@@ -44,6 +44,7 @@ public:
         size_t getIndex() const;
 
         int init(QString f, CubeSubset subset);
+        int init(pqPipelineSource *img);
 
         const std::string getFitsHeaderPath() const;
         const QString getFitsFileName() const;

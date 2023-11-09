@@ -79,6 +79,38 @@ int vlvaStackImage::init(QString f, CubeSubset subset)
     return 1;
 }
 
+int vlvaStackImage::init(pqPipelineSource *img)
+{
+    try {
+        initialised = true;
+        imageSource = img;
+
+        imageRep = builder->createDataRepresentation(this->imageSource->getOutputPort(0), viewImage);
+        vtkSMPropertyHelper(imageProxy, "Representation").Set("Slice");
+        vtkSMProperty* separateProperty = vtkSMPVRepresentationProxy::SafeDownCast(imageProxy)->GetProperty("UseSeparateColorMap");
+        vtkSMPropertyHelper(separateProperty).Set(1);
+        vtkSMPVRepresentationProxy::SetScalarColoring(imageProxy, "FITSImage", vtkDataObject::POINT);
+        imageProxy->UpdateVTKObjects();
+
+        readInfoFromSource();
+        readHeaderFromSource();
+        fitsHeaderPath = createFitsHeaderFile(fitsHeader);
+        // Set default colour map
+        changeColorMap("Grayscale");
+        setLogScale(this->logScale);
+        setOpacity(1);
+        setActive(true);
+        type = 0;
+    }
+    catch (std::exception& e)
+    {
+        initialised = false;
+        std::cerr << "Error when loading vlvaStackImage! Error: " << e.what() << std::endl;
+        return 0;
+    }
+    return 1;
+}
+
 size_t vlvaStackImage::getIndex() const
 {
     return this->index;

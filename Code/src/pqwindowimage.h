@@ -102,6 +102,8 @@ private:
     void extracted(QList<pqRepresentation *> &reps, QString &fName);
     int removeImageFromStack(const int index);
 
+    int addImageToStack(pqPipelineSource *img, QString& file);
+
     int positionImage(vlvaStackImage* stackImage, bool setBasePos = false);
 
     static constexpr float defaultMultiOpacity = 0.5;

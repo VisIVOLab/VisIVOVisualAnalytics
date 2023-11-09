@@ -99,6 +99,7 @@ set(sources
         src/pipe.cpp
         src/plotwindow.cpp
         src/pointspipe.cpp
+        src/pqlocaldatamanager.cpp
         src/pqmeminspector.cpp
         src/pqwindowcube.cpp
         src/pqwindowimage.cpp
@@ -177,6 +178,7 @@ set(headers
         src/pipe.h
         src/plotwindow.h
         src/pointspipe.h
+        src/pqlocaldatamanager.h
         src/pqmeminspector.h
         src/pqwindowcube.h
         src/pqwindowimage.h

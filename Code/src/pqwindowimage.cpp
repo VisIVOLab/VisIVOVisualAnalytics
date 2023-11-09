@@ -68,10 +68,10 @@ pqWindowImage::pqWindowImage(const QString &filepath, const CubeSubset &cubeSubs
     clmInit = false;
 
     // ParaView Init
-    builder = pqApplicationCore::instance()->getObjectBuilder();
-    server = pqActiveObjects::instance().activeServer();
     serverProxyManager = server->proxyManager();
-    new pqAlwaysConnectedBehavior(this);
+//    builder = pqApplicationCore::instance()->getObjectBuilder();
+//    server = pqActiveObjects::instance().activeServer();
+//    new pqAlwaysConnectedBehavior(this);
 
     // Enable annotations such as Remote Rendering, FPS, etc...
     auto renderingSettings = serverProxyManager->GetProxy("settings", "RenderViewSettings");
@@ -261,6 +261,40 @@ int pqWindowImage::addImageToStack(QString file, const CubeSubset &subset)
         return 1;
     } else
     {
+        std::cerr << "Failed to initialise image for file " << file.toStdString() << "." << std::endl;
+        removeImageFromStack(activeIndex);
+        return 0;
+    }
+}
+
+int pqWindowImage::addImageToStack(pqPipelineSource* img, QString &file)
+{
+    // If in the process of initialising the UI, ignore this command.
+    if (clmInit)
+        return 1;
+
+    std::cerr << "Adding image proxy to stack." << std::endl;
+    int index = images.size();
+    auto im = new vlvaStackImage(file, imgCounter, this->logScaleDefault, builder, viewImage, serverProxyManager);
+    im->setIndex(index);
+    images.push_back(im);
+    this->activeIndex = images.size() - 1;
+    if (images.at(activeIndex)->init(img))
+    {
+        if (images.size() == 1){
+            this->positionImage(images.at(activeIndex), true);
+            images.at(activeIndex)->setOpacity(1);
+        }
+        else{
+            this->positionImage(images.at(activeIndex), false);
+            images.at(activeIndex)->setOpacity(defaultMultiOpacity);
+        }
+        this->updateUI();
+        viewImage->render();
+        imgCounter++;
+        return 1;
+    }
+    else{
         std::cerr << "Failed to initialise image for file " << file.toStdString() << "." << std::endl;
         removeImageFromStack(activeIndex);
         return 0;
