@@ -30,8 +30,6 @@ public:
 
     void removeArrow();
 
-    void setRenderWindow(pqRenderView *renderWindow);
-
 protected:
     vtkDrawLineInteractorStyleUser();
     ~vtkDrawLineInteractorStyleUser();
@@ -49,7 +47,6 @@ private:
     double End[3];
     vtkNew<vtkCoordinate> Coordinate;
     vtkNew<vtkLeaderActor2D> Actor;
-    pqRenderView *renderWindow;
 };
 
 #endif // VTKDRAWLINEINTERACTORSTYLEUSER_H
