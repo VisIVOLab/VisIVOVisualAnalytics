@@ -154,6 +154,7 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
     // Set up interactor for drawing PV slice line
     drawPVLineInteractorStyle->setLineValsCallback([this](float x1, float y1, float x2, float y2){sendLineEndPoints(std::make_pair(x1, y1), std::make_pair(x2, y2));});
     drawPVLineInteractorStyle->setLineAbortCallback([this](){endDrawLine();});
+    drawPVLineInteractorStyle->setRenderWindow(this->viewSlice);
 
     // Set initial interactor
     viewSlice->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(
@@ -518,6 +519,8 @@ void pqWindowCube::endDrawLine()
             pixCoordInteractorStyle);
     this->ui->actionDraw_PV_line->setChecked(false);
     drawing = false;
+    auto viewProxy = viewSlice->getProxy();
+    vtkSMPropertyHelper(viewProxy, "ShowAnnotation").Set(1);
     endPVSlice();
 }
 
@@ -928,6 +931,8 @@ void pqWindowCube::on_actionDraw_PV_line_triggered()
                 drawPVLineInteractorStyle);
         drawing = true;
         showStatusBarMessage("Press ENTER to confirm your selection, press ESC to abort.");
+        auto viewProxy = viewSlice->getProxy();
+        vtkSMPropertyHelper(viewProxy, "ShowAnnotation").Set(0);
     }
     else
         endDrawLine();

@@ -33,6 +33,11 @@ vtkDrawLineInteractorStyleUser::~vtkDrawLineInteractorStyleUser()
     });
 }
 
+void vtkDrawLineInteractorStyleUser::setRenderWindow(pqRenderView *renderWindow)
+{
+    renderWindow = renderWindow;
+}
+
 void vtkDrawLineInteractorStyleUser::setLineAbortCallback(const std::function<void ()> &newLineAbortCallback)
 {
     lineAbortCallback = newLineAbortCallback;
@@ -65,7 +70,7 @@ void vtkDrawLineInteractorStyleUser::OnMouseMove()
 
     this->renderers.insert(renderer);
     renderer->AddActor(this->Actor);
-    this->Interactor->GetRenderWindow()->Render();
+    this->renderWindow->render();
 }
 
 void vtkDrawLineInteractorStyleUser::OnLeftButtonDown()
