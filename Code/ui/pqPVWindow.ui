@@ -140,7 +140,7 @@
    </property>
    <widget class="QMenu" name="menuSave">
     <property name="title">
-     <string>Save</string>
+     <string>File</string>
     </property>
     <addaction name="actionSave_as_PNG"/>
     <addaction name="actionSave_as_FITS"/>

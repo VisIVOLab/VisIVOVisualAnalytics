@@ -19,6 +19,7 @@
 #include <vtkSMTransferFunctionPresets.h>
 #include <vtkWindowToImageFilter.h>
 
+#include <QCloseEvent>
 #include <QFileDialog>
 #include <QMessageBox>
 
@@ -93,6 +94,12 @@ pqPVWindow::pqPVWindow(pqServer *serv, pqPipelineSource *cbSrc, std::pair<int, i
 pqPVWindow::~pqPVWindow()
 {
     delete ui;
+}
+
+void pqPVWindow::closeEvent(QCloseEvent *event)
+{
+    emit closed();
+    event->accept();
 }
 
 void pqPVWindow::update(std::pair<int, int> &start, std::pair<int, int> &end)

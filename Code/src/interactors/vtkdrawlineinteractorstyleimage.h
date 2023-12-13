@@ -26,6 +26,8 @@ public:
     void setLineValsCallback(const std::function<void(float, float, float, float)>& callback);
     void setLineAbortCallback(const std::function<void ()> &newLineAbortCallback);
 
+    void removeArrow();
+
 protected:
     vtkDrawLineInteractorStyleUser();
     ~vtkDrawLineInteractorStyleUser();

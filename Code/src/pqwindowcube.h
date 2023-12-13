@@ -32,9 +32,6 @@ public:
     explicit pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset = CubeSubset());
     ~pqWindowCube() override;
 
-public slots:
-    void PVSliceWindowClosed();
-
 private slots:
     void on_sliceSlider_actionTriggered(int action);
     void on_sliceSlider_sliderReleased();
@@ -67,6 +64,8 @@ private slots:
     void on_actionDraw_PV_line_triggered();
 
     void on_actionGen_test_PV_slice_triggered();
+
+    void endPVSlice();
 
 private:
     Ui::pqWindowCube *ui;

@@ -38,6 +38,11 @@ void vtkDrawLineInteractorStyleUser::setLineAbortCallback(const std::function<vo
     lineAbortCallback = newLineAbortCallback;
 }
 
+void vtkDrawLineInteractorStyleUser::removeArrow()
+{
+    this->Actor->VisibilityOff();
+}
+
 void vtkDrawLineInteractorStyleUser::PrintSelf(ostream &os, vtkIndent indent)
 {
     Superclass::PrintSelf(os, indent);
@@ -72,6 +77,7 @@ void vtkDrawLineInteractorStyleUser::OnLeftButtonDown()
     auto renderer = this->Interactor->GetRenderWindow()->GetRenderers()->GetFirstRenderer();
     double *worldCoords = this->Coordinate->GetComputedWorldValue(renderer);
     std::copy_n(worldCoords, 3, this->Start);
+    this->Actor->VisibilityOn();
     this->Actor->GetPositionCoordinate()->SetValue(this->Start);
     this->isDrawingPVSliceLine = true;
 }
@@ -81,6 +87,8 @@ void vtkDrawLineInteractorStyleUser::OnLeftButtonUp()
     Superclass::OnLeftButtonUp();
     this->isDrawingPVSliceLine = false;
     this->Interactor->GetRenderWindow()->Render();
+    this->LinePointCallback(this->Start[0], this->Start[1], this->End[0], this->End[1]);
+    this->lineAbortCallback();
 }
 
 void vtkDrawLineInteractorStyleUser::OnKeyPress()

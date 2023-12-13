@@ -25,6 +25,11 @@ public:
 
     QString getColourMap() const;
 
+    void closeEvent(QCloseEvent *event) override;
+
+signals:
+    void closed();
+
 private slots:
     int changeLutScale();
     int changeOpacity(int opacity);

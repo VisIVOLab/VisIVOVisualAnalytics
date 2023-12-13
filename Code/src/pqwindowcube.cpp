@@ -1,4 +1,5 @@
 #include "pqwindowcube.h"
+#include "qmessagebox.h"
 #include "ui_pqwindowcube.h"
 
 #include "interactors/vtkinteractorstyleimagecustom.h"
@@ -113,6 +114,7 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
     // Load Reactions
     CubeSource = pqLoadDataReaction::loadData({ filepath });
     SliceSource = pqLoadDataReaction::loadData({ filepath });
+    fullSrc = NULL;
 
     // Handle Subset selection
     setSubsetProperties(cubeSubset);
@@ -167,19 +169,15 @@ pqWindowCube::~pqWindowCube()
 {
     builder->destroy(CubeSource);
     builder->destroy(SliceSource);
-    builder->destroySources(server);
-    this->CubeSource = NULL;
-    this->SliceSource = NULL;
-    delete ui;
-}
-
-void pqWindowCube::PVSliceWindowClosed()
-{
     if (this->fullSrc != NULL)
     {
         builder->destroy(fullSrc);
         this->fullSrc = NULL;
     }
+    builder->destroySources(server);
+    this->CubeSource = NULL;
+    this->SliceSource = NULL;
+    delete ui;
 }
 
 void pqWindowCube::readInfoFromSource()
@@ -478,6 +476,25 @@ void pqWindowCube::removeContours()
 
 void pqWindowCube::sendLineEndPoints(std::pair<float, float> start, std::pair<float, float> end)
 {
+    QMessageBox msgBox;
+    msgBox.setIcon(QMessageBox::Question);
+    msgBox.setText("Do you want to load a Position-Velocity slice?");
+    msgBox.setInformativeText("Generating the PV slice will take time if the cube is large.");
+    msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
+    msgBox.setDefaultButton(QMessageBox::Yes);
+    msgBox.setEscapeButton(QMessageBox::Cancel);
+    int ret = msgBox.exec();
+    switch (ret){
+        case QMessageBox::Yes:
+            break;
+        case QMessageBox::Cancel:
+            endDrawLine();
+            return;
+            break;
+        default:
+            break;
+    }
+
     bool invalid = start.first < bounds[0] || start.first > bounds[1] || start.second < bounds[2] || start.second > bounds[3];
     invalid = invalid || end.first < bounds[0] || end.first > bounds[1] || end.second < bounds[2] || end.second > bounds[3];
     if (invalid){
@@ -501,6 +518,7 @@ void pqWindowCube::endDrawLine()
             pixCoordInteractorStyle);
     this->ui->actionDraw_PV_line->setChecked(false);
     drawing = false;
+    endPVSlice();
 }
 
 void pqWindowCube::showPVSlice()
@@ -517,16 +535,58 @@ void pqWindowCube::showPVSlice(std::pair<int, int> start, std::pair<int, int> en
     vtkSMPropertyHelper(CubeSource->getProxy(), "ScaleFactorInfo").Get(&sF);
     if (sF != 1)
     {
-        fullSrc = pqLoadDataReaction::loadData({ cubeFilePath });
+        if (fullSrc == NULL)
+            fullSrc = pqLoadDataReaction::loadData({ cubeFilePath });
+//        CubeSubset sub;
+//        sub.AutoScale = false;
+//        sub.ScaleFactor = 1;
+//        int x1, y1, z1, z2;
+//        if (cubeSubset.ReadSubExtent){
+//            x1 = cubeSubset.SubExtent[0];
+//            y1 = cubeSubset.SubExtent[2];
+//            z1 = cubeSubset.SubExtent[4];
+//            z2 = cubeSubset.SubExtent[5];
+//        }
+//        else{
+//            x1 = bounds[0];
+//            y1 = bounds[2];
+//            z1 = bounds[4];
+//            z2 = bounds[5];
+//        }
+
+//        std::pair<int, int> botLeft = std::make_pair(std::min(start.first, end.first), std::min(start.second, end.second));
+//        std::pair<int, int> topRight = std::make_pair(std::max(start.first, end.first), std::max(start.second, end.second));
+//        sub.SubExtent[0] = x1 + botLeft.first;
+//        sub.SubExtent[1] = x1 + topRight.first;
+//        sub.SubExtent[2] = y1 + botLeft.second;
+//        sub.SubExtent[3] = y1 + topRight.second;
+//        sub.SubExtent[4] = z1;
+//        sub.SubExtent[5] = z2;
+
+//        auto sourceProxy = fullSrc->getProxy();
+//        vtkSMPropertyHelper(sourceProxy, "ReadSubExtent").Set(true);
+//        vtkSMPropertyHelper(sourceProxy, "SubExtent").Set(sub.SubExtent, 6);
+//        vtkSMPropertyHelper(sourceProxy, "AutoScale").Set(sub.AutoScale);
+//        vtkSMPropertyHelper(sourceProxy, "CubeMaxSize").Set(sub.CubeMaxSize);
+//        sourceProxy->UpdateVTKObjects();
+//        start = std::make_pair(start.first - botLeft.first, start.second - botLeft.second);
+//        end = std::make_pair(end.first - botLeft.first, end.second - botLeft.second);
         pvSlice = new pqPVWindow(this->server, fullSrc, start, end, this);
     }
     else
         pvSlice = new pqPVWindow(this->server, this->CubeSource, start, end, this);
-    connect(pvSlice, &pqPVWindow::destroyed, this, &pqWindowCube::PVSliceWindowClosed);
+    connect(pvSlice, &pqPVWindow::closed, this, &pqWindowCube::endPVSlice);
     pvSlice->setAttribute(Qt::WA_Hover);
     pvSlice->show();
     pvSlice->activateWindow();
     pvSlice->raise();
+}
+
+void pqWindowCube::endPVSlice()
+{
+    this->drawPVLineInteractorStyle->removeArrow();
+    viewSlice->render();
+    viewCube->render();
 }
 
 void pqWindowCube::on_sliceSlider_valueChanged()
