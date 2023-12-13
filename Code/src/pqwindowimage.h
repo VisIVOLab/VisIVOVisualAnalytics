@@ -1,8 +1,6 @@
 #ifndef PQWINDOWIMAGE_H
 #define PQWINDOWIMAGE_H
 
-#include "astroutils.h"
-#include "src/vtklegendscaleactor.h"
 #include "subsetselectordialog.h"
 #include "vlvastackimage.h"
 
@@ -61,6 +59,13 @@ private slots:
     void on_lstImageList_itemChanged(QListWidgetItem *item);
 
 private:
+    /**
+     * @brief The removeErrorCode enum
+     * Used for removing images from stack for reasons to make sure that program doesn't
+     * try to destroy unitialised or nonexisting proxies and sources.
+     */
+    enum removeErrorCode{INIT_ERROR, NO_ERROR, IS_CUBE_ERROR};
+
     Ui::pqWindowImage *ui;
 
     std::vector<vlvaStackImage*> images;
@@ -96,11 +101,10 @@ private:
     void createView();
     void readInfoFromSource();
     void readHeaderFromSource();
-    void showLegendScaleActor();
     void setLogScale(bool logScale);
     void setOpacity(float value);
     void extracted(QList<pqRepresentation *> &reps, QString &fName);
-    int removeImageFromStack(const int index);
+    int removeImageFromStack(const int index, const removeErrorCode remErrCode = removeErrorCode::NO_ERROR);
 
     int positionImage(vlvaStackImage* stackImage, bool setBasePos = false);
 

@@ -2,6 +2,7 @@
 #include "ui_pqwindowimage.h"
 
 #include "interactors/vtkinteractorstyleimagecustom.h"
+#include "errorMessage.h"
 
 #include <pqActiveObjects.h>
 #include <pqAlwaysConnectedBehavior.h>
@@ -11,6 +12,8 @@
 #include <pqObjectBuilder.h>
 #include <pqPipelineSource.h>
 #include <pqRenderView.h>
+#include <pqScalarBarRepresentation.h>
+#include <pqScalarsToColors.h>
 #include <pqSMAdaptor.h>
 
 #include <vtkPVArrayInformation.h>
@@ -20,6 +23,7 @@
 #include <vtkRendererCollection.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderWindowInteractor.h>
+#include <vtkScalarBarWidget.h>
 #include <vtkSMCoreUtilities.h>
 #include <vtkSMProperty.h>
 #include <vtkSMPropertyHelper.h>
@@ -54,6 +58,8 @@ pqWindowImage::pqWindowImage(const QString &filepath, const CubeSubset &cubeSubs
     }
     ui->cmbxLUTSelect->setCurrentIndex(ui->cmbxLUTSelect->findText("Grayscale"));
     ui->linearRadioButton->setChecked(true);
+
+    //Initialise image stack
     this->images = std::vector<vlvaStackImage*>();
 
     ui->tblCompactSourcesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -126,8 +132,24 @@ void pqWindowImage::showStatusBarMessage(const std::string &msg)
  */
 void pqWindowImage::updateUI()
 {
-    if (images.size() == 0)
+    this->ui->lstImageList->clear();
+    //Disable buttons if all images are removed
+    if (images.size() == 0){
+        this->ui->btnRemoveImageFromStack->setEnabled(false);
+        this->ui->cmbxLUTSelect->setEnabled(false);
+        this->ui->opacitySlider->setEnabled(false);
+        this->ui->linearRadioButton->setCheckable(false);
+        this->ui->logRadioButton->setCheckable(false);
+        viewImage->render();
         return;
+    }
+    else{
+        this->ui->btnRemoveImageFromStack->setEnabled(true);
+        this->ui->cmbxLUTSelect->setEnabled(true);
+        this->ui->opacitySlider->setEnabled(true);
+        this->ui->linearRadioButton->setCheckable(true);
+        this->ui->logRadioButton->setCheckable(true);
+    }
 
     clmInit = true;
     setWindowTitle(this->images.at(activeIndex)->getFitsFileName());
@@ -139,9 +161,9 @@ void pqWindowImage::updateUI()
     interactorStyle->SetLayerFitsReaderFunc(this->images.at(activeIndex)->getFitsHeaderPath());
     viewImage->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(
             interactorStyle);
-    this->ui->lstImageList->clear();
     std::sort(images.begin(), images.end(), [](vlvaStackImage* a, vlvaStackImage* b){ return a->getIndex() < b->getIndex();});
 
+    //Create list of images at bottom right
     for (int i = 0; i < images.size(); ++i)
     {
         auto item = images.at(i);
@@ -154,6 +176,7 @@ void pqWindowImage::updateUI()
         this->ui->lstImageList->addItem(lstItem);
     }
 
+    //Update UI for current image values
     this->ui->lstImageList->setCurrentItem(this->ui->lstImageList->item(this->activeIndex));
     int newCMIndex = this->ui->cmbxLUTSelect->findText(this->images.at(activeIndex)->getColourMap());
     this->ui->cmbxLUTSelect->setCurrentIndex(newCMIndex);
@@ -181,20 +204,6 @@ void pqWindowImage::setImageListCheckbox(int row, Qt::CheckState checked)
     else{
         im->setActive(false);
     }
-}
-
-/**
- * @brief pqWindowImage::showLegendScaleActor
- * Function that adds colour map legend to the render view.
- */
-void pqWindowImage::showLegendScaleActor()
-{
-    // Show Legend Scale Actor in image renderer
-    auto legendActorCube = vtkSmartPointer<vtkLegendScaleActor>::New();
-    legendActorCube->LegendVisibilityOff();
-    legendActorCube->setFitsHeader(this->images.at(activeIndex)->getFitsHeaderPath());
-    auto rwImage = viewImage->getViewProxy()->GetRenderWindow()->GetRenderers();
-    vtkRenderer::SafeDownCast(rwImage->GetItemAsObject(1))->AddActor(legendActorCube);
 }
 
 /**
@@ -245,14 +254,22 @@ int pqWindowImage::addImageToStack(QString file, const CubeSubset &subset)
     this->activeIndex = images.size() - 1;
 
     // Initialise image on server side
-    if (images.at(activeIndex)->init(file, subset))
+    removeErrorCode initErr = (removeErrorCode) images.at(activeIndex)->init(file, subset);
+    //Check error code
+    if (initErr == removeErrorCode::NO_ERROR)
     {
         if (images.size() == 1){
             this->positionImage(images.at(activeIndex), true);
             images.at(activeIndex)->setOpacity(1);
         }
         else{
-            this->positionImage(images.at(activeIndex), false);
+            if (!this->positionImage(images.at(activeIndex), false))
+            {
+                std::cerr << file.toStdString() << " not added to stack." << std::endl;
+                removeImageFromStack(activeIndex);
+                return 0;
+            }
+
             images.at(activeIndex)->setOpacity(defaultMultiOpacity);
         }
         this->updateUI();
@@ -262,7 +279,7 @@ int pqWindowImage::addImageToStack(QString file, const CubeSubset &subset)
     } else
     {
         std::cerr << "Failed to initialise image for file " << file.toStdString() << "." << std::endl;
-        removeImageFromStack(activeIndex);
+        removeImageFromStack(activeIndex, initErr);
         return 0;
     }
 }
@@ -271,36 +288,27 @@ int pqWindowImage::addImageToStack(QString file, const CubeSubset &subset)
  * @brief pqWindowImage::removeImageFromStack
  * Function that removes an image from the stack
  * @param index The index of the image to be removed
+ * @param remErrCode The error code used for removing the image. Used when default removal would cause issues for program.
  * @return True if successful, false if unsuccessful
  */
-int pqWindowImage::removeImageFromStack(const int index)
+int pqWindowImage::removeImageFromStack(const int index, const removeErrorCode remErrCode)
 {
     // If in the process of initialising the UI, ignore this command.
     if (clmInit)
         return 1;
-    /*
-    auto reps = this->viewImage->getRepresentations();
-    auto fName = this->images.at(activeIndex)->getFitsFileName();
-    for (int i = 0; i < reps.size(); ++i){
-        auto r = reps.at(i);
-        r->getProxy()->UpdatePropertyInformation();
-        auto fNProp = vtkSMStringVectorProperty::SafeDownCast(r->getProxy()->GetProperty("ImageFileNameInfo"));
-        std::string pName;
-        if (fNProp)
-            pName = fNProp->GetElement(0);
-        else
-            continue;
 
-        if (fName.toStdString().compare(pName) == 0){
-            this->images.at(activeIndex)->setActive(false);
-            break;
-        }
-        else
-            continue;
-    }*/
-    std::cerr << "Removing representation of " << this->images.at(activeIndex)->getFitsFileName().toStdString() << " (index " << activeIndex << ") in spirit since Paraview somehow doesn't allow it." << std::endl;
-    this->images.at(activeIndex)->setActive(false);
-    auto fitsHeadPath = this->images.at(activeIndex)->getFitsHeaderPath();
+    auto rep = this->images.at(activeIndex)->getImageRep();
+    //If error code returns that the image is a cube, don't remove colour bar since it doesn't exist
+    if (remErrCode != removeErrorCode::IS_CUBE_ERROR)
+    {
+        auto colProxy = rep->getLookupTable();
+        auto scalBarRep = colProxy->getScalarBar(this->viewImage);
+        builder->destroy(scalBarRep);
+    }
+
+    //Free resources on the server
+    builder->destroy(rep);
+
     images.erase(images.begin() + index);
     this->activeIndex = activeIndex > 0 ? index - 1 : 0;
     updateUI();
@@ -346,6 +354,10 @@ int pqWindowImage::positionImage(vlvaStackImage *stackImage, bool setBasePos)
     catch (std::exception& e)
     {
         std::cerr << "Error when trying to extract WCS position from FITS header file!" << std::endl;
+        std::stringstream eString, eInfo;
+        eString << "Error when trying to extract WCS position from FITS header file " << stackImage->getFitsFileName().toStdString() << "!";
+        eInfo << "Please file a bug report and include the specific files you were trying to load.";
+        throwError(eString.str().c_str(), eInfo.str().c_str());
         return 0;
     }
 
@@ -357,13 +369,38 @@ int pqWindowImage::positionImage(vlvaStackImage *stackImage, bool setBasePos)
         }
         scaledPixel = AstroUtils().arcsecPixel(fitsPath) / refImagePixScaling;
 
-        return stackImage->setOrientation(0, 0, angle) && stackImage->setScale(scaledPixel, scaledPixel) && stackImage->setPosition(x1, y1);
+        int sum = 0;
+        sum += stackImage->setOrientation(0, 0, angle);
+        sum += stackImage->setScale(scaledPixel, scaledPixel);
+        sum += stackImage->setXYPosition(x1, y1);
+        if (sum != 3){
+            std::cerr << "Error when placing/rotating/scaling image " << stackImage->getFitsFileName().toStdString() << "!" << std::endl;
+            std::stringstream eString, eInfo;
+            eString << "Error when placing/rotating/scaling image " << stackImage->getFitsFileName().toStdString() << "!";
+            eInfo << "Please file a bug report and include the specific files you were trying to load.";
+            throwError(eString.str().c_str(), eInfo.str().c_str());
+            return 0;
+        }
+        if (!setBasePos && !overlaps(this->images, stackImage)){
+            std::cerr << "File " << stackImage->getFitsFileName().toStdString() << " does not overlap any currently displayed image!" << std::endl;
+            std::stringstream eString, eInfo;
+            eString << "File " << stackImage->getFitsFileName().toStdString() << " does not overlap any currently displayed image!";
+            eInfo << "Images must overlap at least partially to be shown in a stack. Remove all current images and try again if you want to load this image.";
+            throwError(eString.str().c_str(), eInfo.str().c_str());
+
+            return 0;
+        }
     }
     catch (std::exception& e)
     {
         std::cerr << "Error when trying to position image via proxies!" << std::endl;
+        std::stringstream eString, eInfo;
+        eString << "Error when trying to position image via proxies!";
+        eInfo << "Please file a bug report and include the specific files you were trying to load.";
+        throwError(eString.str().c_str(), eInfo.str().c_str());
         return 0;
     }
+    return 1;
 }
 
 /**
