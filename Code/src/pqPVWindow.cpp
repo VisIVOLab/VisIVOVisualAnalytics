@@ -123,10 +123,8 @@ void pqPVWindow::update(std::pair<int, int> &start, std::pair<int, int> &end)
 
     }
     filterProxy->UpdateVTKObjects();
+    //Send the filter call off on another thread to not block main thread
     QtConcurrent::run(this, &pqPVWindow::applyFilter);
-//    PVSliceFilter->updatePipeline();
-//    viewImage->resetDisplay();
-//    viewImage->render();
 }
 
 QString pqPVWindow::getColourMap() const
@@ -303,4 +301,3 @@ int pqPVWindow::saveAsFITS()
     writer->Delete();
     return 1;
 }
-
