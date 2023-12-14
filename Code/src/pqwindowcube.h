@@ -1,6 +1,9 @@
 #ifndef PQWINDOWCUBE_H
 #define PQWINDOWCUBE_H
 
+#include "pqPVWindow.h"
+#include "src/interactors/vtkdrawlineinteractorstyleimage.h"
+#include "src/interactors/vtkinteractorstyleimagecustom.h"
 #include "subsetselectordialog.h"
 
 #include <QMainWindow>
@@ -28,6 +31,10 @@ class pqWindowCube : public QMainWindow
 public:
     explicit pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset = CubeSubset());
     ~pqWindowCube() override;
+
+signals:
+    void pvGenComplete();
+    void genPVSlice(std::pair<int, int> start, std::pair<int, int> end);
 
 private slots:
     void on_sliceSlider_actionTriggered(int action);
@@ -58,12 +65,25 @@ private slots:
 
     void generateVolumeRendering();
 
+    void on_actionDraw_PV_line_triggered();
+
+    void endPVSlice();
+
+    void endDrawBlock();
+
+    void showPVWindow();
+    void showPVSlice(std::pair<int, int> start, std::pair<int, int> end);
+
 private:
     Ui::pqWindowCube *ui;
 
     QString FitsFileName;
+    QString cubeFilePath;
     pqPipelineSource *CubeSource;
     pqPipelineSource *SliceSource;
+    pqPipelineSource* fullSrc = NULL;
+
+    pqPVWindow* pvSlice;
 
     CubeSubset cubeSubset;
 
@@ -117,7 +137,15 @@ private:
     void showContours();
     void removeContours();
 
+    int zDepth;
+    void sendLineEndPoints(std::pair<float, float> start, std::pair<float, float> end);
+    void endDrawLine();
+    bool drawingPVLine, canDrawPVLine;
+
     bool loadChange = false;
+
+    vtkNew<vtkInteractorStyleImageCustom> pixCoordInteractorStyle;
+    vtkNew<vtkDrawLineInteractorStyleUser> drawPVLineInteractorStyle;
 };
 
 #endif // PQWINDOWCUBE_H
