@@ -29,6 +29,7 @@ public:
 
 signals:
     void closed();
+    void pvGenComplete();
 
 private slots:
     int changeLutScale();
@@ -38,6 +39,7 @@ private slots:
     void on_actionSave_as_PNG_triggered();
 
     void on_actionSave_as_FITS_triggered();
+    void setRep();
 
 private:
     Ui::pqPVWindow *ui;
@@ -50,9 +52,10 @@ private:
     vtkSMTransferFunctionProxy* lutProxy;
     pqRenderView* viewImage;
 
-    QString colourMap;
-    bool logScale;
+    QString colourMap = "Grayscale";
+    bool logScale = false;
 
+    void applyFilter();
     int saveAsPNG();
     int saveAsFITS();
 };

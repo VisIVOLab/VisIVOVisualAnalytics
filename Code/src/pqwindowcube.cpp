@@ -1,5 +1,6 @@
 #include "pqwindowcube.h"
 #include "qmessagebox.h"
+#include "qtconcurrentrun.h"
 #include "ui_pqwindowcube.h"
 
 #include "interactors/vtkinteractorstyleimagecustom.h"
@@ -59,6 +60,8 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
     connect(ui->actionVolGenerate, &QAction::triggered, this,
             &pqWindowCube::generateVolumeRendering);
 
+    connect(this, &pqWindowCube::genPVSlice, this, &pqWindowCube::showPVSlice);
+
     // Opacity menu actions
     auto opacityGroup = new QActionGroup(this);
     opacityGroup->addAction(ui->action0);
@@ -79,6 +82,10 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
     connect(scalingLinear, &QAction::triggered, this, [=]() { setLogScale(false); });
     connect(scalingLog, &QAction::triggered, this, [=]() { setLogScale(true); });
     ui->menuScaling->addActions(scalingGroup->actions());
+
+    canDrawPVLine = true;
+    this->ui->actionDraw_PV_line->setEnabled(true);
+    connect(this, &pqWindowCube::pvGenComplete, this, &pqWindowCube::endDrawBlock);
 
     // Create LUTs menu actions
     auto presets = vtkSMTransferFunctionPresets::GetInstance();
@@ -474,11 +481,19 @@ void pqWindowCube::removeContours()
     }
 }
 
+/**
+ * @brief pqWindowCube::sendLineEndPoints
+ * This function is the callback from the interactor that is called when the user
+ * finishes drawing the line along which the PV plot is to be calculated. User is
+ * required to confirm and then it checks that the line is within bounds.
+ * @param start The coordinates where the line for the PV slice starts.
+ * @param end The coordinates where the line for the PV slice ends.
+ */
 void pqWindowCube::sendLineEndPoints(std::pair<float, float> start, std::pair<float, float> end)
 {
     QMessageBox msgBox;
     msgBox.setIcon(QMessageBox::Question);
-    msgBox.setText("Do you want to load a Position-Velocity slice?");
+    msgBox.setText("Do you want to compute a position velocity plot along the line?");
     msgBox.setInformativeText("Generating the PV slice will take time if the cube is large.");
     msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
     msgBox.setDefaultButton(QMessageBox::Yes);
@@ -509,28 +524,38 @@ void pqWindowCube::sendLineEndPoints(std::pair<float, float> start, std::pair<fl
     y1 = std::round(start.second);
     x2 = std::round(end.first);
     y2 = std::round(end.second);
-    this->showPVSlice(std::make_pair(x1, y1), std::make_pair(x2, y2));
+    this->canDrawPVLine = false;
+    this->ui->actionDraw_PV_line->setEnabled(false);
+//    QtConcurrent::run(this, &pqWindowCube::showPVSlice, std::make_pair(x1, y1), std::make_pair(x2, y2));
+    emit genPVSlice(std::make_pair(x1, y1), std::make_pair(x2, y2));
 }
 
+/**
+ * @brief pqWindowCube::endDrawLine
+ * This function is called to make sure that the annotation on the slice view
+ * doesn't get shown a million times on every update.
+ */
 void pqWindowCube::endDrawLine()
 {
     viewSlice->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(
             pixCoordInteractorStyle);
     this->ui->actionDraw_PV_line->setChecked(false);
-    drawing = false;
+    drawingPVLine = false;
     auto viewProxy = viewSlice->getProxy();
     vtkSMPropertyHelper(viewProxy, "ShowAnnotation").Set(1);
     viewProxy->UpdateVTKObjects();
     endPVSlice();
 }
 
-void pqWindowCube::showPVSlice()
-{
-    int start1 = 50, start2 = 50;
-    int end1 = 100, end2 = 100;
-    showPVSlice(std::make_pair(start1, start2), std::make_pair(end1, end2));
-}
 
+/**
+ * @brief pqWindowCube::showPVSlice
+ * This function manages the memory and data for generating the PV slice. It is meant to be run in a separate thread
+ * (see QtConcurrent::run). Once the PV slice is computed and displayed, it informs the main thread that the user can
+ * now draw a new line again.
+ * @param start The coordinates where the line for the PV slice starts.
+ * @param end The coordinates where the line for the PV slice ends.
+ */
 void pqWindowCube::showPVSlice(std::pair<int, int> start, std::pair<int, int> end)
 {
     CubeSource->getProxy()->UpdatePropertyInformation();
@@ -540,56 +565,79 @@ void pqWindowCube::showPVSlice(std::pair<int, int> start, std::pair<int, int> en
     {
         if (fullSrc == NULL)
             fullSrc = pqLoadDataReaction::loadData({ cubeFilePath });
-//        CubeSubset sub;
-//        sub.AutoScale = false;
-//        sub.ScaleFactor = 1;
-//        int x1, y1, z1, z2;
-//        if (cubeSubset.ReadSubExtent){
-//            x1 = cubeSubset.SubExtent[0];
-//            y1 = cubeSubset.SubExtent[2];
-//            z1 = cubeSubset.SubExtent[4];
-//            z2 = cubeSubset.SubExtent[5];
-//        }
-//        else{
-//            x1 = bounds[0];
-//            y1 = bounds[2];
-//            z1 = bounds[4];
-//            z2 = bounds[5];
-//        }
+/*        CubeSubset sub;
+        sub.AutoScale = false;
+        sub.ScaleFactor = 1;
+        int x1, y1, z1, z2;
+        if (cubeSubset.ReadSubExtent){
+            x1 = cubeSubset.SubExtent[0];
+            y1 = cubeSubset.SubExtent[2];
+            z1 = cubeSubset.SubExtent[4];
+            z2 = cubeSubset.SubExtent[5];
+        }
+        else{
+            x1 = bounds[0];
+            y1 = bounds[2];
+            z1 = bounds[4];
+            z2 = bounds[5];
+        }
 
-//        std::pair<int, int> botLeft = std::make_pair(std::min(start.first, end.first), std::min(start.second, end.second));
-//        std::pair<int, int> topRight = std::make_pair(std::max(start.first, end.first), std::max(start.second, end.second));
-//        sub.SubExtent[0] = x1 + botLeft.first;
-//        sub.SubExtent[1] = x1 + topRight.first;
-//        sub.SubExtent[2] = y1 + botLeft.second;
-//        sub.SubExtent[3] = y1 + topRight.second;
-//        sub.SubExtent[4] = z1;
-//        sub.SubExtent[5] = z2;
+        std::pair<int, int> botLeft = std::make_pair(std::min(start.first, end.first), std::min(start.second, end.second));
+        std::pair<int, int> topRight = std::make_pair(std::max(start.first, end.first), std::max(start.second, end.second));
+        sub.SubExtent[0] = x1 + botLeft.first;
+        sub.SubExtent[1] = x1 + topRight.first;
+        sub.SubExtent[2] = y1 + botLeft.second;
+        sub.SubExtent[3] = y1 + topRight.second;
+        sub.SubExtent[4] = z1;
+        sub.SubExtent[5] = z2;
 
-//        auto sourceProxy = fullSrc->getProxy();
-//        vtkSMPropertyHelper(sourceProxy, "ReadSubExtent").Set(true);
-//        vtkSMPropertyHelper(sourceProxy, "SubExtent").Set(sub.SubExtent, 6);
-//        vtkSMPropertyHelper(sourceProxy, "AutoScale").Set(sub.AutoScale);
-//        vtkSMPropertyHelper(sourceProxy, "CubeMaxSize").Set(sub.CubeMaxSize);
-//        sourceProxy->UpdateVTKObjects();
-//        start = std::make_pair(start.first - botLeft.first, start.second - botLeft.second);
-//        end = std::make_pair(end.first - botLeft.first, end.second - botLeft.second);
+        auto sourceProxy = fullSrc->getProxy();
+        vtkSMPropertyHelper(sourceProxy, "ReadSubExtent").Set(true);
+        vtkSMPropertyHelper(sourceProxy, "SubExtent").Set(sub.SubExtent, 6);
+        vtkSMPropertyHelper(sourceProxy, "AutoScale").Set(sub.AutoScale);
+        vtkSMPropertyHelper(sourceProxy, "CubeMaxSize").Set(sub.CubeMaxSize);
+        sourceProxy->UpdateVTKObjects();
+        start = std::make_pair(start.first - botLeft.first, start.second - botLeft.second);
+        end = std::make_pair(end.first - botLeft.first, end.second - botLeft.second);*/
         pvSlice = new pqPVWindow(this->server, fullSrc, start, end, this);
     }
     else
         pvSlice = new pqPVWindow(this->server, this->CubeSource, start, end, this);
     connect(pvSlice, &pqPVWindow::closed, this, &pqWindowCube::endPVSlice);
-    pvSlice->setAttribute(Qt::WA_Hover);
-    pvSlice->show();
-    pvSlice->activateWindow();
-    pvSlice->raise();
+    connect(pvSlice, &pqPVWindow::pvGenComplete, this, &pqWindowCube::showPVWindow);
 }
 
+/**
+ * @brief pqWindowCube::endPVSlice
+ * This function is called when a PV slice is closed
+ * to remove the arrow from the slice display.
+ */
 void pqWindowCube::endPVSlice()
 {
     this->drawPVLineInteractorStyle->removeArrow();
     viewSlice->render();
     viewCube->render();
+}
+
+/**
+ * @brief pqWindowCube::endDrawBlock
+ * This function is called when the current generation
+ * of a PV plot is completed and reenables the button
+ * to allow the user to draw a line along which to generate a PV slice.
+ */
+void pqWindowCube::endDrawBlock()
+{
+    canDrawPVLine = true;
+    this->ui->actionDraw_PV_line->setEnabled(true);
+}
+
+void pqWindowCube::showPVWindow()
+{
+    pvSlice->setAttribute(Qt::WA_Hover);
+    pvSlice->show();
+    pvSlice->activateWindow();
+    pvSlice->raise();
+    emit pvGenComplete();
 }
 
 void pqWindowCube::on_sliceSlider_valueChanged()
@@ -926,10 +974,10 @@ void pqWindowCube::setVolumeRenderingOpacity(double opacity)
 
 void pqWindowCube::on_actionDraw_PV_line_triggered()
 {
-    if (!drawing){
+    if (!drawingPVLine){
         viewSlice->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(
                 drawPVLineInteractorStyle);
-        drawing = true;
+        drawingPVLine = true;
         showStatusBarMessage("Press ENTER to confirm your selection, press ESC to abort.");
         auto viewProxy = viewSlice->getProxy();
         vtkSMPropertyHelper(viewProxy, "ShowAnnotation").Set(0);
@@ -938,9 +986,3 @@ void pqWindowCube::on_actionDraw_PV_line_triggered()
     else
         endDrawLine();
 }
-
-void pqWindowCube::on_actionGen_test_PV_slice_triggered()
-{
-    showPVSlice();
-}
-

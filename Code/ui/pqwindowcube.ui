@@ -482,15 +482,15 @@
     <addaction name="menuVolume"/>
     <addaction name="menuSlice"/>
    </widget>
-   <widget class="QMenu" name="menuPV_Slice">
+   <widget class="QMenu" name="menuTools">
     <property name="title">
-     <string>PV Slice</string>
+     <string>Tools</string>
     </property>
     <addaction name="actionDraw_PV_line"/>
    </widget>
    <addaction name="menuCamera"/>
    <addaction name="menuRendering"/>
-   <addaction name="menuPV_Slice"/>
+   <addaction name="menuTools"/>
   </widget>
   <widget class="QStatusBar" name="statusBar"/>
   <action name="actionFront">
@@ -598,6 +598,9 @@
   <action name="actionDraw_PV_line">
    <property name="checkable">
     <bool>false</bool>
+   </property>
+   <property name="enabled">
+    <bool>true</bool>
    </property>
    <property name="text">
     <string>Draw PV line</string>

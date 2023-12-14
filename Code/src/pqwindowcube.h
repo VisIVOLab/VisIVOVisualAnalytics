@@ -32,6 +32,10 @@ public:
     explicit pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset = CubeSubset());
     ~pqWindowCube() override;
 
+signals:
+    void pvGenComplete();
+    void genPVSlice(std::pair<int, int> start, std::pair<int, int> end);
+
 private slots:
     void on_sliceSlider_actionTriggered(int action);
     void on_sliceSlider_sliderReleased();
@@ -63,9 +67,12 @@ private slots:
 
     void on_actionDraw_PV_line_triggered();
 
-    void on_actionGen_test_PV_slice_triggered();
-
     void endPVSlice();
+
+    void endDrawBlock();
+
+    void showPVWindow();
+    void showPVSlice(std::pair<int, int> start, std::pair<int, int> end);
 
 private:
     Ui::pqWindowCube *ui;
@@ -133,9 +140,7 @@ private:
     int zDepth;
     void sendLineEndPoints(std::pair<float, float> start, std::pair<float, float> end);
     void endDrawLine();
-    void showPVSlice();
-    void showPVSlice(std::pair<int, int> start, std::pair<int, int> end);
-    bool drawing;
+    bool drawingPVLine, canDrawPVLine;
 
     bool loadChange = false;
 

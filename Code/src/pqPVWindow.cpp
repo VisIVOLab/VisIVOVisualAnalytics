@@ -1,4 +1,5 @@
 #include "pqPVWindow.h"
+#include "qtconcurrentrun.h"
 #include "ui_pqPVWindow.h"
 
 #include "pqFileDialog.h"
@@ -28,6 +29,7 @@ pqPVWindow::pqPVWindow(pqServer *serv, pqPipelineSource *cbSrc, std::pair<int, i
       ui(new Ui::pqPVWindow)
 {
     ui->setupUi(this);
+
 
     this->builder = pqApplicationCore::instance()->getObjectBuilder();
     this->server = serv;
@@ -70,25 +72,16 @@ pqPVWindow::pqPVWindow(pqServer *serv, pqPipelineSource *cbSrc, std::pair<int, i
 
     }
     filterProxy->UpdateVTKObjects();
-    PVSliceFilter->updatePipeline();
-
-    this->imageProxy = builder->createDataRepresentation(this->PVSliceFilter->getOutputPort(0), viewImage)->getProxy();
-    vtkSMPropertyHelper(imageProxy, "Representation").Set("Slice");
-    vtkSMPVRepresentationProxy::SetScalarColoring(imageProxy, "FITSImage", vtkDataObject::POINT);
-    imageProxy->UpdateVTKObjects();
-
-    vtkNew<vtkSMTransferFunctionManager> mgr;
-    lutProxy = vtkSMTransferFunctionProxy::SafeDownCast(mgr->GetColorTransferFunction("PVSliceTransferFunction", imageProxy->GetSessionProxyManager()));
-    changeLut("Grayscale");
-    ui->comboLut->setCurrentIndex(ui->comboLut->findText("Grayscale"));
-    this->logScale = false;
 
     connect(ui->radioLinear, &QRadioButton::toggled, this, &pqPVWindow::changeLutScale);
     connect(ui->opacitySlider, &QSlider::valueChanged, this, &pqPVWindow::changeOpacity);
     connect(ui->comboLut, &QComboBox::currentTextChanged, this, &pqPVWindow::changeLut);
+    connect(this, &pqPVWindow::pvGenComplete, this, &pqPVWindow::setRep);
 
-    viewImage->resetDisplay();
-    viewImage->render();
+    QtConcurrent::run(this, &pqPVWindow::applyFilter);
+    //    PVSliceFilter->updatePipeline();
+    //    viewImage->resetDisplay();
+    //    viewImage->render();
 }
 
 pqPVWindow::~pqPVWindow()
@@ -130,7 +123,10 @@ void pqPVWindow::update(std::pair<int, int> &start, std::pair<int, int> &end)
 
     }
     filterProxy->UpdateVTKObjects();
-    PVSliceFilter->updatePipeline();
+    QtConcurrent::run(this, &pqPVWindow::applyFilter);
+//    PVSliceFilter->updatePipeline();
+//    viewImage->resetDisplay();
+//    viewImage->render();
 }
 
 QString pqPVWindow::getColourMap() const
@@ -224,6 +220,29 @@ void pqPVWindow::on_actionSave_as_PNG_triggered()
 void pqPVWindow::on_actionSave_as_FITS_triggered()
 {
     this->saveAsFITS();
+}
+
+void pqPVWindow::setRep()
+{
+    this->imageProxy = builder->createDataRepresentation(this->PVSliceFilter->getOutputPort(0), viewImage)->getProxy();
+    vtkSMPropertyHelper(imageProxy, "Representation").Set("Slice");
+    vtkSMPVRepresentationProxy::SetScalarColoring(imageProxy, "FITSImage", vtkDataObject::POINT);
+    imageProxy->UpdateVTKObjects();
+
+    vtkNew<vtkSMTransferFunctionManager> mgr;
+    lutProxy = vtkSMTransferFunctionProxy::SafeDownCast(mgr->GetColorTransferFunction("PVSliceTransferFunction", imageProxy->GetSessionProxyManager()));
+    changeLut(this->getColourMap());
+    ui->comboLut->setCurrentIndex(ui->comboLut->findText("Grayscale"));
+    this->logScale = false;
+
+    viewImage->resetDisplay();
+    viewImage->render();
+}
+
+void pqPVWindow::applyFilter()
+{
+    PVSliceFilter->updatePipeline();
+    emit pvGenComplete();
 }
 
 int pqPVWindow::saveAsPNG()
