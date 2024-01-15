@@ -2,10 +2,10 @@
 #define PQPVWINDOW_H
 
 #include "pqObjectBuilder.h"
-#include "pqPipelineSource.h"
 #include "pqRenderView.h"
 #include "pqServer.h"
-#include "vtkSMTransferFunctionProxy.h"
+#include "qthread.h"
+#include "pvdataobject.h"
 
 #include <QMainWindow>
 
@@ -18,38 +18,45 @@ class pqPVWindow : public QMainWindow
     Q_OBJECT
 
 public:
-    explicit pqPVWindow(pqServer* serv, pqPipelineSource* cbSrc, std::pair<int, int>& start, std::pair<int, int>& end, QWidget *parent = nullptr);
+    explicit pqPVWindow(const QString serverUrl, QString cubeFileName, std::pair<int, int>& start, std::pair<int, int>& end, std::pair<int, int>& zSubExtent, QWidget *parent = nullptr);
     ~pqPVWindow();
-
-    void update(std::pair<int, int>& start, std::pair<int, int>& end);
 
     QString getColourMap() const;
 
     void closeEvent(QCloseEvent *event) override;
+    void genPVSlice();
 
 signals:
     void closed();
     void pvGenComplete();
 
+    void dataObjChangeLutScale();
+    void dataObjChangeOpacity(int opacity);
+    void dataObjChangeLut(const QString &lutName);
+    void genPV(pqRenderView* viewImage);
+
 private slots:
-    int changeLutScale();
-    int changeOpacity(int opacity);
-    int changeLut(const QString &lutName);
+    void changeLutScale();
+    void changeOpacity(int opacity);
+    void changeLut(const QString &lutName);
 
     void on_actionSave_as_PNG_triggered();
 
     void on_actionSave_as_FITS_triggered();
-    void setRep();
+
+    void dataObjPVGenComplete();
+
+    void render();
+    void renderReset();
 
 private:
     Ui::pqPVWindow *ui;
 
+    QThread* thread;
+    PVDataObject* dataObject;
+
     pqServer* server;
     pqObjectBuilder* builder;
-    pqPipelineSource* cubeSource;
-    pqPipelineSource* PVSliceFilter;
-    vtkSMProxy* imageProxy;
-    vtkSMTransferFunctionProxy* lutProxy;
     pqRenderView* viewImage;
 
     QString colourMap = "Grayscale";

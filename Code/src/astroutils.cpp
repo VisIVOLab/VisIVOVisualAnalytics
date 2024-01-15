@@ -139,6 +139,10 @@ void AstroUtils::xy2sky(std::string map, float x, float y, double *coord, int wc
 
     strcpy(fn, map.c_str());
     wcs = GetWCSFITS(fn, 0);
+    if (wcs == nullptr){
+        coord[0] = coord[1] = 0;
+        return;
+    }
     wcs->sysout = wcs_type;
     // force the set of wcs in degree
     setwcsdeg(wcs, 1);
@@ -333,7 +337,10 @@ bool AstroUtils::sky2xy(std::string map, double ra, double dec, double *coord)
 
     header = GetFITShead(fn, 0);
     wcs = GetFITSWCS(fn, header, 0, &cra, &cdec, &dra, &ddec, &secpix, &wp, &hp, &sysout, &eqout);
-
+    if (wcs == nullptr){
+        coord[0] = coord[1] = 0;
+        return false;
+    }
     if (wcs->prjcode < 0)
         strcpy(csys, "PIXEL");
     else if (wcs->prjcode < 2)

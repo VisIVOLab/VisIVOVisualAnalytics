@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.8)
 
-project(VisIVOVisualAnalytics LANGUAGES CXX C VERSION 1.6.0)
+project(VisIVOVisualAnalytics LANGUAGES CXX C VERSION 0.1)
 
 # Set a default build type if none was specified
 set(default_build_type "Release")
@@ -15,7 +15,7 @@ if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
             )
 endif ()
 
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
@@ -103,6 +103,7 @@ set(sources
         src/pqPVWindow.cpp
         src/pqwindowcube.cpp
         src/pqwindowimage.cpp
+        src/pvdataobject.cpp
         src/sed.cpp
         src/sedfitgrid_thick.cpp
         src/sedfitgrid_thin.cpp
@@ -183,6 +184,7 @@ set(headers
         src/pqPVWindow.h
         src/pqwindowcube.h
         src/pqwindowimage.h
+        src/pvdataobject.h
         src/sed.h
         src/sedfitgrid_thick.h
         src/sedfitgrid_thin.h

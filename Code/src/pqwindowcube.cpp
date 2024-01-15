@@ -1,12 +1,8 @@
 #include "pqwindowcube.h"
 #include "qmessagebox.h"
-#include "qtconcurrentrun.h"
 #include "ui_pqwindowcube.h"
 
 #include "interactors/vtkinteractorstyleimagecustom.h"
-#include "vtkNamedColors.h"
-#include "vtkPolyDataMapper.h"
-#include "vtkProperty.h"
 #include "vtklegendscaleactor.h"
 
 #include <pqActiveObjects.h>
@@ -45,14 +41,15 @@
 #include <cstring>
 #include <utility>
 
-pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset)
+pqWindowCube::pqWindowCube(const QString serverUrl, const QString &filepath, const CubeSubset &cubeSubset)
     : ui(new Ui::pqWindowCube),
       FitsFileName(QFileInfo(filepath).fileName()),
       cubeFilePath(filepath),
       cubeSubset(cubeSubset),
       currentSlice(-1),
       contourFilter(nullptr),
-      contourFilter2D(nullptr)
+      contourFilter2D(nullptr),
+      serverURL(serverUrl)
 {
     ui->setupUi(this);
     setAttribute(Qt::WA_DeleteOnClose);
@@ -151,6 +148,11 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
     changeColorMap("Grayscale");
     setLogScale(false);
     vtkSMPVRepresentationProxy::SetScalarBarVisibility(sliceProxy, viewSlice->getProxy(), true);
+
+    if (cubeSubset.ReadSubExtent)
+        this->ZSubExtent = std::make_pair(this->cubeSubset.SubExtent[4], this->cubeSubset.SubExtent[5]);
+    else
+        this->ZSubExtent = std::make_pair(bounds[4], bounds[5]);
 
     // Set up interactor to show pixel coordinates in the status bar
     pixCoordInteractorStyle->SetCoordsCallback(
@@ -558,53 +560,11 @@ void pqWindowCube::endDrawLine()
  */
 void pqWindowCube::showPVSlice(std::pair<int, int> start, std::pair<int, int> end)
 {
-    CubeSource->getProxy()->UpdatePropertyInformation();
-    int sF;
-    vtkSMPropertyHelper(CubeSource->getProxy(), "ScaleFactorInfo").Get(&sF);
-    if (sF != 1)
-    {
-        if (fullSrc == NULL)
-            fullSrc = pqLoadDataReaction::loadData({ cubeFilePath });
-/*        CubeSubset sub;
-        sub.AutoScale = false;
-        sub.ScaleFactor = 1;
-        int x1, y1, z1, z2;
-        if (cubeSubset.ReadSubExtent){
-            x1 = cubeSubset.SubExtent[0];
-            y1 = cubeSubset.SubExtent[2];
-            z1 = cubeSubset.SubExtent[4];
-            z2 = cubeSubset.SubExtent[5];
-        }
-        else{
-            x1 = bounds[0];
-            y1 = bounds[2];
-            z1 = bounds[4];
-            z2 = bounds[5];
-        }
-
-        std::pair<int, int> botLeft = std::make_pair(std::min(start.first, end.first), std::min(start.second, end.second));
-        std::pair<int, int> topRight = std::make_pair(std::max(start.first, end.first), std::max(start.second, end.second));
-        sub.SubExtent[0] = x1 + botLeft.first;
-        sub.SubExtent[1] = x1 + topRight.first;
-        sub.SubExtent[2] = y1 + botLeft.second;
-        sub.SubExtent[3] = y1 + topRight.second;
-        sub.SubExtent[4] = z1;
-        sub.SubExtent[5] = z2;
-
-        auto sourceProxy = fullSrc->getProxy();
-        vtkSMPropertyHelper(sourceProxy, "ReadSubExtent").Set(true);
-        vtkSMPropertyHelper(sourceProxy, "SubExtent").Set(sub.SubExtent, 6);
-        vtkSMPropertyHelper(sourceProxy, "AutoScale").Set(sub.AutoScale);
-        vtkSMPropertyHelper(sourceProxy, "CubeMaxSize").Set(sub.CubeMaxSize);
-        sourceProxy->UpdateVTKObjects();
-        start = std::make_pair(start.first - botLeft.first, start.second - botLeft.second);
-        end = std::make_pair(end.first - botLeft.first, end.second - botLeft.second);*/
-        pvSlice = new pqPVWindow(this->server, fullSrc, start, end, this);
-    }
-    else
-        pvSlice = new pqPVWindow(this->server, this->CubeSource, start, end, this);
+    pvSlice = new pqPVWindow(serverURL, this->cubeFilePath, start, end, ZSubExtent, nullptr);
     connect(pvSlice, &pqPVWindow::closed, this, &pqWindowCube::endPVSlice);
     connect(pvSlice, &pqPVWindow::pvGenComplete, this, &pqWindowCube::showPVWindow);
+    pvSlice->genPVSlice();
+    endDrawLine();
 }
 
 /**

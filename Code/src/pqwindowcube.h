@@ -29,7 +29,7 @@ class pqWindowCube : public QMainWindow
     using FitsHeaderMap = QMap<QString, QString>;
 
 public:
-    explicit pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset = CubeSubset());
+    explicit pqWindowCube(const QString serverUrl, const QString &filepath, const CubeSubset &cubeSubset = CubeSubset());
     ~pqWindowCube() override;
 
 signals:
@@ -77,6 +77,7 @@ private slots:
 private:
     Ui::pqWindowCube *ui;
 
+    QString serverURL;
     QString FitsFileName;
     QString cubeFilePath;
     pqPipelineSource *CubeSource;
@@ -141,6 +142,7 @@ private:
     void sendLineEndPoints(std::pair<float, float> start, std::pair<float, float> end);
     void endDrawLine();
     bool drawingPVLine, canDrawPVLine;
+    std::pair<int, int> ZSubExtent;
 
     bool loadChange = false;
 
