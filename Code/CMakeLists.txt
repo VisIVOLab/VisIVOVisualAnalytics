@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.8)
 
-project(ViaLacteaVisualAnalytics LANGUAGES CXX C VERSION 1.6.0)
+project(VisIVOVisualAnalytics LANGUAGES CXX C VERSION 1.6.0)
 
 # Set a default build type if none was specified
 set(default_build_type "Release")

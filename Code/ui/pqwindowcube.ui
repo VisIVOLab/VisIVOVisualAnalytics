@@ -419,7 +419,7 @@
      <x>0</x>
      <y>0</y>
      <width>1366</width>
-     <height>24</height>
+     <height>22</height>
     </rect>
    </property>
    <widget class="QMenu" name="menuCamera">
@@ -482,8 +482,29 @@
     <addaction name="menuVolume"/>
     <addaction name="menuSlice"/>
    </widget>
+   <widget class="QMenu" name="menuView">
+    <property name="title">
+     <string>View</string>
+    </property>
+    <addaction name="separator"/>
+    <addaction name="actionView_Slice"/>
+    <addaction name="actionView_Moment_Map"/>
+   </widget>
+   <widget class="QMenu" name="menuMoment_order">
+    <property name="title">
+     <string>Moment</string>
+    </property>
+    <addaction name="actionMomentOrder0"/>
+    <addaction name="actionMomentOrder1"/>
+    <addaction name="actionMomentOrder2"/>
+    <addaction name="actionMomentOrder6"/>
+    <addaction name="actionMomentOrder8"/>
+    <addaction name="actionMomentOrder10"/>
+   </widget>
    <addaction name="menuCamera"/>
    <addaction name="menuRendering"/>
+   <addaction name="menuView"/>
+   <addaction name="menuMoment_order"/>
   </widget>
   <widget class="QStatusBar" name="statusBar"/>
   <action name="actionFront">
@@ -586,6 +607,52 @@
    </property>
    <property name="text">
     <string>75%</string>
+   </property>
+  </action>
+  <action name="actionMomentOrder0">
+   <property name="text">
+    <string>0 – the integrated value of the spectrum</string>
+   </property>
+  </action>
+  <action name="actionMomentOrder1">
+   <property name="text">
+    <string>1 – the intensity weighted coordinate</string>
+   </property>
+  </action>
+  <action name="actionMomentOrder2">
+   <property name="text">
+    <string>2 – the intensity weighted dispersion of the coordinate</string>
+   </property>
+  </action>
+  <action name="actionMomentOrder6">
+   <property name="text">
+    <string>6 – the root mean square of the spectrum</string>
+   </property>
+  </action>
+  <action name="actionMomentOrder8">
+   <property name="text">
+    <string>8 – the maximum value of the spectrum</string>
+   </property>
+  </action>
+  <action name="actionMomentOrder10">
+   <property name="text">
+    <string>10 – the minimum value of the spectrum</string>
+   </property>
+  </action>
+  <action name="actionView_Slice">
+   <property name="checkable">
+    <bool>false</bool>
+   </property>
+   <property name="checked">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Show Slice</string>
+   </property>
+  </action>
+  <action name="actionView_Moment_Map">
+   <property name="text">
+    <string>Show Moment Map</string>
    </property>
   </action>
  </widget>

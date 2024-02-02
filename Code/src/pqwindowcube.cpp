@@ -61,6 +61,11 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
     opacityGroup->addAction(ui->action75);
     opacityGroup->addAction(ui->action100);
 
+    // View menu show action group
+    auto viewGroup = new QActionGroup(this);
+    viewGroup->addAction(ui->actionView_Slice);
+    viewGroup->addAction(ui->actionView_Moment_Map);
+
     logScaleActive = false;
 
     auto scalingGroup = new QActionGroup(this);
@@ -108,6 +113,7 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
     // Load Reactions
     CubeSource = pqLoadDataReaction::loadData({ filepath });
     SliceSource = pqLoadDataReaction::loadData({ filepath });
+    MomentMapSource = pqLoadDataReaction::loadData( { filepath });
 
     // Handle Subset selection
     setSubsetProperties(cubeSubset);
@@ -133,10 +139,12 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
 
     // Show slice and set default LUT
     showSlice();
+    loadMomentMap();
     setSliceDatacube(1);
     changeColorMap("Grayscale");
     setLogScale(false);
     vtkSMPVRepresentationProxy::SetScalarBarVisibility(sliceProxy, viewSlice->getProxy(), true);
+    vtkSMPVRepresentationProxy::SetScalarBarVisibility(momentProxy, viewMomentMap->getProxy(), true);
 
     // Interactor to show pixel coordinates in the status bar
     vtkNew<vtkInteractorStyleImageCustom> interactorStyle;
@@ -144,22 +152,27 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
             [this](const std::string &str) { showStatusBarMessage(str); });
     interactorStyle->SetLayerFitsReaderFunc(fitsHeaderPath.toStdString());
     interactorStyle->SetPixelZCompFunc([this]() { return currentSlice; });
-    viewSlice->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(
-            interactorStyle);
+    viewSlice->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(interactorStyle);
+    viewMomentMap->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(interactorStyle);
 
     viewSlice->resetDisplay();
     viewCube->resetDisplay();
+    viewMomentMap->resetDisplay();
     viewSlice->render();
     viewCube->render();
+    viewMomentMap->render();
+    setMomentMapVisible(false);
 }
 
 pqWindowCube::~pqWindowCube()
 {
     builder->destroy(CubeSource);
     builder->destroy(SliceSource);
+    builder->destroy(MomentMapSource);
     builder->destroySources(server);
     this->CubeSource = NULL;
     this->SliceSource = NULL;
+    this->MomentMapSource = NULL;
     delete ui;
 }
 
@@ -295,8 +308,15 @@ void pqWindowCube::createViews()
             builder->createView(pqRenderView::renderViewType(), server));
     viewSlice->widget()->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
+    viewMomentMap= qobject_cast<pqRenderView *>(
+            builder->createView(pqRenderView::renderViewType(), server));
+    viewMomentMap->widget()->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
     ui->PVLayout->addWidget(viewCube->widget());
     ui->PVLayout->addWidget(viewSlice->widget());
+    ui->PVLayout->addWidget(viewMomentMap->widget());
+    viewSlice->widget()->setVisible(true);
+    viewMomentMap->widget()->setVisible(false);
 }
 
 void pqWindowCube::showOutline()
@@ -324,6 +344,13 @@ void pqWindowCube::showLegendScaleActors()
     auto rwSlice = viewSlice->getViewProxy()->GetRenderWindow()->GetRenderers();
     rwSlice->GetFirstRenderer()->AddActor(legendActorSlice);
     vtkRenderer::SafeDownCast(rwSlice->GetItemAsObject(1))->AddActor(legendActorSlice);
+
+    auto legendActorMoment = vtkSmartPointer<vtkLegendScaleActor>::New();
+    legendActorMoment->LegendVisibilityOff();
+    legendActorMoment->setFitsHeader(fitsHeaderPath.toStdString());
+    auto rwMoment = viewMomentMap->getViewProxy()->GetRenderWindow()->GetRenderers();
+    rwMoment->GetFirstRenderer()->AddActor(legendActorMoment);
+    vtkRenderer::SafeDownCast(rwMoment->GetItemAsObject(1))->AddActor(legendActorMoment);
 }
 
 void pqWindowCube::showSlice()
@@ -368,6 +395,45 @@ void pqWindowCube::showSlice()
     ui->sliceSpinBox->setRange(1, bounds[5] + 1);
 }
 
+void pqWindowCube::loadMomentMap()
+{
+    momentProxy = builder->createDataRepresentation(this->MomentMapSource->getOutputPort(0), viewMomentMap)->getProxy();
+    vtkSMPropertyHelper(momentProxy, "Representation").Set("Slice");
+    std::string name = "FITSImage" + std::to_string(momentOrder);
+    vtkSMPVRepresentationProxy::SetScalarColoring(momentProxy, name.c_str(), vtkDataObject::POINT);
+
+    auto momentPropProxy = this->MomentMapSource->getProxy();
+    vtkSMPropertyHelper(momentPropProxy, "ReadAsType").Set(1);
+    vtkSMPropertyHelper(momentPropProxy, "MomentOrder").Set(0);
+    momentPropProxy->UpdateVTKObjects();
+    MomentMapSource->updatePipeline();
+
+    vtkNew<vtkSMTransferFunctionManager> mgr;
+    momentLUTProxy = vtkSMTransferFunctionProxy::SafeDownCast(
+            mgr->GetColorTransferFunction(name.c_str(), momentProxy->GetSessionProxyManager()));
+
+    viewMomentMap->resetDisplay();
+    viewMomentMap->render();
+}
+
+void pqWindowCube::showMomentMap(int order)
+{
+    momentOrder = order;
+    auto momentPropProxy = this->MomentMapSource->getProxy();
+    vtkSMPropertyHelper(momentPropProxy, "ReadAsType").Set(1);
+    vtkSMPropertyHelper(momentPropProxy, "MomentOrder").Set(order);
+    momentPropProxy->UpdateVTKObjects();
+    MomentMapSource->updatePipeline();
+    vtkNew<vtkSMTransferFunctionManager> mgr;
+    std::string name = "FITSImage" + std::to_string(momentOrder);
+    momentLUTProxy = vtkSMTransferFunctionProxy::SafeDownCast(
+            mgr->GetColorTransferFunction(name.c_str(), momentProxy->GetSessionProxyManager()));
+
+    setMomentMapVisible(true);
+    viewMomentMap->resetDisplay();
+    viewMomentMap->render();
+}
+
 void pqWindowCube::showStatusBarMessage(const std::string &msg)
 {
     ui->statusBar->showMessage(QString::fromStdString(msg));
@@ -399,6 +465,32 @@ void pqWindowCube::updateVelocityText()
         velocity /= 1000;
     }
     ui->velocityText->setText(QString::number(velocity).append(" Km/s"));
+}
+
+void pqWindowCube::updateMinMax(bool moment)
+{
+    vtkPVDataInformation* dataInformation;
+    vtkPVArrayInformation* fitsImageInfo;
+    std::string name = "FITSImage" + std::to_string(momentOrder);
+    if (moment)
+    {
+        dataInformation = this->MomentMapSource->getOutputPort(0)->getDataInformation();
+        fitsImageInfo = dataInformation->GetPointDataInformation()->GetArrayInformation(name.c_str());
+    }
+    else
+    {
+        dataInformation = this->SliceSource->getOutputPort(0)->getDataInformation();
+        fitsImageInfo = dataInformation->GetPointDataInformation()->GetArrayInformation("FITSImage");
+    }
+
+    double dataRange[2];
+    fitsImageInfo->GetComponentRange(0, dataRange);
+    ui->minSliceText->setText(QString::number(dataRange[0], 'f', 4));
+    ui->maxSliceText->setText(QString::number(dataRange[1], 'f', 4));
+    if (moment){
+        momentLUTProxy->RescaleTransferFunction(dataRange, true);
+        momentLUTProxy->UpdateVTKObjects();
+    }
 }
 
 void pqWindowCube::setThreshold(double threshold)
@@ -454,6 +546,18 @@ void pqWindowCube::removeContours()
         contourFilter2D = nullptr;
         viewSlice->render();
     }
+}
+
+void pqWindowCube::setMomentMapVisible(bool val)
+{
+    viewMomentMap->widget()->setVisible(val);
+    viewSlice->widget()->setVisible(!val);
+    ui->sliceGroupBox->setTitle(val ? "Moment" : "Slice");
+    updateMinMax(val);
+    viewSlice->resetDisplay();
+    viewSlice->render();
+    viewMomentMap->resetDisplay();
+    viewMomentMap->render();
 }
 
 void pqWindowCube::on_sliceSlider_valueChanged()
@@ -617,27 +721,40 @@ void pqWindowCube::setLogScale(bool logScale)
         logScaleActive = true;
         vtkSMTransferFunctionProxy::RescaleTransferFunction(lutProxy, range);
         vtkSMPropertyHelper(lutProxy, "UseLogScale").Set(1);
+
+        vtkSMTransferFunctionProxy::GetRange(momentLUTProxy, range);
+        vtkSMCoreUtilities::AdjustRangeForLog(range);
+        vtkSMTransferFunctionProxy::RescaleTransferFunction(momentLUTProxy, range);
+        vtkSMPropertyHelper(momentLUTProxy, "UseLogScale").Set(1);
+
         changeColorMap(currentColorMap);
     } else {
         logScaleActive = false;
         vtkSMTransferFunctionProxy::RescaleTransferFunctionToDataRange(lutProxy);
         vtkSMPropertyHelper(lutProxy, "UseLogScale").Set(0);
+        vtkSMTransferFunctionProxy::RescaleTransferFunctionToDataRange(momentLUTProxy);
+        vtkSMPropertyHelper(momentLUTProxy, "UseLogScale").Set(0);
         changeColorMap(currentColorMap);
     }
     lutProxy->UpdateVTKObjects();
+    momentLUTProxy->UpdateVTKObjects();
     sliceProxy->UpdateVTKObjects();
     cubeSliceProxy->UpdateVTKObjects();
+    momentProxy->UpdateVTKObjects();
 
     viewSlice->resetDisplay();
 
+    viewMomentMap->resetDisplay();
     viewSlice->render();
+    viewMomentMap->render();
     viewCube->render();
 }
 
 void pqWindowCube::changeColorMap(const QString &name)
 {
-    if (vtkSMProperty *lutProperty = sliceProxy->GetProperty("LookupTable")) {
-
+    vtkSMProperty *lutProperty = sliceProxy->GetProperty("LookupTable");
+    vtkSMProperty *momentLUTProperty = momentProxy->GetProperty("LookupTable");
+    if (lutProperty && momentLUTProperty) {
         currentColorMap = name;
         auto presets = vtkSMTransferFunctionPresets::GetInstance();
         lutProxy->ApplyPreset(presets->GetFirstPresetWithName(name.toStdString().c_str()));
@@ -645,12 +762,22 @@ void pqWindowCube::changeColorMap(const QString &name)
         lutProxy->UpdateVTKObjects();
         vtkSMPVRepresentationProxy::RescaleTransferFunctionToDataRange(sliceProxy, false, false);
 
+        momentLUTProxy->ApplyPreset(presets->GetFirstPresetWithName(name.toStdString().c_str()));
+        vtkSMPropertyHelper(momentLUTProperty).Set(momentLUTProxy);
+        momentLUTProxy->UpdateVTKObjects();
+        vtkSMPVRepresentationProxy::RescaleTransferFunctionToDataRange(sliceProxy, false, false);
+
         sliceProxy->UpdateVTKObjects();
+        momentProxy->UpdateVTKObjects();
 
         viewSlice->resetDisplay();
         viewSlice->render();
+        viewMomentMap->resetDisplay();
+        viewMomentMap->render();
         viewCube->render();
     }
+    else
+        std::cerr << "Error with setting colour map!" << std::endl;
 }
 
 void pqWindowCube::on_actionFront_triggered()
@@ -786,4 +913,44 @@ void pqWindowCube::setVolumeRenderingOpacity(double opacity)
     vtkSMPropertyHelper(contourProxy, "Opacity").Set(opacity);
     contourProxy->UpdateVTKObjects();
     viewCube->render();
+}
+
+void pqWindowCube::on_actionView_Slice_triggered()
+{
+    setMomentMapVisible(false);
+}
+
+void pqWindowCube::on_actionView_Moment_Map_triggered()
+{
+    setMomentMapVisible(true);
+}
+
+void pqWindowCube::on_actionMomentOrder0_triggered()
+{
+    showMomentMap(0);
+}
+
+void pqWindowCube::on_actionMomentOrder1_triggered()
+{
+    showMomentMap(1);
+}
+
+void pqWindowCube::on_actionMomentOrder2_triggered()
+{
+    showMomentMap(2);
+}
+
+void pqWindowCube::on_actionMomentOrder6_triggered()
+{
+    showMomentMap(6);
+}
+
+void pqWindowCube::on_actionMomentOrder8_triggered()
+{
+    showMomentMap(8);
+}
+
+void pqWindowCube::on_actionMomentOrder10_triggered()
+{
+    showMomentMap(10);
 }

@@ -527,7 +527,7 @@ void contour::addContours()
     if (vtkWin->ui->spinBox_channels->text().toInt() == 0) {
         vtkSmartPointer<vtkPlane> plane = vtkSmartPointer<vtkPlane>::New();
 
-        plane->SetOrigin(0, 0, vtkWin->viewer->GetSlice());
+        // plane->SetOrigin(0, 0, vtkWin->viewer->GetSlice());
         //  plane->SetOrigin(0,0,vtkWin->imageViewer->GetSlice());
         plane->SetNormal(0, 0, 1);
         // Set cutter function for a single planes
@@ -535,10 +535,10 @@ void contour::addContours()
     } else {
 
         vtkSmartPointer<vtkPlanes> planes = vtkSmartPointer<vtkPlanes>::New();
-        planes->SetBounds(
-                0, fitsReader->GetNaxes(0), 0, fitsReader->GetNaxes(1),
-                vtkWin->imageViewer->GetSlice() - vtkWin->ui->spinBox_channels->text().toInt(),
-                vtkWin->imageViewer->GetSlice() + vtkWin->ui->spinBox_channels->text().toInt());
+        // planes->SetBounds(
+        //         0, fitsReader->GetNaxes(0), 0, fitsReader->GetNaxes(1),
+        //         vtkWin->imageViewer->GetSlice() - vtkWin->ui->spinBox_channels->text().toInt(),
+        //         vtkWin->imageViewer->GetSlice() + vtkWin->ui->spinBox_channels->text().toInt());
 
         vtkSmartPointer<vtkPoints> points = vtkSmartPointer<vtkPoints>::New();
         points = planes->GetPoints();
@@ -864,7 +864,7 @@ void contour::addContours2()
     // Create a plane to cut,here it cuts in the XZ direction (xz normal=(1,0,0);XY =(0,0,1),YZ
     // =(0,1,0)
     vtkSmartPointer<vtkPlane> plane = vtkSmartPointer<vtkPlane>::New();
-    plane->SetOrigin(0, 0, vtkWin->imageViewer->GetSlice());
+    // plane->SetOrigin(0, 0, vtkWin->imageViewer->GetSlice());
     plane->SetNormal(0, 0, 1);
 
     // Create cutter
