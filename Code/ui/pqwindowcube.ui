@@ -359,7 +359,7 @@
                <widget class="QLineEdit" name="minSliceText">
                 <property name="maximumSize">
                  <size>
-                  <width>80</width>
+                  <width>160</width>
                   <height>16777215</height>
                  </size>
                 </property>
@@ -389,7 +389,7 @@
                <widget class="QLineEdit" name="maxSliceText">
                 <property name="maximumSize">
                  <size>
-                  <width>80</width>
+                  <width>160</width>
                   <height>16777215</height>
                  </size>
                 </property>

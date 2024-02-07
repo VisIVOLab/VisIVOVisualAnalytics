@@ -271,11 +271,11 @@ set_source_files_properties(${app_icon_macos} PROPERTIES
 
 set(resources visivo.qrc ${ICON_RESOURCE})
 
-add_executable(ViaLacteaVisualAnalytics ${ui_files} ${resources} ${sources} ${headers})
+add_executable(VisIVOVisualAnalytics ${ui_files} ${resources} ${sources} ${headers})
 
-target_include_directories(ViaLacteaVisualAnalytics PRIVATE ${Boost_INCLUDE_DIRS})
+target_include_directories(VisIVOVisualAnalytics PRIVATE ${Boost_INCLUDE_DIRS})
 
-target_link_libraries(ViaLacteaVisualAnalytics PRIVATE
+target_link_libraries(VisIVOVisualAnalytics PRIVATE
         ${qt_modules}
         ${VTK_LIBRARIES}
         ParaView::pqApplicationComponents
@@ -283,7 +283,7 @@ target_link_libraries(ViaLacteaVisualAnalytics PRIVATE
         CFITSIO::CFITSIO
 )
 
-set_target_properties(ViaLacteaVisualAnalytics PROPERTIES
+set_target_properties(VisIVOVisualAnalytics PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER it.inaf.oact.visivo
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
     MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}

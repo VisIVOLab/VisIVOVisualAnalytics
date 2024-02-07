@@ -2,6 +2,7 @@
 #include "ui_pqwindowcube.h"
 
 #include "interactors/vtkinteractorstyleimagecustom.h"
+#include "errorMessage.h"
 #include "vtklegendscaleactor.h"
 
 #include <pqActiveObjects.h>
@@ -161,6 +162,22 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
     viewSlice->render();
     viewCube->render();
     viewMomentMap->render();
+
+    // setMomentMapVisible(true);
+    // showMomentMap(0);
+    // showMomentMap(1);
+    // showMomentMap(2);
+    // showMomentMap(6);
+    // showMomentMap(8);
+    // showMomentMap(10);
+    // showMomentMap(0);
+    // showMomentMap(1);
+    // showMomentMap(2);
+    // showMomentMap(6);
+    // showMomentMap(8);
+    // showMomentMap(10);
+    // showMomentMap(0);
+
     setMomentMapVisible(false);
 }
 
@@ -397,16 +414,17 @@ void pqWindowCube::showSlice()
 
 void pqWindowCube::loadMomentMap()
 {
-    momentProxy = builder->createDataRepresentation(this->MomentMapSource->getOutputPort(0), viewMomentMap)->getProxy();
-    vtkSMPropertyHelper(momentProxy, "Representation").Set("Slice");
-    std::string name = "FITSImage" + std::to_string(momentOrder);
-    vtkSMPVRepresentationProxy::SetScalarColoring(momentProxy, name.c_str(), vtkDataObject::POINT);
 
     auto momentPropProxy = this->MomentMapSource->getProxy();
     vtkSMPropertyHelper(momentPropProxy, "ReadAsType").Set(1);
     vtkSMPropertyHelper(momentPropProxy, "MomentOrder").Set(0);
     momentPropProxy->UpdateVTKObjects();
     MomentMapSource->updatePipeline();
+
+    momentProxy = builder->createDataRepresentation(this->MomentMapSource->getOutputPort(0), viewMomentMap)->getProxy();
+    vtkSMPropertyHelper(momentProxy, "Representation").Set("Slice");
+    std::string name = "FITSImage" + std::to_string(momentOrder);
+    vtkSMPVRepresentationProxy::SetScalarColoring(momentProxy, name.c_str(), vtkDataObject::POINT);
 
     vtkNew<vtkSMTransferFunctionManager> mgr;
     momentLUTProxy = vtkSMTransferFunctionProxy::SafeDownCast(
@@ -418,16 +436,21 @@ void pqWindowCube::loadMomentMap()
 
 void pqWindowCube::showMomentMap(int order)
 {
+
     momentOrder = order;
     auto momentPropProxy = this->MomentMapSource->getProxy();
     vtkSMPropertyHelper(momentPropProxy, "ReadAsType").Set(1);
     vtkSMPropertyHelper(momentPropProxy, "MomentOrder").Set(order);
     momentPropProxy->UpdateVTKObjects();
     MomentMapSource->updatePipeline();
+    this->momentProxy->UpdateVTKObjects();
     vtkNew<vtkSMTransferFunctionManager> mgr;
     std::string name = "FITSImage" + std::to_string(momentOrder);
     momentLUTProxy = vtkSMTransferFunctionProxy::SafeDownCast(
             mgr->GetColorTransferFunction(name.c_str(), momentProxy->GetSessionProxyManager()));
+
+    vtkSMPVRepresentationProxy::SetScalarColoring(momentProxy, name.c_str(), vtkDataObject::POINT);
+    changeColorMap(currentColorMap);
 
     setMomentMapVisible(true);
     viewMomentMap->resetDisplay();
@@ -481,6 +504,16 @@ void pqWindowCube::updateMinMax(bool moment)
     {
         dataInformation = this->SliceSource->getOutputPort(0)->getDataInformation();
         fitsImageInfo = dataInformation->GetPointDataInformation()->GetArrayInformation("FITSImage");
+    }
+
+    if (!fitsImageInfo)
+    {
+        std::cerr << "Error! Could not acquire fitsImageInfo from array name \"" << name << "\"!" << std::endl;
+        std::stringstream eString, eInfo;
+        eString << "Error when trying to extract information from array name \"" << name << "\"!";
+        eInfo << "Please file a bug report on the repository with details of what you were attempting to do.";
+        throwError(eString.str().c_str(), eInfo.str().c_str());
+        return;
     }
 
     double dataRange[2];
