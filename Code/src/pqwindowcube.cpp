@@ -163,21 +163,6 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
     viewCube->render();
     viewMomentMap->render();
 
-    // setMomentMapVisible(true);
-    // showMomentMap(0);
-    // showMomentMap(1);
-    // showMomentMap(2);
-    // showMomentMap(6);
-    // showMomentMap(8);
-    // showMomentMap(10);
-    // showMomentMap(0);
-    // showMomentMap(1);
-    // showMomentMap(2);
-    // showMomentMap(6);
-    // showMomentMap(8);
-    // showMomentMap(10);
-    // showMomentMap(0);
-
     setMomentMapVisible(false);
 }
 
