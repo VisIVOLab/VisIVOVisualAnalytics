@@ -93,6 +93,7 @@ set(sources
         src/pqmeminspector.cpp
         src/pqwindowcube.cpp
         src/pqwindowimage.cpp
+        src/pvdownloadmanager.cpp
         src/sed.cpp
         src/sednode.cpp
         src/sessionloader.cpp
@@ -150,6 +151,7 @@ set(headers
         src/pqmeminspector.h
         src/pqwindowcube.h
         src/pqwindowimage.h
+        src/pvdownloadmanager.h
         src/sed.h
         src/sednode.h
         src/sessionloader.h
@@ -209,7 +211,8 @@ set_source_files_properties(${app_icon_macos} PROPERTIES
 
 set(resources visivo.qrc ${ICON_RESOURCE})
 
-add_executable(VisIVOVisualAnalytics ${ui_files} ${resources} ${sources} ${headers})
+add_executable(VisIVOVisualAnalytics ${ui_files} ${resources} ${sources} ${headers}
+    src/pvdownloadmanager.h src/pvdownloadmanager.cpp)
 
 target_include_directories(VisIVOVisualAnalytics PRIVATE ${Boost_INCLUDE_DIRS})
 

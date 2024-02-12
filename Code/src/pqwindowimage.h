@@ -1,14 +1,19 @@
 #ifndef PQWINDOWIMAGE_H
 #define PQWINDOWIMAGE_H
 
+#include "downloadmanager.h"
 #include "subsetselectordialog.h"
 #include "vlvastackimage.h"
+#include "xmlparser.h"
 
 #include <QTableWidgetItem>
 #include <QListWidgetItem>
 #include <QMainWindow>
 #include <QMap>
+#include <QPainter>
+#include <QPaintEvent>
 #include <QPointer>
+#include <QPropertyAnimation>
 
 class pqPipelineSource;
 class pqServer;
@@ -31,6 +36,9 @@ class pqWindowImage : public QMainWindow
 public:
     explicit pqWindowImage(const QString &filepath, const CubeSubset &cubeSubset = CubeSubset());
     ~pqWindowImage();
+
+public slots:
+    void setVLKBElementsList(QList<QMap<QString, QString>> elementsOnDb);
 
 private slots:
     int addImageToStack(QString file, const CubeSubset& subset);
@@ -77,6 +85,8 @@ private:
     vtkSMProxy *imageProxy;
     vtkSMTransferFunctionProxy *lutProxy;
 
+    xmlparser* parser;
+
     std::pair<double, double> refImageBottomLeftCornerCoords;
     double refImagePixScaling;
     std::string refImageFits;
@@ -103,13 +113,13 @@ private:
     void readHeaderFromSource();
     void setLogScale(bool logScale);
     void setOpacity(float value);
-    void extracted(QList<pqRepresentation *> &reps, QString &fName);
     int removeImageFromStack(const int index, const removeErrorCode remErrCode = removeErrorCode::NO_ERROR);
+    void checkVLKB(vlvaStackImage *stackImage);
 
     int positionImage(vlvaStackImage* stackImage, bool setBasePos = false);
 
     static constexpr float defaultMultiOpacity = 0.5;
-    static constexpr bool logScaleDefault = true;
+    static constexpr bool logScaleDefault = false;
 };
 
 #endif // PQWINDOWIMAGE_H

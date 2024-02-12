@@ -20,7 +20,7 @@
 #include <QSettings>
 #include <QWebChannel>
 
-#include "pqActiveObjects.h" //Do not remove, it is used
+#include "pqActiveObjects.h" /** Do not remove, it is used */
 #include "pqApplicationCore.h"
 #include "pqObjectBuilder.h"
 #include "pqServerResource.h"

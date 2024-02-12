@@ -1,4 +1,6 @@
 #include "pqwindowimage.h"
+#include "qgraphicseffect.h"
+#include "src/vialacteainitialquery.h"
 #include "ui_pqwindowimage.h"
 
 #include "interactors/vtkinteractorstyleimagecustom.h"
@@ -65,8 +67,8 @@ pqWindowImage::pqWindowImage(const QString &filepath, const CubeSubset &cubeSubs
     ui->tblCompactSourcesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     ui->tblCompactSourcesTable->setSelectionMode(QAbstractItemView::SingleSelection);
     ui->lstImageList->setDragDropMode(QAbstractItemView::InternalMove);
-    connect(ui->lstImageList->model(), SIGNAL(rowsMoved(QModelIndex, int, int, QModelIndex, int)),
-            this, SLOT(movedLayersRow(QModelIndex, int, int, QModelIndex, int)));
+    connect(ui->lstImageList->model(), SIGNAL(rowsMoved(QModelIndex,int,int,QModelIndex,int)),
+            this, SLOT(movedLayersRow(QModelIndex,int,int,QModelIndex,int)));
 
     // Set default opacity
     ui->opacitySlider->setSliderPosition(ui->opacitySlider->maximum());
@@ -89,8 +91,16 @@ pqWindowImage::pqWindowImage(const QString &filepath, const CubeSubset &cubeSubs
     vtkSMPropertyHelper(renderingSettings, "RemoteRenderThreshold").Set(512);
     vtkSMPropertyHelper(renderingSettings, "CompressorConfig").Set("vtkLZ4Compressor 0 5");
 
+    //Create the viewport
     createView();
-    addImageToStack(filepath, cubeSubset);
+
+    //Load the initial image
+    int initImg = addImageToStack(filepath, cubeSubset);
+    if (initImg)
+        //Query VLKB and populate the table widget
+        checkVLKB(this->images.at(0));
+
+    //Update the UI with initial values
     updateUI();
 
     viewImage->resetDisplay();
@@ -313,6 +323,112 @@ int pqWindowImage::removeImageFromStack(const int index, const removeErrorCode r
     this->activeIndex = activeIndex > 0 ? index - 1 : 0;
     updateUI();
     return 1;
+}
+
+
+/**
+ * @brief pqWindowImage::setVLKBElementsList
+ * This function takes a list as provided by the VLKB REST API and populates the table in the top right of the UI.
+ * @param elementsOnDb The list of potential cutouts available on the VLKB.
+ */
+void pqWindowImage::setVLKBElementsList(QList<QMap<QString, QString> > elementsOnDb)
+{
+    auto classElementsOnDb = elementsOnDb;
+    int i = 0;
+    ui->elementListWidget->clear();
+    while (!elementsOnDb.isEmpty()) {
+        QMap<QString, QString> datacube = elementsOnDb.takeFirst();
+        ui->elementListWidget->insertRow(i);
+        QTableWidgetItem *item_0 = new QTableWidgetItem();
+        item_0->setFlags(item_0->flags() ^ Qt::ItemIsEditable);
+        item_0->setText(datacube["Survey"] + "\n" + datacube["Species"]);
+        ui->elementListWidget->setItem(i, 0, item_0);
+
+        QTableWidgetItem *item_1 = new QTableWidgetItem();
+        item_1->setFlags(item_1->flags() ^ Qt::ItemIsEditable);
+        QString codeString = "";
+        switch (datacube["code"].toInt()) {
+        case 2:
+            codeString = "The Region is completely inside the input";
+            break;
+        case 3:
+            codeString = "Full Overlap";
+            break;
+        case 4:
+            codeString = "Partial Overlap";
+            break;
+        case 5:
+            codeString = "The Regions are identical ";
+            break;
+        default:
+            codeString = "Merge";
+            break;
+        }
+
+        item_1->setText(datacube["Transition"] + "\n" + codeString);
+        ui->elementListWidget->setItem(i, 1, item_1);
+        if (datacube["code"].toDouble() == 3) {
+            ui->elementListWidget->item(i, 0)->setBackground(Qt::green);
+            ui->elementListWidget->item(i, 1)->setBackground(Qt::green);
+        }
+        item_0->setToolTip(datacube["Description"]);
+        item_1->setToolTip(datacube["Description"]);
+        i++;
+    }
+
+    ui->elementListWidget->setWordWrap(true);
+    ui->elementListWidget->setTextElideMode(Qt::ElideMiddle);
+    ui->elementListWidget->resizeColumnsToContents();
+    ui->elementListWidget->resizeRowsToContents();
+}
+
+/**
+ * @brief pqWindowImage::checkVLKB
+ * This function makes a request to the VLKB for potential cutouts that overlap at least partially with the first image loaded.
+ * @param stackImage
+ * The first image loaded, which provides the area of the sky for which cutouts should be sought.
+ */
+void pqWindowImage::checkVLKB(vlvaStackImage *stackImage)
+{
+    bool doSearch = true;//settings.value("vlkb.search", false).toBool();
+    if (doSearch) {
+
+        //Create loading warning/notification
+        this->ui->elementListWidget->insertRow(0);
+        QTableWidgetItem *loadingItem = new QTableWidgetItem();
+        loadingItem->setText("Loading...");
+        QFont font = QFont();
+        font.setFamily(font.defaultFamily());
+        font.setBold(true);
+        font.setPointSize(12);
+        loadingItem->setFont(font);
+        loadingItem->setBackground(Qt::darkGray);
+        ui->elementListWidget->setItem(0, 0, loadingItem);
+
+        double coords[2], rectSize[2];
+        auto filePath = stackImage->getFitsHeaderPath();
+        AstroUtils::GetCenterCoords(filePath, coords);
+        AstroUtils::GetRectSize(filePath, rectSize);
+        VialacteaInitialQuery *vq = new VialacteaInitialQuery;
+        connect(vq, &VialacteaInitialQuery::searchDone,
+                [vq, this](QList<QMap<QString, QString>> results) {
+                    this->setVLKBElementsList(results);
+                    //TODO:
+                    //Add some sort of notification that results have been added to widget
+                    vq->deleteLater();
+                    QGraphicsColorizeEffect *eff = new QGraphicsColorizeEffect(this);
+                    this->ui->elementListWidget->setGraphicsEffect(eff);
+                    QPropertyAnimation *a = new QPropertyAnimation(eff,"strength");
+                    a->setDuration(350);
+                    a->setStartValue(1);
+                    a->setEndValue(0);
+                    a->setEasingCurve(QEasingCurve::OutBack);
+                    a->start(QPropertyAnimation::DeleteWhenStopped);
+                    connect(a,&QPropertyAnimation::finished,this,[this](){this->activateWindow();});//Force a rerender of entire screen
+                });
+
+        vq->searchRequest(coords[0], coords[1], rectSize[0], rectSize[1]);
+    }
 }
 
 /**
