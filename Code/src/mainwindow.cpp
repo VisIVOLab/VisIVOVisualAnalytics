@@ -22,10 +22,8 @@
 #include "singleton.h"
 #include "ui_mainwindow.h"
 #include "vialactea.h"
-#include "visivoimporterdesktop.h"
 #include "vispoint.h"
 #include "vtkfitsreader.h"
-#include "vtkwindow_new.h"
 
 #include "pqAlwaysConnectedBehavior.h"
 #include "pqPersistentMainWindowStateBehavior.h"
@@ -155,14 +153,14 @@ void MainWindow::importAsciiFilaments(QString fileName, vtkwindow_new *v)
     // It Checks for an empty filename
     if (fileName.isEmpty())
         return;
-    VisIVOImporterDesktop *VI = new VisIVOImporterDesktop(fileName, v);
+    // VisIVOImporterDesktop *VI = new VisIVOImporterDesktop(fileName, v);
 }
 
 void MainWindow::importAsciiBubbles(QString fileName, vtkwindow_new *v)
 {
     if (fileName.isEmpty())
         return;
-    VisIVOImporterDesktop *VI = new VisIVOImporterDesktop(fileName, v, false, true);
+    // VisIVOImporterDesktop *VI = new VisIVOImporterDesktop(fileName, v, false, true);
 }
 
 void MainWindow::importAscii3dSelection(QString fileName, vtkwindow_new *v)
@@ -170,7 +168,7 @@ void MainWindow::importAscii3dSelection(QString fileName, vtkwindow_new *v)
     // It Checks for an empty filename
     if (fileName.isEmpty())
         return;
-    VisIVOImporterDesktop *VI = new VisIVOImporterDesktop(fileName, v, false);
+    // VisIVOImporterDesktop *VI = new VisIVOImporterDesktop(fileName, v, false);
 }
 
 void MainWindow::importAscii(QString fileName, QString wavelen, bool higal, bool bm,
@@ -179,17 +177,17 @@ void MainWindow::importAscii(QString fileName, QString wavelen, bool higal, bool
     // It Checks for an empty filename
     if (fileName.isEmpty())
         return;
-    VisIVOImporterDesktop *VI;
+    // VisIVOImporterDesktop *VI;
     if (higal) {
-        VI = new VisIVOImporterDesktop(fileName, m_VisIVOTreeModel, bm, v, wavelen);
+        // VI = new VisIVOImporterDesktop(fileName, m_VisIVOTreeModel, bm, v, wavelen);
     } else {
-        VI = new VisIVOImporterDesktop("ascii", fileName, m_VisIVOTreeModel);
-        VI->setBm(bm);
-        VI->setVtkWin(v);
-        //        ui->tabWidget->setCurrentWidget(ui->tabViewSettings);
-        //        ui->tabWidget->setCurrentWidget(ui->tabObjectTree);
-        // ui->tabWidget->setCurrentWidget(ui->tabOpParameters);
-        VI->doImport(wavelen, true);
+        // VI = new VisIVOImporterDesktop("ascii", fileName, m_VisIVOTreeModel);
+        // VI->setBm(bm);
+        // VI->setVtkWin(v);
+        // //        ui->tabWidget->setCurrentWidget(ui->tabViewSettings);
+        // //        ui->tabWidget->setCurrentWidget(ui->tabObjectTree);
+        // // ui->tabWidget->setCurrentWidget(ui->tabOpParameters);
+        // VI->doImport(wavelen, true);
     }
 }
 
@@ -199,9 +197,9 @@ void MainWindow::importCSV(QString fileName)
     // It Checks for an empty filename
     if (fileName.isEmpty())
         return;
-    VisIVOImporterDesktop *VI;
-    VI = new VisIVOImporterDesktop("csv", fileName, m_VisIVOTreeModel);
-    VI->doImport("", true);
+    // VisIVOImporterDesktop *VI;
+    // VI = new VisIVOImporterDesktop("csv", fileName, m_VisIVOTreeModel);
+    // VI->doImport("", true);
 }
 
 void MainWindow::importVOTable(QString fileName)
@@ -210,9 +208,9 @@ void MainWindow::importVOTable(QString fileName)
     // It Checks for an empty filename
     if (fileName.isEmpty())
         return;
-    VisIVOImporterDesktop *VI;
-    VI = new VisIVOImporterDesktop("votable", fileName, m_VisIVOTreeModel);
-    VI->doImport("", true);
+    // VisIVOImporterDesktop *VI;
+    // VI = new VisIVOImporterDesktop("votable", fileName, m_VisIVOTreeModel);
+    // VI->doImport("", true);
 }
 
 void MainWindow::importVoTable()
@@ -259,9 +257,9 @@ void MainWindow::importBinaryTable(QString fileName)
     // It Checks for an empty filename
     if (fileName.isEmpty())
         return;
-    VisIVOImporterDesktop *VI;
-    VI = new VisIVOImporterDesktop("binary", fileName, m_VisIVOTreeModel);
-    VI->doImport("", true);
+    // VisIVOImporterDesktop *VI;
+    // VI = new VisIVOImporterDesktop("binary", fileName, m_VisIVOTreeModel);
+    // VI->doImport("", true);
 }
 
 void MainWindow::importVTI()
@@ -271,15 +269,15 @@ void MainWindow::importVTI()
     // It Checks for an empty filename
     if (fileName.isEmpty())
         return;
-    VisIVOImporterDesktop *VI = new VisIVOImporterDesktop("VTI", fileName, m_VisIVOTreeModel);
-    VI->doImport();
+    // VisIVOImporterDesktop *VI = new VisIVOImporterDesktop("VTI", fileName, m_VisIVOTreeModel);
+    // VI->doImport();
 
     ui->tabWidget->setCurrentWidget(ui->tabViewSettings);
     ui->tabWidget->setCurrentWidget(ui->tabObjectTree);
     // ui->treeView->update();
     //  Check if the importing is OK
-    if (VI->getStatus())
-        return;
+    // if (VI->getStatus())
+        // return;
     return;
 }
 
@@ -290,15 +288,15 @@ void MainWindow::importVTP()
     // It Checks for an empty filename
     if (fileName.isEmpty())
         return;
-    VisIVOImporterDesktop *VI = new VisIVOImporterDesktop("VTP", fileName, m_VisIVOTreeModel);
-    VI->doImport();
+    // VisIVOImporterDesktop *VI = new VisIVOImporterDesktop("VTP", fileName, m_VisIVOTreeModel);
+    // VI->doImport();
 
     ui->tabWidget->setCurrentWidget(ui->tabViewSettings);
     ui->tabWidget->setCurrentWidget(ui->tabObjectTree);
     // ui->treeView->update();
     //  Check if the importing is OK
-    if (VI->getStatus())
-        return;
+    // if (VI->getStatus())
+        // return;
     return;
 }
 
@@ -329,8 +327,8 @@ void MainWindow::importFitsImage(QString filename, QList<QMap<QString, QString>>
                                  bool layer)
 {
 
-    VisIVOImporterDesktop *VI = new VisIVOImporterDesktop("FITSIMG", filename, m_VisIVOTreeModel);
-    VI->doImport();
+    // VisIVOImporterDesktop *VI = new VisIVOImporterDesktop("FITSIMG", filename, m_VisIVOTreeModel);
+    // VI->doImport();
 
     class_l = l;
     class_b = b;
@@ -620,7 +618,7 @@ void MainWindow::viewSettingOk()
         }
         if (m_VisPointsObject->isOriginSpecified()) {
             ui->tabWidget->setCurrentWidget(ui->tabObjectTree);
-            m_OldRenderingWindow = new vtkwindow_new(this, m_VisPointsObject);
+            // m_OldRenderingWindow = new vtkwindow_new(this, m_VisPointsObject);
             /*
             // We will open a single Rendering Window
             if (m_RenderingWindow == NULL)
@@ -663,8 +661,7 @@ void MainWindow::itemSelected(QList<QMap<QString, QString>> elementsOnDb, bool l
         if (layer) {
             qDebug() << "*******++ " << survey << " " << species << " " << transition;
 
-            myCallingVtkWindow->addLayerImage(m_VisIVOTreeModel->getFITSIMG(selectedItemIndex),
-                                              survey, species, transition);
+            // myCallingVtkWindow->addLayerImage(m_VisIVOTreeModel->getFITSIMG(selectedItemIndex), survey, species, transition);
         } else {
             vtkSmartPointer<vtkFitsReader> fitsreader =
                     m_VisIVOTreeModel->getFITSIMG(selectedItemIndex);
@@ -674,26 +671,25 @@ void MainWindow::itemSelected(QList<QMap<QString, QString>> elementsOnDb, bool l
 
             qDebug() << "*******++ " << survey << " " << species << " " << transition;
 
-            m_OldRenderingWindow =
-                    new vtkwindow_new(this, m_VisIVOTreeModel->getFITSIMG(selectedItemIndex));
+            // m_OldRenderingWindow = new vtkwindow_new(this, m_VisIVOTreeModel->getFITSIMG(selectedItemIndex));
 
-            if (elementsOnDb.size() > 0) {
-                m_OldRenderingWindow->setDbElements(elementsOnDb);
-                m_OldRenderingWindow->setCallingL(class_l);
-                m_OldRenderingWindow->setCallingB(class_b);
-                m_OldRenderingWindow->setCallingR(class_r);
-                m_OldRenderingWindow->setCallingDl(class_dl);
-                m_OldRenderingWindow->setCallingDb(class_db);
-            }
-            if (selectedSurvey.size() > 1) {
+            // if (elementsOnDb.size() > 0) {
+            //     m_OldRenderingWindow->setDbElements(elementsOnDb);
+            //     m_OldRenderingWindow->setCallingL(class_l);
+            //     m_OldRenderingWindow->setCallingB(class_b);
+            //     m_OldRenderingWindow->setCallingR(class_r);
+            //     m_OldRenderingWindow->setCallingDl(class_dl);
+            //     m_OldRenderingWindow->setCallingDb(class_db);
+            // }
+            // if (selectedSurvey.size() > 1) {
 
-                m_OldRenderingWindow->setCallingL(class_l);
-                m_OldRenderingWindow->setCallingB(class_b);
-                m_OldRenderingWindow->setCallingR(class_r);
-                m_OldRenderingWindow->setCallingDl(class_dl);
-                m_OldRenderingWindow->setCallingDb(class_db);
-                m_OldRenderingWindow->downloadStartingLayers(selectedSurvey);
-            }
+            //     m_OldRenderingWindow->setCallingL(class_l);
+            //     m_OldRenderingWindow->setCallingB(class_b);
+            //     m_OldRenderingWindow->setCallingR(class_r);
+            //     m_OldRenderingWindow->setCallingDl(class_dl);
+            //     m_OldRenderingWindow->setCallingDb(class_db);
+            //     m_OldRenderingWindow->downloadStartingLayers(selectedSurvey);
+            // }
         }
 
     }
@@ -861,7 +857,7 @@ void MainWindow::importFitsDC(QString fileName)
 
     // TEST
     // new vtkwindow(this,fitsReader,1);
-    new vtkwindow_new(this, fitsReader, 1, myCallingVtkWindow);
+    // new vtkwindow_new(this, fitsReader, 1, myCallingVtkWindow);
 }
 
 void MainWindow::closeEvent(QCloseEvent *)

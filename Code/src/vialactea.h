@@ -4,8 +4,8 @@
 #include "aboutform.h"
 #include "pqmeminspector.h"
 #include "settingform.h"
-#include "vtkwindow_new.h"
 
+#include <QDir>
 #include <QMainWindow>
 #include <QMap>
 #include <QPair>
@@ -40,9 +40,7 @@ public:
     explicit ViaLactea(QWidget *parent = 0);
     ~ViaLactea();
     void reload();
-    bool isMasterWin(vtkwindow_new *win);
     void resetMasterWin();
-    void setMasterWin(vtkwindow_new *win);
 
     QPointer<pqServer> getServer() const { return server; }
 
@@ -69,7 +67,6 @@ private slots:
     void on_localDCPushButton_clicked();
     void on_actionExit_triggered();
     void on_actionAbout_triggered();
-    void on_select3dPushButton_clicked();
     void on_actionLoad_SED_2_triggered();
     void on_pointRadioButton_clicked(bool checked);
     void on_rectRadioButton_clicked(bool checked);
@@ -94,7 +91,6 @@ private:
     QString m_sSettingsFile;
     QString tilePath;
     QMap<int, QPair<QString, QString>> mapSurvey;
-    vtkwindow_new *masterWin = nullptr;
     QPointer<pqServer> server;
 
     pqMemInspector* memInspectWin = nullptr;

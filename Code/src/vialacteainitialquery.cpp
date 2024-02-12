@@ -50,7 +50,6 @@ VialacteaInitialQuery::VialacteaInitialQuery(QString fn, QWidget *parent)
     outputFile = fn;
     species = "";
     p = parent;
-    myCallingVtkWindow = 0;
 
     transitions.insert("PLW", "500um");
     transitions.insert("PMW", "350um");
@@ -535,42 +534,36 @@ void VialacteaInitialQuery::on_download_completed()
 
     this->close();
 
-    if ((velfrom.compare("0.0") == 0 && velto.compare("0.0") == 0) || species.compare("dust") == 0
-        || species.compare("Continuum") == 0
-        || (surveyname.compare("NANTEN") == 0 && test_flag_nanten == 2)
-        || QString::compare("cornish", surveyname, Qt::CaseInsensitive) == 0
-        || QString::compare("cornish2d", surveyname, Qt::CaseInsensitive) == 0
-        || QString::compare("magpis", surveyname, Qt::CaseInsensitive) == 0) {
-        bool l = myCallingVtkWindow != 0;
+  //   if ((velfrom.compare("0.0") == 0 && velto.compare("0.0") == 0) || species.compare("dust") == 0
+  //       || species.compare("Continuum") == 0
+  //       || (surveyname.compare("NANTEN") == 0 && test_flag_nanten == 2)
+  //       || QString::compare("cornish", surveyname, Qt::CaseInsensitive) == 0
+  //       || QString::compare("cornish2d", surveyname, Qt::CaseInsensitive) == 0
+  //       || QString::compare("magpis", surveyname, Qt::CaseInsensitive) == 0) {
 
-        auto fits = vtkSmartPointer<vtkFitsReader>::New();
-        fits->SetFileName(currentPath.toStdString());
-        fits->setSurvey(surveyname);
-        fits->setSpecies(species);
-        fits->setTransition(transition);
 
-        if (l) {
-            myCallingVtkWindow->addLayerImage(fits, surveyname, species, transition);
-        } else {
-            auto win = new vtkwindow_new(this, fits, 0, myCallingVtkWindow);
-            win->setCallingL(ui->l_lineEdit->text());
-            win->setCallingB(ui->b_lineEdit->text());
-            win->setCallingR(ui->r_lineEdit->text());
-            win->setCallingDl(ui->dlLineEdit->text());
-            win->setCallingDb(ui->dbLineEdit->text());
-            win->setDbElements(elementsOnDb);
-            if (selectedSurvey.length() > 1)
-                win->downloadStartingLayers(selectedSurvey);
+  //       if (l) {
+  //           myCallingVtkWindow->addLayerImage(fits, surveyname, species, transition);
+  //       } else {
+  //           auto win = new vtkwindow_new(this, fits, 0, myCallingVtkWindow);
+  //           win->setCallingL(ui->l_lineEdit->text());
+  //           win->setCallingB(ui->b_lineEdit->text());
+  //           win->setCallingR(ui->r_lineEdit->text());
+  //           win->setCallingDl(ui->dlLineEdit->text());
+  //           win->setCallingDb(ui->dbLineEdit->text());
+  //           win->setDbElements(elementsOnDb);
+  //           if (selectedSurvey.length() > 1)
+  //               win->downloadStartingLayers(selectedSurvey);
 
-            auto vl = &Singleton<ViaLactea>::Instance();
-            vl->setMasterWin(win);
-        }
-    } else {
-        auto fits = vtkSmartPointer<vtkFitsReader>::New();
-        fits->SetFileName(currentPath.toStdString());
-        fits->is3D = true;
+  //           auto vl = &Singleton<ViaLactea>::Instance();
+  //           vl->setMasterWin(win);
+  //       }
+  //   } else {
+  //       auto fits = vtkSmartPointer<vtkFitsReader>::New();
+  //       fits->SetFileName(currentPath.toStdString());
+  //       fits->is3D = true;
 
-        myCallingVtkWindow->setSelectedCubeVelocityUnit(velocityUnit);
-        new vtkwindow_new(myCallingVtkWindow, fits, 1, myCallingVtkWindow);
-    }
+  //       myCallingVtkWindow->setSelectedCubeVelocityUnit(velocityUnit);
+  //       new vtkwindow_new(myCallingVtkWindow, fits, 1, myCallingVtkWindow);
+  //   }
 }

@@ -2,11 +2,9 @@
 #include "ui_vialactea.h"
 
 #include "aboutform.h"
-#include "astroutils.h"
 #include "pqwindowcube.h"
 #include "pqwindowimage.h"
 #include "sed.h"
-#include "sedvisualizerplot.h"
 #include "sessionloader.h"
 #include "settingform.h"
 #include "singleton.h"
@@ -14,10 +12,10 @@
 #include "usertablewindow.h"
 #include "vialacteainitialquery.h"
 #include "vialacteastringdictwidget.h"
-#include "vlkbsimplequerycomposer.h"
 
 #include <pqFileDialog.h>
 #include <QFileDialog>
+#include <QJsonDocument>
 #include <QMessageBox>
 #include <QSettings>
 #include <QWebChannel>
@@ -30,6 +28,8 @@
 #include "vtkSMProxyManager.h"
 #include "vtkSMReaderFactory.h"
 #include "vtkSMPluginManager.h"
+
+#include <fitsio.h>
 
 WebProcess::WebProcess(QObject *parent) : QObject(parent) { }
 
@@ -237,14 +237,6 @@ void ViaLactea::updateVLKBSetting()
 
 void ViaLactea::on_queryPushButton_clicked()
 {
-    if (masterWin != nullptr) {
-        QMessageBox::information(
-                this, QObject::tr(""),
-                QObject::tr(
-                        "A session is already open. Close the session window to start a new one."));
-        return;
-    }
-
     VialacteaInitialQuery *vq;
     if (ui->saveToDiskCheckBox->isChecked()) {
         if (ui->fileNameLineEdit->text() != "")
@@ -446,32 +438,6 @@ void ViaLactea::reload()
     updateVLKBSetting();
 }
 
-bool ViaLactea::isMasterWin(vtkwindow_new *win)
-{
-    return win == masterWin;
-}
-
-void ViaLactea::resetMasterWin()
-{
-    masterWin = nullptr;
-}
-
-void ViaLactea::setMasterWin(vtkwindow_new *win)
-{
-    masterWin = win;
-}
-
-bool ViaLactea::canImportToMasterWin(std::string importFn)
-{
-    if (masterWin != nullptr) {
-        std::string masterFile = masterWin->getFitsImage()->GetFileName();
-        // By default, partial overlap are allowed
-        return AstroUtils().CheckOverlap(masterFile, importFn, false);
-    }
-
-    return false;
-}
-
 void ViaLactea::sessionScan(const QString &currentDir, const QDir &rootDir, QStringList &results)
 {
     QDir dir(currentDir);
@@ -592,15 +558,6 @@ void ViaLactea::on_actionExit_triggered()
 
 void ViaLactea::closeEvent(QCloseEvent *event)
 {
-    if (masterWin != nullptr && !masterWin->isSessionSaved()) {
-        // Prompt to save the session
-        if (!masterWin->confirmSaveAndExit()) {
-            // Cancel button was clicked, therefore do not close
-            event->ignore();
-            return;
-        }
-    }
-
     ui->webView->page()->deleteLater();
     QApplication::quit();
 }
@@ -613,16 +570,6 @@ void ViaLactea::on_actionAbout_triggered()
     aboutForm->show();
     aboutForm->activateWindow();
     aboutForm->raise();
-}
-
-void ViaLactea::on_select3dPushButton_clicked()
-{
-    VLKBSimpleQueryComposer *skyregionquery = new VLKBSimpleQueryComposer(NULL);
-    skyregionquery->setIs3dSelections();
-
-    skyregionquery->setLongitude(0, 360);
-    skyregionquery->setLatitude(-1, 1);
-    skyregionquery->show();
 }
 
 void ViaLactea::on_actionLoad_SED_2_triggered()
@@ -662,9 +609,6 @@ void ViaLactea::on_actionLoad_SED_2_triggered()
      */
 
     ViaLactea *vialactealWin = &Singleton<ViaLactea>::Instance();
-    SEDVisualizerPlot *sedv = new SEDVisualizerPlot(sed_list2, 0, vialactealWin);
-    sedv->show();
-    sedv->loadSavedSED(dirList);
 }
 
 void ViaLactea::on_pointRadioButton_clicked(bool checked)
@@ -695,12 +639,6 @@ void ViaLactea::on_dbLineEdit_textChanged(const QString &arg1)
 
 void ViaLactea::on_actionLoad_session_triggered()
 {
-    if (masterWin != nullptr) {
-        QMessageBox::warning(this, tr("Load a session"),
-                             tr("A session is already open, close it to load another session."));
-        return;
-    }
-
     QString rootPath = QFileDialog::getExistingDirectory(this, "Load a session", QDir::homePath());
     if (rootPath.isEmpty()) {
         return;

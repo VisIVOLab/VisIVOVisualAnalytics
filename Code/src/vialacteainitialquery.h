@@ -2,7 +2,6 @@
 #define VIALACTEAINITIALQUERY_H
 
 #include "loadingwidget.h"
-#include "vtkwindow_new.h"
 #include "xmlparser.h"
 
 #include <QAuthenticator>
@@ -28,7 +27,6 @@ public:
     void setSurveyname(QString s);
     void setSpecies(QString s) { species = s; }
     void setTransition(QString s);
-    void setCallingVtkWindow(vtkwindow_new *v) { myCallingVtkWindow = v; }
     void setSelectedSurveyMap(QList<QPair<QString, QString>> s) { selectedSurvey = s; }
 
     void searchRequest(double l, double b, double dl, double db);
@@ -69,7 +67,6 @@ private:
     QString vlkbUrl;
     QString vlkbtype;
     QString velocityUnit;
-    vtkwindow_new *myCallingVtkWindow;
     bool isRadius;
 
     void searchRequest(const QString &url);

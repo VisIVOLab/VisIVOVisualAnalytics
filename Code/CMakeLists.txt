@@ -55,15 +55,10 @@ set(sources
         src/base64.cpp
         src/caesarwindow.cpp
         src/color.cpp
-        src/contour.cpp
-        src/dbquery.cpp
         src/downloadmanager.cpp
         src/ds9region/DS9Region.cpp
         src/ds9region/DS9RegionParser.cpp
         src/extendedglyph3d.cpp
-        src/filtercustomize.cpp
-        src/fitsimagestatisiticinfo.cpp
-        src/higalselectedsources.cpp
         src/libwcs/cel.c
         src/libwcs/dateutil.c
         src/libwcs/distort.c
@@ -89,26 +84,17 @@ set(sources
         src/libwcs/worldpos.c
         src/loadingwidget.cpp
         src/qcustomplot.cpp
-        src/lutcustomize.cpp
         src/luteditor.cpp
         src/main.cpp
         src/mainwindow.cpp
         src/mcutoutsummary.cpp
         src/observedobject.cpp
         src/operationqueue.cpp
-        src/pipe.cpp
-        src/plotwindow.cpp
-        src/pointspipe.cpp
         src/pqmeminspector.cpp
         src/pqwindowcube.cpp
         src/pqwindowimage.cpp
         src/sed.cpp
-        src/sedfitgrid_thick.cpp
-        src/sedfitgrid_thin.cpp
         src/sednode.cpp
-        src/sedplotpointcustom.cpp
-        src/sedvisualizerplot.cpp
-        src/selectedsourcefieldsselect.cpp
         src/sessionloader.cpp
         src/settingform.cpp
         src/subsetselectordialog.cpp
@@ -116,16 +102,11 @@ set(sources
         src/treemodel.cpp
         src/usertablewindow.cpp
         src/vialactea.cpp
-        src/vialactea_fileload.cpp
         src/vialacteainitialquery.cpp
         src/vialacteasource.cpp
         src/vialacteastringdictwidget.cpp
-        src/viewselectedsourcedataset.cpp
-        src/visivoimporterdesktop.cpp
         src/visivoutilsdesktop.cpp
         src/vispoint.cpp
-        src/vlkbquery.cpp
-        src/vlkbsimplequerycomposer.cpp
         src/vlkbtable.cpp
         src/vlvastackimage.cpp
         src/vlvaurlschemehandler.cpp
@@ -134,12 +115,9 @@ set(sources
         src/vtkellipse.cpp
         src/vtkextracthistogram.cpp
         src/vtkfitsreader.cpp
-        src/vtkfitstoolswidget.cpp
         src/vtkfitstoolwidget_new.cpp
         src/vtkfitstoolwidgetobject.cpp
         src/vtklegendscaleactor.cpp
-        src/vtktoolswidget.cpp
-        src/vtkwindow_new.cpp
         src/xmlparser.cpp
         src/interactors/vtkinteractorstyleimagecustom.cpp
         )
@@ -152,8 +130,6 @@ set(headers
         src/base64.h
         src/caesarwindow.h
         src/color.h
-        src/contour.h
-        src/dbquery.h
         src/downloadmanager.h
         src/ds9region/CodeUtils.h
         src/ds9region/Consts.h
@@ -161,33 +137,21 @@ set(headers
         src/ds9region/DS9RegionParser.h
         src/errorMessage.h
         src/extendedglyph3d.h
-        src/filtercustomize.h
-        src/fitsimagestatisiticinfo.h
-        src/higalselectedsources.h
         src/libwcs/fitsfile.h
         src/libwcs/wcs.h
         src/loadingwidget.h
         src/qcustomplot.h
-        src/lutcustomize.h
         src/luteditor.h
         src/mainwindow.h
         src/mcutoutsummary.h
         src/observedobject.h
         src/operationqueue.h
         src/osxhelper.h
-        src/pipe.h
-        src/plotwindow.h
-        src/pointspipe.h
         src/pqmeminspector.h
         src/pqwindowcube.h
         src/pqwindowimage.h
         src/sed.h
-        src/sedfitgrid_thick.h
-        src/sedfitgrid_thin.h
         src/sednode.h
-        src/sedplotpointcustom.h
-        src/sedvisualizerplot.h
-        src/selectedsourcefieldsselect.h
         src/sessionloader.h
         src/settingform.h
         src/singleton.h
@@ -196,16 +160,11 @@ set(headers
         src/treemodel.h
         src/usertablewindow.h
         src/vialactea.h
-        src/vialactea_fileload.h
         src/vialacteainitialquery.h
         src/vialacteasource.h
         src/vialacteastringdictwidget.h
-        src/viewselectedsourcedataset.h
-        src/visivoimporterdesktop.h
         src/visivoutilsdesktop.h
         src/vispoint.h
-        src/vlkbquery.h
-        src/vlkbsimplequerycomposer.h
         src/vlkbtable.h
         src/vlvastackimage.h
         src/vlvaurlschemehandler.h
@@ -214,12 +173,9 @@ set(headers
         src/vtkellipse.h
         src/vtkextracthistogram.h
         src/vtkfitsreader.h
-        src/vtkfitstoolswidget.h
         src/vtkfitstoolwidget_new.h
         src/vtkfitstoolwidgetobject.h
         src/vtklegendscaleactor.h
-        src/vtktoolswidget.h
-        src/vtkwindow_new.h
         src/xmlparser.h
         src/interactors/vtkinteractorstyleimagecustom.h
         )
@@ -227,39 +183,21 @@ set(headers
 set(ui_files
         ui/aboutform.ui
         ui/caesarwindow.ui
-        ui/contour.ui
-        ui/dbquery.ui
-        ui/filtercustomize.ui
-        ui/fitsimagestatisiticinfo.ui
-        ui/higalselectedsources.ui
         ui/loadingwidget.ui
         ui/mainwindow.ui
         ui/mcutoutsummary.ui
         ui/operationqueue.ui
-        ui/plotwindow.ui
         ui/pqmeminspector.ui
         ui/pqwindowcube.ui
         ui/pqwindowimage.ui
-        ui/sedfitgrid_thick.ui
-        ui/sedfitgrid_thin.ui
-        ui/sedvisualizerplot.ui
-        ui/selectedsourcefieldsselect.ui
         ui/sessionloader.ui
         ui/settingform.ui
         ui/subsetselectordialog.ui
         ui/usertablewindow.ui
         ui/vialactea.ui
-        ui/vialactea_fileload.ui
         ui/vialacteainitialquery.ui
         ui/vialacteastringdictwidget.ui
-        ui/viewselectedsourcedataset.ui
-        ui/lutcustomize.ui
-        ui/vlkbquery.ui
-        ui/vlkbsimplequerycomposer.ui
-        ui/vtkfitstoolswidget.ui
         ui/vtkfitstoolwidget_new.ui
-        ui/vtktoolswidget.ui
-        ui/vtkwindow_new.ui
         )
 
 set(ICON_RESOURCE icons/logo_256_beta.icns)

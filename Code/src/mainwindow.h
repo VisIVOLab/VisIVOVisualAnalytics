@@ -55,7 +55,7 @@ public:
     QString importer;
     QString filter;
     QString util;
-    void setCallingVtkWindow(vtkwindow_new *v) { myCallingVtkWindow = v; }
+    // void setCallingVtkWindow(vtkwindow_new *v) { myCallingVtkWindow = v; }
     Ui::MainWindow *ui;
     QString selectedFile;
     TreeModel *m_VisIVOTreeModel;
@@ -89,7 +89,7 @@ public slots:
                     QString l = "", QString b = "", QString r = "", QString db = "",
                     QString dl = "", bool layer = false);
     TreeModel *getTreeModel();
-    vtkwindow_new *getLastVtkWin() { return m_OldRenderingWindow; }
+    // vtkwindow_new *getLastVtkWin() { return m_OldRenderingWindow; }
     void on_actionTEST_DC3D_triggered();
     void importFitsDC(QString fileName);
 
@@ -116,7 +116,7 @@ private slots:
     void on_runFilterPushButton_clicked();
 
 private:
-    vtkwindow_new *m_OldRenderingWindow;
+    // vtkwindow_new *m_OldRenderingWindow;
     void createModel();
     void resetInterface();
     void hideAllFilterParameter();
