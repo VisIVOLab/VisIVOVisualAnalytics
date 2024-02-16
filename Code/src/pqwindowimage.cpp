@@ -1,8 +1,7 @@
 #include "pqwindowimage.h"
-#include "qgraphicseffect.h"
-#include "src/vialacteainitialquery.h"
 #include "ui_pqwindowimage.h"
 
+#include "vialacteainitialquery.h"
 #include "interactors/vtkinteractorstyleimagecustom.h"
 #include "errorMessage.h"
 
@@ -18,6 +17,7 @@
 #include <pqScalarsToColors.h>
 #include <pqSMAdaptor.h>
 
+#include <vtkClientServerStream.h>
 #include <vtkPVArrayInformation.h>
 #include <vtkPVDataInformation.h>
 #include <vtkPVDataMover.h>
@@ -32,6 +32,7 @@
 #include <vtkSMProxyManager.h>
 #include <vtkSMPVRepresentationProxy.h>
 #include <vtkSMReaderFactory.h>
+#include <vtkSMSession.h>
 #include <vtkSMSessionProxyManager.h>
 #include <vtkSMStringVectorProperty.h>
 #include <vtkSMTransferFunctionManager.h>
@@ -43,6 +44,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
+#include <QGraphicsEffect>
 #include <QSignalMapper>
 
 pqWindowImage::pqWindowImage(const QString &filepath, const CubeSubset &cubeSubset) : ui(new Ui::pqWindowImage)
@@ -96,9 +98,12 @@ pqWindowImage::pqWindowImage(const QString &filepath, const CubeSubset &cubeSubs
 
     //Load the initial image
     int initImg = addImageToStack(filepath, cubeSubset);
-    if (initImg)
+    if (initImg){
         //Query VLKB and populate the table widget
         checkVLKB(this->images.at(0));
+        //Create proxy to ParaviewVLKBProxy
+        vlkbManagerProxy = serverProxyManager->NewProxy("download_managers", "VLKBProxy");
+    }
 
     //Update the UI with initial values
     updateUI();
@@ -413,22 +418,74 @@ void pqWindowImage::checkVLKB(vlvaStackImage *stackImage)
         connect(vq, &VialacteaInitialQuery::searchDone,
                 [vq, this](QList<QMap<QString, QString>> results) {
                     this->setVLKBElementsList(results);
-                    //TODO:
                     //Add some sort of notification that results have been added to widget
                     vq->deleteLater();
                     QGraphicsColorizeEffect *eff = new QGraphicsColorizeEffect(this);
                     this->ui->elementListWidget->setGraphicsEffect(eff);
                     QPropertyAnimation *a = new QPropertyAnimation(eff,"strength");
-                    a->setDuration(350);
+                    a->setDuration(5000);
                     a->setStartValue(1);
                     a->setEndValue(0);
                     a->setEasingCurve(QEasingCurve::OutBack);
                     a->start(QPropertyAnimation::DeleteWhenStopped);
-                    connect(a,&QPropertyAnimation::finished,this,[this](){this->activateWindow();});//Force a rerender of entire screen
+                    connect(a,&QPropertyAnimation::finished,this,[this](){
+                        QGraphicsColorizeEffect *eff = new QGraphicsColorizeEffect(this);
+                        this->ui->elementListWidget->setGraphicsEffect(eff);
+                        QPropertyAnimation *a = new QPropertyAnimation(eff,"strength");
+                        a->setDuration(100);
+                        a->setStartValue(0);
+                        a->setEndValue(0);
+                        a->start(QPropertyAnimation::DeleteWhenStopped);});//Undo the recolour
                 });
 
         vq->searchRequest(coords[0], coords[1], rectSize[0], rectSize[1]);
     }
+}
+
+/**
+ * @brief pqWindowImage::downloadFromVLKB
+ * This function interacts with the proxy on the server to download a file from the VLKB.
+ * @param URL
+ * The URL of the image to be downloaded, provided from the element list.
+ */
+void pqWindowImage::downloadFromVLKB(std::string URL)
+{
+    if (auto prop = vlkbManagerProxy->GetProperty("DownloadFile"))
+    {
+        vtkSMPropertyHelper(prop).Set(URL.c_str());
+        vlkbManagerProxy->UpdateVTKObjects();
+        throwMessage("Result from DownloadFile for file:", URL.c_str());
+    }
+    else
+        throwError("vlkbManagerProxy not instantiated!", "Investigate allocation of the proxy!");
+}
+
+void pqWindowImage::checkDownloads(std::string URL)
+{
+    if (vlkbManagerProxy)
+    {
+        vtkClientServerStream stream;
+        stream << vtkClientServerStream::Invoke
+               << VTKOBJECT(vlkbManagerProxy)
+               << "GetFileStatus" << URL.c_str()
+               << vtkClientServerStream::End;
+
+        vtkSMSession* session = vlkbManagerProxy->GetSession();
+        session->ExecuteStream(
+                /*location*/ vlkbManagerProxy->GetLocation(),
+                /*stream*/ stream,
+                /* ignore_errores*/ false);
+
+        vtkClientServerStream result = session->GetLastResult(vlkbManagerProxy->GetLocation());
+        if (result.GetNumberOfMessages() == 1 && result.GetNumberOfArguments(0) == 1)
+        {
+            std::string aresult;
+            result.GetArgument(0, 0, &aresult);
+            throwMessage("Result from ExecuteStream:", aresult.c_str());
+        }
+    }
+    else
+        throwError("vlkbManagerProxy not instantiated!", "Investigate allocation of the proxy!");
 }
 
 /**
@@ -731,5 +788,17 @@ void pqWindowImage::on_lstImageList_itemChanged(QListWidgetItem *item)
 
     setImageListCheckbox(item->listWidget()->row(item), item->checkState());
     updateUI();
+}
+
+
+void pqWindowImage::on_btnVLKBDown_clicked()
+{
+    downloadFromVLKB("TestingTesting");
+}
+
+
+void pqWindowImage::on_btnCheckVLKB_clicked()
+{
+    checkDownloads("TestingTesting");
 }
 

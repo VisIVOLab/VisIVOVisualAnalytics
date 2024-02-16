@@ -66,6 +66,10 @@ private slots:
 
     void on_lstImageList_itemChanged(QListWidgetItem *item);
 
+    void on_btnVLKBDown_clicked();
+
+    void on_btnCheckVLKB_clicked();
+
 private:
     /**
      * @brief The removeErrorCode enum
@@ -83,6 +87,7 @@ private:
     pqObjectBuilder *builder;
     pqRenderView *viewImage;
     vtkSMProxy *imageProxy;
+    vtkSMProxy *vlkbManagerProxy;
     vtkSMTransferFunctionProxy *lutProxy;
 
     xmlparser* parser;
@@ -115,6 +120,8 @@ private:
     void setOpacity(float value);
     int removeImageFromStack(const int index, const removeErrorCode remErrCode = removeErrorCode::NO_ERROR);
     void checkVLKB(vlvaStackImage *stackImage);
+    void downloadFromVLKB(std::string URL);
+    void checkDownloads(std::string URL);
 
     int positionImage(vlvaStackImage* stackImage, bool setBasePos = false);
 
