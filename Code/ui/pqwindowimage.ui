@@ -90,7 +90,7 @@
                     </size>
                    </property>
                    <property name="text">
-                    <string>Colour Map:</string>
+                    <string>    Colour Map:</string>
                    </property>
                    <property name="alignment">
                     <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
@@ -110,7 +110,7 @@
                    </property>
                    <property name="maximumSize">
                     <size>
-                     <width>120</width>
+                     <width>480</width>
                      <height>16777215</height>
                     </size>
                    </property>

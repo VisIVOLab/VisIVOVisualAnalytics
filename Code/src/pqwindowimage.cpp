@@ -102,7 +102,8 @@ pqWindowImage::pqWindowImage(const QString &filepath, const CubeSubset &cubeSubs
         //Query VLKB and populate the table widget
         checkVLKB(this->images.at(0));
         //Create proxy to ParaviewVLKBProxy
-        vlkbManagerProxy = serverProxyManager->NewProxy("download_managers", "VLKBProxy");
+        vlkbManagerProxy = serverProxyManager->NewProxy("sources", "VLKBProxy");
+        // vlkbManagerProxy = builder->createProxy("sources", "VLKBProxy", server, "");
     }
 
     //Update the UI with initial values
