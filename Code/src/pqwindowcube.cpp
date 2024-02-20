@@ -397,15 +397,22 @@ void pqWindowCube::showSlice()
     ui->sliceSpinBox->setRange(1, bounds[5] + 1);
 }
 
+/**
+ * @brief pqWindowCube::loadMomentMap
+ * This function calls the reader on the server to load the given file
+ * with the ReadAsType set to Moment Map.
+ */
 void pqWindowCube::loadMomentMap()
 {
 
+    // Set the appropriate properties
     auto momentPropProxy = this->MomentMapSource->getProxy();
     vtkSMPropertyHelper(momentPropProxy, "ReadAsType").Set(1);
     vtkSMPropertyHelper(momentPropProxy, "MomentOrder").Set(0);
     momentPropProxy->UpdateVTKObjects();
     MomentMapSource->updatePipeline();
 
+    // Link the data to the correct view and create a colour mapp
     momentProxy = builder->createDataRepresentation(this->MomentMapSource->getOutputPort(0), viewMomentMap)->getProxy();
     vtkSMPropertyHelper(momentProxy, "Representation").Set("Slice");
     std::string name = "FITSImage" + std::to_string(momentOrder);
@@ -419,9 +426,14 @@ void pqWindowCube::loadMomentMap()
     viewMomentMap->render();
 }
 
+/**
+ * @brief pqWindowCube::showMomentMap
+ * This function is used to switch between the different moment map orders.
+ * @param order The order to switch to.
+ */
 void pqWindowCube::showMomentMap(int order)
 {
-
+    //Change the properties on the server to the new values.
     momentOrder = order;
     auto momentPropProxy = this->MomentMapSource->getProxy();
     vtkSMPropertyHelper(momentPropProxy, "ReadAsType").Set(1);
@@ -429,6 +441,8 @@ void pqWindowCube::showMomentMap(int order)
     momentPropProxy->UpdateVTKObjects();
     MomentMapSource->updatePipeline();
     this->momentProxy->UpdateVTKObjects();
+
+    //Create a new colour map to match the values of the new moment map order.
     vtkNew<vtkSMTransferFunctionManager> mgr;
     std::string name = "FITSImage" + std::to_string(momentOrder);
     momentLUTProxy = vtkSMTransferFunctionProxy::SafeDownCast(
@@ -437,6 +451,7 @@ void pqWindowCube::showMomentMap(int order)
     vtkSMPVRepresentationProxy::SetScalarColoring(momentProxy, name.c_str(), vtkDataObject::POINT);
     changeColorMap(currentColorMap);
 
+    //Set the moment map to be visible if it wasn't before.
     setMomentMapVisible(true);
     viewMomentMap->resetDisplay();
     viewMomentMap->render();
@@ -475,16 +490,23 @@ void pqWindowCube::updateVelocityText()
     ui->velocityText->setText(QString::number(velocity).append(" Km/s"));
 }
 
+/**
+ * @brief pqWindowCube::updateMinMax
+ * This function updates the min/max values on the UI (above the 2D view).
+ * @param moment The moment order currently active (ignored if a moment map is not displayed).
+ */
 void pqWindowCube::updateMinMax(bool moment)
 {
     vtkPVDataInformation* dataInformation;
     vtkPVArrayInformation* fitsImageInfo;
     std::string name = "FITSImage" + std::to_string(momentOrder);
+    //Check if a moment map is displayed
     if (moment)
     {
         dataInformation = this->MomentMapSource->getOutputPort(0)->getDataInformation();
         fitsImageInfo = dataInformation->GetPointDataInformation()->GetArrayInformation(name.c_str());
     }
+    //Otherwise, use the information from the slice view.
     else
     {
         dataInformation = this->SliceSource->getOutputPort(0)->getDataInformation();
@@ -566,6 +588,11 @@ void pqWindowCube::removeContours()
     }
 }
 
+/**
+ * @brief pqWindowCube::setMomentMapVisible
+ * This function switches the 3D display between the view of the slice and the moment map.
+ * @param val True if a moment map should be displayed, false if the slice view should be displayed.
+ */
 void pqWindowCube::setMomentMapVisible(bool val)
 {
     viewMomentMap->widget()->setVisible(val);

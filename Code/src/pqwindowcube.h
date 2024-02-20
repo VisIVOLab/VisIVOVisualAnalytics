@@ -1,7 +1,6 @@
 #ifndef PQWINDOWCUBE_H
 #define PQWINDOWCUBE_H
 
-#include "qactiongroup.h"
 #include "subsetselectordialog.h"
 
 #include <QMainWindow>
