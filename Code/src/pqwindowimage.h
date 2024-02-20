@@ -1,7 +1,26 @@
+/***************************************************************************
+ *   Copyright (C) 2024 by P. Cilliers Pretorius                           *
+ *   pietersieliepcp@gmail.com                                             *
+ *                                                                         *
+ *   This program is free software; you can redistribute it and/or modify  *
+ *   it under the terms of the GNU General Public License as published by  *
+ *   the Free Software Foundation; either version 2 of the License, or     *
+ *   (at your option) any later version.                                   *
+ *                                                                         *
+ *   This program is distributed in the hope that it will be useful,       *
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
+ *   GNU General Public License for more details.                          *
+ *                                                                         *
+ *   You should have received a copy of the GNU General Public License     *
+ *   along with this program; if not, write to the                         *
+ *   Free Software Foundation, Inc.,                                       *
+ *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
+ ***************************************************************************/
+
 #ifndef PQWINDOWIMAGE_H
 #define PQWINDOWIMAGE_H
 
-#include "downloadmanager.h"
 #include "subsetselectordialog.h"
 #include "vlvastackimage.h"
 #include "xmlparser.h"
@@ -27,6 +46,12 @@ namespace Ui {
 class pqWindowImage;
 }
 
+/**
+ * @brief The pqWindowImage class
+ * This class manages the 2D image visualisation.
+ * Multiple images can be loaded and will be placed according to the coordinates
+ * contained in the FITS header.
+ */
 class pqWindowImage : public QMainWindow
 {
     Q_OBJECT
@@ -120,8 +145,8 @@ private:
     void setOpacity(float value);
     int removeImageFromStack(const int index, const removeErrorCode remErrCode = removeErrorCode::NO_ERROR);
     void checkVLKB(vlvaStackImage *stackImage);
-    void downloadFromVLKB(std::string URL);
-    void checkDownloads(std::string URL);
+    void downloadFromVLKB(std::string URL, std::string fileID = "");
+    void checkDownloads(std::string fileID);
 
     int positionImage(vlvaStackImage* stackImage, bool setBasePos = false);
 

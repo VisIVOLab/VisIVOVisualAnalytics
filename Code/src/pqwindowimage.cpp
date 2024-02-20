@@ -1,3 +1,23 @@
+/***************************************************************************
+ *   Copyright (C) 2024 by P. Cilliers Pretorius                           *
+ *   pietersieliepcp@gmail.com                                             *
+ *                                                                         *
+ *   This program is free software; you can redistribute it and/or modify  *
+ *   it under the terms of the GNU General Public License as published by  *
+ *   the Free Software Foundation; either version 2 of the License, or     *
+ *   (at your option) any later version.                                   *
+ *                                                                         *
+ *   This program is distributed in the hope that it will be useful,       *
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
+ *   GNU General Public License for more details.                          *
+ *                                                                         *
+ *   You should have received a copy of the GNU General Public License     *
+ *   along with this program; if not, write to the                         *
+ *   Free Software Foundation, Inc.,                                       *
+ *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
+ ***************************************************************************/
+
 #include "pqwindowimage.h"
 #include "ui_pqwindowimage.h"
 
@@ -339,7 +359,6 @@ int pqWindowImage::removeImageFromStack(const int index, const removeErrorCode r
  */
 void pqWindowImage::setVLKBElementsList(QList<QMap<QString, QString> > elementsOnDb)
 {
-    auto classElementsOnDb = elementsOnDb;
     int i = 0;
     ui->elementListWidget->clear();
     while (!elementsOnDb.isEmpty()) {
@@ -446,11 +465,18 @@ void pqWindowImage::checkVLKB(vlvaStackImage *stackImage)
 /**
  * @brief pqWindowImage::downloadFromVLKB
  * This function interacts with the proxy on the server to download a file from the VLKB.
- * @param URL
- * The URL of the image to be downloaded, provided from the element list.
+ * @param URL The URL of the image to be downloaded, provided from the element list.
+ * @param fileID The fileID of the downloaded file. If not provided, a timestamp is used instead.
  */
-void pqWindowImage::downloadFromVLKB(std::string URL)
+void pqWindowImage::downloadFromVLKB(std::string URL, std::string fileID)
 {
+    if (fileID == "")
+    {
+        auto val = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        fileID = std::ctime(&val);
+    }
+
+    //TODO: Set fileID property on the server side.
     if (auto prop = vlkbManagerProxy->GetProperty("DownloadFile"))
     {
         vtkSMPropertyHelper(prop).Set(URL.c_str());
@@ -461,14 +487,20 @@ void pqWindowImage::downloadFromVLKB(std::string URL)
         throwError("vlkbManagerProxy not instantiated!", "Investigate allocation of the proxy!");
 }
 
-void pqWindowImage::checkDownloads(std::string URL)
+/**
+ * @brief pqWindowImage::checkDownloads
+ * This function interacts with the VLKBproxy on the the server to check on the status
+ * of a file downloaded from the VLKB.
+ * @param fileID The ID
+ */
+void pqWindowImage::checkDownloads(std::string fileID)
 {
     if (vlkbManagerProxy)
     {
         vtkClientServerStream stream;
         stream << vtkClientServerStream::Invoke
                << VTKOBJECT(vlkbManagerProxy)
-               << "GetFileStatus" << URL.c_str()
+               << "GetFileStatus" << fileID.c_str()
                << vtkClientServerStream::End;
 
         vtkSMSession* session = vlkbManagerProxy->GetSession();

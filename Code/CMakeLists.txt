@@ -93,7 +93,6 @@ set(sources
         src/pqmeminspector.cpp
         src/pqwindowcube.cpp
         src/pqwindowimage.cpp
-        src/pvdownloadmanager.cpp
         src/sed.cpp
         src/sednode.cpp
         src/sessionloader.cpp
@@ -151,7 +150,6 @@ set(headers
         src/pqmeminspector.h
         src/pqwindowcube.h
         src/pqwindowimage.h
-        src/pvdownloadmanager.h
         src/sed.h
         src/sednode.h
         src/sessionloader.h
