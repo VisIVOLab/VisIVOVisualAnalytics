@@ -495,6 +495,8 @@ void pqWindowImage::downloadFromVLKB(std::string URL, std::string fileID)
  */
 void pqWindowImage::checkDownloads(std::string fileID)
 {
+    //See https://paraview.paraview.narkive.com/TapLnQMc/invoke-remote-procedure-from-proxy-with-argument-and-return-value for an 
+    //example of how to call a function on the server that returns a value to the client.
     if (vlkbManagerProxy)
     {
         vtkClientServerStream stream;
