@@ -3,9 +3,13 @@
 #include "ui_pqwindowcube.h"
 
 #include "interactors/vtkinteractorstyleimagecustom.h"
+
+#include "errorMessage.h"
+
 #include "vtkNamedColors.h"
 #include "vtkPolyDataMapper.h"
 #include "vtkProperty.h"
+
 #include "vtklegendscaleactor.h"
 
 #include <pqActiveObjects.h>
@@ -67,6 +71,11 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
     opacityGroup->addAction(ui->action75);
     opacityGroup->addAction(ui->action100);
 
+    // View menu show action group
+    auto viewGroup = new QActionGroup(this);
+    viewGroup->addAction(ui->actionView_Slice);
+    viewGroup->addAction(ui->actionView_Moment_Map);
+
     logScaleActive = false;
 
     auto scalingGroup = new QActionGroup(this);
@@ -114,6 +123,9 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
     // Load Reactions
     CubeSource = pqLoadDataReaction::loadData({ filepath });
     SliceSource = pqLoadDataReaction::loadData({ filepath });
+
+    MomentMapSource = pqLoadDataReaction::loadData({ filepath });
+
     fullSrc = NULL;
 
     // Handle Subset selection
@@ -140,20 +152,36 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
 
     // Show slice and set default LUT
     showSlice();
+    loadMomentMap();
     setSliceDatacube(1);
     changeColorMap("Grayscale");
     setLogScale(false);
     vtkSMPVRepresentationProxy::SetScalarBarVisibility(sliceProxy, viewSlice->getProxy(), true);
+    vtkSMPVRepresentationProxy::SetScalarBarVisibility(momentProxy, viewMomentMap->getProxy(),
+                                                       true);
 
     // Set up interactor to show pixel coordinates in the status bar
     pixCoordInteractorStyle->SetCoordsCallback(
             [this](const std::string &str) { showStatusBarMessage(str); });
+
+    vtkNew<vtkInteractorStyleImageCustom> interactorStyle;
+    interactorStyle->SetCoordsCallback(
+            [this](const std::string &str) { showStatusBarMessage(str); });
+    interactorStyle->SetLayerFitsReaderFunc(fitsHeaderPath.toStdString());
+    interactorStyle->SetPixelZCompFunc([this]() { return currentSlice; });
+    viewSlice->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(
+            interactorStyle);
+    viewMomentMap->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(
+            interactorStyle);
+
     pixCoordInteractorStyle->SetLayerFitsReaderFunc(fitsHeaderPath.toStdString());
     pixCoordInteractorStyle->SetPixelZCompFunc([this]() { return currentSlice; });
 
     // Set up interactor for drawing PV slice line
-    drawPVLineInteractorStyle->setLineValsCallback([this](float x1, float y1, float x2, float y2){sendLineEndPoints(std::make_pair(x1, y1), std::make_pair(x2, y2));});
-    drawPVLineInteractorStyle->setLineAbortCallback([this](){endDrawLine();});
+    drawPVLineInteractorStyle->setLineValsCallback([this](float x1, float y1, float x2, float y2) {
+        sendLineEndPoints(std::make_pair(x1, y1), std::make_pair(x2, y2));
+    });
+    drawPVLineInteractorStyle->setLineAbortCallback([this]() { endDrawLine(); });
 
     // Set initial interactor
     viewSlice->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(
@@ -161,22 +189,28 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
 
     viewSlice->resetDisplay();
     viewCube->resetDisplay();
+    viewMomentMap->resetDisplay();
     viewSlice->render();
     viewCube->render();
+    viewMomentMap->render();
+
+    setMomentMapVisible(false);
 }
 
 pqWindowCube::~pqWindowCube()
 {
     builder->destroy(CubeSource);
     builder->destroy(SliceSource);
-    if (this->fullSrc != NULL)
-    {
+    builder->destroy(MomentMapSource);
+
+    if (this->fullSrc != NULL) {
         builder->destroy(fullSrc);
         this->fullSrc = NULL;
     }
     builder->destroySources(server);
     this->CubeSource = NULL;
     this->SliceSource = NULL;
+    this->MomentMapSource = NULL;
     delete ui;
 }
 
@@ -312,8 +346,15 @@ void pqWindowCube::createViews()
             builder->createView(pqRenderView::renderViewType(), server));
     viewSlice->widget()->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
+    viewMomentMap = qobject_cast<pqRenderView *>(
+            builder->createView(pqRenderView::renderViewType(), server));
+    viewMomentMap->widget()->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
     ui->PVLayout->addWidget(viewCube->widget());
     ui->PVLayout->addWidget(viewSlice->widget());
+    ui->PVLayout->addWidget(viewMomentMap->widget());
+    viewSlice->widget()->setVisible(true);
+    viewMomentMap->widget()->setVisible(false);
 }
 
 void pqWindowCube::showOutline()
@@ -341,6 +382,13 @@ void pqWindowCube::showLegendScaleActors()
     auto rwSlice = viewSlice->getViewProxy()->GetRenderWindow()->GetRenderers();
     rwSlice->GetFirstRenderer()->AddActor(legendActorSlice);
     vtkRenderer::SafeDownCast(rwSlice->GetItemAsObject(1))->AddActor(legendActorSlice);
+
+    auto legendActorMoment = vtkSmartPointer<vtkLegendScaleActor>::New();
+    legendActorMoment->LegendVisibilityOff();
+    legendActorMoment->setFitsHeader(fitsHeaderPath.toStdString());
+    auto rwMoment = viewMomentMap->getViewProxy()->GetRenderWindow()->GetRenderers();
+    rwMoment->GetFirstRenderer()->AddActor(legendActorMoment);
+    vtkRenderer::SafeDownCast(rwMoment->GetItemAsObject(1))->AddActor(legendActorMoment);
 }
 
 void pqWindowCube::showSlice()
@@ -353,7 +401,6 @@ void pqWindowCube::showSlice()
     vtkSMPVRepresentationProxy::SetScalarColoring(cubeSliceProxy, "FITSImage",
                                                   vtkDataObject::POINT);
     cubeSliceProxy->UpdateVTKObjects();
-
 
     // vtkNew<vtkSMTransferFunctionManager> mgr;
     // lutProxy = vtkSMTransferFunctionProxy::SafeDownCast(
@@ -384,6 +431,68 @@ void pqWindowCube::showSlice()
     ui->sliceSlider->setRange(1, bounds[5] + 1);
     ui->sliceSpinBox->setRange(1, bounds[5] + 1);
     this->zDepth = bounds[5] + 2;
+}
+
+/**
+ * @brief pqWindowCube::loadMomentMap
+ * This function calls the reader on the server to load the given file
+ * with the ReadAsType set to Moment Map.
+ */
+void pqWindowCube::loadMomentMap()
+{
+
+    // Set the appropriate properties
+    auto momentPropProxy = this->MomentMapSource->getProxy();
+    vtkSMPropertyHelper(momentPropProxy, "ReadAsType").Set(1);
+    vtkSMPropertyHelper(momentPropProxy, "MomentOrder").Set(0);
+    momentPropProxy->UpdateVTKObjects();
+    MomentMapSource->updatePipeline();
+
+    // Link the data to the correct view and create a colour mapp
+    momentProxy = builder->createDataRepresentation(this->MomentMapSource->getOutputPort(0),
+                                                    viewMomentMap)
+                          ->getProxy();
+    vtkSMPropertyHelper(momentProxy, "Representation").Set("Slice");
+    std::string name = "FITSImage" + std::to_string(momentOrder);
+    vtkSMPVRepresentationProxy::SetScalarColoring(momentProxy, name.c_str(), vtkDataObject::POINT);
+
+    vtkNew<vtkSMTransferFunctionManager> mgr;
+    momentLUTProxy = vtkSMTransferFunctionProxy::SafeDownCast(
+            mgr->GetColorTransferFunction(name.c_str(), momentProxy->GetSessionProxyManager()));
+
+    viewMomentMap->resetDisplay();
+    viewMomentMap->render();
+}
+
+/**
+ * @brief pqWindowCube::showMomentMap
+ * This function is used to switch between the different moment map orders.
+ * @param order The order to switch to.
+ */
+void pqWindowCube::showMomentMap(int order)
+{
+    // Change the properties on the server to the new values.
+    momentOrder = order;
+    auto momentPropProxy = this->MomentMapSource->getProxy();
+    vtkSMPropertyHelper(momentPropProxy, "ReadAsType").Set(1);
+    vtkSMPropertyHelper(momentPropProxy, "MomentOrder").Set(order);
+    momentPropProxy->UpdateVTKObjects();
+    MomentMapSource->updatePipeline();
+    this->momentProxy->UpdateVTKObjects();
+
+    // Create a new colour map to match the values of the new moment map order.
+    vtkNew<vtkSMTransferFunctionManager> mgr;
+    std::string name = "FITSImage" + std::to_string(momentOrder);
+    momentLUTProxy = vtkSMTransferFunctionProxy::SafeDownCast(
+            mgr->GetColorTransferFunction(name.c_str(), momentProxy->GetSessionProxyManager()));
+
+    vtkSMPVRepresentationProxy::SetScalarColoring(momentProxy, name.c_str(), vtkDataObject::POINT);
+    changeColorMap(currentColorMap);
+
+    // Set the moment map to be visible if it wasn't before.
+    setMomentMapVisible(true);
+    viewMomentMap->resetDisplay();
+    viewMomentMap->render();
 }
 
 void pqWindowCube::showStatusBarMessage(const std::string &msg)
@@ -417,6 +526,50 @@ void pqWindowCube::updateVelocityText()
         velocity /= 1000;
     }
     ui->velocityText->setText(QString::number(velocity).append(" Km/s"));
+}
+
+/**
+ * @brief pqWindowCube::updateMinMax
+ * This function updates the min/max values on the UI (above the 2D view).
+ * @param moment The moment order currently active (ignored if a moment map is not displayed).
+ */
+void pqWindowCube::updateMinMax(bool moment)
+{
+    vtkPVDataInformation *dataInformation;
+    vtkPVArrayInformation *fitsImageInfo;
+    std::string name = "FITSImage" + std::to_string(momentOrder);
+    // Check if a moment map is displayed
+    if (moment) {
+        dataInformation = this->MomentMapSource->getOutputPort(0)->getDataInformation();
+        fitsImageInfo =
+                dataInformation->GetPointDataInformation()->GetArrayInformation(name.c_str());
+    }
+    // Otherwise, use the information from the slice view.
+    else {
+        dataInformation = this->SliceSource->getOutputPort(0)->getDataInformation();
+        fitsImageInfo =
+                dataInformation->GetPointDataInformation()->GetArrayInformation("FITSImage");
+    }
+
+    if (!fitsImageInfo) {
+        std::cerr << "Error! Could not acquire fitsImageInfo from array name \"" << name << "\"!"
+                  << std::endl;
+        std::stringstream eString, eInfo;
+        eString << "Error when trying to extract information from array name \"" << name << "\"!";
+        eInfo << "Please file a bug report on the repository with details of what you were "
+                 "attempting to do.";
+        throwError(eString.str().c_str(), eInfo.str().c_str());
+        return;
+    }
+
+    double dataRange[2];
+    fitsImageInfo->GetComponentRange(0, dataRange);
+    ui->minSliceText->setText(QString::number(dataRange[0], 'f', 4));
+    ui->maxSliceText->setText(QString::number(dataRange[1], 'f', 4));
+    if (moment) {
+        momentLUTProxy->RescaleTransferFunction(dataRange, true);
+        momentLUTProxy->UpdateVTKObjects();
+    }
 }
 
 void pqWindowCube::setThreshold(double threshold)
@@ -474,6 +627,23 @@ void pqWindowCube::removeContours()
     }
 }
 
+/**
+ * @brief pqWindowCube::setMomentMapVisible
+ * This function switches the 3D display between the view of the slice and the moment map.
+ * @param val True if a moment map should be displayed, false if the slice view should be displayed.
+ */
+void pqWindowCube::setMomentMapVisible(bool val)
+{
+    viewMomentMap->widget()->setVisible(val);
+    viewSlice->widget()->setVisible(!val);
+    ui->sliceGroupBox->setTitle(val ? "Moment" : "Slice");
+    updateMinMax(val);
+    viewSlice->resetDisplay();
+    viewSlice->render();
+    viewMomentMap->resetDisplay();
+    viewMomentMap->render();
+}
+
 void pqWindowCube::sendLineEndPoints(std::pair<float, float> start, std::pair<float, float> end)
 {
     QMessageBox msgBox;
@@ -484,24 +654,26 @@ void pqWindowCube::sendLineEndPoints(std::pair<float, float> start, std::pair<fl
     msgBox.setDefaultButton(QMessageBox::Yes);
     msgBox.setEscapeButton(QMessageBox::Cancel);
     int ret = msgBox.exec();
-    switch (ret){
-        case QMessageBox::Yes:
-            break;
-        case QMessageBox::Cancel:
-            endDrawLine();
-            return;
-            break;
-        default:
-            break;
+    switch (ret) {
+    case QMessageBox::Yes:
+        break;
+    case QMessageBox::Cancel:
+        endDrawLine();
+        return;
+        break;
+    default:
+        break;
     }
 
-    bool invalid = start.first < bounds[0] || start.first > bounds[1] || start.second < bounds[2] || start.second > bounds[3];
-    invalid = invalid || end.first < bounds[0] || end.first > bounds[1] || end.second < bounds[2] || end.second > bounds[3];
-    if (invalid){
+    bool invalid = start.first < bounds[0] || start.first > bounds[1] || start.second < bounds[2]
+            || start.second > bounds[3];
+    invalid = invalid || end.first < bounds[0] || end.first > bounds[1] || end.second < bounds[2]
+            || end.second > bounds[3];
+    if (invalid) {
         std::stringstream eString, eInfo;
         eString << "Error: trying to draw a PV slice beyond the edges of the available data!";
         eInfo << "Draw a line only on the slice.";
-//        throwError(eString.str().c_str(), eInfo.str().c_str());
+        //        throwError(eString.str().c_str(), eInfo.str().c_str());
         return;
     }
     int x1, y1, x2, y2;
@@ -536,47 +708,44 @@ void pqWindowCube::showPVSlice(std::pair<int, int> start, std::pair<int, int> en
     CubeSource->getProxy()->UpdatePropertyInformation();
     int sF;
     vtkSMPropertyHelper(CubeSource->getProxy(), "ScaleFactorInfo").Get(&sF);
-    if (sF != 1)
-    {
+    if (sF != 1) {
         if (fullSrc == NULL)
             fullSrc = pqLoadDataReaction::loadData({ cubeFilePath });
-//        CubeSubset sub;
-//        sub.AutoScale = false;
-//        sub.ScaleFactor = 1;
-//        int x1, y1, z1, z2;
-//        if (cubeSubset.ReadSubExtent){
-//            x1 = cubeSubset.SubExtent[0];
-//            y1 = cubeSubset.SubExtent[2];
-//            z1 = cubeSubset.SubExtent[4];
-//            z2 = cubeSubset.SubExtent[5];
-//        }
-//        else{
-//            x1 = bounds[0];
-//            y1 = bounds[2];
-//            z1 = bounds[4];
-//            z2 = bounds[5];
-//        }
+        //        CubeSubset sub;
+        //        sub.AutoScale = false;
+        //        sub.ScaleFactor = 1;
+        //        int x1, y1, z1, z2;
+        //        if (cubeSubset.ReadSubExtent){
+        //            x1 = cubeSubset.SubExtent[0];
+        //            y1 = cubeSubset.SubExtent[2];
+        //            z1 = cubeSubset.SubExtent[4];
+        //            z2 = cubeSubset.SubExtent[5];
+        //        }
+        //        else{
+        //            x1 = bounds[0];
+        //            y1 = bounds[2];
+        //            z1 = bounds[4];
+        //            z2 = bounds[5];
+        //        }
 
-//        std::pair<int, int> botLeft = std::make_pair(std::min(start.first, end.first), std::min(start.second, end.second));
-//        std::pair<int, int> topRight = std::make_pair(std::max(start.first, end.first), std::max(start.second, end.second));
-//        sub.SubExtent[0] = x1 + botLeft.first;
-//        sub.SubExtent[1] = x1 + topRight.first;
-//        sub.SubExtent[2] = y1 + botLeft.second;
-//        sub.SubExtent[3] = y1 + topRight.second;
-//        sub.SubExtent[4] = z1;
-//        sub.SubExtent[5] = z2;
+        //        std::pair<int, int> botLeft = std::make_pair(std::min(start.first, end.first),
+        //        std::min(start.second, end.second)); std::pair<int, int> topRight =
+        //        std::make_pair(std::max(start.first, end.first), std::max(start.second,
+        //        end.second)); sub.SubExtent[0] = x1 + botLeft.first; sub.SubExtent[1] = x1 +
+        //        topRight.first; sub.SubExtent[2] = y1 + botLeft.second; sub.SubExtent[3] = y1 +
+        //        topRight.second; sub.SubExtent[4] = z1; sub.SubExtent[5] = z2;
 
-//        auto sourceProxy = fullSrc->getProxy();
-//        vtkSMPropertyHelper(sourceProxy, "ReadSubExtent").Set(true);
-//        vtkSMPropertyHelper(sourceProxy, "SubExtent").Set(sub.SubExtent, 6);
-//        vtkSMPropertyHelper(sourceProxy, "AutoScale").Set(sub.AutoScale);
-//        vtkSMPropertyHelper(sourceProxy, "CubeMaxSize").Set(sub.CubeMaxSize);
-//        sourceProxy->UpdateVTKObjects();
-//        start = std::make_pair(start.first - botLeft.first, start.second - botLeft.second);
-//        end = std::make_pair(end.first - botLeft.first, end.second - botLeft.second);
+        //        auto sourceProxy = fullSrc->getProxy();
+        //        vtkSMPropertyHelper(sourceProxy, "ReadSubExtent").Set(true);
+        //        vtkSMPropertyHelper(sourceProxy, "SubExtent").Set(sub.SubExtent, 6);
+        //        vtkSMPropertyHelper(sourceProxy, "AutoScale").Set(sub.AutoScale);
+        //        vtkSMPropertyHelper(sourceProxy, "CubeMaxSize").Set(sub.CubeMaxSize);
+        //        sourceProxy->UpdateVTKObjects();
+        //        start = std::make_pair(start.first - botLeft.first, start.second -
+        //        botLeft.second); end = std::make_pair(end.first - botLeft.first, end.second -
+        //        botLeft.second);
         pvSlice = new pqPVWindow(this->server, fullSrc, start, end, this);
-    }
-    else
+    } else
         pvSlice = new pqPVWindow(this->server, this->CubeSource, start, end, this);
     connect(pvSlice, &pqPVWindow::closed, this, &pqWindowCube::endPVSlice);
     pvSlice->setAttribute(Qt::WA_Hover);
@@ -753,27 +922,40 @@ void pqWindowCube::setLogScale(bool logScale)
         logScaleActive = true;
         vtkSMTransferFunctionProxy::RescaleTransferFunction(lutProxy, range);
         vtkSMPropertyHelper(lutProxy, "UseLogScale").Set(1);
+
+        vtkSMTransferFunctionProxy::GetRange(momentLUTProxy, range);
+        vtkSMCoreUtilities::AdjustRangeForLog(range);
+        vtkSMTransferFunctionProxy::RescaleTransferFunction(momentLUTProxy, range);
+        vtkSMPropertyHelper(momentLUTProxy, "UseLogScale").Set(1);
+
         changeColorMap(currentColorMap);
     } else {
         logScaleActive = false;
         vtkSMTransferFunctionProxy::RescaleTransferFunctionToDataRange(lutProxy);
         vtkSMPropertyHelper(lutProxy, "UseLogScale").Set(0);
+        vtkSMTransferFunctionProxy::RescaleTransferFunctionToDataRange(momentLUTProxy);
+        vtkSMPropertyHelper(momentLUTProxy, "UseLogScale").Set(0);
         changeColorMap(currentColorMap);
     }
     lutProxy->UpdateVTKObjects();
+    momentLUTProxy->UpdateVTKObjects();
     sliceProxy->UpdateVTKObjects();
     cubeSliceProxy->UpdateVTKObjects();
+    momentProxy->UpdateVTKObjects();
 
     viewSlice->resetDisplay();
 
+    viewMomentMap->resetDisplay();
     viewSlice->render();
+    viewMomentMap->render();
     viewCube->render();
 }
 
 void pqWindowCube::changeColorMap(const QString &name)
 {
-    if (vtkSMProperty *lutProperty = sliceProxy->GetProperty("LookupTable")) {
-
+    vtkSMProperty *lutProperty = sliceProxy->GetProperty("LookupTable");
+    vtkSMProperty *momentLUTProperty = momentProxy->GetProperty("LookupTable");
+    if (lutProperty && momentLUTProperty) {
         currentColorMap = name;
         auto presets = vtkSMTransferFunctionPresets::GetInstance();
         lutProxy->ApplyPreset(presets->GetFirstPresetWithName(name.toStdString().c_str()));
@@ -781,12 +963,21 @@ void pqWindowCube::changeColorMap(const QString &name)
         lutProxy->UpdateVTKObjects();
         vtkSMPVRepresentationProxy::RescaleTransferFunctionToDataRange(sliceProxy, false, false);
 
+        momentLUTProxy->ApplyPreset(presets->GetFirstPresetWithName(name.toStdString().c_str()));
+        vtkSMPropertyHelper(momentLUTProperty).Set(momentLUTProxy);
+        momentLUTProxy->UpdateVTKObjects();
+        vtkSMPVRepresentationProxy::RescaleTransferFunctionToDataRange(sliceProxy, false, false);
+
         sliceProxy->UpdateVTKObjects();
+        momentProxy->UpdateVTKObjects();
 
         viewSlice->resetDisplay();
         viewSlice->render();
+        viewMomentMap->resetDisplay();
+        viewMomentMap->render();
         viewCube->render();
-    }
+    } else
+        std::cerr << "Error with setting colour map!" << std::endl;
 }
 
 void pqWindowCube::on_actionFront_triggered()
@@ -924,9 +1115,49 @@ void pqWindowCube::setVolumeRenderingOpacity(double opacity)
     viewCube->render();
 }
 
+void pqWindowCube::on_actionView_Slice_triggered()
+{
+    setMomentMapVisible(false);
+}
+
+void pqWindowCube::on_actionView_Moment_Map_triggered()
+{
+    setMomentMapVisible(true);
+}
+
+void pqWindowCube::on_actionMomentOrder0_triggered()
+{
+    showMomentMap(0);
+}
+
+void pqWindowCube::on_actionMomentOrder1_triggered()
+{
+    showMomentMap(1);
+}
+
+void pqWindowCube::on_actionMomentOrder2_triggered()
+{
+    showMomentMap(2);
+}
+
+void pqWindowCube::on_actionMomentOrder6_triggered()
+{
+    showMomentMap(6);
+}
+
+void pqWindowCube::on_actionMomentOrder8_triggered()
+{
+    showMomentMap(8);
+}
+
+void pqWindowCube::on_actionMomentOrder10_triggered()
+{
+    showMomentMap(10);
+}
+
 void pqWindowCube::on_actionDraw_PV_line_triggered()
 {
-    if (!drawing){
+    if (!drawing) {
         viewSlice->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(
                 drawPVLineInteractorStyle);
         drawing = true;
@@ -934,8 +1165,7 @@ void pqWindowCube::on_actionDraw_PV_line_triggered()
         auto viewProxy = viewSlice->getProxy();
         vtkSMPropertyHelper(viewProxy, "ShowAnnotation").Set(0);
         viewProxy->UpdateVTKObjects();
-    }
-    else
+    } else
         endDrawLine();
 }
 
@@ -943,4 +1173,3 @@ void pqWindowCube::on_actionGen_test_PV_slice_triggered()
 {
     showPVSlice();
 }
-

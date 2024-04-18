@@ -27,9 +27,9 @@
 #include "pqObjectBuilder.h"
 #include "pqServerResource.h"
 
+#include "vtkSMPluginManager.h"
 #include "vtkSMProxyManager.h"
 #include "vtkSMReaderFactory.h"
-#include "vtkSMPluginManager.h"
 
 WebProcess::WebProcess(QObject *parent) : QObject(parent) { }
 
@@ -38,8 +38,7 @@ void WebProcess::jsCall(const QString &point, const QString &radius)
     emit processJavascript(point, radius);
 }
 
-const QString ViaLactea::ONLINE_TILE_PATH =
-        "https://vlkb.neanias.eu/PanoramicView-v1.1.0/openlayers.html";
+const QString ViaLactea::ONLINE_TILE_PATH = "http://vlkb.ia2.inaf.it/panoramicview/openlayers.html";
 
 const QString ViaLactea::VLKB_URL_IA2 = "https://vlkb.ia2.inaf.it:8443/vlkb/datasets";
 const QString ViaLactea::TAP_URL_IA2 = "http://ia2-vialactea.oats.inaf.it:8080/vlkb";
@@ -800,18 +799,14 @@ void ViaLactea::on_loadTableButton_clicked()
 void ViaLactea::on_actionInspectMemory_triggered()
 {
     if (!server) {
-        QMessageBox::warning(
-                this, "Not connected",
-                "Server not connected. Check the connection url in the settings.");
+        QMessageBox::warning(this, "Not connected",
+                             "Server not connected. Check the connection url in the settings.");
         return;
     }
-    if (memInspectWin != nullptr)
-    {
+    if (memInspectWin != nullptr) {
         memInspectWin->show();
         memInspectWin->raise();
-    }
-    else
-    {
+    } else {
         memInspectWin = new pqMemInspector(this);
         memInspectWin->setAttribute(Qt::WA_Hover);
         memInspectWin->show();
