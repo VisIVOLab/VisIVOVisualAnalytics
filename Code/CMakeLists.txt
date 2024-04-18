@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.8)
 
-project(ViaLacteaVisualAnalytics LANGUAGES CXX C VERSION 1.6.0)
+project(VisIVOVisualAnalytics LANGUAGES CXX C VERSION 0.1.0)
 
 # Set a default build type if none was specified
 set(default_build_type "Release")
@@ -100,6 +100,7 @@ set(sources
         src/plotwindow.cpp
         src/pointspipe.cpp
         src/pqmeminspector.cpp
+        src/pqPVWindow.cpp
         src/pqwindowcube.cpp
         src/pqwindowimage.cpp
         src/sed.cpp
@@ -142,6 +143,7 @@ set(sources
         src/vtkwindow_new.cpp
         src/xmlparser.cpp
         src/interactors/vtkinteractorstyleimagecustom.cpp
+        src/interactors/vtkdrawlineinteractorstyleimage.cpp
         )
 
 set(headers
@@ -179,6 +181,7 @@ set(headers
         src/plotwindow.h
         src/pointspipe.h
         src/pqmeminspector.h
+        src/pqPVWindow.h
         src/pqwindowcube.h
         src/pqwindowimage.h
         src/sed.h
@@ -222,6 +225,7 @@ set(headers
         src/vtkwindow_new.h
         src/xmlparser.h
         src/interactors/vtkinteractorstyleimagecustom.h
+        src/interactors/vtkdrawlineinteractorstyleimage.h
         )
 
 set(ui_files
@@ -238,6 +242,7 @@ set(ui_files
         ui/operationqueue.ui
         ui/plotwindow.ui
         ui/pqmeminspector.ui
+        ui/pqPVWindow.ui
         ui/pqwindowcube.ui
         ui/pqwindowimage.ui
         ui/sedfitgrid_thick.ui
@@ -271,11 +276,11 @@ set_source_files_properties(${app_icon_macos} PROPERTIES
 
 set(resources visivo.qrc ${ICON_RESOURCE})
 
-add_executable(ViaLacteaVisualAnalytics ${ui_files} ${resources} ${sources} ${headers})
+add_executable(VisIVOVisualAnalytics ${ui_files} ${resources} ${sources} ${headers})
 
-target_include_directories(ViaLacteaVisualAnalytics PRIVATE ${Boost_INCLUDE_DIRS})
+target_include_directories(VisIVOVisualAnalytics PRIVATE ${Boost_INCLUDE_DIRS})
 
-target_link_libraries(ViaLacteaVisualAnalytics PRIVATE
+target_link_libraries(VisIVOVisualAnalytics PRIVATE
         ${qt_modules}
         ${VTK_LIBRARIES}
         ParaView::pqApplicationComponents
@@ -283,7 +288,7 @@ target_link_libraries(ViaLacteaVisualAnalytics PRIVATE
         CFITSIO::CFITSIO
 )
 
-set_target_properties(ViaLacteaVisualAnalytics PROPERTIES
+set_target_properties(VisIVOVisualAnalytics PROPERTIES
     MACOSX_BUNDLE_GUI_IDENTIFIER it.inaf.oact.visivo
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
     MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}
