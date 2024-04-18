@@ -61,11 +61,19 @@ private slots:
 
     void generateVolumeRendering();
 
+    void on_actionView_Slice_triggered();
+    void on_actionView_Moment_Map_triggered();
+    void on_actionMomentOrder0_triggered();
+    void on_actionMomentOrder1_triggered();
+    void on_actionMomentOrder2_triggered();
+    void on_actionMomentOrder6_triggered();
+    void on_actionMomentOrder8_triggered();
+    void on_actionMomentOrder10_triggered();
+
     void on_actionDraw_PV_line_triggered();
-
     void on_actionGen_test_PV_slice_triggered();
-
     void endPVSlice();
+
 
 private:
     Ui::pqWindowCube *ui;
@@ -74,6 +82,7 @@ private:
     QString cubeFilePath;
     pqPipelineSource *CubeSource;
     pqPipelineSource *SliceSource;
+    pqPipelineSource *MomentMapSource;
     pqPipelineSource* fullSrc = NULL;
 
     pqPVWindow* pvSlice;
@@ -85,9 +94,12 @@ private:
     pqObjectBuilder *builder;
     pqRenderView *viewCube;
     pqRenderView *viewSlice;
+    pqRenderView *viewMomentMap;
     vtkSMProxy *cubeSliceProxy;
     vtkSMProxy *sliceProxy;
+    vtkSMProxy *momentProxy;
     vtkSMTransferFunctionProxy *lutProxy;
+    vtkSMTransferFunctionProxy *momentLUTProxy;
     pqPipelineSource *extractGrid;
     QPointer<pqPipelineSource> contourFilter2D;
     pqPipelineSource *contourFilter;
@@ -118,17 +130,26 @@ private:
     void showOutline();
     void showLegendScaleActors();
     void showSlice();
+    void loadMomentMap();
+    void showMomentMap(int order = 0);
     void changeColorMap(const QString &name);
     void setLogScale(bool logScale);
 
     void setSliceDatacube(int value);
     void updateVelocityText();
+    void updateMinMax(bool moment);
 
     void setThreshold(double threshold);
     void setVolumeRenderingOpacity(double opacity);
 
     void showContours();
     void removeContours();
+
+
+    void setMomentMapVisible(bool val = false);
+
+    bool loadChange = false;
+    int momentOrder = 0;
 
     int zDepth;
     void sendLineEndPoints(std::pair<float, float> start, std::pair<float, float> end);

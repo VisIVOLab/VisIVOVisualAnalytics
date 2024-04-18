@@ -51,9 +51,9 @@
 #include "vtkImageMapToWindowLevelColors.h"
 #include "vtkImageProperty.h"
 #include "vtkImageShiftScale.h"
-#include "vtkImageSliceCollection.h"
+// #include "vtkImageSliceCollection.h"
 #include "vtkImageSliceMapper.h"
-#include "vtkImageStack.h"
+// #include "vtkImageStack.h"
 #include "vtkInteractorStyleDrawPolygon.h"
 #include "vtkInteractorStyleImage.h"
 #include "vtkInteractorStyleRubberBand2D.h"
@@ -737,9 +737,9 @@ public:
         if (!isSlice)
             pixel = static_cast<float *>(
                                          fits->GetOutput()->GetScalarPointer(world_coord[0], world_coord[1], 0));
-        else
-            pixel = static_cast<float *>(fits->GetOutput()->GetScalarPointer(
-                                                                             world_coord[0], world_coord[1], vtkwin->viewer->GetSlice()));
+        // else
+        //     pixel = static_cast<float *>(fits->GetOutput()->GetScalarPointer(
+        //                                                                      world_coord[0], world_coord[1], vtkwin->viewer->GetSlice()));
         
         statusBarText = "<value> ";
         if (pixel != NULL)
@@ -1239,8 +1239,8 @@ vtkwindow_new::vtkwindow_new(QWidget *parent, vtkSmartPointer<vtkFitsReader> vis
             imageSliceBase->GetProperty()->SetLayerNumber(0);
             
             // Stack
-            imageStack = vtkSmartPointer<vtkImageStack>::New();
-            imageStack->AddImage(imageSliceBase);
+            // imageStack = vtkSmartPointer<vtkImageStack>::New();
+            // imageStack->AddImage(imageSliceBase);
             
             vtkSmartPointer<vtkLegendScaleActor> legendScaleActorImage =
             vtkSmartPointer<vtkLegendScaleActor>::New();
@@ -1248,7 +1248,7 @@ vtkwindow_new::vtkwindow_new(QWidget *parent, vtkSmartPointer<vtkFitsReader> vis
             legendScaleActorImage->setFitsFile(myfits);
             
             m_Ren1->AddActor(legendScaleActorImage);
-            m_Ren1->AddViewProp(imageStack);
+            // m_Ren1->AddViewProp(imageStack);
             m_Ren1->ResetCamera();
             
             addLayer(imageObject);
@@ -1407,14 +1407,14 @@ vtkwindow_new::vtkwindow_new(QWidget *parent, vtkSmartPointer<vtkFitsReader> vis
             
             setVtkInteractorStyleImageContour();
             
-            viewer = vtkSmartPointer<vtkResliceImageViewer>::New();
-            viewer->SetInputData(vis->GetOutput());
-            viewer->GetWindowLevel()->SetOutputFormatToRGB();
-            viewer->GetWindowLevel()->SetLookupTable(lutSlice);
-            viewer->GetImageActor()->InterpolateOff();
-            viewer->SetRenderWindow(renwin2);
-            viewer->SetRenderer(m_Ren2);
-            viewer->GetRenderer()->ResetCamera();
+            // viewer = vtkSmartPointer<vtkResliceImageViewer>::New();
+            // viewer->SetInputData(vis->GetOutput());
+            // viewer->GetWindowLevel()->SetOutputFormatToRGB();
+            // viewer->GetWindowLevel()->SetLookupTable(lutSlice);
+            // viewer->GetImageActor()->InterpolateOff();
+            // viewer->SetRenderWindow(renwin2);
+            // viewer->SetRenderer(m_Ren2);
+            // viewer->GetRenderer()->ResetCamera();
             
             currentContourActor = vtkSmartPointer<vtkPVLODActor>::New();
             currentContourActorForMainWindow = vtkSmartPointer<vtkPVLODActor>::New();
@@ -1511,37 +1511,37 @@ vtkwindow_new::vtkwindow_new(QWidget *parent, vtkSmartPointer<vtkFitsReader> vis
             
             resultScale->Update();
             
-            // commentato qui, provo reslice
-            imageViewer = vtkSmartPointer<vtkImageViewer2>::New();
-            imageViewer->SetInputData(resultScale->GetOutput());
+            // // commentato qui, provo reslice
+            // imageViewer = vtkSmartPointer<vtkImageViewer2>::New();
+            // imageViewer->SetInputData(resultScale->GetOutput());
             
-            // Set Color level and window
-            imageViewer->SetColorLevel(0.5 * (range[1] + range[0]));
-            imageViewer->SetColorWindow(range[1] - range[0]);
+            // // Set Color level and window
+            // imageViewer->SetColorLevel(0.5 * (range[1] + range[0]));
+            // imageViewer->SetColorWindow(range[1] - range[0]);
             
-            imageViewer->SetupInteractor(ui->qVTK1->renderWindow()->GetInteractor());
-            imageViewer->GetInteractorStyle()->AutoAdjustCameraClippingRangeOn();
+            // imageViewer->SetupInteractor(ui->qVTK1->renderWindow()->GetInteractor());
+            // imageViewer->GetInteractorStyle()->AutoAdjustCameraClippingRangeOn();
             
-            imageViewer->SetRenderer(m_Ren1);
-            imageViewer->SetRenderWindow(rw);
+            // imageViewer->SetRenderer(m_Ren1);
+            // imageViewer->SetRenderWindow(rw);
             
-            imageViewer->GetWindowLevel()->SetLookupTable(lut);
+            // imageViewer->GetWindowLevel()->SetLookupTable(lut);
             
-            viewer = vtkSmartPointer<vtkResliceImageViewer>::New();
-            viewer->SetRenderer(ui->qVTK1->renderWindow()->GetRenderers()->GetFirstRenderer());
-            viewer->SetRenderWindow(ui->qVTK1->renderWindow());
-            viewer->SetupInteractor(ui->qVTK1->renderWindow()->GetInteractor());
-            viewer->SetInputData(vis->GetOutput());
-            viewer->SetSlice(1);
+            // viewer = vtkSmartPointer<vtkResliceImageViewer>::New();
+            // viewer->SetRenderer(ui->qVTK1->renderWindow()->GetRenderers()->GetFirstRenderer());
+            // viewer->SetRenderWindow(ui->qVTK1->renderWindow());
+            // viewer->SetupInteractor(ui->qVTK1->renderWindow()->GetInteractor());
+            // viewer->SetInputData(vis->GetOutput());
+            // viewer->SetSlice(1);
             
             double *pos = m_Ren1->GetActiveCamera()->GetPosition();
             cam_init_pos[0] = pos[0];
             cam_init_pos[1] = pos[1];
             cam_init_pos[2] = pos[2];
             
-            vtkImageActor *imageActor = viewer->GetImageActor();
-            m_Ren1->AddActor(imageActor);
-            m_Ren1->SetBackground(0.21, 0.23, 0.25);
+            // vtkImageActor *imageActor = viewer->GetImageActor();
+            // m_Ren1->AddActor(imageActor);
+            // m_Ren1->SetBackground(0.21, 0.23, 0.25);
             
             update();
             
@@ -2913,7 +2913,7 @@ void vtkwindow_new::slot_clicked(vtkObject *, unsigned long, void *, void *)
     
     vtkSmartPointer<vtkImageActorPointPlacer> pointPlacer =
     vtkSmartPointer<vtkImageActorPointPlacer>::New();
-    pointPlacer->SetImageActor(imageViewer->GetImageActor());
+    // pointPlacer->SetImageActor(imageViewer->GetImageActor());
     
     if (pointPlacer->ValidateWorldPosition(world_coord) == 1) {
         
@@ -3034,8 +3034,8 @@ void vtkwindow_new::changeFitsScale(std::string palette, std::string scale)
     
     // vtkImageSlice::SafeDownCast( imageStack->GetImages()->GetItemAsObject(imgLayerList.at(pos
     // )->getLayerNumber()))->SetMapper(imageSliceMapperLutModified);
-    vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(pos))
-    ->SetMapper(imageSliceMapperLutModified);
+    // vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(pos))
+    // ->SetMapper(imageSliceMapperLutModified);
     // vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(cb))->VisibilityOn();
     
     ui->qVTK1->update();
@@ -3229,10 +3229,10 @@ void vtkwindow_new::setSliceDatacube(int i)
     vtkSmartPointer<vtkLookupTable> lutSlice = vtkSmartPointer<vtkLookupTable>::New();
     lutSlice->SetTableRange(myfits->GetRangeSlice(i)[0], myfits->GetRangeSlice(i)[1]);
     SelectLookTable("Gray", lutSlice);
-    viewer->GetWindowLevel()->SetOutputFormatToRGB();
-    viewer->GetWindowLevel()->SetLookupTable(lutSlice);
-    viewer->GetImageActor()->InterpolateOff();
-    viewer->SetSlice(i);
+    // viewer->GetWindowLevel()->SetOutputFormatToRGB();
+    // viewer->GetWindowLevel()->SetLookupTable(lutSlice);
+    // viewer->GetImageActor()->InterpolateOff();
+    // viewer->SetSlice(i);
     
     if (ui->contourCheckBox->isChecked())
         goContour();
@@ -3241,8 +3241,8 @@ void vtkwindow_new::setSliceDatacube(int i)
     ui->maxSliceLineEdit->setText(QString::number(myfits->GetRangeSlice(i)[1]));
     
     ui->isocontourVtkWin->update();
-    viewer->GetRenderer()->ResetCamera();
-    viewer->Render();
+    // viewer->GetRenderer()->ResetCamera();
+    // viewer->Render();
 }
 
 void vtkwindow_new::changeFitsPalette(std::string palette)
@@ -3253,7 +3253,7 @@ void vtkwindow_new::changeFitsPalette(std::string palette)
     
     SelectLookTable(palette.c_str(), lut);
     
-    imageViewer->GetWindowLevel()->SetLookupTable(lut);
+    // imageViewer->GetWindowLevel()->SetLookupTable(lut);
     
     ui->qVTK1->update();
     ui->qVTK1->renderWindow()->GetInteractor()->Render();
@@ -3687,7 +3687,7 @@ void vtkwindow_new::addTreeChild(QTreeWidgetItem *parent, QString name, QBrush b
 void vtkwindow_new::addImageToList(vtkfitstoolwidgetobject *o)
 {
     imgLayerList.append(o);
-    o->setLayerNumber(imageStack->GetImages()->GetNumberOfItems() - 1);
+    // o->setLayerNumber(imageStack->GetImages()->GetNumberOfItems() - 1);
     
     QString text;
     if ((o->getSurvey() == "") && (o->getSpecies() == "") && (o->getTransition() == "")) {
@@ -3763,14 +3763,14 @@ void vtkwindow_new::addToList(vtkfitstoolwidgetobject *o, bool enabled)
 
 void vtkwindow_new::checkboxImageClicked(int cb, bool status)
 {
-    auto image = vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(cb));
-    if (!image)
+    // auto image = vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(cb));
+    // if (!image)
         return;
     
-    if (status)
-        image->VisibilityOn();
-    else
-        image->VisibilityOff();
+    // if (status)
+    //     image->VisibilityOn();
+    // else
+    //     image->VisibilityOff();
     
     ui->qVTK1->renderWindow()->GetInteractor()->Render();
 }
@@ -4021,9 +4021,9 @@ void vtkwindow_new::addLayerImage(vtkSmartPointer<vtkFitsReader> vis, QString su
     transform->Translate(-bounds[0], -bounds[2], -bounds[4]);
     imageSliceLayer->SetUserTransform(transform);
     
-    imageSliceLayer->GetProperty()->SetLayerNumber(imageStack->GetImages()->GetNumberOfItems());
+    // imageSliceLayer->GetProperty()->SetLayerNumber(imageStack->GetImages()->GetNumberOfItems());
     
-    imageStack->AddImage(imageSliceLayer);
+    // imageStack->AddImage(imageSliceLayer);
     
     addLayer(img);
     
@@ -4184,7 +4184,7 @@ void vtkwindow_new::goContour()
     removeContour();
     
     vtkSmartPointer<vtkPlane> plane = vtkSmartPointer<vtkPlane>::New();
-    plane->SetOrigin(0, 0, viewer->GetSlice());
+    // plane->SetOrigin(0, 0, viewer->GetSlice());
     plane->SetNormal(0, 0, 1);
     
     vtkSmartPointer<vtkCutter> cutter = vtkSmartPointer<vtkCutter>::New();
@@ -4246,7 +4246,7 @@ void vtkwindow_new::goContour()
         myfits->GetOutput()->GetBounds(bounds);
         
         // Rotate about the origin point (world coordinates)
-        transform->Translate(0, 0, -1 * viewer->GetSlice());
+        // transform->Translate(0, 0, -1 * viewer->GetSlice());
         transform->Translate(bounds[0], bounds[2], 0);
         transform->RotateWXYZ(angle, 0, 0, 1);
         transform->Translate(-bounds[0], -bounds[2], 0);
@@ -4634,9 +4634,9 @@ void vtkwindow_new::on_horizontalSlider_valueChanged(int value)
         //  )->getLayerNumber() ;
     }
     
-    vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(pos))
-    ->GetProperty()
-    ->SetOpacity(value / 100.0);
+    // vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(pos))
+    // ->GetProperty()
+    // ->SetOpacity(value / 100.0);
     ui->qVTK1->renderWindow()->GetInteractor()->Render();
     sessionModified();
 }
@@ -4834,12 +4834,12 @@ void vtkwindow_new::on_listWidget_clicked(const QModelIndex &index)
     if (ui->listWidget->selectionModel()->selectedRows().count() != 0
         && imgLayerList.at(index.row())->getType() == 0) {
         int row = ui->listWidget->selectionModel()->selectedRows().at(0).row();
-        imageStack->SetActiveLayer(row);
-        ui->horizontalSlider->setValue(
-                                       vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(row))
-                                       ->GetProperty()
-                                       ->GetOpacity()
-                                       * 100.0);
+        // imageStack->SetActiveLayer(row);
+        // ui->horizontalSlider->setValue(
+        //                                vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(row))
+        //                                ->GetProperty()
+        //                                ->GetOpacity()
+        //                                * 100.0);
         ui->lutComboBox->setCurrentText(imgLayerList.at(row)->getLutType());
         auto radioBtn = imgLayerList.at(row)->getLutScale() == "Linear" ? ui->linearadioButton
         : ui->logRadioButton;
@@ -4861,27 +4861,27 @@ void vtkwindow_new::movedLayersRow(const QModelIndex &sourceParent, int sourceSt
     if (sourceStart > destinationRow) { // down
         
         for (int i = sourceStart - 1; i >= destinationRow; i--) {
-            vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(i))
-            ->GetProperty()
-            ->SetLayerNumber(i + 1);
+            // vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(i))
+            // ->GetProperty()
+            // ->SetLayerNumber(i + 1);
             imgLayerList.swapItemsAt(i, i + 1);
         }
         
-        vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(sourceStart))
-        ->GetProperty()
-        ->SetLayerNumber(destinationRow);
+        // vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(sourceStart))
+        // ->GetProperty()
+        // ->SetLayerNumber(destinationRow);
         
     } else { // up
         
         for (int i = sourceStart + 1; i < destinationRow; i++) {
-            vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(i))
-            ->GetProperty()
-            ->SetLayerNumber(i - 1);
+            // vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(i))
+            // ->GetProperty()
+            // ->SetLayerNumber(i - 1);
             imgLayerList.swapItemsAt(i, i - 1);
         }
-        vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(sourceStart))
-        ->GetProperty()
-        ->SetLayerNumber(destinationRow - 1);
+        // vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(sourceStart))
+        // ->GetProperty()
+        // ->SetLayerNumber(destinationRow - 1);
     }
     
     ui->qVTK1->update();
@@ -5161,7 +5161,7 @@ void vtkwindow_new::setImageLayers(const QJsonArray &layers, const QDir &session
     // Clear current layers
     ui->listWidget->clear();
     imgLayerList.clear();
-    imageStack->GetImages()->RemoveAllItems();
+    // imageStack->GetImages()->RemoveAllItems();
     
     foreach (const auto &it, layers) {
         auto layer = it.toObject();
@@ -5192,10 +5192,10 @@ void vtkwindow_new::setImageLayers(const QJsonArray &layers, const QDir &session
         listItem->setText(layer["text"].toString(filename));
         changeFitsScale(layer["lutType"].toString("Gray").toStdString(),
                         layer["lutScale"].toString("Log").toStdString());
-        vtkImageSlice::SafeDownCast(
-                                    imageStack->GetImages()->GetItemAsObject(ui->listWidget->row(listItem)))
-        ->GetProperty()
-        ->SetOpacity(layer["opacity"].toInt(99) / 100.0);
+        // vtkImageSlice::SafeDownCast(
+        //                             imageStack->GetImages()->GetItemAsObject(ui->listWidget->row(listItem)))
+        // ->GetProperty()
+        // ->SetOpacity(layer["opacity"].toInt(99) / 100.0);
         listItem->setCheckState(layer["show"].toBool(false) ? Qt::Checked : Qt::Unchecked);
     }
     ui->qVTK1->renderWindow()->GetInteractor()->Render();
@@ -5408,10 +5408,10 @@ void vtkwindow_new::on_actionSave_session_triggered()
         layer["lutType"] = img->getLutType().isEmpty() ? "Gray" : img->getLutType();
         layer["lutScale"] = img->getLutScale().isEmpty() ? "Log" : img->getLutScale();
         layer["opacity"] =
-        vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(row))
-        ->GetProperty()
-        ->GetOpacity()
-        * 100;
+        // vtkImageSlice::SafeDownCast(imageStack->GetImages()->GetItemAsObject(row))
+        // ->GetProperty()
+        // ->GetOpacity()
+        // * 100;
         layer["show"] = listItem->checkState() == Qt::Checked;
         layer["enabled"] = true;
         layers.append(layer);
