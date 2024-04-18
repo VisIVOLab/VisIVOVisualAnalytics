@@ -34,7 +34,7 @@
 
 #include "vtkColorTransferFunction.h"
 #include "vtkFixedPointVolumeRayCastMapper.h"
-#include "vtkImageViewer2.h"
+// #include "vtkImageViewer2.h"
 #include "vtkPiecewiseFunction.h"
 #include "vtkSmartPointer.h"
 #include "vtkVolume.h"

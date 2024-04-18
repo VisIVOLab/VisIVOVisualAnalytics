@@ -12,15 +12,15 @@
 #include "vtkAxesActor.h"
 #include "vtkellipse.h"
 #include "vtkEventQtSlotConnect.h"
-#include "vtkImageStack.h"
-#include "vtkImageViewer2.h"
+// #include "vtkImageStack.h"
+// #include "vtkImageViewer2.h"
 #include "vtkLineSource.h"
 #include "vtkMarchingCubes.h"
 #include "vtkOrientationMarkerWidget.h"
 #include "vtkPVLODActor.h"
 #include "vtkRenderer.h"
 #include "vtkRenderWindow.h"
-#include "vtkResliceImageViewer.h"
+// #include "vtkResliceImageViewer.h"
 #include "vtkSmartPointer.h"
 
 #include <QGestureEvent>
@@ -115,11 +115,11 @@ public:
     double min;
     long naxis3;
     double *z_range;
-    vtkSmartPointer<vtkImageStack> imageStack;
+    // vtkSmartPointer<vtkImageStack> imageStack;
 
-    vtkSmartPointer<vtkResliceImageViewer> viewer;
+    // vtkSmartPointer<vtkResliceImageViewer> viewer;
 
-    vtkSmartPointer<vtkImageViewer2> imageViewer;
+    // vtkSmartPointer<vtkImageViewer2> imageViewer;
     void addSources(VSTableDesktop *m_VisIVOTable);
     void addSourcesFromJson(const QString &fn);
     void addFilaments(VSTableDesktop *m_VisIVOTable);

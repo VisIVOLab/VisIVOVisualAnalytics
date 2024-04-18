@@ -74,6 +74,7 @@ private slots:
     void on_actionGen_test_PV_slice_triggered();
     void endPVSlice();
 
+
 private:
     Ui::pqWindowCube *ui;
 

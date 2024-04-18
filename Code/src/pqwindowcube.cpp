@@ -124,9 +124,10 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
     CubeSource = pqLoadDataReaction::loadData({ filepath });
     SliceSource = pqLoadDataReaction::loadData({ filepath });
 
-    MomentMapSource = pqLoadDataReaction::loadData({ filepath });
+    MomentMapSource = pqLoadDataReaction::loadData( { filepath });
 
     fullSrc = NULL;
+
 
     // Handle Subset selection
     setSubsetProperties(cubeSubset);
@@ -157,8 +158,7 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
     changeColorMap("Grayscale");
     setLogScale(false);
     vtkSMPVRepresentationProxy::SetScalarBarVisibility(sliceProxy, viewSlice->getProxy(), true);
-    vtkSMPVRepresentationProxy::SetScalarBarVisibility(momentProxy, viewMomentMap->getProxy(),
-                                                       true);
+    vtkSMPVRepresentationProxy::SetScalarBarVisibility(momentProxy, viewMomentMap->getProxy(), true);
 
     // Set up interactor to show pixel coordinates in the status bar
     pixCoordInteractorStyle->SetCoordsCallback(
@@ -187,6 +187,7 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
     viewSlice->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(
             pixCoordInteractorStyle);
 
+
     viewSlice->resetDisplay();
     viewCube->resetDisplay();
     viewMomentMap->resetDisplay();
@@ -203,7 +204,8 @@ pqWindowCube::~pqWindowCube()
     builder->destroy(SliceSource);
     builder->destroy(MomentMapSource);
 
-    if (this->fullSrc != NULL) {
+    if (this->fullSrc != NULL)
+    {
         builder->destroy(fullSrc);
         this->fullSrc = NULL;
     }
@@ -346,7 +348,7 @@ void pqWindowCube::createViews()
             builder->createView(pqRenderView::renderViewType(), server));
     viewSlice->widget()->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
-    viewMomentMap = qobject_cast<pqRenderView *>(
+    viewMomentMap= qobject_cast<pqRenderView *>(
             builder->createView(pqRenderView::renderViewType(), server));
     viewMomentMap->widget()->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
@@ -449,9 +451,7 @@ void pqWindowCube::loadMomentMap()
     MomentMapSource->updatePipeline();
 
     // Link the data to the correct view and create a colour mapp
-    momentProxy = builder->createDataRepresentation(this->MomentMapSource->getOutputPort(0),
-                                                    viewMomentMap)
-                          ->getProxy();
+    momentProxy = builder->createDataRepresentation(this->MomentMapSource->getOutputPort(0), viewMomentMap)->getProxy();
     vtkSMPropertyHelper(momentProxy, "Representation").Set("Slice");
     std::string name = "FITSImage" + std::to_string(momentOrder);
     vtkSMPVRepresentationProxy::SetScalarColoring(momentProxy, name.c_str(), vtkDataObject::POINT);
