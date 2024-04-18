@@ -183,11 +183,13 @@ bool ViaLactea::connectToPVServer()
 
 void ViaLactea::onDataLoaded(const QString &filepath)
 {
+    QSettings settings(m_sSettingsFile, QSettings::NativeFormat);
+    QString serverUrl = settings.value("pvserver.url", "cs://localhost:11111").toString();
     auto subsetSelector = new SubsetSelectorDialog(this);
     subsetSelector->setAttribute(Qt::WA_DeleteOnClose);
     connect(subsetSelector, &SubsetSelectorDialog::subsetSelected, this,
             [=](const CubeSubset &subset) {
-                auto win = new pqWindowCube(filepath, subset);
+                auto win = new pqWindowCube(serverUrl, filepath, subset);
                 win->showMaximized();
                 win->raise();
                 win->activateWindow();
