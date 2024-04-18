@@ -1,8 +1,15 @@
 #include "pqwindowcube.h"
+#include "qmessagebox.h"
 #include "ui_pqwindowcube.h"
 
 #include "interactors/vtkinteractorstyleimagecustom.h"
+
 #include "errorMessage.h"
+
+#include "vtkNamedColors.h"
+#include "vtkPolyDataMapper.h"
+#include "vtkProperty.h"
+
 #include "vtklegendscaleactor.h"
 
 #include <pqActiveObjects.h>
@@ -35,6 +42,7 @@
 
 #include <QDebug>
 #include <QDir>
+#include <QMouseEvent>
 
 #include <cmath>
 #include <cstring>
@@ -43,6 +51,7 @@
 pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset)
     : ui(new Ui::pqWindowCube),
       FitsFileName(QFileInfo(filepath).fileName()),
+      cubeFilePath(filepath),
       cubeSubset(cubeSubset),
       currentSlice(-1),
       contourFilter(nullptr),
@@ -114,7 +123,11 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
     // Load Reactions
     CubeSource = pqLoadDataReaction::loadData({ filepath });
     SliceSource = pqLoadDataReaction::loadData({ filepath });
+
     MomentMapSource = pqLoadDataReaction::loadData( { filepath });
+
+    fullSrc = NULL;
+
 
     // Handle Subset selection
     setSubsetProperties(cubeSubset);
@@ -147,14 +160,26 @@ pqWindowCube::pqWindowCube(const QString &filepath, const CubeSubset &cubeSubset
     vtkSMPVRepresentationProxy::SetScalarBarVisibility(sliceProxy, viewSlice->getProxy(), true);
     vtkSMPVRepresentationProxy::SetScalarBarVisibility(momentProxy, viewMomentMap->getProxy(), true);
 
-    // Interactor to show pixel coordinates in the status bar
-    vtkNew<vtkInteractorStyleImageCustom> interactorStyle;
-    interactorStyle->SetCoordsCallback(
+    // Set up interactor to show pixel coordinates in the status bar
+    pixCoordInteractorStyle->SetCoordsCallback(
             [this](const std::string &str) { showStatusBarMessage(str); });
+
     interactorStyle->SetLayerFitsReaderFunc(fitsHeaderPath.toStdString());
     interactorStyle->SetPixelZCompFunc([this]() { return currentSlice; });
     viewSlice->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(interactorStyle);
     viewMomentMap->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(interactorStyle);
+
+    pixCoordInteractorStyle->SetLayerFitsReaderFunc(fitsHeaderPath.toStdString());
+    pixCoordInteractorStyle->SetPixelZCompFunc([this]() { return currentSlice; });
+
+    // Set up interactor for drawing PV slice line
+    drawPVLineInteractorStyle->setLineValsCallback([this](float x1, float y1, float x2, float y2){sendLineEndPoints(std::make_pair(x1, y1), std::make_pair(x2, y2));});
+    drawPVLineInteractorStyle->setLineAbortCallback([this](){endDrawLine();});
+
+    // Set initial interactor
+    viewSlice->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(
+            pixCoordInteractorStyle);
+
 
     viewSlice->resetDisplay();
     viewCube->resetDisplay();
@@ -171,6 +196,12 @@ pqWindowCube::~pqWindowCube()
     builder->destroy(CubeSource);
     builder->destroy(SliceSource);
     builder->destroy(MomentMapSource);
+
+    if (this->fullSrc != NULL)
+    {
+        builder->destroy(fullSrc);
+        this->fullSrc = NULL;
+    }
     builder->destroySources(server);
     this->CubeSource = NULL;
     this->SliceSource = NULL;
@@ -395,6 +426,7 @@ void pqWindowCube::showSlice()
 
     ui->sliceSlider->setRange(1, bounds[5] + 1);
     ui->sliceSpinBox->setRange(1, bounds[5] + 1);
+    this->zDepth = bounds[5] + 2;
 }
 
 /**
@@ -588,6 +620,7 @@ void pqWindowCube::removeContours()
     }
 }
 
+
 /**
  * @brief pqWindowCube::setMomentMapVisible
  * This function switches the 3D display between the view of the slice and the moment map.
@@ -603,6 +636,123 @@ void pqWindowCube::setMomentMapVisible(bool val)
     viewSlice->render();
     viewMomentMap->resetDisplay();
     viewMomentMap->render();
+
+void pqWindowCube::sendLineEndPoints(std::pair<float, float> start, std::pair<float, float> end)
+{
+    QMessageBox msgBox;
+    msgBox.setIcon(QMessageBox::Question);
+    msgBox.setText("Do you want to load a Position-Velocity slice?");
+    msgBox.setInformativeText("Generating the PV slice will take time if the cube is large.");
+    msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
+    msgBox.setDefaultButton(QMessageBox::Yes);
+    msgBox.setEscapeButton(QMessageBox::Cancel);
+    int ret = msgBox.exec();
+    switch (ret){
+        case QMessageBox::Yes:
+            break;
+        case QMessageBox::Cancel:
+            endDrawLine();
+            return;
+            break;
+        default:
+            break;
+    }
+
+    bool invalid = start.first < bounds[0] || start.first > bounds[1] || start.second < bounds[2] || start.second > bounds[3];
+    invalid = invalid || end.first < bounds[0] || end.first > bounds[1] || end.second < bounds[2] || end.second > bounds[3];
+    if (invalid){
+        std::stringstream eString, eInfo;
+        eString << "Error: trying to draw a PV slice beyond the edges of the available data!";
+        eInfo << "Draw a line only on the slice.";
+//        throwError(eString.str().c_str(), eInfo.str().c_str());
+        return;
+    }
+    int x1, y1, x2, y2;
+    x1 = std::round(start.first);
+    y1 = std::round(start.second);
+    x2 = std::round(end.first);
+    y2 = std::round(end.second);
+    this->showPVSlice(std::make_pair(x1, y1), std::make_pair(x2, y2));
+}
+
+void pqWindowCube::endDrawLine()
+{
+    viewSlice->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(
+            pixCoordInteractorStyle);
+    this->ui->actionDraw_PV_line->setChecked(false);
+    drawing = false;
+    auto viewProxy = viewSlice->getProxy();
+    vtkSMPropertyHelper(viewProxy, "ShowAnnotation").Set(1);
+    viewProxy->UpdateVTKObjects();
+    endPVSlice();
+}
+
+void pqWindowCube::showPVSlice()
+{
+    int start1 = 50, start2 = 50;
+    int end1 = 100, end2 = 100;
+    showPVSlice(std::make_pair(start1, start2), std::make_pair(end1, end2));
+}
+
+void pqWindowCube::showPVSlice(std::pair<int, int> start, std::pair<int, int> end)
+{
+    CubeSource->getProxy()->UpdatePropertyInformation();
+    int sF;
+    vtkSMPropertyHelper(CubeSource->getProxy(), "ScaleFactorInfo").Get(&sF);
+    if (sF != 1)
+    {
+        if (fullSrc == NULL)
+            fullSrc = pqLoadDataReaction::loadData({ cubeFilePath });
+//        CubeSubset sub;
+//        sub.AutoScale = false;
+//        sub.ScaleFactor = 1;
+//        int x1, y1, z1, z2;
+//        if (cubeSubset.ReadSubExtent){
+//            x1 = cubeSubset.SubExtent[0];
+//            y1 = cubeSubset.SubExtent[2];
+//            z1 = cubeSubset.SubExtent[4];
+//            z2 = cubeSubset.SubExtent[5];
+//        }
+//        else{
+//            x1 = bounds[0];
+//            y1 = bounds[2];
+//            z1 = bounds[4];
+//            z2 = bounds[5];
+//        }
+
+//        std::pair<int, int> botLeft = std::make_pair(std::min(start.first, end.first), std::min(start.second, end.second));
+//        std::pair<int, int> topRight = std::make_pair(std::max(start.first, end.first), std::max(start.second, end.second));
+//        sub.SubExtent[0] = x1 + botLeft.first;
+//        sub.SubExtent[1] = x1 + topRight.first;
+//        sub.SubExtent[2] = y1 + botLeft.second;
+//        sub.SubExtent[3] = y1 + topRight.second;
+//        sub.SubExtent[4] = z1;
+//        sub.SubExtent[5] = z2;
+
+//        auto sourceProxy = fullSrc->getProxy();
+//        vtkSMPropertyHelper(sourceProxy, "ReadSubExtent").Set(true);
+//        vtkSMPropertyHelper(sourceProxy, "SubExtent").Set(sub.SubExtent, 6);
+//        vtkSMPropertyHelper(sourceProxy, "AutoScale").Set(sub.AutoScale);
+//        vtkSMPropertyHelper(sourceProxy, "CubeMaxSize").Set(sub.CubeMaxSize);
+//        sourceProxy->UpdateVTKObjects();
+//        start = std::make_pair(start.first - botLeft.first, start.second - botLeft.second);
+//        end = std::make_pair(end.first - botLeft.first, end.second - botLeft.second);
+        pvSlice = new pqPVWindow(this->server, fullSrc, start, end, this);
+    }
+    else
+        pvSlice = new pqPVWindow(this->server, this->CubeSource, start, end, this);
+    connect(pvSlice, &pqPVWindow::closed, this, &pqWindowCube::endPVSlice);
+    pvSlice->setAttribute(Qt::WA_Hover);
+    pvSlice->show();
+    pvSlice->activateWindow();
+    pvSlice->raise();
+}
+
+void pqWindowCube::endPVSlice()
+{
+    this->drawPVLineInteractorStyle->removeArrow();
+    viewSlice->render();
+    viewCube->render();
 }
 
 void pqWindowCube::on_sliceSlider_valueChanged()
@@ -999,3 +1149,25 @@ void pqWindowCube::on_actionMomentOrder10_triggered()
 {
     showMomentMap(10);
 }
+
+void pqWindowCube::on_actionDraw_PV_line_triggered()
+{
+    if (!drawing){
+        viewSlice->getViewProxy()->GetRenderWindow()->GetInteractor()->SetInteractorStyle(
+                drawPVLineInteractorStyle);
+        drawing = true;
+        showStatusBarMessage("Press ENTER to confirm your selection, press ESC to abort.");
+        auto viewProxy = viewSlice->getProxy();
+        vtkSMPropertyHelper(viewProxy, "ShowAnnotation").Set(0);
+        viewProxy->UpdateVTKObjects();
+    }
+    else
+        endDrawLine();
+}
+
+void pqWindowCube::on_actionGen_test_PV_slice_triggered()
+{
+    showPVSlice();
+}
+
+
