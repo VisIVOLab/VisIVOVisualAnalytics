@@ -82,13 +82,14 @@ set_source_files_properties(${app_icon_macos} PROPERTIES
 )
 
 qt_add_resources(VisIVOVisualAnalytics assets
+    PREFIX "/icons"
     FILES
-    icons/settings.svg
-    icons/folder_open.svg
-    icons/cloud.svg
+    settings.svg
+    folder_open.svg
+    cloud.svg
 )
 
-add_executable(VisIVOVisualAnalytics ${ui_files} ${resources} ${sources} ${headers} ${assets})
+add_executable(VisIVOVisualAnalytics ${ui_files} ${resources} ${sources} ${headers})
 
 target_include_directories(VisIVOVisualAnalytics PRIVATE ${Boost_INCLUDE_DIRS})
 
