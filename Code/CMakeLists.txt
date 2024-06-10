@@ -27,6 +27,8 @@ find_package(Boost REQUIRED)
 set(qt_components Widgets Network NetworkAuth WebEngineWidgets Concurrent Xml PrintSupport)
 find_package(Qt6 QUIET REQUIRED COMPONENTS ${qt_components})
 
+qt_standard_project_setup()
+
 foreach (_qt_comp IN LISTS qt_components)
     list(APPEND qt_modules "Qt6::${_qt_comp}")
 endforeach ()
@@ -82,11 +84,10 @@ set_source_files_properties(${app_icon_macos} PROPERTIES
 )
 
 qt_add_resources(VisIVOVisualAnalytics "assets"
-    PREFIX "/icons/"
     FILES
-    settings.svg
-    folder_open.svg
-    cloud.svg
+    icons/settings.svg
+        icons/folder_open.svg
+        icons/cloud.svg
 )
 
 add_executable(VisIVOVisualAnalytics ${ui_files} ${resources} ${sources} ${headers})
