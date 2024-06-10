@@ -81,8 +81,8 @@ set_source_files_properties(${app_icon_macos} PROPERTIES
     MACOSX_PACKAGE_LOCATION "Resources"
 )
 
-qt_add_resources(VisIVOVisualAnalytics assets
-    PREFIX "/icons"
+qt_add_resources(VisIVOVisualAnalytics "assets"
+    PREFIX "/icons/"
     FILES
     settings.svg
     folder_open.svg
