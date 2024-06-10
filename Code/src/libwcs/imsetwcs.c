@@ -1,8 +1,8 @@
 /*** File libwcs/imsetwcs.c
- *** September 24, 2009
- *** By Doug Mink, dmink@cfa.harvard.edu (based on UIowa code)
+ *** May 19, 2010
+ *** By Jessica Mink, jmink@cfa.harvard.edu (based on UIowa code)
  *** Harvard-Smithsonian Center for Astrophysics
- *** Copyright (C) 1996-2009
+ *** Copyright (C) 1996-2010
  *** Smithsonian Astrophysical Observatory, Cambridge, MA, USA
 
     This library is free software; you can redistribute it and/or
@@ -20,8 +20,8 @@
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
     Correspondence concerning WCSTools should be addressed as follows:
-           Internet email: dmink@cfa.harvard.edu
-           Postal address: Doug Mink
+           Internet email: jmink@cfa.harvard.edu
+           Postal address: Jessica Mink
                            Smithsonian Astrophysical Observatory
                            60 Garden St.
                            Cambridge, MA 02138 USA
@@ -81,6 +81,7 @@ static int irafout = 0;		/* if 1, write X Y RA Dec out */
 static int magfit = 0;		/* If 1, write magnitude polynomial(s) */
 static int sortmag = 1;		/* Magnitude by which to sort stars */
 static int minstars0 = MINSTARS;	/* Number of star matches for fit */
+static int nmagmax = MAXNMAG;	/* Maximum number of magnitudes (etc.) per entry */
 static int nxydec = NXYDEC;	/* Number of decimal places in image coordinates */
 static void PrintRes();
 static void CompRes();
@@ -322,11 +323,11 @@ getfield:
     if (!(gpdec = (double *) calloc (ngmax, sizeof(double))))
 	fprintf (stderr, "Could not calloc %d bytes for gpdec\n",
 		 ngmax*sizeof(double));
-    if (!(gm = (double **) calloc (nmag, sizeof(double *))))
+    if (!(gm = (double **) calloc (nmagmax, sizeof(double *))))
 	fprintf (stderr, "Could not calloc %d bytes for gm\n",
-		 nmag*sizeof(double *));
+		 nmagmax*sizeof(double *));
     else {
-	for (imag = 0; imag < nmag; imag++) {
+	for (imag = 0; imag < nmagmax; imag++) {
 	    if (!(gm[imag] = (double *) calloc (ngmax, sizeof(double))))
 		fprintf (stderr, "Could not calloc %d bytes for gm\n",
 		    ngmax*sizeof(double));
@@ -369,7 +370,7 @@ getstars:
 
     /* Sort reference stars by brightness (magnitude) */
     MagSortStars (gnum, gra, gdec, gpra, gpdec, NULL, NULL, gm, gc, gobj1, nrg, 
-		  nmag, sortmag);
+		  nmagmax, sortmag);
 
     /* Project the reference stars into pixels on a plane at ra0/dec0 */
     if (!(gx = (double *) calloc (ngmax, sizeof(double))))
@@ -857,7 +858,7 @@ done:
     if (gpra) free ((char *)gpra);
     if (gpdec) free ((char *)gpdec);
     if (gm) {
-	for (imag = 0; imag < nmag; imag++) {
+	for (imag = 0; imag < nmagmax; imag++) {
 	    if (gm[imag])
 		free ((char *)gm[imag]);
 	    }
@@ -929,7 +930,7 @@ int	verbose;	/* True for more information */
     double cmax;
     int nnfld;
     int nxyfld;
-    char rstr[32], dstr[32], numstr[32], xstr[32], ystr[32];
+    char rstr[32], dstr[32], numstr[32], xstr[32], ystr[32], mstr[8];
 
     maxnum = 0.0;
     for (i = 0; i < nmatch; i++) {
@@ -939,13 +940,14 @@ int	verbose;	/* True for more information */
 	    maxnum = gnum1[i];
 	}
     nnfld = CatNumLen (refcat, maxnum, 0);
+    CatMagName (sortmag, refcat, mstr);
 
     CatID (numstr, refcat);
     if (irafout)
-	printf ("#   x      y        ra2000   dec2000  mag %s", numstr); 
+	printf ("#   x      y        ra2000   dec2000  %5s %s", mstr, numstr); 
     else
-	printf ("# %s ra2000       dec2000    magc    X      Y     magi",
-		numstr);
+	printf ("# %s ra2000       dec2000    %5s    X      Y     magi",
+		mstr, numstr);
     printf ("    dra   ddec   sep\n");
 
     /* Find maximum image coordinates and set field size accordingly */
@@ -1400,4 +1402,7 @@ setmagfit ()
  *
  * Aug  3 2009	If not printing residuals, still compute WCSSEP using CompRes()
  * Sep 24 2009	Free pointers more carefully
+ * Nov 13 2009	Print catalog magnitude name  in residual output header
+ *
+ * May 19 2010	Allocate NMAXMAG instead of number of magnitudes, nmag
  */

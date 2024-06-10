@@ -1,6 +1,6 @@
 /*** File libwcs/distort.c
  *** January 4, 2007
- *** By Doug Mink, dmink@cfa.harvard.edu, 
+ *** By Jessica Mink, jmink@cfa.harvard.edu, 
  *** Based on code written by Jing Li, IPAC
  *** Harvard-Smithsonian Center for Astrophysics
  *** Copyright (C) 2004-2007
@@ -21,8 +21,8 @@
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
     Correspondence concerning WCSTools should be addressed as follows:
-           Internet email: dmink@cfa.harvard.edu
-           Postal address: Doug Mink
+           Internet email: jmink@cfa.harvard.edu
+           Postal address: Jessica Mink
                            Smithsonian Astrophysical Observatory
                            60 Garden St.
                            Cambridge, MA 02138 USA
@@ -37,11 +37,17 @@
  * Subroutine:  getdistcode (wcs) returns distortion code string for CTYPEi
  */
 
-#include <unistd.h>
+//#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "wcs.h"
+
+#ifndef _WIN32
+#include <unistd.h>
+#else
+#include "win_fixes.h"
+#endif
 
 void
 distortinit (wcs, hstring)
@@ -63,7 +69,7 @@ const char *hstring;	/* character string containing FITS header information
 	    }
 	else {
 	    if (!hgeti4 (hstring, "A_ORDER", &wcs->distort.a_order)) {
-		setwcserr ("DISTINIT: Missing A_ORDER keyword for SIRTF distortion");
+		setwcserr ("DISTINIT: Missing A_ORDER keyword for Spitzer distortion");
 		}
 	    else {
 		m = wcs->distort.a_order;
@@ -80,7 +86,7 @@ const char *hstring;	/* character string containing FITS header information
 		    }
 		}
 	    if (!hgeti4 (hstring, "B_ORDER", &wcs->distort.b_order)) {
-		setwcserr ("DISTINIT: Missing B_ORDER keyword for SIRTF distortion");
+		setwcserr ("DISTINIT: Missing B_ORDER keyword for Spitzer distortion");
 		}
 	    else {
 		m = wcs->distort.b_order;
@@ -97,7 +103,7 @@ const char *hstring;	/* character string containing FITS header information
 		    }
 		}
 	    if (!hgeti4 (hstring, "AP_ORDER", &wcs->distort.ap_order)) {
-		setwcserr ("DISTINIT: Missing AP_ORDER keyword for SIRTF distortion");
+		setwcserr ("DISTINIT: Missing AP_ORDER keyword for Spitzer distortion");
 		}
 	    else {
 		m = wcs->distort.ap_order;
@@ -114,7 +120,7 @@ const char *hstring;	/* character string containing FITS header information
 		    }
 		}
 	    if (!hgeti4 (hstring, "BP_ORDER", &wcs->distort.bp_order)) {
-		setwcserr ("DISTINIT: Missing BP_ORDER keyword for SIRTF distortion");
+		setwcserr ("DISTINIT: Missing BP_ORDER keyword for Spitzer distortion");
 		}
 	    else {
 		m = wcs->distort.bp_order;
@@ -235,7 +241,7 @@ double	*u, *v;		/* Image pixel coordinates (returned) */
     double s[DISTMAX], sum;
     double temp_x, temp_y;
 
-    /* SIRTF distortion */
+    /* Spitzer distortion */
     if (wcs->distcode == DISTORT_SIRTF) {
 	m = wcs->distort.ap_order;
 	n = wcs->distort.bp_order;
@@ -296,7 +302,7 @@ double *x, *y;		/* Focal plane coordinates (returned) */
     double s[DISTMAX], sum;
     double temp_u, temp_v;
 
-    /* SIRTF distortion */
+    /* Spitzer distortion */
     if (wcs->distcode == DISTORT_SIRTF) {
 	m = wcs->distort.a_order;
 	n = wcs->distort.b_order;
@@ -402,4 +408,6 @@ struct WorldCoor *wcs;  /* World coordinate system structure */
  * Jan  9 2004	Add DelDistort() to delete distortion keywords
  *
  * Jan  4 2007	Declare header const char*
+ *
+ * Feb 25 2011	Change SIRTF to Spitzer (long overdue!)
  */

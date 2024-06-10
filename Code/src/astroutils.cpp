@@ -2,27 +2,23 @@
 
 #include "libwcs/fitsfile.h"
 #include "libwcs/lwcs.h"
-#include "libwcs/wcs.h"
-#include <errno.h>
-#include <fcntl.h>
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
 
+#include <fitsio.h>
+
+#include <cmath>
+#include <exception>
 #include <iostream>
+#include <set>
 #include <string>
 #include <vector>
 
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/split.hpp>
+
 using namespace boost::algorithm;
 
-extern void setsys();
-
-AstroUtils::AstroUtils() { }
+AstroUtils::AstroUtils() = default;
 
 void AstroUtils::GetCenterCoords(std::string file, double *coords)
 {
@@ -57,56 +53,218 @@ double AstroUtils::GetRadiusSize(std::string file)
     return radius;
 }
 
-void AstroUtils::GetBounds(std::string file, double *top, double *bottom, double *right,
-                           double *left)
+void AstroUtils::GetBounds(std::string file, double *ra_min, double *ra_max, double *dec_min,
+                           double *dec_max)
 {
-    double tl[2], br[2];
-    WorldCoor *wc = AstroUtils().GetWCSFITS((char *)file.c_str(), 1);
-    AstroUtils().xy2sky(file, 0, wc->nypix, tl, WCS_GALACTIC);
-    AstroUtils().xy2sky(file, wc->nxpix, 0, br, WCS_GALACTIC);
-
-    /*
-    *top = tl[1];
-    *left = tl[0];
-    *bottom = br[1];
-    *right = br[0];
-    */
-
-    *top = fmax(tl[1], br[1]);
-    *bottom = fmin(tl[1], br[1]);
-    *left = fmax(tl[0], br[0]);
-    *right = fmin(tl[0], br[0]);
-
-    wcsfree(wc);
+    WorldCoor *wcs = AstroUtils::GetWCSFITS(const_cast<char *>(file.c_str()), 0);
+    char coorsys[80];
+    wcscstr(coorsys, WCS_J2000, 0., 0.);
+    wcsoutinit(wcs, coorsys);
+    wcsrange(wcs, ra_min, ra_max, dec_min, dec_max);
+    wcsfree(wcs);
 }
 
 bool AstroUtils::CheckOverlap(std::string f1, std::string f2, bool full)
 {
     if (full) {
         // Full overlap
-        return CheckFullOverlap(f1, f2) || CheckFullOverlap(f2, f1);
+        return CheckFullOverlap(f1, f2);
     } else {
         // Check partial overlap
-        double T1, B1, R1, L1;
-        AstroUtils().GetBounds(f1, &T1, &B1, &R1, &L1);
+        double ra_min1, ra_max1, dec_min1, dec_max1;
+        AstroUtils::GetBounds(f1, &ra_min1, &ra_max1, &dec_min1, &dec_max1);
 
-        double T2, B2, R2, L2;
-        AstroUtils().GetBounds(f2, &T2, &B2, &R2, &L2);
+        double ra_min2, ra_max2, dec_min2, dec_max2;
+        AstroUtils::GetBounds(f2, &ra_min2, &ra_max2, &dec_min2, &dec_max2);
 
-        return L1 >= R2 && R1 <= L2 && T1 >= B2 && B1 <= T2;
+        return std::max(ra_min1, ra_min2) < std::min(ra_max1, ra_max2)
+                && std::max(dec_min1, dec_min2) < std::min(dec_max1, dec_max2);
     }
+}
+
+int AstroUtils::calculateResizeFactor(long size, long maxSize)
+{
+    if (size <= 0 || maxSize <= 0 || size <= maxSize)
+        return 1;
+    return ceil(cbrt(1.0 * size / maxSize));
+}
+
+bool AstroUtils::checkSimCubeHeader(const std::string &file,
+                                    std::list<std::string> &missingKeywords)
+{
+    // Set of required header's keywords to handle simcubes
+    std::set<std::string> requiredKeywords = { "CTYPE", "CDELT" };
+
+    // Clear return list
+    missingKeywords.clear();
+
+    fitsfile *fptr;
+    int status = 0;
+    char errmsg[FLEN_ERRMSG];
+    if (fits_open_data(&fptr, file.data(), READONLY, &status)) {
+        fits_get_errstatus(status, errmsg);
+        fits_report_error(stderr, status);
+        throw std::runtime_error(errmsg);
+    }
+
+    int nfound = 0;
+    char *cards[3];
+    for (int i = 0; i < 3; ++i) {
+        cards[i] = new char[FLEN_CARD];
+    }
+    std::for_each(requiredKeywords.cbegin(), requiredKeywords.cend(),
+                  [&](const std::string &keyword) {
+                      if (fits_read_keys_str(fptr, keyword.data(), 1, 3, cards, &nfound, &status)) {
+                          fits_report_error(stderr, status);
+                      }
+
+                      if (nfound != 3) {
+                          missingKeywords.push_back(keyword);
+                      }
+                  });
+
+    for (int i = 0; i < 3; ++i) {
+        delete[] cards[i];
+    }
+
+    // Returns true if there are no missing keywords in the header
+    return missingKeywords.empty();
+}
+
+QPair<QVector<double>, QVector<double>> AstroUtils::extractSpectrum(const char *fn, int x, int y,
+                                                                    double nulval)
+{
+    fitsfile *fptr;
+    int status = 0;
+    char errtext[FLEN_ERRMSG];
+    if (fits_open_data(&fptr, fn, READONLY, &status)) {
+        fits_get_errstatus(status, errtext);
+        throw std::runtime_error(errtext);
+    }
+
+    int nlen = 3;
+    long naxes[3];
+    if (fits_get_img_size(fptr, nlen, naxes, &status)) {
+        fits_get_errstatus(status, errtext);
+        throw std::runtime_error(errtext);
+    }
+
+    QVector<double> spectrum(naxes[2]);
+    QVector<double> nanIndices;
+    long fpixel[3] = { x + 1, y + 1, 0 };
+    float value;
+    for (long i = 1; i <= naxes[2]; ++i) {
+        fpixel[2] = i;
+        if (fits_read_pix(fptr, TFLOAT, fpixel, 1, 0, &value, 0, &status)) {
+            fits_get_errstatus(status, errtext);
+            throw std::runtime_error(errtext);
+        }
+
+        if (std::isnan(value)) {
+            value = nulval;
+            nanIndices.append(i - 1);
+        }
+
+        spectrum[i - 1] = value;
+    }
+
+    fits_close_file(fptr, &status);
+
+    return qMakePair(spectrum, nanIndices);
+}
+
+bool AstroUtils::isFitsImage(const std::string &filename)
+{
+    fitsfile *fptr;
+    int ReadStatus = 0;
+    if (fits_open_data(&fptr, filename.c_str(), READONLY, &ReadStatus)) {
+        fits_report_error(stderr, ReadStatus);
+        return false;
+    }
+
+    int naxis = 0;
+    if (fits_get_img_dim(fptr, &naxis, &ReadStatus)) {
+        fits_report_error(stderr, ReadStatus);
+        return false;
+    }
+
+    fits_close_file(fptr, &ReadStatus);
+
+    return naxis == 2;
+}
+
+void AstroUtils::setMomentFITSHeader(const std::string &src, const std::string &dst, int order)
+{
+    char fin[FLEN_FILENAME];
+    snprintf(fin, FLEN_FILENAME, "%s", src.c_str());
+
+    char fout[FLEN_FILENAME];
+    snprintf(fout, FLEN_FILENAME, "%s", dst.c_str());
+
+    int lhead = 0;
+    int nbhead = 0;
+    char *header = fitsrhead(fin, &lhead, &nbhead);
+
+    // Fix NAXIS
+    hputi4(header, "NAXIS", 2);
+    hdel(header, "WCSAXES");
+
+    // Fix BUNIT
+    char key[FLEN_CARD];
+    hgets(header, "BUNIT", FLEN_VALUE, key);
+    std::string bunit(key);
+    hgets(header, "CUNIT3", FLEN_VALUE, key);
+    std::string cunit3(key);
+    if (!bunit.empty() && order == 0) {
+        bunit += " " + cunit3;
+    }
+    if (order == 1 || order == 2) {
+        bunit = cunit3;
+    }
+    // for orders 6, 8 and 10 bunit is unchanged
+    if (!bunit.empty()) {
+        hputs(header, "BUNIT", bunit.c_str());
+    }
+
+    // Remove NAXIS{3,4} keywords
+    for (int i = 3; i <= 4; ++i) {
+        std::snprintf(key, FLEN_KEYWORD, "NAXIS%d", i);
+        hdel(header, key);
+
+        std::snprintf(key, FLEN_KEYWORD, "CRPIX%d", i);
+        hdel(header, key);
+
+        std::snprintf(key, FLEN_KEYWORD, "CRVAL%d", i);
+        hdel(header, key);
+
+        std::snprintf(key, FLEN_KEYWORD, "CDELT%d", i);
+        hdel(header, key);
+
+        std::snprintf(key, FLEN_KEYWORD, "CTYPE%d", i);
+        hdel(header, key);
+
+        std::snprintf(key, FLEN_KEYWORD, "CUNIT%d", i);
+        hdel(header, key);
+    }
+
+    // Add HISTORY keyword
+    snprintf(key, FLEN_VALUE, "Moment %d Map", order);
+    hputs(header, "HISTORY", key);
+
+    int fd = fitswhead(fout, header);
+    close(fd);
+    free(header);
 }
 
 bool AstroUtils::CheckFullOverlap(std::string f1, std::string f2)
 {
-    double T1, B1, R1, L1;
-    AstroUtils().GetBounds(f1, &T1, &B1, &R1, &L1);
+    double ra_min1, ra_max1, dec_min1, dec_max1;
+    AstroUtils::GetBounds(f1, &ra_min1, &ra_max1, &dec_min1, &dec_max1);
 
-    double T2, B2, R2, L2;
-    AstroUtils().GetBounds(f2, &T2, &B2, &R2, &L2);
+    double ra_min2, ra_max2, dec_min2, dec_max2;
+    AstroUtils::GetBounds(f2, &ra_min2, &ra_max2, &dec_min2, &dec_max2);
 
-    // returns true if f2 is completely inside f1
-    return R2 > R1 && L2 < L1 && T2 < T1 && B2 > B1;
+    return ra_min1 <= ra_max2 && ra_max1 >= ra_min2 && dec_max1 >= dec_min2 && dec_min1 <= dec_max2;
 }
 
 double AstroUtils::arcsecPixel(std::string file)
@@ -140,11 +298,14 @@ void AstroUtils::xy2sky(std::string map, float x, float y, double *coord, int wc
     strcpy(fn, map.c_str());
     wcs = GetWCSFITS(fn, 0);
     wcs->sysout = wcs_type;
+    wcs->degout = 1; /* Output degrees instead of hh:mm:ss dd:mm:ss */
     // force the set of wcs in degree
     setwcsdeg(wcs, 1);
 
-    if (wcs_type == WCS_GALACTIC) {
+    if (wcs_type == WCS_GALACTIC || wcs_type == WCS_ECLIPTIC || wcs_type == WCS_J2000) {
         wcs->eqout = 2000.0;
+    } else if (wcs_type == WCS_B1950) {
+        wcs->eqout = 1950.0;
     }
 
     if (pix2wcst(wcs, x, y, wcstring, lstr)) {
@@ -289,7 +450,7 @@ void AstroUtils::getRotationAngle(std::string file, double *rot, int wcs_type)
 void AstroUtils::sky2xy_t(std::string map, double xpos, double ypos, int wcs_type, double *xpix,
                           double *ypix)
 {
-    char fn[map.size() + 1];
+    char *fn = new char[map.length() + 1];
     strncpy(fn, map.c_str(), map.size());
     fn[map.size()] = 0;
 
@@ -312,6 +473,7 @@ void AstroUtils::sky2xy_t(std::string map, double xpos, double ypos, int wcs_typ
     wcsc2pix(wcs, xpos, ypos, type, xpix, ypix, &offset);
 
     wcsfree(wcs);
+    delete[] fn;
 }
 
 bool AstroUtils::sky2xy(std::string map, double ra, double dec, double *coord)
@@ -539,7 +701,7 @@ WorldCoor *AstroUtils::GetFITSWCS(char *filename, char *header, int verbose, dou
         wcs->xinc = *dra * 2.0 / (double)wcs->nxpix;
         wcs->yinc = *ddec * 2.0 / (double)wcs->nypix;
         /* hchange (header,"PLTRAH","PLT0RAH");
-    wcs->plate_fit = 0; */
+        wcs->plate_fit = 0; */
     }
 
     /* Convert center to desired coordinate system */

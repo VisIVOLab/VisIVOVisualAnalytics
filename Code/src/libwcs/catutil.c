@@ -1,8 +1,8 @@
 /*** File libwcs/catutil.c
- *** October 26, 2009
- *** By Doug Mink, dmink@cfa.harvard.edu
+ *** February 1, 2022
+ *** By Jessica Mink, jmink@cfa.harvard.edu
  *** Harvard-Smithsonian Center for Astrophysics
- *** Copyright (C) 1998-2009
+ *** Copyright (C) 1998-2022
  *** Smithsonian Astrophysical Observatory, Cambridge, MA, USA
 
     This library is free software; you can redistribute it and/or
@@ -20,8 +20,8 @@
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
     Correspondence concerning WCSTools should be addressed as follows:
-           Internet email: dmink@cfa.harvard.edu
-           Postal address: Doug Mink
+           Internet email: jmink@cfa.harvard.edu
+           Postal address: Jessica Mink
                            Smithsonian Astrophysical Observatory
                            60 Garden St.
                            Cambridge, MA 02138 USA
@@ -61,24 +61,6 @@
  *	Return string with epoch of position in desired format
  * void RefLim (cra,cdec,dra,ddec,sysc,sysr,eqc,eqr,epc,ramin,ramax,decmin,decmax,verbose)
  *	Compute limiting RA and Dec in new system from center and half-widths
- * struct Range *RangeInit (string, ndef)
- *	Return structure containing ranges of numbers
- * int isrange (string)
- *	Return 1 if string is a range, else 0
- * int rstart (range)
- *	Restart at beginning of range
- * int rgetn (range)
- *	Return number of values from range structure
- * int rgeti4 (range)
- *	Return next number from range structure as 4-byte integer
- * int rgetr8 (range)
- *	Return next number from range structure as 8-byte floating point number
- * int ageti4 (string, keyword, ival)
- *	Read int value from a file where keyword=value, anywhere on a line
- * int agetr8 (string, keyword, dval)
- *	Read double value from a file where keyword=value, anywhere on a line
- * int agets (string, keyword, lval, value)
- *	Read value from a file where keyword=value, anywhere on a line
  * void bv2sp (bv, b, v, isp)
  *	approximate spectral type given B - V or B and V magnitudes
  * void br2sp (br, b, r, isp)
@@ -93,15 +75,11 @@
  *	Return version/date message for nstarmax=-1 returns from *read subroutines
  * int	*is2massid (string)
  *	Return 1 if string is 2MASS ID, else 0
- * void polfit (x, y, x0, npts, nterms, a, stdev)
- *	Polynomial least squares fitting program
- *double polcomp (xi, x0, norder, a)
- *	Polynomial evaluation Y = A(1) + A(2)*X + A(3)*X^2 + A(3)*X^3 + ...
- * void moveb (source, dest, nbytes, offs, offd)
+ * void movebuff (source, dest, nbytes, offs, offd)
  *	Copy nbytes bytes from source+offs to dest+offd (any data type)
  */
 
-#include <unistd.h>
+//#include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -109,6 +87,12 @@
 #include "wcs.h"
 #include "fitsfile.h"
 #include "wcscat.h"
+
+#ifndef _WIN32
+#include <unistd.h>
+#else
+#include "win_fixes.h"
+#endif
 
 static char *revmessage = NULL;	/* Version and date for calling program */
 static char *revmsg0 = "";
@@ -268,6 +252,14 @@ int	*nmag;		/* Number of magnitudes in catalog (returned) */
 	}
     else if (refcat == UCAC3) {
 	strcpy (title, "USNO UCAC3 Catalog Stars");
+	*syscat = WCS_J2000;
+	*eqcat = 2000.0;
+	*epcat = 2000.0;
+	*catprop = 1;
+	*nmag = 8;
+	}
+    else if (refcat == UCAC4) {
+	strcpy (title, "USNO UCAC4 Catalog Stars");
 	*syscat = WCS_J2000;
 	*eqcat = 2000.0;
 	*epcat = 2000.0;
@@ -510,6 +502,9 @@ char	*refcatname;	/* Name of reference catalog */
     else if (strncasecmp(refcatname,"ucac3",5)==0 &&
 	     strcsrch(refcatname, ".tab") == NULL)
 	refcat = UCAC3;
+    else if (strncasecmp(refcatname,"ucac4",5)==0 &&
+	     strcsrch(refcatname, ".tab") == NULL)
+	refcat = UCAC4;
     else if (strncasecmp(refcatname,"usa",3)==0 &&
 	     strcsrch(refcatname, ".tab") == NULL) {
 	if (strchr (refcatname, '1') != NULL)
@@ -708,6 +703,8 @@ char	*refcatname;	/* Catalog file name */
 	strcpy (catname, "USNO-UCAC2");
     else if (refcat ==  UCAC3)	/* USNO UCAC3 Star Catalog */
 	strcpy (catname, "USNO-UCAC3");
+    else if (refcat ==  UCAC4)	/* USNO UCAC4 Star Catalog */
+	strcpy (catname, "USNO-UCAC4");
     else if (refcat ==  UA2)	/* USNO A-2.0 Star Catalog */
 	strcpy (catname, "USNO-A2.0");
     else if (refcat ==  USA1)	/* USNO SA-1.0 Star Catalog */
@@ -807,6 +804,8 @@ char	*refcatname;	/* Catalog file name */
 	strcpy (catname, "USNO-UCAC2 Stars");
     else if (refcat ==  UCAC3)	/* USNO UCAC3 Star Catalog */
 	strcpy (catname, "USNO-UCAC3 Stars");
+    else if (refcat ==  UCAC4)	/* USNO UCAC4 Star Catalog */
+	strcpy (catname, "USNO-UCAC4 Stars");
     else if (refcat ==  UA2)	/* USNO A-2.0 Star Catalog */
 	strcpy (catname, "USNO-A2.0 Stars");
     else if (refcat ==  USA1)	/* USNO SA-1.0 Star Catalog */
@@ -873,6 +872,8 @@ int	refcat;		/* Catalog code */
 	strcpy (catid,"ucac2_id  ");
     else if (refcat == UCAC3)
 	strcpy (catid,"ucac3_id  ");
+    else if (refcat == UCAC4)
+	strcpy (catid,"ucac4_id  ");
     else if (refcat == UJC)
 	strcpy (catid,"usnoj_id     ");
     else if (refcat == TMPSC || refcat == TMPSCE)
@@ -908,7 +909,7 @@ int	refcat;		/* Catalog code */
 {
     if (refcat==GSC || refcat==GSCACT || refcat==UJC || refcat==USAC ||
 	refcat==USA1 || refcat==USA2 ||
-	refcat == UCAC1 || refcat == UCAC2 || refcat == UCAC3)
+	refcat == UCAC1 || refcat == UCAC2 || refcat == UCAC3 || refcat == UCAC4)
 	return (900.0);
     else if (refcat==UAC  || refcat==UA1  || refcat==UA2)
 	return (120.0);
@@ -925,6 +926,8 @@ int	refcat;		/* Catalog code */
     else if (refcat==SAO || refcat==PPM || refcat==IRAS || refcat == SKY2K ||
 	    refcat==SKYBOT)
 	return (5000.0);
+    else if (refcat==BSC)
+	return (7200.0);
     else
 	return (1800.0);
 }
@@ -1022,6 +1025,10 @@ char *progname;	/* Program name which might contain catalog code */
     else if (strcsrch (progname,"ucac3") != NULL) {
 	refcatname = (char *) calloc (1,8);
 	strcpy (refcatname, "ucac3");
+	}
+    else if (strcsrch (progname,"ucac4") != NULL) {
+	refcatname = (char *) calloc (1,8);
+	strcpy (refcatname, "ucac4");
 	}
     else if (strcsrch (progname,"ujc") != NULL) {
 	refcatname = (char *) calloc (1,8);
@@ -1144,6 +1151,14 @@ char	*numstr;	/* Formatted number (returned) */
 	    sprintf (numstr, "%10.6f", dnum);
 	}
 
+    /* USNO-UCAC4 */
+    else if (refcat == UCAC4) {
+	if (nnfld < 0)
+	    sprintf (numstr, "%010.6f", dnum);
+	else
+	    sprintf (numstr, "%10.6f", dnum);
+	}
+
     /* SDSS */
     else if (refcat == SDSS) {
 	sprintf (numstr, "582%015.0f", dnum);
@@ -1219,12 +1234,19 @@ char	*numstr;	/* Formatted number (returned) */
 	}
 
     /* SAO, PPM, or IRAS Point Source Catalogs (TDC binary format) */
-    else if (refcat==SAO || refcat==PPM || refcat==IRAS || refcat==BSC ||
-	     refcat==HIP) {
+    else if (refcat==SAO || refcat==PPM || refcat==IRAS || refcat==HIP) {
 	if (nnfld < 0)
 	    sprintf (numstr, "%06d", (int)(dnum+0.5));
 	else
 	    sprintf (numstr, "%6d", (int)(dnum+0.5));
+	}
+
+    /* Yale Bright Star Catalog (TDC binary format) */
+    else if (refcat==BSC) {
+	if (nnfld < 0)
+	    sprintf (numstr, "%04d", (int)(dnum+0.5));
+	else
+	    sprintf (numstr, "%4d", (int)(dnum+0.5));
 	}
 
     /* SKY2000 Catalog (TDC binary format) */
@@ -1236,9 +1258,16 @@ char	*numstr;	/* Formatted number (returned) */
 	}
 
 
-    /* Tycho or ACT catalogs */
-    else if (refcat==TYCHO || refcat==TYCHO2 ||
-	     refcat == TYCHO2E || refcat==ACT) {
+    /* Tycho2 */
+    else if (refcat==TYCHO2) {
+	if (nnfld < 0)
+	    sprintf (numstr, "%010.6f", dnum);
+	else
+	    sprintf (numstr, "%10.6f", dnum);
+	}
+
+    /* Other Tycho or ACT catalogs */
+    else if (refcat==TYCHO || refcat == TYCHO2E || refcat==ACT) {
 	if (nnfld < 0)
 	    sprintf (numstr, "%010.5f", dnum);
 	else
@@ -1322,6 +1351,10 @@ int	nndec;		/* Number of decimal places ( >= 0) */
     else if (refcat == UCAC3)
 	return (10);
 
+    /* UCAC4 Catalog */
+    else if (refcat == UCAC4)
+	return (10);
+
     /* USNO Plate Catalogs */
     else if (refcat == USNO)
 	return (7);
@@ -1343,17 +1376,23 @@ int	nndec;		/* Number of decimal places ( >= 0) */
 	return (9);
 
     /* SAO, PPM, Hipparcos, or IRAS Point Source Catalogs (TDC binary format) */
-    else if (refcat==SAO || refcat==PPM || refcat==IRAS || refcat==BSC ||
-	     refcat==HIP)
+    else if (refcat==SAO || refcat==PPM || refcat==IRAS || refcat==HIP)
 	return (6);
+
+    /* Bright Star Catalog (TDC binary format) */
+    else if (refcat==BSC)
+	return (4);
 
     /* SKY2000 Catalog (TDC binary format) */
     else if (refcat==SKY2K)
 	return (7);
 
+    /* Tycho2 catalog */
+    else if (refcat == TYCHO2)
+	return (11);
+
     /* Tycho, Tycho2, or ACT catalogs */
-    else if (refcat == TYCHO || refcat == TYCHO2 ||
-	     refcat == TYCHO2E || refcat == ACT)
+    else if (refcat == TYCHO || refcat == TYCHO2E || refcat == ACT)
 	return (10);
 
     /* Starbase tab-separated, TDC binary, or TDC ASCII catalogs */
@@ -1452,6 +1491,10 @@ int	refcat;		/* Catalog code */
 
     /* UCAC3 Catalog */
     else if (refcat == UCAC3)
+	return (6);
+
+    /* UCAC4 Catalog */
+    else if (refcat == UCAC4)
 	return (6);
 
     /* USNO UJ 1.0 Catalog */
@@ -1595,6 +1638,52 @@ char	*magname;	/* Name of magnitude, returned */
 	else if (imag == 6)
 	    strcpy (magname, "MagKe");
 	}
+    else if (refcat==UCAC2) {
+	if (imag == 1)
+	    strcpy (magname, "MagJ");
+	else if (imag == 2)
+	    strcpy (magname, "MagH");
+	else if (imag == 3)
+	    strcpy (magname, "MagK");
+	else if (imag == 4)
+	    strcpy (magname, "MagC");
+	}
+    else if (refcat==UCAC3) {
+	if (imag == 1)
+	    strcpy (magname, "MagB");
+	else if (imag == 2)
+	    strcpy (magname, "MagR");
+	else if (imag == 3)
+	    strcpy (magname, "MagI");
+	else if (imag == 4)
+	    strcpy (magname, "MagJ");
+	else if (imag == 5)
+	    strcpy (magname, "MagH");
+	else if (imag == 6)
+	    strcpy (magname, "MagK");
+	else if (imag == 7)
+	    strcpy (magname, "MagM");
+	else if (imag == 8)
+	    strcpy (magname, "MagA");
+	}
+    else if (refcat==UCAC4) {
+	if (imag == 1)
+	    strcpy (magname, "MagB");
+	else if (imag == 2)
+	    strcpy (magname, "MagR");
+	else if (imag == 3)
+	    strcpy (magname, "MagI");
+	else if (imag == 4)
+	    strcpy (magname, "MagJ");
+	else if (imag == 5)
+	    strcpy (magname, "MagH");
+	else if (imag == 6)
+	    strcpy (magname, "MagK");
+	else if (imag == 7)
+	    strcpy (magname, "MagM");
+	else if (imag == 8)
+	    strcpy (magname, "MagA");
+	}
     else if (refcat==SKYBOT)
 	strcpy (magname, "MagV");
     else
@@ -1693,6 +1782,54 @@ int	refcat;		/* Catalog code */
 	    return (2);
 	else
 	    return (3);	/* K */
+	}
+    else if (refcat==UCAC2) {
+	if (cmag == 'J')
+	    return (1);
+	else if (cmag == 'H')
+	    return (2);
+	else if (cmag == 'K')
+	    return (3);
+	else if (cmag == 'C')
+	    return (4);
+	else
+	    return (3);	/* K */
+	}
+    else if (refcat==UCAC3) {
+	if (cmag == 'R')
+	    return (2);
+	else if (cmag == 'I')
+	    return (3);
+	else if (cmag == 'J')
+	    return (4);
+	else if (cmag == 'H')
+	    return (5);
+	else if (cmag == 'K')
+	    return (6);
+	else if (cmag == 'M')
+	    return (7);
+	else if (cmag == 'A')
+	    return (8);
+	else
+	    return (1);	/* B */
+	}
+    else if (refcat==UCAC4) {
+	if (cmag == 'R')
+	    return (2);
+	else if (cmag == 'I')
+	    return (3);
+	else if (cmag == 'J')
+	    return (4);
+	else if (cmag == 'H')
+	    return (5);
+	else if (cmag == 'K')
+	    return (6);
+	else if (cmag == 'M')
+	    return (7);
+	else if (cmag == 'A')
+	    return (8);
+	else
+	    return (1);	/* B */
 	}
     else
 	return (1);
@@ -1946,7 +2083,6 @@ int	verbose;	/* 1 to print limits, else 0 */
     return;
 }
 
-
 /* REFLIM-- Set limits in reference catalog coordinates given search coords */
 void
 RefLim (cra, cdec, dra, ddec, sysc, sysr, eqc, eqr, epc, epr, secmarg,
@@ -1995,7 +2131,7 @@ int	verbose;	/* 1 to print limits, else 0 */
 
     /* Deal with south pole */
     if (dec1 < -90.0) {
-	dec1 = 90.0 - (dec1 + 90.0);
+	dec1 = -90.0 - (dec1 + 90.0);
 	if (dec1 > dec2)
 	    dec2 = dec1;
 	dec1 = -90.0;
@@ -2022,6 +2158,10 @@ int	verbose;	/* 1 to print limits, else 0 */
     if (adec < 90.0 && adec > acdec)
 	dra1 = dra * (cos (degrad(acdec)) / cos (degrad(adec)));
     else if (adec == 90.0)
+	dra1 = 180.0;
+
+    /* Deal with images containing a pole */
+    if (dra1 > 180.0)
 	dra1 = 180.0;
 
     /* Set right ascension limits for search */
@@ -2159,435 +2299,6 @@ int	verbose;	/* 1 to print limits, else 0 */
 	    fprintf (stderr,"\n");
 	}
     return;
-}
-
-
-/* RANGEINIT -- Initialize range structure from string */
-
-struct Range *
-RangeInit (string, ndef)
-
-char	*string;	/* String containing numbers separated by , and - */
-int	ndef;		/* Maximum allowable range value */
-
-{
-    struct Range *range;
-    int ip, irange;
-    char *slast;
-    double first, last, step;
-
-    if (!isrange (string) && !isnum (string))
-	return (NULL);
-    ip = 0;
-    range = (struct Range *)calloc (1, sizeof (struct Range));
-    range->irange = -1;
-    range->nvalues = 0;
-    range->nranges = 0;
-
-    for (irange = 0; irange < MAXRANGE; irange++) {
-
-	/* Default to entire list */
-	first = 1.0;
-	last = ndef;
-	step = 1.0;
-
-	/* Skip delimiters to start of range */
-	while (string[ip] == ' ' || string[ip] == '	' ||
-	       string[ip] == ',')
-	    ip++;
-
-	/* Get first limit
-	 * Must be a number, '-', 'x', or EOS.  If not return ERR */
-	if (string[ip] == (char)0) {	/* end of list */
-	    if (irange == 0) {
-
-		/* Null string defaults */
-		range->ranges[0] = first;
-		if (first < 1)
-		    range->ranges[1] = first;
-		else
-		    range->ranges[1] = last;
-		range->ranges[2] = step;
-		range->nvalues = range->nvalues + 1 +
-			  ((range->ranges[1]-range->ranges[0])/step);
-		range->nranges++;
-		return (range);
-		}
-	    else
-		return (range);
-	    }
-	else if (string[ip] > (char)47 && string[ip] < 58) {
-	    first = strtod (string+ip, &slast);
-	    ip = slast - string;
-	    }
-	else if (strchr ("-:x", string[ip]) == NULL) {
-	    free (range);
-	    return (NULL);
-	    }
-
-	/* Skip delimiters */
-	while (string[ip] == ' ' || string[ip] == '	' ||
-	       string[ip] == ',')
-	    ip++;
-
-	/* Get last limit
-	* Must be '-', or 'x' otherwise last = first */
-	if (string[ip] == '-' || string[ip] == ':') {
-	    ip++;
-	    while (string[ip] == ' ' || string[ip] == '	' ||
-	   	   string[ip] == ',')
-		ip++;
-	    if (string[ip] == (char)0)
-		last = first + ndef;
-	    else if (string[ip] > (char)47 && string[ip] < 58) {
-		last = strtod (string+ip, &slast);
-		ip = slast - string;
-		}
-	    else if (string[ip] != 'x')
-		last = first + ndef;
-	    }
-	else if (string[ip] != 'x')
-	    last = first;
-
-	/* Skip delimiters */
-	while (string[ip] == ' ' || string[ip] == '	' ||
-	       string[ip] == ',')
-	    ip++;
-
-	/* Get step
-	 * Must be 'x' or assume default step. */
-	if (string[ip] == 'x') {
-	    ip++;
-	    while (string[ip] == ' ' || string[ip] == '	' ||
-	   	   string[ip] == ',')
-		ip++;
-	    if (string[ip] == (char)0)
-		step = 1.0;
-	    else if (string[ip] > (char)47 && string[ip] < 58) {
-		step = strtod (string+ip, &slast);
-		ip = slast - string;
-		}
-	    else if (string[ip] != '-' && string[ip] != ':')
-		step = 1.0;
-            }
-
-	/* Output the range triple */
-	range->ranges[irange*3] = first;
-	range->ranges[irange*3 + 1] = last;
-	range->ranges[irange*3 + 2] = step;
-	range->nvalues = range->nvalues + ((last-first+(0.1*step)) / step + 1);
-	range->nranges++;
-	}
-
-    return (range);
-}
-
-
-/* ISRANGE -- Return 1 if string is a range, else 0 */
-
-int
-isrange (string)
-
-char *string;		/* String which might be a range of numbers */
-
-{
-    int i, lstr;
-
-    /* If string is NULL or empty, return 0 */
-    if (string == NULL || strlen (string) == 0)
-	return (0);
-
-    /* If range separators present, check to make sure string is range */
-    else if (strchr (string+1, '-') || strchr (string+1, ',')) {
-	lstr = strlen (string);
-	for (i = 0; i < lstr; i++) {
-	    if (strchr ("0123456789-,.x", (int)string[i]) == NULL)
-		return (0);
-	    }
-	return (1);
-	}
-    else
-	return (0);
-}
-
-
-/* RSTART -- Restart at beginning of range */
-
-void
-rstart (range)
-
-struct Range *range;	/* Range structure */
-
-{
-    range->irange = -1;
-    return;
-}
-
-
-/* RGETN -- Return number of values from range structure */
-
-int
-rgetn (range)
-
-struct Range *range;	/* Range structure */
-
-{
-    return (range->nvalues);
-}
-
-
-/*  RGETR8 -- Return next number from range structure as 8-byte f.p. number */
-
-double
-rgetr8 (range)
-
-struct Range *range;	/* Range structure */
-
-{
-    int i;
-
-    if (range == NULL)
-	return (0.0);
-    else if (range->irange < 0) {
-	range->irange = 0;
-	range->first = range->ranges[0];
-	range->last = range->ranges[1];
-	range->step = range->ranges[2];
-	range->value = range->first;
-	}
-    else {
-	range->value = range->value + range->step;
-	if (range->value > (range->last + (range->step * 0.5))) {
-	    range->irange++;
-	    if (range->irange < range->nranges) {
-		i = range->irange * 3;
-		range->first = range->ranges[i];
-		range->last = range->ranges[i+1];
-		range->step = range->ranges[i+2];
-		range->value = range->first;
-		}
-	    else
-		range->value = 0.0;
-	    }
-	}
-    return (range->value);
-}
-
-
-/*  RGETI4 -- Return next number from range structure as 4-byte integer */
-
-int
-rgeti4 (range)
-
-struct Range *range;	/* Range structure */
-
-{
-    double value;
-
-    value = rgetr8 (range);
-    return ((int) (value + 0.000000001));
-}
-
-
-/* AGETI4 -- Read int value from a file where keyword=value, anywhere */
-
-int
-ageti4 (string, keyword, ival)
-
-char	*string;	/* character string containing <keyword>= <value> */
-char	*keyword;	/* character string containing the name of the keyword
-			   the value of which is returned.  hget searches for a
-                 	   line beginning with this string.  if "[n]" or ",n" is
-			   present, the n'th token in the value is returned. */
-int	*ival;		/* Integer value, returned */
-{
-    char value[32];
-
-    if (agets (string, keyword, 31, value)) {
-	*ival = atoi (value);
-	return (1);
-	}
-    else
-	return (0);
-}
-	
-
-/* AGETR8 -- Read double value from a file where keyword=value, anywhere */
-int
-agetr8 (string, keyword, dval)
-
-char	*string;	/* character string containing <keyword>= <value> */
-char	*keyword;	/* character string containing the name of the keyword
-			   the value of which is returned.  hget searches for a
-                 	   line beginning with this string.  if "[n]" or ",n" is
-			   present, the n'th token in the value is returned. */
-double	*dval;		/* Double value, returned */
-{
-    char value[32];
-
-    if (agets (string, keyword, 31, value)) {
-	*dval = atof (value);
-	return (1);
-	}
-    else
-	return (0);
-}
-
-
-/* AGETS -- Get keyword value from ASCII string with keyword=value anywhere */
-
-int
-agets (string, keyword0, lval, value)
-
-char *string;  /* character string containing <keyword>= <value> info */
-char *keyword0;  /* character string containing the name of the keyword
-                   the value of which is returned.  hget searches for a
-                   line beginning with this string.  if "[n]" or ",n" is
-		   present, the n'th token in the value is returned. */
-int lval;       /* Size of value in characters
-		   If negative, value ends at end of line */
-char *value;      /* String (returned) */
-{
-    char keyword[81];
-    char *pval, *str, *pkey, *pv;
-    char squot[2], dquot[2], lbracket[2], rbracket[2], comma[2];
-    char *lastval, *rval, *brack1, *brack2, *lastring, *iquot, *ival;
-    int ipar, i, lkey;
-
-    squot[0] = (char) 39;
-    squot[1] = (char) 0;
-    dquot[0] = (char) 34;
-    dquot[1] = (char) 0;
-    lbracket[0] = (char) 91;
-    lbracket[1] = (char) 0;
-    comma[0] = (char) 44;
-    comma[1] = (char) 0;
-    rbracket[0] = (char) 93;
-    rbracket[1] = (char) 0;
-    lastring = string + strlen (string);
-
-    /* Find length of variable name */
-    strncpy (keyword,keyword0, sizeof(keyword)-1);
-    brack1 = strsrch (keyword,lbracket);
-    if (brack1 == NULL)
-	brack1 = strsrch (keyword,comma);
-    if (brack1 != NULL) {
-	*brack1 = '\0';
-	brack1++;
-	}
-    lkey = strlen (keyword);
-
-    /* First check for the existence of the keyword in the string */
-    pkey = strcsrch (string, keyword);
-
-    /* If keyword has not been found, return 0 */
-    if (pkey == NULL)
-	return (0);
-
-    /* If it has been found, check for = or : and preceding characters */
-    pval = NULL;
-    while (pval == NULL) {
-
-	/* Must be at start of file or after control character or space */
-	if (pkey != string && *(pkey-1) > 32) {
-	    str = pkey;
-	    pval = NULL;
-	    }
-
-	/* Must have "=" or ":" as next nonspace character */
-	else {
-	    pv = pkey + lkey;
-	    while (*pv == ' ')
-		pv++;
-	    if (*pv != '=' && *pv != ':') {
-		str = pkey;
-		pval = NULL;
-		}
-
-	    /* If found, bump pointer past keyword, operator, and spaces */
-	    else {
-		pval = pv + 1;
-		while (*pval == '=' || *pval == ' ')
-		    pval++;
-		break;
-		}
-	    }
-	str = str + lkey;
-	if (str > lastring)
-	    break;
-	pkey = strcsrch (str, keyword);
-	if (pkey == NULL)
-	    break;
-	}
-    if (pval == NULL)
-	return (0);
-
-    /* Drop leading spaces */
-    while (*pval == ' ') pval++;
-
-    /* Pad quoted material with _; drop leading and trailing quotes */
-    iquot = NULL;
-    if (*pval == squot[0]) {
-	pval++;
-	iquot = strsrch (pval, squot);
-	}
-    if (*pval == dquot[0]) {
-	pval++;
-	iquot = strsrch (pval, dquot);
-	}
-    if (iquot != NULL) {
-	*iquot = (char) 0;
-	for (ival = pval; ival < iquot; ival++) {
-	    if (*ival == ' ')
-		*ival = '_';
-	    }
-	}
-
-    /* If keyword has brackets, figure out which token to extract */
-    if (brack1 != NULL) {
-        brack2 = strsrch (brack1,rbracket);
-        if (brack2 != NULL)
-            *brack2 = '\0';
-        ipar = atoi (brack1);
-	}
-    else
-	ipar = 1;
-
-    /* Move to appropriate token */
-    for (i = 1; i < ipar; i++) {
-	while (*pval != ' ' && *pval != '/' && pval < lastring)
-	    pval++;
-
-	/* Drop leading spaces  or / */
-	while (*pval == ' ' || *pval == '/')
-	    pval++;
-	}
-
-    /* Transfer token value to returned string */
-    rval = value;
-    if (lval < 0) {
-	lastval = value - lval - 1;
-	while (*pval != '\n' && pval < lastring && rval < lastval) {
-	    if (lval > 0 && *pval == ' ')
-		break;
-	    *rval++ = *pval++;
-	    }
-	}
-    else {
-	lastval = value + lval - 1;
-	while (*pval != '\n' && *pval != '/' &&
-	    pval < lastring && rval < lastval) {
-	    if (lval > 0 && *pval == ' ')
-		break;
-	    *rval++ = *pval++;
-	    }
-	}
-    if (rval < lastval)
-	*rval = (char) 0;
-    else
-	*lastval = 0;
-
-    return (1);
 }
 
 char sptbv[468]={"O5O8B0B0B0B1B1B1B2B2B2B3B3B3B4B5B5B6B6B6B7B7B8B8B8B9B9B9B9A0A0A0A0A0A0A0A0A0A2A2A2A2A2A2A2A2A5A5A5A5A6A7A7A7A7A7A7A7A7A7A7F0F0F0F0F0F0F0F2F2F2F2F2F2F2F5F5F5F5F5F5F5F5F5F8F8F8F8F8F8G0G5G5G2G2G2G3G3G4G4G5G5G5G6G6G6G6G6K6K6K6K6K7K7K7K7K7K7K7K7K7K7K7K7K7K7K8K8K8K8K8K8K8K8K8K8K8K8K8K8K8K8K8K8K8K5K5K5K5K5K6K6K6K6K6K6K6K7K7K7K7K7K7K7K8K8K8K8K9K9K9M0M0M0M0M0M0M1M1M1M1M1M2M2M2M2M3M3M4M4M5M5M5M2M2M2M3M3M4M4M5M5M5M6M6M6M6M6M6M6M6M6M7M7M7M7M7M7M7M7M7M7M7M7M7M7M8M8M8M8M8M8M8"};
@@ -3008,179 +2719,6 @@ vottail ()
     return;
 }
 
-
-/*    Polynomial least squares fitting program, almost identical to the
- *    one in Bevington, "Data Reduction and Error Analysis for the
- *    Physical Sciences," page 141.  The argument list was changed and
- *    the weighting removed.
- *      y = a(1) + a(2)*(x-x0) + a(3)*(x-x0)**2 + a(3)*(x-x0)**3 + . . .
- */
-
-static double determ();
-
-void
-polfit (x, y, x0, npts, nterms, a, stdev)
-
-double	*x;		/* Array of independent variable points */
-double	*y;		/* Array of dependent variable points */
-double	x0;		/* Offset to independent variable */
-int	npts;		/* Number of data points to fit */
-int	nterms;		/* Number of parameters to fit */
-double	*a;		/* Vector containing current fit values */
-double	*stdev; 	/* Standard deviation of fit (returned) */
-{
-    double sigma2sum;
-    double xterm,yterm,xi,yi;
-    double *sumx, *sumy;
-    double *array;
-    int i,j,k,l,n,nmax;
-    double delta;
-
-    /* accumulate weighted sums */
-    nmax = 2 * nterms - 1;
-    sumx = (double *) calloc (nmax, sizeof(double));
-    sumy = (double *) calloc (nterms, sizeof(double));
-    for (n = 0; n < nmax; n++)
-	sumx[n] = 0.0;
-    for (j = 0; j < nterms; j++)
-	sumy[j] = 0.0;
-    for (i = 0; i < npts; i++) {
-	xi = x[i] - x0;
-	yi = y[i];
-	xterm = 1.0;
-	for (n = 0; n < nmax; n++) {
-	    sumx[n] = sumx[n] + xterm;
-	    xterm = xterm * xi;
-	    }
-	yterm = yi;
-	for (n = 0; n < nterms; n++) {
-	    sumy[n] = sumy[n] + yterm;
-	    yterm = yterm * xi;
-	    }
-	}
-
-    /* Construct matrices and calculate coeffients */
-    array = (double *) calloc (nterms*nterms, sizeof(double));
-    for (j = 0; j < nterms; j++) {
-	for (k = 0; k < nterms; k++) {
-	    n = j + k;
-	    array[j+k*nterms] = sumx[n];
-	    }
-	}
-    delta = determ (array, nterms);
-    if (delta == 0.0) {
-	*stdev = 0.;
-	for (j = 0; j < nterms; j++)
-	    a[j] = 0. ;
-	free (array);
-	free (sumx);
-	free (sumy);
-	return;
-	}
-
-    for (l = 0; l < nterms; l++) {
-	for (j = 0; j < nterms; j++) {
-	    for (k = 0; k < nterms; k++) {
-		n = j + k;
-		array[j+k*nterms] = sumx[n];
-		}
-	    array[j+l*nterms] = sumy[j];
-	    }
-	a[l] = determ (array, nterms) / delta;
-	}
-
-    /* Calculate sigma */
-    sigma2sum = 0.0;
-    for (i = 0; i < npts; i++) {
-	yi = polcomp (x[i], x0, nterms, a);
-	sigma2sum = sigma2sum + ((y[i] - yi) * (y[i] - yi));
-	}
-    *stdev = sqrt (sigma2sum / (double) (npts - 1));
-
-    free (array);
-    free (sumx);
-    free (sumy);
-    return;
-}
-
-
-/*--- Calculate the determinant of a square matrix
- *    This subprogram destroys the input matrix array
- *    From Bevington, page 294.
- */
-
-static double
-determ (array, norder)
-
-double	*array;		/* Input matrix array */
-int	norder;		/* Order of determinant (degree of matrix) */
-
-{
-    double save, det;
-    int i,j,k,k1, zero;
-
-    det = 1.0;
-    for (k = 0; k < norder; k++) {
-
-	/* Interchange columns if diagonal element is zero */
-	if (array[k+k*norder] == 0) {
-	    zero = 1;
-	    for (j = k; j < norder; j++) {
-		if (array[k+j*norder] != 0.0)
-		    zero = 0;
-		}
-	    if (zero)
-		return (0.0);
-
-	    for (i = k; i < norder; i++) {
-		save = array[i+j*norder]; 
-		array[i+j*norder] = array[i+k*norder];
-		array[i+k*norder] = save ;
-		}
-	    det = -det;
-	    }
-
-	/* Subtract row k from lower rows to get diagonal matrix */
-	det = det * array[k+k*norder];
-	if (k < norder - 1) {
-	    k1 = k + 1;
-	    for (i = k1; i < norder; i++) {
-		for (j = k1; j < norder; j++) {
-		    array[i+j*norder] = array[i+j*norder] -
-				      (array[i+k*norder] * array[k+j*norder] /
-				      array[k+k*norder]);
-		    }
-		}
-	    }
-	}
-	return (det);
-}
-
-/* POLCOMP -- Polynomial evaluation
- *	Y = A(1) + A(2)*X + A(3)*X**2 + A(3)*X**3 + . . . */
-
-double
-polcomp (xi, x0, norder, a)
-
-double	xi;	/* Independent variable */
-double	x0;	/* Offset to independent variable */
-int	norder;	/* Number of coefficients */
-double	*a;	/* Vector containing coeffiecients */
-{
-    double xterm, x, y;
-    int iterm;
-
-    /* Accumulate polynomial value */
-    x = xi - x0;
-    y = 0.0;
-    xterm = 1.0;
-    for (iterm = 0; iterm < norder; iterm++) {
-	y = y + a[iterm] * xterm;
-	xterm = xterm + x;
-	}
-    return (y);
-}
-
 /* MOVEB -- Copy nbytes bytes from source+offs to dest+offd (any data type) */
 
 void
@@ -3342,4 +2880,30 @@ char *from, *last, *to;
  * Sep 30 2009	Add UCAC3 catalog
  * Oct 26 2009	Do not wrap in RefLim() if dra=360
  * Nov  6 2009	Add UCAC3 catalog to ProgCat()
+ * Nov 13 2009	Add UCAC3 and UCAC2 to CatMagName() and CatMagNum()
+ *
+ * Mar 31 2010	Fix south pole search
+ * Apr 06 2010	Add fillblank argument to agets()
+ * Apr 06 2010	In agets() search until keyword[: or =] or end of string
+ * Sep 14 2010	Add BSC radius of 7200 to CatRad() and number field of 4
+ *
+ * May 16 2012	Save maximum value in range data structure
+ * Jul 26 2012	Fix xterm computation in polcomp() from + to *
+ *		(found by Raymond Carlberg of U.Toronto)
+ * Oct 02 2012	Skip trailing right bracket in aget*()
+ * Oct 23 2012	Add "of" as possible connector in aget*()
+ *
+ * Feb 15 2013	Add UCAC4 catalog
+ * Sep 23 2013	Finish adding UCAC4 catalog
+ *
+ * Nov 25 2015	Add tab as an assignment character in agets()
+ *
+ * Jul 31 2018	Keep RA limits to +- 180 (suggested by Ed Los, Harvard)
+ *
+ * Oct 29 2019	Drop trailing commas as well as underscores and spaces
+ *
+ * Jul  6 2021	If keyword is surrounded by brackets, keep them.
+ * Aug  5 2021	Move range and string-parsing subroutines to fileutil.c
+ *
+ * Feb  1 2022	Move polynomial-fitting to fileutil.c
  */

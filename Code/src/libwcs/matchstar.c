@@ -1,8 +1,8 @@
 /*** File libwcs/matchstar.c
- *** July 20, 2009
- *** By Doug Mink, dmink@cfa.harvard.edu
+ *** June 9, 2016
+ *** By Jessica Mink, jmink@cfa.harvard.edu
  *** Harvard-Smithsonian Center for Astrophysics
- *** Copyright (C) 1996-2009
+ *** Copyright (C) 1996-2016
  *** Smithsonian Astrophysical Observatory, Cambridge, MA, USA
 
     This library is free software; you can redistribute it and/or
@@ -20,8 +20,8 @@
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
     Correspondence concerning WCSTools should be addressed as follows:
-           Internet email: dmink@cfa.harvard.edu
-           Postal address: Doug Mink
+           Internet email: jmink@cfa.harvard.edu
+           Postal address: Jessica Mink
                            Smithsonian Astrophysical Observatory
                            60 Garden St.
                            Cambridge, MA 02138 USA
@@ -808,7 +808,7 @@ int	debug;		/* Printed debugging information if not zero */
 	    if (getoken(&tokens, itok, token, 256)) {
 
 		/* Read RA, Dec, X, Y if first token has : in it */
-		if (strchr (token, ':') != NULL) {
+		if (isnum (token) == 3) {
 		    ra = str2ra (token);
 		    iytok = 4;
 		    if (getoken(&tokens, 2, token, 256))
@@ -827,7 +827,7 @@ int	debug;		/* Printed debugging information if not zero */
 			    }
 			}
 		    if (getoken(&tokens, iytok, token, 256)) {
-			if (isnum (token))
+			if (isnum (token) == 1 || isnum (token) == 2)
 			    y = atof (token);
 			else
 			    continue;
@@ -850,7 +850,7 @@ int	debug;		/* Printed debugging information if not zero */
 	    /* Image Y coordinate */
 	    itok++;
 	    if (getoken(&tokens, itok, token, 256)) {
-		if (isnum (token))
+		if (isnum (token) == 1 || isnum (token) == 2)
 		    y = atof (token);
 		else
 		    continue;
@@ -873,7 +873,7 @@ int	debug;		/* Printed debugging information if not zero */
 			    ra = ra + (atof (token) / 60.0);
 			    itok++;
 			    if (getoken(&tokens, itok, token, 256)) {
-				if (isnum (token))
+				if (isnum (token) == 1 || isnum (token) == 2)
 				    ra = ra + (atof (token) / 3600.0);
 				}
 			    }
@@ -910,7 +910,7 @@ int	debug;		/* Printed debugging information if not zero */
 				dec = dec + (atof (token) / 60.0);
 			    itok++;
 			    if (getoken(&tokens, itok, token, 256)) {
-				if (isnum (token)) {
+				if (isnum (token) == 1 || isnum (token) == 2) {
 				    if (ndec)
 					dec = dec - (atof (token) / 3600.0);
 				    else
@@ -969,7 +969,6 @@ int	debug;		/* Printed debugging information if not zero */
     extern double getsecpix();
     extern void getcenter(),getrefpix(),setdcenter(),setrefpix(),setsecpix();
 
-    dmatch = (double) nmatch;
 
     /* Too few hits */
     if (nmatch < 2) {
@@ -1045,11 +1044,16 @@ int	debug;		/* Printed debugging information if not zero */
 		}
 	    }
 	}
+    tx = tx + sbx[nmatch-1];
+    ty = ty + sby[nmatch-1];
+    tra = tra + gbra[nmatch-1];
+    tdec = tdec + gbdec[nmatch-1];
     
     /* Reset image center based on star matching */
     cra = -99.0;
     cdec = -99.0;
     getcenter (&cra, &cdec);
+    dmatch = (double) nmatch;
     if (cra == -99.0 && cdec == -99.0) {
 	cra = tra / dmatch;
 	cdec = tdec / dmatch;
@@ -2039,4 +2043,8 @@ int nitmax;
  *
  * Jul 20 2009	Fixed matched star wrap around RA = 0:00:00
  * Jul 20 2009	Fixed matched star wrap for bad matches
+ *
+ * Dec 13 2009	In WCSMatch(), add last x,y,ra,dec so means are means of all
+ *
+ * Jun  9 2016	Fix isnum() tests for added coloned times and dashed dates 
  */ 

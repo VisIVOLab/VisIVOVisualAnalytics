@@ -1,30 +1,30 @@
 /*** File libwcs/ucacread.c
- *** November 5, 2009
- *** By Doug Mink, dmink@cfa.harvard.edu
+ *** August 3, 2018
+ *** By Jessica Mink, jmink@cfa.harvard.edu
  *** Harvard-Smithsonian Center for Astrophysics
- *** Copyright (C) 2003-2009
+ *** Copyright (C) 2003-2018
  *** Smithsonian Astrophysical Observatory, Cambridge, MA, USA
 
-    This library is free software; you can redistribute it and/or
-    modify it under the terms of the GNU Lesser General Public
-    License as published by the Free Software Foundation; either
-    version 2 of the License, or (at your option) any later version.
+ This library is free software; you can redistribute it and/or
+ modify it under the terms of the GNU Lesser General Public
+ License as published by the Free Software Foundation; either
+ version 2 of the License, or (at your option) any later version.
 
-    This library is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-    Lesser General Public License for more details.
+ This library is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ Lesser General Public License for more details.
     
-    You should have received a copy of the GNU Lesser General Public
-    License along with this library; if not, write to the Free Software
-    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ You should have received a copy of the GNU Lesser General Public
+ License along with this library; if not, write to the Free Software
+ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
-    Correspondence concerning WCSTools should be addressed as follows:
-           Internet email: dmink@cfa.harvard.edu
-           Postal address: Doug Mink
-                           Smithsonian Astrophysical Observatory
-                           60 Garden St.
-                           Cambridge, MA 02138 USA
+ Correspondence concerning WCSTools should be addressed as follows:
+ Internet email: jmink@cfa.harvard.edu
+ Postal address: Jessica Mink
+ Smithsonian Astrophysical Observatory
+ 60 Garden St.
+ Cambridge, MA 02138 USA
 
  * ucacread()	Read UCAC Star Catalog stars in a rectangle on the sky
  * ucacrnum()	Read UCAC Star Catalog stars by number 
@@ -36,49 +36,106 @@
  * ucacstar (sc,st,zone,istar) Get UCAC catalog entry for one star
  */
 
-#include <unistd.h>
+//#include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <stdint.h>
 #include "fitsfile.h"
 #include "wcs.h"
 #include "wcscat.h"
 
-#define MAXZONE 100
+#ifndef _WIN32
+#include <unistd.h>
+#else
+#include "win_fixes.h"
+#endif
+
+#define MAXZONE 900
 #define ABS(a) ((a) < 0 ? (-(a)) : (a))
 
+/* #define UCAC_DEBUG 1 */
 typedef struct {
-    int rasec, decsec;
-    short cmag;
-    unsigned char era, edec, nobs, rflg, ncat, cflg;
-    short epra, epdec;
-    int rapm, decpm;
-    unsigned char erapm, edecpm, qrapm, qdecpm;
-    int id2m;
-    short jmag, hmag, kmag, qm, cc;
+  int rasec, decsec;
+  short cmag;
+  unsigned char era, edec, nobs, rflg, ncat, cflg;
+  short epra, epdec;
+  int rapm, decpm;
+  unsigned char erapm, edecpm, qrapm, qdecpm;
+  int id2m;
+  short jmag, hmag, kmag, qm, cc;
 } UCAC2star;
 
 typedef struct {
-    int rasec, decsec;
-    short mmag, amag, sigmag;
-    char objt, dsf;
-    short sigra, sigdec;
-    char na1, nu1, us1, cn1;
-    short cepra, cepdec;
-    int rapm, decpm;
-    short sigpmr, sigpmd;
-    int id2m;
-    short jmag, hmag, kmag;
-    char jq, hq, kq;
-    char e2mpho[3];
-    short bmag, rmag, imag;
-    char clbl;
-    char bq, rq, iq;
-    char catflg[10];
-    char g1, c1, leda, x2m;
-    int rn;
+  int rasec, decsec;
+  short mmag, amag, sigmag;
+  char objt, dsf;
+  short sigra, sigdec;
+  char na1, nu1, us1, cn1;
+  short cepra, cepdec;
+  int rapm, decpm;
+  short sigpmr, sigpmd;
+  int id2m;
+  short jmag, hmag, kmag;
+  char jq, hq, kq;
+  char e2mpho[3];
+  short bmag, rmag, imag;
+  char clbl;
+  char bq, rq, iq;
+  char catflg[10];
+  char g1, c1, leda, x2m;
+  int rn;
 } UCAC3star;
+/* The following is from ucac4.h */
+#pragma pack( 1)
+typedef struct {
+  int32_t ra, spd;         /* RA/dec at J2000.0,  ICRS,  in milliarcsec */
+  uint16_t magm, maga;     /* UCAC fit model & aperture mags, .001 mag */
+  uint8_t mag_sigma;
+  uint8_t obj_type, double_star_flag;
+  int8_t ra_sigma, dec_sigma;    /* sigmas in RA and dec at central epoch */
+  uint8_t n_ucac_total;      /* Number of UCAC observations of this star */
+  uint8_t n_ucac_used;      /* # UCAC observations _used_ for this star */
+  uint8_t n_cats_used;      /* # catalogs (epochs) used for prop motion */
+  uint16_t epoch_ra;        /* Central epoch for mean RA, minus 1900, .01y */
+  uint16_t epoch_dec;       /* Central epoch for mean DE, minus 1900, .01y */
+  int16_t pm_ra;            /* prop motion, .1 mas/yr = .01 arcsec/cy */
+  int16_t pm_dec;           /* prop motion, .1 mas/yr = .01 arcsec/cy */
+  int8_t pm_ra_sigma;       /* sigma in same units */
+  int8_t pm_dec_sigma;
+  uint32_t twomass_id;        /* 2MASS pts_key star identifier */
+  uint16_t mag_j, mag_h, mag_k;  /* 2MASS J, H, K_s mags,  in millimags */
+  uint8_t icq_flag[3];
+  uint8_t e2mpho[3];          /* 2MASS error photometry (in centimags) */
+  uint16_t apass_mag[5];      /* in millimags */
+  uint8_t apass_mag_sigma[5]; /* also in millimags */
+  uint8_t yale_gc_flags;      /* Yale SPM g-flag * 10 + c-flag */
+  uint32_t catalog_flags;
+  uint8_t leda_flag;          /* LEDA galaxy match flag */
+  uint8_t twomass_ext_flag;   /* 2MASS extended source flag */
+  uint32_t id_number;
+  uint16_t ucac2_zone;
+  uint32_t ucac2_number;
+} UCAC4star;
+#pragma pack( )
+/* Fields in the u4hpm.dat file */
+#define MAX_U4HPM_RECORDS                 50
+#define MAX_U4HPM_LINE 512
+typedef struct u4hpm {
+  int rnm;   /* unique star identifier (col. 51 main data) */
+  int zn;    /* UCAC4 zone number for this star */
+  int rnz;   /* unning record number along that zone for this star */
+  int pmrc;  /* actual proper motion in RA*cos(dec) [0.1 mas/yr] */
+  int pmd;   /* actual proper motion in Dec         [0.1 mas/yr] */
+  int ra;    /* col. 1 of main data file (redundant) */
+  int dec;   /* col. 2 of main data file (redundant) */
+  int maga;  /* col. 4 of main data file (redundant) */
+} U4HPM,*PU4HPM;
+
+
+int hpmLines = 0;
+U4HPM u4hpm_table[MAX_U4HPM_RECORDS];
 
 
 /* pathname of UCAC1 decompressed data files or search engine URL */
@@ -90,7 +147,14 @@ char ucac2path[64]="/data/astrocat/ucac2";
 /* pathname of UCAC3 decompressed data files or search engine URL */
 char ucac3path[64]="/data/astrocat/ucac3";
 
+/* pathname of UCAC4 decompressed data files or search engine URL */
+char ucac4path[64]="/data/astrocat/ucac4/u4b";
+
+/* Path name of UCAC4 proper motion catalog */
+char ucac4hpmpath[] = "/data/astrocat/ucac4/u4i/u4hpm.dat";
+
 char *ucacpath;
+char *hpmpath;
 static int ucat = 0;
 
 static double *gdist;	/* Array of distances to stars */
@@ -110,7 +174,7 @@ static void ucacswap2();
 
 int
 ucacread (refcatname,cra,cdec,dra,ddec,drad,dradi,distsort,sysout,eqout,epout,
-	  mag1,mag2,sortmag,nstarmax,gnum,gra,gdec,gpra,gpdec,gmag,gtype,nlog)
+          mag1,mag2,sortmag,nstarmax,gnum,gra,gdec,gpra,gpdec,gmag,gtype,nlog)
 
 char	*refcatname;	/* Name of catalog (UAC, USAC, UAC2, USAC2) */
 double	cra;		/* Search center J2000 right ascension in degrees */
@@ -124,14 +188,14 @@ int	sysout;		/* Search coordinate system */
 double	eqout;		/* Search coordinate equinox */
 double	epout;		/* Proper motion epoch (0.0 for no proper motion) */
 double	mag1,mag2;	/* Limiting magnitudes (none if equal) */
-int	sortmag;	/* Magnitude by which to sort (1 or 2) */
+int	sortmag;	/* Magnitude by which to sort (1-8) */
 int	nstarmax;	/* Maximum number of stars to be returned */
 double	*gnum;		/* Array of Guide Star numbers (returned) */
 double	*gra;		/* Array of right ascensions (returned) */
 double	*gdec;		/* Array of declinations (returned) */
 double  *gpra;          /* Array of right ascension proper motions (returned) */
 double  *gpdec;         /* Array of declination proper motions (returned) */
-double	**gmag;		/* Array of b and v magnitudes (returned) */
+double	**gmag;		/* Array of magnitudes (returned) */
 int	*gtype;		/* Array of object types (returned) */
 int	nlog;		/* 1 for diagnostics */
 {
@@ -149,7 +213,7 @@ int	nlog;		/* 1 for diagnostics */
     double epref = 2000.0;	/* Catalog epoch */
     double secmarg = 60.0;	/* Arcsec/century margin for proper motion */
     struct StarCat *starcat;	/* Star catalog data structure */
-    struct Star *star;		/* Single star cata structure */
+    struct Star *star;		/* Single star data structure */
     double errra, errdec, errpmr, errpmd;
     int nim, ncat;
     int verbose;
@@ -163,14 +227,18 @@ int	nlog;		/* 1 for diagnostics */
     int jtable,iwrap, nread;
     int pass;
     int zone;
-    int nmag, nmag1;
+    int nmag;
+    int lstr;
     double num, ra, dec, rapm, decpm, mag;
     double rra1, rra2, rdec1, rdec2;
     double rdist, ddist;
     char cstr[32], rastr[32], decstr[32];
     char ucacenv[16];
-    char *str;
+    char *str, *str1;
+    char *hpmfile;
 
+    hpmpath = 0;
+    str1 = 0;
     ntot = 0;
     if (nlog > 0)
 	verbose = 1;
@@ -179,38 +247,55 @@ int	nlog;		/* 1 for diagnostics */
 
     /* Set catalog code and path to catalog */
     if (strncmp (refcatname,"ucac2",5)==0 ||
-        strncmp (refcatname,"UCAC2",5)==0) {
+	strncmp (refcatname,"UCAC2",5)==0) {
 	ucat = UCAC2;
 	ucacpath = ucac2path;
 	strcpy (ucacenv, "UCAC2_PATH");
 	nmag = 4;
-	nmag1 = 4;
 	}
     else if (strncmp (refcatname,"ucac3",5)==0 ||
-        strncmp (refcatname,"UCAC3",5)==0) {
+	     strncmp (refcatname,"UCAC3",5)==0) {
 	ucat = UCAC3;
 	ucacpath = ucac3path;
 	strcpy (ucacenv, "UCAC3_PATH");
 	nmag = 8;
-	nmag1 = 12;
+	}
+    else if (strncmp (refcatname,"ucac4",5)==0 ||
+	     strncmp (refcatname,"UCAC4",5)==0) {
+	ucat = UCAC4;
+	ucacpath = ucac4path;
+	strcpy (ucacenv, "UCAC4_PATH");
+	nmag = 10;
+	/* UCAC4 high proper motion catalog */
+	hpmpath = ucac4hpmpath;
 	}
     else {
 	ucat = UCAC1;
 	ucacpath = ucac1path;
 	strcpy (ucacenv, "UCAC1_PATH");
 	nmag = 1;
-	nmag1 = 1;
 	}
 
     /* If pathname is set in environment, override local value */
-    if ((str = getenv (ucacenv)) != NULL )
+    if ((str = getenv (ucacenv)) != NULL ) {
 	ucacpath = str;
+	if (hpmpath) {
+	    lstr = strlen (ucacpath) + 16;
+	    str1 = (char *) calloc (lstr, sizeof (char));
+	    strcpy (str1, str);
+	    hpmfile = strrchr (str1, '/') + 1;
+	    strcpy (hpmfile, "u4i/u4hpm.dat");
+	    }
+	}
 
     /* If pathname is a URL, search and return */
     if (!strncmp (ucacpath, "http:",5)) {
+	if (str1) {
+	    free ((void *)str1);
+	    }
 	return (webread (ucacpath,refcatname,distsort,cra,cdec,dra,ddec,drad,
-			 dradi,sysout,eqout,epout,mag1,mag2,sortmag,nstarmax,
-			 gnum,gra,gdec,gpra,gpdec,gmag,gtype,nlog));
+                     dradi,sysout,eqout,epout,mag1,mag2,sortmag,nstarmax,
+                     gnum,gra,gdec,gpra,gpdec,gmag,gtype,nlog));
 	}
 
     wcscstr (cstr, sysout, eqout, epout);
@@ -224,7 +309,7 @@ int	nlog;		/* 1 for diagnostics */
 	mag1 = mag;
 	}
 
-   if (sortmag < 1)
+    if (sortmag < 1)
 	magsort = 0;
     else if (sortmag > nmag)
 	magsort = nmag - 1;
@@ -237,6 +322,9 @@ int	nlog;		/* 1 for diagnostics */
 	    free ((void *)gdist);
 	gdist = (double *) malloc (nstarmax * sizeof (double));
 	if (gdist == NULL) {
+	    if (str1) {
+		free ((void *)str1);
+		}
 	    fprintf (stderr,"UCACREAD:  cannot allocate separation array\n");
 	    return (0);
 	    }
@@ -261,6 +349,9 @@ int	nlog;		/* 1 for diagnostics */
     /* Find UCAC Star Catalog zones in which to search */
     nz = ucaczones (rdec1,rdec2,nrmax,zlist,verbose);
     if (nz <= 0) {
+	if (str1) {
+	    free ((void *)str1);
+	    }
 	fprintf (stderr,"UCACREAD:  no UCAC zone for %.2f-%.2f %.2f %.2f\n",
 		 rra1, rra2, rdec1, rdec2);
 	return (0);
@@ -280,7 +371,7 @@ int	nlog;		/* 1 for diagnostics */
 	if (drad != 0.0) {
 	    printf ("radmin	%.1f\n", drad*60.0);
 	    if (dradi > 0)
-		printf ("radimin	%.1f\n", dradi*60.0);
+        	printf ("radimin	%.1f\n", dradi*60.0);
 	    }
 	else {
 	    printf ("dramin	%.1f\n", dra*60.0* cosdeg (cdec));
@@ -317,6 +408,17 @@ int	nlog;		/* 1 for diagnostics */
 	    printf ("-----	-----	-----	------	------	");
 	    printf ("--	--	------\n");
 	    }
+	else if (ucat == UCAC4) {
+	    printf ("raerr 	decerr	magb 	magv 	magg 	");
+	    printf ("magr 	magi 	magj 	magj 	magk 	");
+	    printf ("pmra  	pmdec  	pmrerr 	pmderr 	");
+	    printf ("ni	nc	arcsec\n");
+	    printf ("----------	------------	------------	");
+	    printf ("------	------	-----	------	-----	");
+	    printf ("-----	-----	-----	-----	-----	");
+	    printf ("-----	-----	------	------	");
+	    printf ("--	--	------\n");
+	    }
 	}
 
     /* Loop through zone list */
@@ -325,19 +427,26 @@ int	nlog;		/* 1 for diagnostics */
 
 	/* Get path to zone catalog */
 	zone = zlist[iz];
+
+#ifdef UCAC_DEBUG
+	if (zone == 183) {
+	    fprintf(stderr,"at zone %d\n",zone);
+	    }
+#endif /* UCAC_DEBUG */
+
 	if ((starcat = ucacopen (zone)) != 0) {
 
 	    jstar = 0;
 	    jtable = 0;
 	    for (iwrap = 0; iwrap <= wrap; iwrap++) {
 
-		/* Find first star based on RA */
-		if (iwrap == 0 || wrap == 0) {
-		    istar1 = ucacsra (starcat, star, zone, rra1);
-		    if (istar > 5)
-			istar = istar - 5;
+        	/* Find first star based on RA */
+        	if (iwrap == 0 || wrap == 0) {
+          	    istar1 = ucacsra (starcat, star, zone, rra1);
+		    if (istar1 > 5)
+			istar1 = istar1 - 5;
 		    else
-			istar = 1;
+			istar1 = 1;
 		    }
 		else
 		    istar1 = 1;
@@ -393,7 +502,7 @@ int	nlog;		/* 1 for diagnostics */
 			nim = star->nimage;
 			ncat = star->ncat;
 			wcsconp (sysref, sysout, eqref, eqout, epref, epout,
-		 	     &ra, &dec, &rapm, &decpm);
+				 &ra, &dec, &rapm, &decpm);
 
 			/* Compute distance from search center */
 			if (drad > 0 || distsort)
@@ -415,38 +524,38 @@ int	nlog;		/* 1 for diagnostics */
 			    if (ddist > ddec)
 				pass = 0;
 			    rdist = wcsdist (cra,dec,ra,dec);
-		            if (rdist > dra)
+			    if (rdist > dra)
 				pass = 0;
 			    }
 			}
 
 		    if (pass) {
 
-		    /* Write star position and magnitude to stdout */
+			/* Write star position and magnitude to stdout */
 			if (nstarmax < 1) {
 			    ra2str (rastr, 31, ra, 3);
 			    dec2str (decstr, 31, dec, 2);
 			    dist = wcsdist (cra,cdec,ra,dec) * 3600.0;
 			    printf ("%010.6f	%s	%s", num,rastr,decstr);
-			    if (ucat == UCAC2 || ucat == UCAC3)
-				printf ("	%5.3f	%5.3f",
+			    if (ucat == UCAC2 || ucat == UCAC3 || ucat == UCAC4)
+			        printf ("	%5.3f	%5.3f",
 				errra * 3600.0 * cosdeg (dec), errdec * 3600.0);
-			    if (ucat == UCAC1)
+              		    if (ucat == UCAC1)
 				printf ("	%5.2f", mag);
 			    else
 				printf ("	%5.2f	%5.2f	%5.2f	%5.2f",
 					star->xmag[0], star->xmag[1],
 					star->xmag[2], star->xmag[3]);
-			    if (ucat == UCAC3)
+			    if (ucat == UCAC3 || ucat == UCAC4)
 				printf ("	%5.2f	%5.2f	%5.2f	%5.2f",
 					star->xmag[4], star->xmag[5],
 					star->xmag[6], star->xmag[7]);
 			    printf ("	%5.2f	%6.1f	%6.1f",
-				mag, rapm*3600000.0*cosdeg (dec), decpm*3600000.0);
+				    mag, rapm*3600000.0*cosdeg (dec),
+				    decpm*3600000.0);
 			    printf ("	%6.1f	%6.1f",
-				errpmr*3600000.0, errpmd*3600000.0);
-			    printf ("	%2d	%2d	%.3f\n",
-				nim, ncat, dist);
+				    errpmr*3600000.0, errpmd*3600000.0);
+			    printf ("	%2d	%2d	%.3f\n", nim, ncat, dist);
 			    }
 
 			/* Save star position and magnitude in table */
@@ -461,7 +570,6 @@ int	nlog;		/* 1 for diagnostics */
 			    else {
 				for (imag = 0; imag < nmag; imag++)
 				    gmag[imag][nstar] = star->xmag[imag];
-
 				gmag[nmag][nstar] = star->errra;
 				gmag[nmag+1][nstar] = star->errdec;
 				gmag[nmag+2][nstar] = star->errpmr;
@@ -493,11 +601,11 @@ int	nlog;		/* 1 for diagnostics */
 				else {
 				    for (imag = 0; imag < nmag; imag++)
 					gmag[imag][farstar] = star->xmag[imag];
-					gmag[nmag][farstar] = star->errra;
-					gmag[nmag+1][farstar] = star->errdec;
-					gmag[nmag+2][farstar] = star->errpmr;
-					gmag[nmag+3][farstar] = star->errpmd;
-					gtype[farstar] = (1000 * nim) + ncat;
+				    gmag[nmag][farstar] = star->errra;
+				    gmag[nmag+1][farstar] = star->errdec;
+				    gmag[nmag+2][farstar] = star->errpmr;
+				    gmag[nmag+3][farstar] = star->errpmd;
+				    gtype[farstar] = (1000 * nim) + ncat;
 				    }
 				gdist[farstar] = dist;
 
@@ -531,9 +639,9 @@ int	nlog;		/* 1 for diagnostics */
 				gtype[faintstar] = (1000 * nim) + ncat;
 				}
 			    gdist[faintstar] = dist;
-			    faintmag = 0.0;
 
 			    /* Find new faintest star */
+			    faintmag = 0.0;
 			    for (i = 0; i < nstarmax; i++) {
 				if (gmag[magsort][i] > faintmag) {
 				    faintmag = gmag[magsort][i];
@@ -545,7 +653,7 @@ int	nlog;		/* 1 for diagnostics */
 			nstar++;
 			if (nlog == 1)
 			    fprintf (stderr,"UCACREAD: %11.6f: %9.5f %9.5f %5.2f\n",
-				 num,ra,dec,mag);
+				     num,ra,dec,mag);
 
 			/* End of accepted star processing */
 			}
@@ -565,14 +673,14 @@ int	nlog;		/* 1 for diagnostics */
 	    /* End of successful zone file loop */
 	    ntot = ntot + starcat->nstars;
 	    if (nlog > 0)
-		fprintf (stderr,"UCACREAD: %4d / %4d: %5d / %5d  / %5d sources from zone %4d    \n",
-		 	 iz+1,nz,nstar,jstar,starcat->nstars,zlist[iz]);
+        fprintf (stderr,"UCACREAD: %4d / %4d: %5d / %5d  / %5d sources from zone %4d    \n",
+                 iz+1,nz,nstar,jstar,starcat->nstars,zlist[iz]);
 
 	    /* Close region input file */
 	    ucacclose (starcat);
 	    }
 
-	/* End of zone loop */
+    /* End of zone loop */
 	}
 
     /* Summarize transfer */
@@ -585,6 +693,9 @@ int	nlog;		/* 1 for diagnostics */
 	    fprintf (stderr,"UCACREAD: %d stars found; only %d returned\n",
 		     nstar,nstarmax);
 	}
+    if (str1) {
+	free ((void *)str1);
+	}
     return (nstar);
 }
 
@@ -592,21 +703,21 @@ int	nlog;		/* 1 for diagnostics */
 
 int
 ucacrnum (refcatname,nstars,sysout,eqout,epout,
-	 gnum,gra,gdec,gpra,gpdec,gmag,gtype,nlog)
+          gnum,gra,gdec,gpra,gpdec,gmag,gtype,nlog)
 
-char	*refcatname;	/* Name of catalog (UAC, USAC, UAC2, USAC2) */
-int	nstars;		/* Number of stars to find */
-int	sysout;		/* Search coordinate system */
-double	eqout;		/* Search coordinate equinox */
-double	epout;		/* Proper motion epoch (0.0 for no proper motion) */
-double	*gnum;		/* Array of Guide Star numbers (returned) */
-double	*gra;		/* Array of right ascensions (returned) */
-double	*gdec;		/* Array of declinations (returned) */
-double  *gpra;          /* Array of right ascension proper motions (returned) */
-double  *gpdec;         /* Array of declination proper motions (returned) */
-double	**gmag;		/* Array of B and V magnitudes (returned) */
-int	*gtype;		/* Array of object types (returned) */
-int	nlog;		/* 1 for diagnostics */
+     char	*refcatname;	/* Name of catalog (UAC, USAC, UAC2, USAC2) */
+     int	nstars;		/* Number of stars to find */
+     int	sysout;		/* Search coordinate system */
+     double	eqout;		/* Search coordinate equinox */
+     double	epout;		/* Proper motion epoch (0.0 for no proper motion) */
+     double	*gnum;		/* Array of Guide Star numbers (returned) */
+     double	*gra;		/* Array of right ascensions (returned) */
+     double	*gdec;		/* Array of declinations (returned) */
+     double  *gpra;          /* Array of right ascension proper motions (returned) */
+     double  *gpdec;         /* Array of declination proper motions (returned) */
+     double	**gmag;		/* Array of B and V magnitudes (returned) */
+     int	*gtype;		/* Array of object types (returned) */
+     int	nlog;		/* 1 for diagnostics */
 {
     int sysref=WCS_J2000;	/* Catalog coordinate system */
     double eqref=2000.0;	/* Catalog equinox */
@@ -615,10 +726,10 @@ int	nlog;		/* 1 for diagnostics */
     struct Star *star;
     char *str;
     char ucacenv[16];
-
+  
     int verbose;
     int zone, zone0;
-    int jstar, imag, nmag, nmag1;
+    int jstar, imag, nmag;
     int istar, nstar;
     double num, ra, dec, rapm, decpm, mag;
 
@@ -628,28 +739,32 @@ int	nlog;		/* 1 for diagnostics */
 	verbose = 0;
 
     /* Set catalog code and path to catalog */
+    if (strncmp (refcatname,"ucac4",5)==0 ||
+	strncmp (refcatname,"UCAC4",5)==0) {
+	ucat = UCAC4;
+	ucacpath = ucac4path;
+	strcpy (ucacenv, "UCAC4_PATH");
+	nmag = 8;
+	}
     if (strncmp (refcatname,"ucac3",5)==0 ||
-        strncmp (refcatname,"UCAC3",5)==0) {
+	strncmp (refcatname,"UCAC3",5)==0) {
 	ucat = UCAC3;
 	ucacpath = ucac3path;
 	strcpy (ucacenv, "UCAC3_PATH");
 	nmag = 8;
-	nmag1 = 12;
 	}
     else if (strncmp (refcatname,"ucac2",5)==0 ||
-        strncmp (refcatname,"UCAC2",5)==0) {
+	     strncmp (refcatname,"UCAC2",5)==0) {
 	ucat = UCAC2;
 	ucacpath = ucac2path;
 	strcpy (ucacenv, "UCAC2_PATH");
 	nmag = 4;
-	nmag1 = 4;
 	}
     else {
 	ucat = UCAC1;
 	ucacpath = ucac1path;
 	strcpy (ucacenv, "UCAC1_PATH");
 	nmag = 1;
-	nmag1 = 1;
 	}
 
     /* If pathname is set in environment, override local value */
@@ -668,7 +783,7 @@ int	nlog;		/* 1 for diagnostics */
     zone0 = 0;
     starcat = NULL;
 
-/* Loop through star list */
+    /* Loop through star list */
     for (jstar = 0; jstar < nstars; jstar++) {
 	zone = (int) (gnum[jstar] + 0.0000001);
 
@@ -680,7 +795,7 @@ int	nlog;		/* 1 for diagnostics */
 		    ucacclose (starcat);
 		starcat = ucacopen (zone);
 		}
-    	    if (starcat == NULL) {
+	    if (starcat == NULL) {
 		fprintf (stderr,"UCACRNUM: Zone %d file not found\n", zone);
 		return (0);
 		}
@@ -709,7 +824,7 @@ int	nlog;		/* 1 for diagnostics */
 	    rapm = star->rapm;
 	    decpm = star->decpm;
 	    wcsconp (sysref, sysout, eqref, eqout, epref, epout,
-		     &ra, &dec, &rapm, &decpm);
+               &ra, &dec, &rapm, &decpm);
 
 	    /* Magnitude */
 	    mag = star->xmag[0];
@@ -721,7 +836,7 @@ int	nlog;		/* 1 for diagnostics */
 	    gpra[jstar] = rapm;
 	    gpdec[jstar] = decpm;
 	    gmag[0][jstar] = mag;
-    	    gtype[jstar] = (1000 * star->nimage) + star->ncat;
+	    gtype[jstar] = (1000 * star->nimage) + star->ncat;
 	    if (ucat == UCAC1)
 		gmag[0][jstar] = star->xmag[0];
 	    else {
@@ -734,36 +849,49 @@ int	nlog;		/* 1 for diagnostics */
 		gtype[jstar] = (1000 * star->nimage) + star->ncat;
 		}
 	    if (nlog == 1) {
-		if (ucat == UCAC1)
-		    fprintf (stderr,"UCACRNUM: %11.6f: %9.5f %9.5f %5.2f %s  \n",
-			     num, ra, dec, mag, star->isp);
-		else if (ucat == UCAC2) {
-		    fprintf (stderr,"UCACRNUM: %11.6f: %9.5f %9.5f %5.2f",
-			     num, ra, dec, star->xmag[0]);
-		    fprintf (stderr," %5.2f %5.2f %5.2f %d %d",
-			     star->xmag[1],star->xmag[2],star->xmag[3]);
-		    fprintf (stderr," %d %d\n",star->nimage,star->ncat);
+        if (ucat == UCAC1)
+          fprintf (stderr,"UCACRNUM: %11.6f: %9.5f %9.5f %5.2f %s  \n",
+                   num, ra, dec, mag, star->isp);
+        else if (ucat == UCAC2) {
+          fprintf (stderr,"UCACRNUM: %11.6f: %9.5f %9.5f %5.2f",
+                   num, ra, dec, star->xmag[0]);
+          fprintf (stderr," %5.2f %5.2f %5.2f",
+                   star->xmag[1],star->xmag[2],star->xmag[3]);
+          fprintf (stderr," %d %d\n",star->nimage,star->ncat);
 		    }
-		else
-		    fprintf (stderr,"UCACRNUM: %11.6f: %9.5f %9.5f %5.2f %5.2f",
-			     num, ra, dec, star->xmag[0],star->xmag[1]);
-		    fprintf (stderr," %5.2f %5.2f %5.2f",
-			     star->xmag[2], star->xmag[3], star->xmag[4]);
-		    fprintf (stderr," %5.2f %5.2f %5.2f",
-			     star->xmag[5], star->xmag[6], star->xmag[7]);
-		    fprintf (stderr," %d %d\n",star->nimage,star->ncat);
-		}
-	    }
+        else if (ucat == UCAC3) {
+          fprintf (stderr,"UCACRNUM: %11.6f: %9.5f %9.5f %5.2f %5.2f",
+                   num, ra, dec, star->xmag[0],star->xmag[1]);
+          fprintf (stderr," %5.2f %5.2f %5.2f",
+                   star->xmag[2], star->xmag[3], star->xmag[4]);
+          fprintf (stderr," %5.2f %5.2f %5.2f",
+                   star->xmag[5], star->xmag[6], star->xmag[7]);
+          fprintf (stderr," %d %d\n",star->nimage,star->ncat);
+        }
+        else if (ucat == UCAC4) {
+          fprintf (stderr,"UCACRNUM: %11.6f: %9.5f %9.5f %5.2f %5.2f",
+                   num, ra, dec, star->xmag[0],star->xmag[1]);
+          fprintf (stderr," %5.2f %5.2f %5.2f",
+                   star->xmag[2], star->xmag[3], star->xmag[4]);
+          fprintf (stderr," %5.2f %5.2f %5.2f",
+                   star->xmag[5], star->xmag[6], star->xmag[7]);
+          fprintf (stderr," %d %d\n",star->nimage,star->ncat);
+        } else {
+          fprintf(stderr,"ucacread CATALOG NUMBER ERROR %d in line %d\n",ucat,__LINE__);
+          exit(-1);
+        }
+      }
+    }
 
-	/* End of star loop */
-	}
+    /* End of star loop */
+  }
 
-/* Summarize search */
-    ucacclose (starcat);
-    if (nlog > 0)
-	fprintf (stderr,"UCACRNUM: %d / %d found\n",nstar,starcat->nstars);
+  /* Summarize search */
+  ucacclose (starcat);
+  if (nlog > 0)
+    fprintf (stderr,"UCACRNUM: %d / %d found\n",nstar,starcat->nstars);
 
-    return (nstars);
+  return (nstars);
 }
 
 
@@ -772,272 +900,278 @@ int	nlog;		/* 1 for diagnostics */
 int
 ucacbin (refcatname, wcs, header, image, mag1, mag2, sortmag, magscale, nlog)
 
-char	*refcatname;	/* Name of catalog (UAC, USAC, UAC2, USAC2) */
-struct WorldCoor *wcs;	/* World coordinate system for image */
-char	*header;	/* FITS header for output image */
-char	*image;		/* Output FITS image */
-double	mag1,mag2;	/* Limiting magnitudes (none if equal) */
-int	sortmag;	/* Magnitude by which to sort (1 or 2) */
-double	magscale;	/* Scaling factor for magnitude to pixel flux
-			 * (number of catalog objects per bin if 0) */
-int	nlog;		/* 1 for diagnostics */
+     char	*refcatname;	/* Name of catalog (UAC, USAC, UAC2, USAC2) */
+     struct WorldCoor *wcs;	/* World coordinate system for image */
+     char	*header;	/* FITS header for output image */
+     char	*image;		/* Output FITS image */
+     double	mag1,mag2;	/* Limiting magnitudes (none if equal) */
+     int	sortmag;	/* Magnitude by which to sort (1 or 2) */
+     double	magscale;	/* Scaling factor for magnitude to pixel flux
+                       * (number of catalog objects per bin if 0) */
+     int	nlog;		/* 1 for diagnostics */
 {
-    double cra;		/* Search center J2000 right ascension in degrees */
-    double cdec;	/* Search center J2000 declination in degrees */
-    double dra;		/* Search half width in right ascension in degrees */
-    double ddec;	/* Search half-width in declination in degrees */
-    int sysout;		/* Search coordinate system */
-    double eqout;	/* Search coordinate equinox */
-    double epout;	/* Proper motion epoch (0.0 for no proper motion) */
-    double ra1,ra2;	/* Limiting right ascensions of region in degrees */
-    double dec1,dec2;		/* Limiting declinations of region in degrees */
-    int nz;			/* Number of UCAC regions in search */
-    int zlist[MAXZONE];		/* List of region numbers */
-    int sysref = WCS_J2000;	/* Catalog coordinate system */
-    double eqref = 2000.0;	/* Catalog equinox */
-    double epref = 2000.0;	/* Catalog epoch */
-    double secmarg = 60.0;	/* Arcsec/century margin for proper motion */
-    struct StarCat *starcat;	/* Star catalog data structure */
-    struct Star *star;		/* Single star cata structure */
-    int verbose;
-    int wrap;
-    int ix, iy, iz;
-    int magsort;
-    int jstar;
-    int nrmax = MAXZONE;
-    int nstar, ntot;
-    int istar, istar1, istar2;
-    int jtable,iwrap, nread;
-    int pass;
-    int zone;
-    double num, ra, dec, rapm, decpm, mag;
-    double rra1, rra2, rdec1, rdec2;
-    double rdist, ddist;
-    char cstr[32];
-    char ucacenv[16];
-    char *str;
-    double xpix, ypix, flux;
-    int offscl;
-    int bitpix, w, h;   /* Image bits/pixel and pixel width and height */
-    double logt = log(10.0);
+  double cra;		/* Search center J2000 right ascension in degrees */
+  double cdec;	/* Search center J2000 declination in degrees */
+  double dra;		/* Search half width in right ascension in degrees */
+  double ddec;	/* Search half-width in declination in degrees */
+  int sysout;		/* Search coordinate system */
+  double eqout;	/* Search coordinate equinox */
+  double epout;	/* Proper motion epoch (0.0 for no proper motion) */
+  double ra1,ra2;	/* Limiting right ascensions of region in degrees */
+  double dec1,dec2;		/* Limiting declinations of region in degrees */
+  int nz;			/* Number of UCAC regions in search */
+  int zlist[MAXZONE];		/* List of region numbers */
+  int sysref = WCS_J2000;	/* Catalog coordinate system */
+  double eqref = 2000.0;	/* Catalog equinox */
+  double epref = 2000.0;	/* Catalog epoch */
+  double secmarg = 60.0;	/* Arcsec/century margin for proper motion */
+  struct StarCat *starcat;	/* Star catalog data structure */
+  struct Star *star;		/* Single star cata structure */
+  int verbose;
+  int wrap;
+  int ix, iy, iz;
+  int magsort;
+  int jstar;
+  int nrmax = MAXZONE;
+  int nstar, ntot;
+  int istar, istar1, istar2;
+  int jtable,iwrap, nread;
+  int pass;
+  int zone;
+  double num, ra, dec, rapm, decpm, mag;
+  double rra1, rra2, rdec1, rdec2;
+  double rdist, ddist;
+  char cstr[32];
+  char ucacenv[16];
+  char *str;
+  double xpix, ypix, flux;
+  int offscl;
+  int bitpix, w, h;   /* Image bits/pixel and pixel width and height */
+  double logt = log(10.0);
 
-    ntot = 0;
-    if (nlog > 0)
-	verbose = 1;
+  ntot = 0;
+  if (nlog > 0)
+    verbose = 1;
+  else
+    verbose = 0;
+
+  /* Set catalog code and path to catalog */
+  if (strncmp (refcatname,"ucac4",5)==0 ||
+      strncmp (refcatname,"UCAC4",5)==0) {
+    ucat = UCAC4;
+    ucacpath = ucac4path;
+    strcpy (ucacenv, "UCAC4_PATH");
+  }
+  if (strncmp (refcatname,"ucac3",5)==0 ||
+      strncmp (refcatname,"UCAC3",5)==0) {
+    ucat = UCAC3;
+    ucacpath = ucac3path;
+    strcpy (ucacenv, "UCAC3_PATH");
+  }
+  else if (strncmp (refcatname,"ucac2",5)==0 ||
+           strncmp (refcatname,"UCAC2",5)==0) {
+    ucat = UCAC2;
+    ucacpath = ucac2path;
+    strcpy (ucacenv, "UCAC2_PATH");
+  }
+  else {
+    ucat = UCAC1;
+    ucacpath = ucac1path;
+    strcpy (ucacenv, "UCAC1_PATH");
+  }
+
+  /* If pathname is set in environment, override local value */
+  if ((str = getenv (ucacenv)) != NULL )
+    ucacpath = str;
+
+  /* Set image parameters */
+  bitpix = 0;
+  (void)hgeti4 (header, "BITPIX", &bitpix);
+  w = 0;
+  (void)hgeti4 (header, "NAXIS1", &w);
+  h = 0;
+  (void)hgeti4 (header, "NAXIS2", &h);
+
+  /* Set catalog search limits from image WCS information */
+  sysout = wcs->syswcs;
+  eqout = wcs->equinox;
+  epout = wcs->epoch;
+  wcscstr (cstr, sysout, eqout, epout);
+  wcssize (wcs, &cra, &cdec, &dra, &ddec);
+  SearchLim (cra,cdec,dra,ddec,sysout,&ra1,&ra2,&dec1,&dec2,verbose);
+
+  /* Make mag1 always the smallest magnitude */
+  if (mag2 < mag1) {
+    mag = mag2;
+    mag2 = mag1;
+    mag1 = mag;
+  }
+
+  if (sortmag < 1)
+    magsort = 0;
+  else if (sortmag > 4)
+    magsort = 3;
+  else
+    magsort = sortmag - 1;
+
+  /* Allocate catalog entry buffer */
+  star = (struct Star *) calloc (1, sizeof (struct Star));
+  star->num = 0.0;
+
+  nstar = 0;
+  jstar = 0;
+
+  /* Get RA and Dec limits in catalog (J2000) coordinates */
+  rra1 = ra1;
+  rra2 = ra2;
+  rdec1 = dec1;
+  rdec2 = dec2;
+  RefLim (cra,cdec,dra,ddec,sysout,sysref,eqout,eqref,epout,epref,secmarg,
+          &rra1, &rra2, &rdec1, &rdec2, &wrap, verbose);
+
+  /* Find UCAC Star Catalog zones in which to search */
+  nz = ucaczones (rdec1,rdec2,nrmax,zlist,verbose);
+  if (nz <= 0) {
+    fprintf (stderr,"UCACBIN:  no UCAC zone for %.2f-%.2f %.2f %.2f\n",
+             rra1, rra2, rdec1, rdec2);
+    return (0);
+  }
+
+  /* Loop through zone list */
+  nstar = 0;
+  for (iz = 0; iz < nz; iz++) {
+
+    /* Get path to zone catalog */
+    zone = zlist[iz];
+    if ((starcat = ucacopen (zone)) != 0) {
+
+      jstar = 0;
+      jtable = 0;
+      for (iwrap = 0; iwrap <= wrap; iwrap++) {
+
+        /* Find first star based on RA */
+        if (iwrap == 0 || wrap == 0)
+          istar1 = ucacsra (starcat, star, zone, rra1);
+        else
+          istar1 = 1;
+
+        /* Find last star based on RA */
+        if (iwrap == 1 || wrap == 0)
+          istar2 = ucacsra (starcat, star, zone, rra2);
+        else
+          istar2 = starcat->nstars;
+
+        if (istar1 == 0 || istar2 == 0)
+          break;
+
+        nread = istar2 - istar1 + 1;
+
+        /* Loop through zone catalog for this region */
+        for (istar = istar1; istar <= istar2; istar++) {
+          jtable ++;
+
+          if (ucacstar (starcat, star, zone, istar)) {
+            fprintf(stderr,"UCACBIN: Cannot read star %d\n",istar);
+            break;
+          }
+
+          /* ID number */
+          num = star->num;
+
+          /* Magnitude */
+          mag = star->xmag[magsort];
+
+          /* Check magnitude limits */
+          pass = 1;
+          if (mag1 != mag2 && (mag < mag1 || mag > mag2))
+            pass = 0;
+
+          /* Check position limits */
+          if (pass) {
+
+            /* Get position in output coordinate system */
+            rapm = star->rapm;
+            decpm = star->decpm;
+            ra = star->ra;
+            dec = star->dec;
+            wcsconp (sysref, sysout, eqref, eqout, epref, epout,
+                     &ra, &dec, &rapm, &decpm);
+
+            /* Check distance along RA and Dec axes */
+            ddist = wcsdist (cra,cdec,cra,dec);
+            if (ddist > ddec)
+              pass = 0;
+            rdist = wcsdist (cra,dec,ra,dec);
+            if (rdist > dra)
+              pass = 0;
+          }
+
+          /* Save star in FITS image */
+          if (pass) {
+            wcs2pix (wcs, ra, dec, &xpix, &ypix, &offscl);
+            if (!offscl) {
+              if (magscale > 0.0)
+                flux = magscale * exp (logt * (-mag / 2.5));
+              else
+                flux = 1.0;
+              ix = (int) (xpix + 0.5);
+              iy = (int) (ypix + 0.5);
+              addpix1 (image, bitpix, w,h, 0.0,1.0, xpix,ypix, flux);
+              nstar++;
+              jstar++;
+            }
+            else {
+              ix = 0;
+              iy = 0;
+            }
+            if (nlog == 1) {
+              fprintf (stderr,"UCACBIN: %11.6f: %9.5f %9.5f %s",
+                       num,ra,dec,cstr);
+              if (magscale > 0.0)
+                fprintf (stderr, " %5.2f", mag);
+              if (!offscl)
+                flux = getpix1 (image, bitpix, w, h, 0.0, 1.0, ix, iy);
+              else
+                flux = 0.0;
+              fprintf (stderr," (%d,%d): %f\n", ix, iy, flux);
+            }
+
+            /* End of accepted star processing */
+          }
+
+          /* Log operation */
+          jstar++;
+          if (nlog > 0 && istar%nlog == 0)
+            fprintf (stderr,"UCACBIN: %5d / %5d / %5d sources\r",
+                     nstar,jstar,starcat->nstars);
+
+          /* End of star loop */
+        }
+
+        /* End of 0:00 RA wrap loop */
+      }
+
+      /* End of successful zone file loop */
+      ntot = ntot + starcat->nstars;
+      if (nlog > 0)
+        fprintf (stderr,"UCACBIN: %4d / %4d: %5d / %5d  / %5d sources from zone %4d    \n",
+                 iz+1,nz,nstar,jstar,starcat->nstars,zlist[iz]);
+
+      /* Close region input file */
+      ucacclose (starcat);
+    }
+
+    /* End of zone loop */
+  }
+
+  /* Summarize transfer */
+  if (nlog > 0) {
+    if (nz > 1)
+      fprintf (stderr,"UCACBIN: %d zones: %d / %d found\n",nz,nstar,ntot);
     else
-	verbose = 0;
-
-    /* Set catalog code and path to catalog */
-    if (strncmp (refcatname,"ucac3",5)==0 ||
-        strncmp (refcatname,"UCAC3",5)==0) {
-	ucat = UCAC3;
-	ucacpath = ucac3path;
-	strcpy (ucacenv, "UCAC3_PATH");
-	}
-   else if (strncmp (refcatname,"ucac2",5)==0 ||
-        strncmp (refcatname,"UCAC2",5)==0) {
-	ucat = UCAC2;
-	ucacpath = ucac2path;
-	strcpy (ucacenv, "UCAC2_PATH");
-	}
-    else {
-	ucat = UCAC1;
-	ucacpath = ucac1path;
-	strcpy (ucacenv, "UCAC1_PATH");
-	}
-
-    /* If pathname is set in environment, override local value */
-    if ((str = getenv (ucacenv)) != NULL )
-	ucacpath = str;
-
-    /* Set image parameters */
-    bitpix = 0;
-    (void)hgeti4 (header, "BITPIX", &bitpix);
-    w = 0;
-    (void)hgeti4 (header, "NAXIS1", &w);
-    h = 0;
-    (void)hgeti4 (header, "NAXIS2", &h);
-
-    /* Set catalog search limits from image WCS information */
-    sysout = wcs->syswcs;
-    eqout = wcs->equinox;
-    epout = wcs->epoch;
-    wcscstr (cstr, sysout, eqout, epout);
-    wcssize (wcs, &cra, &cdec, &dra, &ddec);
-    SearchLim (cra,cdec,dra,ddec,sysout,&ra1,&ra2,&dec1,&dec2,verbose);
-
-    /* Make mag1 always the smallest magnitude */
-    if (mag2 < mag1) {
-	mag = mag2;
-	mag2 = mag1;
-	mag1 = mag;
-	}
-
-   if (sortmag < 1)
-	magsort = 0;
-    else if (sortmag > 4)
-	magsort = 3;
-    else
-	magsort = sortmag - 1;
-
-    /* Allocate catalog entry buffer */
-    star = (struct Star *) calloc (1, sizeof (struct Star));
-    star->num = 0.0;
-
-    nstar = 0;
-    jstar = 0;
-
-    /* Get RA and Dec limits in catalog (J2000) coordinates */
-    rra1 = ra1;
-    rra2 = ra2;
-    rdec1 = dec1;
-    rdec2 = dec2;
-    RefLim (cra,cdec,dra,ddec,sysout,sysref,eqout,eqref,epout,epref,secmarg,
-	    &rra1, &rra2, &rdec1, &rdec2, &wrap, verbose);
-
-    /* Find UCAC Star Catalog zones in which to search */
-    nz = ucaczones (rdec1,rdec2,nrmax,zlist,verbose);
-    if (nz <= 0) {
-	fprintf (stderr,"UCACBIN:  no UCAC zone for %.2f-%.2f %.2f %.2f\n",
-		 rra1, rra2, rdec1, rdec2);
-	return (0);
-	}
-
-    /* Loop through zone list */
-    nstar = 0;
-    for (iz = 0; iz < nz; iz++) {
-
-	/* Get path to zone catalog */
-	zone = zlist[iz];
-	if ((starcat = ucacopen (zone)) != 0) {
-
-	    jstar = 0;
-	    jtable = 0;
-	    for (iwrap = 0; iwrap <= wrap; iwrap++) {
-
-		/* Find first star based on RA */
-		if (iwrap == 0 || wrap == 0)
-		    istar1 = ucacsra (starcat, star, zone, rra1);
-		else
-		    istar1 = 1;
-
-		/* Find last star based on RA */
-		if (iwrap == 1 || wrap == 0)
-		    istar2 = ucacsra (starcat, star, zone, rra2);
-		else
-		    istar2 = starcat->nstars;
-
-		if (istar1 == 0 || istar2 == 0)
-		    break;
-
-		nread = istar2 - istar1 + 1;
-
-		/* Loop through zone catalog for this region */
-		for (istar = istar1; istar <= istar2; istar++) {
-		    jtable ++;
-
-		    if (ucacstar (starcat, star, zone, istar)) {
-			fprintf(stderr,"UCACBIN: Cannot read star %d\n",istar);
-			break;
-			}
-
-		    /* ID number */
-		    num = star->num;
-
-		    /* Magnitude */
-		    mag = star->xmag[magsort];
-
-		    /* Check magnitude limits */
-		    pass = 1;
-		    if (mag1 != mag2 && (mag < mag1 || mag > mag2))
-			pass = 0;
-
-		    /* Check position limits */
-		    if (pass) {
-
-			/* Get position in output coordinate system */
-			rapm = star->rapm;
-			decpm = star->decpm;
-			ra = star->ra;
-			dec = star->dec;
-			wcsconp (sysref, sysout, eqref, eqout, epref, epout,
-		 	     &ra, &dec, &rapm, &decpm);
-
-			/* Check distance along RA and Dec axes */
-			ddist = wcsdist (cra,cdec,cra,dec);
-			if (ddist > ddec)
-			    pass = 0;
-			rdist = wcsdist (cra,dec,ra,dec);
-		        if (rdist > dra)
-			    pass = 0;
-			}
-
-		    /* Save star in FITS image */
-		    if (pass) {
-			wcs2pix (wcs, ra, dec, &xpix, &ypix, &offscl);
-			if (!offscl) {
-			    if (magscale > 0.0)
-				flux = magscale * exp (logt * (-mag / 2.5));
-			    else
-				flux = 1.0;
-			    ix = (int) (xpix + 0.5);
-			    iy = (int) (ypix + 0.5);
-			    addpix1 (image, bitpix, w,h, 0.0,1.0, xpix,ypix, flux);
-			    nstar++;
-			    jstar++;
-			    }
-			else {
-			    ix = 0;
-			    iy = 0;
-			    }
-			if (nlog == 1) {
-			    fprintf (stderr,"UCACBIN: %11.6f: %9.5f %9.5f %s",
-				     num,ra,dec,cstr);
-			    if (magscale > 0.0)
-				fprintf (stderr, " %5.2f", mag);
-			    if (!offscl)
-				flux = getpix1 (image, bitpix, w, h, 0.0, 1.0, ix, iy);
-			    else
-				flux = 0.0;
-			    fprintf (stderr," (%d,%d): %f\n", ix, iy, flux);
-			    }
-
-			/* End of accepted star processing */
-			}
-
-		    /* Log operation */
-		    jstar++;
-		    if (nlog > 0 && istar%nlog == 0)
-			fprintf (stderr,"UCACBIN: %5d / %5d / %5d sources\r",
-				 nstar,jstar,starcat->nstars);
-
-		    /* End of star loop */
-		    }
-
-		/* End of 0:00 RA wrap loop */
-		}
-
-	    /* End of successful zone file loop */
-	    ntot = ntot + starcat->nstars;
-	    if (nlog > 0)
-		fprintf (stderr,"UCACBIN: %4d / %4d: %5d / %5d  / %5d sources from zone %4d    \n",
-		 	 iz+1,nz,nstar,jstar,starcat->nstars,zlist[iz]);
-
-	    /* Close region input file */
-	    ucacclose (starcat);
-	    }
-
-	/* End of zone loop */
-	}
-
-    /* Summarize transfer */
-    if (nlog > 0) {
-	if (nz > 1)
-	    fprintf (stderr,"UCACBIN: %d zones: %d / %d found\n",nz,nstar,ntot);
-	else
-	    fprintf (stderr,"UCACBIN: 1 region: %d / %d found\n",nstar,ntot);
-	}
-    return (nstar);
+      fprintf (stderr,"UCACBIN: 1 region: %d / %d found\n",nstar,ntot);
+  }
+  return (nstar);
 }
 
 
@@ -1049,45 +1183,55 @@ int	nlog;		/* 1 for diagnostics */
 static int
 ucaczones (dec1, dec2, nzmax, zones, verbose)
 
-double	dec1, dec2; 	/* Declination limits in degrees */
-int	nzmax;		/* Maximum number of zones to find */
-int	*zones;		/* Zone numbers (returned)*/
-int	verbose;	/* 1 for diagnostics */
+     double	dec1, dec2; 	/* Declination limits in degrees */
+     int	nzmax;		/* Maximum number of zones to find */
+     int	*zones;		/* Zone numbers (returned)*/
+     int	verbose;	/* 1 for diagnostics */
 
 {
-    int nz;		/* Number of declination zones found (returned) */
-    int iz, iz1, iz2;
-    int i;
-    double spd1, spd2;
+  int nz;		/* Number of declination zones found (returned) */
+  int iz, iz1, iz2;
+  int i;
+  double spd1, spd2;
 
-    for (i = 0; i < nzmax; i++)
-	zones[i] = 0;
+  for (i = 0; i < nzmax; i++)
+    zones[i] = 0;
 
-/* Find first and last declination zone to search */
-    spd1 = 90.0 + dec1;
-    iz1 = (int) ((spd1 * 2.0) + 0.99999);
+  /* Find first and last declination zone to search */
+  spd1 = 90.0 + dec1;
+  iz1 = (int) ((spd1 * 2.0) + 0.99999);
+  if (iz1 < 1) iz1 = 1;
+  spd2 = 90.0 + dec2;
+  iz2 = (int) ((spd2 * 2.0) + 0.99999);
+  if (ucat == UCAC1 && iz2 > 169) iz2 = 169;
+  if (ucat == UCAC2 && iz2 > 288) iz2 = 288;
+  if (ucat == UCAC3 && iz2 > 360) iz2 = 360;
+  if (ucat == UCAC4) {
+    iz1 = (int) ((spd1 * 5.0) + 0.99999);
     if (iz1 < 1) iz1 = 1;
     spd2 = 90.0 + dec2;
-    iz2 = (int) ((spd2 * 2.0) + 0.99999);
-    if (ucat == UCAC1 && iz2 > 169) iz2 = 169;
-    if (ucat == UCAC2 && iz2 > 288) iz2 = 288;
-    if (ucat == UCAC3 && iz2 > 360) iz2 = 360;
-    if (iz1 > iz2)
-	return (0);
+    iz2 = (int) ((spd2 * 5.0) + 0.99999);
+    if (iz2 > 900) {
+      iz2 = 900;
+    }
+  }
 
-    nz = iz2 - iz1 + 1;
-    if (verbose) {
-	fprintf (stderr,"UCACZONES: searching %d zones: %d - %d\n",nz,iz1,iz2);
-	fprintf(stderr,"UCACZONES: Dec: %.5f - %.5f\n", dec1,dec2);
-	}
+  if (iz1 > iz2)
+    return (0);
 
-    i = 0;
-    for (iz = iz1; iz <= iz2; iz++) {
-	zones[i] = iz;
-	i++;
-	}
+  nz = iz2 - iz1 + 1;
+  if (verbose) {
+    fprintf (stderr,"UCACZONES: searching %d zones: %d - %d\n",nz,iz1,iz2);
+    fprintf(stderr,"UCACZONES: Dec: %.5f - %.5f\n", dec1,dec2);
+  }
 
-    return (nz);
+  i = 0;
+  for (iz = iz1; iz <= iz2; iz++) {
+    zones[i] = iz;
+    i++;
+  }
+
+  return (nz);
 }
 
 
@@ -1096,67 +1240,72 @@ int	verbose;	/* 1 for diagnostics */
 static int
 ucacsra (sc, st, zone, rax0)
 
-struct StarCat *sc;	/* Star catalog descriptor */
-struct Star *st;	/* Current star entry */
-int	zone;		/* Declination zone */
-double	rax0;		/* Right ascension in degrees for which to search */
+     struct StarCat *sc;	/* Star catalog descriptor */
+     struct Star *st;	/* Current star entry */
+     int	zone;		/* Declination zone */
+     double	rax0;		/* Right ascension in degrees for which to search */
 {
-    int istar, istar1, istar2, nrep;
-    double rax, ra1, ra, rdiff, rdiff1, rdiff2, sdiff;
-    char rastrx[32];
-    int debug = 0;
+  int istar, istar1, istar2, nrep;
+  double rax, ra1, ra2, ra, rdiff, rdiff1, rdiff2, sdiff;
+  char rastrx[32];
+  int debug = 0;
+  int maxnrep;
+#ifdef UCAC_DEBUG
+  if (zone == 183) {
+    debug = 1;
+    fprintf(stderr,"Entering UCACSRA, zone %d\n",zone);
+  } else {
+    debug = 0;
+  }
+#endif /* UCAC_DEBUG */
 
-    rax = rax0;
-    if (debug)
-	ra2str (rastrx, 31, rax, 3);
-    istar1 = 1;
-    ucacstar (sc, st, zone, istar1);
-    ra1 = st->ra;
-    istar = sc->nstars;
-    nrep = 0;
-    while (istar != istar1 && nrep < 20) {
-	if (ucacstar (sc, st, zone, istar))
-	    break;
-	else {
-	    ra = st->ra;
-	    if (ra == ra1)
-		break;
-	    if (debug) {
-		char rastr[32];
-		ra2str (rastr, 31, ra, 3);
-		fprintf (stderr,"UCACSRA %d %d: %s (%s)\n",
-			 nrep,istar,rastr,rastrx);
-		}
-	    rdiff = ra1 - ra;
-	    rdiff1 = ra1 - rax;
-	    rdiff2 = ra - rax;
-	    if (nrep > 20 && ABS(rdiff2) > ABS(rdiff1)) {
-		istar = istar1;
-		break;
-		}
-	    nrep++;
-	    sdiff = (double)(istar - istar1) * rdiff1 / rdiff;
-	    istar2 = istar1 + (int) (sdiff + 0.5);
-	    ra1 = ra;
-	    istar1 = istar;
-	    istar = istar2;
-	    if (debug) {
-		fprintf (stderr," ra1=    %.5f ra=     %.5f rax=    %.5f\n",
-			 ra1,ra,rax);
-		fprintf (stderr," rdiff=  %.5f rdiff1= %.5f rdiff2= %.5f\n",
-			 rdiff,rdiff1,rdiff2);
-		fprintf (stderr," istar1= %d istar= %d istar1= %d\n",
-			 istar1,istar,istar2);
-		}
-	    if (istar < 1)
-		istar = 1;
-	    if (istar > sc->nstars)
-		istar = sc->nstars;
-	    if (istar == istar1)
-		break;
-	    }
-	}
-    return (istar);
+  rax = rax0;
+  if (debug)
+    ra2str (rastrx, 31, rax, 3);
+  istar1 = 1;
+  ucacstar (sc, st, zone, istar1);
+  ra1 = st->ra;
+  istar2 = sc->nstars;
+  maxnrep = sc->nstars;
+  istar = (istar1+istar2)/2;
+  nrep = 0;
+  while (istar != istar1 && nrep < maxnrep) {
+    if (ucacstar (sc, st, zone, istar)) {
+      break;
+    } else {
+      ra = st->ra;
+      if (ra == ra1)
+        break;
+      if (debug) {
+        char rastr[32];
+        ra2str (rastr, 31, ra, 3);
+        fprintf (stderr,"UCACSRA %d %d: %s (%s)\n",
+                 nrep,istar,rastr,rastrx);
+      }
+      nrep++;
+      if (ra > rax) {
+        istar2 = istar;
+        ra2 = ra;
+      } else {
+        istar1 = istar;
+        ra1 = ra;
+      }
+      istar = (istar1+istar2)/2;
+      if (debug) {
+        fprintf (stderr," ra1=    %.5f ra2=     %.5f rax=    %.5f\n",
+                 ra1,ra2,rax);
+        fprintf (stderr," istar1= %d istar= %d istar2= %d\n",
+                 istar1,istar,istar2);
+      }
+      if (istar < 1)
+        istar = 1;
+      if (istar > sc->nstars)
+        istar = sc->nstars;
+      if (istar == istar1)
+        break;
+    }
+  }
+  return (istar);
 }
 
  
@@ -1165,324 +1314,575 @@ double	rax0;		/* Right ascension in degrees for which to search */
 struct StarCat *
 ucacopen (zone)
 
-int	zone;	/* Number of catalog zone to read */
+     int	zone;	/* Number of catalog zone to read */
 
 {
-    FILE *fcat;
-    struct StarCat *sc;
-    int lfile, lpath;
-    char *zonefile;
-    char *zonepath;	/* Full pathname for catalog file */
+  FILE *fcat;
+  struct StarCat *sc;
+  int lfile, lpath;
+  char *zonefile;
+  char *zonepath;	/* Full pathname for catalog file */
 
-    /* Set pathname for catalog file */
-    lpath = strlen (ucacpath) + 16;
-    zonepath = (char *) malloc (lpath);
-    if (ucat == UCAC1)
-	sprintf (zonepath, "%s/u1/z%03d", ucacpath, zone);
-    else if (ucat == UCAC2)
-	sprintf (zonepath, "%s/u2/z%03d", ucacpath, zone);
+  /* Set pathname for catalog file */
+  lpath = strlen (ucacpath) + 16;
+  zonepath = (char *) malloc (lpath);
+  if (ucat == UCAC1)
+    sprintf (zonepath, "%s/u1/z%03d", ucacpath, zone);
+  else if (ucat == UCAC2)
+    sprintf (zonepath, "%s/u2/z%03d", ucacpath, zone);
+  else if (ucat == UCAC3)
+    sprintf (zonepath, "%s/z%03d", ucacpath, zone);
+  else if (ucat == UCAC4)
+    sprintf (zonepath, "%s/z%03d", ucacpath, zone);
+  else { 
+    fprintf(stderr,"ucacread CATALOG NUMBER ERROR %d in line %d\n",ucat,__LINE__);
+    exit(-1);
+  }
+  /* Set UCAC catalog header information */
+  sc = (struct StarCat *) calloc (1, sizeof (struct StarCat));
+  sc->byteswapped = 0;
+
+  /* Set number of stars in this zone catalog */
+  if (ucat == UCAC1)
+    sc->nbent = 67;
+  else if (ucat == UCAC2)
+    sc->nbent = 44;
+  else if (ucat == UCAC3) 
+    sc->nbent = 84;
+  else if (ucat == UCAC4) 
+    sc->nbent = sizeof(UCAC4star);
+  else { 
+    fprintf(stderr,"ucacread CATALOG NUMBER ERROR %d in line %d\n",ucat,__LINE__);
+    exit(-1);
+  }
+  lfile = getfilesize (zonepath);
+  if (lfile < 2) {
+    fprintf (stderr,"UCAC zone catalog %s has no entries\n",zonepath);
+    free (sc);
+    sc = NULL;
+    return (NULL);
+  }
+  else
+    sc->nstars = lfile / sc->nbent;
+
+  /* Open UCAC file */
+  if (!(fcat = fopen (zonepath, "r"))) {
+    fprintf (stderr,"UCACOPEN: UCAC file %s cannot be read\n",zonepath);
+    free (sc);
+    return (NULL);
+  }
+
+  /* Separate filename from pathname and save in structure */
+  zonefile = strrchr (zonepath,'/');
+  if (zonefile)
+    zonefile = zonefile + 1;
+  else
+    zonefile = zonepath;
+  if (strlen (zonefile) < 24)
+    strcpy (sc->isfil, zonefile);
+  else
+    strncpy (sc->isfil, zonefile, 23);
+
+  /* Set other catalog information in structure */
+  sc->inform = 'J';
+  sc->coorsys = WCS_J2000;
+  sc->epoch = 2000.0;
+  sc->equinox = 2000.0;
+  sc->ifcat = fcat;
+  sc->sptype = 0;
+  if (ucat == UCAC1)
+    sc->nmag = 1;
+  else if (ucat == UCAC2)
+    sc->nmag = 4;
+  else if (ucat == UCAC3)
+    sc->nmag = 8;
+  else if (ucat == UCAC4)
+    sc->nmag = 8;
+  else { 
+    fprintf(stderr,"ucacread CATALOG NUMBER ERROR %d in line %d\n",ucat,__LINE__);
+    exit(-1);
+  }
+   
+
+  /* UCAC stars are RA-sorted within declination zones */
+  sc->rasorted = 1;
+
+  /* Check to see if byte-swapping is necessary */
+  cswap = 0;
+  if (ucat == UCAC2) {
+    UCAC2star us2;	/* UCAC2 catalog entry for one star */
+    int nbr;
+
+    nbr = fread (&us2, 1, sc->nbent, sc->ifcat);
+    if (nbr < 1) {
+      fprintf (stderr,
+               "UCACOPEN: cannot read star 1 from UCAC2 zone catalog %s\n",
+               zonepath);
+      return (0);
+    }
+
+    /* RA should be between 0 and 360 degrees in milliarcseconds */
+    if (us2.rasec > 360 * 3600000 || us2.rasec < 0)
+      cswap = 1;
+
+    /* Dec should be between -90 and +90 degrees in milliarcseconds */
+    else if (us2.decsec > 90 * 3600000 || us2.decsec < -90 * 3600000)
+      cswap = 1;
+
+    /* J H K magnitudes should be near-positive */
+    else if (us2.jmag < -1000 || us2.hmag < -1000  || us2.kmag < -1000)
+      cswap = 1;
     else
-	sprintf (zonepath, "%s/z%03d", ucacpath, zone);
+      cswap = 0;
 
-    /* Set UCAC catalog header information */
-    sc = (struct StarCat *) calloc (1, sizeof (struct StarCat));
-    sc->byteswapped = 0;
+    /* if (cswap)
+       fprintf (stderr,
+       "UCACOPEN: swapping bytes in UCAC2 zone catalog %s\n",
+       zonepath); */
+  }
+  else if (ucat == UCAC3) {
+    UCAC3star us3;	/* UCAC3 catalog entry for one star */
+    int nbr;
 
-    /* Set number of stars in this zone catalog */
-    if (ucat == UCAC1)
-	sc->nbent = 67;
-    else if (ucat == UCAC2)
-	sc->nbent = 44;
+    nbr = fread (&us3, 1, sc->nbent, sc->ifcat);
+    if (nbr < 1) {
+      fprintf (stderr,
+               "UCACOPEN: cannot read star 1 from UCAC3 zone catalog %s\n",
+               zonepath);
+      return (0);
+    }
+
+    /* RA should be between 0 and 360 degrees in milliarcseconds */
+    if (us3.rasec > 360 * 3600000 || us3.rasec < 0)
+      cswap = 1;
+
+    /* Dec should be between -90 and +90 degrees in milliarcseconds */
+    else if (us3.decsec > 180 * 3600000 || us3.decsec < -180 * 3600000)
+      cswap = 1;
+
+    /* J H K magnitudes should be near-positive */
+    else if (us3.jmag < -1000 || us3.hmag < -1000  || us3.kmag < -1000)
+      cswap = 1;
     else
-	sc->nbent = 84;
-    lfile = getfilesize (zonepath);
-    if (lfile < 2) {
-        fprintf (stderr,"UCAC zone catalog %s has no entries\n",zonepath);
-	free (sc);
-	sc = NULL;
-        return (NULL);
-        }
+      cswap = 0;
+
+    /* if (cswap)
+       fprintf (stderr,
+       "UCACOPEN: swapping bytes in UCAC2 zone catalog %s\n",zomepath); */
+  }
+  else if (ucat == UCAC4) {
+    UCAC4star us4;	/* UCAC4 catalog entry for one star */
+    int nbr;
+
+    nbr = fread (&us4, 1, sc->nbent, sc->ifcat);
+    if (nbr < 1) {
+      fprintf (stderr,
+               "UCACOPEN: cannot read star 1 from UCAC4 zone catalog %s\n",
+               zonepath);
+      return (0);
+    }
+
+    /* RA should be between 0 and 360 degrees in milliarcseconds */
+    if (us4.ra > 360 * 3600000 || us4.ra < 0)
+      cswap = 1;
+
+    /* Dec should be between -90 and +90 degrees in milliarcseconds */
+    else if (us4.spd > 180 * 3600000 || us4.spd < 0)
+      cswap = 1;
+
+    /* J H K magnitudes should be near-positive */
+    else if (us4.mag_j < -1000 || us4.mag_h < -1000  || us4.mag_k < -1000)
+      cswap = 1;
     else
-        sc->nstars = lfile / sc->nbent;
+      cswap = 0;
 
-    /* Open UCAC file */
-    if (!(fcat = fopen (zonepath, "r"))) {
-	fprintf (stderr,"UCACOPEN: UCAC file %s cannot be read\n",zonepath);
-	free (sc);
-	return (NULL);
-	}
+    if (cswap)
+      fprintf (stderr,
+               "UCACOPEN: swapping bytes in UCAC4 zone catalog %s\n",zonepath); 
+  }
+  else { 
+    fprintf(stderr,"ucacread CATALOG NUMBER ERROR %d in line %d\n",ucat,__LINE__);
+    exit(-1);
+  }
 
-    /* Separate filename from pathname and save in structure */
-    zonefile = strrchr (zonepath,'/');
-    if (zonefile)
-	zonefile = zonefile + 1;
-    else
-	zonefile = zonepath;
-    if (strlen (zonefile) < 24)
-	strcpy (sc->isfil, zonefile);
-    else
-	strncpy (sc->isfil, zonefile, 23);
-
-    /* Set other catalog information in structure */
-    sc->inform = 'J';
-    sc->coorsys = WCS_J2000;
-    sc->epoch = 2000.0;
-    sc->equinox = 2000.0;
-    sc->ifcat = fcat;
-    sc->sptype = 0;
-    if (ucat == UCAC1)
-	sc->nmag = 1;
-    else if (ucat == UCAC2)
-	sc->nmag = 4;
-    else
-	sc->nmag = 8;
-
-    /* UCAC stars are RA-sorted within declination zones */
-    sc->rasorted = 1;
-
-/* Check to see if byte-swapping is necessary */
-    cswap = 0;
-    if (ucat == UCAC2) {
-	UCAC2star us2;	/* UCAC2 catalog entry for one star */
-	int nbr;
-
-	nbr = fread (&us2, 1, sc->nbent, sc->ifcat);
-	if (nbr < 1) {
-	    fprintf (stderr,
-		 "UCACOPEN: cannot read star 1 from UCAC2 zone catalog %s\n",
-		 zonepath);
-	    return (0);
-	    }
-
-	/* RA should be between 0 and 360 degrees in milliarcseconds */
-	if (us2.rasec > 360 * 3600000 || us2.rasec < 0)
-	    cswap = 1;
-
-	/* Dec should be between -90 and +90 degrees in milliarcseconds */
-	else if (us2.decsec > 90 * 3600000 || us2.decsec < -90 * 3600000)
-	    cswap = 1;
-
-	/* J H K magnitudes should be near-positive */
-	else if (us2.jmag < -1000 || us2.hmag < -1000  || us2.kmag < -1000)
-	    cswap = 1;
-	else
-	    cswap = 0;
-
-	/* if (cswap)
-	    fprintf (stderr,
-		    "UCACOPEN: swapping bytes in UCAC2 zone catalog %s\n",
-		     zonepath); */
-	}
-    else if (ucat == UCAC3) {
-	UCAC3star us3;	/* UCAC3 catalog entry for one star */
-	int nbr;
-
-	nbr = fread (&us3, 1, sc->nbent, sc->ifcat);
-	if (nbr < 1) {
-	    fprintf (stderr,
-		 "UCACOPEN: cannot read star 1 from UCAC3 zone catalog %s\n",
-		 zonepath);
-	    return (0);
-	    }
-
-	/* RA should be between 0 and 360 degrees in milliarcseconds */
-	if (us3.rasec > 360 * 3600000 || us3.rasec < 0)
-	    cswap = 1;
-
-	/* Dec should be between -90 and +90 degrees in milliarcseconds */
-	else if (us3.decsec > 180 * 3600000 || us3.decsec < -180 * 3600000)
-	    cswap = 1;
-
-	/* J H K magnitudes should be near-positive */
-	else if (us3.jmag < -1000 || us3.hmag < -1000  || us3.kmag < -1000)
-	    cswap = 1;
-	else
-	    cswap = 0;
-
-	/* if (cswap)
-	    fprintf (stderr,
-	    "UCACOPEN: swapping bytes in UCAC2 zone catalog %s\n",zomepath); */
-	}
-
-    sc->istar = 0;
-    free (zonepath);
-    return (sc);
+  sc->istar = 0;
+  free (zonepath);
+  return (sc);
 }
 
 
 void
 ucacclose (sc)
-struct StarCat *sc;	/* Star catalog descriptor */
+     struct StarCat *sc;	/* Star catalog descriptor */
 {
-    fclose (sc->ifcat);
-    free (sc);
-    return;
+  fclose (sc->ifcat);
+  free (sc);
+  return;
 }
 
 
 /* UCACSTAR -- Get UCAC catalog entry for one star;
-              return 0 if successful */
+   return 0 if successful */
 
 static int
 ucacstar (sc, st, zone, istar)
 
-struct StarCat *sc;	/* Star catalog descriptor */
-struct Star *st;	/* Current star entry */
-int	zone;		/* Declination zone */
-int	istar;		/* Star sequence number in UCAC catalog region file */
+     struct StarCat *sc;	/* Star catalog descriptor */
+     struct Star *st;	/* Current star entry */
+     int	zone;		/* Declination zone */
+     int	istar;		/* Star sequence number in UCAC catalog region file */
 {
-    char line[256];
-    int nbr, nbskip;
-    UCAC2star us2;	/* UCAC2 catalog entry for one star */
-    UCAC3star us3;	/* UCAC3 catalog entry for one star */
 
-    /* Drop out if catalog pointer is not set */
-    if (sc == NULL)
-	return (1);
 
-    /* Drop out if catalog is not open */
-    if (sc->ifcat == NULL)
-	return (2);
+  char line[256];
+  int nbr, nbskip;
+  UCAC2star us2;	/* UCAC2 catalog entry for one star */
+  UCAC3star us3;	/* UCAC3 catalog entry for one star */
+  UCAC4star us4;  /* UCAC4 catalog entry for one star */
 
-    /* Drop out if star number is too small or too large */
-    if (istar < 1 || istar > sc->nstars) {
-        fprintf (stderr, "UCAC star %d is not in catalog\n",istar);
-        return (-1);
-        }
+  int hpmIndex;
+  int lineLen;
+  int nvals;
+  FILE *hpmHandle;
+  char inLine[MAX_U4HPM_LINE];
+  char *inBuffer;
+  PU4HPM pU4hpm = NULL;
 
-    /* Move file pointer to start of correct star entry */
-    nbskip = sc->nbent * (istar - 1);
-    if (fseek (sc->ifcat,nbskip,SEEK_SET))
-        return (-1);
 
-    if (ucat == UCAC1)
-	nbr = fread (line, 1, sc->nbent, sc->ifcat);
-    else if (ucat == UCAC2)
-	nbr = fread (&us2, 1, sc->nbent, sc->ifcat);
+  /* Drop out if catalog pointer is not set */
+  if (sc == NULL)
+    return (1);
+
+  /* Drop out if catalog is not open */
+  if (sc->ifcat == NULL)
+    return (2);
+
+  /* Drop out if star number is too small or too large */
+  if (istar < 1 || istar > sc->nstars) {
+    fprintf (stderr, "UCAC star %d is not in catalog\n",istar);
+    return (-1);
+  }
+
+  /* Move file pointer to start of correct star entry */
+  nbskip = sc->nbent * (istar - 1);
+  if (fseek (sc->ifcat,nbskip,SEEK_SET))
+    return (-1);
+
+  if (ucat == UCAC1)
+    nbr = fread (line, 1, sc->nbent, sc->ifcat);
+  else if (ucat == UCAC2)
+    nbr = fread (&us2, 1, sc->nbent, sc->ifcat);
+  else if (ucat == UCAC3)
+    nbr = fread (&us3, 1, sc->nbent, sc->ifcat);
+  else if (ucat == UCAC4)
+    nbr = fread (&us4, 1, sc->nbent, sc->ifcat);
+  else { 
+    fprintf(stderr,"ucacread CATALOG NUMBER ERROR %d in line %d\n",ucat,__LINE__);
+    exit(-1);
+  }
+  if (nbr < sc->nbent) {
+    fprintf (stderr, "UCACSTAR %d / %d bytes read\n",nbr, sc->nbent);
+    return (-2);
+  }
+#if 0
+  if ((zone == 552) && (istar == 43247)) {
+    printf("At zone %d and istar %d\n",zone,istar);
+  }
+#endif
+
+
+  /* Star ID number = region.sequence */
+  st->num = (double) zone + (0.000001 * (double) istar);
+
+  /* Read UCAC1 position and proper motion from ASCII file */
+  if (ucat == UCAC1) {
+
+    /* Read position in degrees */
+    st->ra = atof (line) / 3600000.0;
+    st->dec = (atof (line+10) / 3600000.0) - 90.0;
+
+    /* Read proper motion and convert it to to degrees/year */
+    st->rapm = (atof (line+41) / 3600000.0) / cosdeg (st->dec);
+    st->decpm = atof (line+48) / 3600000.0;
+
+    /* Set V magnitude */
+    st->xmag[0] = atof (line+20) * 0.01;
+  }
+
+  /* Read UCAC2 position, proper motion, and magnitudes from binary file */
+  else if (ucat == UCAC2) {
+    if (cswap) {
+      ucacswap4 (&us2.rasec);
+      ucacswap4 (&us2.decsec);
+      ucacswap4 (&us2.rapm);
+      ucacswap4 (&us2.decpm);
+      ucacswap2 (&us2.cmag);
+      ucacswap2 (&us2.jmag);
+      ucacswap2 (&us2.hmag);
+      ucacswap2 (&us2.kmag);
+    }
+    st->ra  = (double) us2.rasec  / 3600000.0;
+    st->dec = (double) us2.decsec / 3600000.0;
+    st->errra  = (double) us2.era / 3600000.0;	/* mas */
+    st->errra  = st->errra / cosdeg (st->dec);	/* to RA deg */
+    st->errdec = (double) us2.edec / 3600000.0;	/* mas */
+    st->rapm  = (double) us2.rapm  / 36000000.0;	/* 0.1mas/yr */
+    st->decpm = (double) us2.decpm / 36000000.0;	/* 0.1mas/yr */
+    st->errpmr  = (double) us2.erapm / 36000000.0;	/* 0.1mas/yr */
+    st->errpmr  = st->errpmr / cosdeg (st->dec);	/* to RA deg */
+    st->errpmd = (double) us2.edecpm / 36000000.0;	/* 0.1mas/yr */
+    st->xmag[0] = ((double) us2.jmag) / 1000.0;
+    st->xmag[1] = ((double) us2.hmag) / 1000.0;
+    st->xmag[2] = ((double) us2.kmag) / 1000.0;
+    st->xmag[3] = ((double) us2.cmag) / 100.0;
+    st->nimage = (int) us2.nobs;
+    st->ncat = (int) us2.ncat;
+  }
+
+  /* Read UCAC3 position, proper motion, and magnitudes from binary file */
+  else if (ucat == UCAC3) {
+    if (cswap) {
+      ucacswap4 (&us3.rasec);
+      ucacswap4 (&us3.decsec);
+      ucacswap4 (&us3.rapm);
+      ucacswap4 (&us3.decpm);
+      ucacswap2 (&us3.sigra);
+      ucacswap2 (&us3.sigdec);
+      ucacswap2 (&us3.sigpmr);
+      ucacswap2 (&us3.sigpmd);
+      ucacswap2 (&us3.mmag);
+      ucacswap2 (&us3.amag);
+      ucacswap2 (&us3.jmag);
+      ucacswap2 (&us3.hmag);
+      ucacswap2 (&us3.kmag);
+      ucacswap2 (&us3.bmag);
+      ucacswap2 (&us3.rmag);
+      ucacswap2 (&us3.imag);
+    }
+    st->ra  = (double) us3.rasec  / 3600000.0;	/* mas */
+    st->dec = (double) us3.decsec / 3600000.0;	/* mas */
+    st->dec = st->dec - 90.0;
+    st->errra  = (double) us3.sigra / 3600000.0;	/* mas */
+    st->errra  = st->errra / cosdeg (st->dec);	/* to RA deg */
+    st->errdec = (double) us3.sigdec / 3600000.0;	/* mas */
+    st->rapm  = (double) us3.rapm  / 36000000.0;	/* 0.1mas/yr */
+    st->rapm  = st->rapm / cosdeg (st->dec);	/* to RA deg */
+    st->decpm = (double) us3.decpm / 36000000.0;	/* 0.1mas/yr */
+    st->errpmr  = (double) us3.sigpmr / 36000000.0;	/* 0.1mas/yr */
+    st->errpmr  = st->errpmr / cosdeg (st->dec);	/* to RA deg */
+    st->errpmd = (double) us3.sigpmd / 36000000.0;	/* 0.1mas/yr */
+    st->nimage = (int) us3.nu1;
+    st->ncat = (int) us3.us1;
+    if (us3.bmag == 0)
+      st->xmag[0] = 99.990;
     else
-	nbr = fread (&us3, 1, sc->nbent, sc->ifcat);
-    if (nbr < sc->nbent) {
-        fprintf (stderr, "UCACSTAR %d / %d bytes read\n",nbr, sc->nbent);
-        return (-2);
+      st->xmag[0] = ((double) us3.bmag) / 1000.0;
+    if (us3.rmag == 0)
+      st->xmag[1] = 99.990;
+    else
+      st->xmag[1] = ((double) us3.rmag) / 1000.0;
+    if (us3.imag == 0)
+      st->xmag[2] = 99.990;
+    else
+      st->xmag[2] = ((double) us3.imag) / 1000.0;
+    if (us3.jmag == 0)
+      st->xmag[3] = 99.990;
+    else
+      st->xmag[3] = ((double) us3.jmag) / 1000.0;
+    if (us3.hmag == 0)
+      st->xmag[4] = 99.990;
+    else
+      st->xmag[4] = ((double) us3.hmag) / 1000.0;
+    if (us3.kmag == 0)
+      st->xmag[5] = 99.990;
+    else
+      st->xmag[5] = ((double) us3.kmag) / 1000.0;
+    if (us3.mmag == 0)
+      st->xmag[6] = 99.990;
+    else
+      st->xmag[6] = ((double) us3.mmag) / 1000.0;
+    if (us3.amag == 0)
+      st->xmag[7] = 99.990;
+    else
+      st->xmag[7] = ((double) us3.amag) / 1000.0;
+    }
+  else if (ucat == UCAC4) {
+    if (cswap) {
+      ucacswap4 (&us4.ra);
+      ucacswap4 (&us4.spd);
+      ucacswap4 (&us4.pm_ra);
+      ucacswap4 (&us4.pm_dec);
+      ucacswap4 (&us4.id_number);
+      ucacswap2 (&us4.ra_sigma);
+      ucacswap2 (&us4.dec_sigma);
+      ucacswap2 (&us4.pm_ra_sigma);
+      ucacswap2 (&us4.pm_dec_sigma);
+      ucacswap2 (&us4.magm);
+      ucacswap2 (&us4.maga);
+      ucacswap2 (&us4.mag_j);
+      ucacswap2 (&us4.mag_h);
+      ucacswap2 (&us4.mag_k);
+      ucacswap2 (&us4.apass_mag[0]);
+      ucacswap2 (&us4.apass_mag[1]);
+      ucacswap2 (&us4.apass_mag[2]);
+      ucacswap2 (&us4.apass_mag[3]);
+      ucacswap2 (&us4.apass_mag[4]);
+    }
+    st->ra  = (double) us4.ra  / 3600000.0;	/* mas */
+    st->dec = (double) us4.spd / 3600000.0;	/* mas */
+    st->dec = st->dec - 90.0;
+    st->errra  = (double) us4.ra_sigma / 3600000.0;	/* mas */
+    st->errra  = st->errra / cosdeg (st->dec);	/* to RA deg */ 
+    st->errdec = (double) us4.dec_sigma / 3600000.0;	/* mas */
+
+      /* Must get proper motions from a different catalog */
+    if ((us4.pm_ra == 32767) || (us4.pm_dec == 32767)) {
+      if (hpmLines == 0) {
+        /* Read in the high proper motion catalog */
+        hpmHandle = fopen(hpmpath,"rt");
+        if (hpmHandle == NULL) {
+          printf("ERROR: failed to open %s\n",hpmpath);
+          exit(-1);
         }
+        hpmLines = 0;
+        while(1) {
+          if (hpmLines >= MAX_U4HPM_RECORDS) {
+            printf("ERROR: MAX_U4HPM_RECORDS exceeded\n");
+            exit(-1);
+          }
+          pU4hpm = &u4hpm_table[hpmLines];
+          memset(pU4hpm,0,sizeof(U4HPM));
+          inBuffer = fgets(inLine,MAX_U4HPM_LINE,hpmHandle);
+          if (inBuffer == NULL) {
+            break;
+          }
+          lineLen = strlen(inBuffer);
+          /* Trim off the carriage return */
+          if (inBuffer[lineLen-1] == 10) {
+            inBuffer[lineLen-1] = 0;
+            lineLen--;
+          }
+          /* Trim off the line feed */
+          if (inBuffer[lineLen-1] == 13) {
+            inBuffer[lineLen-1] = 0;
+            lineLen--;
+          }
+          nvals = sscanf(inBuffer,"%d %d %d %d %d %d %d %d",
+                         &pU4hpm->rnm,
+                         &pU4hpm->zn,
+                         &pU4hpm->rnz,
+                         &pU4hpm->pmrc,
+                         &pU4hpm->pmd,
+                         &pU4hpm->ra,
+                         &pU4hpm->dec,
+                         &pU4hpm->maga);
+          if (nvals != 8) {
+            fprintf(stderr,"Error reading line %d of u4hpm %s\n",hpmLines,inLine);
+          } else {            
+            hpmLines++;
+          }
+        }
+        fclose(hpmHandle);
+      }
+      for (hpmIndex = 0; hpmIndex < hpmLines; hpmIndex++) {
+        pU4hpm = &u4hpm_table[hpmIndex];
+        if ((zone == pU4hpm->zn) &&
+            (us4.id_number == pU4hpm->rnm) &&
+            (us4.ra == pU4hpm->ra) &&
+            (us4.spd == pU4hpm->dec) &&
+            (us4.maga == pU4hpm->maga)) {
+          /* We have a match */
+          st->rapm = (1.0 * pU4hpm->pmrc) / 36000000.0; /* 0.1 mas/yr */
+          st->rapm  = st->rapm / cosdeg (st->dec);	/* to RA deg */
+          st->decpm = (1.0 * pU4hpm->pmd) / 36000000.0; /* 0.1 mas/yr */
+          break;
+        }
+      }
+      if (hpmIndex == hpmLines) {
+        fprintf(stderr,"ERROR: no proper motion found for zone %d entry %d\n",zone,us4.id_number);
+      }
+    
+    } else {
 
-    /* Star ID number = region.sequence */
-    st->num = (double) zone + (0.000001 * (double) istar);
+      st->rapm  = (double) us4.pm_ra  / 36000000.0;	/* 0.1mas/yr */
+      st->rapm  = st->rapm / cosdeg (st->dec);	/* to RA deg */
+      st->decpm = (double) us4.pm_dec / 36000000.0;	/* 0.1mas/yr */
+    }
+    st->errpmr  = (double) (us4.pm_ra_sigma+128) / 36000000.0;	/* 0.1mas/yr */
+    st->errpmr  = st->errpmr / cosdeg (st->dec);	/* to RA deg */
+    st->errpmd = (double) (us4.pm_dec_sigma+128) / 36000000.0;	/* 0.1mas/yr */
+    st->nimage = (int) us4.n_ucac_used;
+    st->ncat = (int) us4.n_cats_used;
+    if (us4.apass_mag[0] == 20000)
+      st->xmag[0] = 99.990;
+    else
+      st->xmag[0] = ((double) us4.apass_mag[0]) / 1000.0;
+    if (us4.apass_mag[1] == 20000)
+      st->xmag[1] = 99.990;
+    else
+      st->xmag[1] = ((double) us4.apass_mag[1]) / 1000.0;
+    if (us4.apass_mag[2] == 20000)
+      st->xmag[2] = 99.990;
+    else
+      st->xmag[2] = ((double) us4.apass_mag[2]) / 1000.0;
+    if (us4.apass_mag[3] == 20000)
+      st->xmag[3] = 99.990;
+    else
+      st->xmag[3] = ((double) us4.apass_mag[3]) / 1000.0;
+    if (us4.apass_mag[4] == 20000)
+      st->xmag[4] = 99.990;
+    else
+      st->xmag[4] = ((double) us4.apass_mag[4]) / 1000.0;
+    if (us4.mag_j == 0)
+      st->xmag[5] = 99.990;
+    else
+      st->xmag[5] = ((double) us4.mag_j) / 1000.0;
+    if (us4.mag_h == 0)
+      st->xmag[6] = 99.990;
+    else
+      st->xmag[6] = ((double) us4.mag_h) / 1000.0;
+    if (us4.mag_k == 0)
+      st->xmag[7] = 99.990;
+    else
+      st->xmag[7] = ((double) us4.mag_k) / 1000.0;
+    if (us4.magm == 20000)
+      st->xmag[8] = 99.990;
+    else
+      st->xmag[8] = ((double) us4.magm) / 1000.0;
+    if (us4.maga == 20000)
+      st->xmag[9] = 99.990;
+    else
+      st->xmag[9] = ((double) us4.maga) / 1000.0;
 
-    /* Read UCAC1 position and proper motion from ASCII file */
-    if (ucat == UCAC1) {
+    /* DASCH specific.  Since we are sorting on mag[8], try using APASS B or mag[9] first */
+    if (st->xmag[9] < 90.0) {
+      st->xmag[8] = st->xmag[9];
+    }
+    if (st->xmag[0] < 90.0) {
+      st->xmag[8] = st->xmag[0];
+    }
 
-	/* Read position in degrees */
-	st->ra = atof (line) / 3600000.0;
-	st->dec = (atof (line+10) / 3600000.0) - 90.0;
+  }
+  else { 
+    fprintf(stderr,"ucacread CATALOG NUMBER ERROR %d in line %d\n",ucat,__LINE__);
+    exit(-1);
+  }
 
-	/* Read proper motion and convert it to to degrees/year */
-	st->rapm = (atof (line+41) / 3600000.0) / cosdeg (st->dec);
-	st->decpm = atof (line+48) / 3600000.0;
 
-	/* Set V magnitude */
-	st->xmag[0] = atof (line+20) * 0.01;
-	}
+#if 0
+  if ((zone == 256) && (istar == 149200)) {
+    printf("At zone %d and istar %d\n",zone,istar);
+  }
+#endif
 
-    /* Read UCAC2 position, proper motion, and magnitudes from binary file */
-    else if (ucat == UCAC2) {
-	if (cswap) {
-	    ucacswap4 (&us2.rasec);
-	    ucacswap4 (&us2.decsec);
-	    ucacswap4 (&us2.rapm);
-	    ucacswap4 (&us2.decpm);
-	    ucacswap2 (&us2.cmag);
-	    ucacswap2 (&us2.jmag);
-	    ucacswap2 (&us2.hmag);
-	    ucacswap2 (&us2.kmag);
-	    }
-	st->ra  = (double) us2.rasec  / 3600000.0;
-	st->dec = (double) us2.decsec / 3600000.0;
-	st->errra  = (double) us2.era / 3600000.0;	/* mas */
-	st->errra  = st->errra / cosdeg (st->dec);	/* to RA deg */
-	st->errdec = (double) us2.edec / 3600000.0;	/* mas */
-	st->rapm  = (double) us2.rapm  / 36000000.0;	/* 0.1mas/yr */
-	st->decpm = (double) us2.decpm / 36000000.0;	/* 0.1mas/yr */
-	st->errpmr  = (double) us2.erapm / 36000000.0;	/* 0.1mas/yr */
-	st->errpmr  = st->errpmr / cosdeg (st->dec);	/* to RA deg */
-	st->errpmd = (double) us2.edecpm / 36000000.0;	/* 0.1mas/yr */
-	st->xmag[0] = ((double) us2.jmag) / 1000.0;
-	st->xmag[1] = ((double) us2.hmag) / 1000.0;
-	st->xmag[2] = ((double) us2.kmag) / 1000.0;
-	st->xmag[3] = ((double) us2.cmag) / 100.0;
-	st->nimage = (int) us2.nobs;
-	st->ncat = (int) us2.ncat;
-	}
+#ifdef UCAC_DEBUG
+  if (zone == 183) {
+    fprintf(stderr,"istar %6d, ra %.3f  dec %.3f\n",istar,st->ra,st->dec);
+    
+  }
+#endif /* UCAC_DEBUG */
 
-    /* Read UCAC3 position, proper motion, and magnitudes from binary file */
-    else {
-	if (cswap) {
-	    ucacswap4 (&us3.rasec);
-	    ucacswap4 (&us3.decsec);
-	    ucacswap4 (&us3.rapm);
-	    ucacswap4 (&us3.decpm);
-	    ucacswap2 (&us3.sigra);
-	    ucacswap2 (&us3.sigdec);
-	    ucacswap2 (&us3.sigpmr);
-	    ucacswap2 (&us3.sigpmd);
-	    ucacswap2 (&us3.mmag);
-	    ucacswap2 (&us3.amag);
-	    ucacswap2 (&us3.jmag);
-	    ucacswap2 (&us3.hmag);
-	    ucacswap2 (&us3.kmag);
-	    ucacswap2 (&us3.bmag);
-	    ucacswap2 (&us3.rmag);
-	    ucacswap2 (&us3.imag);
-	    }
-	st->ra  = (double) us3.rasec  / 3600000.0;	/* mas */
-	st->dec = (double) us3.decsec / 3600000.0;	/* mas */
-	st->dec = st->dec - 90.0;
-	st->errra  = (double) us3.sigra / 3600000.0;	/* mas */
-	st->errra  = st->errra / cosdeg (st->dec);	/* to RA deg */
-	st->errdec = (double) us3.sigdec / 3600000.0;	/* mas */
-	st->rapm  = (double) us3.rapm  / 36000000.0;	/* 0.1mas/yr */
-	st->rapm  = st->rapm / cosdeg (st->dec);	/* to RA deg */
-	st->decpm = (double) us3.decpm / 36000000.0;	/* 0.1mas/yr */
-	st->errpmr  = (double) us3.sigpmr / 36000000.0;	/* 0.1mas/yr */
-	st->errpmr  = st->errpmr / cosdeg (st->dec);	/* to RA deg */
-	st->errpmd = (double) us3.sigpmd / 36000000.0;	/* 0.1mas/yr */
-	st->nimage = (int) us3.nu1;
-	st->ncat = (int) us3.us1;
-	if (us3.bmag == 0)
-	    st->xmag[0] = 99.990;
-	else
-	    st->xmag[0] = ((double) us3.bmag) / 1000.0;
-	if (us3.rmag == 0)
-	    st->xmag[1] = 99.990;
-	else
-	    st->xmag[1] = ((double) us3.rmag) / 1000.0;
-	if (us3.imag == 0)
-	    st->xmag[2] = 99.990;
-	else
-	    st->xmag[2] = ((double) us3.imag) / 1000.0;
-	if (us3.jmag == 0)
-	    st->xmag[3] = 99.990;
-	else
-	    st->xmag[3] = ((double) us3.jmag) / 1000.0;
-	if (us3.hmag == 0)
-	    st->xmag[4] = 99.990;
-	else
-	    st->xmag[4] = ((double) us3.hmag) / 1000.0;
-	if (us3.kmag == 0)
-	    st->xmag[5] = 99.990;
-	else
-	    st->xmag[5] = ((double) us3.kmag) / 1000.0;
-	if (us3.mmag == 0)
-	    st->xmag[6] = 99.990;
-	else
-	    st->xmag[6] = ((double) us3.mmag) / 1000.0;
-	if (us3.amag == 0)
-	    st->xmag[7] = 99.990;
-	else
-	    st->xmag[7] = ((double) us3.amag) / 1000.0;
-	}
-
-    return (0);
+  return (0);
 }
 
 
@@ -1492,16 +1892,16 @@ static void
 ucacswap2 (string)
 
 
-char *string;	/* Address of starting point of bytes to swap */
+     char *string;	/* Address of starting point of bytes to swap */
 
 {
-    char *sbyte, temp;
+  char *sbyte, temp;
 
-    sbyte = string;
-    temp = sbyte[0];
-    sbyte[0] = sbyte[1];
-    sbyte[1] = temp;
-    return;
+  sbyte = string;
+  temp = sbyte[0];
+  sbyte[0] = sbyte[1];
+  sbyte[1] = temp;
+  return;
 }
 
 
@@ -1510,21 +1910,21 @@ char *string;	/* Address of starting point of bytes to swap */
 static void
 ucacswap4 (string)
 
-char *string;	/* Address of Integer*4 or Real*4 vector */
+     char *string;	/* Address of Integer*4 or Real*4 vector */
 
 {
-    char temp0, temp1, temp2, temp3;
+  char temp0, temp1, temp2, temp3;
 
-    temp3 = string[0];
-    temp2 = string[1];
-    temp1 = string[2];
-    temp0 = string[3];
-    string[0] = temp0;
-    string[1] = temp1;
-    string[2] = temp2;
-    string[3] = temp3;
+  temp3 = string[0];
+  temp2 = string[1];
+  temp1 = string[2];
+  temp0 = string[3];
+  string[0] = temp0;
+  string[1] = temp1;
+  string[2] = temp2;
+  string[3] = temp3;
 
-    return;
+  return;
 }
 
 /* Apr 24 2003	New subroutines, based on ty2read.c and uacread.c
@@ -1556,4 +1956,13 @@ char *string;	/* Address of Integer*4 or Real*4 vector */
  * Nov  5 2009	Return number of images and catalogs in gtype
  * Nov  5 2009	Return errors in position and proper motion as magnitudes
  * Nov  5 2009	Return UCAC2 and UCAC3 RA proper motion and error as RA degrees
+ * Dec 14 2009	Drop nmag1 from ucacread() and ucacrnum(); it wasn't being used
+ *
+ * Jan 29 2013  Add UCAC4 support see "DASCH" tag for DASCH-specific changes
+ *
+ * Jun 12 2015	Fix UCAC4 support to include BVgriJHK magnitudes correctly
+ *
+ * Jun 22 2016	Remove extra variables from format string (via Ole Streicher)
+ *
+ * Aug  3 2018	Fix bug to set up UCAC4 hpm file path if environment UCAC4_PATH used
  */

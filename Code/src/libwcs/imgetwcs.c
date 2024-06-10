@@ -1,8 +1,8 @@
 /*** File libwcs/imgetwcs.c
- *** March 24, 2009
- *** By Doug Mink, dmink@cfa.harvard.edu (remotely based on UIowa code)
+ *** June 24, 2016
+ *** By Jessica Mink, jmink@cfa.harvard.edu (remotely based on UIowa code)
  *** Harvard-Smithsonian Center for Astrophysics
- *** Copyright (C) 1996-2009
+ *** Copyright (C) 1996-2016
  *** Smithsonian Astrophysical Observatory, Cambridge, MA, USA
 
     This library is free software; you can redistribute it and/or
@@ -20,8 +20,8 @@
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
     Correspondence concerning WCSTools should be addressed as follows:
-	   Internet email: dmink@cfa.harvard.edu
-	   Postal address: Doug Mink
+	   Internet email: jmink@cfa.harvard.edu
+	   Postal address: Jessica Mink
 	                   Smithsonian Astrophysical Observatory
 	                   60 Garden St.
 	                   Cambridge, MA 02138 USA
@@ -56,8 +56,8 @@ static double dec0 = -99.0;		/* Initial center Dec in degrees */
 static double xref0 = -99999.0;		/* Reference pixel X coordinate */
 static double yref0 = -99999.0;		/* Reference pixel Y coordinate */
 static int ptype0 = -1;			/* Projection type to fit */
-static int  nctype = 28;		/* Number of possible projections */
-static char ctypes[32][4];		/* 3-letter codes for projections */
+static int  nctype = NWCSTYPE;		/* Number of possible projections */
+static char ctypes[NWCSTYPE][4];	/* 3-letter codes for projections */
 static int usecdelt = 0;		/* Use CDELT if 1, else CD matrix */
 static char *dateobs0 = NULL;		/* Initial DATE-OBS value in FITS date format */
 
@@ -422,7 +422,7 @@ int	verbose;	/* Extra printing if =1 */
 	else {
 	    if (hgeti4 (header, "IMAGEW", &wp) < 1)
 		return (NULL);
-	    if (hgeti4 (header, "IMAGEH", &wp) < 1)
+	    if (hgeti4 (header, "IMAGEH", &hp) < 1)
 		return (NULL);
 	    }
 	}
@@ -681,8 +681,11 @@ char*	ptype;
     strcpy (ctypes[29], "DSS");
     strcpy (ctypes[30], "PLT");
     strcpy (ctypes[31], "TNX");
+    strcpy (ctypes[32], "ZPX");
+    strcpy (ctypes[33], "TPV");
 
     ptype0 = -1;
+    ptype[3] = (char) 0;
     for (i = 0; i < nctype; i++) {
 	if (!strcasecmp (ptype, ctypes[i]))
 	    ptype0 = i;
@@ -802,4 +805,11 @@ char *dateobs;
  * Oct 19 2007	Return NULL from GetFITSWCS() immediately if no WCS in header
  *
  * Mar 24 2009	Set dimensions from IMAGEW and IMAGEH if WCSAXES > 0
+ *
+ * Apr 06 2010	Set hp from IMAGEH in ChangeFITSWCS() (from Paul Liptack)
+ * Apr  7 2010	In ChangeFITSWCS() set number of WCS projections from NWCSTYPE
+ *
+ * Sep  1 2011	Add ZPX and TPV projections to setproj()
+ *
+ * Jun 24 2016	ptype contains only first 3 letters of projection codes
  */

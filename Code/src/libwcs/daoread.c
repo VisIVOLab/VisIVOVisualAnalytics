@@ -1,6 +1,6 @@
 /*** File libwcs/daoread.c
  *** January 11, 2007
- *** By Doug Mink, dmink@cfa.harvard.edu
+ *** By Jessica Mink, jmink@cfa.harvard.edu
  *** Harvard-Smithsonian Center for Astrophysics
  *** Copyright (C) 1996-2007
  *** Smithsonian Astrophysical Observatory, Cambridge, MA, USA
@@ -20,14 +20,14 @@
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
     Correspondence concerning WCSTools should be addressed as follows:
-           Internet email: dmink@cfa.harvard.edu
-           Postal address: Doug Mink
+           Internet email: jmink@cfa.harvard.edu
+           Postal address: Jessica Mink
                            Smithsonian Astrophysical Observatory
                            60 Garden St.
                            Cambridge, MA 02138 USA
  */
 
-#include <unistd.h>
+//#include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -35,6 +35,12 @@
 #include "wcs.h"
 #include "fitsfile.h"
 #include "wcscat.h"
+
+#ifndef _WIN32
+#include <unistd.h>
+#else
+#include "win_fixes.h"
+#endif
 
 static int nlines;	/* Number of lines in catalog */
 #define ABS(a) ((a) < 0 ? (-(a)) : (a))

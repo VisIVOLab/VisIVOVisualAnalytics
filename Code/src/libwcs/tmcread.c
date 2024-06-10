@@ -1,8 +1,8 @@
 /*** File libwcs/tmcread.c
- *** September 28, 2009
- *** By Doug Mink, dmink@cfa.harvard.edu
+ *** September 23, 2010
+ *** By Jessica Mink, jmink@cfa.harvard.edu
  *** Harvard-Smithsonian Center for Astrophysics
- *** Copyright (C) 2001-2009
+ *** Copyright (C) 2001-2010
  *** Smithsonian Astrophysical Observatory, Cambridge, MA, USA
 
     This library is free software; you can redistribute it and/or
@@ -20,14 +20,14 @@
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
     Correspondence concerning WCSTools should be addressed as follows:
-           Internet email: dmink@cfa.harvard.edu
-           Postal address: Doug Mink
+           Internet email: jmink@cfa.harvard.edu
+           Postal address: Jessica Mink
                            Smithsonian Astrophysical Observatory
                            60 Garden St.
                            Cambridge, MA 02138 USA
  */
 
-#include <unistd.h>
+//#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +36,12 @@
 #include "fitsfile.h"
 #include "wcs.h"
 #include "wcscat.h"
+
+#ifndef _WIN32
+#include <unistd.h>
+#else
+#include "win_fixes.h"
+#endif
 
 #define MAXREG 1800
 
@@ -320,7 +326,7 @@ int	nlog;		/* 1 for diagnostics */
 			istar1, istar2-1, zone);
 
 	    /* Loop through catalog for this region */
-	    for (istar = istar1; istar < istar2; istar++) {
+	    for (istar = istar1; istar <= istar2; istar++) {
 		if (tmcstar (starcat, star, zone, istar)) {
 		    fprintf (stderr,"TMCREAD: Cannot read star %d\n", istar);
 		    break;
@@ -1535,4 +1541,6 @@ int	istar;		/* Star sequence in 2MASS zone file */
  * Nov 20 2007	Fix bug which offset limit flag by one (found by Gus Muensch)
  *
  * Sep 28 2009	Print correct heading for n<0 Extended Source tab table
+ *
+ * Sep 23 2010	Add last star to search loop to fix bug
  */

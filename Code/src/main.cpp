@@ -1,26 +1,17 @@
-#include "mainwindow.h"
-#include "singleton.h"
-
 #include <QApplication>
 #include <QLocale>
 #include <QSurfaceFormat>
 #include <QVTKOpenGLNativeWidget.h>
 #include <QWebEngineUrlScheme>
-
-#include <clocale>
-
-#include "pqPVApplicationCore.h"
 #include <QSurfaceFormat>
+#include <clocale>
+#include "pqPVApplicationCore.h"
+
+#include "startupwindow.h"
 
 int main(int argc, char *argv[])
 {
-    QWebEngineUrlScheme vlvaUrlScheme("vlva");
-    vlvaUrlScheme.setSyntax(QWebEngineUrlScheme::Syntax::Path);
-    vlvaUrlScheme.setDefaultPort(QWebEngineUrlScheme::PortUnspecified);
-    vlvaUrlScheme.setFlags(QWebEngineUrlScheme::SecureScheme);
-    QWebEngineUrlScheme::registerScheme(vlvaUrlScheme);
 
-    // QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
     QSurfaceFormat glFormat;
     glFormat.setVersion(3, 3);
     glFormat.setProfile(QSurfaceFormat::CoreProfile);
@@ -31,14 +22,16 @@ int main(int argc, char *argv[])
     // paraview init
     pqPVApplicationCore appCore(argc, argv);
 
-    a.setApplicationName("Vialactea - Visual Analytics client");
-    a.setApplicationVersion("0.1b");
+    a.setApplicationName("VisIVO - Visual Analytics client");
+    a.setApplicationVersion("2.0");
     a.setWindowIcon(QIcon(":/icons/logo_256.png"));
 
     setlocale(LC_NUMERIC, "C");
     QLocale::setDefault(QLocale::c());
+    
+    StartupWindow *startupWindow = new StartupWindow();
+    startupWindow->show();
 
-    Singleton<MainWindow>::Instance();
 
     return a.exec();
 }

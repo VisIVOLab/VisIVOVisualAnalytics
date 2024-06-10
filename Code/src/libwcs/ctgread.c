@@ -1,8 +1,8 @@
 /*** File libwcs/ctgread.c
- *** September 30, 2009
- *** By Doug Mink, dmink@cfa.harvard.edu
+ *** January 24, 2017
+ *** By Jessica Mink, jmink@cfa.harvard.edu
  *** Harvard-Smithsonian Center for Astrophysics
- *** Copyright (C) 1998-2009
+ *** Copyright (C) 1998-2017
  *** Smithsonian Astrophysical Observatory, Cambridge, MA, USA
 
     This library is free software; you can redistribute it and/or
@@ -20,8 +20,8 @@
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
     Correspondence concerning WCSTools should be addressed as follows:
-           Internet email: dmink@cfa.harvard.edu
-           Postal address: Doug Mink
+           Internet email: jmink@cfa.harvard.edu
+           Postal address: Jessica Mink
                            Smithsonian Astrophysical Observatory
                            60 Garden St.
                            Cambridge, MA 02138 USA
@@ -35,7 +35,7 @@
  * int isacat()		Return 1 if file is ASCII catalog, else 0
  */
 
-#include <unistd.h>
+//#include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -44,6 +44,12 @@
 #include "wcs.h"
 #include "fitsfile.h"
 #include "wcscat.h"
+
+#ifndef _WIN32
+#include <unistd.h>
+#else
+#include "win_fixes.h"
+#endif
 
 /* default pathname for catalog,  used if catalog file not found in current
    working directory, but overridden by WCS_CATDIR environment variable */
@@ -153,7 +159,7 @@ int	nlog;
             nstar = ubcread (catfile,distsort,cra,cdec,dra,ddec,drad,dradi,
 			     sysout,eqout,epout,mag1,mag2,sortmag,nsmax,tnum,
 			     tra,tdec,tpra,tpdec,tmag,tc,nlog);
-        else if (refcat == UCAC1 || refcat == UCAC2 || refcat == UCAC3)
+        else if (refcat == UCAC1 || refcat == UCAC2 || refcat == UCAC3 || refcat == UCAC4)
             nstar = ucacread (catfile,cra,cdec,dra,ddec,drad,dradi,distsort,
 			     sysout,eqout,epout,mag1,mag2,sortmag,nsmax,
 			     tnum,tra,tdec,tpra,tpdec,tmag,tc,nlog);
@@ -520,7 +526,7 @@ int	nlog;
 
 int
 ctgrnum (catfile,refcat, nnum,sysout,eqout,epout,match,starcat,
-	 tnum,tra,tdec,tpra,tpdec,tmag,tc,tobj,nlog)
+	 tnum,tra,tdec,tpra,tpdec,tmag,tc,tobj,tpath,nlog)
 
 char	*catfile;	/* Name of reference star catalog file */
 int	refcat;		/* Catalog code from wcscat.h */
@@ -538,6 +544,7 @@ double	*tpdec;		/* Array of declination proper motions (returned) */
 double	**tmag;		/* 2-D Array of magnitudes (returned) */
 int	*tc;		/* Array of fluxes (returned) */
 char	**tobj;		/* Array of object names (returned) */
+char	**tpath;	/* Array of object pathnames (returned) */
 int	nlog;
 {
     int jnum;
@@ -552,10 +559,12 @@ int	nlog;
     struct StarCat *sc;
     struct Star *star;
     char *objname;
+    char *datapath;
     int imag;
     int lname;
     int starfound;
     int nameobj;
+    int pathobj;
 
     nstar = 0;
 
@@ -576,7 +585,7 @@ int	nlog;
         else if (refcat == UJC || refcat == USNO)
 	    nstar = ujcrnum (catfile,nnum,sysout,eqout,epout,
 			     tnum,tra,tdec,tmag,tc,nlog);
-        else if (refcat == UCAC1 || refcat == UCAC2 || refcat == UCAC3)
+        else if (refcat == UCAC1 || refcat == UCAC2 || refcat == UCAC3 || refcat == UCAC4)
 	    nstar = ucacrnum (catfile,nnum,sysout,eqout,epout,
 			     tnum,tra,tdec,tpra,tpdec,tmag,tc,nlog);
         else if (refcat == TMPSC || refcat == TMPSCE ||
@@ -645,6 +654,10 @@ int	nlog;
 	nameobj = 0;
     else
 	nameobj = 1;
+    if (tpath == NULL || sc->ignore)
+	pathobj = 0;
+    else
+	pathobj = 1;
 
     /* Loop through star list */
     for (jnum = 0; jnum < nnum; jnum++) {
@@ -711,6 +724,7 @@ int	nlog;
 	    if (sc->sptype)
 		tc[nstar] = (1000 * (int) star->isp[0]) + (int)star->isp[1];
 
+	    /* Object name */
 	    if (nameobj) {
 		lname = strlen (star->objname) + 1;
 		if (lname > 1) {
@@ -721,6 +735,20 @@ int	nlog;
 		else
 		    tobj[nstar] = NULL;
 		}
+
+	    /* Object data pathname */
+	    if (pathobj) {
+		lname = strlen (star->datapath) + 1;
+		if (lname > 1) {
+		    datapath = (char *)calloc (lname, 1);
+		    strcpy (datapath, star->datapath);
+		    tpath[nstar] = datapath;
+		    }
+		else
+		    tpath[nstar] = NULL;
+		}
+
+
 	    nstar++;
 	    if (nlog == 1)
 		fprintf (stderr,"CTGRNUM: %11.6f: %9.5f %9.5f %s %5.2f    \n",
@@ -992,7 +1020,7 @@ int	nlog;
             nstar = ujcbin (catfile,wcs,header,image,mag1,mag2,magscale,nlog);
         else if (refcat == UB1 || refcat == YB6)
             nstar = ubcbin (catfile,wcs,header,image,mag1,mag2,sortmag,magscale,nlog);
-        else if (refcat == UCAC1 || refcat == UCAC2 || refcat == UCAC3)
+        else if (refcat == UCAC1 || refcat == UCAC2 || refcat == UCAC3 || refcat == UCAC4)
             nstar = ucacbin (catfile,wcs,header,image,mag1,mag2,sortmag,magscale,nlog);
         else if (refcat == TMPSC || refcat == TMIDR2 || refcat == TMXSC)
             nstar = tmcbin (refcat,wcs,header,image,mag1,mag2,sortmag,magscale,nlog);
@@ -1313,6 +1341,7 @@ int	refcat;		/* Catalog code from wcscat.h (TXTCAT,BINCAT,TABCAT) */
     sc->stnum = 1;
     sc->entepoch = 0;
     sc->entrv = 0;
+    sc->entpath = 0;
 
     catdesc = strchr (sc->catbuff, newline) + 1;
     lhead = catdesc - sc->catbuff;
@@ -1396,6 +1425,16 @@ int	refcat;		/* Catalog code from wcscat.h (TXTCAT,BINCAT,TABCAT) */
 	sc->nmag = 3;
     else if (strsrch (header, "/4"))
 	sc->nmag = 4;
+    else if (strsrch (header, "/5"))
+	sc->nmag = 5;
+    else if (strsrch (header, "/6"))
+	sc->nmag = 6;
+    else if (strsrch (header, "/7"))
+	sc->nmag = 7;
+    else if (strsrch (header, "/8"))
+	sc->nmag = 8;
+    else if (strsrch (header, "/9"))
+	sc->nmag = 9;
 
     /* No number in first column, RA or object name first */
     if (strsrch (header, "/n") || strsrch (header, "/N"))
@@ -1624,6 +1663,7 @@ struct Star *st; /* Star data structure, updated on return */
     ctemp = *linend;
     *linend = (char) 0;
     st->objname[0] = (char) 0;
+    st->datapath[0] = (char) 0;
 
     /* Extract information from line of catalog */
     ntok = setoken (&tokens, line, NULL);
@@ -1850,15 +1890,27 @@ struct Star *st; /* Star data structure, updated on return */
 
     /* Object name */
     itok = tokens.itok;
-    if (sc->stnum > 0 && itok < ntok && !sc->ignore) {
-	itok = -(itok+1);
-	ltok = getoken (&tokens, itok, token, MAX_LTOK);
-	if (ltok > 79) {
-	    strncpy (st->objname, token, 79);
-	    st->objname[79] = 0;
+    if (itok < ntok && !sc->ignore) {
+	if (sc->stnum > 0) {
+	    itok = -(itok+1);
+	    ltok = getoken (&tokens, itok, token, MAX_LTOK);
+	    if (ltok > 79) {
+		strncpy (st->objname, token, 79);
+		st->objname[79] = 0;
+		}
+	    else if (ltok > 0)
+		strcpy (st->objname, token);
 	    }
-	else if (ltok > 0)
-	    strcpy (st->objname, token);
+	else {
+	    itok = -(itok+1);
+	    ltok = getoken (&tokens, itok, token, MAX_LTOK);
+	    if (ltok > 79) {
+		strncpy (st->datapath, token, 79);
+		st->datapath[79] = 0;
+		}
+	    else if (ltok > 0)
+		strcpy (st->datapath, token);
+	    }
 	}
 
     *linend = ctemp;
@@ -2117,4 +2169,10 @@ char	*in;	/* Character string */
  *
  * Aug 27 2009	Add /k option for fractional hours of RA and degrees of Dec
  * Sep 30 2009	Add UCAC3
+ *
+ * May 22 2012	Accept up to 9 magnitudes per entry instead of 4
+ *
+ * Feb 15 2013	Add UCAC4
+ *
+ * Jan 24 2017	Add datapath return from catalog in tpath
  */

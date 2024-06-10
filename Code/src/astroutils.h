@@ -1,9 +1,13 @@
 #ifndef ASTROUTILS_H
 #define ASTROUTILS_H
 
-#include "libwcs/wcs.h"
+#include <QPair>
+#include <QVector>
 
+#include <list>
 #include <string>
+
+#include "libwcs/fitswcs.h"
 
 class AstroUtils
 {
@@ -21,6 +25,14 @@ public:
     static void GetRectSize(std::string file, double *values);
     static double GetRadiusSize(std::string file);
     static bool CheckOverlap(std::string f1, std::string f2, bool full = false);
+    static int calculateResizeFactor(long size, long maxSize);
+    static bool checkSimCubeHeader(const std::string &file,
+                                   std::list<std::string> &missingKeywords);
+    static QPair<QVector<double>, QVector<double>> extractSpectrum(const char *fn, int x, int y,
+                                                                   double nulval);
+    static bool isFitsImage(const std::string &filename);
+
+    static void setMomentFITSHeader(const std::string &src, const std::string &dst, int order);
 
 private:
     static WorldCoor *GetWCSFITS(char *filename, int verbose);
@@ -29,8 +41,8 @@ private:
                                  double *cdec, double *dra, double *ddec, double *secpix, int *wp,
                                  int *hp, int *sysout, double *eqout);
     static WorldCoor *ChangeFITSWCS(char *filename, char *header, int verbose);
-    static void GetBounds(std::string file, double *top, double *bottom, double *right,
-                          double *left);
+    static void GetBounds(std::string file, double *ra_min, double *ra_max, double *dec_min,
+                          double *dec_max);
     static bool CheckFullOverlap(std::string f1, std::string f2);
 };
 
