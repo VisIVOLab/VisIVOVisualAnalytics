@@ -83,14 +83,14 @@ set_source_files_properties(${app_icon_macos} PROPERTIES
     MACOSX_PACKAGE_LOCATION "Resources"
 )
 
+qt_add_executable(VisIVOVisualAnalytics ${ui_files} ${resources} ${sources} ${headers})
+
 qt_add_resources(VisIVOVisualAnalytics "assets"
     FILES
     icons/settings.svg
         icons/folder_open.svg
         icons/cloud.svg
 )
-
-add_executable(VisIVOVisualAnalytics ${ui_files} ${resources} ${sources} ${headers})
 
 target_include_directories(VisIVOVisualAnalytics PRIVATE ${Boost_INCLUDE_DIRS})
 
@@ -100,6 +100,7 @@ target_link_libraries(VisIVOVisualAnalytics PRIVATE
         ParaView::pqApplicationComponents
         ParaView::RemotingViews
         CFITSIO::CFITSIO
+        wcs
 )
 
 set_target_properties(VisIVOVisualAnalytics PROPERTIES
