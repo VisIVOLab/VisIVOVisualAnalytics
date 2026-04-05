@@ -35,7 +35,7 @@ class DiagnosticsWindow : public QWidget
     Q_OBJECT
 
 public:
-    explicit DiagnosticsWindow(QWidget *parent = nullptr);
+    explicit DiagnosticsWindow(QWidget *parent = nullptr, Qt::WindowFlags flags = Qt::Window);
 
 private slots:
     void copySelectedMessages();

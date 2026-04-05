@@ -111,8 +111,7 @@ MainWindow::~MainWindow()
 void MainWindow::openDiagnosticsWindow()
 {
     if (!this->diagnosticsWindow) {
-        this->diagnosticsWindow = new DiagnosticsWindow(this);
-        this->diagnosticsWindow->setAttribute(Qt::WA_DeleteOnClose, false);
+        this->diagnosticsWindow = new DiagnosticsWindow(nullptr, Qt::Window);
     }
     this->diagnosticsWindow->show();
     this->diagnosticsWindow->raise();

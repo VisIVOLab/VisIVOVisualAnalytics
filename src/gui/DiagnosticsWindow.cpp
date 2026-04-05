@@ -47,10 +47,12 @@ bool DiagnosticsFilterModel::filterAcceptsRow(int sourceRow, const QModelIndex &
     return QSortFilterProxyModel::filterAcceptsRow(sourceRow, sourceParent);
 }
 
-DiagnosticsWindow::DiagnosticsWindow(QWidget *parent) : QWidget(parent)
+DiagnosticsWindow::DiagnosticsWindow(QWidget *parent, Qt::WindowFlags flags)
+    : QWidget(parent, flags)
 {
     this->setWindowTitle(QStringLiteral("Diagnostics"));
     this->resize(1100, 480);
+    this->setAttribute(Qt::WA_DeleteOnClose, false);
 
     this->m_model = new DiagnosticsModel(DiagnosticsManager::instance(), this);
     this->m_filterModel = new DiagnosticsFilterModel(this);
