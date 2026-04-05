@@ -87,8 +87,15 @@ RemoteMomentWindow::RemoteMomentWindow(const QString &backendUrl, const QString 
     this->renderer->AddViewProp(this->colorbar);
 
     auto *momentMenu = this->menuBar()->addMenu(u"Moment"_s);
-    for (const int order : { 0, 1, 2, 8, 10 }) {
-        auto *action = momentMenu->addAction(u"Moment %1"_s.arg(order));
+    const QList<QPair<int, QString>> momentOrders = {
+        { 0, u"Moment 0 (Integrated intensity)"_s },
+        { 1, u"Moment 1 (Mean velocity)"_s },
+        { 2, u"Moment 2 (Variance – NOT dispersion)"_s },
+        { 8, u"Moment 8 (Peak value)"_s },
+        { 10, u"Moment 10 (Minimum value)"_s },
+    };
+    for (const auto &[order, label] : momentOrders) {
+        auto *action = momentMenu->addAction(label);
         QObject::connect(action, &QAction::triggered, this, [this, order]() { this->requestMoment(order); });
     }
 
@@ -122,9 +129,31 @@ RemoteMomentWindow::RemoteMomentWindow(const QString &backendUrl, const QString 
             return;
         }
         this->lookupTable->SetTableRange(result.imageRange[0], result.imageRange[1]);
+
+        // Update title and colorbar to show the moment order and physical units.
+        const int momentOrder = this->watcher.property("momentOrder").toInt();
+        const QString unitSuffix = result.momentUnit.isEmpty()
+                ? QString()
+                : u" [%1]"_s.arg(result.momentUnit);
+        this->setWindowTitle(u"%1  M%2%3"_s.arg(this->datasetPath).arg(momentOrder).arg(unitSuffix));
+        const QByteArray colorbarTitle =
+                (result.momentUnit.isEmpty() ? u"M%1"_s.arg(momentOrder)
+                                             : u"M%1 (%2)"_s.arg(momentOrder).arg(result.momentUnit))
+                        .toUtf8();
+        this->colorbar->SetTitle(colorbarTitle.constData());
+
         this->renderer->ResetCamera();
         this->renderWindow->Render();
         this->clearPersistentStatusMessage();
+
+        // Show a non-blocking WCS warning in the status bar when the server had to sanitize
+        // or degrade the WCS (e.g. dropped PC matrix, fell back to CDELT-only).
+        if (result.wcsStatus != u"ok"_s) {
+            const QString warnText = result.wcsWarningMessage.isEmpty()
+                    ? u"WCS: %1"_s.arg(result.wcsStatus)
+                    : u"WCS (%1): %2"_s.arg(result.wcsStatus, result.wcsWarningMessage);
+            this->statusBar()->showMessage(warnText, 8000);
+        }
     });
 
     this->requestMoment(0);
@@ -151,6 +180,7 @@ void RemoteMomentWindow::requestMoment(int order)
 
     const int requestId = ++this->currentRequestId;
     this->watcher.setProperty("requestId", requestId);
+    this->watcher.setProperty("momentOrder", order);
     this->showPersistentStatusMessage(u"Computing moment..."_s);
     this->watcher.setFuture(QtConcurrent::run(
             &computeMomentMap,

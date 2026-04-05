@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import uuid
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
@@ -80,6 +81,19 @@ app = FastAPI(
 )
 
 _FITS_SUFFIXES = {".fits", ".fit", ".fts"}
+
+
+# ── VTK availability check (R startup) ───────────────────────────────────────
+
+_VTK_AVAILABLE = False
+try:
+    import vtk as _vtk  # noqa: F401
+    _VTK_AVAILABLE = True
+except ImportError:
+    logger.warning(
+        "[startup] VTK Python bindings not available – "
+        "/v1/products/isosurface will return 503."
+    )
 
 # ── Middleware: X-Request-ID (R8) ─────────────────────────────────────────────
 
@@ -259,6 +273,9 @@ class CubePvResponse(BaseModel):
     scalar_type: str = ""
     compression: str = ""
     positions_base64: str = ""
+    positions_arcsec_base64: str = ""
+    pixel_scale_arcsec_per_pixel: float = 0.0
+    spatial_unit: str = "pixel"
     data_base64: str = ""
     computed_on: str = ""
     width_pixels: int = 1
@@ -319,6 +336,27 @@ class ImageFullResponse(BaseModel):
     data_base64: str = ""
 
 
+class CubeNoiseRequest(BaseModel):
+    dataset_id: str
+    x0: int
+    x1: int
+    y0: int
+    y1: int
+    channel_start: int = 0
+    channel_end: int = 0
+
+
+class CubeNoiseResponse(BaseModel):
+    valid: bool
+    error: str
+    channel_start: int = 0
+    channel_end: int = 0
+    num_channels: int = 0
+    mad: list[float] = []
+    sigma: list[float] = []
+    region: dict = {}
+
+
 class IsosurfaceProductRequest(BaseModel):
     dataset_id: str
     threshold: float
@@ -351,6 +389,24 @@ async def _run(fn, *args) -> Any:
     """Run a CPU-bound function in the process pool without blocking the loop."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(_POOL, fn, *args)
+
+
+
+
+async def _run_with_limit(session: Session, fn, *args) -> Any:
+    """Like _run(), but enforces per-session concurrent task limit (HTTP 429 on overflow)."""
+    if not session.try_acquire_task_slot():
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                "Too many concurrent compute tasks for this session. "
+                "Wait for a running task to finish before submitting another."
+            ),
+        )
+    try:
+        return await _run(fn, *args)
+    finally:
+        session.release_task_slot()
 
 
 async def _moment_product_payload(entry: dict[str, Any], request: MomentProductRequest) -> tuple[dict[str, Any], bool]:
@@ -597,8 +653,9 @@ async def moment_product(
     session: Session = Depends(get_session),
 ) -> MomentProductResponse:
     try:
-        path = _require_cube_path(session, request.dataset_id)
         entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "cube":
+            raise HTTPException(422, "This endpoint requires a spectral cube dataset.")
         result, _ = await _moment_product_payload(entry, request)
     except HTTPException:
         raise
@@ -607,24 +664,72 @@ async def moment_product(
     return MomentProductResponse(valid=True, error="", **result)
 
 
+@app.post("/v1/cube/noise", response_model=CubeNoiseResponse, tags=["cube"])
+async def cube_noise(
+    request: CubeNoiseRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> CubeNoiseResponse:
+    """Estimate per-channel noise (MAD and Gaussian sigma) in an emission-free region."""
+    from .compute import worker_noise_estimate
+    try:
+        path = _require_cube_path(session, request.dataset_id)
+        result = await _run_with_limit(
+            session,
+            worker_noise_estimate,
+            path,
+            request.x0, request.x1,
+            request.y0, request.y1,
+            request.channel_start,
+            request.channel_end,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return CubeNoiseResponse(valid=False, error=str(exc))
+    return CubeNoiseResponse(valid=True, error="", **result)
+
+
 @app.post("/v1/products/isosurface", response_model=IsosurfaceProductResponse, tags=["products"])
 async def isosurface_product(
     request: IsosurfaceProductRequest,
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> IsosurfaceProductResponse:
+    if not _VTK_AVAILABLE:
+        return IsosurfaceProductResponse(
+            valid=False,
+            error="VTK Python bindings are not installed on this server. Isosurface is unavailable.",
+        )
     from .compute import worker_isosurface
     try:
         entry = _require_dataset(session, request.dataset_id)
         if entry["kind"] != "cube":
             raise HTTPException(422, "Isosurface requires a cube dataset.")
-        result = await _run(
+        iso_cache_params = {"threshold": float(request.threshold)}
+        cache_key, param_hash = PRODUCT_CACHE.make_key(entry["path"], "isosurface", iso_cache_params)
+        cached = PRODUCT_CACHE.get(cache_key)
+        if cached is not None:
+            logger.debug("[isosurface] cache hit dataset_id=%s threshold=%s", request.dataset_id, request.threshold)
+            return IsosurfaceProductResponse(valid=True, error="", **cached.payload)
+        result = await _run_with_limit(
+            session,
             worker_isosurface,
             entry["path"],
             int(entry["width"]),
             int(entry["height"]),
             int(entry["depth"]),
             float(request.threshold),
+        )
+        dataset = ScientificFitsDataset(entry["path"])
+        PRODUCT_CACHE.put(
+            key=cache_key,
+            operation="isosurface",
+            dataset_path=entry["path"],
+            parameter_hash=param_hash,
+            payload=dict(result),
+            scientific_metadata={"threshold": float(request.threshold)},
+            provenance_metadata=dataset.provenance_context(),
         )
     except HTTPException:
         raise
@@ -643,7 +748,7 @@ async def cube_preview(
     from .compute import worker_cube_preview
     try:
         path = _require_cube_path(session, request.dataset_id)
-        result = await _run(worker_cube_preview, path, request.downsample)
+        result = await _run_with_limit(session, worker_cube_preview, path, request.downsample)
     except HTTPException:
         raise
     except Exception as exc:
@@ -662,7 +767,7 @@ async def cube_slice(
         path = _require_cube_path(session, request.dataset_id)
         if request.axis.lower() != "z":
             raise HTTPException(422, "Only axis='z' is currently supported.")
-        result = await _run(worker_cube_slice, path, request.index)
+        result = await _run_with_limit(session, worker_cube_slice, path, request.index)
     except HTTPException:
         raise
     except Exception as exc:
@@ -679,7 +784,8 @@ async def cube_subvolume(
     from .compute import worker_cube_subvolume
     try:
         path = _require_cube_path(session, request.dataset_id)
-        result = await _run(
+        result = await _run_with_limit(
+            session,
             worker_cube_subvolume,
             path,
             request.x0, request.x1,
@@ -712,6 +818,33 @@ async def cube_pv(
     return CubePvResponse(valid=True, error="", **result)
 
 
+async def _progress_ticker(task_id: str, start: float = 0.05, end: float = 0.90, interval_s: float = 5.0) -> None:
+    """
+    Slowly increment task progress from *start* to *end* at *interval_s* second intervals.
+
+    This gives the polling client visible forward progress during long-running
+    ProcessPoolExecutor operations where the worker cannot report back intermediate
+    state. The ticker is cancelled by the _runner coroutine as soon as the real
+    result arrives.
+
+    With the defaults (start=0.05, end=0.90, interval=5s, step≈4.25%):
+      - A 30s computation reaches ~45% before completing.
+      - A 120s computation reaches ~90% (cap) after 100s, then jumps to 100%.
+    """
+    step = max(0.01, (end - start) / 20.0)  # ≈20 ticks from start to end
+    progress = start
+    try:
+        while progress < end:
+            await asyncio.sleep(interval_s)
+            progress = min(end, progress + step)
+            record = TASKS.get(task_id)
+            if record is None or record.status != "running":
+                return
+            TASKS.update(task_id, progress=progress)
+    except asyncio.CancelledError:
+        pass
+
+
 @app.post("/v1/tasks/moment", response_model=TaskCreateResponse, tags=["tasks"])
 async def create_moment_task(
     request: MomentProductRequest,
@@ -729,8 +862,10 @@ async def create_moment_task(
     TASKS.update(task.task_id, status="running", progress=0.05)
 
     async def _runner() -> None:
+        ticker = asyncio.create_task(_progress_ticker(task.task_id))
         try:
             result, cache_hit = await _moment_product_payload(entry, request)
+            ticker.cancel()
             TASKS.update(
                 task.task_id,
                 status="completed",
@@ -738,10 +873,15 @@ async def create_moment_task(
                 result={"valid": True, "error": "", **result},
                 cache_hit=cache_hit,
             )
+        except asyncio.CancelledError:
+            ticker.cancel()
+            TASKS.update(task.task_id, status="cancelled", progress=0.0, error="Cancelled by client.")
         except Exception as exc:  # pragma: no cover - exercised at runtime
+            ticker.cancel()
             TASKS.update(task.task_id, status="failed", progress=1.0, error=str(exc))
 
-    asyncio.create_task(_runner())
+    handle = asyncio.create_task(_runner())
+    TASKS.update(task.task_id, asyncio_handle=handle)
     return TaskCreateResponse(valid=True, error="", task_id=task.task_id, status="running", cache_hit=False)
 
 
@@ -762,8 +902,10 @@ async def create_pv_task(
     TASKS.update(task.task_id, status="running", progress=0.05)
 
     async def _runner() -> None:
+        ticker = asyncio.create_task(_progress_ticker(task.task_id))
         try:
             result, cache_hit = await _pv_product_payload(entry, request)
+            ticker.cancel()
             TASKS.update(
                 task.task_id,
                 status="completed",
@@ -771,10 +913,15 @@ async def create_pv_task(
                 result={"valid": True, "error": "", **result},
                 cache_hit=cache_hit,
             )
+        except asyncio.CancelledError:
+            ticker.cancel()
+            TASKS.update(task.task_id, status="cancelled", progress=0.0, error="Cancelled by client.")
         except Exception as exc:  # pragma: no cover - exercised at runtime
+            ticker.cancel()
             TASKS.update(task.task_id, status="failed", progress=1.0, error=str(exc))
 
-    asyncio.create_task(_runner())
+    handle = asyncio.create_task(_runner())
+    TASKS.update(task.task_id, asyncio_handle=handle)
     return TaskCreateResponse(valid=True, error="", task_id=task.task_id, status="running", cache_hit=False)
 
 
@@ -797,6 +944,27 @@ async def task_status(task_id: str, _: None = _auth) -> TaskStatusResponse:
     )
 
 
+@app.delete("/v1/tasks/{task_id}", tags=["tasks"])
+async def cancel_task(task_id: str, _: None = _auth) -> dict:
+    """Request cancellation of a running or pending task.
+
+    Returns 200 with ``{"cancelled": true}`` if the cancellation was accepted,
+    or 404 if the task does not exist, or 409 if the task has already finished.
+    A cancellation request is best-effort: the task may still complete before
+    the asyncio cancellation propagates to the worker future.
+    """
+    task = TASKS.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Unknown task_id '{task_id}'.")
+    if task.status not in ("pending", "running"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Task '{task_id}' is already in terminal state '{task.status}'.",
+        )
+    cancelled = TASKS.cancel(task_id)
+    return {"cancelled": cancelled, "task_id": task_id}
+
+
 @app.post("/v1/image/full", response_model=ImageFullResponse, tags=["image"])
 async def image_full(
     request: ImageFullRequest,
@@ -808,7 +976,7 @@ async def image_full(
         entry = _require_dataset(session, request.dataset_id)
         if entry["kind"] != "image":
             return ImageFullResponse(valid=False, error="Image endpoint requires an image dataset.")
-        result = await _run(worker_image_full, entry["path"])
+        result = await _run_with_limit(session, worker_image_full, entry["path"])
     except HTTPException:
         raise
     except Exception as exc:
@@ -827,9 +995,88 @@ async def image_preview(
         entry = _require_dataset(session, request.dataset_id)
         if entry["kind"] != "image":
             raise HTTPException(422, "Image preview endpoint requires an image dataset.")
-        result = await _run(worker_image_preview, entry["path"], request.max_longest_side)
+        result = await _run_with_limit(session, worker_image_preview, entry["path"], request.max_longest_side)
     except HTTPException:
         raise
     except Exception as exc:
         return ImageFullResponse(valid=False, error=str(exc))
     return ImageFullResponse(valid=True, error="", **result)
+
+
+# ── Cosmology ─────────────────────────────────────────────────────────────────
+
+_COSMOLOGY_MODELS: dict[str, Any] = {}
+
+
+def _load_cosmology_models() -> dict[str, Any]:
+    """Lazy-load astropy cosmology presets; returns an empty dict if astropy is absent."""
+    if _COSMOLOGY_MODELS:
+        return _COSMOLOGY_MODELS
+    try:
+        import astropy.cosmology as _ac
+        for _name in ("Planck18", "Planck15", "Planck13", "WMAP9"):
+            if hasattr(_ac, _name):
+                _COSMOLOGY_MODELS[_name] = getattr(_ac, _name)
+    except ImportError:
+        logger.warning("[startup] astropy not available – /v1/cosmology/distance will return 503.")
+    return _COSMOLOGY_MODELS
+
+
+_load_cosmology_models()
+
+
+class CosmologyDistanceRequest(BaseModel):
+    z: float
+    model: str = "Planck18"
+
+
+class CosmologyDistanceResponse(BaseModel):
+    valid: bool
+    error: str
+    z: float = 0.0
+    model: str = ""
+    comoving_Mpc: float = 0.0
+    luminosity_Mpc: float = 0.0
+    proper_motion_kpc_per_arcsec: float = 0.0
+
+
+@app.post("/v1/cosmology/distance", response_model=CosmologyDistanceResponse, tags=["cosmology"])
+async def cosmology_distance(
+    request: CosmologyDistanceRequest,
+    _: None = _auth,
+) -> CosmologyDistanceResponse:
+    """Compute comoving distance, luminosity distance, and proper-motion scale for a given redshift.
+
+    The ``model`` parameter selects the background cosmology; supported values are
+    ``Planck18`` (default), ``Planck15``, ``Planck13``, and ``WMAP9``.
+    """
+    models = _load_cosmology_models()
+    if not models:
+        return CosmologyDistanceResponse(
+            valid=False, error="astropy is not installed on this server. Cosmology endpoint unavailable."
+        )
+    if request.model not in models:
+        return CosmologyDistanceResponse(
+            valid=False,
+            error=f"Unknown cosmology model '{request.model}'. Available: {sorted(models.keys())}",
+        )
+    z = float(request.z)
+    if z < 0.0:
+        return CosmologyDistanceResponse(valid=False, error="Redshift z must be >= 0.")
+    try:
+        cosmo = models[request.model]
+        comoving_mpc = float(cosmo.comoving_distance(z).to("Mpc").value)
+        luminosity_mpc = float(cosmo.luminosity_distance(z).to("Mpc").value)
+        # kpc_proper_per_arcmin → divide by 60 to get kpc/arcsec
+        kpc_per_arcsec = float(cosmo.kpc_proper_per_arcmin(z).value / 60.0) if z > 0.0 else 0.0
+    except Exception as exc:
+        return CosmologyDistanceResponse(valid=False, error=str(exc))
+    return CosmologyDistanceResponse(
+        valid=True,
+        error="",
+        z=z,
+        model=request.model,
+        comoving_Mpc=comoving_mpc,
+        luminosity_Mpc=luminosity_mpc,
+        proper_motion_kpc_per_arcsec=kpc_per_arcsec,
+    )

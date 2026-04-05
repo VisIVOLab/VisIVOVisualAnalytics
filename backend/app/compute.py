@@ -212,6 +212,19 @@ def _moment_map_from_array(
     raise ValueError(f"Unsupported moment order: {order}.")
 
 
+def _moment_unit(order: int, bunit: str, spectral_unit: str) -> str:
+    """Derive the physical unit of a moment map from the FITS header units."""
+    if order == 0:
+        parts = [p for p in (bunit, spectral_unit) if p]
+        return " ".join(parts)
+    if order == 1:
+        return spectral_unit
+    if order == 2:
+        return f"{spectral_unit}^2" if spectral_unit else ""
+    # Orders 6, 8, 10 preserve the intensity unit.
+    return bunit
+
+
 def worker_moment(
     path: str,
     order: int,
@@ -420,6 +433,7 @@ def worker_pv(path: str, vertices: list[list[int]], width_pixels: int) -> dict[s
         # the full spectral depth, but avoids eager loading the entire cube volume.
         cube = np.asarray(data[:, slab_y0 : slab_y1 + 1, slab_x0 : slab_x1 + 1], dtype=np.float32)
         spectral = dataset.spectral_axis_metadata(0, depth - 1)
+        pixel_scale_arcsec = dataset.spatial_pixel_scale_arcsec()
         logger.info(
             "[pv] slab read path=%s full_depth=%s slab_x=%s..%s slab_y=%s..%s width_pixels=%s samples=%s spectral=%s[%s]",
             dataset.path,
@@ -470,7 +484,9 @@ def worker_pv(path: str, vertices: list[list[int]], width_pixels: int) -> dict[s
     if valid_samples <= 0:
         raise ValueError("No valid data found along the PV cut.")
 
+    positions_arcsec = positions * pixel_scale_arcsec
     pos_compression, pos_b64 = _b64f32_compressed(positions)
+    pos_arcsec_compression, pos_arcsec_b64 = _b64f32_compressed(positions_arcsec)
     data_compression, data_b64 = _b64f32_compressed(pv.reshape(-1))
     return {
         "num_samples": x_samples,
@@ -478,6 +494,9 @@ def worker_pv(path: str, vertices: list[list[int]], width_pixels: int) -> dict[s
         "scalar_type": "float32",
         "compression": pos_compression,
         "positions_base64": pos_b64,
+        "positions_arcsec_base64": pos_arcsec_b64,
+        "pixel_scale_arcsec_per_pixel": pixel_scale_arcsec,
+        "spatial_unit": "arcsec",
         "data_base64": data_b64,
         "computed_on": "spatial_slab",
         "width_pixels": width_pixels,
@@ -490,6 +509,67 @@ def worker_pv(path: str, vertices: list[list[int]], width_pixels: int) -> dict[s
         "beam_major": dataset.beam.major,
         "beam_minor": dataset.beam.minor,
         "beam_pa": dataset.beam.pa,
+    }
+
+
+# ── Worker: per-channel noise (MAD → σ) ──────────────────────────────────────
+
+
+def worker_noise_estimate(
+    path: str,
+    x0: int, x1: int,
+    y0: int, y1: int,
+    channel_start: int,
+    channel_end: int,
+) -> dict[str, Any]:
+    """
+    Estimate per-channel noise in a user-specified emission-free spatial region.
+
+    Returns the per-channel median absolute deviation (MAD) and the derived
+    Gaussian sigma (MAD × 1.4826).  The spatial region [x0:x1, y0:y1] should
+    be an area of the cube that contains only noise (no astronomical emission).
+    """
+    dataset = ScientificFitsDataset(path)
+    hdul, raw = dataset.open_memmap()
+    try:
+        data = dataset.squeeze_to_3d(raw)
+        if data.ndim != 3:
+            raise ValueError("Noise estimation requires a 3D cube.")
+        depth = data.shape[0]
+        height = data.shape[1]
+        width = data.shape[2]
+        x0c, x1c = max(0, x0), min(x1, width - 1)
+        y0c, y1c = max(0, y0), min(y1, height - 1)
+        z0 = max(0, min(channel_start, depth - 1))
+        z1 = max(0, min(channel_end,   depth - 1))
+        if x0c > x1c or y0c > y1c or z0 > z1:
+            raise ValueError("Invalid spatial or spectral region for noise estimation.")
+        # Materialise only the requested region.
+        region = np.asarray(data[z0 : z1 + 1, y0c : y1c + 1, x0c : x1c + 1], dtype=np.float32)
+    finally:
+        hdul.close()
+
+    mad_values: list[float] = []
+    sigma_values: list[float] = []
+    for z in range(region.shape[0]):
+        plane = region[z].ravel()
+        finite = plane[np.isfinite(plane)]
+        if len(finite) < 2:
+            mad_values.append(float("nan"))
+            sigma_values.append(float("nan"))
+        else:
+            median = float(np.median(finite))
+            mad = float(np.median(np.abs(finite - median)))
+            mad_values.append(mad)
+            sigma_values.append(mad * 1.4826)  # MAD → σ for Gaussian noise
+
+    return {
+        "channel_start": z0,
+        "channel_end": z1,
+        "num_channels": z1 - z0 + 1,
+        "mad": mad_values,
+        "sigma": sigma_values,
+        "region": {"x0": x0c, "x1": x1c, "y0": y0c, "y1": y1c},
     }
 
 

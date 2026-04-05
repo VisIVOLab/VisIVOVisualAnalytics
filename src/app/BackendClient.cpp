@@ -13,7 +13,6 @@
 #include <QProcessEnvironment>
 #include <QDebug>
 #include <QStandardPaths>
-#include <QThread>
 #include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
@@ -619,7 +618,15 @@ BackendTaskStatusResult BackendClient::waitForTaskCompletion(const BackendTaskCr
                                                  : QStringLiteral("false"));
 
     for (int attempt = 0; attempt < maxPollAttempts; ++attempt) {
-        QThread::msleep(pollIntervalMs);
+        // Use a local QEventLoop driven by a single-shot QTimer instead of
+        // QThread::msleep so the thread can process queued Qt events while
+        // waiting. This prevents the thread pool slot from being locked in an
+        // unconditional sleep system call during long-running polls.
+        {
+            QEventLoop waitLoop;
+            QTimer::singleShot(pollIntervalMs, &waitLoop, &QEventLoop::quit);
+            waitLoop.exec();
+        }
         const auto taskStatus = this->requestTaskStatus(createResult.taskId);
         if (!taskStatus.valid && !taskStatus.status.isEmpty()
             && taskStatus.status != QStringLiteral("failed")) {
@@ -690,6 +697,8 @@ BackendMomentResult BackendClient::parseMomentResultObject(const QJsonObject &ob
     result.spectralAxisUnit = object.value(QStringLiteral("spectral_axis_unit")).toString();
     result.momentUnit = object.value(QStringLiteral("moment_unit")).toString();
     result.bunit = object.value(QStringLiteral("bunit")).toString();
+    result.wcsStatus = object.value(QStringLiteral("wcs_status")).toString(QStringLiteral("ok"));
+    result.wcsWarningMessage = object.value(QStringLiteral("wcs_warning_message")).toString();
     result.data = decodePayload(object, QStringLiteral("data_base64"),
                                 QStringLiteral("compression"), result.error);
     if (!result.error.isEmpty()) {
@@ -717,6 +726,12 @@ BackendCubePvResult BackendClient::parsePvResultObject(const QJsonObject &object
     result.beamMajor = object.value(QStringLiteral("beam_major")).toDouble();
     result.beamMinor = object.value(QStringLiteral("beam_minor")).toDouble();
     result.beamPa = object.value(QStringLiteral("beam_pa")).toDouble();
+    result.positionsArcsec = decodePayload(object, QStringLiteral("positions_arcsec_base64"),
+                                           QStringLiteral("compression"), result.error);
+    result.error.clear(); // missing arcsec positions is non-fatal
+    result.pixelScaleArcsecPerPixel =
+            object.value(QStringLiteral("pixel_scale_arcsec_per_pixel")).toDouble(0.);
+    result.spatialUnit = object.value(QStringLiteral("spatial_unit")).toString(QStringLiteral("pixel"));
     result.positions = decodePayload(object, QStringLiteral("positions_base64"),
                                      QStringLiteral("compression"), result.error);
     if (result.error.isEmpty()) {

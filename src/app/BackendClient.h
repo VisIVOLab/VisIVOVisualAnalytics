@@ -85,10 +85,12 @@ struct BackendMomentResult
     QString scalarType;
     double rangeMin{ 0. };
     double rangeMax{ 0. };
-    QString spectralAxisType;
-    QString spectralAxisUnit;
-    QString momentUnit;
-    QString bunit;
+    QString spectralAxisType; // CTYPE3 value, e.g. "FREQ", "VRAD"
+    QString spectralAxisUnit; // CUNIT3 value, e.g. "Hz", "km/s"
+    QString momentUnit;       // e.g. "Jy/beam Hz", "km/s", "km^2/s^2"
+    QString bunit;            // raw BUNIT from the FITS header
+    QString wcsStatus{ QStringLiteral("ok") }; // "ok", "sanitized", or "degraded"
+    QString wcsWarningMessage;                  // human-readable WCS warning, empty when ok
     QByteArray data;
 };
 
@@ -156,7 +158,10 @@ struct BackendCubePvResult
     int numSamples{ 0 };
     int depth{ 0 };
     QString scalarType;
-    QByteArray positions;
+    QByteArray positions;        // pixel-distance offset along path (float32[N])
+    QByteArray positionsArcsec;  // angular offset in arcseconds (float32[N])
+    double pixelScaleArcsecPerPixel{ 0. };
+    QString spatialUnit;         // "arcsec" when physical coords are available
     QByteArray data;
     QString computedOn;
     int widthPixels{ 1 };

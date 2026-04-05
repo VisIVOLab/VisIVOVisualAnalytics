@@ -165,7 +165,8 @@ struct RemotePvFetchResult
 {
     bool valid{ false };
     QString errorMessage;
-    QVector<double> positions;
+    QVector<double> positions;       // pixel-distance offset along path
+    QVector<double> positionsArcsec; // angular offset in arcseconds (empty if unavailable)
     QVector<double> values;
     int numSamples{ 0 };
     int depth{ 0 };
@@ -174,6 +175,7 @@ struct RemotePvFetchResult
     int vertexCount{ 0 };
     double totalLength{ 0. };
     int validSamples{ 0 };
+    QString spatialUnit; // "arcsec" when physical coords are available
 };
 
 enum class SanityLevel
@@ -1356,6 +1358,18 @@ RemotePvFetchResult fetchRemotePv(const QString &backendUrl, const QString &data
         result.positions[i] = static_cast<double>(rawPositions[i]);
     }
 
+    // Populate physical arcsecond positions when the backend returns them.
+    if (!response.positionsArcsec.isEmpty()
+        && response.positionsArcsec.size() == expectedPositionsBytes) {
+        const auto *rawArcsec =
+                reinterpret_cast<const float *>(response.positionsArcsec.constData());
+        result.positionsArcsec.resize(response.numSamples);
+        for (int i = 0; i < response.numSamples; ++i) {
+            result.positionsArcsec[i] = static_cast<double>(rawArcsec[i]);
+        }
+        result.spatialUnit = response.spatialUnit;
+    }
+
     const auto *rawValues = reinterpret_cast<const float *>(response.data.constData());
     result.values.resize(response.numSamples * response.depth);
     for (int i = 0; i < response.numSamples * response.depth; ++i) {
@@ -1871,16 +1885,24 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                          const QString maskSummary = this->currentMomentConfig.maskEnabled
                                  ? u">= %1"_s.arg(this->currentMomentConfig.thresholdValue, 0, 'g', 8)
                                  : u"none"_s;
+                         const QString unitLabel = result.momentUnit.isEmpty()
+                                 ? u"—"_s
+                                 : result.momentUnit;
                          this->momentProvenanceState.valid = true;
                          this->momentProvenanceState.summary =
-                                 u"Moment: %1 | Ch: %2 | Mask: %3 | Scope: %4"_s
+                                 u"Moment: %1 | Unit: %2 | Ch: %3 | Mask: %4 | Scope: %5"_s
                                          .arg(this->describeMomentOrder(this->currentMomentConfig.order))
+                                         .arg(unitLabel)
                                          .arg(this->formatMomentChannelRange(this->currentMomentConfig))
                                          .arg(maskSummary)
                                          .arg(this->describeMomentScope());
                          this->momentProvenanceState.details =
-                                 u"Moment type: %1\nChannel range: %2\nMask: %3\nThreshold: %4\nNaN/blanking: excluded from computation\nValid-pixel policy: only finite unmasked voxels contribute\nSource scope: %5\nAxis 3 semantics: %6\nWCS frame: %7"_s
+                                 u"Moment type: %1\nUnit: %2\nBUNIT: %3\nSpectral axis: %4 [%5]\nChannel range: %6\nMask: %7\nThreshold: %8\nNaN/blanking: excluded from computation\nValid-pixel policy: only finite unmasked voxels contribute\nSource scope: %9\nAxis 3 semantics: %10\nWCS frame: %11"_s
                                          .arg(this->describeMomentOrder(this->currentMomentConfig.order))
+                                         .arg(unitLabel)
+                                         .arg(result.bunit.isEmpty() ? u"—"_s : result.bunit)
+                                         .arg(result.spectralAxisType.isEmpty() ? u"—"_s : result.spectralAxisType)
+                                         .arg(result.spectralAxisUnit.isEmpty() ? u"—"_s : result.spectralAxisUnit)
                                          .arg(this->formatMomentChannelRange(this->currentMomentConfig))
                                          .arg(this->currentMomentConfig.maskEnabled ? u"enabled"_s
                                                                                     : u"none"_s)
@@ -1895,6 +1917,15 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                  << QStringLiteral("[perf][moment] UI apply: %1 ms")
                                             .arg(applyTimer.elapsed());
                          this->clearPersistentStatusMessage();
+
+                         // Show a transient WCS warning when the moment was
+                         // computed with a sanitized or degraded WCS.
+                         if (!result.wcsStatus.isEmpty() && result.wcsStatus != u"ok"_s) {
+                             const QString warnText = result.wcsWarningMessage.isEmpty()
+                                     ? u"Moment WCS: %1"_s.arg(result.wcsStatus)
+                                     : u"Moment WCS (%1): %2"_s.arg(result.wcsStatus, result.wcsWarningMessage);
+                             this->statusBar()->showMessage(warnText, 8000);
+                         }
                      });
     QObject::connect(&this->isosurfaceWatcher, &QFutureWatcher<AsyncIsosurfaceResult>::finished,
                      this, [this]() {
@@ -4544,11 +4575,19 @@ void vtkWindowCube::extractCurrentPvDiagram()
     const auto showPvDiagram = [this, &ensurePvWidget](const QVector<double> &positions,
                                                        const QVector<double> &spectral,
                                                        const QVector<double> &values, int xSamples,
-                                                       int zCount, const QString &details) {
+                                                       int zCount, const QString &details,
+                                                       const QVector<double> &arcsecPositions = {},
+                                                       const QString &spatialUnit = {}) {
         ensurePvWidget();
         qDebug().noquote() << QStringLiteral("[pv] updating widget and requesting show/raise");
-        this->pvDiagramWidget->setPvData(positions, spectral, values, xSamples, zCount,
-                                         u"Offset Along Path (pixels)"_s, this->spectralAxisTitle(),
+        const bool hasArcsec = !arcsecPositions.isEmpty()
+                && arcsecPositions.size() == positions.size();
+        const QVector<double> &pvPositions = hasArcsec ? arcsecPositions : positions;
+        const QString xLabel = hasArcsec
+                ? u"Offset Along Path (%1)"_s.arg(spatialUnit.isEmpty() ? u"arcsec"_s : spatialUnit)
+                : u"Offset Along Path (pixels)"_s;
+        this->pvDiagramWidget->setPvData(pvPositions, spectral, values, xSamples, zCount,
+                                         xLabel, this->spectralAxisTitle(),
                                          u"PV Diagram (Polyline)"_s, details);
     };
 
@@ -4708,7 +4747,8 @@ void vtkWindowCube::extractCurrentPvDiagram()
                             .arg(remoteResult.widthPixels > 0 ? remoteResult.widthPixels : this->pvWidthPixels)
                             .arg(remoteResult.totalLength, 0, 'f', 2);
             showPvDiagram(remoteResult.positions, spectral, remoteResult.values, remoteResult.numSamples,
-                          remoteResult.depth, details);
+                          remoteResult.depth, details,
+                          remoteResult.positionsArcsec, remoteResult.spatialUnit);
             return;
         }
 
@@ -5882,7 +5922,7 @@ QString vtkWindowCube::describeMomentOrder(int order) const
     case 1:
         return u"Moment 1"_s;
     case 2:
-        return u"Moment 2"_s;
+        return u"Moment 2 (Variance \u2013 NOT dispersion)"_s;
     case 6:
         return u"Moment 6 (RMS)"_s;
     case 8:
@@ -6003,7 +6043,7 @@ bool vtkWindowCube::configureMomentRequest(int defaultOrder, MomentGenerationCon
     const std::array<std::pair<int, QString>, 6> orders = {
             std::pair{ 0, u"Moment 0: Integrated intensity"_s },
             std::pair{ 1, u"Moment 1: Intensity-weighted coordinate"_s },
-            std::pair{ 2, u"Moment 2: Coordinate dispersion"_s },
+            std::pair{ 2, u"Moment 2: Variance (NOT velocity dispersion)"_s },
             std::pair{ 6, u"Moment 6: RMS"_s },
             std::pair{ 8, u"Moment 8: Maximum"_s },
             std::pair{ 10, u"Moment 10: Minimum"_s },

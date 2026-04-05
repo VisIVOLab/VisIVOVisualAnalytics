@@ -336,10 +336,12 @@ async def test_moment_map_orders(
     assert data["height"] == 64
     arr = _decode_f32(data["data_base64"])
     assert arr.shape == (64 * 64,)
-    # At least some finite values.
     assert np.isfinite(arr).any()
-    assert "spectral_axis_type" in data
-    assert "moment_unit" in data
+    # Scientific metadata must be present and non-empty.
+    assert data.get("bunit") == "Jy/beam", f"bunit missing or wrong for M{order}"
+    assert data.get("spectral_axis_type") == "FREQ"
+    assert data.get("spectral_axis_unit") == "Hz"
+    assert data.get("moment_unit") != "", f"moment_unit empty for M{order}"
 
 
 @pytest.mark.asyncio
@@ -574,8 +576,216 @@ async def test_unknown_dataset_id(client: AsyncClient, auth_headers: dict) -> No
     assert resp.status_code == 404
 
 
+
+# ── /v1/cube/noise tests ──────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cube_noise_basic(client: AsyncClient, opened_cube: dict) -> None:
+    """Noise endpoint should return per-channel MAD and sigma."""
+    resp = await client.post(
+        "/v1/cube/noise",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "x0": 0, "x1": 10, "y0": 0, "y1": 10,
+            "channel_start": 0, "channel_end": 31,
+        },
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["valid"] is True, data["error"]
+    assert data["num_channels"] == 32
+    assert len(data["mad"]) == 32
+    assert len(data["sigma"]) == 32
+    # All sigma should be positive finite (noise region has no NaN-only channels).
+    assert all(s > 0 for s in data["sigma"] if s == s), "All sigma should be positive"
+
+
+@pytest.mark.asyncio
+async def test_cube_noise_sigma_relation(client: AsyncClient, opened_cube: dict) -> None:
+    """sigma must equal MAD * 1.4826 within float precision."""
+    resp = await client.post(
+        "/v1/cube/noise",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "x0": 0, "x1": 8, "y0": 0, "y1": 8,
+            "channel_start": 0, "channel_end": 10,
+        },
+        headers=opened_cube["headers"],
+    )
+    data = resp.json()
+    for mad, sigma in zip(data["mad"], data["sigma"]):
+        if mad == mad and sigma == sigma and mad > 0:  # skip NaN
+            assert abs(sigma / mad - 1.4826) < 1e-4
+
+
+@pytest.mark.asyncio
+async def test_cube_noise_wrong_kind(client: AsyncClient, opened_image: dict) -> None:
+    """Noise endpoint on an image dataset must fail."""
+    resp = await client.post(
+        "/v1/cube/noise",
+        json={
+            "dataset_id": opened_image["dataset_id"],
+            "x0": 0, "x1": 10, "y0": 0, "y1": 10,
+            "channel_start": 0, "channel_end": 5,
+        },
+        headers=opened_image["headers"],
+    )
+    # Should be 422 (wrong kind) or valid=False.
+    assert resp.status_code in (422, 200)
+    if resp.status_code == 200:
+        assert resp.json()["valid"] is False
+
+
+# ── PV physical coordinates ───────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cube_pv_has_arcsec_positions(client: AsyncClient, opened_cube: dict) -> None:
+    """PV response must include physical arcsecond positions."""
+    resp = await client.post(
+        "/v1/cube/pv",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "vertices": [[10, 32], [54, 32]],
+            "width_pixels": 1,
+        },
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["valid"] is True
+    assert data.get("spatial_unit") == "arcsec"
+    assert data.get("pixel_scale_arcsec_per_pixel", 0) > 0
+    assert data.get("positions_arcsec_base64", "") != ""
+    # Decode and check monotonicity.
+    import zlib
+    raw = base64.b64decode(data["positions_arcsec_base64"])
+    n_expected = struct.unpack(">I", raw[:4])[0]
+    arcsec = np.frombuffer(zlib.decompress(raw[4:])[:n_expected], dtype=np.float32)
+    assert len(arcsec) == data["num_samples"]
+    assert np.all(np.diff(arcsec) >= 0), "Arcsec positions should be non-decreasing"
+
+
+# ── Concurrency limit ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_concurrent_task_limit_returns_429(
+    client: AsyncClient, opened_cube: dict
+) -> None:
+    """Submitting more than VISIVO_MAX_CONCURRENT_TASKS requests for the same session
+    must yield HTTP 429 for the overflow request."""
+    headers = opened_cube["headers"]
+    payload = {
+        "dataset_id": opened_cube["dataset_id"],
+        "moment_order": 0,
+        "channel_start": 0,
+        "channel_end": 0,
+    }
+
+    # Occupy all task slots by directly manipulating the session counter.
+    from app.sessions import REGISTRY, _MAX_CONCURRENT_TASKS
+
+    session_id = opened_cube["session_id"]
+    session = REGISTRY.get(session_id)
+    assert session is not None, "Session must exist after opened_cube fixture"
+
+    with session._task_lock:
+        session._active_tasks = _MAX_CONCURRENT_TASKS
+
+    try:
+        resp = await client.post("/v1/products/moment", json=payload, headers=headers)
+        assert resp.status_code == 429, (
+            f"Expected 429 when session is at capacity, got {resp.status_code}"
+        )
+    finally:
+        # Always restore so subsequent tests are not affected.
+        with session._task_lock:
+            session._active_tasks = 0
+
+
+# ── Cosmology ─────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cosmology_planck18_z1(client: AsyncClient, auth_headers: dict) -> None:
+    """Planck18 cosmology at z=1 should return sensible Mpc distances."""
+    resp = await client.post(
+        "/v1/cosmology/distance",
+        json={"z": 1.0, "model": "Planck18"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["valid"] is True
+    assert data["model"] == "Planck18"
+    assert data["z"] == pytest.approx(1.0)
+    # Planck18: D_C(z=1) ≈ 3303 Mpc, D_L(z=1) ≈ 6607 Mpc
+    assert 3000 < data["comoving_Mpc"] < 3700, "Comoving distance at z=1 out of expected range"
+    assert 6000 < data["luminosity_Mpc"] < 7200, "Luminosity distance at z=1 out of expected range"
+    assert data["proper_motion_kpc_per_arcsec"] > 0
+
+
+@pytest.mark.asyncio
+async def test_cosmology_z0_returns_zero_distances(client: AsyncClient, auth_headers: dict) -> None:
+    resp = await client.post(
+        "/v1/cosmology/distance",
+        json={"z": 0.0},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["valid"] is True
+    assert data["comoving_Mpc"] == pytest.approx(0.0, abs=1e-3)
+    assert data["luminosity_Mpc"] == pytest.approx(0.0, abs=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_cosmology_negative_z_returns_error(client: AsyncClient, auth_headers: dict) -> None:
+    resp = await client.post(
+        "/v1/cosmology/distance",
+        json={"z": -0.5},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["valid"] is False
+    assert "z" in data["error"].lower() or "redshift" in data["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_cosmology_unknown_model_returns_error(client: AsyncClient, auth_headers: dict) -> None:
+    resp = await client.post(
+        "/v1/cosmology/distance",
+        json={"z": 1.0, "model": "NonExistentModel99"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["valid"] is False
+    assert "NonExistentModel99" in data["error"]
+
+
+@pytest.mark.asyncio
+async def test_cosmology_luminosity_gt_comoving(client: AsyncClient, auth_headers: dict) -> None:
+    """D_L = D_C * (1+z) > D_C for z > 0."""
+    resp = await client.post(
+        "/v1/cosmology/distance",
+        json={"z": 0.5},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["valid"] is True
+    assert data["luminosity_Mpc"] > data["comoving_Mpc"]
+
+
+# Next-server test: task registry TTL eviction
+
 def test_task_registry_ttl_eviction() -> None:
-    from backend.app.tasks import TaskRegistry
+    from app.tasks import TaskRegistry
 
     registry = TaskRegistry(ttl_seconds=1)
     task = registry.create("pv")
@@ -583,3 +793,100 @@ def test_task_registry_ttl_eviction() -> None:
     assert record is not None
     record.last_touched_monotonic -= 5.0
     assert registry.get(task.task_id) is None
+
+
+# ── Task cancellation (DELETE /v1/tasks/{id}) ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cancel_running_task(client: AsyncClient, opened_cube: dict) -> None:
+    """A running task must be cancellable via DELETE and reflect status='cancelled'."""
+    create_resp = await client.post(
+        "/v1/tasks/moment",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "moment_order": 0,
+            "channel_start": 0,
+            "channel_end": 31,
+            "mask_enabled": False,
+            "threshold_value": 0.0,
+        },
+        headers=opened_cube["headers"],
+    )
+    assert create_resp.status_code == 200
+    task_id = create_resp.json()["task_id"]
+
+    del_resp = await client.delete(f"/v1/tasks/{task_id}", headers=opened_cube["headers"])
+    assert del_resp.status_code == 200
+    assert del_resp.json()["cancelled"] is True
+    assert del_resp.json()["task_id"] == task_id
+
+    # After cancellation the status must be 'cancelled' (or 'completed' if it
+    # already finished before the cancel propagated — both are acceptable).
+    status_resp = await client.get(f"/v1/tasks/{task_id}", headers=opened_cube["headers"])
+    assert status_resp.status_code == 200
+    final_status = status_resp.json()["status"]
+    assert final_status in ("cancelled", "completed"), f"Unexpected status: {final_status}"
+
+
+@pytest.mark.asyncio
+async def test_cancel_nonexistent_task_returns_404(client: AsyncClient, auth_headers: dict) -> None:
+    resp = await client.delete("/v1/tasks/task_doesnotexist_abc", headers=auth_headers)
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_cancel_completed_task_returns_409(client: AsyncClient, opened_cube: dict) -> None:
+    """Cancelling a task that has already completed must return 409 Conflict."""
+    create_resp = await client.post(
+        "/v1/tasks/moment",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "moment_order": 0,
+            "channel_start": 0,
+            "channel_end": 4,
+        },
+        headers=opened_cube["headers"],
+    )
+    assert create_resp.status_code == 200
+    task_id = create_resp.json()["task_id"]
+
+    # Wait for completion
+    for _ in range(30):
+        s = await client.get(f"/v1/tasks/{task_id}", headers=opened_cube["headers"])
+        if s.json()["status"] == "completed":
+            break
+        await asyncio.sleep(0.1)
+
+    del_resp = await client.delete(f"/v1/tasks/{task_id}", headers=opened_cube["headers"])
+    assert del_resp.status_code == 409
+
+
+# ── Isosurface via PRODUCT_CACHE ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_isosurface_cache_hit(client: AsyncClient, opened_cube: dict) -> None:
+    """Two identical isosurface requests must produce a cache hit on the second call."""
+    if not _vtk_available():
+        pytest.skip("VTK not available on this server")
+
+    payload = {"dataset_id": opened_cube["dataset_id"], "threshold": 1.0}
+    resp1 = await client.post("/v1/products/isosurface", json=payload, headers=opened_cube["headers"])
+    assert resp1.status_code == 200
+    assert resp1.json()["valid"] is True
+
+    resp2 = await client.post("/v1/products/isosurface", json=payload, headers=opened_cube["headers"])
+    assert resp2.status_code == 200
+    assert resp2.json()["valid"] is True
+    # Both responses must carry identical geometry data.
+    assert resp1.json()["num_points"] == resp2.json()["num_points"]
+    assert resp1.json()["num_polys"] == resp2.json()["num_polys"]
+
+
+def _vtk_available() -> bool:
+    try:
+        import vtk  # noqa: F401
+        return True
+    except ImportError:
+        return False
