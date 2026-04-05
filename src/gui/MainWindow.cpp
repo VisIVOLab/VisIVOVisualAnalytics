@@ -6,6 +6,7 @@
 #include "app/BackendClient.h"
 #include "DatasetOpenService.h"
 #include "DatasetWindowFactory.h"
+#include "DiagnosticsWindow.h"
 #include "RemoteFileBrowserDialog.h"
 #include "Settings.h"
 #include "SettingsDialog.h"
@@ -26,6 +27,8 @@
 #include <QFileInfo>
 #include <QInputDialog>
 #include <QMessageBox>
+#include <QMenu>
+#include <QMenuBar>
 #include <QWebChannel>
 #include <qstylehints.h>
 
@@ -58,6 +61,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // Setup Menu Edit
     QObject::connect(ui->actionSettings, &QAction::triggered, this,
                      &MainWindow::openSettingsDialog);
+
+    auto *viewMenu = new QMenu(u"View"_s, this);
+    this->menuBar()->insertMenu(ui->menuHelp->menuAction(), viewMenu);
+    auto *diagnosticsAction = viewMenu->addAction(u"Diagnostics"_s);
+    QObject::connect(diagnosticsAction, &QAction::triggered, this,
+                     [this]() { this->openDiagnosticsWindow(); });
 
     // Setup Menu About
     QObject::connect(ui->actionAbout, &QAction::triggered, this, &MainWindow::openAboutDialog);
@@ -97,6 +106,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 MainWindow::~MainWindow()
 {
     delete ui;
+}
+
+void MainWindow::openDiagnosticsWindow()
+{
+    if (!this->diagnosticsWindow) {
+        this->diagnosticsWindow = new DiagnosticsWindow(this);
+        this->diagnosticsWindow->setAttribute(Qt::WA_DeleteOnClose, false);
+    }
+    this->diagnosticsWindow->show();
+    this->diagnosticsWindow->raise();
+    this->diagnosticsWindow->activateWindow();
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)

@@ -1,4 +1,5 @@
 #include "BackendClient.h"
+#include "DiagnosticsManager.h"
 
 #include <QByteArray>
 #include <QDir>
@@ -602,12 +603,23 @@ BackendTaskStatusResult BackendClient::waitForTaskCompletion(const BackendTaskCr
 {
     BackendTaskStatusResult terminal;
     terminal.taskId = createResult.taskId;
+    QString operationTag;
+    if (logTag.contains(QStringLiteral("moment"), Qt::CaseInsensitive)) {
+        operationTag = QStringLiteral("moment");
+    } else if (logTag.contains(QStringLiteral("pv"), Qt::CaseInsensitive)) {
+        operationTag = QStringLiteral("pv");
+    }
     if (!createResult.valid || createResult.taskId.isEmpty()) {
         terminal.error = createResult.error.isEmpty()
                 ? QStringLiteral("Task creation failed.")
                 : createResult.error;
         qWarning().noquote()
                 << QStringLiteral("%1 create failed error=%2").arg(logTag, terminal.error);
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
+                QStringLiteral("BackendClient"),
+                QStringLiteral("Task creation failed: %1").arg(terminal.error), {}, this->m_sessionId,
+                operationTag);
         return terminal;
     }
 
@@ -616,6 +628,16 @@ BackendTaskStatusResult BackendClient::waitForTaskCompletion(const BackendTaskCr
                        .arg(logTag, createResult.taskId, createResult.status)
                        .arg(createResult.cacheHit ? QStringLiteral("true")
                                                  : QStringLiteral("false"));
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Info, DiagnosticsCategory::Task, QStringLiteral("BackendClient"),
+            QStringLiteral("Task created (%1)%2.")
+                    .arg(createResult.taskId,
+                         createResult.cacheHit ? QStringLiteral(", cache hit")
+                                               : QString()),
+            {}, this->m_sessionId, operationTag);
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Info, DiagnosticsCategory::Task, QStringLiteral("BackendClient"),
+            QStringLiteral("Polling task status."), {}, this->m_sessionId, operationTag);
 
     for (int attempt = 0; attempt < maxPollAttempts; ++attempt) {
         // Use a local QEventLoop driven by a single-shot QTimer instead of
@@ -633,6 +655,11 @@ BackendTaskStatusResult BackendClient::waitForTaskCompletion(const BackendTaskCr
             qWarning().noquote()
                     << QStringLiteral("%1 polling invalid task_id=%2 error=%3")
                                .arg(logTag, createResult.taskId, taskStatus.error);
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
+                    QStringLiteral("BackendClient"),
+                    QStringLiteral("Task polling failed: %1").arg(taskStatus.error), {},
+                    this->m_sessionId, operationTag);
             return taskStatus;
         }
         qDebug().noquote()
@@ -645,12 +672,26 @@ BackendTaskStatusResult BackendClient::waitForTaskCompletion(const BackendTaskCr
                                .arg(logTag, createResult.taskId)
                                .arg(taskStatus.cacheHit ? QStringLiteral("true")
                                                         : QStringLiteral("false"));
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Info, DiagnosticsCategory::Task,
+                    QStringLiteral("BackendClient"),
+                    QStringLiteral("Task completed (%1)%2.")
+                            .arg(createResult.taskId,
+                                 taskStatus.cacheHit ? QStringLiteral(", cache hit")
+                                                     : QString()),
+                    {}, this->m_sessionId, operationTag);
             return taskStatus;
         }
         if (taskStatus.status == QStringLiteral("failed")) {
             qWarning().noquote()
                     << QStringLiteral("%1 failed task_id=%2 error=%3")
                                .arg(logTag, createResult.taskId, taskStatus.error);
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Error, DiagnosticsCategory::Task,
+                    QStringLiteral("BackendClient"),
+                    QStringLiteral("Task failed (%1): %2")
+                            .arg(createResult.taskId, taskStatus.error),
+                    {}, this->m_sessionId, operationTag);
             return taskStatus;
         }
     }
@@ -658,6 +699,10 @@ BackendTaskStatusResult BackendClient::waitForTaskCompletion(const BackendTaskCr
     terminal.error = QStringLiteral("Task polling timed out.");
     qWarning().noquote()
             << QStringLiteral("%1 polling timed out task_id=%2").arg(logTag, createResult.taskId);
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Warning, DiagnosticsCategory::Task, QStringLiteral("BackendClient"),
+            QStringLiteral("Task polling timed out (%1).").arg(createResult.taskId), {},
+            this->m_sessionId, operationTag);
     return terminal;
 }
 
@@ -759,6 +804,9 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
                         .arg(this->requestTimeoutFor(url).count())
                         .arg(url.path());
         qWarning().noquote() << error;
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
+                QStringLiteral("BackendClient"), error, {}, this->m_sessionId);
         reply->abort();
         loop.quit();
     });
@@ -769,11 +817,23 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
     const QByteArray data = reply->readAll();
     if (error.isEmpty() && reply->error() != QNetworkReply::NoError) {
         error = reply->errorString();
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
+                QStringLiteral("BackendClient"),
+                QStringLiteral("Backend GET failed for %1: %2").arg(url.path(), error), {},
+                this->m_sessionId);
     } else if (error.isEmpty()) {
         const int status =
                 reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (status >= 400) {
             error = QString::fromUtf8(data);
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
+                    QStringLiteral("BackendClient"),
+                    QStringLiteral("Backend GET returned HTTP %1 for %2: %3")
+                            .arg(status)
+                            .arg(url.path(), error),
+                    {}, this->m_sessionId);
         }
     }
     reply->deleteLater();
@@ -796,6 +856,9 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
                         .arg(this->requestTimeoutFor(url).count())
                         .arg(url.path());
         qWarning().noquote() << error;
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
+                QStringLiteral("BackendClient"), error, {}, this->m_sessionId);
         reply->abort();
         loop.quit();
     });
@@ -806,11 +869,23 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
     const QByteArray data = reply->readAll();
     if (error.isEmpty() && reply->error() != QNetworkReply::NoError) {
         error = reply->errorString();
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
+                QStringLiteral("BackendClient"),
+                QStringLiteral("Backend POST failed for %1: %2").arg(url.path(), error), {},
+                this->m_sessionId);
     } else if (error.isEmpty()) {
         const int status =
                 reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (status >= 400) {
             error = QString::fromUtf8(data);
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
+                    QStringLiteral("BackendClient"),
+                    QStringLiteral("Backend POST returned HTTP %1 for %2: %3")
+                            .arg(status)
+                            .arg(url.path(), error),
+                    {}, this->m_sessionId);
         }
     }
     reply->deleteLater();

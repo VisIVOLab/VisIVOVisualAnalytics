@@ -126,6 +126,7 @@ private:
     const QString remoteDegenerateAxesSummary;
     const QString remoteWcsStatus;
     const QString remoteWcsWarningMessage;
+    bool wcsDiagnosticPublished{ false };
     bool remoteDisplayingPreview{ false };
     std::array<int, 2> remoteFullImageDims{ 0, 0 };
     bool transitioningToFull{ false };

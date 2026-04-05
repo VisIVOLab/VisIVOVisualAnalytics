@@ -1,6 +1,7 @@
 #include "MomentProcessingService.h"
 
 #include "app/BackendClient.h"
+#include "app/DiagnosticsManager.h"
 
 #include <QByteArray>
 #include <QDebug>
@@ -85,6 +86,11 @@ MomentResult MomentProcessingService::computeMomentRemote(const MomentRequest &r
             qWarning().noquote()
                     << QStringLiteral("[moment][task] fallback to sync task_id=%1")
                                .arg(taskStatus.taskId);
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
+                    QStringLiteral("MomentProcessingService"),
+                    QStringLiteral("Task path failed, falling back to sync moment request."),
+                    request.datasetId, request.sessionId, QStringLiteral("moment"));
         }
         response = client.requestMoment(request.datasetId, request.order, request.channelStart,
                                         request.channelEnd, request.maskEnabled,

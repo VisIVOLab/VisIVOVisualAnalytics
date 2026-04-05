@@ -255,6 +255,7 @@ private:
     const QString remoteSpectralAxisUnit;
     const QString remoteWcsStatus;
     const QString remoteWcsWarningMessage;
+    bool wcsDiagnosticPublished{ false };
     std::unique_ptr<AstroUtils> astro;
 
     QPointer<LUTCustomizerDialog> lutCustomizer;

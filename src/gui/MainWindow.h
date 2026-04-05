@@ -9,6 +9,7 @@
 class DatasetOpenService;
 class DatasetWindowFactory;
 class AuthWrapper;
+class DiagnosticsWindow;
 class Settings;
 
 QT_BEGIN_NAMESPACE
@@ -78,8 +79,11 @@ private:
     Ui::MainWindow *ui;
     QPointer<Settings> settings;
     QPointer<AuthWrapper> auth;
+    QPointer<DiagnosticsWindow> diagnosticsWindow;
     std::unique_ptr<DatasetOpenService> datasetOpenService;
     std::unique_ptr<DatasetWindowFactory> datasetWindowFactory;
+
+    void openDiagnosticsWindow();
 };
 
 #endif

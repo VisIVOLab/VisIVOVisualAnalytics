@@ -71,6 +71,8 @@ set(PROJECT_SOURCES
         src/auth/OIDCAuthorizationCodeFlow.h
         src/auth/VisIVOUrlSchemeHandler.cpp
         src/auth/VisIVOUrlSchemeHandler.h
+        src/app/DiagnosticsManager.cpp
+        src/app/DiagnosticsManager.h
         src/gui/RemoteFileBrowserDialog.cpp
         src/gui/RemoteFileBrowserDialog.h
         src/gui/RemoteMomentWindow.cpp
@@ -85,6 +87,8 @@ set(PROJECT_SOURCES
         src/gui/CubeViewController.h
         src/gui/DatasetWindowFactory.cpp
         src/gui/DatasetWindowFactory.h
+        src/gui/DiagnosticsWindow.cpp
+        src/gui/DiagnosticsWindow.h
         src/gui/ImageLayerController.cpp
         src/gui/ImageLayerController.h
         src/gui/LUTCustomizerDialog.cpp

@@ -10,6 +10,7 @@
 #include "ProfileWidget.h"
 #include "PvDiagramWidget.h"
 #include "app/BackendClient.h"
+#include "app/DiagnosticsManager.h"
 #include "vtkFITSReader.h"
 #include "vtkInteractorStyleProfile.h"
 #include "vtkLegendScaleActorWCS.h"
@@ -1319,6 +1320,11 @@ RemotePvFetchResult fetchRemotePv(const QString &backendUrl, const QString &data
         if (!taskStatus.taskId.isEmpty()) {
             qWarning().noquote()
                     << QStringLiteral("[pv][task] fallback to sync task_id=%1").arg(taskStatus.taskId);
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
+                    QStringLiteral("vtkWindowCube"),
+                    QStringLiteral("Task path failed, falling back to sync PV request."),
+                    datasetId, sessionId, QStringLiteral("pv"));
         }
         response = client.requestPv(datasetId, vertices, widthPixels);
         if (!taskStatus.taskId.isEmpty()) {
@@ -6005,21 +6011,30 @@ void vtkWindowCube::updateWcsStatusIndicator()
         this->wcsStatusLabel->clear();
         this->wcsStatusLabel->setToolTip({});
         this->wcsStatusLabel->hide();
+        this->wcsDiagnosticPublished = false;
         return;
     }
 
     const bool degraded = this->remoteWcsStatus.compare(u"degraded"_s, Qt::CaseInsensitive) == 0;
+    const QString message =
+            this->remoteWcsWarningMessage.isEmpty()
+            ? (degraded ? u"Remote cube opened with degraded WCS metadata."_s
+                        : u"Remote cube opened with sanitized WCS metadata."_s)
+            : this->remoteWcsWarningMessage;
     this->wcsStatusLabel->setText(degraded ? u"WCS degraded"_s : u"WCS repaired"_s);
     this->wcsStatusLabel->setStyleSheet(
             degraded
                     ? u"QLabel { padding-left: 8px; font-weight: 700; color: #b54708; }"_s
                     : u"QLabel { padding-left: 8px; font-weight: 600; color: #9a6700; }"_s);
-    this->wcsStatusLabel->setToolTip(
-            this->remoteWcsWarningMessage.isEmpty()
-                    ? (degraded ? u"Remote cube opened with degraded WCS metadata."_s
-                                : u"Remote cube opened with sanitized WCS metadata."_s)
-                    : this->remoteWcsWarningMessage);
+    this->wcsStatusLabel->setToolTip(message);
     this->wcsStatusLabel->show();
+    if (!this->wcsDiagnosticPublished) {
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Warning,
+                DiagnosticsCategory::WCS, QStringLiteral("vtkWindowCube"), message,
+                this->remoteDatasetId, this->remoteSessionId, QStringLiteral("dataset-open"));
+        this->wcsDiagnosticPublished = true;
+    }
 }
 
 bool vtkWindowCube::configureMomentRequest(int defaultOrder, MomentGenerationConfig &config)
