@@ -4,11 +4,14 @@
 #include "DatasetOpenTypes.h"
 
 class QWidget;
+class QString;
 
 class DatasetWindowFactory
 {
 public:
-    QWidget *createWindow(const DatasetOpenInfo &dataset, QWidget *parent = nullptr) const;
+    QWidget *createWindow(const DatasetOpenInfo &dataset, const QString &backendUrl = QString(),
+                          const QString &backendToken = QString(),
+                          QWidget *parent = nullptr) const;
 };
 
 #endif

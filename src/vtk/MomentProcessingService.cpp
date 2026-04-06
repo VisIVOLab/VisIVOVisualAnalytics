@@ -33,6 +33,8 @@ MomentResult MomentProcessingService::computeMoment(const MomentRequest &request
 
 MomentResult MomentProcessingService::computeMomentLocal(const MomentRequest &request) const
 {
+    qWarning().noquote()
+            << QStringLiteral("[moment][deprecated] using legacy local C++ moment implementation");
     if (!this->moment || !this->lutMoment) {
         return { nullptr, { 0., 0. }, false, QStringLiteral("Local moment runtime not available.") };
     }
@@ -65,15 +67,36 @@ MomentResult MomentProcessingService::computeMomentLocal(const MomentRequest &re
 
 MomentResult MomentProcessingService::computeMomentRemote(const MomentRequest &request) const
 {
-    if (request.datasetId.isEmpty()) {
-        return { nullptr, { 0., 0. }, false, QStringLiteral("Missing remote dataset_id.") };
+    BackendClient client = request.backendUrl.isEmpty()
+            ? BackendClient()
+            : BackendClient(request.backendUrl, request.backendToken);
+    if (!request.sessionId.isEmpty()) {
+        client.setSessionId(request.sessionId);
     }
 
-    BackendClient client(request.backendUrl, request.backendToken);
-    client.setSessionId(request.sessionId);
+    QString datasetId = request.datasetId;
+    QString sessionId = request.sessionId;
+    if (datasetId.isEmpty()) {
+        if (request.datasetPath.isEmpty()) {
+            return { nullptr, { 0., 0. }, false, QStringLiteral("Missing dataset path for backend moment request.") };
+        }
+        const auto opened = client.openDataset(request.datasetPath);
+        if (!opened.valid || opened.datasetId.isEmpty()) {
+            return { nullptr, { 0., 0. }, false,
+                     opened.error.isEmpty()
+                             ? QStringLiteral("Could not open local dataset on backend for moment computation.")
+                             : opened.error };
+        }
+        datasetId = opened.datasetId;
+        sessionId = opened.sessionId;
+        qInfo().noquote()
+                << QStringLiteral("[moment][backend] opened local dataset via backend dataset_id=%1 session_id=%2")
+                           .arg(datasetId, sessionId);
+    }
+
     BackendMomentResult response;
     const auto taskStatus = client.waitForTaskCompletion(
-            client.createMomentTask(request.datasetId, request.order, request.channelStart,
+            client.createMomentTask(datasetId, request.order, request.channelStart,
                                     request.channelEnd, request.maskEnabled,
                                     request.thresholdValue),
             QStringLiteral("[moment][task]"));
@@ -90,9 +113,9 @@ MomentResult MomentProcessingService::computeMomentRemote(const MomentRequest &r
                     DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
                     QStringLiteral("MomentProcessingService"),
                     QStringLiteral("Task path failed, falling back to sync moment request."),
-                    request.datasetId, request.sessionId, QStringLiteral("moment"));
+                    datasetId, sessionId, QStringLiteral("moment"));
         }
-        response = client.requestMoment(request.datasetId, request.order, request.channelStart,
+        response = client.requestMoment(datasetId, request.order, request.channelStart,
                                         request.channelEnd, request.maskEnabled,
                                         request.thresholdValue);
         if (!taskStatus.taskId.isEmpty()) {

@@ -1435,8 +1435,14 @@ AsyncIsosurfaceResult fetchRemoteIsosurface(const QString &backendUrl, const QSt
 }
 
 vtkWindowCube::vtkWindowCube(const QString &filepath, QWidget *parent)
+    : vtkWindowCube(filepath, {}, {}, parent)
+{
+}
+
+vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
+                             const QString &backendToken, QWidget *parent)
     : vtkWindowCube(filepath,
-                    {},
+                    backendUrl,
                     {},
                     0,
                     0,
@@ -1454,7 +1460,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, QWidget *parent)
                     {},
                     {},
                     {},
-                    {},
+                    backendToken,
                     parent)
 {
 }

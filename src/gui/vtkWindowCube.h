@@ -112,6 +112,8 @@ class vtkWindowCube : public QMainWindow
 
 public:
     vtkWindowCube(const QString &filepath, QWidget *parent = nullptr);
+    vtkWindowCube(const QString &filepath, const QString &backendUrl,
+                  const QString &backendToken, QWidget *parent = nullptr);
     vtkWindowCube(const QString &filepath, const QString &backendUrl, const QString &datasetId,
                   int remoteWidth, int remoteHeight, int remoteDepth,
                   const std::array<double, 3> &remoteSpacing,

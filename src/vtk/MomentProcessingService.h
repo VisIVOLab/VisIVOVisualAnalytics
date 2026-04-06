@@ -13,7 +13,7 @@ class vtkMomentMapFilter;
 
 enum class MomentComputeMode
 {
-    Local,
+    Local, // Deprecated for scientific use; kept only as compatibility fallback.
     Remote
 };
 
@@ -65,13 +65,13 @@ public:
     MomentProcessingService(vtkMomentMapFilter *moment, vtkLookupTable *lutMoment,
                             MomentComputeMode mode = MomentComputeMode::Local);
 
-    // Dispatches moment computation. Currently always resolves to the local implementation.
+    // Dispatches moment computation. The backend-facing implementation is authoritative.
     MomentResult computeMoment(const MomentRequest &request) const;
 
-    // Computes the moment using the current local VTK runtime.
+    // Legacy local computation path. Retained only as compatibility fallback.
     MomentResult computeMomentLocal(const MomentRequest &request) const;
 
-    // Future remote hook. For now this intentionally reuses the local implementation.
+    // Authoritative backend/API path used for both local and remote datasets.
     MomentResult computeMomentRemote(const MomentRequest &request) const;
 
     // Recomputes the moment map in the local VTK runtime and updates the associated LUT range.

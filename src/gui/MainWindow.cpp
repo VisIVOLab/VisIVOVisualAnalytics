@@ -174,7 +174,8 @@ void MainWindow::openLocalData()
         return;
     }
 
-    QWidget *win = this->datasetWindowFactory->createWindow(dataset, this);
+    QWidget *win = this->datasetWindowFactory->createWindow(
+            dataset, this->settings->getBackendUrl(), this->settings->getBackendToken(), this);
     if (!win) {
         QMessageBox::critical(this, u"Could not open file"_s,
                               u"The file could not be opened as a FITS image or cube.\n\n"

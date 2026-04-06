@@ -32,6 +32,11 @@ bool isSupportedMomentOrder(int order)
     }
 }
 
+// Deprecated compatibility path.
+// The backend-based implementation is the scientific source of truth and is
+// used for all normal UI requests. This function is retained only as an
+// emergency fallback to keep the build/runtime surface stable during the
+// transition away from duplicated local moment algorithms.
 MomentMapComputeResult computeMomentMapLocalWithConfig(const MomentMapComputeRequest &request)
 {
     QElapsedTimer totalTimer;
@@ -186,10 +191,10 @@ MomentMapComputeResult computeMomentMap(const MomentMapComputeRequest &request)
     totalTimer.start();
     MomentMapComputeResult result;
 
-    const bool remoteMode = !request.datasetId.isEmpty();
-    const auto mode = remoteMode ? MomentComputeMode::Remote : MomentComputeMode::Local;
-
-    if (!remoteMode && request.filepath.isEmpty()) {
+    const bool hasBackendReachabilityHint =
+            !request.backendUrl.isEmpty() || !request.backendToken.isEmpty() || !request.datasetId.isEmpty();
+    Q_UNUSED(hasBackendReachabilityHint);
+    if (request.filepath.isEmpty() && request.datasetId.isEmpty()) {
         result.errorMessage = "Empty dataset path.";
         return result;
     }
@@ -199,38 +204,42 @@ MomentMapComputeResult computeMomentMap(const MomentMapComputeRequest &request)
         return result;
     }
 
-    if (remoteMode) {
-        vtkLookupTable *lutMoment = nullptr;
-        vtkMomentMapFilter *moment = nullptr;
-        MomentProcessingService processing(moment, lutMoment, mode);
-        QElapsedTimer computeTimer;
-        computeTimer.start();
-        const auto processed = processing.computeMoment(
-                MomentRequest { request.filepath, request.datasetId, request.backendUrl,
-                                request.sessionId, request.backendToken,
-                                request.momentOrder, request.channelStart, request.channelEnd,
-                                request.maskEnabled, request.thresholdValue });
-        qDebug().noquote()
-                << QStringLiteral("[perf][moment] worker compute: %1 ms").arg(computeTimer.elapsed());
-        if (!processed.valid || !processed.image) {
-            result.errorMessage = processed.error.isEmpty() ? QStringLiteral("Remote moment failed.")
-                                                            : processed.error;
-            return result;
+    vtkLookupTable *lutMoment = nullptr;
+    vtkMomentMapFilter *moment = nullptr;
+    MomentProcessingService processing(moment, lutMoment, MomentComputeMode::Remote);
+    QElapsedTimer computeTimer;
+    computeTimer.start();
+    const auto processed = processing.computeMoment(
+            MomentRequest { request.filepath, request.datasetId, request.backendUrl,
+                            request.sessionId, request.backendToken,
+                            request.momentOrder, request.channelStart, request.channelEnd,
+                            request.maskEnabled, request.thresholdValue });
+    qDebug().noquote()
+            << QStringLiteral("[perf][moment] backend compute: %1 ms").arg(computeTimer.elapsed());
+    if (!processed.valid || !processed.image) {
+        qWarning().noquote()
+                << QStringLiteral("[moment][backend] authoritative path failed, falling back to deprecated local implementation");
+        if (!request.filepath.isEmpty()) {
+            result = computeMomentMapLocalWithConfig(request);
+            if (result.valid) {
+                return result;
+            }
         }
-
-        result.valid = true;
-        result.imageRange = processed.imageRange;
-        result.imageData = processed.image;
-        result.momentUnit = processed.momentUnit;
-        result.bunit = processed.bunit;
-        result.spectralAxisType = processed.spectralAxisType;
-        result.spectralAxisUnit = processed.spectralAxisUnit;
-        result.wcsStatus = processed.wcsStatus;
-        result.wcsWarningMessage = processed.wcsWarningMessage;
-        qDebug().noquote()
-                << QStringLiteral("[perf][moment] worker total: %1 ms").arg(totalTimer.elapsed());
+        result.errorMessage = processed.error.isEmpty() ? QStringLiteral("Backend moment failed.")
+                                                        : processed.error;
         return result;
     }
 
-    return computeMomentMapLocalWithConfig(request);
+    result.valid = true;
+    result.imageRange = processed.imageRange;
+    result.imageData = processed.image;
+    result.momentUnit = processed.momentUnit;
+    result.bunit = processed.bunit;
+    result.spectralAxisType = processed.spectralAxisType;
+    result.spectralAxisUnit = processed.spectralAxisUnit;
+    result.wcsStatus = processed.wcsStatus;
+    result.wcsWarningMessage = processed.wcsWarningMessage;
+    qDebug().noquote()
+            << QStringLiteral("[perf][moment] worker total: %1 ms").arg(totalTimer.elapsed());
+    return result;
 }
