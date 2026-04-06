@@ -176,6 +176,9 @@ struct RemotePvFetchResult
     double totalLength{ 0. };
     int validSamples{ 0 };
     QString spatialUnit; // "arcsec" when physical coords are available
+    double pixelScaleArcsecPerPixel{ 0. };
+    QString spectralAxisType;
+    QString spectralAxisUnit;
 };
 
 enum class SanityLevel
@@ -1389,6 +1392,9 @@ RemotePvFetchResult fetchRemotePv(const QString &backendUrl, const QString &data
     result.vertexCount = response.vertexCount;
     result.totalLength = response.totalLength;
     result.validSamples = response.validSamples;
+    result.pixelScaleArcsecPerPixel = response.pixelScaleArcsecPerPixel;
+    result.spectralAxisType = response.spectralAxisType;
+    result.spectralAxisUnit = response.spectralAxisUnit;
     return result;
 }
 
@@ -4560,6 +4566,23 @@ void vtkWindowCube::extractCurrentPvDiagram()
         return;
     }
 
+    const auto showPvError = [this](const QString &message) {
+        DiagnosticsManager::instance()->publish(DiagnosticsLevel::Warning,
+                                                DiagnosticsCategory::Remote, QStringLiteral("PV"),
+                                                message, this->remoteDatasetId,
+                                                this->remoteSessionId, QStringLiteral("pv"));
+        QMessageBox::warning(this, u"PV Diagram"_s, message);
+        this->statusBar()->showMessage(message, 4000);
+    };
+
+    if (this->remoteDatasetId.isEmpty()) {
+        const QString message =
+                u"PV computation requires a backend-visible dataset. Stage or open it on the backend first."_s;
+        qWarning().noquote() << QStringLiteral("[pv] missing backend dataset_id");
+        showPvError(message);
+        return;
+    }
+
     const auto ensurePvWidget = [this]() {
         if (!this->pvDiagramWidget) {
             qDebug().noquote() << QStringLiteral("[pv] creating PvDiagramWidget");
@@ -4593,184 +4616,57 @@ void vtkWindowCube::extractCurrentPvDiagram()
                                          u"PV Diagram (Polyline)"_s, details);
     };
 
-    const auto extractLoadedBlockPv = [this, &showPvDiagram](const QString &provenanceLabel,
-                                                             const QString &noDataMessage) -> bool {
-        auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
-        if (!cubeImage) {
-            qDebug().noquote() << QStringLiteral("[pv] extraction skipped: cube image unavailable");
-            this->statusBar()->showMessage(u"No loaded cube data available for PV extraction."_s, 2000);
-            return false;
-        }
-
-        qDebug().noquote()
-                << QStringLiteral("[pv] polyline vertices=%1").arg(this->pvPolylineVertices.size());
-
-        int extent[6];
-        cubeImage->GetExtent(extent);
-        double origin[3];
-        double spacing[3];
-        cubeImage->GetOrigin(origin);
-        cubeImage->GetSpacing(spacing);
-        const int zCount = extent[5] - extent[4] + 1;
-        qDebug().noquote()
-                << QStringLiteral("[pv] cube extent x=%1..%2 y=%3..%4 z=%5..%6 zCount=%7")
-                           .arg(extent[0])
-                           .arg(extent[1])
-                           .arg(extent[2])
-                           .arg(extent[3])
-                           .arg(extent[4])
-                           .arg(extent[5])
-                           .arg(zCount);
-        if (zCount <= 0) {
-            qDebug().noquote() << QStringLiteral("[pv] invalid z dimension");
-            this->statusBar()->showMessage(u"Invalid spectral dimension for PV extraction."_s, 2500);
-            return false;
-        }
-
-        QVector<double> spectral(zCount);
-        for (int localZ = extent[4]; localZ <= extent[5]; ++localZ) {
-            const int zIndex = localZ - extent[4];
-            const double datasetZ = origin[2] + (localZ - extent[4]) * spacing[2];
-            bool ok = false;
-            spectral[zIndex] = this->spectralAxisValue(datasetZ, &ok);
-            if (!ok) {
-                spectral[zIndex] = datasetZ;
-            }
-        }
-
-        const auto sampledPoints = this->pvSampledPath(this->pvPolylineVertices);
-        QVector<double> positions;
-        positions.reserve(static_cast<qsizetype>(sampledPoints.size()));
-        double cumulativeDistance = 0.0;
-        for (std::size_t i = 0; i < sampledPoints.size(); ++i) {
-            if (i > 0) {
-                cumulativeDistance += std::hypot(
-                        static_cast<double>(sampledPoints[i][0] - sampledPoints[i - 1][0]),
-                        static_cast<double>(sampledPoints[i][1] - sampledPoints[i - 1][1]));
-            }
-            positions.push_back(cumulativeDistance);
-        }
-
-        qDebug().noquote()
-                << QStringLiteral("[pv] sampled polyline points=%1 cumulativeLength=%2")
-                           .arg(sampledPoints.size())
-                           .arg(positions.isEmpty() ? 0.0 : positions.back());
-        if (sampledPoints.size() < 2) {
-            this->statusBar()->showMessage(u"PV line too short. Draw a longer PV path."_s, 2500);
-            return false;
-        }
-
-        const int xSamples = static_cast<int>(sampledPoints.size());
-        QVector<double> values(xSamples * zCount, std::numeric_limits<double>::quiet_NaN());
-        int validSamples = 0;
-        for (int i = 0; i < xSamples; ++i) {
-            const auto &center = sampledPoints[static_cast<std::size_t>(i)];
-            const auto normal =
-                    this->pvLocalNormalForSample(sampledPoints, static_cast<std::size_t>(i));
-            for (int localZ = extent[4]; localZ <= extent[5]; ++localZ) {
-                const int zIndex = localZ - extent[4];
-                double sum = 0.0;
-                int count = 0;
-                for (int sample = 0; sample < this->pvWidthPixels; ++sample) {
-                    const double centeredOffset =
-                            static_cast<double>(sample)
-                            - (static_cast<double>(this->pvWidthPixels - 1) / 2.0);
-                    const int datasetX = static_cast<int>(
-                            std::lround(static_cast<double>(center[0]) + centeredOffset * normal[0]));
-                    const int datasetY = static_cast<int>(
-                            std::lround(static_cast<double>(center[1]) + centeredOffset * normal[1]));
-                    const int localX =
-                            std::lround(extent[0] + (datasetX - origin[0]) / spacing[0]);
-                    const int localY =
-                            std::lround(extent[2] + (datasetY - origin[1]) / spacing[1]);
-                    if (localX < extent[0] || localX > extent[1] || localY < extent[2]
-                        || localY > extent[3]) {
-                        continue;
-                    }
-                    const double value = cubeImage->GetScalarComponentAsDouble(localX, localY, localZ, 0);
-                    if (!std::isfinite(value)) {
-                        continue;
-                    }
-                    sum += value;
-                    count += 1;
-                }
-                if (count > 0) {
-                    values[zIndex * xSamples + i] = sum / static_cast<double>(count);
-                    ++validSamples;
-                }
-            }
-        }
-        qDebug().noquote()
-                << QStringLiteral("[pv] sampled matrix xSamples=%1 zCount=%2 validSamples=%3")
-                           .arg(xSamples)
-                           .arg(zCount)
-                           .arg(validSamples);
-
-        if (validSamples == 0) {
-            qDebug().noquote() << QStringLiteral("[pv] no valid data found along cut");
-            this->statusBar()->showMessage(noDataMessage, 3000);
-            return false;
-        }
-
-        const QString details =
-                u"Start: %1\nEnd: %2\nVertices: %3\nPath width: %4 px\nPath length: %5 px\nSampling: nearest-neighbor perpendicular averaging\nComputation: %6"_s
-                        .arg(this->formatSpatialPointSummary(this->pvPolylineVertices.front()))
-                        .arg(this->formatSpatialPointSummary(this->pvPolylineVertices.back()))
-                        .arg(static_cast<int>(this->pvPolylineVertices.size()))
-                        .arg(this->pvWidthPixels)
-                        .arg(positions.isEmpty() ? 0.0 : positions.back(), 0, 'f', 2)
-                        .arg(provenanceLabel);
-        showPvDiagram(positions, spectral, values, xSamples, zCount, details);
-        return true;
-    };
-
-    if (this->isRemoteMode) {
-        qDebug().noquote() << QStringLiteral("[remote-pv] requesting backend pv vertices=%1 width=%2")
-                                      .arg(this->pvPolylineVertices.size())
-                                      .arg(this->pvWidthPixels);
-        const auto remoteResult = fetchRemotePv(this->remoteBackendUrl, this->remoteDatasetId,
-                                                this->pvPolylineVertices, this->pvWidthPixels,
-                                                this->remoteSessionId, this->remoteBackendToken);
-        if (remoteResult.valid) {
-            QVector<double> spectral(remoteResult.depth);
-            for (int datasetZ = 0; datasetZ < remoteResult.depth; ++datasetZ) {
-                bool ok = false;
-                spectral[datasetZ] = this->spectralAxisValue(static_cast<double>(datasetZ), &ok);
-                if (!ok) {
-                    spectral[datasetZ] = static_cast<double>(datasetZ);
-                }
-            }
-            const QString details =
-                    u"Start: %1\nEnd: %2\nVertices: %3\nPath width: %4 px\nPath length: %5 px\nSampling: nearest-neighbor perpendicular averaging\nComputation: Computed remotely on full dataset"_s
-                            .arg(this->formatSpatialPointSummary(this->pvPolylineVertices.front()))
-                            .arg(this->formatSpatialPointSummary(this->pvPolylineVertices.back()))
-                            .arg(remoteResult.vertexCount > 0 ? remoteResult.vertexCount
-                                                              : static_cast<int>(this->pvPolylineVertices.size()))
-                            .arg(remoteResult.widthPixels > 0 ? remoteResult.widthPixels : this->pvWidthPixels)
-                            .arg(remoteResult.totalLength, 0, 'f', 2);
-            showPvDiagram(remoteResult.positions, spectral, remoteResult.values, remoteResult.numSamples,
-                          remoteResult.depth, details,
-                          remoteResult.positionsArcsec, remoteResult.spatialUnit);
-            return;
-        }
-
-        qDebug().noquote() << QStringLiteral("[remote-pv] backend extraction failed: %1")
-                                      .arg(remoteResult.errorMessage);
-        this->statusBar()->showMessage(u"Remote PV extraction failed; using loaded block fallback."_s,
-                                       4000);
-        if (extractLoadedBlockPv(u"Computed on currently loaded remote block (fallback)"_s,
-                                 u"No valid data found along PV cut in the currently loaded remote block."_s)) {
-            return;
-        }
-        this->statusBar()->showMessage(remoteResult.errorMessage.isEmpty()
-                                               ? u"Remote PV extraction failed."_s
-                                               : remoteResult.errorMessage,
-                                       4000);
+    qDebug().noquote() << QStringLiteral("[remote-pv] requesting backend pv vertices=%1 width=%2")
+                                  .arg(this->pvPolylineVertices.size())
+                                  .arg(this->pvWidthPixels);
+    const auto remoteResult = fetchRemotePv(this->remoteBackendUrl, this->remoteDatasetId,
+                                            this->pvPolylineVertices, this->pvWidthPixels,
+                                            this->remoteSessionId, this->remoteBackendToken);
+    if (!remoteResult.valid) {
+        qWarning().noquote() << QStringLiteral("[remote-pv] backend extraction failed: %1")
+                                        .arg(remoteResult.errorMessage);
+        showPvError(remoteResult.errorMessage.isEmpty()
+                            ? u"PV computation failed on the backend."_s
+                            : remoteResult.errorMessage);
         return;
     }
 
-    extractLoadedBlockPv(u"Computed locally on full loaded cube"_s,
-                         u"No valid data found along PV cut in the currently loaded cube."_s);
+    QVector<double> spectral(remoteResult.depth);
+    for (int datasetZ = 0; datasetZ < remoteResult.depth; ++datasetZ) {
+        bool ok = false;
+        spectral[datasetZ] = this->spectralAxisValue(static_cast<double>(datasetZ), &ok);
+        if (!ok) {
+            spectral[datasetZ] = static_cast<double>(datasetZ);
+        }
+    }
+    const QString yLabel = !remoteResult.spectralAxisType.isEmpty()
+            ? (!remoteResult.spectralAxisUnit.isEmpty()
+                       ? u"%1 (%2)"_s.arg(remoteResult.spectralAxisType, remoteResult.spectralAxisUnit)
+                       : remoteResult.spectralAxisType)
+            : this->spectralAxisTitle();
+    const QString details =
+            u"Start: %1\nEnd: %2\nVertices: %3\nPath width: %4 px\nPath length: %5 px\nSampling: nearest-neighbor perpendicular averaging\nComputation: Computed on backend-visible dataset\nSpectral axis: %6\nSpatial unit: %7\nPixel scale: %8 arcsec/pixel"_s
+                    .arg(this->formatSpatialPointSummary(this->pvPolylineVertices.front()))
+                    .arg(this->formatSpatialPointSummary(this->pvPolylineVertices.back()))
+                    .arg(remoteResult.vertexCount > 0 ? remoteResult.vertexCount
+                                                      : static_cast<int>(this->pvPolylineVertices.size()))
+                    .arg(remoteResult.widthPixels > 0 ? remoteResult.widthPixels : this->pvWidthPixels)
+                    .arg(remoteResult.totalLength, 0, 'f', 2)
+                    .arg(yLabel)
+                    .arg(remoteResult.spatialUnit.isEmpty() ? u"pixels"_s : remoteResult.spatialUnit)
+                    .arg(remoteResult.pixelScaleArcsecPerPixel, 0, 'g', 8);
+    ensurePvWidget();
+    qDebug().noquote() << QStringLiteral("[pv] updating widget and requesting show/raise");
+    const bool hasArcsec = !remoteResult.positionsArcsec.isEmpty()
+            && remoteResult.positionsArcsec.size() == remoteResult.positions.size();
+    const QVector<double> &pvPositions = hasArcsec ? remoteResult.positionsArcsec : remoteResult.positions;
+    const QString xLabel = hasArcsec
+            ? u"Offset Along Path (%1)"_s.arg(remoteResult.spatialUnit.isEmpty() ? u"arcsec"_s
+                                                                                  : remoteResult.spatialUnit)
+            : u"Offset Along Path (pixels)"_s;
+    this->pvDiagramWidget->setPvData(pvPositions, spectral, remoteResult.values,
+                                     remoteResult.numSamples, remoteResult.depth, xLabel, yLabel,
+                                     u"PV Diagram (Polyline)"_s, details);
 }
 
 void vtkWindowCube::updateProbeReadout(vtkImageData *imageData)
