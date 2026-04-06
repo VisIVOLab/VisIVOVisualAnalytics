@@ -11,8 +11,8 @@ class vtkImageData;
 
 struct MomentRequest
 {
-    QString datasetPath;
-    QString datasetId;
+    QString datasetPath;   // Client-local desktop path, only for error context / future staging flows.
+    QString datasetId;     // Required for backend-authoritative computation.
     QString backendUrl;
     QString sessionId;
     QString backendToken;
@@ -55,10 +55,13 @@ class MomentProcessingService
 public:
     MomentProcessingService() = default;
 
-    // Dispatches moment computation. The backend-facing implementation is authoritative.
+    // Dispatches moment computation. The backend-facing implementation is authoritative and
+    // requires a backend-visible dataset identifier.
     MomentResult computeMoment(const MomentRequest &request) const;
 
-    // Authoritative backend/API path used for both local and remote datasets.
+    // Authoritative backend/API path. It operates only on backend-visible datasets
+    // identified by datasetId; client-local desktop paths are not considered
+    // backend-openable in the normal flow.
     MomentResult computeMomentRemote(const MomentRequest &request) const;
 };
 

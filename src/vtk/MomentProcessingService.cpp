@@ -5,8 +5,6 @@
 
 #include <QByteArray>
 #include <QDebug>
-#include <QUrl>
-
 #include <vtkImageData.h>
 
 #include <cstring>
@@ -28,28 +26,14 @@ MomentResult MomentProcessingService::computeMomentRemote(const MomentRequest &r
     QString datasetId = request.datasetId;
     QString sessionId = request.sessionId;
     if (datasetId.isEmpty()) {
-        if (request.datasetPath.isEmpty()) {
-            return { nullptr, { 0., 0. }, false, QStringLiteral("Missing dataset path for backend moment request.") };
-        }
-        const auto opened = client.openDataset(request.datasetPath);
-        if (!opened.valid || opened.datasetId.isEmpty()) {
-            const QUrl backendUrl(client.baseUrl());
-            const bool backendLooksLocal =
-                    backendUrl.host().compare(QStringLiteral("127.0.0.1"), Qt::CaseInsensitive) == 0
-                    || backendUrl.host().compare(QStringLiteral("localhost"), Qt::CaseInsensitive) == 0
-                    || backendUrl.host().isEmpty();
-            return { nullptr, { 0., 0. }, false,
-                     backendLooksLocal
-                             ? (opened.error.isEmpty()
-                                        ? QStringLiteral("Could not open local dataset on the local backend for moment computation.")
-                                        : opened.error)
-                             : QStringLiteral("Moment computation requires a backend that can access this dataset path. Use a local backend or stage/upload the dataset.") };
-        }
-        datasetId = opened.datasetId;
-        sessionId = opened.sessionId;
-        qInfo().noquote()
-                << QStringLiteral("[moment][backend] opened local dataset via backend dataset_id=%1 session_id=%2")
-                           .arg(datasetId, sessionId);
+        const QString message = request.datasetPath.isEmpty()
+                ? QStringLiteral("Moment computation requires a backend-visible dataset. Open or stage the dataset on the backend first.")
+                : QStringLiteral("Moment computation requires a backend that can access this dataset. Stage or upload the dataset to the backend first.");
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
+                QStringLiteral("MomentProcessingService"), message, {}, sessionId,
+                QStringLiteral("moment"));
+        return { nullptr, { 0., 0. }, false, message };
     }
 
     BackendMomentResult response;
