@@ -114,6 +114,10 @@ constexpr double smartCatalogueLabelMinPixelsPerUnit = 2.5;
 constexpr double catalogueHoverDisplayThresholdPx = 10.0;
 const QString kMomentBackendTooltip =
         QStringLiteral("Moment computation requires a backend-visible dataset. Use File → Open Remote or copy the dataset to the backend host.");
+const QString kPvBackendTooltip =
+        QStringLiteral("PV computation requires a backend-visible dataset. Use File → Open Remote or copy the dataset to the backend host.");
+const QString kIsosurfaceBackendTooltip =
+        QStringLiteral("Isosurface extraction requires a backend-visible dataset.");
 
 QString catalogueFrameName(CatalogueOverlayEntry::Frame frame)
 {
@@ -1879,7 +1883,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              return;
                          }
 
-                         this->updateMomentActionAvailability();
+                         this->updateBackendDerivedActionsAvailability();
 
                          const auto result = this->momentComputeWatcher.result();
                          if (!result.valid || !result.imageData) {
@@ -2015,7 +2019,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                      [this]() { this->setMomentOrder(8); });
     QObject::connect(ui->actionMoment10, &QAction::triggered, this,
                      [this]() { this->setMomentOrder(10); });
-    this->updateMomentActionAvailability();
+    this->updateBackendDerivedActionsAvailability();
 
     // Setup menu WCS
     auto groupWCS = new QActionGroup(this);
@@ -2148,7 +2152,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         ui->lineCubeMean->clear();
         ui->lineCubeRms->clear();
         this->setCubeOpenActionsEnabled(false);
-        ui->actionIsosurface->setEnabled(true);
         ui->actionIsosurface->setChecked(false);
         ui->actionVolume->setChecked(true);
         this->setCubeRenderModeLocally(false);
@@ -7004,7 +7007,7 @@ bool vtkWindowCube::hasBackendVisibleDataset() const
     return this->isRemoteMode && !this->remoteDatasetId.isEmpty();
 }
 
-void vtkWindowCube::updateMomentActionAvailability()
+void vtkWindowCube::updateBackendDerivedActionsAvailability()
 {
     const bool available = this->hasBackendVisibleDataset();
     if (ui->menuMoment) {
@@ -7014,22 +7017,37 @@ void vtkWindowCube::updateMomentActionAvailability()
         ui->menuMoment->menuAction()->setStatusTip(available ? QString {} : kMomentBackendTooltip);
     }
     this->setMomentActionsEnabled(!this->momentComputeWatcher.isRunning());
+
+    if (this->actionExtractPvDiagram) {
+        const bool pvEnabled = available && !this->cubeOpenWatcher.isRunning()
+                && !this->remotePreviewWatcher.isRunning();
+        this->actionExtractPvDiagram->setEnabled(pvEnabled);
+        this->actionExtractPvDiagram->setToolTip(available ? QString {} : kPvBackendTooltip);
+        this->actionExtractPvDiagram->setStatusTip(available ? QString {} : kPvBackendTooltip);
+    }
+
+    const bool isoEnabled = available && !this->cubeOpenWatcher.isRunning()
+            && !this->remotePreviewWatcher.isRunning();
+    ui->actionIsosurface->setEnabled(isoEnabled);
+    ui->actionIsosurface->setToolTip(available ? QString {} : kIsosurfaceBackendTooltip);
+    ui->actionIsosurface->setStatusTip(available ? QString {} : kIsosurfaceBackendTooltip);
 }
 
 void vtkWindowCube::setCubeOpenActionsEnabled(bool enabled)
 {
     if (enabled) {
-        this->updateMomentActionAvailability();
+        this->updateBackendDerivedActionsAvailability();
     } else {
         this->setMomentActionsEnabled(false);
         if (ui->menuMoment) {
             ui->menuMoment->setEnabled(false);
         }
+        ui->actionIsosurface->setEnabled(false);
+        if (this->actionExtractPvDiagram) {
+            this->actionExtractPvDiagram->setEnabled(false);
+        }
     }
     ui->actionExtractSpectrum->setEnabled(enabled);
-    if (this->actionExtractPvDiagram) {
-        this->actionExtractPvDiagram->setEnabled(enabled);
-    }
 }
 
 void vtkWindowCube::setCubeOpenStateLabel(const QString &text)

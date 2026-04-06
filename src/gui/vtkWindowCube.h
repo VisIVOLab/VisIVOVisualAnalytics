@@ -648,7 +648,7 @@ private:
     void setCubeOpenActionsEnabled(bool enabled);
     void setMomentActionsEnabled(bool enabled);
     bool hasBackendVisibleDataset() const;
-    void updateMomentActionAvailability();
+    void updateBackendDerivedActionsAvailability();
     void setMomentOrder(int order);
 };
 #endif
