@@ -14,7 +14,6 @@
 #include "vtkFITSReader.h"
 #include "vtkInteractorStyleProfile.h"
 #include "vtkLegendScaleActorWCS.h"
-#include "vtkMomentMapFilter.h"
 #include "wcs.h"
 
 #include <QVTKInteractor.h>
@@ -1645,8 +1644,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
     const CubeOpenStageResult preview = this->isRemoteMode ? CubeOpenStageResult { }
                                                            : loadCubeOpenPreview(this->filepath);
-    const bool usingPreview = !this->isRemoteMode && preview.valid && preview.cubeImageData
-            && preview.momentImageData;
+    const bool usingPreview = !this->isRemoteMode && preview.valid && preview.cubeImageData;
 
     if (this->isRemoteMode) {
         vtkNew<vtkImageData> placeholder;
@@ -1663,7 +1661,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         this->currentCubeVisibleRange = sanitized.visibleRange;
         this->currentCubeInvisibleSentinel = sanitized.invisibleSentinel;
         this->cubeDisplaySource->SetOutput(preview.cubeImageData);
-        this->momentDisplaySource->SetOutput(preview.momentImageData);
         this->lowerBound = 3.f * preview.cubeRms;
         this->upperBound = preview.cubeRange[1];
     } else {
@@ -1700,10 +1697,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         this->applyCubeOpenResult({ true,
                                     { },
                                     this->reader->GetOutput(),
-                                    this->moment->GetOutput(),
+                                    nullptr,
                                     { this->reader->GetMin(), this->reader->GetMax() },
-                                    { this->moment->GetOutput()->GetScalarRange()[0],
-                                      this->moment->GetOutput()->GetScalarRange()[1] },
+                                    { 0., 0. },
                                     { this->reader->GetDataExtent()[0], this->reader->GetDataExtent()[1],
                                       this->reader->GetDataExtent()[2], this->reader->GetDataExtent()[3],
                                       this->reader->GetDataExtent()[4], this->reader->GetDataExtent()[5] },
@@ -1725,7 +1721,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             this->lutSliceOnCube,
             this->contours,
             this->contoursActor,
-            this->moment,
             this->lutMoment,
             this->legendSlice,
             this->legendMoment
@@ -2577,13 +2572,8 @@ void vtkWindowCube::setupMomentRenderer()
     vtkNew<vtkInteractorStyleImage> style;
     iren->SetInteractorStyle(style);
 
-    // Moment
-    if (!vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0))
-        && !this->isRemoteMode) {
-        this->moment->SetInputConnection(this->reader->GetOutputPort());
-        this->moment->Init(this->filepath.toStdString());
-        this->moment->Update();
-        this->momentDisplaySource->SetOutput(this->moment->GetOutput());
+    if (!vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0))) {
+        this->momentDisplaySource->SetOutput(createPlaceholderImageData());
     }
 
     const auto momentImage =

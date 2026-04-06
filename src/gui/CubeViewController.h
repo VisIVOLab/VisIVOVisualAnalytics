@@ -11,7 +11,6 @@ class vtkFlyingEdges3D;
 class vtkImageReslice;
 class vtkLegendScaleActorWCS;
 class vtkLookupTable;
-class vtkMomentMapFilter;
 class vtkPiecewiseFunction;
 class vtkRenderer;
 class vtkTrivialProducer;
@@ -32,7 +31,6 @@ struct CubeViewContext
     vtkLookupTable *lutSliceOnCube;
     vtkFlyingEdges2D *contours;
     vtkActor *contoursActor;
-    vtkMomentMapFilter *moment;
     vtkLookupTable *lutMoment;
     vtkLegendScaleActorWCS *legendSlice;
     vtkLegendScaleActorWCS *legendMoment;
@@ -48,12 +46,6 @@ public:
         std::array<double, 2> imageRange;
     };
 
-    struct MomentUpdateResult
-    {
-        bool valid;
-        std::array<double, 2> imageRange;
-    };
-
     explicit CubeViewController(const CubeViewContext &context);
 
     void updateCube(double threshold) const;
@@ -61,7 +53,6 @@ public:
     void setContoursVisible(bool visible) const;
     void updateContours(int levels, double lowerBound, double upperBound) const;
     void setLegendWcs(int wcs) const;
-    MomentUpdateResult updateMomentOrder(int order) const;
     void syncSlicesLut() const;
     void setCubeRenderMode(bool isosurfaceMode) const;
 

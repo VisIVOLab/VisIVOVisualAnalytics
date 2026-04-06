@@ -50,7 +50,6 @@ class vtkImageReslice;
 class vtkLegendScaleActorWCS;
 class vtkLineSource;
 class vtkLookupTable;
-class vtkMomentMapFilter;
 class vtkOrientationMarkerWidget;
 class vtkPlaneSource;
 class vtkPiecewiseFunction;
@@ -576,7 +575,6 @@ private:
     void updateContoursVisibility();
 
     // Moment
-    vtkNew<vtkMomentMapFilter> moment;
     vtkNew<vtkTrivialProducer> momentDisplaySource;
     vtkNew<vtkImageMapToColors> momentColors;
     vtkNew<vtkLookupTable> lutMoment;

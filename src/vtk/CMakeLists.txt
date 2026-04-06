@@ -23,8 +23,6 @@ add_library(visivo_shared_vtk STATIC
         ${PROJECT_SOURCE_DIR}/src/vtk/vtkInteractorStyleProfile.h
         ${PROJECT_SOURCE_DIR}/src/vtk/vtkLegendScaleActorWCS.cpp
         ${PROJECT_SOURCE_DIR}/src/vtk/vtkLegendScaleActorWCS.h
-        ${PROJECT_SOURCE_DIR}/src/vtk/vtkMomentMapFilter.cpp
-        ${PROJECT_SOURCE_DIR}/src/vtk/vtkMomentMapFilter.h
 )
 
 target_link_libraries(visivo_shared_vtk

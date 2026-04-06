@@ -1,9 +1,9 @@
 # Service Mapping Note
 
 ## Purpose
-This note captures the current local service boundaries and the intended future mapping toward possible local/remote dual implementations.
+This note captures the current service boundaries and the intended future mapping toward a cleaner remote-authoritative architecture.
 
-It does not describe an implemented backend. It only documents the current state and the minimum gap that still exists before a clean split.
+It documents the current state and the minimum gaps that still exist before a cleaner client/backend split.
 
 ## `DatasetOpenService`
 
@@ -50,27 +50,27 @@ It does not describe an implemented backend. It only documents the current state
 ## `MomentProcessingService`
 
 ### Current contract
-- `MomentMapRequest`
-- `MomentMapResult`
-- `MomentProcessingService::process(const MomentMapRequest &request)`
+- `MomentRequest`
+- `MomentResult`
+- `MomentProcessingService::computeMoment(const MomentRequest &request)`
 
-### Current local implementation
-- local VTK-bound processing service in `visivo_shared_vtk`
-- request currently carries only the requested moment order
-- implementation is bound to live `vtkMomentMapFilter` and `vtkLookupTable`
-- processing updates local VTK runtime state and returns the output image range
+### Current implementation
+- client-side service facade in `visivo_shared_vtk`
+- request carries backend-facing identifiers and moment parameters
+- authoritative scientific computation happens on the backend
+- result carries image payload plus scientific metadata needed by the client UI
 
-### Future remote equivalent
-- submit or execute moment-map computation on a remote processing side
-- return a portable processing result that the client can then apply locally
+### Current remote-authoritative contract
+- submit or execute moment-map computation through the backend API
+- return a portable processing result that the client applies locally for display
+- require a backend-visible dataset identity rather than assuming the backend can open a desktop-local file path directly
 
-### Missing step before clean split
-- separate "compute moment result" from "apply result to local VTK/LUT state"
-- reduce direct dependence on live VTK runtime objects inside the service contract boundary
+### Missing step before cleaner remote-only contract
+- add explicit upload/staging for desktop-local datasets so they can become backend-visible datasets
+- keep the compute contract dataset-id-based and backend-authoritative
 
 ## Non-Goals
 This note does not imply that any of the following already exist:
-- backend services
 - remote rendering
 - remote jobs
 - async execution
@@ -84,4 +84,4 @@ The best current pilot for a future local/remote dual implementation is `Dataset
 
 `ImageLayerImportService` is the next closest candidate.
 
-`MomentProcessingService` is architecturally important, but still requires one more decoupling step before a clean local/remote split becomes realistic.
+`MomentProcessingService` is now already backend-authoritative. The main missing step is not scientific decoupling anymore, but explicit dataset staging/upload for desktop-local files so the same remote-only contract can cover local desktop usage cleanly.

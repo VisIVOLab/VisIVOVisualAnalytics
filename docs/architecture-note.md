@@ -1,11 +1,11 @@
 # Architecture Note
 
 ## Purpose
-This note summarizes the current architecture after the recent local refactorings and build modularization.
+This note summarizes the current architecture after the recent local refactorings, backend integration, and build modularization.
 
 It describes what is already true in the codebase today, which boundaries are now stable, and which parts are the best candidates for a future local/remote split.
 
-This is not a backend design document. No backend or remote rendering is implemented.
+This is not a full backend design document. It focuses on the current client/backend split that is already implemented in the codebase today.
 
 ## Current Module Map
 
@@ -27,7 +27,7 @@ Main role:
 - scientific/file-level checks that do not require Qt widgets or VTK rendering widgets
 
 ### `visivo_shared_vtk`
-Local VTK/runtime and processing logic.
+VTK/runtime and client-side rendering support logic.
 
 Current contents include:
 - `ImageLayerSet`
@@ -35,14 +35,13 @@ Current contents include:
 - `MomentProcessingService`
 - `vtkFITSReader`
 - `vtkFITSWriter`
-- `vtkMomentMapFilter`
 - `vtkLegendScaleActorWCS`
 - `vtkInteractorStyleProfile`
 - `ColorMaps`
 
 Main role:
 - local VTK runtime support
-- local scientific/visual processing tied to VTK objects
+- client-side rendering/visual processing tied to VTK objects
 - image layer runtime state
 
 ### Client GUI
@@ -89,9 +88,9 @@ The GUI no longer owns dataset classification logic directly.
 - `MomentMapResult`
 - `MomentProcessingService`
 
-`vtkWindowCube` still owns UI orchestration, but moment recomputation and LUT/range update are outside the widget.
+`vtkWindowCube` still owns UI orchestration, but user-facing moment computation is delegated to the backend-authoritative processing path.
 
-`MomentProcessingService` should currently be read as a local VTK-bound processing boundary, not as a transport-neutral processing API.
+`MomentProcessingService` should currently be read as a client-side facade over the backend/API processing path, not as a local scientific implementation.
 
 ### Image layer runtime state
 - `ImageLayerSet`
@@ -100,7 +99,7 @@ The GUI no longer owns dataset classification logic directly.
 
 ## Local Async Paths
 
-The project now includes three real local async or staged load paths:
+The project now includes three real async or staged client paths:
 
 - moment-map recomputation on moment-order change in `vtkWindowCube`
 - image-layer loading for additional layers in `vtkWindowImage`
@@ -116,7 +115,8 @@ Common pattern:
 
 ### Async moment-map recomputation
 Current design:
-- the worker computes the moment map using its own `vtkFITSReader`, `vtkMomentMapFilter`, and `vtkLookupTable`
+- the worker submits or polls backend-side moment-map computation through `MomentProcessingService`
+- the backend-authoritative path is used for both remote datasets and local desktop datasets that have already been staged/opened on the backend
 - the UI thread applies the result through `applyMomentMapResult(...)`
 - the visible moment pipeline is fed through a display-side bridge (`vtkTrivialProducer`)
 
@@ -129,9 +129,9 @@ Current design:
 ### Preview-first cube open
 Current design:
 - initial cube open in `vtkWindowCube` first tries a synchronous downsampled preview
-- the preview downsamples X/Y, keeps the full Z axis, and also prepares a minimal moment preview
+- the preview downsamples X/Y and keeps the full Z axis
 - the visible cube and slice pipeline is fed through `cubeDisplaySource`
-- the visible moment pipeline is fed through `momentDisplaySource`
+- the visible moment pipeline starts from a placeholder and is updated only by an explicit backend-computed moment result
 - both preview and full-resolution data are applied through `applyCubeOpenResult(...)`
 - if the preview succeeds, a full-resolution cube load starts in the background and replaces the preview when ready
 - the UI exposes a persistent state indicator during this flow with explicit states such as preview, loading full resolution, and applying full resolution
@@ -146,7 +146,7 @@ Current limitations:
 - they do not form a general async/job framework
 - cancellation, progress reporting, and queued execution are not implemented
 - the final preview-to-full replacement can still introduce a small visible lag
-- preview and full-resolution state can temporarily diverge while the full cube is still loading, for example if moment recomputation is considered during that interval
+- preview and full-resolution state can temporarily diverge while the full cube is still loading
 - any new async use case must still define its own explicit separation between worker-side state and UI/display-side apply
 
 ## Current Responsibilities
@@ -166,7 +166,7 @@ Does not own:
 Owns:
 - VTK-side processing and helpers
 - image layer runtime objects
-- processing services tied to live VTK objects
+- client-side service facades and helpers that bridge backend results into VTK display objects
 
 Does not own:
 - Qt widget behavior
@@ -183,7 +183,7 @@ Owns:
 Does not need to own:
 - dataset classification rules
 - image-layer import validation rules
-- moment-map recomputation rules
+- moment-map scientific computation rules
 
 ## Future Local/Remote Candidates
 
@@ -223,29 +223,29 @@ Future mapping:
 ### `MomentProcessingService`
 Reason:
 - already has explicit request/result shape
-- represents a real processing boundary
-- strongest candidate for eventual async local execution or remote processing
+- now fronts the single authoritative backend moment implementation
+- is the clearest example of the client acting as a rendering/orchestration shell over backend science logic
 
 Current semantics:
-- the current implementation is a local VTK-bound processing service
-- it operates on live `vtkMomentMapFilter` and `vtkLookupTable` instances
-- `MomentMapResult` exposes only part of the useful outcome; the implementation also mutates local VTK runtime state
+- `MomentProcessingService` is a client-side API/service facade
+- backend-visible `datasetId` is required for authoritative moment computation
+- client-local desktop paths are not treated as directly backend-openable in the normal flow
+- `MomentMapResult` carries backend-derived image payload plus scientific metadata for UI/provenance display
 
 Constraint today:
-- it is still bound to live VTK runtime objects (`vtkMomentMapFilter`, `vtkLookupTable`)
-- this means the contract exists, but it is not yet directly remotizable without one more decoupling step
+- a local desktop dataset must first become backend-visible through dataset open/staging before moment computation is supported
+- the future upload/staging pipeline is not implemented yet
 
 Future step needed:
-- separate "compute moment map result" from "apply result to local VTK/LUT state"
-- only after that separation will a clean local/remote split become realistic
+- add an explicit staging/upload flow that yields backend dataset identifiers for desktop-local files
+- keep the compute contract backend-authoritative and dataset-id-based
 
 ## Non-Goals / Deferred Items
 
 The following are intentionally not implemented yet:
 
-- no backend
+- no general dataset upload/staging pipeline for desktop-local files
 - no remote rendering
-- no remote job execution
 - no general async/job framework beyond the current moment-map, image-layer, and cube-open use cases
 - no generic service interfaces
 - no large widget rewrite
@@ -256,8 +256,8 @@ These are deferred on purpose. The current focus has been to create stable local
 
 ## Architecture Decisions Already Taken
 
-### 1. Service logic moves out of widgets before any backend work
-We first extracted local services and controllers from GUI classes instead of introducing premature remote abstractions.
+### 1. Service logic moves out of widgets and backend-authoritative science moves out of the client
+We first extracted local services and controllers from GUI classes, then made moment computation backend-authoritative instead of maintaining two scientific implementations.
 
 ### 2. Build modularization follows code boundaries
 The build now reflects the code structure with:
@@ -275,7 +275,7 @@ Widgets still own:
 - render calls
 - UI updates
 
-Services own bounded non-UI logic.
+Services own bounded non-UI logic, and scientific computation that must be authoritative belongs on the backend side.
 
 ## Recommended Next Milestone
 

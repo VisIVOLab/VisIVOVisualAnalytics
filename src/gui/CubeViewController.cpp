@@ -11,7 +11,6 @@
 #include <vtkImageReslice.h>
 #include <vtkLegendScaleActorWCS.h>
 #include <vtkLookupTable.h>
-#include <vtkMomentMapFilter.h>
 #include <vtkPiecewiseFunction.h>
 #include <vtkRenderer.h>
 #include <vtkTrivialProducer.h>
@@ -88,27 +87,6 @@ void CubeViewController::setLegendWcs(int wcs) const
 {
     this->context.legendSlice->SetWCS(wcs);
     this->context.legendMoment->SetWCS(wcs);
-}
-
-CubeViewController::MomentUpdateResult CubeViewController::updateMomentOrder(int order) const
-{
-    switch (order) {
-    case 0:
-    case 1:
-    case 2:
-    case 6:
-    case 8:
-    case 10:
-        break;
-    default:
-        return { false, { 0., 0. } };
-    }
-
-    this->context.moment->SetMomentOrder(order);
-    this->context.moment->Update();
-    const double *range = this->context.moment->GetOutput()->GetScalarRange();
-    this->context.lutMoment->SetTableRange(range);
-    return { true, { range[0], range[1] } };
 }
 
 void CubeViewController::syncSlicesLut() const

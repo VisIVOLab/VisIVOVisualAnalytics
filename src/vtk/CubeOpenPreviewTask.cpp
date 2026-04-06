@@ -1,8 +1,6 @@
 #include "CubeOpenPreviewTask.h"
 
 #include "vtkFITSReader.h"
-#include "vtkMomentMapFilter.h"
-
 #include <fitsio.h>
 
 #include <QDebug>
@@ -10,7 +8,6 @@
 
 #include <vtkImageData.h>
 #include <vtkPointData.h>
-#include <vtkTrivialProducer.h>
 
 #include <cmath>
 #include <limits>
@@ -120,31 +117,15 @@ CubeOpenStageResult loadCubeOpenPreview(const QString &filepath)
     qDebug().noquote()
             << QStringLiteral("[perf][cube] preview stats: %1 ms").arg(statsTimer.elapsed());
 
-    vtkNew<vtkTrivialProducer> previewSource;
-    previewSource->SetOutput(cubeImage);
-
-    vtkNew<vtkMomentMapFilter> moment;
-    moment->SetInputConnection(previewSource->GetOutputPort());
-    moment->Init(filepath.toStdString());
-    moment->SetMomentOrder(0);
-    QElapsedTimer momentTimer;
-    momentTimer.start();
-    moment->Update();
-    qDebug().noquote() << QStringLiteral("[perf][cube] preview moment generation: %1 ms").arg(
-            momentTimer.elapsed());
-
-    vtkNew<vtkImageData> momentImage;
-    momentImage->DeepCopy(moment->GetOutput());
-    const double *momentRange = momentImage->GetScalarRange();
     qDebug().noquote()
             << QStringLiteral("[perf][cube] preview load: %1 ms").arg(totalTimer.elapsed());
 
     return { true,
              { },
              cubeImage,
-             momentImage,
+             nullptr,
              { cubeRange[0], cubeRange[1] },
-             { momentRange[0], momentRange[1] },
+             { 0., 0. },
              { 0, dims[0] - 1, 0, dims[1] - 1, 0, dims[2] - 1 },
              cubeMean,
              cubeRms };
