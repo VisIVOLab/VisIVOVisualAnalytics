@@ -285,6 +285,40 @@ BackendOpenDatasetResult BackendClient::openDataset(const QString &path)
     return result;
 }
 
+BackendCatalogueInfo BackendClient::openCatalogue(const QString &path, const QString &format)
+{
+    BackendCatalogueInfo result;
+    QString error;
+    const QJsonDocument body(QJsonObject{ { QStringLiteral("path"), path },
+                                          { QStringLiteral("format"), format } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/catalogue/open")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.datasetId = object.value(QStringLiteral("dataset_id")).toString();
+    result.sessionId = object.value(QStringLiteral("session_id")).toString();
+    result.numRows = object.value(QStringLiteral("num_rows")).toInt();
+    if (!result.sessionId.isEmpty()) {
+        this->setSessionId(result.sessionId);
+    }
+    const QJsonObject coord = object.value(QStringLiteral("coordinate_fields")).toObject();
+    result.raField = coord.value(QStringLiteral("ra")).toString();
+    result.decField = coord.value(QStringLiteral("dec")).toString();
+    const QJsonArray fields = object.value(QStringLiteral("fields")).toArray();
+    result.fields.reserve(fields.size());
+    for (const QJsonValue &fieldValue : fields) {
+        const QJsonObject field = fieldValue.toObject();
+        result.fields.push_back({ field.value(QStringLiteral("name")).toString(),
+                                  field.value(QStringLiteral("type")).toString() });
+    }
+    return result;
+}
+
 BackendCubePreviewResult BackendClient::requestPreview(const QString &datasetId,
                                                        int downsample) const
 {
@@ -445,6 +479,29 @@ BackendCubeNoiseResult BackendClient::requestNoise(const QString &datasetId, int
     result.x1 = region.value(QStringLiteral("x1")).toInt();
     result.y0 = region.value(QStringLiteral("y0")).toInt();
     result.y1 = region.value(QStringLiteral("y1")).toInt();
+    return result;
+}
+
+BackendCatalogueSubset BackendClient::requestCatalogueSubset(const QString &datasetId,
+                                                             int maxRows) const
+{
+    BackendCatalogueSubset result;
+    QString error;
+    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
+                                          { QStringLiteral("max_rows"), maxRows } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/catalogue/subset")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    const QJsonArray rows = object.value(QStringLiteral("rows")).toArray();
+    for (const QJsonValue &rowValue : rows) {
+        result.rows.append(rowValue.toObject().toVariantMap());
+    }
     return result;
 }
 

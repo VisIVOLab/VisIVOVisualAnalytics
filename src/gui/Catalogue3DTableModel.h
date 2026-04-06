@@ -15,7 +15,7 @@ class Catalogue3DTableModel : public QAbstractTableModel
 public:
     explicit Catalogue3DTableModel(QObject *parent = nullptr);
 
-    void setCatalogue(const std::vector<Catalogue3DEntry> *entries, const QStringList *headers);
+    void setCatalogue(const std::vector<Catalogue3DEntry> *entries, const Catalogue3DSchema *schema);
 
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     int columnCount(const QModelIndex &parent = QModelIndex()) const override;
@@ -37,7 +37,7 @@ private:
     };
 
     const std::vector<Catalogue3DEntry> *entries{ nullptr };
-    const QStringList *headers{ nullptr };
+    const Catalogue3DSchema *schema{ nullptr };
 };
 
 #endif

@@ -101,10 +101,13 @@ const QMap<QString, int> kKnownMorphologies = {
 // Construction / destruction
 // ─────────────────────────────────────────────────────────────────────────────
 
-vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, QWidget *parent)
+vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QString &backendUrl,
+                                           const QString &backendToken, QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::vtkWindowCatalogue3D)
     , filepath(filepath)
+    , backendUrl(backendUrl)
+    , backendToken(backendToken)
 {
     ui->setupUi(this);
 
@@ -149,23 +152,41 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, QWidget *par
     ui->labelStatus->setToolTip(
             u"3D positions use RA/Dec + redshift or distance. Source geometry is parametric."_s);
 
-    // ── Parse catalogue ──────────────────────────────────────────────────────
-    const auto parsed = Catalogue3DParser::parseFile(filepath);
-    if (!parsed.valid) {
-        QMessageBox::critical(this, u"Catalogue Error"_s, parsed.errorMessage);
-        // Window still opens – empty scene with error shown in status.
-        ui->labelStatus->setText(u"Load error: "_s + parsed.errorMessage);
+    BackendClient client(backendUrl, backendToken);
+    const auto opened = client.openCatalogue(filepath);
+    if (!opened.valid) {
+        QMessageBox::critical(this, u"Catalogue Error"_s, opened.error);
+        ui->labelStatus->setText(u"Load error: "_s + opened.error);
     } else {
-        entries = parsed.entries;
-        rawHeaders = parsed.headers;
-        if (parsed.skippedEntries > 0) {
-            ui->labelStatus->setText(
-                    QStringLiteral("Loaded %1 sources (%2 rows skipped).")
-                            .arg(entries.size())
-                            .arg(parsed.skippedEntries));
+        this->remoteDatasetId = opened.datasetId;
+        this->remoteSessionId = opened.sessionId;
+        this->schema.headers.clear();
+        this->schema.fields.clear();
+        this->schema.fields.reserve(opened.fields.size());
+        this->schema.raFieldName = opened.raField;
+        this->schema.decFieldName = opened.decField;
+        for (const auto &field : opened.fields) {
+            this->schema.fields.push_back({ field.name, field.type });
+            this->schema.headers.append(field.name);
+        }
+        this->rawHeaders = this->schema.headers;
+
+        const auto subset = client.requestCatalogueSubset(this->remoteDatasetId, 100000);
+        const auto parsed = Catalogue3DParser::parseBackendSubset(this->schema, subset.rows);
+        if (!subset.valid || !parsed.valid) {
+            const QString error = !subset.valid ? subset.error : parsed.errorMessage;
+            QMessageBox::critical(this, u"Catalogue Error"_s, error);
+            ui->labelStatus->setText(u"Load error: "_s + error);
         } else {
-            ui->labelStatus->setText(
-                    QStringLiteral("Loaded %1 sources.").arg(entries.size()));
+            this->entries = parsed.entries;
+            if (parsed.skippedEntries > 0) {
+                ui->labelStatus->setText(
+                        QStringLiteral("Loaded %1 sources (%2 rows skipped).")
+                                .arg(entries.size())
+                                .arg(parsed.skippedEntries));
+            } else {
+                ui->labelStatus->setText(QStringLiteral("Loaded %1 sources.").arg(entries.size()));
+            }
         }
     }
 
@@ -280,9 +301,10 @@ void vtkWindowCatalogue3D::buildMorphologyLut()
 {
     // Collect ordered unique morphologies preserving first-seen order.
     for (const auto &e : entries) {
-        if (!morphologyIndexOf.contains(e.morphology)) {
-            morphologyIndexOf[e.morphology] = morphologyNames.size();
-            morphologyNames.append(e.morphology);
+        const QString morph = Catalogue3DParser::detail::entryMorphology(e, this->schema);
+        if (!morphologyIndexOf.contains(morph)) {
+            morphologyIndexOf[morph] = morphologyNames.size();
+            morphologyNames.append(morph);
         }
     }
 
@@ -324,12 +346,14 @@ void vtkWindowCatalogue3D::buildScene()
     maxDistanceMpc = 1.0;
     for (int i = 0; i < static_cast<int>(entries.size()); ++i) {
         const auto &e = entries[i];
-        morphScalars->SetValue(i, morphologyIndexOf.value(e.morphology, 0));
+        morphScalars->SetValue(i, morphologyIndexOf.value(
+                                          Catalogue3DParser::detail::entryMorphology(e, this->schema), 0));
 
         xMin = std::min(xMin, e.sceneX); xMax = std::max(xMax, e.sceneX);
         yMin = std::min(yMin, e.sceneY); yMax = std::max(yMax, e.sceneY);
         zMin = std::min(zMin, e.sceneZ); zMax = std::max(zMax, e.sceneZ);
-        maxDistanceMpc = std::max(maxDistanceMpc, e.distanceMpc);
+        maxDistanceMpc = std::max(maxDistanceMpc,
+                                  Catalogue3DParser::detail::entryDistanceMpc(e, this->schema));
     }
 
     const double diag = std::sqrt((xMax - xMin) * (xMax - xMin)
@@ -471,7 +495,7 @@ void vtkWindowCatalogue3D::buildLabels()
 {
     for (const auto &e : entries) {
         auto actor = vtkSmartPointer<vtkBillboardTextActor3D>::New();
-        actor->SetInput(e.name.toUtf8().constData());
+        actor->SetInput(Catalogue3DParser::detail::entryDisplayName(e, this->schema).toUtf8().constData());
         actor->SetPosition(e.sceneX, e.sceneY, e.sceneZ);
         actor->GetTextProperty()->SetFontSize(11);
         actor->GetTextProperty()->SetColor(1.0, 1.0, 1.0);
@@ -561,22 +585,25 @@ double vtkWindowCatalogue3D::mappedSizeValue(const Catalogue3DEntry &entry, bool
         return 1.0;
     }
     if (this->mapSizeKey == QStringLiteral("builtin:major")) {
-        if (entry.majorAxisArcmin > 0.0) {
-            return entry.majorAxisArcmin;
+        const double value = Catalogue3DParser::detail::entryMajorAxisArcmin(entry, this->schema);
+        if (value > 0.0) {
+            return value;
         }
         ok = false;
         return 1.0;
     }
     if (this->mapSizeKey == QStringLiteral("builtin:lls")) {
-        if (entry.llsMajorKpc > 0.0) {
-            return entry.llsMajorKpc;
+        const double value = Catalogue3DParser::detail::entryLlsMajorKpc(entry, this->schema);
+        if (value > 0.0) {
+            return value;
         }
         ok = false;
         return 1.0;
     }
     if (this->mapSizeKey == QStringLiteral("builtin:flux")) {
-        if (entry.fluxMJy > 0.0) {
-            return entry.fluxMJy;
+        const double value = Catalogue3DParser::detail::entryFluxMJy(entry, this->schema);
+        if (value > 0.0) {
+            return value;
         }
         ok = false;
         return 1.0;
@@ -702,7 +729,9 @@ void vtkWindowCatalogue3D::updateColorMapping()
     if (this->mapColorKey == QStringLiteral("builtin:morphology")) {
         for (vtkIdType i = 0; i < static_cast<vtkIdType>(this->entries.size()); ++i) {
             const auto &entry = this->entries[static_cast<std::size_t>(i)];
-            this->morphScalars->SetValue(i, this->morphologyIndexOf.value(entry.morphology, 0));
+            this->morphScalars->SetValue(
+                    i, this->morphologyIndexOf.value(
+                               Catalogue3DParser::detail::entryMorphology(entry, this->schema), 0));
         }
         this->morphScalars->Modified();
         this->sourcesPolyData->GetPointData()->SetScalars(this->morphScalars);
@@ -824,18 +853,26 @@ void vtkWindowCatalogue3D::updateGlyphScales()
         double depth = major;
 
         if (this->geometryMode == GeometryMode::Ellipsoid) {
-            if (this->mapSizeKey == QStringLiteral("builtin:major") && entry.majorAxisArcmin > 0.0) {
-                major = defaultGlyphRadius * sliderScale * std::max(0.15, entry.majorAxisArcmin / sizeNormalizationValue);
-                const double minorNorm = entry.minorAxisArcmin > 0.0
-                        ? std::max(0.12, entry.minorAxisArcmin / sizeNormalizationValue)
-                        : std::max(0.12, entry.majorAxisArcmin / sizeNormalizationValue * 0.65);
+            const double majorAxisArcmin =
+                    Catalogue3DParser::detail::entryMajorAxisArcmin(entry, this->schema);
+            const double minorAxisArcmin =
+                    Catalogue3DParser::detail::entryMinorAxisArcmin(entry, this->schema);
+            const double llsMajorKpc =
+                    Catalogue3DParser::detail::entryLlsMajorKpc(entry, this->schema);
+            const double llsMinorKpc =
+                    Catalogue3DParser::detail::entryLlsMinorKpc(entry, this->schema);
+            if (this->mapSizeKey == QStringLiteral("builtin:major") && majorAxisArcmin > 0.0) {
+                major = defaultGlyphRadius * sliderScale * std::max(0.15, majorAxisArcmin / sizeNormalizationValue);
+                const double minorNorm = minorAxisArcmin > 0.0
+                        ? std::max(0.12, minorAxisArcmin / sizeNormalizationValue)
+                        : std::max(0.12, majorAxisArcmin / sizeNormalizationValue * 0.65);
                 minor = defaultGlyphRadius * sliderScale * minorNorm;
                 depth = minor;
-            } else if (this->mapSizeKey == QStringLiteral("builtin:lls") && entry.llsMajorKpc > 0.0) {
-                major = defaultGlyphRadius * sliderScale * std::max(0.15, entry.llsMajorKpc / sizeNormalizationValue);
-                const double minorNorm = entry.llsMinorKpc > 0.0
-                        ? std::max(0.12, entry.llsMinorKpc / sizeNormalizationValue)
-                        : std::max(0.12, entry.llsMajorKpc / sizeNormalizationValue * 0.7);
+            } else if (this->mapSizeKey == QStringLiteral("builtin:lls") && llsMajorKpc > 0.0) {
+                major = defaultGlyphRadius * sliderScale * std::max(0.15, llsMajorKpc / sizeNormalizationValue);
+                const double minorNorm = llsMinorKpc > 0.0
+                        ? std::max(0.12, llsMinorKpc / sizeNormalizationValue)
+                        : std::max(0.12, llsMajorKpc / sizeNormalizationValue * 0.7);
                 minor = defaultGlyphRadius * sliderScale * minorNorm;
                 depth = minor;
             }
@@ -1014,33 +1051,48 @@ void vtkWindowCatalogue3D::updateInfoPanel()
     }
 
     const Catalogue3DEntry &e = entries[selectedIndex];
+    const QString displayName = Catalogue3DParser::detail::entryDisplayName(e, this->schema);
+    const QString morphology = Catalogue3DParser::detail::entryMorphology(e, this->schema);
+    const double distanceMpc = Catalogue3DParser::detail::entryDistanceMpc(e, this->schema);
+    const double redshift =
+            Catalogue3DParser::detail::fieldDouble(e, Catalogue3DParser::detail::detectedRedshiftField(this->schema));
+    const double majorAxisArcmin =
+            Catalogue3DParser::detail::entryMajorAxisArcmin(e, this->schema);
+    const double minorAxisArcmin =
+            Catalogue3DParser::detail::entryMinorAxisArcmin(e, this->schema);
+    const double llsMajorKpc =
+            Catalogue3DParser::detail::entryLlsMajorKpc(e, this->schema);
+    const double llsMinorKpc =
+            Catalogue3DParser::detail::entryLlsMinorKpc(e, this->schema);
+    const double fluxMJy =
+            Catalogue3DParser::detail::entryFluxMJy(e, this->schema);
     QString html;
-    html += QStringLiteral("<b>%1</b>").arg(e.name.toHtmlEscaped());
+    html += QStringLiteral("<b>%1</b>").arg(displayName.toHtmlEscaped());
     html += QStringLiteral("<br>RA: %1°").arg(e.raDeg, 0, 'f', 4);
     html += QStringLiteral("<br>Dec: %1°").arg(e.decDeg, 0, 'f', 4);
-    if (e.redshift > 0.0)
-        html += QStringLiteral("<br>z: %1").arg(e.redshift, 0, 'f', 4);
-    if (e.distanceMpc > 0.0)
-        html += QStringLiteral("<br>d: %1 Mpc").arg(e.distanceMpc, 0, 'f', 1);
-    html += QStringLiteral("<br>Type: <i>%1</i>").arg(e.morphology.toHtmlEscaped());
-    if (e.majorAxisArcmin > 0.0) {
-        if (e.minorAxisArcmin > 0.0)
+    if (redshift > 0.0)
+        html += QStringLiteral("<br>z: %1").arg(redshift, 0, 'f', 4);
+    if (distanceMpc > 0.0)
+        html += QStringLiteral("<br>d: %1 Mpc").arg(distanceMpc, 0, 'f', 1);
+    html += QStringLiteral("<br>Type: <i>%1</i>").arg(morphology.toHtmlEscaped());
+    if (majorAxisArcmin > 0.0) {
+        if (minorAxisArcmin > 0.0)
             html += QStringLiteral("<br>Size: %1′ × %2′")
-                            .arg(e.majorAxisArcmin, 0, 'f', 1)
-                            .arg(e.minorAxisArcmin, 0, 'f', 1);
+                            .arg(majorAxisArcmin, 0, 'f', 1)
+                            .arg(minorAxisArcmin, 0, 'f', 1);
         else
-            html += QStringLiteral("<br>Size: %1′").arg(e.majorAxisArcmin, 0, 'f', 1);
+            html += QStringLiteral("<br>Size: %1′").arg(majorAxisArcmin, 0, 'f', 1);
     }
-    if (e.llsMajorKpc > 0.0) {
-        if (e.llsMinorKpc > 0.0)
+    if (llsMajorKpc > 0.0) {
+        if (llsMinorKpc > 0.0)
             html += QStringLiteral("<br>LLS: %1 × %2 kpc")
-                            .arg(e.llsMinorKpc, 0, 'f', 1)
-                            .arg(e.llsMajorKpc, 0, 'f', 1);
+                            .arg(llsMinorKpc, 0, 'f', 1)
+                            .arg(llsMajorKpc, 0, 'f', 1);
         else
-            html += QStringLiteral("<br>LLS: %1 kpc").arg(e.llsMajorKpc, 0, 'f', 1);
+            html += QStringLiteral("<br>LLS: %1 kpc").arg(llsMajorKpc, 0, 'f', 1);
     }
-    if (e.fluxMJy > 0.0)
-        html += QStringLiteral("<br>Flux: %1 mJy").arg(e.fluxMJy, 0, 'f', 2);
+    if (fluxMJy > 0.0)
+        html += QStringLiteral("<br>Flux: %1 mJy").arg(fluxMJy, 0, 'f', 2);
     html += QStringLiteral(
             "<br><br><span style='color:#b0b8c8'>3D depth comes from RA/Dec + redshift or distance. Source shape is parametric.</span>");
 
@@ -1250,7 +1302,7 @@ void vtkWindowCatalogue3D::refreshCatalogueTable()
     if (!this->catalogueTableModel) {
         return;
     }
-    this->catalogueTableModel->setCatalogue(&this->entries, &this->rawHeaders);
+    this->catalogueTableModel->setCatalogue(&this->entries, &this->schema);
     if (this->catalogueTableView) {
         this->catalogueTableView->resizeColumnsToContents();
     }
@@ -1265,24 +1317,9 @@ void vtkWindowCatalogue3D::populateMappingControls()
     }
 
     this->numericRawFieldIndices.clear();
-    for (int column = 0; column < this->rawHeaders.size(); ++column) {
-        int validCount = 0;
-        int nonEmptyCount = 0;
-        for (const auto &entry : this->entries) {
-            if (column >= entry.rawFieldValues.size()) {
-                continue;
-            }
-            const QString raw = entry.rawFieldValues.at(column).trimmed();
-            if (raw.isEmpty()) {
-                continue;
-            }
-            ++nonEmptyCount;
-            double value = 0.0;
-            if (Catalogue3DParser::detail::maybeNumeric(raw, value)) {
-                ++validCount;
-            }
-        }
-        if (validCount >= 3 && validCount * 5 >= std::max(1, nonEmptyCount) * 4) {
+    for (int column = 0; column < static_cast<int>(this->schema.fields.size()); ++column) {
+        const QString type = this->schema.fields[static_cast<std::size_t>(column)].type.toLower();
+        if (type == QStringLiteral("float") || type == QStringLiteral("int")) {
             this->numericRawFieldIndices.push_back(column);
         }
     }
@@ -1342,11 +1379,14 @@ void vtkWindowCatalogue3D::updateDockSelectionDetails()
     }
     const auto &entry = this->entries[static_cast<std::size_t>(this->selectedIndex)];
     QString details;
-    details += QStringLiteral("Name: %1\n").arg(entry.name);
+    details += QStringLiteral("Name: %1\n")
+                       .arg(Catalogue3DParser::detail::entryDisplayName(entry, this->schema));
     details += QStringLiteral("RA: %1\n").arg(entry.raDeg, 0, 'f', 6);
     details += QStringLiteral("Dec: %1\n").arg(entry.decDeg, 0, 'f', 6);
-    details += QStringLiteral("Distance: %1\n").arg(entry.distanceMpc, 0, 'f', 3);
-    details += QStringLiteral("Morphology: %1\n").arg(entry.morphology);
+    details += QStringLiteral("Distance: %1\n")
+                       .arg(Catalogue3DParser::detail::entryDistanceMpc(entry, this->schema), 0, 'f', 3);
+    details += QStringLiteral("Morphology: %1\n")
+                       .arg(Catalogue3DParser::detail::entryMorphology(entry, this->schema));
     const QString rawDetails = this->fallbackDetailsText(entry);
     if (!rawDetails.isEmpty()) {
         details += QStringLiteral("\nRaw fields\n%1").arg(rawDetails);

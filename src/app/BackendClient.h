@@ -7,6 +7,7 @@
 #include <QNetworkRequest>
 #include <QString>
 #include <QStringList>
+#include <QVariantMap>
 #include <QVector>
 #include <chrono>
 
@@ -192,6 +193,31 @@ struct BackendCubeNoiseResult
     int y1{ 0 };
 };
 
+struct BackendCatalogueFieldInfo
+{
+    QString name;
+    QString type;
+};
+
+struct BackendCatalogueInfo
+{
+    bool valid{ false };
+    QString error;
+    QString datasetId;
+    QString sessionId;
+    int numRows{ 0 };
+    std::vector<BackendCatalogueFieldInfo> fields;
+    QString raField;
+    QString decField;
+};
+
+struct BackendCatalogueSubset
+{
+    bool valid{ false };
+    QString error;
+    QList<QVariantMap> rows;
+};
+
 struct BackendImageResult
 {
     bool valid{ false };
@@ -285,6 +311,7 @@ public:
      * so all subsequent calls carry the correct X-Visivo-Session header.
      */
     BackendOpenDatasetResult openDataset(const QString &path);
+    BackendCatalogueInfo openCatalogue(const QString &path, const QString &format = QStringLiteral("csv"));
 
     BackendCubePreviewResult requestPreview(const QString &datasetId, int downsample) const;
     BackendCubeSliceResult requestSlice(const QString &datasetId, const QString &axis,
@@ -296,6 +323,7 @@ public:
                                   int widthPixels) const;
     BackendCubeNoiseResult requestNoise(const QString &datasetId, int x0, int x1, int y0, int y1,
                                         int channelStart, int channelEnd) const;
+    BackendCatalogueSubset requestCatalogueSubset(const QString &datasetId, int maxRows) const;
     BackendImageResult requestImagePreview(const QString &datasetId, int maxLongestSide) const;
     BackendImageResult requestImage(const QString &datasetId) const;
     BackendIsosurfaceResult requestIsosurface(const QString &datasetId, double threshold) const;

@@ -3,11 +3,11 @@
 Catalogue3DTableModel::Catalogue3DTableModel(QObject *parent) : QAbstractTableModel(parent) {}
 
 void Catalogue3DTableModel::setCatalogue(const std::vector<Catalogue3DEntry> *newEntries,
-                                         const QStringList *newHeaders)
+                                         const Catalogue3DSchema *newSchema)
 {
     beginResetModel();
     this->entries = newEntries;
-    this->headers = newHeaders;
+    this->schema = newSchema;
     endResetModel();
 }
 
@@ -24,12 +24,12 @@ int Catalogue3DTableModel::columnCount(const QModelIndex &parent) const
     if (parent.isValid()) {
         return 0;
     }
-    return FixedColumnCount + (this->headers ? this->headers->size() : 0);
+    return FixedColumnCount + (this->schema ? this->schema->headers.size() : 0);
 }
 
 QVariant Catalogue3DTableModel::data(const QModelIndex &index, int role) const
 {
-    if (!index.isValid() || !this->entries || index.row() < 0
+    if (!index.isValid() || !this->entries || !this->schema || index.row() < 0
         || index.row() >= static_cast<int>(this->entries->size())) {
         return {};
     }
@@ -46,15 +46,15 @@ QVariant Catalogue3DTableModel::data(const QModelIndex &index, int role) const
 
     switch (index.column()) {
     case NameColumn:
-        return entry.name;
+        return Catalogue3DParser::detail::entryDisplayName(entry, *this->schema);
     case TypeColumn:
-        return entry.morphology;
+        return Catalogue3DParser::detail::entryMorphology(entry, *this->schema);
     case RaColumn:
         return QString::number(entry.raDeg, 'f', 4);
     case DecColumn:
         return QString::number(entry.decDeg, 'f', 4);
     case DistanceColumn:
-        return QString::number(entry.distanceMpc, 'f', 1);
+        return QString::number(Catalogue3DParser::detail::entryDistanceMpc(entry, *this->schema), 'f', 1);
     case XColumn:
         return QString::number(entry.sceneX, 'f', 3);
     case YColumn:
@@ -66,7 +66,7 @@ QVariant Catalogue3DTableModel::data(const QModelIndex &index, int role) const
     }
 
     const int rawColumn = index.column() - FixedColumnCount;
-    if (!this->headers || rawColumn < 0 || rawColumn >= this->headers->size()) {
+    if (!this->schema || rawColumn < 0 || rawColumn >= this->schema->headers.size()) {
         return {};
     }
     if (rawColumn >= 0 && rawColumn < entry.rawFieldValues.size()) {
@@ -103,8 +103,8 @@ QVariant Catalogue3DTableModel::headerData(int section, Qt::Orientation orientat
     }
 
     const int rawColumn = section - FixedColumnCount;
-    if (this->headers && rawColumn >= 0 && rawColumn < this->headers->size()) {
-        return this->headers->at(rawColumn);
+    if (this->schema && rawColumn >= 0 && rawColumn < this->schema->headers.size()) {
+        return this->schema->headers.at(rawColumn);
     }
     return {};
 }

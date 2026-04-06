@@ -20,6 +20,7 @@ prepend /v1/ to every request URL (Settings dialog → backend URL field).
 from __future__ import annotations
 
 import asyncio
+import csv
 import logging
 import os
 import threading
@@ -30,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 from astropy.io import fits
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -357,6 +359,42 @@ class CubeNoiseResponse(BaseModel):
     region: dict = {}
 
 
+class CatalogueOpenRequest(BaseModel):
+    path: str
+    format: str = "csv"
+
+
+class CatalogueFieldInfo(BaseModel):
+    name: str
+    type: str
+
+
+class CatalogueCoordinateFields(BaseModel):
+    ra: str = ""
+    dec: str = ""
+
+
+class CatalogueOpenResponse(BaseModel):
+    valid: bool
+    error: str
+    dataset_id: str = ""
+    session_id: str = ""
+    num_rows: int = 0
+    fields: list[CatalogueFieldInfo] = []
+    coordinate_fields: CatalogueCoordinateFields = CatalogueCoordinateFields()
+
+
+class CatalogueSubsetRequest(BaseModel):
+    dataset_id: str
+    max_rows: int = 100000
+
+
+class CatalogueSubsetResponse(BaseModel):
+    valid: bool
+    error: str
+    rows: list[dict[str, Any]] = []
+
+
 class IsosurfaceProductRequest(BaseModel):
     dataset_id: str
     threshold: float
@@ -383,6 +421,57 @@ def _normalize_path(raw: str) -> Path:
 
 def _is_fits(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() in _FITS_SUFFIXES
+
+
+def _normalize_catalogue_field(raw: str) -> str:
+    return "".join(ch.upper() for ch in raw if ch.isalnum())
+
+
+def _catalogue_csv_metadata(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        headers = next(reader, [])
+    if not headers:
+        raise ValueError("CSV catalogue is empty.")
+
+    frame = pd.read_csv(path, nrows=256)
+    fields: list[dict[str, str]] = []
+    normalized_to_actual: dict[str, str] = {}
+    for column in frame.columns:
+        name = str(column)
+        normalized_to_actual[_normalize_catalogue_field(name)] = name
+        dtype = frame[column].dtype
+        if pd.api.types.is_bool_dtype(dtype):
+            field_type = "bool"
+        elif pd.api.types.is_integer_dtype(dtype):
+            field_type = "int"
+        elif pd.api.types.is_float_dtype(dtype):
+            field_type = "float"
+        else:
+            field_type = "string"
+        fields.append({"name": name, "type": field_type})
+
+    ra_field = ""
+    dec_field = ""
+    for alias in ("RA", "RADEG", "RAJ2000", "RAJ2000OBS", "ALPHA", "RAICRS"):
+        if alias in normalized_to_actual:
+            ra_field = normalized_to_actual[alias]
+            break
+    for alias in ("DEC", "DE", "DECDEG", "DEJ2000", "DECJ2000", "DELTA", "DECICRS"):
+        if alias in normalized_to_actual:
+            dec_field = normalized_to_actual[alias]
+            break
+    if not ra_field or not dec_field:
+        raise ValueError("CSV catalogue requires RA and DEC columns.")
+
+    row_count = max(0, sum(1 for _ in path.open("r", encoding="utf-8")) - 1)
+    return {
+        "kind": "catalogue",
+        "format": "csv",
+        "num_rows": row_count,
+        "fields": fields,
+        "coordinate_fields": {"ra": ra_field, "dec": dec_field},
+    }
 
 
 async def _run(fn, *args) -> Any:
@@ -644,6 +733,54 @@ async def open_dataset(
         crpix=geometry["crpix"],
         cdelt=geometry["cdelt"],
     )
+
+
+@app.post("/v1/catalogue/open", response_model=CatalogueOpenResponse, tags=["catalogue"])
+async def open_catalogue(
+    request: CatalogueOpenRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> CatalogueOpenResponse:
+    path = _normalize_path(request.path)
+    if request.format.lower() != "csv":
+        return CatalogueOpenResponse(valid=False, error="Only CSV catalogue format is supported.")
+    if not path.exists() or not path.is_file():
+        return CatalogueOpenResponse(valid=False, error="Catalogue file not found.")
+    try:
+        metadata = _catalogue_csv_metadata(path)
+    except Exception as exc:
+        return CatalogueOpenResponse(valid=False, error=str(exc))
+
+    dataset_id = f"cat_{uuid.uuid4().hex[:12]}"
+    session.datasets[dataset_id] = {"path": str(path), **metadata}
+    return CatalogueOpenResponse(
+        valid=True,
+        error="",
+        dataset_id=dataset_id,
+        session_id=session.session_id,
+        num_rows=int(metadata["num_rows"]),
+        fields=[CatalogueFieldInfo(**field) for field in metadata["fields"]],
+        coordinate_fields=CatalogueCoordinateFields(**metadata["coordinate_fields"]),
+    )
+
+
+@app.post("/v1/catalogue/subset", response_model=CatalogueSubsetResponse, tags=["catalogue"])
+async def catalogue_subset(
+    request: CatalogueSubsetRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> CatalogueSubsetResponse:
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "catalogue":
+            raise HTTPException(422, "This endpoint requires a catalogue dataset.")
+        frame = pd.read_csv(entry["path"], nrows=max(1, int(request.max_rows)))
+        rows = frame.replace({np.nan: None}).to_dict(orient="records")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return CatalogueSubsetResponse(valid=False, error=str(exc))
+    return CatalogueSubsetResponse(valid=True, error="", rows=rows)
 
 
 @app.post("/v1/products/moment", response_model=MomentProductResponse, tags=["products"])

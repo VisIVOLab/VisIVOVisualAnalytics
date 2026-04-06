@@ -199,7 +199,8 @@ void MainWindow::openCatalogue3D()
     if (filepath.isEmpty())
         return;
 
-    auto *win = new vtkWindowCatalogue3D(filepath, this);
+    auto *win = new vtkWindowCatalogue3D(filepath, settings->getBackendUrl(),
+                                         settings->getBackendToken(), this);
     win->setAttribute(Qt::WA_DeleteOnClose);
     win->show();
     win->raise();

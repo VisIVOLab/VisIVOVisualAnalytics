@@ -4,3 +4,4 @@ astropy>=6.1
 numpy>=2.0
 # R4: pin relaxed from ==9.6.0 → >=9.4 to support conda-forge builds on HPC archs (RHEL 8/9)
 vtk>=9.4
+pandas>=2.0

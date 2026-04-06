@@ -3,6 +3,8 @@
 
 #include "Catalogue3DParser.h"
 
+#include "app/BackendClient.h"
+
 #include <vtkNew.h>
 #include <vtkSmartPointer.h>
 
@@ -57,7 +59,8 @@ class vtkWindowCatalogue3D : public QMainWindow
     Q_OBJECT
 
 public:
-    explicit vtkWindowCatalogue3D(const QString &filepath, QWidget *parent = nullptr);
+    explicit vtkWindowCatalogue3D(const QString &filepath, const QString &backendUrl,
+                                  const QString &backendToken, QWidget *parent = nullptr);
     ~vtkWindowCatalogue3D() override;
 
 private slots:
@@ -136,7 +139,12 @@ private:
     // ── Data ────────────────────────────────────────────────────────────────
     Ui::vtkWindowCatalogue3D *ui;
     QString filepath;
+    QString backendUrl;
+    QString backendToken;
+    QString remoteDatasetId;
+    QString remoteSessionId;
     std::vector<Catalogue3DEntry> entries;
+    Catalogue3DSchema schema;
     QStringList rawHeaders;
     std::vector<int> numericRawFieldIndices;
     std::vector<std::array<double, 3>> mappedPositions;
