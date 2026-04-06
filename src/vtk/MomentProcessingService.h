@@ -8,14 +8,6 @@
 #include <array>
 
 class vtkImageData;
-class vtkLookupTable;
-class vtkMomentMapFilter;
-
-enum class MomentComputeMode
-{
-    Local, // Deprecated for scientific use; kept only as compatibility fallback.
-    Remote
-};
 
 struct MomentRequest
 {
@@ -61,26 +53,13 @@ struct MomentMapResult
 class MomentProcessingService
 {
 public:
-    // Binds the service to the current local VTK runtime objects used by the cube view.
-    MomentProcessingService(vtkMomentMapFilter *moment, vtkLookupTable *lutMoment,
-                            MomentComputeMode mode = MomentComputeMode::Local);
+    MomentProcessingService() = default;
 
     // Dispatches moment computation. The backend-facing implementation is authoritative.
     MomentResult computeMoment(const MomentRequest &request) const;
 
-    // Legacy local computation path. Retained only as compatibility fallback.
-    MomentResult computeMomentLocal(const MomentRequest &request) const;
-
     // Authoritative backend/API path used for both local and remote datasets.
     MomentResult computeMomentRemote(const MomentRequest &request) const;
-
-    // Recomputes the moment map in the local VTK runtime and updates the associated LUT range.
-    MomentMapResult process(const MomentMapRequest &request) const;
-
-private:
-    vtkMomentMapFilter *moment;
-    vtkLookupTable *lutMoment;
-    MomentComputeMode mode;
 };
 
 #endif

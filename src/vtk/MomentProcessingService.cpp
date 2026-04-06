@@ -5,64 +5,15 @@
 
 #include <QByteArray>
 #include <QDebug>
+#include <QUrl>
 
 #include <vtkImageData.h>
-#include <vtkLookupTable.h>
-#include <vtkMomentMapFilter.h>
 
 #include <cstring>
 
-MomentProcessingService::MomentProcessingService(vtkMomentMapFilter *moment,
-                                                 vtkLookupTable *lutMoment,
-                                                 MomentComputeMode mode)
-    : moment(moment), lutMoment(lutMoment), mode(mode)
-{
-}
-
 MomentResult MomentProcessingService::computeMoment(const MomentRequest &request) const
 {
-    switch (this->mode) {
-    case MomentComputeMode::Local:
-        return this->computeMomentLocal(request);
-    case MomentComputeMode::Remote:
-        return this->computeMomentRemote(request);
-    }
-
-    return { nullptr, { 0., 0. }, false, QStringLiteral("Unsupported moment compute mode.") };
-}
-
-MomentResult MomentProcessingService::computeMomentLocal(const MomentRequest &request) const
-{
-    qWarning().noquote()
-            << QStringLiteral("[moment][deprecated] using legacy local C++ moment implementation");
-    if (!this->moment || !this->lutMoment) {
-        return { nullptr, { 0., 0. }, false, QStringLiteral("Local moment runtime not available.") };
-    }
-
-    switch (request.order) {
-    case 0:
-    case 1:
-    case 2:
-    case 6:
-    case 8:
-    case 10:
-        break;
-    default:
-        return { nullptr, { 0., 0. }, false, QStringLiteral("Unsupported moment order.") };
-    }
-
-    this->moment->SetMomentOrder(request.order);
-    this->moment->Update();
-
-    const double *range = this->moment->GetOutput()->GetScalarRange();
-    this->lutMoment->SetTableRange(range);
-
-    MomentResult result;
-    result.valid = true;
-    result.imageRange = { range[0], range[1] };
-    result.image = vtkSmartPointer<vtkImageData>::New();
-    result.image->DeepCopy(this->moment->GetOutput());
-    return result;
+    return this->computeMomentRemote(request);
 }
 
 MomentResult MomentProcessingService::computeMomentRemote(const MomentRequest &request) const
@@ -82,10 +33,17 @@ MomentResult MomentProcessingService::computeMomentRemote(const MomentRequest &r
         }
         const auto opened = client.openDataset(request.datasetPath);
         if (!opened.valid || opened.datasetId.isEmpty()) {
+            const QUrl backendUrl(client.baseUrl());
+            const bool backendLooksLocal =
+                    backendUrl.host().compare(QStringLiteral("127.0.0.1"), Qt::CaseInsensitive) == 0
+                    || backendUrl.host().compare(QStringLiteral("localhost"), Qt::CaseInsensitive) == 0
+                    || backendUrl.host().isEmpty();
             return { nullptr, { 0., 0. }, false,
-                     opened.error.isEmpty()
-                             ? QStringLiteral("Could not open local dataset on backend for moment computation.")
-                             : opened.error };
+                     backendLooksLocal
+                             ? (opened.error.isEmpty()
+                                        ? QStringLiteral("Could not open local dataset on the local backend for moment computation.")
+                                        : opened.error)
+                             : QStringLiteral("Moment computation requires a backend that can access this dataset path. Use a local backend or stage/upload the dataset.") };
         }
         datasetId = opened.datasetId;
         sessionId = opened.sessionId;
@@ -156,10 +114,4 @@ MomentResult MomentProcessingService::computeMomentRemote(const MomentRequest &r
     result.wcsStatus = response.wcsStatus;
     result.wcsWarningMessage = response.wcsWarningMessage;
     return result;
-}
-
-MomentMapResult MomentProcessingService::process(const MomentMapRequest &request) const
-{
-    const auto result = this->computeMoment(MomentRequest { {}, {}, {}, {}, {}, request.momentOrder });
-    return { result.valid, result.imageRange };
 }
