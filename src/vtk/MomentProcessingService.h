@@ -38,18 +38,6 @@ struct MomentResult
     QString wcsWarningMessage;                  // human-readable WCS warning, empty when ok
 };
 
-struct MomentMapRequest
-{
-    // Requested moment order for the current local VTK processing context.
-    int momentOrder;
-};
-
-struct MomentMapResult
-{
-    bool valid;
-    std::array<double, 2> imageRange;
-};
-
 class MomentProcessingService
 {
 public:

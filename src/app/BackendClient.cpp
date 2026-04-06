@@ -18,6 +18,8 @@
 #include <QUrl>
 #include <QUrlQuery>
 
+#include <limits>
+
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 namespace {
@@ -397,6 +399,53 @@ BackendCubePvResult BackendClient::requestPv(const QString &datasetId,
         return result;
     }
     return parsePvResultObject(QJsonDocument::fromJson(payload).object());
+}
+
+BackendCubeNoiseResult BackendClient::requestNoise(const QString &datasetId, int x0, int x1,
+                                                   int y0, int y1, int channelStart,
+                                                   int channelEnd) const
+{
+    BackendCubeNoiseResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
+                                          { QStringLiteral("x0"), x0 },
+                                          { QStringLiteral("x1"), x1 },
+                                          { QStringLiteral("y0"), y0 },
+                                          { QStringLiteral("y1"), y1 },
+                                          { QStringLiteral("channel_start"), channelStart },
+                                          { QStringLiteral("channel_end"), channelEnd } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/noise")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.channelStart = object.value(QStringLiteral("channel_start")).toInt();
+    result.channelEnd = object.value(QStringLiteral("channel_end")).toInt();
+    result.numChannels = object.value(QStringLiteral("num_channels")).toInt();
+
+    const QJsonArray madArray = object.value(QStringLiteral("mad")).toArray();
+    result.mad.reserve(madArray.size());
+    for (const QJsonValue &value : madArray) {
+        result.mad.push_back(value.toDouble(std::numeric_limits<double>::quiet_NaN()));
+    }
+
+    const QJsonArray sigmaArray = object.value(QStringLiteral("sigma")).toArray();
+    result.sigma.reserve(sigmaArray.size());
+    for (const QJsonValue &value : sigmaArray) {
+        result.sigma.push_back(value.toDouble(std::numeric_limits<double>::quiet_NaN()));
+    }
+
+    const QJsonObject region = object.value(QStringLiteral("region")).toObject();
+    result.x0 = region.value(QStringLiteral("x0")).toInt();
+    result.x1 = region.value(QStringLiteral("x1")).toInt();
+    result.y0 = region.value(QStringLiteral("y0")).toInt();
+    result.y1 = region.value(QStringLiteral("y1")).toInt();
+    return result;
 }
 
 BackendImageResult BackendClient::requestImage(const QString &datasetId) const

@@ -7,6 +7,7 @@
 #include <QNetworkRequest>
 #include <QString>
 #include <QStringList>
+#include <QVector>
 #include <chrono>
 
 #include <array>
@@ -176,6 +177,21 @@ struct BackendCubePvResult
     double beamPa{ 0.0 };
 };
 
+struct BackendCubeNoiseResult
+{
+    bool valid{ false };
+    QString error;
+    int channelStart{ 0 };
+    int channelEnd{ 0 };
+    int numChannels{ 0 };
+    QVector<double> mad;
+    QVector<double> sigma;
+    int x0{ 0 };
+    int x1{ 0 };
+    int y0{ 0 };
+    int y1{ 0 };
+};
+
 struct BackendImageResult
 {
     bool valid{ false };
@@ -278,6 +294,8 @@ public:
     BackendCubePvResult requestPv(const QString &datasetId,
                                   const std::vector<std::array<int, 2>> &vertices,
                                   int widthPixels) const;
+    BackendCubeNoiseResult requestNoise(const QString &datasetId, int x0, int x1, int y0, int y1,
+                                        int channelStart, int channelEnd) const;
     BackendImageResult requestImagePreview(const QString &datasetId, int maxLongestSide) const;
     BackendImageResult requestImage(const QString &datasetId) const;
     BackendIsosurfaceResult requestIsosurface(const QString &datasetId, double threshold) const;

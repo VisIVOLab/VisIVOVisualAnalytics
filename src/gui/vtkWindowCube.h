@@ -18,6 +18,7 @@
 #include <QSet>
 #include <QStringList>
 #include <QTimer>
+#include <QVector>
 
 #include <array>
 #include <limits>
@@ -103,6 +104,21 @@ struct RemoteCubeSubvolumeResult
     std::array<int, 6> dataExtent{ 0, -1, 0, -1, 0, -1 };
     double cubeMean{ 0. };
     double cubeRms{ 0. };
+};
+
+struct CubeNoiseEstimateResult
+{
+    bool valid{ false };
+    QString errorMessage;
+    int channelStart{ 0 };
+    int channelEnd{ 0 };
+    int numChannels{ 0 };
+    QVector<double> mad;
+    QVector<double> sigma;
+    int x0{ 0 };
+    int x1{ 0 };
+    int y0{ 0 };
+    int y1{ 0 };
 };
 
 class vtkWindowCube : public QMainWindow
@@ -283,6 +299,7 @@ private:
     QPointer<QAction> actionPolygonRegion;
     QPointer<QAction> actionAnnulusRegion;
     QPointer<QAction> actionExtractPvDiagram;
+    QPointer<QAction> actionEstimateNoise;
     QPointer<QAction> actionLoadCatalogueOverlay;
     QPointer<QAction> actionShowCatalogueOverlay;
     QPointer<QAction> actionShowCatalogueLabels;
@@ -291,6 +308,7 @@ private:
     QFutureWatcher<RemoteCubePreviewResult> remotePreviewWatcher;
     QFutureWatcher<RemoteCubeSubvolumeResult> remoteHighResCubeWatcher;
     QFutureWatcher<MomentMapComputeResult> momentComputeWatcher;
+    QFutureWatcher<CubeNoiseEstimateResult> noiseEstimateWatcher;
     QFutureWatcher<AsyncIsosurfaceResult> isosurfaceWatcher;
     int currentRemotePreviewRequestId{ 0 };
     int currentRemoteHighResRequestId{ 0 };
@@ -649,6 +667,8 @@ private:
     void setMomentActionsEnabled(bool enabled);
     bool hasBackendVisibleDataset() const;
     void updateBackendDerivedActionsAvailability();
+    void startNoiseEstimation();
+    void showNoiseEstimateResult(const CubeNoiseEstimateResult &result);
     void setMomentOrder(int order);
 };
 #endif
