@@ -647,6 +647,8 @@ private:
     void setCubeOpenStateLabel(const QString &text);
     void setCubeOpenActionsEnabled(bool enabled);
     void setMomentActionsEnabled(bool enabled);
+    bool hasBackendVisibleDataset() const;
+    void updateMomentActionAvailability();
     void setMomentOrder(int order);
 };
 #endif

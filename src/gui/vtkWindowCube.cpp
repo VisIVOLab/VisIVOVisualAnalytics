@@ -112,6 +112,8 @@ constexpr int maxCatalogueLabelCount = 200;
 constexpr int smartCatalogueLabelMaxVisible = 24;
 constexpr double smartCatalogueLabelMinPixelsPerUnit = 2.5;
 constexpr double catalogueHoverDisplayThresholdPx = 10.0;
+const QString kMomentBackendTooltip =
+        QStringLiteral("Moment computation requires a backend-visible dataset. Use File → Open Remote or copy the dataset to the backend host.");
 
 QString catalogueFrameName(CatalogueOverlayEntry::Frame frame)
 {
@@ -1877,7 +1879,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              return;
                          }
 
-                         this->setMomentActionsEnabled(true);
+                         this->updateMomentActionAvailability();
 
                          const auto result = this->momentComputeWatcher.result();
                          if (!result.valid || !result.imageData) {
@@ -2013,6 +2015,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                      [this]() { this->setMomentOrder(8); });
     QObject::connect(ui->actionMoment10, &QAction::triggered, this,
                      [this]() { this->setMomentOrder(10); });
+    this->updateMomentActionAvailability();
 
     // Setup menu WCS
     auto groupWCS = new QActionGroup(this);
@@ -6972,17 +6975,57 @@ void vtkWindowCube::setRemoteCubeDisplayState(RemoteCubeDisplayState state)
 
 void vtkWindowCube::setMomentActionsEnabled(bool enabled)
 {
-    ui->actionMoment0->setEnabled(enabled);
-    ui->actionMoment1->setEnabled(enabled);
-    ui->actionMoment2->setEnabled(enabled);
-    ui->actionMoment6->setEnabled(enabled);
-    ui->actionMoment8->setEnabled(enabled);
-    ui->actionMoment10->setEnabled(enabled);
+    const bool available = this->hasBackendVisibleDataset();
+    const bool finalEnabled = enabled && available;
+    ui->actionMoment0->setEnabled(finalEnabled);
+    ui->actionMoment1->setEnabled(finalEnabled);
+    ui->actionMoment2->setEnabled(finalEnabled);
+    ui->actionMoment6->setEnabled(finalEnabled);
+    ui->actionMoment8->setEnabled(finalEnabled);
+    ui->actionMoment10->setEnabled(finalEnabled);
+
+    const QString tooltip = available ? QString {} : kMomentBackendTooltip;
+    ui->actionMoment0->setToolTip(tooltip);
+    ui->actionMoment1->setToolTip(tooltip);
+    ui->actionMoment2->setToolTip(tooltip);
+    ui->actionMoment6->setToolTip(tooltip);
+    ui->actionMoment8->setToolTip(tooltip);
+    ui->actionMoment10->setToolTip(tooltip);
+    ui->actionMoment0->setStatusTip(tooltip);
+    ui->actionMoment1->setStatusTip(tooltip);
+    ui->actionMoment2->setStatusTip(tooltip);
+    ui->actionMoment6->setStatusTip(tooltip);
+    ui->actionMoment8->setStatusTip(tooltip);
+    ui->actionMoment10->setStatusTip(tooltip);
+}
+
+bool vtkWindowCube::hasBackendVisibleDataset() const
+{
+    return this->isRemoteMode && !this->remoteDatasetId.isEmpty();
+}
+
+void vtkWindowCube::updateMomentActionAvailability()
+{
+    const bool available = this->hasBackendVisibleDataset();
+    if (ui->menuMoment) {
+        ui->menuMoment->setEnabled(available);
+        ui->menuMoment->setToolTipsVisible(true);
+        ui->menuMoment->menuAction()->setToolTip(available ? QString {} : kMomentBackendTooltip);
+        ui->menuMoment->menuAction()->setStatusTip(available ? QString {} : kMomentBackendTooltip);
+    }
+    this->setMomentActionsEnabled(!this->momentComputeWatcher.isRunning());
 }
 
 void vtkWindowCube::setCubeOpenActionsEnabled(bool enabled)
 {
-    this->setMomentActionsEnabled(enabled);
+    if (enabled) {
+        this->updateMomentActionAvailability();
+    } else {
+        this->setMomentActionsEnabled(false);
+        if (ui->menuMoment) {
+            ui->menuMoment->setEnabled(false);
+        }
+    }
     ui->actionExtractSpectrum->setEnabled(enabled);
     if (this->actionExtractPvDiagram) {
         this->actionExtractPvDiagram->setEnabled(enabled);
