@@ -65,6 +65,7 @@ private:
 
     QPointer<QVTKOpenGLNativeWidget> vtkWidget;
     QPointer<QComboBox> comboScalarField;
+    QPointer<QComboBox> comboBlendMode;  // Composite / MIP / MinIP
     QPointer<QComboBox> comboScaleMode;
     QPointer<QSlider> sliderOpacity;
     QPointer<QDoubleSpinBox> spinRangeMin;

@@ -48,6 +48,7 @@
 #include <optional>
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 using namespace Qt::StringLiterals;
@@ -321,16 +322,8 @@ void vtkWindowVbt::setupUi()
                      [this](int) { this->updateColorMapping(); });
     QObject::connect(this->comboBackground, &QComboBox::currentIndexChanged, this,
                      [this](int) { this->applyBackground(); });
-    QObject::connect(this->sliderPointSize, &QSlider::valueChanged, this, [this](int value) {
-        if (this->actor) {
-            this->actor->GetProperty()->SetPointSize(value);
-            if (this->gaussianMapper) {
-                this->gaussianMapper->SetScaleFactor(static_cast<double>(value));
-            }
-            this->renderWindow->Render();
-            this->updateSummary();
-        }
-    });
+    QObject::connect(this->sliderPointSize, &QSlider::valueChanged, this,
+                     [this](int) { this->updateRenderMode(); });
     QObject::connect(this->sliderRayIntensity, &QSlider::valueChanged, this,
                      [this](int) { this->updateRenderMode(); });
     QObject::connect(this->checkShowBox, &QCheckBox::toggled, this, [this](bool checked) {
@@ -572,14 +565,44 @@ void vtkWindowVbt::setupRenderer()
     this->renderer->AddActor(this->boxActor.Get());
 
     this->gaussianMapper->SetInputData(this->polyData.Get());
-    this->gaussianMapper->SetScaleArray("VbtScalar");
-    this->gaussianMapper->SetOpacityArray("VbtScalar");
-    this->gaussianMapper->SetScaleFunction(this->gaussianScaleFunction.Get());
-    this->gaussianMapper->SetScalarOpacityFunction(this->gaussianOpacityFunction.Get());
-    this->gaussianMapper->SetScaleFactor(static_cast<double>(this->sliderPointSize->value()));
+    // ── Particle (Gaussian splat) rendering configuration ───────────────────
+    //
+    // SetEmissive(true): additive blending (GL_SRC_ALPHA, GL_ONE) + glDepthMask(GL_FALSE).
+    //
+    //   WHY EMISSIVE IS REQUIRED FOR MORPHOLOGY:
+    //   With EmissiveOff, depth writes (glDepthMask=GL_TRUE) are active.  The nearest
+    //   splat at any screen pixel writes its depth; all particles behind it fail the
+    //   depth test → only the front shell of the cloud is visible → collapses to a
+    //   "tiny blob" even for a sparse filamentary cloud.
+    //
+    //   With EmissiveOn, every particle at a given pixel contributes additively to
+    //   screen brightness regardless of depth.  Dense regions accumulate to be bright;
+    //   sparse filaments remain dim but visible.  This matches the spatial distribution
+    //   seen in Points mode.
+    //
+    //   WHY THIS WORKS ON macOS/QVTKOpenGLNativeWidget:
+    //   QVTKOpenGLNativeWidget renders to a *native* OpenGL surface, not a Qt
+    //   QOpenGLWidget FBO.  There is no Qt alpha-compositing step that could hide
+    //   additive output.  The "emissive invisible" failure in previous attempts was
+    //   caused by an empty ScalarOpacityFunction returning opacity=0 for all points,
+    //   not by any FBO/alpha-compositing issue.
+    //
     this->gaussianMapper->SetEmissive(true);
+    //
+    // BoundScale=3: render the Gaussian out to 3σ (opacity drops to 1.1% at edge).
+    // Smoother falloff than BoundScale=2 (13.5% at edge), reduces the visible "disc"
+    // artefact when splats are isolated in sparse regions.
     this->gaussianMapper->SetBoundScale(3.0f);
     this->gaussianMapper->SetLookupTable(this->scalarLut.Get());
+    //
+    // Per-splat opacity is controlled via the documented VTK API:
+    //   SetOpacityArray("VbtScalar") → use the scalar array as the lookup key
+    //   SetScalarOpacityFunction     → piecewise function mapping key → per-splat opacity
+    // The function is a flat constant configured density-adaptively in updateRenderMode().
+    // Using this API path is more reliable than actor->GetProperty()->SetOpacity() which
+    // vtkPointGaussianMapper may not honour consistently across VTK builds.
+    this->gaussianMapper->SetOpacityArray("VbtScalar");
+    this->gaussianMapper->SetScalarOpacityFunction(this->gaussianOpacityFunction.Get());
 }
 
 void vtkWindowVbt::buildPointCloud()
@@ -653,21 +676,92 @@ void vtkWindowVbt::updateRenderMode()
     }
     const bool rayCasting = this->comboRenderMode && this->comboRenderMode->currentIndex() == 1;
     if (rayCasting) {
-        // Derive splat radius as a fraction of the dataset's bounding-box extent so
-        // that the scale is data-independent and always visible regardless of units.
+        // ── Density-adaptive splat sizing ─────────────────────────────────────
+        // Goal: every particle contributes to the rendered image at every depth
+        // (depth writes are disabled in emissive mode), so the full cloud volume
+        // and its filamentary structure are preserved.
+        //
+        // Radius derivation:
+        //   spacing  = maxDim / cbrtN  ← mean inter-particle distance along longest axis
+        //   radius   = spacing * sliderVal / 12
+        //
+        // At default sliderVal=3: radius = spacing/4.
+        // Two adjacent filament points separated by spacing/2 (denser-than-average
+        // filament) have their splat centres 2×radius apart → Gaussian value at
+        // midpoint = exp(-0.5*(d/σ)²) = exp(-0.5*(2)²) = exp(-2) ≈ 0.135 of peak.
+        // With additive blending both splats contribute → midpoint = 0.27 of peak,
+        // so filaments at ½ global spacing appear as connected structures.
+        // At sliderVal=12: radius = spacing → very wide splats that merge clusters;
+        // useful for inspecting large-scale density only.
+        //
         double bounds[6] = {0., 0., 0., 0., 0., 0.};
         this->polyData->GetBounds(bounds);
-        const double maxExt = std::max({bounds[1] - bounds[0],
-                                        bounds[3] - bounds[2],
-                                        bounds[5] - bounds[4],
-                                        1.0e-6});
-        const int sliderVal = this->sliderPointSize ? this->sliderPointSize->value() : 6;
-        // slider 1-12: maps to 0.1 – 1.2 % of max extent
-        this->gaussianMapper->SetScaleFactor(maxExt * sliderVal / 1000.0);
+        const double dimX = bounds[1] - bounds[0];
+        const double dimY = bounds[3] - bounds[2];
+        const double dimZ = bounds[5] - bounds[4];
+        const double maxDim = std::max({dimX, dimY, dimZ, 1.0e-6});
+        const vtkIdType npts = this->polyData->GetNumberOfPoints();
+        const double cbrtN = npts > 0 ? std::cbrt(static_cast<double>(npts)) : 1.0;
+        const double spacing = maxDim / cbrtN;
+        const int sliderVal = this->sliderPointSize ? this->sliderPointSize->value() : 3;
+        // slider 1–12: radius = 12%–150% of mean spacing
+        // (was /12 → /8: 1.5× larger so adjacent filament points at ≤ 0.75×spacing connect)
+        const double radius = spacing * sliderVal / 8.0;
 
+        // ── Per-splat opacity ─────────────────────────────────────────────────
+        // Design target: a single isolated particle must be clearly visible, i.e.
+        //   1 × perSplatOpacity ≥ 0.15  (15% brightness on the dark background).
+        //
+        // Previous formula (3.0/cbrtN) was calibrated for the AVERAGE sightline density
+        // (N_sightline ≈ 0.375×cbrtN), so perSplatOpacity ≈ 8/cbrtN.  For N=100k
+        // (cbrtN=46.4) at default intensity=35%: perSplatOpacity ≈ 0.022.
+        // In a filamentary cloud, SPARSE sightlines have 1–3 particles → brightness
+        // 0.02–0.07, invisible against the 6% background → "faint central spot".
+        //
+        // Fix: use baseOpacity = min(0.9, 20.0/cbrtN), which gives perSplatOpacity ≈ 0.15
+        // for a single particle at default intensity=35% across the expected dataset range.
+        //
+        //   N=10k  (cbrtN=21.5): baseOpacity = min(0.9, 0.93) = 0.90; at 35% → 0.315
+        //   N=100k (cbrtN=46.4): baseOpacity = min(0.9, 0.43) = 0.43; at 35% → 0.151
+        //   N=1M   (cbrtN=100):  baseOpacity = min(0.9, 0.20) = 0.20; at 35% → 0.070
+        //
+        // Dense cores (N_sightline ≫ 1) saturate at default settings — this is the
+        // expected and desirable behaviour for a density/emission renderer.  The intensity
+        // slider reduces perSplatOpacity to trade core contrast for cloud-edge brightness.
+        //
+        // Clamp: lower bound 0.05 ensures sparse pixels always show something;
+        //        upper bound 0.9 allows sparse small datasets to render visibly.
         const double intensity = (this->sliderRayIntensity ? this->sliderRayIntensity->value() : 35) / 100.0;
+        const double baseOpacity = std::min(0.9, 20.0 / cbrtN);
+        const double perSplatOpacity = std::clamp(baseOpacity * intensity, 0.05, 0.9);
+
+        // Flat opacity function: same opacity for every scalar value so that the
+        // rendering is uniform across solid-colour mode (VbtScalar=0) and scalar-
+        // colour modes (VbtScalar in [min,max]).  Range [-1e15, 1e15] covers any value.
+        this->gaussianOpacityFunction->RemoveAllPoints();
+        this->gaussianOpacityFunction->AddPoint(-1.0e15, perSplatOpacity);
+        this->gaussianOpacityFunction->AddPoint( 1.0e15, perSplatOpacity);
+
+        this->gaussianMapper->SetScaleFactor(radius);
+        qDebug().noquote()
+                << QStringLiteral(
+                           "[VBT] rayCasting: npts=%1 cbrtN=%2 spacing=%3 radius=%4 "
+                           "sliderVal=%5 intensity=%6 perSplatOpacity=%7 "
+                           "emissive=%8 scalarVis=%9 boundScale=%10")
+                           .arg(npts)
+                           .arg(cbrtN, 0, 'f', 1)
+                           .arg(spacing, 0, 'g', 4)
+                           .arg(radius, 0, 'g', 4)
+                           .arg(sliderVal)
+                           .arg(intensity, 0, 'f', 2)
+                           .arg(perSplatOpacity, 0, 'f', 4)
+                           .arg(this->gaussianMapper->GetEmissive())
+                           .arg(this->gaussianMapper->GetScalarVisibility())
+                           .arg(this->gaussianMapper->GetBoundScale());
         this->actor->SetMapper(this->gaussianMapper.Get());
-        this->actor->GetProperty()->SetOpacity(std::clamp(0.25 + intensity * 0.75, 0.05, 1.0));
+        // Actor property opacity = 1.0: VTK treats the actor as opaque for render-pass
+        // selection.  Individual splat opacity is driven entirely by gaussianOpacityFunction.
+        this->actor->GetProperty()->SetOpacity(1.0);
     } else {
         this->actor->SetMapper(this->mapper.Get());
         this->actor->GetProperty()->SetOpacity(1.0);
@@ -727,13 +821,6 @@ void vtkWindowVbt::updateColorMapping()
         this->mapper->ScalarVisibilityOff();
         this->gaussianMapper->ScalarVisibilityOff();
         this->actor->GetProperty()->SetColor(0.8, 0.85, 1.0);
-        const double intensity = (this->sliderRayIntensity ? this->sliderRayIntensity->value() : 35) / 100.0;
-        this->gaussianScaleFunction->RemoveAllPoints();
-        this->gaussianScaleFunction->AddPoint(0.0, 1.0);
-        this->gaussianScaleFunction->AddPoint(1.0, 1.0);
-        this->gaussianOpacityFunction->RemoveAllPoints();
-        this->gaussianOpacityFunction->AddPoint(0.0, intensity);
-        this->gaussianOpacityFunction->AddPoint(1.0, intensity);
         qDebug() << "[VBT] updateColorMapping: solid color mode";
         this->updateScalarBar();
         this->updateRenderMode();
@@ -749,13 +836,6 @@ void vtkWindowVbt::updateColorMapping()
         // fall back to solid-color gaussian functions so ray-casting still renders.
         this->mapper->ScalarVisibilityOff();
         this->gaussianMapper->ScalarVisibilityOff();
-        const double intensity = (this->sliderRayIntensity ? this->sliderRayIntensity->value() : 35) / 100.0;
-        this->gaussianScaleFunction->RemoveAllPoints();
-        this->gaussianScaleFunction->AddPoint(0.0, 1.0);
-        this->gaussianScaleFunction->AddPoint(1.0, 1.0);
-        this->gaussianOpacityFunction->RemoveAllPoints();
-        this->gaussianOpacityFunction->AddPoint(0.0, intensity);
-        this->gaussianOpacityFunction->AddPoint(1.0, intensity);
         qDebug() << "[VBT] updateColorMapping: field" << fieldName << "not found in subset columns";
         this->updateScalarBar();
         this->updateRenderMode();
@@ -801,22 +881,6 @@ void vtkWindowVbt::updateColorMapping()
     this->gaussianMapper->SetLookupTable(this->scalarLut.Get());
     this->gaussianMapper->SetScalarRange(this->activeScalarMin, this->activeScalarMax);
     this->gaussianMapper->ScalarVisibilityOn();
-
-    this->gaussianScaleFunction->RemoveAllPoints();
-    this->gaussianOpacityFunction->RemoveAllPoints();
-    const double range = this->activeScalarMax - this->activeScalarMin;
-    const double p20 = this->activeScalarMin + range * 0.20;
-    const double p60 = this->activeScalarMin + range * 0.60;
-    const double p90 = this->activeScalarMin + range * 0.90;
-    const double intensity = (this->sliderRayIntensity ? this->sliderRayIntensity->value() : 35) / 100.0;
-    this->gaussianScaleFunction->AddPoint(this->activeScalarMin, 0.6);
-    this->gaussianScaleFunction->AddPoint(p60, 1.0);
-    this->gaussianScaleFunction->AddPoint(this->activeScalarMax, 1.6);
-    this->gaussianOpacityFunction->AddPoint(this->activeScalarMin, 0.0);
-    this->gaussianOpacityFunction->AddPoint(p20, 0.02 * intensity);
-    this->gaussianOpacityFunction->AddPoint(p60, 0.10 * intensity);
-    this->gaussianOpacityFunction->AddPoint(p90, 0.30 * intensity);
-    this->gaussianOpacityFunction->AddPoint(this->activeScalarMax, 0.65 * intensity);
 
     this->updateScalarBar();
     this->updateRenderMode();

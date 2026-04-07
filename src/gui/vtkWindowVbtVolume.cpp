@@ -112,11 +112,21 @@ void vtkWindowVbtVolume::setupUi()
     for (const auto &field : this->openResult.fields) {
         this->comboScalarField->addItem(field.name, field.name);
     }
+    this->comboBlendMode = new QComboBox(displayGroup);
+    this->comboBlendMode->addItems(
+            { u"Composite"_s, u"MIP (Max Intensity)"_s, u"MinIP (Min Intensity)"_s });
+    this->comboBlendMode->setToolTip(
+            u"Composite: full volume ray-casting with opacity transfer function.\n"
+            "MIP: show the maximum scalar value along each ray (ignores opacity TF).\n"
+            "MinIP: show the minimum scalar value along each ray."_s);
     this->comboScaleMode = new QComboBox(displayGroup);
     this->comboScaleMode->addItems({ u"Linear"_s, u"Log"_s });
     this->sliderOpacity = new QSlider(Qt::Horizontal, displayGroup);
     this->sliderOpacity->setRange(1, 100);
     this->sliderOpacity->setValue(28);
+    this->sliderOpacity->setToolTip(
+            u"Composite: scales the opacity ramp — higher = more opaque.\n"
+            "MIP/MinIP: raises the threshold above which voxels are projection candidates."_s);
     this->spinRangeMin = new QDoubleSpinBox(displayGroup);
     this->spinRangeMax = new QDoubleSpinBox(displayGroup);
     this->spinRangeMin->setDecimals(12);
@@ -125,6 +135,7 @@ void vtkWindowVbtVolume::setupUi()
     this->spinRangeMax->setRange(-1e30, 1e30);
     this->buttonAutoscale = new QPushButton(u"Autoscale"_s, displayGroup);
     displayLayout->addRow(u"Scalar"_s, this->comboScalarField);
+    displayLayout->addRow(u"Mode"_s, this->comboBlendMode);
     displayLayout->addRow(u"Scale"_s, this->comboScaleMode);
     displayLayout->addRow(u"Range min"_s, this->spinRangeMin);
     displayLayout->addRow(u"Range max"_s, this->spinRangeMax);
@@ -158,6 +169,8 @@ void vtkWindowVbtVolume::setupUi()
 
     QObject::connect(this->comboScalarField, &QComboBox::currentIndexChanged, this,
                      [this](int) { this->rebuildVolumeData(); });
+    QObject::connect(this->comboBlendMode, &QComboBox::currentIndexChanged, this,
+                     [this](int) { this->updateTransferFunctions(); });
     QObject::connect(this->sliderOpacity, &QSlider::valueChanged, this,
                      [this](int) { this->updateTransferFunctions(); });
     QObject::connect(this->comboScaleMode, &QComboBox::currentIndexChanged, this,
@@ -397,6 +410,20 @@ void vtkWindowVbtVolume::updateTransferFunctions()
         return;
     }
 
+    // ── Blend mode ────────────────────────────────────────────────────────────
+    // 0 = Composite  1 = MIP  2 = MinIP
+    const int blendIdx = this->comboBlendMode ? this->comboBlendMode->currentIndex() : 0;
+    const bool isMIP   = (blendIdx == 1);
+    const bool isMinIP = (blendIdx == 2);
+    if (isMIP) {
+        this->volumeMapper->SetBlendModeToMaximumIntensity();
+    } else if (isMinIP) {
+        this->volumeMapper->SetBlendModeToMinimumIntensity();
+    } else {
+        this->volumeMapper->SetBlendModeToComposite();
+    }
+
+    // ── Colour/opacity range ──────────────────────────────────────────────────
     const bool logMode = this->comboScaleMode && this->comboScaleMode->currentIndex() == 1;
     double colorMin = this->activeColorMin;
     double colorMax = this->activeColorMax;
@@ -419,46 +446,78 @@ void vtkWindowVbtVolume::updateTransferFunctions()
         colorMax = colorMin + 1.0;
     }
 
-    const double opacityScale = (this->sliderOpacity ? this->sliderOpacity->value() : 28) / 100.0;
-    const double opacityLow = logMode ? std::max(positiveFloor, this->cachedOpacityLow)
-                                      : std::max(colorMin, this->cachedOpacityLow);
-    const double opacityMidLow = std::max(opacityLow, this->cachedOpacityMidLow);
-    const double opacityMidHigh = std::max(opacityMidLow, this->cachedOpacityMidHigh);
-    const double opacityHigh = std::max(opacityMidHigh, std::max(colorMax, this->cachedOpacityHigh));
-
     this->colorTransfer->RemoveAllPoints();
     this->opacityTransfer->RemoveAllPoints();
 
+    // ── Colour transfer function (identical for all blend modes) ──────────────
     if (logMode) {
         const double mid1 = std::sqrt(colorMin * std::max(colorMin, colorMax));
         const double mid2 = std::sqrt(mid1 * std::max(mid1, colorMax));
         this->colorTransfer->AddRGBPoint(positiveFloor, 0.01, 0.01, 0.02);
-        this->colorTransfer->AddRGBPoint(colorMin, 0.03, 0.05, 0.12);
-        this->colorTransfer->AddRGBPoint(mid1, 0.08, 0.25, 0.70);
-        this->colorTransfer->AddRGBPoint(mid2, 0.90, 0.55, 0.12);
-        this->colorTransfer->AddRGBPoint(colorMax, 1.00, 0.97, 0.88);
-        this->opacityTransfer->AddPoint(positiveFloor, 0.0);
-        this->opacityTransfer->AddPoint(opacityLow, 0.0);
-        this->opacityTransfer->AddPoint(opacityMidLow, 0.015 * opacityScale);
-        this->opacityTransfer->AddPoint(opacityMidHigh, 0.08 * opacityScale);
-        this->opacityTransfer->AddPoint(opacityHigh, 0.35 * opacityScale);
-        this->opacityTransfer->AddPoint(std::max(opacityHigh, colorMax), 0.65 * opacityScale);
+        this->colorTransfer->AddRGBPoint(colorMin,      0.03, 0.05, 0.12);
+        this->colorTransfer->AddRGBPoint(mid1,          0.08, 0.25, 0.70);
+        this->colorTransfer->AddRGBPoint(mid2,          0.90, 0.55, 0.12);
+        this->colorTransfer->AddRGBPoint(colorMax,      1.00, 0.97, 0.88);
     } else {
         const double range = colorMax - colorMin;
-        const double mid1 = colorMin + range * 0.55;
-        const double mid2 = colorMin + range * 0.82;
+        const double mid1  = colorMin + range * 0.55;
+        const double mid2  = colorMin + range * 0.82;
         this->colorTransfer->AddRGBPoint(colorMin, 0.02, 0.02, 0.04);
-        this->colorTransfer->AddRGBPoint(mid1, 0.08, 0.25, 0.70);
-        this->colorTransfer->AddRGBPoint(mid2, 0.90, 0.55, 0.12);
+        this->colorTransfer->AddRGBPoint(mid1,     0.08, 0.25, 0.70);
+        this->colorTransfer->AddRGBPoint(mid2,     0.90, 0.55, 0.12);
         this->colorTransfer->AddRGBPoint(colorMax, 1.00, 0.97, 0.88);
-        this->opacityTransfer->AddPoint(colorMin, 0.0);
-        this->opacityTransfer->AddPoint(opacityLow, 0.0);
-        this->opacityTransfer->AddPoint(opacityMidLow, 0.01 * opacityScale);
-        this->opacityTransfer->AddPoint(opacityMidHigh, 0.05 * opacityScale);
-        this->opacityTransfer->AddPoint(opacityHigh, 0.20 * opacityScale);
-        this->opacityTransfer->AddPoint(std::max(opacityHigh, colorMax), 0.55 * opacityScale);
     }
 
+    // ── Opacity transfer function ─────────────────────────────────────────────
+    const double opacityScale = (this->sliderOpacity ? this->sliderOpacity->value() : 28) / 100.0;
+
+    if (isMIP || isMinIP) {
+        // In MIP/MinIP modes the opacity TF acts as a voxel-inclusion mask:
+        // voxels with opacity > 0 are candidates for the max/min search.
+        // Opacity scale controls the lower threshold — higher = fewer (brighter)
+        // voxels included; lower = entire range included.
+        //
+        // Strategy: exclude the very bottom opacityScale-fraction of the range
+        // so that background/noise voxels do not win the projection.  The bulk
+        // of the interesting data (above the threshold) gets opacity = 1.0.
+        const double range      = colorMax - colorMin;
+        const double threshold  = logMode
+                ? std::max(positiveFloor, colorMin * std::pow(colorMax / std::max(colorMin, positiveFloor), opacityScale))
+                : colorMin + range * opacityScale;
+        const double rampEnd    = std::min(threshold + range * 0.01, colorMax);
+        if (logMode) {
+            this->opacityTransfer->AddPoint(positiveFloor, 0.0);
+        }
+        this->opacityTransfer->AddPoint(colorMin, 0.0);
+        this->opacityTransfer->AddPoint(threshold, 0.0);
+        this->opacityTransfer->AddPoint(rampEnd, 1.0);
+        this->opacityTransfer->AddPoint(colorMax, 1.0);
+    } else {
+        // Composite: sophisticated percentile-based opacity ramp, scaled by slider.
+        const double opacityLow     = logMode ? std::max(positiveFloor, this->cachedOpacityLow)
+                                              : std::max(colorMin, this->cachedOpacityLow);
+        const double opacityMidLow  = std::max(opacityLow,     this->cachedOpacityMidLow);
+        const double opacityMidHigh = std::max(opacityMidLow,  this->cachedOpacityMidHigh);
+        const double opacityHigh    = std::max(opacityMidHigh, std::max(colorMax, this->cachedOpacityHigh));
+
+        if (logMode) {
+            this->opacityTransfer->AddPoint(positiveFloor, 0.0);
+            this->opacityTransfer->AddPoint(opacityLow,     0.0);
+            this->opacityTransfer->AddPoint(opacityMidLow,  0.015 * opacityScale);
+            this->opacityTransfer->AddPoint(opacityMidHigh, 0.08  * opacityScale);
+            this->opacityTransfer->AddPoint(opacityHigh,    0.35  * opacityScale);
+            this->opacityTransfer->AddPoint(std::max(opacityHigh, colorMax), 0.65 * opacityScale);
+        } else {
+            this->opacityTransfer->AddPoint(colorMin,       0.0);
+            this->opacityTransfer->AddPoint(opacityLow,     0.0);
+            this->opacityTransfer->AddPoint(opacityMidLow,  0.01 * opacityScale);
+            this->opacityTransfer->AddPoint(opacityMidHigh, 0.05 * opacityScale);
+            this->opacityTransfer->AddPoint(opacityHigh,    0.20 * opacityScale);
+            this->opacityTransfer->AddPoint(std::max(opacityHigh, colorMax), 0.55 * opacityScale);
+        }
+    }
+
+    // ── Scalar bar LUT (mirrors the colour TF for display) ────────────────────
     this->scalarBarLut->SetNumberOfTableValues(256);
     if (logMode) {
         this->scalarBarLut->SetScaleToLog10();
@@ -483,17 +542,16 @@ void vtkWindowVbtVolume::updateTransferFunctions()
     this->scalarBar->SetLookupTable(this->scalarBarLut.Get());
     this->updateScalarBar();
 
+    static const char *kBlendNames[] = { "composite", "MIP", "MinIP" };
     qDebug().noquote()
-            << QStringLiteral("[vbt-volume] tf mode=%1 image_range=%2..%3 color_range=%4..%5 opacity_points=[%6,%7,%8,%9] positive_floor=%10")
+            << QStringLiteral("[vbt-volume] tf blend=%1 scale=%2 image_range=%3..%4 color_range=%5..%6 opacity_scale=%7 positive_floor=%8")
+                       .arg(kBlendNames[std::clamp(blendIdx, 0, 2)])
                        .arg(logMode ? QStringLiteral("log") : QStringLiteral("linear"))
                        .arg(this->dataScalarMin, 0, 'g', 8)
                        .arg(this->dataScalarMax, 0, 'g', 8)
                        .arg(colorMin, 0, 'g', 8)
                        .arg(colorMax, 0, 'g', 8)
-                       .arg(opacityLow, 0, 'g', 8)
-                       .arg(opacityMidLow, 0, 'g', 8)
-                       .arg(opacityMidHigh, 0, 'g', 8)
-                       .arg(opacityHigh, 0, 'g', 8)
+                       .arg(opacityScale, 0, 'f', 2)
                        .arg(positiveFloor, 0, 'g', 8);
     this->renderWindow->Render();
 }
