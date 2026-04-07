@@ -846,7 +846,6 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
       remoteDegenerateAxesSummary(remoteDegenerateAxesSummary),
       remoteWcsStatus(remoteWcsStatus),
       remoteWcsWarningMessage(remoteWcsWarningMessage),
-      astro(nullptr), // WCS metadata comes from the backend, not a local file parse
       lutCustomizer(nullptr),
       profileWidget(nullptr),
       layers(nullptr),

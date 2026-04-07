@@ -1505,7 +1505,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
       remoteSpectralAxisUnit(remoteSpectralAxisUnit),
       remoteWcsStatus(remoteWcsStatus),
       remoteWcsWarningMessage(remoteWcsWarningMessage),
-      astro(nullptr), // WCS metadata comes from the backend, not a local file parse
       lutCustomizer(nullptr),
       profileWidget(nullptr),
       level(15)
