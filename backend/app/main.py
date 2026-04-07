@@ -397,6 +397,40 @@ class CatalogueSubsetResponse(BaseModel):
     rows: list[dict[str, Any]] = []
 
 
+# ── Tabular query models (shared for catalogue + VBT point) ──────────────────
+
+class TabularFilter(BaseModel):
+    field: str
+    op: str    # "=", "!=", ">", ">=", "<", "<=", "contains", "in"
+    value: str
+
+
+class TabularSortSpec(BaseModel):
+    field: str
+    direction: str = "asc"   # "asc" or "desc"
+
+
+class TabularQueryRequest(BaseModel):
+    dataset_id: str
+    limit: int = 100000
+    offset: int = 0
+    filters: list[TabularFilter] = []
+    sort: TabularSortSpec | None = None
+
+
+class TabularQueryResponse(BaseModel):
+    valid: bool
+    error: str
+    total_rows: int = 0
+    returned_rows: int = 0
+    # catalogue: row-oriented dicts
+    rows: list[dict[str, Any]] = []
+    # VBT point: column-oriented base64 float64-LE
+    num_rows: int = 0
+    fields: list[str] = []
+    columns: dict[str, str] = {}
+
+
 # ── VBT models ────────────────────────────────────────────────────────────────
 
 class VbtOpenRequest(BaseModel):
@@ -459,6 +493,86 @@ class IsosurfaceProductResponse(BaseModel):
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
+
+def _apply_tabular_query(
+    df: "pd.DataFrame",
+    filters: list[TabularFilter],
+    sort: TabularSortSpec | None,
+    limit: int,
+    offset: int,
+) -> tuple["pd.DataFrame", int]:
+    """Apply filters, sort, and limit/offset to a DataFrame.
+
+    Returns ``(result_df, total_rows_before_pagination)``.
+    Raises ``ValueError`` for unknown fields or operators.
+    """
+    _NUMERIC_OPS = {"=", "!=", ">", ">=", "<", "<="}
+    for f in filters:
+        if f.field not in df.columns:
+            raise ValueError(f"Unknown field: {f.field!r}")
+        col = df[f.field]
+        is_numeric = pd.api.types.is_numeric_dtype(col)
+        if f.op in _NUMERIC_OPS:
+            if is_numeric:
+                try:
+                    num_val = float(f.value)
+                except ValueError:
+                    raise ValueError(
+                        f"Cannot convert {f.value!r} to number for field {f.field!r}"
+                    )
+                if f.op == "=":
+                    df = df[col == num_val]
+                elif f.op == "!=":
+                    df = df[col != num_val]
+                elif f.op == ">":
+                    df = df[col > num_val]
+                elif f.op == ">=":
+                    df = df[col >= num_val]
+                elif f.op == "<":
+                    df = df[col < num_val]
+                elif f.op == "<=":
+                    df = df[col <= num_val]
+            else:
+                s = col.astype(str)
+                if f.op == "=":
+                    df = df[s == f.value]
+                elif f.op == "!=":
+                    df = df[s != f.value]
+                elif f.op == ">":
+                    df = df[s > f.value]
+                elif f.op == ">=":
+                    df = df[s >= f.value]
+                elif f.op == "<":
+                    df = df[s < f.value]
+                elif f.op == "<=":
+                    df = df[s <= f.value]
+        elif f.op == "contains":
+            df = df[col.astype(str).str.contains(f.value, case=False, na=False)]
+        elif f.op == "in":
+            raw_vals = [v.strip() for v in f.value.split(",")]
+            if is_numeric:
+                try:
+                    num_vals = [float(v) for v in raw_vals]
+                    df = df[col.isin(num_vals)]
+                except ValueError:
+                    df = df[col.astype(str).isin(raw_vals)]
+            else:
+                df = df[col.astype(str).isin(raw_vals)]
+        else:
+            raise ValueError(f"Unknown filter operator: {f.op!r}")
+
+    if sort and sort.field in df.columns:
+        df = df.sort_values(
+            by=sort.field, ascending=(sort.direction.lower() != "desc"), na_position="last"
+        )
+
+    total = len(df)
+    if offset:
+        df = df.iloc[offset:]
+    if limit > 0:
+        df = df.iloc[:limit]
+    return df, total
 
 
 def _normalize_path(raw: str) -> Path:
@@ -902,6 +1016,35 @@ async def catalogue_subset(
     return CatalogueSubsetResponse(valid=True, error="", rows=rows)
 
 
+@app.post("/v1/catalogue/query", response_model=TabularQueryResponse, tags=["catalogue"])
+async def catalogue_query(
+    request: TabularQueryRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> TabularQueryResponse:
+    """Query a catalogue with optional filters, sort, and pagination."""
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "catalogue":
+            raise HTTPException(422, "This endpoint requires a catalogue dataset.")
+        df = pd.read_csv(entry["path"])
+        df, total = _apply_tabular_query(
+            df, request.filters, request.sort, request.limit, request.offset
+        )
+        rows = df.replace({np.nan: None}).to_dict(orient="records")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return TabularQueryResponse(valid=False, error=str(exc))
+    return TabularQueryResponse(
+        valid=True,
+        error="",
+        total_rows=total,
+        returned_rows=len(rows),
+        rows=rows,
+    )
+
+
 # ── VBT endpoints ─────────────────────────────────────────────────────────────
 
 
@@ -1039,6 +1182,73 @@ async def vbt_subset(
             dimensions=header["dimensions"],
             spacing=header["spacing"],
         )
+
+
+@app.post("/v1/vbt/query", response_model=TabularQueryResponse, tags=["vbt"])
+async def vbt_query(
+    request: TabularQueryRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> TabularQueryResponse:
+    """Query a VBT point dataset with optional filters, sort, and pagination.
+
+    Returns column-oriented float64-LE base64 data, same wire format as
+    /v1/vbt/subset but with full filter/sort/pagination support.
+    Only ``kind='point'`` datasets are supported.
+    """
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "vbt":
+            raise HTTPException(422, "This endpoint requires a VBT dataset.")
+    except HTTPException:
+        raise
+
+    header = entry["header"]
+    if header["kind"] != "point":
+        return TabularQueryResponse(
+            valid=False, error="vbt/query only supports point datasets; use vbt/subset for volumes."
+        )
+
+    bin_path = entry["bin_path"]
+    field_count: int = header["field_count"]
+    num_rows: int = header["num_rows"]
+    field_names: list[str] = header["field_names"]
+    np_dtype = np.dtype(header["np_endian_code"])
+
+    try:
+        raw = np.fromfile(bin_path, dtype=np_dtype)
+        if raw.size != field_count * num_rows:
+            return TabularQueryResponse(
+                valid=False,
+                error=f"Binary size mismatch: expected {field_count * num_rows}, got {raw.size}",
+            )
+        arr = raw.reshape(field_count, num_rows)
+    except Exception as exc:
+        return TabularQueryResponse(valid=False, error=f"Failed to read VBT binary: {exc}")
+
+    # Build a DataFrame for query support
+    df = pd.DataFrame({name: arr[i].astype(float) for i, name in enumerate(field_names)})
+    try:
+        df, total = _apply_tabular_query(
+            df, request.filters, request.sort, request.limit, request.offset
+        )
+    except Exception as exc:
+        return TabularQueryResponse(valid=False, error=str(exc))
+
+    columns: dict[str, str] = {}
+    for name in field_names:
+        col = df[name].to_numpy().astype("<f8")
+        columns[name] = base64.b64encode(col.tobytes()).decode("ascii")
+
+    return TabularQueryResponse(
+        valid=True,
+        error="",
+        total_rows=total,
+        returned_rows=len(df),
+        num_rows=len(df),
+        fields=field_names,
+        columns=columns,
+    )
 
 
 @app.post("/v1/products/moment", response_model=MomentProductResponse, tags=["products"])

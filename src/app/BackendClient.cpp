@@ -604,6 +604,91 @@ BackendVbtSubsetResult BackendClient::requestVbtSubset(const QString &datasetId,
     return result;
 }
 
+static QJsonObject buildTabularQueryBody(const BackendTabularQueryRequest &req)
+{
+    QJsonObject body{
+        { QStringLiteral("dataset_id"), req.datasetId },
+        { QStringLiteral("limit"), req.limit },
+        { QStringLiteral("offset"), req.offset },
+    };
+    QJsonArray filters;
+    for (const auto &f : req.filters) {
+        filters.append(QJsonObject{
+            { QStringLiteral("field"), f.field },
+            { QStringLiteral("op"), f.op },
+            { QStringLiteral("value"), f.value },
+        });
+    }
+    body.insert(QStringLiteral("filters"), filters);
+    if (!req.sortField.isEmpty()) {
+        body.insert(QStringLiteral("sort"),
+                    QJsonObject{
+                        { QStringLiteral("field"), req.sortField },
+                        { QStringLiteral("direction"),
+                          req.sortDirection.isEmpty() ? QStringLiteral("asc") : req.sortDirection },
+                    });
+    }
+    return body;
+}
+
+BackendTabularQueryResponse BackendClient::queryTabularCatalogue(
+        const BackendTabularQueryRequest &req) const
+{
+    BackendTabularQueryResponse result;
+    QString error;
+    const QJsonDocument body(buildTabularQueryBody(req));
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/catalogue/query")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.totalRows = object.value(QStringLiteral("total_rows")).toInt();
+    result.returnedRows = object.value(QStringLiteral("returned_rows")).toInt();
+    const QJsonArray rows = object.value(QStringLiteral("rows")).toArray();
+    for (const QJsonValue &rowValue : rows) {
+        result.rows.append(rowValue.toObject().toVariantMap());
+    }
+    return result;
+}
+
+BackendTabularQueryResponse BackendClient::queryTabularVbt(
+        const BackendTabularQueryRequest &req) const
+{
+    BackendTabularQueryResponse result;
+    QString error;
+    const QJsonDocument body(buildTabularQueryBody(req));
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/vbt/query")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.totalRows = object.value(QStringLiteral("total_rows")).toInt();
+    result.returnedRows = object.value(QStringLiteral("returned_rows")).toInt();
+    result.numRows = object.value(QStringLiteral("num_rows")).toInt();
+    const QJsonArray fieldNamesArray = object.value(QStringLiteral("fields")).toArray();
+    for (const QJsonValue &v : fieldNamesArray) {
+        result.fieldNames.append(v.toString());
+    }
+    const QJsonObject columns = object.value(QStringLiteral("columns")).toObject();
+    for (const QString &fname : result.fieldNames) {
+        const QByteArray raw =
+                QByteArray::fromBase64(columns.value(fname).toString().toLatin1());
+        const int n = raw.size() / static_cast<int>(sizeof(double));
+        std::vector<double> col(static_cast<std::size_t>(n));
+        memcpy(col.data(), raw.constData(), static_cast<std::size_t>(n) * sizeof(double));
+        result.columns[fname] = std::move(col);
+    }
+    return result;
+}
+
 BackendImageResult BackendClient::requestImage(const QString &datasetId) const
 {
     BackendImageResult result;

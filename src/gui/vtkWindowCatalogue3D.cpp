@@ -42,10 +42,13 @@
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QHBoxLayout>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QTableView>
@@ -148,6 +151,27 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         vizLayout->addWidget(sceneGroup);
         vizLayout->addWidget(ui->chkLabels);
         vizLayout->addWidget(ui->chkMorphColors);
+
+        // ── Filter group ─────────────────────────────────────────────────────
+        auto *filterGroup = new QGroupBox(u"Filter"_s, this);
+        auto *filterLayout = new QFormLayout(filterGroup);
+        this->comboFilterField = new QComboBox(filterGroup);
+        this->comboFilterOp = new QComboBox(filterGroup);
+        this->comboFilterOp->addItems({ u"="_s, u"!="_s, u">"_s, u">="_s, u"<"_s, u"<="_s,
+                                        u"contains"_s, u"in"_s });
+        this->lineFilterValue = new QLineEdit(filterGroup);
+        auto *filterBtnRow = new QWidget(filterGroup);
+        auto *filterBtnLayout = new QHBoxLayout(filterBtnRow);
+        filterBtnLayout->setContentsMargins(0, 0, 0, 0);
+        this->btnFilterApply = new QPushButton(u"Apply"_s, filterBtnRow);
+        this->btnFilterClear = new QPushButton(u"Clear"_s, filterBtnRow);
+        filterBtnLayout->addWidget(this->btnFilterApply);
+        filterBtnLayout->addWidget(this->btnFilterClear);
+        filterLayout->addRow(u"Field"_s, this->comboFilterField);
+        filterLayout->addRow(u"Op"_s, this->comboFilterOp);
+        filterLayout->addRow(u"Value"_s, this->lineFilterValue);
+        filterLayout->addRow(filterBtnRow);
+        vizLayout->addWidget(filterGroup);
     }
     ui->labelStatus->setToolTip(
             u"3D positions use RA/Dec + redshift or distance. Source geometry is parametric."_s);
@@ -171,7 +195,24 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         }
         this->rawHeaders = this->schema.headers;
 
-        const auto subset = client.requestCatalogueSubset(this->remoteDatasetId, 100000);
+        // Populate filter field combo with numeric fields (float, int, bool)
+        if (this->comboFilterField) {
+            for (const auto &field : this->schema.fields) {
+                if (field.type != QStringLiteral("string")) {
+                    this->comboFilterField->addItem(field.name);
+                }
+            }
+            if (this->comboFilterField->count() == 0) {
+                // Fall back to all fields if type info is unavailable
+                for (const auto &h : this->schema.headers) {
+                    this->comboFilterField->addItem(h);
+                }
+            }
+        }
+
+        BackendTabularQueryRequest qreq;
+        qreq.datasetId = this->remoteDatasetId;
+        const auto subset = client.queryTabularCatalogue(qreq);
         const auto parsed = Catalogue3DParser::parseBackendSubset(this->schema, subset.rows);
         if (!subset.valid || !parsed.valid) {
             const QString error = !subset.valid ? subset.error : parsed.errorMessage;
@@ -232,11 +273,82 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                      &vtkWindowCatalogue3D::toggleBoundingBox);
     QObject::connect(this->chkShowShells, &QCheckBox::toggled, this,
                      &vtkWindowCatalogue3D::toggleShells);
+    if (this->btnFilterApply) {
+        QObject::connect(this->btnFilterApply, &QPushButton::clicked, this,
+                         &vtkWindowCatalogue3D::applyFilter);
+    }
+    if (this->btnFilterClear) {
+        QObject::connect(this->btnFilterClear, &QPushButton::clicked, this, [this]() {
+            if (this->lineFilterValue) {
+                this->lineFilterValue->clear();
+            }
+            this->applyFilter();
+        });
+    }
 }
 
 vtkWindowCatalogue3D::~vtkWindowCatalogue3D()
 {
     delete ui;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Filter
+// ─────────────────────────────────────────────────────────────────────────────
+
+void vtkWindowCatalogue3D::applyFilter()
+{
+    if (this->remoteDatasetId.isEmpty()) {
+        return;
+    }
+    BackendClient client(this->backendUrl, this->backendToken);
+    if (!this->remoteSessionId.isEmpty()) {
+        client.setSessionId(this->remoteSessionId);
+    }
+    BackendTabularQueryRequest qreq;
+    qreq.datasetId = this->remoteDatasetId;
+
+    const QString filterField =
+            this->comboFilterField ? this->comboFilterField->currentText() : QString();
+    const QString filterOp =
+            this->comboFilterOp ? this->comboFilterOp->currentText() : QString();
+    const QString filterValue =
+            this->lineFilterValue ? this->lineFilterValue->text().trimmed() : QString();
+    if (!filterField.isEmpty() && !filterOp.isEmpty() && !filterValue.isEmpty()) {
+        qreq.filters.push_back({ filterField, filterOp, filterValue });
+    }
+
+    const auto subset = client.queryTabularCatalogue(qreq);
+    if (!subset.valid) {
+        QMessageBox::warning(this, u"Filter error"_s, subset.error);
+        return;
+    }
+    const auto parsed = Catalogue3DParser::parseBackendSubset(this->schema, subset.rows);
+    if (!parsed.valid) {
+        QMessageBox::warning(this, u"Filter error"_s, parsed.errorMessage);
+        return;
+    }
+    this->entries = parsed.entries;
+    ui->labelStatus->setText(
+            QStringLiteral("Filtered: %1 sources (total %2).")
+                    .arg(this->entries.size())
+                    .arg(subset.totalRows));
+
+    // Rebuild the VTK scene with filtered data
+    this->renderer->RemoveAllViewProps();
+    this->morphologyNames.clear();
+    this->morphologyIndexOf.clear();
+    this->labelActors.clear();
+    this->shellActors.clear();
+    this->mappedPositions.clear();
+    this->hoveredIndex = -1;
+    this->selectedIndex = -1;
+    if (!this->entries.empty()) {
+        this->buildScene();
+        this->buildLabels();
+    }
+    this->refreshCatalogueTable();
+    this->renderWindow->Render();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

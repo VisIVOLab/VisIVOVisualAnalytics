@@ -27,6 +27,7 @@ class QComboBox;
 class QDockWidget;
 class QDoubleSpinBox;
 class QLabel;
+class QLineEdit;
 class QListWidget;
 class QPushButton;
 class QSlider;
@@ -38,13 +39,15 @@ class vtkWindowVbt : public QMainWindow
 
 public:
     explicit vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResult subsetResult,
-                          QWidget *parent = nullptr);
+                          const QString &backendUrl, const QString &backendToken,
+                          const QString &sessionId, QWidget *parent = nullptr);
     ~vtkWindowVbt() override = default;
 
 private:
     void setupUi();
     void setupRenderer();
     void buildPointCloud();
+    void applyFilter();
     void updateColorMapping();
     void updateScalarBar();
     void updateSummary();
@@ -61,6 +64,9 @@ private:
     QString xFieldName;
     QString yFieldName;
     QString zFieldName;
+    const QString backendUrl;
+    const QString backendToken;
+    const QString sessionId;
 
     QPointer<QVTKOpenGLNativeWidget> vtkWidget;
     QPointer<QComboBox> comboRenderMode;
@@ -76,6 +82,12 @@ private:
     QPointer<QDoubleSpinBox> spinRangeMax;
     QPointer<QPushButton> buttonAutoscale;
     QPointer<QPushButton> buttonResetView;
+    // Filter UI
+    QPointer<QComboBox> comboFilterField;
+    QPointer<QComboBox> comboFilterOp;
+    QPointer<QLineEdit> lineFilterValue;
+    QPointer<QPushButton> btnFilterApply;
+    QPointer<QPushButton> btnFilterClear;
     QPointer<QLabel> summaryLabel;
     QPointer<QDockWidget> metadataDock;
     QPointer<QListWidget> fieldList;

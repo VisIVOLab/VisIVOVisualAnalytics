@@ -266,7 +266,8 @@ void MainWindow::openVbt()
                                           : subsetResult.error);
             return;
         }
-        win = new vtkWindowVbt(openResult, subsetResult, this);
+        win = new vtkWindowVbt(openResult, subsetResult, client.baseUrl(), client.token(),
+                               client.sessionId(), this);
     }
     win->show();
     win->raise();

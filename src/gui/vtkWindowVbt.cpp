@@ -29,7 +29,9 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSlider>
 #include <QVBoxLayout>
@@ -52,10 +54,14 @@ static QString findCoordField(const std::vector<BackendVbtFieldInfo> &fields, co
 }
 
 vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResult subsetResult,
-                           QWidget *parent)
+                           const QString &backendUrl, const QString &backendToken,
+                           const QString &sessionId, QWidget *parent)
     : QMainWindow(parent)
     , openResult(std::move(openResult))
     , subsetResult(std::move(subsetResult))
+    , backendUrl(backendUrl)
+    , backendToken(backendToken)
+    , sessionId(sessionId)
 {
     this->xFieldName = findCoordField(this->openResult.fields, u"x"_s);
     this->yFieldName = findCoordField(this->openResult.fields, u"y"_s);
@@ -153,6 +159,33 @@ void vtkWindowVbt::setupUi()
     this->summaryLabel->setWordWrap(true);
     summaryLayout->addWidget(this->summaryLabel);
     panelLayout->addWidget(summaryGroup);
+
+    auto *filterGroup = new QGroupBox(u"Filter"_s, panel);
+    auto *filterLayout = new QFormLayout(filterGroup);
+    this->comboFilterField = new QComboBox(filterGroup);
+    for (const auto &field : this->openResult.fields) {
+        if (field.name != this->xFieldName && field.name != this->yFieldName
+            && field.name != this->zFieldName) {
+            this->comboFilterField->addItem(field.name);
+        }
+    }
+    this->comboFilterOp = new QComboBox(filterGroup);
+    this->comboFilterOp->addItems(
+            { u"="_s, u"!="_s, u">"_s, u">="_s, u"<"_s, u"<="_s, u"contains"_s, u"in"_s });
+    this->lineFilterValue = new QLineEdit(filterGroup);
+    auto *filterBtnRow = new QWidget(filterGroup);
+    auto *filterBtnLayout = new QHBoxLayout(filterBtnRow);
+    filterBtnLayout->setContentsMargins(0, 0, 0, 0);
+    this->btnFilterApply = new QPushButton(u"Apply"_s, filterBtnRow);
+    this->btnFilterClear = new QPushButton(u"Clear"_s, filterBtnRow);
+    filterBtnLayout->addWidget(this->btnFilterApply);
+    filterBtnLayout->addWidget(this->btnFilterClear);
+    filterLayout->addRow(u"Field"_s, this->comboFilterField);
+    filterLayout->addRow(u"Op"_s, this->comboFilterOp);
+    filterLayout->addRow(u"Value"_s, this->lineFilterValue);
+    filterLayout->addRow(filterBtnRow);
+    panelLayout->addWidget(filterGroup);
+
     panelLayout->addStretch(1);
     layout->addWidget(panel);
     this->setCentralWidget(central);
@@ -226,6 +259,63 @@ void vtkWindowVbt::setupUi()
         this->setScalarRange(this->spinRangeMin->value(), this->spinRangeMax->value());
         this->updateColorMapping();
     });
+    QObject::connect(this->btnFilterApply, &QPushButton::clicked, this,
+                     &vtkWindowVbt::applyFilter);
+    QObject::connect(this->btnFilterClear, &QPushButton::clicked, this, [this]() {
+        if (this->lineFilterValue) {
+            this->lineFilterValue->clear();
+        }
+        this->applyFilter();
+    });
+}
+
+void vtkWindowVbt::applyFilter()
+{
+    if (this->openResult.datasetId.isEmpty()) {
+        return;
+    }
+    BackendClient client(this->backendUrl, this->backendToken);
+    if (!this->sessionId.isEmpty()) {
+        client.setSessionId(this->sessionId);
+    }
+    BackendTabularQueryRequest qreq;
+    qreq.datasetId = this->openResult.datasetId;
+
+    const QString filterField =
+            this->comboFilterField ? this->comboFilterField->currentText() : QString();
+    const QString filterOp =
+            this->comboFilterOp ? this->comboFilterOp->currentText() : QString();
+    const QString filterValue =
+            this->lineFilterValue ? this->lineFilterValue->text().trimmed() : QString();
+    if (!filterField.isEmpty() && !filterOp.isEmpty() && !filterValue.isEmpty()) {
+        qreq.filters.push_back({ filterField, filterOp, filterValue });
+    }
+
+    const auto result = client.queryTabularVbt(qreq);
+    if (!result.valid) {
+        QMessageBox::warning(this, u"Filter error"_s, result.error);
+        return;
+    }
+    // Rebuild subsetResult from query response
+    this->subsetResult = {};
+    this->subsetResult.valid = true;
+    this->subsetResult.kind = QStringLiteral("point");
+    this->subsetResult.numRows = result.numRows;
+    this->subsetResult.fieldNames = result.fieldNames;
+    this->subsetResult.columns = result.columns;
+
+    // Remove existing point cloud actors; keep axes/scalar bar/box
+    if (this->actor) {
+        this->renderer->RemoveActor(this->actor.Get());
+    }
+    this->points->Reset();
+    this->pointScalars->Reset();
+    this->polyData->Reset();
+
+    this->buildPointCloud();
+    this->updateColorMapping();
+    this->updateSummary();
+    this->renderWindow->Render();
 }
 
 void vtkWindowVbt::setupRenderer()

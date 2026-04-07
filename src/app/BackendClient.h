@@ -219,6 +219,39 @@ struct BackendCatalogueSubset
     QList<QVariantMap> rows;
 };
 
+// ── Tabular query (shared for catalogue + VBT point) ─────────────────────────
+
+struct BackendTabularFilter
+{
+    QString field;
+    QString op;    // "=", "!=", ">", ">=", "<", "<=", "contains", "in"
+    QString value;
+};
+
+struct BackendTabularQueryRequest
+{
+    QString datasetId;
+    int limit{ 100000 };
+    int offset{ 0 };
+    std::vector<BackendTabularFilter> filters;
+    QString sortField;
+    QString sortDirection; // "asc" or "desc", empty = no sort
+};
+
+struct BackendTabularQueryResponse
+{
+    bool valid{ false };
+    QString error;
+    int totalRows{ 0 };
+    int returnedRows{ 0 };
+    // Catalogue: row-oriented
+    QList<QVariantMap> rows;
+    // VBT point: column-oriented, decoded float64
+    std::map<QString, std::vector<double>> columns;
+    QStringList fieldNames;
+    int numRows{ 0 };
+};
+
 // ── VBT (VisIVO Binary Table) ─────────────────────────────────────────────────
 
 struct BackendVbtFieldInfo
@@ -364,9 +397,11 @@ public:
     BackendCubeNoiseResult requestNoise(const QString &datasetId, int x0, int x1, int y0, int y1,
                                         int channelStart, int channelEnd) const;
     BackendCatalogueSubset requestCatalogueSubset(const QString &datasetId, int maxRows) const;
+    BackendTabularQueryResponse queryTabularCatalogue(const BackendTabularQueryRequest &req) const;
     BackendVbtOpenResult openVbt(const QString &path, const QString &format = QString());
     BackendVbtSubsetResult requestVbtSubset(const QString &datasetId, int maxRows = 0,
                                             const QString &fieldName = QString()) const;
+    BackendTabularQueryResponse queryTabularVbt(const BackendTabularQueryRequest &req) const;
     BackendImageResult requestImagePreview(const QString &datasetId, int maxLongestSide) const;
     BackendImageResult requestImage(const QString &datasetId) const;
     BackendIsosurfaceResult requestIsosurface(const QString &datasetId, double threshold) const;
