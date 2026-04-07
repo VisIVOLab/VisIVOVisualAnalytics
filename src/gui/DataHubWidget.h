@@ -4,18 +4,23 @@
 #include <QWidget>
 #include <QPointer>
 
-class QLabel;
-class QPushButton;
-class QListWidget;
 class QFrame;
+class QLabel;
+class QListWidget;
+class QPushButton;
 
 // ---------------------------------------------------------------------------
-// DataHubWidget
+// DataHubWidget  —  Digital Observatory landing page
 //
-// Central landing page for VisIVO Visual Analytics.
-// Provides backend status, quick-action buttons for all dataset types, and a
-// placeholder recent-datasets list.  All actions are emitted as signals so
-// that MainWindow owns the business logic.
+// Sections (matching code.html reference):
+//   1. Header title + subtitle
+//   2. Operational Backend card  (URL, status badge, Check Connection)
+//   3. Primary Operations grid   (4 action cards)
+//   4. Recent Datasets panel     + System Insights panel
+//   5. Footer note
+//
+// All business logic lives in MainWindow; this widget emits signals only.
+// Backend status is updated via setBackendUrl() + refreshStatus().
 // ---------------------------------------------------------------------------
 class DataHubWidget : public QWidget
 {
@@ -24,12 +29,11 @@ class DataHubWidget : public QWidget
 public:
     explicit DataHubWidget(QWidget *parent = nullptr);
 
-    // Called by MainWindow whenever settings change or the tab becomes active.
+    // Called by MainWindow whenever settings change.
     void setBackendUrl(const QString &url, const QString &token);
 
 public slots:
-    // Triggers a synchronous health-check against the configured backend URL
-    // and updates the status indicator.
+    // Synchronous health-check → updates status badge + system-insights panel.
     void refreshStatus();
 
 signals:
@@ -39,20 +43,34 @@ signals:
     void openHiPSRequested();
 
 private:
+    // ── Builder helpers ───────────────────────────────────────────────────────
     void buildUi();
+    QFrame *buildBackendCard();
+    QFrame *buildActionGrid();
+    QFrame *buildRecentDatasetsPanel();
+    QFrame *buildSystemInsightsPanel();
+
+    // Creates a single interactive action card (icon symbol + title + desc).
+    // Installs an event filter so the frame emits the given signal on click.
+    QFrame *makeActionCard(const QString &symbol, const QString &title,
+                           const QString &desc, QWidget *parent);
 
     QString backendUrl;
     QString backendToken;
 
+    // Backend card widgets
     QPointer<QLabel>       labelBackendUrl;
-    QPointer<QLabel>       labelStatusIndicator;
-    QPointer<QLabel>       labelStatusText;
+    QPointer<QLabel>       labelStatusBadge;
+    QPointer<QLabel>       labelStatusDetail;
     QPointer<QPushButton>  btnCheckConnection;
-    QPointer<QPushButton>  btnOpenData;
-    QPointer<QPushButton>  btnOpenCatalogue;
-    QPointer<QPushButton>  btnOpenVbt;
-    QPointer<QPushButton>  btnOpenHiPS;
-    QPointer<QListWidget>  listRecentDatasets;
+
+    // System insights panel
+    QPointer<QLabel> labelWorkers;
+    QPointer<QLabel> labelSessions;
+    QPointer<QLabel> labelTaskRegistry;
+
+    // Recent datasets
+    QPointer<QListWidget> listRecentDatasets;
 };
 
 #endif // DataHubWidget_h

@@ -83,6 +83,8 @@ set(PROJECT_SOURCES
         src/gui/CatalogueTableModel.h
         src/gui/DataHubWidget.cpp
         src/gui/DataHubWidget.h
+        src/gui/theme/VisivoTheme.cpp
+        src/gui/theme/VisivoTheme.h
         src/gui/Catalogue3DTableModel.cpp
         src/gui/Catalogue3DTableModel.h
         src/gui/DiagnosticsWindow.cpp
@@ -161,6 +163,19 @@ qt_add_ui(${PROJECT_NAME}
 
 qt_add_resources(${PROJECT_NAME} assets
         FILES ${PROJECT_ASSETS}
+)
+
+# Compile bundled Lato fonts into the binary so they load on all platforms
+# without requiring system font installation.
+# Accessible at runtime as :/fonts/Lato-Regular.ttf etc.
+qt_add_resources(${PROJECT_NAME} bundled_fonts
+        PREFIX "/fonts"
+        BASE "resources/fonts"
+        FILES
+            resources/fonts/Lato-Light.ttf
+            resources/fonts/Lato-Regular.ttf
+            resources/fonts/Lato-Bold.ttf
+            resources/fonts/Lato-Black.ttf
 )
 
 add_subdirectory(src/libwcs)

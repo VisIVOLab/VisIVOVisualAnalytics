@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "Version.h"
+#include "theme/VisivoTheme.h"
 
 #include <QVTKOpenGLNativeWidget.h>
 
@@ -41,6 +42,11 @@ int main(int argc, char *argv[])
     QApplication::setWindowIcon(QIcon(":/icons/VisIVO_512.png"));
     QApplication::setOrganizationName(u"Osservatorio Astrofisico di Catania"_s);
     QApplication::setOrganizationDomain(u"it.inaf.oact"_s);
+
+    // Apply Digital Observatory design system — must run after QApplication is
+    // constructed but before any window is created so palette + stylesheet are
+    // inherited by all top-level widgets.
+    VisivoTheme::applyTo(&app);
 
     // Customize QDebug message format
     qSetMessagePattern("%{time} "
