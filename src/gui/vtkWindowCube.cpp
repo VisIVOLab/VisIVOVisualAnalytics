@@ -4,14 +4,12 @@
 #include "ColorMaps.h"
 #include "CatalogueOverlayUtils.h"
 #include "CatalogueTableModel.h"
-#include "CubeViewController.h"
 #include "LUTCustomizerDialog.h"
 #include "MomentMapComputeTask.h"
 #include "ProfileWidget.h"
 #include "PvDiagramWidget.h"
 #include "app/BackendClient.h"
 #include "app/DiagnosticsManager.h"
-#include "vtkFITSReader.h"
 #include "vtkInteractorStyleProfile.h"
 #include "vtkLegendScaleActorWCS.h"
 #include "wcs.h"
@@ -25,7 +23,6 @@
 #include <vtkColorTransferFunction.h>
 #include <vtkContourTriangulator.h>
 #include <vtkCoordinate.h>
-#include <vtkExtractVOI.h>
 #include <vtkFloatArray.h>
 #include <vtkFlyingEdges2D.h>
 #include <vtkFlyingEdges3D.h>
@@ -34,7 +31,6 @@
 #include <vtkImageData.h>
 #include <vtkImageMapToColors.h>
 #include <vtkImageProperty.h>
-#include <vtkImageReslice.h>
 #include <vtkImageSlice.h>
 #include <vtkImageSliceMapper.h>
 #include <vtkInteractorStyleImage.h>
@@ -1697,7 +1693,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                  << QStringLiteral("[perf][cube] apply full result: %1 ms")
                                             .arg(applyTimer.elapsed());
                          ++this->currentFullCubeGeneration;
-                         this->scheduleIsosurfacePrewarm();
                          this->setCubeOpenStateLabel({ });
                          this->clearPersistentStatusMessage();
                      });
@@ -5116,8 +5111,6 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
             << QStringLiteral("[perf][cube] apply slider/spin sync: %1 ms").arg(
                        sliderSyncTimer.elapsed());
 
-    // Local slice pipeline (sliceOnCube / slice / lutSliceOnCube) is not used in backend mode.
-
     QElapsedTimer cubeFieldsTimer;
     cubeFieldsTimer.start();
     ui->lineCubeMin->setText(QString::number(this->currentCubeVisibleRange[0]));
@@ -5801,14 +5794,6 @@ QString vtkWindowCube::selectedFrameAxisTitle(int axis) const
     return this->remoteOverlayAxisTitle(axis);
 }
 
-QString vtkWindowCube::formatLocalProbeCoordinate(int axis, const std::array<int, 3> &voxel) const
-{
-    if (axis == 2) {
-        return this->formatSpectralAxisValue(voxel[2]);
-    }
-    return QString::number(voxel[axis]);
-}
-
 void vtkWindowCube::set2dWcsOverlayVisible(bool visible)
 {
     // Legend actors require local AstroUtils (not available in backend mode); always use overlay axes.
@@ -6476,8 +6461,6 @@ void vtkWindowCube::showLUTCustomizer()
         this->lutCustomizer = new LUTCustomizerDialog(this);
         QObject::connect(this->lutCustomizer, &LUTCustomizerDialog::lutUpdated, this,
                          &vtkWindowCube::renderImage);
-        QObject::connect(this->lutCustomizer, &LUTCustomizerDialog::lutUpdated, this,
-                         &vtkWindowCube::syncSlicesLUT);
     }
 
     this->updateLUTCustomizer();
@@ -7039,11 +7022,6 @@ void vtkWindowCube::renderImage()
     ui->vtkImage->renderWindow()->Render();
 }
 
-void vtkWindowCube::syncSlicesLUT()
-{
-    // LUT sync across local slice actors not applicable in backend mode.
-}
-
 void vtkWindowCube::startAsyncIsosurface(double isoValue)
 {
     if (this->remoteIsosurfaceRequestInFlight
@@ -7147,18 +7125,6 @@ void vtkWindowCube::startAsyncIsosurface(double isoValue)
 void vtkWindowCube::scheduleIsosurfaceRecompute()
 {
     this->isosurfaceDebounceTimer.start(150);
-}
-
-void vtkWindowCube::scheduleIsosurfacePrewarm()
-{
-    if (this->currentFullCubeGeneration <= 0
-        || this->lastIsosurfacePrewarmGeneration == this->currentFullCubeGeneration) {
-        return;
-    }
-
-    this->lastIsosurfacePrewarmGeneration = this->currentFullCubeGeneration;
-    // Isosurface prewarm not applicable in remote mode — backend computes on demand.
-    Q_UNUSED(this);
 }
 
 void vtkWindowCube::setCubeRenderModeLocally(bool isosurfaceMode)

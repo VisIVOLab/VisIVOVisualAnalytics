@@ -1,7 +1,6 @@
 #ifndef vtkWindowCube_H
 #define vtkWindowCube_H
 
-#include "AstroUtils.h"
 #include "CatalogueOverlayUtils.h"
 #include "CubeOpenPreviewTask.h"
 #include "MomentMapComputeTask.h"
@@ -25,7 +24,6 @@
 #include <memory>
 #include <vector>
 
-class CubeViewController;
 class QAction;
 class QCheckBox;
 class CatalogueTableModel;
@@ -40,14 +38,11 @@ class vtkActor;
 class vtkColorTransferFunction;
 class vtkContourTriangulator;
 class vtkCoordinate;
-class vtkExtractVOI;
-class vtkFITSReader;
 class vtkFlyingEdges2D;
 class vtkFlyingEdges3D;
 class vtkGenericOpenGLRenderWindow;
 class vtkImageData;
 class vtkImageMapToColors;
-class vtkImageReslice;
 class vtkLegendScaleActorWCS;
 class vtkLineSource;
 class vtkLookupTable;
@@ -158,7 +153,6 @@ private slots:
 
     void renderImage();
     void changeImageRenderer();
-    void syncSlicesLUT();
 
     void changeCubeRender();
     void changeCubeColor();
@@ -272,7 +266,6 @@ private:
     const QString remoteWcsStatus;
     const QString remoteWcsWarningMessage;
     bool wcsDiagnosticPublished{ false };
-    std::unique_ptr<AstroUtils> astro;
 
     QPointer<LUTCustomizerDialog> lutCustomizer;
     QPointer<ProfileWidget> profileWidget;
@@ -325,7 +318,6 @@ private:
     int currentMomentRequestId{ 0 };
     int currentIsosurfaceRequestId{ 0 };
     int currentFullCubeGeneration{ 0 };
-    int lastIsosurfacePrewarmGeneration{ 0 };
     QTimer statusMessageClearTimer;
     QElapsedTimer statusMessageElapsed;
     int statusMessageMinDurationMs{ 0 };
@@ -375,7 +367,6 @@ private:
     bool remoteIsosurfaceRequestInFlight{ false };
     double inFlightRemoteIsosurfaceThreshold{ std::numeric_limits<double>::quiet_NaN() };
 
-    vtkNew<vtkFITSReader> reader;
     std::array<double, 2> currentCubeVisibleRange{ 0., 0. };
     double currentCubeInvisibleSentinel{ -1.0 };
     float lowerBound;
@@ -388,7 +379,6 @@ private:
     vtkNew<vtkCoordinate> coordinate;
     double initialCameraPosition[3];
     double initialCameraFocalPoint[3];
-    std::unique_ptr<CubeViewController> viewController;
     void setupCubeRenderer();
     void setupSliceRenderer();
     void setupMomentRenderer();
@@ -432,7 +422,6 @@ private:
             const std::vector<std::array<int, 2>> &vertices) const;
     std::array<double, 2> pvLocalNormalForSample(
             const std::vector<std::array<int, 2>> &sampledPoints, std::size_t index) const;
-    QString formatLocalProbeCoordinate(int axis, const std::array<int, 3> &voxel) const;
     QString selectedFrameAxisTitle(int axis) const;
     bool viewingIsosurface() const;
     bool viewingSlice() const;
@@ -452,7 +441,6 @@ private:
     void applyIsosurfaceResult(const AsyncIsosurfaceResult &result);
     void startAsyncIsosurface(double isoValue);
     void scheduleIsosurfaceRecompute();
-    void scheduleIsosurfacePrewarm();
     void setCubeRenderModeLocally(bool isosurfaceMode);
     void updateCube();
     std::array<int, 6> computeVisibleROI();
@@ -500,11 +488,8 @@ private:
     void updateSanityPanel();
 
     // Slice
-    vtkNew<vtkImageReslice> slice;
     vtkNew<vtkImageMapToColors> sliceColors;
     vtkNew<vtkLookupTable> lutSlice;
-    vtkNew<vtkExtractVOI> sliceOnCube;
-    vtkNew<vtkLookupTable> lutSliceOnCube;
     vtkNew<vtkTrivialProducer> remoteSliceDisplaySource;
     vtkNew<vtkLegendScaleActorWCS> legendSlice;
     vtkNew<vtkAxisActor2D> sliceOverlayXAxis;

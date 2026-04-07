@@ -1,7 +1,6 @@
 #include "vtkWindowImage.h"
 #include "ui_vtkWindowImage.h"
 
-#include "AstroUtils.h"
 #include "app/BackendClient.h"
 #include "app/DiagnosticsManager.h"
 #include "CatalogueTableModel.h"
@@ -3426,11 +3425,6 @@ QString vtkWindowImage::formatDegreeCoordinate(double value) const
 QString vtkWindowImage::selectedFrameAxisTitle(int axis) const
 {
     return this->remoteOverlayAxisTitle(axis);
-}
-
-QString vtkWindowImage::formatLocalProbeCoordinate(int axis, const std::array<int, 2> &voxel) const
-{
-    return QString::number(axis == 0 ? voxel[0] : voxel[1]);
 }
 
 void vtkWindowImage::vtkRender()

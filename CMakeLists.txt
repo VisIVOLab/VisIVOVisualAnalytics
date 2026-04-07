@@ -83,10 +83,6 @@ set(PROJECT_SOURCES
         src/gui/CatalogueTableModel.h
         src/gui/Catalogue3DTableModel.cpp
         src/gui/Catalogue3DTableModel.h
-        src/gui/CubeViewController.cpp
-        src/gui/CubeViewController.h
-        src/gui/DatasetWindowFactory.cpp
-        src/gui/DatasetWindowFactory.h
         src/gui/DiagnosticsWindow.cpp
         src/gui/DiagnosticsWindow.h
         src/gui/ImageLayerController.cpp

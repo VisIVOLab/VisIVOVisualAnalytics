@@ -26,7 +26,6 @@ class LayerListModel;
 class LUTCustomizerDialog;
 class ProfileWidget;
 class CatalogueTableModel;
-class AstroUtils;
 class QAction;
 class QCheckBox;
 class QDockWidget;
@@ -133,7 +132,6 @@ private:
     bool displayStateInitialized{ false };
     bool userAdjustedDisplayState{ false };
     int remoteLoadGeneration{ 0 };
-    std::unique_ptr<AstroUtils> astro;
     QPointer<LUTCustomizerDialog> lutCustomizer;
     QPointer<ProfileWidget> profileWidget;
     QPointer<QCheckBox> wcsAxesCheck;
@@ -297,7 +295,6 @@ private:
     void setSelectedCatalogueSourceIndex(int index);
     void centerViewOnCatalogueSource(int index, double zoomFactor = 2.5);
     bool catalogueWorldToPixel(double raDeg, double decDeg, std::array<double, 2> &pixel) const;
-    QString formatLocalProbeCoordinate(int axis, const std::array<int, 2> &voxel) const;
     QString selectedFrameAxisTitle(int axis) const;
 
     // Stack
