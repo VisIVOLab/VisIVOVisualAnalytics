@@ -1,5 +1,7 @@
 #include "vtkWindowVbt.h"
 
+#include "app/DiagnosticsManager.h"
+
 #include <QVTKOpenGLNativeWidget.h>
 
 #include <vtkActor.h>
@@ -31,9 +33,11 @@
 #include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QDebug>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
@@ -52,11 +56,13 @@ using namespace Qt::StringLiterals;
 // Shared helper – "Add Filter" dialog
 // ─────────────────────────────────────────────────────────────────────────────
 
-static std::optional<BackendTabularFilter> showAddFilterDialog(QWidget *parent,
-                                                               const QStringList &fields)
+// existing != nullptr → pre-populate for edit; title changes to "Edit Filter".
+static std::optional<BackendTabularFilter> showAddFilterDialog(
+        QWidget *parent, const QStringList &fields,
+        const BackendTabularFilter *existing = nullptr)
 {
     auto *dlg = new QDialog(parent);
-    dlg->setWindowTitle(u"Add Filter"_s);
+    dlg->setWindowTitle(existing ? u"Edit Filter"_s : u"Add Filter"_s);
     dlg->setModal(true);
     dlg->setMinimumWidth(320);
     auto *layout = new QFormLayout(dlg);
@@ -64,11 +70,22 @@ static std::optional<BackendTabularFilter> showAddFilterDialog(QWidget *parent,
 
     auto *comboField = new QComboBox(dlg);
     comboField->addItems(fields);
+    if (existing) {
+        comboField->setCurrentText(existing->field);
+    }
+
     auto *comboOp = new QComboBox(dlg);
     comboOp->addItems({ u"="_s, u"!="_s, u">"_s, u">="_s, u"<"_s, u"<="_s,
                         u"contains"_s, u"in"_s });
+    if (existing) {
+        comboOp->setCurrentText(existing->op);
+    }
+
     auto *lineValue = new QLineEdit(dlg);
     lineValue->setPlaceholderText(u"value (comma-separated for 'in')"_s);
+    if (existing) {
+        lineValue->setText(existing->value);
+    }
 
     layout->addRow(u"Field"_s, comboField);
     layout->addRow(u"Operator"_s, comboOp);
@@ -362,7 +379,43 @@ void vtkWindowVbt::setupUi()
         this->activeFilters.push_back(*filter);
         this->filterList->addItem(
                 QStringLiteral("%1 %2 %3").arg(filter->field, filter->op, filter->value));
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
+                QStringLiteral("Filter added: %1 %2 %3").arg(filter->field, filter->op,
+                                                               filter->value),
+                this->openResult.datasetId, this->sessionId, QStringLiteral("filter"));
     });
+    // Filter: Edit on double-click
+    QObject::connect(this->filterList, &QListWidget::itemDoubleClicked, this,
+                     [this](QListWidgetItem *item) {
+                         if (!item || !this->filterList) {
+                             return;
+                         }
+                         const int row = this->filterList->row(item);
+                         if (row < 0 || row >= static_cast<int>(this->activeFilters.size())) {
+                             return;
+                         }
+                         QStringList fields;
+                         for (const auto &f : this->openResult.fields) {
+                             fields.append(f.name);
+                         }
+                         const auto updated =
+                                 showAddFilterDialog(this, fields, &this->activeFilters[row]);
+                         if (!updated) {
+                             return;
+                         }
+                         this->activeFilters[row] = *updated;
+                         item->setText(QStringLiteral("%1 %2 %3")
+                                               .arg(updated->field, updated->op, updated->value));
+                         DiagnosticsManager::instance()->publish(
+                                 DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
+                                 QStringLiteral("VBT"),
+                                 QStringLiteral("Filter [%1] edited: %2 %3 %4")
+                                         .arg(row)
+                                         .arg(updated->field, updated->op, updated->value),
+                                 this->openResult.datasetId, this->sessionId,
+                                 QStringLiteral("filter"));
+                     });
     // Filter: Remove selected
     QObject::connect(this->btnFilterRemove, &QPushButton::clicked, this, [this]() {
         if (!this->filterList) {
@@ -372,18 +425,40 @@ void vtkWindowVbt::setupUi()
         if (row < 0 || row >= static_cast<int>(this->activeFilters.size())) {
             return;
         }
+        const BackendTabularFilter removed = this->activeFilters[row];
         this->activeFilters.erase(this->activeFilters.begin() + row);
         delete this->filterList->takeItem(row);
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
+                QStringLiteral("Filter removed: %1 %2 %3").arg(removed.field, removed.op,
+                                                                removed.value),
+                this->openResult.datasetId, this->sessionId, QStringLiteral("filter"));
     });
     // Filter: Clear all
     QObject::connect(this->btnFilterClearAll, &QPushButton::clicked, this, [this]() {
+        const int count = static_cast<int>(this->activeFilters.size());
         this->activeFilters.clear();
         if (this->filterList) {
             this->filterList->clear();
         }
+        if (count > 0) {
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
+                    QStringLiteral("%1 filter(s) cleared.").arg(count),
+                    this->openResult.datasetId, this->sessionId, QStringLiteral("filter"));
+        }
     });
     // Filter: Apply
     QObject::connect(this->btnFilterApply, &QPushButton::clicked, this, &vtkWindowVbt::applyFilter);
+
+    // ── View menu — reopen closed docks ──────────────────────────────────────
+    auto *viewMenu = this->menuBar()->addMenu(u"View"_s);
+    displayDock->toggleViewAction()->setText(u"Display Settings"_s);
+    viewMenu->addAction(displayDock->toggleViewAction());
+    filterDock->toggleViewAction()->setText(u"Filters"_s);
+    viewMenu->addAction(filterDock->toggleViewAction());
+    this->metadataDock->toggleViewAction()->setText(u"VBT Metadata"_s);
+    viewMenu->addAction(this->metadataDock->toggleViewAction());
 }
 
 void vtkWindowVbt::applyFilter()
@@ -399,8 +474,19 @@ void vtkWindowVbt::applyFilter()
     qreq.datasetId = this->openResult.datasetId;
     qreq.filters = this->activeFilters; // all rows, AND semantics
 
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
+            this->activeFilters.empty()
+                    ? QStringLiteral("Querying dataset (no active filters).")
+                    : QStringLiteral("Applying %1 filter(s).").arg(this->activeFilters.size()),
+            this->openResult.datasetId, this->sessionId, QStringLiteral("filter"));
+
     const auto result = client.queryTabularVbt(qreq);
     if (!result.valid) {
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Warning, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
+                QStringLiteral("Filter query failed: %1").arg(result.error),
+                this->openResult.datasetId, this->sessionId, QStringLiteral("filter"));
         QMessageBox::warning(this, u"Filter error"_s, result.error);
         return;
     }
@@ -425,16 +511,24 @@ void vtkWindowVbt::applyFilter()
     this->updateColorMapping();
     this->updateSummary();
 
+    const QString statusMsg =
+            this->activeFilters.empty()
+                    ? QStringLiteral("No filters active — showing all %1 rows.").arg(result.totalRows)
+                    : QStringLiteral("%1 filter(s) active — showing %2 of %3 rows.")
+                              .arg(this->activeFilters.size())
+                              .arg(result.returnedRows)
+                              .arg(result.totalRows);
     if (this->filterStatusLabel) {
-        this->filterStatusLabel->setText(
-                this->activeFilters.empty()
-                        ? QStringLiteral("No filters active — showing all %1 rows.")
-                                  .arg(result.totalRows)
-                        : QStringLiteral("%1 filter(s) active — showing %2 of %3 rows.")
-                                  .arg(this->activeFilters.size())
-                                  .arg(result.returnedRows)
-                                  .arg(result.totalRows));
+        this->filterStatusLabel->setText(statusMsg);
     }
+
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
+            QStringLiteral("Filter applied: %1 of %2 rows match.")
+                    .arg(result.returnedRows)
+                    .arg(result.totalRows),
+            this->openResult.datasetId, this->sessionId, QStringLiteral("filter"));
+
     this->renderWindow->Render();
 }
 
@@ -534,6 +628,20 @@ void vtkWindowVbt::buildPointCloud()
     this->actor->GetProperty()->SetColor(0.8, 0.85, 1.0);
     this->renderer->AddActor(this->actor.Get());
     this->updateBoundsContext();
+
+    // Diagnostic: log point count, bounds and coordinate field mapping
+    {
+        double bounds[6] = {0., 0., 0., 0., 0., 0.};
+        this->polyData->GetBounds(bounds);
+        qDebug() << "[VBT] buildPointCloud:" << rowCount << "points"
+                 << "| bounds X" << bounds[0] << "-" << bounds[1]
+                 << "Y" << bounds[2] << "-" << bounds[3]
+                 << "Z" << bounds[4] << "-" << bounds[5]
+                 << "| X=" << (this->xFieldName.isEmpty() ? QStringLiteral("(none)") : this->xFieldName)
+                 << "Y=" << (this->yFieldName.isEmpty() ? QStringLiteral("(none)") : this->yFieldName)
+                 << "Z=" << (this->zFieldName.isEmpty() ? QStringLiteral("(none)") : this->zFieldName);
+    }
+
     this->updateRenderMode();
     this->resetView();
 }
@@ -545,7 +653,18 @@ void vtkWindowVbt::updateRenderMode()
     }
     const bool rayCasting = this->comboRenderMode && this->comboRenderMode->currentIndex() == 1;
     if (rayCasting) {
-        this->gaussianMapper->SetScaleFactor(static_cast<double>(this->sliderPointSize ? this->sliderPointSize->value() : 3));
+        // Derive splat radius as a fraction of the dataset's bounding-box extent so
+        // that the scale is data-independent and always visible regardless of units.
+        double bounds[6] = {0., 0., 0., 0., 0., 0.};
+        this->polyData->GetBounds(bounds);
+        const double maxExt = std::max({bounds[1] - bounds[0],
+                                        bounds[3] - bounds[2],
+                                        bounds[5] - bounds[4],
+                                        1.0e-6});
+        const int sliderVal = this->sliderPointSize ? this->sliderPointSize->value() : 6;
+        // slider 1-12: maps to 0.1 – 1.2 % of max extent
+        this->gaussianMapper->SetScaleFactor(maxExt * sliderVal / 1000.0);
+
         const double intensity = (this->sliderRayIntensity ? this->sliderRayIntensity->value() : 35) / 100.0;
         this->actor->SetMapper(this->gaussianMapper.Get());
         this->actor->GetProperty()->SetOpacity(std::clamp(0.25 + intensity * 0.75, 0.05, 1.0));
@@ -603,9 +722,19 @@ void vtkWindowVbt::updateColorMapping()
 
     const QVariant data = this->comboColorField->currentData();
     if (!data.isValid() || data.toString().isEmpty()) {
+        // Solid-color mode: scalar visibility off but ensure gaussian functions
+        // produce a visible constant output so ray-casting mode still renders.
         this->mapper->ScalarVisibilityOff();
         this->gaussianMapper->ScalarVisibilityOff();
         this->actor->GetProperty()->SetColor(0.8, 0.85, 1.0);
+        const double intensity = (this->sliderRayIntensity ? this->sliderRayIntensity->value() : 35) / 100.0;
+        this->gaussianScaleFunction->RemoveAllPoints();
+        this->gaussianScaleFunction->AddPoint(0.0, 1.0);
+        this->gaussianScaleFunction->AddPoint(1.0, 1.0);
+        this->gaussianOpacityFunction->RemoveAllPoints();
+        this->gaussianOpacityFunction->AddPoint(0.0, intensity);
+        this->gaussianOpacityFunction->AddPoint(1.0, intensity);
+        qDebug() << "[VBT] updateColorMapping: solid color mode";
         this->updateScalarBar();
         this->updateRenderMode();
         this->renderWindow->Render();
@@ -616,14 +745,26 @@ void vtkWindowVbt::updateColorMapping()
     const QString fieldName = data.toString();
     const auto it = this->subsetResult.columns.find(fieldName);
     if (it == this->subsetResult.columns.end()) {
+        // Field missing (e.g. after a filter that dropped the column) —
+        // fall back to solid-color gaussian functions so ray-casting still renders.
         this->mapper->ScalarVisibilityOff();
         this->gaussianMapper->ScalarVisibilityOff();
+        const double intensity = (this->sliderRayIntensity ? this->sliderRayIntensity->value() : 35) / 100.0;
+        this->gaussianScaleFunction->RemoveAllPoints();
+        this->gaussianScaleFunction->AddPoint(0.0, 1.0);
+        this->gaussianScaleFunction->AddPoint(1.0, 1.0);
+        this->gaussianOpacityFunction->RemoveAllPoints();
+        this->gaussianOpacityFunction->AddPoint(0.0, intensity);
+        this->gaussianOpacityFunction->AddPoint(1.0, intensity);
+        qDebug() << "[VBT] updateColorMapping: field" << fieldName << "not found in subset columns";
         this->updateScalarBar();
         this->updateRenderMode();
         this->renderWindow->Render();
         this->updateSummary();
         return;
     }
+
+    qDebug() << "[VBT] updateColorMapping: active field =" << fieldName;
 
     double minValue = std::numeric_limits<double>::max();
     double maxValue = std::numeric_limits<double>::lowest();
@@ -639,8 +780,14 @@ void vtkWindowVbt::updateColorMapping()
     }
     this->dataScalarMin = minValue;
     this->dataScalarMax = maxValue;
-    if (!(this->activeScalarMin < this->activeScalarMax)
-        || this->activeScalarMin < minValue || this->activeScalarMax > maxValue) {
+    // Reset the active range when: the range is invalid, OR the new data extends
+    // beyond the current range on either side.  This ensures that after clearing
+    // all filters (returning a wider dataset) the opacity function is rebuilt for
+    // the full data range so no points are accidentally mapped to opacity = 0.
+    const bool newDataFitsCurrent = (this->activeScalarMin < this->activeScalarMax)
+                                    && (minValue >= this->activeScalarMin)
+                                    && (maxValue <= this->activeScalarMax);
+    if (!newDataFitsCurrent) {
         this->setScalarRange(minValue, maxValue);
     }
     this->pointScalars->Modified();

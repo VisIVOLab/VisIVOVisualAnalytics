@@ -1,6 +1,7 @@
 #include "vtkWindowCatalogue3D.h"
 #include "ui_vtkWindowCatalogue3D.h"
 
+#include "app/DiagnosticsManager.h"
 #include "Catalogue3DTableModel.h"
 #include "Catalogue3DParser.h"
 
@@ -107,11 +108,13 @@ const QMap<QString, int> kKnownMorphologies = {
 
 // ── "Add Filter" dialog ───────────────────────────────────────────────────────
 
-static std::optional<BackendTabularFilter> showAddFilterDialog(QWidget *parent,
-                                                               const QStringList &fields)
+// existing != nullptr → pre-populate for edit; title changes to "Edit Filter".
+static std::optional<BackendTabularFilter> showAddFilterDialog(
+        QWidget *parent, const QStringList &fields,
+        const BackendTabularFilter *existing = nullptr)
 {
     auto *dlg = new QDialog(parent);
-    dlg->setWindowTitle(u"Add Filter"_s);
+    dlg->setWindowTitle(existing ? u"Edit Filter"_s : u"Add Filter"_s);
     dlg->setModal(true);
     dlg->setMinimumWidth(320);
     auto *layout = new QFormLayout(dlg);
@@ -119,11 +122,22 @@ static std::optional<BackendTabularFilter> showAddFilterDialog(QWidget *parent,
 
     auto *comboField = new QComboBox(dlg);
     comboField->addItems(fields);
+    if (existing) {
+        comboField->setCurrentText(existing->field);
+    }
+
     auto *comboOp = new QComboBox(dlg);
     comboOp->addItems({ u"="_s, u"!="_s, u">"_s, u">="_s, u"<"_s, u"<="_s,
                         u"contains"_s, u"in"_s });
+    if (existing) {
+        comboOp->setCurrentText(existing->op);
+    }
+
     auto *lineValue = new QLineEdit(dlg);
     lineValue->setPlaceholderText(u"value (comma-separated for 'in')"_s);
+    if (existing) {
+        lineValue->setText(existing->value);
+    }
 
     layout->addRow(u"Field"_s, comboField);
     layout->addRow(u"Operator"_s, comboOp);
@@ -320,7 +334,42 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                              this->activeFilters.push_back(*filter);
                              this->filterList->addItem(QStringLiteral("%1 %2 %3").arg(
                                      filter->field, filter->op, filter->value));
+                             DiagnosticsManager::instance()->publish(
+                                     DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
+                                     QStringLiteral("Catalogue3D"),
+                                     QStringLiteral("Filter added: %1 %2 %3")
+                                             .arg(filter->field, filter->op, filter->value),
+                                     this->remoteDatasetId, this->remoteSessionId,
+                                     QStringLiteral("filter"));
                          });
+        // Filter: Edit on double-click
+        QObject::connect(
+                this->filterList, &QListWidget::itemDoubleClicked, this,
+                [this, filterableFields](QListWidgetItem *item) {
+                    if (!item || !this->filterList) {
+                        return;
+                    }
+                    const int row = this->filterList->row(item);
+                    if (row < 0 || row >= static_cast<int>(this->activeFilters.size())) {
+                        return;
+                    }
+                    const auto updated =
+                            showAddFilterDialog(this, filterableFields, &this->activeFilters[row]);
+                    if (!updated) {
+                        return;
+                    }
+                    this->activeFilters[row] = *updated;
+                    item->setText(QStringLiteral("%1 %2 %3")
+                                          .arg(updated->field, updated->op, updated->value));
+                    DiagnosticsManager::instance()->publish(
+                            DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
+                            QStringLiteral("Catalogue3D"),
+                            QStringLiteral("Filter [%1] edited: %2 %3 %4")
+                                    .arg(row)
+                                    .arg(updated->field, updated->op, updated->value),
+                            this->remoteDatasetId, this->remoteSessionId,
+                            QStringLiteral("filter"));
+                });
         // Filter: Remove selected
         QObject::connect(this->btnFilterRemove, &QPushButton::clicked, this, [this]() {
             if (!this->filterList) {
@@ -330,19 +379,43 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             if (row < 0 || row >= static_cast<int>(this->activeFilters.size())) {
                 return;
             }
+            const BackendTabularFilter removed = this->activeFilters[row];
             this->activeFilters.erase(this->activeFilters.begin() + row);
             delete this->filterList->takeItem(row);
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
+                    QStringLiteral("Catalogue3D"),
+                    QStringLiteral("Filter removed: %1 %2 %3").arg(removed.field, removed.op,
+                                                                    removed.value),
+                    this->remoteDatasetId, this->remoteSessionId, QStringLiteral("filter"));
         });
         // Filter: Clear all
         QObject::connect(this->btnFilterClearAll, &QPushButton::clicked, this, [this]() {
+            const int count = static_cast<int>(this->activeFilters.size());
             this->activeFilters.clear();
             if (this->filterList) {
                 this->filterList->clear();
+            }
+            if (count > 0) {
+                DiagnosticsManager::instance()->publish(
+                        DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
+                        QStringLiteral("Catalogue3D"),
+                        QStringLiteral("%1 filter(s) cleared.").arg(count),
+                        this->remoteDatasetId, this->remoteSessionId, QStringLiteral("filter"));
             }
         });
         // Filter: Apply
         QObject::connect(this->btnFilterApply, &QPushButton::clicked, this,
                          &vtkWindowCatalogue3D::applyFilter);
+
+        // ── View menu: dock toggle actions ────────────────────────────────────
+        ui->menuView->addSeparator();
+        filterDock->toggleViewAction()->setText(u"Filters"_s);
+        ui->menuView->addAction(filterDock->toggleViewAction());
+        if (this->catalogueDock) {
+            this->catalogueDock->toggleViewAction()->setText(u"Catalogue Data"_s);
+            ui->menuView->addAction(this->catalogueDock->toggleViewAction());
+        }
     }
 
     // ── Connect UI controls ───────────────────────────────────────────────────
@@ -389,6 +462,15 @@ void vtkWindowCatalogue3D::applyFilter()
     if (this->remoteDatasetId.isEmpty()) {
         return;
     }
+
+    const int nFilters = static_cast<int>(this->activeFilters.size());
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
+            u"Catalogue3D"_s,
+            nFilters == 0 ? u"Querying dataset (no active filters)."_s
+                          : QStringLiteral("Applying %1 filter(s).").arg(nFilters),
+            this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
+
     BackendClient client(this->backendUrl, this->backendToken);
     if (!this->remoteSessionId.isEmpty()) {
         client.setSessionId(this->remoteSessionId);
@@ -399,11 +481,21 @@ void vtkWindowCatalogue3D::applyFilter()
 
     const auto subset = client.queryTabularCatalogue(qreq);
     if (!subset.valid) {
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
+                u"Catalogue3D"_s,
+                u"Filter query failed: "_s + subset.error,
+                this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
         QMessageBox::warning(this, u"Filter error"_s, subset.error);
         return;
     }
     const auto parsed = Catalogue3DParser::parseBackendSubset(this->schema, subset.rows);
     if (!parsed.valid) {
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
+                u"Catalogue3D"_s,
+                u"Filter parse failed: "_s + parsed.errorMessage,
+                this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
         QMessageBox::warning(this, u"Filter error"_s, parsed.errorMessage);
         return;
     }
@@ -421,6 +513,14 @@ void vtkWindowCatalogue3D::applyFilter()
     if (this->filterStatusLabel) {
         this->filterStatusLabel->setText(statusMsg);
     }
+
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
+            u"Catalogue3D"_s,
+            QStringLiteral("Filter applied: %1 of %2 sources match.")
+                    .arg(this->entries.size())
+                    .arg(subset.totalRows),
+            this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
 
     // Rebuild the VTK scene with the filtered data
     this->renderer->RemoveAllViewProps();
