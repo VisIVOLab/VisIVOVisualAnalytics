@@ -81,6 +81,8 @@ set(PROJECT_SOURCES
         src/gui/AboutDialog.h
         src/gui/CatalogueTableModel.cpp
         src/gui/CatalogueTableModel.h
+        src/gui/DataHubWidget.cpp
+        src/gui/DataHubWidget.h
         src/gui/Catalogue3DTableModel.cpp
         src/gui/Catalogue3DTableModel.h
         src/gui/DiagnosticsWindow.cpp

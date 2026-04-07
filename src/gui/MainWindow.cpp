@@ -4,6 +4,7 @@
 #include "AboutDialog.h"
 #include "AuthWrapper.h"
 #include "app/BackendClient.h"
+#include "DataHubWidget.h"
 #include "DiagnosticsWindow.h"
 #include "RemoteFileBrowserDialog.h"
 #include "Settings.h"
@@ -24,6 +25,7 @@
 #include <QMessageBox>
 #include <QMenu>
 #include <QMenuBar>
+#include <QTabWidget>
 #include <QWebChannel>
 #include <qstylehints.h>
 
@@ -43,28 +45,51 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     this->auth = new AuthWrapper(this);
     QObject::connect(this->settings, &Settings::updated, this, &MainWindow::setApplicationTheme);
     QObject::connect(this->settings, &Settings::updated, this, &MainWindow::loadPanoramicView);
+    QObject::connect(this->settings, &Settings::updated, this, &MainWindow::syncDataHubSettings);
 
-    // Setup Menu File
+    // ── Replace the .ui central widget with a tab container ─────────────────
+    // The .ui-defined central widget (panoramic view + coordinate panel) is
+    // detached and becomes "Sky View" tab 1.  DataHubWidget becomes tab 0 so
+    // the app opens on the backend-first landing page.
+    auto *tabs = new QTabWidget(this);
+    tabs->setDocumentMode(true);
+    tabs->setTabPosition(QTabWidget::North);
+
+    this->dataHub = new DataHubWidget(tabs);
+    tabs->addTab(this->dataHub, u"Data Hub"_s);
+
+    // Reparent the existing central widget (built by ui->setupUi) into the tab.
+    auto *skyPanel = this->centralWidget();
+    skyPanel->setParent(tabs);
+    tabs->addTab(skyPanel, u"Sky View"_s);
+
+    this->setCentralWidget(tabs);
+
+    // ── Setup Menu File (existing actions) ───────────────────────────────────
     QObject::connect(ui->actionOpenFile, &QAction::triggered, this, &MainWindow::openData);
     QObject::connect(ui->actionOpenVbt, &QAction::triggered, this, &MainWindow::openVbt);
     QObject::connect(ui->actionOpenCatalogue3D, &QAction::triggered, this,
                      &MainWindow::openCatalogue3D);
     QObject::connect(ui->actionExit, &QAction::triggered, this, &MainWindow::close);
 
-    // Setup Menu Edit
+    // ── Setup Menu Edit ───────────────────────────────────────────────────────
     QObject::connect(ui->actionSettings, &QAction::triggered, this,
                      &MainWindow::openSettingsDialog);
 
+    // ── Data menu (new, primary navigation) ──────────────────────────────────
+    this->buildDataMenu();
+
+    // ── View menu ─────────────────────────────────────────────────────────────
     auto *viewMenu = new QMenu(u"View"_s, this);
     this->menuBar()->insertMenu(ui->menuHelp->menuAction(), viewMenu);
     auto *diagnosticsAction = viewMenu->addAction(u"Diagnostics"_s);
     QObject::connect(diagnosticsAction, &QAction::triggered, this,
                      [this]() { this->openDiagnosticsWindow(); });
 
-    // Setup Menu About
+    // ── Setup Menu About ──────────────────────────────────────────────────────
     QObject::connect(ui->actionAbout, &QAction::triggered, this, &MainWindow::openAboutDialog);
 
-    // Setup Panoramic View
+    // ── Setup Panoramic View (Sky View tab) ───────────────────────────────────
     this->loadPanoramicView();
     auto webobj = new WebViewProcess(ui->view);
     auto webChannel = new QWebChannel(ui->view);
@@ -73,11 +98,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     QObject::connect(webobj, &WebViewProcess::processJavascript, this,
                      &MainWindow::skyRegionSelected);
 
-    // Setup Loading
     ui->btnLoadData->setIcon(QIcon(u":/icons/FILE_OPEN.png"_s));
     QObject::connect(ui->btnLoadData, &QPushButton::clicked, this, &MainWindow::openData);
 
-    // Setup selection modes
     auto groupSelection = new QButtonGroup(this);
     groupSelection->addButton(ui->radioSelNone);
     groupSelection->addButton(ui->radioSelPoint);
@@ -85,12 +108,24 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     QObject::connect(groupSelection, &QButtonGroup::buttonToggled, this,
                      &MainWindow::changeViewSelectionMode);
 
-    // Setup Line Edits
     ui->lineLon->setValidator(new QDoubleValidator(ui->lineLon));
     ui->lineLat->setValidator(new QDoubleValidator(ui->lineLat));
     ui->lineRadius->setValidator(new QDoubleValidator(ui->lineRadius));
     ui->lineDLon->setValidator(new QDoubleValidator(ui->lineDLon));
     ui->lineDLat->setValidator(new QDoubleValidator(ui->lineDLat));
+
+    // ── Wire DataHub signals to MainWindow actions ────────────────────────────
+    QObject::connect(this->dataHub, &DataHubWidget::openDataRequested,
+                     this, &MainWindow::openData);
+    QObject::connect(this->dataHub, &DataHubWidget::openCatalogueRequested,
+                     this, &MainWindow::openCatalogue3D);
+    QObject::connect(this->dataHub, &DataHubWidget::openVbtRequested,
+                     this, &MainWindow::openVbt);
+    QObject::connect(this->dataHub, &DataHubWidget::openHiPSRequested,
+                     this, &MainWindow::openHiPS);
+
+    // ── Initial DataHub state ─────────────────────────────────────────────────
+    this->syncDataHubSettings();
 
     // Load theme
     this->setApplicationTheme();
@@ -99,6 +134,47 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 MainWindow::~MainWindow()
 {
     delete ui;
+}
+
+void MainWindow::buildDataMenu()
+{
+    // Insert "Data" menu between File and Edit so it is the primary navigation.
+    auto *dataMenu = new QMenu(u"Data"_s, this);
+    this->menuBar()->insertMenu(ui->menuEdit->menuAction(), dataMenu);
+
+    // Shortcuts are already defined on the File-menu actions in the .ui file;
+    // do not duplicate them here to avoid ambiguous shortcut warnings.
+    auto *actOpenData = dataMenu->addAction(u"Open Remote Dataset…"_s);
+    QObject::connect(actOpenData, &QAction::triggered, this, &MainWindow::openData);
+
+    auto *actOpenCatalogue = dataMenu->addAction(u"Open 3D Catalogue (CSV)…"_s);
+    QObject::connect(actOpenCatalogue, &QAction::triggered, this, &MainWindow::openCatalogue3D);
+
+    auto *actOpenVbt = dataMenu->addAction(u"Open VBT…"_s);
+    QObject::connect(actOpenVbt, &QAction::triggered, this, &MainWindow::openVbt);
+
+    dataMenu->addSeparator();
+
+    auto *actHiPS = dataMenu->addAction(u"HiPS Viewer…"_s);
+    actHiPS->setToolTip(u"Open the HiPS panoramic sky viewer (coming soon)."_s);
+    QObject::connect(actHiPS, &QAction::triggered, this, &MainWindow::openHiPS);
+}
+
+void MainWindow::syncDataHubSettings()
+{
+    if (this->dataHub) {
+        this->dataHub->setBackendUrl(this->settings->getBackendUrl(),
+                                     this->settings->getBackendToken());
+    }
+}
+
+void MainWindow::openHiPS()
+{
+    QMessageBox::information(
+            this,
+            u"HiPS Viewer"_s,
+            u"The HiPS panoramic sky viewer is not yet available in this build.\n\n"
+            "It will be added in a future release."_s);
 }
 
 void MainWindow::openDiagnosticsWindow()
