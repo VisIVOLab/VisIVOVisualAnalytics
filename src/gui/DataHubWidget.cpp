@@ -15,6 +15,7 @@
 #include <QScrollArea>
 #include <QSizePolicy>
 #include <QVBoxLayout>
+#include <QTimer>
 
 using namespace Qt::StringLiterals;
 
@@ -53,6 +54,9 @@ public:
 DataHubWidget::DataHubWidget(QWidget *parent) : QWidget(parent)
 {
     buildUi();
+    // Automatic backend health check at startup.
+    QTimer::singleShot(0, this, &DataHubWidget::refreshStatus);
+
 }
 
 // ── buildUi ──────────────────────────────────────────────────────────────────
