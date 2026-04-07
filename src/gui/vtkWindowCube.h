@@ -126,9 +126,9 @@ class vtkWindowCube : public QMainWindow
     Q_OBJECT
 
 public:
-    vtkWindowCube(const QString &filepath, QWidget *parent = nullptr);
-    vtkWindowCube(const QString &filepath, const QString &backendUrl,
-                  const QString &backendToken, QWidget *parent = nullptr);
+    // A dataset must always be opened via the backend (datasetId is required).
+    // Use MainWindow::openData() → BackendClient::openDataset() to obtain the
+    // datasetId before constructing this window.
     vtkWindowCube(const QString &filepath, const QString &backendUrl, const QString &datasetId,
                   int remoteWidth, int remoteHeight, int remoteDepth,
                   const std::array<double, 3> &remoteSpacing,
@@ -252,7 +252,6 @@ private:
 
     Ui::vtkWindowCube *ui;
     const QString filepath;
-    const bool isRemoteMode;
     const QString remoteBackendUrl;
     const QString remoteDatasetId;
     const QString remoteSessionId;

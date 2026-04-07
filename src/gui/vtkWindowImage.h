@@ -59,7 +59,7 @@ class vtkWindowImage : public QMainWindow
     Q_OBJECT
 
 public:
-    explicit vtkWindowImage(const QString &filepath, QWidget *parent = nullptr);
+    // A dataset must always be opened via the backend (datasetId is required).
     vtkWindowImage(const QString &filepath, const QString &backendUrl, const QString &datasetId,
                    const std::array<QString, 3> &remoteCtype,
                    const std::array<QString, 3> &remoteCunit,
@@ -113,7 +113,6 @@ public:
 private:
     Ui::vtkWindowImage *ui;
     const QString filepath;
-    const bool isRemoteMode;
     const QString remoteBackendUrl;
     const QString remoteDatasetId;
     const QString remoteSessionId;

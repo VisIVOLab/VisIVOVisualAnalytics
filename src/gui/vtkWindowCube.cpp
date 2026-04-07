@@ -631,8 +631,7 @@ vtkWindowCube::SpectralAxisDescriptor inferSpectralAxisDescriptor(const QString 
     return descriptor;
 }
 
-SanityReport buildCubeSanityReport(bool isRemoteMode, AstroUtils *astro,
-                                   const std::array<QString, 3> &ctype,
+SanityReport buildCubeSanityReport(const std::array<QString, 3> &ctype,
                                    const std::array<QString, 3> &cunit,
                                    const std::array<double, 3> &crval,
                                    const std::array<double, 3> &crpix,
@@ -685,11 +684,8 @@ SanityReport buildCubeSanityReport(bool isRemoteMode, AstroUtils *astro,
         warnings << u"Current loaded cube block is heavily blanked/NaN (%1%)."_s.arg(blankFraction * 100.0, 0, 'f', 1);
     }
 
-    if (isRemoteMode && (!warnings.isEmpty() || !unknowns.isEmpty())) {
-        unknowns << u"Remote preview/full/ROI preserve dataset coordinates, but incomplete metadata lowers WCS confidence."_s;
-    }
-    if (!isRemoteMode && astro && astro->isSimulation()) {
-        unknowns << u"Local dataset has no supported celestial WCS; voxel-index semantics remain valid."_s;
+    if (!warnings.isEmpty() || !unknowns.isEmpty()) {
+        unknowns << u"Backend preview/full/ROI preserve dataset coordinates, but incomplete metadata lowers WCS confidence."_s;
     }
 
     SanityReport report;
@@ -1475,37 +1471,6 @@ AsyncIsosurfaceResult fetchRemoteIsosurface(const QString &backendUrl, const QSt
 }
 }
 
-vtkWindowCube::vtkWindowCube(const QString &filepath, QWidget *parent)
-    : vtkWindowCube(filepath, {}, {}, parent)
-{
-}
-
-vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
-                             const QString &backendToken, QWidget *parent)
-    : vtkWindowCube(filepath,
-                    backendUrl,
-                    {},
-                    0,
-                    0,
-                    0,
-                    { 1.0, 1.0, 1.0 },
-                    { 0.0, 0.0, 0.0 },
-                    { QString(), QString(), QString() },
-                    { QString(), QString(), QString() },
-                    { 0.0, 0.0, 0.0 },
-                    { 1.0, 1.0, 1.0 },
-                    { 1.0, 1.0, 1.0 },
-                    {},
-                    {},
-                    {},
-                    {},
-                    {},
-                    {},
-                    backendToken,
-                    parent)
-{
-}
-
 vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              const QString &datasetId, int remoteWidth, int remoteHeight,
                              int remoteDepth, const std::array<double, 3> &remoteSpacing,
@@ -1525,7 +1490,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     : QMainWindow(parent),
       ui(new Ui::vtkWindowCube),
       filepath(filepath),
-      isRemoteMode(!datasetId.isEmpty()),
       remoteBackendUrl(backendUrl),
       remoteDatasetId(datasetId),
       remoteSessionId(remoteSessionId),
@@ -1545,7 +1509,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
       remoteSpectralAxisUnit(remoteSpectralAxisUnit),
       remoteWcsStatus(remoteWcsStatus),
       remoteWcsWarningMessage(remoteWcsWarningMessage),
-      astro(this->isRemoteMode ? nullptr : std::make_unique<AstroUtils>(filepath.toStdString())),
+      astro(nullptr), // WCS metadata comes from the backend, not a local file parse
       lutCustomizer(nullptr),
       profileWidget(nullptr),
       level(15)
@@ -1553,15 +1517,13 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     ui->setupUi(this);
     this->setWindowTitle(this->filepath);
     this->setAttribute(Qt::WA_DeleteOnClose);
-    if (this->isRemoteMode) {
-        qDebug().noquote()
-                << QStringLiteral("[wcs] remote metadata loaded ctype=%1,%2,%3 cdelt=%4,%5,%6")
-                           .arg(this->remoteDatasetCtype[0], this->remoteDatasetCtype[1],
-                                this->remoteDatasetCtype[2])
-                           .arg(this->remoteDatasetCdelt[0], 0, 'g', 12)
-                           .arg(this->remoteDatasetCdelt[1], 0, 'g', 12)
-                           .arg(this->remoteDatasetCdelt[2], 0, 'g', 12);
-    }
+    qDebug().noquote()
+            << QStringLiteral("[wcs] remote metadata loaded ctype=%1,%2,%3 cdelt=%4,%5,%6")
+                       .arg(this->remoteDatasetCtype[0], this->remoteDatasetCtype[1],
+                            this->remoteDatasetCtype[2])
+                       .arg(this->remoteDatasetCdelt[0], 0, 'g', 12)
+                       .arg(this->remoteDatasetCdelt[1], 0, 'g', 12)
+                       .arg(this->remoteDatasetCdelt[2], 0, 'g', 12);
     this->cubeOpenStateLabel = new QLabel(this);
     this->cubeOpenStateLabel->setStyleSheet(u"QLabel { font-weight: 600; padding-left: 8px; }"_s);
     this->cubeOpenStateLabel->hide();
@@ -1618,8 +1580,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->remoteRoiRefinementCheck->setChecked(this->useCameraRoiRefinement);
     this->remoteRoiRefinementCheck->setToolTip(
             u"Unchecked: refine using the full dataset. Checked: refine using the current camera view."_s);
-    this->remoteRoiRefinementCheck->setVisible(this->isRemoteMode);
-    this->remoteRoiRefinementCheck->setEnabled(this->isRemoteMode);
+    this->remoteRoiRefinementCheck->setVisible(true);
+    this->remoteRoiRefinementCheck->setEnabled(true);
     this->statusBar()->addPermanentWidget(this->remoteRoiRefinementCheck);
     QObject::connect(this->remoteRoiRefinementCheck, &QCheckBox::toggled, this,
                      [this](bool checked) {
@@ -1630,10 +1592,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                          qDebug().noquote()
                                  << QStringLiteral("[remote-roi] mode toggled to %1")
                                             .arg(checked ? u"Camera ROI"_s : u"Full"_s);
-                         if (!this->isRemoteMode) {
-                             return;
-                         }
-
                          if (this->remoteHighResCubeWatcher.isRunning()) {
                              this->pendingRemoteRefinementReload = true;
                              qDebug().noquote()
@@ -1653,15 +1611,11 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     });
     this->remoteSliceDebounceTimer.setSingleShot(true);
     QObject::connect(&this->remoteSliceDebounceTimer, &QTimer::timeout, this, [this]() {
-        if (!this->isRemoteMode) {
-            return;
-        }
-
         this->requestRemoteSlice(this->pendingRemoteSliceIndex);
     });
     this->remoteFullResolutionStateTimer.setSingleShot(true);
     QObject::connect(&this->remoteFullResolutionStateTimer, &QTimer::timeout, this, [this]() {
-        if (!this->isRemoteMode || this->remoteCubeDisplayState != RemoteCubeDisplayState::LoadingFullResolution
+        if (this->remoteCubeDisplayState != RemoteCubeDisplayState::LoadingFullResolution
             || !this->remoteHighResCubeWatcher.isRunning()) {
             return;
         }
@@ -1671,9 +1625,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->isosurfaceDebounceTimer.setSingleShot(true);
     QObject::connect(&this->isosurfaceDebounceTimer, &QTimer::timeout, this, [this]() {
         qDebug().noquote()
-                << QStringLiteral("[remote-iso] debounce fired checked=%1 remote=%2")
-                           .arg(ui->actionIsosurface->isChecked())
-                           .arg(this->isRemoteMode);
+                << QStringLiteral("[remote-iso] debounce fired checked=%1")
+                           .arg(ui->actionIsosurface->isChecked());
         if (this->cubeOpenWatcher.isRunning() || !ui->actionIsosurface->isChecked()) {
             return;
         }
@@ -1684,11 +1637,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         this->startAsyncIsosurface(ui->lineThreshold->text().toDouble());
     });
 
-    const CubeOpenStageResult preview = this->isRemoteMode ? CubeOpenStageResult { }
-                                                           : loadCubeOpenPreview(this->filepath);
-    const bool usingPreview = !this->isRemoteMode && preview.valid && preview.cubeImageData;
-
-    if (this->isRemoteMode) {
+    // Backend-authoritative mode: initialize with a placeholder until the first
+    // remote preview or full-resolution subvolume arrives from the backend.
+    {
         vtkNew<vtkImageData> placeholder;
         placeholder->SetExtent(0, 0, 0, 0, 0, 0);
         placeholder->AllocateScalars(VTK_FLOAT, 1);
@@ -1698,22 +1649,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         this->currentCubeInvisibleSentinel = -1.0;
         this->lowerBound = 0.f;
         this->upperBound = 1.f;
-    } else if (usingPreview) {
-        const auto sanitized = sanitizeCubeScalarsInPlace(preview.cubeImageData);
-        this->currentCubeVisibleRange = sanitized.visibleRange;
-        this->currentCubeInvisibleSentinel = sanitized.invisibleSentinel;
-        this->cubeDisplaySource->SetOutput(preview.cubeImageData);
-        this->lowerBound = 3.f * preview.cubeRms;
-        this->upperBound = preview.cubeRange[1];
-    } else {
-        this->reader->SetFileName(this->filepath.toUtf8());
-        this->reader->Update();
-        const auto sanitized = sanitizeCubeScalarsInPlace(this->reader->GetOutput());
-        this->currentCubeVisibleRange = sanitized.visibleRange;
-        this->currentCubeInvisibleSentinel = sanitized.invisibleSentinel;
-        this->cubeDisplaySource->SetOutput(this->reader->GetOutput());
-        this->lowerBound = 3.f * this->reader->GetRMS();
-        this->upperBound = this->reader->GetMax();
     }
 
     // Setup Renderers
@@ -1733,41 +1668,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         qDebug().noquote()
                 << QStringLiteral("[perf][cube] warm-up render: %1 ms").arg(timer.elapsed());
     });
-    if (usingPreview) {
-        this->applyCubeOpenResult(preview);
-    } else if (!this->isRemoteMode) {
-        this->applyCubeOpenResult({ true,
-                                    { },
-                                    this->reader->GetOutput(),
-                                    nullptr,
-                                    { this->reader->GetMin(), this->reader->GetMax() },
-                                    { 0., 0. },
-                                    { this->reader->GetDataExtent()[0], this->reader->GetDataExtent()[1],
-                                      this->reader->GetDataExtent()[2], this->reader->GetDataExtent()[3],
-                                      this->reader->GetDataExtent()[4], this->reader->GetDataExtent()[5] },
-                                    this->reader->GetMean(),
-                                    this->reader->GetRMS() });
-    }
-    if (!this->isRemoteMode) {
-        this->viewController = std::make_unique<CubeViewController>(CubeViewContext {
-            this->cubeDisplaySource,
-            *this->astro,
-            ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer(),
-            this->isosurface,
-            this->volume,
-            this->isosurfaceFilter,
-            this->volumeOpacity,
-            this->slice,
-            this->sliceOnCube,
-            this->lutSlice,
-            this->lutSliceOnCube,
-            this->contours,
-            this->contoursActor,
-            this->lutMoment,
-            this->legendSlice,
-            this->legendMoment
-        });
-    }
+    // Backend-authoritative: no local applyCubeOpenResult here.
+    // The first content arrives via requestRemotePreview() below.
     QObject::connect(&this->cubeOpenWatcher, &QFutureWatcher<CubeOpenStageResult>::finished, this,
                      [this]() {
                          this->setCubeOpenActionsEnabled(true);
@@ -2084,7 +1986,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     groupWCS->addAction(ui->actionGalactic);
     groupWCS->addAction(ui->actionFK5);
     groupWCS->addAction(ui->actionEcliptic);
-    ui->menuWCS->setEnabled((this->astro && !this->astro->isSimulation()) || this->remoteHasCelestialAxes());
+    ui->menuWCS->setEnabled(this->remoteHasCelestialAxes());
     QObject::connect(groupWCS, &QActionGroup::triggered, this, &vtkWindowCube::changeLegendWCS);
     ui->menuWCS->addSeparator();
     auto *formatGroup = new QActionGroup(this);
@@ -2159,7 +2061,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->ensureCatalogueDock();
 
     // Setup Threshold UI
-    const std::string bunit = this->astro ? this->astro->getPhysicalUnit() : std::string {};
+    const std::string bunit{}; // BUNIT comes from backend metadata, not AstroUtils
     if (!bunit.empty()) {
         ui->groupThreshold->setTitle(u"Threshold (%1)"_s.arg(QString::fromStdString(bunit)));
     }
@@ -2181,7 +2083,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                      &vtkWindowCube::sliceSliderChanged);
     QObject::connect(ui->spinSlice, &QSpinBox::valueChanged, this,
                      &vtkWindowCube::sliceSpinChanged);
-    if (this->isRemoteMode) {
+    {
         const int maxSliceValue = std::max(1, this->remoteSliceCount());
         ui->sliderSlice->setMinimum(1);
         ui->spinSlice->setMinimum(1);
@@ -2207,37 +2109,22 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(ui->lineUpperBound, &QLineEdit::editingFinished, this,
                      &vtkWindowCube::updateContours);
 
-    // Setup Statistics UI
-    if (this->isRemoteMode) {
-        ui->lineCubeMin->clear();
-        ui->lineCubeMax->clear();
-        ui->lineCubeMean->clear();
-        ui->lineCubeRms->clear();
-        this->setCubeOpenActionsEnabled(false);
-        ui->actionIsosurface->setChecked(false);
-        ui->actionVolume->setChecked(true);
-        this->setCubeRenderModeLocally(false);
-        this->setRemoteCubeDisplayState(RemoteCubeDisplayState::Preview);
-        this->showPersistentStatusMessage(u"Loading remote preview..."_s);
-        this->remotePreviewWatcher.setProperty("requestId", ++this->currentRemotePreviewRequestId);
-        this->remotePreviewWatcher.setFuture(
-                QtConcurrent::run(&fetchRemotePreview, this->remoteBackendUrl, this->remoteDatasetId,
-                                  4, this->remoteSessionId, this->remoteBackendToken));
-    } else if (usingPreview) {
-        ui->lineCubeMin->setText(QString::number(preview.cubeRange[0]));
-        ui->lineCubeMax->setText(QString::number(preview.cubeRange[1]));
-        ui->lineCubeMean->setText(QString::number(preview.cubeMean));
-        ui->lineCubeRms->setText(QString::number(preview.cubeRms));
-        this->setCubeOpenActionsEnabled(false);
-        this->setCubeOpenStateLabel(u"Preview"_s);
-        this->showPersistentStatusMessage(u"Loading full resolution..."_s);
-        this->cubeOpenWatcher.setFuture(QtConcurrent::run(&loadCubeOpenFull, this->filepath));
-    } else {
-        ui->lineCubeMin->setText(QString::number(this->reader->GetMin()));
-        ui->lineCubeMax->setText(QString::number(this->reader->GetMax()));
-        ui->lineCubeMean->setText(QString::number(this->reader->GetMean()));
-        ui->lineCubeRms->setText(QString::number(this->reader->GetRMS()));
-    }
+    // Backend-authoritative: statistics fields are blank until the backend preview
+    // populates them; actions disabled until first content arrives.
+    ui->lineCubeMin->clear();
+    ui->lineCubeMax->clear();
+    ui->lineCubeMean->clear();
+    ui->lineCubeRms->clear();
+    this->setCubeOpenActionsEnabled(false);
+    ui->actionIsosurface->setChecked(false);
+    ui->actionVolume->setChecked(true);
+    this->setCubeRenderModeLocally(false);
+    this->setRemoteCubeDisplayState(RemoteCubeDisplayState::Preview);
+    this->showPersistentStatusMessage(u"Loading preview..."_s);
+    this->remotePreviewWatcher.setProperty("requestId", ++this->currentRemotePreviewRequestId);
+    this->remotePreviewWatcher.setFuture(
+            QtConcurrent::run(&fetchRemotePreview, this->remoteBackendUrl, this->remoteDatasetId,
+                              4, this->remoteSessionId, this->remoteBackendToken));
 }
 
 vtkWindowCube::~vtkWindowCube()
@@ -2250,8 +2137,7 @@ void vtkWindowCube::closeEvent(QCloseEvent *event)
     if (this->isBusy()) {
         if (this->cubeOpenWatcher.isRunning() || this->remotePreviewWatcher.isRunning()
             || this->remoteHighResCubeWatcher.isRunning()) {
-            this->showPersistentStatusMessage(this->isRemoteMode ? u"Loading remote preview..."_s
-                                                                : u"Loading full resolution..."_s);
+            this->showPersistentStatusMessage(u"Loading remote preview..."_s);
         } else if (this->activeRemoteSliceRequests > 0) {
             this->showPersistentStatusMessage(u"Loading remote slice..."_s);
         } else if (this->activeRemoteIsosurfaceRequests > 0 || this->isosurfaceWatcher.isRunning()) {
@@ -2284,10 +2170,7 @@ void vtkWindowCube::setupCubeRenderer()
     isosurfaceMapper->ScalarVisibilityOff();
     this->isosurface->SetMapper(isosurfaceMapper);
     this->isosurface->GetProperty()->SetColor(1., 0.5, 1.);
-    if (!this->isRemoteMode) {
-        ren->AddViewProp(this->isosurface);
-        this->currentIsosurfaceActor = this->isosurface;
-    }
+    // Isosurface visibility managed by scheduleIsosurfaceRecompute / setCubeRenderModeLocally
 
     // Volume
     const auto cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
@@ -2321,7 +2204,7 @@ void vtkWindowCube::setupCubeRenderer()
     outlineActor->SetMapper(outlineMapper);
     ren->AddViewProp(outlineActor);
 
-    if (this->isRemoteMode) {
+    {
         vtkNew<vtkPolyDataMapper> planeMapper;
         planeMapper->SetInputConnection(this->remoteCuttingPlaneSource->GetOutputPort());
         planeMapper->ScalarVisibilityOff();
@@ -2344,29 +2227,7 @@ void vtkWindowCube::setupCubeRenderer()
                            .arg(this->remoteCuttingPlaneActor->GetVisibility());
     }
 
-    // Slice overlay in cube renderer is local-only.
-    if (!this->isRemoteMode) {
-        int extent[6] = { 0, -1, 0, -1, 0, -1 };
-        if (cubeImage) {
-            cubeImage->GetExtent(extent);
-        }
-        extent[4] = extent[5] = 0;
-        this->sliceOnCube->SetInputConnection(this->cubeDisplaySource->GetOutputPort());
-        this->sliceOnCube->SetVOI(extent);
-        this->sliceOnCube->Update();
-        this->lutSliceOnCube->SetTableRange(this->sliceOnCube->GetOutput()->GetScalarRange());
-        this->lutSliceOnCube->SetNanColor(1., 1., 1., 1.);
-        ColorMaps::SetColorMap(this->lutSliceOnCube);
-        vtkNew<vtkImageMapToColors> colors;
-        colors->SetInputConnection(this->sliceOnCube->GetOutputPort());
-        colors->SetLookupTable(this->lutSliceOnCube);
-        vtkNew<vtkImageSliceMapper> sliceMapper;
-        sliceMapper->SetInputConnection(colors->GetOutputPort());
-        vtkNew<vtkImageSlice> sliceActor;
-        sliceActor->SetMapper(sliceMapper);
-        sliceActor->GetProperty()->SetInterpolationTypeToNearest();
-        ren->AddViewProp(sliceActor);
-    }
+    // Slice overlay in cube renderer not used in backend mode; cutting plane actor serves this role.
 
     // Axes
     vtkNew<vtkAxesActor> axes;
@@ -2408,27 +2269,12 @@ void vtkWindowCube::setupSliceRenderer()
     this->coordinate->SetCoordinateSystemToDisplay();
     this->coordinate->SetViewport(ren);
 
-    // Slice
-    if (this->isRemoteMode) {
-        this->lutSlice->SetTableRange(0., 0.);
-    } else {
-        this->slice->SetInputConnection(this->cubeDisplaySource->GetOutputPort());
-        this->slice->SetResliceAxesOrigin(0., 0., 0.);
-        this->slice->SetOutputDimensionality(2);
-        this->slice->Update();
-        this->lutSlice->SetTableRange(this->slice->GetOutput()->GetScalarRange());
-    }
+    // Slice — remote backend always provides slice tiles; initialize with a placeholder.
+    this->lutSlice->SetTableRange(0., 0.);
     this->lutSlice->SetNanColor(1., 1., 1., 1.);
     ColorMaps::SetColorMap(this->lutSlice);
-    if (this->isRemoteMode) {
+    {
         auto *img = vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0));
-        if (img) {
-            this->sliceColors->SetInputData(img);
-        } else {
-            this->sliceColors->SetInputData(createPlaceholderImageData());
-        }
-    } else {
-        auto *img = this->slice->GetOutput();
         if (img) {
             this->sliceColors->SetInputData(img);
         } else {
@@ -2452,8 +2298,7 @@ void vtkWindowCube::setupSliceRenderer()
     ren->AddViewProp(colorbar);
 
     // Contours
-    this->contours->SetInputConnection(this->isRemoteMode ? this->remoteSliceDisplaySource->GetOutputPort()
-                                                          : this->slice->GetOutputPort());
+    this->contours->SetInputConnection(this->remoteSliceDisplaySource->GetOutputPort());
     this->contours->GenerateValues(this->level, this->lowerBound, this->upperBound);
     vtkNew<vtkPolyDataMapper> contoursMapper;
     contoursMapper->SetInputConnection(this->contours->GetOutputPort());
@@ -2462,12 +2307,7 @@ void vtkWindowCube::setupSliceRenderer()
     this->contoursActor->VisibilityOff();
     ren->AddViewProp(this->contoursActor);
 
-    // Legend
-    if (this->astro) {
-        this->legendSlice->Init(this->filepath.toStdString());
-        this->legendSlice->SetWCS(WCS_GALACTIC);
-        ren->AddViewProp(this->legendSlice);
-    }
+    // Legend: local AstroUtils-based legend not used in backend mode; remote WCS overlay actors are used instead.
     ren->AddViewProp(this->sliceOverlayXAxis);
     ren->AddViewProp(this->sliceOverlayYAxis);
     ren->AddViewProp(this->sliceOverlayXTitleActor);
@@ -2680,12 +2520,7 @@ void vtkWindowCube::setupMomentRenderer()
     colorbar->SetPosition(0.9, 0.1);
     ren->AddViewProp(colorbar);
 
-    // Legend
-    if (this->astro) {
-        this->legendMoment->Init(this->filepath.toStdString());
-        this->legendMoment->SetWCS(WCS_GALACTIC);
-        ren->AddViewProp(this->legendMoment);
-    }
+    // Legend: local AstroUtils-based legend not used in backend mode; remote WCS overlay actors are used instead.
     ren->AddViewProp(this->momentOverlayXAxis);
     ren->AddViewProp(this->momentOverlayYAxis);
     ren->AddViewProp(this->momentOverlayXTitleActor);
@@ -3116,9 +2951,7 @@ bool vtkWindowCube::updateProbeFromDisplayPosition(int displayX, int displayY)
     auto *renderer = ui->vtkImage->renderWindow() ? ui->vtkImage->renderWindow()->GetRenderers()->GetFirstRenderer()
                                                   : nullptr;
     auto *imageData = this->viewingSlice()
-            ? (this->isRemoteMode
-                       ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-                       : this->slice->GetOutput())
+            ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
             : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
     if (!renderer || !imageData) {
         this->clearProbe();
@@ -3140,8 +2973,7 @@ bool vtkWindowCube::updateProbeFromDisplayPosition(int displayX, int displayY)
     imageData->GetSpacing(spacing);
     const int voxelX = std::lround(extent[0] + (worldCoord[0] - origin[0]) / spacing[0]);
     const int voxelY = std::lround(extent[2] + (worldCoord[1] - origin[1]) / spacing[1]);
-    const int voxelZ = this->isRemoteMode ? this->clampRemoteSliceIndex(ui->spinSlice->value() - 1)
-                                          : std::max(0, ui->spinSlice->value() - 1);
+    const int voxelZ = this->clampRemoteSliceIndex(ui->spinSlice->value() - 1);
     if (voxelX < extent[0] || voxelX > extent[1] || voxelY < extent[2] || voxelY > extent[3]) {
         if (!this->probeFrozen) {
             this->clearProbe();
@@ -3185,9 +3017,7 @@ void vtkWindowCube::refreshProbeOverlay()
         verticalActor->VisibilityOn();
     };
 
-    updateActors(this->isRemoteMode
-                         ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-                         : this->slice->GetOutput(),
+    updateActors(vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0)),
                  this->sliceProbeHorizontalLine, this->sliceProbeVerticalLine,
                  this->sliceProbeHorizontalActor, this->sliceProbeVerticalActor);
     updateActors(vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0)),
@@ -3306,9 +3136,7 @@ bool vtkWindowCube::updateRegionFromDisplayPosition(int displayX, int displayY)
     auto *renderer = ui->vtkImage->renderWindow() ? ui->vtkImage->renderWindow()->GetRenderers()->GetFirstRenderer()
                                                   : nullptr;
     auto *imageData = this->viewingSlice()
-            ? (this->isRemoteMode
-                       ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-                       : this->slice->GetOutput())
+            ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
             : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
     if (!renderer || !imageData) {
         this->pvCursorValid = false;
@@ -3348,9 +3176,7 @@ bool vtkWindowCube::updatePvFromDisplayPosition(int displayX, int displayY)
     auto *renderer = ui->vtkImage->renderWindow() ? ui->vtkImage->renderWindow()->GetRenderers()->GetFirstRenderer()
                                                   : nullptr;
     auto *imageData = this->viewingSlice()
-            ? (this->isRemoteMode
-                       ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-                       : this->slice->GetOutput())
+            ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
             : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
     if (!renderer || !imageData) {
         return false;
@@ -3509,9 +3335,7 @@ void vtkWindowCube::refreshRegionOverlay()
         }
     };
 
-    updateOverlay(this->isRemoteMode
-                          ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-                          : this->slice->GetOutput(),
+    updateOverlay(vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0)),
                   this->sliceRegionTopLine, this->sliceRegionBottomLine, this->sliceRegionLeftLine,
                   this->sliceRegionRightLine, this->sliceRegionTopActor, this->sliceRegionBottomActor,
                   this->sliceRegionLeftActor, this->sliceRegionRightActor, this->sliceRegionCircleSource,
@@ -3644,9 +3468,7 @@ void vtkWindowCube::refreshPvOverlay()
         lowerActor->VisibilityOn();
     };
 
-    updateLine(this->isRemoteMode
-                       ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-                       : this->slice->GetOutput(),
+    updateLine(vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0)),
                this->slicePvPoints, this->slicePvCells, this->slicePvData, this->slicePvActor,
                this->slicePvUpperPoints, this->slicePvUpperCells, this->slicePvUpperData,
                this->slicePvUpperActor, this->slicePvLowerPoints, this->slicePvLowerCells,
@@ -3678,9 +3500,7 @@ void vtkWindowCube::analyzeCurrentRegion()
     }
 
     auto *imageData = this->viewingSlice()
-            ? (this->isRemoteMode
-                       ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-                       : this->slice->GetOutput())
+            ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
             : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
     const auto stats = computeRegionStatistics2D(imageData, this->regionMode, this->regionAnchorVoxel,
                                                  this->regionCurrentVoxel, this->regionPolygonVertices,
@@ -3763,8 +3583,7 @@ void vtkWindowCube::analyzeCurrentRegion()
         if (haveSpectrum) {
             if (!this->probePlotWidget) {
                 this->probePlotWidget = new ProfileWidget(this);
-                const QString yLabel = this->astro ? QString::fromStdString(this->astro->getPhysicalUnit())
-                                                   : u"Value"_s;
+                const QString yLabel = u"Value"_s;
                 this->probePlotWidget->setUsageMode(ProfileWidget::UsageMode::RegionStatic,
                                                     u"Region Spectrum"_s);
                 this->probePlotWidget->setupSpectrumPlot(this->spectralAxisTitle(),
@@ -3782,9 +3601,7 @@ void vtkWindowCube::analyzeCurrentRegion()
         }
     }
 
-    if (this->isRemoteMode) {
-        text += u"\n\nComputed on the currently loaded data block."_s;
-    }
+    text += u"\n\nComputed on the currently loaded data block."_s;
     QMessageBox::information(this, u"Region Analysis"_s, text);
 }
 
@@ -3839,7 +3656,7 @@ void vtkWindowCube::loadCatalogueOverlay()
         return;
     }
 
-    if ((!this->isRemoteMode && !this->astro) || (this->isRemoteMode && !this->remoteHasCelestialAxes())) {
+    if (!this->remoteHasCelestialAxes()) {
         const bool hasImageEntries = std::any_of(
                 parsed.entries.cbegin(), parsed.entries.cend(), [](const CatalogueOverlayEntry &entry) {
                     return entry.frame == CatalogueOverlayEntry::Frame::Image;
@@ -4480,20 +4297,6 @@ bool vtkWindowCube::catalogueWorldToPixel(double raDeg, double decDeg, std::arra
         return false;
     }
 
-    if (!this->isRemoteMode) {
-        if (!this->astro) {
-            return false;
-        }
-        double pos[2] = { raDeg, decDeg };
-        double pix[2] = { 0.0, 0.0 };
-        this->astro->sky2xy(pos, pix, WCS_J2000);
-        if (!std::isfinite(pix[0]) || !std::isfinite(pix[1])) {
-            return false;
-        }
-        pixel = { pix[0], pix[1] };
-        return true;
-    }
-
     if (!this->remoteHasCelestialAxes()) {
         return false;
     }
@@ -4520,19 +4323,6 @@ bool vtkWindowCube::catalogueWorldToPixel(double raDeg, double decDeg, std::arra
 
 QString vtkWindowCube::formatSpatialPointSummary(const std::array<int, 2> &voxel) const
 {
-    const std::array<int, 3> fullVoxel = { voxel[0],
-                                           voxel[1],
-                                           this->isRemoteMode ? this->clampRemoteSliceIndex(ui->spinSlice->value() - 1)
-                                                              : std::max(0, ui->spinSlice->value() - 1) };
-    if (this->astro && !this->astro->isSimulation()) {
-        return u"(%1, %2)  %3=%4  %5=%6"_s.arg(voxel[0])
-                .arg(voxel[1])
-                .arg(this->selectedFrameAxisTitle(0))
-                .arg(this->formatLocalProbeCoordinate(0, fullVoxel))
-                .arg(this->selectedFrameAxisTitle(1))
-                .arg(this->formatLocalProbeCoordinate(1, fullVoxel));
-    }
-
     QString axis0 = this->remoteFormatAxisCoordinate(0, voxel[0]);
     QString axis1 = this->remoteFormatAxisCoordinate(1, voxel[1]);
     if (this->remoteHasCelestialAxes()) {
@@ -4749,14 +4539,7 @@ void vtkWindowCube::updateProbeReadout(vtkImageData *imageData)
                               .arg(this->probeVoxel[1])
                               .arg(this->probeVoxel[2])
                               .arg(valueText);
-    if (this->astro && !this->astro->isSimulation()) {
-        message += u"  %1=%2  %3=%4  %5=%6"_s.arg(this->selectedFrameAxisTitle(0),
-                                                  this->formatLocalProbeCoordinate(0, this->probeVoxel),
-                                                  this->selectedFrameAxisTitle(1),
-                                                  this->formatLocalProbeCoordinate(1, this->probeVoxel),
-                                                  this->spectralAxisTitle(),
-                                                  this->formatSpectralAxisValue(this->probeVoxel[2]));
-    } else if (this->isRemoteMode) {
+    {
         QString axis0 = this->remoteFormatAxisCoordinate(0, this->probeVoxel[0]);
         QString axis1 = this->remoteFormatAxisCoordinate(1, this->probeVoxel[1]);
         if (this->remoteHasCelestialAxes()) {
@@ -4828,8 +4611,7 @@ void vtkWindowCube::updateProbePlot()
     if (!this->probePlotWidget) {
         this->probePlotWidget = new ProfileWidget(this);
         const QString xLabel = this->spectralAxisTitle();
-        const QString yLabel = this->astro ? QString::fromStdString(this->astro->getPhysicalUnit())
-                                           : u"Value"_s;
+        const QString yLabel = u"Value"_s;
         this->probePlotWidget->setUsageMode(ProfileWidget::UsageMode::ProbeLive, u"Profile"_s);
         this->probePlotWidget->setupSpectrumPlot(xLabel.isEmpty() ? u"Z"_s : xLabel,
                                                  yLabel.isEmpty() ? u"Value"_s : yLabel);
@@ -4868,16 +4650,12 @@ bool vtkWindowCube::viewingSlice() const
 void vtkWindowCube::updateCube()
 {
     const double threshold = ui->lineThreshold->text().toDouble();
-    if (this->isRemoteMode) {
-        this->isosurfaceFilter->SetValue(0, threshold);
-        this->volumeOpacity->RemoveAllPoints();
-        this->volumeOpacity->AddPoint(this->currentCubeInvisibleSentinel, 0.0);
-        this->volumeOpacity->AddPoint(this->currentCubeVisibleRange[0], 0.0);
-        this->volumeOpacity->AddPoint(threshold, 0.05);
-        this->volumeOpacity->AddPoint(this->currentCubeVisibleRange[1], 0.3);
-    } else {
-        this->viewController->updateCube(threshold);
-    }
+    this->isosurfaceFilter->SetValue(0, threshold);
+    this->volumeOpacity->RemoveAllPoints();
+    this->volumeOpacity->AddPoint(this->currentCubeInvisibleSentinel, 0.0);
+    this->volumeOpacity->AddPoint(this->currentCubeVisibleRange[0], 0.0);
+    this->volumeOpacity->AddPoint(threshold, 0.05);
+    this->volumeOpacity->AddPoint(this->currentCubeVisibleRange[1], 0.3);
     if (!this->cubeOpenWatcher.isRunning() && ui->actionIsosurface->isChecked()) {
         this->scheduleIsosurfaceRecompute();
     }
@@ -5200,7 +4978,7 @@ std::array<int, 6> vtkWindowCube::computeVisibleROI()
 
 bool vtkWindowCube::requestHighResCube()
 {
-    if (!this->isRemoteMode || this->usingHighResCube || this->remoteHighResCubeWatcher.isRunning()) {
+    if (this->usingHighResCube || this->remoteHighResCubeWatcher.isRunning()) {
         return false;
     }
 
@@ -5226,10 +5004,6 @@ bool vtkWindowCube::requestHighResCube()
 
 void vtkWindowCube::updateRemoteCuttingPlane(int sliceIndex)
 {
-    if (!this->isRemoteMode) {
-        return;
-    }
-
     auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
     if (!cubeImage) {
         qDebug().noquote() << QStringLiteral("[remote-plane] preview valid=0");
@@ -5308,10 +5082,8 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     this->cubeDisplaySource->SetOutput(result.cubeImageData);
     this->cubeDisplaySource->Modified();
     result.cubeImageData->Modified();
-    if (this->isRemoteMode) {
-        this->remoteIsosurfaceReady = false;
-        this->setCubeRenderModeLocally(false);
-    }
+    this->remoteIsosurfaceReady = false;
+    this->setCubeRenderModeLocally(false);
     if (result.momentImageData) {
         this->momentDisplaySource->SetOutput(result.momentImageData);
         this->momentDisplaySource->Modified();
@@ -5324,9 +5096,7 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
         this->currentIsosurfaceActor->GetMapper()->Modified();
     }
 
-    const int clampedSlice = this->isRemoteMode
-            ? this->clampRemoteSliceIndex(ui->spinSlice->value() - 1)
-            : std::clamp(ui->spinSlice->value() - 1, result.dataExtent[4], result.dataExtent[5]);
+    const int clampedSlice = this->clampRemoteSliceIndex(ui->spinSlice->value() - 1);
     qDebug().noquote()
             << QStringLiteral("[perf][cube] apply clamp slice index: %1 ms").arg(
                        totalTimer.elapsed());
@@ -5336,8 +5106,7 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     {
         const QSignalBlocker blockSlider(ui->sliderSlice);
         const QSignalBlocker blockSpin(ui->spinSlice);
-        const int maxSliceValue = this->isRemoteMode ? std::max(1, this->remoteSliceCount())
-                                                     : (result.dataExtent[5] + 1);
+        const int maxSliceValue = std::max(1, this->remoteSliceCount());
         ui->sliderSlice->setMaximum(maxSliceValue);
         ui->spinSlice->setMaximum(maxSliceValue);
         ui->sliderSlice->setValue(clampedSlice + 1);
@@ -5347,50 +5116,7 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
             << QStringLiteral("[perf][cube] apply slider/spin sync: %1 ms").arg(
                        sliderSyncTimer.elapsed());
 
-    double sliceRange[2] = { 0., 0. };
-    if (!this->isRemoteMode) {
-        int sliceExtent[6] = { result.dataExtent[0], result.dataExtent[1], result.dataExtent[2],
-                               result.dataExtent[3], clampedSlice, clampedSlice };
-        QElapsedTimer sliceOnCubeSetTimer;
-        sliceOnCubeSetTimer.start();
-        this->sliceOnCube->SetVOI(sliceExtent);
-        qDebug().noquote()
-                << QStringLiteral("[perf][cube] apply sliceOnCube SetVOI: %1 ms").arg(
-                           sliceOnCubeSetTimer.elapsed());
-
-        QElapsedTimer sliceOnCubeUpdateTimer;
-        sliceOnCubeUpdateTimer.start();
-        this->sliceOnCube->Update();
-        qDebug().noquote()
-                << QStringLiteral("[perf][cube] apply sliceOnCube update: %1 ms").arg(
-                           sliceOnCubeUpdateTimer.elapsed());
-
-        QElapsedTimer sliceSetTimer;
-        sliceSetTimer.start();
-        this->slice->SetResliceAxesOrigin(0., 0., clampedSlice);
-        qDebug().noquote()
-                << QStringLiteral("[perf][cube] apply slice origin set: %1 ms").arg(
-                           sliceSetTimer.elapsed());
-
-        QElapsedTimer sliceUpdateTimer;
-        sliceUpdateTimer.start();
-        this->slice->Update();
-        qDebug().noquote()
-                << QStringLiteral("[perf][cube] apply slice update: %1 ms").arg(
-                           sliceUpdateTimer.elapsed());
-
-        QElapsedTimer lutSyncTimer;
-        lutSyncTimer.start();
-        const double *localSliceRange = this->slice->GetOutput()->GetScalarRange();
-        sliceRange[0] = localSliceRange[0];
-        sliceRange[1] = localSliceRange[1];
-        this->lutSlice->SetTableRange(localSliceRange);
-
-        const double *sliceOnCubeRange = this->sliceOnCube->GetOutput()->GetScalarRange();
-        this->lutSliceOnCube->SetTableRange(sliceOnCubeRange);
-        qDebug().noquote()
-                << QStringLiteral("[perf][cube] apply LUT sync: %1 ms").arg(lutSyncTimer.elapsed());
-    }
+    // Local slice pipeline (sliceOnCube / slice / lutSliceOnCube) is not used in backend mode.
 
     QElapsedTimer cubeFieldsTimer;
     cubeFieldsTimer.start();
@@ -5418,13 +5144,7 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
                        cubeFitTimer.elapsed());
 
     auto sliceRenderer = this->sliceWin->GetRenderers()->GetFirstRenderer();
-    if (!this->isRemoteMode) {
-        QElapsedTimer sliceFitTimer;
-        sliceFitTimer.start();
-        refitParallelSliceCamera(sliceRenderer, this->slice->GetOutput(), this->sliceWin);
-        qDebug().noquote()
-                << QStringLiteral("[perf][cube] apply slice fit: %1 ms").arg(sliceFitTimer.elapsed());
-    }
+    // Slice camera is fit when a remote slice tile is applied (applyRemoteSliceResult).
 
     QElapsedTimer sliceClipTimer;
     sliceClipTimer.start();
@@ -5445,11 +5165,7 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
 
     QElapsedTimer imgFieldsTimer;
     imgFieldsTimer.start();
-    if (this->viewingSlice() && !this->isRemoteMode) {
-        ui->lineImgMin->setText(QString::number(sliceRange[0]));
-        ui->lineImgMax->setText(QString::number(sliceRange[1]));
-        this->updateLUTCustomizer();
-    } else if (result.momentImageData) {
+    if (result.momentImageData) {
         ui->lineImgMin->setText(QString::number(result.momentRange[0]));
         ui->lineImgMax->setText(QString::number(result.momentRange[1]));
         this->updateLUTCustomizer();
@@ -5457,9 +5173,7 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     if (this->probeModeActive && this->probeValid) {
         this->refreshProbeOverlay();
         auto *currentImage = this->viewingSlice()
-                ? (this->isRemoteMode
-                           ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-                           : this->slice->GetOutput())
+                ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
                 : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
         this->updateProbeReadout(currentImage);
     }
@@ -5468,7 +5182,7 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
                        imgFieldsTimer.elapsed());
 
     this->setCubeRenderModeLocally(ui->actionIsosurface->isChecked());
-    if (this->isRemoteMode) {
+    {
         this->updateRemoteCuttingPlane(clampedSlice);
         if (ui->actionIsosurface->isChecked()) {
             const double threshold = ui->lineThreshold->text().toDouble();
@@ -5508,9 +5222,7 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     ui->vtkCube->renderWindow()->Render();
     ui->vtkImage->renderWindow()->Render();
     QTimer::singleShot(0, this, [this]() { ui->vtkCube->renderWindow()->Render(); });
-    if (this->isRemoteMode) {
-        this->requestRemoteSlice(clampedSlice);
-    }
+    this->requestRemoteSlice(clampedSlice);
     qDebug().noquote()
             << QStringLiteral("[perf][cube] apply render: %1 ms").arg(renderTimer.elapsed());
     qDebug().noquote() << QStringLiteral("[perf][cube] apply total: %1 ms").arg(
@@ -5520,29 +5232,8 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
 void vtkWindowCube::updateSlice()
 {
     const int slice = ui->spinSlice->value() - 1;
-    if (this->isRemoteMode) {
-        this->remoteSliceDebounceTimer.stop();
-        this->requestRemoteSlice(slice);
-        return;
-    }
-
-    const auto result = this->viewController->updateSlice(slice);
-    if (!result.valid) {
-        return;
-    }
-
-    ui->lineSpectral->setText(this->formatSpectralAxisValue(slice));
-    this->refreshSpectralAxisUi();
-
-    ui->vtkCube->renderWindow()->Render();
-    this->sliceWin->GetRenderers()->GetFirstRenderer()->ResetCamera();
-    this->sliceWin->Render();
-
-    if (this->viewingSlice()) {
-        ui->lineImgMin->setText(QString::number(result.imageRange[0]));
-        ui->lineImgMax->setText(QString::number(result.imageRange[1]));
-        this->updateLUTCustomizer();
-    }
+    this->remoteSliceDebounceTimer.stop();
+    this->requestRemoteSlice(slice);
 }
 
 void vtkWindowCube::requestRemoteSlice(int sliceIndex)
@@ -5635,39 +5326,28 @@ double vtkWindowCube::remoteSliceCoordinate(int sliceIndex) const
 
 vtkWindowCube::SpectralAxisDescriptor vtkWindowCube::spectralAxisDescriptor() const
 {
-    if (this->isRemoteMode) {
-        const bool hasBackendSpectralMetadata = !this->remoteSpectralAxisType.trimmed().isEmpty()
-                || !this->remoteSpectralAxisUnit.trimmed().isEmpty();
-        if (hasBackendSpectralMetadata) {
-            auto descriptor =
-                    inferSpectralAxisDescriptor(this->remoteSpectralAxisType,
-                                               !this->remoteSpectralAxisUnit.trimmed().isEmpty()
-                                                       ? this->remoteSpectralAxisUnit
-                                                       : this->remoteDatasetCunit[2],
-                                               true);
-            descriptor.trusted = true;
-            descriptor.inferred = false;
-            descriptor.physical = true;
-            descriptor.sourceLabel = this->remoteDatasetCtype[2].trimmed().isEmpty()
-                    ? this->remoteSpectralAxisType.trimmed()
-                    : this->remoteDatasetCtype[2].trimmed();
-            if (descriptor.label.trimmed().isEmpty()) {
-                descriptor.label = u"Spectral"_s;
-            }
-            return descriptor;
+    const bool hasBackendSpectralMetadata = !this->remoteSpectralAxisType.trimmed().isEmpty()
+            || !this->remoteSpectralAxisUnit.trimmed().isEmpty();
+    if (hasBackendSpectralMetadata) {
+        auto descriptor =
+                inferSpectralAxisDescriptor(this->remoteSpectralAxisType,
+                                           !this->remoteSpectralAxisUnit.trimmed().isEmpty()
+                                                   ? this->remoteSpectralAxisUnit
+                                                   : this->remoteDatasetCunit[2],
+                                           true);
+        descriptor.trusted = true;
+        descriptor.inferred = false;
+        descriptor.physical = true;
+        descriptor.sourceLabel = this->remoteDatasetCtype[2].trimmed().isEmpty()
+                ? this->remoteSpectralAxisType.trimmed()
+                : this->remoteDatasetCtype[2].trimmed();
+        if (descriptor.label.trimmed().isEmpty()) {
+            descriptor.label = u"Spectral"_s;
         }
-        return inferSpectralAxisDescriptor(this->remoteDatasetCtype[2], this->remoteDatasetCunit[2],
-                                           this->remoteHasWcsAxis(2));
+        return descriptor;
     }
-
-    if (!this->astro) {
-        return inferSpectralAxisDescriptor({}, {}, false);
-    }
-
-    const QString axisType = QString::fromStdString(this->astro->getAxisType(2));
-    const QString axisUnit = QString::fromStdString(this->astro->getAxisUnit(2));
-    const bool hasPhysicalMetadata = !axisType.trimmed().isEmpty() || !axisUnit.trimmed().isEmpty();
-    return inferSpectralAxisDescriptor(axisType, axisUnit, hasPhysicalMetadata);
+    return inferSpectralAxisDescriptor(this->remoteDatasetCtype[2], this->remoteDatasetCunit[2],
+                                       this->remoteHasWcsAxis(2));
 }
 
 double vtkWindowCube::spectralAxisValue(double datasetVoxelIndex, bool *ok) const
@@ -5680,21 +5360,7 @@ double vtkWindowCube::spectralAxisValue(double datasetVoxelIndex, bool *ok) cons
         return datasetVoxelIndex;
     }
 
-    if (this->isRemoteMode) {
-        return this->remoteVoxelToWcs(2, datasetVoxelIndex, ok);
-    }
-
-    if (this->astro) {
-        if (ok) {
-            *ok = true;
-        }
-        return this->astro->getInitialSpectralValue() + this->astro->getIncrements()[2] * datasetVoxelIndex;
-    }
-
-    if (ok) {
-        *ok = false;
-    }
-    return datasetVoxelIndex;
+    return this->remoteVoxelToWcs(2, datasetVoxelIndex, ok);
 }
 
 QString vtkWindowCube::formatSpectralAxisValue(double datasetVoxelIndex) const
@@ -5727,7 +5393,7 @@ QString vtkWindowCube::spectralAxisTooltip() const
     QString trust;
     if (descriptor.kind == SpectralAxisKind::Channel || !descriptor.physical) {
         trust = u"Fallback to channel index."_s;
-    } else if (this->isRemoteMode && !this->remoteSpectralAxisType.trimmed().isEmpty()) {
+    } else if (!this->remoteSpectralAxisType.trimmed().isEmpty()) {
         trust = u"Inferred from backend WCS."_s;
     } else if (descriptor.trusted) {
         trust = u"Trusted from FITS spectral metadata."_s;
@@ -5756,7 +5422,7 @@ void vtkWindowCube::refreshSpectralAxisUi()
                        .arg(descriptor.label,
                             descriptor.unit.isEmpty() ? QStringLiteral("unknown units")
                                                       : descriptor.unit,
-                            (this->isRemoteMode && !this->remoteSpectralAxisType.trimmed().isEmpty())
+                            !this->remoteSpectralAxisType.trimmed().isEmpty()
                                     ? QStringLiteral("backend_wcs")
                                     : descriptor.sourceLabel);
     this->updateDataStatePanel();
@@ -5902,9 +5568,6 @@ QString vtkWindowCube::describeMomentOrder(int order) const
 
 QString vtkWindowCube::describeMomentScope() const
 {
-    if (!this->isRemoteMode) {
-        return u"Local full cube"_s;
-    }
     return u"Remote full dataset"_s;
 }
 
@@ -5936,28 +5599,10 @@ void vtkWindowCube::updateSanityPanel()
         return;
     }
 
-    std::array<QString, 3> ctype = this->remoteDatasetCtype;
-    std::array<QString, 3> cunit = this->remoteDatasetCunit;
-    std::array<double, 3> crval = this->remoteDatasetCrval;
-    std::array<double, 3> crpix = this->remoteDatasetCrpix;
-    std::array<double, 3> cdelt = this->remoteDatasetCdelt;
-    if (!this->isRemoteMode && this->astro) {
-        const auto *refValues = this->astro->getReferenceValues();
-        const auto *refPixels = this->astro->getReferencePixels();
-        const auto *increments = this->astro->getIncrements();
-        for (int axis = 0; axis < 3; ++axis) {
-            ctype[axis] = QString::fromStdString(this->astro->getAxisType(axis));
-            cunit[axis] = QString::fromStdString(this->astro->getAxisUnit(axis));
-            crval[axis] = refValues[axis];
-            crpix[axis] = refPixels[axis];
-            cdelt[axis] = increments[axis];
-        }
-    }
-
     auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
-    const auto report =
-            buildCubeSanityReport(this->isRemoteMode, this->astro.get(), ctype, cunit, crval, crpix,
-                                  cdelt, cubeImage);
+    const auto report = buildCubeSanityReport(this->remoteDatasetCtype, this->remoteDatasetCunit,
+                                              this->remoteDatasetCrval, this->remoteDatasetCrpix,
+                                              this->remoteDatasetCdelt, cubeImage);
     this->sanityLabel->setText(report.summary);
     this->sanityLabel->setToolTip(report.details);
 }
@@ -5967,7 +5612,7 @@ void vtkWindowCube::updateWcsStatusIndicator()
     if (!this->wcsStatusLabel) {
         return;
     }
-    if (!this->isRemoteMode || this->remoteWcsStatus.compare(u"ok"_s, Qt::CaseInsensitive) == 0) {
+    if (this->remoteWcsStatus.compare(u"ok"_s, Qt::CaseInsensitive) == 0) {
         this->wcsStatusLabel->clear();
         this->wcsStatusLabel->setToolTip({});
         this->wcsStatusLabel->hide();
@@ -6033,8 +5678,7 @@ bool vtkWindowCube::configureMomentRequest(int defaultOrder, MomentGenerationCon
     }
     momentCombo->setCurrentIndex(defaultIndex);
 
-    const int totalChannels = this->isRemoteMode ? std::max(1, this->remoteDatasetDepth)
-                                                 : std::max(1, this->astro->getDimensions()[2]);
+    const int totalChannels = std::max(1, this->remoteDatasetDepth);
     auto *channelStartSpin = new QSpinBox(&dialog);
     auto *channelEndSpin = new QSpinBox(&dialog);
     channelStartSpin->setRange(1, totalChannels);
@@ -6101,12 +5745,9 @@ void vtkWindowCube::updateDataStatePanel()
     }
 
     auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
-    const QString origin = this->isRemoteMode ? u"Remote"_s : u"Local"_s;
+    constexpr QLatin1StringView origin{ "Remote" };
     QString representation;
-    QString refinement;
-    if (!this->isRemoteMode) {
-        representation = u"Full dataset"_s;
-    } else {
+    {
         const std::array<int, 6> fullExtent = { 0,
                                                 std::max(0, this->remoteDatasetWidth - 1),
                                                 0,
@@ -6126,33 +5767,23 @@ void vtkWindowCube::updateDataStatePanel()
                     : u"Full resolution"_s;
             break;
         }
-        refinement = this->currentRemoteRefinementModeLabel;
     }
+    const QString refinement = this->currentRemoteRefinementModeLabel;
 
     const QString loadedBounds = formatCubeBoundsSummary(cubeImage);
-    const QString datasetBounds = this->isRemoteMode
-            ? u"x=0..%1 y=0..%2 z=0..%3"_s.arg(std::max(0, this->remoteDatasetWidth - 1))
-                      .arg(std::max(0, this->remoteDatasetHeight - 1))
-                      .arg(std::max(0, this->remoteDatasetDepth - 1))
-            : (this->astro
-                       ? u"x=0..%1 y=0..%2 z=0..%3"_s.arg(std::max(0, this->astro->getDimensions()[0] - 1))
-                                 .arg(std::max(0, this->astro->getDimensions()[1] - 1))
-                                 .arg(std::max(0, this->astro->getDimensions()[2] - 1))
-                       : loadedBounds);
-    const QString note = this->isRemoteMode ? u"Probe/profile: loaded block only"_s
-                                            : u"Probe/profile: full cube"_s;
-    const QString degenerateSummary =
-            this->isRemoteMode ? this->remoteDegenerateAxesSummary
-                               : (this->astro ? this->astro->degenerateAxesSummary() : QString());
+    const QString datasetBounds =
+            u"x=0..%1 y=0..%2 z=0..%3"_s.arg(std::max(0, this->remoteDatasetWidth - 1))
+                    .arg(std::max(0, this->remoteDatasetHeight - 1))
+                    .arg(std::max(0, this->remoteDatasetDepth - 1));
+    const QString note = u"Probe/profile: loaded block only"_s;
+    const QString degenerateSummary = this->remoteDegenerateAxesSummary;
     QString text = u"%1 | %2 | Loaded: %3 | Dataset: %4 | WCS: %5 | Axis3: %6"_s.arg(origin,
                                                                                          representation,
                                                                                          loadedBounds,
                                                                                          datasetBounds,
                                                                                          this->currentWcsFrameLabel(),
                                                                                          this->spectralAxisTitle());
-    if (this->isRemoteMode) {
-        text += u" | Refine: %1"_s.arg(refinement);
-    }
+    text += u" | Refine: %1"_s.arg(refinement);
     if (!degenerateSummary.isEmpty()) {
         text += u" | Collapsed axes"_s;
     }
@@ -6167,18 +5798,6 @@ void vtkWindowCube::updateDataStatePanel()
 
 QString vtkWindowCube::selectedFrameAxisTitle(int axis) const
 {
-    if (this->astro && !this->astro->isSimulation()) {
-        const int frame = this->selectedWcsFrame();
-        if (frame == WCS_J2000) {
-            return axis == 0 ? u"Right Ascension"_s : u"Declination"_s;
-        }
-        if (frame == WCS_GALACTIC) {
-            return axis == 0 ? u"Galactic Longitude"_s : u"Galactic Latitude"_s;
-        }
-        if (frame == WCS_ECLIPTIC) {
-            return axis == 0 ? u"Ecliptic Longitude"_s : u"Ecliptic Latitude"_s;
-        }
-    }
     return this->remoteOverlayAxisTitle(axis);
 }
 
@@ -6187,50 +5806,40 @@ QString vtkWindowCube::formatLocalProbeCoordinate(int axis, const std::array<int
     if (axis == 2) {
         return this->formatSpectralAxisValue(voxel[2]);
     }
-    if (!this->astro || this->astro->isSimulation()) {
-        return QString::number(voxel[axis]);
-    }
-
-    const double pix[2] = { static_cast<double>(voxel[0]), static_cast<double>(voxel[1]) };
-    double pos[2] = { 0., 0. };
-    this->astro->xy2sky(pix, pos, this->selectedWcsFrame());
-    if (!this->useSexagesimalWcsFormat) {
-        return this->formatDegreeCoordinate(pos[axis]);
-    }
-    return formatCelestialCoordinate(this->selectedWcsFrame(), axis, pos[axis]);
+    return QString::number(voxel[axis]);
 }
 
 void vtkWindowCube::set2dWcsOverlayVisible(bool visible)
 {
-    const bool useLegend = this->astro && !this->astro->isSimulation();
-    this->legendSlice->SetVisibility(visible && useLegend);
-    this->legendMoment->SetVisibility(visible && useLegend);
-    this->sliceOverlayXAxis->SetVisibility(visible && !useLegend);
-    this->sliceOverlayYAxis->SetVisibility(visible && !useLegend);
-    this->sliceOverlayXTitleActor->SetVisibility(visible && !useLegend);
-    this->sliceOverlayYTitleActor->SetVisibility(visible && !useLegend);
-    this->momentOverlayXAxis->SetVisibility(visible && !useLegend);
-    this->momentOverlayYAxis->SetVisibility(visible && !useLegend);
-    this->momentOverlayXTitleActor->SetVisibility(visible && !useLegend);
-    this->momentOverlayYTitleActor->SetVisibility(visible && !useLegend);
+    // Legend actors require local AstroUtils (not available in backend mode); always use overlay axes.
+    this->legendSlice->SetVisibility(false);
+    this->legendMoment->SetVisibility(false);
+    this->sliceOverlayXAxis->SetVisibility(visible);
+    this->sliceOverlayYAxis->SetVisibility(visible);
+    this->sliceOverlayXTitleActor->SetVisibility(visible);
+    this->sliceOverlayYTitleActor->SetVisibility(visible);
+    this->momentOverlayXAxis->SetVisibility(visible);
+    this->momentOverlayYAxis->SetVisibility(visible);
+    this->momentOverlayXTitleActor->SetVisibility(visible);
+    this->momentOverlayYTitleActor->SetVisibility(visible);
     for (const auto &actor : this->sliceOverlayXTickActors) {
         if (actor) {
-            actor->SetVisibility(visible && !useLegend);
+            actor->SetVisibility(visible);
         }
     }
     for (const auto &actor : this->sliceOverlayYTickActors) {
         if (actor) {
-            actor->SetVisibility(visible && !useLegend);
+            actor->SetVisibility(visible);
         }
     }
     for (const auto &actor : this->momentOverlayXTickActors) {
         if (actor) {
-            actor->SetVisibility(visible && !useLegend);
+            actor->SetVisibility(visible);
         }
     }
     for (const auto &actor : this->momentOverlayYTickActors) {
         if (actor) {
-            actor->SetVisibility(visible && !useLegend);
+            actor->SetVisibility(visible);
         }
     }
 }
@@ -6299,9 +5908,7 @@ void vtkWindowCube::requestWcsOverlayRender()
                 if (this->probeValid) {
                     this->refreshProbeOverlay();
                     auto *currentImage = this->viewingSlice()
-                            ? (this->isRemoteMode
-                                       ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-                                       : this->slice->GetOutput())
+                            ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
                             : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
                     this->updateProbeReadout(currentImage);
                 }
@@ -6331,9 +5938,7 @@ void vtkWindowCube::updateSliceWcsOverlay()
     auto *rendererCollection = this->sliceWin->GetRenderers();
     auto *renderer = rendererCollection ? rendererCollection->GetFirstRenderer() : nullptr;
     auto *imageData = this->viewingSlice()
-            ? (this->isRemoteMode
-                       ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-                       : this->slice->GetOutput())
+            ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
             : nullptr;
     if (!renderer || !this->sliceOverlayXAxis.GetPointer() || !this->sliceOverlayYAxis.GetPointer()
         || !this->sliceOverlayXTitleActor.GetPointer() || !this->sliceOverlayYTitleActor.GetPointer()) {
@@ -6348,9 +5953,8 @@ void vtkWindowCube::updateSliceWcsOverlay()
                            .arg(reinterpret_cast<quintptr>(imageData), 0, 16);
         return;
     }
-    const bool useLegend = this->astro && !this->astro->isSimulation();
     this->set2dWcsOverlayVisible(this->showWcsAxes);
-    if (!this->showWcsAxes || useLegend || !renderer || !imageData) {
+    if (!this->showWcsAxes || !renderer || !imageData) {
         return;
     }
     this->ensureOverlayTickActors(renderer, this->sliceOverlayXTickActors, this->sliceOverlayYTickActors);
@@ -6484,9 +6088,8 @@ void vtkWindowCube::updateMomentWcsOverlay()
                            .arg(reinterpret_cast<quintptr>(imageData), 0, 16);
         return;
     }
-    const bool useLegend = this->astro && !this->astro->isSimulation();
     this->set2dWcsOverlayVisible(this->showWcsAxes);
-    if (!this->showWcsAxes || useLegend || !renderer || !imageData) {
+    if (!this->showWcsAxes || !renderer || !imageData) {
         return;
     }
     this->ensureOverlayTickActors(renderer, this->momentOverlayXTickActors, this->momentOverlayYTickActors);
@@ -6701,10 +6304,6 @@ void vtkWindowCube::startRemoteSliceFetch(int sliceIndex, bool isPrefetch, int r
 
 void vtkWindowCube::prefetchNeighborRemoteSlices(int sliceIndex)
 {
-    if (!this->isRemoteMode) {
-        return;
-    }
-
     for (const int neighbor : { sliceIndex - 1, sliceIndex + 1 }) {
         if (neighbor < 0 || neighbor >= this->remoteSliceCount()) {
             continue;
@@ -6721,11 +6320,7 @@ void vtkWindowCube::prefetchNeighborRemoteSlices(int sliceIndex)
 
 void vtkWindowCube::updateContoursVisibility()
 {
-    if (this->isRemoteMode) {
-        this->contoursActor->SetVisibility(ui->checkContours->isChecked());
-    } else {
-        this->viewController->setContoursVisible(ui->checkContours->isChecked());
-    }
+    this->contoursActor->SetVisibility(ui->checkContours->isChecked());
     this->sliceWin->Render();
 }
 
@@ -6738,8 +6333,7 @@ void vtkWindowCube::setMomentOrder(int order)
     MomentGenerationConfig config = this->currentMomentConfig;
     config.order = order;
     if (config.channelEnd <= config.channelStart) {
-        const int totalChannels = this->isRemoteMode ? std::max(1, this->remoteDatasetDepth)
-                                                     : std::max(1, this->astro->getDimensions()[2]);
+        const int totalChannels = std::max(1, this->remoteDatasetDepth);
         config.channelStart = 0;
         config.channelEnd = totalChannels - 1;
     }
@@ -6754,11 +6348,10 @@ void vtkWindowCube::setMomentOrder(int order)
     this->showPersistentStatusMessage(u"Computing moment..."_s);
     this->momentComputeWatcher.setFuture(QtConcurrent::run(
             &computeMomentMap, MomentMapComputeRequest { this->filepath,
-                                                        this->isRemoteMode ? this->remoteDatasetId : QString {},
-                                                        this->isRemoteMode ? this->remoteBackendUrl : QString {},
-                                                        this->isRemoteMode ? this->remoteSessionId : QString {},
-                                                        this->isRemoteMode ? this->remoteBackendToken
-                                                                           : QString {},
+                                                        this->remoteDatasetId,
+                                                        this->remoteBackendUrl,
+                                                        this->remoteSessionId,
+                                                        this->remoteBackendToken,
                                                         config.order,
                                                         config.channelStart,
                                                         config.channelEnd,
@@ -6794,15 +6387,9 @@ void vtkWindowCube::clearPersistentStatusMessage()
 
 void vtkWindowCube::updateContours()
 {
-    if (this->isRemoteMode) {
-        this->contours->GenerateValues(ui->lineLevel->text().toInt(),
-                                       ui->lineLowerBound->text().toDouble(),
-                                       ui->lineUpperBound->text().toDouble());
-    } else {
-        this->viewController->updateContours(ui->lineLevel->text().toInt(),
-                                             ui->lineLowerBound->text().toDouble(),
-                                             ui->lineUpperBound->text().toDouble());
-    }
+    this->contours->GenerateValues(ui->lineLevel->text().toInt(),
+                                   ui->lineLowerBound->text().toDouble(),
+                                   ui->lineUpperBound->text().toDouble());
     this->sliceWin->Render();
 }
 
@@ -6835,7 +6422,7 @@ void vtkWindowCube::sliceSliderChanged(int action)
     }
 
     const int sliderValue = ui->sliderSlice->sliderPosition();
-    if (this->isRemoteMode && ui->sliderSlice->isSliderDown()) {
+    if (ui->sliderSlice->isSliderDown()) {
         const QSignalBlocker blockSpin(ui->spinSlice);
         ui->spinSlice->setValue(sliderValue);
         const int sliceIndex = sliderValue - 1;
@@ -6872,9 +6459,6 @@ void vtkWindowCube::changeLegendWCS()
     const int wcs = (ui->actionGalactic->isChecked()
                              ? WCS_GALACTIC
                              : (ui->actionFK5->isChecked() ? WCS_J2000 : WCS_ECLIPTIC));
-    if (this->astro) {
-        this->viewController->setLegendWcs(wcs);
-    }
     this->applyDefaultWcsFormatForSelectedFrame();
     this->invalidateWcsOverlayCache();
     qDebug().noquote()
@@ -6909,11 +6493,9 @@ void vtkWindowCube::updateLUTCustomizer()
     }
 
     if (this->viewingSlice()) {
-        this->lutCustomizer->init(this->isRemoteMode
-                                          ? vtkImageData::SafeDownCast(
-                                                    this->remoteSliceDisplaySource->GetOutputDataObject(0))
-                                          : this->slice->GetOutput(),
-                                  this->lutSlice);
+        this->lutCustomizer->init(
+                vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0)),
+                this->lutSlice);
     } else {
         this->lutCustomizer->init(
                 vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0)),
@@ -7019,9 +6601,6 @@ void vtkWindowCube::setRemoteCubeDisplayState(RemoteCubeDisplayState state)
     this->remoteCubeDisplayState = state;
     this->updateDataStatePanel();
     this->updateSanityPanel();
-    if (!this->isRemoteMode) {
-        return;
-    }
 
     switch (state) {
     case RemoteCubeDisplayState::Preview:
@@ -7066,7 +6645,7 @@ void vtkWindowCube::setMomentActionsEnabled(bool enabled)
 
 bool vtkWindowCube::hasBackendVisibleDataset() const
 {
-    return this->isRemoteMode && !this->remoteDatasetId.isEmpty();
+    return !this->remoteDatasetId.isEmpty();
 }
 
 void vtkWindowCube::updateBackendDerivedActionsAvailability()
@@ -7229,10 +6808,6 @@ void vtkWindowCube::setInteractorStyleRegion()
 
 void vtkWindowCube::setInteractorStyleProfile()
 {
-    if (this->isRemoteMode) {
-        return;
-    }
-
     if (!this->profileWidget) {
         vtkNew<vtkInteractorStyleProfile> style;
         ui->vtkImage->renderWindow()->GetInteractor()->SetInteractorStyle(style);
@@ -7241,11 +6816,8 @@ void vtkWindowCube::setInteractorStyleProfile()
         this->profileWidget = new ProfileWidget(
                 style, vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0)),
                                                 this->filepath.toStdString(), this);
-        const QString yLabel = this->astro ? QString::fromStdString(this->astro->getPhysicalUnit())
-                                           : u"Value"_s;
         this->profileWidget->setUsageMode(ProfileWidget::UsageMode::ProbeLive, u"Profile"_s);
-        this->profileWidget->setupSpectrumPlot(this->spectralAxisTitle(),
-                                               yLabel.isEmpty() ? u"Value"_s : yLabel);
+        this->profileWidget->setupSpectrumPlot(this->spectralAxisTitle(), u"Value"_s);
         QObject::connect(this->profileWidget, &ProfileWidget::destroyed, this,
                          &vtkWindowCube::setInteractorStyleImage, Qt::QueuedConnection);
     }
@@ -7304,25 +6876,20 @@ void vtkWindowCube::setProbeModeActive(bool active)
 
     if (!this->probeValid) {
         auto *imageData = this->viewingSlice()
-                ? (this->isRemoteMode
-                           ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-                           : this->slice->GetOutput())
+                ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
                 : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
         if (imageData) {
             int extent[6];
             imageData->GetExtent(extent);
             this->probeValid = true;
             this->probeVoxel = { (extent[0] + extent[1]) / 2, (extent[2] + extent[3]) / 2,
-                                 this->isRemoteMode ? this->clampRemoteSliceIndex(ui->spinSlice->value() - 1)
-                                                    : std::max(0, ui->spinSlice->value() - 1) };
+                                 this->clampRemoteSliceIndex(ui->spinSlice->value() - 1) };
         }
     }
 
     this->refreshProbeOverlay();
     auto *currentImage = this->viewingSlice()
-            ? (this->isRemoteMode
-                       ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-                       : this->slice->GetOutput())
+            ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
             : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
     this->updateProbeReadout(currentImage);
     this->updateProbePlot();
@@ -7335,9 +6902,8 @@ void vtkWindowCube::changeImageRenderer()
     if (ui->actionSlice->isChecked()) {
         ui->vtkImage->setRenderWindow(this->sliceWin);
         ui->labelImg->setText(u"Slice:"_s);
-        auto *sliceImage = this->isRemoteMode
-                ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-                : this->sliceOnCube->GetOutput();
+        auto *sliceImage = vtkImageData::SafeDownCast(
+                this->remoteSliceDisplaySource->GetOutputDataObject(0));
         if (sliceImage) {
             sliceImage->GetScalarRange(imgRange);
         } else {
@@ -7362,9 +6928,7 @@ void vtkWindowCube::changeImageRenderer()
     if (this->probeModeActive && this->probeValid) {
         this->refreshProbeOverlay();
         auto *currentImage = this->viewingSlice()
-                ? (this->isRemoteMode
-                           ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-                           : this->slice->GetOutput())
+                ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
                 : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
         this->updateProbeReadout(currentImage);
     }
@@ -7380,10 +6944,9 @@ void vtkWindowCube::changeImageRenderer()
 void vtkWindowCube::changeCubeRender()
 {
     qDebug().noquote()
-            << QStringLiteral("[remote-iso] changeCubeRender triggered checked=%1 remote=%2")
-                       .arg(ui->actionIsosurface->isChecked())
-                       .arg(this->isRemoteMode);
-    if (this->isRemoteMode && ui->actionIsosurface->isChecked()) {
+            << QStringLiteral("[remote-iso] changeCubeRender triggered checked=%1")
+                       .arg(ui->actionIsosurface->isChecked());
+    if (ui->actionIsosurface->isChecked()) {
         this->scheduleIsosurfaceRecompute();
         this->setCubeRenderModeLocally(false);
         qDebug().noquote()
@@ -7391,7 +6954,7 @@ void vtkWindowCube::changeCubeRender()
         ui->vtkCube->renderWindow()->Render();
         return;
     }
-    this->setCubeRenderModeLocally(ui->actionIsosurface->isChecked());
+    this->setCubeRenderModeLocally(false);
     ui->vtkCube->renderWindow()->Render();
 }
 
@@ -7478,15 +7041,12 @@ void vtkWindowCube::renderImage()
 
 void vtkWindowCube::syncSlicesLUT()
 {
-    if (!this->isRemoteMode) {
-        this->viewController->syncSlicesLut();
-        ui->vtkCube->renderWindow()->Render();
-    }
+    // LUT sync across local slice actors not applicable in backend mode.
 }
 
 void vtkWindowCube::startAsyncIsosurface(double isoValue)
 {
-    if (this->isRemoteMode && this->remoteIsosurfaceRequestInFlight
+    if (this->remoteIsosurfaceRequestInFlight
         && std::fabs(this->inFlightRemoteIsosurfaceThreshold - isoValue) < 1e-9) {
         qDebug().noquote()
                 << QStringLiteral("[remote-iso] skipping duplicate in-flight threshold=%1")
@@ -7497,13 +7057,12 @@ void vtkWindowCube::startAsyncIsosurface(double isoValue)
     const int requestId = ++this->currentIsosurfaceRequestId;
     this->remoteIsosurfaceReady = false;
     qDebug().noquote()
-            << QStringLiteral("[remote-iso] startAsyncIsosurface requestId=%1 threshold=%2 remote=%3")
+            << QStringLiteral("[remote-iso] startAsyncIsosurface requestId=%1 threshold=%2")
                        .arg(requestId)
-                       .arg(isoValue, 0, 'g', 12)
-                       .arg(this->isRemoteMode);
+                       .arg(isoValue, 0, 'g', 12);
     this->showPersistentStatusMessage(u"Computing isocontour..."_s);
 
-    if (this->isRemoteMode) {
+    {
         const std::array<int, 6> fullExtent = { 0,
                                                 std::max(0, this->remoteDatasetWidth - 1),
                                                 0,
@@ -7582,29 +7141,7 @@ void vtkWindowCube::startAsyncIsosurface(double isoValue)
         watcher->setFuture(QtConcurrent::run(&fetchRemoteIsosurface, this->remoteBackendUrl,
                                              this->remoteDatasetId, isoValue, requestId,
                                              this->remoteSessionId, this->remoteBackendToken));
-        return;
     }
-
-    if (this->isosurfaceWatcher.isRunning()) {
-        return;
-    }
-
-    auto *source = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
-    if (!source) {
-        return;
-    }
-
-    vtkSmartPointer<vtkImageData> data = vtkSmartPointer<vtkImageData>::New();
-    QElapsedTimer deepCopyTimer;
-    deepCopyTimer.start();
-    data->DeepCopy(source);
-    qDebug().noquote() << QStringLiteral("[perf][isosurface] DeepCopy before async launch: %1 ms")
-                              .arg(deepCopyTimer.elapsed());
-
-    this->isosurfaceWatcher.setFuture(
-            QtConcurrent::run([data, isoValue, requestId]() {
-                return computeIsosurface(data, isoValue, requestId);
-            }));
 }
 
 void vtkWindowCube::scheduleIsosurfaceRecompute()
@@ -7620,16 +7157,8 @@ void vtkWindowCube::scheduleIsosurfacePrewarm()
     }
 
     this->lastIsosurfacePrewarmGeneration = this->currentFullCubeGeneration;
-    QTimer::singleShot(0, this, [this]() {
-        if (this->isRemoteMode) {
-            return;
-        }
-        if (this->isosurfaceWatcher.isRunning()) {
-            return;
-        }
-
-        this->startAsyncIsosurface(ui->lineThreshold->text().toDouble());
-    });
+    // Isosurface prewarm not applicable in remote mode — backend computes on demand.
+    Q_UNUSED(this);
 }
 
 void vtkWindowCube::setCubeRenderModeLocally(bool isosurfaceMode)
@@ -7639,7 +7168,7 @@ void vtkWindowCube::setCubeRenderModeLocally(bool isosurfaceMode)
         return;
     }
 
-    if (this->isRemoteMode && isosurfaceMode && !this->remoteIsosurfaceReady) {
+    if (isosurfaceMode && !this->remoteIsosurfaceReady) {
         isosurfaceMode = false;
     }
 
@@ -7709,7 +7238,7 @@ void vtkWindowCube::applyIsosurfaceResult(const AsyncIsosurfaceResult &result)
         return;
     }
 
-    if (this->isRemoteMode && cubeImage && validBounds(cubeBounds) && !result.meshInDisplayCoordinates) {
+    if (cubeImage && validBounds(cubeBounds) && !result.meshInDisplayCoordinates) {
         const double fullBounds[6] = { 0.0,
                                        std::max(0, this->remoteDatasetWidth - 1) * 1.0,
                                        0.0,
@@ -7775,9 +7304,7 @@ void vtkWindowCube::applyIsosurfaceResult(const AsyncIsosurfaceResult &result)
 
     QElapsedTimer renderTimer;
     renderTimer.start();
-    if (this->isRemoteMode) {
-        ui->actionIsosurface->setChecked(true);
-    }
+    ui->actionIsosurface->setChecked(true);
     this->setCubeRenderModeLocally(true);
     ui->vtkCube->renderWindow()->Render();
     qDebug().noquote()

@@ -4,8 +4,6 @@
 #include "AboutDialog.h"
 #include "AuthWrapper.h"
 #include "app/BackendClient.h"
-#include "DatasetOpenService.h"
-#include "DatasetWindowFactory.h"
 #include "DiagnosticsWindow.h"
 #include "RemoteFileBrowserDialog.h"
 #include "Settings.h"
@@ -24,8 +22,6 @@
 #include <QDir>
 #include <QDoubleValidator>
 #include <QFileDialog>
-#include <QFileInfo>
-#include <QInputDialog>
 #include <QMessageBox>
 #include <QMenu>
 #include <QMenuBar>
@@ -46,13 +42,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // Create core objects
     this->settings = new Settings(workDir, this);
     this->auth = new AuthWrapper(this);
-    this->datasetOpenService = std::make_unique<DatasetOpenService>();
-    this->datasetWindowFactory = std::make_unique<DatasetWindowFactory>();
     QObject::connect(this->settings, &Settings::updated, this, &MainWindow::setApplicationTheme);
     QObject::connect(this->settings, &Settings::updated, this, &MainWindow::loadPanoramicView);
 
     // Setup Menu File
-    QObject::connect(ui->actionOpenFile, &QAction::triggered, this, &MainWindow::openLocalData);
+    QObject::connect(ui->actionOpenFile, &QAction::triggered, this, &MainWindow::openData);
     QObject::connect(ui->actionOpenVbt, &QAction::triggered, this, &MainWindow::openVbt);
     QObject::connect(ui->actionOpenCatalogue3D, &QAction::triggered, this,
                      &MainWindow::openCatalogue3D);
@@ -82,7 +76,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 
     // Setup Loading
     ui->btnLoadData->setIcon(QIcon(u":/icons/FILE_OPEN.png"_s));
-    QObject::connect(ui->btnLoadData, &QPushButton::clicked, this, &MainWindow::openLocalData);
+    QObject::connect(ui->btnLoadData, &QPushButton::clicked, this, &MainWindow::openData);
 
     // Setup selection modes
     auto groupSelection = new QButtonGroup(this);
@@ -132,57 +126,78 @@ void MainWindow::setApplicationTheme()
     QGuiApplication::styleHints()->setColorScheme(this->settings->getColorScheme());
 }
 
-void MainWindow::openLocalData()
+void MainWindow::openData()
 {
-    bool ok = false;
-    const QString source = QInputDialog::getItem(
-            this, u"Open dataset"_s, u"Source"_s, { u"Local file"_s, u"Remote backend"_s }, 0,
-            false, &ok);
-    if (!ok || source.isEmpty()) {
+    // All datasets are opened via the backend. The backend may be a localhost
+    // instance or a remote server — that distinction is a deployment detail,
+    // not a client-side mode. There is no "local FITS open" path.
+    BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
+    const auto health = client.health();
+    if (!health.ok) {
+        QMessageBox::critical(
+                this, u"Backend unavailable"_s,
+                u"Cannot open a dataset: the backend is not reachable.\n\n"
+                "Start a local backend or configure a remote backend URL in Settings, "
+                "then try again.\n\nError: %1"_s.arg(health.error.isEmpty()
+                                                              ? u"No response"_s
+                                                              : health.error));
         return;
     }
 
-    if (source == u"Remote backend"_s) {
-        this->openRemoteData();
+    RemoteFileBrowserDialog dialog(client.baseUrl(), this);
+    if (dialog.exec() != QDialog::Accepted) {
         return;
     }
 
-    const QString filepath = QFileDialog::getOpenFileName(
-            this, u"Open local FITS file"_s, QString(),
-            u"FITS files (*.fits *.fit *.fts);;All files (*)"_s);
-    if (filepath.isEmpty()) {
+    const QString path = dialog.selectedFilePath();
+    if (path.isEmpty()) {
         return;
     }
 
-    const QFileInfo fi(filepath);
-    const QString suffix = fi.suffix().toLower();
-    if (suffix != u"fits"_s && suffix != u"fit"_s && suffix != u"fts"_s) {
+    const auto opened = client.openDataset(path);
+    if (!opened.valid) {
+        QMessageBox::critical(
+                this, u"Could not open dataset"_s,
+                u"The backend could not open this dataset.\n\n%1\n\n"
+                "Supported formats: FITS (image, cube). For HDF5, Gadget, VOTable, "
+                "or simulation data, convert with VisIVOServer first."_s.arg(
+                        opened.error.isEmpty() ? u"Backend returned no error detail."_s
+                                               : opened.error));
+        return;
+    }
+
+    QWidget *win = nullptr;
+    if (opened.kind == u"image"_s) {
+        qDebug().noquote()
+                << QStringLiteral("[fits] active_axes=%1 -> opening as 2D image | %2")
+                           .arg(opened.activeAxes)
+                           .arg(opened.degenerateAxesSummary.isEmpty()
+                                        ? QStringLiteral("no collapsed axes")
+                                        : opened.degenerateAxesSummary);
+        win = new vtkWindowImage(path, client.baseUrl(), opened.datasetId,
+                                 opened.ctype, opened.cunit, opened.crval, opened.crpix,
+                                 opened.cdelt, opened.degenerateAxesSummary,
+                                 opened.wcsStatus, opened.wcsWarningMessage,
+                                 client.sessionId(), client.token(), this);
+    } else if (opened.kind == u"cube"_s) {
+        qDebug().noquote()
+                << QStringLiteral("[fits] active_axes=%1 -> opening as cube | %2")
+                           .arg(opened.activeAxes)
+                           .arg(opened.degenerateAxesSummary.isEmpty()
+                                        ? QStringLiteral("no collapsed axes")
+                                        : opened.degenerateAxesSummary);
+        win = new vtkWindowCube(path, client.baseUrl(), opened.datasetId, opened.width,
+                                opened.height, opened.depth, opened.spacing, opened.origin,
+                                opened.ctype, opened.cunit, opened.crval, opened.crpix,
+                                opened.cdelt, opened.degenerateAxesSummary,
+                                opened.spectralAxisType, opened.spectralAxisUnit,
+                                opened.wcsStatus, opened.wcsWarningMessage,
+                                client.sessionId(), client.token(), this);
+    } else {
         QMessageBox::information(
-                this, u"Unsupported file format"_s,
-                u"VisIVO Visual Analytics natively supports FITS files only.\n\n"
-                "To visualise HDF5, Gadget, VOTable, or simulation data, "
-                "first convert it with VisIVOServer:\n"
-                "  https://visivo.oact.inaf.it/visivo-server\n\n"
-                "VisIVOServer can convert most astrophysical formats to the VBT "
-                "binary table format that VisIVO VA can open directly."_s);
-        return;
-    }
-
-    const DatasetOpenInfo dataset = this->datasetOpenService->inspect(DatasetOpenRequest { filepath });
-    if (!dataset.isValid()) {
-        QMessageBox::critical(this, u"Could not open file"_s, dataset.errorMessage);
-        return;
-    }
-
-    QWidget *win = this->datasetWindowFactory->createWindow(
-            dataset, this->settings->getBackendUrl(), this->settings->getBackendToken(), this);
-    if (!win) {
-        QMessageBox::critical(this, u"Could not open file"_s,
-                              u"The file could not be opened as a FITS image or cube.\n\n"
-                              "If this is a FITS binary table or catalogue, use "
-                              "File → Open 3D Catalogue instead.\n"
-                              "For other formats, see VisIVOServer: "
-                              "https://visivo.oact.inaf.it/visivo-server"_s);
+                this, u"Unsupported dataset"_s,
+                u"The backend reported an unsupported dataset kind: '%1'.\n\n"
+                "Only FITS images and spectral cubes are supported."_s.arg(opened.kind));
         return;
     }
 
@@ -233,74 +248,6 @@ void MainWindow::openVbt()
     win->activateWindow();
 }
 
-void MainWindow::openRemoteData()
-{
-    BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
-    const auto health = client.health();
-    if (!health.ok) {
-        QMessageBox::critical(this, u"Backend unavailable"_s,
-                              health.error.isEmpty() ? u"Could not reach backend."_s : health.error);
-        return;
-    }
-
-    RemoteFileBrowserDialog dialog(client.baseUrl(), this);
-    if (dialog.exec() != QDialog::Accepted) {
-        return;
-    }
-
-    const QString remotePath = dialog.selectedFilePath();
-    if (remotePath.isEmpty()) {
-        return;
-    }
-
-    const auto opened = client.openDataset(remotePath);
-    if (!opened.valid) {
-        QMessageBox::critical(this, u"Could not open remote dataset"_s,
-                              opened.error.isEmpty() ? u"Backend rejected dataset open."_s
-                                                     : opened.error);
-        return;
-    }
-
-    if (opened.kind != u"cube"_s) {
-        if (opened.kind == u"image"_s) {
-            qDebug().noquote()
-                    << QStringLiteral("[fits] active_axes=%1 -> opening as 2D image | %2")
-                               .arg(opened.activeAxes)
-                               .arg(opened.degenerateAxesSummary.isEmpty()
-                                            ? QStringLiteral("no collapsed axes")
-                                            : opened.degenerateAxesSummary);
-            auto *win = new vtkWindowImage(remotePath, client.baseUrl(), opened.datasetId,
-                                           opened.ctype, opened.cunit, opened.crval, opened.crpix,
-                                           opened.cdelt, opened.degenerateAxesSummary,
-                                           opened.wcsStatus, opened.wcsWarningMessage,
-                                           client.sessionId(), client.token(), this);
-            win->show();
-            win->raise();
-            win->activateWindow();
-            return;
-        }
-
-        QMessageBox::information(this, u"Remote dataset"_s, u"Unsupported remote dataset kind."_s);
-        return;
-    }
-
-    qDebug().noquote()
-            << QStringLiteral("[fits] active_axes=%1 -> opening as cube | %2")
-                       .arg(opened.activeAxes)
-                       .arg(opened.degenerateAxesSummary.isEmpty()
-                                    ? QStringLiteral("no collapsed axes")
-                                    : opened.degenerateAxesSummary);
-    auto *win = new vtkWindowCube(remotePath, client.baseUrl(), opened.datasetId, opened.width,
-                                  opened.height, opened.depth, opened.spacing, opened.origin,
-                                  opened.ctype, opened.cunit, opened.crval, opened.crpix,
-                                  opened.cdelt, opened.degenerateAxesSummary,
-                                  opened.spectralAxisType, opened.spectralAxisUnit,
-                                  opened.wcsStatus, opened.wcsWarningMessage,
-                                  client.sessionId(), client.token(), this);
-    win->show();
-    win->raise();
-    win->activateWindow();
-}
 
 void MainWindow::openSettingsDialog()
 {

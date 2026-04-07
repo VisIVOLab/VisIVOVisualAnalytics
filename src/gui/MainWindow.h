@@ -6,8 +6,6 @@
 
 #include <memory>
 
-class DatasetOpenService;
-class DatasetWindowFactory;
 class AuthWrapper;
 class DiagnosticsWindow;
 class Settings;
@@ -36,10 +34,11 @@ private slots:
     void setApplicationTheme();
 
     /**
-   * Show a QFileDialog to select and open local files
-   */
-    void openLocalData();
-    void openRemoteData();
+     * Open a dataset via the backend. The user browses the backend filesystem
+     * through RemoteFileBrowserDialog; the file is always registered on the
+     * backend before a viewer window is created.
+     */
+    void openData();
 
     /**
    * Show a QFileDialog to open a CSV catalogue in the 3D viewer
@@ -80,9 +79,6 @@ private:
     QPointer<Settings> settings;
     QPointer<AuthWrapper> auth;
     QPointer<DiagnosticsWindow> diagnosticsWindow;
-    std::unique_ptr<DatasetOpenService> datasetOpenService;
-    std::unique_ptr<DatasetWindowFactory> datasetWindowFactory;
-
     void openDiagnosticsWindow();
 };
 

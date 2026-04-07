@@ -619,8 +619,7 @@ int inferCelestialFrameFromCtypePair(const std::array<QString, 3> &ctype)
     return -1;
 }
 
-SanityReport buildImageSanityReport(bool isRemoteMode, AstroUtils *astro,
-                                    const std::array<QString, 3> &ctype,
+SanityReport buildImageSanityReport(const std::array<QString, 3> &ctype,
                                     const std::array<QString, 3> &cunit,
                                     const std::array<double, 3> &crval,
                                     const std::array<double, 3> &crpix,
@@ -664,11 +663,8 @@ SanityReport buildImageSanityReport(bool isRemoteMode, AstroUtils *astro,
         warnings << u"Loaded image is heavily blanked/NaN (%1%)."_s.arg(blankFraction * 100.0, 0, 'f', 1);
     }
 
-    if (isRemoteMode && (!warnings.isEmpty() || !unknowns.isEmpty())) {
-        unknowns << u"Remote image still opens, but incomplete metadata lowers WCS confidence."_s;
-    }
-    if (!isRemoteMode && astro && astro->isSimulation()) {
-        unknowns << u"Local dataset has no supported celestial WCS; pixel/index semantics remain valid."_s;
+    if (!warnings.isEmpty() || !unknowns.isEmpty()) {
+        unknowns << u"Backend image still opens, but incomplete metadata lowers WCS confidence."_s;
     }
 
     SanityReport report;
@@ -824,24 +820,6 @@ QString formatImageBoundsSummary(vtkImageData *imageData)
 }
 }
 
-vtkWindowImage::vtkWindowImage(const QString &filepath, QWidget *parent)
-    : vtkWindowImage(filepath,
-                     {},
-                     {},
-                     { QString(), QString(), QString() },
-                     { QString(), QString(), QString() },
-                     { 0.0, 0.0, 0.0 },
-                     { 1.0, 1.0, 1.0 },
-                     { 1.0, 1.0, 1.0 },
-                     {},
-                     {},
-                     {},
-                     {},
-                     {},
-                     parent)
-{
-}
-
 vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUrl,
                                const QString &datasetId,
                                const std::array<QString, 3> &remoteCtype,
@@ -857,7 +835,6 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     : QMainWindow(parent),
       ui(new Ui::vtkWindowImage),
       filepath(filepath),
-      isRemoteMode(!datasetId.isEmpty()),
       remoteBackendUrl(backendUrl),
       remoteDatasetId(datasetId),
       remoteSessionId(remoteSessionId),
@@ -870,22 +847,19 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
       remoteDegenerateAxesSummary(remoteDegenerateAxesSummary),
       remoteWcsStatus(remoteWcsStatus),
       remoteWcsWarningMessage(remoteWcsWarningMessage),
-      astro(this->isRemoteMode ? nullptr : std::make_unique<AstroUtils>(filepath.toStdString())),
+      astro(nullptr), // WCS metadata comes from the backend, not a local file parse
       lutCustomizer(nullptr),
       profileWidget(nullptr),
       layers(nullptr),
       importService(std::make_unique<ImageLayerImportService>())
 {
     ui->setupUi(this);
-    if (this->isRemoteMode) {
-        qDebug().noquote()
-                << QStringLiteral("[wcs] remote metadata loaded ctype=%1,%2 cdelt=%3,%4")
-                           .arg(this->remoteDatasetCtype[0], this->remoteDatasetCtype[1])
-                           .arg(this->remoteDatasetCdelt[0], 0, 'g', 12)
-                           .arg(this->remoteDatasetCdelt[1], 0, 'g', 12);
-    }
-    this->setWindowTitle(this->isRemoteMode ? u"%1 [remote image]"_s.arg(this->filepath)
-                                            : this->filepath);
+    qDebug().noquote()
+            << QStringLiteral("[wcs] remote metadata loaded ctype=%1,%2 cdelt=%3,%4")
+                       .arg(this->remoteDatasetCtype[0], this->remoteDatasetCtype[1])
+                       .arg(this->remoteDatasetCdelt[0], 0, 'g', 12)
+                       .arg(this->remoteDatasetCdelt[1], 0, 'g', 12);
+    this->setWindowTitle(this->filepath);
     this->setAttribute(Qt::WA_DeleteOnClose);
     this->wcsAxesCheck = new QCheckBox(u"Show WCS Axes"_s, this);
     this->wcsAxesCheck->setChecked(this->showWcsAxes);
@@ -1009,17 +983,14 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                          this->clearPersistentStatusMessage();
                      });
 
-    this->layers = this->isRemoteMode
-            ? new LayerListModel(createPlaceholderRemoteLayerResult(this->filepath), this)
-            : new LayerListModel(this->filepath.toStdString(), this);
+    // Backend-authoritative: initialise with a placeholder; real image data
+    // arrives via the remote full-image watcher.
+    this->layers = new LayerListModel(createPlaceholderRemoteLayerResult(this->filepath), this);
 
     this->setupRenderer();
     this->applyInitialAutoscale(this->layers->getImageData(this->layers->getMasterIndex()),
                                 this->layers->getLookupTable(this->layers->getMasterIndex()),
                                 "initial master");
-    if (!this->isRemoteMode) {
-        this->displayStateInitialized = true;
-    }
     this->updateLargeImageMode(this->layers->getImageData(this->layers->getMasterIndex()), "initial");
     this->updateDataStatePanel();
     this->updateSanityPanel();
@@ -1146,15 +1117,13 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     QObject::connect(ui->listLayer->selectionModel(), &QItemSelectionModel::currentChanged, this,
                      &vtkWindowImage::updateLUTCustomizer);
 
-    if (this->isRemoteMode) {
-        ui->actionAddFITS->setEnabled(false);
-        this->showPersistentStatusMessage(u"Loading remote image preview..."_s);
-        this->remoteImageWatcher.setFuture(
-                QtConcurrent::run(&fetchRemoteImageLayer, this->remoteBackendUrl,
-                                  this->remoteDatasetId, this->filepath, true, 1536,
-                                  ++this->remoteLoadGeneration, this->remoteSessionId,
-                                  this->remoteBackendToken));
-    }
+    // Backend-authoritative: kick off the preview load immediately.
+    this->showPersistentStatusMessage(u"Loading image preview..."_s);
+    this->remoteImageWatcher.setFuture(
+            QtConcurrent::run(&fetchRemoteImageLayer, this->remoteBackendUrl,
+                              this->remoteDatasetId, this->filepath, true, 1536,
+                              ++this->remoteLoadGeneration, this->remoteSessionId,
+                              this->remoteBackendToken));
 }
 
 vtkWindowImage::~vtkWindowImage()
@@ -1165,8 +1134,7 @@ vtkWindowImage::~vtkWindowImage()
 void vtkWindowImage::closeEvent(QCloseEvent *event)
 {
     if (this->isBusy()) {
-        this->showPersistentStatusMessage(this->isRemoteMode ? u"Loading remote image..."_s
-                                                             : u"Loading layer..."_s);
+        this->showPersistentStatusMessage(u"Loading image..."_s);
         event->ignore();
         return;
     }
@@ -1288,12 +1256,7 @@ void vtkWindowImage::setupRenderer()
     this->layerController =
             std::make_unique<ImageLayerController>(*(this->layers), this->stack, this->colorbar);
 
-    // Legend
-    if (this->astro) {
-        this->legendWCS->Init(this->filepath.toStdString());
-        this->legendWCS->SetWCS(WCS_GALACTIC);
-        ren->AddViewProp(this->legendWCS);
-    }
+    // Legend: local AstroUtils-based legend not used in backend mode; remote WCS overlay actors are used instead.
     ren->AddViewProp(this->overlayXAxis);
     ren->AddViewProp(this->overlayYAxis);
     ren->AddViewProp(this->overlayXTitleActor);
@@ -1657,12 +1620,7 @@ bool vtkWindowImage::updateProbeFromDisplayPosition(int displayX, int displayY)
     const float value = this->layers->getPixelValue(this->layers->getMasterIndex(), voxelX, voxelY);
     QString valueText = std::isfinite(value) ? QString::number(value, 'g', 8) : u"NaN"_s;
     QString message = u"X=%1  Y=%2  Value=%3"_s.arg(voxelX).arg(voxelY).arg(valueText);
-    if (this->astro && !this->astro->isSimulation()) {
-        message += u"  %1=%2  %3=%4"_s.arg(this->selectedFrameAxisTitle(0),
-                                           this->formatLocalProbeCoordinate(0, this->probeVoxel),
-                                           this->selectedFrameAxisTitle(1),
-                                           this->formatLocalProbeCoordinate(1, this->probeVoxel));
-    } else if (this->isRemoteMode) {
+    {
         QString axis0 = this->remoteFormatAxisCoordinate(0, voxelX);
         QString axis1 = this->remoteFormatAxisCoordinate(1, voxelY);
         if (this->remoteHasCelestialAxes()) {
@@ -1949,9 +1907,7 @@ void vtkWindowImage::analyzeCurrentRegion()
                        .arg(stats.median, 0, 'g', 8)
                        .arg(stats.stddev, 0, 'g', 8);
     }
-    if (this->isRemoteMode) {
-        text += u"\n\nComputed on the currently loaded data block."_s;
-    }
+    text += u"\n\nComputed on the currently loaded data block."_s;
     QMessageBox::information(this, u"Region Statistics"_s, text);
 }
 
@@ -2006,7 +1962,7 @@ void vtkWindowImage::loadCatalogueOverlay()
         return;
     }
 
-    if ((!this->isRemoteMode && !this->astro) || (this->isRemoteMode && !this->remoteHasCelestialAxes())) {
+    if (!this->remoteHasCelestialAxes()) {
         const bool hasImageEntries = std::any_of(
                 parsed.entries.cbegin(), parsed.entries.cend(), [](const CatalogueOverlayEntry &entry) {
                     return entry.frame == CatalogueOverlayEntry::Frame::Image;
@@ -2596,20 +2552,6 @@ bool vtkWindowImage::catalogueWorldToPixel(double raDeg, double decDeg, std::arr
         return false;
     }
 
-    if (!this->isRemoteMode) {
-        if (!this->astro) {
-            return false;
-        }
-        double pos[2] = { raDeg, decDeg };
-        double pix[2] = { 0.0, 0.0 };
-        this->astro->sky2xy(pos, pix, WCS_J2000);
-        if (!std::isfinite(pix[0]) || !std::isfinite(pix[1])) {
-            return false;
-        }
-        pixel = { pix[0], pix[1] };
-        return true;
-    }
-
     if (!this->remoteHasCelestialAxes()) {
         return false;
     }
@@ -2941,7 +2883,7 @@ void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result)
 
 void vtkWindowImage::startRemoteFullResolutionLoad()
 {
-    if (!this->isRemoteMode || this->remoteFullImageWatcher.isRunning()) {
+    if (this->remoteFullImageWatcher.isRunning()) {
         return;
     }
     this->transitioningToFull = true;
@@ -2989,7 +2931,10 @@ void vtkWindowImage::clearPersistentStatusMessage()
 
 void vtkWindowImage::setLayerImportEnabled(bool enabled)
 {
-    ui->actionAddFITS->setEnabled(enabled && !this->isRemoteMode);
+    // Layer stacking via local FITS files is a visualization-only feature that
+    // reads files directly on the client desktop for rendering purposes only.
+    // It is not an authoritative data operation and is kept as an adapter.
+    ui->actionAddFITS->setEnabled(enabled);
 }
 
 void vtkWindowImage::updateWcsOverlay()
@@ -3039,9 +2984,8 @@ void vtkWindowImage::updateWcsOverlay()
                              this->overlayYTickActors);
         return;
     }
-    const bool useLegend = this->astro && !this->astro->isSimulation();
     this->setWcsOverlayVisible(this->showWcsAxes);
-    if (!this->showWcsAxes || useLegend || !renderer || !imageData) {
+    if (!this->showWcsAxes || !renderer || !imageData) {
         return;
     }
     this->ensureOverlayTickActors(renderer);
@@ -3173,22 +3117,21 @@ void vtkWindowImage::setWcsOverlayVisible(bool visible)
     if (!this->wcsOverlayInitialized) {
         return;
     }
-    const bool useLegend = this->astro && !this->astro->isSimulation();
     if (this->legendWCS) {
-        this->legendWCS->SetVisibility(visible && useLegend);
+        this->legendWCS->SetVisibility(false);
     }
-    this->overlayXAxis->SetVisibility(visible && !useLegend);
-    this->overlayYAxis->SetVisibility(visible && !useLegend);
-    this->overlayXTitleActor->SetVisibility(visible && !useLegend);
-    this->overlayYTitleActor->SetVisibility(visible && !useLegend);
+    this->overlayXAxis->SetVisibility(visible);
+    this->overlayYAxis->SetVisibility(visible);
+    this->overlayXTitleActor->SetVisibility(visible);
+    this->overlayYTitleActor->SetVisibility(visible);
     for (const auto &actor : this->overlayXTickActors) {
         if (actor) {
-            actor->SetVisibility(visible && !useLegend);
+            actor->SetVisibility(visible);
         }
     }
     for (const auto &actor : this->overlayYTickActors) {
         if (actor) {
-            actor->SetVisibility(visible && !useLegend);
+            actor->SetVisibility(visible);
         }
     }
 }
@@ -3294,29 +3237,22 @@ void vtkWindowImage::updateDataStatePanel()
     }
 
     auto *imageData = this->layers ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
-    const QString origin = this->isRemoteMode ? u"Remote"_s : u"Local"_s;
-    const QString representation = this->isRemoteMode
-            ? (this->remoteDisplayingPreview ? u"Preview image"_s : u"Full image"_s)
-            : u"Full image"_s;
+    const QString representation = this->remoteDisplayingPreview ? u"Preview image"_s : u"Full image"_s;
     const QString loadedBounds = formatImageBoundsSummary(imageData);
-    const QString datasetBounds = (this->isRemoteMode && this->remoteFullImageDims[0] > 0
-                                   && this->remoteFullImageDims[1] > 0)
+    const QString datasetBounds = (this->remoteFullImageDims[0] > 0 && this->remoteFullImageDims[1] > 0)
             ? u"x=0..%1 y=0..%2"_s.arg(this->remoteFullImageDims[0] - 1).arg(this->remoteFullImageDims[1] - 1)
             : loadedBounds;
     const QString axis3 = u"Axis3: n/a"_s;
-    const QString degenerateSummary =
-            this->isRemoteMode ? this->remoteDegenerateAxesSummary
-                               : (this->astro ? this->astro->degenerateAxesSummary() : QString());
+    const QString degenerateSummary = this->remoteDegenerateAxesSummary;
     this->dataStateLabel->setText(
-            u"%1 | %2 | Loaded: %3 | Dataset: %4 | WCS: %5 | %6%7"_s.arg(origin,
-                                                                          representation,
-                                                                          loadedBounds,
-                                                                          datasetBounds,
-                                                                          this->currentWcsFrameLabel(),
-                                                                          axis3,
-                                                                          degenerateSummary.isEmpty()
-                                                                                  ? QString()
-                                                                                  : u" | Collapsed axes"_s));
+            u"%1 | Loaded: %2 | Dataset: %3 | WCS: %4 | %5%6"_s.arg(representation,
+                                                                     loadedBounds,
+                                                                     datasetBounds,
+                                                                     this->currentWcsFrameLabel(),
+                                                                     axis3,
+                                                                     degenerateSummary.isEmpty()
+                                                                             ? QString()
+                                                                             : u" | Collapsed axes"_s));
     this->dataStateLabel->setToolTip(
             degenerateSummary.isEmpty()
                     ? u"Persistent data state: origin, representation, loaded bounds, dataset bounds, current WCS frame."_s
@@ -3329,7 +3265,7 @@ void vtkWindowImage::updateWcsStatusIndicator()
     if (!this->wcsStatusLabel) {
         return;
     }
-    if (!this->isRemoteMode || this->remoteWcsStatus.compare(u"ok"_s, Qt::CaseInsensitive) == 0) {
+    if (this->remoteWcsStatus.compare(u"ok"_s, Qt::CaseInsensitive) == 0) {
         this->wcsStatusLabel->clear();
         this->wcsStatusLabel->setToolTip({});
         this->wcsStatusLabel->hide();
@@ -3370,21 +3306,8 @@ void vtkWindowImage::updateSanityPanel()
     std::array<double, 3> crval = this->remoteDatasetCrval;
     std::array<double, 3> crpix = this->remoteDatasetCrpix;
     std::array<double, 3> cdelt = this->remoteDatasetCdelt;
-    if (!this->isRemoteMode && this->astro) {
-        const auto *refValues = this->astro->getReferenceValues();
-        const auto *refPixels = this->astro->getReferencePixels();
-        const auto *increments = this->astro->getIncrements();
-        for (int axis = 0; axis < 3; ++axis) {
-            ctype[axis] = QString::fromStdString(this->astro->getAxisType(axis));
-            cunit[axis] = QString::fromStdString(this->astro->getAxisUnit(axis));
-            crval[axis] = refValues[axis];
-            crpix[axis] = refPixels[axis];
-            cdelt[axis] = increments[axis];
-        }
-    }
-
     auto *imageData = this->layers ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
-    const auto report = buildImageSanityReport(this->isRemoteMode, this->astro.get(), ctype, cunit,
+    const auto report = buildImageSanityReport(ctype, cunit,
                                                crval, crpix, cdelt, imageData);
     this->sanityLabel->setText(report.summary);
     this->sanityLabel->setToolTip(report.details);
@@ -3502,34 +3425,12 @@ QString vtkWindowImage::formatDegreeCoordinate(double value) const
 
 QString vtkWindowImage::selectedFrameAxisTitle(int axis) const
 {
-    if (this->astro && !this->astro->isSimulation()) {
-        const int frame = this->selectedWcsFrame();
-        if (frame == WCS_J2000) {
-            return axis == 0 ? u"Right Ascension"_s : u"Declination"_s;
-        }
-        if (frame == WCS_GALACTIC) {
-            return axis == 0 ? u"Galactic Longitude"_s : u"Galactic Latitude"_s;
-        }
-        if (frame == WCS_ECLIPTIC) {
-            return axis == 0 ? u"Ecliptic Longitude"_s : u"Ecliptic Latitude"_s;
-        }
-    }
     return this->remoteOverlayAxisTitle(axis);
 }
 
 QString vtkWindowImage::formatLocalProbeCoordinate(int axis, const std::array<int, 2> &voxel) const
 {
-    if (!this->astro || this->astro->isSimulation()) {
-        return QString::number(axis == 0 ? voxel[0] : voxel[1]);
-    }
-
-    const double pix[2] = { static_cast<double>(voxel[0]), static_cast<double>(voxel[1]) };
-    double pos[2] = { 0., 0. };
-    this->astro->xy2sky(pix, pos, this->selectedWcsFrame());
-    if (!this->useSexagesimalWcsFormat) {
-        return this->formatDegreeCoordinate(pos[axis]);
-    }
-    return formatCelestialCoordinate(this->selectedWcsFrame(), axis, pos[axis]);
+    return QString::number(axis == 0 ? voxel[0] : voxel[1]);
 }
 
 void vtkWindowImage::vtkRender()
@@ -3542,9 +3443,6 @@ void vtkWindowImage::changeLegendWCS()
     const int wcs = (ui->actionGalactic->isChecked()
                              ? WCS_GALACTIC
                              : (ui->actionFK5->isChecked() ? WCS_J2000 : WCS_ECLIPTIC));
-    if (this->astro && !this->astro->isSimulation()) {
-        this->legendWCS->SetWCS(wcs);
-    }
     this->applyDefaultWcsFormatForSelectedFrame();
     this->invalidateWcsOverlayCache();
     qDebug().noquote()
