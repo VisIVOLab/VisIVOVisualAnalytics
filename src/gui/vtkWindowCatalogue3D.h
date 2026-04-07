@@ -37,8 +37,9 @@ class vtkSphereSource;
 class vtkAppendPolyData;
 class QCheckBox;
 class QComboBox;
-class QLineEdit;
+class QListWidget;
 class QPushButton;
+class QLabel;
 class QTextEdit;
 class QTableView;
 class Catalogue3DTableModel;
@@ -215,12 +216,14 @@ private:
     QPointer<QCheckBox> chkShowAxes;
     QPointer<QCheckBox> chkShowBoundingBox;
     QPointer<QCheckBox> chkShowShells;
-    // Filter UI
-    QPointer<QComboBox> comboFilterField;
-    QPointer<QComboBox> comboFilterOp;
-    QPointer<QLineEdit> lineFilterValue;
+    // Multi-filter UI
+    QPointer<QListWidget> filterList;
+    QPointer<QPushButton> btnFilterAdd;
+    QPointer<QPushButton> btnFilterRemove;
+    QPointer<QPushButton> btnFilterClearAll;
     QPointer<QPushButton> btnFilterApply;
-    QPointer<QPushButton> btnFilterClear;
+    QPointer<QLabel> filterStatusLabel;
+    std::vector<BackendTabularFilter> activeFilters;
     bool syncingTableSelection{ false };
     bool updatingMappingControls{ false };
     QString mapXKey{ QStringLiteral("computed:x") };

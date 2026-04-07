@@ -38,6 +38,8 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDebug>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDockWidget>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -47,6 +49,7 @@
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -54,6 +57,8 @@
 #include <QTableView>
 #include <QTextEdit>
 #include <QVBoxLayout>
+
+#include <optional>
 
 // ── std ───────────────────────────────────────────────────────────────────────
 #include <algorithm>
@@ -99,6 +104,49 @@ const QMap<QString, int> kKnownMorphologies = {
 };
 
 } // namespace
+
+// ── "Add Filter" dialog ───────────────────────────────────────────────────────
+
+static std::optional<BackendTabularFilter> showAddFilterDialog(QWidget *parent,
+                                                               const QStringList &fields)
+{
+    auto *dlg = new QDialog(parent);
+    dlg->setWindowTitle(u"Add Filter"_s);
+    dlg->setModal(true);
+    dlg->setMinimumWidth(320);
+    auto *layout = new QFormLayout(dlg);
+    layout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+
+    auto *comboField = new QComboBox(dlg);
+    comboField->addItems(fields);
+    auto *comboOp = new QComboBox(dlg);
+    comboOp->addItems({ u"="_s, u"!="_s, u">"_s, u">="_s, u"<"_s, u"<="_s,
+                        u"contains"_s, u"in"_s });
+    auto *lineValue = new QLineEdit(dlg);
+    lineValue->setPlaceholderText(u"value (comma-separated for 'in')"_s);
+
+    layout->addRow(u"Field"_s, comboField);
+    layout->addRow(u"Operator"_s, comboOp);
+    layout->addRow(u"Value"_s, lineValue);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dlg);
+    layout->addRow(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, dlg, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
+
+    if (dlg->exec() != QDialog::Accepted) {
+        dlg->deleteLater();
+        return std::nullopt;
+    }
+    const QString field = comboField->currentText().trimmed();
+    const QString op = comboOp->currentText();
+    const QString value = lineValue->text().trimmed();
+    dlg->deleteLater();
+    if (field.isEmpty() || value.isEmpty()) {
+        return std::nullopt;
+    }
+    return BackendTabularFilter{ field, op, value };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction / destruction
@@ -151,27 +199,6 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         vizLayout->addWidget(sceneGroup);
         vizLayout->addWidget(ui->chkLabels);
         vizLayout->addWidget(ui->chkMorphColors);
-
-        // ── Filter group ─────────────────────────────────────────────────────
-        auto *filterGroup = new QGroupBox(u"Filter"_s, this);
-        auto *filterLayout = new QFormLayout(filterGroup);
-        this->comboFilterField = new QComboBox(filterGroup);
-        this->comboFilterOp = new QComboBox(filterGroup);
-        this->comboFilterOp->addItems({ u"="_s, u"!="_s, u">"_s, u">="_s, u"<"_s, u"<="_s,
-                                        u"contains"_s, u"in"_s });
-        this->lineFilterValue = new QLineEdit(filterGroup);
-        auto *filterBtnRow = new QWidget(filterGroup);
-        auto *filterBtnLayout = new QHBoxLayout(filterBtnRow);
-        filterBtnLayout->setContentsMargins(0, 0, 0, 0);
-        this->btnFilterApply = new QPushButton(u"Apply"_s, filterBtnRow);
-        this->btnFilterClear = new QPushButton(u"Clear"_s, filterBtnRow);
-        filterBtnLayout->addWidget(this->btnFilterApply);
-        filterBtnLayout->addWidget(this->btnFilterClear);
-        filterLayout->addRow(u"Field"_s, this->comboFilterField);
-        filterLayout->addRow(u"Op"_s, this->comboFilterOp);
-        filterLayout->addRow(u"Value"_s, this->lineFilterValue);
-        filterLayout->addRow(filterBtnRow);
-        vizLayout->addWidget(filterGroup);
     }
     ui->labelStatus->setToolTip(
             u"3D positions use RA/Dec + redshift or distance. Source geometry is parametric."_s);
@@ -194,21 +221,6 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             this->schema.headers.append(field.name);
         }
         this->rawHeaders = this->schema.headers;
-
-        // Populate filter field combo with numeric fields (float, int, bool)
-        if (this->comboFilterField) {
-            for (const auto &field : this->schema.fields) {
-                if (field.type != QStringLiteral("string")) {
-                    this->comboFilterField->addItem(field.name);
-                }
-            }
-            if (this->comboFilterField->count() == 0) {
-                // Fall back to all fields if type info is unavailable
-                for (const auto &h : this->schema.headers) {
-                    this->comboFilterField->addItem(h);
-                }
-            }
-        }
 
         BackendTabularQueryRequest qreq;
         qreq.datasetId = this->remoteDatasetId;
@@ -245,6 +257,94 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     this->populateMappingControls();
     this->refreshCatalogueTable();
 
+    // ── Filters dock (bottom) ─────────────────────────────────────────────────
+    {
+        auto *filterDock = new QDockWidget(u"Filters"_s, this);
+        filterDock->setObjectName(u"Cat3DFilterDock"_s);
+        filterDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable
+                                | QDockWidget::DockWidgetClosable);
+
+        auto *filterWidget = new QWidget;
+        auto *filterVLayout = new QVBoxLayout(filterWidget);
+        filterVLayout->setContentsMargins(6, 4, 6, 4);
+        filterVLayout->setSpacing(4);
+
+        this->filterList = new QListWidget(filterWidget);
+        this->filterList->setFixedHeight(88);
+        this->filterList->setSelectionMode(QAbstractItemView::SingleSelection);
+        this->filterList->setToolTip(
+                u"Active filters combined with AND. Select a row and press Remove to delete it."_s);
+        filterVLayout->addWidget(this->filterList);
+
+        {
+            auto *btnRow = new QWidget(filterWidget);
+            auto *btnLayout = new QHBoxLayout(btnRow);
+            btnLayout->setContentsMargins(0, 0, 0, 0);
+            btnLayout->setSpacing(4);
+            this->btnFilterAdd = new QPushButton(u"Add…"_s, btnRow);
+            this->btnFilterRemove = new QPushButton(u"Remove"_s, btnRow);
+            this->btnFilterClearAll = new QPushButton(u"Clear All"_s, btnRow);
+            this->btnFilterApply = new QPushButton(u"Apply"_s, btnRow);
+            btnLayout->addWidget(this->btnFilterAdd);
+            btnLayout->addWidget(this->btnFilterRemove);
+            btnLayout->addWidget(this->btnFilterClearAll);
+            btnLayout->addStretch(1);
+            btnLayout->addWidget(this->btnFilterApply);
+            filterVLayout->addWidget(btnRow);
+        }
+
+        this->filterStatusLabel = new QLabel(filterWidget);
+        filterVLayout->addWidget(this->filterStatusLabel);
+
+        filterDock->setWidget(filterWidget);
+        this->addDockWidget(Qt::BottomDockWidgetArea, filterDock);
+
+        // Build the list of filterable field names from schema (non-string fields preferred)
+        QStringList filterableFields;
+        for (const auto &field : this->schema.fields) {
+            if (field.type != QStringLiteral("string")) {
+                filterableFields.append(field.name);
+            }
+        }
+        if (filterableFields.isEmpty()) {
+            filterableFields = this->schema.headers; // fallback: all fields
+        }
+
+        // Filter: Add
+        QObject::connect(this->btnFilterAdd, &QPushButton::clicked, this,
+                         [this, filterableFields]() {
+                             const auto filter = showAddFilterDialog(this, filterableFields);
+                             if (!filter) {
+                                 return;
+                             }
+                             this->activeFilters.push_back(*filter);
+                             this->filterList->addItem(QStringLiteral("%1 %2 %3").arg(
+                                     filter->field, filter->op, filter->value));
+                         });
+        // Filter: Remove selected
+        QObject::connect(this->btnFilterRemove, &QPushButton::clicked, this, [this]() {
+            if (!this->filterList) {
+                return;
+            }
+            const int row = this->filterList->currentRow();
+            if (row < 0 || row >= static_cast<int>(this->activeFilters.size())) {
+                return;
+            }
+            this->activeFilters.erase(this->activeFilters.begin() + row);
+            delete this->filterList->takeItem(row);
+        });
+        // Filter: Clear all
+        QObject::connect(this->btnFilterClearAll, &QPushButton::clicked, this, [this]() {
+            this->activeFilters.clear();
+            if (this->filterList) {
+                this->filterList->clear();
+            }
+        });
+        // Filter: Apply
+        QObject::connect(this->btnFilterApply, &QPushButton::clicked, this,
+                         &vtkWindowCatalogue3D::applyFilter);
+    }
+
     // ── Connect UI controls ───────────────────────────────────────────────────
     QObject::connect(ui->chkLabels, &QCheckBox::toggled, this,
                      &vtkWindowCatalogue3D::toggleLabels);
@@ -273,18 +373,6 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                      &vtkWindowCatalogue3D::toggleBoundingBox);
     QObject::connect(this->chkShowShells, &QCheckBox::toggled, this,
                      &vtkWindowCatalogue3D::toggleShells);
-    if (this->btnFilterApply) {
-        QObject::connect(this->btnFilterApply, &QPushButton::clicked, this,
-                         &vtkWindowCatalogue3D::applyFilter);
-    }
-    if (this->btnFilterClear) {
-        QObject::connect(this->btnFilterClear, &QPushButton::clicked, this, [this]() {
-            if (this->lineFilterValue) {
-                this->lineFilterValue->clear();
-            }
-            this->applyFilter();
-        });
-    }
 }
 
 vtkWindowCatalogue3D::~vtkWindowCatalogue3D()
@@ -307,16 +395,7 @@ void vtkWindowCatalogue3D::applyFilter()
     }
     BackendTabularQueryRequest qreq;
     qreq.datasetId = this->remoteDatasetId;
-
-    const QString filterField =
-            this->comboFilterField ? this->comboFilterField->currentText() : QString();
-    const QString filterOp =
-            this->comboFilterOp ? this->comboFilterOp->currentText() : QString();
-    const QString filterValue =
-            this->lineFilterValue ? this->lineFilterValue->text().trimmed() : QString();
-    if (!filterField.isEmpty() && !filterOp.isEmpty() && !filterValue.isEmpty()) {
-        qreq.filters.push_back({ filterField, filterOp, filterValue });
-    }
+    qreq.filters = this->activeFilters; // all rows, AND semantics
 
     const auto subset = client.queryTabularCatalogue(qreq);
     if (!subset.valid) {
@@ -329,12 +408,21 @@ void vtkWindowCatalogue3D::applyFilter()
         return;
     }
     this->entries = parsed.entries;
-    ui->labelStatus->setText(
-            QStringLiteral("Filtered: %1 sources (total %2).")
-                    .arg(this->entries.size())
-                    .arg(subset.totalRows));
 
-    // Rebuild the VTK scene with filtered data
+    const QString statusMsg =
+            this->activeFilters.empty()
+                    ? QStringLiteral("Loaded %1 sources.").arg(this->entries.size())
+                    : QStringLiteral("%1 filter(s) active — %2 sources (total %3).")
+                              .arg(this->activeFilters.size())
+                              .arg(this->entries.size())
+                              .arg(subset.totalRows);
+    ui->labelStatus->setText(statusMsg);
+
+    if (this->filterStatusLabel) {
+        this->filterStatusLabel->setText(statusMsg);
+    }
+
+    // Rebuild the VTK scene with the filtered data
     this->renderer->RemoveAllViewProps();
     this->morphologyNames.clear();
     this->morphologyIndexOf.clear();

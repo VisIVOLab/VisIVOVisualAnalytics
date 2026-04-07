@@ -26,10 +26,11 @@ class QCheckBox;
 class QComboBox;
 class QDockWidget;
 class QDoubleSpinBox;
+class QFrame;
 class QLabel;
-class QLineEdit;
 class QListWidget;
 class QPushButton;
+class QScrollArea;
 class QSlider;
 class QVTKOpenGLNativeWidget;
 
@@ -82,13 +83,15 @@ private:
     QPointer<QDoubleSpinBox> spinRangeMax;
     QPointer<QPushButton> buttonAutoscale;
     QPointer<QPushButton> buttonResetView;
-    // Filter UI
-    QPointer<QComboBox> comboFilterField;
-    QPointer<QComboBox> comboFilterOp;
-    QPointer<QLineEdit> lineFilterValue;
-    QPointer<QPushButton> btnFilterApply;
-    QPointer<QPushButton> btnFilterClear;
     QPointer<QLabel> summaryLabel;
+    // Multi-filter UI
+    QPointer<QListWidget> filterList;
+    QPointer<QPushButton> btnFilterAdd;
+    QPointer<QPushButton> btnFilterRemove;
+    QPointer<QPushButton> btnFilterClearAll;
+    QPointer<QPushButton> btnFilterApply;
+    QPointer<QLabel> filterStatusLabel;
+    std::vector<BackendTabularFilter> activeFilters;
     QPointer<QDockWidget> metadataDock;
     QPointer<QListWidget> fieldList;
     QPointer<QLabel> metadataLabel;
