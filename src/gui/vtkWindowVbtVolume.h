@@ -1,7 +1,7 @@
 #ifndef vtkWindowVbtVolume_h
 #define vtkWindowVbtVolume_h
 
-#include "VbtTableLoader.h"
+#include "app/BackendClient.h"
 
 #include <vtkNew.h>
 #include <vtkColorTransferFunction.h>
@@ -35,13 +35,19 @@ class vtkWindowVbtVolume : public QMainWindow
     Q_OBJECT
 
 public:
-    explicit vtkWindowVbtVolume(const VbtTableData &table, QWidget *parent = nullptr);
+    explicit vtkWindowVbtVolume(BackendVbtOpenResult openResult,
+                                BackendVbtSubsetResult initialSubset,
+                                const QString &backendUrl,
+                                const QString &backendToken,
+                                const QString &sessionId,
+                                QWidget *parent = nullptr);
     ~vtkWindowVbtVolume() override = default;
 
 private:
     void setupUi();
     void setupRenderer();
     void rebuildVolumeData();
+    void applySubsetResult(const BackendVbtSubsetResult &subset);
     void updateTransferFunctions();
     void updateSummary();
     void updateBoundsContext();
@@ -52,7 +58,10 @@ private:
     void setColorRange(double minValue, double maxValue);
     double positiveFloor() const;
 
-    VbtTableData table;
+    BackendVbtOpenResult openResult;
+    const QString backendUrl;
+    const QString backendToken;
+    const QString sessionId;
 
     QPointer<QVTKOpenGLNativeWidget> vtkWidget;
     QPointer<QComboBox> comboScalarField;

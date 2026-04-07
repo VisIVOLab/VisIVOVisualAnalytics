@@ -1,4 +1,5 @@
 #include "vtkWindowVbtVolume.h"
+#include "app/BackendClient.h"
 
 #include <QVTKOpenGLNativeWidget.h>
 
@@ -34,23 +35,6 @@
 
 using namespace Qt::StringLiterals;
 
-namespace {
-
-template <typename T>
-T maybeSwapValue(const char *ptr, bool swapBytes)
-{
-    std::array<unsigned char, sizeof(T)> bytes{};
-    std::memcpy(bytes.data(), ptr, sizeof(T));
-    if (swapBytes) {
-        std::reverse(bytes.begin(), bytes.end());
-    }
-    T value{};
-    std::memcpy(&value, bytes.data(), sizeof(T));
-    return value;
-}
-
-}
-
 double vtkWindowVbtVolume::percentileFromSortedSample(const std::vector<double> &values, double fraction)
 {
     if (values.empty()) {
@@ -67,32 +51,45 @@ double vtkWindowVbtVolume::percentileFromSortedSample(const std::vector<double> 
     return values[low] * (1.0 - t) + values[high] * t;
 }
 
-vtkWindowVbtVolume::vtkWindowVbtVolume(const VbtTableData &table, QWidget *parent)
+vtkWindowVbtVolume::vtkWindowVbtVolume(BackendVbtOpenResult openResult,
+                                       BackendVbtSubsetResult initialSubset,
+                                       const QString &backendUrl,
+                                       const QString &backendToken,
+                                       const QString &sessionId,
+                                       QWidget *parent)
     : QMainWindow(parent)
-    , table(table)
+    , openResult(std::move(openResult))
+    , backendUrl(backendUrl)
+    , backendToken(backendToken)
+    , sessionId(sessionId)
 {
     qDebug().noquote()
-            << QStringLiteral("[vbt-volume] header type=%1 fields=%2 dims=%3x%4x%5 spacing=%6,%7,%8 selected_field=%9")
-                       .arg(VbtTableLoader::scalarTypeName(this->table.header.scalarType))
-                       .arg(this->table.header.fieldCount)
-                       .arg(this->table.header.dimensions[0])
-                       .arg(this->table.header.dimensions[1])
-                       .arg(this->table.header.dimensions[2])
-                       .arg(this->table.header.spacing[0], 0, 'g', 6)
-                       .arg(this->table.header.spacing[1], 0, 'g', 6)
-                       .arg(this->table.header.spacing[2], 0, 'g', 6)
-                       .arg(this->table.header.fieldNames.isEmpty() ? QStringLiteral("<none>")
-                                                                    : this->table.header.fieldNames.first());
+            << QStringLiteral("[vbt-volume] type=%1 fields=%2 dims=%3x%4x%5 spacing=%6,%7,%8 selected_field=%9")
+                       .arg(this->openResult.scalarType)
+                       .arg(this->openResult.fields.size())
+                       .arg(this->openResult.dimensions[0])
+                       .arg(this->openResult.dimensions[1])
+                       .arg(this->openResult.dimensions[2])
+                       .arg(this->openResult.spacing[0], 0, 'g', 6)
+                       .arg(this->openResult.spacing[1], 0, 'g', 6)
+                       .arg(this->openResult.spacing[2], 0, 'g', 6)
+                       .arg(this->openResult.fields.empty() ? QStringLiteral("<none>")
+                                                            : this->openResult.fields[0].name);
     this->setupUi();
     this->setupRenderer();
-    this->rebuildVolumeData();
+    // Apply the initial subset received at open time without an extra round-trip.
+    // rebuildVolumeData() will contact the backend on subsequent field changes.
+    this->applySubsetResult(std::move(initialSubset));
     this->updateSummary();
 }
 
 void vtkWindowVbtVolume::setupUi()
 {
     this->setAttribute(Qt::WA_DeleteOnClose);
-    this->setWindowTitle(QStringLiteral("VBT Volume Viewer — %1").arg(this->table.header.headerPath));
+    this->setWindowTitle(QStringLiteral("VBT Volume Viewer — %1 x %2 x %3")
+                                 .arg(this->openResult.dimensions[0])
+                                 .arg(this->openResult.dimensions[1])
+                                 .arg(this->openResult.dimensions[2]));
     this->resize(1280, 800);
 
     auto *central = new QWidget(this);
@@ -112,8 +109,8 @@ void vtkWindowVbtVolume::setupUi()
     auto *displayGroup = new QGroupBox(u"Volume"_s, panel);
     auto *displayLayout = new QFormLayout(displayGroup);
     this->comboScalarField = new QComboBox(displayGroup);
-    for (int field = 0; field < this->table.header.fieldNames.size(); ++field) {
-        this->comboScalarField->addItem(this->table.header.fieldNames.at(field), field);
+    for (const auto &field : this->openResult.fields) {
+        this->comboScalarField->addItem(field.name, field.name);
     }
     this->comboScaleMode = new QComboBox(displayGroup);
     this->comboScaleMode->addItems({ u"Linear"_s, u"Log"_s });
@@ -151,8 +148,8 @@ void vtkWindowVbtVolume::setupUi()
     this->metadataLabel = new QLabel(dockWidget);
     this->metadataLabel->setWordWrap(true);
     this->fieldList = new QListWidget(dockWidget);
-    for (const QString &fieldName : this->table.header.fieldNames) {
-        this->fieldList->addItem(fieldName);
+    for (const auto &field : this->openResult.fields) {
+        this->fieldList->addItem(QStringLiteral("%1 [%2]").arg(field.name, field.type));
     }
     dockLayout->addWidget(this->metadataLabel);
     dockLayout->addWidget(this->fieldList, 1);
@@ -243,44 +240,59 @@ void vtkWindowVbtVolume::setupRenderer()
 
 void vtkWindowVbtVolume::rebuildVolumeData()
 {
-    const int fieldIndex = this->comboScalarField ? this->comboScalarField->currentData().toInt() : 0;
-    const std::size_t voxelCount = static_cast<std::size_t>(this->table.header.rowCount);
-    const qsizetype scalarSize =
-            this->table.header.scalarType == VbtScalarType::Float64 ? sizeof(double) : sizeof(float);
-    const bool hostLittleEndian = QSysInfo::ByteOrder == QSysInfo::LittleEndian;
-    const bool fileLittleEndian = this->table.header.endian == VbtEndian::Little;
-    const bool swapBytes = hostLittleEndian != fileLittleEndian;
+    const QString fieldName = this->comboScalarField ? this->comboScalarField->currentData().toString()
+                                                     : QString();
+    BackendClient client(this->backendUrl, this->backendToken);
+    client.setSessionId(this->sessionId);
+    const BackendVbtSubsetResult subset =
+            client.requestVbtSubset(this->openResult.datasetId, 0, fieldName);
+    if (!subset.valid) {
+        qWarning().noquote() << QStringLiteral("[vbt-volume] subset request failed: %1").arg(subset.error);
+        return;
+    }
+    this->applySubsetResult(subset);
+}
+
+void vtkWindowVbtVolume::applySubsetResult(const BackendVbtSubsetResult &subset)
+{
+    const auto &dims = this->openResult.dimensions;
+    const auto &spacing = this->openResult.spacing;
+    const std::size_t voxelCount = static_cast<std::size_t>(this->openResult.numRows);
+    // Backend always sends float32-LE; on BE hosts byte-swap each value.
+    const bool needsSwap = (QSysInfo::ByteOrder == QSysInfo::BigEndian);
 
     this->currentImageData = vtkSmartPointer<vtkImageData>::New();
-    this->currentImageData->SetDimensions(this->table.header.dimensions[0],
-                                          this->table.header.dimensions[1],
-                                          this->table.header.dimensions[2]);
-    this->currentImageData->SetSpacing(this->table.header.spacing[0], this->table.header.spacing[1],
-                                       this->table.header.spacing[2]);
+    this->currentImageData->SetDimensions(dims[0], dims[1], dims[2]);
+    this->currentImageData->SetSpacing(spacing[0], spacing[1], spacing[2]);
     this->currentImageData->SetOrigin(0.0, 0.0, 0.0);
     this->currentImageData->AllocateScalars(VTK_FLOAT, 1);
 
     auto *scalars = static_cast<float *>(this->currentImageData->GetScalarPointer());
-    const char *base = this->table.rawBinary.constData();
-    const int fieldCount = this->table.header.fieldCount;
+    const float *src = reinterpret_cast<const float *>(subset.block.constData());
+    const std::size_t blockFloats =
+            static_cast<std::size_t>(subset.block.size()) / sizeof(float);
+    const std::size_t count = std::min(voxelCount, blockFloats);
+
     double minValue = std::numeric_limits<double>::max();
     double maxValue = std::numeric_limits<double>::lowest();
     constexpr std::size_t targetSampleCount = 200000;
-    const std::size_t sampleStride = std::max<std::size_t>(1, voxelCount / targetSampleCount);
+    const std::size_t sampleStride = std::max<std::size_t>(1, count / targetSampleCount);
     this->cachedSampledValues.clear();
     this->cachedPositiveSampledValues.clear();
-    this->cachedSampledValues.reserve(std::min<std::size_t>(voxelCount, targetSampleCount));
-    this->cachedPositiveSampledValues.reserve(std::min<std::size_t>(voxelCount, targetSampleCount));
+    this->cachedSampledValues.reserve(std::min(count, targetSampleCount));
+    this->cachedPositiveSampledValues.reserve(std::min(count, targetSampleCount));
 
-    for (std::size_t voxel = 0; voxel < voxelCount; ++voxel) {
-        const char *ptr = base + (static_cast<qint64>(voxel) * fieldCount + fieldIndex) * scalarSize;
-        const double value = this->table.header.scalarType == VbtScalarType::Float64
-                ? maybeSwapValue<double>(ptr, swapBytes)
-                : maybeSwapValue<float>(ptr, swapBytes);
-        scalars[voxel] = static_cast<float>(value);
+    for (std::size_t i = 0; i < count; ++i) {
+        float v = src[i];
+        if (needsSwap) {
+            auto *b = reinterpret_cast<unsigned char *>(&v);
+            std::reverse(b, b + sizeof(float));
+        }
+        scalars[i] = v;
+        const double value = static_cast<double>(v);
         minValue = std::min(minValue, value);
         maxValue = std::max(maxValue, value);
-        if ((voxel % sampleStride) == 0 && std::isfinite(value)) {
+        if ((i % sampleStride) == 0 && std::isfinite(value)) {
             this->cachedSampledValues.push_back(value);
             if (value > 0.0) {
                 this->cachedPositiveSampledValues.push_back(value);
@@ -293,9 +305,7 @@ void vtkWindowVbtVolume::rebuildVolumeData()
     }
 
     this->volumeProperty->SetScalarOpacityUnitDistance(
-            std::max(1e-6, (this->table.header.spacing[0] + this->table.header.spacing[1]
-                            + this->table.header.spacing[2])
-                                   / 3.0));
+            std::max(1e-6, (spacing[0] + spacing[1] + spacing[2]) / 3.0));
 
     this->volumeMapper->SetInputData(this->currentImageData);
     this->updateBoundsContext();
@@ -334,33 +344,14 @@ void vtkWindowVbtVolume::rebuildVolumeData()
     double bounds[6]{ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
     this->currentImageData->GetBounds(bounds);
     qDebug().noquote()
-            << QStringLiteral("[vbt-volume] image dims=%1x%2x%3 spacing=%4,%5,%6 origin=%7,%8,%9 scalar_type=%10 image_range=%11..%12 bounds=[%13,%14]x[%15,%16]x[%17,%18]")
-                       .arg(this->table.header.dimensions[0])
-                       .arg(this->table.header.dimensions[1])
-                       .arg(this->table.header.dimensions[2])
-                       .arg(this->table.header.spacing[0], 0, 'g', 6)
-                       .arg(this->table.header.spacing[1], 0, 'g', 6)
-                       .arg(this->table.header.spacing[2], 0, 'g', 6)
-                       .arg(0.0, 0, 'g', 3)
-                       .arg(0.0, 0, 'g', 3)
-                       .arg(0.0, 0, 'g', 3)
-                       .arg(this->currentImageData->GetScalarTypeAsString())
+            << QStringLiteral("[vbt-volume] field=%1 dims=%2x%3x%4 spacing=%5,%6,%7 image_range=%8..%9 sampled=%10 positive_sampled=%11")
+                       .arg(subset.fieldName)
+                       .arg(dims[0]).arg(dims[1]).arg(dims[2])
+                       .arg(spacing[0], 0, 'g', 6)
+                       .arg(spacing[1], 0, 'g', 6)
+                       .arg(spacing[2], 0, 'g', 6)
                        .arg(imageRange[0], 0, 'g', 8)
                        .arg(imageRange[1], 0, 'g', 8)
-                       .arg(bounds[0], 0, 'g', 8)
-                       .arg(bounds[1], 0, 'g', 8)
-                       .arg(bounds[2], 0, 'g', 8)
-                       .arg(bounds[3], 0, 'g', 8)
-                       .arg(bounds[4], 0, 'g', 8)
-                       .arg(bounds[5], 0, 'g', 8);
-    qDebug().noquote()
-            << QStringLiteral("[vbt-volume] mapper=%1 input_dims=%2x%3x%4 property=1 data_range=%5..%6 sampled=%7 positive_sampled=%8")
-                       .arg(this->volumeMapper->GetClassName())
-                       .arg(this->table.header.dimensions[0])
-                       .arg(this->table.header.dimensions[1])
-                       .arg(this->table.header.dimensions[2])
-                       .arg(minValue, 0, 'g', 8)
-                       .arg(maxValue, 0, 'g', 8)
                        .arg(this->cachedSampledValues.size())
                        .arg(this->cachedPositiveSampledValues.size());
 
@@ -371,9 +362,7 @@ void vtkWindowVbtVolume::rebuildVolumeData()
     double clippingRange[2]{ 0.0, 0.0 };
     this->renderer->GetActiveCamera()->GetClippingRange(clippingRange);
     qDebug().noquote()
-            << QStringLiteral("[vbt-volume] renderer volume_actor=1 box_actor=%1 scalar_bar=%2 props=%3 visible_bounds=[%4,%5]x[%6,%7]x[%8,%9] camera_pos=%10,%11,%12 focal=%13,%14,%15 clip=%16,%17")
-                       .arg(this->boxActor->GetVisibility())
-                       .arg(this->scalarBar->GetVisibility())
+            << QStringLiteral("[vbt-volume] renderer props=%1 visible_bounds=[%2,%3]x[%4,%5]x[%6,%7] camera_pos=%8,%9,%10 focal=%11,%12,%13 clip=%14,%15")
                        .arg(props ? props->GetNumberOfItems() : 0)
                        .arg(visibleBounds ? visibleBounds[0] : 0.0, 0, 'g', 8)
                        .arg(visibleBounds ? visibleBounds[1] : 0.0, 0, 'g', 8)
@@ -390,8 +379,8 @@ void vtkWindowVbtVolume::rebuildVolumeData()
                        .arg(clippingRange[0], 0, 'g', 8)
                        .arg(clippingRange[1], 0, 'g', 8);
 
-    if (!visibleBounds || !(visibleBounds[0] < visibleBounds[1]) || !(visibleBounds[2] < visibleBounds[3])
-        || !(visibleBounds[4] < visibleBounds[5])) {
+    if (!visibleBounds || !(visibleBounds[0] < visibleBounds[1])
+        || !(visibleBounds[2] < visibleBounds[3]) || !(visibleBounds[4] < visibleBounds[5])) {
         qDebug().noquote() << QStringLiteral("[vbt-volume] visible bounds invalid, applying known-good fallback");
         this->applyKnownGoodVisibleFallback(minValue, maxValue, bounds);
     }
@@ -597,25 +586,23 @@ double vtkWindowVbtVolume::positiveFloor() const
 void vtkWindowVbtVolume::updateSummary()
 {
     const QString activeField = this->comboScalarField ? this->comboScalarField->currentText() : QString();
+    const auto &dims = this->openResult.dimensions;
+    const auto &spacing = this->openResult.spacing;
     if (this->summaryLabel) {
         this->summaryLabel->setText(
                 QStringLiteral("Dimensions: %1 x %2 x %3\nSpacing: %4, %5, %6\nFields: %7\nScalar type: %8\nActive scalar: %9")
-                        .arg(this->table.header.dimensions[0])
-                        .arg(this->table.header.dimensions[1])
-                        .arg(this->table.header.dimensions[2])
-                        .arg(this->table.header.spacing[0])
-                        .arg(this->table.header.spacing[1])
-                        .arg(this->table.header.spacing[2])
-                        .arg(this->table.header.fieldCount)
-                        .arg(VbtTableLoader::scalarTypeName(this->table.header.scalarType))
+                        .arg(dims[0]).arg(dims[1]).arg(dims[2])
+                        .arg(spacing[0]).arg(spacing[1]).arg(spacing[2])
+                        .arg(this->openResult.fields.size())
+                        .arg(this->openResult.scalarType)
                         .arg(activeField));
     }
     if (this->metadataLabel) {
         this->metadataLabel->setText(
-                QStringLiteral("Header: %1\nBinary: %2\nEndian: %3\nVoxel count: %4")
-                        .arg(this->table.header.headerPath)
-                        .arg(this->table.header.binaryPath)
-                        .arg(VbtTableLoader::endianName(this->table.header.endian))
-                        .arg(this->table.header.rowCount));
+                QStringLiteral("Kind: %1\nFields: %2\nVoxel count: %3\nDataset ID: %4")
+                        .arg(this->openResult.kind)
+                        .arg(this->openResult.fields.size())
+                        .arg(this->openResult.numRows)
+                        .arg(this->openResult.datasetId));
     }
 }

@@ -505,6 +505,105 @@ BackendCatalogueSubset BackendClient::requestCatalogueSubset(const QString &data
     return result;
 }
 
+BackendVbtOpenResult BackendClient::openVbt(const QString &path, const QString &format)
+{
+    BackendVbtOpenResult result;
+    QString error;
+    QJsonObject bodyObj{ { QStringLiteral("path"), path } };
+    if (!format.isEmpty()) {
+        bodyObj.insert(QStringLiteral("format"), format);
+    }
+    const QJsonDocument body(bodyObj);
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/vbt/open")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.datasetId = object.value(QStringLiteral("dataset_id")).toString();
+    result.sessionId = object.value(QStringLiteral("session_id")).toString();
+    result.kind = object.value(QStringLiteral("kind")).toString();
+    result.numRows = object.value(QStringLiteral("num_rows")).toInt();
+    result.scalarType = object.value(QStringLiteral("scalar_type")).toString();
+    if (!result.sessionId.isEmpty()) {
+        this->setSessionId(result.sessionId);
+    }
+    const QJsonArray fields = object.value(QStringLiteral("fields")).toArray();
+    result.fields.reserve(static_cast<std::size_t>(fields.size()));
+    for (const QJsonValue &v : fields) {
+        const QJsonObject f = v.toObject();
+        result.fields.push_back({ f.value(QStringLiteral("name")).toString(),
+                                  f.value(QStringLiteral("type")).toString() });
+    }
+    const QJsonArray dims = object.value(QStringLiteral("dimensions")).toArray();
+    if (dims.size() == 3) {
+        result.dimensions = { dims[0].toInt(), dims[1].toInt(), dims[2].toInt() };
+    }
+    const QJsonArray spacing = object.value(QStringLiteral("spacing")).toArray();
+    if (spacing.size() == 3) {
+        result.spacing = { spacing[0].toDouble(), spacing[1].toDouble(), spacing[2].toDouble() };
+    }
+    return result;
+}
+
+BackendVbtSubsetResult BackendClient::requestVbtSubset(const QString &datasetId, int maxRows,
+                                                       const QString &fieldName) const
+{
+    BackendVbtSubsetResult result;
+    QString error;
+    QJsonObject bodyObj{ { QStringLiteral("dataset_id"), datasetId } };
+    if (maxRows > 0) {
+        bodyObj.insert(QStringLiteral("max_rows"), maxRows);
+    }
+    if (!fieldName.isEmpty()) {
+        bodyObj.insert(QStringLiteral("field_name"), fieldName);
+    }
+    const QJsonDocument body(bodyObj);
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/vbt/subset")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.kind = object.value(QStringLiteral("kind")).toString();
+    result.numRows = object.value(QStringLiteral("num_rows")).toInt();
+    const QJsonArray fieldNamesArray = object.value(QStringLiteral("fields")).toArray();
+    for (const QJsonValue &v : fieldNamesArray) {
+        result.fieldNames.append(v.toString());
+    }
+    const QJsonArray dims = object.value(QStringLiteral("dimensions")).toArray();
+    if (dims.size() == 3) {
+        result.dimensions = { dims[0].toInt(), dims[1].toInt(), dims[2].toInt() };
+    }
+    const QJsonArray spacingArr = object.value(QStringLiteral("spacing")).toArray();
+    if (spacingArr.size() == 3) {
+        result.spacing = { spacingArr[0].toDouble(), spacingArr[1].toDouble(),
+                           spacingArr[2].toDouble() };
+    }
+    if (result.kind == QStringLiteral("point")) {
+        const QJsonObject columns = object.value(QStringLiteral("columns")).toObject();
+        for (const QString &fname : result.fieldNames) {
+            const QByteArray raw =
+                    QByteArray::fromBase64(columns.value(fname).toString().toLatin1());
+            const int n = raw.size() / static_cast<int>(sizeof(double));
+            std::vector<double> col(static_cast<std::size_t>(n));
+            memcpy(col.data(), raw.constData(), static_cast<std::size_t>(n) * sizeof(double));
+            result.columns[fname] = std::move(col);
+        }
+    } else {
+        result.fieldName = object.value(QStringLiteral("field_name")).toString();
+        result.block =
+                QByteArray::fromBase64(object.value(QStringLiteral("block")).toString().toLatin1());
+    }
+    return result;
+}
+
 BackendImageResult BackendClient::requestImage(const QString &datasetId) const
 {
     BackendImageResult result;

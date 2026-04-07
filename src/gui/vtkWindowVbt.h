@@ -1,7 +1,7 @@
 #ifndef vtkWindowVbt_h
 #define vtkWindowVbt_h
 
-#include "VbtTableLoader.h"
+#include "app/BackendClient.h"
 #include "vtk/ColorMaps.h"
 
 #include <vtkNew.h>
@@ -31,12 +31,14 @@ class QListWidget;
 class QPushButton;
 class QSlider;
 class QVTKOpenGLNativeWidget;
+
 class vtkWindowVbt : public QMainWindow
 {
     Q_OBJECT
 
 public:
-    explicit vtkWindowVbt(const VbtTableData &table, QWidget *parent = nullptr);
+    explicit vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResult subsetResult,
+                          QWidget *parent = nullptr);
     ~vtkWindowVbt() override = default;
 
 private:
@@ -54,7 +56,11 @@ private:
     QString activeColormapName() const;
     void setScalarRange(double minValue, double maxValue);
 
-    VbtTableData table;
+    BackendVbtOpenResult openResult;
+    BackendVbtSubsetResult subsetResult;
+    QString xFieldName;
+    QString yFieldName;
+    QString zFieldName;
 
     QPointer<QVTKOpenGLNativeWidget> vtkWidget;
     QPointer<QComboBox> comboRenderMode;

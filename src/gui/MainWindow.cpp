@@ -8,7 +8,6 @@
 #include "RemoteFileBrowserDialog.h"
 #include "Settings.h"
 #include "SettingsDialog.h"
-#include "VbtTableLoader.h"
 #include "WebViewProcess.h"
 #include "vtkWindowCatalogue3D.h"
 #include "vtkWindowCube.h"
@@ -231,17 +230,43 @@ void MainWindow::openVbt()
         return;
     }
 
-    const VbtTableData table = VbtTableLoader::load(headerPath);
-    if (!table.valid) {
-        QMessageBox::critical(this, u"Could not open VBT"_s, table.errorMessage);
+    BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
+    const BackendVbtOpenResult openResult = client.openVbt(headerPath);
+    if (!openResult.valid) {
+        QMessageBox::critical(
+                this, u"Could not open VBT"_s,
+                openResult.error.isEmpty()
+                        ? u"The backend could not open this VBT dataset."_s
+                        : openResult.error);
         return;
     }
 
     QWidget *win = nullptr;
-    if (table.header.kind == VbtDatasetKind::Volume) {
-        win = new vtkWindowVbtVolume(table, this);
+    if (openResult.kind == u"volume"_s) {
+        const QString firstField =
+                openResult.fields.empty() ? QString() : openResult.fields[0].name;
+        const BackendVbtSubsetResult initialSubset =
+                client.requestVbtSubset(openResult.datasetId, 0, firstField);
+        if (!initialSubset.valid) {
+            QMessageBox::critical(this, u"Could not load VBT volume"_s,
+                                  initialSubset.error.isEmpty()
+                                          ? u"Backend returned no volume data."_s
+                                          : initialSubset.error);
+            return;
+        }
+        win = new vtkWindowVbtVolume(openResult, initialSubset, client.baseUrl(), client.token(),
+                                     client.sessionId(), this);
     } else {
-        win = new vtkWindowVbt(table, this);
+        const BackendVbtSubsetResult subsetResult =
+                client.requestVbtSubset(openResult.datasetId);
+        if (!subsetResult.valid) {
+            QMessageBox::critical(this, u"Could not load VBT table"_s,
+                                  subsetResult.error.isEmpty()
+                                          ? u"Backend returned no table data."_s
+                                          : subsetResult.error);
+            return;
+        }
+        win = new vtkWindowVbt(openResult, subsetResult, this);
     }
     win->show();
     win->raise();

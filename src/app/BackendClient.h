@@ -12,6 +12,7 @@
 #include <chrono>
 
 #include <array>
+#include <map>
 #include <vector>
 
 struct BackendFileEntry
@@ -218,6 +219,45 @@ struct BackendCatalogueSubset
     QList<QVariantMap> rows;
 };
 
+// ── VBT (VisIVO Binary Table) ─────────────────────────────────────────────────
+
+struct BackendVbtFieldInfo
+{
+    QString name;
+    QString type; // "float32" or "float64"
+};
+
+struct BackendVbtOpenResult
+{
+    bool valid{ false };
+    QString error;
+    QString datasetId;
+    QString sessionId;
+    QString kind;        // "point" or "volume"
+    std::vector<BackendVbtFieldInfo> fields;
+    int numRows{ 0 };
+    QString scalarType;  // "float32" or "float64"
+    // volume only:
+    std::array<int, 3> dimensions{ 0, 0, 0 };
+    std::array<double, 3> spacing{ 1.0, 1.0, 1.0 };
+};
+
+struct BackendVbtSubsetResult
+{
+    bool valid{ false };
+    QString error;
+    QString kind;       // "point" or "volume"
+    int numRows{ 0 };
+    QStringList fieldNames;
+    // point data: decoded float64 columns keyed by field name
+    std::map<QString, std::vector<double>> columns;
+    // volume data: single-field float32-LE block
+    QString fieldName;
+    QByteArray block;
+    std::array<int, 3> dimensions{ 0, 0, 0 };
+    std::array<double, 3> spacing{ 1.0, 1.0, 1.0 };
+};
+
 struct BackendImageResult
 {
     bool valid{ false };
@@ -324,6 +364,9 @@ public:
     BackendCubeNoiseResult requestNoise(const QString &datasetId, int x0, int x1, int y0, int y1,
                                         int channelStart, int channelEnd) const;
     BackendCatalogueSubset requestCatalogueSubset(const QString &datasetId, int maxRows) const;
+    BackendVbtOpenResult openVbt(const QString &path, const QString &format = QString());
+    BackendVbtSubsetResult requestVbtSubset(const QString &datasetId, int maxRows = 0,
+                                            const QString &fieldName = QString()) const;
     BackendImageResult requestImagePreview(const QString &datasetId, int maxLongestSide) const;
     BackendImageResult requestImage(const QString &datasetId) const;
     BackendIsosurfaceResult requestIsosurface(const QString &datasetId, double threshold) const;

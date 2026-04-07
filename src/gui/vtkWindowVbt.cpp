@@ -40,10 +40,26 @@
 
 using namespace Qt::StringLiterals;
 
-vtkWindowVbt::vtkWindowVbt(const VbtTableData &table, QWidget *parent)
-    : QMainWindow(parent)
-    , table(table)
+// Detect x/y/z coordinate columns by name (case-insensitive exact match).
+static QString findCoordField(const std::vector<BackendVbtFieldInfo> &fields, const QString &name)
 {
+    for (const auto &f : fields) {
+        if (f.name.compare(name, Qt::CaseInsensitive) == 0) {
+            return f.name;
+        }
+    }
+    return {};
+}
+
+vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResult subsetResult,
+                           QWidget *parent)
+    : QMainWindow(parent)
+    , openResult(std::move(openResult))
+    , subsetResult(std::move(subsetResult))
+{
+    this->xFieldName = findCoordField(this->openResult.fields, u"x"_s);
+    this->yFieldName = findCoordField(this->openResult.fields, u"y"_s);
+    this->zFieldName = findCoordField(this->openResult.fields, u"z"_s);
     this->setupUi();
     this->setupRenderer();
     this->buildPointCloud();
@@ -54,7 +70,9 @@ vtkWindowVbt::vtkWindowVbt(const VbtTableData &table, QWidget *parent)
 void vtkWindowVbt::setupUi()
 {
     this->setAttribute(Qt::WA_DeleteOnClose);
-    this->setWindowTitle(QStringLiteral("VBT Point Viewer — %1").arg(this->table.header.headerPath));
+    this->setWindowTitle(QStringLiteral("VBT Point Viewer — %1 rows, %2 fields")
+                                 .arg(this->openResult.numRows)
+                                 .arg(this->openResult.fields.size()));
     this->resize(1280, 800);
 
     auto *central = new QWidget(this);
@@ -77,11 +95,12 @@ void vtkWindowVbt::setupUi()
     this->comboRenderMode->addItems({ u"Points"_s, u"Particle Ray-Casting"_s });
     this->comboColorField = new QComboBox(displayGroup);
     this->comboColorField->addItem(u"Solid color"_s, QString());
-    for (int field = 0; field < this->table.header.fieldNames.size(); ++field) {
-        if (field == this->table.xIndex || field == this->table.yIndex || field == this->table.zIndex) {
+    for (const auto &field : this->openResult.fields) {
+        if (field.name == this->xFieldName || field.name == this->yFieldName
+            || field.name == this->zFieldName) {
             continue;
         }
-        this->comboColorField->addItem(this->table.header.fieldNames.at(field), field);
+        this->comboColorField->addItem(field.name, field.name);
     }
     if (this->comboColorField->count() > 1) {
         this->comboColorField->setCurrentIndex(1);
@@ -145,8 +164,8 @@ void vtkWindowVbt::setupUi()
     this->metadataLabel = new QLabel(dockWidget);
     this->metadataLabel->setWordWrap(true);
     this->fieldList = new QListWidget(dockWidget);
-    for (const QString &fieldName : this->table.header.fieldNames) {
-        this->fieldList->addItem(fieldName);
+    for (const auto &field : this->openResult.fields) {
+        this->fieldList->addItem(QStringLiteral("%1 [%2]").arg(field.name, field.type));
     }
     dockLayout->addWidget(this->metadataLabel);
     dockLayout->addWidget(this->fieldList, 1);
@@ -261,16 +280,28 @@ void vtkWindowVbt::setupRenderer()
 
 void vtkWindowVbt::buildPointCloud()
 {
-    const std::size_t rowCount = static_cast<std::size_t>(this->table.header.rowCount);
+    const std::size_t rowCount = static_cast<std::size_t>(this->subsetResult.numRows);
     this->points->SetNumberOfPoints(static_cast<vtkIdType>(rowCount));
     this->pointScalars->SetName("VbtScalar");
     this->pointScalars->SetNumberOfTuples(static_cast<vtkIdType>(rowCount));
 
+    static const std::vector<double> emptyCol{};
+    const auto &xcol = this->subsetResult.columns.count(this->xFieldName)
+            ? this->subsetResult.columns.at(this->xFieldName)
+            : emptyCol;
+    const auto &ycol = this->subsetResult.columns.count(this->yFieldName)
+            ? this->subsetResult.columns.at(this->yFieldName)
+            : emptyCol;
+    const auto &zcol = this->subsetResult.columns.count(this->zFieldName)
+            ? this->subsetResult.columns.at(this->zFieldName)
+            : emptyCol;
+
     vtkNew<vtkCellArray> verts;
     for (vtkIdType row = 0; row < static_cast<vtkIdType>(rowCount); ++row) {
-        const double x = this->table.columns[static_cast<std::size_t>(this->table.xIndex)][static_cast<std::size_t>(row)];
-        const double y = this->table.columns[static_cast<std::size_t>(this->table.yIndex)][static_cast<std::size_t>(row)];
-        const double z = this->table.columns[static_cast<std::size_t>(this->table.zIndex)][static_cast<std::size_t>(row)];
+        const auto i = static_cast<std::size_t>(row);
+        const double x = i < xcol.size() ? xcol[i] : 0.0;
+        const double y = i < ycol.size() ? ycol[i] : 0.0;
+        const double z = i < zcol.size() ? zcol[i] : 0.0;
         this->points->SetPoint(row, x, y, z);
         this->pointScalars->SetValue(row, 0.0);
         verts->InsertNextCell(1, &row);
@@ -372,9 +403,9 @@ void vtkWindowVbt::updateColorMapping()
         return;
     }
 
-    bool okIndex = false;
-    const int fieldIndex = data.toInt(&okIndex);
-    if (!okIndex || fieldIndex < 0 || fieldIndex >= static_cast<int>(this->table.columns.size())) {
+    const QString fieldName = data.toString();
+    const auto it = this->subsetResult.columns.find(fieldName);
+    if (it == this->subsetResult.columns.end()) {
         this->mapper->ScalarVisibilityOff();
         this->gaussianMapper->ScalarVisibilityOff();
         this->updateScalarBar();
@@ -386,7 +417,7 @@ void vtkWindowVbt::updateColorMapping()
 
     double minValue = std::numeric_limits<double>::max();
     double maxValue = std::numeric_limits<double>::lowest();
-    const auto &column = this->table.columns[static_cast<std::size_t>(fieldIndex)];
+    const auto &column = it->second;
     for (vtkIdType row = 0; row < static_cast<vtkIdType>(column.size()); ++row) {
         const double value = column[static_cast<std::size_t>(row)];
         this->pointScalars->SetValue(row, value);
@@ -487,9 +518,9 @@ void vtkWindowVbt::updateSummary()
     if (this->summaryLabel) {
         this->summaryLabel->setText(
                 QStringLiteral("Rows: %1\nFields: %2\nScalar type: %3\nMode: %4\nActive color: %5\nColormap: %6\nRange: [%7, %8]\nPoint size: %9\nRay intensity: %10")
-                        .arg(this->table.header.rowCount)
-                        .arg(this->table.header.fieldCount)
-                        .arg(VbtTableLoader::scalarTypeName(this->table.header.scalarType))
+                        .arg(this->openResult.numRows)
+                        .arg(this->openResult.fields.size())
+                        .arg(this->openResult.scalarType)
                         .arg(this->comboRenderMode ? this->comboRenderMode->currentText() : QStringLiteral("Points"))
                         .arg(this->activeColorFieldName())
                         .arg(this->activeColormapName())
@@ -500,11 +531,13 @@ void vtkWindowVbt::updateSummary()
     }
     if (this->metadataLabel) {
         this->metadataLabel->setText(
-                QStringLiteral("Header: %1\nBinary: %2\nEndian: %3\nFields: %4\nRows: %5")
-                        .arg(this->table.header.headerPath)
-                        .arg(this->table.header.binaryPath)
-                        .arg(VbtTableLoader::endianName(this->table.header.endian))
-                        .arg(this->table.header.fieldCount)
-                        .arg(this->table.header.rowCount));
+                QStringLiteral("Kind: %1\nFields: %2\nRows: %3\nScalar type: %4\nCoordinates: X=%5 Y=%6 Z=%7")
+                        .arg(this->openResult.kind)
+                        .arg(this->openResult.fields.size())
+                        .arg(this->openResult.numRows)
+                        .arg(this->openResult.scalarType)
+                        .arg(this->xFieldName.isEmpty() ? u"(none)"_s : this->xFieldName)
+                        .arg(this->yFieldName.isEmpty() ? u"(none)"_s : this->yFieldName)
+                        .arg(this->zFieldName.isEmpty() ? u"(none)"_s : this->zFieldName));
     }
 }

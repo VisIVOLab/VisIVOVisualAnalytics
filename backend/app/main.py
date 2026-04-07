@@ -20,9 +20,11 @@ prepend /v1/ to every request URL (Settings dialog → backend URL field).
 from __future__ import annotations
 
 import asyncio
+import base64
 import csv
 import logging
 import os
+import struct
 import threading
 import uuid
 from concurrent.futures import ProcessPoolExecutor
@@ -395,6 +397,52 @@ class CatalogueSubsetResponse(BaseModel):
     rows: list[dict[str, Any]] = []
 
 
+# ── VBT models ────────────────────────────────────────────────────────────────
+
+class VbtOpenRequest(BaseModel):
+    path: str
+    format: str = ""
+
+
+class VbtFieldInfo(BaseModel):
+    name: str
+    type: str  # "float32" or "float64"
+
+
+class VbtOpenResponse(BaseModel):
+    valid: bool
+    error: str
+    dataset_id: str = ""
+    session_id: str = ""
+    kind: str = ""          # "point" or "volume"
+    fields: list[VbtFieldInfo] = []
+    num_rows: int = 0
+    scalar_type: str = ""
+    dimensions: list[int] = []    # [nx, ny, nz] for volume
+    spacing: list[float] = []     # [sx, sy, sz] for volume
+
+
+class VbtSubsetRequest(BaseModel):
+    dataset_id: str
+    max_rows: int = 0        # 0 → all rows
+    field_name: str = ""     # volume: which field to return; empty → first field
+
+
+class VbtSubsetResponse(BaseModel):
+    valid: bool
+    error: str
+    kind: str = ""
+    num_rows: int = 0
+    fields: list[str] = []
+    # point data: {field_name: base64-encoded float64-LE column}
+    columns: dict[str, str] = {}
+    # volume data: single-field block
+    field_name: str = ""
+    block: str = ""         # base64-encoded float32-LE voxel block
+    dimensions: list[int] = []
+    spacing: list[float] = []
+
+
 class IsosurfaceProductRequest(BaseModel):
     dataset_id: str
     threshold: float
@@ -417,6 +465,77 @@ def _normalize_path(raw: str) -> Path:
     if not raw:
         return Path.home()
     return Path(raw).expanduser().resolve()
+
+
+def _parse_vbt_header(head_path: Path) -> dict:
+    """Parse a VisIVO Binary Table .head file and return metadata dict."""
+    with open(head_path, "r") as fh:
+        lines = [ln.strip() for ln in fh.readlines() if ln.strip()]
+    if len(lines) < 4:
+        raise ValueError(f"VBT header too short: expected at least 4 lines, got {len(lines)}")
+
+    scalar_str = lines[0].lower()
+    if scalar_str in ("f", "float"):
+        scalar_type = "float32"
+        np_endian_code = "<f4"
+    elif scalar_str in ("d", "double"):
+        scalar_type = "float64"
+        np_endian_code = "<f8"
+    else:
+        raise ValueError(f"Unknown VBT scalar type: '{lines[0]}'")
+
+    try:
+        field_count = int(lines[1])
+    except ValueError:
+        raise ValueError(f"Invalid field count: '{lines[1]}'")
+    if field_count <= 0:
+        raise ValueError(f"Field count must be positive, got {field_count}")
+
+    tokens = lines[2].split()
+    if len(tokens) == 1:
+        kind = "point"
+        num_rows = int(tokens[0])
+        dimensions: list[int] | None = None
+        spacing: list[float] | None = None
+    elif len(tokens) == 7:
+        kind = "volume"
+        num_rows = int(tokens[0])
+        nx, ny, nz = int(tokens[1]), int(tokens[2]), int(tokens[3])
+        sx, sy, sz = float(tokens[4]), float(tokens[5]), float(tokens[6])
+        if num_rows != nx * ny * nz:
+            raise ValueError(
+                f"VBT voxel count mismatch: header says {num_rows}, dims give {nx * ny * nz}"
+            )
+        dimensions = [nx, ny, nz]
+        spacing = [sx, sy, sz]
+    else:
+        raise ValueError(f"Unexpected token count on row-spec line: {len(tokens)}")
+
+    endian_str = lines[3].lower()
+    if endian_str in ("l", "little"):
+        file_endian = "little"
+    elif endian_str in ("b", "big"):
+        file_endian = "big"
+    else:
+        raise ValueError(f"Unknown VBT endian: '{lines[3]}'")
+
+    if len(lines) < 4 + field_count:
+        raise ValueError(
+            f"VBT header has {len(lines)} lines but expected at least {4 + field_count}"
+        )
+    field_names = lines[4 : 4 + field_count]
+
+    return {
+        "kind": kind,
+        "scalar_type": scalar_type,
+        "np_endian_code": np_endian_code,  # numpy dtype string including endian mark
+        "file_endian": file_endian,
+        "field_count": field_count,
+        "num_rows": num_rows,
+        "dimensions": dimensions,
+        "spacing": spacing,
+        "field_names": field_names,
+    }
 
 
 def _is_fits(path: Path) -> bool:
@@ -781,6 +900,145 @@ async def catalogue_subset(
     except Exception as exc:
         return CatalogueSubsetResponse(valid=False, error=str(exc))
     return CatalogueSubsetResponse(valid=True, error="", rows=rows)
+
+
+# ── VBT endpoints ─────────────────────────────────────────────────────────────
+
+
+@app.post("/v1/vbt/open", response_model=VbtOpenResponse, tags=["vbt"])
+async def vbt_open(
+    request: VbtOpenRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> VbtOpenResponse:
+    """Register a VisIVO Binary Table (.head + binary) with the backend.
+
+    Returns field schema and geometry metadata; the client receives a
+    dataset_id to use for subsequent /v1/vbt/subset calls.
+    """
+    head_path = _normalize_path(request.path)
+    if not head_path.exists() or not head_path.is_file():
+        return VbtOpenResponse(valid=False, error="VBT header file not found.")
+    if not head_path.suffix == ".head" and not str(head_path).endswith(".bin.head"):
+        pass  # accept any extension — validation happens on parse
+    bin_path = Path(str(head_path)[: -len(".head")] if str(head_path).endswith(".head") else str(head_path))
+    if not bin_path.exists():
+        return VbtOpenResponse(valid=False, error=f"VBT binary file not found: {bin_path.name}")
+
+    try:
+        header = _parse_vbt_header(head_path)
+    except Exception as exc:
+        return VbtOpenResponse(valid=False, error=str(exc))
+
+    dataset_id = f"vbt_{uuid.uuid4().hex[:12]}"
+    session.datasets[dataset_id] = {
+        "kind": "vbt",
+        "head_path": str(head_path),
+        "bin_path": str(bin_path),
+        "header": header,
+    }
+    logger.info(
+        "[vbt-open] session=%s dataset_id=%s kind=%s fields=%d rows=%d path=%s",
+        session.session_id,
+        dataset_id,
+        header["kind"],
+        header["field_count"],
+        header["num_rows"],
+        head_path,
+    )
+
+    fields = [VbtFieldInfo(name=n, type=header["scalar_type"]) for n in header["field_names"]]
+    return VbtOpenResponse(
+        valid=True,
+        error="",
+        dataset_id=dataset_id,
+        session_id=session.session_id,
+        kind=header["kind"],
+        fields=fields,
+        num_rows=header["num_rows"],
+        scalar_type=header["scalar_type"],
+        dimensions=header["dimensions"] or [],
+        spacing=header["spacing"] or [],
+    )
+
+
+@app.post("/v1/vbt/subset", response_model=VbtSubsetResponse, tags=["vbt"])
+async def vbt_subset(
+    request: VbtSubsetRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> VbtSubsetResponse:
+    """Return a subset of VBT data encoded as base64 binary columns.
+
+    For **point** datasets all fields are returned up to *max_rows* rows.
+    Each column is a base64-encoded float64-LE byte array.
+
+    For **volume** datasets a single field block is returned as a
+    base64-encoded float32-LE byte array of length nx*ny*nz.
+    """
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "vbt":
+            raise HTTPException(422, "This endpoint requires a VBT dataset.")
+    except HTTPException:
+        raise
+
+    header = entry["header"]
+    bin_path = entry["bin_path"]
+    field_count: int = header["field_count"]
+    num_rows: int = header["num_rows"]
+    field_names: list[str] = header["field_names"]
+    np_dtype = np.dtype(header["np_endian_code"])
+
+    try:
+        # Read entire binary into a (field_count × num_rows) array.
+        raw = np.fromfile(bin_path, dtype=np_dtype)
+        if raw.size != field_count * num_rows:
+            return VbtSubsetResponse(
+                valid=False,
+                error=(
+                    f"Binary size mismatch: expected {field_count * num_rows} scalars, "
+                    f"got {raw.size}"
+                ),
+            )
+        arr = raw.reshape(field_count, num_rows)  # field-major layout
+    except Exception as exc:
+        return VbtSubsetResponse(valid=False, error=f"Failed to read VBT binary: {exc}")
+
+    if header["kind"] == "point":
+        max_rows = request.max_rows if request.max_rows > 0 else num_rows
+        max_rows = min(max_rows, num_rows)
+        columns: dict[str, str] = {}
+        for i, fname in enumerate(field_names):
+            col = arr[i, :max_rows].astype("<f8")  # always float64-LE on the wire
+            columns[fname] = base64.b64encode(col.tobytes()).decode("ascii")
+        return VbtSubsetResponse(
+            valid=True,
+            error="",
+            kind="point",
+            num_rows=max_rows,
+            fields=field_names,
+            columns=columns,
+        )
+    else:  # volume
+        field_name = request.field_name if request.field_name else field_names[0]
+        if field_name not in field_names:
+            return VbtSubsetResponse(
+                valid=False, error=f"Field '{field_name}' not found in VBT dataset."
+            )
+        field_idx = field_names.index(field_name)
+        block = arr[field_idx].astype("<f4")  # float32-LE on the wire
+        return VbtSubsetResponse(
+            valid=True,
+            error="",
+            kind="volume",
+            num_rows=num_rows,
+            fields=field_names,
+            field_name=field_name,
+            block=base64.b64encode(block.tobytes()).decode("ascii"),
+            dimensions=header["dimensions"],
+            spacing=header["spacing"],
+        )
 
 
 @app.post("/v1/products/moment", response_model=MomentProductResponse, tags=["products"])
