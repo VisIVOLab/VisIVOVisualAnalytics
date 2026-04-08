@@ -52,9 +52,9 @@ private:
 
     // Creates a single interactive action card (icon symbol + title + desc).
     // Installs an event filter so the frame emits the given signal on click.
-    QFrame *makeActionCard(const QString &symbol, const QString &title,
-                           const QString &desc, QWidget *parent);
-
+QFrame *makeActionCard(const QString &iconKind, const QString &title,
+                       const QString &desc, QWidget *parent = nullptr);
+                       
     QString backendUrl;
     QString backendToken;
 

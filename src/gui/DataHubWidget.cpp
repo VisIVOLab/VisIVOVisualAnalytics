@@ -16,8 +16,69 @@
 #include <QSizePolicy>
 #include <QVBoxLayout>
 #include <QTimer>
+#include <QPainter>
+#include <QPixmap>
+#include <QSvgRenderer>
 
 using namespace Qt::StringLiterals;
+
+namespace {
+
+QString actionCardSvg(const QString &kind, const QString &stroke)
+{
+    if (kind == u"dataset"_s) {
+        return QString(
+                       "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48' fill='none'>"
+                       "<path d='M10 14h18l4 4h6v16a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4V18a4 4 0 0 1 4-4Z' "
+                       "stroke='%1' stroke-width='2.6' stroke-linejoin='round'/>"
+                       "<path d='M24 23v10M19 28h10' stroke='%1' stroke-width='2.6' stroke-linecap='round'/>"
+                       "</svg>")
+                .arg(stroke);
+    }
+    if (kind == u"catalogue"_s) {
+        return QString(
+                       "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48' fill='none'>"
+                       "<circle cx='14' cy='15' r='2.8' fill='%1'/>"
+                       "<circle cx='32' cy='12' r='2.8' fill='%1'/>"
+                       "<circle cx='24' cy='24' r='2.8' fill='%1'/>"
+                       "<circle cx='12' cy='32' r='2.8' fill='%1'/>"
+                       "<circle cx='34' cy='31' r='2.8' fill='%1'/>"
+                       "<path d='M14 15 24 24 32 12M24 24 12 32M24 24 34 31' stroke='%1' stroke-width='2.4' stroke-linecap='round'/>"
+                       "</svg>")
+                .arg(stroke);
+    }
+    if (kind == u"vbt"_s) {
+        return QString(
+                       "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48' fill='none'>"
+                       "<rect x='10' y='10' width='10' height='10' stroke='%1' stroke-width='2.4'/>"
+                       "<rect x='28' y='10' width='10' height='10' stroke='%1' stroke-width='2.4'/>"
+                       "<rect x='10' y='28' width='10' height='10' stroke='%1' stroke-width='2.4'/>"
+                       "<rect x='28' y='28' width='10' height='10' stroke='%1' stroke-width='2.4'/>"
+                       "<path d='M20 15h8M15 20v8M33 20v8M20 33h8' stroke='%1' stroke-width='2.2' stroke-linecap='round'/>"
+                       "</svg>")
+                .arg(stroke);
+    }
+    return QString(
+                   "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48' fill='none'>"
+                   "<circle cx='24' cy='24' r='13' stroke='%1' stroke-width='2.4'/>"
+                   "<path d='M11 24h26M24 11c4 4 6 8 6 13s-2 9-6 13c-4-4-6-8-6-13s2-9 6-13Z' stroke='%1' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/>"
+                   "<circle cx='24' cy='24' r='2.6' fill='%1'/>"
+                   "</svg>")
+            .arg(stroke);
+}
+
+QPixmap actionCardIconPixmap(const QString &kind, const QString &stroke, int size)
+{
+    QPixmap pixmap(size, size);
+    pixmap.fill(Qt::transparent);
+
+    QSvgRenderer renderer(actionCardSvg(kind, stroke).toUtf8());
+    QPainter painter(&pixmap);
+    renderer.render(&painter, QRectF(0, 0, size, size));
+    return pixmap;
+}
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // CardClickFilter
@@ -254,15 +315,16 @@ QFrame *DataHubWidget::buildActionGrid()
     grid->setSpacing(12);
 
     struct CardInfo {
-        QString symbol;
+        QString iconKind;
         QString title;
         QString desc;
     };
+
     const CardInfo cards[] = {
-        { u"↓"_s,  u"Open Remote Dataset"_s,    u"Browse and open FITS images or spectral cubes via the backend."_s },
-        { u"◈"_s,  u"Open 3D Catalogue"_s,      u"Visualise astronomical CSV catalogues in the 3D source viewer."_s },
-        { u"⊞"_s,  u"Open VBT"_s,               u"Load a VisIVO Binary Table for point-cloud or volume rendering."_s },
-        { u"✦"_s,  u"HiPS Viewer"_s,             u"Explore hierarchical progressive sky surveys (coming soon)."_s },
+        { u"dataset"_s,   u"Open Remote Dataset"_s, u"Browse and open FITS images or spectral cubes via the backend."_s },
+        { u"catalogue"_s, u"Open 3D Catalogue"_s,   u"Visualise astronomical CSV catalogues in the 3D source viewer."_s },
+        { u"vbt"_s,       u"Open VBT"_s,            u"Load a VisIVO Binary Table for point-cloud or volume rendering."_s },
+        { u"hips"_s,      u"HiPS Viewer"_s,         u"Explore hierarchical progressive sky surveys (coming soon)."_s },
     };
 
     // Connect each card to the matching signal.
@@ -274,7 +336,7 @@ QFrame *DataHubWidget::buildActionGrid()
     };
 
     for (int i = 0; i < 4; ++i) {
-        auto *card = makeActionCard(cards[i].symbol, cards[i].title, cards[i].desc, container);
+        auto *card = makeActionCard(cards[i].iconKind, cards[i].title, cards[i].desc, container);
         auto action = actions[i];
         auto *filter = new CardClickFilter([this, action]() { emit (this->*action)(); }, card);
         card->installEventFilter(filter);
@@ -287,7 +349,7 @@ QFrame *DataHubWidget::buildActionGrid()
 
 // ── makeActionCard ────────────────────────────────────────────────────────────
 
-QFrame *DataHubWidget::makeActionCard(const QString &symbol, const QString &title,
+QFrame *DataHubWidget::makeActionCard(const QString &iconKind, const QString &title,
                                       const QString &desc, QWidget *parent)
 {
     auto *card = new QFrame(parent);
@@ -309,22 +371,22 @@ QFrame *DataHubWidget::makeActionCard(const QString &symbol, const QString &titl
                     .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerHigh),
                          QLatin1StringView(VisivoTheme::kSurfaceBright)));
 
-    auto *vbox = new QVBoxLayout(card);
-    vbox->setContentsMargins(20, 20, 20, 20);
-    vbox->setSpacing(8);
+    auto *hbox = new QHBoxLayout(card);
+    hbox->setContentsMargins(20, 20, 20, 20);
+    hbox->setSpacing(14);
 
-    // Icon symbol — large, accent-coloured
-    auto *iconLbl = new QLabel(symbol, card);
-    {
-        QFont f = iconLbl->font();
-        f.setPointSize(f.pointSize() + 8);
-        iconLbl->setFont(f);
-        iconLbl->setStyleSheet(
-                QStringLiteral("color: %1; background: transparent; border: none;")
-                        .arg(QLatin1StringView(VisivoTheme::kPrimary)));
-        iconLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
-    }
-    vbox->addWidget(iconLbl);
+    // Larger SVG icon on the left: primary visual anchor for the card.
+    auto *iconLbl = new QLabel(card);
+    iconLbl->setPixmap(actionCardIconPixmap(iconKind, QString::fromLatin1(VisivoTheme::kPrimary), 44));
+    iconLbl->setFixedSize(52, 52);
+    iconLbl->setAlignment(Qt::AlignCenter);
+    iconLbl->setStyleSheet(QStringLiteral("background: transparent; border: none;"));
+    iconLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
+    hbox->addWidget(iconLbl, 0, Qt::AlignVCenter);
+
+    auto *textCol = new QVBoxLayout;
+    textCol->setContentsMargins(0, 0, 0, 0);
+    textCol->setSpacing(6);
 
     // Title — Lato Bold (brand heading weight for action card titles)
     auto *titleLbl = new QLabel(title, card);
@@ -338,7 +400,7 @@ QFrame *DataHubWidget::makeActionCard(const QString &symbol, const QString &titl
                         .arg(QLatin1StringView(VisivoTheme::kOnSurface)));
         titleLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
     }
-    vbox->addWidget(titleLbl);
+    textCol->addWidget(titleLbl);
 
     // Description — small, muted
     auto *descLbl = new QLabel(desc, card);
@@ -347,9 +409,11 @@ QFrame *DataHubWidget::makeActionCard(const QString &symbol, const QString &titl
             QStringLiteral("color: %1; font-size: 11px; background: transparent; border: none;")
                     .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant)));
     descLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
-    vbox->addWidget(descLbl);
+    descLbl->setMaximumHeight(40);
+    textCol->addWidget(descLbl);
+    textCol->addStretch(1);
 
-    vbox->addStretch(1);
+    hbox->addLayout(textCol, 1);
     return card;
 }
 

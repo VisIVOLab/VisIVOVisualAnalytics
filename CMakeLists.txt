@@ -13,6 +13,7 @@ message(STATUS "Configuring ${PROJECT_NAME} v${PROJECT_VERSION}")
 set(qt_components
         Concurrent
         Widgets
+        Svg
         Network
         NetworkAuth
         PrintSupport
