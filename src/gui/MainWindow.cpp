@@ -28,8 +28,40 @@
 #include <QTabWidget>
 #include <QWebChannel>
 #include <qstylehints.h>
+#include <QPixmap>
+#include <QStyle>
+#include <QPainter>
 
 using namespace Qt::StringLiterals;
+
+namespace {
+
+QPixmap makeLightDialogQuestionPixmap(int size)
+{
+    QPixmap pm(size, size);
+    pm.fill(Qt::transparent);
+
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    const QColor fg(QStringLiteral("#E6F4F9"));
+    QPen pen(fg);
+    pen.setWidthF(3.2);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+
+    QFont f(QStringLiteral("Lato"));
+    f.setPixelSize(int(size * 0.78));
+    f.setWeight(QFont::Black);
+    p.setFont(f);
+    p.drawText(QRect(0, 0, size, size), Qt::AlignCenter, QStringLiteral("?"));
+
+    return pm;
+}
+
+} // namespace
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWindow)
 {
@@ -129,6 +161,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 
     // Load theme
     this->setApplicationTheme();
+
+    this->setMinimumSize(1200, 840);
+    this->resize(1280, 840);
 }
 
 MainWindow::~MainWindow()
@@ -189,8 +224,15 @@ void MainWindow::openDiagnosticsWindow()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-    auto res = QMessageBox::question(this, u"Exit"_s, u"Do you  want to exit?"_s,
-                                     QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    QMessageBox box(this);
+    box.setWindowTitle(u"Exit"_s);
+    box.setText(u"Do you want to exit?"_s);
+    box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+    box.setDefaultButton(QMessageBox::No);
+
+    box.setIconPixmap(makeLightDialogQuestionPixmap(40));
+
+    const auto res = box.exec();
     if (res == QMessageBox::No) {
         event->ignore();
     }

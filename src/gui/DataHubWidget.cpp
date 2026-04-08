@@ -19,6 +19,8 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QSvgRenderer>
+#include <QPainterPath>
+#include <QPen>
 
 using namespace Qt::StringLiterals;
 
@@ -75,6 +77,47 @@ QPixmap actionCardIconPixmap(const QString &kind, const QString &stroke, int siz
     QSvgRenderer renderer(actionCardSvg(kind, stroke).toUtf8());
     QPainter painter(&pixmap);
     renderer.render(&painter, QRectF(0, 0, size, size));
+    return pixmap;
+}
+
+QPixmap visivoBrandIconPixmap(const QString &stroke, int width, int height)
+{
+    QPixmap pixmap(width, height);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    const QColor color(stroke);
+    QPen pen(color);
+    pen.setWidthF(2.4);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    painter.setPen(pen);
+    painter.setBrush(Qt::NoBrush);
+
+    const QRectF r(6.0, 6.0, width - 12.0, height - 12.0);
+
+    painter.save();
+    painter.translate(r.center());
+    painter.rotate(-22.0);
+    painter.translate(-r.center());
+    painter.drawEllipse(r);
+    painter.restore();
+
+    painter.save();
+    painter.translate(r.center());
+    painter.rotate(26.0);
+    painter.translate(-r.center());
+    painter.drawArc(r.adjusted(5.0, 10.0, -5.0, -10.0), 25 * 16, 220 * 16);
+    painter.restore();
+
+    painter.setBrush(color);
+    painter.setPen(Qt::NoPen);
+    painter.drawEllipse(QPointF(width * 0.76, height * 0.30), 4.8, 4.8);
+    painter.drawEllipse(QPointF(width * 0.28, height * 0.66), 3.0, 3.0);
+    painter.drawEllipse(QPointF(width * 0.77, height * 0.73), 7.0, 7.0);
+
     return pixmap;
 }
 
@@ -144,6 +187,37 @@ void DataHubWidget::buildUi()
 
     // ── 1. Header ─────────────────────────────────────────────────────────────
     {
+        auto *headerRow = new QHBoxLayout;
+        headerRow->setContentsMargins(0, 0, 0, 0);
+        headerRow->setSpacing(10);
+
+        auto *brandIcon = new QLabel(content);
+        constexpr int logoBoxW = 104;
+        constexpr int logoBoxH = 44;
+        QPixmap logoPixmap(logoBoxW, logoBoxH);
+        logoPixmap.fill(Qt::transparent);
+        {
+            QSvgRenderer renderer(QStringLiteral(":/icons/visivo_logo_white.svg"));
+            QPainter painter(&logoPixmap);
+            const QSize defaultSize = renderer.defaultSize();
+            QSize scaledSize = defaultSize.isValid() ? defaultSize : QSize(logoBoxW, logoBoxH);
+            scaledSize.scale(logoBoxW, logoBoxH, Qt::KeepAspectRatio);
+            const QRectF target((logoBoxW - scaledSize.width()) / 2.0,
+                                (logoBoxH - scaledSize.height()) / 2.0,
+                                scaledSize.width(),
+                                scaledSize.height());
+            renderer.render(&painter, target);
+        }
+        brandIcon->setPixmap(logoPixmap);
+        brandIcon->setFixedSize(logoBoxW, logoBoxH);
+        brandIcon->setAlignment(Qt::AlignCenter);
+        brandIcon->setStyleSheet(QStringLiteral("background: transparent; border: none;"));
+        headerRow->addWidget(brandIcon, 0, Qt::AlignVCenter);
+
+        auto *titleCol = new QVBoxLayout;
+        titleCol->setContentsMargins(0, 0, 0, 0);
+        titleCol->setSpacing(6);
+
         // Main title — Lato Black, brand blue. Lato Black gives the editorial
         // weight called for in the VisIVO brand guidelines for major headings.
         auto *titleLabel = new QLabel(u"VisIVO Data Hub"_s, content);
@@ -157,7 +231,7 @@ void DataHubWidget::buildUi()
         titleLabel->setStyleSheet(
                 QStringLiteral("color: %1; background: transparent;")
                         .arg(QLatin1StringView(VisivoTheme::kPrimary)));
-        vbox->addWidget(titleLabel);
+        titleCol->addWidget(titleLabel);
 
         // Subtitle — Lato Regular, secondary text colour.
         auto *sub = new QLabel(
@@ -174,7 +248,10 @@ void DataHubWidget::buildUi()
         sub->setStyleSheet(
                 QStringLiteral("color: %1; background: transparent;")
                         .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant)));
-        vbox->addWidget(sub);
+        titleCol->addWidget(sub);
+
+        headerRow->addLayout(titleCol, 1);
+        vbox->addLayout(headerRow);
     }
 
     // Separator
@@ -211,9 +288,7 @@ void DataHubWidget::buildUi()
         vbox->addWidget(sep);
 
         auto *footer = new QLabel(
-                u"VisIVO uses a backend-authoritative workflow. "
-                "Scientific operations are computed on remote backend nodes to ensure "
-                "data integrity and high-performance processing."_s,
+                u"VisIVO Visual Analytics, crafted with ❤️ by VisIVOLab team"_s,
                 content);
         footer->setWordWrap(true);
         footer->setStyleSheet(
@@ -353,6 +428,7 @@ QFrame *DataHubWidget::makeActionCard(const QString &iconKind, const QString &ti
                                       const QString &desc, QWidget *parent)
 {
     auto *card = new QFrame(parent);
+    card->setMinimumHeight(112);
     card->setAttribute(Qt::WA_Hover);
     card->setCursor(Qt::PointingHandCursor);
     // Normal + hover states in a single stylesheet using the :hover pseudo-class.
@@ -373,16 +449,16 @@ QFrame *DataHubWidget::makeActionCard(const QString &iconKind, const QString &ti
 
     auto *hbox = new QHBoxLayout(card);
     hbox->setContentsMargins(20, 20, 20, 20);
-    hbox->setSpacing(14);
+    hbox->setSpacing(12);
 
     // Larger SVG icon on the left: primary visual anchor for the card.
     auto *iconLbl = new QLabel(card);
-    iconLbl->setPixmap(actionCardIconPixmap(iconKind, QString::fromLatin1(VisivoTheme::kPrimary), 44));
-    iconLbl->setFixedSize(52, 52);
+    iconLbl->setPixmap(actionCardIconPixmap(iconKind, QString::fromLatin1(VisivoTheme::kPrimary), 48));
+    iconLbl->setFixedSize(56, 56);
     iconLbl->setAlignment(Qt::AlignCenter);
     iconLbl->setStyleSheet(QStringLiteral("background: transparent; border: none;"));
     iconLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
-    hbox->addWidget(iconLbl, 0, Qt::AlignVCenter);
+    hbox->addWidget(iconLbl, 0, Qt::AlignTop);
 
     auto *textCol = new QVBoxLayout;
     textCol->setContentsMargins(0, 0, 0, 0);
@@ -392,7 +468,7 @@ QFrame *DataHubWidget::makeActionCard(const QString &iconKind, const QString &ti
     auto *titleLbl = new QLabel(title, card);
     {
         QFont f(QStringLiteral("Lato"));
-        f.setPixelSize(15);
+        f.setPixelSize(17);
         f.setWeight(QFont::Bold);
         titleLbl->setFont(f);
         titleLbl->setStyleSheet(
@@ -409,7 +485,8 @@ QFrame *DataHubWidget::makeActionCard(const QString &iconKind, const QString &ti
             QStringLiteral("color: %1; font-size: 11px; background: transparent; border: none;")
                     .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant)));
     descLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
-    descLbl->setMaximumHeight(40);
+    descLbl->setMaximumHeight(36);
+    descLbl->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     textCol->addWidget(descLbl);
     textCol->addStretch(1);
 

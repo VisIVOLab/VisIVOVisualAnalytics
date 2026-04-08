@@ -179,6 +179,13 @@ qt_add_resources(${PROJECT_NAME} bundled_fonts
             resources/fonts/Lato-Black.ttf
 )
 
+qt_add_resources(${PROJECT_NAME} branding_assets
+    PREFIX "/icons"
+    BASE "resources/branding"
+    FILES
+        resources/branding/visivo_logo_white.svg
+)
+
 add_subdirectory(src/libwcs)
 
 add_subdirectory(src/qcustomplot)

@@ -105,12 +105,13 @@ RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl, QWid
     layout->addLayout(optionsRow);
 
     auto *splitter = new QSplitter(this);
+    splitter->setHandleWidth(10);
     splitter->setChildrenCollapsible(false);
     layout->addWidget(splitter, 1);
 
     auto *browserPane = new QWidget(splitter);
     auto *browserLayout = new QVBoxLayout(browserPane);
-    browserLayout->setContentsMargins(0, 0, 0, 0);
+    browserLayout->setContentsMargins(0, 0, 6, 0);
     this->entriesTree->setColumnCount(3);
     this->entriesTree->setHeaderLabels({ u"Name"_s, u"Size"_s, u"Modified"_s });
     this->entriesTree->setAlternatingRowColors(true);
@@ -127,14 +128,19 @@ RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl, QWid
     detailsPane->setMaximumWidth(420);
     detailsPane->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto *detailsLayout = new QVBoxLayout(detailsPane);
-    detailsLayout->setContentsMargins(0, 0, 0, 0);
+    detailsLayout->setContentsMargins(6, 0, 0, 0);
     auto *detailsTitle = new QLabel(u"Details"_s, detailsPane);
     auto *detailsForm = new QFormLayout;
     detailsForm->setContentsMargins(0, 0, 0, 0);
+    detailsForm->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+    detailsForm->setLabelAlignment(Qt::AlignLeft | Qt::AlignTop);
+    detailsForm->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
     this->nameValue->setWordWrap(true);
     this->pathValue->setWordWrap(true);
-    this->nameValue->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    this->pathValue->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    this->nameValue->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    this->pathValue->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    this->nameValue->setMinimumWidth(180);
+    this->pathValue->setMinimumWidth(180);
     this->pathValue->setTextInteractionFlags(Qt::TextSelectableByMouse);
     this->headerView->setReadOnly(true);
     this->headerView->setLineWrapMode(QTextEdit::NoWrap);
