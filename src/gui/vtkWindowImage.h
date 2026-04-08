@@ -155,6 +155,7 @@ private:
     QPointer<QAction> actionShowCatalogueOverlay;
     QPointer<QAction> actionShowCatalogueLabels;
     QPointer<QAction> actionClearCatalogueOverlay;
+    QPointer<QAction> actionShowWcsAxes;
     QFutureWatcher<ImageLayerLoadResult> layerLoadWatcher;
     QFutureWatcher<ImageLayerLoadResult> remoteImageWatcher;
     QFutureWatcher<ImageLayerLoadResult> remoteFullImageWatcher;

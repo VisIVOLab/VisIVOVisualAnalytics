@@ -859,9 +859,6 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                        .arg(this->remoteDatasetCdelt[1], 0, 'g', 12);
     this->setWindowTitle(this->filepath);
     this->setAttribute(Qt::WA_DeleteOnClose);
-    this->wcsAxesCheck = new QCheckBox(u"Show WCS Axes"_s, this);
-    this->wcsAxesCheck->setChecked(this->showWcsAxes);
-    this->statusBar()->addPermanentWidget(this->wcsAxesCheck);
     this->hoverReadoutLabel = new QLabel(this);
     this->hoverReadoutLabel->setStyleSheet(u"QLabel { padding-left: 8px; }"_s);
     this->hoverReadoutLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -883,16 +880,6 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     this->catalogueInfoLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     this->statusBar()->addPermanentWidget(this->catalogueInfoLabel);
     this->updateCatalogueInfoPanel();
-    QObject::connect(this->wcsAxesCheck, &QCheckBox::toggled, this, [this](bool checked) {
-        this->showWcsAxes = checked;
-        this->lastOverlayVisibleBounds = { std::numeric_limits<double>::quiet_NaN(),
-                                           std::numeric_limits<double>::quiet_NaN(),
-                                           std::numeric_limits<double>::quiet_NaN(),
-                                           std::numeric_limits<double>::quiet_NaN() };
-        this->lastOverlayViewportSize = { -1, -1 };
-        this->setWcsOverlayVisible(checked);
-        this->requestWcsOverlayRender();
-    });
     this->statusMessageClearTimer.setSingleShot(true);
     QObject::connect(&this->statusMessageClearTimer, &QTimer::timeout, this, [this]() {
         this->persistentStatusActive = false;
@@ -1076,6 +1063,22 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                      &vtkWindowImage::clearCatalogueOverlay);
     this->ensureCatalogueDock();
 
+    // Setup Menu View
+    this->actionShowWcsAxes = new QAction(u"Show WCS Axes"_s, this);
+    this->actionShowWcsAxes->setCheckable(true);
+    this->actionShowWcsAxes->setChecked(this->showWcsAxes);
+    ui->menuView->addAction(this->actionShowWcsAxes);
+    QObject::connect(this->actionShowWcsAxes, &QAction::toggled, this, [this](bool checked) {
+        this->showWcsAxes = checked;
+        this->lastOverlayVisibleBounds = { std::numeric_limits<double>::quiet_NaN(),
+                                           std::numeric_limits<double>::quiet_NaN(),
+                                           std::numeric_limits<double>::quiet_NaN(),
+                                           std::numeric_limits<double>::quiet_NaN() };
+        this->lastOverlayViewportSize = { -1, -1 };
+        this->setWcsOverlayVisible(checked);
+        this->requestWcsOverlayRender();
+    });
+    
     // Setup Buttons
     ui->btnSources->setIcon(QIcon(u":/icons/RECT_SELECT.png"_s));
     ui->btnFilaments->setIcon(QIcon(u":/icons/RECT_SELECT.png"_s));

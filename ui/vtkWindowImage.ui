@@ -209,6 +209,11 @@
     </property>
     <addaction name="actionProfile"/>
    </widget>
+   <widget class="QMenu" name="menuView">
+    <property name="title">
+     <string>View</string>
+    </property>
+   </widget>
    <widget class="QMenu" name="menuFile">
     <property name="title">
      <string>File</string>
@@ -218,6 +223,7 @@
    <addaction name="menuFile"/>
    <addaction name="menuWCS"/>
    <addaction name="menuTools"/>
+   <addaction name="menuView"/>
   </widget>
   <widget class="QStatusBar" name="statusbar"/>
   <action name="actionGalactic">

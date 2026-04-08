@@ -1523,9 +1523,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->cubeOpenStateLabel->setStyleSheet(u"QLabel { font-weight: 600; padding-left: 8px; }"_s);
     this->cubeOpenStateLabel->hide();
     this->statusBar()->addPermanentWidget(this->cubeOpenStateLabel);
-    this->wcsAxesCheck = new QCheckBox(u"Show WCS Axes"_s, this);
-    this->wcsAxesCheck->setChecked(this->showWcsAxes);
-    this->statusBar()->addPermanentWidget(this->wcsAxesCheck);
     this->hoverReadoutLabel = new QLabel(this);
     this->hoverReadoutLabel->setStyleSheet(u"QLabel { padding-left: 8px; }"_s);
     this->hoverReadoutLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -1553,21 +1550,28 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->updateCatalogueInfoPanel();
     this->currentMomentConfig.thresholdValue = this->lowerBound;
     this->updateMomentProvenancePanel();
-    QObject::connect(this->wcsAxesCheck, &QCheckBox::toggled, this, [this](bool checked) {
-        this->showWcsAxes = checked;
-        this->lastSliceOverlayVisibleBounds = { std::numeric_limits<double>::quiet_NaN(),
-                                                std::numeric_limits<double>::quiet_NaN(),
-                                                std::numeric_limits<double>::quiet_NaN(),
-                                                std::numeric_limits<double>::quiet_NaN() };
-        this->lastMomentOverlayVisibleBounds = { std::numeric_limits<double>::quiet_NaN(),
-                                                 std::numeric_limits<double>::quiet_NaN(),
-                                                 std::numeric_limits<double>::quiet_NaN(),
-                                                 std::numeric_limits<double>::quiet_NaN() };
-        this->lastSliceOverlayViewportSize = { -1, -1 };
-        this->lastMomentOverlayViewportSize = { -1, -1 };
-        this->set2dWcsOverlayVisible(checked);
-        this->requestWcsOverlayRender();
-    });
+    this->actionShowWcsAxes = new QAction(u"Show WCS Axes"_s, this);
+    this->actionShowWcsAxes->setCheckable(true);
+    this->actionShowWcsAxes->setChecked(this->showWcsAxes);
+    ui->menuView->addSeparator();
+    ui->menuView->addAction(this->actionShowWcsAxes);
+
+    QObject::connect(this->actionShowWcsAxes, &QAction::toggled, this, [this](bool checked) {
+    this->showWcsAxes = checked;
+    this->lastSliceOverlayVisibleBounds = { std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN() };
+    this->lastMomentOverlayVisibleBounds = { std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN() };
+    this->lastSliceOverlayViewportSize = { -1, -1 };
+    this->lastMomentOverlayViewportSize = { -1, -1 };
+    this->set2dWcsOverlayVisible(checked);
+    this->requestWcsOverlayRender();
+    }); 
+
     this->updateDataStatePanel();
     this->updateSanityPanel();
     this->updateWcsStatusIndicator();
@@ -1857,8 +1861,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                          .arg(this->describeMomentScope())
                                          .arg(this->spectralAxisTitle())
                                          .arg(this->currentWcsFrameLabel());
-                         this->updateMomentProvenancePanel();
-                         qDebug().noquote()
+                        this->updateMomentProvenancePanel();
+
+                        qDebug().noquote()
                                  << QStringLiteral("[perf][moment] UI apply: %1 ms")
                                             .arg(applyTimer.elapsed());
                          this->clearPersistentStatusMessage();

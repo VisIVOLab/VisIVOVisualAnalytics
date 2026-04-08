@@ -311,35 +311,48 @@
     <property name="title">
      <string>View</string>
     </property>
-    <addaction name="actionIsosurface"/>
-    <addaction name="actionVolume"/>
-    <addaction name="separator"/>
-    <addaction name="actionSlice"/>
-    <addaction name="actionMomentMap"/>
+    <addaction name="menu3DRendering"/>
+    <addaction name="menu2DPanel"/>
    </widget>
-   <widget class="QMenu" name="menuCamera">
-    <property name="title">
+<widget class="QMenu" name="menu3DRendering">
+ <property name="title">
+  <string>3D Rendering</string>
+ </property>
+ <addaction name="actionIsosurface"/>
+ <addaction name="actionVolume"/>
+</widget>
+
+<widget class="QMenu" name="menu2DPanel">
+ <property name="title">
+  <string>2D Panel</string>
+ </property>
+ <addaction name="actionSlice"/>
+ <addaction name="actionMomentMap"/>
+</widget>
+<widget class="QMenu" name="menuCamera">
+ <property name="title">
      <string>Camera</string>
-    </property>
-    <addaction name="actionCameraFront"/>
-    <addaction name="actionCameraBack"/>
-    <addaction name="actionCameraTop"/>
-    <addaction name="actionCameraRight"/>
-    <addaction name="actionCameraBottom"/>
-    <addaction name="actionCameraLeft"/>
-   </widget>
-   <widget class="QMenu" name="menuMoment">
+  </property>
+ <addaction name="actionCameraFront"/>
+ <addaction name="actionCameraBack"/>
+ <addaction name="actionCameraTop"/>
+ <addaction name="actionCameraRight"/>
+ <addaction name="actionCameraBottom"/>
+ <addaction name="actionCameraLeft"/>
+</widget>
+<widget class="QMenu" name="menuMoment">
     <property name="title">
      <string>Moment</string>
     </property>
-    <addaction name="actionMoment0"/>
-    <addaction name="actionMoment1"/>
-    <addaction name="actionMoment2"/>
-    <addaction name="actionMoment6"/>
-    <addaction name="actionMoment8"/>
-    <addaction name="actionMoment10"/>
-   </widget>
-   <widget class="QMenu" name="menuWCS">
+<addaction name="actionMoment0"/>
+<addaction name="actionMoment1"/>
+<addaction name="actionMoment2"/>
+<addaction name="actionMoment6"/>
+<addaction name="actionMoment8"/>
+<addaction name="actionMoment10"/>
+</widget>
+
+<widget class="QMenu" name="menuWCS">
     <property name="title">
      <string>WCS</string>
     </property>

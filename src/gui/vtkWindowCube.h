@@ -283,7 +283,7 @@ private:
     QPointer<CatalogueTableModel> catalogueTableModel;
     bool syncingCatalogueSelection{ false };
     QPointer<QCheckBox> remoteRoiRefinementCheck;
-    QPointer<QCheckBox> wcsAxesCheck;
+    QPointer<QAction> actionShowWcsAxes;
     QPointer<QAction> actionWcsSexagesimal;
     QPointer<QAction> actionWcsDecimal;
     QPointer<QAction> actionBoxRegion;
