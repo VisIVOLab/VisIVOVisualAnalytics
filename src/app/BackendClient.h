@@ -369,6 +369,16 @@ struct BackendHiPSCatalogueSource
     double decDeg{ 0.0 };
 };
 
+// ── Cosmology ─────────────────────────────────────────────────────────────────
+
+struct BackendCosmologyBatchResult
+{
+    bool valid{ false };
+    QString error;
+    QString model;
+    QVector<double> distancesMpc; // same order as the submitted redshifts
+};
+
 struct BackendHiPSCatalogueOverlayResult
 {
     bool valid{ false };
@@ -474,6 +484,11 @@ public:
                                                     double raDeg, double decDeg,
                                                     double fovDeg, int order) const;
     // ── Milestone 2 ──────────────────────────────────────────────────────────
+    // ── Cosmology endpoints ───────────────────────────────────────────────────
+    /** POST /v1/cosmology/distance/batch – comoving distances for a list of redshifts. */
+    BackendCosmologyBatchResult requestCosmologyDistanceBatch(const QVector<double> &redshifts,
+                                                              const QString &model) const;
+
     /** POST /v1/resolve/target – resolve object name → RA/Dec via Sesame. */
     BackendTargetResolveResult resolveTarget(const QString &name) const;
     /** POST /v1/hips/catalogue_overlay – RA/Dec sources in current viewport. */

@@ -64,6 +64,17 @@ struct Catalogue3DFilterTaskResult
     int totalRows{ 0 };
 };
 
+// Result struct for the background cosmology recalculation task
+struct Catalogue3DCosmologyTaskResult
+{
+    bool valid{ false };
+    QString error;
+    QString model;
+    // Computed comoving distances in Mpc, same order as the entries vector at
+    // submission time.  Empty on error.
+    std::vector<double> distancesMpc;
+};
+
 // ---------------------------------------------------------------------------
 // vtkWindowCatalogue3D
 //
@@ -177,6 +188,13 @@ private:
     // Galactic:  converts raw raDeg/decDeg → (l,b) then to Cartesian.
     void applyFrameToEntries();
 
+    // ── Cosmology ────────────────────────────────────────────────────────────
+    // Trigger async recalculation of distances using the selected model.
+    // For Planck18 simply clears the per-entry distanceMpc override (reuses
+    // the local computation), otherwise calls the backend batch endpoint.
+    void triggerCosmologyUpdate();
+    void onCosmologyFinished();
+
     // ── Data ────────────────────────────────────────────────────────────────
     Ui::vtkWindowCatalogue3D *ui;
     QString filepath;
@@ -250,6 +268,7 @@ private:
     QPointer<QComboBox> comboGeometry;
     QPointer<QComboBox> comboSizeMode;
     QPointer<QComboBox> comboFrame;
+    QPointer<QComboBox> comboCosmology;
     QPointer<QCheckBox> chkShowAxes;
     QPointer<QCheckBox> chkShowBoundingBox;
     QPointer<QCheckBox> chkShowShells;
@@ -263,6 +282,9 @@ private:
     std::vector<BackendTabularFilter> activeFilters;
     bool filterBusy{ false };
     QFutureWatcher<Catalogue3DFilterTaskResult> filterWatcher;
+    QString m_cosmologyModel{ QStringLiteral("Planck18") };
+    bool m_cosmologyBusy{ false };
+    QFutureWatcher<Catalogue3DCosmologyTaskResult> m_cosmologyWatcher;
     bool syncingTableSelection{ false };
     bool updatingMappingControls{ false };
     QString mapXKey{ QStringLiteral("computed:x") };

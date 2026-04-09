@@ -1288,6 +1288,33 @@ BackendHiPSViewResponse BackendClient::requestHiPSTilesForView(const QString &su
 
 // ── Milestone 2 ───────────────────────────────────────────────────────────────
 
+BackendCosmologyBatchResult BackendClient::requestCosmologyDistanceBatch(
+        const QVector<double> &redshifts, const QString &model) const
+{
+    BackendCosmologyBatchResult result;
+    const QUrl url(m_baseUrl + QStringLiteral("/v1/cosmology/distance/batch"));
+    QJsonArray zArr;
+    for (double z : redshifts)
+        zArr.append(z);
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("redshifts"), zArr   },
+            { QStringLiteral("model"),     model  },
+    });
+    QString error;
+    const QByteArray payload = performPost(url, body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    result.valid = obj.value(QStringLiteral("valid")).toBool();
+    result.error = obj.value(QStringLiteral("error")).toString();
+    result.model = obj.value(QStringLiteral("model")).toString();
+    for (const QJsonValue &v : obj.value(QStringLiteral("distances_Mpc")).toArray())
+        result.distancesMpc.append(v.toDouble());
+    return result;
+}
+
 BackendTargetResolveResult BackendClient::resolveTarget(const QString &name) const
 {
     BackendTargetResolveResult result;

@@ -266,6 +266,14 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     this->comboFrame->setToolTip(u"Coordinate frame used for 3D scene positions.\n"
                                   "FK5 / J2000: standard equatorial (RA, Dec).\n"
                                   "Galactic (l, b): galactic longitude and latitude."_s);
+    this->comboCosmology = new QComboBox(this);
+    this->comboCosmology->addItems({ u"Planck18"_s, u"Planck15"_s, u"Planck13"_s, u"WMAP9"_s });
+    this->comboCosmology->setCurrentIndex(0);
+    this->comboCosmology->setToolTip(
+            u"Cosmology model used to convert redshift → comoving distance.\n"
+            "Planck18 (default), Planck15, Planck13: ESA Planck results.\n"
+            "WMAP9: WMAP 9-year results.\n"
+            "Distances are computed on the backend via astropy."_s);
     this->chkShowAxes = new QCheckBox(u"Show axes"_s, this);
     this->chkShowAxes->setChecked(true);
     this->chkShowBoundingBox = new QCheckBox(u"Show bounding box"_s, this);
@@ -285,6 +293,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     sceneLayout->addRow(this->chkShowBoundingBox);
     sceneLayout->addRow(this->chkShowShells);
     sceneLayout->addRow(u"Frame"_s, this->comboFrame);
+    sceneLayout->addRow(u"Cosmology"_s, this->comboCosmology);
     auto *vizLayout = qobject_cast<QVBoxLayout *>(ui->groupViz->layout());
     if (vizLayout) {
         while (vizLayout->count() > 0) {
@@ -542,6 +551,13 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         }
         this->renderWindow->Render();
     });
+    QObject::connect(this->comboCosmology, &QComboBox::currentIndexChanged, this,
+                     [this](int) {
+                         this->m_cosmologyModel = this->comboCosmology->currentText();
+                         this->triggerCosmologyUpdate();
+                     });
+    QObject::connect(&this->m_cosmologyWatcher, &QFutureWatcher<Catalogue3DCosmologyTaskResult>::finished,
+                     this, &vtkWindowCatalogue3D::onCosmologyFinished);
     QObject::connect(this->chkShowAxes, &QCheckBox::toggled, this,
                      &vtkWindowCatalogue3D::toggleSceneAxes);
     QObject::connect(this->chkShowBoundingBox, &QCheckBox::toggled, this,
@@ -751,6 +767,157 @@ void vtkWindowCatalogue3D::applyFrameToEntries()
         e.sceneY = d * std::cos(bRad) * std::sin(lRad);
         e.sceneZ = d * std::sin(bRad);
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cosmology
+// ─────────────────────────────────────────────────────────────────────────────
+
+void vtkWindowCatalogue3D::triggerCosmologyUpdate()
+{
+    if (this->entries.empty() || this->m_cosmologyBusy)
+        return;
+
+    // Planck18 matches the hardcoded local integration in Catalogue3DParser;
+    // just clear overrides so entryDistanceMpc() falls back to local values.
+    if (this->m_cosmologyModel == QStringLiteral("Planck18")) {
+        for (auto &e : this->entries)
+            e.distanceMpc = 0.0;
+        // Recompute scene positions and rebuild.
+        constexpr double pi = 3.14159265358979323846;
+        for (auto &e : this->entries) {
+            const double d = Catalogue3DParser::detail::entryDistanceMpc(e, this->schema);
+            const double ra  = e.raDeg  * pi / 180.0;
+            const double dec = e.decDeg * pi / 180.0;
+            e.sceneX = d * std::cos(dec) * std::cos(ra);
+            e.sceneY = d * std::cos(dec) * std::sin(ra);
+            e.sceneZ = d * std::sin(dec);
+        }
+        this->applyFrameToEntries();
+        this->renderer->RemoveAllViewProps();
+        this->morphologyNames.clear();
+        this->morphologyIndexOf.clear();
+        this->labelActors.clear();
+        this->shellActors.clear();
+        this->mappedPositions.clear();
+        this->hoveredIndex  = -1;
+        this->selectedIndex = -1;
+        if (!this->entries.empty()) {
+            this->buildScene();
+            this->buildLabels();
+        }
+        this->renderWindow->Render();
+        if (this->filterStatusLabel)
+            this->filterStatusLabel->setText(
+                    QStringLiteral("Cosmology: Planck18 (local) – %1 sources.").arg(entries.size()));
+        ui->labelStatus->setText(
+                QStringLiteral("Cosmology: Planck18 (local) – %1 sources.").arg(entries.size()));
+        return;
+    }
+
+    // Non-Planck18: collect redshifts for all entries and ask the backend.
+    this->m_cosmologyBusy = true;
+    if (this->comboCosmology)
+        this->comboCosmology->setEnabled(false);
+    if (this->filterStatusLabel)
+        this->filterStatusLabel->setText(
+                QStringLiteral("Computing distances with %1…").arg(this->m_cosmologyModel));
+    ui->labelStatus->setText(
+            QStringLiteral("Computing distances with %1…").arg(this->m_cosmologyModel));
+
+    const QString backendUrl   = this->backendUrl;
+    const QString backendToken = this->backendToken;
+    const QString model        = this->m_cosmologyModel;
+    const Catalogue3DSchema schema = this->schema;
+
+    // Collect per-entry redshifts (use 0.0 when absent/invalid – the backend
+    // will return 0.0 distance for those and entryDistanceMpc will then fall
+    // back to the direct distance field or the 300 Mpc default).
+    QVector<double> redshifts;
+    redshifts.reserve(static_cast<int>(this->entries.size()));
+    for (const auto &e : this->entries) {
+        bool ok = false;
+        const double z = Catalogue3DParser::detail::fieldDouble(
+                e, Catalogue3DParser::detail::detectedRedshiftField(schema), &ok);
+        redshifts.append((ok && z > 0.0) ? z : 0.0);
+    }
+
+    this->m_cosmologyWatcher.setFuture(QtConcurrent::run(
+            [backendUrl, backendToken, model, redshifts, schema]()
+                    -> Catalogue3DCosmologyTaskResult {
+                Catalogue3DCosmologyTaskResult out;
+                BackendClient client(backendUrl, backendToken);
+                const auto res = client.requestCosmologyDistanceBatch(redshifts, model);
+                if (!res.valid) {
+                    out.error = res.error.isEmpty()
+                            ? QStringLiteral("Backend cosmology request failed.")
+                            : res.error;
+                    return out;
+                }
+                out.valid = true;
+                out.model = res.model;
+                out.distancesMpc.reserve(static_cast<size_t>(res.distancesMpc.size()));
+                for (double d : res.distancesMpc)
+                    out.distancesMpc.push_back(d);
+                return out;
+            }));
+}
+
+void vtkWindowCatalogue3D::onCosmologyFinished()
+{
+    this->m_cosmologyBusy = false;
+    if (this->comboCosmology)
+        this->comboCosmology->setEnabled(true);
+
+    const auto result = this->m_cosmologyWatcher.result();
+    if (!result.valid) {
+        const QString msg = QStringLiteral("Cosmology update failed: %1").arg(result.error);
+        QMessageBox::warning(this, u"Cosmology Error"_s, msg);
+        ui->labelStatus->setText(msg);
+        if (this->filterStatusLabel)
+            this->filterStatusLabel->setText(msg);
+        return;
+    }
+
+    // Apply computed distances: override entryDistanceMpc() via e.distanceMpc.
+    // Entries with returned distance 0 keep the catalogue distance field or the
+    // 300 Mpc fallback (entryDistanceMpc checks distanceMpc == 0 → auto-compute).
+    const int n = static_cast<int>(std::min(this->entries.size(), result.distancesMpc.size()));
+    constexpr double pi = 3.14159265358979323846;
+    for (int i = 0; i < n; ++i) {
+        auto &e = this->entries[static_cast<size_t>(i)];
+        e.distanceMpc = result.distancesMpc[static_cast<size_t>(i)];
+        // Recompute FK5 Cartesian; applyFrameToEntries() will convert if Galactic.
+        const double d = Catalogue3DParser::detail::entryDistanceMpc(e, this->schema);
+        const double ra  = e.raDeg  * pi / 180.0;
+        const double dec = e.decDeg * pi / 180.0;
+        e.sceneX = d * std::cos(dec) * std::cos(ra);
+        e.sceneY = d * std::cos(dec) * std::sin(ra);
+        e.sceneZ = d * std::sin(dec);
+    }
+    // Reapply galactic frame if active (it uses entryDistanceMpc, now updated).
+    this->applyFrameToEntries();
+
+    this->renderer->RemoveAllViewProps();
+    this->morphologyNames.clear();
+    this->morphologyIndexOf.clear();
+    this->labelActors.clear();
+    this->shellActors.clear();
+    this->mappedPositions.clear();
+    this->hoveredIndex  = -1;
+    this->selectedIndex = -1;
+    if (!this->entries.empty()) {
+        this->buildScene();
+        this->buildLabels();
+    }
+    this->renderWindow->Render();
+
+    const QString statusMsg = QStringLiteral("Cosmology: %1 – %2 sources.")
+            .arg(result.model)
+            .arg(this->entries.size());
+    ui->labelStatus->setText(statusMsg);
+    if (this->filterStatusLabel)
+        this->filterStatusLabel->setText(statusMsg);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

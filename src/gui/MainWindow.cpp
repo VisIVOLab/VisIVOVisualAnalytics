@@ -346,9 +346,25 @@ void MainWindow::openData()
 
 void MainWindow::openCatalogue3D()
 {
-    const QString filepath = QFileDialog::getOpenFileName(
-            this, u"Open 3D Catalogue (CSV)"_s, QString(),
-            u"CSV Catalogues (*.csv);;All files (*)"_s);
+    BackendClient client(settings->getBackendUrl(), settings->getBackendToken());
+    const auto health = client.health();
+    if (!health.ok) {
+        QMessageBox::critical(
+                this, u"Backend unavailable"_s,
+                u"Cannot open a catalogue: the backend is not reachable.\n\n"
+                "Start a local backend or configure a remote backend URL in Settings, "
+                "then try again.\n\nError: %1"_s.arg(health.error.isEmpty()
+                                                              ? u"No response"_s
+                                                              : health.error));
+        return;
+    }
+
+    RemoteFileBrowserDialog dialog(client.baseUrl(), this);
+    dialog.setExtensionFilter({u".csv"_s}, u"CSV catalogues only"_s);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString filepath = dialog.selectedFilePath();
     if (filepath.isEmpty())
         return;
 

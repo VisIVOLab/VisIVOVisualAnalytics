@@ -38,6 +38,9 @@ struct Catalogue3DEntry
     double sceneY{ 0.0 };
     double sceneZ{ 0.0 };
     QStringList rawFieldValues;
+    // Override distance (Mpc) set by the cosmology selector.  When 0.0, the
+    // parser falls back to computing the distance from the catalogue fields.
+    double distanceMpc{ 0.0 };
 };
 
 struct Catalogue3DParseResult
@@ -248,6 +251,9 @@ inline void parseSizePair(const QString &raw, double &minorValue, double &majorV
 
 inline double entryDistanceMpc(const Catalogue3DEntry &entry, const Catalogue3DSchema &schema)
 {
+    // Prefer the cosmology-selector override if it has been set.
+    if (entry.distanceMpc > 0.0)
+        return entry.distanceMpc;
     const QString distanceField = detectedDistanceField(schema);
     bool okDistance = false;
     const double distance = fieldDouble(entry, distanceField, &okDistance);

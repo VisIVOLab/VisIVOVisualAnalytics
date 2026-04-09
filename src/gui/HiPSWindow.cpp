@@ -446,7 +446,7 @@ void HiPSWindow::onResolveClicked()
     if (m_resolveWatcher.isRunning()) return;
 
     m_resolveBtn->setEnabled(false);
-    showStatus(QStringLiteral("Resolving "%1"…").arg(name));
+    showStatus(QStringLiteral("Resolving \"%1\"...").arg(name));
 
     const QString bUrl = m_backendUrl;
     const QString bTok = m_backendToken;
@@ -465,7 +465,7 @@ void HiPSWindow::onResolveFinished()
     if (!r.valid) {
         showStatus(QStringLiteral("Resolve failed: %1").arg(r.error));
         QMessageBox::warning(this, u"Target Resolver"_s,
-                             QStringLiteral("Could not resolve target "%1":\n\n%2")
+                             QStringLiteral("Could not resolve target \"%1\":\n\n%2")
                                      .arg(m_targetEdit->text().trimmed(), r.error));
         return;
     }

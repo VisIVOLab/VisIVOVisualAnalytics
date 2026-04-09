@@ -1724,6 +1724,61 @@ async def cosmology_distance(
     )
 
 
+class CosmologyBatchRequest(BaseModel):
+    redshifts: list[float]
+    model: str = "Planck18"
+
+
+class CosmologyBatchResponse(BaseModel):
+    valid: bool
+    error: str
+    model: str = ""
+    distances_Mpc: list[float] = []
+
+
+@app.post("/v1/cosmology/distance/batch", response_model=CosmologyBatchResponse, tags=["cosmology"])
+async def cosmology_distance_batch(
+    request: CosmologyBatchRequest,
+    _: None = _auth,
+) -> CosmologyBatchResponse:
+    """Compute comoving distances (Mpc) for a list of redshifts in one call.
+
+    Accepts up to 100 000 redshift values.  Returns an array of comoving distances
+    in the same order.  Negative or non-finite values are replaced with 0.0.
+    """
+    models = _load_cosmology_models()
+    if not models:
+        return CosmologyBatchResponse(
+            valid=False,
+            error="astropy is not installed on this server. Cosmology endpoint unavailable.",
+        )
+    if request.model not in models:
+        return CosmologyBatchResponse(
+            valid=False,
+            error=f"Unknown cosmology model '{request.model}'. Available: {sorted(models.keys())}",
+        )
+    if len(request.redshifts) > 100_000:
+        return CosmologyBatchResponse(
+            valid=False, error="Too many redshifts: limit is 100 000 per request."
+        )
+    try:
+        import numpy as _np
+        cosmo = models[request.model]
+        zs = _np.array(request.redshifts, dtype=float)
+        distances = _np.zeros_like(zs)
+        valid_mask = _np.isfinite(zs) & (zs >= 0.0)
+        if valid_mask.any():
+            distances[valid_mask] = cosmo.comoving_distance(zs[valid_mask]).to("Mpc").value
+        return CosmologyBatchResponse(
+            valid=True,
+            error="",
+            model=request.model,
+            distances_Mpc=distances.tolist(),
+        )
+    except Exception as exc:
+        return CosmologyBatchResponse(valid=False, error=str(exc))
+
+
 # ── HiPS (Hierarchical Progressive Survey) ────────────────────────────────────
 # Backend-authoritative: the backend fetches tiles from remote HiPS servers,
 # caches them on disk, and serves them to the Qt client.  The client never
