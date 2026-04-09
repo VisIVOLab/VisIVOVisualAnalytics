@@ -23,27 +23,35 @@
 #include <vtkScalarBarActor.h>
 #include <vtkTextProperty.h>
 
+#include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
-#include <QDockWidget>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QFrame>
+#include <QFutureWatcher>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QDebug>
+#include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QParallelAnimationGroup>
+#include <QPropertyAnimation>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSlider>
+#include <QStackedWidget>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QtConcurrent>
 
 #include <optional>
 
@@ -140,6 +148,60 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
     this->buildPointCloud();
     this->updateColorMapping();
     this->updateSummary();
+
+    // ── Connect background filter watcher ─────────────────────────────────────
+    QObject::connect(&this->filterWatcher, &QFutureWatcher<VbtFilterTaskResult>::finished, this,
+                     [this]() {
+                         this->filterBusy = false;
+                         if (this->btnFilterApply) {
+                             this->btnFilterApply->setEnabled(true);
+                         }
+                         if (this->btnFilterAdd) {
+                             this->btnFilterAdd->setEnabled(true);
+                         }
+                         if (this->filterStatusLabel) {
+                             this->filterStatusLabel->setText({});
+                         }
+
+                         const auto result = this->filterWatcher.result();
+                         if (!result.valid) {
+                             DiagnosticsManager::instance()->publish(
+                                     DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
+                                     QStringLiteral("VBT"),
+                                     QStringLiteral("Filter failed: %1").arg(result.error),
+                                     this->openResult.datasetId, this->sessionId,
+                                     QStringLiteral("filter"));
+                             QMessageBox::warning(this, u"Filter error"_s, result.error);
+                             return;
+                         }
+
+                         this->subsetResult = result.subsetResult;
+
+                         if (this->filterStatusLabel) {
+                             this->filterStatusLabel->setText(result.statusMsg);
+                         }
+
+                         if (this->actor) {
+                             this->renderer->RemoveActor(this->actor.Get());
+                         }
+                         this->points->Reset();
+                         this->pointScalars->Reset();
+                         this->polyData->Reset();
+
+                         this->buildPointCloud();
+                         this->updateColorMapping();
+                         this->updateSummary();
+
+                         DiagnosticsManager::instance()->publish(
+                                 DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
+                                 QStringLiteral("VBT"),
+                                 QStringLiteral("Filter applied: %1 rows shown.")
+                                         .arg(result.subsetResult.numRows),
+                                 this->openResult.datasetId, this->sessionId,
+                                 QStringLiteral("filter"));
+
+                         this->renderWindow->Render();
+                     });
 }
 
 void vtkWindowVbt::setupUi()
@@ -150,168 +212,18 @@ void vtkWindowVbt::setupUi()
                                  .arg(this->openResult.fields.size()));
     this->resize(1280, 800);
 
-    // ── Central: full-window VTK viewport ────────────────────────────────────
-    this->vtkWidget = new QVTKOpenGLNativeWidget(this);
-    this->setCentralWidget(this->vtkWidget);
+    // ── Central widget: sidebar + VTK ─────────────────────────────────────────
+    auto *central = new QWidget(this);
+    this->setCentralWidget(central);
+    auto *rootLayout = new QHBoxLayout(central);
+    rootLayout->setSpacing(0);
+    rootLayout->setContentsMargins(0, 0, 0, 0);
 
-    // ── Display dock (right) — visualization controls ─────────────────────────
-    auto *displayDock = new QDockWidget(u"Display"_s, this);
-    displayDock->setObjectName(u"VbtDisplayDock"_s);
-    displayDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable
-                             | QDockWidget::DockWidgetClosable);
+    this->setupSidebarUi(central);
+    rootLayout->addWidget(this->sidebarContainer);
 
-    auto *displayInner = new QWidget;
-    auto *displayLayout = new QFormLayout(displayInner);
-    displayLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-    displayLayout->setContentsMargins(6, 6, 6, 6);
-    displayLayout->setSpacing(4);
-
-    this->comboRenderMode = new QComboBox(displayInner);
-    this->comboRenderMode->addItems({ u"Points"_s, u"Particle Ray-Casting"_s });
-
-    this->comboColorField = new QComboBox(displayInner);
-    this->comboColorField->addItem(u"Solid color"_s, QString());
-    for (const auto &field : this->openResult.fields) {
-        if (field.name == this->xFieldName || field.name == this->yFieldName
-            || field.name == this->zFieldName) {
-            continue;
-        }
-        this->comboColorField->addItem(field.name, field.name);
-    }
-    if (this->comboColorField->count() > 1) {
-        this->comboColorField->setCurrentIndex(1);
-    }
-
-    this->comboColormap = new QComboBox(displayInner);
-    for (const auto &name : ColorMaps::GetColorMapNames()) {
-        this->comboColormap->addItem(QString::fromStdString(name));
-    }
-    this->comboColormap->setCurrentText(QString::fromStdString(ColorMaps::DefaultColorMap));
-
-    this->comboBackground = new QComboBox(displayInner);
-    this->comboBackground->addItems({ u"Black"_s, u"Dark gray"_s, u"White"_s });
-
-    this->sliderPointSize = new QSlider(Qt::Horizontal, displayInner);
-    this->sliderPointSize->setRange(1, 12);
-    this->sliderPointSize->setValue(3);
-    this->sliderRayIntensity = new QSlider(Qt::Horizontal, displayInner);
-    this->sliderRayIntensity->setRange(1, 100);
-    this->sliderRayIntensity->setValue(35);
-
-    this->checkShowBox = new QCheckBox(u"Show bounding box"_s, displayInner);
-    this->checkShowBox->setChecked(true);
-    this->checkShowLut = new QCheckBox(u"Show color bar"_s, displayInner);
-    this->checkShowLut->setChecked(true);
-    this->checkShowOrientation = new QCheckBox(u"Show orientation axes"_s, displayInner);
-    this->checkShowOrientation->setChecked(true);
-
-    this->spinRangeMin = new QDoubleSpinBox(displayInner);
-    this->spinRangeMax = new QDoubleSpinBox(displayInner);
-    this->spinRangeMin->setDecimals(6);
-    this->spinRangeMax->setDecimals(6);
-    this->spinRangeMin->setRange(-1e30, 1e30);
-    this->spinRangeMax->setRange(-1e30, 1e30);
-
-    this->buttonAutoscale = new QPushButton(u"Autoscale"_s, displayInner);
-    this->buttonResetView = new QPushButton(u"Reset View"_s, displayInner);
-
-    displayLayout->addRow(u"Mode"_s, this->comboRenderMode);
-    displayLayout->addRow(u"Color field"_s, this->comboColorField);
-    displayLayout->addRow(u"Colormap"_s, this->comboColormap);
-    displayLayout->addRow(u"Range min"_s, this->spinRangeMin);
-    displayLayout->addRow(u"Range max"_s, this->spinRangeMax);
-    {
-        auto *row = new QWidget(displayInner);
-        auto *rl = new QHBoxLayout(row);
-        rl->setContentsMargins(0, 0, 0, 0);
-        rl->addWidget(this->buttonAutoscale);
-        rl->addWidget(this->buttonResetView);
-        displayLayout->addRow(row);
-    }
-    displayLayout->addRow(u"Background"_s, this->comboBackground);
-    displayLayout->addRow(u"Point size"_s, this->sliderPointSize);
-    displayLayout->addRow(u"Ray intensity"_s, this->sliderRayIntensity);
-    displayLayout->addRow(this->checkShowBox);
-    displayLayout->addRow(this->checkShowLut);
-    displayLayout->addRow(this->checkShowOrientation);
-
-    auto *sep = new QFrame(displayInner);
-    sep->setFrameShape(QFrame::HLine);
-    sep->setFrameShadow(QFrame::Sunken);
-    displayLayout->addRow(sep);
-
-    this->summaryLabel = new QLabel(displayInner);
-    this->summaryLabel->setWordWrap(true);
-    this->summaryLabel->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-    displayLayout->addRow(this->summaryLabel);
-
-    auto *displayScroll = new QScrollArea;
-    displayScroll->setWidgetResizable(true);
-    displayScroll->setWidget(displayInner);
-    displayScroll->setMinimumWidth(240);
-    displayScroll->setMaximumWidth(300);
-    displayScroll->setFrameShape(QFrame::NoFrame);
-    displayDock->setWidget(displayScroll);
-    this->addDockWidget(Qt::RightDockWidgetArea, displayDock);
-
-    // ── Filters dock (bottom) — multi-filter list ─────────────────────────────
-    auto *filterDock = new QDockWidget(u"Filters"_s, this);
-    filterDock->setObjectName(u"VbtFilterDock"_s);
-    filterDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable
-                            | QDockWidget::DockWidgetClosable);
-
-    auto *filterWidget = new QWidget;
-    auto *filterVLayout = new QVBoxLayout(filterWidget);
-    filterVLayout->setContentsMargins(6, 4, 6, 4);
-    filterVLayout->setSpacing(4);
-
-    this->filterList = new QListWidget(filterWidget);
-    this->filterList->setFixedHeight(88);
-    this->filterList->setSelectionMode(QAbstractItemView::SingleSelection);
-    this->filterList->setToolTip(
-            u"Active filters combined with AND. Select a row and press Remove to delete it."_s);
-    filterVLayout->addWidget(this->filterList);
-
-    {
-        auto *btnRow = new QWidget(filterWidget);
-        auto *btnLayout = new QHBoxLayout(btnRow);
-        btnLayout->setContentsMargins(0, 0, 0, 0);
-        btnLayout->setSpacing(4);
-        this->btnFilterAdd = new QPushButton(u"Add…"_s, btnRow);
-        this->btnFilterRemove = new QPushButton(u"Remove"_s, btnRow);
-        this->btnFilterClearAll = new QPushButton(u"Clear All"_s, btnRow);
-        this->btnFilterApply = new QPushButton(u"Apply"_s, btnRow);
-        btnLayout->addWidget(this->btnFilterAdd);
-        btnLayout->addWidget(this->btnFilterRemove);
-        btnLayout->addWidget(this->btnFilterClearAll);
-        btnLayout->addStretch(1);
-        btnLayout->addWidget(this->btnFilterApply);
-        filterVLayout->addWidget(btnRow);
-    }
-
-    this->filterStatusLabel = new QLabel(filterWidget);
-    filterVLayout->addWidget(this->filterStatusLabel);
-
-    filterDock->setWidget(filterWidget);
-    this->addDockWidget(Qt::BottomDockWidgetArea, filterDock);
-
-    // ── Metadata dock (tabbed with Filters) ──────────────────────────────────
-    this->metadataDock = new QDockWidget(u"VBT Metadata"_s, this);
-    this->metadataDock->setObjectName(u"VbtMetadataDock"_s);
-    auto *dockWidget = new QWidget(this->metadataDock);
-    auto *dockLayout = new QVBoxLayout(dockWidget);
-    this->metadataLabel = new QLabel(dockWidget);
-    this->metadataLabel->setWordWrap(true);
-    this->fieldList = new QListWidget(dockWidget);
-    for (const auto &field : this->openResult.fields) {
-        this->fieldList->addItem(QStringLiteral("%1 [%2]").arg(field.name, field.type));
-    }
-    dockLayout->addWidget(this->metadataLabel);
-    dockLayout->addWidget(this->fieldList, 1);
-    this->metadataDock->setWidget(dockWidget);
-    this->addDockWidget(Qt::BottomDockWidgetArea, this->metadataDock);
-    this->tabifyDockWidget(filterDock, this->metadataDock);
-    filterDock->raise();
+    this->vtkWidget = new QVTKOpenGLNativeWidget(central);
+    rootLayout->addWidget(this->vtkWidget, 1);
 
     // ── Signal connections ────────────────────────────────────────────────────
     QObject::connect(this->comboRenderMode, &QComboBox::currentIndexChanged, this,
@@ -444,85 +356,490 @@ void vtkWindowVbt::setupUi()
     // Filter: Apply
     QObject::connect(this->btnFilterApply, &QPushButton::clicked, this, &vtkWindowVbt::applyFilter);
 
-    // ── View menu — reopen closed docks ──────────────────────────────────────
+    // ── View menu ─────────────────────────────────────────────────────────────
     auto *viewMenu = this->menuBar()->addMenu(u"View"_s);
-    displayDock->toggleViewAction()->setText(u"Display Settings"_s);
-    viewMenu->addAction(displayDock->toggleViewAction());
-    filterDock->toggleViewAction()->setText(u"Filters"_s);
-    viewMenu->addAction(filterDock->toggleViewAction());
-    this->metadataDock->toggleViewAction()->setText(u"VBT Metadata"_s);
-    viewMenu->addAction(this->metadataDock->toggleViewAction());
+    this->actionShowControlsSidebar = new QAction(u"Controls Sidebar"_s, this);
+    this->actionShowControlsSidebar->setCheckable(true);
+    this->actionShowControlsSidebar->setChecked(true);
+    viewMenu->addAction(this->actionShowControlsSidebar);
+    QObject::connect(this->actionShowControlsSidebar, &QAction::toggled, this,
+                     [this](bool checked) { setSidebarExpanded(checked); });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sidebar implementation
+// ─────────────────────────────────────────────────────────────────────────────
+
+void vtkWindowVbt::setupSidebarUi(QWidget *parent)
+{
+    // ── Sidebar container ─────────────────────────────────────────────────────
+    this->sidebarContainer = new QWidget(parent);
+    this->sidebarContainer->setObjectName(u"sidebarContainer"_s);
+    this->sidebarContainer->setMinimumWidth(48);
+    this->sidebarContainer->setMaximumWidth(320);
+
+    auto *containerLayout = new QHBoxLayout(this->sidebarContainer);
+    containerLayout->setSpacing(0);
+    containerLayout->setContentsMargins(0, 0, 0, 0);
+
+    // ── Rail ──────────────────────────────────────────────────────────────────
+    this->railWidget = new QWidget(this->sidebarContainer);
+    this->railWidget->setObjectName(u"railWidget"_s);
+    this->railWidget->setFixedWidth(48);
+
+    auto *railLayout = new QVBoxLayout(this->railWidget);
+    railLayout->setSpacing(2);
+    railLayout->setContentsMargins(4, 8, 4, 8);
+
+    this->btnToggleSidebar = new QToolButton(this->railWidget);
+    this->btnToggleSidebar->setToolTip(u"Toggle sidebar"_s);
+    this->btnToggleSidebar->setCheckable(true);
+    this->btnToggleSidebar->setChecked(true);
+    this->btnToggleSidebar->setAutoRaise(true);
+
+    this->railBtnDisplay = new QToolButton(this->railWidget);
+    this->railBtnDisplay->setToolTip(u"Display Settings"_s);
+    this->railBtnDisplay->setCheckable(true);
+    this->railBtnDisplay->setChecked(true);
+    this->railBtnDisplay->setAutoRaise(true);
+
+    this->railBtnFilters = new QToolButton(this->railWidget);
+    this->railBtnFilters->setToolTip(u"Filters"_s);
+    this->railBtnFilters->setCheckable(true);
+    this->railBtnFilters->setAutoRaise(true);
+
+    this->railBtnMetadata = new QToolButton(this->railWidget);
+    this->railBtnMetadata->setToolTip(u"VBT Metadata"_s);
+    this->railBtnMetadata->setCheckable(true);
+    this->railBtnMetadata->setAutoRaise(true);
+
+    railLayout->addWidget(this->btnToggleSidebar);
+    railLayout->addWidget(this->railBtnDisplay);
+    railLayout->addWidget(this->railBtnFilters);
+    railLayout->addWidget(this->railBtnMetadata);
+    railLayout->addStretch(1);
+
+    containerLayout->addWidget(this->railWidget);
+
+    // ── Scroll area + stack ───────────────────────────────────────────────────
+    this->sidebarScrollArea = new QScrollArea(this->sidebarContainer);
+    this->sidebarScrollArea->setObjectName(u"sidebarScrollArea"_s);
+    this->sidebarScrollArea->setWidgetResizable(true);
+    this->sidebarScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    this->sidebarScrollArea->setFrameShape(QFrame::NoFrame);
+
+    auto *scrollContents = new QWidget(this->sidebarScrollArea);
+    auto *scrollLayout = new QVBoxLayout(scrollContents);
+    scrollLayout->setSpacing(0);
+    scrollLayout->setContentsMargins(0, 0, 0, 0);
+
+    this->sidebarStack = new QStackedWidget(scrollContents);
+    scrollLayout->addWidget(this->sidebarStack);
+    this->sidebarScrollArea->setWidget(scrollContents);
+    containerLayout->addWidget(this->sidebarScrollArea);
+
+    // ── Page 0: Display ───────────────────────────────────────────────────────
+    auto *pageDisplay = new QWidget;
+    auto *pageDisplayLayout = new QVBoxLayout(pageDisplay);
+    pageDisplayLayout->setContentsMargins(8, 8, 8, 8);
+    pageDisplayLayout->setSpacing(8);
+
+    auto *hdrDisplay = new QLabel(u"DISPLAY SETTINGS"_s);
+    auto *displayInner = new QWidget;
+    auto *displayLayout = new QFormLayout(displayInner);
+    displayLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    displayLayout->setContentsMargins(6, 6, 6, 6);
+    displayLayout->setSpacing(4);
+
+    this->comboRenderMode = new QComboBox(displayInner);
+    this->comboRenderMode->addItems({ u"Points"_s, u"Particle Ray-Casting"_s });
+
+    this->comboColorField = new QComboBox(displayInner);
+    this->comboColorField->addItem(u"Solid color"_s, QString());
+    for (const auto &field : this->openResult.fields) {
+        if (field.name == this->xFieldName || field.name == this->yFieldName
+            || field.name == this->zFieldName) {
+            continue;
+        }
+        this->comboColorField->addItem(field.name, field.name);
+    }
+    if (this->comboColorField->count() > 1) {
+        this->comboColorField->setCurrentIndex(1);
+    }
+
+    this->comboColormap = new QComboBox(displayInner);
+    for (const auto &name : ColorMaps::GetColorMapNames()) {
+        this->comboColormap->addItem(QString::fromStdString(name));
+    }
+    this->comboColormap->setCurrentText(QString::fromStdString(ColorMaps::DefaultColorMap));
+
+    this->comboBackground = new QComboBox(displayInner);
+    this->comboBackground->addItems({ u"Black"_s, u"Dark gray"_s, u"White"_s });
+
+    this->sliderPointSize = new QSlider(Qt::Horizontal, displayInner);
+    this->sliderPointSize->setRange(1, 12);
+    this->sliderPointSize->setValue(3);
+    this->sliderRayIntensity = new QSlider(Qt::Horizontal, displayInner);
+    this->sliderRayIntensity->setRange(1, 100);
+    this->sliderRayIntensity->setValue(35);
+
+    this->checkShowBox = new QCheckBox(u"Show bounding box"_s, displayInner);
+    this->checkShowBox->setChecked(true);
+    this->checkShowLut = new QCheckBox(u"Show color bar"_s, displayInner);
+    this->checkShowLut->setChecked(true);
+    this->checkShowOrientation = new QCheckBox(u"Show orientation axes"_s, displayInner);
+    this->checkShowOrientation->setChecked(true);
+
+    this->spinRangeMin = new QDoubleSpinBox(displayInner);
+    this->spinRangeMax = new QDoubleSpinBox(displayInner);
+    this->spinRangeMin->setDecimals(6);
+    this->spinRangeMax->setDecimals(6);
+    this->spinRangeMin->setRange(-1e30, 1e30);
+    this->spinRangeMax->setRange(-1e30, 1e30);
+
+    this->buttonAutoscale = new QPushButton(u"Autoscale"_s, displayInner);
+    this->buttonResetView = new QPushButton(u"Reset View"_s, displayInner);
+
+    displayLayout->addRow(u"Mode"_s, this->comboRenderMode);
+    displayLayout->addRow(u"Color field"_s, this->comboColorField);
+    displayLayout->addRow(u"Colormap"_s, this->comboColormap);
+    displayLayout->addRow(u"Range min"_s, this->spinRangeMin);
+    displayLayout->addRow(u"Range max"_s, this->spinRangeMax);
+    {
+        auto *row = new QWidget(displayInner);
+        auto *rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+        rl->addWidget(this->buttonAutoscale);
+        rl->addWidget(this->buttonResetView);
+        displayLayout->addRow(row);
+    }
+    displayLayout->addRow(u"Background"_s, this->comboBackground);
+    displayLayout->addRow(u"Point size"_s, this->sliderPointSize);
+    displayLayout->addRow(u"Ray intensity"_s, this->sliderRayIntensity);
+    displayLayout->addRow(this->checkShowBox);
+    displayLayout->addRow(this->checkShowLut);
+    displayLayout->addRow(this->checkShowOrientation);
+
+    auto *sep = new QFrame(displayInner);
+    sep->setFrameShape(QFrame::HLine);
+    sep->setFrameShadow(QFrame::Sunken);
+    displayLayout->addRow(sep);
+
+    this->summaryLabel = new QLabel(displayInner);
+    this->summaryLabel->setWordWrap(true);
+    this->summaryLabel->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+    displayLayout->addRow(this->summaryLabel);
+
+    pageDisplayLayout->addWidget(hdrDisplay);
+    pageDisplayLayout->addWidget(displayInner);
+    pageDisplayLayout->addStretch(1);
+    this->sidebarStack->addWidget(pageDisplay); // index 0
+
+    // ── Page 1: Filters ───────────────────────────────────────────────────────
+    auto *pageFilters = new QWidget;
+    auto *pageFiltersLayout = new QVBoxLayout(pageFilters);
+    pageFiltersLayout->setContentsMargins(8, 8, 8, 8);
+    pageFiltersLayout->setSpacing(8);
+
+    auto *hdrFilters = new QLabel(u"FILTERS"_s);
+    pageFiltersLayout->addWidget(hdrFilters);
+
+    this->filterList = new QListWidget(pageFilters);
+    this->filterList->setFixedHeight(120);
+    this->filterList->setSelectionMode(QAbstractItemView::SingleSelection);
+    this->filterList->setToolTip(
+            u"Active filters combined with AND. Select a row and press Remove to delete it."_s);
+    pageFiltersLayout->addWidget(this->filterList);
+
+    {
+        auto *btnRow = new QWidget(pageFilters);
+        auto *btnLayout = new QHBoxLayout(btnRow);
+        btnLayout->setContentsMargins(0, 0, 0, 0);
+        btnLayout->setSpacing(4);
+        this->btnFilterAdd = new QPushButton(u"Add…"_s, btnRow);
+        this->btnFilterRemove = new QPushButton(u"Remove"_s, btnRow);
+        this->btnFilterClearAll = new QPushButton(u"Clear All"_s, btnRow);
+        this->btnFilterApply = new QPushButton(u"Apply"_s, btnRow);
+        btnLayout->addWidget(this->btnFilterAdd);
+        btnLayout->addWidget(this->btnFilterRemove);
+        btnLayout->addWidget(this->btnFilterClearAll);
+        btnLayout->addStretch(1);
+        btnLayout->addWidget(this->btnFilterApply);
+        pageFiltersLayout->addWidget(btnRow);
+    }
+
+    this->filterStatusLabel = new QLabel(pageFilters);
+    this->filterStatusLabel->setWordWrap(true);
+    pageFiltersLayout->addWidget(this->filterStatusLabel);
+    pageFiltersLayout->addStretch(1);
+    this->sidebarStack->addWidget(pageFilters); // index 1
+
+    // ── Page 2: Metadata ──────────────────────────────────────────────────────
+    auto *pageMetadata = new QWidget;
+    auto *pageMetadataLayout = new QVBoxLayout(pageMetadata);
+    pageMetadataLayout->setContentsMargins(8, 8, 8, 8);
+    pageMetadataLayout->setSpacing(8);
+
+    auto *hdrMetadata = new QLabel(u"VBT METADATA"_s);
+    pageMetadataLayout->addWidget(hdrMetadata);
+
+    this->metadataLabel = new QLabel(pageMetadata);
+    this->metadataLabel->setWordWrap(true);
+    pageMetadataLayout->addWidget(this->metadataLabel);
+
+    this->fieldList = new QListWidget(pageMetadata);
+    for (const auto &field : this->openResult.fields) {
+        this->fieldList->addItem(QStringLiteral("%1 [%2]").arg(field.name, field.type));
+    }
+    pageMetadataLayout->addWidget(this->fieldList, 1);
+    this->sidebarStack->addWidget(pageMetadata); // index 2
+
+    // ── Styles ────────────────────────────────────────────────────────────────
+    setupSidebarRail();
+    setupRailIcons();
+    setupSidebarPages();
+
+    // ── Rail connections ──────────────────────────────────────────────────────
+    QObject::connect(this->btnToggleSidebar, &QToolButton::clicked, this,
+                     &vtkWindowVbt::toggleSidebar);
+    QObject::connect(this->railBtnDisplay, &QToolButton::clicked, this,
+                     [this]() { switchToPage(0); });
+    QObject::connect(this->railBtnFilters, &QToolButton::clicked, this,
+                     [this]() { switchToPage(1); });
+    QObject::connect(this->railBtnMetadata, &QToolButton::clicked, this,
+                     [this]() { switchToPage(2); });
+
+    setActiveRailButton(this->railBtnDisplay);
+    this->sidebarStack->setCurrentIndex(0);
+}
+
+void vtkWindowVbt::setupSidebarRail()
+{
+    const QString railStyle =
+            u"QWidget#railWidget { background-color: #0A2236; }"
+            u"QToolButton { background: transparent; border: none; border-radius: 8px;"
+            u"              color: #8AB8CC; padding: 6px; min-width: 36px; min-height: 36px; }"
+            u"QToolButton:hover { background-color: rgba(4,138,191,0.18); }"
+            u"QToolButton[active='true'] { background-color: rgba(4,138,191,0.30); color: #FFFFFF; }"_s;
+    if (this->railWidget) {
+        this->railWidget->setStyleSheet(railStyle);
+    }
+    if (this->sidebarContainer) {
+        this->sidebarContainer->setStyleSheet(
+                u"QWidget#sidebarContainer { background-color: #0A2236; }"
+                u"QScrollArea#sidebarScrollArea { background-color: transparent; border: none; }"_s);
+    }
+}
+
+void vtkWindowVbt::setupRailIcons()
+{
+    struct Entry { QToolButton *btn; QString path; };
+    const std::array<Entry, 4> entries = { {
+        { this->btnToggleSidebar, u":/icons/rail_slice.svg"_s    },
+        { this->railBtnDisplay,   u":/icons/rail_display.svg"_s  },
+        { this->railBtnFilters,   u":/icons/rail_filter.svg"_s   },
+        { this->railBtnMetadata,  u":/icons/rail_metadata.svg"_s },
+    } };
+    for (const auto &e : entries) {
+        if (e.btn) {
+            e.btn->setIcon(QIcon(e.path));
+            e.btn->setIconSize({ 22, 22 });
+            e.btn->setText({});
+        }
+    }
+}
+
+void vtkWindowVbt::setupSidebarPages()
+{
+    const QString hdrStyle =
+            u"QLabel { color: #8AB8CC; font-size: 10px; font-weight: 600;"
+            u"         padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20); }"_s;
+    // Apply to page header labels (3 of them, found by iterating pages)
+    for (int i = 0; i < this->sidebarStack->count(); ++i) {
+        auto *page = this->sidebarStack->widget(i);
+        const auto labels = page->findChildren<QLabel *>(QString(), Qt::FindDirectChildrenOnly);
+        if (!labels.isEmpty()) {
+            labels.first()->setStyleSheet(hdrStyle);
+        }
+    }
+}
+
+void vtkWindowVbt::setActiveRailButton(QToolButton *btn)
+{
+    for (QToolButton *b : { this->railBtnDisplay.data(), this->railBtnFilters.data(),
+                            this->railBtnMetadata.data() }) {
+        if (b) {
+            b->setProperty("active", b == btn);
+            b->style()->polish(b);
+        }
+    }
+}
+
+void vtkWindowVbt::switchToPage(int index)
+{
+    if (this->sidebarExpanded) {
+        if (this->sidebarStack) {
+            this->sidebarStack->setCurrentIndex(index);
+        }
+        QToolButton *btn = nullptr;
+        if (index == 0) { btn = this->railBtnDisplay; }
+        else if (index == 1) { btn = this->railBtnFilters; }
+        else { btn = this->railBtnMetadata; }
+        setActiveRailButton(btn);
+    } else {
+        this->pendingPageIndex = index;
+        setSidebarExpanded(true);
+    }
+}
+
+void vtkWindowVbt::toggleSidebar()
+{
+    setSidebarExpanded(!this->sidebarExpanded);
+}
+
+void vtkWindowVbt::setSidebarExpanded(bool expanded, bool animated)
+{
+    if (this->sidebarExpanded == expanded && !animated) {
+        return;
+    }
+    this->sidebarExpanded = expanded;
+
+    if (this->actionShowControlsSidebar) {
+        QSignalBlocker blocker(this->actionShowControlsSidebar);
+        this->actionShowControlsSidebar->setChecked(expanded);
+    }
+
+    const int targetW = expanded ? 320 : 48;
+
+    if (!animated) {
+        if (this->sidebarContainer) {
+            this->sidebarContainer->setMinimumWidth(targetW);
+            this->sidebarContainer->setMaximumWidth(targetW);
+        }
+        if (this->sidebarScrollArea) {
+            this->sidebarScrollArea->setVisible(expanded);
+        }
+        if (expanded && this->pendingPageIndex >= 0 && this->sidebarStack) {
+            this->sidebarStack->setCurrentIndex(this->pendingPageIndex);
+            QToolButton *btn = nullptr;
+            if (this->pendingPageIndex == 0) { btn = this->railBtnDisplay; }
+            else if (this->pendingPageIndex == 1) { btn = this->railBtnFilters; }
+            else { btn = this->railBtnMetadata; }
+            setActiveRailButton(btn);
+            this->pendingPageIndex = -1;
+        }
+        return;
+    }
+
+    if (this->sidebarScrollArea) {
+        this->sidebarScrollArea->setVisible(true);
+    }
+
+    if (this->sidebarAnimGroup) {
+        this->sidebarAnimGroup->stop();
+    }
+
+    auto *group = new QParallelAnimationGroup(this);
+    this->sidebarAnimGroup = group;
+
+    auto *animMin = new QPropertyAnimation(this->sidebarContainer, "minimumWidth", group);
+    animMin->setDuration(200);
+    animMin->setStartValue(this->sidebarContainer ? this->sidebarContainer->minimumWidth() : 48);
+    animMin->setEndValue(targetW);
+
+    auto *animMax = new QPropertyAnimation(this->sidebarContainer, "maximumWidth", group);
+    animMax->setDuration(200);
+    animMax->setStartValue(this->sidebarContainer ? this->sidebarContainer->maximumWidth() : 320);
+    animMax->setEndValue(targetW);
+
+    group->addAnimation(animMin);
+    group->addAnimation(animMax);
+
+    QObject::connect(group, &QParallelAnimationGroup::finished, this, [this, expanded]() {
+        if (this->sidebarScrollArea) {
+            this->sidebarScrollArea->setVisible(expanded);
+        }
+        if (expanded && this->pendingPageIndex >= 0 && this->sidebarStack) {
+            this->sidebarStack->setCurrentIndex(this->pendingPageIndex);
+            QToolButton *btn = nullptr;
+            if (this->pendingPageIndex == 0) { btn = this->railBtnDisplay; }
+            else if (this->pendingPageIndex == 1) { btn = this->railBtnFilters; }
+            else { btn = this->railBtnMetadata; }
+            setActiveRailButton(btn);
+            this->pendingPageIndex = -1;
+        }
+    });
+
+    group->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
 void vtkWindowVbt::applyFilter()
 {
-    if (this->openResult.datasetId.isEmpty()) {
-        return;
-    }
-    BackendClient client(this->backendUrl, this->backendToken);
-    if (!this->sessionId.isEmpty()) {
-        client.setSessionId(this->sessionId);
-    }
-    BackendTabularQueryRequest qreq;
-    qreq.datasetId = this->openResult.datasetId;
-    qreq.filters = this->activeFilters; // all rows, AND semantics
-
-    DiagnosticsManager::instance()->publish(
-            DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
-            this->activeFilters.empty()
-                    ? QStringLiteral("Querying dataset (no active filters).")
-                    : QStringLiteral("Applying %1 filter(s).").arg(this->activeFilters.size()),
-            this->openResult.datasetId, this->sessionId, QStringLiteral("filter"));
-
-    const auto result = client.queryTabularVbt(qreq);
-    if (!result.valid) {
-        DiagnosticsManager::instance()->publish(
-                DiagnosticsLevel::Warning, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
-                QStringLiteral("Filter query failed: %1").arg(result.error),
-                this->openResult.datasetId, this->sessionId, QStringLiteral("filter"));
-        QMessageBox::warning(this, u"Filter error"_s, result.error);
+    if (this->openResult.datasetId.isEmpty() || this->filterBusy) {
         return;
     }
 
-    // Rebuild subsetResult from query response
-    this->subsetResult = {};
-    this->subsetResult.valid = true;
-    this->subsetResult.kind = QStringLiteral("point");
-    this->subsetResult.numRows = result.numRows;
-    this->subsetResult.fieldNames = result.fieldNames;
-    this->subsetResult.columns = result.columns;
-
-    // Remove existing point cloud actors; keep axes/scalar bar/box intact
-    if (this->actor) {
-        this->renderer->RemoveActor(this->actor.Get());
+    this->filterBusy = true;
+    if (this->btnFilterApply) {
+        this->btnFilterApply->setEnabled(false);
     }
-    this->points->Reset();
-    this->pointScalars->Reset();
-    this->polyData->Reset();
-
-    this->buildPointCloud();
-    this->updateColorMapping();
-    this->updateSummary();
-
-    const QString statusMsg =
-            this->activeFilters.empty()
-                    ? QStringLiteral("No filters active — showing all %1 rows.").arg(result.totalRows)
-                    : QStringLiteral("%1 filter(s) active — showing %2 of %3 rows.")
-                              .arg(this->activeFilters.size())
-                              .arg(result.returnedRows)
-                              .arg(result.totalRows);
+    if (this->btnFilterAdd) {
+        this->btnFilterAdd->setEnabled(false);
+    }
     if (this->filterStatusLabel) {
-        this->filterStatusLabel->setText(statusMsg);
+        this->filterStatusLabel->setText(u"Applying filters…"_s);
     }
 
+    const int nFilters = static_cast<int>(this->activeFilters.size());
     DiagnosticsManager::instance()->publish(
             DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
-            QStringLiteral("Filter applied: %1 of %2 rows match.")
-                    .arg(result.returnedRows)
-                    .arg(result.totalRows),
+            nFilters == 0 ? QStringLiteral("Querying dataset (no active filters).")
+                          : QStringLiteral("Applying %1 filter(s).").arg(nFilters),
             this->openResult.datasetId, this->sessionId, QStringLiteral("filter"));
 
-    this->renderWindow->Render();
+    const QString backendUrl = this->backendUrl;
+    const QString backendToken = this->backendToken;
+    const QString datasetId = this->openResult.datasetId;
+    const QString sessionId = this->sessionId;
+    const std::vector<BackendTabularFilter> filters = this->activeFilters;
+
+    this->filterWatcher.setFuture(QtConcurrent::run(
+            [backendUrl, backendToken, datasetId, sessionId, filters, nFilters]()
+                    -> VbtFilterTaskResult {
+                VbtFilterTaskResult out;
+
+                BackendClient client(backendUrl, backendToken);
+                if (!sessionId.isEmpty()) {
+                    client.setSessionId(sessionId);
+                }
+                BackendTabularQueryRequest qreq;
+                qreq.datasetId = datasetId;
+                qreq.filters = filters;
+
+                const auto queryResult = client.queryTabularVbt(qreq);
+                if (!queryResult.valid) {
+                    out.error = queryResult.error;
+                    return out;
+                }
+
+                out.subsetResult = {};
+                out.subsetResult.valid = true;
+                out.subsetResult.kind = QStringLiteral("point");
+                out.subsetResult.numRows = queryResult.numRows;
+                out.subsetResult.fieldNames = queryResult.fieldNames;
+                out.subsetResult.columns = queryResult.columns;
+
+                out.statusMsg =
+                        filters.empty()
+                                ? QStringLiteral("No filters active — showing all %1 rows.")
+                                          .arg(queryResult.totalRows)
+                                : QStringLiteral("%1 filter(s) active — showing %2 of %3 rows.")
+                                          .arg(nFilters)
+                                          .arg(queryResult.returnedRows)
+                                          .arg(queryResult.totalRows);
+                out.valid = true;
+                return out;
+            }));
 }
 
 void vtkWindowVbt::setupRenderer()

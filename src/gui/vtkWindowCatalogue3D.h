@@ -9,9 +9,12 @@
 #include <vtkSmartPointer.h>
 
 #include <QDockWidget>
+#include <QFutureWatcher>
 #include <QMainWindow>
 #include <QMap>
+#include <QParallelAnimationGroup>
 #include <QPointer>
+#include <QPropertyAnimation>
 #include <QStringList>
 #include <array>
 
@@ -35,6 +38,7 @@ class vtkPolyDataMapper;
 class vtkRenderer;
 class vtkSphereSource;
 class vtkAppendPolyData;
+class QAction;
 class QCheckBox;
 class QComboBox;
 class QListWidget;
@@ -42,12 +46,23 @@ class QPushButton;
 class QLabel;
 class QTextEdit;
 class QTableView;
+class QToolButton;
 class Catalogue3DTableModel;
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class vtkWindowCatalogue3D;
 }
 QT_END_NAMESPACE
+
+// Result struct for the background filter query task
+struct Catalogue3DFilterTaskResult
+{
+    bool valid{ false };
+    QString error;
+    std::vector<Catalogue3DEntry> entries;
+    QString statusMsg;
+    int totalRows{ 0 };
+};
 
 // ---------------------------------------------------------------------------
 // vtkWindowCatalogue3D
@@ -98,6 +113,20 @@ private:
         Flux,
     };
 
+    // ── Sidebar ───────────────────────────────────────────────────────────────
+    bool sidebarExpanded{ true };
+    int pendingPageIndex{ -1 };
+    QPointer<QParallelAnimationGroup> sidebarAnimGroup;
+    QPointer<QAction> actionShowControlsSidebar;
+    void setupSidebar();
+    void setupSidebarRail();
+    void setupRailIcons();
+    void setupSidebarPages();
+    void setSidebarExpanded(bool expanded, bool animated = true);
+    void toggleSidebar();
+    void switchToPage(int index);
+    void setActiveRailButton(QToolButton *btn);
+
     // ── Setup ──────────────────────────────────────────────────────────────
     void setupRenderer();
     void applyFilter();
@@ -139,6 +168,14 @@ private:
     // Reposition and resize a highlight sphere to sit on source[idx].
     void updateHighlightSphere(vtkSphereSource *sphere, vtkActor *actor, int idx,
                                double radiusFactor);
+
+    // ── Coordinate frame ────────────────────────────────────────────────────
+    enum class CoordFrame { FK5_J2000, Galactic };
+    CoordFrame activeFrame{ CoordFrame::FK5_J2000 };
+    // Recompute sceneX/Y/Z for all current entries using activeFrame.
+    // FK5_J2000: no-op (parser already computes in this frame).
+    // Galactic:  converts raw raDeg/decDeg → (l,b) then to Cartesian.
+    void applyFrameToEntries();
 
     // ── Data ────────────────────────────────────────────────────────────────
     Ui::vtkWindowCatalogue3D *ui;
@@ -224,6 +261,8 @@ private:
     QPointer<QPushButton> btnFilterApply;
     QPointer<QLabel> filterStatusLabel;
     std::vector<BackendTabularFilter> activeFilters;
+    bool filterBusy{ false };
+    QFutureWatcher<Catalogue3DFilterTaskResult> filterWatcher;
     bool syncingTableSelection{ false };
     bool updatingMappingControls{ false };
     QString mapXKey{ QStringLiteral("computed:x") };

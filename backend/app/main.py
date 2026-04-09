@@ -984,8 +984,22 @@ async def open_catalogue(
     except Exception as exc:
         return CatalogueOpenResponse(valid=False, error=str(exc))
 
+    # Load the full CSV once at open time so subsequent queries read from memory.
+    try:
+        dataframe = pd.read_csv(path)
+    except Exception as exc:
+        return CatalogueOpenResponse(valid=False, error=f"Failed to load CSV: {exc}")
+
     dataset_id = f"cat_{uuid.uuid4().hex[:12]}"
-    session.datasets[dataset_id] = {"path": str(path), **metadata}
+    session.datasets[dataset_id] = {"path": str(path), "dataframe": dataframe, **metadata}
+    logger.info(
+        "[catalogue-open] session=%s dataset_id=%s rows=%d cols=%d path=%s",
+        session.session_id,
+        dataset_id,
+        len(dataframe),
+        len(dataframe.columns),
+        path,
+    )
     return CatalogueOpenResponse(
         valid=True,
         error="",
@@ -1007,7 +1021,9 @@ async def catalogue_subset(
         entry = _require_dataset(session, request.dataset_id)
         if entry["kind"] != "catalogue":
             raise HTTPException(422, "This endpoint requires a catalogue dataset.")
-        frame = pd.read_csv(entry["path"], nrows=max(1, int(request.max_rows)))
+        df: pd.DataFrame = entry["dataframe"]
+        max_rows = max(1, int(request.max_rows))
+        frame = df.iloc[:max_rows]
         rows = frame.replace({np.nan: None}).to_dict(orient="records")
     except HTTPException:
         raise
@@ -1027,9 +1043,10 @@ async def catalogue_query(
         entry = _require_dataset(session, request.dataset_id)
         if entry["kind"] != "catalogue":
             raise HTTPException(422, "This endpoint requires a catalogue dataset.")
-        df = pd.read_csv(entry["path"])
+        # Use the DataFrame cached at open time – no disk I/O.
+        # _apply_tabular_query operates on a copy so the original is never mutated.
         df, total = _apply_tabular_query(
-            df, request.filters, request.sort, request.limit, request.offset
+            entry["dataframe"], request.filters, request.sort, request.limit, request.offset
         )
         rows = df.replace({np.nan: None}).to_dict(orient="records")
     except HTTPException:
@@ -1073,15 +1090,39 @@ async def vbt_open(
     except Exception as exc:
         return VbtOpenResponse(valid=False, error=str(exc))
 
+    # Memory-map the binary file once at open time.  np.memmap opens a
+    # read-only virtual mapping – no actual data is loaded until accessed,
+    # and the OS page cache handles repeated access efficiently.
+    field_count: int = header["field_count"]
+    num_rows: int = header["num_rows"]
+    np_dtype = np.dtype(header["np_endian_code"])
+    expected_scalars = field_count * num_rows
+    actual_scalars = bin_path.stat().st_size // np_dtype.itemsize
+    if actual_scalars != expected_scalars:
+        return VbtOpenResponse(
+            valid=False,
+            error=(
+                f"Binary size mismatch: header says {expected_scalars} scalars "
+                f"({field_count} fields × {num_rows} rows), "
+                f"file contains {actual_scalars} scalars."
+            ),
+        )
+    try:
+        # Shape (field_count, num_rows): field-major layout matches VBT spec.
+        memmap = np.memmap(bin_path, dtype=np_dtype, mode="r", shape=(field_count, num_rows))
+    except Exception as exc:
+        return VbtOpenResponse(valid=False, error=f"Failed to memory-map VBT binary: {exc}")
+
     dataset_id = f"vbt_{uuid.uuid4().hex[:12]}"
     session.datasets[dataset_id] = {
         "kind": "vbt",
         "head_path": str(head_path),
         "bin_path": str(bin_path),
         "header": header,
+        "memmap": memmap,  # shape (field_count, num_rows), read-only
     }
     logger.info(
-        "[vbt-open] session=%s dataset_id=%s kind=%s fields=%d rows=%d path=%s",
+        "[vbt-open] session=%s dataset_id=%s kind=%s fields=%d rows=%d path=%s (memmap)",
         session.session_id,
         dataset_id,
         header["kind"],
@@ -1127,33 +1168,18 @@ async def vbt_subset(
         raise
 
     header = entry["header"]
-    bin_path = entry["bin_path"]
-    field_count: int = header["field_count"]
-    num_rows: int = header["num_rows"]
     field_names: list[str] = header["field_names"]
-    np_dtype = np.dtype(header["np_endian_code"])
-
-    try:
-        # Read entire binary into a (field_count × num_rows) array.
-        raw = np.fromfile(bin_path, dtype=np_dtype)
-        if raw.size != field_count * num_rows:
-            return VbtSubsetResponse(
-                valid=False,
-                error=(
-                    f"Binary size mismatch: expected {field_count * num_rows} scalars, "
-                    f"got {raw.size}"
-                ),
-            )
-        arr = raw.reshape(field_count, num_rows)  # field-major layout
-    except Exception as exc:
-        return VbtSubsetResponse(valid=False, error=f"Failed to read VBT binary: {exc}")
+    num_rows: int = header["num_rows"]
+    # Use the pre-opened memmap – no disk I/O beyond what the OS pages in.
+    arr: np.memmap = entry["memmap"]  # shape (field_count, num_rows)
 
     if header["kind"] == "point":
         max_rows = request.max_rows if request.max_rows > 0 else num_rows
         max_rows = min(max_rows, num_rows)
         columns: dict[str, str] = {}
         for i, fname in enumerate(field_names):
-            col = arr[i, :max_rows].astype("<f8")  # always float64-LE on the wire
+            # np.array() copies the memmap slice so the wire bytes are a plain ndarray.
+            col = np.array(arr[i, :max_rows], dtype="<f8")
             columns[fname] = base64.b64encode(col.tobytes()).decode("ascii")
         return VbtSubsetResponse(
             valid=True,
@@ -1170,7 +1196,7 @@ async def vbt_subset(
                 valid=False, error=f"Field '{field_name}' not found in VBT dataset."
             )
         field_idx = field_names.index(field_name)
-        block = arr[field_idx].astype("<f4")  # float32-LE on the wire
+        block = np.array(arr[field_idx], dtype="<f4")  # float32-LE on the wire
         return VbtSubsetResponse(
             valid=True,
             error="",
@@ -1209,35 +1235,46 @@ async def vbt_query(
             valid=False, error="vbt/query only supports point datasets; use vbt/subset for volumes."
         )
 
-    bin_path = entry["bin_path"]
-    field_count: int = header["field_count"]
-    num_rows: int = header["num_rows"]
     field_names: list[str] = header["field_names"]
-    np_dtype = np.dtype(header["np_endian_code"])
+    # Use the pre-opened memmap – shape (field_count, num_rows).
+    arr: np.memmap = entry["memmap"]
+
+    # Determine which columns are referenced by filters/sort so we only copy
+    # those slices from the memmap rather than materialising the entire table.
+    filter_fields: set[str] = {f.field for f in request.filters}
+    sort_field: str | None = request.sort.field if request.sort else None
+    needed: set[str] = filter_fields | ({sort_field} if sort_field else set())
+    # If no filters/sort are active we still need all columns for the response,
+    # so just build them all lazily.
+    if not needed:
+        needed = set(field_names)
 
     try:
-        raw = np.fromfile(bin_path, dtype=np_dtype)
-        if raw.size != field_count * num_rows:
-            return TabularQueryResponse(
-                valid=False,
-                error=f"Binary size mismatch: expected {field_count * num_rows}, got {raw.size}",
-            )
-        arr = raw.reshape(field_count, num_rows)
-    except Exception as exc:
-        return TabularQueryResponse(valid=False, error=f"Failed to read VBT binary: {exc}")
-
-    # Build a DataFrame for query support
-    df = pd.DataFrame({name: arr[i].astype(float) for i, name in enumerate(field_names)})
-    try:
+        # Build DataFrame only from needed columns; copy out of memmap.
+        df = pd.DataFrame(
+            {
+                name: np.array(arr[i], dtype=float)
+                for i, name in enumerate(field_names)
+                if name in needed
+            }
+        )
         df, total = _apply_tabular_query(
             df, request.filters, request.sort, request.limit, request.offset
         )
     except Exception as exc:
         return TabularQueryResponse(valid=False, error=str(exc))
 
+    # After filtering we know the surviving row indices.  For columns that were
+    # not loaded into the DataFrame (non-filter, non-sort columns when filters
+    # were active), read only the filtered rows from the memmap now.
+    row_index = df.index  # integer positions in the original array
     columns: dict[str, str] = {}
-    for name in field_names:
-        col = df[name].to_numpy().astype("<f8")
+    for i, name in enumerate(field_names):
+        if name in df.columns:
+            col = df[name].to_numpy().astype("<f8")
+        else:
+            # Read only the rows that survived filtering.
+            col = np.array(arr[i][row_index], dtype="<f8")
         columns[name] = base64.b64encode(col.tobytes()).decode("ascii")
 
     return TabularQueryResponse(
@@ -1684,4 +1721,374 @@ async def cosmology_distance(
         comoving_Mpc=comoving_mpc,
         luminosity_Mpc=luminosity_mpc,
         proper_motion_kpc_per_arcsec=kpc_per_arcsec,
+    )
+
+
+# ── HiPS (Hierarchical Progressive Survey) ────────────────────────────────────
+# Backend-authoritative: the backend fetches tiles from remote HiPS servers,
+# caches them on disk, and serves them to the Qt client.  The client never
+# makes direct HTTP requests to external hosts.
+
+import asyncio as _asyncio
+import math as _math
+import urllib.request as _urllib_request
+import urllib.error as _urllib_error
+from pathlib import Path as _Path
+
+_HIPS_CACHE_DIR = _Path(
+    os.environ.get("VISIVO_HIPS_CACHE",
+                   str(_Path.home() / ".cache" / "visivo" / "hips"))
+)
+_HIPS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Optional: healpy for HEALPix pixel queries
+_HEALPY_AVAILABLE = False
+try:
+    import healpy as _hp  # type: ignore
+    _HEALPY_AVAILABLE = True
+except ImportError:
+    logger.warning("[startup] healpy not installed – /v1/hips/*/query_tiles will be unavailable.")
+
+
+# ── HiPS Pydantic models ──────────────────────────────────────────────────────
+
+class HiPSOpenRequest(BaseModel):
+    url: str
+
+
+class HiPSSurveyResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    survey_id: str = ""
+    session_id: str = ""
+    base_url: str = ""
+    title: str = ""
+    frame: str = "equatorial"   # "equatorial" | "galactic" | "ecliptic"
+    max_order: int = 9
+    min_order: int = 0
+    tile_width: int = 512
+    tile_formats: list[str] = []  # e.g. ["png", "jpeg"]
+
+
+class HiPSTileInfo(BaseModel):
+    pix: int
+    order: int
+    ra_center: float    # degrees
+    dec_center: float   # degrees
+    corners_ra: list[float]   # 4 values, degrees
+    corners_dec: list[float]  # 4 values, degrees
+
+
+class HiPSViewRequest(BaseModel):
+    survey_id: str
+    ra_center: float
+    dec_center: float
+    fov_deg: float
+    order: int
+
+
+class HiPSViewResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    tiles: list[HiPSTileInfo] = []
+
+
+# ── HiPS helpers ──────────────────────────────────────────────────────────────
+
+def _hips_fetch_sync(url: str) -> bytes:
+    """Synchronous remote fetch.  Called in a thread-pool executor."""
+    req = _urllib_request.Request(
+        url, headers={"User-Agent": "VisIVO-Backend/1.0 (HiPS proxy)"}
+    )
+    with _urllib_request.urlopen(req, timeout=30) as resp:
+        return resp.read()
+
+
+async def _hips_fetch(url: str) -> bytes:
+    """Fetch *url* without blocking the FastAPI event loop."""
+    loop = _asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _hips_fetch_sync, url)
+
+
+def _parse_hips_properties(text: str) -> dict[str, str]:
+    """Parse a Java-style `.properties` file as used by the HiPS standard."""
+    props: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("!"):
+            continue
+        if "=" in line:
+            key, _, value = line.partition("=")
+            props[key.strip()] = value.strip()
+    return props
+
+
+def _best_tile_formats(props: dict[str, str]) -> list[str]:
+    """Return tile formats ordered by preference (PNG → JPEG → FITS)."""
+    raw = props.get("hips_tile_format", "jpeg")
+    found = [f.strip().lower() for f in raw.replace(",", " ").split()]
+    preference = ["png", "jpeg", "jpg", "fits"]
+    return sorted(set(found), key=lambda f: preference.index(f) if f in preference else 99)
+
+
+def _tile_url(base_url: str, order: int, pix: int, fmt: str) -> str:
+    dir_num = (pix // 10000) * 10000
+    ext = "jpg" if fmt in ("jpeg", "jpg") else fmt
+    return f"{base_url}/Norder{order}/Dir{dir_num}/Npix{pix}.{ext}"
+
+
+def _allsky_url(base_url: str, order: int, fmt: str) -> str:
+    ext = "jpg" if fmt in ("jpeg", "jpg") else fmt
+    return f"{base_url}/Norder{order}/Allsky.{ext}"
+
+
+def _tile_cache_path(survey_id: str, order: int, pix: int, fmt: str) -> _Path:
+    return _HIPS_CACHE_DIR / survey_id / str(order) / f"{pix}.{fmt}"
+
+
+def _allsky_cache_path(survey_id: str, order: int, fmt: str) -> _Path:
+    return _HIPS_CACHE_DIR / survey_id / f"allsky_{order}.{fmt}"
+
+
+def _get_tiles_for_fov(
+    ra_deg: float, dec_deg: float, fov_deg: float, order: int
+) -> list[dict]:
+    """Return HEALPix NESTED tiles covering the given FOV.  Requires healpy."""
+    nside = _hp.order2nside(order)
+    # Centre unit vector
+    theta = _math.radians(90.0 - dec_deg)
+    phi   = _math.radians(ra_deg)
+    vec   = _hp.ang2vec(theta, phi)
+    # Disc radius with √2 margin so corner tiles are included
+    radius_rad = _math.radians(fov_deg / 2.0 * 1.42)
+    pixels = _hp.query_disc(nside, vec, radius_rad, nest=True, inclusive=True)
+
+    result = []
+    for pix in pixels:
+        p = int(pix)
+        theta_c, phi_c = _hp.pix2ang(nside, p, nest=True)
+        ra_c  = float(_math.degrees(phi_c))
+        dec_c = float(90.0 - _math.degrees(theta_c))
+
+        # 4 corners in (theta, phi) then convert to (ra, dec)
+        corners = _hp.boundaries(nside, p, step=1, nest=True)  # shape (3,4)
+        c_ra  = [float(_math.degrees(_math.atan2(corners[1, i], corners[0, i]))) for i in range(4)]
+        c_dec = [float(90.0 - _math.degrees(_math.acos(
+            max(-1.0, min(1.0, corners[2, i]))))) for i in range(4)]
+
+        result.append({
+            "pix": p,
+            "order": order,
+            "ra_center": ra_c,
+            "dec_center": dec_c,
+            "corners_ra": c_ra,
+            "corners_dec": c_dec,
+        })
+    return result
+
+
+# ── HiPS endpoints ─────────────────────────────────────────────────────────────
+
+@app.post("/v1/hips/open", response_model=HiPSSurveyResponse, tags=["hips"])
+async def hips_open(
+    request: HiPSOpenRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> HiPSSurveyResponse:
+    """Register a remote HiPS survey URL.  Fetches the `properties` file and
+    caches it.  Returns a survey_id for subsequent tile/allsky requests."""
+    base_url = request.url.rstrip("/")
+    props_url = f"{base_url}/properties"
+
+    try:
+        props_bytes = await _hips_fetch(props_url)
+    except _urllib_error.HTTPError as exc:
+        return HiPSSurveyResponse(valid=False,
+                                  error=f"Cannot fetch HiPS properties ({exc.code}): {props_url}")
+    except Exception as exc:
+        return HiPSSurveyResponse(valid=False,
+                                  error=f"Cannot fetch HiPS properties: {exc}")
+
+    try:
+        props = _parse_hips_properties(props_bytes.decode("utf-8", errors="replace"))
+    except Exception as exc:
+        return HiPSSurveyResponse(valid=False,
+                                  error=f"Cannot parse HiPS properties: {exc}")
+
+    title = (props.get("obs_title")
+             or props.get("obs_collection")
+             or props.get("creator_did")
+             or "Unknown Survey")
+    frame_raw = props.get("hips_frame", "equatorial").lower()
+    if "galactic" in frame_raw:
+        frame = "galactic"
+    elif "ecliptic" in frame_raw:
+        frame = "ecliptic"
+    else:
+        frame = "equatorial"
+
+    try:
+        max_order = int(props.get("hips_order", "9"))
+        min_order = int(props.get("hips_order_min", "0"))
+        tile_width = int(props.get("hips_tile_width", "512"))
+    except ValueError:
+        max_order, min_order, tile_width = 9, 0, 512
+
+    formats = _best_tile_formats(props)
+
+    survey_id = f"hips_{uuid.uuid4().hex[:12]}"
+    session.datasets[survey_id] = {
+        "kind": "hips",
+        "base_url": base_url,
+        "title": title,
+        "frame": frame,
+        "max_order": max_order,
+        "min_order": min_order,
+        "tile_width": tile_width,
+        "tile_formats": formats,
+        "properties": props,
+    }
+    logger.info("[hips-open] session=%s survey_id=%s title=%s max_order=%d frame=%s",
+                session.session_id, survey_id, title, max_order, frame)
+
+    return HiPSSurveyResponse(
+        valid=True, error="",
+        survey_id=survey_id, session_id=session.session_id,
+        base_url=base_url, title=title, frame=frame,
+        max_order=max_order, min_order=min_order,
+        tile_width=tile_width, tile_formats=formats,
+    )
+
+
+@app.get("/v1/hips/{survey_id}/allsky", tags=["hips"])
+async def hips_allsky(
+    survey_id: str,
+    order: int = 3,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Return the AllSky mosaic image for the given order.
+    The image is fetched once from the remote survey and cached on disk."""
+    try:
+        entry = _require_dataset(session, survey_id)
+        if entry["kind"] != "hips":
+            raise HTTPException(422, "Not a HiPS survey.")
+    except HTTPException:
+        raise
+
+    base_url: str = entry["base_url"]
+    formats: list[str] = entry["tile_formats"]
+    fmt = formats[0] if formats else "png"
+
+    cache_path = _allsky_cache_path(survey_id, order, fmt)
+    if cache_path.exists():
+        data = cache_path.read_bytes()
+    else:
+        # Try each format until one works
+        data = b""
+        last_err: Exception | None = None
+        for candidate_fmt in (formats or ["png", "jpeg"]):
+            url = _allsky_url(base_url, order, candidate_fmt)
+            try:
+                data = await _hips_fetch(url)
+                fmt = candidate_fmt
+                break
+            except Exception as exc:
+                last_err = exc
+        if not data:
+            raise HTTPException(404, f"AllSky not available at order {order}: {last_err}")
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(data)
+
+    mt = ("image/jpeg" if fmt in ("jpeg", "jpg")
+          else "image/fits" if fmt == "fits"
+          else "image/png")
+    return Response(content=data, media_type=mt)
+
+
+@app.get("/v1/hips/{survey_id}/tile/{order}/{pix}", tags=["hips"])
+async def hips_tile(
+    survey_id: str,
+    order: int,
+    pix: int,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Return a single HiPS tile image (PNG/JPEG).  Caches tiles on disk."""
+    try:
+        entry = _require_dataset(session, survey_id)
+        if entry["kind"] != "hips":
+            raise HTTPException(422, "Not a HiPS survey.")
+    except HTTPException:
+        raise
+
+    formats: list[str] = entry["tile_formats"]
+    base_url: str = entry["base_url"]
+    fmt = formats[0] if formats else "png"
+
+    cache_path = _tile_cache_path(survey_id, order, pix, fmt)
+    if cache_path.exists():
+        data = cache_path.read_bytes()
+    else:
+        data = b""
+        last_err: Exception | None = None
+        for candidate_fmt in (formats or ["png", "jpeg"]):
+            url = _tile_url(base_url, order, pix, candidate_fmt)
+            try:
+                data = await _hips_fetch(url)
+                fmt = candidate_fmt
+                break
+            except Exception as exc:
+                last_err = exc
+        if not data:
+            raise HTTPException(404, f"Tile order={order} pix={pix} not available: {last_err}")
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(data)
+
+    mt = ("image/jpeg" if fmt in ("jpeg", "jpg")
+          else "image/fits" if fmt == "fits"
+          else "image/png")
+    return Response(content=data, media_type=mt)
+
+
+@app.post("/v1/hips/{survey_id}/query_tiles",
+          response_model=HiPSViewResponse, tags=["hips"])
+async def hips_query_tiles(
+    survey_id: str,
+    request: HiPSViewRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> HiPSViewResponse:
+    """Return the set of HEALPix tiles that cover the given viewport.
+    Requires healpy.  Falls back to an empty list with an error if unavailable."""
+    try:
+        entry = _require_dataset(session, survey_id)
+        if entry["kind"] != "hips":
+            raise HTTPException(422, "Not a HiPS survey.")
+    except HTTPException:
+        raise
+
+    if not _HEALPY_AVAILABLE:
+        return HiPSViewResponse(
+            valid=False,
+            error="healpy is not installed on the backend – tile queries unavailable. "
+                  "Install it with: pip install healpy",
+        )
+
+    max_order: int = entry["max_order"]
+    order = max(0, min(request.order, max_order))
+    try:
+        loop = _asyncio.get_event_loop()
+        tiles_raw = await loop.run_in_executor(
+            None, _get_tiles_for_fov,
+            request.ra_center, request.dec_center, request.fov_deg, order,
+        )
+    except Exception as exc:
+        return HiPSViewResponse(valid=False, error=f"HEALPix query failed: {exc}")
+
+    return HiPSViewResponse(
+        valid=True,
+        tiles=[HiPSTileInfo(**t) for t in tiles_raw],
     )

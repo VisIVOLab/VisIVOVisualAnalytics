@@ -13,16 +13,25 @@
 #include <vtkScalarBarActor.h>
 #include <vtkTextProperty.h>
 
+#include <QAction>
 #include <QComboBox>
-#include <QDockWidget>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
 #include <QListWidget>
+#include <QMenuBar>
+#include <QParallelAnimationGroup>
+#include <QPropertyAnimation>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSlider>
+#include <QStackedWidget>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -92,21 +101,134 @@ void vtkWindowVbtVolume::setupUi()
                                  .arg(this->openResult.dimensions[2]));
     this->resize(1280, 800);
 
+    // ── Central widget: sidebar + VTK ─────────────────────────────────────────
     auto *central = new QWidget(this);
-    auto *layout = new QHBoxLayout(central);
-    layout->setContentsMargins(6, 6, 6, 6);
-    layout->setSpacing(6);
+    this->setCentralWidget(central);
+    auto *rootLayout = new QHBoxLayout(central);
+    rootLayout->setSpacing(0);
+    rootLayout->setContentsMargins(0, 0, 0, 0);
+
+    this->setupSidebarUi(central);
+    rootLayout->addWidget(this->sidebarContainer);
 
     this->vtkWidget = new QVTKOpenGLNativeWidget(central);
     this->vtkWidget->setMinimumSize(700, 500);
-    layout->addWidget(this->vtkWidget, 1);
+    rootLayout->addWidget(this->vtkWidget, 1);
 
-    auto *panel = new QWidget(central);
-    panel->setMinimumWidth(260);
-    panel->setMaximumWidth(300);
-    auto *panelLayout = new QVBoxLayout(panel);
+    // ── Signal connections ────────────────────────────────────────────────────
+    QObject::connect(this->comboScalarField, &QComboBox::currentIndexChanged, this,
+                     [this](int) { this->rebuildVolumeData(); });
+    QObject::connect(this->comboBlendMode, &QComboBox::currentIndexChanged, this,
+                     [this](int) { this->updateTransferFunctions(); });
+    QObject::connect(this->sliderOpacity, &QSlider::valueChanged, this,
+                     [this](int) { this->updateTransferFunctions(); });
+    QObject::connect(this->comboScaleMode, &QComboBox::currentIndexChanged, this,
+                     [this](int) { this->updateTransferFunctions(); });
+    QObject::connect(this->buttonAutoscale, &QPushButton::clicked, this, [this]() {
+        this->setColorRange(this->dataScalarMin, this->dataScalarMax);
+        this->updateTransferFunctions();
+    });
+    QObject::connect(this->spinRangeMin, &QDoubleSpinBox::valueChanged, this, [this](double) {
+        if (this->updatingRangeControls) {
+            return;
+        }
+        this->setColorRange(this->spinRangeMin->value(), this->spinRangeMax->value());
+        this->updateTransferFunctions();
+    });
+    QObject::connect(this->spinRangeMax, &QDoubleSpinBox::valueChanged, this, [this](double) {
+        if (this->updatingRangeControls) {
+            return;
+        }
+        this->setColorRange(this->spinRangeMin->value(), this->spinRangeMax->value());
+        this->updateTransferFunctions();
+    });
 
-    auto *displayGroup = new QGroupBox(u"Volume"_s, panel);
+    // ── View menu ─────────────────────────────────────────────────────────────
+    auto *viewMenu = this->menuBar()->addMenu(u"View"_s);
+    this->actionShowControlsSidebar = new QAction(u"Controls Sidebar"_s, this);
+    this->actionShowControlsSidebar->setCheckable(true);
+    this->actionShowControlsSidebar->setChecked(true);
+    viewMenu->addAction(this->actionShowControlsSidebar);
+    QObject::connect(this->actionShowControlsSidebar, &QAction::toggled, this,
+                     [this](bool checked) { setSidebarExpanded(checked); });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sidebar implementation
+// ─────────────────────────────────────────────────────────────────────────────
+
+void vtkWindowVbtVolume::setupSidebarUi(QWidget *parent)
+{
+    // ── Sidebar container ─────────────────────────────────────────────────────
+    this->sidebarContainer = new QWidget(parent);
+    this->sidebarContainer->setObjectName(u"sidebarContainer"_s);
+    this->sidebarContainer->setMinimumWidth(48);
+    this->sidebarContainer->setMaximumWidth(320);
+
+    auto *containerLayout = new QHBoxLayout(this->sidebarContainer);
+    containerLayout->setSpacing(0);
+    containerLayout->setContentsMargins(0, 0, 0, 0);
+
+    // ── Rail ──────────────────────────────────────────────────────────────────
+    this->railWidget = new QWidget(this->sidebarContainer);
+    this->railWidget->setObjectName(u"railWidget"_s);
+    this->railWidget->setFixedWidth(48);
+
+    auto *railLayout = new QVBoxLayout(this->railWidget);
+    railLayout->setSpacing(2);
+    railLayout->setContentsMargins(4, 8, 4, 8);
+
+    this->btnToggleSidebar = new QToolButton(this->railWidget);
+    this->btnToggleSidebar->setToolTip(u"Toggle sidebar"_s);
+    this->btnToggleSidebar->setCheckable(true);
+    this->btnToggleSidebar->setChecked(true);
+    this->btnToggleSidebar->setAutoRaise(true);
+
+    this->railBtnVolume = new QToolButton(this->railWidget);
+    this->railBtnVolume->setToolTip(u"Volume Settings"_s);
+    this->railBtnVolume->setCheckable(true);
+    this->railBtnVolume->setChecked(true);
+    this->railBtnVolume->setAutoRaise(true);
+
+    this->railBtnMetadata = new QToolButton(this->railWidget);
+    this->railBtnMetadata->setToolTip(u"VBT Metadata"_s);
+    this->railBtnMetadata->setCheckable(true);
+    this->railBtnMetadata->setAutoRaise(true);
+
+    railLayout->addWidget(this->btnToggleSidebar);
+    railLayout->addWidget(this->railBtnVolume);
+    railLayout->addWidget(this->railBtnMetadata);
+    railLayout->addStretch(1);
+
+    containerLayout->addWidget(this->railWidget);
+
+    // ── Scroll area + stack ───────────────────────────────────────────────────
+    this->sidebarScrollArea = new QScrollArea(this->sidebarContainer);
+    this->sidebarScrollArea->setObjectName(u"sidebarScrollArea"_s);
+    this->sidebarScrollArea->setWidgetResizable(true);
+    this->sidebarScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    this->sidebarScrollArea->setFrameShape(QFrame::NoFrame);
+
+    auto *scrollContents = new QWidget(this->sidebarScrollArea);
+    auto *scrollLayout = new QVBoxLayout(scrollContents);
+    scrollLayout->setSpacing(0);
+    scrollLayout->setContentsMargins(0, 0, 0, 0);
+
+    this->sidebarStack = new QStackedWidget(scrollContents);
+    scrollLayout->addWidget(this->sidebarStack);
+    this->sidebarScrollArea->setWidget(scrollContents);
+    containerLayout->addWidget(this->sidebarScrollArea);
+
+    // ── Page 0: Volume controls ───────────────────────────────────────────────
+    auto *pageVolume = new QWidget;
+    auto *pageVolumeLayout = new QVBoxLayout(pageVolume);
+    pageVolumeLayout->setContentsMargins(8, 8, 8, 8);
+    pageVolumeLayout->setSpacing(8);
+
+    auto *hdrVolume = new QLabel(u"VOLUME SETTINGS"_s);
+    pageVolumeLayout->addWidget(hdrVolume);
+
+    auto *displayGroup = new QGroupBox(u"Volume"_s, pageVolume);
     auto *displayLayout = new QFormLayout(displayGroup);
     this->comboScalarField = new QComboBox(displayGroup);
     for (const auto &field : this->openResult.fields) {
@@ -141,58 +263,200 @@ void vtkWindowVbtVolume::setupUi()
     displayLayout->addRow(u"Range max"_s, this->spinRangeMax);
     displayLayout->addRow(u"Opacity"_s, this->sliderOpacity);
     displayLayout->addRow(this->buttonAutoscale);
-    panelLayout->addWidget(displayGroup);
+    pageVolumeLayout->addWidget(displayGroup);
 
-    auto *summaryGroup = new QGroupBox(u"Summary"_s, panel);
+    auto *summaryGroup = new QGroupBox(u"Summary"_s, pageVolume);
     auto *summaryLayout = new QVBoxLayout(summaryGroup);
     this->summaryLabel = new QLabel(summaryGroup);
     this->summaryLabel->setWordWrap(true);
     summaryLayout->addWidget(this->summaryLabel);
-    panelLayout->addWidget(summaryGroup);
-    panelLayout->addStretch(1);
-    layout->addWidget(panel);
-    this->setCentralWidget(central);
+    pageVolumeLayout->addWidget(summaryGroup);
+    pageVolumeLayout->addStretch(1);
+    this->sidebarStack->addWidget(pageVolume); // index 0
 
-    this->metadataDock = new QDockWidget(u"VBT Metadata"_s, this);
-    auto *dockWidget = new QWidget(this->metadataDock);
-    auto *dockLayout = new QVBoxLayout(dockWidget);
-    this->metadataLabel = new QLabel(dockWidget);
+    // ── Page 1: Metadata ──────────────────────────────────────────────────────
+    auto *pageMetadata = new QWidget;
+    auto *pageMetadataLayout = new QVBoxLayout(pageMetadata);
+    pageMetadataLayout->setContentsMargins(8, 8, 8, 8);
+    pageMetadataLayout->setSpacing(8);
+
+    auto *hdrMetadata = new QLabel(u"VBT METADATA"_s);
+    pageMetadataLayout->addWidget(hdrMetadata);
+
+    this->metadataLabel = new QLabel(pageMetadata);
     this->metadataLabel->setWordWrap(true);
-    this->fieldList = new QListWidget(dockWidget);
+    pageMetadataLayout->addWidget(this->metadataLabel);
+
+    this->fieldList = new QListWidget(pageMetadata);
     for (const auto &field : this->openResult.fields) {
         this->fieldList->addItem(QStringLiteral("%1 [%2]").arg(field.name, field.type));
     }
-    dockLayout->addWidget(this->metadataLabel);
-    dockLayout->addWidget(this->fieldList, 1);
-    this->metadataDock->setWidget(dockWidget);
-    this->addDockWidget(Qt::BottomDockWidgetArea, this->metadataDock);
+    pageMetadataLayout->addWidget(this->fieldList, 1);
+    this->sidebarStack->addWidget(pageMetadata); // index 1
 
-    QObject::connect(this->comboScalarField, &QComboBox::currentIndexChanged, this,
-                     [this](int) { this->rebuildVolumeData(); });
-    QObject::connect(this->comboBlendMode, &QComboBox::currentIndexChanged, this,
-                     [this](int) { this->updateTransferFunctions(); });
-    QObject::connect(this->sliderOpacity, &QSlider::valueChanged, this,
-                     [this](int) { this->updateTransferFunctions(); });
-    QObject::connect(this->comboScaleMode, &QComboBox::currentIndexChanged, this,
-                     [this](int) { this->updateTransferFunctions(); });
-    QObject::connect(this->buttonAutoscale, &QPushButton::clicked, this, [this]() {
-        this->setColorRange(this->dataScalarMin, this->dataScalarMax);
-        this->updateTransferFunctions();
-    });
-    QObject::connect(this->spinRangeMin, &QDoubleSpinBox::valueChanged, this, [this](double) {
-        if (this->updatingRangeControls) {
-            return;
+    // ── Styles ────────────────────────────────────────────────────────────────
+    setupSidebarRail();
+    setupRailIcons();
+    setupSidebarPages();
+
+    // ── Rail connections ──────────────────────────────────────────────────────
+    QObject::connect(this->btnToggleSidebar, &QToolButton::clicked, this,
+                     &vtkWindowVbtVolume::toggleSidebar);
+    QObject::connect(this->railBtnVolume, &QToolButton::clicked, this,
+                     [this]() { switchToPage(0); });
+    QObject::connect(this->railBtnMetadata, &QToolButton::clicked, this,
+                     [this]() { switchToPage(1); });
+
+    setActiveRailButton(this->railBtnVolume);
+    this->sidebarStack->setCurrentIndex(0);
+}
+
+void vtkWindowVbtVolume::setupSidebarRail()
+{
+    const QString railStyle =
+            u"QWidget#railWidget { background-color: #0A2236; }"
+            u"QToolButton { background: transparent; border: none; border-radius: 8px;"
+            u"              color: #8AB8CC; padding: 6px; min-width: 36px; min-height: 36px; }"
+            u"QToolButton:hover { background-color: rgba(4,138,191,0.18); }"
+            u"QToolButton[active='true'] { background-color: rgba(4,138,191,0.30); color: #FFFFFF; }"_s;
+    if (this->railWidget) {
+        this->railWidget->setStyleSheet(railStyle);
+    }
+    if (this->sidebarContainer) {
+        this->sidebarContainer->setStyleSheet(
+                u"QWidget#sidebarContainer { background-color: #0A2236; }"
+                u"QScrollArea#sidebarScrollArea { background-color: transparent; border: none; }"_s);
+    }
+}
+
+void vtkWindowVbtVolume::setupRailIcons()
+{
+    struct Entry { QToolButton *btn; QString path; };
+    const std::array<Entry, 3> entries = { {
+        { this->btnToggleSidebar, u":/icons/rail_slice.svg"_s    },
+        { this->railBtnVolume,    u":/icons/rail_display.svg"_s  },
+        { this->railBtnMetadata,  u":/icons/rail_metadata.svg"_s },
+    } };
+    for (const auto &e : entries) {
+        if (e.btn) {
+            e.btn->setIcon(QIcon(e.path));
+            e.btn->setIconSize({ 22, 22 });
+            e.btn->setText({});
         }
-        this->setColorRange(this->spinRangeMin->value(), this->spinRangeMax->value());
-        this->updateTransferFunctions();
-    });
-    QObject::connect(this->spinRangeMax, &QDoubleSpinBox::valueChanged, this, [this](double) {
-        if (this->updatingRangeControls) {
-            return;
+    }
+}
+
+void vtkWindowVbtVolume::setupSidebarPages()
+{
+    const QString hdrStyle =
+            u"QLabel { color: #8AB8CC; font-size: 10px; font-weight: 600;"
+            u"         padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20); }"_s;
+    for (int i = 0; i < this->sidebarStack->count(); ++i) {
+        auto *page = this->sidebarStack->widget(i);
+        const auto labels = page->findChildren<QLabel *>(QString(), Qt::FindDirectChildrenOnly);
+        if (!labels.isEmpty()) {
+            labels.first()->setStyleSheet(hdrStyle);
         }
-        this->setColorRange(this->spinRangeMin->value(), this->spinRangeMax->value());
-        this->updateTransferFunctions();
+    }
+}
+
+void vtkWindowVbtVolume::setActiveRailButton(QToolButton *btn)
+{
+    for (QToolButton *b : { this->railBtnVolume.data(), this->railBtnMetadata.data() }) {
+        if (b) {
+            b->setProperty("active", b == btn);
+            b->style()->polish(b);
+        }
+    }
+}
+
+void vtkWindowVbtVolume::switchToPage(int index)
+{
+    if (this->sidebarExpanded) {
+        if (this->sidebarStack) {
+            this->sidebarStack->setCurrentIndex(index);
+        }
+        setActiveRailButton(index == 0 ? this->railBtnVolume.data()
+                                       : this->railBtnMetadata.data());
+    } else {
+        this->pendingPageIndex = index;
+        setSidebarExpanded(true);
+    }
+}
+
+void vtkWindowVbtVolume::toggleSidebar()
+{
+    setSidebarExpanded(!this->sidebarExpanded);
+}
+
+void vtkWindowVbtVolume::setSidebarExpanded(bool expanded, bool animated)
+{
+    if (this->sidebarExpanded == expanded && !animated) {
+        return;
+    }
+    this->sidebarExpanded = expanded;
+
+    if (this->actionShowControlsSidebar) {
+        QSignalBlocker blocker(this->actionShowControlsSidebar);
+        this->actionShowControlsSidebar->setChecked(expanded);
+    }
+
+    const int targetW = expanded ? 320 : 48;
+
+    if (!animated) {
+        if (this->sidebarContainer) {
+            this->sidebarContainer->setMinimumWidth(targetW);
+            this->sidebarContainer->setMaximumWidth(targetW);
+        }
+        if (this->sidebarScrollArea) {
+            this->sidebarScrollArea->setVisible(expanded);
+        }
+        if (expanded && this->pendingPageIndex >= 0 && this->sidebarStack) {
+            this->sidebarStack->setCurrentIndex(this->pendingPageIndex);
+            setActiveRailButton(this->pendingPageIndex == 0 ? this->railBtnVolume.data()
+                                                            : this->railBtnMetadata.data());
+            this->pendingPageIndex = -1;
+        }
+        return;
+    }
+
+    if (this->sidebarScrollArea) {
+        this->sidebarScrollArea->setVisible(true);
+    }
+
+    if (this->sidebarAnimGroup) {
+        this->sidebarAnimGroup->stop();
+    }
+
+    auto *group = new QParallelAnimationGroup(this);
+    this->sidebarAnimGroup = group;
+
+    auto *animMin = new QPropertyAnimation(this->sidebarContainer, "minimumWidth", group);
+    animMin->setDuration(200);
+    animMin->setStartValue(this->sidebarContainer ? this->sidebarContainer->minimumWidth() : 48);
+    animMin->setEndValue(targetW);
+
+    auto *animMax = new QPropertyAnimation(this->sidebarContainer, "maximumWidth", group);
+    animMax->setDuration(200);
+    animMax->setStartValue(this->sidebarContainer ? this->sidebarContainer->maximumWidth() : 320);
+    animMax->setEndValue(targetW);
+
+    group->addAnimation(animMin);
+    group->addAnimation(animMax);
+
+    QObject::connect(group, &QParallelAnimationGroup::finished, this, [this, expanded]() {
+        if (this->sidebarScrollArea) {
+            this->sidebarScrollArea->setVisible(expanded);
+        }
+        if (expanded && this->pendingPageIndex >= 0 && this->sidebarStack) {
+            this->sidebarStack->setCurrentIndex(this->pendingPageIndex);
+            setActiveRailButton(this->pendingPageIndex == 0 ? this->railBtnVolume.data()
+                                                            : this->railBtnMetadata.data());
+            this->pendingPageIndex = -1;
+        }
     });
+
+    group->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
 void vtkWindowVbtVolume::setupRenderer()

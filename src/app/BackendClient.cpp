@@ -1188,3 +1188,100 @@ QByteArray BackendClient::decodePayload(const QJsonObject &object, const QString
     return decodeCompressedPayload(object.value(base64Field).toString().toUtf8(),
                                    object.value(compressionField).toString(), error);
 }
+
+// ── HiPS ──────────────────────────────────────────────────────────────────────
+
+BackendHiPSSurveyInfo BackendClient::openHiPS(const QString &url)
+{
+    BackendHiPSSurveyInfo result;
+    const QJsonDocument body(QJsonObject{ { QStringLiteral("url"), url } });
+    QString error;
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/hips/open")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    result.valid     = obj.value(QStringLiteral("valid")).toBool(false);
+    result.error     = obj.value(QStringLiteral("error")).toString();
+    result.surveyId  = obj.value(QStringLiteral("survey_id")).toString();
+    result.sessionId = obj.value(QStringLiteral("session_id")).toString();
+    result.baseUrl   = obj.value(QStringLiteral("base_url")).toString();
+    result.title     = obj.value(QStringLiteral("title")).toString();
+    result.frame     = obj.value(QStringLiteral("frame")).toString();
+    result.maxOrder  = obj.value(QStringLiteral("max_order")).toInt(9);
+    result.minOrder  = obj.value(QStringLiteral("min_order")).toInt(0);
+    result.tileWidth = obj.value(QStringLiteral("tile_width")).toInt(512);
+    for (const QJsonValue &v : obj.value(QStringLiteral("tile_formats")).toArray()) {
+        result.tileFormats.append(v.toString());
+    }
+    if (result.valid) {
+        // Echo the session id for subsequent calls on this client instance.
+        m_sessionId = result.sessionId;
+    }
+    return result;
+}
+
+QByteArray BackendClient::requestHiPSAllsky(const QString &surveyId, int order) const
+{
+    QUrl url(m_baseUrl + QStringLiteral("/v1/hips/") + surveyId
+             + QStringLiteral("/allsky"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("order"), QString::number(order));
+    url.setQuery(q);
+    QString error;
+    const QByteArray data = performGet(url, error);
+    // Returns raw image bytes; caller checks for empty/error.
+    return data;
+}
+
+QByteArray BackendClient::requestHiPSTile(const QString &surveyId, int order, int pix) const
+{
+    const QUrl url(m_baseUrl + QStringLiteral("/v1/hips/") + surveyId
+                   + QStringLiteral("/tile/") + QString::number(order)
+                   + QStringLiteral("/") + QString::number(pix));
+    QString error;
+    return performGet(url, error);
+}
+
+BackendHiPSViewResponse BackendClient::requestHiPSTilesForView(const QString &surveyId,
+                                                               double raDeg, double decDeg,
+                                                               double fovDeg, int order) const
+{
+    BackendHiPSViewResponse result;
+    const QUrl url(m_baseUrl + QStringLiteral("/v1/hips/") + surveyId
+                   + QStringLiteral("/query_tiles"));
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("survey_id"), surveyId },
+            { QStringLiteral("ra_center"),  raDeg   },
+            { QStringLiteral("dec_center"), decDeg  },
+            { QStringLiteral("fov_deg"),    fovDeg  },
+            { QStringLiteral("order"),      order   },
+    });
+    QString error;
+    const QByteArray payload = performPost(url, body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    result.valid = obj.value(QStringLiteral("valid")).toBool(false);
+    result.error = obj.value(QStringLiteral("error")).toString();
+    for (const QJsonValue &v : obj.value(QStringLiteral("tiles")).toArray()) {
+        const QJsonObject t = v.toObject();
+        BackendHiPSTileInfo info;
+        info.pix          = t.value(QStringLiteral("pix")).toInt();
+        info.order        = t.value(QStringLiteral("order")).toInt();
+        info.raCenterDeg  = t.value(QStringLiteral("ra_center")).toDouble();
+        info.decCenterDeg = t.value(QStringLiteral("dec_center")).toDouble();
+        const QJsonArray cra  = t.value(QStringLiteral("corners_ra")).toArray();
+        const QJsonArray cdec = t.value(QStringLiteral("corners_dec")).toArray();
+        for (int i = 0; i < 4; ++i) {
+            info.cornersRaDeg[i]  = cra.at(i).toDouble();
+            info.cornersDecDeg[i] = cdec.at(i).toDouble();
+        }
+        result.tiles.push_back(std::move(info));
+    }
+    return result;
+}

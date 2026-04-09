@@ -18,15 +18,21 @@
 #include <vtkVolumeProperty.h>
 
 #include <QMainWindow>
+#include <QParallelAnimationGroup>
 #include <QPointer>
+#include <QPropertyAnimation>
 
+class QAction;
 class QComboBox;
-class QDockWidget;
 class QDoubleSpinBox;
+class QFrame;
 class QLabel;
 class QListWidget;
 class QPushButton;
+class QScrollArea;
 class QSlider;
+class QStackedWidget;
+class QToolButton;
 class QVTKOpenGLNativeWidget;
 class vtkImageData;
 
@@ -72,10 +78,30 @@ private:
     QPointer<QDoubleSpinBox> spinRangeMax;
     QPointer<QPushButton> buttonAutoscale;
     QPointer<QLabel> summaryLabel;
-    QPointer<QDockWidget> metadataDock;
     QPointer<QListWidget> fieldList;
     QPointer<QLabel> metadataLabel;
     bool updatingRangeControls{ false };
+
+    // ── Sidebar ──────────────────────────────────────────────────────────────
+    bool sidebarExpanded{ true };
+    int pendingPageIndex{ -1 };
+    QPointer<QParallelAnimationGroup> sidebarAnimGroup;
+    QPointer<QAction> actionShowControlsSidebar;
+    QPointer<QWidget> sidebarContainer;
+    QPointer<QWidget> railWidget;
+    QPointer<QScrollArea> sidebarScrollArea;
+    QPointer<QStackedWidget> sidebarStack;
+    QPointer<QToolButton> btnToggleSidebar;
+    QPointer<QToolButton> railBtnVolume;
+    QPointer<QToolButton> railBtnMetadata;
+    void setupSidebarUi(QWidget *centralWidget);
+    void setupSidebarRail();
+    void setupRailIcons();
+    void setupSidebarPages();
+    void setSidebarExpanded(bool expanded, bool animated = true);
+    void toggleSidebar();
+    void switchToPage(int index);
+    void setActiveRailButton(QToolButton *btn);
     double dataScalarMin{ 0.0 };
     double dataScalarMax{ 1.0 };
     double activeColorMin{ 0.0 };

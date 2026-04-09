@@ -317,6 +317,40 @@ struct BackendIsosurfaceResult
     QByteArray polysData;
 };
 
+// ── HiPS (Hierarchical Progressive Survey) ────────────────────────────────────
+
+struct BackendHiPSSurveyInfo
+{
+    bool valid{ false };
+    QString error;
+    QString surveyId;
+    QString sessionId;
+    QString baseUrl;
+    QString title;
+    QString frame;           // "equatorial", "galactic", "ecliptic"
+    int maxOrder{ 9 };
+    int minOrder{ 0 };
+    int tileWidth{ 512 };
+    QStringList tileFormats; // e.g. {"png"} or {"jpeg"}
+};
+
+struct BackendHiPSTileInfo
+{
+    int pix{ 0 };
+    int order{ 0 };
+    double raCenterDeg{ 0.0 };
+    double decCenterDeg{ 0.0 };
+    std::array<double, 4> cornersRaDeg{};
+    std::array<double, 4> cornersDecDeg{};
+};
+
+struct BackendHiPSViewResponse
+{
+    bool valid{ false };
+    QString error;
+    std::vector<BackendHiPSTileInfo> tiles;
+};
+
 class QJsonDocument;
 class QJsonObject;
 class QUrl;
@@ -402,6 +436,17 @@ public:
     BackendVbtSubsetResult requestVbtSubset(const QString &datasetId, int maxRows = 0,
                                             const QString &fieldName = QString()) const;
     BackendTabularQueryResponse queryTabularVbt(const BackendTabularQueryRequest &req) const;
+    // ── HiPS endpoints ────────────────────────────────────────────────────────
+    BackendHiPSSurveyInfo openHiPS(const QString &url);
+    /** GET /v1/hips/{id}/allsky?order=N – raw PNG/JPEG bytes of the AllSky mosaic. */
+    QByteArray requestHiPSAllsky(const QString &surveyId, int order) const;
+    /** GET /v1/hips/{id}/tile/{order}/{pix} – raw PNG/JPEG bytes of one tile. */
+    QByteArray requestHiPSTile(const QString &surveyId, int order, int pix) const;
+    /** POST /v1/hips/{id}/query_tiles – tile list for the current viewport. */
+    BackendHiPSViewResponse requestHiPSTilesForView(const QString &surveyId,
+                                                    double raDeg, double decDeg,
+                                                    double fovDeg, int order) const;
+
     BackendImageResult requestImagePreview(const QString &datasetId, int maxLongestSide) const;
     BackendImageResult requestImage(const QString &datasetId) const;
     BackendIsosurfaceResult requestIsosurface(const QString &datasetId, double threshold) const;

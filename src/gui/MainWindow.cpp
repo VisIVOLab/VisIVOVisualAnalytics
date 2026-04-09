@@ -22,6 +22,7 @@
 #include <QDir>
 #include <QDoubleValidator>
 #include <QFileDialog>
+#include <QFutureWatcher>
 #include <QMessageBox>
 #include <QMenu>
 #include <QMenuBar>
@@ -31,6 +32,9 @@
 #include <QPixmap>
 #include <QStyle>
 #include <QPainter>
+#include <QtConcurrent>
+
+#include "app/DiagnosticsManager.h"
 
 using namespace Qt::StringLiterals;
 
@@ -339,6 +343,91 @@ void MainWindow::openCatalogue3D()
     win->activateWindow();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// VBT open task – runs entirely on a background thread
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct VbtOpenTaskResult
+{
+    bool valid{ false };
+    QString error;
+    BackendVbtOpenResult openResult;
+    BackendVbtSubsetResult subsetResult;
+    QString backendUrl;
+    QString backendToken;
+    QString sessionId;
+};
+
+static VbtOpenTaskResult runVbtOpenTask(const QString &headerPath,
+                                        const QString &backendUrl,
+                                        const QString &backendToken)
+{
+    VbtOpenTaskResult out;
+    out.backendUrl = backendUrl;
+    out.backendToken = backendToken;
+
+    BackendClient client(backendUrl, backendToken);
+
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
+            QStringLiteral("Opening VBT: %1").arg(headerPath), QString(), QString(),
+            QStringLiteral("open"));
+
+    out.openResult = client.openVbt(headerPath);
+    if (!out.openResult.valid) {
+        out.error = out.openResult.error.isEmpty()
+                ? QStringLiteral("The backend could not open this VBT dataset.")
+                : out.openResult.error;
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Warning, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
+                QStringLiteral("Open failed: %1").arg(out.error), QString(), QString(),
+                QStringLiteral("open"));
+        return out;
+    }
+
+    out.sessionId = client.sessionId();
+
+    if (out.openResult.kind == QStringLiteral("volume")) {
+        const QString firstField = out.openResult.fields.empty()
+                ? QString()
+                : out.openResult.fields[0].name;
+        out.subsetResult = client.requestVbtSubset(out.openResult.datasetId, 0, firstField);
+        if (!out.subsetResult.valid) {
+            out.error = out.subsetResult.error.isEmpty()
+                    ? QStringLiteral("Backend returned no volume data.")
+                    : out.subsetResult.error;
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Warning, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
+                    QStringLiteral("Volume subset failed: %1").arg(out.error),
+                    out.openResult.datasetId, out.sessionId, QStringLiteral("open"));
+            return out;
+        }
+    } else {
+        out.subsetResult = client.requestVbtSubset(out.openResult.datasetId);
+        if (!out.subsetResult.valid) {
+            out.error = out.subsetResult.error.isEmpty()
+                    ? QStringLiteral("Backend returned no table data.")
+                    : out.subsetResult.error;
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Warning, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
+                    QStringLiteral("Table subset failed: %1").arg(out.error),
+                    out.openResult.datasetId, out.sessionId, QStringLiteral("open"));
+            return out;
+        }
+    }
+
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
+            QStringLiteral("Opened %1 (%2 rows, %3 fields).")
+                    .arg(out.openResult.kind)
+                    .arg(out.openResult.numRows)
+                    .arg(out.openResult.fields.size()),
+            out.openResult.datasetId, out.sessionId, QStringLiteral("open"));
+
+    out.valid = true;
+    return out;
+}
+
 void MainWindow::openVbt()
 {
     const QString headerPath = QFileDialog::getOpenFileName(
@@ -348,48 +437,51 @@ void MainWindow::openVbt()
         return;
     }
 
-    BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
-    const BackendVbtOpenResult openResult = client.openVbt(headerPath);
-    if (!openResult.valid) {
-        QMessageBox::critical(
-                this, u"Could not open VBT"_s,
-                openResult.error.isEmpty()
-                        ? u"The backend could not open this VBT dataset."_s
-                        : openResult.error);
-        return;
-    }
+    const QString backendUrl = this->settings->getBackendUrl();
+    const QString backendToken = this->settings->getBackendToken();
 
-    QWidget *win = nullptr;
-    if (openResult.kind == u"volume"_s) {
-        const QString firstField =
-                openResult.fields.empty() ? QString() : openResult.fields[0].name;
-        const BackendVbtSubsetResult initialSubset =
-                client.requestVbtSubset(openResult.datasetId, 0, firstField);
-        if (!initialSubset.valid) {
-            QMessageBox::critical(this, u"Could not load VBT volume"_s,
-                                  initialSubset.error.isEmpty()
-                                          ? u"Backend returned no volume data."_s
-                                          : initialSubset.error);
-            return;
-        }
-        win = new vtkWindowVbtVolume(openResult, initialSubset, client.baseUrl(), client.token(),
-                                     client.sessionId(), this);
-    } else {
-        const BackendVbtSubsetResult subsetResult =
-                client.requestVbtSubset(openResult.datasetId);
-        if (!subsetResult.valid) {
-            QMessageBox::critical(this, u"Could not load VBT table"_s,
-                                  subsetResult.error.isEmpty()
-                                          ? u"Backend returned no table data."_s
-                                          : subsetResult.error);
-            return;
-        }
-        win = new vtkWindowVbt(openResult, subsetResult, client.baseUrl(), client.token(),
-                               client.sessionId(), this);
+    // Disable the action while loading to prevent double-submit
+    if (ui->actionOpenVbt) {
+        ui->actionOpenVbt->setEnabled(false);
     }
-    win->show();
-    win->raise();
-    win->activateWindow();
+    this->statusBar()->showMessage(u"Opening VBT dataset…"_s);
+
+    auto *watcher = new QFutureWatcher<VbtOpenTaskResult>(this);
+    QObject::connect(
+            watcher, &QFutureWatcher<VbtOpenTaskResult>::finished, this,
+            [this, watcher]() {
+                watcher->deleteLater();
+
+                if (ui->actionOpenVbt) {
+                    ui->actionOpenVbt->setEnabled(true);
+                }
+                this->statusBar()->clearMessage();
+
+                const auto result = watcher->result();
+                if (!result.valid) {
+                    QMessageBox::critical(this, u"Could not open VBT"_s, result.error);
+                    return;
+                }
+
+                QWidget *win = nullptr;
+                if (result.openResult.kind == u"volume"_s) {
+                    win = new vtkWindowVbtVolume(
+                            result.openResult, result.subsetResult,
+                            result.backendUrl, result.backendToken,
+                            result.sessionId, this);
+                } else {
+                    win = new vtkWindowVbt(
+                            result.openResult, result.subsetResult,
+                            result.backendUrl, result.backendToken,
+                            result.sessionId, this);
+                }
+                win->show();
+                win->raise();
+                win->activateWindow();
+            });
+
+    watcher->setFuture(
+            QtConcurrent::run(&runVbtOpenTask, headerPath, backendUrl, backendToken));
 }
 
 

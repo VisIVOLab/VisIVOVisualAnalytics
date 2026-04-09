@@ -36,6 +36,7 @@
 #include <vtkTextProperty.h>
 
 // ── Qt ───────────────────────────────────────────────────────────────────────
+#include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDebug>
@@ -44,20 +45,28 @@
 #include <QDockWidget>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFutureWatcher>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QIcon>
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QParallelAnimationGroup>
+#include <QPropertyAnimation>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QStackedWidget>
 #include <QTableView>
 #include <QTextEdit>
+#include <QToolButton>
 #include <QVBoxLayout>
+#include <QtConcurrent>
 
 #include <optional>
 
@@ -66,6 +75,16 @@
 #include <array>
 #include <cmath>
 #include <limits>
+
+// ── libwcs coordinate conversion ──────────────────────────────────────────────
+// wcscon() converts between WCS coordinate systems (FK5/J2000, Galactic, …).
+// Only the declaration is needed here; the function is linked from libwcs.
+extern "C" {
+void wcscon(int sys1, int sys2, double eq1, double eq2,
+            double *dtheta, double *dphi, double epoch);
+}
+static constexpr int kWCS_J2000    = 1;
+static constexpr int kWCS_GALACTIC = 3;
 
 using namespace Qt::StringLiterals;
 
@@ -175,15 +194,78 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     , backendToken(backendToken)
 {
     ui->setupUi(this);
+    this->setupSidebar();
+
+    // ── Connect background filter watcher ─────────────────────────────────────
+    QObject::connect(&this->filterWatcher, &QFutureWatcher<Catalogue3DFilterTaskResult>::finished,
+                     this, [this]() {
+                         this->filterBusy = false;
+                         // Re-enable filter controls
+                         if (this->btnFilterApply) {
+                             this->btnFilterApply->setEnabled(true);
+                         }
+                         if (this->btnFilterAdd) {
+                             this->btnFilterAdd->setEnabled(true);
+                         }
+                         if (this->filterStatusLabel) {
+                             this->filterStatusLabel->setText({});
+                         }
+
+                         const auto result = this->filterWatcher.result();
+                         if (!result.valid) {
+                             DiagnosticsManager::instance()->publish(
+                                     DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
+                                     u"Catalogue3D"_s,
+                                     u"Filter failed: "_s + result.error,
+                                     this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
+                             QMessageBox::warning(this, u"Filter error"_s, result.error);
+                             return;
+                         }
+
+                         this->entries = result.entries;
+                         // Re-apply the active coordinate frame: the parser always
+                         // produces FK5/J2000 scene positions; convert to Galactic if needed.
+                         this->applyFrameToEntries();
+                         ui->labelStatus->setText(result.statusMsg);
+                         if (this->filterStatusLabel) {
+                             this->filterStatusLabel->setText(result.statusMsg);
+                         }
+
+                         DiagnosticsManager::instance()->publish(
+                                 DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
+                                 u"Catalogue3D"_s,
+                                 QStringLiteral("Filter applied: %1 of %2 sources match.")
+                                         .arg(result.entries.size())
+                                         .arg(result.totalRows),
+                                 this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
+
+                         // Rebuild the VTK scene with the filtered data
+                         this->renderer->RemoveAllViewProps();
+                         this->morphologyNames.clear();
+                         this->morphologyIndexOf.clear();
+                         this->labelActors.clear();
+                         this->shellActors.clear();
+                         this->mappedPositions.clear();
+                         this->hoveredIndex = -1;
+                         this->selectedIndex = -1;
+                         if (!this->entries.empty()) {
+                             this->buildScene();
+                             this->buildLabels();
+                         }
+                         this->refreshCatalogueTable();
+                         this->renderWindow->Render();
+                     });
 
     this->comboGeometry = new QComboBox(this);
     this->comboGeometry->addItems({ u"Ellipsoid"_s, u"Sphere"_s, u"Point"_s, u"Cross"_s });
     this->comboSizeMode = new QComboBox(this);
     this->comboSizeMode->addItems({ u"Fixed"_s, u"Major axis"_s, u"LLS"_s, u"Flux"_s });
     this->comboFrame = new QComboBox(this);
-    this->comboFrame->addItems({ u"FK5 / J2000"_s, u"Galactic (future)"_s });
+    this->comboFrame->addItems({ u"FK5 / J2000"_s, u"Galactic (l, b)"_s });
     this->comboFrame->setCurrentIndex(0);
-    this->comboFrame->setEnabled(false);
+    this->comboFrame->setToolTip(u"Coordinate frame used for 3D scene positions.\n"
+                                  "FK5 / J2000: standard equatorial (RA, Dec).\n"
+                                  "Galactic (l, b): galactic longitude and latitude."_s);
     this->chkShowAxes = new QCheckBox(u"Show axes"_s, this);
     this->chkShowAxes->setChecked(true);
     this->chkShowBoundingBox = new QCheckBox(u"Show bounding box"_s, this);
@@ -246,6 +328,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             ui->labelStatus->setText(u"Load error: "_s + error);
         } else {
             this->entries = parsed.entries;
+            // Apply the active coordinate frame (FK5_J2000 is the parser default;
+            // this is a no-op on startup since comboFrame defaults to FK5_J2000).
+            this->applyFrameToEntries();
             if (parsed.skippedEntries > 0) {
                 ui->labelStatus->setText(
                         QStringLiteral("Loaded %1 sources (%2 rows skipped).")
@@ -440,6 +525,23 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                      [this](int) { this->updateGeometryMode(); });
     QObject::connect(this->comboSizeMode, &QComboBox::currentIndexChanged, this,
                      [this](int) { this->updateSizeMode(); });
+    QObject::connect(this->comboFrame, &QComboBox::currentIndexChanged, this, [this](int idx) {
+        this->activeFrame = (idx == 1) ? CoordFrame::Galactic : CoordFrame::FK5_J2000;
+        this->applyFrameToEntries();
+        this->renderer->RemoveAllViewProps();
+        this->morphologyNames.clear();
+        this->morphologyIndexOf.clear();
+        this->labelActors.clear();
+        this->shellActors.clear();
+        this->mappedPositions.clear();
+        this->hoveredIndex  = -1;
+        this->selectedIndex = -1;
+        if (!this->entries.empty()) {
+            this->buildScene();
+            this->buildLabels();
+        }
+        this->renderWindow->Render();
+    });
     QObject::connect(this->chkShowAxes, &QCheckBox::toggled, this,
                      &vtkWindowCatalogue3D::toggleSceneAxes);
     QObject::connect(this->chkShowBoundingBox, &QCheckBox::toggled, this,
@@ -454,13 +556,222 @@ vtkWindowCatalogue3D::~vtkWindowCatalogue3D()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Sidebar
+// ─────────────────────────────────────────────────────────────────────────────
+
+void vtkWindowCatalogue3D::setupSidebar()
+{
+    setupSidebarRail();
+    setupRailIcons();
+    setupSidebarPages();
+
+    // Apply overall sidebar background
+    ui->sidebarContainer->setStyleSheet(
+            u"QWidget#sidebarContainer { background-color: #0A2236; }"
+            u"QScrollArea#sidebarScrollArea { background-color: transparent; border: none; }"
+            u"QWidget#sidebarScrollContents { background-color: transparent; }"_s);
+
+    // Action for View menu
+    this->actionShowControlsSidebar = new QAction(u"Controls Sidebar"_s, this);
+    this->actionShowControlsSidebar->setCheckable(true);
+    this->actionShowControlsSidebar->setChecked(true);
+    ui->menuView->insertAction(ui->menuView->actions().isEmpty() ? nullptr
+                                                                 : ui->menuView->actions().first(),
+                               this->actionShowControlsSidebar);
+    ui->menuView->insertSeparator(
+            ui->menuView->actions().isEmpty() ? nullptr : ui->menuView->actions().at(1));
+    QObject::connect(this->actionShowControlsSidebar, &QAction::toggled, this,
+                     [this](bool checked) { setSidebarExpanded(checked); });
+
+    // Toggle button
+    QObject::connect(ui->btnToggleSidebar, &QToolButton::clicked, this,
+                     &vtkWindowCatalogue3D::toggleSidebar);
+
+    // Rail buttons
+    QObject::connect(ui->railBtnViz, &QToolButton::clicked, this,
+                     [this]() { switchToPage(0); });
+    QObject::connect(ui->railBtnInfo, &QToolButton::clicked, this,
+                     [this]() { switchToPage(1); });
+
+    // Start on page 0
+    setActiveRailButton(ui->railBtnViz);
+    ui->sidebarStack->setCurrentIndex(0);
+}
+
+void vtkWindowCatalogue3D::setupSidebarRail()
+{
+    const QString railStyle =
+            u"QWidget#railWidget { background-color: #0A2236; }"
+            u"QToolButton { background: transparent; border: none; border-radius: 8px;"
+            u"              color: #8AB8CC; padding: 6px; min-width: 36px; min-height: 36px; }"
+            u"QToolButton:hover { background-color: rgba(4,138,191,0.18); }"
+            u"QToolButton[active='true'] { background-color: rgba(4,138,191,0.30); color: #FFFFFF; }"_s;
+    ui->railWidget->setStyleSheet(railStyle);
+}
+
+void vtkWindowCatalogue3D::setupRailIcons()
+{
+    struct Entry { QToolButton *btn; QString path; };
+    const std::array<Entry, 3> entries = { {
+        { ui->btnToggleSidebar, u":/icons/rail_slice.svg"_s },
+        { ui->railBtnViz,       u":/icons/rail_viz.svg"_s  },
+        { ui->railBtnInfo,      u":/icons/rail_info.svg"_s },
+    } };
+    for (const auto &e : entries) {
+        e.btn->setIcon(QIcon(e.path));
+        e.btn->setIconSize({ 22, 22 });
+        e.btn->setText({});
+    }
+}
+
+void vtkWindowCatalogue3D::setupSidebarPages()
+{
+    const QString hdrStyle =
+            u"QLabel { color: #8AB8CC; font-size: 10px; font-weight: 600;"
+            u"         padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20); }"_s;
+    const QString cardStyle =
+            u"QFrame, QGroupBox { background-color: rgba(255,255,255,0.03);"
+            u"  border: 1px solid rgba(4,138,191,0.14); border-radius: 6px; }"_s;
+
+    ui->labelVizHdr->setStyleSheet(hdrStyle);
+    ui->labelInfoHdr->setStyleSheet(hdrStyle);
+
+    ui->groupViz->setStyleSheet(cardStyle);
+    ui->groupInfo->setStyleSheet(cardStyle);
+}
+
+void vtkWindowCatalogue3D::setActiveRailButton(QToolButton *btn)
+{
+    for (QToolButton *b : { ui->railBtnViz, ui->railBtnInfo }) {
+        b->setProperty("active", b == btn);
+        b->style()->polish(b);
+    }
+}
+
+void vtkWindowCatalogue3D::switchToPage(int index)
+{
+    if (this->sidebarExpanded) {
+        ui->sidebarStack->setCurrentIndex(index);
+        setActiveRailButton(index == 0 ? ui->railBtnViz : ui->railBtnInfo);
+    } else {
+        this->pendingPageIndex = index;
+        setSidebarExpanded(true);
+    }
+}
+
+void vtkWindowCatalogue3D::toggleSidebar()
+{
+    setSidebarExpanded(!this->sidebarExpanded);
+}
+
+void vtkWindowCatalogue3D::setSidebarExpanded(bool expanded, bool animated)
+{
+    if (this->sidebarExpanded == expanded && !animated) {
+        return;
+    }
+    this->sidebarExpanded = expanded;
+
+    if (this->actionShowControlsSidebar) {
+        QSignalBlocker blocker(this->actionShowControlsSidebar);
+        this->actionShowControlsSidebar->setChecked(expanded);
+    }
+
+    ui->sidebarScrollArea->setVisible(expanded || !animated);
+
+    const int targetW = expanded ? 320 : 48;
+
+    if (!animated) {
+        ui->sidebarContainer->setMinimumWidth(targetW);
+        ui->sidebarContainer->setMaximumWidth(targetW);
+        ui->sidebarScrollArea->setVisible(expanded);
+        if (expanded && this->pendingPageIndex >= 0) {
+            ui->sidebarStack->setCurrentIndex(this->pendingPageIndex);
+            setActiveRailButton(this->pendingPageIndex == 0 ? ui->railBtnViz : ui->railBtnInfo);
+            this->pendingPageIndex = -1;
+        }
+        return;
+    }
+
+    if (this->sidebarAnimGroup) {
+        this->sidebarAnimGroup->stop();
+    }
+
+    auto *group = new QParallelAnimationGroup(this);
+    this->sidebarAnimGroup = group;
+
+    auto *animMin = new QPropertyAnimation(ui->sidebarContainer, "minimumWidth", group);
+    animMin->setDuration(200);
+    animMin->setStartValue(ui->sidebarContainer->minimumWidth());
+    animMin->setEndValue(targetW);
+
+    auto *animMax = new QPropertyAnimation(ui->sidebarContainer, "maximumWidth", group);
+    animMax->setDuration(200);
+    animMax->setStartValue(ui->sidebarContainer->maximumWidth());
+    animMax->setEndValue(targetW);
+
+    group->addAnimation(animMin);
+    group->addAnimation(animMax);
+
+    QObject::connect(group, &QParallelAnimationGroup::finished, this, [this, expanded]() {
+        ui->sidebarScrollArea->setVisible(expanded);
+        if (expanded && this->pendingPageIndex >= 0) {
+            ui->sidebarStack->setCurrentIndex(this->pendingPageIndex);
+            setActiveRailButton(this->pendingPageIndex == 0 ? ui->railBtnViz : ui->railBtnInfo);
+            this->pendingPageIndex = -1;
+        }
+    });
+
+    group->start(QAbstractAnimation::DeleteWhenStopped);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Coordinate frame conversion
+// ─────────────────────────────────────────────────────────────────────────────
+
+void vtkWindowCatalogue3D::applyFrameToEntries()
+{
+    if (this->activeFrame == CoordFrame::FK5_J2000) {
+        // FK5/J2000 is the native output of the parser – already correct.
+        return;
+    }
+
+    // Galactic (l, b): convert each source's equatorial RA/Dec → galactic
+    // longitude l / latitude b using wcscon(WCS_J2000 → WCS_GALACTIC), then
+    // project onto the same spherical-to-Cartesian formula so the scene scale
+    // (Mpc from redshift/distance) is preserved.
+    constexpr double pi = 3.14159265358979323846;
+    for (auto &e : this->entries) {
+        double l = e.raDeg;
+        double b = e.decDeg;
+        wcscon(kWCS_J2000, kWCS_GALACTIC, 2000.0, 2000.0, &l, &b, 2000.0);
+        const double d = Catalogue3DParser::detail::entryDistanceMpc(e, this->schema);
+        const double lRad = l * pi / 180.0;
+        const double bRad = b * pi / 180.0;
+        e.sceneX = d * std::cos(bRad) * std::cos(lRad);
+        e.sceneY = d * std::cos(bRad) * std::sin(lRad);
+        e.sceneZ = d * std::sin(bRad);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Filter
 // ─────────────────────────────────────────────────────────────────────────────
 
 void vtkWindowCatalogue3D::applyFilter()
 {
-    if (this->remoteDatasetId.isEmpty()) {
+    if (this->remoteDatasetId.isEmpty() || this->filterBusy) {
         return;
+    }
+
+    this->filterBusy = true;
+    if (this->btnFilterApply) {
+        this->btnFilterApply->setEnabled(false);
+    }
+    if (this->btnFilterAdd) {
+        this->btnFilterAdd->setEnabled(false);
+    }
+    if (this->filterStatusLabel) {
+        this->filterStatusLabel->setText(u"Applying filters…"_s);
     }
 
     const int nFilters = static_cast<int>(this->activeFilters.size());
@@ -471,72 +782,51 @@ void vtkWindowCatalogue3D::applyFilter()
                           : QStringLiteral("Applying %1 filter(s).").arg(nFilters),
             this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
 
-    BackendClient client(this->backendUrl, this->backendToken);
-    if (!this->remoteSessionId.isEmpty()) {
-        client.setSessionId(this->remoteSessionId);
-    }
-    BackendTabularQueryRequest qreq;
-    qreq.datasetId = this->remoteDatasetId;
-    qreq.filters = this->activeFilters; // all rows, AND semantics
+    // Capture everything needed by the background task
+    const QString backendUrl = this->backendUrl;
+    const QString backendToken = this->backendToken;
+    const QString datasetId = this->remoteDatasetId;
+    const QString sessionId = this->remoteSessionId;
+    const std::vector<BackendTabularFilter> filters = this->activeFilters;
+    const Catalogue3DSchema schema = this->schema;
+    const int numFilters = nFilters;
 
-    const auto subset = client.queryTabularCatalogue(qreq);
-    if (!subset.valid) {
-        DiagnosticsManager::instance()->publish(
-                DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
-                u"Catalogue3D"_s,
-                u"Filter query failed: "_s + subset.error,
-                this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
-        QMessageBox::warning(this, u"Filter error"_s, subset.error);
-        return;
-    }
-    const auto parsed = Catalogue3DParser::parseBackendSubset(this->schema, subset.rows);
-    if (!parsed.valid) {
-        DiagnosticsManager::instance()->publish(
-                DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
-                u"Catalogue3D"_s,
-                u"Filter parse failed: "_s + parsed.errorMessage,
-                this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
-        QMessageBox::warning(this, u"Filter error"_s, parsed.errorMessage);
-        return;
-    }
-    this->entries = parsed.entries;
+    this->filterWatcher.setFuture(QtConcurrent::run(
+            [backendUrl, backendToken, datasetId, sessionId, filters, schema, numFilters]()
+                    -> Catalogue3DFilterTaskResult {
+                Catalogue3DFilterTaskResult out;
 
-    const QString statusMsg =
-            this->activeFilters.empty()
-                    ? QStringLiteral("Loaded %1 sources.").arg(this->entries.size())
-                    : QStringLiteral("%1 filter(s) active — %2 sources (total %3).")
-                              .arg(this->activeFilters.size())
-                              .arg(this->entries.size())
-                              .arg(subset.totalRows);
-    ui->labelStatus->setText(statusMsg);
+                BackendClient client(backendUrl, backendToken);
+                if (!sessionId.isEmpty()) {
+                    client.setSessionId(sessionId);
+                }
+                BackendTabularQueryRequest qreq;
+                qreq.datasetId = datasetId;
+                qreq.filters = filters;
 
-    if (this->filterStatusLabel) {
-        this->filterStatusLabel->setText(statusMsg);
-    }
+                const auto subset = client.queryTabularCatalogue(qreq);
+                if (!subset.valid) {
+                    out.error = subset.error;
+                    return out;
+                }
+                const auto parsed = Catalogue3DParser::parseBackendSubset(schema, subset.rows);
+                if (!parsed.valid) {
+                    out.error = parsed.errorMessage;
+                    return out;
+                }
 
-    DiagnosticsManager::instance()->publish(
-            DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
-            u"Catalogue3D"_s,
-            QStringLiteral("Filter applied: %1 of %2 sources match.")
-                    .arg(this->entries.size())
-                    .arg(subset.totalRows),
-            this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
-
-    // Rebuild the VTK scene with the filtered data
-    this->renderer->RemoveAllViewProps();
-    this->morphologyNames.clear();
-    this->morphologyIndexOf.clear();
-    this->labelActors.clear();
-    this->shellActors.clear();
-    this->mappedPositions.clear();
-    this->hoveredIndex = -1;
-    this->selectedIndex = -1;
-    if (!this->entries.empty()) {
-        this->buildScene();
-        this->buildLabels();
-    }
-    this->refreshCatalogueTable();
-    this->renderWindow->Render();
+                out.entries = parsed.entries;
+                out.totalRows = subset.totalRows;
+                out.statusMsg =
+                        filters.empty()
+                                ? QStringLiteral("Loaded %1 sources.").arg(out.entries.size())
+                                : QStringLiteral("%1 filter(s) active — %2 sources (total %3).")
+                                          .arg(numFilters)
+                                          .arg(out.entries.size())
+                                          .arg(subset.totalRows);
+                out.valid = true;
+                return out;
+            }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
