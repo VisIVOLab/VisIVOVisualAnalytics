@@ -351,6 +351,33 @@ struct BackendHiPSViewResponse
     std::vector<BackendHiPSTileInfo> tiles;
 };
 
+// ── Milestone 2 additions ─────────────────────────────────────────────────────
+
+struct BackendTargetResolveResult
+{
+    bool valid{ false };
+    QString error;
+    double raDeg{ 0.0 };
+    double decDeg{ 0.0 };
+    QString resolvedName;
+    QString source;    // "sesame"
+};
+
+struct BackendHiPSCatalogueSource
+{
+    double raDeg{ 0.0 };
+    double decDeg{ 0.0 };
+};
+
+struct BackendHiPSCatalogueOverlayResult
+{
+    bool valid{ false };
+    QString error;
+    QVector<BackendHiPSCatalogueSource> sources;
+    int totalInView{ 0 };
+    bool truncated{ false };
+};
+
 class QJsonDocument;
 class QJsonObject;
 class QUrl;
@@ -446,6 +473,14 @@ public:
     BackendHiPSViewResponse requestHiPSTilesForView(const QString &surveyId,
                                                     double raDeg, double decDeg,
                                                     double fovDeg, int order) const;
+    // ── Milestone 2 ──────────────────────────────────────────────────────────
+    /** POST /v1/resolve/target – resolve object name → RA/Dec via Sesame. */
+    BackendTargetResolveResult resolveTarget(const QString &name) const;
+    /** POST /v1/hips/catalogue_overlay – RA/Dec sources in current viewport. */
+    BackendHiPSCatalogueOverlayResult requestHiPSCatalogueOverlay(
+            const QString &cataloguePath, double raDeg, double decDeg, double fovDeg,
+            const QString &raField = {}, const QString &decField = {},
+            int maxSources = 5000) const;
 
     BackendImageResult requestImagePreview(const QString &datasetId, int maxLongestSide) const;
     BackendImageResult requestImage(const QString &datasetId) const;

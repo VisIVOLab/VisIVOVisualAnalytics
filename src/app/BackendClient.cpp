@@ -1285,3 +1285,64 @@ BackendHiPSViewResponse BackendClient::requestHiPSTilesForView(const QString &su
     }
     return result;
 }
+
+// ── Milestone 2 ───────────────────────────────────────────────────────────────
+
+BackendTargetResolveResult BackendClient::resolveTarget(const QString &name) const
+{
+    BackendTargetResolveResult result;
+    const QUrl url(m_baseUrl + QStringLiteral("/v1/resolve/target"));
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("name"), name },
+    });
+    QString error;
+    const QByteArray payload = performPost(url, body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    result.valid        = obj.value(QStringLiteral("valid")).toBool();
+    result.error        = obj.value(QStringLiteral("error")).toString();
+    result.raDeg        = obj.value(QStringLiteral("ra_deg")).toDouble();
+    result.decDeg       = obj.value(QStringLiteral("dec_deg")).toDouble();
+    result.resolvedName = obj.value(QStringLiteral("resolved_name")).toString();
+    result.source       = obj.value(QStringLiteral("source")).toString();
+    return result;
+}
+
+BackendHiPSCatalogueOverlayResult BackendClient::requestHiPSCatalogueOverlay(
+        const QString &cataloguePath, double raDeg, double decDeg, double fovDeg,
+        const QString &raField, const QString &decField, int maxSources) const
+{
+    BackendHiPSCatalogueOverlayResult result;
+    const QUrl url(m_baseUrl + QStringLiteral("/v1/hips/catalogue_overlay"));
+    QJsonObject bodyObj{
+            { QStringLiteral("catalogue_path"), cataloguePath },
+            { QStringLiteral("ra_center"),      raDeg         },
+            { QStringLiteral("dec_center"),     decDeg        },
+            { QStringLiteral("fov_deg"),        fovDeg        },
+            { QStringLiteral("max_sources"),    maxSources    },
+    };
+    if (!raField.isEmpty())  bodyObj[QStringLiteral("ra_field")]  = raField;
+    if (!decField.isEmpty()) bodyObj[QStringLiteral("dec_field")] = decField;
+    QString error;
+    const QByteArray payload = performPost(url, QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    result.valid       = obj.value(QStringLiteral("valid")).toBool();
+    result.error       = obj.value(QStringLiteral("error")).toString();
+    result.totalInView = obj.value(QStringLiteral("total_in_view")).toInt();
+    result.truncated   = obj.value(QStringLiteral("truncated")).toBool();
+    for (const QJsonValue &v : obj.value(QStringLiteral("sources")).toArray()) {
+        const QJsonObject s = v.toObject();
+        BackendHiPSCatalogueSource src;
+        src.raDeg  = s.value(QStringLiteral("ra")).toDouble();
+        src.decDeg = s.value(QStringLiteral("dec")).toDouble();
+        result.sources.append(src);
+    }
+    return result;
+}

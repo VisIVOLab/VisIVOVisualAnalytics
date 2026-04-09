@@ -15,26 +15,13 @@
 #include <vector>
 
 // ---------------------------------------------------------------------------
-// HiPSViewportWidget
+// HiPSViewportWidget — Milestone 2
 //
-// A QWidget that renders a HiPS (Hierarchical Progressive Survey) sky map
-// using QPainter with gnomonic (tangential) projection.
-//
-// Tile images are fetched from the backend asynchronously via a bounded
-// concurrent-fetch queue (QtConcurrent::run + QFutureWatcher).  The widget
-// never contacts remote servers directly.
-//
-// Architecture
-// ┌─────────────────────────────────────────────┐
-// │ HiPSViewportWidget                          │
-// │  ┌─────────────┐   ┌─────────────────────┐ │
-// │  │ ViewState   │   │ TileCache (QHash)   │ │
-// │  │ raDeg/decDeg│   │ TileKey→QPixmap     │ │
-// │  │ fovDeg      │   └─────────────────────┘ │
-// │  └─────────────┘                            │
-// │  TileListWatcher  → query_tiles backend     │
-// │  TileFetchWatchers→ tile/{order}/{pix}      │
-// └─────────────────────────────────────────────┘
+// Extends the MVP viewer with:
+//   • Coordinate grid overlay (Task 1)
+//   • Secondary survey (alpha blending / side-by-side) (Task 2)
+//   • Catalogue overlay — marker rendering for sky sources (Task 3)
+//   (Target resolver lives in HiPSWindow; the viewport only exposes setCenter)
 // ---------------------------------------------------------------------------
 
 struct HiPSTileKey
@@ -74,16 +61,18 @@ class HiPSViewportWidget : public QWidget
     Q_OBJECT
 
 public:
+    // ── Blend mode for secondary survey ──────────────────────────────────────
+    enum class BlendMode { Alpha, SideBySide };
+
     explicit HiPSViewportWidget(QWidget *parent = nullptr);
     ~HiPSViewportWidget() override;
 
-    // Call once after openHiPS() succeeds.
+    // ── Primary survey ────────────────────────────────────────────────────────
     void setSurvey(const BackendHiPSSurveyInfo &survey,
                    const QString &backendUrl, const QString &backendToken);
-
     void clearSurvey();
 
-    // View control (also triggered by mouse/wheel internally)
+    // View control
     void setCenter(double raDeg, double decDeg);
     void setFov(double fovDeg);
     void resetView();
@@ -93,12 +82,37 @@ public:
     double fov()       const { return m_view.fovDeg; }
     int    currentOrder() const;
 
+    // ── Task 1 — Coordinate grid ──────────────────────────────────────────────
+    void setGridVisible(bool visible);
+    bool isGridVisible() const { return m_showGrid; }
+
+    // ── Task 2 — Secondary survey (blending / side-by-side) ──────────────────
+    void setSecondarySurvey(const BackendHiPSSurveyInfo &survey,
+                            const QString &backendUrl, const QString &backendToken);
+    void clearSecondarySurvey();
+    bool hasSecondarySurvey() const { return m_hasSurveySec; }
+    void setOverlayOpacity(double opacity);
+    double overlayOpacity() const { return m_overlayOpacity; }
+    void setBlendMode(BlendMode mode);
+    BlendMode blendMode() const { return m_blendMode; }
+
+    // ── Task 3 — Catalogue overlay ────────────────────────────────────────────
+    void setCatalogueOverlay(const QString &cataloguePath,
+                             const QString &raField = {},
+                             const QString &decField = {});
+    void clearCatalogueOverlay();
+    void setCatalogueOverlayVisible(bool visible);
+    bool hasCatalogueOverlay() const { return !m_cataloguePath.isEmpty(); }
+    bool isCatalogueOverlayVisible() const { return m_showCatalogue; }
+
 signals:
     void cursorCoordinatesChanged(double raDeg, double decDeg);
     void centerChanged(double raDeg, double decDeg);
     void fovChanged(double fovDeg);
     void orderChanged(int order);
     void loadingChanged(bool loading);
+    // Emitted when catalogue overlay is refreshed (totalInView, truncated)
+    void catalogueOverlayRefreshed(int totalInView, bool truncated);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -113,59 +127,99 @@ private:
     struct ViewState {
         double raDeg  = 180.0;
         double decDeg = 0.0;
-        double fovDeg = 60.0;  // full-width FOV in degrees
+        double fovDeg = 60.0;
     };
 
-    // ── Projection ────────────────────────────────────────────────────────
+    // ── Projection ────────────────────────────────────────────────────────────
     QPointF project(double raDeg, double decDeg) const;
     void    unproject(QPointF screen, double &raDeg, double &decDeg) const;
     double  scalePixPerRad() const;
 
-    // ── Tile management ──────────────────────────────────────────────────
-    void onViewChanged();           // debounced — triggers tile-list query
-    void requestTileList();         // async: calls backend query_tiles
+    // ── Primary tile management ───────────────────────────────────────────────
+    void onViewChanged();
+    void requestTileList();
     void scheduleTileFetch(const HiPSTileKey &key);
     void drainFetchQueue();
-    void requestAllsky();           // async: download AllSky background
+    void requestAllsky();
 
-    // ── Rendering ─────────────────────────────────────────────────────────
+    // ── Secondary tile management (Task 2) ────────────────────────────────────
+    void requestTileListSec();
+    void scheduleTileFetchSec(const HiPSTileKey &key);
+    void drainFetchQueueSec();
+    void requestAllskySec();
+
+    // ── Rendering ─────────────────────────────────────────────────────────────
     void renderBackground(QPainter &p) const;
     void renderAllsky(QPainter &p) const;
     void renderTiles(QPainter &p);
+    void renderAllskySec(QPainter &p) const;   // Task 2
+    void renderTilesSec(QPainter &p);           // Task 2
+    void renderGrid(QPainter &p) const;         // Task 1
+    void renderCatalogueOverlay(QPainter &p) const; // Task 3
     void renderCrosshair(QPainter &p) const;
     void renderNoSurvey(QPainter &p) const;
 
-    // ── Survey state ──────────────────────────────────────────────────────
+    // ── Survey state (primary) ────────────────────────────────────────────────
     BackendHiPSSurveyInfo m_survey;
-    bool m_hasSurvey{ false };
+    bool    m_hasSurvey{ false };
     QString m_backendUrl;
     QString m_backendToken;
 
-    // ── View state ────────────────────────────────────────────────────────
+    // ── View state ────────────────────────────────────────────────────────────
     ViewState m_view;
 
-    // ── Pan interaction ───────────────────────────────────────────────────
+    // ── Pan interaction ───────────────────────────────────────────────────────
     bool      m_panning{ false };
     QPointF   m_panStartPos;
     ViewState m_panStartView;
 
-    // ── AllSky background ─────────────────────────────────────────────────
+    // ── AllSky (primary) ──────────────────────────────────────────────────────
     QPixmap m_allskyPixmap;
     bool    m_allskyLoading{ false };
     QFutureWatcher<QByteArray> m_allskyWatcher;
 
-    // ── Tile list (from query_tiles) ──────────────────────────────────────
+    // ── Tile list + cache (primary) ───────────────────────────────────────────
     std::vector<HiPSTileDescriptor> m_currentTiles;
     QFutureWatcher<BackendHiPSViewResponse> m_tileListWatcher;
-
-    // ── Tile fetch queue ─────────────────────────────────────────────────
     static constexpr int kMaxConcurrent = 6;
     QHash<HiPSTileKey, QPixmap> m_tileCache;
-    QSet<HiPSTileKey> m_pendingKeys;
+    QSet<HiPSTileKey>  m_pendingKeys;
     QList<HiPSTileKey> m_fetchQueue;
     QList<QFutureWatcher<HiPSTileFetchResult> *> m_activeWatchers;
 
-    // ── View-change debounce ─────────────────────────────────────────────
+    // ── Task 1 — Grid ─────────────────────────────────────────────────────────
+    bool m_showGrid{ false };
+
+    // ── Task 2 — Secondary survey ─────────────────────────────────────────────
+    BackendHiPSSurveyInfo m_surveySec;
+    bool    m_hasSurveySec{ false };
+    QString m_backendUrlSec;
+    QString m_backendTokenSec;
+
+    QPixmap m_allskyPixmapSec;
+    bool    m_allskyLoadingSec{ false };
+    QFutureWatcher<QByteArray> m_allskyWatcherSec;
+
+    std::vector<HiPSTileDescriptor> m_currentTilesSec;
+    QFutureWatcher<BackendHiPSViewResponse> m_tileListWatcherSec;
+    QHash<HiPSTileKey, QPixmap> m_tileCacheSec;
+    QSet<HiPSTileKey>  m_pendingKeysSec;
+    QList<HiPSTileKey> m_fetchQueueSec;
+    QList<QFutureWatcher<HiPSTileFetchResult> *> m_activeWatchersSec;
+
+    double    m_overlayOpacity{ 0.5 };
+    BlendMode m_blendMode{ BlendMode::Alpha };
+
+    // ── Task 3 — Catalogue overlay ────────────────────────────────────────────
+    QString m_cataloguePath;
+    QString m_catalogueRaField;
+    QString m_catalogueDecField;
+    bool    m_showCatalogue{ true };
+    QVector<BackendHiPSCatalogueSource> m_catalogueSources;
+    QFutureWatcher<BackendHiPSCatalogueOverlayResult> m_catalogueWatcher;
+    QTimer *m_catalogueRefreshTimer{ nullptr };
+
+    // ── Shared debounce timer ─────────────────────────────────────────────────
     QTimer *m_viewChangeTimer{ nullptr };
 };
 

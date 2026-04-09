@@ -2092,3 +2092,174 @@ async def hips_query_tiles(
         valid=True,
         tiles=[HiPSTileInfo(**t) for t in tiles_raw],
     )
+
+
+# ── Target name resolver ──────────────────────────────────────────────────────
+# Uses astropy's Sesame resolver which queries SIMBAD/NED/VizieR in sequence.
+# No external HTTP is made by the Qt client directly.
+
+class TargetResolveRequest(BaseModel):
+    name: str
+
+
+class TargetResolveResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    ra_deg: float = 0.0
+    dec_deg: float = 0.0
+    resolved_name: str = ""
+    source: str = ""
+
+
+def _resolve_target_sync(name: str) -> dict:
+    try:
+        from astropy.coordinates import SkyCoord  # type: ignore
+        coord = SkyCoord.from_name(name)
+        return {
+            "valid": True, "error": "",
+            "ra_deg": float(coord.ra.deg), "dec_deg": float(coord.dec.deg),
+            "resolved_name": name, "source": "sesame",
+        }
+    except Exception as exc:
+        return {
+            "valid": False, "error": str(exc),
+            "ra_deg": 0.0, "dec_deg": 0.0, "resolved_name": "", "source": "",
+        }
+
+
+@app.post("/v1/resolve/target", response_model=TargetResolveResponse, tags=["resolve"])
+async def resolve_target(
+    request: TargetResolveRequest,
+    _: None = _auth,
+) -> TargetResolveResponse:
+    """Resolve an object name to RA/Dec via the Sesame name resolver (SIMBAD/NED/VizieR).
+    Requires astropy; returns an error if astropy is not installed."""
+    name = request.name.strip()
+    if not name:
+        return TargetResolveResponse(valid=False, error="Empty target name.")
+    loop = _asyncio.get_event_loop()
+    d = await loop.run_in_executor(None, _resolve_target_sync, name)
+    return TargetResolveResponse(**d)
+
+
+# ── HiPS catalogue overlay ────────────────────────────────────────────────────
+# Reads a CSV from the backend filesystem and returns RA/Dec pairs within the
+# current viewport bounding box.  No session required — path-based lookup.
+
+class CatalogueOverlayRequest(BaseModel):
+    catalogue_path: str      # backend-side absolute path to a CSV file
+    ra_center: float
+    dec_center: float
+    fov_deg: float
+    ra_field: str = ""       # auto-detected if empty
+    dec_field: str = ""
+    max_sources: int = 5000  # spatial sub-sample cap
+
+
+class CatalogueOverlaySource(BaseModel):
+    ra: float
+    dec: float
+
+
+class CatalogueOverlayResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    sources: list[CatalogueOverlaySource] = []
+    total_in_view: int = 0
+    truncated: bool = False
+
+
+_RA_CANDIDATES  = ["ra", "RA", "Ra", "RAJ2000", "ra_deg", "RAdeg", "ALPHA_J2000"]
+_DEC_CANDIDATES = ["dec", "Dec", "DEC", "DEJ2000", "dec_deg", "DECdeg", "DELTA_J2000"]
+
+_OVERLAY_CSV_CACHE: dict[str, pd.DataFrame] = {}  # simple in-process cache
+
+
+def _catalogue_overlay_sync(
+    path: str, ra_center: float, dec_center: float, fov_deg: float,
+    ra_field: str, dec_field: str, max_sources: int,
+) -> dict:
+    # Read (cached in process memory for the lifetime of the server)
+    if path not in _OVERLAY_CSV_CACHE:
+        try:
+            _OVERLAY_CSV_CACHE[path] = pd.read_csv(path)
+        except Exception as exc:
+            return {"valid": False, "error": f"Cannot read CSV '{path}': {exc}",
+                    "sources": [], "total_in_view": 0, "truncated": False}
+    df = _OVERLAY_CSV_CACHE[path]
+
+    # Auto-detect RA/Dec column names
+    if not ra_field:
+        ra_field = next((c for c in _RA_CANDIDATES  if c in df.columns), "")
+    if not dec_field:
+        dec_field = next((c for c in _DEC_CANDIDATES if c in df.columns), "")
+
+    if not ra_field or not dec_field:
+        return {"valid": False,
+                "error": f"Cannot detect RA/Dec columns. Available: {list(df.columns)[:20]}",
+                "sources": [], "total_in_view": 0, "truncated": False}
+
+    ra_col  = pd.to_numeric(df[ra_field],  errors="coerce")
+    dec_col = pd.to_numeric(df[dec_field], errors="coerce")
+
+    # Conservative bounding-box filter
+    half_fov  = fov_deg * 0.6
+    cos_dec   = max(0.02, abs(float(np.cos(np.radians(dec_center)))))
+    ra_margin = min(180.0, half_fov / cos_dec)
+
+    ra_min, ra_max   = ra_center - ra_margin, ra_center + ra_margin
+    dec_min, dec_max = dec_center - half_fov, dec_center + half_fov
+
+    if ra_min < 0:
+        mask = ((ra_col >= ra_min + 360) | (ra_col <= ra_max)) & \
+               (dec_col >= dec_min) & (dec_col <= dec_max)
+    elif ra_max > 360:
+        mask = ((ra_col >= ra_min) | (ra_col <= ra_max - 360)) & \
+               (dec_col >= dec_min) & (dec_col <= dec_max)
+    else:
+        mask = (ra_col >= ra_min) & (ra_col <= ra_max) & \
+               (dec_col >= dec_min) & (dec_col <= dec_max)
+
+    filtered  = df[mask]
+    total     = int(len(filtered))
+    truncated = total > max_sources
+    if truncated:
+        # Spatial sub-sampling: every N-th row to keep uniform coverage
+        step     = max(1, total // max_sources)
+        filtered = filtered.iloc[::step].head(max_sources)
+
+    sources = []
+    for r, d in zip(filtered[ra_field], filtered[dec_field]):
+        try:
+            fr, fd = float(r), float(d)
+            if np.isfinite(fr) and np.isfinite(fd):
+                sources.append({"ra": fr, "dec": fd})
+        except (ValueError, TypeError):
+            pass
+
+    return {"valid": True, "error": "", "sources": sources,
+            "total_in_view": total, "truncated": truncated}
+
+
+@app.post("/v1/hips/catalogue_overlay",
+          response_model=CatalogueOverlayResponse, tags=["hips"])
+async def hips_catalogue_overlay(
+    request: CatalogueOverlayRequest,
+    _: None = _auth,
+) -> CatalogueOverlayResponse:
+    """Return catalogue sources (RA/Dec) visible in the given HiPS viewport.
+    Reads a CSV file at `catalogue_path` on the backend filesystem."""
+    loop = _asyncio.get_event_loop()
+    d = await loop.run_in_executor(
+        None, _catalogue_overlay_sync,
+        request.catalogue_path, request.ra_center, request.dec_center,
+        request.fov_deg, request.ra_field, request.dec_field, request.max_sources,
+    )
+    if not d["valid"]:
+        return CatalogueOverlayResponse(valid=False, error=d["error"])
+    return CatalogueOverlayResponse(
+        valid=True,
+        sources=[CatalogueOverlaySource(**s) for s in d["sources"]],
+        total_in_view=d["total_in_view"],
+        truncated=d["truncated"],
+    )
