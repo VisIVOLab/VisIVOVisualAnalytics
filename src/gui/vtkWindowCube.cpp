@@ -2065,7 +2065,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // Setup Threshold UI
     const std::string bunit{}; // BUNIT comes from backend metadata, not AstroUtils
     if (!bunit.empty()) {
-        ui->groupThreshold->setTitle(u"Threshold (%1)"_s.arg(QString::fromStdString(bunit)));
+        ui->labelThresholdHdr->setText(
+                u"THRESHOLD (%1)"_s.arg(QString::fromStdString(bunit)).toUpper());
     }
     ui->lineThreshold->setText(QString::number(this->lowerBound));
     ui->lineThreshold->setValidator(new QDoubleValidator(ui->lineThreshold));
@@ -2146,8 +2147,9 @@ void vtkWindowCube::setupSidebar()
             "}"_s);
 
     setupSidebarRail();
+    setupSidebarPages();
 
-    // Start fully expanded — scroll area visible.
+    // Start fully expanded — stacked panel visible.
     ui->sidebarContainer->setMinimumWidth(48);
     ui->sidebarContainer->setMaximumWidth(268);
     ui->sidebarScrollArea->setVisible(true);
@@ -2213,38 +2215,32 @@ void vtkWindowCube::setupSidebarRail()
     QObject::connect(ui->btnToggleSidebar, &QToolButton::clicked,
                      this, &vtkWindowCube::toggleSidebar);
 
-    // Section buttons: set active state first, then navigate.
+    // Section buttons: set active rail state and switch the stacked page.
     QObject::connect(ui->railBtnThreshold, &QToolButton::clicked, this, [this]() {
         setActiveRailButton(ui->railBtnThreshold);
-        scrollToSection(ui->groupThreshold);
+        switchToPage(0);
     });
     QObject::connect(ui->railBtnSlice, &QToolButton::clicked, this, [this]() {
         setActiveRailButton(ui->railBtnSlice);
-        scrollToSection(ui->groupSlice);
+        switchToPage(1);
     });
     QObject::connect(ui->railBtnContours, &QToolButton::clicked, this, [this]() {
         setActiveRailButton(ui->railBtnContours);
-        scrollToSection(ui->groupContours);
+        switchToPage(2);
     });
     QObject::connect(ui->railBtnStats, &QToolButton::clicked, this, [this]() {
         setActiveRailButton(ui->railBtnStats);
-        scrollToSection(ui->groupStats);
+        switchToPage(3);
     });
-
-    // Auto-sync active section with manual scroll position.
-    QObject::connect(ui->sidebarScrollArea->verticalScrollBar(), &QScrollBar::valueChanged,
-                     this, [this](int) { updateActiveSectionFromScroll(); });
 }
 
-void vtkWindowCube::scrollToSection(QWidget *section)
+void vtkWindowCube::switchToPage(int index)
 {
     if (this->sidebarExpanded) {
-        this->isProgrammaticScroll = true;
-        ui->sidebarScrollArea->ensureWidgetVisible(section);
-        this->isProgrammaticScroll = false;
+        ui->sidebarStack->setCurrentIndex(index);
     } else {
-        // Record the target; setSidebarExpanded will scroll once the animation finishes.
-        this->pendingScrollTarget = section;
+        // Record the page; setSidebarExpanded will switch once the animation finishes.
+        this->pendingPageIndex = index;
         setSidebarExpanded(true);
     }
 }
@@ -2288,36 +2284,50 @@ void vtkWindowCube::setActiveRailButton(QToolButton *btn)
     }
 }
 
-void vtkWindowCube::updateActiveSectionFromScroll()
+void vtkWindowCube::setupSidebarPages()
 {
-    if (this->isProgrammaticScroll)
-        return;
+    // Page header label — section title bar.
+    const QString hdrStyle =
+            u"QLabel {"
+            "  color: #8AB8CC;"
+            "  font-size: 10px;"
+            "  font-weight: 600;"
+            "  padding-bottom: 4px;"
+            "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
+            "}"_s;
 
-    struct Entry { QWidget *section; QToolButton *btn; };
-    const std::array<Entry, 4> entries = {{
-        { ui->groupThreshold, ui->railBtnThreshold },
-        { ui->groupSlice,     ui->railBtnSlice     },
-        { ui->groupContours,  ui->railBtnContours  },
-        { ui->groupStats,     ui->railBtnStats     },
-    }};
+    // Sub-section label inside Stats page.
+    const QString subHdrStyle =
+            u"QLabel {"
+            "  color: #5A8DAA;"
+            "  font-size: 9px;"
+            "  font-weight: 600;"
+            "}"_s;
 
-    QWidget      *vp       = ui->sidebarScrollArea->viewport();
-    const int     vpCenter = vp->height() / 2;
-    QToolButton  *best     = nullptr;
-    int           bestDist = std::numeric_limits<int>::max();
+    // Subtle card frame for each section's controls.
+    const QString cardStyle =
+            u"QFrame {"
+            "  background-color: rgba(255, 255, 255, 0.03);"
+            "  border: 1px solid rgba(4, 138, 191, 0.14);"
+            "  border-radius: 6px;"
+            "}"_s;
 
-    for (const auto &e : entries) {
-        // Map the vertical midpoint of the section into viewport coordinates.
-        const int midY = e.section->mapTo(vp, QPoint(0, e.section->height() / 2)).y();
-        const int dist = std::abs(midY - vpCenter);
-        if (dist < bestDist) {
-            bestDist = dist;
-            best     = e.btn;
-        }
+    for (QLabel *lbl : { ui->labelThresholdHdr, ui->labelSliceHdr,
+                          ui->labelContoursHdr,  ui->labelStatsHdr }) {
+        lbl->setStyleSheet(hdrStyle);
+    }
+    for (QLabel *lbl : { ui->labelImg, ui->labelCubeStatsHdr }) {
+        lbl->setStyleSheet(subHdrStyle);
+    }
+    for (QFrame *f : { ui->frameThreshold, ui->frameSlice,
+                        ui->frameContours,  ui->frameImgStats, ui->frameCubeStats }) {
+        f->setStyleSheet(cardStyle);
     }
 
-    if (best)
-        setActiveRailButton(best);
+    // Read-only stat fields get a slightly dimmer text so they read as data, not inputs.
+    const QString roStyle = u"QLineEdit[readOnly='true'] { color: #7AAABB; }"_s;
+    ui->frameImgStats->setStyleSheet(cardStyle + roStyle);
+    ui->frameCubeStats->setStyleSheet(cardStyle + roStyle);
 }
 
 void vtkWindowCube::setSidebarExpanded(bool expanded, bool animated)
@@ -2326,9 +2336,9 @@ void vtkWindowCube::setSidebarExpanded(bool expanded, bool animated)
         return;
     this->sidebarExpanded = expanded;
 
-    // Collapsing cancels any pending section scroll requested via rail buttons.
+    // Collapsing cancels any pending page switch requested via rail buttons.
     if (!expanded)
-        this->pendingScrollTarget = nullptr;
+        this->pendingPageIndex = -1;
 
     // Sync toggle button and menu action.
     if (this->actionShowControlsSidebar)
@@ -2373,11 +2383,9 @@ void vtkWindowCube::setSidebarExpanded(bool expanded, bool animated)
         QObject::connect(group, &QParallelAnimationGroup::finished, this, [this, expanded]() {
             if (!expanded) {
                 ui->sidebarScrollArea->setVisible(false);
-            } else if (this->pendingScrollTarget) {
-                this->isProgrammaticScroll = true;
-                ui->sidebarScrollArea->ensureWidgetVisible(this->pendingScrollTarget);
-                this->isProgrammaticScroll = false;
-                this->pendingScrollTarget = nullptr;
+            } else if (this->pendingPageIndex >= 0) {
+                ui->sidebarStack->setCurrentIndex(this->pendingPageIndex);
+                this->pendingPageIndex = -1;
             }
         });
 
@@ -2387,10 +2395,10 @@ void vtkWindowCube::setSidebarExpanded(bool expanded, bool animated)
         ui->sidebarScrollArea->setVisible(expanded);
         ui->sidebarContainer->setMinimumWidth(toWidth);
         ui->sidebarContainer->setMaximumWidth(toWidth);
-        // Non-animated expand: flush pending scroll immediately.
-        if (expanded && this->pendingScrollTarget) {
-            ui->sidebarScrollArea->ensureWidgetVisible(this->pendingScrollTarget);
-            this->pendingScrollTarget = nullptr;
+        // Non-animated expand: flush pending page switch immediately.
+        if (expanded && this->pendingPageIndex >= 0) {
+            ui->sidebarStack->setCurrentIndex(this->pendingPageIndex);
+            this->pendingPageIndex = -1;
         }
     }
 }
@@ -5674,8 +5682,8 @@ void vtkWindowCube::refreshSpectralAxisUi()
     const auto descriptor = this->spectralAxisDescriptor();
     const QString title = this->spectralAxisTitle();
     const QString tooltip = this->spectralAxisTooltip();
-    ui->groupSlice->setTitle(u"Cutting plane (%1)"_s.arg(title));
-    ui->groupSlice->setToolTip(tooltip);
+    ui->labelSliceHdr->setText(u"CUTTING PLANE (%1)"_s.arg(title).toUpper());
+    ui->labelSliceHdr->setToolTip(tooltip);
     ui->lineSpectral->setToolTip(tooltip);
     ui->lineSpectral->setStatusTip(tooltip);
     qDebug().noquote()

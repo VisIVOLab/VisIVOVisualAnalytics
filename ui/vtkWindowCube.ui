@@ -34,7 +34,7 @@
      <widget class="QWidget" name="sidebarContainer">
       <property name="minimumWidth"><number>48</number></property>
       <property name="maximumWidth"><number>268</number></property>
-      <!-- HBox: 48px icon rail | scrollable content panel -->
+      <!-- HBox: 48px icon rail | stacked content panel -->
       <layout class="QHBoxLayout" name="sidebarHLayout">
        <property name="spacing"><number>0</number></property>
        <property name="leftMargin"><number>0</number></property>
@@ -130,7 +130,7 @@
         </widget>
        </item>
 
-       <!-- ── Scrollable controls panel (hidden when collapsed) ──────── -->
+       <!-- ── Stacked content panel (hidden when collapsed) ─────────── -->
        <item>
         <widget class="QScrollArea" name="sidebarScrollArea">
          <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
@@ -138,208 +138,393 @@
          <property name="horizontalScrollBarPolicy">
           <enum>Qt::ScrollBarAlwaysOff</enum>
          </property>
-         <widget class="QWidget" name="sidebarContent">
-          <layout class="QVBoxLayout" name="sidebarContentLayout">
-           <property name="leftMargin"><number>8</number></property>
-           <property name="topMargin"><number>4</number></property>
-           <property name="rightMargin"><number>8</number></property>
-           <property name="bottomMargin"><number>8</number></property>
-           <property name="spacing"><number>8</number></property>
 
-           <!-- ── Threshold ───────────────────────────────────────────── -->
-           <item>
-            <widget class="QGroupBox" name="groupThreshold">
-             <property name="title"><string>Threshold</string></property>
-             <layout class="QVBoxLayout" name="verticalLayout">
-              <item>
-               <layout class="QHBoxLayout" name="horizontalLayout_4">
-                <item>
-                 <widget class="QSlider" name="sliderThreshold">
-                  <property name="maximum"><number>100</number></property>
-                  <property name="orientation">
-                   <enum>Qt::Orientation::Horizontal</enum>
-                  </property>
-                  <property name="tickPosition">
-                   <enum>QSlider::TickPosition::TicksAbove</enum>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QPushButton" name="btnCubeColor">
-                  <property name="sizePolicy">
-                   <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                    <horstretch>0</horstretch>
-                    <verstretch>0</verstretch>
-                   </sizepolicy>
-                  </property>
-                 </widget>
-                </item>
-               </layout>
-              </item>
-              <item>
-               <widget class="QLineEdit" name="lineThreshold"/>
-              </item>
-             </layout>
-            </widget>
-           </item>
+         <widget class="QStackedWidget" name="sidebarStack">
+          <property name="currentIndex"><number>0</number></property>
 
-           <!-- ── Cutting plane ───────────────────────────────────────── -->
-           <item>
-            <widget class="QGroupBox" name="groupSlice">
-             <property name="title"><string>Cutting plane</string></property>
-             <layout class="QVBoxLayout" name="verticalLayout_2">
-              <item>
-               <widget class="QSlider" name="sliderSlice">
-                <property name="minimum"><number>1</number></property>
-                <property name="orientation">
-                 <enum>Qt::Orientation::Horizontal</enum>
-                </property>
-                <property name="tickPosition">
-                 <enum>QSlider::TickPosition::TicksAbove</enum>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <layout class="QHBoxLayout" name="horizontalLayout">
-                <item>
-                 <widget class="QSpinBox" name="spinSlice">
-                  <property name="minimum"><number>1</number></property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QLineEdit" name="lineSpectral">
-                  <property name="readOnly"><bool>true</bool></property>
-                 </widget>
-                </item>
-               </layout>
-              </item>
-             </layout>
-            </widget>
-           </item>
+          <!-- ══ Page 0 — Threshold ═══════════════════════════════════ -->
+          <widget class="QWidget" name="pageThreshold">
+           <layout class="QVBoxLayout" name="layoutPageThreshold">
+            <property name="leftMargin"><number>12</number></property>
+            <property name="topMargin"><number>14</number></property>
+            <property name="rightMargin"><number>12</number></property>
+            <property name="bottomMargin"><number>12</number></property>
+            <property name="spacing"><number>10</number></property>
 
-           <!-- ── Contours ────────────────────────────────────────────── -->
-           <item>
-            <widget class="QGroupBox" name="groupContours">
-             <property name="title"><string>Contours</string></property>
-             <layout class="QGridLayout" name="gridLayout">
-              <item row="0" column="0" rowspan="2">
-               <widget class="QCheckBox" name="checkContours"/>
-              </item>
-              <item row="0" column="1">
-               <widget class="QLabel" name="label">
-                <property name="text"><string>Level</string></property>
-                <property name="buddy"><cstring>lineLevel</cstring></property>
-               </widget>
-              </item>
-              <item row="0" column="2">
-               <widget class="QLabel" name="label_2">
-                <property name="text"><string>Lower</string></property>
-                <property name="buddy"><cstring>lineLowerBound</cstring></property>
-               </widget>
-              </item>
-              <item row="0" column="3">
-               <widget class="QLabel" name="label_3">
-                <property name="text"><string>Upper</string></property>
-                <property name="buddy"><cstring>lineUpperBound</cstring></property>
-               </widget>
-              </item>
-              <item row="1" column="1">
-               <widget class="QLineEdit" name="lineLevel"/>
-              </item>
-              <item row="1" column="2">
-               <widget class="QLineEdit" name="lineLowerBound"/>
-              </item>
-              <item row="1" column="3">
-               <widget class="QLineEdit" name="lineUpperBound"/>
-              </item>
-             </layout>
-            </widget>
-           </item>
+            <item>
+             <widget class="QLabel" name="labelThresholdHdr">
+              <property name="text"><string>THRESHOLD</string></property>
+             </widget>
+            </item>
 
-           <!-- ── Statistics ─────────────────────────────────────────── -->
-           <item>
-            <widget class="QGroupBox" name="groupStats">
-             <property name="title"><string>Statistics</string></property>
-             <layout class="QGridLayout" name="gridLayout_2">
-              <item row="0" column="0">
-               <widget class="QLabel" name="labelImg">
-                <property name="text"><string>Slice:</string></property>
-               </widget>
-              </item>
-              <item row="0" column="1">
-               <widget class="QLabel" name="label_6">
-                <property name="text"><string>Min</string></property>
-                <property name="buddy"><cstring>lineImgMin</cstring></property>
-               </widget>
-              </item>
-              <item row="0" column="2">
-               <widget class="QLabel" name="label_7">
-                <property name="text"><string>Max</string></property>
-                <property name="buddy"><cstring>lineImgMax</cstring></property>
-               </widget>
-              </item>
-              <item row="1" column="1">
-               <widget class="QLineEdit" name="lineImgMin">
-                <property name="readOnly"><bool>true</bool></property>
-               </widget>
-              </item>
-              <item row="1" column="2">
-               <widget class="QLineEdit" name="lineImgMax">
-                <property name="readOnly"><bool>true</bool></property>
-               </widget>
-              </item>
-              <item row="2" column="0">
-               <widget class="QLabel" name="label_4">
-                <property name="text"><string>Datacube:</string></property>
-               </widget>
-              </item>
-              <item row="2" column="1">
-               <widget class="QLineEdit" name="lineCubeMin">
-                <property name="readOnly"><bool>true</bool></property>
-               </widget>
-              </item>
-              <item row="2" column="2">
-               <widget class="QLineEdit" name="lineCubeMax">
-                <property name="readOnly"><bool>true</bool></property>
-               </widget>
-              </item>
-              <item row="2" column="3">
-               <widget class="QLineEdit" name="lineCubeMean">
-                <property name="readOnly"><bool>true</bool></property>
-               </widget>
-              </item>
-              <item row="2" column="4">
-               <widget class="QLineEdit" name="lineCubeRms">
-                <property name="readOnly"><bool>true</bool></property>
-               </widget>
-              </item>
-              <item row="3" column="1">
-               <widget class="QLabel" name="label_8">
-                <property name="text"><string>Mean</string></property>
-                <property name="buddy"><cstring>lineCubeMean</cstring></property>
-               </widget>
-              </item>
-              <item row="3" column="2">
-               <widget class="QLabel" name="label_9">
-                <property name="text"><string>RMS</string></property>
-                <property name="buddy"><cstring>lineCubeRms</cstring></property>
-               </widget>
-              </item>
-             </layout>
-            </widget>
-           </item>
+            <item>
+             <widget class="QFrame" name="frameThreshold">
+              <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+              <layout class="QVBoxLayout" name="layoutFrameThreshold">
+               <property name="leftMargin"><number>8</number></property>
+               <property name="topMargin"><number>8</number></property>
+               <property name="rightMargin"><number>8</number></property>
+               <property name="bottomMargin"><number>8</number></property>
+               <property name="spacing"><number>8</number></property>
 
-           <!-- Bottom spacer pushes controls up -->
-           <item>
-            <spacer name="sidebarBottomSpacer">
-             <property name="orientation"><enum>Qt::Vertical</enum></property>
-             <property name="sizeHint" stdset="0">
-              <size><width>20</width><height>40</height></size>
-             </property>
-            </spacer>
-           </item>
+               <item>
+                <layout class="QHBoxLayout" name="hboxThreshold">
+                 <property name="spacing"><number>8</number></property>
+                 <item>
+                  <widget class="QSlider" name="sliderThreshold">
+                   <property name="maximum"><number>100</number></property>
+                   <property name="orientation">
+                    <enum>Qt::Orientation::Horizontal</enum>
+                   </property>
+                   <property name="tickPosition">
+                    <enum>QSlider::TickPosition::TicksAbove</enum>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="btnCubeColor">
+                   <property name="sizePolicy">
+                    <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                     <horstretch>0</horstretch>
+                     <verstretch>0</verstretch>
+                    </sizepolicy>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
 
-          </layout>
+               <item>
+                <widget class="QLineEdit" name="lineThreshold"/>
+               </item>
+
+              </layout>
+             </widget>
+            </item>
+
+            <item>
+             <spacer name="spacerThreshold">
+              <property name="orientation"><enum>Qt::Vertical</enum></property>
+              <property name="sizeHint" stdset="0">
+               <size><width>20</width><height>40</height></size>
+              </property>
+             </spacer>
+            </item>
+
+           </layout>
+          </widget>
+
+          <!-- ══ Page 1 — Cutting Plane ════════════════════════════════ -->
+          <widget class="QWidget" name="pageSlice">
+           <layout class="QVBoxLayout" name="layoutPageSlice">
+            <property name="leftMargin"><number>12</number></property>
+            <property name="topMargin"><number>14</number></property>
+            <property name="rightMargin"><number>12</number></property>
+            <property name="bottomMargin"><number>12</number></property>
+            <property name="spacing"><number>10</number></property>
+
+            <item>
+             <widget class="QLabel" name="labelSliceHdr">
+              <property name="text"><string>CUTTING PLANE</string></property>
+             </widget>
+            </item>
+
+            <item>
+             <widget class="QFrame" name="frameSlice">
+              <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+              <layout class="QVBoxLayout" name="layoutFrameSlice">
+               <property name="leftMargin"><number>8</number></property>
+               <property name="topMargin"><number>8</number></property>
+               <property name="rightMargin"><number>8</number></property>
+               <property name="bottomMargin"><number>8</number></property>
+               <property name="spacing"><number>8</number></property>
+
+               <item>
+                <widget class="QSlider" name="sliderSlice">
+                 <property name="minimum"><number>1</number></property>
+                 <property name="orientation">
+                  <enum>Qt::Orientation::Horizontal</enum>
+                 </property>
+                 <property name="tickPosition">
+                  <enum>QSlider::TickPosition::TicksAbove</enum>
+                 </property>
+                </widget>
+               </item>
+
+               <item>
+                <layout class="QHBoxLayout" name="hboxSlice">
+                 <property name="spacing"><number>6</number></property>
+                 <item>
+                  <widget class="QSpinBox" name="spinSlice">
+                   <property name="minimum"><number>1</number></property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QLineEdit" name="lineSpectral">
+                   <property name="readOnly"><bool>true</bool></property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+
+              </layout>
+             </widget>
+            </item>
+
+            <item>
+             <spacer name="spacerSlice">
+              <property name="orientation"><enum>Qt::Vertical</enum></property>
+              <property name="sizeHint" stdset="0">
+               <size><width>20</width><height>40</height></size>
+              </property>
+             </spacer>
+            </item>
+
+           </layout>
+          </widget>
+
+          <!-- ══ Page 2 — Contours ══════════════════════════════════════ -->
+          <widget class="QWidget" name="pageContours">
+           <layout class="QVBoxLayout" name="layoutPageContours">
+            <property name="leftMargin"><number>12</number></property>
+            <property name="topMargin"><number>14</number></property>
+            <property name="rightMargin"><number>12</number></property>
+            <property name="bottomMargin"><number>12</number></property>
+            <property name="spacing"><number>10</number></property>
+
+            <item>
+             <widget class="QLabel" name="labelContoursHdr">
+              <property name="text"><string>CONTOURS</string></property>
+             </widget>
+            </item>
+
+            <item>
+             <widget class="QFrame" name="frameContours">
+              <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+              <layout class="QGridLayout" name="gridContours">
+               <property name="leftMargin"><number>8</number></property>
+               <property name="topMargin"><number>8</number></property>
+               <property name="rightMargin"><number>8</number></property>
+               <property name="bottomMargin"><number>8</number></property>
+               <property name="horizontalSpacing"><number>6</number></property>
+               <property name="verticalSpacing"><number>6</number></property>
+
+               <item row="0" column="0" rowspan="2">
+                <widget class="QCheckBox" name="checkContours"/>
+               </item>
+               <item row="0" column="1">
+                <widget class="QLabel" name="labelContoursLevel">
+                 <property name="text"><string>Level</string></property>
+                 <property name="buddy"><cstring>lineLevel</cstring></property>
+                </widget>
+               </item>
+               <item row="0" column="2">
+                <widget class="QLabel" name="labelContoursLower">
+                 <property name="text"><string>Lower</string></property>
+                 <property name="buddy"><cstring>lineLowerBound</cstring></property>
+                </widget>
+               </item>
+               <item row="0" column="3">
+                <widget class="QLabel" name="labelContoursUpper">
+                 <property name="text"><string>Upper</string></property>
+                 <property name="buddy"><cstring>lineUpperBound</cstring></property>
+                </widget>
+               </item>
+               <item row="1" column="1">
+                <widget class="QLineEdit" name="lineLevel"/>
+               </item>
+               <item row="1" column="2">
+                <widget class="QLineEdit" name="lineLowerBound"/>
+               </item>
+               <item row="1" column="3">
+                <widget class="QLineEdit" name="lineUpperBound"/>
+               </item>
+
+              </layout>
+             </widget>
+            </item>
+
+            <item>
+             <spacer name="spacerContours">
+              <property name="orientation"><enum>Qt::Vertical</enum></property>
+              <property name="sizeHint" stdset="0">
+               <size><width>20</width><height>40</height></size>
+              </property>
+             </spacer>
+            </item>
+
+           </layout>
+          </widget>
+
+          <!-- ══ Page 3 — Statistics ════════════════════════════════════ -->
+          <widget class="QWidget" name="pageStats">
+           <layout class="QVBoxLayout" name="layoutPageStats">
+            <property name="leftMargin"><number>12</number></property>
+            <property name="topMargin"><number>14</number></property>
+            <property name="rightMargin"><number>12</number></property>
+            <property name="bottomMargin"><number>12</number></property>
+            <property name="spacing"><number>8</number></property>
+
+            <item>
+             <widget class="QLabel" name="labelStatsHdr">
+              <property name="text"><string>STATISTICS</string></property>
+             </widget>
+            </item>
+
+            <!-- Slice subsection label (name preserved: .cpp calls setText("Slice:" / "Moment:")) -->
+            <item>
+             <widget class="QLabel" name="labelImg">
+              <property name="text"><string>Slice</string></property>
+             </widget>
+            </item>
+
+            <!-- Slice stats card -->
+            <item>
+             <widget class="QFrame" name="frameImgStats">
+              <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+              <layout class="QGridLayout" name="gridImgStats">
+               <property name="leftMargin"><number>8</number></property>
+               <property name="topMargin"><number>6</number></property>
+               <property name="rightMargin"><number>8</number></property>
+               <property name="bottomMargin"><number>6</number></property>
+               <property name="horizontalSpacing"><number>6</number></property>
+               <property name="verticalSpacing"><number>4</number></property>
+
+               <item row="0" column="0">
+                <widget class="QLabel" name="labelImgMin">
+                 <property name="text"><string>Min</string></property>
+                 <property name="buddy"><cstring>lineImgMin</cstring></property>
+                </widget>
+               </item>
+               <item row="1" column="0">
+                <widget class="QLineEdit" name="lineImgMin">
+                 <property name="readOnly"><bool>true</bool></property>
+                </widget>
+               </item>
+
+               <item row="0" column="1">
+                <widget class="QLabel" name="labelImgMax">
+                 <property name="text"><string>Max</string></property>
+                 <property name="buddy"><cstring>lineImgMax</cstring></property>
+                </widget>
+               </item>
+               <item row="1" column="1">
+                <widget class="QLineEdit" name="lineImgMax">
+                 <property name="readOnly"><bool>true</bool></property>
+                </widget>
+               </item>
+
+               <item row="2" column="0">
+                <widget class="QLabel" name="labelImgMean">
+                 <property name="text"><string>Mean</string></property>
+                 <property name="buddy"><cstring>lineImgMean</cstring></property>
+                </widget>
+               </item>
+               <item row="3" column="0">
+                <widget class="QLineEdit" name="lineImgMean">
+                 <property name="readOnly"><bool>true</bool></property>
+                </widget>
+               </item>
+
+               <item row="2" column="1">
+                <widget class="QLabel" name="labelImgRms">
+                 <property name="text"><string>RMS</string></property>
+                 <property name="buddy"><cstring>lineImgRms</cstring></property>
+                </widget>
+               </item>
+               <item row="3" column="1">
+                <widget class="QLineEdit" name="lineImgRms">
+                 <property name="readOnly"><bool>true</bool></property>
+                </widget>
+               </item>
+
+              </layout>
+             </widget>
+            </item>
+
+            <!-- Datacube subsection label -->
+            <item>
+             <widget class="QLabel" name="labelCubeStatsHdr">
+              <property name="text"><string>Datacube</string></property>
+             </widget>
+            </item>
+
+            <!-- Datacube stats card -->
+            <item>
+             <widget class="QFrame" name="frameCubeStats">
+              <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+              <layout class="QGridLayout" name="gridCubeStats">
+               <property name="leftMargin"><number>8</number></property>
+               <property name="topMargin"><number>6</number></property>
+               <property name="rightMargin"><number>8</number></property>
+               <property name="bottomMargin"><number>6</number></property>
+               <property name="horizontalSpacing"><number>6</number></property>
+               <property name="verticalSpacing"><number>4</number></property>
+
+               <item row="0" column="0">
+                <widget class="QLabel" name="labelCubeMin">
+                 <property name="text"><string>Min</string></property>
+                 <property name="buddy"><cstring>lineCubeMin</cstring></property>
+                </widget>
+               </item>
+               <item row="1" column="0">
+                <widget class="QLineEdit" name="lineCubeMin">
+                 <property name="readOnly"><bool>true</bool></property>
+                </widget>
+               </item>
+
+               <item row="0" column="1">
+                <widget class="QLabel" name="labelCubeMax">
+                 <property name="text"><string>Max</string></property>
+                 <property name="buddy"><cstring>lineCubeMax</cstring></property>
+                </widget>
+               </item>
+               <item row="1" column="1">
+                <widget class="QLineEdit" name="lineCubeMax">
+                 <property name="readOnly"><bool>true</bool></property>
+                </widget>
+               </item>
+
+               <item row="2" column="0">
+                <widget class="QLabel" name="labelCubeMean">
+                 <property name="text"><string>Mean</string></property>
+                 <property name="buddy"><cstring>lineCubeMean</cstring></property>
+                </widget>
+               </item>
+               <item row="3" column="0">
+                <widget class="QLineEdit" name="lineCubeMean">
+                 <property name="readOnly"><bool>true</bool></property>
+                </widget>
+               </item>
+
+               <item row="2" column="1">
+                <widget class="QLabel" name="labelCubeRms">
+                 <property name="text"><string>RMS</string></property>
+                 <property name="buddy"><cstring>lineCubeRms</cstring></property>
+                </widget>
+               </item>
+               <item row="3" column="1">
+                <widget class="QLineEdit" name="lineCubeRms">
+                 <property name="readOnly"><bool>true</bool></property>
+                </widget>
+               </item>
+
+              </layout>
+             </widget>
+            </item>
+
+            <item>
+             <spacer name="spacerStats">
+              <property name="orientation"><enum>Qt::Vertical</enum></property>
+              <property name="sizeHint" stdset="0">
+               <size><width>20</width><height>40</height></size>
+              </property>
+             </spacer>
+            </item>
+
+           </layout>
+          </widget>
+
          </widget>
         </widget>
        </item>
@@ -558,6 +743,8 @@
   <tabstop>lineUpperBound</tabstop>
   <tabstop>lineImgMin</tabstop>
   <tabstop>lineImgMax</tabstop>
+  <tabstop>lineImgMean</tabstop>
+  <tabstop>lineImgRms</tabstop>
   <tabstop>lineCubeMin</tabstop>
   <tabstop>lineCubeMax</tabstop>
   <tabstop>lineCubeMean</tabstop>

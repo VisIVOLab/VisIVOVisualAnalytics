@@ -288,18 +288,17 @@ private:
     QPointer<QCheckBox> remoteRoiRefinementCheck;
     // ── Sidebar ───────────────────────────────────────────────────────────────
     bool sidebarExpanded{ true };
-    bool isProgrammaticScroll{ false };
+    int pendingPageIndex{ -1 };
     QPointer<QParallelAnimationGroup> sidebarAnimGroup;
-    QPointer<QWidget> pendingScrollTarget;
     QPointer<QAction> actionShowControlsSidebar;
     void setupSidebar();
     void setupSidebarRail();
     void setupRailIcons();
+    void setupSidebarPages();
     void setSidebarExpanded(bool expanded, bool animated = true);
     void toggleSidebar();
-    void scrollToSection(QWidget *section);
+    void switchToPage(int index);
     void setActiveRailButton(QToolButton *btn);
-    void updateActiveSectionFromScroll();
 
     QPointer<QAction> actionShowWcsAxes;
     QPointer<QAction> actionWcsSexagesimal;
