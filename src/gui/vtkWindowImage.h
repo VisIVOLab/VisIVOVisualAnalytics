@@ -11,7 +11,9 @@
 #include <QElapsedTimer>
 #include <QFutureWatcher>
 #include <QMainWindow>
+#include <QParallelAnimationGroup>
 #include <QPointer>
+#include <QPropertyAnimation>
 #include <QStringList>
 #include <QTimer>
 
@@ -31,6 +33,7 @@ class QCheckBox;
 class QDockWidget;
 class QLabel;
 class QTableView;
+class QToolButton;
 class vtkActor;
 class vtkAxisActor2D;
 class vtkCoordinate;
@@ -164,6 +167,20 @@ private:
     int statusMessageMinDurationMs{ 0 };
     bool persistentStatusActive{ false };
     std::unique_ptr<ImageLayerImportService> importService;
+
+    // ── Sidebar ───────────────────────────────────────────────────────────────
+    bool sidebarExpanded{ true };
+    int pendingPageIndex{ -1 };
+    QPointer<QParallelAnimationGroup> sidebarAnimGroup;
+    QPointer<QAction> actionShowControlsSidebar;
+    void setupSidebar();
+    void setupSidebarRail();
+    void setupRailIcons();
+    void setupSidebarPages();
+    void setSidebarExpanded(bool expanded, bool animated = true);
+    void toggleSidebar();
+    void switchToPage(int index);
+    void setActiveRailButton(QToolButton *btn);
 
     // Renderer
     vtkNew<vtkLegendScaleActorWCS> legendWCS;

@@ -59,6 +59,7 @@
 #include <QMessageBox>
 #include <QSignalBlocker>
 #include <QStringList>
+#include <QToolButton>
 #include <QTableView>
 #include <QtConcurrentRun>
 
@@ -852,6 +853,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
       importService(std::make_unique<ImageLayerImportService>())
 {
     ui->setupUi(this);
+    this->setupSidebar();
     qDebug().noquote()
             << QStringLiteral("[wcs] remote metadata loaded ctype=%1,%2 cdelt=%3,%4")
                        .arg(this->remoteDatasetCtype[0], this->remoteDatasetCtype[1])
@@ -1079,11 +1081,6 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
         this->requestWcsOverlayRender();
     });
     
-    // Setup Buttons
-    ui->btnSources->setIcon(QIcon(u":/icons/RECT_SELECT.png"_s));
-    ui->btnFilaments->setIcon(QIcon(u":/icons/RECT_SELECT.png"_s));
-    ui->btn3D->setIcon(QIcon(u":/icons/RECT_SELECT.png"_s));
-
     // Color Maps Combobox
     auto cmaps = ColorMaps::GetColorMapNames();
     std::for_each(cmaps.cbegin(), cmaps.cend(), [this](const std::string &name) {
@@ -3602,4 +3599,233 @@ void vtkWindowImage::markDisplayStateAdjusted(const char *reason)
     this->userAdjustedDisplayState = true;
     qDebug().noquote() << QStringLiteral("[image] display state adjusted reason=%1")
                                   .arg(QString::fromUtf8(reason ? reason : "unknown"));
+}
+
+// ── Sidebar ───────────────────────────────────────────────────────────────────
+
+void vtkWindowImage::setupSidebar()
+{
+    ui->sidebarContainer->setStyleSheet(
+            u"QWidget#sidebarContainer {"
+            "  background-color: #0E2940;"
+            "  border-right: 1px solid rgba(4, 138, 191, 0.18);"
+            "}"_s);
+
+    setupSidebarRail();
+    setupSidebarPages();
+
+    ui->sidebarContainer->setMinimumWidth(48);
+    ui->sidebarContainer->setMaximumWidth(320);
+    ui->sidebarScrollArea->setVisible(true);
+
+    this->actionShowControlsSidebar = new QAction(u"Controls Sidebar"_s, this);
+    this->actionShowControlsSidebar->setCheckable(true);
+    this->actionShowControlsSidebar->setChecked(true);
+    this->actionShowControlsSidebar->setShortcut(QKeySequence(u"Ctrl+\\"_s));
+    ui->menuView->addAction(this->actionShowControlsSidebar);
+    QObject::connect(this->actionShowControlsSidebar, &QAction::toggled,
+                     this, [this](bool checked) { setSidebarExpanded(checked); });
+}
+
+void vtkWindowImage::setupSidebarRail()
+{
+    ui->sidebarRail->setStyleSheet(
+            u"QWidget#sidebarRail {"
+            "  background-color: #0A2236;"
+            "  border-right: 1px solid rgba(4, 138, 191, 0.18);"
+            "}"_s);
+
+    const QString railBtnStyle =
+            u"QToolButton {"
+            "  background-color: transparent;"
+            "  border: none;"
+            "  border-radius: 6px;"
+            "  padding: 4px 0px;"
+            "}"
+            "QToolButton:hover   { background-color: #163D5E; }"
+            "QToolButton:pressed { background-color: #1A4870; }"
+            "QToolButton[active='true'] {"
+            "  background-color: #1B3A57;"
+            "  border-left: 2px solid #048ABF;"
+            "}"_s;
+
+    const QString toggleBtnStyle =
+            u"QToolButton {"
+            "  background-color: transparent;"
+            "  color: #8AB8CC;"
+            "  border: none;"
+            "  border-radius: 6px;"
+            "  font-size: 13px;"
+            "  padding: 4px 0px;"
+            "}"
+            "QToolButton:hover   { background-color: #163D5E; color: #048ABF; }"
+            "QToolButton:pressed { background-color: #1A4870; }"_s;
+
+    ui->btnToggleSidebar->setStyleSheet(toggleBtnStyle);
+    ui->railBtnLayer->setStyleSheet(railBtnStyle);
+    ui->railBtnCatalogue->setStyleSheet(railBtnStyle);
+    ui->railBtn3D->setStyleSheet(railBtnStyle);
+
+    setupRailIcons();
+    setActiveRailButton(ui->railBtnLayer);
+
+    QObject::connect(ui->btnToggleSidebar, &QToolButton::clicked,
+                     this, &vtkWindowImage::toggleSidebar);
+
+    QObject::connect(ui->railBtnLayer, &QToolButton::clicked, this, [this]() {
+        setActiveRailButton(ui->railBtnLayer);
+        switchToPage(0);
+    });
+    QObject::connect(ui->railBtnCatalogue, &QToolButton::clicked, this, [this]() {
+        setActiveRailButton(ui->railBtnCatalogue);
+        switchToPage(1);
+    });
+    QObject::connect(ui->railBtn3D, &QToolButton::clicked, this, [this]() {
+        setActiveRailButton(ui->railBtn3D);
+        switchToPage(2);
+    });
+}
+
+void vtkWindowImage::setupRailIcons()
+{
+    struct Entry { QToolButton *btn; const char *resource; const char *tooltip; };
+    const std::array<Entry, 3> entries = {{
+        { ui->railBtnLayer,     ":/icons/rail_layers.svg",    "Layer settings" },
+        { ui->railBtnCatalogue, ":/icons/rail_catalogue.svg", "Catalogue"      },
+        { ui->railBtn3D,        ":/icons/rail_3d.svg",        "3D View"        },
+    }};
+    for (const auto &e : entries) {
+        e.btn->setText(QString());
+        e.btn->setIcon(QIcon(QString::fromUtf8(e.resource)));
+        e.btn->setIconSize(QSize(22, 22));
+        e.btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        e.btn->setToolTip(QString::fromUtf8(e.tooltip));
+    }
+}
+
+void vtkWindowImage::setupSidebarPages()
+{
+    const QString hdrStyle =
+            u"QLabel {"
+            "  color: #8AB8CC;"
+            "  font-size: 10px;"
+            "  font-weight: 600;"
+            "  padding-bottom: 4px;"
+            "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
+            "}"_s;
+
+    const QString subHdrStyle =
+            u"QLabel {"
+            "  color: #5A8DAA;"
+            "  font-size: 9px;"
+            "  font-weight: 600;"
+            "}"_s;
+
+    const QString cardStyle =
+            u"QFrame {"
+            "  background-color: rgba(255, 255, 255, 0.03);"
+            "  border: 1px solid rgba(4, 138, 191, 0.14);"
+            "  border-radius: 6px;"
+            "}"_s;
+
+    for (QLabel *lbl : { ui->labelLayerHdr, ui->labelCatalogueHdr, ui->label3DHdr }) {
+        lbl->setStyleSheet(hdrStyle);
+    }
+    for (QLabel *lbl : { ui->labelLayerListHdr, ui->labelInventoryHdr, ui->labelObjectsHdr }) {
+        lbl->setStyleSheet(subHdrStyle);
+    }
+    for (QFrame *f : { ui->frameLayerControls, ui->frameCatalogueActions,
+                        ui->frame3D }) {
+        f->setStyleSheet(cardStyle);
+    }
+}
+
+void vtkWindowImage::setActiveRailButton(QToolButton *btn)
+{
+    for (QToolButton *b : { ui->railBtnLayer, ui->railBtnCatalogue, ui->railBtn3D }) {
+        const bool active = (b == btn);
+        if (b->property("active").toBool() != active) {
+            b->setProperty("active", active);
+            b->style()->polish(b);
+        }
+    }
+}
+
+void vtkWindowImage::switchToPage(int index)
+{
+    if (this->sidebarExpanded) {
+        ui->sidebarStack->setCurrentIndex(index);
+    } else {
+        this->pendingPageIndex = index;
+        setSidebarExpanded(true);
+    }
+}
+
+void vtkWindowImage::toggleSidebar()
+{
+    setSidebarExpanded(!this->sidebarExpanded);
+}
+
+void vtkWindowImage::setSidebarExpanded(bool expanded, bool animated)
+{
+    if (this->sidebarExpanded == expanded)
+        return;
+    this->sidebarExpanded = expanded;
+
+    if (!expanded)
+        this->pendingPageIndex = -1;
+
+    if (this->actionShowControlsSidebar)
+        this->actionShowControlsSidebar->setChecked(expanded);
+    ui->btnToggleSidebar->setChecked(expanded);
+    ui->btnToggleSidebar->setText(expanded ? u"◀"_s : u"▶"_s);
+    ui->btnToggleSidebar->setToolTip(
+            expanded ? u"Collapse controls sidebar"_s : u"Expand controls sidebar"_s);
+
+    const int fromWidth = ui->sidebarContainer->width();
+    const int toWidth = expanded ? 320 : 48;
+
+    if (animated) {
+        if (this->sidebarAnimGroup)
+            this->sidebarAnimGroup->stop();
+
+        auto *animMin = new QPropertyAnimation(ui->sidebarContainer, "minimumWidth", this);
+        animMin->setDuration(200);
+        animMin->setEasingCurve(QEasingCurve::InOutCubic);
+        animMin->setStartValue(fromWidth);
+        animMin->setEndValue(toWidth);
+
+        auto *animMax = new QPropertyAnimation(ui->sidebarContainer, "maximumWidth", this);
+        animMax->setDuration(200);
+        animMax->setEasingCurve(QEasingCurve::InOutCubic);
+        animMax->setStartValue(fromWidth);
+        animMax->setEndValue(toWidth);
+
+        auto *group = new QParallelAnimationGroup(this);
+        group->addAnimation(animMin);
+        group->addAnimation(animMax);
+
+        if (expanded)
+            ui->sidebarScrollArea->setVisible(true);
+
+        QObject::connect(group, &QParallelAnimationGroup::finished, this, [this, expanded]() {
+            if (!expanded) {
+                ui->sidebarScrollArea->setVisible(false);
+            } else if (this->pendingPageIndex >= 0) {
+                ui->sidebarStack->setCurrentIndex(this->pendingPageIndex);
+                this->pendingPageIndex = -1;
+            }
+        });
+
+        this->sidebarAnimGroup = group;
+        group->start(QAbstractAnimation::DeleteWhenStopped);
+    } else {
+        ui->sidebarScrollArea->setVisible(expanded);
+        ui->sidebarContainer->setMinimumWidth(toWidth);
+        ui->sidebarContainer->setMaximumWidth(toWidth);
+        if (expanded && this->pendingPageIndex >= 0) {
+            ui->sidebarStack->setCurrentIndex(this->pendingPageIndex);
+            this->pendingPageIndex = -1;
+        }
+    }
 }

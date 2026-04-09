@@ -19,173 +19,401 @@
   <property name="windowTitle">
    <string>vtkWindowImage</string>
   </property>
+
   <widget class="QWidget" name="centralwidget">
-   <layout class="QHBoxLayout" name="horizontalLayout_2">
+   <!-- Root horizontal split: sidebar (left) | viewer (right) -->
+   <layout class="QHBoxLayout" name="mainHLayout">
+    <property name="spacing"><number>0</number></property>
+    <property name="leftMargin"><number>0</number></property>
+    <property name="topMargin"><number>0</number></property>
+    <property name="rightMargin"><number>0</number></property>
+    <property name="bottomMargin"><number>0</number></property>
+
+    <!-- ══ LEFT SIDEBAR ══════════════════════════════════════════════════ -->
     <item>
-     <layout class="QVBoxLayout" name="verticalLayout_4">
-      <item>
-       <layout class="QHBoxLayout" name="horizontalLayout">
-        <item>
-         <widget class="QGroupBox" name="groupSources">
-          <property name="sizePolicy">
-           <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
-            <horstretch>0</horstretch>
-            <verstretch>0</verstretch>
-           </sizepolicy>
-          </property>
-          <property name="title">
-           <string>Compact sources</string>
-          </property>
-          <layout class="QVBoxLayout" name="verticalLayout">
-           <item>
-            <widget class="QPushButton" name="btnSources"/>
-           </item>
-          </layout>
+     <widget class="QWidget" name="sidebarContainer">
+      <property name="minimumWidth"><number>48</number></property>
+      <property name="maximumWidth"><number>320</number></property>
+      <layout class="QHBoxLayout" name="sidebarHLayout">
+       <property name="spacing"><number>0</number></property>
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>0</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
+
+       <!-- ── Icon rail (always visible, 48px fixed) ──────────────────── -->
+       <item>
+        <widget class="QWidget" name="sidebarRail">
+         <property name="minimumWidth"><number>48</number></property>
+         <property name="maximumWidth"><number>48</number></property>
+         <layout class="QVBoxLayout" name="railVLayout">
+          <property name="spacing"><number>2</number></property>
+          <property name="leftMargin"><number>4</number></property>
+          <property name="topMargin"><number>4</number></property>
+          <property name="rightMargin"><number>4</number></property>
+          <property name="bottomMargin"><number>4</number></property>
+
+          <!-- Collapse / expand toggle -->
+          <item>
+           <widget class="QToolButton" name="btnToggleSidebar">
+            <property name="text"><string>◀</string></property>
+            <property name="checkable"><bool>true</bool></property>
+            <property name="checked"><bool>true</bool></property>
+            <property name="toolTip"><string>Collapse controls sidebar</string></property>
+            <property name="autoRaise"><bool>true</bool></property>
+            <property name="minimumSize">
+             <size><width>40</width><height>40</height></size>
+            </property>
+           </widget>
+          </item>
+
+          <!-- Section: Layer settings -->
+          <item>
+           <widget class="QToolButton" name="railBtnLayer">
+            <property name="text"><string>≡</string></property>
+            <property name="toolTip"><string>Layer settings</string></property>
+            <property name="autoRaise"><bool>true</bool></property>
+            <property name="minimumSize">
+             <size><width>40</width><height>40</height></size>
+            </property>
+           </widget>
+          </item>
+
+          <!-- Section: Catalogue -->
+          <item>
+           <widget class="QToolButton" name="railBtnCatalogue">
+            <property name="text"><string>⊞</string></property>
+            <property name="toolTip"><string>Catalogue</string></property>
+            <property name="autoRaise"><bool>true</bool></property>
+            <property name="minimumSize">
+             <size><width>40</width><height>40</height></size>
+            </property>
+           </widget>
+          </item>
+
+          <!-- Section: 3D View -->
+          <item>
+           <widget class="QToolButton" name="railBtn3D">
+            <property name="text"><string>⬡</string></property>
+            <property name="toolTip"><string>3D View</string></property>
+            <property name="autoRaise"><bool>true</bool></property>
+            <property name="minimumSize">
+             <size><width>40</width><height>40</height></size>
+            </property>
+           </widget>
+          </item>
+
+          <!-- Push rail buttons to the top -->
+          <item>
+           <spacer name="railVSpacer">
+            <property name="orientation"><enum>Qt::Vertical</enum></property>
+            <property name="sizeHint" stdset="0">
+             <size><width>20</width><height>40</height></size>
+            </property>
+           </spacer>
+          </item>
+
+         </layout>
+        </widget>
+       </item>
+
+       <!-- ── Stacked content panel (hidden when collapsed) ─────────── -->
+       <item>
+        <widget class="QScrollArea" name="sidebarScrollArea">
+         <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+         <property name="widgetResizable"><bool>true</bool></property>
+         <property name="horizontalScrollBarPolicy">
+          <enum>Qt::ScrollBarAlwaysOff</enum>
+         </property>
+
+         <widget class="QStackedWidget" name="sidebarStack">
+          <property name="currentIndex"><number>0</number></property>
+
+          <!-- ══ Page 0 — Layer Settings ════════════════════════════════ -->
+          <widget class="QWidget" name="pageLayer">
+           <layout class="QVBoxLayout" name="layoutPageLayer">
+            <property name="leftMargin"><number>12</number></property>
+            <property name="topMargin"><number>14</number></property>
+            <property name="rightMargin"><number>12</number></property>
+            <property name="bottomMargin"><number>12</number></property>
+            <property name="spacing"><number>10</number></property>
+
+            <item>
+             <widget class="QLabel" name="labelLayerHdr">
+              <property name="text"><string>LAYER SETTINGS</string></property>
+             </widget>
+            </item>
+
+            <!-- LUT + scale + opacity controls -->
+            <item>
+             <widget class="QFrame" name="frameLayerControls">
+              <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+              <layout class="QVBoxLayout" name="layoutFrameLayer">
+               <property name="leftMargin"><number>8</number></property>
+               <property name="topMargin"><number>8</number></property>
+               <property name="rightMargin"><number>8</number></property>
+               <property name="bottomMargin"><number>8</number></property>
+               <property name="spacing"><number>8</number></property>
+
+               <item>
+                <widget class="QComboBox" name="comboLut"/>
+               </item>
+
+               <item>
+                <layout class="QHBoxLayout" name="hboxScale">
+                 <property name="spacing"><number>6</number></property>
+                 <item>
+                  <widget class="QRadioButton" name="radioLinear">
+                   <property name="text"><string>Linear</string></property>
+                   <property name="checked"><bool>true</bool></property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QRadioButton" name="radioLog">
+                   <property name="text"><string>Log</string></property>
+                  </widget>
+                 </item>
+                 <item>
+                  <spacer>
+                   <property name="orientation"><enum>Qt::Horizontal</enum></property>
+                   <property name="sizeHint" stdset="0">
+                    <size><width>10</width><height>20</height></size>
+                   </property>
+                  </spacer>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="btnLutEdit">
+                   <property name="sizePolicy">
+                    <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                     <horstretch>0</horstretch>
+                     <verstretch>0</verstretch>
+                    </sizepolicy>
+                   </property>
+                   <property name="text"><string>...</string></property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+
+               <item>
+                <widget class="QSlider" name="sliderOpacity">
+                 <property name="maximum"><number>100</number></property>
+                 <property name="value"><number>100</number></property>
+                 <property name="orientation">
+                  <enum>Qt::Orientation::Horizontal</enum>
+                 </property>
+                </widget>
+               </item>
+
+              </layout>
+             </widget>
+            </item>
+
+            <!-- Layer list sub-header -->
+            <item>
+             <widget class="QLabel" name="labelLayerListHdr">
+              <property name="text"><string>Layers</string></property>
+             </widget>
+            </item>
+
+            <!-- Layer list (expands to fill remaining space) -->
+            <item>
+             <widget class="QListView" name="listLayer">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+                <horstretch>0</horstretch>
+                <verstretch>1</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="dragEnabled"><bool>true</bool></property>
+              <property name="dragDropMode">
+               <enum>QAbstractItemView::DragDropMode::InternalMove</enum>
+              </property>
+              <property name="defaultDropAction">
+               <enum>Qt::DropAction::MoveAction</enum>
+              </property>
+             </widget>
+            </item>
+
+           </layout>
+          </widget>
+
+          <!-- ══ Page 1 — Catalogue ══════════════════════════════════════ -->
+          <widget class="QWidget" name="pageCatalogue">
+           <layout class="QVBoxLayout" name="layoutPageCatalogue">
+            <property name="leftMargin"><number>12</number></property>
+            <property name="topMargin"><number>14</number></property>
+            <property name="rightMargin"><number>12</number></property>
+            <property name="bottomMargin"><number>12</number></property>
+            <property name="spacing"><number>10</number></property>
+
+            <item>
+             <widget class="QLabel" name="labelCatalogueHdr">
+              <property name="text"><string>CATALOGUE</string></property>
+             </widget>
+            </item>
+
+            <!-- Action buttons -->
+            <item>
+             <widget class="QFrame" name="frameCatalogueActions">
+              <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+              <layout class="QHBoxLayout" name="hboxCatalogueActions">
+               <property name="leftMargin"><number>4</number></property>
+               <property name="topMargin"><number>4</number></property>
+               <property name="rightMargin"><number>4</number></property>
+               <property name="bottomMargin"><number>4</number></property>
+               <property name="spacing"><number>8</number></property>
+               <item>
+                <widget class="QPushButton" name="btnSources">
+                 <property name="sizePolicy">
+                  <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                   <horstretch>0</horstretch>
+                   <verstretch>0</verstretch>
+                  </sizepolicy>
+                 </property>
+                 <property name="text"><string>Sources</string></property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QPushButton" name="btnFilaments">
+                 <property name="sizePolicy">
+                  <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                   <horstretch>0</horstretch>
+                   <verstretch>0</verstretch>
+                  </sizepolicy>
+                 </property>
+                 <property name="text"><string>Filaments</string></property>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+            </item>
+
+            <!-- Inventory table sub-section -->
+            <item>
+             <widget class="QLabel" name="labelInventoryHdr">
+              <property name="text"><string>Inventory</string></property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QTableWidget" name="tableInventory">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+                <horstretch>0</horstretch>
+                <verstretch>1</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="minimumHeight"><number>120</number></property>
+             </widget>
+            </item>
+
+            <!-- Objects table sub-section -->
+            <item>
+             <widget class="QLabel" name="labelObjectsHdr">
+              <property name="text"><string>Objects</string></property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QTableWidget" name="tableObjects">
+              <property name="sizePolicy">
+               <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+                <horstretch>0</horstretch>
+                <verstretch>1</verstretch>
+               </sizepolicy>
+              </property>
+              <property name="minimumHeight"><number>120</number></property>
+             </widget>
+            </item>
+
+           </layout>
+          </widget>
+
+          <!-- ══ Page 2 — 3D View ══════════════════════════════════════ -->
+          <widget class="QWidget" name="page3D">
+           <layout class="QVBoxLayout" name="layoutPage3D">
+            <property name="leftMargin"><number>12</number></property>
+            <property name="topMargin"><number>14</number></property>
+            <property name="rightMargin"><number>12</number></property>
+            <property name="bottomMargin"><number>12</number></property>
+            <property name="spacing"><number>10</number></property>
+
+            <item>
+             <widget class="QLabel" name="label3DHdr">
+              <property name="text"><string>3D VIEW</string></property>
+             </widget>
+            </item>
+
+            <item>
+             <widget class="QFrame" name="frame3D">
+              <property name="frameShape"><enum>QFrame::NoFrame</enum></property>
+              <layout class="QVBoxLayout" name="layoutFrame3D">
+               <property name="leftMargin"><number>8</number></property>
+               <property name="topMargin"><number>8</number></property>
+               <property name="rightMargin"><number>8</number></property>
+               <property name="bottomMargin"><number>8</number></property>
+               <property name="spacing"><number>8</number></property>
+               <item>
+                <widget class="QPushButton" name="btn3D">
+                 <property name="sizePolicy">
+                  <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+                   <horstretch>0</horstretch>
+                   <verstretch>0</verstretch>
+                  </sizepolicy>
+                 </property>
+                 <property name="text"><string>Open 3D Viewer</string></property>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+            </item>
+
+            <item>
+             <spacer name="spacer3D">
+              <property name="orientation"><enum>Qt::Vertical</enum></property>
+              <property name="sizeHint" stdset="0">
+               <size><width>20</width><height>40</height></size>
+              </property>
+             </spacer>
+            </item>
+
+           </layout>
+          </widget>
+
          </widget>
-        </item>
-        <item>
-         <widget class="QGroupBox" name="groupFilaments">
-          <property name="sizePolicy">
-           <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
-            <horstretch>0</horstretch>
-            <verstretch>0</verstretch>
-           </sizepolicy>
-          </property>
-          <property name="title">
-           <string>Filaments</string>
-          </property>
-          <layout class="QVBoxLayout" name="verticalLayout_2">
-           <item>
-            <widget class="QPushButton" name="btnFilaments"/>
-           </item>
-          </layout>
-         </widget>
-        </item>
-        <item>
-         <widget class="QGroupBox" name="group3D">
-          <property name="sizePolicy">
-           <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
-            <horstretch>0</horstretch>
-            <verstretch>0</verstretch>
-           </sizepolicy>
-          </property>
-          <property name="title">
-           <string>3D</string>
-          </property>
-          <layout class="QVBoxLayout" name="verticalLayout_3">
-           <item>
-            <widget class="QPushButton" name="btn3D"/>
-           </item>
-          </layout>
-         </widget>
-        </item>
-        <item>
-         <widget class="QGroupBox" name="groupLayer">
-          <property name="sizePolicy">
-           <sizepolicy hsizetype="MinimumExpanding" vsizetype="Preferred">
-            <horstretch>0</horstretch>
-            <verstretch>0</verstretch>
-           </sizepolicy>
-          </property>
-          <property name="minimumSize">
-           <size>
-            <width>450</width>
-            <height>0</height>
-           </size>
-          </property>
-          <property name="title">
-           <string>Layer settings</string>
-          </property>
-          <layout class="QVBoxLayout" name="verticalLayout_5">
-           <item>
-            <layout class="QHBoxLayout" name="horizontalLayout_3">
-             <item>
-              <widget class="QComboBox" name="comboLut"/>
-             </item>
-             <item>
-              <widget class="QRadioButton" name="radioLinear">
-               <property name="text">
-                <string>Linear</string>
-               </property>
-               <property name="checked">
-                <bool>true</bool>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QRadioButton" name="radioLog">
-               <property name="text">
-                <string>Log</string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QPushButton" name="btnLutEdit">
-               <property name="sizePolicy">
-                <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                 <horstretch>0</horstretch>
-                 <verstretch>0</verstretch>
-                </sizepolicy>
-               </property>
-               <property name="text">
-                <string>...</string>
-               </property>
-              </widget>
-             </item>
-            </layout>
-           </item>
-           <item>
-            <widget class="QSlider" name="sliderOpacity">
-             <property name="maximum">
-              <number>100</number>
-             </property>
-             <property name="value">
-              <number>100</number>
-             </property>
-             <property name="orientation">
-              <enum>Qt::Orientation::Horizontal</enum>
-             </property>
-            </widget>
-           </item>
-          </layout>
-         </widget>
-        </item>
-       </layout>
-      </item>
-      <item>
-       <widget class="QVTKOpenGLNativeWidget" name="vtk" native="true">
-        <property name="sizePolicy">
-         <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-          <horstretch>0</horstretch>
-          <verstretch>0</verstretch>
-         </sizepolicy>
-        </property>
-       </widget>
-      </item>
-     </layout>
-    </item>
-    <item>
-     <widget class="QSplitter" name="splitter">
-      <property name="orientation">
-       <enum>Qt::Orientation::Vertical</enum>
-      </property>
-      <widget class="QTableWidget" name="tableInventory"/>
-      <widget class="QTableWidget" name="tableObjects"/>
-      <widget class="QListView" name="listLayer">
-       <property name="dragEnabled">
-        <bool>true</bool>
-       </property>
-       <property name="dragDropMode">
-        <enum>QAbstractItemView::DragDropMode::InternalMove</enum>
-       </property>
-       <property name="defaultDropAction">
-        <enum>Qt::DropAction::MoveAction</enum>
-       </property>
-      </widget>
+        </widget>
+       </item>
+
+      </layout>
      </widget>
     </item>
+
+    <!-- ══ RIGHT VIEWER ══════════════════════════════════════════════════ -->
+    <item>
+     <widget class="QWidget" name="viewerContainer">
+      <layout class="QVBoxLayout" name="viewerVLayout">
+       <property name="spacing"><number>0</number></property>
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>0</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
+       <item>
+        <widget class="QVTKOpenGLNativeWidget" name="vtk" native="true">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+
    </layout>
   </widget>
+
+  <!-- ══ MENU BAR ══════════════════════════════════════════════════════════ -->
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">
     <rect>
@@ -195,78 +423,56 @@
      <height>30</height>
     </rect>
    </property>
+   <widget class="QMenu" name="menuFile">
+    <property name="title"><string>File</string></property>
+    <addaction name="actionAddFITS"/>
+   </widget>
    <widget class="QMenu" name="menuWCS">
-    <property name="title">
-     <string>WCS</string>
-    </property>
+    <property name="title"><string>WCS</string></property>
     <addaction name="actionGalactic"/>
     <addaction name="actionFK5"/>
     <addaction name="actionEcliptic"/>
    </widget>
    <widget class="QMenu" name="menuTools">
-    <property name="title">
-     <string>Tools</string>
-    </property>
+    <property name="title"><string>Tools</string></property>
     <addaction name="actionProfile"/>
    </widget>
    <widget class="QMenu" name="menuView">
-    <property name="title">
-     <string>View</string>
-    </property>
-   </widget>
-   <widget class="QMenu" name="menuFile">
-    <property name="title">
-     <string>File</string>
-    </property>
-    <addaction name="actionAddFITS"/>
+    <property name="title"><string>View</string></property>
+    <!-- actionShowControlsSidebar is added programmatically -->
    </widget>
    <addaction name="menuFile"/>
    <addaction name="menuWCS"/>
    <addaction name="menuTools"/>
    <addaction name="menuView"/>
   </widget>
+
   <widget class="QStatusBar" name="statusbar"/>
+
+  <!-- ══ ACTIONS ═══════════════════════════════════════════════════════════ -->
   <action name="actionGalactic">
-   <property name="checkable">
-    <bool>true</bool>
-   </property>
-   <property name="checked">
-    <bool>true</bool>
-   </property>
-   <property name="text">
-    <string>Galactic</string>
-   </property>
+   <property name="checkable"><bool>true</bool></property>
+   <property name="checked"><bool>true</bool></property>
+   <property name="text"><string>Galactic</string></property>
   </action>
   <action name="actionFK5">
-   <property name="checkable">
-    <bool>true</bool>
-   </property>
-   <property name="text">
-    <string>FK5</string>
-   </property>
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>FK5</string></property>
   </action>
   <action name="actionEcliptic">
-   <property name="checkable">
-    <bool>true</bool>
-   </property>
-   <property name="text">
-    <string>Ecliptic</string>
-   </property>
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Ecliptic</string></property>
   </action>
   <action name="actionProfile">
-   <property name="text">
-    <string>Profile</string>
-   </property>
-   <property name="shortcut">
-    <string>Ctrl+P</string>
-   </property>
+   <property name="text"><string>Profile</string></property>
+   <property name="shortcut"><string>Ctrl+P</string></property>
   </action>
   <action name="actionAddFITS">
-   <property name="text">
-    <string>Add new FITS file...</string>
-   </property>
+   <property name="text"><string>Add new FITS file...</string></property>
   </action>
+
  </widget>
+
  <customwidgets>
   <customwidget>
    <class>QVTKOpenGLNativeWidget</class>
@@ -275,19 +481,21 @@
    <container>1</container>
   </customwidget>
  </customwidgets>
+
  <tabstops>
-  <tabstop>btnSources</tabstop>
-  <tabstop>btnFilaments</tabstop>
-  <tabstop>btn3D</tabstop>
   <tabstop>comboLut</tabstop>
   <tabstop>radioLinear</tabstop>
   <tabstop>radioLog</tabstop>
   <tabstop>btnLutEdit</tabstop>
   <tabstop>sliderOpacity</tabstop>
+  <tabstop>listLayer</tabstop>
+  <tabstop>btnSources</tabstop>
+  <tabstop>btnFilaments</tabstop>
   <tabstop>tableInventory</tabstop>
   <tabstop>tableObjects</tabstop>
-  <tabstop>listLayer</tabstop>
+  <tabstop>btn3D</tabstop>
  </tabstops>
+
  <resources/>
  <connections/>
 </ui>

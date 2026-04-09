@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <!-- Front face -->
+  <rect x="4" y="8" width="11" height="11" rx="0.5"
+        stroke="#8AB8CC" stroke-width="1.5"/>
+  <!-- Top face -->
+  <polyline points="4,8 8,4 19,4 15,8"
+            stroke="#8AB8CC" stroke-width="1.5" stroke-linejoin="round"/>
+  <!-- Right face (accent) -->
+  <polyline points="15,8 19,4 19,15 15,19"
+            stroke="#048ABF" stroke-width="1.5" stroke-linejoin="round"/>
+</svg>
