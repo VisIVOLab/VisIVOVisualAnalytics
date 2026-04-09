@@ -14,6 +14,7 @@
 #include <QHash>
 #include <QMainWindow>
 #include <QPointer>
+#include <QParallelAnimationGroup>
 #include <QPropertyAnimation>
 #include <QSet>
 #include <QStringList>
@@ -27,6 +28,7 @@
 
 class QAction;
 class QCheckBox;
+class QToolButton;
 class CatalogueTableModel;
 class QDockWidget;
 class QLabel;
@@ -286,11 +288,18 @@ private:
     QPointer<QCheckBox> remoteRoiRefinementCheck;
     // ── Sidebar ───────────────────────────────────────────────────────────────
     bool sidebarExpanded{ true };
-    QPointer<QPropertyAnimation> sidebarAnimation;
+    bool isProgrammaticScroll{ false };
+    QPointer<QParallelAnimationGroup> sidebarAnimGroup;
+    QPointer<QWidget> pendingScrollTarget;
     QPointer<QAction> actionShowControlsSidebar;
     void setupSidebar();
+    void setupSidebarRail();
+    void setupRailIcons();
     void setSidebarExpanded(bool expanded, bool animated = true);
     void toggleSidebar();
+    void scrollToSection(QWidget *section);
+    void setActiveRailButton(QToolButton *btn);
+    void updateActiveSectionFromScroll();
 
     QPointer<QAction> actionShowWcsAxes;
     QPointer<QAction> actionWcsSexagesimal;

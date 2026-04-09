@@ -186,6 +186,16 @@ qt_add_resources(${PROJECT_NAME} branding_assets
         resources/branding/visivo_logo_white.svg
 )
 
+qt_add_resources(${PROJECT_NAME} rail_icons
+    PREFIX "/icons"
+    BASE "resources/icons"
+    FILES
+        resources/icons/rail_threshold.svg
+        resources/icons/rail_slice.svg
+        resources/icons/rail_contours.svg
+        resources/icons/rail_stats.svg
+)
+
 add_subdirectory(src/libwcs)
 
 add_subdirectory(src/qcustomplot)

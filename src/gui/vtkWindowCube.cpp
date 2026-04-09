@@ -83,6 +83,7 @@
 #include <QList>
 #include <QMetaObject>
 #include <QMessageBox>
+#include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSpinBox>
@@ -2137,39 +2138,19 @@ vtkWindowCube::~vtkWindowCube()
 
 void vtkWindowCube::setupSidebar()
 {
-    // Style the sidebar container: VisIVO navy surface, thin right border.
+    // Style the sidebar container.
     ui->sidebarContainer->setStyleSheet(
             u"QWidget#sidebarContainer {"
             "  background-color: #0E2940;"
             "  border-right: 1px solid rgba(4, 138, 191, 0.18);"
             "}"_s);
 
-    // Style the header strip that houses the toggle button.
-    ui->sidebarHeader->setStyleSheet(
-            u"QWidget#sidebarHeader {"
-            "  background-color: #12334F;"
-            "  border-bottom: 1px solid rgba(4, 138, 191, 0.18);"
-            "}"_s);
+    setupSidebarRail();
 
-    // Toggle button — borderless, themed.
-    ui->btnToggleSidebar->setStyleSheet(
-            u"QToolButton {"
-            "  background-color: transparent;"
-            "  color: #8AB8CC;"
-            "  border: none;"
-            "  border-radius: 4px;"
-            "  font-size: 13px;"
-            "  padding: 4px 6px;"
-            "}"
-            "QToolButton:hover { background-color: #163D5E; color: #048ABF; }"
-            "QToolButton:pressed { background-color: #1A4870; }"_s);
-
-    // Fix the expanded width on the container.
-    ui->sidebarContainer->setFixedWidth(268);
-
-    // Wire the toggle button.
-    QObject::connect(ui->btnToggleSidebar, &QToolButton::clicked,
-                     this, &vtkWindowCube::toggleSidebar);
+    // Start fully expanded — scroll area visible.
+    ui->sidebarContainer->setMinimumWidth(48);
+    ui->sidebarContainer->setMaximumWidth(268);
+    ui->sidebarScrollArea->setVisible(true);
 
     // Create the View menu action.
     this->actionShowControlsSidebar = new QAction(u"Controls Sidebar"_s, this);
@@ -2180,9 +2161,163 @@ void vtkWindowCube::setupSidebar()
                      this, [this](bool checked) { setSidebarExpanded(checked); });
 }
 
+void vtkWindowCube::setupSidebarRail()
+{
+    ui->sidebarRail->setStyleSheet(
+            u"QWidget#sidebarRail {"
+            "  background-color: #0A2236;"
+            "  border-right: 1px solid rgba(4, 138, 191, 0.18);"
+            "}"_s);
+
+    // Stylesheet for section buttons. The [active='true'] rule uses a property set
+    // via setProperty("active", …) + style()->polish() — no extra code paths needed.
+    const QString railBtnStyle =
+            u"QToolButton {"
+            "  background-color: transparent;"
+            "  border: none;"
+            "  border-radius: 6px;"
+            "  padding: 4px 0px;"
+            "}"
+            "QToolButton:hover   { background-color: #163D5E; }"
+            "QToolButton:pressed { background-color: #1A4870; }"
+            "QToolButton[active='true'] {"
+            "  background-color: #1B3A57;"
+            "  border-left: 2px solid #048ABF;"
+            "}"_s;
+
+    // Toggle button keeps a slightly different style (arrow, no active indicator).
+    const QString toggleBtnStyle =
+            u"QToolButton {"
+            "  background-color: transparent;"
+            "  color: #8AB8CC;"
+            "  border: none;"
+            "  border-radius: 6px;"
+            "  font-size: 13px;"
+            "  padding: 4px 0px;"
+            "}"
+            "QToolButton:hover   { background-color: #163D5E; color: #048ABF; }"
+            "QToolButton:pressed { background-color: #1A4870; }"_s;
+
+    ui->btnToggleSidebar->setStyleSheet(toggleBtnStyle);
+    ui->railBtnThreshold->setStyleSheet(railBtnStyle);
+    ui->railBtnSlice->setStyleSheet(railBtnStyle);
+    ui->railBtnContours->setStyleSheet(railBtnStyle);
+    ui->railBtnStats->setStyleSheet(railBtnStyle);
+
+    setupRailIcons();
+
+    // Threshold section is at the top — make it active by default.
+    setActiveRailButton(ui->railBtnThreshold);
+
+    // Wire toggle button.
+    QObject::connect(ui->btnToggleSidebar, &QToolButton::clicked,
+                     this, &vtkWindowCube::toggleSidebar);
+
+    // Section buttons: set active state first, then navigate.
+    QObject::connect(ui->railBtnThreshold, &QToolButton::clicked, this, [this]() {
+        setActiveRailButton(ui->railBtnThreshold);
+        scrollToSection(ui->groupThreshold);
+    });
+    QObject::connect(ui->railBtnSlice, &QToolButton::clicked, this, [this]() {
+        setActiveRailButton(ui->railBtnSlice);
+        scrollToSection(ui->groupSlice);
+    });
+    QObject::connect(ui->railBtnContours, &QToolButton::clicked, this, [this]() {
+        setActiveRailButton(ui->railBtnContours);
+        scrollToSection(ui->groupContours);
+    });
+    QObject::connect(ui->railBtnStats, &QToolButton::clicked, this, [this]() {
+        setActiveRailButton(ui->railBtnStats);
+        scrollToSection(ui->groupStats);
+    });
+
+    // Auto-sync active section with manual scroll position.
+    QObject::connect(ui->sidebarScrollArea->verticalScrollBar(), &QScrollBar::valueChanged,
+                     this, [this](int) { updateActiveSectionFromScroll(); });
+}
+
+void vtkWindowCube::scrollToSection(QWidget *section)
+{
+    if (this->sidebarExpanded) {
+        this->isProgrammaticScroll = true;
+        ui->sidebarScrollArea->ensureWidgetVisible(section);
+        this->isProgrammaticScroll = false;
+    } else {
+        // Record the target; setSidebarExpanded will scroll once the animation finishes.
+        this->pendingScrollTarget = section;
+        setSidebarExpanded(true);
+    }
+}
+
 void vtkWindowCube::toggleSidebar()
 {
     setSidebarExpanded(!this->sidebarExpanded);
+}
+
+void vtkWindowCube::setupRailIcons()
+{
+    struct Entry {
+        QToolButton *btn;
+        const char  *resource;
+        const char  *tooltip;
+    };
+    const std::array<Entry, 4> entries = {{
+        { ui->railBtnThreshold, ":/icons/rail_threshold.svg", "Threshold"    },
+        { ui->railBtnSlice,     ":/icons/rail_slice.svg",     "Cutting plane" },
+        { ui->railBtnContours,  ":/icons/rail_contours.svg",  "Contours"     },
+        { ui->railBtnStats,     ":/icons/rail_stats.svg",     "Statistics"   },
+    }};
+    for (const auto &e : entries) {
+        e.btn->setText(QString());
+        e.btn->setIcon(QIcon(QString::fromUtf8(e.resource)));
+        e.btn->setIconSize(QSize(22, 22));
+        e.btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        e.btn->setToolTip(QString::fromUtf8(e.tooltip));
+    }
+}
+
+void vtkWindowCube::setActiveRailButton(QToolButton *btn)
+{
+    for (QToolButton *b : { ui->railBtnThreshold, ui->railBtnSlice,
+                             ui->railBtnContours,  ui->railBtnStats }) {
+        const bool active = (b == btn);
+        if (b->property("active").toBool() != active) {
+            b->setProperty("active", active);
+            b->style()->polish(b);
+        }
+    }
+}
+
+void vtkWindowCube::updateActiveSectionFromScroll()
+{
+    if (this->isProgrammaticScroll)
+        return;
+
+    struct Entry { QWidget *section; QToolButton *btn; };
+    const std::array<Entry, 4> entries = {{
+        { ui->groupThreshold, ui->railBtnThreshold },
+        { ui->groupSlice,     ui->railBtnSlice     },
+        { ui->groupContours,  ui->railBtnContours  },
+        { ui->groupStats,     ui->railBtnStats     },
+    }};
+
+    QWidget      *vp       = ui->sidebarScrollArea->viewport();
+    const int     vpCenter = vp->height() / 2;
+    QToolButton  *best     = nullptr;
+    int           bestDist = std::numeric_limits<int>::max();
+
+    for (const auto &e : entries) {
+        // Map the vertical midpoint of the section into viewport coordinates.
+        const int midY = e.section->mapTo(vp, QPoint(0, e.section->height() / 2)).y();
+        const int dist = std::abs(midY - vpCenter);
+        if (dist < bestDist) {
+            bestDist = dist;
+            best     = e.btn;
+        }
+    }
+
+    if (best)
+        setActiveRailButton(best);
 }
 
 void vtkWindowCube::setSidebarExpanded(bool expanded, bool animated)
@@ -2191,7 +2326,11 @@ void vtkWindowCube::setSidebarExpanded(bool expanded, bool animated)
         return;
     this->sidebarExpanded = expanded;
 
-    // Keep menu action and button in sync.
+    // Collapsing cancels any pending section scroll requested via rail buttons.
+    if (!expanded)
+        this->pendingScrollTarget = nullptr;
+
+    // Sync toggle button and menu action.
     if (this->actionShowControlsSidebar)
         this->actionShowControlsSidebar->setChecked(expanded);
     ui->btnToggleSidebar->setChecked(expanded);
@@ -2199,35 +2338,60 @@ void vtkWindowCube::setSidebarExpanded(bool expanded, bool animated)
     ui->btnToggleSidebar->setToolTip(
             expanded ? u"Collapse controls sidebar"_s : u"Expand controls sidebar"_s);
 
-    const int targetWidth = expanded ? 268 : 48;
+    const int fromWidth = ui->sidebarContainer->width();
+    const int toWidth = expanded ? 268 : 48;
 
     if (animated) {
-        // Stop any in-progress animation before starting a new one.
-        if (this->sidebarAnimation) {
-            this->sidebarAnimation->stop();
-        }
-        auto *anim = new QPropertyAnimation(ui->sidebarContainer, "maximumWidth", this);
-        anim->setDuration(180);
-        anim->setEasingCurve(QEasingCurve::InOutCubic);
-        anim->setStartValue(ui->sidebarContainer->width());
-        anim->setEndValue(targetWidth);
+        // stop() does NOT emit finished(), so the old lambda never fires.
+        // DeleteWhenStopped schedules the old group for deletion via deleteLater().
+        if (this->sidebarAnimGroup)
+            this->sidebarAnimGroup->stop();
 
-        // Show scroll area immediately when expanding; hide only after collapsing.
-        if (expanded) {
+        auto *animMin = new QPropertyAnimation(ui->sidebarContainer, "minimumWidth", this);
+        animMin->setDuration(200);
+        animMin->setEasingCurve(QEasingCurve::InOutCubic);
+        animMin->setStartValue(fromWidth);
+        animMin->setEndValue(toWidth);
+
+        auto *animMax = new QPropertyAnimation(ui->sidebarContainer, "maximumWidth", this);
+        animMax->setDuration(200);
+        animMax->setEasingCurve(QEasingCurve::InOutCubic);
+        animMax->setStartValue(fromWidth);
+        animMax->setEndValue(toWidth);
+
+        auto *group = new QParallelAnimationGroup(this);
+        group->addAnimation(animMin);
+        group->addAnimation(animMax);
+
+        // Show scroll area immediately so it grows with the sidebar during expansion.
+        if (expanded)
             ui->sidebarScrollArea->setVisible(true);
-            ui->sidebarContainer->setMinimumWidth(48);
-        } else {
-            // Hide controls area when animation ends.
-            QObject::connect(anim, &QPropertyAnimation::finished, this, [this]() {
+
+        // Single finished() handler covers both directions:
+        //   • collapse → hide the scroll area
+        //   • expand   → flush any pending section scroll from a rail button click
+        QObject::connect(group, &QParallelAnimationGroup::finished, this, [this, expanded]() {
+            if (!expanded) {
                 ui->sidebarScrollArea->setVisible(false);
-                ui->sidebarContainer->setFixedWidth(48);
-            });
-        }
-        this->sidebarAnimation = anim;
-        anim->start(QAbstractAnimation::DeleteWhenStopped);
+            } else if (this->pendingScrollTarget) {
+                this->isProgrammaticScroll = true;
+                ui->sidebarScrollArea->ensureWidgetVisible(this->pendingScrollTarget);
+                this->isProgrammaticScroll = false;
+                this->pendingScrollTarget = nullptr;
+            }
+        });
+
+        this->sidebarAnimGroup = group;
+        group->start(QAbstractAnimation::DeleteWhenStopped);
     } else {
         ui->sidebarScrollArea->setVisible(expanded);
-        ui->sidebarContainer->setFixedWidth(targetWidth);
+        ui->sidebarContainer->setMinimumWidth(toWidth);
+        ui->sidebarContainer->setMaximumWidth(toWidth);
+        // Non-animated expand: flush pending scroll immediately.
+        if (expanded && this->pendingScrollTarget) {
+            ui->sidebarScrollArea->ensureWidgetVisible(this->pendingScrollTarget);
+            this->pendingScrollTarget = nullptr;
+        }
     }
 }
 

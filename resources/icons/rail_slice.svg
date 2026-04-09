@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <!-- Datacube outline -->
+  <rect x="5" y="4" width="14" height="16" rx="1"
+        stroke="#8AB8CC" stroke-width="1.5"
+        stroke-linecap="round"/>
+  <!-- Cutting plane highlighted in accent -->
+  <line x1="3" y1="12" x2="21" y2="12"
+        stroke="#048ABF" stroke-width="2"
+        stroke-linecap="round"/>
+</svg>
