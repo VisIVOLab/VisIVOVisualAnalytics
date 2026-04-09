@@ -455,31 +455,7 @@ BackendCubeNoiseResult BackendClient::requestNoise(const QString &datasetId, int
         return result;
     }
 
-    const QJsonObject object = QJsonDocument::fromJson(payload).object();
-    result.valid = object.value(QStringLiteral("valid")).toBool(false);
-    result.error = object.value(QStringLiteral("error")).toString();
-    result.channelStart = object.value(QStringLiteral("channel_start")).toInt();
-    result.channelEnd = object.value(QStringLiteral("channel_end")).toInt();
-    result.numChannels = object.value(QStringLiteral("num_channels")).toInt();
-
-    const QJsonArray madArray = object.value(QStringLiteral("mad")).toArray();
-    result.mad.reserve(madArray.size());
-    for (const QJsonValue &value : madArray) {
-        result.mad.push_back(value.toDouble(std::numeric_limits<double>::quiet_NaN()));
-    }
-
-    const QJsonArray sigmaArray = object.value(QStringLiteral("sigma")).toArray();
-    result.sigma.reserve(sigmaArray.size());
-    for (const QJsonValue &value : sigmaArray) {
-        result.sigma.push_back(value.toDouble(std::numeric_limits<double>::quiet_NaN()));
-    }
-
-    const QJsonObject region = object.value(QStringLiteral("region")).toObject();
-    result.x0 = region.value(QStringLiteral("x0")).toInt();
-    result.x1 = region.value(QStringLiteral("x1")).toInt();
-    result.y0 = region.value(QStringLiteral("y0")).toInt();
-    result.y1 = region.value(QStringLiteral("y1")).toInt();
-    return result;
+    return parseNoiseResultObject(QJsonDocument::fromJson(payload).object());
 }
 
 BackendCatalogueSubset BackendClient::requestCatalogueSubset(const QString &datasetId,
@@ -1076,6 +1052,33 @@ BackendCubePvResult BackendClient::parsePvResultObject(const QJsonObject &object
     if (!result.error.isEmpty()) {
         result.valid = false;
     }
+    return result;
+}
+
+BackendCubeNoiseResult BackendClient::parseNoiseResultObject(const QJsonObject &object)
+{
+    BackendCubeNoiseResult result;
+    result.valid        = object.value(QStringLiteral("valid")).toBool(false);
+    result.error        = object.value(QStringLiteral("error")).toString();
+    result.channelStart = object.value(QStringLiteral("channel_start")).toInt();
+    result.channelEnd   = object.value(QStringLiteral("channel_end")).toInt();
+    result.numChannels  = object.value(QStringLiteral("num_channels")).toInt();
+
+    const QJsonArray madArray = object.value(QStringLiteral("mad")).toArray();
+    result.mad.reserve(madArray.size());
+    for (const QJsonValue &v : madArray)
+        result.mad.push_back(v.toDouble(std::numeric_limits<double>::quiet_NaN()));
+
+    const QJsonArray sigmaArray = object.value(QStringLiteral("sigma")).toArray();
+    result.sigma.reserve(sigmaArray.size());
+    for (const QJsonValue &v : sigmaArray)
+        result.sigma.push_back(v.toDouble(std::numeric_limits<double>::quiet_NaN()));
+
+    const QJsonObject region = object.value(QStringLiteral("region")).toObject();
+    result.x0 = region.value(QStringLiteral("x0")).toInt();
+    result.x1 = region.value(QStringLiteral("x1")).toInt();
+    result.y0 = region.value(QStringLiteral("y0")).toInt();
+    result.y1 = region.value(QStringLiteral("y1")).toInt();
     return result;
 }
 

@@ -266,3 +266,9 @@ qt_generate_deploy_app_script(
 )
 
 install(SCRIPT ${deploy_script})
+
+# ── Unit tests (opt-in via -DBUILD_TESTING=ON) ────────────────────────────────
+option(BUILD_TESTING "Build the VisIVO unit-test suite" OFF)
+if (BUILD_TESTING)
+    add_subdirectory(tests)
+endif ()

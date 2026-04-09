@@ -514,8 +514,9 @@ public:
                                                   const QString &logTag,
                                                   int maxPollAttempts = 120,
                                                   int pollIntervalMs = 250) const;
-    static BackendMomentResult parseMomentResultObject(const QJsonObject &object);
-    static BackendCubePvResult parsePvResultObject(const QJsonObject &object);
+    static BackendMomentResult    parseMomentResultObject(const QJsonObject &object);
+    static BackendCubePvResult    parsePvResultObject(const QJsonObject &object);
+    static BackendCubeNoiseResult parseNoiseResultObject(const QJsonObject &object);
 
 private:
     /** Build a QNetworkRequest with auth + session headers pre-applied. */

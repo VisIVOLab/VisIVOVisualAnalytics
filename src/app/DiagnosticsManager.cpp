@@ -1,6 +1,6 @@
 #include "DiagnosticsManager.h"
 
-#include <QApplication>
+#include <QCoreApplication>
 #include <QThread>
 
 namespace {
