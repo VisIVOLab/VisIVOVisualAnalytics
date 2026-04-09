@@ -14,6 +14,7 @@
 #include <QHash>
 #include <QMainWindow>
 #include <QPointer>
+#include <QPropertyAnimation>
 #include <QSet>
 #include <QStringList>
 #include <QTimer>
@@ -283,6 +284,14 @@ private:
     QPointer<CatalogueTableModel> catalogueTableModel;
     bool syncingCatalogueSelection{ false };
     QPointer<QCheckBox> remoteRoiRefinementCheck;
+    // ── Sidebar ───────────────────────────────────────────────────────────────
+    bool sidebarExpanded{ true };
+    QPointer<QPropertyAnimation> sidebarAnimation;
+    QPointer<QAction> actionShowControlsSidebar;
+    void setupSidebar();
+    void setSidebarExpanded(bool expanded, bool animated = true);
+    void toggleSidebar();
+
     QPointer<QAction> actionShowWcsAxes;
     QPointer<QAction> actionWcsSexagesimal;
     QPointer<QAction> actionWcsDecimal;

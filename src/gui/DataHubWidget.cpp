@@ -15,12 +15,10 @@
 #include <QScrollArea>
 #include <QSizePolicy>
 #include <QVBoxLayout>
-#include <QTimer>
 #include <QPainter>
 #include <QPixmap>
 #include <QSvgRenderer>
-#include <QPainterPath>
-#include <QPen>
+#include <QTimer>
 
 using namespace Qt::StringLiterals;
 
@@ -187,45 +185,28 @@ void DataHubWidget::buildUi()
 
     // ── 1. Header ─────────────────────────────────────────────────────────────
     {
+        // [ VisIVO orbital logo ]  [ title + subtitle ]
+        // Logo sits at 44 px height — large enough to read the wordmark clearly
+        // without overwhelming the header. No glow or color effects: asset as-is.
         auto *headerRow = new QHBoxLayout;
         headerRow->setContentsMargins(0, 0, 0, 0);
-        headerRow->setSpacing(10);
+        headerRow->setSpacing(16);
 
-        auto *brandIcon = new QLabel(content);
-        constexpr int logoBoxW = 104;
-        constexpr int logoBoxH = 44;
-        QPixmap logoPixmap(logoBoxW, logoBoxH);
-        logoPixmap.fill(Qt::transparent);
-        {
-            QSvgRenderer renderer(QStringLiteral(":/icons/visivo_logo_white.svg"));
-            QPainter painter(&logoPixmap);
-            const QSize defaultSize = renderer.defaultSize();
-            QSize scaledSize = defaultSize.isValid() ? defaultSize : QSize(logoBoxW, logoBoxH);
-            scaledSize.scale(logoBoxW, logoBoxH, Qt::KeepAspectRatio);
-            const QRectF target((logoBoxW - scaledSize.width()) / 2.0,
-                                (logoBoxH - scaledSize.height()) / 2.0,
-                                scaledSize.width(),
-                                scaledSize.height());
-            renderer.render(&painter, target);
+        if (auto *logo = VisivoTheme::createVisivoLogoLabel(44, content)) {
+            headerRow->addWidget(logo, 0, Qt::AlignVCenter);
         }
-        brandIcon->setPixmap(logoPixmap);
-        brandIcon->setFixedSize(logoBoxW, logoBoxH);
-        brandIcon->setAlignment(Qt::AlignCenter);
-        brandIcon->setStyleSheet(QStringLiteral("background: transparent; border: none;"));
-        headerRow->addWidget(brandIcon, 0, Qt::AlignVCenter);
 
+        // Title + subtitle stacked column
         auto *titleCol = new QVBoxLayout;
         titleCol->setContentsMargins(0, 0, 0, 0);
-        titleCol->setSpacing(6);
+        titleCol->setSpacing(4);
 
-        // Main title — Lato Black, brand blue. Lato Black gives the editorial
-        // weight called for in the VisIVO brand guidelines for major headings.
-        auto *titleLabel = new QLabel(u"VisIVO Data Hub"_s, content);
+        // Main title — Lato Black, brand blue.
+        auto *titleLabel = new QLabel(u"Data Hub"_s, content);
         {
             QFont f(QStringLiteral("Lato"));
-            f.setPixelSize(28);
+            f.setPixelSize(26);
             f.setWeight(QFont::Black);
-            f.setLetterSpacing(QFont::AbsoluteSpacing, 0.5);
             titleLabel->setFont(f);
         }
         titleLabel->setStyleSheet(
@@ -233,15 +214,14 @@ void DataHubWidget::buildUi()
                         .arg(QLatin1StringView(VisivoTheme::kPrimary)));
         titleCol->addWidget(titleLabel);
 
-        // Subtitle — Lato Regular, secondary text colour.
+        // Subtitle — Lato Regular, muted.
         auto *sub = new QLabel(
-                u"VisIVO uses a backend-authoritative workflow. "
-                "Scientific operations are available for backend-visible datasets."_s,
+                u"Backend-authoritative workflow — scientific operations run on remote nodes."_s,
                 content);
         sub->setWordWrap(true);
         {
             QFont f(QStringLiteral("Lato"));
-            f.setPixelSize(13);
+            f.setPixelSize(12);
             f.setWeight(QFont::Normal);
             sub->setFont(f);
         }

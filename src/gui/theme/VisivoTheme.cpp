@@ -1,13 +1,16 @@
 #include "VisivoTheme.h"
 
 #include <QApplication>
+#include <QDebug>
 #include <QFont>
 #include <QFontDatabase>
 #include <QFrame>
 #include <QLabel>
 #include <QPalette>
+#include <QPixmap>
 #include <QPushButton>
-#include <QDebug>
+#include <QSvgRenderer>
+#include <QPainter>
 #include <QWidget>
 
 using namespace Qt::StringLiterals;
@@ -596,6 +599,46 @@ QString globalStyleSheet()
 
             // ── Web engine ─────────────────────────────────────────────────
             "QWebEngineView { background-color: #091E30; }");
+}
+
+QLabel *createVisivoLogoLabel(int height, QWidget *parent)
+{
+    // Try the SVG resource first — crisp at any DPI.
+    QSvgRenderer renderer(QStringLiteral(":/icons/visivo_logo_white.svg"));
+    if (renderer.isValid()) {
+        const QSize svgSize = renderer.defaultSize();
+        // Scale width to match requested height while preserving aspect ratio.
+        const int w = (svgSize.height() > 0)
+                ? qRound(svgSize.width() * static_cast<double>(height) / svgSize.height())
+                : height * 2;
+        QPixmap pm(w, height);
+        pm.fill(Qt::transparent);
+        QPainter painter(&pm);
+        renderer.render(&painter);
+        painter.end();
+
+        auto *lbl = new QLabel(parent);
+        lbl->setPixmap(pm);
+        lbl->setFixedSize(w, height);
+        lbl->setStyleSheet(u"background: transparent; border: none;"_s);
+        lbl->setAttribute(Qt::WA_TransparentForMouseEvents);
+        return lbl;
+    }
+
+    // SVG failed — fall back to the bundled 128-px PNG.
+    QPixmap fallback(QStringLiteral(":/icons/VisIVO_128.png"));
+    if (!fallback.isNull()) {
+        const QPixmap scaled = fallback.scaledToHeight(height, Qt::SmoothTransformation);
+        auto *lbl = new QLabel(parent);
+        lbl->setPixmap(scaled);
+        lbl->setFixedSize(scaled.width(), scaled.height());
+        lbl->setStyleSheet(u"background: transparent; border: none;"_s);
+        lbl->setAttribute(Qt::WA_TransparentForMouseEvents);
+        return lbl;
+    }
+
+    qWarning("[VisivoTheme] createVisivoLogoLabel: both SVG and PNG resources failed to load");
+    return nullptr;
 }
 
 void applyTo(QApplication *app)

@@ -1510,6 +1510,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
       level(15)
 {
     ui->setupUi(this);
+    this->setupSidebar();
     this->setWindowTitle(this->filepath);
     this->setAttribute(Qt::WA_DeleteOnClose);
     qDebug().noquote()
@@ -1554,6 +1555,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->actionShowWcsAxes->setCheckable(true);
     this->actionShowWcsAxes->setChecked(this->showWcsAxes);
     ui->menuView->addSeparator();
+    ui->menuView->addAction(this->actionShowControlsSidebar);
     ui->menuView->addAction(this->actionShowWcsAxes);
 
     QObject::connect(this->actionShowWcsAxes, &QAction::toggled, this, [this](bool checked) {
@@ -2129,6 +2131,104 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 vtkWindowCube::~vtkWindowCube()
 {
     delete ui;
+}
+
+// ── Sidebar ───────────────────────────────────────────────────────────────────
+
+void vtkWindowCube::setupSidebar()
+{
+    // Style the sidebar container: VisIVO navy surface, thin right border.
+    ui->sidebarContainer->setStyleSheet(
+            u"QWidget#sidebarContainer {"
+            "  background-color: #0E2940;"
+            "  border-right: 1px solid rgba(4, 138, 191, 0.18);"
+            "}"_s);
+
+    // Style the header strip that houses the toggle button.
+    ui->sidebarHeader->setStyleSheet(
+            u"QWidget#sidebarHeader {"
+            "  background-color: #12334F;"
+            "  border-bottom: 1px solid rgba(4, 138, 191, 0.18);"
+            "}"_s);
+
+    // Toggle button — borderless, themed.
+    ui->btnToggleSidebar->setStyleSheet(
+            u"QToolButton {"
+            "  background-color: transparent;"
+            "  color: #8AB8CC;"
+            "  border: none;"
+            "  border-radius: 4px;"
+            "  font-size: 13px;"
+            "  padding: 4px 6px;"
+            "}"
+            "QToolButton:hover { background-color: #163D5E; color: #048ABF; }"
+            "QToolButton:pressed { background-color: #1A4870; }"_s);
+
+    // Fix the expanded width on the container.
+    ui->sidebarContainer->setFixedWidth(268);
+
+    // Wire the toggle button.
+    QObject::connect(ui->btnToggleSidebar, &QToolButton::clicked,
+                     this, &vtkWindowCube::toggleSidebar);
+
+    // Create the View menu action.
+    this->actionShowControlsSidebar = new QAction(u"Controls Sidebar"_s, this);
+    this->actionShowControlsSidebar->setCheckable(true);
+    this->actionShowControlsSidebar->setChecked(true);
+    this->actionShowControlsSidebar->setShortcut(QKeySequence(u"Ctrl+\\"_s));
+    QObject::connect(this->actionShowControlsSidebar, &QAction::toggled,
+                     this, [this](bool checked) { setSidebarExpanded(checked); });
+}
+
+void vtkWindowCube::toggleSidebar()
+{
+    setSidebarExpanded(!this->sidebarExpanded);
+}
+
+void vtkWindowCube::setSidebarExpanded(bool expanded, bool animated)
+{
+    if (this->sidebarExpanded == expanded)
+        return;
+    this->sidebarExpanded = expanded;
+
+    // Keep menu action and button in sync.
+    if (this->actionShowControlsSidebar)
+        this->actionShowControlsSidebar->setChecked(expanded);
+    ui->btnToggleSidebar->setChecked(expanded);
+    ui->btnToggleSidebar->setText(expanded ? u"◀"_s : u"▶"_s);
+    ui->btnToggleSidebar->setToolTip(
+            expanded ? u"Collapse controls sidebar"_s : u"Expand controls sidebar"_s);
+
+    const int targetWidth = expanded ? 268 : 48;
+
+    if (animated) {
+        // Stop any in-progress animation before starting a new one.
+        if (this->sidebarAnimation) {
+            this->sidebarAnimation->stop();
+        }
+        auto *anim = new QPropertyAnimation(ui->sidebarContainer, "maximumWidth", this);
+        anim->setDuration(180);
+        anim->setEasingCurve(QEasingCurve::InOutCubic);
+        anim->setStartValue(ui->sidebarContainer->width());
+        anim->setEndValue(targetWidth);
+
+        // Show scroll area immediately when expanding; hide only after collapsing.
+        if (expanded) {
+            ui->sidebarScrollArea->setVisible(true);
+            ui->sidebarContainer->setMinimumWidth(48);
+        } else {
+            // Hide controls area when animation ends.
+            QObject::connect(anim, &QPropertyAnimation::finished, this, [this]() {
+                ui->sidebarScrollArea->setVisible(false);
+                ui->sidebarContainer->setFixedWidth(48);
+            });
+        }
+        this->sidebarAnimation = anim;
+        anim->start(QAbstractAnimation::DeleteWhenStopped);
+    } else {
+        ui->sidebarScrollArea->setVisible(expanded);
+        ui->sidebarContainer->setFixedWidth(targetWidth);
+    }
 }
 
 void vtkWindowCube::closeEvent(QCloseEvent *event)

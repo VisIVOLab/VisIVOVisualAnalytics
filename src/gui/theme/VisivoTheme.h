@@ -91,6 +91,14 @@ inline constexpr auto kBodyFamily =
 // Returns true if at least Lato-Regular loaded successfully.
 bool loadBundledFonts();
 
+// ── Logo helper ───────────────────────────────────────────────────────────────
+// Returns a QLabel containing the VisIVO SVG logo rendered as a QPixmap.
+// The logo is scaled to 'height' pixels (preserving aspect ratio).
+// Uses the bundled :/branding/visivo_logo.svg resource.
+// Falls back to :/icons/VisIVO_128.png if SVG is unavailable.
+// Returns nullptr on failure (caller must guard).
+QLabel *createVisivoLogoLabel(int height, QWidget *parent = nullptr);
+
 // ── Component factories ───────────────────────────────────────────────────────
 QLabel *makeSectionLabel(const QString &text, QWidget *parent = nullptr);
 
