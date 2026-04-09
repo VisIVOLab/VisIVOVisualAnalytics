@@ -282,6 +282,14 @@ private:
     std::vector<BackendTabularFilter> activeFilters;
     bool filterBusy{ false };
     QFutureWatcher<Catalogue3DFilterTaskResult> filterWatcher;
+    // ── Pagination ────────────────────────────────────────────────────────────
+    int m_currentOffset{ 0 };
+    int m_pageSize{ 50000 };
+    int m_totalCount{ -1 };
+    bool m_loadingMore{ false };
+    QPointer<QPushButton> btnLoadMore;
+    QFutureWatcher<Catalogue3DFilterTaskResult> m_loadMoreWatcher;
+    void loadMoreEntries();
     QString m_cosmologyModel{ QStringLiteral("Planck18") };
     bool m_cosmologyBusy{ false };
     QFutureWatcher<Catalogue3DCosmologyTaskResult> m_cosmologyWatcher;

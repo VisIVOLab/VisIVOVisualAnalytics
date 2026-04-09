@@ -177,6 +177,19 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
 
                          this->subsetResult = result.subsetResult;
 
+                         // Update pagination state
+                         this->m_currentOffset = result.subsetResult.numRows;
+                         this->m_totalCount = result.totalRows > 0 ? result.totalRows
+                                                                    : result.subsetResult.numRows;
+                         const bool hasMore = this->m_currentOffset < this->m_totalCount;
+                         if (this->btnLoadMore) {
+                             this->btnLoadMore->setVisible(hasMore);
+                             this->btnLoadMore->setEnabled(true);
+                             this->btnLoadMore->setText(
+                                     QStringLiteral("Load more (%1 remaining)")
+                                             .arg(this->m_totalCount - this->m_currentOffset));
+                         }
+
                          if (this->filterStatusLabel) {
                              this->filterStatusLabel->setText(result.statusMsg);
                          }
@@ -195,11 +208,74 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
                          DiagnosticsManager::instance()->publish(
                                  DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
                                  QStringLiteral("VBT"),
-                                 QStringLiteral("Filter applied: %1 rows shown.")
-                                         .arg(result.subsetResult.numRows),
+                                 QStringLiteral("Filter applied: %1 of %2 rows loaded.")
+                                         .arg(result.subsetResult.numRows)
+                                         .arg(this->m_totalCount),
                                  this->openResult.datasetId, this->sessionId,
                                  QStringLiteral("filter"));
 
+                         this->renderWindow->Render();
+                     });
+
+    // ── Connect "load more" watcher ───────────────────────────────────────────
+    QObject::connect(&this->m_loadMoreWatcher, &QFutureWatcher<VbtFilterTaskResult>::finished,
+                     this, [this]() {
+                         this->m_loadingMore = false;
+
+                         const auto result = this->m_loadMoreWatcher.result();
+                         if (!result.valid) {
+                             if (this->filterStatusLabel) {
+                                 this->filterStatusLabel->setText(
+                                         u"Load more failed: "_s + result.error);
+                             }
+                             if (this->btnLoadMore) {
+                                 this->btnLoadMore->setEnabled(true);
+                                 this->btnLoadMore->setText(
+                                         QStringLiteral("Load more (%1 remaining)")
+                                                 .arg(this->m_totalCount - this->m_currentOffset));
+                             }
+                             return;
+                         }
+
+                         // Append columns to existing subsetResult
+                         const auto &newCols = result.subsetResult.columns;
+                         for (const auto &[fieldName, newVec] : newCols) {
+                             auto &dest = this->subsetResult.columns[fieldName];
+                             dest.insert(dest.end(), newVec.begin(), newVec.end());
+                         }
+                         this->subsetResult.numRows += result.subsetResult.numRows;
+                         this->m_currentOffset = this->subsetResult.numRows;
+                         this->m_totalCount = result.totalRows > 0 ? result.totalRows
+                                                                    : this->m_totalCount;
+
+                         const bool hasMore = this->m_currentOffset < this->m_totalCount;
+                         if (this->btnLoadMore) {
+                             this->btnLoadMore->setVisible(hasMore);
+                             this->btnLoadMore->setEnabled(true);
+                             this->btnLoadMore->setText(
+                                     QStringLiteral("Load more (%1 remaining)")
+                                             .arg(this->m_totalCount - this->m_currentOffset));
+                         }
+
+                         const QString statusMsg =
+                                 QStringLiteral("Loaded %1 of %2 rows.")
+                                         .arg(this->subsetResult.numRows)
+                                         .arg(this->m_totalCount);
+                         if (this->filterStatusLabel) {
+                             this->filterStatusLabel->setText(statusMsg);
+                         }
+
+                         // Rebuild point cloud with all data
+                         if (this->actor) {
+                             this->renderer->RemoveActor(this->actor.Get());
+                         }
+                         this->points->Reset();
+                         this->pointScalars->Reset();
+                         this->polyData->Reset();
+
+                         this->buildPointCloud();
+                         this->updateColorMapping();
+                         this->updateSummary();
                          this->renderWindow->Render();
                      });
 }
@@ -571,6 +647,15 @@ void vtkWindowVbt::setupSidebarUi(QWidget *parent)
     this->filterStatusLabel = new QLabel(pageFilters);
     this->filterStatusLabel->setWordWrap(true);
     pageFiltersLayout->addWidget(this->filterStatusLabel);
+
+    this->btnLoadMore = new QPushButton(u"Load more"_s, pageFilters);
+    this->btnLoadMore->setVisible(false);
+    this->btnLoadMore->setToolTip(
+            u"Fetch the next page of results and append them to the current point cloud."_s);
+    pageFiltersLayout->addWidget(this->btnLoadMore);
+    QObject::connect(this->btnLoadMore, &QPushButton::clicked, this,
+                     &vtkWindowVbt::loadMoreEntries);
+
     pageFiltersLayout->addStretch(1);
     this->sidebarStack->addWidget(pageFilters); // index 1
 
@@ -779,12 +864,19 @@ void vtkWindowVbt::applyFilter()
         return;
     }
 
+    // Reset pagination state for a fresh query
+    this->m_currentOffset = 0;
+    this->m_totalCount = -1;
+
     this->filterBusy = true;
     if (this->btnFilterApply) {
         this->btnFilterApply->setEnabled(false);
     }
     if (this->btnFilterAdd) {
         this->btnFilterAdd->setEnabled(false);
+    }
+    if (this->btnLoadMore) {
+        this->btnLoadMore->setVisible(false);
     }
     if (this->filterStatusLabel) {
         this->filterStatusLabel->setText(u"Applying filters…"_s);
@@ -802,9 +894,10 @@ void vtkWindowVbt::applyFilter()
     const QString datasetId = this->openResult.datasetId;
     const QString sessionId = this->sessionId;
     const std::vector<BackendTabularFilter> filters = this->activeFilters;
+    const int pageSize = this->m_pageSize;
 
     this->filterWatcher.setFuture(QtConcurrent::run(
-            [backendUrl, backendToken, datasetId, sessionId, filters, nFilters]()
+            [backendUrl, backendToken, datasetId, sessionId, filters, nFilters, pageSize]()
                     -> VbtFilterTaskResult {
                 VbtFilterTaskResult out;
 
@@ -815,6 +908,8 @@ void vtkWindowVbt::applyFilter()
                 BackendTabularQueryRequest qreq;
                 qreq.datasetId = datasetId;
                 qreq.filters = filters;
+                qreq.limit = pageSize;
+                qreq.offset = 0;
 
                 const auto queryResult = client.queryTabularVbt(qreq);
                 if (!queryResult.valid) {
@@ -828,15 +923,79 @@ void vtkWindowVbt::applyFilter()
                 out.subsetResult.numRows = queryResult.numRows;
                 out.subsetResult.fieldNames = queryResult.fieldNames;
                 out.subsetResult.columns = queryResult.columns;
+                out.totalRows = queryResult.totalRows;
 
                 out.statusMsg =
                         filters.empty()
-                                ? QStringLiteral("No filters active — showing all %1 rows.")
+                                ? QStringLiteral("Loaded %1 of %2 rows.")
+                                          .arg(queryResult.returnedRows)
                                           .arg(queryResult.totalRows)
-                                : QStringLiteral("%1 filter(s) active — showing %2 of %3 rows.")
+                                : QStringLiteral("%1 filter(s) active — %2 of %3 rows.")
                                           .arg(nFilters)
                                           .arg(queryResult.returnedRows)
                                           .arg(queryResult.totalRows);
+                out.valid = true;
+                return out;
+            }));
+}
+
+void vtkWindowVbt::loadMoreEntries()
+{
+    if (this->openResult.datasetId.isEmpty() || this->m_loadingMore || this->filterBusy) {
+        return;
+    }
+    if (this->m_totalCount >= 0 && this->m_currentOffset >= this->m_totalCount) {
+        return;
+    }
+
+    this->m_loadingMore = true;
+    if (this->btnLoadMore) {
+        this->btnLoadMore->setEnabled(false);
+        this->btnLoadMore->setText(u"Loading…"_s);
+    }
+    if (this->filterStatusLabel) {
+        this->filterStatusLabel->setText(
+                QStringLiteral("Loading rows %1–%2…")
+                        .arg(this->m_currentOffset + 1)
+                        .arg(this->m_currentOffset + this->m_pageSize));
+    }
+
+    const QString backendUrl = this->backendUrl;
+    const QString backendToken = this->backendToken;
+    const QString datasetId = this->openResult.datasetId;
+    const QString sessionId = this->sessionId;
+    const std::vector<BackendTabularFilter> filters = this->activeFilters;
+    const int offset = this->m_currentOffset;
+    const int pageSize = this->m_pageSize;
+
+    this->m_loadMoreWatcher.setFuture(QtConcurrent::run(
+            [backendUrl, backendToken, datasetId, sessionId, filters, offset, pageSize]()
+                    -> VbtFilterTaskResult {
+                VbtFilterTaskResult out;
+
+                BackendClient client(backendUrl, backendToken);
+                if (!sessionId.isEmpty()) {
+                    client.setSessionId(sessionId);
+                }
+                BackendTabularQueryRequest qreq;
+                qreq.datasetId = datasetId;
+                qreq.filters = filters;
+                qreq.limit = pageSize;
+                qreq.offset = offset;
+
+                const auto queryResult = client.queryTabularVbt(qreq);
+                if (!queryResult.valid) {
+                    out.error = queryResult.error;
+                    return out;
+                }
+
+                out.subsetResult = {};
+                out.subsetResult.valid = true;
+                out.subsetResult.kind = QStringLiteral("point");
+                out.subsetResult.numRows = queryResult.numRows;
+                out.subsetResult.fieldNames = queryResult.fieldNames;
+                out.subsetResult.columns = queryResult.columns;
+                out.totalRows = queryResult.totalRows;
                 out.valid = true;
                 return out;
             }));

@@ -223,6 +223,18 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          }
 
                          this->entries = result.entries;
+                         // Update pagination state
+                         this->m_currentOffset = static_cast<int>(result.entries.size());
+                         this->m_totalCount = result.totalRows;
+                         const bool hasMore = this->m_currentOffset < this->m_totalCount;
+                         if (this->btnLoadMore) {
+                             this->btnLoadMore->setVisible(hasMore);
+                             this->btnLoadMore->setEnabled(true);
+                             this->btnLoadMore->setText(
+                                     QStringLiteral("Load more (%1 remaining)")
+                                             .arg(this->m_totalCount - this->m_currentOffset));
+                         }
+
                          // Re-apply the active coordinate frame: the parser always
                          // produces FK5/J2000 scene positions; convert to Galactic if needed.
                          this->applyFrameToEntries();
@@ -234,7 +246,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          DiagnosticsManager::instance()->publish(
                                  DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
                                  u"Catalogue3D"_s,
-                                 QStringLiteral("Filter applied: %1 of %2 sources match.")
+                                 QStringLiteral("Filter applied: %1 of %2 sources loaded.")
                                          .arg(result.entries.size())
                                          .arg(result.totalRows),
                                  this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
@@ -255,6 +267,70 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          this->refreshCatalogueTable();
                          this->renderWindow->Render();
                      });
+
+    // ── Connect "load more" watcher ───────────────────────────────────────────
+    QObject::connect(
+            &this->m_loadMoreWatcher, &QFutureWatcher<Catalogue3DFilterTaskResult>::finished,
+            this, [this]() {
+                this->m_loadingMore = false;
+
+                const auto result = this->m_loadMoreWatcher.result();
+                if (!result.valid) {
+                    if (this->filterStatusLabel) {
+                        this->filterStatusLabel->setText(
+                                u"Load more failed: "_s + result.error);
+                    }
+                    if (this->btnLoadMore) {
+                        this->btnLoadMore->setEnabled(true);
+                        this->btnLoadMore->setText(
+                                QStringLiteral("Load more (%1 remaining)")
+                                        .arg(this->m_totalCount - this->m_currentOffset));
+                    }
+                    return;
+                }
+
+                // Append new entries
+                this->entries.insert(this->entries.end(),
+                                     result.entries.begin(), result.entries.end());
+                this->m_currentOffset = static_cast<int>(this->entries.size());
+                this->m_totalCount = result.totalRows;
+
+                // Re-apply coordinate frame for the newly appended entries
+                this->applyFrameToEntries();
+
+                const bool hasMore = this->m_currentOffset < this->m_totalCount;
+                if (this->btnLoadMore) {
+                    this->btnLoadMore->setVisible(hasMore);
+                    this->btnLoadMore->setEnabled(true);
+                    this->btnLoadMore->setText(
+                            QStringLiteral("Load more (%1 remaining)")
+                                    .arg(this->m_totalCount - this->m_currentOffset));
+                }
+                const QString statusMsg =
+                        QStringLiteral("Loaded %1 of %2 sources.")
+                                .arg(this->entries.size())
+                                .arg(this->m_totalCount);
+                ui->labelStatus->setText(statusMsg);
+                if (this->filterStatusLabel) {
+                    this->filterStatusLabel->setText(statusMsg);
+                }
+
+                // Rebuild the scene with all entries (including appended)
+                this->renderer->RemoveAllViewProps();
+                this->morphologyNames.clear();
+                this->morphologyIndexOf.clear();
+                this->labelActors.clear();
+                this->shellActors.clear();
+                this->mappedPositions.clear();
+                this->hoveredIndex  = -1;
+                this->selectedIndex = -1;
+                if (!this->entries.empty()) {
+                    this->buildScene();
+                    this->buildLabels();
+                }
+                this->refreshCatalogueTable();
+                this->renderWindow->Render();
+            });
 
     this->comboGeometry = new QComboBox(this);
     this->comboGeometry->addItems({ u"Ellipsoid"_s, u"Sphere"_s, u"Point"_s, u"Cross"_s });
@@ -403,6 +479,14 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
 
         this->filterStatusLabel = new QLabel(filterWidget);
         filterVLayout->addWidget(this->filterStatusLabel);
+
+        this->btnLoadMore = new QPushButton(u"Load more"_s, filterWidget);
+        this->btnLoadMore->setVisible(false);
+        this->btnLoadMore->setToolTip(
+                u"Fetch the next page of results and append them to the current scene."_s);
+        filterVLayout->addWidget(this->btnLoadMore);
+        QObject::connect(this->btnLoadMore, &QPushButton::clicked, this,
+                         &vtkWindowCatalogue3D::loadMoreEntries);
 
         filterDock->setWidget(filterWidget);
         this->addDockWidget(Qt::BottomDockWidgetArea, filterDock);
@@ -930,12 +1014,19 @@ void vtkWindowCatalogue3D::applyFilter()
         return;
     }
 
+    // Reset pagination state for a fresh query
+    this->m_currentOffset = 0;
+    this->m_totalCount = -1;
+
     this->filterBusy = true;
     if (this->btnFilterApply) {
         this->btnFilterApply->setEnabled(false);
     }
     if (this->btnFilterAdd) {
         this->btnFilterAdd->setEnabled(false);
+    }
+    if (this->btnLoadMore) {
+        this->btnLoadMore->setVisible(false);
     }
     if (this->filterStatusLabel) {
         this->filterStatusLabel->setText(u"Applying filters…"_s);
@@ -957,9 +1048,10 @@ void vtkWindowCatalogue3D::applyFilter()
     const std::vector<BackendTabularFilter> filters = this->activeFilters;
     const Catalogue3DSchema schema = this->schema;
     const int numFilters = nFilters;
+    const int pageSize = this->m_pageSize;
 
     this->filterWatcher.setFuture(QtConcurrent::run(
-            [backendUrl, backendToken, datasetId, sessionId, filters, schema, numFilters]()
+            [backendUrl, backendToken, datasetId, sessionId, filters, schema, numFilters, pageSize]()
                     -> Catalogue3DFilterTaskResult {
                 Catalogue3DFilterTaskResult out;
 
@@ -970,6 +1062,8 @@ void vtkWindowCatalogue3D::applyFilter()
                 BackendTabularQueryRequest qreq;
                 qreq.datasetId = datasetId;
                 qreq.filters = filters;
+                qreq.limit = pageSize;
+                qreq.offset = 0;
 
                 const auto subset = client.queryTabularCatalogue(qreq);
                 if (!subset.valid) {
@@ -986,11 +1080,77 @@ void vtkWindowCatalogue3D::applyFilter()
                 out.totalRows = subset.totalRows;
                 out.statusMsg =
                         filters.empty()
-                                ? QStringLiteral("Loaded %1 sources.").arg(out.entries.size())
-                                : QStringLiteral("%1 filter(s) active — %2 sources (total %3).")
+                                ? QStringLiteral("Loaded %1 of %2 sources.")
+                                          .arg(out.entries.size())
+                                          .arg(subset.totalRows)
+                                : QStringLiteral("%1 filter(s) active — %2 of %3 sources.")
                                           .arg(numFilters)
                                           .arg(out.entries.size())
                                           .arg(subset.totalRows);
+                out.valid = true;
+                return out;
+            }));
+}
+
+void vtkWindowCatalogue3D::loadMoreEntries()
+{
+    if (this->remoteDatasetId.isEmpty() || this->m_loadingMore || this->filterBusy) {
+        return;
+    }
+    if (this->m_totalCount >= 0
+        && this->m_currentOffset >= this->m_totalCount) {
+        return;
+    }
+
+    this->m_loadingMore = true;
+    if (this->btnLoadMore) {
+        this->btnLoadMore->setEnabled(false);
+        this->btnLoadMore->setText(u"Loading…"_s);
+    }
+    if (this->filterStatusLabel) {
+        this->filterStatusLabel->setText(
+                QStringLiteral("Loading rows %1–%2…")
+                        .arg(this->m_currentOffset + 1)
+                        .arg(this->m_currentOffset + this->m_pageSize));
+    }
+
+    const QString backendUrl = this->backendUrl;
+    const QString backendToken = this->backendToken;
+    const QString datasetId = this->remoteDatasetId;
+    const QString sessionId = this->remoteSessionId;
+    const std::vector<BackendTabularFilter> filters = this->activeFilters;
+    const Catalogue3DSchema schema = this->schema;
+    const int offset = this->m_currentOffset;
+    const int pageSize = this->m_pageSize;
+
+    this->m_loadMoreWatcher.setFuture(QtConcurrent::run(
+            [backendUrl, backendToken, datasetId, sessionId, filters, schema, offset, pageSize]()
+                    -> Catalogue3DFilterTaskResult {
+                Catalogue3DFilterTaskResult out;
+
+                BackendClient client(backendUrl, backendToken);
+                if (!sessionId.isEmpty()) {
+                    client.setSessionId(sessionId);
+                }
+                BackendTabularQueryRequest qreq;
+                qreq.datasetId = datasetId;
+                qreq.filters = filters;
+                qreq.limit = pageSize;
+                qreq.offset = offset;
+
+                const auto subset = client.queryTabularCatalogue(qreq);
+                if (!subset.valid) {
+                    out.error = subset.error;
+                    return out;
+                }
+                const auto parsed = Catalogue3DParser::parseBackendSubset(schema, subset.rows);
+                if (!parsed.valid) {
+                    out.error = parsed.errorMessage;
+                    return out;
+                }
+
+                out.entries = parsed.entries;
+                out.totalRows = subset.totalRows;
                 out.valid = true;
                 return out;
             }));

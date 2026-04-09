@@ -45,6 +45,7 @@ struct VbtFilterTaskResult
     QString error;
     BackendVbtSubsetResult subsetResult;
     QString statusMsg;
+    int totalRows{ 0 }; // backend-reported total (before limit/offset)
 };
 
 class vtkWindowVbt : public QMainWindow
@@ -107,6 +108,14 @@ private:
     std::vector<BackendTabularFilter> activeFilters;
     bool filterBusy{ false };
     QFutureWatcher<VbtFilterTaskResult> filterWatcher;
+    // ── Pagination ────────────────────────────────────────────────────────────
+    int m_currentOffset{ 0 };
+    int m_pageSize{ 50000 };
+    int m_totalCount{ -1 };
+    bool m_loadingMore{ false };
+    QPointer<QPushButton> btnLoadMore;
+    QFutureWatcher<VbtFilterTaskResult> m_loadMoreWatcher;
+    void loadMoreEntries();
     QPointer<QListWidget> fieldList;
     QPointer<QLabel> metadataLabel;
     bool updatingRangeControls{ false };
