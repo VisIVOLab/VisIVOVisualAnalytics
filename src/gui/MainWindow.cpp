@@ -13,6 +13,7 @@
 #include "vtkWindowCatalogue3D.h"
 #include "vtkWindowCube.h"
 #include "vtkWindowImage.h"
+#include "HiPSWindow.h"
 #include "vtkWindowVbt.h"
 #include "vtkWindowVbtVolume.h"
 
@@ -90,6 +91,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     auto *tabs = new QTabWidget(this);
     tabs->setDocumentMode(true);
     tabs->setTabPosition(QTabWidget::North);
+    tabs->setTabsClosable(true); // shows close button on user-added tabs
+    this->m_tabs = tabs;
 
     this->dataHub = new DataHubWidget(tabs);
     tabs->addTab(this->dataHub, u"Data Hub"_s);
@@ -100,6 +103,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     tabs->addTab(skyPanel, u"Sky View"_s);
 
     this->setCentralWidget(tabs);
+
+    // Permanent tabs (Data Hub + Sky View) must not show a close button.
+    tabs->tabBar()->setTabButton(0, QTabBar::RightSide, nullptr);
+    tabs->tabBar()->setTabButton(1, QTabBar::RightSide, nullptr);
+
+    // Close user-added tabs (index ≥ 2) on request; ignore permanent ones.
+    QObject::connect(tabs, &QTabWidget::tabCloseRequested, this, [tabs](int index) {
+        if (index >= 2) {
+            QWidget *w = tabs->widget(index);
+            tabs->removeTab(index);
+            w->deleteLater();
+        }
+    });
 
     // ── Setup Menu File (existing actions) ───────────────────────────────────
     QObject::connect(ui->actionOpenFile, &QAction::triggered, this, &MainWindow::openData);
@@ -209,11 +225,11 @@ void MainWindow::syncDataHubSettings()
 
 void MainWindow::openHiPS()
 {
-    QMessageBox::information(
-            this,
-            u"HiPS Viewer"_s,
-            u"The HiPS panoramic sky viewer is not yet available in this build.\n\n"
-            "It will be added in a future release."_s);
+    const QString backendUrl   = this->settings->getBackendUrl();
+    const QString backendToken = this->settings->getBackendToken();
+    auto *hipsWidget = new HiPSWindow(backendUrl, backendToken, m_tabs);
+    const int idx = m_tabs->addTab(hipsWidget, u"HiPS Viewer"_s);
+    m_tabs->setCurrentIndex(idx);
 }
 
 void MainWindow::openDiagnosticsWindow()

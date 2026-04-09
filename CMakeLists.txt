@@ -102,6 +102,10 @@ set(PROJECT_SOURCES
         src/gui/PvDiagramWidget.h
         src/gui/SettingsDialog.cpp
         src/gui/SettingsDialog.h
+        src/gui/HiPSViewportWidget.cpp
+        src/gui/HiPSViewportWidget.h
+        src/gui/HiPSWindow.cpp
+        src/gui/HiPSWindow.h
         src/gui/vtkWindowCatalogue3D.cpp
         src/gui/vtkWindowCatalogue3D.h
         src/gui/vtkWindowCube.cpp

@@ -379,7 +379,7 @@ QFrame *DataHubWidget::buildActionGrid()
         { u"dataset"_s,   u"Open Remote Dataset"_s, u"Browse and open FITS images or spectral cubes via the backend."_s },
         { u"catalogue"_s, u"Open 3D Catalogue"_s,   u"Visualise astronomical CSV catalogues in the 3D source viewer."_s },
         { u"vbt"_s,       u"Open VBT"_s,            u"Load a VisIVO Binary Table for point-cloud or volume rendering."_s },
-        { u"hips"_s,      u"HiPS Viewer"_s,         u"Explore hierarchical progressive sky surveys (coming soon)."_s },
+        { u"hips"_s,      u"HiPS Viewer"_s,         u"Explore hierarchical progressive sky surveys."_s },
     };
 
     // Connect each card to the matching signal.

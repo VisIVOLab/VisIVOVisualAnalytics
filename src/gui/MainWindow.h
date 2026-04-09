@@ -9,6 +9,8 @@
 class AuthWrapper;
 class DataHubWidget;
 class DiagnosticsWindow;
+class HiPSWindow;
+class QTabWidget;
 class Settings;
 
 QT_BEGIN_NAMESPACE
@@ -49,6 +51,7 @@ private:
     QPointer<AuthWrapper>     auth;
     QPointer<DiagnosticsWindow> diagnosticsWindow;
     QPointer<DataHubWidget>   dataHub;
+    QPointer<QTabWidget>      m_tabs;
 
     void openDiagnosticsWindow();
 };
