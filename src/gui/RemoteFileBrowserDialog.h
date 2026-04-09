@@ -5,6 +5,7 @@
 
 #include <QDialog>
 #include <QFutureWatcher>
+#include <QStringList>
 
 #include <memory>
 #include <vector>
@@ -27,6 +28,12 @@ public:
     ~RemoteFileBrowserDialog() override;
 
     QString selectedFilePath() const;
+
+    // Optional: restrict visible files to those whose names end with one of
+    // the given suffixes (case-insensitive).  Pass an empty list to clear.
+    // Also updates the filter checkbox label.
+    void setExtensionFilter(const QStringList &suffixes,
+                            const QString &label = QString());
 
 private:
     void loadPath(const QString &path);
@@ -54,6 +61,7 @@ private:
     QString selectedPath;
     QString currentDirectory;
     std::vector<BackendFileEntry> currentEntries;
+    QStringList m_extensionFilter;  // empty = use isFits; non-empty = filter by suffix
 };
 
 #endif

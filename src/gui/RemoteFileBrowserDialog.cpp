@@ -216,7 +216,18 @@ RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl, QWid
                              return;
                          }
 
-                         if (item->data(0, IsFitsRole).toBool()) {
+                         bool selectable = false;
+                         if (!this->m_extensionFilter.isEmpty()) {
+                             for (const QString &suffix : this->m_extensionFilter) {
+                                 if (item->text(0).endsWith(suffix, Qt::CaseInsensitive)) {
+                                     selectable = true;
+                                     break;
+                                 }
+                             }
+                         } else {
+                             selectable = item->data(0, IsFitsRole).toBool();
+                         }
+                         if (selectable) {
                              this->selectedPath = itemPath;
                              this->accept();
                          }
@@ -283,8 +294,22 @@ void RemoteFileBrowserDialog::populateEntries()
     std::vector<BackendFileEntry> visibleEntries;
     visibleEntries.reserve(this->currentEntries.size());
     for (const auto &entry : this->currentEntries) {
-        if (this->fitsOnlyCheck->isChecked() && entry.type == u"file"_s && !entry.isFits) {
-            continue;
+        if (this->fitsOnlyCheck->isChecked() && entry.type == u"file"_s) {
+            if (!this->m_extensionFilter.isEmpty()) {
+                // Extension-based filter (e.g. VBT .bin.head files)
+                bool matched = false;
+                for (const QString &suffix : this->m_extensionFilter) {
+                    if (entry.name.endsWith(suffix, Qt::CaseInsensitive)) {
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched)
+                    continue;
+            } else if (!entry.isFits) {
+                // Default: FITS-only filter
+                continue;
+            }
         }
         visibleEntries.push_back(entry);
     }
@@ -381,10 +406,33 @@ void RemoteFileBrowserDialog::updateDetails(const BackendFileEntry *entry)
 void RemoteFileBrowserDialog::updateSelectionState()
 {
     const auto *item = this->entriesTree->currentItem();
-    const bool isFitsFile =
-            item && item->data(0, TypeRole).toString() == u"file"_s && item->data(0, IsFitsRole).toBool();
-    this->selectedPath = isFitsFile ? item->data(0, PathRole).toString() : QString();
-    this->openButton->setEnabled(isFitsFile);
+    const bool isFile = item && item->data(0, TypeRole).toString() == u"file"_s;
+    bool selectable = false;
+    if (isFile) {
+        if (!this->m_extensionFilter.isEmpty()) {
+            const QString name = item->text(0);
+            for (const QString &suffix : this->m_extensionFilter) {
+                if (name.endsWith(suffix, Qt::CaseInsensitive)) {
+                    selectable = true;
+                    break;
+                }
+            }
+        } else {
+            selectable = item->data(0, IsFitsRole).toBool();
+        }
+    }
+    this->selectedPath = selectable ? item->data(0, PathRole).toString() : QString();
+    this->openButton->setEnabled(selectable);
+}
+
+void RemoteFileBrowserDialog::setExtensionFilter(const QStringList &suffixes,
+                                                 const QString &label)
+{
+    this->m_extensionFilter = suffixes;
+    if (!label.isEmpty())
+        this->fitsOnlyCheck->setText(label);
+    this->fitsOnlyCheck->setChecked(!suffixes.isEmpty());
+    this->refreshEntriesView();
 }
 
 void RemoteFileBrowserDialog::refreshEntriesView()

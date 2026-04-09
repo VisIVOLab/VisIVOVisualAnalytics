@@ -6,6 +6,7 @@
 #include "CatalogueTableModel.h"
 #include "LUTCustomizerDialog.h"
 #include "MomentMapComputeTask.h"
+#include "NoiseRegionDialog.h"
 #include "ProfileWidget.h"
 #include "PvDiagramWidget.h"
 #include "app/BackendClient.h"
@@ -6967,18 +6968,26 @@ void vtkWindowCube::startNoiseEstimation()
         return;
     }
 
-    const int x0 = 0;
-    const int x1 = std::max(0, this->remoteDatasetWidth - 1);
-    const int y0 = 0;
-    const int y1 = std::max(0, this->remoteDatasetHeight - 1);
-    const int channelStart = 0;
-    const int channelEnd = std::max(0, this->remoteDatasetDepth - 1);
+    NoiseRegionDialog dlg(this->remoteDatasetWidth, this->remoteDatasetHeight,
+                          this->remoteDatasetDepth, this);
+    if (dlg.exec() != QDialog::Accepted) {
+        return;
+    }
 
-    DiagnosticsManager::instance()->publish(DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
-                                            QStringLiteral("vtkWindowCube"),
-                                            QStringLiteral("Noise estimation started."),
-                                            this->remoteDatasetId, this->remoteSessionId,
-                                            QStringLiteral("noise"));
+    const int x0           = dlg.x0();
+    const int x1           = dlg.x1();
+    const int y0           = dlg.y0();
+    const int y1           = dlg.y1();
+    const int channelStart = dlg.channelStart();
+    const int channelEnd   = dlg.channelEnd();
+
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
+            QStringLiteral("vtkWindowCube"),
+            QStringLiteral("Noise estimation started (x:%1-%2 y:%3-%4 ch:%5-%6).")
+                    .arg(x0).arg(x1).arg(y0).arg(y1).arg(channelStart).arg(channelEnd),
+            this->remoteDatasetId, this->remoteSessionId,
+            QStringLiteral("noise"));
     this->statusBar()->showMessage(u"Estimating backend noise..."_s, 2000);
     this->updateBackendDerivedActionsAvailability();
     this->noiseEstimateWatcher.setFuture(QtConcurrent::run(

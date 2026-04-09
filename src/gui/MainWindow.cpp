@@ -27,6 +27,7 @@
 #include <QMessageBox>
 #include <QMenu>
 #include <QMenuBar>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QWebChannel>
 #include <qstylehints.h>
@@ -446,15 +447,32 @@ static VbtOpenTaskResult runVbtOpenTask(const QString &headerPath,
 
 void MainWindow::openVbt()
 {
-    const QString headerPath = QFileDialog::getOpenFileName(
-            this, u"Open VBT header"_s, QString(),
-            u"VisIVO Binary Table header (*.bin.head);;All files (*)"_s);
-    if (headerPath.isEmpty()) {
+    const QString backendUrl   = this->settings->getBackendUrl();
+    const QString backendToken = this->settings->getBackendToken();
+
+    BackendClient client(backendUrl, backendToken);
+    const auto health = client.health();
+    if (!health.ok) {
+        QMessageBox::critical(
+                this, u"Backend unavailable"_s,
+                u"Cannot open a VBT dataset: the backend is not reachable.\n\n"
+                "Start a local backend or configure a remote backend URL in Settings, "
+                "then try again.\n\nError: %1"_s.arg(health.error.isEmpty()
+                                                              ? u"No response"_s
+                                                              : health.error));
         return;
     }
 
-    const QString backendUrl = this->settings->getBackendUrl();
-    const QString backendToken = this->settings->getBackendToken();
+    RemoteFileBrowserDialog dialog(client.baseUrl(), this);
+    dialog.setExtensionFilter({u".bin.head"_s}, u"VBT files only"_s);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    const QString headerPath = dialog.selectedFilePath();
+    if (headerPath.isEmpty()) {
+        return;
+    }
 
     // Disable the action while loading to prevent double-submit
     if (ui->actionOpenVbt) {
