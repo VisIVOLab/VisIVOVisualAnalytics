@@ -4,7 +4,7 @@
 #include "CatalogueOverlayUtils.h"
 #include "CubeNoiseTypes.h"
 #include "CubeOpenPreviewTask.h"
-#include "MomentMapComputeTask.h"
+#include "MomentMapController.h"
 #include "NoiseController.h"
 
 #include <vtkSmartPointer.h>
@@ -218,15 +218,6 @@ private:
         std::array<double, 2> imageRange;
     };
 
-    struct MomentGenerationConfig
-    {
-        int order{ 0 };
-        int channelStart{ 0 };
-        int channelEnd{ 0 };
-        bool maskEnabled{ false };
-        double thresholdValue{ 0.0 };
-    };
-
     struct MomentProvenanceState
     {
         bool valid{ false };
@@ -303,8 +294,9 @@ private:
     QFutureWatcher<CubeOpenStageResult> cubeOpenWatcher;
     QFutureWatcher<RemoteCubePreviewResult> remotePreviewWatcher;
     QFutureWatcher<RemoteCubeSubvolumeResult> remoteHighResCubeWatcher;
-    QFutureWatcher<MomentMapComputeResult> momentComputeWatcher;
     QFutureWatcher<AsyncIsosurfaceResult> isosurfaceWatcher;
+    // Moment computation is delegated to MomentMapController.
+    MomentMapController *momentController{ nullptr };
     // Noise estimation is delegated to NoiseController.
     NoiseController *noiseController{ nullptr };
     int currentRemotePreviewRequestId{ 0 };
@@ -320,7 +312,6 @@ private:
     QTimer isosurfaceDebounceTimer;
     QTimer remoteSliceDebounceTimer;
     QTimer remoteFullResolutionStateTimer;
-    int currentMomentRequestId{ 0 };
     int currentIsosurfaceRequestId{ 0 };
     int currentFullCubeGeneration{ 0 };
     QTimer statusMessageClearTimer;
@@ -347,7 +338,6 @@ private:
     bool regionValid{ false };
     bool catalogueOverlayLoaded{ false };
     bool ignoreNextPolygonRelease{ false };
-    MomentGenerationConfig currentMomentConfig;
     MomentProvenanceState momentProvenanceState;
     std::array<int, 3> probeVoxel{ -1, -1, -1 };
     std::array<int, 2> regionAnchorVoxel{ -1, -1 };
@@ -485,10 +475,6 @@ private:
     void invalidateWcsOverlayCache();
     void applyDefaultWcsFormatForSelectedFrame();
     void requestWcsOverlayRender();
-    bool configureMomentRequest(int defaultOrder, MomentGenerationConfig &config);
-    QString describeMomentOrder(int order) const;
-    QString describeMomentScope() const;
-    QString formatMomentChannelRange(const MomentGenerationConfig &config) const;
     void updateMomentProvenancePanel();
     void updateSanityPanel();
 

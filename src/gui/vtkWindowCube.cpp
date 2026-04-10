@@ -5,7 +5,7 @@
 #include "CatalogueOverlayUtils.h"
 #include "CatalogueTableModel.h"
 #include "LUTCustomizerDialog.h"
-#include "MomentMapComputeTask.h"
+#include "MomentMapController.h"
 #include "NoiseController.h"
 #include "ProfileWidget.h"
 #include "PvDiagramWidget.h"
@@ -1523,7 +1523,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->catalogueInfoLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     this->statusBar()->addPermanentWidget(this->catalogueInfoLabel);
     this->updateCatalogueInfoPanel();
-    this->currentMomentConfig.thresholdValue = this->lowerBound;
     this->updateMomentProvenancePanel();
     this->actionShowWcsAxes = new QAction(u"Show WCS Axes"_s, this);
     this->actionShowWcsAxes->setCheckable(true);
@@ -1781,78 +1780,50 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              this->requestHighResCube();
                          }
                      });
-    QObject::connect(&this->momentComputeWatcher, &QFutureWatcher<MomentMapComputeResult>::finished,
-                     this, [this]() {
-                         const int requestId =
-                                 this->momentComputeWatcher.property("requestId").toInt();
-                         if (requestId != this->currentMomentRequestId) {
-                             return;
-                         }
+    // ── Moment computation – delegated to MomentMapController ────────────────
+    this->momentController = new MomentMapController(
+            this->filepath,
+            this->remoteBackendUrl,
+            this->remoteDatasetId,
+            this->remoteSessionId,
+            this->remoteBackendToken,
+            this->remoteDatasetDepth,
+            this->lowerBound,
+            this,
+            [this]() { this->updateBackendDerivedActionsAvailability(); },
+            [this](const MomentMapComputeResult &result,
+                   const MomentMapController::Config & /*config*/,
+                   const QString &summary,
+                   const QString &details) {
+                QElapsedTimer applyTimer;
+                applyTimer.start();
+                this->applyMomentMapResult(
+                        { result.imageData, { result.imageRange[0], result.imageRange[1] } });
+                qDebug().noquote()
+                        << QStringLiteral("[perf][moment] UI apply: %1 ms")
+                                   .arg(applyTimer.elapsed());
 
-                         this->updateBackendDerivedActionsAvailability();
+                this->momentProvenanceState.valid = true;
+                this->momentProvenanceState.summary = summary;
+                // Append WCS-specific fields that require window state.
+                this->momentProvenanceState.details =
+                        details
+                        + u"\nAxis 3 semantics: %1\nWCS frame: %2"_s
+                                  .arg(this->spectralAxisTitle())
+                                  .arg(this->currentWcsFrameLabel());
+                this->updateMomentProvenancePanel();
+                this->clearPersistentStatusMessage();
 
-                         const auto result = this->momentComputeWatcher.result();
-                         if (!result.valid || !result.imageData) {
-                             if (!result.errorMessage.isEmpty()) {
-                                 this->persistentStatusActive = false;
-                                 this->statusMessageClearTimer.stop();
-                                 this->statusBar()->showMessage(result.errorMessage);
-                             } else {
-                                 this->clearPersistentStatusMessage();
-                             }
-                             return;
-                         }
-
-                         QElapsedTimer applyTimer;
-                         applyTimer.start();
-                         this->applyMomentMapResult(
-                                 { result.imageData, { result.imageRange[0], result.imageRange[1] } });
-                         const QString maskSummary = this->currentMomentConfig.maskEnabled
-                                 ? u">= %1"_s.arg(this->currentMomentConfig.thresholdValue, 0, 'g', 8)
-                                 : u"none"_s;
-                         const QString unitLabel = result.momentUnit.isEmpty()
-                                 ? u"—"_s
-                                 : result.momentUnit;
-                         this->momentProvenanceState.valid = true;
-                         this->momentProvenanceState.summary =
-                                 u"Moment: %1 | Unit: %2 | Ch: %3 | Mask: %4 | Scope: %5"_s
-                                         .arg(this->describeMomentOrder(this->currentMomentConfig.order))
-                                         .arg(unitLabel)
-                                         .arg(this->formatMomentChannelRange(this->currentMomentConfig))
-                                         .arg(maskSummary)
-                                         .arg(this->describeMomentScope());
-                         this->momentProvenanceState.details =
-                                 u"Moment type: %1\nUnit: %2\nBUNIT: %3\nSpectral axis: %4 [%5]\nChannel range: %6\nMask: %7\nThreshold: %8\nNaN/blanking: excluded from computation\nValid-pixel policy: only finite unmasked voxels contribute\nSource scope: %9\nAxis 3 semantics: %10\nWCS frame: %11"_s
-                                         .arg(this->describeMomentOrder(this->currentMomentConfig.order))
-                                         .arg(unitLabel)
-                                         .arg(result.bunit.isEmpty() ? u"—"_s : result.bunit)
-                                         .arg(result.spectralAxisType.isEmpty() ? u"—"_s : result.spectralAxisType)
-                                         .arg(result.spectralAxisUnit.isEmpty() ? u"—"_s : result.spectralAxisUnit)
-                                         .arg(this->formatMomentChannelRange(this->currentMomentConfig))
-                                         .arg(this->currentMomentConfig.maskEnabled ? u"enabled"_s
-                                                                                    : u"none"_s)
-                                         .arg(this->currentMomentConfig.maskEnabled
-                                                      ? QString::number(this->currentMomentConfig.thresholdValue, 'g', 8)
-                                                      : u"n/a"_s)
-                                         .arg(this->describeMomentScope())
-                                         .arg(this->spectralAxisTitle())
-                                         .arg(this->currentWcsFrameLabel());
-                        this->updateMomentProvenancePanel();
-
-                        qDebug().noquote()
-                                 << QStringLiteral("[perf][moment] UI apply: %1 ms")
-                                            .arg(applyTimer.elapsed());
-                         this->clearPersistentStatusMessage();
-
-                         // Show a transient WCS warning when the moment was
-                         // computed with a sanitized or degraded WCS.
-                         if (!result.wcsStatus.isEmpty() && result.wcsStatus != u"ok"_s) {
-                             const QString warnText = result.wcsWarningMessage.isEmpty()
-                                     ? u"Moment WCS: %1"_s.arg(result.wcsStatus)
-                                     : u"Moment WCS (%1): %2"_s.arg(result.wcsStatus, result.wcsWarningMessage);
-                             this->statusBar()->showMessage(warnText, 8000);
-                         }
-                     });
+                // Show a transient WCS warning for sanitized/degraded WCS.
+                if (!result.wcsStatus.isEmpty() && result.wcsStatus != u"ok"_s) {
+                    const QString warnText = result.wcsWarningMessage.isEmpty()
+                            ? u"Moment WCS: %1"_s.arg(result.wcsStatus)
+                            : u"Moment WCS (%1): %2"_s.arg(result.wcsStatus,
+                                                             result.wcsWarningMessage);
+                    this->statusBar()->showMessage(warnText, 8000);
+                }
+            },
+            this);
     // ── Noise estimation – delegated to NoiseController ───────────────────────
     this->noiseController = new NoiseController(
             this->remoteBackendUrl, this->remoteDatasetId,
@@ -1922,7 +1893,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     cubeGroup->addAction(ui->actionVolume);
     QObject::connect(cubeGroup, &QActionGroup::triggered, this, &vtkWindowCube::changeCubeRender);
 
-    // Setup menu Moment
+    // Setup menu Moment – wired through the thin setMomentOrder() wrapper so the
+    // cross-system isBusy() guard still applies before delegating to the controller.
     QObject::connect(ui->actionMoment0, &QAction::triggered, this,
                      [this]() { this->setMomentOrder(0); });
     QObject::connect(ui->actionMoment1, &QAction::triggered, this,
@@ -2024,7 +1996,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     }
     ui->lineThreshold->setText(QString::number(this->lowerBound));
     ui->lineThreshold->setValidator(new QDoubleValidator(ui->lineThreshold));
-    this->currentMomentConfig.thresholdValue = ui->lineThreshold->text().toDouble();
     ui->btnCubeColor->setIcon(QIcon(u":/icons/COLORIZE.png"_s));
     QObject::connect(ui->lineThreshold, &QLineEdit::editingFinished, this,
                      &vtkWindowCube::thresholdLineChanged);
@@ -5769,36 +5740,6 @@ QString vtkWindowCube::currentWcsFrameLabel() const
             : (frame == WCS_J2000 ? u"FK5"_s : u"Ecliptic"_s);
 }
 
-QString vtkWindowCube::describeMomentOrder(int order) const
-{
-    switch (order) {
-    case 0:
-        return u"Moment 0"_s;
-    case 1:
-        return u"Moment 1"_s;
-    case 2:
-        return u"Moment 2 (Variance \u2013 NOT dispersion)"_s;
-    case 6:
-        return u"Moment 6 (RMS)"_s;
-    case 8:
-        return u"Moment 8 (Max)"_s;
-    case 10:
-        return u"Moment 10 (Min)"_s;
-    default:
-        return u"Moment"_s;
-    }
-}
-
-QString vtkWindowCube::describeMomentScope() const
-{
-    return u"Remote full dataset"_s;
-}
-
-QString vtkWindowCube::formatMomentChannelRange(const MomentGenerationConfig &config) const
-{
-    return u"%1..%2"_s.arg(config.channelStart + 1).arg(config.channelEnd + 1);
-}
-
 void vtkWindowCube::updateMomentProvenancePanel()
 {
     if (!this->momentProvenanceLabel) {
@@ -5863,102 +5804,6 @@ void vtkWindowCube::updateWcsStatusIndicator()
                 this->remoteDatasetId, this->remoteSessionId, QStringLiteral("dataset-open"));
         this->wcsDiagnosticPublished = true;
     }
-}
-
-bool vtkWindowCube::configureMomentRequest(int defaultOrder, MomentGenerationConfig &config)
-{
-    QDialog dialog(this);
-    dialog.setWindowTitle(u"Moment Map Settings"_s);
-    dialog.setMinimumWidth(560);
-    auto *layout = new QVBoxLayout(&dialog);
-    layout->setContentsMargins(12, 12, 12, 12);
-    layout->setSpacing(8);
-    auto *form = new QFormLayout();
-    form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
-    form->setRowWrapPolicy(QFormLayout::WrapLongRows);
-    form->setLabelAlignment(Qt::AlignLeft | Qt::AlignTop);
-    form->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
-    form->setHorizontalSpacing(12);
-    form->setVerticalSpacing(8);
-    layout->addLayout(form);
-
-    auto *momentCombo = new QComboBox(&dialog);
-    const std::array<std::pair<int, QString>, 6> orders = {
-            std::pair{ 0, u"Moment 0: Integrated intensity"_s },
-            std::pair{ 1, u"Moment 1: Intensity-weighted coordinate"_s },
-            std::pair{ 2, u"Moment 2: Variance (NOT velocity dispersion)"_s },
-            std::pair{ 6, u"Moment 6: RMS"_s },
-            std::pair{ 8, u"Moment 8: Maximum"_s },
-            std::pair{ 10, u"Moment 10: Minimum"_s },
-    };
-    int defaultIndex = 0;
-    for (int i = 0; i < static_cast<int>(orders.size()); ++i) {
-        momentCombo->addItem(orders[static_cast<std::size_t>(i)].second,
-                             orders[static_cast<std::size_t>(i)].first);
-        if (orders[static_cast<std::size_t>(i)].first == defaultOrder) {
-            defaultIndex = i;
-        }
-    }
-    momentCombo->setCurrentIndex(defaultIndex);
-
-    const int totalChannels = std::max(1, this->remoteDatasetDepth);
-    auto *channelStartSpin = new QSpinBox(&dialog);
-    auto *channelEndSpin = new QSpinBox(&dialog);
-    channelStartSpin->setRange(1, totalChannels);
-    channelEndSpin->setRange(1, totalChannels);
-    channelStartSpin->setValue(std::clamp(config.channelStart + 1, 1, totalChannels));
-    channelEndSpin->setValue(std::clamp(config.channelEnd > 0 ? config.channelEnd + 1 : totalChannels,
-                                        1, totalChannels));
-
-    auto *maskCheck = new QCheckBox(u"Enable threshold mask"_s, &dialog);
-    maskCheck->setChecked(config.maskEnabled);
-    auto *thresholdSpin = new QDoubleSpinBox(&dialog);
-    thresholdSpin->setRange(-1.0e30, 1.0e30);
-    thresholdSpin->setDecimals(6);
-    thresholdSpin->setValue(config.thresholdValue);
-    thresholdSpin->setEnabled(config.maskEnabled);
-    QObject::connect(maskCheck, &QCheckBox::toggled, thresholdSpin, &QWidget::setEnabled);
-
-    auto *blankingLabel = new QLabel(u"NaN/blanked voxels excluded automatically"_s, &dialog);
-    blankingLabel->setWordWrap(true);
-    blankingLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
-    blankingLabel->setMinimumHeight(blankingLabel->fontMetrics().lineSpacing() * 2 + 8);
-    auto *scopeLabel = new QLabel(this->describeMomentScope(), &dialog);
-    scopeLabel->setWordWrap(true);
-    scopeLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
-    scopeLabel->setMinimumHeight(scopeLabel->fontMetrics().lineSpacing() * 2 + 8);
-
-    form->addRow(u"Moment"_s, momentCombo);
-    form->addRow(u"Start channel"_s, channelStartSpin);
-    form->addRow(u"End channel"_s, channelEndSpin);
-    form->addRow(u"Mask"_s, maskCheck);
-    form->addRow(u"Threshold"_s, thresholdSpin);
-    form->addRow(u"NaN/blanking"_s, blankingLabel);
-    form->addRow(u"Source scope"_s, scopeLabel);
-
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-
-    if (dialog.exec() != QDialog::Accepted) {
-        return false;
-    }
-
-    const int channelStart = channelStartSpin->value() - 1;
-    const int channelEnd = channelEndSpin->value() - 1;
-    if (channelStart > channelEnd) {
-        QMessageBox::warning(this, u"Moment Map"_s,
-                             u"Start channel must be less than or equal to end channel."_s);
-        return false;
-    }
-
-    config.order = momentCombo->currentData().toInt();
-    config.channelStart = channelStart;
-    config.channelEnd = channelEnd;
-    config.maskEnabled = maskCheck->isChecked();
-    config.thresholdValue = thresholdSpin->value();
-    return true;
 }
 
 void vtkWindowCube::updateDataStatePanel()
@@ -6541,37 +6386,12 @@ void vtkWindowCube::updateContoursVisibility()
 
 void vtkWindowCube::setMomentOrder(int order)
 {
+    // Cross-system busy guard: block moment computation while the cube itself
+    // is still loading (slice/isosurface requests in flight, etc.).
     if (this->isBusy()) {
         return;
     }
-
-    MomentGenerationConfig config = this->currentMomentConfig;
-    config.order = order;
-    if (config.channelEnd <= config.channelStart) {
-        const int totalChannels = std::max(1, this->remoteDatasetDepth);
-        config.channelStart = 0;
-        config.channelEnd = totalChannels - 1;
-    }
-    if (!this->configureMomentRequest(order, config)) {
-        return;
-    }
-    this->currentMomentConfig = config;
-
-    const int requestId = ++this->currentMomentRequestId;
-    this->momentComputeWatcher.setProperty("requestId", requestId);
-    this->setMomentActionsEnabled(false);
-    this->showPersistentStatusMessage(u"Computing moment..."_s);
-    this->momentComputeWatcher.setFuture(QtConcurrent::run(
-            &computeMomentMap, MomentMapComputeRequest { this->filepath,
-                                                        this->remoteDatasetId,
-                                                        this->remoteBackendUrl,
-                                                        this->remoteSessionId,
-                                                        this->remoteBackendToken,
-                                                        config.order,
-                                                        config.channelStart,
-                                                        config.channelEnd,
-                                                        config.maskEnabled,
-                                                        config.thresholdValue }));
+    this->momentController->startComputation(order);
 }
 
 void vtkWindowCube::showPersistentStatusMessage(const QString &text, int minDurationMs)
@@ -6805,7 +6625,8 @@ bool vtkWindowCube::isBusy() const
 {
     return this->cubeOpenWatcher.isRunning() || this->remotePreviewWatcher.isRunning()
             || this->remoteHighResCubeWatcher.isRunning()
-            || this->momentComputeWatcher.isRunning() || this->activeRemoteSliceRequests > 0
+            || (this->momentController && this->momentController->isBusy())
+            || this->activeRemoteSliceRequests > 0
             || this->activeRemoteIsosurfaceRequests > 0 || this->isosurfaceWatcher.isRunning();
 }
 
@@ -6870,7 +6691,8 @@ void vtkWindowCube::updateBackendDerivedActionsAvailability()
         ui->menuMoment->menuAction()->setToolTip(available ? QString {} : kMomentBackendTooltip);
         ui->menuMoment->menuAction()->setStatusTip(available ? QString {} : kMomentBackendTooltip);
     }
-    this->setMomentActionsEnabled(!this->momentComputeWatcher.isRunning());
+    this->setMomentActionsEnabled(
+            !(this->momentController && this->momentController->isBusy()));
 
     if (this->actionExtractPvDiagram) {
         const bool pvEnabled = available && !this->cubeOpenWatcher.isRunning()

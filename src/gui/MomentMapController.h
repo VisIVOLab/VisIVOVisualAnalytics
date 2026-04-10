@@ -1,0 +1,119 @@
+#ifndef MomentMapController_h
+#define MomentMapController_h
+
+// ---------------------------------------------------------------------------
+// MomentMapController
+//
+// Owns the full moment-map computation flow extracted from vtkWindowCube:
+//   1. Open the "Moment Map Settings" dialog (config selection)
+//   2. Dispatch async computeMomentMap() via QFutureWatcher
+//   3. On completion: call onRunFinished() so the cube window can
+//      re-enable moment actions, then call onCompleted() with the result
+//      and pre-built provenance strings for the cube window to apply
+//
+// Dependencies injected at construction time:
+//   - dataset/backend context (filepath, backendUrl, datasetId, …)
+//   - cube spectral depth (for channel-range pre-fill in the dialog)
+//   - initial threshold value (used as default mask threshold)
+//   - parent widget (dialog parent + status-bar access)
+//   - onRunFinished callback: called both immediately after dispatch starts
+//     (to refresh action availability) and when the watcher finishes
+//   - onCompleted callback: called on success with the result, the config
+//     that was used, and pre-built provenance summary/details strings;
+//     vtkWindowCube uses these to apply the rendering and update the label
+//
+// vtkWindowCube retains:
+//   - applyMomentMapResult()   (VTK rendering – too entangled to move)
+//   - updateMomentProvenancePanel()  (reads a QLabel pointer)
+//   - setMomentActionsEnabled() / updateBackendDerivedActionsAvailability()
+//   - showPersistentStatusMessage() / clearPersistentStatusMessage()
+//   - setMomentOrder() as a thin wrapper (adds the cross-system isBusy guard)
+// ---------------------------------------------------------------------------
+
+#include "MomentMapComputeTask.h"
+
+#include <QFutureWatcher>
+#include <QObject>
+
+#include <functional>
+
+class QWidget;
+
+class MomentMapController : public QObject
+{
+    Q_OBJECT
+
+public:
+    // Mirrors the old MomentGenerationConfig; lives here now so the
+    // callback signature doesn't pull in the full vtkWindowCube header.
+    struct Config
+    {
+        int order{ 0 };
+        int channelStart{ 0 };
+        int channelEnd{ 0 };
+        bool maskEnabled{ false };
+        double thresholdValue{ 0.0 };
+    };
+
+    // onRunFinished – called when the watcher transitions busy state:
+    //   • once just after dispatch begins  (so actions are disabled immediately)
+    //   • once when the watcher finishes   (so actions are re-enabled)
+    //
+    // onCompleted – called on successful completion with:
+    //   result           – the full MomentMapComputeResult from the worker
+    //   config           – the Config that was passed to the worker
+    //   provenanceSummary – short one-liner for the status-bar label
+    //   provenanceDetails – full multi-line tooltip string
+    //   (note: vtkWindowCube appends spectralAxisTitle/wcsFrameLabel to details)
+    explicit MomentMapController(
+            const QString &filepath,
+            const QString &backendUrl,
+            const QString &datasetId,
+            const QString &sessionId,
+            const QString &backendToken,
+            int depth,
+            double initialThreshold,
+            QWidget *parentWindow,
+            std::function<void()> onRunFinished,
+            std::function<void(const MomentMapComputeResult &result,
+                               const Config &config,
+                               const QString &provenanceSummary,
+                               const QString &provenanceDetails)> onCompleted,
+            QObject *parent = nullptr);
+
+    // True while an async moment computation is in progress.
+    // Queried by vtkWindowCube::isBusy() and updateBackendDerivedActionsAvailability().
+    bool isBusy() const;
+
+public slots:
+    // Opens the dialog with defaultOrder pre-selected; if accepted, dispatches
+    // the async computation.  Re-entrancy-safe: no-op if already running.
+    void startComputation(int defaultOrder);
+
+private:
+    void onWatcherFinished();
+    bool configureMomentDialog(int defaultOrder, Config &config);
+
+    static QString describeMomentOrder(int order);
+    static QString describeMomentScope();
+    static QString formatMomentChannelRange(const Config &config);
+
+    const QString m_filepath;
+    const QString m_backendUrl;
+    const QString m_datasetId;
+    const QString m_sessionId;
+    const QString m_backendToken;
+    const int m_depth;
+    QWidget *m_parentWindow;
+    std::function<void()> m_onRunFinished;
+    std::function<void(const MomentMapComputeResult &,
+                       const Config &,
+                       const QString &,
+                       const QString &)> m_onCompleted;
+
+    Config m_currentConfig;
+    int m_currentRequestId{ 0 };
+    QFutureWatcher<MomentMapComputeResult> m_watcher;
+};
+
+#endif // MomentMapController_h

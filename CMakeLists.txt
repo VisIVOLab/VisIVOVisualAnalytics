@@ -106,6 +106,8 @@ set(PROJECT_SOURCES
         src/gui/HiPSViewportWidget.h
         src/gui/HiPSWindow.cpp
         src/gui/HiPSWindow.h
+        src/gui/MomentMapController.cpp
+        src/gui/MomentMapController.h
         src/gui/NoiseController.cpp
         src/gui/NoiseController.h
         src/gui/NoiseRegionDialog.cpp
