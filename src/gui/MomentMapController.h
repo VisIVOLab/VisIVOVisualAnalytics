@@ -84,6 +84,10 @@ public:
     // Queried by vtkWindowCube::isBusy() and updateBackendDerivedActionsAvailability().
     bool isBusy() const;
 
+    // Returns the configuration that was accepted in the last successful dialog.
+    // Valid only after startComputation() returns with isBusy() == true.
+    const Config &lastAcceptedConfig() const { return m_currentConfig; }
+
 public slots:
     // Opens the dialog with defaultOrder pre-selected; if accepted, dispatches
     // the async computation.  Re-entrancy-safe: no-op if already running.

@@ -292,6 +292,12 @@ private:
     void syncVolumeModeSidebar(int idx);
     void updateVolumeModeVisibility(bool volumeActive);
 
+    // ── Moment card state machine ─────────────────────────────────────────────
+    enum class MomentCardState { NoMoment, Computing, Ready, Error };
+    MomentCardState m_momentCardState{ MomentCardState::NoMoment };
+    QString         m_momentCardDetail;  // context string for Computing/Error states
+    void setMomentCardState(MomentCardState state, const QString &detail = {});
+
     // ── 2D View Settings page ─────────────────────────────────────────────────
     QPointer<QComboBox> m_combo2dMode;        // Slice / Moment
     QPointer<QWidget>   m_sliceControlsCard;  // shown only when Slice is active

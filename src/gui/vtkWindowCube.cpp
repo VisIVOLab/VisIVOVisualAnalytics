@@ -1755,7 +1755,33 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             this->remoteDatasetDepth,
             this->lowerBound,
             this,
-            [this]() { this->updateBackendDerivedActionsAvailability(); },
+            [this]() {
+                this->updateBackendDerivedActionsAvailability();
+                // When the controller transitions from busy→idle we don't yet know
+                // whether onCompleted will be called (it fires right after this in
+                // the same watcher lambda).  Schedule a deferred check for the next
+                // event-loop tick: if we're still in Computing state by then,
+                // onCompleted was not called → the computation failed.
+                if (!this->momentController->isBusy()
+                    && this->m_momentCardState == MomentCardState::Computing) {
+                    QMetaObject::invokeMethod(
+                            this,
+                            [this]() {
+                                if (this->m_momentCardState == MomentCardState::Computing) {
+                                    this->setMomentCardState(MomentCardState::Error);
+                                    DiagnosticsManager::instance()->publish(
+                                            DiagnosticsLevel::Warning,
+                                            DiagnosticsCategory::Scientific,
+                                            QStringLiteral("MomentMap"),
+                                            QStringLiteral("Moment computation failed."),
+                                            this->remoteDatasetId,
+                                            this->remoteSessionId,
+                                            QStringLiteral("moment"));
+                                }
+                            },
+                            Qt::QueuedConnection);
+                }
+            },
             [this](const MomentMapComputeResult &result,
                    const MomentMapController::Config & /*config*/,
                    const QString &summary,
@@ -1777,7 +1803,20 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                   .arg(this->spectralAxisTitle())
                                   .arg(this->currentWcsFrameLabel());
                 this->updateMomentProvenancePanel();
-                this->updateMomentInfoCard();
+
+                // Transition card to Ready and update info label with provenance.
+                this->setMomentCardState(MomentCardState::Ready);
+
+                // Diagnostics — success.
+                DiagnosticsManager::instance()->publish(
+                        DiagnosticsLevel::Info,
+                        DiagnosticsCategory::Scientific,
+                        QStringLiteral("MomentMap"),
+                        QStringLiteral("Moment computation completed: ") + summary,
+                        this->remoteDatasetId,
+                        this->remoteSessionId,
+                        QStringLiteral("moment"));
+
                 this->clearPersistentStatusMessage();
 
                 // Show a transient WCS warning for sanitized/degraded WCS.
@@ -2763,6 +2802,15 @@ void vtkWindowCube::requestMomentMode()
     // ── Case C: no moment yet — show the configuration dialog ────────────
     // startComputation() shows the dialog synchronously, then either returns
     // immediately (cancelled) or starts async computation and sets m_busy = true.
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Info,
+            DiagnosticsCategory::Scientific,
+            QStringLiteral("MomentMap"),
+            QStringLiteral("No cached moment available; opening moment configuration dialog."),
+            this->remoteDatasetId,
+            this->remoteSessionId,
+            QStringLiteral("moment"));
+
     this->momentController->startComputation(0);
 
     if (!this->momentController->isBusy()) {
@@ -2776,9 +2824,31 @@ void vtkWindowCube::requestMomentMode()
         return;
     }
 
-    // Computation is now in flight. Keep the UI in Slice view for now — the
-    // applyMomentMapResult() callback will switch to Moment automatically when
-    // the result arrives (it calls sync2dModeSidebar/update2dModeVisibility).
+    // Computation is now in flight. Build a compact summary of what was requested.
+    {
+        const auto &cfg = this->momentController->lastAcceptedConfig();
+        QString detail = u"Moment %1 · channels %2–%3"_s
+                                 .arg(cfg.order)
+                                 .arg(cfg.channelStart + 1)
+                                 .arg(cfg.channelEnd + 1);
+        if (cfg.maskEnabled) {
+            detail += u" · mask \u2265 %1"_s.arg(cfg.thresholdValue, 0, 'g', 4);
+        }
+        this->setMomentCardState(MomentCardState::Computing, detail);
+
+        // Diagnostics — start.
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Info,
+                DiagnosticsCategory::Scientific,
+                QStringLiteral("MomentMap"),
+                QStringLiteral("Moment computation started: ") + detail,
+                this->remoteDatasetId,
+                this->remoteSessionId,
+                QStringLiteral("moment"));
+    }
+
+    // Keep the UI in Slice view while computing — applyMomentMapResult() will
+    // switch to Moment automatically when the result arrives.
     const QSignalBlocker b1(ui->actionSlice);
     const QSignalBlocker b2(ui->actionMomentMap);
     ui->actionSlice->setChecked(true);
@@ -2787,19 +2857,64 @@ void vtkWindowCube::requestMomentMode()
     this->update2dModeVisibility(true);
 }
 
+void vtkWindowCube::setMomentCardState(MomentCardState state, const QString &detail)
+{
+    m_momentCardState = state;
+    if (!detail.isEmpty()) {
+        m_momentCardDetail = detail;
+    }
+    this->updateMomentInfoCard();
+}
+
 void vtkWindowCube::updateMomentInfoCard()
 {
     if (!this->m_momentInfoLabel) {
         return;
     }
-    if (!this->momentProvenanceState.valid) {
+
+    // Common stylesheet fragments.
+    const QString baseStyle = u"QLabel { font-size: 9px; word-wrap: true; }"_s;
+    const QString infoColor = u"color: #7AAABB;"_s;
+    const QString busyColor = u"color: #E8A840;"_s; // warm amber — visually distinct
+    const QString errorColor = u"color: #CC6060;"_s;
+
+    switch (m_momentCardState) {
+    case MomentCardState::NoMoment:
+        this->m_momentInfoLabel->setStyleSheet(
+                QStringLiteral("QLabel { font-size: 9px; %1 }").arg(infoColor));
         this->m_momentInfoLabel->setText(
                 u"No moment map available.\nUse the Moment menu to\ncompute one."_s);
-        return;
+        this->m_momentInfoLabel->setToolTip(QString());
+        break;
+
+    case MomentCardState::Computing:
+        this->m_momentInfoLabel->setStyleSheet(
+                QStringLiteral("QLabel { font-size: 9px; font-style: italic; %1 }").arg(busyColor));
+        this->m_momentInfoLabel->setText(
+                u"Computing moment map\u2026\n%1"_s.arg(m_momentCardDetail));
+        this->m_momentInfoLabel->setToolTip(
+                u"Moment computation is running on the backend.\nThe panel will update automatically when done."_s);
+        break;
+
+    case MomentCardState::Ready:
+        this->m_momentInfoLabel->setStyleSheet(
+                QStringLiteral("QLabel { font-size: 9px; %1 }").arg(infoColor));
+        this->m_momentInfoLabel->setText(this->momentProvenanceState.summary);
+        this->m_momentInfoLabel->setToolTip(this->momentProvenanceState.details);
+        break;
+
+    case MomentCardState::Error:
+        this->m_momentInfoLabel->setStyleSheet(
+                QStringLiteral("QLabel { font-size: 9px; %1 }").arg(errorColor));
+        this->m_momentInfoLabel->setText(
+                u"Moment computation failed.\n%1"_s.arg(
+                        m_momentCardDetail.isEmpty()
+                                ? u"Check the Diagnostics panel for details."_s
+                                : m_momentCardDetail));
+        this->m_momentInfoLabel->setToolTip(
+                u"The last moment computation did not produce a result.\nSee the Diagnostics panel for the error."_s);
+        break;
     }
-    // Show a compact version of the provenance summary.
-    this->m_momentInfoLabel->setText(this->momentProvenanceState.summary);
-    this->m_momentInfoLabel->setToolTip(this->momentProvenanceState.details);
 }
 
 void vtkWindowCube::update2dModeVisibility(bool sliceActive)
@@ -6916,6 +7031,28 @@ void vtkWindowCube::setMomentOrder(int order)
         return;
     }
     this->momentController->startComputation(order);
+
+    // If the dialog was accepted and computation started, transition the card
+    // to Computing and publish start diagnostics (mirrors requestMomentMode()).
+    if (this->momentController->isBusy()) {
+        const auto &cfg = this->momentController->lastAcceptedConfig();
+        QString detail = u"Moment %1 · channels %2–%3"_s
+                                 .arg(cfg.order)
+                                 .arg(cfg.channelStart + 1)
+                                 .arg(cfg.channelEnd + 1);
+        if (cfg.maskEnabled) {
+            detail += u" · mask \u2265 %1"_s.arg(cfg.thresholdValue, 0, 'g', 4);
+        }
+        this->setMomentCardState(MomentCardState::Computing, detail);
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Info,
+                DiagnosticsCategory::Scientific,
+                QStringLiteral("MomentMap"),
+                QStringLiteral("Moment computation started: ") + detail,
+                this->remoteDatasetId,
+                this->remoteSessionId,
+                QStringLiteral("moment"));
+    }
 }
 
 void vtkWindowCube::showPersistentStatusMessage(const QString &text, int minDurationMs)
