@@ -1375,6 +1375,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 {
     ui->setupUi(this);
     this->setupSidebar();
+    this->setupWorkspaceDocks();
     this->setWindowTitle(this->filepath);
     this->setAttribute(Qt::WA_DeleteOnClose);
     qDebug().noquote()
@@ -1420,6 +1421,14 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     ui->menuView->addSeparator();
     ui->menuView->addAction(this->actionShowControlsSidebar);
     ui->menuView->addAction(this->actionShowWcsAxes);
+    ui->menuView->addSeparator();
+    ui->menuView->addAction(this->dockCubeView->toggleViewAction());
+    ui->menuView->addAction(this->dockSliceView->toggleViewAction());
+    ui->menuView->addSeparator();
+    this->actionResetLayout = new QAction(u"Reset Layout"_s, this);
+    ui->menuView->addAction(this->actionResetLayout);
+    QObject::connect(this->actionResetLayout, &QAction::triggered,
+                     this, &vtkWindowCube::resetWorkspaceLayout);
 
     QObject::connect(this->actionShowWcsAxes, &QAction::toggled, this, [this](bool checked) {
     this->showWcsAxes = checked;
@@ -2096,6 +2105,106 @@ void vtkWindowCube::setupSidebar()
     // View menu toggle action — wired bidirectionally by SidebarPanel.
     this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
             u"Controls Sidebar"_s, this);
+}
+
+void vtkWindowCube::setupWorkspaceDocks()
+{
+    // Allow docks to be nested and tabbed for maximum layout flexibility.
+    this->setDockNestingEnabled(true);
+    this->setDockOptions(QMainWindow::AllowNestedDocks
+                         | QMainWindow::AllowTabbedDocks
+                         | QMainWindow::AnimatedDocks);
+
+    // Remove the viewer container (vtkCube + vtkImage) from the central layout.
+    // The VTK widgets will be reparented into dock widgets below; the pointer
+    // values (ui->vtkCube, ui->vtkImage) remain valid and all rendering code
+    // continues to work without any changes.
+    auto *mainLayout = qobject_cast<QHBoxLayout *>(ui->centralwidget->layout());
+    mainLayout->removeWidget(ui->viewerContainer);
+    ui->viewerContainer->hide();
+
+    // The central widget now only holds m_sidebar.  Prevent it from expanding
+    // horizontally so the dock area gets the rest of the window width.
+    ui->centralwidget->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Expanding);
+
+    // Shared dock stylesheet — matches the dark/blue-accent theme used by the sidebar.
+    const QString dockStyle =
+            u"QDockWidget {"
+            "  border: 1px solid rgba(4, 138, 191, 0.22);"
+            "}"
+            "QDockWidget::title {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            "      stop:0 rgba(4,138,191,0.18), stop:1 rgba(4,138,191,0.06));"
+            "  color: #8AB8CC;"
+            "  font-size: 10px;"
+            "  font-weight: 600;"
+            "  text-transform: uppercase;"
+            "  padding: 5px 10px;"
+            "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
+            "}"
+            "QDockWidget::close-button, QDockWidget::float-button {"
+            "  border: none;"
+            "  background: transparent;"
+            "  subcontrol-position: top right;"
+            "  subcontrol-origin: margin;"
+            "  top: 3px;"
+            "}"
+            "QDockWidget::close-button:hover, QDockWidget::float-button:hover {"
+            "  background: rgba(4, 138, 191, 0.25);"
+            "  border-radius: 3px;"
+            "}"_s;
+
+    // ── 3D View dock ─────────────────────────────────────────────────────────
+    auto *dockCube = new QDockWidget(u"3D View"_s, this);
+    dockCube->setObjectName(u"dockCubeView"_s);
+    dockCube->setWidget(ui->vtkCube);          // reparents vtkCube into the dock
+    dockCube->setAllowedAreas(Qt::AllDockWidgetAreas);
+    dockCube->setFeatures(QDockWidget::DockWidgetMovable
+                          | QDockWidget::DockWidgetFloatable
+                          | QDockWidget::DockWidgetClosable);
+    dockCube->setStyleSheet(dockStyle);
+
+    // ── Slice / Detail dock ───────────────────────────────────────────────────
+    auto *dockSlice = new QDockWidget(u"Slice / Detail"_s, this);
+    dockSlice->setObjectName(u"dockSliceView"_s);
+    dockSlice->setWidget(ui->vtkImage);        // reparents vtkImage into the dock
+    dockSlice->setAllowedAreas(Qt::AllDockWidgetAreas);
+    dockSlice->setFeatures(QDockWidget::DockWidgetMovable
+                           | QDockWidget::DockWidgetFloatable
+                           | QDockWidget::DockWidgetClosable);
+    dockSlice->setStyleSheet(dockStyle);
+
+    // Place both docks in the right dock area, then split them side-by-side.
+    this->addDockWidget(Qt::RightDockWidgetArea, dockCube);
+    this->addDockWidget(Qt::RightDockWidgetArea, dockSlice);
+    this->splitDockWidget(dockCube, dockSlice, Qt::Horizontal);
+
+    this->dockCubeView  = dockCube;
+    this->dockSliceView = dockSlice;
+}
+
+void vtkWindowCube::resetWorkspaceLayout()
+{
+    if (!this->dockCubeView || !this->dockSliceView) {
+        return;
+    }
+
+    // Unfloat and show both docks.
+    this->dockCubeView->setFloating(false);
+    this->dockSliceView->setFloating(false);
+    this->dockCubeView->show();
+    this->dockSliceView->show();
+
+    // Re-establish the side-by-side layout in the right dock area.
+    this->addDockWidget(Qt::RightDockWidgetArea, this->dockCubeView);
+    this->addDockWidget(Qt::RightDockWidgetArea, this->dockSliceView);
+    this->splitDockWidget(this->dockCubeView, this->dockSliceView, Qt::Horizontal);
+
+    // Resize to equal halves of the available horizontal space.
+    const int sidebarW = this->m_sidebar ? this->m_sidebar->width() : 48;
+    const int avail = std::max(400, this->width() - sidebarW);
+    this->resizeDocks({ this->dockCubeView, this->dockSliceView },
+                      { avail / 2, avail / 2 }, Qt::Horizontal);
 }
 
 void vtkWindowCube::closeEvent(QCloseEvent *event)

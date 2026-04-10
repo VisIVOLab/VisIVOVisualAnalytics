@@ -270,6 +270,13 @@ private:
     QPointer<QAction> actionShowControlsSidebar;
     void setupSidebar();
 
+    // ── Workspace docks ───────────────────────────────────────────────────────
+    QPointer<QDockWidget> dockCubeView;
+    QPointer<QDockWidget> dockSliceView;
+    QPointer<QAction> actionResetLayout;
+    void setupWorkspaceDocks();
+    void resetWorkspaceLayout();
+
     QPointer<QAction> actionShowWcsAxes;
     QPointer<QAction> actionWcsSexagesimal;
     QPointer<QAction> actionWcsDecimal;
