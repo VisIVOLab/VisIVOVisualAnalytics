@@ -29,7 +29,6 @@
 
 #include "CubeNoiseTypes.h"
 
-#include <QFutureWatcher>
 #include <QObject>
 
 #include <functional>
@@ -73,7 +72,6 @@ public slots:
     void startEstimation();
 
 private:
-    void onWatcherFinished();
     void showResult(const CubeNoiseEstimateResult &result);
 
     const QString m_backendUrl;
@@ -86,7 +84,7 @@ private:
     QWidget *m_parentWindow;
     std::function<void()> m_onRunFinished;
 
-    QFutureWatcher<CubeNoiseEstimateResult> m_watcher;
+    bool m_busy{ false };
 };
 
 #endif // NoiseController_h

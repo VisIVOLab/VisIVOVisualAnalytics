@@ -12,9 +12,11 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QFutureWatcher>
 #include <QLabel>
 #include <QMainWindow>
 #include <QMessageBox>
+#include <QPointer>
 #include <QSizePolicy>
 #include <QSpinBox>
 #include <QStatusBar>
@@ -60,19 +62,16 @@ MomentMapController::MomentMapController(
     , m_onCompleted(std::move(onCompleted))
 {
     m_currentConfig.thresholdValue = initialThreshold;
-
-    QObject::connect(&m_watcher, &QFutureWatcher<MomentMapComputeResult>::finished,
-                     this, &MomentMapController::onWatcherFinished);
 }
 
 bool MomentMapController::isBusy() const
 {
-    return m_watcher.isRunning();
+    return m_busy;
 }
 
 void MomentMapController::startComputation(int defaultOrder)
 {
-    if (m_watcher.isRunning()) {
+    if (m_busy) {
         return; // guard against re-entrancy
     }
 
@@ -90,11 +89,12 @@ void MomentMapController::startComputation(int defaultOrder)
     m_currentConfig = config;
 
     const int requestId = ++m_currentRequestId;
-    m_watcher.setProperty("requestId", requestId);
 
     if (auto *win = qobject_cast<QMainWindow *>(m_parentWindow)) {
         win->statusBar()->showMessage(u"Computing moment..."_s);
     }
+
+    m_busy = true;
 
     // Notify immediately so vtkWindowCube can disable moment actions.
     if (m_onRunFinished) {
@@ -102,13 +102,94 @@ void MomentMapController::startComputation(int defaultOrder)
     }
 
     // Capture by value – safe across thread boundary and if window closes.
-    const QString filepath    = m_filepath;
-    const QString backendUrl  = m_backendUrl;
-    const QString datasetId   = m_datasetId;
-    const QString sessionId   = m_sessionId;
+    const QString filepath     = m_filepath;
+    const QString backendUrl   = m_backendUrl;
+    const QString datasetId    = m_datasetId;
+    const QString sessionId    = m_sessionId;
     const QString backendToken = m_backendToken;
 
-    m_watcher.setFuture(QtConcurrent::run(
+    QPointer<MomentMapController> self(this);
+    auto *watcher = new QFutureWatcher<MomentMapComputeResult>();
+    QObject::connect(watcher, &QFutureWatcher<MomentMapComputeResult>::finished,
+                     watcher, [self, watcher, requestId, config]() {
+        const auto result = watcher->result();
+        watcher->deleteLater();
+
+        if (!self) {
+            return; // controller was destroyed while request was in-flight
+        }
+
+        if (requestId != self->m_currentRequestId) {
+            return; // stale result from a superseded request – discard
+        }
+
+        self->m_busy = false;
+
+        // Re-enable moment actions first (same ordering as the original code).
+        if (self->m_onRunFinished) {
+            self->m_onRunFinished();
+        }
+
+        if (!result.valid || !result.imageData) {
+            if (auto *win = qobject_cast<QMainWindow *>(self->m_parentWindow)) {
+                if (!result.errorMessage.isEmpty()) {
+                    win->statusBar()->showMessage(result.errorMessage);
+                } else {
+                    win->statusBar()->clearMessage();
+                }
+            }
+            return;
+        }
+
+        // Build provenance strings (pure string work – no UI access needed here).
+        // vtkWindowCube's onCompleted lambda appends the two WCS-specific fields
+        // (spectralAxisTitle, currentWcsFrameLabel) that require window state.
+        const QString maskSummary = config.maskEnabled
+                ? u">= %1"_s.arg(config.thresholdValue, 0, 'g', 8)
+                : u"none"_s;
+        const QString unitLabel = result.momentUnit.isEmpty() ? u"\u2014"_s : result.momentUnit;
+
+        const QString summary =
+                u"Moment: %1 | Unit: %2 | Ch: %3 | Mask: %4 | Scope: %5"_s
+                        .arg(describeMomentOrder(config.order))
+                        .arg(unitLabel)
+                        .arg(formatMomentChannelRange(config))
+                        .arg(maskSummary)
+                        .arg(describeMomentScope());
+
+        // The caller (vtkWindowCube) appends "\nAxis 3 semantics: …\nWCS frame: …"
+        // to complete the tooltip, using spectralAxisTitle() / currentWcsFrameLabel().
+        const QString details =
+                u"Moment type: %1\n"
+                "Unit: %2\n"
+                "BUNIT: %3\n"
+                "Spectral axis: %4 [%5]\n"
+                "Channel range: %6\n"
+                "Mask: %7\n"
+                "Threshold: %8\n"
+                "NaN/blanking: excluded from computation\n"
+                "Valid-pixel policy: only finite unmasked voxels contribute\n"
+                "Source scope: %9"_s
+                        .arg(describeMomentOrder(config.order))
+                        .arg(unitLabel)
+                        .arg(result.bunit.isEmpty() ? u"\u2014"_s : result.bunit)
+                        .arg(result.spectralAxisType.isEmpty() ? u"\u2014"_s
+                                                               : result.spectralAxisType)
+                        .arg(result.spectralAxisUnit.isEmpty() ? u"\u2014"_s
+                                                               : result.spectralAxisUnit)
+                        .arg(formatMomentChannelRange(config))
+                        .arg(config.maskEnabled ? u"enabled"_s : u"none"_s)
+                        .arg(config.maskEnabled
+                                     ? QString::number(config.thresholdValue, 'g', 8)
+                                     : u"n/a"_s)
+                        .arg(describeMomentScope());
+
+        if (self->m_onCompleted) {
+            self->m_onCompleted(result, config, summary, details);
+        }
+    });
+
+    watcher->setFuture(QtConcurrent::run(
             &computeMomentMap,
             MomentMapComputeRequest{ filepath,
                                      datasetId,
@@ -120,76 +201,6 @@ void MomentMapController::startComputation(int defaultOrder)
                                      config.channelEnd,
                                      config.maskEnabled,
                                      config.thresholdValue }));
-}
-
-void MomentMapController::onWatcherFinished()
-{
-    const int requestId = m_watcher.property("requestId").toInt();
-    if (requestId != m_currentRequestId) {
-        return; // stale result from a superseded request – discard
-    }
-
-    // Re-enable moment actions first (same ordering as the original code).
-    if (m_onRunFinished) {
-        m_onRunFinished();
-    }
-
-    const auto result = m_watcher.result();
-    if (!result.valid || !result.imageData) {
-        if (auto *win = qobject_cast<QMainWindow *>(m_parentWindow)) {
-            if (!result.errorMessage.isEmpty()) {
-                win->statusBar()->showMessage(result.errorMessage);
-            } else {
-                win->statusBar()->clearMessage();
-            }
-        }
-        return;
-    }
-
-    // Build provenance strings (pure string work – no UI access needed here).
-    // vtkWindowCube's onCompleted lambda appends the two WCS-specific fields
-    // (spectralAxisTitle, currentWcsFrameLabel) that require window state.
-    const QString maskSummary = m_currentConfig.maskEnabled
-            ? u">= %1"_s.arg(m_currentConfig.thresholdValue, 0, 'g', 8)
-            : u"none"_s;
-    const QString unitLabel = result.momentUnit.isEmpty() ? u"\u2014"_s : result.momentUnit;
-
-    const QString summary =
-            u"Moment: %1 | Unit: %2 | Ch: %3 | Mask: %4 | Scope: %5"_s
-                    .arg(describeMomentOrder(m_currentConfig.order))
-                    .arg(unitLabel)
-                    .arg(formatMomentChannelRange(m_currentConfig))
-                    .arg(maskSummary)
-                    .arg(describeMomentScope());
-
-    // The caller (vtkWindowCube) appends "\nAxis 3 semantics: …\nWCS frame: …"
-    // to complete the tooltip, using spectralAxisTitle() / currentWcsFrameLabel().
-    const QString details =
-            u"Moment type: %1\n"
-            "Unit: %2\n"
-            "BUNIT: %3\n"
-            "Spectral axis: %4 [%5]\n"
-            "Channel range: %6\n"
-            "Mask: %7\n"
-            "Threshold: %8\n"
-            "NaN/blanking: excluded from computation\n"
-            "Valid-pixel policy: only finite unmasked voxels contribute\n"
-            "Source scope: %9"_s
-                    .arg(describeMomentOrder(m_currentConfig.order))
-                    .arg(unitLabel)
-                    .arg(result.bunit.isEmpty() ? u"\u2014"_s : result.bunit)
-                    .arg(result.spectralAxisType.isEmpty() ? u"\u2014"_s : result.spectralAxisType)
-                    .arg(result.spectralAxisUnit.isEmpty() ? u"\u2014"_s : result.spectralAxisUnit)
-                    .arg(formatMomentChannelRange(m_currentConfig))
-                    .arg(m_currentConfig.maskEnabled ? u"enabled"_s : u"none"_s)
-                    .arg(m_currentConfig.maskEnabled
-                                 ? QString::number(m_currentConfig.thresholdValue, 'g', 8)
-                                 : u"n/a"_s)
-                    .arg(describeMomentScope());
-
-    if (m_onCompleted) {
-        m_onCompleted(result, m_currentConfig, summary, details);
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

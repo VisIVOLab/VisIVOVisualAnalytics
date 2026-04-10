@@ -11,8 +11,10 @@
 #include "app/BackendClient.h"
 #include "app/DiagnosticsManager.h"
 
+#include <QFutureWatcher>
 #include <QMainWindow>
 #include <QMessageBox>
+#include <QPointer>
 #include <QStatusBar>
 #include <QtConcurrent>
 
@@ -151,25 +153,25 @@ PvController::PvController(
     , m_onRunFinished(std::move(onRunFinished))
     , m_onCompleted(std::move(onCompleted))
 {
-    QObject::connect(&m_watcher, &QFutureWatcher<RemotePvFetchResult>::finished,
-                     this, &PvController::onWatcherFinished);
 }
 
 bool PvController::isBusy() const
 {
-    return m_watcher.isRunning();
+    return m_busy;
 }
 
 void PvController::startExtraction(const std::vector<std::array<int, 2>> &vertices,
                                    int widthPixels)
 {
-    if (m_watcher.isRunning()) {
+    if (m_busy) {
         return; // guard against re-entrancy
     }
 
     if (auto *win = qobject_cast<QMainWindow *>(m_parentWindow)) {
         win->statusBar()->showMessage(u"Requesting PV diagram..."_s);
     }
+
+    m_busy = true;
 
     // Notify immediately so vtkWindowCube can disable the PV action.
     if (m_onRunFinished) {
@@ -182,7 +184,46 @@ void PvController::startExtraction(const std::vector<std::array<int, 2>> &vertic
     const QString sessionId    = m_sessionId;
     const QString backendToken = m_backendToken;
 
-    m_watcher.setFuture(QtConcurrent::run(
+    QPointer<PvController> self(this);
+    auto *watcher = new QFutureWatcher<RemotePvFetchResult>();
+    QObject::connect(watcher, &QFutureWatcher<RemotePvFetchResult>::finished,
+                     watcher, [self, watcher, datasetId, sessionId]() {
+        const auto result = watcher->result();
+        watcher->deleteLater();
+
+        if (!self) {
+            return; // controller was destroyed while request was in-flight
+        }
+
+        self->m_busy = false;
+
+        // Re-enable the PV action first (same ordering as MomentMapController).
+        if (self->m_onRunFinished) {
+            self->m_onRunFinished();
+        }
+
+        if (!result.valid) {
+            const QString message = result.errorMessage.isEmpty()
+                    ? u"PV computation failed on the backend."_s
+                    : result.errorMessage;
+
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
+                    QStringLiteral("PvController"), message,
+                    datasetId, sessionId, QStringLiteral("pv"));
+            QMessageBox::warning(self->m_parentWindow, u"PV Diagram"_s, message);
+            if (auto *win = qobject_cast<QMainWindow *>(self->m_parentWindow)) {
+                win->statusBar()->showMessage(message, 4000);
+            }
+            return;
+        }
+
+        if (self->m_onCompleted) {
+            self->m_onCompleted(result);
+        }
+    });
+
+    watcher->setFuture(QtConcurrent::run(
             [backendUrl, datasetId, sessionId, backendToken,
              vertices, widthPixels]() -> RemotePvFetchResult {
                 auto result = fetchRemotePv(backendUrl, datasetId, vertices, widthPixels,
@@ -193,33 +234,4 @@ void PvController::startExtraction(const std::vector<std::array<int, 2>> &vertic
                 result.capturedWidthPixels = widthPixels;
                 return result;
             }));
-}
-
-void PvController::onWatcherFinished()
-{
-    // Re-enable the PV action first (same ordering as MomentMapController).
-    if (m_onRunFinished) {
-        m_onRunFinished();
-    }
-
-    const auto result = m_watcher.result();
-    if (!result.valid) {
-        const QString message = result.errorMessage.isEmpty()
-                ? u"PV computation failed on the backend."_s
-                : result.errorMessage;
-
-        DiagnosticsManager::instance()->publish(
-                DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
-                QStringLiteral("PvController"), message,
-                m_datasetId, m_sessionId, QStringLiteral("pv"));
-        QMessageBox::warning(m_parentWindow, u"PV Diagram"_s, message);
-        if (auto *win = qobject_cast<QMainWindow *>(m_parentWindow)) {
-            win->statusBar()->showMessage(message, 4000);
-        }
-        return;
-    }
-
-    if (m_onCompleted) {
-        m_onCompleted(result);
-    }
 }

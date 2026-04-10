@@ -32,7 +32,6 @@
 
 #include "MomentMapComputeTask.h"
 
-#include <QFutureWatcher>
 #include <QObject>
 
 #include <functional>
@@ -91,7 +90,6 @@ public slots:
     void startComputation(int defaultOrder);
 
 private:
-    void onWatcherFinished();
     bool configureMomentDialog(int defaultOrder, Config &config);
 
     static QString describeMomentOrder(int order);
@@ -113,7 +111,7 @@ private:
 
     Config m_currentConfig;
     int m_currentRequestId{ 0 };
-    QFutureWatcher<MomentMapComputeResult> m_watcher;
+    bool m_busy{ false };
 };
 
 #endif // MomentMapController_h

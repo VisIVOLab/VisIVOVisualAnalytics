@@ -34,7 +34,6 @@
 
 #include "PvTypes.h"
 
-#include <QFutureWatcher>
 #include <QObject>
 
 #include <array>
@@ -77,8 +76,6 @@ public slots:
                          int widthPixels);
 
 private:
-    void onWatcherFinished();
-
     const QString m_backendUrl;
     const QString m_datasetId;
     const QString m_sessionId;
@@ -87,7 +84,7 @@ private:
     std::function<void()> m_onRunFinished;
     std::function<void(const RemotePvFetchResult &)> m_onCompleted;
 
-    QFutureWatcher<RemotePvFetchResult> m_watcher;
+    bool m_busy{ false };
 };
 
 #endif // PvController_h

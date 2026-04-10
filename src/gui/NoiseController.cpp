@@ -11,8 +11,10 @@
 #include "app/DiagnosticsManager.h"
 
 #include <QDialog>
+#include <QFutureWatcher>
 #include <QMainWindow>
 #include <QMessageBox>
+#include <QPointer>
 #include <QStatusBar>
 #include <QtConcurrent>
 
@@ -86,18 +88,16 @@ NoiseController::NoiseController(const QString &backendUrl, const QString &datas
     , m_parentWindow(parentWindow)
     , m_onRunFinished(std::move(onRunFinished))
 {
-    QObject::connect(&m_watcher, &QFutureWatcher<CubeNoiseEstimateResult>::finished,
-                     this, &NoiseController::onWatcherFinished);
 }
 
 bool NoiseController::isBusy() const
 {
-    return m_watcher.isRunning();
+    return m_busy;
 }
 
 void NoiseController::startEstimation()
 {
-    if (m_watcher.isRunning()) {
+    if (m_busy) {
         return; // guard against re-entrancy
     }
 
@@ -125,63 +125,70 @@ void NoiseController::startEstimation()
         win->statusBar()->showMessage(u"Estimating backend noise..."_s, 2000);
     }
 
+    m_busy = true;
+
     // Notify immediately so vtkWindowCube can disable the action while busy.
     if (m_onRunFinished) {
-        // Not a finished callback here — we call it now to trigger an
-        // availability refresh. The same callback is also called on completion.
-        // Use a direct single-shot call; no need for a separate "started" signal.
         m_onRunFinished();
     }
 
-    // Capture values to avoid dangling refs if the window closes (very unlikely
-    // during an in-flight request, but defensive is cheap here).
+    // Capture values by value – safe across thread boundary and if window closes.
     const QString backendUrl   = m_backendUrl;
     const QString datasetId    = m_datasetId;
     const QString sessionId    = m_sessionId;
     const QString backendToken = m_backendToken;
 
-    m_watcher.setFuture(QtConcurrent::run(
+    QPointer<NoiseController> self(this);
+    auto *watcher = new QFutureWatcher<CubeNoiseEstimateResult>();
+    QObject::connect(watcher, &QFutureWatcher<CubeNoiseEstimateResult>::finished,
+                     watcher, [self, watcher, datasetId, sessionId]() {
+        const auto result = watcher->result();
+        watcher->deleteLater();
+
+        if (!self) {
+            return; // controller was destroyed while request was in-flight
+        }
+
+        self->m_busy = false;
+
+        if (!result.valid) {
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
+                    QStringLiteral("NoiseController"),
+                    result.errorMessage.isEmpty() ? QStringLiteral("Noise estimation failed.")
+                                                  : result.errorMessage,
+                    datasetId, sessionId,
+                    QStringLiteral("noise"));
+
+            if (auto *win = qobject_cast<QMainWindow *>(self->m_parentWindow)) {
+                win->statusBar()->showMessage(
+                        result.errorMessage.isEmpty() ? u"Noise estimation failed."_s
+                                                      : result.errorMessage,
+                        4000);
+            }
+        } else {
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
+                    QStringLiteral("NoiseController"),
+                    QStringLiteral("Noise estimation completed."),
+                    datasetId, sessionId,
+                    QStringLiteral("noise"));
+
+            self->showResult(result);
+        }
+
+        // Always call back so vtkWindowCube can re-evaluate action availability.
+        if (self->m_onRunFinished) {
+            self->m_onRunFinished();
+        }
+    });
+
+    watcher->setFuture(QtConcurrent::run(
             [backendUrl, datasetId, sessionId, backendToken,
              x0, x1, y0, y1, channelStart, channelEnd]() -> CubeNoiseEstimateResult {
                 return runNoiseRequest(backendUrl, datasetId, sessionId, backendToken,
                                       x0, x1, y0, y1, channelStart, channelEnd);
             }));
-}
-
-void NoiseController::onWatcherFinished()
-{
-    const auto result = m_watcher.result();
-
-    if (!result.valid) {
-        DiagnosticsManager::instance()->publish(
-                DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
-                QStringLiteral("NoiseController"),
-                result.errorMessage.isEmpty() ? QStringLiteral("Noise estimation failed.")
-                                              : result.errorMessage,
-                m_datasetId, m_sessionId,
-                QStringLiteral("noise"));
-
-        if (auto *win = qobject_cast<QMainWindow *>(m_parentWindow)) {
-            win->statusBar()->showMessage(
-                    result.errorMessage.isEmpty() ? u"Noise estimation failed."_s
-                                                  : result.errorMessage,
-                    4000);
-        }
-    } else {
-        DiagnosticsManager::instance()->publish(
-                DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
-                QStringLiteral("NoiseController"),
-                QStringLiteral("Noise estimation completed."),
-                m_datasetId, m_sessionId,
-                QStringLiteral("noise"));
-
-        showResult(result);
-    }
-
-    // Always call back so vtkWindowCube can re-evaluate action availability.
-    if (m_onRunFinished) {
-        m_onRunFinished();
-    }
 }
 
 void NoiseController::showResult(const CubeNoiseEstimateResult &result)
