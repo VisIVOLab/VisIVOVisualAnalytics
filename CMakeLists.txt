@@ -108,6 +108,9 @@ set(PROJECT_SOURCES
         src/gui/HiPSWindow.h
         src/gui/MomentMapController.cpp
         src/gui/MomentMapController.h
+        src/gui/PvController.cpp
+        src/gui/PvController.h
+        src/gui/PvTypes.h
         src/gui/NoiseController.cpp
         src/gui/NoiseController.h
         src/gui/NoiseRegionDialog.cpp

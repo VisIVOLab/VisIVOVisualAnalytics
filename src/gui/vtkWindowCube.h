@@ -6,6 +6,7 @@
 #include "CubeOpenPreviewTask.h"
 #include "MomentMapController.h"
 #include "NoiseController.h"
+#include "PvController.h"
 
 #include <vtkSmartPointer.h>
 #include <vtkNew.h>
@@ -299,6 +300,8 @@ private:
     MomentMapController *momentController{ nullptr };
     // Noise estimation is delegated to NoiseController.
     NoiseController *noiseController{ nullptr };
+    // PV diagram backend fetch is delegated to PvController.
+    PvController *pvController{ nullptr };
     int currentRemotePreviewRequestId{ 0 };
     int currentRemoteHighResRequestId{ 0 };
     int currentRemoteSliceRequestId{ 0 };

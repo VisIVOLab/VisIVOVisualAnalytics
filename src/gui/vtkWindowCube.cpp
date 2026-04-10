@@ -8,6 +8,7 @@
 #include "MomentMapController.h"
 #include "NoiseController.h"
 #include "ProfileWidget.h"
+#include "PvController.h"
 #include "PvDiagramWidget.h"
 #include "app/BackendClient.h"
 #include "app/DiagnosticsManager.h"
@@ -167,25 +168,7 @@ bool pointInVisibleBounds(const std::array<double, 2> &point, const VisibleImage
             && point[1] <= visible.ymax;
 }
 
-struct RemotePvFetchResult
-{
-    bool valid{ false };
-    QString errorMessage;
-    QVector<double> positions;       // pixel-distance offset along path
-    QVector<double> positionsArcsec; // angular offset in arcseconds (empty if unavailable)
-    QVector<double> values;
-    int numSamples{ 0 };
-    int depth{ 0 };
-    QString computedOn;
-    int widthPixels{ 1 };
-    int vertexCount{ 0 };
-    double totalLength{ 0. };
-    int validSamples{ 0 };
-    QString spatialUnit; // "arcsec" when physical coords are available
-    double pixelScaleArcsecPerPixel{ 0. };
-    QString spectralAxisType;
-    QString spectralAxisUnit;
-};
+// RemotePvFetchResult moved to PvTypes.h (included via PvController.h → vtkWindowCube.h)
 
 enum class SanityLevel
 {
@@ -1304,101 +1287,7 @@ RemoteCubeSubvolumeResult fetchRemoteSubvolume(const QString &backendUrl, const 
     return result;
 }
 
-RemotePvFetchResult fetchRemotePv(const QString &backendUrl, const QString &datasetId,
-                                  const std::vector<std::array<int, 2>> &vertices, int widthPixels,
-                                  const QString &sessionId, const QString &backendToken)
-{
-    RemotePvFetchResult result;
-
-    BackendClient client(backendUrl, backendToken);
-    client.setSessionId(sessionId);
-    BackendCubePvResult response;
-    const auto taskStatus = client.waitForTaskCompletion(
-            client.createPvTask(datasetId, vertices, widthPixels),
-            QStringLiteral("[pv][task]"));
-    if (taskStatus.status == QStringLiteral("completed")) {
-        response = BackendClient::parsePvResultObject(taskStatus.resultObject);
-    }
-
-    if (!response.valid) {
-        if (!taskStatus.taskId.isEmpty()) {
-            qWarning().noquote()
-                    << QStringLiteral("[pv][task] fallback to sync task_id=%1").arg(taskStatus.taskId);
-            DiagnosticsManager::instance()->publish(
-                    DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
-                    QStringLiteral("vtkWindowCube"),
-                    QStringLiteral("Task path failed, falling back to sync PV request."),
-                    datasetId, sessionId, QStringLiteral("pv"));
-        }
-        response = client.requestPv(datasetId, vertices, widthPixels);
-        if (!taskStatus.taskId.isEmpty()) {
-            qDebug().noquote() << QStringLiteral("[pv][task] sync fallback completed valid=%1")
-                                          .arg(response.valid ? QStringLiteral("true")
-                                                              : QStringLiteral("false"));
-        }
-    }
-
-    if (!response.valid) {
-        result.errorMessage =
-                response.error.isEmpty() ? u"Remote PV request failed."_s : response.error;
-        return result;
-    }
-    if (response.scalarType != u"float32"_s) {
-        result.errorMessage = u"Unsupported remote PV scalar type."_s;
-        return result;
-    }
-    if (response.numSamples <= 0 || response.depth <= 0) {
-        result.errorMessage = u"Remote PV payload has invalid dimensions."_s;
-        return result;
-    }
-
-    const qsizetype expectedPositionsBytes =
-            static_cast<qsizetype>(response.numSamples) * static_cast<qsizetype>(sizeof(float));
-    const qsizetype expectedDataBytes =
-            static_cast<qsizetype>(response.numSamples) * response.depth
-            * static_cast<qsizetype>(sizeof(float));
-    if (response.positions.size() != expectedPositionsBytes || response.data.size() != expectedDataBytes) {
-        result.errorMessage = u"Invalid remote PV payload."_s;
-        return result;
-    }
-
-    const auto *rawPositions = reinterpret_cast<const float *>(response.positions.constData());
-    result.positions.resize(response.numSamples);
-    for (int i = 0; i < response.numSamples; ++i) {
-        result.positions[i] = static_cast<double>(rawPositions[i]);
-    }
-
-    // Populate physical arcsecond positions when the backend returns them.
-    if (!response.positionsArcsec.isEmpty()
-        && response.positionsArcsec.size() == expectedPositionsBytes) {
-        const auto *rawArcsec =
-                reinterpret_cast<const float *>(response.positionsArcsec.constData());
-        result.positionsArcsec.resize(response.numSamples);
-        for (int i = 0; i < response.numSamples; ++i) {
-            result.positionsArcsec[i] = static_cast<double>(rawArcsec[i]);
-        }
-        result.spatialUnit = response.spatialUnit;
-    }
-
-    const auto *rawValues = reinterpret_cast<const float *>(response.data.constData());
-    result.values.resize(response.numSamples * response.depth);
-    for (int i = 0; i < response.numSamples * response.depth; ++i) {
-        result.values[i] = static_cast<double>(rawValues[i]);
-    }
-
-    result.valid = true;
-    result.numSamples = response.numSamples;
-    result.depth = response.depth;
-    result.computedOn = response.computedOn;
-    result.widthPixels = response.widthPixels;
-    result.vertexCount = response.vertexCount;
-    result.totalLength = response.totalLength;
-    result.validSamples = response.validSamples;
-    result.pixelScaleArcsecPerPixel = response.pixelScaleArcsecPerPixel;
-    result.spectralAxisType = response.spectralAxisType;
-    result.spectralAxisUnit = response.spectralAxisUnit;
-    return result;
-}
+// fetchRemotePv() moved to PvController.cpp
 
 AsyncIsosurfaceResult fetchRemoteIsosurface(const QString &backendUrl, const QString &datasetId,
                                             double isoValue, int requestId, const QString &sessionId,
@@ -1831,6 +1720,94 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             this->remoteDatasetWidth, this->remoteDatasetHeight, this->remoteDatasetDepth,
             this,
             [this]() { this->updateBackendDerivedActionsAvailability(); },
+            this);
+
+    // ── PV diagram backend fetch – delegated to PvController ─────────────────
+    this->pvController = new PvController(
+            this->remoteBackendUrl, this->remoteDatasetId,
+            this->remoteSessionId, this->remoteBackendToken,
+            this,
+            [this]() { this->updateBackendDerivedActionsAvailability(); },
+            [this](const RemotePvFetchResult &result) {
+                // Build spectral axis for the Y axis of the diagram.
+                QVector<double> spectral(result.depth);
+                for (int z = 0; z < result.depth; ++z) {
+                    bool ok = false;
+                    spectral[z] = this->spectralAxisValue(static_cast<double>(z), &ok);
+                    if (!ok) {
+                        spectral[z] = static_cast<double>(z);
+                    }
+                }
+
+                // Y-axis label: prefer backend-reported type, fall back to local descriptor.
+                const QString yLabel = !result.spectralAxisType.isEmpty()
+                        ? (!result.spectralAxisUnit.isEmpty()
+                                   ? u"%1 (%2)"_s.arg(result.spectralAxisType,
+                                                       result.spectralAxisUnit)
+                                   : result.spectralAxisType)
+                        : this->spectralAxisTitle();
+
+                // Provenance tooltip using the vertices captured at dispatch time.
+                const auto &verts = result.capturedVertices;
+                const int usedWidth = result.widthPixels > 0 ? result.widthPixels
+                                                              : result.capturedWidthPixels;
+                const QString details =
+                        u"Start: %1\nEnd: %2\nVertices: %3\nPath width: %4 px\n"
+                        "Path length: %5 px\n"
+                        "Sampling: nearest-neighbor perpendicular averaging\n"
+                        "Computation: Computed on backend-visible dataset\n"
+                        "Spectral axis: %6\nSpatial unit: %7\n"
+                        "Pixel scale: %8 arcsec/pixel"_s
+                                .arg(verts.size() >= 1
+                                             ? this->formatSpatialPointSummary(verts.front())
+                                             : QString{})
+                                .arg(verts.size() >= 2
+                                             ? this->formatSpatialPointSummary(verts.back())
+                                             : QString{})
+                                .arg(result.vertexCount > 0
+                                             ? result.vertexCount
+                                             : static_cast<int>(verts.size()))
+                                .arg(usedWidth)
+                                .arg(result.totalLength, 0, 'f', 2)
+                                .arg(yLabel)
+                                .arg(result.spatialUnit.isEmpty() ? u"pixels"_s
+                                                                  : result.spatialUnit)
+                                .arg(result.pixelScaleArcsecPerPixel, 0, 'g', 8);
+
+                // Create PvDiagramWidget lazily on first successful extraction.
+                if (!this->pvDiagramWidget) {
+                    qDebug().noquote() << QStringLiteral("[pv] creating PvDiagramWidget");
+                    this->pvDiagramWidget = new PvDiagramWidget(this);
+                    QObject::connect(
+                            this->pvDiagramWidget, &PvDiagramWidget::destroyed, this,
+                            [this]() {
+                                this->pvDiagramWidget = nullptr;
+                                if (this->actionExtractPvDiagram
+                                    && this->actionExtractPvDiagram->isChecked()) {
+                                    this->actionExtractPvDiagram->setChecked(false);
+                                }
+                            });
+                }
+
+                // Choose spatial axis (prefer physical arcsec when available).
+                const bool hasArcsec = !result.positionsArcsec.isEmpty()
+                        && result.positionsArcsec.size() == result.positions.size();
+                const QVector<double> &pvPositions =
+                        hasArcsec ? result.positionsArcsec : result.positions;
+                const QString xLabel = hasArcsec
+                        ? u"Offset Along Path (%1)"_s.arg(
+                                  result.spatialUnit.isEmpty() ? u"arcsec"_s
+                                                               : result.spatialUnit)
+                        : u"Offset Along Path (pixels)"_s;
+
+                qDebug().noquote()
+                        << QStringLiteral("[pv] updating widget and requesting show/raise");
+                this->pvDiagramWidget->setPvData(pvPositions, spectral, result.values,
+                                                 result.numSamples, result.depth,
+                                                 xLabel, yLabel,
+                                                 u"PV Diagram (Polyline)"_s, details);
+                this->clearPersistentStatusMessage();
+            },
             this);
 
     QObject::connect(&this->isosurfaceWatcher, &QFutureWatcher<AsyncIsosurfaceResult>::finished,
@@ -2338,6 +2315,8 @@ void vtkWindowCube::closeEvent(QCloseEvent *event)
             this->showPersistentStatusMessage(u"Loading remote slice..."_s);
         } else if (this->activeRemoteIsosurfaceRequests > 0 || this->isosurfaceWatcher.isRunning()) {
             this->showPersistentStatusMessage(u"Computing isocontour..."_s);
+        } else if (this->pvController && this->pvController->isBusy()) {
+            this->showPersistentStatusMessage(u"Requesting PV diagram..."_s);
         } else {
             this->showPersistentStatusMessage(u"Computing moment..."_s);
         }
@@ -4614,113 +4593,34 @@ std::array<double, 2> vtkWindowCube::pvLocalNormalForSample(
 
 void vtkWindowCube::extractCurrentPvDiagram()
 {
+    // Polyline must have been finalised before the action fires.
     if (!this->pvValid || this->pvPolylineVertices.size() < 2) {
         qDebug().noquote() << QStringLiteral("[pv] extraction skipped: line not valid");
         this->statusBar()->showMessage(u"Define at least two points for PV path."_s, 2000);
         return;
     }
 
-    const auto showPvError = [this](const QString &message) {
-        DiagnosticsManager::instance()->publish(DiagnosticsLevel::Warning,
-                                                DiagnosticsCategory::Remote, QStringLiteral("PV"),
-                                                message, this->remoteDatasetId,
-                                                this->remoteSessionId, QStringLiteral("pv"));
-        QMessageBox::warning(this, u"PV Diagram"_s, message);
-        this->statusBar()->showMessage(message, 4000);
-    };
-
     if (this->remoteDatasetId.isEmpty()) {
         const QString message =
-                u"PV computation requires a backend-visible dataset. Stage or open it on the backend first."_s;
+                u"PV computation requires a backend-visible dataset. "
+                "Stage or open it on the backend first."_s;
         qWarning().noquote() << QStringLiteral("[pv] missing backend dataset_id");
-        showPvError(message);
+        DiagnosticsManager::instance()->publish(DiagnosticsLevel::Warning,
+                                                DiagnosticsCategory::Remote,
+                                                QStringLiteral("PvController"), message,
+                                                this->remoteDatasetId, this->remoteSessionId,
+                                                QStringLiteral("pv"));
+        QMessageBox::warning(this, u"PV Diagram"_s, message);
+        this->statusBar()->showMessage(message, 4000);
         return;
     }
 
-    const auto ensurePvWidget = [this]() {
-        if (!this->pvDiagramWidget) {
-            qDebug().noquote() << QStringLiteral("[pv] creating PvDiagramWidget");
-            this->pvDiagramWidget = new PvDiagramWidget(this);
-            QObject::connect(this->pvDiagramWidget, &PvDiagramWidget::destroyed, this,
-                             [this]() {
-                                 this->pvDiagramWidget = nullptr;
-                                 if (this->actionExtractPvDiagram && this->actionExtractPvDiagram->isChecked()) {
-                                     this->actionExtractPvDiagram->setChecked(false);
-                                 }
-                             });
-        }
-    };
-
-    const auto showPvDiagram = [this, &ensurePvWidget](const QVector<double> &positions,
-                                                       const QVector<double> &spectral,
-                                                       const QVector<double> &values, int xSamples,
-                                                       int zCount, const QString &details,
-                                                       const QVector<double> &arcsecPositions = {},
-                                                       const QString &spatialUnit = {}) {
-        ensurePvWidget();
-        qDebug().noquote() << QStringLiteral("[pv] updating widget and requesting show/raise");
-        const bool hasArcsec = !arcsecPositions.isEmpty()
-                && arcsecPositions.size() == positions.size();
-        const QVector<double> &pvPositions = hasArcsec ? arcsecPositions : positions;
-        const QString xLabel = hasArcsec
-                ? u"Offset Along Path (%1)"_s.arg(spatialUnit.isEmpty() ? u"arcsec"_s : spatialUnit)
-                : u"Offset Along Path (pixels)"_s;
-        this->pvDiagramWidget->setPvData(pvPositions, spectral, values, xSamples, zCount,
-                                         xLabel, this->spectralAxisTitle(),
-                                         u"PV Diagram (Polyline)"_s, details);
-    };
-
-    qDebug().noquote() << QStringLiteral("[remote-pv] requesting backend pv vertices=%1 width=%2")
-                                  .arg(this->pvPolylineVertices.size())
-                                  .arg(this->pvWidthPixels);
-    const auto remoteResult = fetchRemotePv(this->remoteBackendUrl, this->remoteDatasetId,
-                                            this->pvPolylineVertices, this->pvWidthPixels,
-                                            this->remoteSessionId, this->remoteBackendToken);
-    if (!remoteResult.valid) {
-        qWarning().noquote() << QStringLiteral("[remote-pv] backend extraction failed: %1")
-                                        .arg(remoteResult.errorMessage);
-        showPvError(remoteResult.errorMessage.isEmpty()
-                            ? u"PV computation failed on the backend."_s
-                            : remoteResult.errorMessage);
-        return;
-    }
-
-    QVector<double> spectral(remoteResult.depth);
-    for (int datasetZ = 0; datasetZ < remoteResult.depth; ++datasetZ) {
-        bool ok = false;
-        spectral[datasetZ] = this->spectralAxisValue(static_cast<double>(datasetZ), &ok);
-        if (!ok) {
-            spectral[datasetZ] = static_cast<double>(datasetZ);
-        }
-    }
-    const QString yLabel = !remoteResult.spectralAxisType.isEmpty()
-            ? (!remoteResult.spectralAxisUnit.isEmpty()
-                       ? u"%1 (%2)"_s.arg(remoteResult.spectralAxisType, remoteResult.spectralAxisUnit)
-                       : remoteResult.spectralAxisType)
-            : this->spectralAxisTitle();
-    const QString details =
-            u"Start: %1\nEnd: %2\nVertices: %3\nPath width: %4 px\nPath length: %5 px\nSampling: nearest-neighbor perpendicular averaging\nComputation: Computed on backend-visible dataset\nSpectral axis: %6\nSpatial unit: %7\nPixel scale: %8 arcsec/pixel"_s
-                    .arg(this->formatSpatialPointSummary(this->pvPolylineVertices.front()))
-                    .arg(this->formatSpatialPointSummary(this->pvPolylineVertices.back()))
-                    .arg(remoteResult.vertexCount > 0 ? remoteResult.vertexCount
-                                                      : static_cast<int>(this->pvPolylineVertices.size()))
-                    .arg(remoteResult.widthPixels > 0 ? remoteResult.widthPixels : this->pvWidthPixels)
-                    .arg(remoteResult.totalLength, 0, 'f', 2)
-                    .arg(yLabel)
-                    .arg(remoteResult.spatialUnit.isEmpty() ? u"pixels"_s : remoteResult.spatialUnit)
-                    .arg(remoteResult.pixelScaleArcsecPerPixel, 0, 'g', 8);
-    ensurePvWidget();
-    qDebug().noquote() << QStringLiteral("[pv] updating widget and requesting show/raise");
-    const bool hasArcsec = !remoteResult.positionsArcsec.isEmpty()
-            && remoteResult.positionsArcsec.size() == remoteResult.positions.size();
-    const QVector<double> &pvPositions = hasArcsec ? remoteResult.positionsArcsec : remoteResult.positions;
-    const QString xLabel = hasArcsec
-            ? u"Offset Along Path (%1)"_s.arg(remoteResult.spatialUnit.isEmpty() ? u"arcsec"_s
-                                                                                  : remoteResult.spatialUnit)
-            : u"Offset Along Path (pixels)"_s;
-    this->pvDiagramWidget->setPvData(pvPositions, spectral, remoteResult.values,
-                                     remoteResult.numSamples, remoteResult.depth, xLabel, yLabel,
-                                     u"PV Diagram (Polyline)"_s, details);
+    qDebug().noquote()
+            << QStringLiteral("[remote-pv] dispatching async pv vertices=%1 width=%2")
+                       .arg(this->pvPolylineVertices.size())
+                       .arg(this->pvWidthPixels);
+    this->showPersistentStatusMessage(u"Requesting PV diagram..."_s);
+    this->pvController->startExtraction(this->pvPolylineVertices, this->pvWidthPixels);
 }
 
 void vtkWindowCube::updateProbeReadout(vtkImageData *imageData)
@@ -6626,6 +6526,7 @@ bool vtkWindowCube::isBusy() const
     return this->cubeOpenWatcher.isRunning() || this->remotePreviewWatcher.isRunning()
             || this->remoteHighResCubeWatcher.isRunning()
             || (this->momentController && this->momentController->isBusy())
+            || (this->pvController && this->pvController->isBusy())
             || this->activeRemoteSliceRequests > 0
             || this->activeRemoteIsosurfaceRequests > 0 || this->isosurfaceWatcher.isRunning();
 }
@@ -6695,8 +6596,9 @@ void vtkWindowCube::updateBackendDerivedActionsAvailability()
             !(this->momentController && this->momentController->isBusy()));
 
     if (this->actionExtractPvDiagram) {
+        const bool pvBusy = this->pvController && this->pvController->isBusy();
         const bool pvEnabled = available && !this->cubeOpenWatcher.isRunning()
-                && !this->remotePreviewWatcher.isRunning();
+                && !this->remotePreviewWatcher.isRunning() && !pvBusy;
         this->actionExtractPvDiagram->setEnabled(pvEnabled);
         this->actionExtractPvDiagram->setToolTip(available ? QString {} : kPvBackendTooltip);
         this->actionExtractPvDiagram->setStatusTip(available ? QString {} : kPvBackendTooltip);
