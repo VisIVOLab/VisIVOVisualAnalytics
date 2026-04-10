@@ -278,7 +278,8 @@ private:
     QPointer<QComboBox> m_comboVolumeMode;   // Composite / MIP / MinIP
     QPointer<QWidget>   m_volumeModeCard;    // shown only when Volume is active
     QPointer<QComboBox> m_comboLut;
-    QPointer<QLabel>    m_lutPreviewLabel;
+    QPointer<QWidget>   m_colorMapCard;      // shown only when Volume is active
+    QPointer<QWidget>   m_surfaceColorCard;  // shown only when Isosurface is active
     QString             m_activeColorMapName;
     // Menu actions for volume blend mode (created programmatically).
     QPointer<QAction>   m_actionComposite;

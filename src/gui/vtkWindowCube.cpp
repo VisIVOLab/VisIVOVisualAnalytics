@@ -2125,12 +2125,12 @@ void vtkWindowCube::setupSidebar()
     ui->sidebarContainer->hide();
 
     // Build the redesigned "3D View Settings" page (creates m_comboRenderMode,
-    // m_comboLut, m_lutPreviewLabel; reparents sliderThreshold / lineThreshold /
-    // btnCubeColor into the new widget).
+    // m_comboLut, m_colorMapCard, m_surfaceColorCard; reparents sliderThreshold /
+    // lineThreshold / btnCubeColor into the new widget).
     QWidget *page3dSettings = this->setupThresholdPage();
 
     this->m_sidebar = new SidebarPanel(220, this);
-    this->m_sidebar->addPage(u":/icons/rail_threshold.svg"_s, u"3D View Settings"_s, page3dSettings);
+    this->m_sidebar->addPage(u":/icons/rail_3d.svg"_s, u"3D View Settings"_s, page3dSettings);
     this->m_sidebar->addPage(u":/icons/rail_slice.svg"_s,     u"Cutting Plane"_s,    ui->pageSlice);
     this->m_sidebar->addPage(u":/icons/rail_contours.svg"_s,  u"Contours"_s,         ui->pageContours);
     this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,     u"Statistics"_s,       ui->pageStats);
@@ -2325,32 +2325,54 @@ QWidget *vtkWindowCube::setupThresholdPage()
         ui->sliderThreshold->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         cl->addWidget(ui->sliderThreshold);
 
-        // Value row: line edit + color button.
+        // Value row: line edit only (no color button here).
         auto *row = new QHBoxLayout();
         row->setSpacing(6);
         ui->lineThreshold->setParent(card);
         row->addWidget(ui->lineThreshold, 1);
-        ui->btnCubeColor->setParent(card);
-        ui->btnCubeColor->setFixedSize(28, 28);
-        ui->btnCubeColor->setToolTip(
-                u"Isosurface mode: pick surface color\nVolume mode: pick color palette"_s);
-        row->addWidget(ui->btnCubeColor);
         cl->addLayout(row);
 
         root->addWidget(card);
     }
 
-    // ── Section 3: Color Map ──────────────────────────────────────────────
+    // ── Section 3: Surface Color (Isosurface mode only) ───────────────────
     {
-        auto *hdr = new QLabel(u"COLOR MAP"_s);
-        hdr->setStyleSheet(hdrStyle);
-        root->addWidget(hdr);
-
-        auto *card = new QFrame();
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
+        auto *surfCard = new QFrame();
+        surfCard->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(surfCard);
         cl->setContentsMargins(8, 8, 8, 8);
         cl->setSpacing(6);
+
+        auto *hdr = new QLabel(u"SURFACE COLOR"_s);
+        hdr->setStyleSheet(hdrStyle);
+        cl->addWidget(hdr);
+
+        auto *row = new QHBoxLayout();
+        row->setSpacing(6);
+        ui->btnCubeColor->setParent(surfCard);
+        ui->btnCubeColor->setFixedSize(28, 28);
+        ui->btnCubeColor->setToolTip(u"Pick isosurface color"_s);
+        row->addWidget(ui->btnCubeColor);
+        row->addStretch();
+        cl->addLayout(row);
+
+        // Visible only when Isosurface rendering is active.
+        surfCard->setVisible(!ui->actionVolume->isChecked());
+        this->m_surfaceColorCard = surfCard;
+        root->addWidget(surfCard);
+    }
+
+    // ── Section 4: Color Map (Volume mode only) ───────────────────────────
+    {
+        auto *cmCard = new QFrame();
+        cmCard->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(cmCard);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+
+        auto *hdr = new QLabel(u"COLOR MAP"_s);
+        hdr->setStyleSheet(hdrStyle);
+        cl->addWidget(hdr);
 
         // Combo with per-item gradient icons.
         this->m_comboLut = new QComboBox();
@@ -2365,20 +2387,10 @@ QWidget *vtkWindowCube::setupThresholdPage()
         this->m_activeColorMapName = defaultName;
         cl->addWidget(this->m_comboLut);
 
-        // Full-width gradient preview bar.
-        this->m_lutPreviewLabel = new QLabel();
-        this->m_lutPreviewLabel->setFixedHeight(16);
-        this->m_lutPreviewLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        this->m_lutPreviewLabel->setScaledContents(true);
-        this->m_lutPreviewLabel->setStyleSheet(
-                u"QLabel {"
-                "  border: 1px solid rgba(4, 138, 191, 0.20);"
-                "  border-radius: 3px;"
-                "}"_s);
-        this->m_lutPreviewLabel->setPixmap(buildLutPreview(defaultName, 180, 16));
-        cl->addWidget(this->m_lutPreviewLabel);
-
-        root->addWidget(card);
+        // Visible only when Volume rendering is active.
+        cmCard->setVisible(ui->actionVolume->isChecked());
+        this->m_colorMapCard = cmCard;
+        root->addWidget(cmCard);
     }
 
     root->addStretch();
@@ -2393,15 +2405,8 @@ void vtkWindowCube::applyColorMapByName(const QString &name)
     this->m_activeColorMapName = name;
     const std::string stdName = name.toStdString();
 
-    // Slice LUT.
-    ColorMaps::SetColorMap(this->lutSlice, stdName);
-    this->lutSlice->Modified();
-
-    // Moment LUT.
-    ColorMaps::SetColorMap(this->lutMoment, stdName);
-    this->lutMoment->Modified();
-
-    // Volume color transfer function.
+    // Volume color transfer function only — slice and moment LUTs are NOT
+    // touched here; they are managed independently by their own rendering paths.
     {
         auto *cubeImage =
                 vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
@@ -2416,18 +2421,9 @@ void vtkWindowCube::applyColorMapByName(const QString &name)
         this->volumeColorTransferFunction->SetObjectName(stdName);
     }
 
-    // Update the preview bar (generates at label's logical width, or 180 px as fallback).
-    if (this->m_lutPreviewLabel) {
-        const int previewW = std::max(60, this->m_lutPreviewLabel->width());
-        this->m_lutPreviewLabel->setPixmap(buildLutPreview(name, previewW, 16));
-    }
-
-    // Re-render all open views.
+    // Re-render the 3D cube view.
     if (ui->vtkCube->renderWindow()) {
         ui->vtkCube->renderWindow()->Render();
-    }
-    if (ui->vtkImage->renderWindow()) {
-        ui->vtkImage->renderWindow()->Render();
     }
 }
 
@@ -2465,6 +2461,12 @@ void vtkWindowCube::updateVolumeModeVisibility(bool volumeActive)
 {
     if (this->m_volumeModeCard) {
         this->m_volumeModeCard->setVisible(volumeActive);
+    }
+    if (this->m_colorMapCard) {
+        this->m_colorMapCard->setVisible(volumeActive);
+    }
+    if (this->m_surfaceColorCard) {
+        this->m_surfaceColorCard->setVisible(!volumeActive);
     }
     if (this->m_menuVolumeRendering) {
         this->m_menuVolumeRendering->setEnabled(volumeActive);
