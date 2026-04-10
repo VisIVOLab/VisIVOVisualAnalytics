@@ -168,7 +168,7 @@ bool pointInVisibleBounds(const std::array<double, 2> &point, const VisibleImage
             && point[1] <= visible.ymax;
 }
 
-// RemotePvFetchResult moved to PvTypes.h (included via PvController.h → vtkWindowCube.h)
+// RemotePvFetchResult moved to PvTypes.h (included via PvController.h)
 
 enum class SanityLevel
 {

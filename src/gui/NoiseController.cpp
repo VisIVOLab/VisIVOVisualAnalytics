@@ -115,7 +115,7 @@ void NoiseController::startEstimation()
 
     DiagnosticsManager::instance()->publish(
             DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
-            QStringLiteral("vtkWindowCube"),
+            QStringLiteral("NoiseController"),
             QStringLiteral("Noise estimation started (x:%1-%2 y:%3-%4 ch:%5-%6).")
                     .arg(x0).arg(x1).arg(y0).arg(y1).arg(channelStart).arg(channelEnd),
             m_datasetId, m_sessionId,
@@ -155,7 +155,7 @@ void NoiseController::onWatcherFinished()
     if (!result.valid) {
         DiagnosticsManager::instance()->publish(
                 DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
-                QStringLiteral("vtkWindowCube"),
+                QStringLiteral("NoiseController"),
                 result.errorMessage.isEmpty() ? QStringLiteral("Noise estimation failed.")
                                               : result.errorMessage,
                 m_datasetId, m_sessionId,
@@ -170,7 +170,7 @@ void NoiseController::onWatcherFinished()
     } else {
         DiagnosticsManager::instance()->publish(
                 DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
-                QStringLiteral("vtkWindowCube"),
+                QStringLiteral("NoiseController"),
                 QStringLiteral("Noise estimation completed."),
                 m_datasetId, m_sessionId,
                 QStringLiteral("noise"));

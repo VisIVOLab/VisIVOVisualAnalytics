@@ -2,11 +2,13 @@
 #define vtkWindowCube_H
 
 #include "CatalogueOverlayUtils.h"
-#include "CubeNoiseTypes.h"
 #include "CubeOpenPreviewTask.h"
-#include "MomentMapController.h"
-#include "NoiseController.h"
-#include "PvController.h"
+
+// Controllers are forward-declared here; their full headers are included in
+// vtkWindowCube.cpp where they are constructed and their methods are called.
+class MomentMapController;
+class NoiseController;
+class PvController;
 
 #include <vtkSmartPointer.h>
 #include <vtkNew.h>

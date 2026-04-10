@@ -53,7 +53,7 @@ static RemotePvFetchResult fetchRemotePv(const QString &backendUrl,
                                .arg(taskStatus.taskId);
             DiagnosticsManager::instance()->publish(
                     DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
-                    QStringLiteral("vtkWindowCube"),
+                    QStringLiteral("PvController"),
                     QStringLiteral("Task path failed, falling back to sync PV request."),
                     datasetId, sessionId, QStringLiteral("pv"));
         }
