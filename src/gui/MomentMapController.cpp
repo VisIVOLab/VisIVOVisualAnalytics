@@ -91,7 +91,7 @@ void MomentMapController::startComputation(int defaultOrder)
     const int requestId = ++m_currentRequestId;
 
     if (auto *win = qobject_cast<QMainWindow *>(m_parentWindow)) {
-        win->statusBar()->showMessage(u"Computing moment..."_s);
+        win->statusBar()->showMessage(u"Computing moment map..."_s);
     }
 
     m_busy = true;
@@ -150,7 +150,7 @@ void MomentMapController::startComputation(int defaultOrder)
         const QString unitLabel = result.momentUnit.isEmpty() ? u"\u2014"_s : result.momentUnit;
 
         const QString summary =
-                u"Moment: %1 | Unit: %2 | Ch: %3 | Mask: %4 | Scope: %5"_s
+                u"Moment map: %1 | Unit: %2 | Ch: %3 | Mask: %4 | Scope: %5"_s
                         .arg(describeMomentOrder(config.order))
                         .arg(unitLabel)
                         .arg(formatMomentChannelRange(config))
@@ -270,11 +270,11 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
     scopeLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
     scopeLabel->setMinimumHeight(scopeLabel->fontMetrics().lineSpacing() * 2 + 8);
 
-    form->addRow(u"Moment"_s, momentCombo);
+    form->addRow(u"Moment order"_s, momentCombo);
     form->addRow(u"Start channel"_s, channelStartSpin);
     form->addRow(u"End channel"_s, channelEndSpin);
     form->addRow(u"Mask"_s, maskCheck);
-    form->addRow(u"Threshold"_s, thresholdSpin);
+    form->addRow(u"Mask threshold"_s, thresholdSpin);
     form->addRow(u"NaN/blanking"_s, blankingLabel);
     form->addRow(u"Source scope"_s, scopeLabel);
 

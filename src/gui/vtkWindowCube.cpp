@@ -63,6 +63,7 @@
 #include <vtkVolume.h>
 #include <vtkVolumeProperty.h>
 
+#include <QFileInfo>
 #include <QActionGroup>
 #include <QAction>
 #include <QAbstractItemView>
@@ -1475,17 +1476,17 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->m_actionComposite->setCheckable(true);
     this->m_actionComposite->setChecked(true);
     this->m_actionComposite->setToolTip(
-            u"Full ray-casting with opacity transfer function"_s);
+            u"Full ray-casting with opacity transfer function."_s);
     blendGroup->addAction(this->m_actionComposite);
 
     this->m_actionMIP = this->m_menuVolumeRendering->addAction(u"MIP (Max Intensity)"_s);
     this->m_actionMIP->setCheckable(true);
-    this->m_actionMIP->setToolTip(u"Project the maximum scalar value along each ray"_s);
+    this->m_actionMIP->setToolTip(u"Maximum intensity projection along each ray."_s);
     blendGroup->addAction(this->m_actionMIP);
 
     this->m_actionMinIP = this->m_menuVolumeRendering->addAction(u"MinIP (Min Intensity)"_s);
     this->m_actionMinIP->setCheckable(true);
-    this->m_actionMinIP->setToolTip(u"Project the minimum scalar value along each ray"_s);
+    this->m_actionMinIP->setToolTip(u"Minimum intensity projection along each ray."_s);
     blendGroup->addAction(this->m_actionMinIP);
 
     QObject::connect(blendGroup, &QActionGroup::triggered, this, [this](QAction *action) {
@@ -1626,8 +1627,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              return;
                          }
 
-                         this->setCubeOpenStateLabel(u"Applying full resolution..."_s);
-                         this->showPersistentStatusMessage(u"Applying full resolution..."_s);
+                         this->setCubeOpenStateLabel(u"Loading full resolution..."_s);
+                         this->showPersistentStatusMessage(u"Loading full resolution..."_s);
                          QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
                          QElapsedTimer applyTimer;
                          applyTimer.start();
@@ -1654,7 +1655,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              this->persistentStatusActive = false;
                              this->statusMessageClearTimer.stop();
                              this->statusBar()->showMessage(result.errorMessage.isEmpty()
-                                                                    ? u"Could not load remote preview."_s
+                                                                    ? u"Could not load preview."_s
                                                                     : result.errorMessage);
                              return;
                          }
@@ -1694,7 +1695,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              this->statusMessageClearTimer.stop();
                              this->setRemoteCubeDisplayState(RemoteCubeDisplayState::Preview);
                              this->statusBar()->showMessage(result.errorMessage.isEmpty()
-                                                                    ? u"Could not load remote high-resolution cube."_s
+                                                                    ? u"Could not load full-resolution cube."_s
                                                                     : result.errorMessage);
                              if (this->pendingRemoteRefinementReload) {
                                  this->pendingRemoteRefinementReload = false;
@@ -1822,9 +1823,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 // Show a transient WCS warning for sanitized/degraded WCS.
                 if (!result.wcsStatus.isEmpty() && result.wcsStatus != u"ok"_s) {
                     const QString warnText = result.wcsWarningMessage.isEmpty()
-                            ? u"Moment WCS: %1"_s.arg(result.wcsStatus)
-                            : u"Moment WCS (%1): %2"_s.arg(result.wcsStatus,
-                                                             result.wcsWarningMessage);
+                            ? u"Moment map WCS: %1"_s.arg(result.wcsStatus)
+                            : u"Moment map WCS (%1): %2"_s.arg(result.wcsStatus,
+                                                                result.wcsWarningMessage);
                     this->statusBar()->showMessage(warnText, 8000);
                 }
             },
@@ -2180,15 +2181,20 @@ void vtkWindowCube::setupSidebar()
     // lineSpectral into the new widget).
     QWidget *page2dSettings = this->setup2dViewPage();
 
+    // Build the "Info / Statistics" page (reparents frameImgStats / frameCubeStats
+    // and adds new dynamic labels for dataset, WCS and system state).
+    QWidget *pageInfoStats = this->setupInfoStatsPage();
+
     this->m_sidebar = new SidebarPanel(220, this);
     this->m_sidebar->addPage(u":/icons/rail_3d.svg"_s,       u"3D View Settings"_s, page3dSettings);
     this->m_sidebar->addPage(u":/icons/rail_slice.svg"_s,    u"2D View Settings"_s, page2dSettings);
     this->m_sidebar->addPage(u":/icons/rail_contours.svg"_s, u"Contours"_s,         ui->pageContours);
-    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,    u"Statistics"_s,       ui->pageStats);
+    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,    u"Info / Stats"_s,     pageInfoStats);
     this->m_sidebar->finalize(0);
     mainLayout->insertWidget(0, this->m_sidebar);
 
-    // Style the remaining sidebar pages (Cutting Plane, Contours, Statistics).
+    // Style the remaining sidebar pages (Contours). The stats page is fully styled
+    // inside setupInfoStatsPage().
     const QString hdrStyle =
             u"QLabel {"
             "  color: #8AB8CC;"
@@ -2197,31 +2203,21 @@ void vtkWindowCube::setupSidebar()
             "  padding-bottom: 4px;"
             "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
             "}"_s;
-    const QString subHdrStyle =
-            u"QLabel {"
-            "  color: #5A8DAA;"
-            "  font-size: 9px;"
-            "  font-weight: 600;"
-            "}"_s;
     const QString cardStyle =
             u"QFrame {"
             "  background-color: rgba(255, 255, 255, 0.03);"
             "  border: 1px solid rgba(4, 138, 191, 0.14);"
             "  border-radius: 6px;"
             "}"_s;
-    const QString roStyle = u"QLineEdit[readOnly='true'] { color: #7AAABB; }"_s;
 
-    for (QLabel *lbl : { ui->labelContoursHdr, ui->labelStatsHdr }) {
+    for (QLabel *lbl : { ui->labelContoursHdr }) {
         lbl->setStyleSheet(hdrStyle);
-    }
-    for (QLabel *lbl : { ui->labelImg, ui->labelCubeStatsHdr }) {
-        lbl->setStyleSheet(subHdrStyle);
     }
     for (QFrame *f : { ui->frameContours }) {
         f->setStyleSheet(cardStyle);
     }
-    ui->frameImgStats->setStyleSheet(cardStyle + roStyle);
-    ui->frameCubeStats->setStyleSheet(cardStyle + roStyle);
+    // ui->labelImg, ui->frameImgStats, and ui->frameCubeStats are reparented and
+    // styled inside setupInfoStatsPage(); no additional styling needed here.
 
     // ── Bidirectional sync: rendering mode combo ↔ menu actions ──────────
     QObject::connect(this->m_comboRenderMode, &QComboBox::currentIndexChanged,
@@ -2366,10 +2362,14 @@ QWidget *vtkWindowCube::setupThresholdPage()
 
         this->m_comboRenderMode = new QComboBox();
         this->m_comboRenderMode->addItem(u"Isosurface"_s);
-        this->m_comboRenderMode->addItem(u"Volume"_s);
-        this->m_comboRenderMode->setItemData(0, u"Extract surface at threshold value"_s,
-                                              Qt::ToolTipRole);
-        this->m_comboRenderMode->setItemData(1, u"Direct volume rendering"_s, Qt::ToolTipRole);
+        this->m_comboRenderMode->addItem(u"Volume Rendering"_s);
+        this->m_comboRenderMode->setItemData(
+                0, u"Render an isosurface extracted at the rendering threshold."_s,
+                Qt::ToolTipRole);
+        this->m_comboRenderMode->setItemData(
+                1, u"Render the cube volume directly (supports Composite, MIP, MinIP)."_s,
+                Qt::ToolTipRole);
+        this->m_comboRenderMode->setToolTip(u"Select how the 3D cube is rendered."_s);
         // Reflect current state (Volume is the default on startup).
         this->m_comboRenderMode->setCurrentIndex(ui->actionVolume->isChecked() ? 1 : 0);
 
@@ -2394,9 +2394,10 @@ QWidget *vtkWindowCube::setupThresholdPage()
         this->m_comboVolumeMode->addItem(u"MIP (Max Intensity)"_s);
         this->m_comboVolumeMode->addItem(u"MinIP (Min Intensity)"_s);
         this->m_comboVolumeMode->setToolTip(
-                u"Composite: full ray-casting with opacity transfer function.\n"
-                "MIP: project the maximum scalar value along each ray.\n"
-                "MinIP: project the minimum scalar value along each ray."_s);
+                u"Choose the volume blending method.\n"
+                "Composite: full ray-casting with opacity transfer function.\n"
+                "MIP: maximum intensity projection along each ray.\n"
+                "MinIP: minimum intensity projection along each ray."_s);
         this->m_comboVolumeMode->setCurrentIndex(0);
         cl->addWidget(this->m_comboVolumeMode);
 
@@ -2421,12 +2422,14 @@ QWidget *vtkWindowCube::setupThresholdPage()
         // Reparent the existing slider into the new card.
         ui->sliderThreshold->setParent(card);
         ui->sliderThreshold->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        ui->sliderThreshold->setToolTip(u"Set the rendering threshold for isosurface extraction and volume opacity."_s);
         cl->addWidget(ui->sliderThreshold);
 
         // Value row: line edit only (no color button here).
         auto *row = new QHBoxLayout();
         row->setSpacing(6);
         ui->lineThreshold->setParent(card);
+        ui->lineThreshold->setToolTip(u"Current rendering threshold value."_s);
         row->addWidget(ui->lineThreshold, 1);
         cl->addLayout(row);
 
@@ -2449,7 +2452,7 @@ QWidget *vtkWindowCube::setupThresholdPage()
         row->setSpacing(6);
         ui->btnCubeColor->setParent(surfCard);
         ui->btnCubeColor->setFixedSize(28, 28);
-        ui->btnCubeColor->setToolTip(u"Pick isosurface color"_s);
+        ui->btnCubeColor->setToolTip(u"Select the surface color for isosurface rendering."_s);
         row->addWidget(ui->btnCubeColor);
         row->addStretch();
         cl->addLayout(row);
@@ -2482,6 +2485,7 @@ QWidget *vtkWindowCube::setupThresholdPage()
         }
         const QString defaultName = QString::fromStdString(ColorMaps::DefaultColorMap);
         this->m_comboLut->setCurrentText(defaultName);
+        this->m_comboLut->setToolTip(u"Select the color map for volume rendering."_s);
         this->m_activeColorMapName = defaultName;
         cl->addWidget(this->m_comboLut);
 
@@ -2613,9 +2617,12 @@ QWidget *vtkWindowCube::setup2dViewPage()
 
         this->m_combo2dMode = new QComboBox();
         this->m_combo2dMode->addItem(u"Slice"_s);
-        this->m_combo2dMode->addItem(u"Moment"_s);
-        this->m_combo2dMode->setItemData(0, u"Show a 2D slice through the cube"_s, Qt::ToolTipRole);
-        this->m_combo2dMode->setItemData(1, u"Show the current moment map"_s, Qt::ToolTipRole);
+        this->m_combo2dMode->addItem(u"Moment Map"_s);
+        this->m_combo2dMode->setItemData(0, u"Display a 2D slice through the cube."_s,
+                                          Qt::ToolTipRole);
+        this->m_combo2dMode->setItemData(1, u"Display the computed moment map of the cube."_s,
+                                          Qt::ToolTipRole);
+        this->m_combo2dMode->setToolTip(u"Select the 2D display mode."_s);
         this->m_combo2dMode->setCurrentIndex(initiallySlice ? 0 : 1);
         cl->addWidget(this->m_combo2dMode);
 
@@ -2673,6 +2680,7 @@ QWidget *vtkWindowCube::setup2dViewPage()
         }
         const QString defaultName = QString::fromStdString(ColorMaps::DefaultColorMap);
         this->m_comboSliceLut->setCurrentText(defaultName);
+        this->m_comboSliceLut->setToolTip(u"Select the color map for slice views."_s);
         this->m_activeSliceLutName = defaultName;
         cl->addWidget(this->m_comboSliceLut);
 
@@ -2694,7 +2702,7 @@ QWidget *vtkWindowCube::setup2dViewPage()
         cl->addWidget(hdr);
 
         // Dynamic label — updated by updateMomentInfoCard() when a moment is computed.
-        auto *info = new QLabel(u"No moment map available.\nUse the Moment menu to\ncompute one."_s);
+        auto *info = new QLabel(u"No moment map available.\nOpen Compute \u2192 Moment Map\nto generate one."_s);
         info->setWordWrap(true);
         info->setStyleSheet(u"QLabel { color: #7AAABB; font-size: 9px; }"_s);
         cl->addWidget(info);
@@ -2726,6 +2734,7 @@ QWidget *vtkWindowCube::setup2dViewPage()
         }
         const QString defaultName2 = QString::fromStdString(ColorMaps::DefaultColorMap);
         this->m_comboMomentLut->setCurrentText(defaultName2);
+        this->m_comboMomentLut->setToolTip(u"Select the color map for moment map views."_s);
         this->m_activeMomentLutName = defaultName2;
         cl->addWidget(this->m_comboMomentLut);
 
@@ -2736,6 +2745,239 @@ QWidget *vtkWindowCube::setup2dViewPage()
 
     root->addStretch();
     return page;
+}
+
+QWidget *vtkWindowCube::setupInfoStatsPage()
+{
+    const QString hdrStyle =
+            u"QLabel { font-size: 8px; font-weight: 700; letter-spacing: 1px;"
+            "  color: rgba(4,138,191,0.75); margin-top: 6px; margin-bottom: 2px; }"_s;
+
+    const QString cardStyle =
+            u"QFrame {"
+            "  background: rgba(255,255,255,0.04);"
+            "  border: 1px solid rgba(4,138,191,0.18);"
+            "  border-radius: 4px;"
+            "}"_s;
+
+    // Read-only line-edit tint applied to the existing stats frames.
+    const QString roStyle = u"QLineEdit[readOnly='true'] { color: #7AAABB; }"_s;
+
+    // Helper: create a small read-only value label.
+    auto makeVal = [](const QString &text = {}) -> QLabel * {
+        auto *l = new QLabel(text);
+        l->setWordWrap(true);
+        l->setStyleSheet(u"QLabel { font-size: 9px; color: #AABBCC; }"_s);
+        return l;
+    };
+
+    auto *page = new QWidget();
+    auto *root = new QVBoxLayout(page);
+    root->setContentsMargins(8, 8, 8, 8);
+    root->setSpacing(4);
+
+    // ── 1. DATASET SUMMARY ────────────────────────────────────────────────────
+    {
+        auto *hdr = new QLabel(u"DATASET SUMMARY"_s);
+        hdr->setStyleSheet(hdrStyle);
+        root->addWidget(hdr);
+
+        auto *card = new QFrame();
+        card->setStyleSheet(cardStyle);
+        auto *fl = new QFormLayout(card);
+        fl->setContentsMargins(8, 6, 8, 6);
+        fl->setSpacing(3);
+        fl->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+        this->m_infoDsName = makeVal(QFileInfo(this->filepath).fileName());
+        this->m_infoDsDimensions = makeVal(
+                u"%1 × %2 × %3"_s
+                        .arg(this->remoteDatasetWidth)
+                        .arg(this->remoteDatasetHeight)
+                        .arg(this->remoteDatasetDepth));
+        this->m_infoDsLoadState = makeVal(u"Preview"_s);
+
+        fl->addRow(u"File:"_s, this->m_infoDsName);
+        fl->addRow(u"Dimensions:"_s, this->m_infoDsDimensions);
+        fl->addRow(u"Load state:"_s, this->m_infoDsLoadState);
+
+        root->addWidget(card);
+    }
+
+    // ── 2. DATA STATISTICS ────────────────────────────────────────────────────
+    {
+        auto *hdr = new QLabel(u"DATA STATISTICS"_s);
+        hdr->setStyleSheet(hdrStyle);
+        root->addWidget(hdr);
+
+        // Reparent existing stats frames from the .ui file into this section.
+        // Pointer values remain valid; all existing data-population code still works.
+        auto *subHdr2d = new QLabel(u"2D IMAGE"_s);
+        subHdr2d->setStyleSheet(
+                u"QLabel { font-size: 8px; font-weight: 600; letter-spacing: 1px; color: rgba(4,138,191,0.55); }"_s);
+        root->addWidget(subHdr2d);
+
+        ui->labelImg->setStyleSheet(
+                u"QLabel { font-size: 8px; font-weight: 600; letter-spacing: 1px; color: rgba(4,138,191,0.55); }"_s);
+        ui->frameImgStats->setStyleSheet(cardStyle + roStyle);
+        ui->frameImgStats->setParent(page);
+        root->addWidget(ui->labelImg);
+        root->addWidget(ui->frameImgStats);
+
+        auto *subHdr3d = new QLabel(u"3D CUBE"_s);
+        subHdr3d->setStyleSheet(
+                u"QLabel { font-size: 8px; font-weight: 600; letter-spacing: 1px; color: rgba(4,138,191,0.55); }"_s);
+        root->addWidget(subHdr3d);
+
+        ui->frameCubeStats->setStyleSheet(cardStyle + roStyle);
+        ui->frameCubeStats->setParent(page);
+        root->addWidget(ui->frameCubeStats);
+    }
+
+    // ── 3. COORDINATE / WCS ───────────────────────────────────────────────────
+    {
+        auto *hdr = new QLabel(u"COORDINATE / WCS"_s);
+        hdr->setStyleSheet(hdrStyle);
+        root->addWidget(hdr);
+
+        auto *card = new QFrame();
+        card->setStyleSheet(cardStyle);
+        auto *fl = new QFormLayout(card);
+        fl->setContentsMargins(8, 6, 8, 6);
+        fl->setSpacing(3);
+        fl->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+        this->m_infoWcsBadge = makeVal();
+        this->m_infoWcsFrame = makeVal(this->currentWcsFrameLabel());
+        this->m_infoSpectral = makeVal(this->spectralAxisTitle());
+
+        this->m_infoWcsBadge->setToolTip(u"World Coordinate System status for this dataset."_s);
+        this->m_infoWcsFrame->setToolTip(u"The celestial reference frame currently in use."_s);
+        this->m_infoSpectral->setToolTip(u"The spectral axis type and units for the third dimension."_s);
+
+        fl->addRow(u"WCS:"_s, this->m_infoWcsBadge);
+        fl->addRow(u"Frame:"_s, this->m_infoWcsFrame);
+        fl->addRow(u"Spectral axis:"_s, this->m_infoSpectral);
+
+        root->addWidget(card);
+    }
+
+    // ── 4. SYSTEM / STATUS ────────────────────────────────────────────────────
+    {
+        auto *hdr = new QLabel(u"SYSTEM / STATUS"_s);
+        hdr->setStyleSheet(hdrStyle);
+        root->addWidget(hdr);
+
+        auto *card = new QFrame();
+        card->setStyleSheet(cardStyle);
+        auto *fl = new QFormLayout(card);
+        fl->setContentsMargins(8, 6, 8, 6);
+        fl->setSpacing(3);
+        fl->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+        this->m_infoRenderMode = makeVal(u"Isosurface"_s);
+        this->m_info2dMode = makeVal(u"Slice"_s);
+        this->m_infoMomentState = makeVal(u"—"_s);
+
+        this->m_infoRenderMode->setToolTip(u"Current 3D rendering mode (Isosurface or Volume Rendering)."_s);
+        this->m_info2dMode->setToolTip(u"Current 2D view mode (Slice or Moment Map)."_s);
+        this->m_infoMomentState->setToolTip(u"State of the last moment map computation."_s);
+
+        fl->addRow(u"Rendering mode:"_s, this->m_infoRenderMode);
+        fl->addRow(u"2D view:"_s, this->m_info2dMode);
+        fl->addRow(u"Moment map:"_s, this->m_infoMomentState);
+
+        root->addWidget(card);
+    }
+
+    root->addStretch();
+
+    // Populate dynamic fields that depend on state already known at setup time.
+    this->updateInfoStatsPage();
+
+    return page;
+}
+
+void vtkWindowCube::updateInfoStatsPage()
+{
+    // Guard: labels are created inside setupInfoStatsPage(); this is a no-op
+    // until the sidebar is fully set up.
+    if (!this->m_infoDsLoadState) {
+        return;
+    }
+
+    // ── Dataset Summary ───────────────────────────────────────────────────────
+    // m_infoDsName and m_infoDsDimensions are set once at construction (static).
+
+    switch (this->remoteCubeDisplayState) {
+    case RemoteCubeDisplayState::Preview:
+        this->m_infoDsLoadState->setText(u"Preview proxy"_s);
+        this->m_infoDsLoadState->setStyleSheet(u"QLabel { font-size: 9px; color: #E8A840; }"_s);
+        break;
+    case RemoteCubeDisplayState::LoadingFullResolution:
+        this->m_infoDsLoadState->setText(u"Loading full resolution\u2026"_s);
+        this->m_infoDsLoadState->setStyleSheet(
+                u"QLabel { font-size: 9px; color: #E8A840; font-style: italic; }"_s);
+        break;
+    case RemoteCubeDisplayState::FullResolution:
+        this->m_infoDsLoadState->setText(u"Full resolution"_s);
+        this->m_infoDsLoadState->setStyleSheet(u"QLabel { font-size: 9px; color: #7AAABB; }"_s);
+        break;
+    }
+
+    // ── Coordinate / WCS ─────────────────────────────────────────────────────
+    if (this->m_infoWcsFrame) {
+        this->m_infoWcsFrame->setText(this->currentWcsFrameLabel());
+    }
+    if (this->m_infoSpectral) {
+        this->m_infoSpectral->setText(this->spectralAxisTitle());
+    }
+    if (this->m_infoWcsBadge) {
+        if (this->remoteWcsStatus.compare(u"ok"_s, Qt::CaseInsensitive) == 0) {
+            this->m_infoWcsBadge->setText(u"OK"_s);
+            this->m_infoWcsBadge->setStyleSheet(u"QLabel { font-size: 9px; color: #5DA87A; }"_s);
+        } else if (this->remoteWcsStatus.compare(u"degraded"_s, Qt::CaseInsensitive) == 0) {
+            this->m_infoWcsBadge->setText(u"Degraded"_s);
+            this->m_infoWcsBadge->setStyleSheet(u"QLabel { font-size: 9px; color: #E8A840; }"_s);
+        } else {
+            this->m_infoWcsBadge->setText(u"Repaired"_s);
+            this->m_infoWcsBadge->setStyleSheet(u"QLabel { font-size: 9px; color: #9a6700; }"_s);
+        }
+        if (!this->remoteWcsWarningMessage.isEmpty()) {
+            this->m_infoWcsBadge->setToolTip(this->remoteWcsWarningMessage);
+        }
+    }
+
+    // ── System / Status ───────────────────────────────────────────────────────
+    if (this->m_infoRenderMode) {
+        const bool iso = ui->actionIsosurface->isChecked();
+        this->m_infoRenderMode->setText(iso ? u"Isosurface"_s : u"Volume Rendering"_s);
+    }
+    if (this->m_info2dMode) {
+        const bool slc = this->viewingSlice();
+        this->m_info2dMode->setText(slc ? u"Slice"_s : u"Moment Map"_s);
+    }
+    if (this->m_infoMomentState) {
+        switch (m_momentCardState) {
+        case MomentCardState::NoMoment:
+            this->m_infoMomentState->setText(u"\u2014"_s); // em-dash
+            this->m_infoMomentState->setStyleSheet(u"QLabel { font-size: 9px; color: #AABBCC; }"_s);
+            break;
+        case MomentCardState::Computing:
+            this->m_infoMomentState->setText(u"Computing\u2026"_s);
+            this->m_infoMomentState->setStyleSheet(
+                    u"QLabel { font-size: 9px; color: #E8A840; font-style: italic; }"_s);
+            break;
+        case MomentCardState::Ready:
+            this->m_infoMomentState->setText(this->momentProvenanceState.summary);
+            this->m_infoMomentState->setStyleSheet(u"QLabel { font-size: 9px; color: #7AAABB; }"_s);
+            break;
+        case MomentCardState::Error:
+            this->m_infoMomentState->setText(u"Error"_s);
+            this->m_infoMomentState->setStyleSheet(u"QLabel { font-size: 9px; color: #CC6060; }"_s);
+            break;
+        }
+    }
 }
 
 void vtkWindowCube::applySliceLutByName(const QString &name)
@@ -2806,7 +3048,7 @@ void vtkWindowCube::requestMomentMode()
             DiagnosticsLevel::Info,
             DiagnosticsCategory::Scientific,
             QStringLiteral("MomentMap"),
-            QStringLiteral("No cached moment available; opening moment configuration dialog."),
+            QStringLiteral("No moment map available — opening configuration dialog."),
             this->remoteDatasetId,
             this->remoteSessionId,
             QStringLiteral("moment"));
@@ -2864,6 +3106,7 @@ void vtkWindowCube::setMomentCardState(MomentCardState state, const QString &det
         m_momentCardDetail = detail;
     }
     this->updateMomentInfoCard();
+    this->updateInfoStatsPage();
 }
 
 void vtkWindowCube::updateMomentInfoCard()
@@ -2883,7 +3126,7 @@ void vtkWindowCube::updateMomentInfoCard()
         this->m_momentInfoLabel->setStyleSheet(
                 QStringLiteral("QLabel { font-size: 9px; %1 }").arg(infoColor));
         this->m_momentInfoLabel->setText(
-                u"No moment map available.\nUse the Moment menu to\ncompute one."_s);
+                u"No moment map available.\nOpen Compute \u2192 Moment Map\nto generate one."_s);
         this->m_momentInfoLabel->setToolTip(QString());
         break;
 
@@ -3047,15 +3290,15 @@ void vtkWindowCube::closeEvent(QCloseEvent *event)
     if (this->isBusy()) {
         if (this->cubeOpenWatcher.isRunning() || this->remotePreviewWatcher.isRunning()
             || this->remoteHighResCubeWatcher.isRunning()) {
-            this->showPersistentStatusMessage(u"Loading remote preview..."_s);
+            this->showPersistentStatusMessage(u"Loading cube data..."_s);
         } else if (this->activeRemoteSliceRequests > 0) {
-            this->showPersistentStatusMessage(u"Loading remote slice..."_s);
+            this->showPersistentStatusMessage(u"Loading slice..."_s);
         } else if (this->activeRemoteIsosurfaceRequests > 0 || this->isosurfaceWatcher.isRunning()) {
-            this->showPersistentStatusMessage(u"Computing isocontour..."_s);
+            this->showPersistentStatusMessage(u"Computing isosurface..."_s);
         } else if (this->pvController && this->pvController->isBusy()) {
-            this->showPersistentStatusMessage(u"Requesting PV diagram..."_s);
+            this->showPersistentStatusMessage(u"Computing PV diagram..."_s);
         } else {
-            this->showPersistentStatusMessage(u"Computing moment..."_s);
+            this->showPersistentStatusMessage(u"Computing moment map..."_s);
         }
         event->ignore();
         return;
@@ -5358,7 +5601,7 @@ void vtkWindowCube::extractCurrentPvDiagram()
             << QStringLiteral("[remote-pv] dispatching async pv vertices=%1 width=%2")
                        .arg(this->pvPolylineVertices.size())
                        .arg(this->pvWidthPixels);
-    this->showPersistentStatusMessage(u"Requesting PV diagram..."_s);
+    this->showPersistentStatusMessage(u"Computing PV diagram..."_s);
     this->pvController->startExtraction(this->pvPolylineVertices, this->pvWidthPixels);
 }
 
@@ -6386,9 +6629,9 @@ void vtkWindowCube::updateMomentProvenancePanel()
     }
 
     if (!this->momentProvenanceState.valid) {
-        this->momentProvenanceLabel->setText(u"Moment: none"_s);
+        this->momentProvenanceLabel->setText(u"Moment map: none"_s);
         this->momentProvenanceLabel->setToolTip(
-                u"No moment map generated in this window yet."_s);
+                u"No moment map has been computed for this dataset yet."_s);
         return;
     }
 
@@ -6443,6 +6686,7 @@ void vtkWindowCube::updateWcsStatusIndicator()
                 this->remoteDatasetId, this->remoteSessionId, QStringLiteral("dataset-open"));
         this->wcsDiagnosticPublished = true;
     }
+    this->updateInfoStatsPage();
 }
 
 void vtkWindowCube::updateDataStatePanel()
@@ -6501,6 +6745,7 @@ void vtkWindowCube::updateDataStatePanel()
                     ? u"Persistent data provenance: origin, current representation, loaded bounds, full dataset bounds, WCS frame, spectral-axis semantics, remote refinement strategy, and probe/profile scope."_s
                     : u"Persistent data provenance: origin, current representation, loaded bounds, full dataset bounds, WCS frame, spectral-axis semantics, remote refinement strategy, and probe/profile scope.\n%1"_s
                               .arg(degenerateSummary));
+    this->updateInfoStatsPage();
 }
 
 QString vtkWindowCube::selectedFrameAxisTitle(int axis) const
@@ -7233,7 +7478,7 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
     this->update2dModeVisibility(false);
 
     ui->vtkImage->setRenderWindow(this->momentWin);
-    ui->labelImg->setText(u"Moment:"_s);
+    ui->labelImg->setText(u"Moment Map:"_s);
     this->coordinate->SetViewport(ui->vtkImage->renderWindow()->GetRenderers()->GetFirstRenderer());
     if (auto *renderer = this->momentWin->GetRenderers()->GetFirstRenderer()) {
         renderer->ResetCamera();
@@ -7541,7 +7786,7 @@ void vtkWindowCube::changeImageRenderer()
         }
     } else {
         ui->vtkImage->setRenderWindow(this->momentWin);
-        ui->labelImg->setText(u"Moment:"_s);
+        ui->labelImg->setText(u"Moment Map:"_s);
         auto *momentImage = vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
         if (momentImage) {
             momentImage->GetScalarRange(imgRange);
@@ -7570,6 +7815,7 @@ void vtkWindowCube::changeImageRenderer()
     // Keep the 2D sidebar in sync with the active mode.
     this->sync2dModeSidebar(ui->actionSlice->isChecked());
     this->update2dModeVisibility(ui->actionSlice->isChecked());
+    this->updateInfoStatsPage();
     ui->vtkImage->renderWindow()->Render();
 }
 
@@ -7584,10 +7830,12 @@ void vtkWindowCube::changeCubeRender()
         qDebug().noquote()
                 << QStringLiteral("[remote-iso] keeping volume visible while waiting for mesh");
         ui->vtkCube->renderWindow()->Render();
+        this->updateInfoStatsPage();
         return;
     }
     this->setCubeRenderModeLocally(false);
     ui->vtkCube->renderWindow()->Render();
+    this->updateInfoStatsPage();
 }
 
 void vtkWindowCube::changeCubeColor()
@@ -7617,7 +7865,7 @@ void vtkWindowCube::changeCubeColor()
         const int idxCurrent = items.indexOf(this->volumeColorTransferFunction->GetObjectName());
         bool ok{ };
         const QString palette =
-                QInputDialog::getItem(this, u"Select color palette"_s, u"Color palette:"_s, items,
+                QInputDialog::getItem(this, u"Select Color Map"_s, u"Color map:"_s, items,
                                       idxCurrent, false, &ok);
         if (ok && !palette.isEmpty()) {
             // Delegate full LUT application (updates slice, moment, and volume CTF).
@@ -7682,7 +7930,7 @@ void vtkWindowCube::startAsyncIsosurface(double isoValue)
             << QStringLiteral("[remote-iso] startAsyncIsosurface requestId=%1 threshold=%2")
                        .arg(requestId)
                        .arg(isoValue, 0, 'g', 12);
-    this->showPersistentStatusMessage(u"Computing isocontour..."_s);
+    this->showPersistentStatusMessage(u"Computing isosurface..."_s);
 
     {
         const std::array<int, 6> fullExtent = { 0,

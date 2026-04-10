@@ -317,6 +317,19 @@ private:
     void requestMomentMode();
     void updateMomentInfoCard();
 
+    // ── Info / Stats page ────────────────────────────────────────────────────
+    QPointer<QLabel> m_infoDsName;
+    QPointer<QLabel> m_infoDsDimensions;
+    QPointer<QLabel> m_infoDsLoadState;
+    QPointer<QLabel> m_infoWcsBadge;
+    QPointer<QLabel> m_infoWcsFrame;
+    QPointer<QLabel> m_infoSpectral;
+    QPointer<QLabel> m_infoRenderMode;
+    QPointer<QLabel> m_info2dMode;
+    QPointer<QLabel> m_infoMomentState;
+    QWidget *setupInfoStatsPage();
+    void updateInfoStatsPage();
+
     // ── Workspace docks ───────────────────────────────────────────────────────
     QPointer<QDockWidget> dockCubeView;
     QPointer<QDockWidget> dockSliceView;
