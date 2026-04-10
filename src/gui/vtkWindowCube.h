@@ -31,6 +31,7 @@ class PvController;
 
 class QAction;
 class QCheckBox;
+class QToolButton;
 class QComboBox;
 class QMenu;
 class SidebarPanel;
@@ -300,8 +301,9 @@ private:
 
     // ── 2D View Settings page ─────────────────────────────────────────────────
     QPointer<QComboBox> m_combo2dMode;        // Slice / Moment
-    QPointer<QWidget>   m_sliceControlsCard;  // shown only when Slice is active
-    QPointer<QWidget>   m_sliceLutCard;       // shown only when Slice is active
+    QPointer<QWidget>   m_sliceControlsCard;   // shown only when Slice is active
+    QPointer<QWidget>   m_sliceLutCard;        // shown only when Slice is active
+    QPointer<QWidget>   m_sliceContoursCard;   // shown only when Slice is active
     QPointer<QComboBox> m_comboSliceLut;
     QPointer<QWidget>   m_momentInfoCard;     // shown only when Moment is active
     QPointer<QLabel>    m_momentInfoLabel;    // updated when a moment is available
@@ -316,6 +318,14 @@ private:
     void sync2dModeSidebar(bool sliceActive);
     void requestMomentMode();
     void updateMomentInfoCard();
+
+    // ── Tools page ────────────────────────────────────────────────────────────
+    // Buttons are created in setupToolsPage() and wired to their QActions after
+    // menu Tools are set up in the constructor (post-setupSidebar).
+    QPointer<QToolButton> m_btnEstimateNoise;
+    QPointer<QToolButton> m_btnDataProbe;
+    QPointer<QToolButton> m_btnPvDiagram;
+    QWidget *setupToolsPage();
 
     // ── Info / Stats page ────────────────────────────────────────────────────
     QPointer<QLabel> m_infoDsName;

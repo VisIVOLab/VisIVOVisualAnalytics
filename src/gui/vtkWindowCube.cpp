@@ -76,6 +76,7 @@
 #include <QImage>
 #include <QPixmap>
 #include <QPushButton>
+#include <QToolButton>
 #include <QDebug>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -2043,6 +2044,21 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->actionEstimateNoise = ui->menuTools->addAction(u"Estimate Noise..."_s);
     QObject::connect(this->actionEstimateNoise, &QAction::triggered,
                      this->noiseController, &NoiseController::startEstimation);
+
+    // Wire the sidebar Tools card buttons to their actions now that both exist.
+    // setDefaultAction() links button text, tooltip, enabled state, and checkability.
+    if (this->m_btnEstimateNoise) {
+        this->m_btnEstimateNoise->setDefaultAction(this->actionEstimateNoise);
+    }
+    if (this->m_btnDataProbe) {
+        this->m_btnDataProbe->setDefaultAction(ui->actionExtractSpectrum);
+        this->m_btnDataProbe->setToolTip(u"Probe data values at a point in the 2D view."_s);
+    }
+    if (this->m_btnPvDiagram) {
+        this->m_btnPvDiagram->setDefaultAction(this->actionExtractPvDiagram);
+        this->m_btnPvDiagram->setToolTip(u"Draw a path in the 2D view to extract a position-velocity diagram."_s);
+    }
+
     this->updateBackendDerivedActionsAvailability();
     this->actionBoxRegion = ui->menuTools->addAction(u"Box Region Analysis"_s);
     this->actionCircleRegion = ui->menuTools->addAction(u"Circle Region Analysis"_s);
@@ -2185,37 +2201,19 @@ void vtkWindowCube::setupSidebar()
     // and adds new dynamic labels for dataset, WCS and system state).
     QWidget *pageInfoStats = this->setupInfoStatsPage();
 
+    // Build the "Tools" page (creates tool buttons; wired to QActions after this
+    // function returns, when the menu Tools are constructed in the constructor).
+    QWidget *pageTools = this->setupToolsPage();
+
     this->m_sidebar = new SidebarPanel(220, this);
-    this->m_sidebar->addPage(u":/icons/rail_3d.svg"_s,       u"3D View Settings"_s, page3dSettings);
-    this->m_sidebar->addPage(u":/icons/rail_slice.svg"_s,    u"2D View Settings"_s, page2dSettings);
-    this->m_sidebar->addPage(u":/icons/rail_contours.svg"_s, u"Contours"_s,         ui->pageContours);
-    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,    u"Info / Stats"_s,     pageInfoStats);
+    this->m_sidebar->addPage(u":/icons/rail_3d.svg"_s,    u"3D View Settings"_s, page3dSettings);
+    this->m_sidebar->addPage(u":/icons/rail_slice.svg"_s, u"2D View Settings"_s, page2dSettings);
+    this->m_sidebar->addPage(u":/icons/rail_filter.svg"_s, u"Tools"_s,           pageTools);
+    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s, u"Info / Stats"_s,     pageInfoStats);
     this->m_sidebar->finalize(0);
     mainLayout->insertWidget(0, this->m_sidebar);
 
-    // Style the remaining sidebar pages (Contours). The stats page is fully styled
-    // inside setupInfoStatsPage().
-    const QString hdrStyle =
-            u"QLabel {"
-            "  color: #8AB8CC;"
-            "  font-size: 10px;"
-            "  font-weight: 600;"
-            "  padding-bottom: 4px;"
-            "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
-            "}"_s;
-    const QString cardStyle =
-            u"QFrame {"
-            "  background-color: rgba(255, 255, 255, 0.03);"
-            "  border: 1px solid rgba(4, 138, 191, 0.14);"
-            "  border-radius: 6px;"
-            "}"_s;
-
-    for (QLabel *lbl : { ui->labelContoursHdr }) {
-        lbl->setStyleSheet(hdrStyle);
-    }
-    for (QFrame *f : { ui->frameContours }) {
-        f->setStyleSheet(cardStyle);
-    }
+    // ui->frameContours is reparented into setup2dViewPage().
     // ui->labelImg, ui->frameImgStats, and ui->frameCubeStats are reparented and
     // styled inside setupInfoStatsPage(); no additional styling needed here.
 
@@ -2499,6 +2497,82 @@ QWidget *vtkWindowCube::setupThresholdPage()
     return page;
 }
 
+QWidget *vtkWindowCube::setupToolsPage()
+{
+    const QString hdrStyle =
+            u"QLabel {"
+            "  color: #8AB8CC;"
+            "  font-size: 10px;"
+            "  font-weight: 600;"
+            "  padding-bottom: 4px;"
+            "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
+            "}"_s;
+    const QString cardStyle =
+            u"QFrame {"
+            "  background-color: rgba(255, 255, 255, 0.03);"
+            "  border: 1px solid rgba(4, 138, 191, 0.14);"
+            "  border-radius: 6px;"
+            "}"_s;
+
+    auto *page = new QWidget();
+    auto *root = new QVBoxLayout(page);
+    root->setContentsMargins(12, 14, 12, 12);
+    root->setSpacing(12);
+
+    // Helper: create a placeholder QToolButton (text + enabled state are
+    // overwritten by setDefaultAction() once the QActions exist).
+    auto makeToolBtn = [](const QString &label) -> QToolButton * {
+        auto *btn = new QToolButton();
+        btn->setText(label);
+        btn->setEnabled(false);
+        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        return btn;
+    };
+
+    // ── Section 1: Analysis ───────────────────────────────────────────────
+    {
+        auto *hdr = new QLabel(u"ANALYSIS"_s);
+        hdr->setStyleSheet(hdrStyle);
+        root->addWidget(hdr);
+
+        auto *card = new QFrame();
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 6, 8, 6);
+        cl->setSpacing(4);
+
+        this->m_btnEstimateNoise = makeToolBtn(u"Estimate Noise\u2026"_s);
+        cl->addWidget(this->m_btnEstimateNoise);
+
+        root->addWidget(card);
+    }
+
+    // ── Section 2: Exploration ─────────────────────────────────────────────
+    {
+        auto *hdr = new QLabel(u"EXPLORATION"_s);
+        hdr->setStyleSheet(hdrStyle);
+        root->addWidget(hdr);
+
+        auto *card = new QFrame();
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 6, 8, 6);
+        cl->setSpacing(4);
+
+        this->m_btnDataProbe = makeToolBtn(u"Data Probe"_s);
+        this->m_btnPvDiagram = makeToolBtn(u"PV Diagram"_s);
+
+        cl->addWidget(this->m_btnDataProbe);
+        cl->addWidget(this->m_btnPvDiagram);
+
+        root->addWidget(card);
+    }
+
+    root->addStretch();
+    return page;
+}
+
 void vtkWindowCube::applyColorMapByName(const QString &name)
 {
     if (name.isEmpty()) {
@@ -2689,7 +2763,31 @@ QWidget *vtkWindowCube::setup2dViewPage()
         root->addWidget(lutCard);
     }
 
-    // ── Section 4: Moment Info (Moment mode only) ─────────────────────────
+    // ── Section 4: Contours (Slice mode only) ────────────────────────────
+    {
+        // Reparent the existing contours frame from the .ui file.
+        // All signal connections wired in the constructor (checkContours,
+        // lineLevel, lineLowerBound, lineUpperBound) remain valid after reparenting.
+        auto *hdr = new QLabel(u"CONTOURS"_s);
+        hdr->setStyleSheet(hdrStyle);
+
+        ui->frameContours->setStyleSheet(cardStyle);
+        ui->frameContours->setParent(page);
+
+        // Wrap in a container so visibility toggling keeps the header + frame together.
+        auto *contoursCard = new QWidget();
+        auto *ccl = new QVBoxLayout(contoursCard);
+        ccl->setContentsMargins(0, 0, 0, 0);
+        ccl->setSpacing(4);
+        ccl->addWidget(hdr);
+        ccl->addWidget(ui->frameContours);
+
+        contoursCard->setVisible(initiallySlice);
+        this->m_sliceContoursCard = contoursCard;
+        root->addWidget(contoursCard);
+    }
+
+    // ── Section 5: Moment Map Info (Moment mode only) ────────────────────
     {
         auto *momentCard = new QFrame();
         momentCard->setStyleSheet(cardStyle);
@@ -2713,7 +2811,7 @@ QWidget *vtkWindowCube::setup2dViewPage()
         root->addWidget(momentCard);
     }
 
-    // ── Section 5: Moment Color Map (Moment mode only) ────────────────────
+    // ── Section 6: Moment Color Map (Moment mode only) ────────────────────
     {
         auto *lutCard = new QFrame();
         lutCard->setStyleSheet(cardStyle);
@@ -3167,6 +3265,9 @@ void vtkWindowCube::update2dModeVisibility(bool sliceActive)
     }
     if (this->m_sliceLutCard) {
         this->m_sliceLutCard->setVisible(sliceActive);
+    }
+    if (this->m_sliceContoursCard) {
+        this->m_sliceContoursCard->setVisible(sliceActive);
     }
     if (this->m_momentInfoCard) {
         this->m_momentInfoCard->setVisible(!sliceActive);
