@@ -298,11 +298,18 @@ private:
     QPointer<QWidget>   m_sliceLutCard;       // shown only when Slice is active
     QPointer<QComboBox> m_comboSliceLut;
     QPointer<QWidget>   m_momentInfoCard;     // shown only when Moment is active
+    QPointer<QLabel>    m_momentInfoLabel;    // updated when a moment is available
+    QPointer<QWidget>   m_momentLutCard;      // shown only when Moment is active
+    QPointer<QComboBox> m_comboMomentLut;
     QString             m_activeSliceLutName;
+    QString             m_activeMomentLutName;
     QWidget *setup2dViewPage();
     void applySliceLutByName(const QString &name);
+    void applyMomentLutByName(const QString &name);
     void update2dModeVisibility(bool sliceActive);
     void sync2dModeSidebar(bool sliceActive);
+    void requestMomentMode();
+    void updateMomentInfoCard();
 
     // ── Workspace docks ───────────────────────────────────────────────────────
     QPointer<QDockWidget> dockCubeView;

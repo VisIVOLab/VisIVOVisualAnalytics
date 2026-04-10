@@ -1777,6 +1777,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                   .arg(this->spectralAxisTitle())
                                   .arg(this->currentWcsFrameLabel());
                 this->updateMomentProvenancePanel();
+                this->updateMomentInfoCard();
                 this->clearPersistentStatusMessage();
 
                 // Show a transient WCS warning for sanitized/degraded WCS.
@@ -1937,10 +1938,16 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     auto imageGroup = new QActionGroup(this);
     imageGroup->addAction(ui->actionSlice);
     imageGroup->addAction(ui->actionMomentMap);
-    QObject::connect(imageGroup, &QActionGroup::triggered, this,
-                     &vtkWindowCube::changeImageRenderer);
-    QObject::connect(imageGroup, &QActionGroup::triggered, this,
-                     &vtkWindowCube::updateLUTCustomizer);
+    QObject::connect(imageGroup, &QActionGroup::triggered, this, [this](QAction *action) {
+        if (action == ui->actionMomentMap) {
+            // Route through the availability guard — may show the computation dialog,
+            // revert to Slice on cancel/failure, or show an existing moment map.
+            this->requestMomentMode();
+        } else {
+            this->changeImageRenderer(); // Slice — also syncs sidebar
+        }
+        this->updateLUTCustomizer();
+    });
     auto cubeGroup = new QActionGroup(this);
     cubeGroup->addAction(ui->actionIsosurface);
     cubeGroup->addAction(ui->actionVolume);
@@ -2238,12 +2245,20 @@ void vtkWindowCube::setupSidebar()
         if (wantSlice == ui->actionSlice->isChecked()) {
             return; // already in sync
         }
-        const QSignalBlocker b1(ui->actionSlice);
-        const QSignalBlocker b2(ui->actionMomentMap);
-        ui->actionSlice->setChecked(wantSlice);
-        ui->actionMomentMap->setChecked(!wantSlice);
-        this->update2dModeVisibility(wantSlice);
-        this->changeImageRenderer();
+        if (wantSlice) {
+            // Switching to Slice — straightforward
+            const QSignalBlocker b1(ui->actionSlice);
+            const QSignalBlocker b2(ui->actionMomentMap);
+            ui->actionSlice->setChecked(true);
+            ui->actionMomentMap->setChecked(false);
+            this->update2dModeVisibility(true);
+            this->changeImageRenderer();
+        } else {
+            // Switching to Moment — route through the availability guard
+            // (may revert the combo back to Slice if no moment is available
+            //  and the user cancels the dialog)
+            this->requestMomentMode();
+        }
     });
     QObject::connect(ui->actionSlice, &QAction::toggled, this, [this](bool checked) {
         if (checked) {
@@ -2262,6 +2277,12 @@ void vtkWindowCube::setupSidebar()
     QObject::connect(this->m_comboSliceLut, &QComboBox::currentTextChanged,
                      this, [this](const QString &name) {
         this->applySliceLutByName(name);
+    });
+
+    // ── Moment LUT combo → apply moment color map ─────────────────────────
+    QObject::connect(this->m_comboMomentLut, &QComboBox::currentTextChanged,
+                     this, [this](const QString &name) {
+        this->applyMomentLutByName(name);
     });
 
     // View menu toggle action — wired bidirectionally by SidebarPanel.
@@ -2633,14 +2654,45 @@ QWidget *vtkWindowCube::setup2dViewPage()
         hdr->setStyleSheet(hdrStyle);
         cl->addWidget(hdr);
 
-        auto *info = new QLabel(u"Moment map displayed.\nUse the Moment menu to\ncompute a new moment."_s);
+        // Dynamic label — updated by updateMomentInfoCard() when a moment is computed.
+        auto *info = new QLabel(u"No moment map available.\nUse the Moment menu to\ncompute one."_s);
         info->setWordWrap(true);
         info->setStyleSheet(u"QLabel { color: #7AAABB; font-size: 9px; }"_s);
         cl->addWidget(info);
+        this->m_momentInfoLabel = info;
 
         momentCard->setVisible(!initiallySlice);
         this->m_momentInfoCard = momentCard;
         root->addWidget(momentCard);
+    }
+
+    // ── Section 5: Moment Color Map (Moment mode only) ────────────────────
+    {
+        auto *lutCard = new QFrame();
+        lutCard->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(lutCard);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+
+        auto *hdr = new QLabel(u"COLOR MAP"_s);
+        hdr->setStyleSheet(hdrStyle);
+        cl->addWidget(hdr);
+
+        this->m_comboMomentLut = new QComboBox();
+        this->m_comboMomentLut->setIconSize(QSize(48, 12));
+        const auto names2 = ColorMaps::GetColorMapNames();
+        for (const auto &stdName : names2) {
+            const QString qName = QString::fromStdString(stdName);
+            this->m_comboMomentLut->addItem(QIcon(buildLutPreview(qName, 48, 12)), qName);
+        }
+        const QString defaultName2 = QString::fromStdString(ColorMaps::DefaultColorMap);
+        this->m_comboMomentLut->setCurrentText(defaultName2);
+        this->m_activeMomentLutName = defaultName2;
+        cl->addWidget(this->m_comboMomentLut);
+
+        lutCard->setVisible(!initiallySlice);
+        this->m_momentLutCard = lutCard;
+        root->addWidget(lutCard);
     }
 
     root->addStretch();
@@ -2664,6 +2716,92 @@ void vtkWindowCube::applySliceLutByName(const QString &name)
     }
 }
 
+void vtkWindowCube::applyMomentLutByName(const QString &name)
+{
+    if (name.isEmpty()) {
+        return;
+    }
+    this->m_activeMomentLutName = name;
+    const std::string stdName = name.toStdString();
+
+    // Update only the moment LUT — does not touch the slice LUT or 3D volume.
+    ColorMaps::SetColorMap(this->lutMoment, stdName);
+    this->lutMoment->Modified();
+
+    if (ui->vtkImage->renderWindow() && !this->viewingSlice()) {
+        ui->vtkImage->renderWindow()->Render();
+    }
+}
+
+void vtkWindowCube::requestMomentMode()
+{
+    // ── Case A: a moment map is already available ─────────────────────────
+    if (this->momentProvenanceState.valid) {
+        // Sync actions (they may not be in sync yet if called from the sidebar).
+        const QSignalBlocker b1(ui->actionSlice);
+        const QSignalBlocker b2(ui->actionMomentMap);
+        ui->actionSlice->setChecked(false);
+        ui->actionMomentMap->setChecked(true);
+        this->sync2dModeSidebar(false);
+        this->update2dModeVisibility(false);
+        this->changeImageRenderer();
+        return;
+    }
+
+    // ── Case B: system is busy (cube loading, previous moment in flight) ──
+    if (this->isBusy()) {
+        // Revert the combo/action to Slice — can't start computation now.
+        const QSignalBlocker b1(ui->actionSlice);
+        const QSignalBlocker b2(ui->actionMomentMap);
+        ui->actionSlice->setChecked(true);
+        ui->actionMomentMap->setChecked(false);
+        this->sync2dModeSidebar(true);
+        this->update2dModeVisibility(true);
+        return;
+    }
+
+    // ── Case C: no moment yet — show the configuration dialog ────────────
+    // startComputation() shows the dialog synchronously, then either returns
+    // immediately (cancelled) or starts async computation and sets m_busy = true.
+    this->momentController->startComputation(0);
+
+    if (!this->momentController->isBusy()) {
+        // Dialog was cancelled or failed before async start — revert to Slice.
+        const QSignalBlocker b1(ui->actionSlice);
+        const QSignalBlocker b2(ui->actionMomentMap);
+        ui->actionSlice->setChecked(true);
+        ui->actionMomentMap->setChecked(false);
+        this->sync2dModeSidebar(true);
+        this->update2dModeVisibility(true);
+        return;
+    }
+
+    // Computation is now in flight. Keep the UI in Slice view for now — the
+    // applyMomentMapResult() callback will switch to Moment automatically when
+    // the result arrives (it calls sync2dModeSidebar/update2dModeVisibility).
+    const QSignalBlocker b1(ui->actionSlice);
+    const QSignalBlocker b2(ui->actionMomentMap);
+    ui->actionSlice->setChecked(true);
+    ui->actionMomentMap->setChecked(false);
+    this->sync2dModeSidebar(true);
+    this->update2dModeVisibility(true);
+}
+
+void vtkWindowCube::updateMomentInfoCard()
+{
+    if (!this->m_momentInfoLabel) {
+        return;
+    }
+    if (!this->momentProvenanceState.valid) {
+        this->m_momentInfoLabel->setText(
+                u"No moment map available.\nUse the Moment menu to\ncompute one."_s);
+        return;
+    }
+    // Show a compact version of the provenance summary.
+    this->m_momentInfoLabel->setText(this->momentProvenanceState.summary);
+    this->m_momentInfoLabel->setToolTip(this->momentProvenanceState.details);
+}
+
 void vtkWindowCube::update2dModeVisibility(bool sliceActive)
 {
     if (this->m_sliceControlsCard) {
@@ -2674,6 +2812,9 @@ void vtkWindowCube::update2dModeVisibility(bool sliceActive)
     }
     if (this->m_momentInfoCard) {
         this->m_momentInfoCard->setVisible(!sliceActive);
+    }
+    if (this->m_momentLutCard) {
+        this->m_momentLutCard->setVisible(!sliceActive);
     }
 }
 
