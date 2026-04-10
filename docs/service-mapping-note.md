@@ -1,87 +1,221 @@
 # Service Mapping Note
 
 ## Purpose
-This note captures the current service boundaries and the intended future mapping toward a cleaner remote-authoritative architecture.
+This note documents the current service boundaries, their implementation status, and where the client/backend split is clean vs. where gaps remain.
 
-It documents the current state and the minimum gaps that still exist before a cleaner client/backend split.
+---
+
+## `BackendClient`
+
+### Status
+**Implemented and stable.**
+
+### Contract
+- Synchronous REST client; all methods block until the HTTP response arrives
+- Called exclusively from `QtConcurrent::run` worker threads
+- One instance per async operation (no shared state between concurrent calls)
+
+### Covered operations (by tag)
+| Tag | Methods |
+|-----|---------|
+| meta | `health()` |
+| files | `listFiles()`, `fileHeader()` |
+| datasets | `openDataset()` |
+| catalogue | `openCatalogue()`, `requestCatalogueSubset()`, `queryTabularCatalogue()` |
+| vbt | `openVbt()`, `requestVbtSubset()`, `queryTabularVbt()` |
+| cube | `requestPreview()`, `requestSlice()`, `requestSubvolume()`, `requestPv()`, `requestNoise()` |
+| products | `requestMoment()`, `requestIsosurface()` |
+| tasks | `createMomentTask()`, `createPvTask()`, `requestTaskStatus()`, `waitForTaskCompletion()` |
+| image | `requestImagePreview()`, `requestImage()` |
+| cosmology | `requestCosmologyDistanceBatch()` |
+| hips | `openHiPS()`, `requestHiPSAllsky()`, `requestHiPSTile()`, `requestHiPSTilesForView()`, `requestHiPSCatalogueOverlay()` |
+| resolve | `resolveTarget()` |
+
+### Token resolution
+1. Explicit `setToken()` / `Settings`
+2. `~/.visivo_token` written by the backend at startup
+
+### Session management
+`openDataset()` stores `session_id`; echoed as `X-Visivo-Session` in all subsequent calls for that dataset. `openCatalogue()` and `openVbt()` return their own session IDs; viewers call `client.setSessionId()` accordingly.
+
+---
 
 ## `DatasetOpenService`
 
-### Current contract
-- `DatasetOpenRequest`
-- `DatasetOpenInfo`
-- `DatasetOpenService::inspect(const DatasetOpenRequest &request)`
+### Status
+**Local implementation, stable.**
+
+### Contract
+- `DatasetOpenRequest { filepath }`
+- `DatasetOpenInfo` — dataset classification (image vs. cube, dimensions)
+- `DatasetOpenService::inspect(const DatasetOpenRequest &)`
 
 ### Current local implementation
-- local inspection service in `visivo_shared_core`
-- input is currently a local desktop FITS file path
-- implementation uses `AstroUtils` to classify the dataset as image or cube
+- `visivo_shared_core`; no Qt::Widgets, no VTK
+- Input: local desktop FITS file path
+- Uses `AstroUtils` to classify and inspect the file
 
-### Future remote equivalent
-- inspect a remote dataset reference or catalog resource id
-- return the same kind of inspection result needed by the client to decide how to open the dataset
+### Future remote mapping
+- Replace `filepath` with a backend `datasetId` or remote resource reference
+- Return the same `DatasetOpenInfo` shape; the GUI must not depend on the inspection being local
+- Natural bridge: call `BackendClient::openDataset()` and map the response into `DatasetOpenInfo`
 
-### Missing step before clean split
-- clarify the future request identity model beyond local file paths
-- keep the client dependent on the contract, not on local inspection assumptions
+### Gap before clean split
+- `DatasetOpenRequest` still carries a local file path; no dataset-reference abstraction exists yet
+
+---
 
 ## `ImageLayerImportService`
 
-### Current contract
-- `ImageLayerImportRequest`
+### Status
+**Local implementation, stable.**
+
+### Contract
+- `ImageLayerImportRequest { baseDatasetPath, layerFilepath }`
 - `ImageLayerImportResult`
-- `ImageLayerImportService::inspect(const ImageLayerImportRequest &request)`
+- `ImageLayerImportService::inspect(const ImageLayerImportRequest &)`
 
 ### Current local implementation
-- local validation service in `visivo_shared_core`
-- request currently carries:
-  - local desktop path of the base dataset
-  - local desktop path of the candidate image layer
-- implementation uses `AstroUtils` to validate overlap and image compatibility
+- `visivo_shared_core`
+- Validates WCS overlap and pixel-type compatibility between base dataset and candidate layer
+- Uses `AstroUtils` on local FITS files
 
-### Future remote equivalent
-- validate a base dataset reference against a candidate layer reference
-- return acceptance/error information needed by the client import flow
+### Future remote mapping
+- Replace path-based request with dataset/layer reference identifiers
+- Validation result shape stays the same
+- Backend equivalent: validate via dataset metadata already known to the server
 
-### Missing step before clean split
-- replace path-based request semantics with stable dataset/layer references
-- keep validation result small and client-oriented
+### Gap before clean split
+- Request still carries two local file paths; no stable reference identity model
+
+---
 
 ## `MomentProcessingService`
 
-### Current contract
-- `MomentRequest`
-- `MomentResult`
-- `MomentProcessingService::computeMoment(const MomentRequest &request)`
+### Status
+**Backend-authoritative facade, stable.**
+
+### Contract
+- `MomentRequest` — carries `datasetId`, moment order, channel range, RMS
+- `MomentResult` — carries image payload, scientific metadata, WCS status
+- `MomentProcessingService::computeMoment(const MomentRequest &)`
 
 ### Current implementation
-- client-side service facade in `visivo_shared_vtk`
-- request carries backend-facing identifiers and moment parameters
-- authoritative scientific computation happens on the backend
-- result carries image payload plus scientific metadata needed by the client UI
+- `visivo_shared_vtk`; wraps `BackendClient::requestMoment()` or `waitForTaskCompletion()`
+- Authoritative computation always runs on the backend
+- Result is a portable image payload + metadata; the client renders it locally
 
-### Current remote-authoritative contract
-- submit or execute moment-map computation through the backend API
-- return a portable processing result that the client applies locally for display
-- require a backend-visible dataset identity rather than assuming the backend can open a desktop-local file path directly
+### Task-based path
+For long-running moments, the client uses `createMomentTask()` + `waitForTaskCompletion()` via `BackendClient`. `RemoteMomentWindow` uses this path. `vtkWindowCube` uses the synchronous `requestMoment()` path.
 
-### Missing step before cleaner remote-only contract
-- add explicit upload/staging for desktop-local datasets so they can become backend-visible datasets
-- keep the compute contract dataset-id-based and backend-authoritative
+### Gap before clean split
+- Desktop-local FITS files must be manually opened on the backend first (via `DataHub` / `RemoteFileBrowserDialog`) before moment computation is possible
+- No automated upload/staging pipeline for local files; this remains a manual step
 
-## Non-Goals
-This note does not imply that any of the following already exist:
-- remote rendering
-- remote jobs
-- async execution
-- generic service interfaces
-- widget rewrites
+---
+
+## Tabular query / pagination
+
+### Status
+**Implemented and stable.**
+
+### Contract (shared by catalogue and VBT)
+```
+BackendTabularQueryRequest {
+    datasetId, limit, offset, filters[], sortField, sortDirection
+}
+BackendTabularQueryResponse {
+    valid, error, totalRows, returnedRows, rows (catalogue), columns (VBT)
+}
+```
+
+### Pagination state (per viewer)
+| Field | Default | Reset on |
+|-------|---------|----------|
+| `m_pageSize` | 50 000 | never |
+| `m_currentOffset` | 0 | `applyFilter()` |
+| `m_totalCount` | -1 | `applyFilter()` |
+| `m_loadingMore` | false | after watcher fires |
+
+Filters are re-applied verbatim on each page (same `filters[]` vector, different `offset`).
+
+---
+
+## Cosmology distance service
+
+### Status
+**Implemented and stable.**
+
+### Contract
+- Single: `POST /v1/cosmology/distance` — one redshift → distance_Mpc
+- Batch: `POST /v1/cosmology/distance/batch` — `redshifts[]` + `model` → `distances_Mpc[]`
+- Client: `BackendClient::requestCosmologyDistanceBatch(redshifts, model)`
+- Result: `BackendCosmologyBatchResult { valid, error, model, distancesMpc[] }`
+
+### Client-side integration
+- `vtkWindowCatalogue3D` uses the batch endpoint for Planck15/13/WMAP9 models (async via `m_cosmologyWatcher`)
+- Planck18 uses the local `Catalogue3DParser::detail::comovingDistanceMpc()` integration; no network call
+- Distances are stored as per-entry override (`Catalogue3DEntry::distanceMpc`); `entryDistanceMpc()` applies the priority chain transparently
+
+---
+
+## HiPS service
+
+### Status
+**Implemented and stable.**
+
+### Contract
+- `openHiPS(url)` → `BackendHiPSSurveyInfo`
+- Tile fetch: `requestHiPSAllsky()`, `requestHiPSTile()`
+- View-aware tile set: `requestHiPSTilesForView()`
+- Catalogue overlay: `requestHiPSCatalogueOverlay()`
+- Name resolution: `resolveTarget()` → `BackendTargetResolveResult`
+
+### Client-side integration
+`HiPSWindow` / `HiPSViewportWidget` manage the tile cache and compositing entirely client-side. The backend is responsible only for computing which tiles are needed and serving the tile bytes.
+
+---
+
+## Auth services
+
+### Backend token (simple bearer)
+Managed by `BackendClient`. Token is read from `~/.visivo_token` or set explicitly from `SettingsDialog`. **No service boundary gap** — token handling is complete.
+
+### VLKB OIDC
+Managed by `AuthWrapper` + `OIDCAuthorizationCodeFlow`. Flow: browser-based PKCE → `localhost` redirect → `HttpServerReplyHandler`. Custom `visivo://` scheme handled by `VisIVOUrlSchemeHandler`.
+
+Gap: tokens are in-process only; no keychain integration.
+
+---
+
+## Diagnostics
+
+### Status
+**Implemented and stable.**
+
+### Contract
+```cpp
+DiagnosticsManager::instance()->publish(
+    level, category, source, message,
+    datasetId, sessionId, operationTag
+);
+```
+
+All backend-calling code publishes structured entries before and after operations. `DiagnosticsWindow` (View menu) shows them in a live table. No external sink (file, remote log collector) is implemented yet.
+
+---
 
 ## Summary
-Today the project already has three meaningful local service boundaries.
 
-The best current pilot for a future local/remote dual implementation is `DatasetOpenService`, because it already has the cleanest contract and the lowest runtime coupling.
-
-`ImageLayerImportService` is the next closest candidate.
-
-`MomentProcessingService` is now already backend-authoritative. The main missing step is not scientific decoupling anymore, but explicit dataset staging/upload for desktop-local files so the same remote-only contract can cover local desktop usage cleanly.
+| Service | Local impl | Remote impl | Gap |
+|---------|-----------|-------------|-----|
+| `DatasetOpenService` | ✓ | — | local path; no dataset-ref model |
+| `ImageLayerImportService` | ✓ | — | local paths; no dataset-ref model |
+| `MomentProcessingService` | — | ✓ (backend-auth) | no local staging pipeline |
+| `BackendClient` (all endpoints) | — | ✓ | none |
+| Tabular query + pagination | — | ✓ | none |
+| Cosmology distance | local (Planck18) | ✓ (batch) | none |
+| HiPS tiles | — | ✓ | none |
+| Auth (bearer token) | ✓ | — | none |
+| Auth (OIDC VLKB) | ✓ | — | no keychain |
+| Diagnostics (in-process) | ✓ | — | no external sink |

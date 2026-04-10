@@ -1,293 +1,333 @@
 # Architecture Note
 
 ## Purpose
-This note summarizes the current architecture after the recent local refactorings, backend integration, and build modularization.
+This note summarises the current architecture of VisIVO Visual Analytics after the full client/backend integration, async viewer additions, authentication layer, and diagnostic infrastructure.
 
-It describes what is already true in the codebase today, which boundaries are now stable, and which parts are the best candidates for a future local/remote split.
+It describes what is already true in the codebase today, which boundaries are now stable, and what remains deferred.
 
-This is not a full backend design document. It focuses on the current client/backend split that is already implemented in the codebase today.
+---
 
-## Current Module Map
+## High-Level Topology
+
+```
+┌─────────────────────────────────────────────────┐
+│              Qt/VTK Desktop Client               │
+│                                                  │
+│  MainWindow ──► DataHubWidget                    │
+│      │                                           │
+│      ├──► vtkWindowCube        (local/remote)    │
+│      ├──► vtkWindowImage       (local/remote)    │
+│      ├──► vtkWindowCatalogue3D (remote-only)     │
+│      ├──► vtkWindowVbt         (remote-only)     │
+│      ├──► vtkWindowVbtVolume   (remote-only)     │
+│      ├──► HiPSWindow           (remote-only)     │
+│      └──► RemoteMomentWindow   (remote-only)     │
+│                                                  │
+│  BackendClient ── Qt Network ──► FastAPI backend │
+│  AuthWrapper   ── OIDC/PKCE ──► identity server  │
+│  DiagnosticsManager (singleton, in-process log)  │
+└─────────────────────────────────────────────────┘
+```
+
+---
+
+## Build Modules
 
 ### `visivo_shared_core`
-Local non-UI application/core logic.
+Local non-UI application/core logic (`src/app/`, `src/AstroUtils`).
 
-Current contents include:
-- `DatasetOpenService`
-- `DatasetOpenRequest`
-- `DatasetOpenTypes`
-- `ImageLayerImportService`
-- `ImageLayerImportRequest`
-- `ImageLayerImportResult`
+Contents:
+- `DatasetOpenRequest`, `DatasetOpenService`, `DatasetOpenTypes`
+- `ImageLayerImportRequest`, `ImageLayerImportService`, `ImageLayerImportResult`
 - `AstroUtils`
+- `BackendClient` — synchronous REST client (Qt Network, no Qt::Widgets)
+- `DiagnosticsManager` — singleton structured event log
 
-Main role:
-- dataset inspection/classification
-- image-layer import validation
-- scientific/file-level checks that do not require Qt widgets or VTK rendering widgets
+Does not depend on Qt::Widgets, VTK, or libwcs.
 
 ### `visivo_shared_vtk`
-VTK/runtime and client-side rendering support logic.
+VTK/runtime support (`src/vtk/`).
 
-Current contents include:
-- `ImageLayerSet`
-- `ImageLayer`
-- `MomentProcessingService`
-- `vtkFITSReader`
-- `vtkFITSWriter`
-- `vtkLegendScaleActorWCS`
-- `vtkInteractorStyleProfile`
+Contents:
+- `ImageLayerSet`, `ImageLayer`
+- `MomentProcessingService`, `MomentMapComputeTask`
+- `CubeOpenPreviewTask`, `ImageLayerLoadTask`
+- `vtkFITSReader`, `vtkFITSWriter`
+- `vtkLegendScaleActorWCS`, `vtkInteractorStyleProfile`
 - `ColorMaps`
 
-Main role:
-- local VTK runtime support
-- client-side rendering/visual processing tied to VTK objects
-- image layer runtime state
+Does not depend on Qt::Widgets.
 
-### Client GUI
+### Client GUI (`src/gui/`, `src/auth/`, `src/`)
 Qt widget layer and UI orchestration.
 
-Current contents include:
-- `MainWindow`
-- `vtkWindowImage`
-- `vtkWindowCube`
-- `DatasetWindowFactory`
-- `ImageLayerController`
-- `CubeViewController`
-- dialogs and widget-only helpers
+Contents:
+- `MainWindow` — top-level shell, menus, action routing
+- `DataHubWidget` — landing page; health check, file browser, session start
+- `vtkWindowCube` — FITS cube viewer (local preview + remote full, moment, PV, noise)
+- `vtkWindowImage` — FITS image viewer (local + remote multi-layer)
+- `vtkWindowCatalogue3D` — 3-D catalogue viewer (remote CSV/backend)
+- `vtkWindowVbt` — VBT point-cloud viewer (remote)
+- `vtkWindowVbtVolume` — VBT volume viewer (remote)
+- `HiPSWindow` / `HiPSViewportWidget` — HiPS sky viewer with overlay
+- `RemoteMomentWindow` — standalone moment map viewer (async task-based)
+- `RemoteFileBrowserDialog` — file-picker backed by `/v1/files/list`
+- `NoiseRegionDialog` — region selector for noise computation
+- `ProfileWidget`, `PvDiagramWidget` — profile/PV plot widgets
+- `DiagnosticsWindow` — live table view of `DiagnosticsManager` entries
+- `AuthWrapper`, `OIDCAuthorizationCodeFlow` — OIDC PKCE auth
+- `LUTCustomizerDialog`, `SettingsDialog`, `AboutDialog`
+- `Catalogue3DParser`, `Catalogue3DTableModel`, `CatalogueTableModel`
+- `VisivoTheme` — application-wide style sheet
 
-Main role:
-- file dialogs, menus, actions, UI updates
-- render-window orchestration
-- widget lifecycle and interaction flow
+### Third-party bundled
+- `libwcs` — WCS coordinate conversion (C, statically linked)
+- `qcustomplot` — 1-D profile and PV plots
 
-## Stable Local Boundaries
+---
 
-The following local boundaries are now explicitly present in the code:
+## Backend (FastAPI, Python)
 
-### Dataset opening
-- `DatasetOpenRequest`
-- `DatasetOpenService`
-- `DatasetOpenInfo`
+The backend process (`backend/app/main.py`) runs as a local or remote server.
+The client talks to it exclusively through `BackendClient` (REST/HTTP, bearer-token auth).
 
-The GUI no longer owns dataset classification logic directly.
+### Endpoint groups
 
-`DatasetOpenService` should currently be read as a local dataset inspection service, not as a generic remote-ready implementation.
+| Tag | Endpoints | Notes |
+|-----|-----------|-------|
+| `meta` | `GET /v1/health`, `GET /v1/sessions` | startup health check, session enumeration |
+| `files` | `GET /v1/files/list`, `POST /v1/files/header` | backend-side filesystem browser |
+| `datasets` | `POST /v1/datasets/open` | open FITS/dataset, returns `datasetId` + WCS metadata |
+| `catalogue` | `POST /v1/catalogue/open`, `/subset`, `/query` | CSV catalogue; paginated query via `limit`/`offset` |
+| `vbt` | `POST /v1/vbt/open`, `/subset`, `/query` | VBT point table; paginated query |
+| `cube` | `POST /v1/cube/preview`, `/slice`, `/subvolume`, `/pv`, `/noise` | cube data slices, PV diagram, noise stats |
+| `products` | `POST /v1/products/moment`, `/isosurface` | synchronous moment/isosurface computation |
+| `tasks` | `POST /v1/tasks/moment`, `/pv`; `GET`/`DELETE /v1/tasks/{id}` | async task queue; client polls for completion |
+| `image` | `POST /v1/image/full`, `/preview` | 2-D image export/preview |
+| `cosmology` | `POST /v1/cosmology/distance`, `/distance/batch` | redshift → comoving distance (astropy) |
+| `hips` | `POST /v1/hips/open`; `GET /v1/hips/{id}/allsky`, `/tile/…`; `POST /query_tiles`, `/catalogue_overlay` | HiPS sky survey tiles + source overlay |
+| `resolve` | `POST /v1/resolve/target` | astronomical name → sky coordinates |
 
-### Image layer import validation
-- `ImageLayerImportRequest`
-- `ImageLayerImportService`
-- `ImageLayerImportResult`
+### Backend session model
+- `POST /v1/datasets/open` returns a `session_id`; the client echoes it as `X-Visivo-Session` in all subsequent requests for that dataset
+- Sessions are tracked server-side; `GET /v1/sessions` lists active sessions
+- Auth: every request carries `X-Visivo-Token` (static bearer token); separate OIDC flow covers the VLKB identity service
 
-`vtkWindowImage` still owns the UI flow, but import validation is outside the widget.
+---
 
-`ImageLayerImportService` should currently be read as a local image-layer validation service, not as a transport-neutral validation API.
+## `BackendClient`
 
-### Moment map processing
-- `MomentMapRequest`
-- `MomentMapResult`
-- `MomentProcessingService`
+Single synchronous REST client (`src/app/BackendClient.h/cpp`).
 
-`vtkWindowCube` still owns UI orchestration, but user-facing moment computation is delegated to the backend-authoritative processing path.
+Key design decisions:
+- all methods are **blocking** — called from `QtConcurrent::run` worker threads, never from the UI thread
+- session management: `setSessionId()` / `sessionId()`; echoed automatically as `X-Visivo-Session`
+- token resolution order: (1) explicit `setToken()`, (2) `~/.visivo_token` file written by the backend at startup
+- static parse helpers exposed for unit testing: `parseMomentResultObject`, `parsePvResultObject`, `parseNoiseResultObject`
+- timeout: per-request via `requestTimeoutFor()`; long-running endpoints (subvolume, full-res cube) get extended timeouts
 
-`MomentProcessingService` should currently be read as a client-side facade over the backend/API processing path, not as a local scientific implementation.
+Result structs (all in `BackendClient.h`):
 
-### Image layer runtime state
-- `ImageLayerSet`
+| Struct | Produced by |
+|--------|-------------|
+| `BackendHealthResult` | `health()` |
+| `BackendListFilesResult` | `listFiles()` |
+| `BackendFileHeaderResult` | `fileHeader()` |
+| `BackendOpenDatasetResult` | `openDataset()` |
+| `BackendMomentResult` | `requestMoment()` / task polling |
+| `BackendCubePreviewResult` | `requestPreview()` |
+| `BackendCubeSliceResult` | `requestSlice()` |
+| `BackendCubeSubvolumeResult` | `requestSubvolume()` |
+| `BackendCubePvResult` | `requestPv()` |
+| `BackendCubeNoiseResult` | `requestNoise()` |
+| `BackendCatalogueInfo` | `openCatalogue()` |
+| `BackendTabularQueryResponse` | `queryTabularCatalogue()`, `queryTabularVbt()` |
+| `BackendVbtOpenResult` | `openVbt()` |
+| `BackendVbtSubsetResult` | `requestVbtSubset()` |
+| `BackendImageResult` | `requestImagePreview()`, `requestImage()` |
+| `BackendIsosurfaceResult` | `requestIsosurface()` |
+| `BackendHiPSSurveyInfo` | `openHiPS()` |
+| `BackendHiPSViewResponse` | `requestHiPSTilesForView()` |
+| `BackendTargetResolveResult` | `resolveTarget()` |
+| `BackendCosmologyBatchResult` | `requestCosmologyDistanceBatch()` |
+| `BackendHiPSCatalogueOverlayResult` | `requestHiPSCatalogueOverlay()` |
+| `BackendTaskCreateResult` | `createMomentTask()`, `createPvTask()` |
+| `BackendTaskStatusResult` | `requestTaskStatus()`, `waitForTaskCompletion()` |
 
-`LayerListModel` no longer owns the full non-Qt layer management logic.
+---
 
-## Local Async Paths
+## Async Patterns
 
-The project now includes three real async or staged client paths:
+All viewers follow the same pattern:
 
-- moment-map recomputation on moment-order change in `vtkWindowCube`
-- image-layer loading for additional layers in `vtkWindowImage`
-- preview-first cube open in `vtkWindowCube`
+1. The UI thread captures needed state and launches a `QtConcurrent::run` worker
+2. The worker uses its own `BackendClient` instance (no shared state)
+3. A `QFutureWatcher` fires `finished()` on the UI thread
+4. The UI thread reads the result struct and applies it (scene rebuild, LUT update, etc.)
+5. Controls are disabled during the operation and re-enabled on completion
 
-Common pattern:
-- compute/load runs off the UI thread using `QtConcurrent::run` and `QFutureWatcher`
-- the worker uses its own data and VTK objects and does not touch the visible pipeline
-- the UI thread receives a result payload and applies it through a dedicated apply seam
-- UI actions are temporarily disabled while the operation is running
-- window closing is blocked while the async operation is still in progress
-- display-side `vtkTrivialProducer` bridges are used where the visible pipeline must be fed from externally prepared data
+### Active async paths
 
-### Async moment-map recomputation
-Current design:
-- the worker submits or polls backend-side moment-map computation through `MomentProcessingService`
-- the backend-authoritative path is used for both remote datasets and local desktop datasets that have already been staged/opened on the backend
-- the UI thread applies the result through `applyMomentMapResult(...)`
-- the visible moment pipeline is fed through a display-side bridge (`vtkTrivialProducer`)
+| Viewer | Watcher | Triggered by |
+|--------|---------|--------------|
+| `vtkWindowCube` | `previewWatcher`, `fullResWatcher`, `momentWatcher`, `pvWatcher` | open, moment order change, PV line draw |
+| `vtkWindowImage` | `layerWatcher` | "Add layer" action |
+| `vtkWindowCatalogue3D` | `filterWatcher`, `m_loadMoreWatcher`, `m_cosmologyWatcher` | Apply filter, Load more, cosmology model change |
+| `vtkWindowVbt` | `filterWatcher`, `m_loadMoreWatcher` | Apply filter, Load more |
 
-### Async image-layer loading
-Current design:
-- the worker loads and prepares the layer payload through `loadImageLayer(...)`
-- the payload includes image data and placement metadata needed to build the visible layer without rereading the FITS file in the UI thread
-- the UI thread applies the result through `applyLoadedLayer(...)`
+### Pagination (large datasets)
 
-### Preview-first cube open
-Current design:
-- initial cube open in `vtkWindowCube` first tries a synchronous downsampled preview
-- the preview downsamples X/Y and keeps the full Z axis
-- the visible cube and slice pipeline is fed through `cubeDisplaySource`
-- the visible moment pipeline starts from a placeholder and is updated only by an explicit backend-computed moment result
-- both preview and full-resolution data are applied through `applyCubeOpenResult(...)`
-- if the preview succeeds, a full-resolution cube load starts in the background and replaces the preview when ready
-- the UI exposes a persistent state indicator during this flow with explicit states such as preview, loading full resolution, and applying full resolution
-- the preview-to-full replacement also performs geometry synchronization:
-  - clamp of the current slice index
-  - immediate update of `slice` and `sliceOnCube`
-  - camera and clipping-range reset after replacement
-- if the preview cannot be built, `vtkWindowCube` falls back to the older synchronous full open path
+Both `vtkWindowCatalogue3D` and `vtkWindowVbt` support incremental pagination for datasets larger than the default page size (50 000 rows):
 
-Current limitations:
-- these async or staged paths are intentionally use-case-specific
-- they do not form a general async/job framework
-- cancellation, progress reporting, and queued execution are not implemented
-- the final preview-to-full replacement can still introduce a small visible lag
-- preview and full-resolution state can temporarily diverge while the full cube is still loading
-- any new async use case must still define its own explicit separation between worker-side state and UI/display-side apply
+- `m_pageSize = 50000`, `m_currentOffset`, `m_totalCount`
+- `applyFilter()` always resets offset to 0 and fetches the first page
+- A "Load more (N remaining)" button appears in the filter panel when `offset < totalCount`
+- Clicking it triggers `loadMoreEntries()` via `m_loadMoreWatcher`
+- Catalogue3D: new entries are **appended** to `this->entries`; the full VTK scene is rebuilt
+- VBT: new column vectors are **appended** to `this->subsetResult.columns`; the point cloud is rebuilt
 
-## Current Responsibilities
+### Task-based async (moment, PV)
 
-### Shared Core
-Owns:
-- explicit request/result-based local services
-- dataset/file validation rules
-- non-UI logic that may later map to service contracts
+For long-running operations the backend supports a task queue:
+- `createMomentTask()` / `createPvTask()` → returns a `task_id`
+- `waitForTaskCompletion()` polls `GET /v1/tasks/{id}` with exponential back-off
+- `RemoteMomentWindow` uses this path exclusively
 
-Does not own:
-- widget flow
-- render windows
-- VTK rendering orchestration
+---
 
-### Shared VTK
-Owns:
-- VTK-side processing and helpers
-- image layer runtime objects
-- client-side service facades and helpers that bridge backend results into VTK display objects
+## Authentication
 
-Does not own:
-- Qt widget behavior
-- menus, dialogs, action wiring
+### Backend token
+Static bearer token, resolved by `BackendClient` from:
+1. Explicit `setToken()` call (from Settings)
+2. `~/.visivo_token` file written by the backend process at startup
 
-### Client GUI
-Owns:
-- widget wiring
-- action handling
-- render triggers
-- UI state updates
-- choosing when to call local services
+### VLKB OIDC
+`AuthWrapper` wraps `OIDCAuthorizationCodeFlow` (PKCE) for the VLKB identity service.
+- `AuthWrapper::grant(AuthService::VLKB)` launches the browser-based flow
+- `HttpServerReplyHandler` captures the redirect callback on `localhost`
+- `VisIVOUrlSchemeHandler` handles the custom `visivo://` URL scheme on macOS
+- Tokens are stored in-process; `logout()` clears them
 
-Does not need to own:
-- dataset classification rules
-- image-layer import validation rules
-- moment-map scientific computation rules
+---
 
-## Future Local/Remote Candidates
+## Diagnostics
 
-The best candidates for a future local/remote split are:
+`DiagnosticsManager` (singleton, `src/app/`) is an in-process structured event log.
 
-### `DatasetOpenService`
-Reason:
-- already has explicit request/result shape
-- behavior is local and bounded
-- good future candidate for remote dataset inspection or catalog-backed open flows
+- `publish(level, category, source, message, datasetId, sessionId, operationTag)` — called from any thread
+- Categories: `Scientific`, `Client`, `Backend`, `Task`, `WCS`, `Remote`, `Rendering`, `Performance`
+- `DiagnosticsModel` exposes the log as a `QAbstractTableModel` for `DiagnosticsWindow`
+- `DiagnosticsWindow` is accessible from the `View` menu at runtime
 
-Current semantics:
-- `DatasetOpenRequest.filepath` is currently a local desktop file path
-- the current implementation is a local inspection service backed by `AstroUtils`
+---
 
-Future mapping:
-- local implementation: inspect a local FITS path
-- remote implementation: inspect a dataset reference or remote resource identifier
-- the widget/client should not depend on how inspection is performed
+## Catalogue 3D viewer (`vtkWindowCatalogue3D`)
 
-### `ImageLayerImportService`
-Reason:
-- already has explicit request/result shape
-- validates compatibility between a base dataset and a candidate layer
-- good future candidate for remote validation
+Renders a remote CSV catalogue as a 3-D point cloud in Cartesian (RA/Dec/distance) space.
 
-Current semantics:
-- `ImageLayerImportRequest.baseDatasetPath` is currently a local desktop path for the base dataset
-- `ImageLayerImportRequest.layerFilepath` is currently a local desktop path for the candidate image layer
-- the current implementation is a local validation service backed by `AstroUtils`
+Key capabilities:
+- **Coordinate frame**: FK5 J2000 (default) or Galactic (l, b) via `applyFrameToEntries()`; uses `wcscon()` from libwcs
+- **Distance resolution** (per entry, priority order):
+  1. `entry.distanceMpc` override (set by cosmology selector)
+  2. catalogue `distance` / `dist` / `dMpc` field
+  3. cosmological integration from redshift (`z`, `REDSHIFT`, `Zspec`, …)
+  4. hardcoded fallback 300 Mpc
+- **Cosmology model selector**: Planck18 (local integration), Planck15/13/WMAP9 (async batch via `/v1/cosmology/distance/batch`)
+- **Geometry modes**: Ellipsoid, Sphere, Point, Cross (vtkGlyph3D)
+- **Size modes**: Fixed, Major axis, LLS, Flux
+- **Interaction**: hover highlight (yellow wireframe sphere), click-select (red wireframe), sidebar info panel, table view dock
+- **Morphology LUT**: deterministic colour per morphology class; unknown classes cycle the palette
+- **Pagination**: 50 000 row pages; "Load more" button
 
-Future mapping:
-- local implementation: validate overlap and image compatibility using local FITS/WCS inspection
-- remote implementation: validate a base dataset reference against a candidate layer reference
-- the widget/client should not depend on how validation is performed
+---
 
-### `MomentProcessingService`
-Reason:
-- already has explicit request/result shape
-- now fronts the single authoritative backend moment implementation
-- is the clearest example of the client acting as a rendering/orchestration shell over backend science logic
+## VBT viewer (`vtkWindowVbt`)
 
-Current semantics:
-- `MomentProcessingService` is a client-side API/service facade
-- backend-visible `datasetId` is required for authoritative moment computation
-- client-local desktop paths are not treated as directly backend-openable in the normal flow
-- `MomentMapResult` carries backend-derived image payload plus scientific metadata for UI/provenance display
+Renders a remote VBT (VisIVO Binary Table) dataset as a 3-D point cloud.
 
-Constraint today:
-- a local desktop dataset must first become backend-visible through dataset open/staging before moment computation is supported
-- the future upload/staging pipeline is not implemented yet
+Key capabilities:
+- **Render modes**: Plain (vtkPolyDataMapper) and Gaussian splat (vtkPointGaussianMapper)
+- **Color mapping**: any scalar field; configurable colour map and range
+- **Sidebar**: Display (render mode, colour, range), Filters, Metadata pages
+- **Pagination**: 50 000 row pages; "Load more" appends column vectors
 
-Future step needed:
-- add an explicit staging/upload flow that yields backend dataset identifiers for desktop-local files
-- keep the compute contract backend-authoritative and dataset-id-based
+---
 
-## Non-Goals / Deferred Items
+## HiPS viewer (`HiPSWindow`)
 
-The following are intentionally not implemented yet:
+Interactive all-sky survey browser.
 
-- no general dataset upload/staging pipeline for desktop-local files
-- no remote rendering
-- no general async/job framework beyond the current moment-map, image-layer, and cube-open use cases
-- no generic service interfaces
-- no large widget rewrite
-- no full decomposition of `vtkWindowCube`
-- no attempt to make all VTK runtime code backend-ready today
+Key capabilities:
+- Fetches AllSky mosaic via `requestHiPSAllsky()`; individual tiles via `requestHiPSTile()`
+- `requestHiPSTilesForView()` requests the backend to compute which tiles cover the current viewport
+- Astronomical name resolution via `resolveTarget()` → `POST /v1/resolve/target`
+- Catalogue overlay via `requestHiPSCatalogueOverlay()` → `POST /v1/hips/catalogue_overlay`
+- `HiPSViewportWidget` owns the tile compositing and paint logic
 
-These are deferred on purpose. The current focus has been to create stable local boundaries first.
+---
 
-## Architecture Decisions Already Taken
+## Unit Tests (`tests/`)
 
-### 1. Service logic moves out of widgets and backend-authoritative science moves out of the client
-We first extracted local services and controllers from GUI classes, then made moment computation backend-authoritative instead of maintaining two scientific implementations.
+QTest-based headless suite; no VTK, no Qt::Widgets, no live backend.
 
-### 2. Build modularization follows code boundaries
-The build now reflects the code structure with:
-- `visivo_shared_core`
-- `visivo_shared_vtk`
-- final GUI executable
+| File | Tests | What it covers |
+|------|-------|----------------|
+| `test_backendclient.cpp` | 16 | `parseMomentResultObject`, `parsePvResultObject`, `parseNoiseResultObject` |
+| `test_catalogue_parser.cpp` | 26 | `detectedRedshiftField`, `detectedDistanceField`, `comovingDistanceMpc`, `entryDistanceMpc` |
 
-### 3. Request/result contracts are preferred for stable service boundaries
-Where useful, local services now expose explicit request/result types instead of ad-hoc primitive inputs.
+Build:
+```
+cmake -B build -DBUILD_TESTING=ON
+cmake --build build --target VisIVOTests
+ctest --test-dir build -V
+```
 
-### 4. GUI remains the orchestration shell
-Widgets still own:
-- file dialogs
-- action triggers
-- render calls
-- UI updates
+Static library `visivo_test_support` (BackendClient + DiagnosticsManager) is shared across test executables without pulling in Qt::Widgets or VTK.
 
-Services own bounded non-UI logic, and scientific computation that must be authoritative belongs on the backend side.
+---
 
-## Recommended Next Milestone
+## Stable Boundaries Today
 
-Define and document backend-ready service contracts for the existing local services, without implementing backend or async yet.
+| Boundary | Status |
+|----------|--------|
+| `DatasetOpenService` | local, explicit request/result |
+| `ImageLayerImportService` | local, explicit request/result |
+| `MomentProcessingService` | backend-authoritative facade |
+| `BackendClient` | stable; all backend I/O goes through here |
+| `DiagnosticsManager` | stable singleton; all structured logging goes through here |
+| Async worker pattern | stable; each viewer owns its watchers explicitly |
+| Pagination state | stable; uniform across catalogue and VBT viewers |
 
-Practical next step:
-- keep `DatasetOpenService`, `ImageLayerImportService`, and `MomentProcessingService` as the reference service boundaries
-- document their intended local/remote mapping
-- avoid further widget refactors unless they directly improve those boundaries
+---
 
-## Summary
+## Non-Goals / Deferred
 
-The project is still a local Qt/VTK desktop application.
+- No dataset upload/staging for desktop-local files (moment computation requires backend-visible dataset)
+- No remote rendering
+- No general async/job framework (each use case defines its own watcher)
+- No cancellation or progress reporting for in-flight requests
+- No generic service interfaces (DI, plugin system)
+- No large `vtkWindowCube` decomposition
 
-What changed is that several previously embedded pieces of logic are now explicit local boundaries with clearer ownership. This is the main architectural foundation for any future evolution toward async execution or client/server separation.
+---
+
+## Architecture Decisions
+
+### 1. All backend I/O through a single synchronous client called off-thread
+`BackendClient` is synchronous and safe to call from `QtConcurrent::run`. No async Qt Network code, no callback spaghetti. Each worker creates its own `BackendClient` instance.
+
+### 2. UI thread only reads results, never calls the backend directly
+The UI thread is responsible only for applying result structs to VTK pipelines and widget state. It never blocks on network I/O.
+
+### 3. Pagination is stateful per-window, reset on filter change
+`m_currentOffset` / `m_totalCount` are window-local. `applyFilter()` always resets them. The "Load more" button is the only way to advance the offset.
+
+### 4. Cosmology distances are transparent to rendering code
+`Catalogue3DEntry::distanceMpc` (0 = auto) is the override seam. `entryDistanceMpc()` applies the priority chain. Rendering code calls only `entryDistanceMpc()` and is unaware of which source was used.
+
+### 5. Build modularisation follows dependency direction
+`visivo_shared_core` → no Qt::Widgets, no VTK.
+`visivo_shared_vtk` → no Qt::Widgets.
+GUI executable → can use all.
+Test suite → links only `visivo_test_support` (core subset).
