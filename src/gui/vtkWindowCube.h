@@ -31,6 +31,7 @@ class PvController;
 
 class QAction;
 class QCheckBox;
+class QComboBox;
 class SidebarPanel;
 class CatalogueTableModel;
 class QDockWidget;
@@ -269,6 +270,14 @@ private:
     SidebarPanel *m_sidebar{ nullptr };
     QPointer<QAction> actionShowControlsSidebar;
     void setupSidebar();
+
+    // ── 3D View Settings page ─────────────────────────────────────────────────
+    QPointer<QComboBox> m_comboRenderMode;
+    QPointer<QComboBox> m_comboLut;
+    QPointer<QLabel>    m_lutPreviewLabel;
+    QString             m_activeColorMapName;
+    QWidget *setupThresholdPage();
+    void applyColorMapByName(const QString &name);
 
     // ── Workspace docks ───────────────────────────────────────────────────────
     QPointer<QDockWidget> dockCubeView;

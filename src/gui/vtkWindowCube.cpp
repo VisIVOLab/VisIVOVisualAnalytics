@@ -70,6 +70,11 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QColorDialog>
+#include <QFrame>
+#include <QHBoxLayout>
+#include <QImage>
+#include <QPixmap>
+#include <QPushButton>
 #include <QDebug>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -1329,7 +1334,33 @@ AsyncIsosurfaceResult fetchRemoteIsosurface(const QString &backendUrl, const QSt
                        .arg(result.mesh->GetNumberOfPolys());
     return result;
 }
+
+// Generate a horizontal gradient QPixmap for a named color map.
+// Safe to call from the UI thread; w/h are in logical pixels.
+QPixmap buildLutPreview(const QString &name, int w, int h)
+{
+    vtkNew<vtkLookupTable> lut;
+    lut->SetTableRange(0., 1.);
+    lut->SetNumberOfTableValues(w);
+    ColorMaps::SetColorMap(lut, name.toStdString());
+    lut->Build();
+
+    QImage img(w, h, QImage::Format_RGB888);
+    for (int x = 0; x < w; ++x) {
+        const double t = (w > 1) ? static_cast<double>(x) / static_cast<double>(w - 1) : 0.0;
+        double rgb[3];
+        lut->GetColor(t, rgb);
+        const QColor c(std::clamp(static_cast<int>(rgb[0] * 255.0 + 0.5), 0, 255),
+                       std::clamp(static_cast<int>(rgb[1] * 255.0 + 0.5), 0, 255),
+                       std::clamp(static_cast<int>(rgb[2] * 255.0 + 0.5), 0, 255));
+        for (int y = 0; y < h; ++y) {
+            img.setPixel(x, y, c.rgb());
+        }
+    }
+    return QPixmap::fromImage(img);
 }
+
+} // anonymous namespace
 
 vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              const QString &datasetId, int remoteWidth, int remoteHeight,
@@ -2058,15 +2089,20 @@ void vtkWindowCube::setupSidebar()
     mainLayout->removeWidget(ui->sidebarContainer);
     ui->sidebarContainer->hide();
 
+    // Build the redesigned "3D View Settings" page (creates m_comboRenderMode,
+    // m_comboLut, m_lutPreviewLabel; reparents sliderThreshold / lineThreshold /
+    // btnCubeColor into the new widget).
+    QWidget *page3dSettings = this->setupThresholdPage();
+
     this->m_sidebar = new SidebarPanel(220, this);
-    this->m_sidebar->addPage(u":/icons/rail_threshold.svg"_s, u"Threshold"_s,    ui->pageThreshold);
-    this->m_sidebar->addPage(u":/icons/rail_slice.svg"_s,     u"Cutting Plane"_s, ui->pageSlice);
-    this->m_sidebar->addPage(u":/icons/rail_contours.svg"_s,  u"Contours"_s,     ui->pageContours);
-    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,     u"Statistics"_s,   ui->pageStats);
+    this->m_sidebar->addPage(u":/icons/rail_threshold.svg"_s, u"3D View Settings"_s, page3dSettings);
+    this->m_sidebar->addPage(u":/icons/rail_slice.svg"_s,     u"Cutting Plane"_s,    ui->pageSlice);
+    this->m_sidebar->addPage(u":/icons/rail_contours.svg"_s,  u"Contours"_s,         ui->pageContours);
+    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,     u"Statistics"_s,       ui->pageStats);
     this->m_sidebar->finalize(0);
     mainLayout->insertWidget(0, this->m_sidebar);
 
-    // Style page content (header labels, card frames, read-only stat fields).
+    // Style the remaining sidebar pages (Cutting Plane, Contours, Statistics).
     const QString hdrStyle =
             u"QLabel {"
             "  color: #8AB8CC;"
@@ -2089,22 +2125,226 @@ void vtkWindowCube::setupSidebar()
             "}"_s;
     const QString roStyle = u"QLineEdit[readOnly='true'] { color: #7AAABB; }"_s;
 
-    for (QLabel *lbl : { ui->labelThresholdHdr, ui->labelSliceHdr,
-                          ui->labelContoursHdr,  ui->labelStatsHdr }) {
+    for (QLabel *lbl : { ui->labelSliceHdr, ui->labelContoursHdr, ui->labelStatsHdr }) {
         lbl->setStyleSheet(hdrStyle);
     }
     for (QLabel *lbl : { ui->labelImg, ui->labelCubeStatsHdr }) {
         lbl->setStyleSheet(subHdrStyle);
     }
-    for (QFrame *f : { ui->frameThreshold, ui->frameSlice, ui->frameContours }) {
+    for (QFrame *f : { ui->frameSlice, ui->frameContours }) {
         f->setStyleSheet(cardStyle);
     }
     ui->frameImgStats->setStyleSheet(cardStyle + roStyle);
     ui->frameCubeStats->setStyleSheet(cardStyle + roStyle);
 
+    // ── Bidirectional sync: rendering mode combo ↔ menu actions ──────────
+    QObject::connect(this->m_comboRenderMode, &QComboBox::currentIndexChanged,
+                     this, [this](int idx) {
+        const bool wantIsosurface = (idx == 0);
+        if (wantIsosurface == ui->actionIsosurface->isChecked()) {
+            return; // already in sync
+        }
+        const QSignalBlocker b1(ui->actionIsosurface);
+        const QSignalBlocker b2(ui->actionVolume);
+        ui->actionIsosurface->setChecked(wantIsosurface);
+        ui->actionVolume->setChecked(!wantIsosurface);
+        this->changeCubeRender();
+    });
+    QObject::connect(ui->actionIsosurface, &QAction::toggled, this, [this](bool checked) {
+        if (checked && this->m_comboRenderMode
+                && this->m_comboRenderMode->currentIndex() != 0) {
+            const QSignalBlocker b(this->m_comboRenderMode);
+            this->m_comboRenderMode->setCurrentIndex(0);
+        }
+    });
+    QObject::connect(ui->actionVolume, &QAction::toggled, this, [this](bool checked) {
+        if (checked && this->m_comboRenderMode
+                && this->m_comboRenderMode->currentIndex() != 1) {
+            const QSignalBlocker b(this->m_comboRenderMode);
+            this->m_comboRenderMode->setCurrentIndex(1);
+        }
+    });
+
+    // ── LUT combo → apply color map ───────────────────────────────────────
+    QObject::connect(this->m_comboLut, &QComboBox::currentTextChanged,
+                     this, [this](const QString &name) {
+        this->applyColorMapByName(name);
+    });
+
     // View menu toggle action — wired bidirectionally by SidebarPanel.
     this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
             u"Controls Sidebar"_s, this);
+}
+
+QWidget *vtkWindowCube::setupThresholdPage()
+{
+    // Style constants — same palette as the rest of the sidebar.
+    const QString hdrStyle =
+            u"QLabel {"
+            "  color: #8AB8CC;"
+            "  font-size: 10px;"
+            "  font-weight: 600;"
+            "  padding-bottom: 4px;"
+            "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
+            "}"_s;
+    const QString cardStyle =
+            u"QFrame {"
+            "  background-color: rgba(255, 255, 255, 0.03);"
+            "  border: 1px solid rgba(4, 138, 191, 0.14);"
+            "  border-radius: 6px;"
+            "}"_s;
+
+    auto *page = new QWidget();
+    auto *root = new QVBoxLayout(page);
+    root->setContentsMargins(12, 14, 12, 12);
+    root->setSpacing(12);
+
+    // ── Section 1: Rendering Mode ─────────────────────────────────────────
+    {
+        auto *hdr = new QLabel(u"RENDERING MODE"_s);
+        hdr->setStyleSheet(hdrStyle);
+        root->addWidget(hdr);
+
+        auto *card = new QFrame();
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(0);
+
+        this->m_comboRenderMode = new QComboBox();
+        this->m_comboRenderMode->addItem(u"Isosurface"_s);
+        this->m_comboRenderMode->addItem(u"Volume"_s);
+        this->m_comboRenderMode->setItemData(0, u"Extract surface at threshold value"_s,
+                                              Qt::ToolTipRole);
+        this->m_comboRenderMode->setItemData(1, u"Direct volume rendering"_s, Qt::ToolTipRole);
+        // Reflect current state (Volume is the default on startup).
+        this->m_comboRenderMode->setCurrentIndex(ui->actionVolume->isChecked() ? 1 : 0);
+
+        cl->addWidget(this->m_comboRenderMode);
+        root->addWidget(card);
+    }
+
+    // ── Section 2: Threshold ──────────────────────────────────────────────
+    {
+        auto *hdr = new QLabel(u"RENDERING THRESHOLD"_s);
+        hdr->setStyleSheet(hdrStyle);
+        root->addWidget(hdr);
+
+        auto *card = new QFrame();
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+
+        // Reparent the existing slider into the new card.
+        ui->sliderThreshold->setParent(card);
+        ui->sliderThreshold->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        cl->addWidget(ui->sliderThreshold);
+
+        // Value row: line edit + color button.
+        auto *row = new QHBoxLayout();
+        row->setSpacing(6);
+        ui->lineThreshold->setParent(card);
+        row->addWidget(ui->lineThreshold, 1);
+        ui->btnCubeColor->setParent(card);
+        ui->btnCubeColor->setFixedSize(28, 28);
+        ui->btnCubeColor->setToolTip(
+                u"Isosurface mode: pick surface color\nVolume mode: pick color palette"_s);
+        row->addWidget(ui->btnCubeColor);
+        cl->addLayout(row);
+
+        root->addWidget(card);
+    }
+
+    // ── Section 3: Color Map ──────────────────────────────────────────────
+    {
+        auto *hdr = new QLabel(u"COLOR MAP"_s);
+        hdr->setStyleSheet(hdrStyle);
+        root->addWidget(hdr);
+
+        auto *card = new QFrame();
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+
+        // Combo with per-item gradient icons.
+        this->m_comboLut = new QComboBox();
+        this->m_comboLut->setIconSize(QSize(48, 12));
+        const auto names = ColorMaps::GetColorMapNames();
+        for (const auto &stdName : names) {
+            const QString qName = QString::fromStdString(stdName);
+            this->m_comboLut->addItem(QIcon(buildLutPreview(qName, 48, 12)), qName);
+        }
+        const QString defaultName = QString::fromStdString(ColorMaps::DefaultColorMap);
+        this->m_comboLut->setCurrentText(defaultName);
+        this->m_activeColorMapName = defaultName;
+        cl->addWidget(this->m_comboLut);
+
+        // Full-width gradient preview bar.
+        this->m_lutPreviewLabel = new QLabel();
+        this->m_lutPreviewLabel->setFixedHeight(16);
+        this->m_lutPreviewLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        this->m_lutPreviewLabel->setScaledContents(true);
+        this->m_lutPreviewLabel->setStyleSheet(
+                u"QLabel {"
+                "  border: 1px solid rgba(4, 138, 191, 0.20);"
+                "  border-radius: 3px;"
+                "}"_s);
+        this->m_lutPreviewLabel->setPixmap(buildLutPreview(defaultName, 180, 16));
+        cl->addWidget(this->m_lutPreviewLabel);
+
+        root->addWidget(card);
+    }
+
+    root->addStretch();
+    return page;
+}
+
+void vtkWindowCube::applyColorMapByName(const QString &name)
+{
+    if (name.isEmpty()) {
+        return;
+    }
+    this->m_activeColorMapName = name;
+    const std::string stdName = name.toStdString();
+
+    // Slice LUT.
+    ColorMaps::SetColorMap(this->lutSlice, stdName);
+    this->lutSlice->Modified();
+
+    // Moment LUT.
+    ColorMaps::SetColorMap(this->lutMoment, stdName);
+    this->lutMoment->Modified();
+
+    // Volume color transfer function.
+    {
+        auto *cubeImage =
+                vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
+        double cubeRange[2] = { 0., 0. };
+        if (cubeImage) {
+            cubeImage->GetScalarRange(cubeRange);
+        }
+        vtkNew<vtkLookupTable> lut;
+        lut->SetTableRange(cubeRange[0], cubeRange[1]);
+        ColorMaps::SetColorMap(lut, stdName);
+        ColorMaps::SetColorTransferFunction(lut, this->volumeColorTransferFunction);
+        this->volumeColorTransferFunction->SetObjectName(stdName);
+    }
+
+    // Update the preview bar (generates at label's logical width, or 180 px as fallback).
+    if (this->m_lutPreviewLabel) {
+        const int previewW = std::max(60, this->m_lutPreviewLabel->width());
+        this->m_lutPreviewLabel->setPixmap(buildLutPreview(name, previewW, 16));
+    }
+
+    // Re-render all open views.
+    if (ui->vtkCube->renderWindow()) {
+        ui->vtkCube->renderWindow()->Render();
+    }
+    if (ui->vtkImage->renderWindow()) {
+        ui->vtkImage->renderWindow()->Render();
+    }
 }
 
 void vtkWindowCube::setupWorkspaceDocks()
@@ -6754,18 +6994,13 @@ void vtkWindowCube::changeCubeColor()
                 QInputDialog::getItem(this, u"Select color palette"_s, u"Color palette:"_s, items,
                                       idxCurrent, false, &ok);
         if (ok && !palette.isEmpty()) {
-            const auto cubeImage =
-                    vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
-            double cubeRange[2] = { 0., 0. };
-            if (cubeImage) {
-                cubeImage->GetScalarRange(cubeRange);
+            // Delegate full LUT application (updates slice, moment, and volume CTF).
+            this->applyColorMapByName(palette);
+            // Sync the sidebar combo so the two paths stay consistent.
+            if (this->m_comboLut) {
+                const QSignalBlocker b(this->m_comboLut);
+                this->m_comboLut->setCurrentText(palette);
             }
-            vtkNew<vtkLookupTable> lut;
-            lut->SetTableRange(cubeRange);
-            ColorMaps::SetColorMap(lut, palette.toStdString());
-            ColorMaps::SetColorTransferFunction(lut, this->volumeColorTransferFunction);
-            this->volumeColorTransferFunction->SetObjectName(palette.toStdString());
-            ui->vtkCube->renderWindow()->Render();
         }
     }
 }
