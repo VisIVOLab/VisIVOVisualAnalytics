@@ -292,6 +292,18 @@ private:
     void syncVolumeModeSidebar(int idx);
     void updateVolumeModeVisibility(bool volumeActive);
 
+    // ── 2D View Settings page ─────────────────────────────────────────────────
+    QPointer<QComboBox> m_combo2dMode;        // Slice / Moment
+    QPointer<QWidget>   m_sliceControlsCard;  // shown only when Slice is active
+    QPointer<QWidget>   m_sliceLutCard;       // shown only when Slice is active
+    QPointer<QComboBox> m_comboSliceLut;
+    QPointer<QWidget>   m_momentInfoCard;     // shown only when Moment is active
+    QString             m_activeSliceLutName;
+    QWidget *setup2dViewPage();
+    void applySliceLutByName(const QString &name);
+    void update2dModeVisibility(bool sliceActive);
+    void sync2dModeSidebar(bool sliceActive);
+
     // ── Workspace docks ───────────────────────────────────────────────────────
     QPointer<QDockWidget> dockCubeView;
     QPointer<QDockWidget> dockSliceView;

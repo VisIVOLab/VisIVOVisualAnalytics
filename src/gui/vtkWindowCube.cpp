@@ -2129,11 +2129,16 @@ void vtkWindowCube::setupSidebar()
     // lineThreshold / btnCubeColor into the new widget).
     QWidget *page3dSettings = this->setupThresholdPage();
 
+    // Build the "2D View Settings" page (creates m_combo2dMode, m_comboSliceLut,
+    // m_sliceControlsCard, m_momentInfoCard; reparents sliderSlice / spinSlice /
+    // lineSpectral into the new widget).
+    QWidget *page2dSettings = this->setup2dViewPage();
+
     this->m_sidebar = new SidebarPanel(220, this);
-    this->m_sidebar->addPage(u":/icons/rail_3d.svg"_s, u"3D View Settings"_s, page3dSettings);
-    this->m_sidebar->addPage(u":/icons/rail_slice.svg"_s,     u"Cutting Plane"_s,    ui->pageSlice);
-    this->m_sidebar->addPage(u":/icons/rail_contours.svg"_s,  u"Contours"_s,         ui->pageContours);
-    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,     u"Statistics"_s,       ui->pageStats);
+    this->m_sidebar->addPage(u":/icons/rail_3d.svg"_s,       u"3D View Settings"_s, page3dSettings);
+    this->m_sidebar->addPage(u":/icons/rail_slice.svg"_s,    u"2D View Settings"_s, page2dSettings);
+    this->m_sidebar->addPage(u":/icons/rail_contours.svg"_s, u"Contours"_s,         ui->pageContours);
+    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,    u"Statistics"_s,       ui->pageStats);
     this->m_sidebar->finalize(0);
     mainLayout->insertWidget(0, this->m_sidebar);
 
@@ -2160,13 +2165,13 @@ void vtkWindowCube::setupSidebar()
             "}"_s;
     const QString roStyle = u"QLineEdit[readOnly='true'] { color: #7AAABB; }"_s;
 
-    for (QLabel *lbl : { ui->labelSliceHdr, ui->labelContoursHdr, ui->labelStatsHdr }) {
+    for (QLabel *lbl : { ui->labelContoursHdr, ui->labelStatsHdr }) {
         lbl->setStyleSheet(hdrStyle);
     }
     for (QLabel *lbl : { ui->labelImg, ui->labelCubeStatsHdr }) {
         lbl->setStyleSheet(subHdrStyle);
     }
-    for (QFrame *f : { ui->frameSlice, ui->frameContours }) {
+    for (QFrame *f : { ui->frameContours }) {
         f->setStyleSheet(cardStyle);
     }
     ui->frameImgStats->setStyleSheet(cardStyle + roStyle);
@@ -2224,6 +2229,39 @@ void vtkWindowCube::setupSidebar()
     QObject::connect(this->m_comboLut, &QComboBox::currentTextChanged,
                      this, [this](const QString &name) {
         this->applyColorMapByName(name);
+    });
+
+    // ── Bidirectional sync: 2D mode combo ↔ actionSlice / actionMomentMap ─
+    QObject::connect(this->m_combo2dMode, &QComboBox::currentIndexChanged,
+                     this, [this](int idx) {
+        const bool wantSlice = (idx == 0);
+        if (wantSlice == ui->actionSlice->isChecked()) {
+            return; // already in sync
+        }
+        const QSignalBlocker b1(ui->actionSlice);
+        const QSignalBlocker b2(ui->actionMomentMap);
+        ui->actionSlice->setChecked(wantSlice);
+        ui->actionMomentMap->setChecked(!wantSlice);
+        this->update2dModeVisibility(wantSlice);
+        this->changeImageRenderer();
+    });
+    QObject::connect(ui->actionSlice, &QAction::toggled, this, [this](bool checked) {
+        if (checked) {
+            this->sync2dModeSidebar(true);
+            this->update2dModeVisibility(true);
+        }
+    });
+    QObject::connect(ui->actionMomentMap, &QAction::toggled, this, [this](bool checked) {
+        if (checked) {
+            this->sync2dModeSidebar(false);
+            this->update2dModeVisibility(false);
+        }
+    });
+
+    // ── Slice LUT combo → apply slice color map ───────────────────────────
+    QObject::connect(this->m_comboSliceLut, &QComboBox::currentTextChanged,
+                     this, [this](const QString &name) {
+        this->applySliceLutByName(name);
     });
 
     // View menu toggle action — wired bidirectionally by SidebarPanel.
@@ -2473,6 +2511,181 @@ void vtkWindowCube::updateVolumeModeVisibility(bool volumeActive)
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 2D View Settings
+// ─────────────────────────────────────────────────────────────────────────────
+
+QWidget *vtkWindowCube::setup2dViewPage()
+{
+    const QString hdrStyle =
+            u"QLabel {"
+            "  color: #8AB8CC;"
+            "  font-size: 10px;"
+            "  font-weight: 600;"
+            "  padding-bottom: 4px;"
+            "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
+            "}"_s;
+    const QString cardStyle =
+            u"QFrame {"
+            "  background-color: rgba(255, 255, 255, 0.03);"
+            "  border: 1px solid rgba(4, 138, 191, 0.14);"
+            "  border-radius: 6px;"
+            "}"_s;
+
+    auto *page = new QWidget();
+    auto *root = new QVBoxLayout(page);
+    root->setContentsMargins(12, 14, 12, 12);
+    root->setSpacing(12);
+
+    const bool initiallySlice = ui->actionSlice->isChecked();
+
+    // ── Section 1: 2D Mode ────────────────────────────────────────────────
+    {
+        auto *hdr = new QLabel(u"2D MODE"_s);
+        hdr->setStyleSheet(hdrStyle);
+        root->addWidget(hdr);
+
+        auto *card = new QFrame();
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(0);
+
+        this->m_combo2dMode = new QComboBox();
+        this->m_combo2dMode->addItem(u"Slice"_s);
+        this->m_combo2dMode->addItem(u"Moment"_s);
+        this->m_combo2dMode->setItemData(0, u"Show a 2D slice through the cube"_s, Qt::ToolTipRole);
+        this->m_combo2dMode->setItemData(1, u"Show the current moment map"_s, Qt::ToolTipRole);
+        this->m_combo2dMode->setCurrentIndex(initiallySlice ? 0 : 1);
+        cl->addWidget(this->m_combo2dMode);
+
+        root->addWidget(card);
+    }
+
+    // ── Section 2: Slice Controls (Slice mode only) ────────────────────────
+    {
+        auto *sliceCard = new QFrame();
+        sliceCard->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(sliceCard);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+
+        auto *hdr = new QLabel(u"CUTTING PLANE"_s);
+        hdr->setStyleSheet(hdrStyle);
+        cl->addWidget(hdr);
+
+        // Reparent the existing slice controls into this card.
+        ui->sliderSlice->setParent(sliceCard);
+        ui->sliderSlice->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        cl->addWidget(ui->sliderSlice);
+
+        auto *row = new QHBoxLayout();
+        row->setSpacing(6);
+        ui->spinSlice->setParent(sliceCard);
+        row->addWidget(ui->spinSlice);
+        ui->lineSpectral->setParent(sliceCard);
+        row->addWidget(ui->lineSpectral, 1);
+        cl->addLayout(row);
+
+        sliceCard->setVisible(initiallySlice);
+        this->m_sliceControlsCard = sliceCard;
+        root->addWidget(sliceCard);
+    }
+
+    // ── Section 3: Slice Color Map (Slice mode only) ─────────────────────
+    {
+        auto *lutCard = new QFrame();
+        lutCard->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(lutCard);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+
+        auto *hdr = new QLabel(u"COLOR MAP"_s);
+        hdr->setStyleSheet(hdrStyle);
+        cl->addWidget(hdr);
+
+        this->m_comboSliceLut = new QComboBox();
+        this->m_comboSliceLut->setIconSize(QSize(48, 12));
+        const auto names = ColorMaps::GetColorMapNames();
+        for (const auto &stdName : names) {
+            const QString qName = QString::fromStdString(stdName);
+            this->m_comboSliceLut->addItem(QIcon(buildLutPreview(qName, 48, 12)), qName);
+        }
+        const QString defaultName = QString::fromStdString(ColorMaps::DefaultColorMap);
+        this->m_comboSliceLut->setCurrentText(defaultName);
+        this->m_activeSliceLutName = defaultName;
+        cl->addWidget(this->m_comboSliceLut);
+
+        lutCard->setVisible(initiallySlice);
+        this->m_sliceLutCard = lutCard;
+        root->addWidget(lutCard);
+    }
+
+    // ── Section 4: Moment Info (Moment mode only) ─────────────────────────
+    {
+        auto *momentCard = new QFrame();
+        momentCard->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(momentCard);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *hdr = new QLabel(u"MOMENT MAP"_s);
+        hdr->setStyleSheet(hdrStyle);
+        cl->addWidget(hdr);
+
+        auto *info = new QLabel(u"Moment map displayed.\nUse the Moment menu to\ncompute a new moment."_s);
+        info->setWordWrap(true);
+        info->setStyleSheet(u"QLabel { color: #7AAABB; font-size: 9px; }"_s);
+        cl->addWidget(info);
+
+        momentCard->setVisible(!initiallySlice);
+        this->m_momentInfoCard = momentCard;
+        root->addWidget(momentCard);
+    }
+
+    root->addStretch();
+    return page;
+}
+
+void vtkWindowCube::applySliceLutByName(const QString &name)
+{
+    if (name.isEmpty()) {
+        return;
+    }
+    this->m_activeSliceLutName = name;
+    const std::string stdName = name.toStdString();
+
+    // Update only the slice LUT — does not touch the 3D volume or moment LUT.
+    ColorMaps::SetColorMap(this->lutSlice, stdName);
+    this->lutSlice->Modified();
+
+    if (ui->vtkImage->renderWindow() && this->viewingSlice()) {
+        ui->vtkImage->renderWindow()->Render();
+    }
+}
+
+void vtkWindowCube::update2dModeVisibility(bool sliceActive)
+{
+    if (this->m_sliceControlsCard) {
+        this->m_sliceControlsCard->setVisible(sliceActive);
+    }
+    if (this->m_sliceLutCard) {
+        this->m_sliceLutCard->setVisible(sliceActive);
+    }
+    if (this->m_momentInfoCard) {
+        this->m_momentInfoCard->setVisible(!sliceActive);
+    }
+}
+
+void vtkWindowCube::sync2dModeSidebar(bool sliceActive)
+{
+    if (!this->m_combo2dMode) {
+        return;
+    }
+    const QSignalBlocker b(this->m_combo2dMode);
+    this->m_combo2dMode->setCurrentIndex(sliceActive ? 0 : 1);
+}
+
 void vtkWindowCube::setupWorkspaceDocks()
 {
     // Allow docks to be nested and tabbed for maximum layout flexibility.
@@ -2530,8 +2743,8 @@ void vtkWindowCube::setupWorkspaceDocks()
                           | QDockWidget::DockWidgetClosable);
     dockCube->setStyleSheet(dockStyle);
 
-    // ── Slice / Detail dock ───────────────────────────────────────────────────
-    auto *dockSlice = new QDockWidget(u"Slice / Detail"_s, this);
+    // ── 2D View dock ─────────────────────────────────────────────────────────
+    auto *dockSlice = new QDockWidget(u"2D View"_s, this);
     dockSlice->setObjectName(u"dockSliceView"_s);
     dockSlice->setWidget(ui->vtkImage);        // reparents vtkImage into the dock
     dockSlice->setAllowedAreas(Qt::AllDockWidgetAreas);
@@ -6736,6 +6949,10 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
         ui->actionSlice->setChecked(false);
         ui->actionMomentMap->setChecked(true);
     }
+    // Sync the 2D sidebar (actions were blocked above so the toggled handler
+    // did not fire; update manually here).
+    this->sync2dModeSidebar(false);
+    this->update2dModeVisibility(false);
 
     ui->vtkImage->setRenderWindow(this->momentWin);
     ui->labelImg->setText(u"Moment:"_s);
@@ -7072,6 +7289,9 @@ void vtkWindowCube::changeImageRenderer()
     if (this->pvModeActive && this->pvValid) {
         this->refreshPvOverlay();
     }
+    // Keep the 2D sidebar in sync with the active mode.
+    this->sync2dModeSidebar(ui->actionSlice->isChecked());
+    this->update2dModeVisibility(ui->actionSlice->isChecked());
     ui->vtkImage->renderWindow()->Render();
 }
 
