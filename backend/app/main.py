@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import csv
+import functools
 import logging
 import os
 import struct
@@ -2227,21 +2228,26 @@ class CatalogueOverlayResponse(BaseModel):
 _RA_CANDIDATES  = ["ra", "RA", "Ra", "RAJ2000", "ra_deg", "RAdeg", "ALPHA_J2000"]
 _DEC_CANDIDATES = ["dec", "Dec", "DEC", "DEJ2000", "dec_deg", "DECdeg", "DELTA_J2000"]
 
-_OVERLAY_CSV_CACHE: dict[str, pd.DataFrame] = {}  # simple in-process cache
+@functools.lru_cache(maxsize=32)
+def _load_overlay_csv(path: str) -> pd.DataFrame:
+    """Read and parse a catalogue CSV, caching up to 32 files (LRU eviction)."""
+    return pd.read_csv(path)
+
+
+def clear_overlay_cache() -> None:
+    """Invalidate the overlay CSV cache (call on dataset reload or file change)."""
+    _load_overlay_csv.cache_clear()
 
 
 def _catalogue_overlay_sync(
     path: str, ra_center: float, dec_center: float, fov_deg: float,
     ra_field: str, dec_field: str, max_sources: int,
 ) -> dict:
-    # Read (cached in process memory for the lifetime of the server)
-    if path not in _OVERLAY_CSV_CACHE:
-        try:
-            _OVERLAY_CSV_CACHE[path] = pd.read_csv(path)
-        except Exception as exc:
-            return {"valid": False, "error": f"Cannot read CSV '{path}': {exc}",
-                    "sources": [], "total_in_view": 0, "truncated": False}
-    df = _OVERLAY_CSV_CACHE[path]
+    try:
+        df = _load_overlay_csv(path)
+    except Exception as exc:
+        return {"valid": False, "error": f"Cannot read CSV '{path}': {exc}",
+                "sources": [], "total_in_view": 0, "truncated": False}
 
     # Auto-detect RA/Dec column names
     if not ra_field:
