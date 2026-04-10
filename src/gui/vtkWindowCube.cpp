@@ -6,7 +6,7 @@
 #include "CatalogueTableModel.h"
 #include "LUTCustomizerDialog.h"
 #include "MomentMapComputeTask.h"
-#include "NoiseRegionDialog.h"
+#include "NoiseController.h"
 #include "ProfileWidget.h"
 #include "PvDiagramWidget.h"
 #include "app/BackendClient.h"
@@ -1400,34 +1400,6 @@ RemotePvFetchResult fetchRemotePv(const QString &backendUrl, const QString &data
     return result;
 }
 
-CubeNoiseEstimateResult fetchRemoteNoise(const QString &backendUrl, const QString &datasetId,
-                                         int x0, int x1, int y0, int y1, int channelStart,
-                                         int channelEnd, const QString &sessionId,
-                                         const QString &backendToken)
-{
-    CubeNoiseEstimateResult result;
-    BackendClient client(backendUrl, backendToken);
-    client.setSessionId(sessionId);
-    const auto response = client.requestNoise(datasetId, x0, x1, y0, y1, channelStart, channelEnd);
-    if (!response.valid) {
-        result.errorMessage =
-                response.error.isEmpty() ? u"Backend noise estimation failed."_s : response.error;
-        return result;
-    }
-
-    result.valid = true;
-    result.channelStart = response.channelStart;
-    result.channelEnd = response.channelEnd;
-    result.numChannels = response.numChannels;
-    result.mad = response.mad;
-    result.sigma = response.sigma;
-    result.x0 = response.x0;
-    result.x1 = response.x1;
-    result.y0 = response.y0;
-    result.y1 = response.y1;
-    return result;
-}
-
 AsyncIsosurfaceResult fetchRemoteIsosurface(const QString &backendUrl, const QString &datasetId,
                                             double isoValue, int requestId, const QString &sessionId,
                                             const QString &backendToken)
@@ -1881,34 +1853,15 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              this->statusBar()->showMessage(warnText, 8000);
                          }
                      });
-    QObject::connect(&this->noiseEstimateWatcher, &QFutureWatcher<CubeNoiseEstimateResult>::finished,
-                     this, [this]() {
-                         this->updateBackendDerivedActionsAvailability();
-                         const auto result = this->noiseEstimateWatcher.result();
-                         if (!result.valid) {
-                             DiagnosticsManager::instance()->publish(
-                                     DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
-                                     QStringLiteral("vtkWindowCube"),
-                                     result.errorMessage.isEmpty()
-                                             ? QStringLiteral("Noise estimation failed.")
-                                             : result.errorMessage,
-                                     this->remoteDatasetId, this->remoteSessionId,
-                                     QStringLiteral("noise"));
-                             this->statusBar()->showMessage(result.errorMessage.isEmpty()
-                                                                    ? u"Noise estimation failed."_s
-                                                                    : result.errorMessage,
-                                                            4000);
-                             return;
-                         }
+    // ── Noise estimation – delegated to NoiseController ───────────────────────
+    this->noiseController = new NoiseController(
+            this->remoteBackendUrl, this->remoteDatasetId,
+            this->remoteSessionId, this->remoteBackendToken,
+            this->remoteDatasetWidth, this->remoteDatasetHeight, this->remoteDatasetDepth,
+            this,
+            [this]() { this->updateBackendDerivedActionsAvailability(); },
+            this);
 
-                         DiagnosticsManager::instance()->publish(
-                                 DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
-                                 QStringLiteral("vtkWindowCube"),
-                                 QStringLiteral("Noise estimation completed."),
-                                 this->remoteDatasetId, this->remoteSessionId,
-                                 QStringLiteral("noise"));
-                         this->showNoiseEstimateResult(result);
-                     });
     QObject::connect(&this->isosurfaceWatcher, &QFutureWatcher<AsyncIsosurfaceResult>::finished,
                      this, [this]() {
                          const auto result = this->isosurfaceWatcher.result();
@@ -2016,8 +1969,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(this->actionExtractPvDiagram, &QAction::toggled, this,
                      &vtkWindowCube::setPvModeActive);
     this->actionEstimateNoise = ui->menuTools->addAction(u"Estimate Noise..."_s);
-    QObject::connect(this->actionEstimateNoise, &QAction::triggered, this,
-                     &vtkWindowCube::startNoiseEstimation);
+    QObject::connect(this->actionEstimateNoise, &QAction::triggered,
+                     this->noiseController, &NoiseController::startEstimation);
     this->updateBackendDerivedActionsAvailability();
     this->actionBoxRegion = ui->menuTools->addAction(u"Box Region Analysis"_s);
     this->actionCircleRegion = ui->menuTools->addAction(u"Circle Region Analysis"_s);
@@ -6928,8 +6881,9 @@ void vtkWindowCube::updateBackendDerivedActionsAvailability()
     }
 
     if (this->actionEstimateNoise) {
+        const bool noiseBusy = this->noiseController && this->noiseController->isBusy();
         const bool noiseEnabled = available && !this->cubeOpenWatcher.isRunning()
-                && !this->remotePreviewWatcher.isRunning() && !this->noiseEstimateWatcher.isRunning();
+                && !this->remotePreviewWatcher.isRunning() && !noiseBusy;
         this->actionEstimateNoise->setEnabled(noiseEnabled);
         this->actionEstimateNoise->setToolTip(available ? QString {} : kNoiseBackendTooltip);
         this->actionEstimateNoise->setStatusTip(available ? QString {} : kNoiseBackendTooltip);
@@ -6960,88 +6914,6 @@ void vtkWindowCube::setCubeOpenActionsEnabled(bool enabled)
         }
     }
     ui->actionExtractSpectrum->setEnabled(enabled);
-}
-
-void vtkWindowCube::startNoiseEstimation()
-{
-    if (!this->hasBackendVisibleDataset()) {
-        return;
-    }
-
-    NoiseRegionDialog dlg(this->remoteDatasetWidth, this->remoteDatasetHeight,
-                          this->remoteDatasetDepth, this);
-    if (dlg.exec() != QDialog::Accepted) {
-        return;
-    }
-
-    const int x0           = dlg.x0();
-    const int x1           = dlg.x1();
-    const int y0           = dlg.y0();
-    const int y1           = dlg.y1();
-    const int channelStart = dlg.channelStart();
-    const int channelEnd   = dlg.channelEnd();
-
-    DiagnosticsManager::instance()->publish(
-            DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
-            QStringLiteral("vtkWindowCube"),
-            QStringLiteral("Noise estimation started (x:%1-%2 y:%3-%4 ch:%5-%6).")
-                    .arg(x0).arg(x1).arg(y0).arg(y1).arg(channelStart).arg(channelEnd),
-            this->remoteDatasetId, this->remoteSessionId,
-            QStringLiteral("noise"));
-    this->statusBar()->showMessage(u"Estimating backend noise..."_s, 2000);
-    this->updateBackendDerivedActionsAvailability();
-    this->noiseEstimateWatcher.setFuture(QtConcurrent::run(
-            &fetchRemoteNoise, this->remoteBackendUrl, this->remoteDatasetId, x0, x1, y0, y1,
-            channelStart, channelEnd, this->remoteSessionId, this->remoteBackendToken));
-}
-
-void vtkWindowCube::showNoiseEstimateResult(const CubeNoiseEstimateResult &result)
-{
-    auto summarize = [](const QVector<double> &values) {
-        QVector<double> finite;
-        finite.reserve(values.size());
-        for (double value : values) {
-            if (std::isfinite(value)) {
-                finite.push_back(value);
-            }
-        }
-        if (finite.isEmpty()) {
-            return std::array<double, 4>{ std::numeric_limits<double>::quiet_NaN(),
-                                          std::numeric_limits<double>::quiet_NaN(),
-                                          std::numeric_limits<double>::quiet_NaN(),
-                                          std::numeric_limits<double>::quiet_NaN() };
-        }
-        std::sort(finite.begin(), finite.end());
-        double sum = 0.0;
-        for (double value : finite) {
-            sum += value;
-        }
-        const double mean = sum / static_cast<double>(finite.size());
-        const double median = finite[finite.size() / 2];
-        return std::array<double, 4>{ mean, median, finite.front(), finite.back() };
-    };
-
-    const auto sigmaStats = summarize(result.sigma);
-    const auto madStats = summarize(result.mad);
-    const QString details =
-            u"Channels analyzed: %1 (%2..%3)\nRegion: x=%4..%5, y=%6..%7\n\nSigma summary\nMean: %8\nMedian: %9\nMin: %10\nMax: %11\n\nMAD summary\nMean: %12\nMedian: %13\nMin: %14\nMax: %15"_s
-                    .arg(result.numChannels)
-                    .arg(result.channelStart)
-                    .arg(result.channelEnd)
-                    .arg(result.x0)
-                    .arg(result.x1)
-                    .arg(result.y0)
-                    .arg(result.y1)
-                    .arg(sigmaStats[0], 0, 'g', 8)
-                    .arg(sigmaStats[1], 0, 'g', 8)
-                    .arg(sigmaStats[2], 0, 'g', 8)
-                    .arg(sigmaStats[3], 0, 'g', 8)
-                    .arg(madStats[0], 0, 'g', 8)
-                    .arg(madStats[1], 0, 'g', 8)
-                    .arg(madStats[2], 0, 'g', 8)
-                    .arg(madStats[3], 0, 'g', 8);
-    QMessageBox::information(this, u"Noise Estimate"_s, details);
-    this->statusBar()->showMessage(u"Noise estimation completed."_s, 3000);
 }
 
 void vtkWindowCube::setCubeOpenStateLabel(const QString &text)

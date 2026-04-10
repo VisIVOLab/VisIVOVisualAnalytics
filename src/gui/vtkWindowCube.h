@@ -2,8 +2,10 @@
 #define vtkWindowCube_H
 
 #include "CatalogueOverlayUtils.h"
+#include "CubeNoiseTypes.h"
 #include "CubeOpenPreviewTask.h"
 #include "MomentMapComputeTask.h"
+#include "NoiseController.h"
 
 #include <vtkSmartPointer.h>
 #include <vtkNew.h>
@@ -102,21 +104,6 @@ struct RemoteCubeSubvolumeResult
     std::array<int, 6> dataExtent{ 0, -1, 0, -1, 0, -1 };
     double cubeMean{ 0. };
     double cubeRms{ 0. };
-};
-
-struct CubeNoiseEstimateResult
-{
-    bool valid{ false };
-    QString errorMessage;
-    int channelStart{ 0 };
-    int channelEnd{ 0 };
-    int numChannels{ 0 };
-    QVector<double> mad;
-    QVector<double> sigma;
-    int x0{ 0 };
-    int x1{ 0 };
-    int y0{ 0 };
-    int y1{ 0 };
 };
 
 class vtkWindowCube : public QMainWindow
@@ -317,8 +304,9 @@ private:
     QFutureWatcher<RemoteCubePreviewResult> remotePreviewWatcher;
     QFutureWatcher<RemoteCubeSubvolumeResult> remoteHighResCubeWatcher;
     QFutureWatcher<MomentMapComputeResult> momentComputeWatcher;
-    QFutureWatcher<CubeNoiseEstimateResult> noiseEstimateWatcher;
     QFutureWatcher<AsyncIsosurfaceResult> isosurfaceWatcher;
+    // Noise estimation is delegated to NoiseController.
+    NoiseController *noiseController{ nullptr };
     int currentRemotePreviewRequestId{ 0 };
     int currentRemoteHighResRequestId{ 0 };
     int currentRemoteSliceRequestId{ 0 };
@@ -668,8 +656,6 @@ private:
     void setMomentActionsEnabled(bool enabled);
     bool hasBackendVisibleDataset() const;
     void updateBackendDerivedActionsAvailability();
-    void startNoiseEstimation();
-    void showNoiseEstimateResult(const CubeNoiseEstimateResult &result);
     void setMomentOrder(int order);
 };
 #endif
