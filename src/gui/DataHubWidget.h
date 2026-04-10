@@ -1,13 +1,15 @@
 #ifndef DataHubWidget_h
 #define DataHubWidget_h
 
+#include "app/RecentDatasetsManager.h"
+
 #include <QWidget>
 #include <QPointer>
 
 class QFrame;
 class QLabel;
-class QListWidget;
 class QPushButton;
+class QVBoxLayout;
 
 // ---------------------------------------------------------------------------
 // DataHubWidget  —  Digital Observatory landing page
@@ -32,15 +34,27 @@ public:
     // Called by MainWindow whenever settings change.
     void setBackendUrl(const QString &url, const QString &token);
 
+    // Called by MainWindow after construction to wire the recent-datasets panel.
+    // The manager must outlive DataHubWidget. DataHubWidget does NOT take ownership.
+    void setRecentDatasetsManager(RecentDatasetsManager *manager);
+
 public slots:
     // Synchronous health-check → updates status badge + system-insights panel.
     void refreshStatus();
+
+    // Rebuilds the Recent Datasets panel from the current manager state.
+    // Called automatically when manager emits changed().
+    void refreshRecentDatasets();
 
 signals:
     void openDataRequested();
     void openCatalogueRequested();
     void openVbtRequested();
     void openHiPSRequested();
+
+    // Emitted when the user clicks a recent dataset item.
+    // MainWindow handles this by reopening the dataset using the stored path.
+    void reopenDatasetRequested(const RecentDataset &dataset);
 
 private:
     // ── Builder helpers ───────────────────────────────────────────────────────
@@ -69,8 +83,9 @@ QFrame *makeActionCard(const QString &iconKind, const QString &title,
     QPointer<QLabel> labelSessions;
     QPointer<QLabel> labelTaskRegistry;
 
-    // Recent datasets
-    QPointer<QListWidget> listRecentDatasets;
+    // Recent datasets — manager pointer (not owned), layout for dynamic items.
+    RecentDatasetsManager *recentMgr{ nullptr };
+    QPointer<QVBoxLayout>  recentItemsLayout;
 };
 
 #endif // DataHubWidget_h

@@ -19,8 +19,6 @@ class PvController;
 #include <QHash>
 #include <QMainWindow>
 #include <QPointer>
-#include <QParallelAnimationGroup>
-#include <QPropertyAnimation>
 #include <QSet>
 #include <QStringList>
 #include <QTimer>
@@ -33,7 +31,7 @@ class PvController;
 
 class QAction;
 class QCheckBox;
-class QToolButton;
+class SidebarPanel;
 class CatalogueTableModel;
 class QDockWidget;
 class QLabel;
@@ -268,18 +266,9 @@ private:
     bool syncingCatalogueSelection{ false };
     QPointer<QCheckBox> remoteRoiRefinementCheck;
     // ── Sidebar ───────────────────────────────────────────────────────────────
-    bool sidebarExpanded{ true };
-    int pendingPageIndex{ -1 };
-    QPointer<QParallelAnimationGroup> sidebarAnimGroup;
+    SidebarPanel *m_sidebar{ nullptr };
     QPointer<QAction> actionShowControlsSidebar;
     void setupSidebar();
-    void setupSidebarRail();
-    void setupRailIcons();
-    void setupSidebarPages();
-    void setSidebarExpanded(bool expanded, bool animated = true);
-    void toggleSidebar();
-    void switchToPage(int index);
-    void setActiveRailButton(QToolButton *btn);
 
     QPointer<QAction> actionShowWcsAxes;
     QPointer<QAction> actionWcsSexagesimal;

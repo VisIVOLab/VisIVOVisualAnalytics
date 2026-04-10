@@ -1,6 +1,8 @@
 #ifndef MainWindow_h
 #define MainWindow_h
 
+#include "app/RecentDatasetsManager.h"
+
 #include <QMainWindow>
 #include <QPointer>
 
@@ -41,17 +43,24 @@ private slots:
     void loadPanoramicView();
     void changeViewSelectionMode();
     void skyRegionSelected(const QString &point, const QString &area);
+    void reopenDataset(const RecentDataset &dataset);
 
 private:
     void buildDataMenu();
     void syncDataHubSettings();
 
+    // Path-based open helpers (skip the file browser dialog, used for reopen).
+    void doOpenDataPath(const QString &path);
+    void doOpenCataloguePath(const QString &path);
+    void doOpenVbtPath(const QString &path);
+
     Ui::MainWindow *ui;
-    QPointer<Settings>        settings;
-    QPointer<AuthWrapper>     auth;
-    QPointer<DiagnosticsWindow> diagnosticsWindow;
-    QPointer<DataHubWidget>   dataHub;
-    QPointer<QTabWidget>      m_tabs;
+    QPointer<Settings>               settings;
+    QPointer<AuthWrapper>            auth;
+    QPointer<DiagnosticsWindow>      diagnosticsWindow;
+    QPointer<DataHubWidget>          dataHub;
+    QPointer<QTabWidget>             m_tabs;
+    QPointer<RecentDatasetsManager>  recentMgr;
 
     void openDiagnosticsWindow();
 };

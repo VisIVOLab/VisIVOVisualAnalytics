@@ -21,9 +21,7 @@
 
 #include <QFutureWatcher>
 #include <QMainWindow>
-#include <QParallelAnimationGroup>
 #include <QPointer>
-#include <QPropertyAnimation>
 
 class QAction;
 class QCheckBox;
@@ -33,6 +31,7 @@ class QFrame;
 class QLabel;
 class QListWidget;
 class QPushButton;
+class SidebarPanel;
 class QScrollArea;
 class QSlider;
 class QStackedWidget;
@@ -121,26 +120,9 @@ private:
     bool updatingRangeControls{ false };
 
     // ── Sidebar ──────────────────────────────────────────────────────────────
-    bool sidebarExpanded{ true };
-    int pendingPageIndex{ -1 };
-    QPointer<QParallelAnimationGroup> sidebarAnimGroup;
+    SidebarPanel *m_sidebar{ nullptr };
     QPointer<QAction> actionShowControlsSidebar;
-    QPointer<QWidget> sidebarContainer;
-    QPointer<QWidget> railWidget;
-    QPointer<QScrollArea> sidebarScrollArea;
-    QPointer<QStackedWidget> sidebarStack;
-    QPointer<QToolButton> btnToggleSidebar;
-    QPointer<QToolButton> railBtnDisplay;
-    QPointer<QToolButton> railBtnFilters;
-    QPointer<QToolButton> railBtnMetadata;
-    void setupSidebarUi(QWidget *centralWidget);
-    void setupSidebarRail();
-    void setupRailIcons();
-    void setupSidebarPages();
-    void setSidebarExpanded(bool expanded, bool animated = true);
-    void toggleSidebar();
-    void switchToPage(int index);
-    void setActiveRailButton(QToolButton *btn);
+    void setupSidebarUi();
     double activeScalarMin{ 0.0 };
     double activeScalarMax{ 1.0 };
     double dataScalarMin{ 0.0 };

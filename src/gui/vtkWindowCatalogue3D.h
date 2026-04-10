@@ -12,9 +12,7 @@
 #include <QFutureWatcher>
 #include <QMainWindow>
 #include <QMap>
-#include <QParallelAnimationGroup>
 #include <QPointer>
-#include <QPropertyAnimation>
 #include <QStringList>
 #include <array>
 
@@ -46,7 +44,7 @@ class QPushButton;
 class QLabel;
 class QTextEdit;
 class QTableView;
-class QToolButton;
+class SidebarPanel;
 class Catalogue3DTableModel;
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -125,18 +123,9 @@ private:
     };
 
     // ── Sidebar ───────────────────────────────────────────────────────────────
-    bool sidebarExpanded{ true };
-    int pendingPageIndex{ -1 };
-    QPointer<QParallelAnimationGroup> sidebarAnimGroup;
+    SidebarPanel *m_sidebar{ nullptr };
     QPointer<QAction> actionShowControlsSidebar;
     void setupSidebar();
-    void setupSidebarRail();
-    void setupRailIcons();
-    void setupSidebarPages();
-    void setSidebarExpanded(bool expanded, bool animated = true);
-    void toggleSidebar();
-    void switchToPage(int index);
-    void setActiveRailButton(QToolButton *btn);
 
     // ── Setup ──────────────────────────────────────────────────────────────
     void setupRenderer();

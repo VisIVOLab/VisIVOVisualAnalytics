@@ -4,6 +4,7 @@
 #include "AboutDialog.h"
 #include "AuthWrapper.h"
 #include "app/BackendClient.h"
+#include "app/RecentDatasetsManager.h"
 #include "DataHubWidget.h"
 #include "DiagnosticsWindow.h"
 #include "RemoteFileBrowserDialog.h"
@@ -21,6 +22,7 @@
 #include <QCloseEvent>
 #include <QDebug>
 #include <QDir>
+#include <QFileInfo>
 #include <QDoubleValidator>
 #include <QFileDialog>
 #include <QFutureWatcher>
@@ -97,6 +99,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 
     this->dataHub = new DataHubWidget(tabs);
     tabs->addTab(this->dataHub, u"Data Hub"_s);
+
+    // ── Recent datasets ───────────────────────────────────────────────────────
+    this->recentMgr = new RecentDatasetsManager(
+            QDir::home().absoluteFilePath(qApp->applicationName()), this);
+    this->dataHub->setRecentDatasetsManager(this->recentMgr);
+    QObject::connect(this->dataHub, &DataHubWidget::reopenDatasetRequested,
+                     this, &MainWindow::reopenDataset);
 
     // Reparent the existing central widget (built by ui->setupUi) into the tab.
     auto *skyPanel = this->centralWidget();
@@ -231,6 +240,28 @@ void MainWindow::openHiPS()
     auto *hipsWidget = new HiPSWindow(backendUrl, backendToken, m_tabs);
     const int idx = m_tabs->addTab(hipsWidget, u"HiPS Viewer"_s);
     m_tabs->setCurrentIndex(idx);
+
+    if (this->recentMgr) {
+        this->recentMgr->record(u"hips"_s, u"HiPS Viewer"_s, u"hips"_s);
+    }
+}
+
+void MainWindow::reopenDataset(const RecentDataset &dataset)
+{
+    if (dataset.type == u"cube"_s || dataset.type == u"image"_s) {
+        doOpenDataPath(dataset.id);
+    } else if (dataset.type == u"catalogue"_s) {
+        doOpenCataloguePath(dataset.id);
+    } else if (dataset.type == u"vbt"_s || dataset.type == u"vbt-volume"_s) {
+        doOpenVbtPath(dataset.id);
+    } else if (dataset.type == u"hips"_s) {
+        openHiPS();
+    } else {
+        QMessageBox::information(
+                this, u"Cannot reopen"_s,
+                QStringLiteral("Reopening '%1' (type: %2) is not yet supported.")
+                        .arg(dataset.displayName, dataset.type));
+    }
 }
 
 void MainWindow::openDiagnosticsWindow()
@@ -292,6 +323,21 @@ void MainWindow::openData()
         return;
     }
 
+    doOpenDataPath(path);
+}
+
+void MainWindow::doOpenDataPath(const QString &path)
+{
+    BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
+    const auto health = client.health();
+    if (!health.ok) {
+        QMessageBox::critical(
+                this, u"Backend unavailable"_s,
+                u"Cannot open a dataset: the backend is not reachable.\n\n"
+                "Error: %1"_s.arg(health.error.isEmpty() ? u"No response"_s : health.error));
+        return;
+    }
+
     const auto opened = client.openDataset(path);
     if (!opened.valid) {
         QMessageBox::critical(
@@ -339,6 +385,12 @@ void MainWindow::openData()
         return;
     }
 
+    // Record in recent datasets (uses the final kind returned by the backend).
+    if (this->recentMgr) {
+        const QString name = QFileInfo(path).fileName();
+        this->recentMgr->record(path, name, opened.kind);
+    }
+
     win->show();
     win->raise();
     win->activateWindow();
@@ -368,12 +420,21 @@ void MainWindow::openCatalogue3D()
     if (filepath.isEmpty())
         return;
 
+    doOpenCataloguePath(filepath);
+}
+
+void MainWindow::doOpenCataloguePath(const QString &filepath)
+{
     auto *win = new vtkWindowCatalogue3D(filepath, settings->getBackendUrl(),
                                          settings->getBackendToken(), this);
     win->setAttribute(Qt::WA_DeleteOnClose);
     win->show();
     win->raise();
     win->activateWindow();
+
+    if (this->recentMgr) {
+        this->recentMgr->record(filepath, QFileInfo(filepath).fileName(), u"catalogue"_s);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -490,6 +551,14 @@ void MainWindow::openVbt()
         return;
     }
 
+    doOpenVbtPath(headerPath);
+}
+
+void MainWindow::doOpenVbtPath(const QString &headerPath)
+{
+    const QString backendUrl   = this->settings->getBackendUrl();
+    const QString backendToken = this->settings->getBackendToken();
+
     // Disable the action while loading to prevent double-submit
     if (ui->actionOpenVbt) {
         ui->actionOpenVbt->setEnabled(false);
@@ -499,7 +568,7 @@ void MainWindow::openVbt()
     auto *watcher = new QFutureWatcher<VbtOpenTaskResult>(this);
     QObject::connect(
             watcher, &QFutureWatcher<VbtOpenTaskResult>::finished, this,
-            [this, watcher]() {
+            [this, watcher, headerPath]() {
                 watcher->deleteLater();
 
                 if (ui->actionOpenVbt) {
@@ -514,6 +583,8 @@ void MainWindow::openVbt()
                 }
 
                 QWidget *win = nullptr;
+                const QString vbtType = result.openResult.kind == u"volume"_s
+                        ? u"vbt-volume"_s : u"vbt"_s;
                 if (result.openResult.kind == u"volume"_s) {
                     win = new vtkWindowVbtVolume(
                             result.openResult, result.subsetResult,
@@ -528,6 +599,17 @@ void MainWindow::openVbt()
                 win->show();
                 win->raise();
                 win->activateWindow();
+
+                // Record after successful open (inside the watcher callback
+                // because kind is only known after the async open completes).
+                if (this->recentMgr) {
+                    // Strip .bin.head suffix for the display name.
+                    QString name = QFileInfo(headerPath).fileName();
+                    if (name.endsWith(u".bin.head"_s)) {
+                        name.chop(9);
+                    }
+                    this->recentMgr->record(headerPath, name, vbtType);
+                }
             });
 
     watcher->setFuture(

@@ -1,0 +1,372 @@
+// SidebarPanel.cpp
+// Shared collapsible sidebar component used by all main visualization windows.
+// See SidebarPanel.h for the public API.
+
+#include "SidebarPanel.h"
+
+#include <QAction>
+#include <QFrame>
+#include <QHBoxLayout>
+#include <QIcon>
+#include <QKeySequence>
+#include <QParallelAnimationGroup>
+#include <QPropertyAnimation>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QSize>
+#include <QStyle>
+#include <QSpacerItem>
+#include <QStackedWidget>
+#include <QToolButton>
+#include <QVBoxLayout>
+
+using namespace Qt::StringLiterals;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Construction
+// ─────────────────────────────────────────────────────────────────────────────
+
+SidebarPanel::SidebarPanel(int expandedWidth, QWidget *parent)
+    : QWidget(parent)
+    , m_expandedWidth(expandedWidth)
+{
+    setObjectName(u"sidebarContainer"_s);
+
+    // The panel starts expanded: rail (48 px) + content panel.
+    const int fullWidth = kRailWidth + m_expandedWidth;
+    setMinimumWidth(kRailWidth);
+    setMaximumWidth(fullWidth);
+
+    auto *rootLayout = new QHBoxLayout(this);
+    rootLayout->setSpacing(0);
+    rootLayout->setContentsMargins(0, 0, 0, 0);
+
+    // ── Rail ─────────────────────────────────────────────────────────────────
+    m_rail = new QWidget(this);
+    m_rail->setObjectName(u"sidebarRail"_s);
+    m_rail->setFixedWidth(kRailWidth);
+
+    m_railLayout = new QVBoxLayout(m_rail);
+    m_railLayout->setSpacing(2);
+    m_railLayout->setContentsMargins(4, 8, 4, 8);
+
+    m_toggleBtn = new QToolButton(m_rail);
+    m_toggleBtn->setCheckable(false);
+    m_toggleBtn->setText(u"◀"_s);
+    m_toggleBtn->setToolTip(u"Collapse controls sidebar"_s);
+    m_railLayout->addWidget(m_toggleBtn);
+
+    // Spacer pushed to the end; section buttons are inserted before it.
+    m_railLayout->addStretch(1);
+
+    rootLayout->addWidget(m_rail);
+
+    // ── Content panel ─────────────────────────────────────────────────────────
+    // Each page inside sidebarStack is itself a QScrollArea, so:
+    //   • sidebarStack fills whatever height the panel has
+    //   • each page scrolls its own content independently
+    //   • no content is clipped regardless of window height
+    m_stack = new QStackedWidget(this);
+    m_stack->setObjectName(u"sidebarStack"_s);
+    rootLayout->addWidget(m_stack, 1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Page registration
+// ─────────────────────────────────────────────────────────────────────────────
+
+int SidebarPanel::addPage(const QString &iconResource, const QString &tooltip, QWidget *content)
+{
+    Q_ASSERT(!m_finalized);
+
+    // Wrap each content widget in a per-page scroll area.
+    // This means the QStackedWidget can fill the sidebar height exactly, and
+    // each page independently scrolls its own content when the window is short.
+    auto *scrollArea = new QScrollArea(this);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    scrollArea->setWidget(content);
+
+    const int index = m_stack->addWidget(scrollArea);
+
+    // Rail button for this section.
+    auto *btn = new QToolButton(m_rail);
+    btn->setIcon(QIcon(iconResource));
+    btn->setIconSize(QSize(22, 22));
+    btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    btn->setToolTip(tooltip);
+    btn->setAutoRaise(true);
+
+    // Insert before the trailing stretch (which is at count()-1).
+    m_railLayout->insertWidget(m_railLayout->count() - 1, btn);
+    m_railBtns.append(btn);
+
+    m_pending.append({ iconResource, tooltip, content });
+
+    return index;
+}
+
+int SidebarPanel::addPage(const PageDef &def)
+{
+    return addPage(def.iconResource, def.tooltip, def.content);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Finalization
+// ─────────────────────────────────────────────────────────────────────────────
+
+void SidebarPanel::finalize(int initialPage)
+{
+    Q_ASSERT(!m_finalized);
+    Q_ASSERT(!m_railBtns.isEmpty());
+    m_finalized = true;
+
+    applyStyles();
+
+    // Wire toggle button.
+    QObject::connect(m_toggleBtn, &QToolButton::clicked, this, &SidebarPanel::toggleExpanded);
+
+    // Wire each rail button.
+    for (int i = 0; i < m_railBtns.size(); ++i) {
+        QToolButton *btn = m_railBtns[i];
+        QObject::connect(btn, &QToolButton::clicked, this, [this, i, btn]() {
+            setActiveButton(btn);
+            switchToPage(i);
+        });
+    }
+
+    // Show the initial page.
+    if (initialPage >= 0 && initialPage < m_railBtns.size()) {
+        m_stack->setCurrentIndex(initialPage);
+        setActiveButton(m_railBtns[initialPage]);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Styles
+// ─────────────────────────────────────────────────────────────────────────────
+
+void SidebarPanel::applyStyles()
+{
+    // Container background.
+    setStyleSheet(
+            u"QWidget#sidebarContainer {"
+            "  background-color: #0E2940;"
+            "  border-right: 1px solid rgba(4, 138, 191, 0.18);"
+            "}"_s);
+
+    // Rail.
+    m_rail->setStyleSheet(
+            u"QWidget#sidebarRail {"
+            "  background-color: #0A2236;"
+            "  border-right: 1px solid rgba(4, 138, 191, 0.18);"
+            "}"_s);
+
+    // Section buttons share one stylesheet; [active='true'] is flipped via
+    // setProperty("active", …) + style()->polish() — no extra code paths needed.
+    const QString railBtnStyle =
+            u"QToolButton {"
+            "  background-color: transparent;"
+            "  border: none;"
+            "  border-radius: 6px;"
+            "  padding: 4px 0px;"
+            "}"
+            "QToolButton:hover   { background-color: #163D5E; }"
+            "QToolButton:pressed { background-color: #1A4870; }"
+            "QToolButton[active='true'] {"
+            "  background-color: #1B3A57;"
+            "  border-left: 2px solid #048ABF;"
+            "}"_s;
+
+    const QString toggleBtnStyle =
+            u"QToolButton {"
+            "  background-color: transparent;"
+            "  color: #8AB8CC;"
+            "  border: none;"
+            "  border-radius: 6px;"
+            "  font-size: 13px;"
+            "  padding: 4px 0px;"
+            "}"
+            "QToolButton:hover   { background-color: #163D5E; color: #048ABF; }"
+            "QToolButton:pressed { background-color: #1A4870; }"_s;
+
+    m_toggleBtn->setStyleSheet(toggleBtnStyle);
+    for (QToolButton *btn : m_railBtns) {
+        btn->setStyleSheet(railBtnStyle);
+    }
+
+    // Scroll areas: transparent background, no border.
+    for (int i = 0; i < m_stack->count(); ++i) {
+        if (auto *sa = qobject_cast<QScrollArea *>(m_stack->widget(i))) {
+            sa->setStyleSheet(
+                    u"QScrollArea {"
+                    "  background-color: transparent;"
+                    "  border: none;"
+                    "}"
+                    "QScrollArea > QWidget > QWidget {"
+                    "  background-color: transparent;"
+                    "}"_s);
+            if (sa->verticalScrollBar()) {
+                sa->verticalScrollBar()->setStyleSheet(
+                        u"QScrollBar:vertical {"
+                        "  background: transparent;"
+                        "  width: 6px;"
+                        "  margin: 0;"
+                        "}"
+                        "QScrollBar::handle:vertical {"
+                        "  background: rgba(4, 138, 191, 0.35);"
+                        "  border-radius: 3px;"
+                        "  min-height: 20px;"
+                        "}"
+                        "QScrollBar::add-line:vertical,"
+                        "QScrollBar::sub-line:vertical { height: 0; }"_s);
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public state
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool SidebarPanel::isExpanded() const
+{
+    return m_expanded;
+}
+
+int SidebarPanel::currentPage() const
+{
+    return m_stack->currentIndex();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Toggle action for View menu
+// ─────────────────────────────────────────────────────────────────────────────
+
+QAction *SidebarPanel::createToggleAction(const QString &label, QObject *parent)
+{
+    auto *action = new QAction(label, parent ? parent : this);
+    action->setCheckable(true);
+    action->setChecked(true);
+    action->setShortcut(QKeySequence(u"Ctrl+\\"_s));
+    m_toggleAction = action;
+
+    QObject::connect(action, &QAction::toggled, this, [this](bool checked) {
+        setExpanded(checked);
+    });
+    QObject::connect(this, &SidebarPanel::expandedChanged, action, [action](bool expanded) {
+        QSignalBlocker blocker(action);
+        action->setChecked(expanded);
+    });
+
+    return action;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Expand / collapse
+// ─────────────────────────────────────────────────────────────────────────────
+
+void SidebarPanel::setExpanded(bool expanded, bool animated)
+{
+    if (m_expanded == expanded) {
+        return;
+    }
+    m_expanded = expanded;
+
+    // Sync toggle button label/tooltip.
+    m_toggleBtn->setText(expanded ? u"◀"_s : u"▶"_s);
+    m_toggleBtn->setToolTip(expanded ? u"Collapse controls sidebar"_s
+                                     : u"Expand controls sidebar"_s);
+
+    const int toWidth = expanded ? (kRailWidth + m_expandedWidth) : kRailWidth;
+    const int fromWidth = width();
+
+    if (!animated) {
+        setMinimumWidth(toWidth);
+        setMaximumWidth(toWidth);
+        m_stack->setVisible(expanded);
+        if (expanded && m_pendingPage >= 0) {
+            m_stack->setCurrentIndex(m_pendingPage);
+            m_pendingPage = -1;
+        }
+        emit expandedChanged(expanded);
+        return;
+    }
+
+    // Show the stack immediately when expanding so it grows with the animation.
+    if (expanded) {
+        m_stack->setVisible(true);
+    }
+
+    // Stop and delete any in-flight animation.
+    if (m_animGroup) {
+        m_animGroup->stop();
+    }
+
+    auto *animMin = new QPropertyAnimation(this, "minimumWidth");
+    animMin->setDuration(kAnimDurationMs);
+    animMin->setEasingCurve(QEasingCurve::InOutCubic);
+    animMin->setStartValue(fromWidth);
+    animMin->setEndValue(toWidth);
+
+    auto *animMax = new QPropertyAnimation(this, "maximumWidth");
+    animMax->setDuration(kAnimDurationMs);
+    animMax->setEasingCurve(QEasingCurve::InOutCubic);
+    animMax->setStartValue(fromWidth);
+    animMax->setEndValue(toWidth);
+
+    auto *group = new QParallelAnimationGroup(this);
+    group->addAnimation(animMin);
+    group->addAnimation(animMax);
+    m_animGroup = group;
+
+    QObject::connect(group, &QParallelAnimationGroup::finished, this, [this, expanded]() {
+        if (!expanded) {
+            m_stack->setVisible(false);
+        } else if (m_pendingPage >= 0) {
+            m_stack->setCurrentIndex(m_pendingPage);
+            m_pendingPage = -1;
+        }
+        emit expandedChanged(expanded);
+    });
+
+    group->start(QAbstractAnimation::DeleteWhenStopped);
+}
+
+void SidebarPanel::toggleExpanded()
+{
+    setExpanded(!m_expanded);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Page switching
+// ─────────────────────────────────────────────────────────────────────────────
+
+void SidebarPanel::switchToPage(int index)
+{
+    if (m_expanded) {
+        m_stack->setCurrentIndex(index);
+        emit pageChanged(index);
+    } else {
+        // Defer the page switch until the expand animation finishes.
+        m_pendingPage = index;
+        setExpanded(true);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Active rail button highlight
+// ─────────────────────────────────────────────────────────────────────────────
+
+void SidebarPanel::setActiveButton(QToolButton *btn)
+{
+    for (QToolButton *b : m_railBtns) {
+        const bool active = (b == btn);
+        if (b->property("active").toBool() != active) {
+            b->setProperty("active", active);
+            b->style()->polish(b);
+        }
+    }
+}

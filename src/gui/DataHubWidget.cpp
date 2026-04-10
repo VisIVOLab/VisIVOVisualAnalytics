@@ -1,7 +1,9 @@
 #include "DataHubWidget.h"
 #include "app/BackendClient.h"
+#include "app/RecentDatasetsManager.h"
 #include "theme/VisivoTheme.h"
 
+#include <QDateTime>
 #include <QDebug>
 #include <QEvent>
 #include <QFrame>
@@ -9,7 +11,6 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QListWidget>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QScrollArea>
@@ -117,6 +118,32 @@ QPixmap visivoBrandIconPixmap(const QString &stroke, int width, int height)
     painter.drawEllipse(QPointF(width * 0.77, height * 0.73), 7.0, 7.0);
 
     return pixmap;
+}
+
+// Returns a human-readable relative time string for a past QDateTime.
+QString timeAgo(const QDateTime &dt)
+{
+    const qint64 secs = dt.secsTo(QDateTime::currentDateTime());
+    if (secs < 5)   return QStringLiteral("just now");
+    if (secs < 60)  return QStringLiteral("%1 sec ago").arg(secs);
+    if (secs < 3600) return QStringLiteral("%1 min ago").arg(secs / 60);
+    if (secs < 86400) return QStringLiteral("%1h ago").arg(secs / 3600);
+    if (secs < 604800) return QStringLiteral("%1d ago").arg(secs / 86400);
+    if (secs < 2592000) return QStringLiteral("%1w ago").arg(secs / 604800);
+    return dt.toString(QStringLiteral("MMM d, yyyy"));
+}
+
+// Returns a short uppercase label for a dataset type, plus an icon kind for rendering.
+struct TypeInfo { QString label; QString iconKind; };
+TypeInfo typeInfo(const QString &type)
+{
+    if (type == QLatin1StringView("cube"))       return { QStringLiteral("CUBE"),    QStringLiteral("dataset")   };
+    if (type == QLatin1StringView("image"))      return { QStringLiteral("IMAGE"),   QStringLiteral("dataset")   };
+    if (type == QLatin1StringView("catalogue"))  return { QStringLiteral("CAT"),     QStringLiteral("catalogue") };
+    if (type == QLatin1StringView("vbt"))        return { QStringLiteral("VBT"),     QStringLiteral("vbt")       };
+    if (type == QLatin1StringView("vbt-volume")) return { QStringLiteral("VBT-VOL"), QStringLiteral("vbt")       };
+    if (type == QLatin1StringView("hips"))       return { QStringLiteral("HiPS"),    QStringLiteral("hips")      };
+    return { type.toUpper(), QStringLiteral("dataset") };
 }
 
 } // namespace
@@ -484,27 +511,166 @@ QFrame *DataHubWidget::buildRecentDatasetsPanel()
     vbox->setContentsMargins(20, 16, 20, 16);
     vbox->setSpacing(10);
 
+    // Header row: section label (left) — future "Clear all" button goes here (right).
     auto *header = new QHBoxLayout;
     header->addWidget(VisivoTheme::makeSectionLabel(u"Recent Datasets"_s, card));
     header->addStretch(1);
     vbox->addLayout(header);
 
-    this->listRecentDatasets = new QListWidget(card);
-    this->listRecentDatasets->setFrameShape(QFrame::NoFrame);
-    this->listRecentDatasets->setSelectionMode(QAbstractItemView::NoSelection);
-    this->listRecentDatasets->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    this->listRecentDatasets->setMinimumHeight(120);
+    // Scrollable item list.  The actual items are injected by refreshRecentDatasets().
+    auto *scrollArea = new QScrollArea(card);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scrollArea->setStyleSheet(u"QScrollArea { background: transparent; border: none; }"_s);
 
-    // Empty-state placeholder
-    auto *emptyItem = new QListWidgetItem(
-            u"No recently opened datasets.\n"
-            "Open a dataset using the actions above."_s,
-            this->listRecentDatasets);
-    emptyItem->setFlags(Qt::NoItemFlags);
-    emptyItem->setForeground(QColor(VisivoTheme::kOnSurfaceVariant));
+    auto *itemContainer = new QWidget(scrollArea);
+    itemContainer->setStyleSheet(u"background: transparent;"_s);
+    this->recentItemsLayout = new QVBoxLayout(itemContainer);
+    this->recentItemsLayout->setContentsMargins(0, 0, 0, 0);
+    this->recentItemsLayout->setSpacing(6);
+    this->recentItemsLayout->addStretch(1); // keeps items pushed to the top
 
-    vbox->addWidget(this->listRecentDatasets, 1);
+    scrollArea->setWidget(itemContainer);
+    scrollArea->setMinimumHeight(140);
+    vbox->addWidget(scrollArea, 1);
+
+    // Populate once from the current manager state (may be empty at startup
+    // if manager is not yet set; a proper refresh happens in setRecentDatasetsManager).
+    refreshRecentDatasets();
+
     return card;
+}
+
+// ── setRecentDatasetsManager ──────────────────────────────────────────────────
+
+void DataHubWidget::setRecentDatasetsManager(RecentDatasetsManager *manager)
+{
+    this->recentMgr = manager;
+    if (manager) {
+        QObject::connect(manager, &RecentDatasetsManager::changed,
+                         this, &DataHubWidget::refreshRecentDatasets);
+    }
+    refreshRecentDatasets();
+}
+
+// ── refreshRecentDatasets ─────────────────────────────────────────────────────
+
+void DataHubWidget::refreshRecentDatasets()
+{
+    if (!this->recentItemsLayout) {
+        return;
+    }
+
+    // Remove all items except the trailing stretch (always the last item).
+    while (this->recentItemsLayout->count() > 1) {
+        auto *item = this->recentItemsLayout->takeAt(0);
+        if (item->widget()) {
+            item->widget()->deleteLater();
+        }
+        delete item;
+    }
+
+    const QList<RecentDataset> datasets =
+            this->recentMgr ? this->recentMgr->datasets() : QList<RecentDataset>{};
+
+    if (datasets.isEmpty()) {
+        // Empty-state label.
+        auto *empty = new QLabel(
+                u"No recently opened datasets.\n"
+                "Open a dataset using the actions above."_s,
+                nullptr);
+        empty->setAlignment(Qt::AlignCenter);
+        empty->setWordWrap(true);
+        empty->setStyleSheet(
+                QStringLiteral("color: %1; font-size: 12px; background: transparent; "
+                                "padding: 16px 8px;")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant)));
+        this->recentItemsLayout->insertWidget(0, empty);
+        return;
+    }
+
+    // Build one item frame per recent dataset.
+    for (const auto &ds : datasets) {
+        auto *row = new QFrame(nullptr);
+        row->setAttribute(Qt::WA_Hover);
+        row->setCursor(Qt::PointingHandCursor);
+        row->setStyleSheet(
+                QStringLiteral(
+                        "QFrame {"
+                        "  background-color: rgba(255,255,255,0.02);"
+                        "  border: 1px solid rgba(4,138,191,0.10);"
+                        "  border-radius: 8px;"
+                        "}"
+                        "QFrame:hover {"
+                        "  background-color: rgba(4,138,191,0.09);"
+                        "  border-color: rgba(4,138,191,0.28);"
+                        "}"));
+
+        auto *hbox = new QHBoxLayout(row);
+        hbox->setContentsMargins(12, 10, 12, 10);
+        hbox->setSpacing(10);
+
+        // Type icon (24×24 — smaller than action cards).
+        const auto ti = typeInfo(ds.type);
+        auto *iconLbl = new QLabel(row);
+        iconLbl->setPixmap(
+                actionCardIconPixmap(ti.iconKind,
+                                     QString::fromLatin1(VisivoTheme::kPrimaryDim), 28));
+        iconLbl->setFixedSize(32, 32);
+        iconLbl->setAlignment(Qt::AlignCenter);
+        iconLbl->setStyleSheet(u"background: transparent; border: none;"_s);
+        iconLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
+        hbox->addWidget(iconLbl, 0, Qt::AlignVCenter);
+
+        // Text column: display name (bold) + type/source (small).
+        auto *textCol = new QVBoxLayout;
+        textCol->setContentsMargins(0, 0, 0, 0);
+        textCol->setSpacing(2);
+
+        auto *nameLbl = new QLabel(ds.displayName, row);
+        {
+            QFont f(QStringLiteral("Lato"));
+            f.setPixelSize(13);
+            f.setWeight(QFont::DemiBold);
+            nameLbl->setFont(f);
+        }
+        nameLbl->setStyleSheet(
+                QStringLiteral("color: %1; background: transparent; border: none;")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurface)));
+        nameLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
+        nameLbl->setToolTip(ds.id); // full path on hover
+        textCol->addWidget(nameLbl);
+
+        auto *metaLbl = new QLabel(
+                QStringLiteral("%1 · %2").arg(ti.label, ds.source), row);
+        metaLbl->setStyleSheet(
+                QStringLiteral("color: %1; font-size: 10px; background: transparent; border: none;")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant)));
+        metaLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
+        textCol->addWidget(metaLbl);
+
+        hbox->addLayout(textCol, 1);
+
+        // Relative timestamp (right-aligned, muted).
+        auto *timeLbl = new QLabel(timeAgo(ds.lastOpened), row);
+        timeLbl->setStyleSheet(
+                QStringLiteral("color: %1; font-size: 10px; background: transparent; border: none;")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant)));
+        timeLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
+        timeLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        hbox->addWidget(timeLbl, 0, Qt::AlignVCenter);
+
+        // Click → emit reopenDatasetRequested.
+        RecentDataset dsCopy = ds; // capture by value
+        auto *filter = new CardClickFilter(
+                [this, dsCopy]() { emit reopenDatasetRequested(dsCopy); }, row);
+        row->installEventFilter(filter);
+
+        // Insert before the trailing stretch.
+        const int insertPos = this->recentItemsLayout->count() - 1;
+        this->recentItemsLayout->insertWidget(insertPos, row);
+    }
 }
 
 // ── buildSystemInsightsPanel ──────────────────────────────────────────────────

@@ -55,17 +55,13 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
-#include <QParallelAnimationGroup>
-#include <QPropertyAnimation>
 #include <QPushButton>
-#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSlider>
-#include <QStackedWidget>
 #include <QTableView>
 #include <QTextEdit>
-#include <QToolButton>
 #include <QVBoxLayout>
+#include "SidebarPanel.h"
 #include <QtConcurrent>
 
 #include <optional>
@@ -661,167 +657,36 @@ vtkWindowCatalogue3D::~vtkWindowCatalogue3D()
 
 void vtkWindowCatalogue3D::setupSidebar()
 {
-    setupSidebarRail();
-    setupRailIcons();
-    setupSidebarPages();
+    // Remove the UI-file sidebar container and replace it with SidebarPanel.
+    auto *mainLayout = qobject_cast<QHBoxLayout *>(ui->centralwidget->layout());
+    mainLayout->removeWidget(ui->sidebarContainer);
+    ui->sidebarContainer->hide();
 
-    // Apply overall sidebar background
-    ui->sidebarContainer->setStyleSheet(
-            u"QWidget#sidebarContainer { background-color: #0A2236; }"
-            u"QScrollArea#sidebarScrollArea { background-color: transparent; border: none; }"
-            u"QWidget#sidebarScrollContents { background-color: transparent; }"_s);
+    this->m_sidebar = new SidebarPanel(272, this);
+    this->m_sidebar->addPage(u":/icons/rail_viz.svg"_s,  u"Visualization"_s, ui->pageViz);
+    this->m_sidebar->addPage(u":/icons/rail_info.svg"_s, u"Source Info"_s,   ui->pageInfo);
+    this->m_sidebar->finalize(0);
+    mainLayout->insertWidget(0, this->m_sidebar);
 
-    // Action for View menu
-    this->actionShowControlsSidebar = new QAction(u"Controls Sidebar"_s, this);
-    this->actionShowControlsSidebar->setCheckable(true);
-    this->actionShowControlsSidebar->setChecked(true);
-    ui->menuView->insertAction(ui->menuView->actions().isEmpty() ? nullptr
-                                                                 : ui->menuView->actions().first(),
-                               this->actionShowControlsSidebar);
-    ui->menuView->insertSeparator(
-            ui->menuView->actions().isEmpty() ? nullptr : ui->menuView->actions().at(1));
-    QObject::connect(this->actionShowControlsSidebar, &QAction::toggled, this,
-                     [this](bool checked) { setSidebarExpanded(checked); });
-
-    // Toggle button
-    QObject::connect(ui->btnToggleSidebar, &QToolButton::clicked, this,
-                     &vtkWindowCatalogue3D::toggleSidebar);
-
-    // Rail buttons
-    QObject::connect(ui->railBtnViz, &QToolButton::clicked, this,
-                     [this]() { switchToPage(0); });
-    QObject::connect(ui->railBtnInfo, &QToolButton::clicked, this,
-                     [this]() { switchToPage(1); });
-
-    // Start on page 0
-    setActiveRailButton(ui->railBtnViz);
-    ui->sidebarStack->setCurrentIndex(0);
-}
-
-void vtkWindowCatalogue3D::setupSidebarRail()
-{
-    const QString railStyle =
-            u"QWidget#railWidget { background-color: #0A2236; }"
-            u"QToolButton { background: transparent; border: none; border-radius: 8px;"
-            u"              color: #8AB8CC; padding: 6px; min-width: 36px; min-height: 36px; }"
-            u"QToolButton:hover { background-color: rgba(4,138,191,0.18); }"
-            u"QToolButton[active='true'] { background-color: rgba(4,138,191,0.30); color: #FFFFFF; }"_s;
-    ui->railWidget->setStyleSheet(railStyle);
-}
-
-void vtkWindowCatalogue3D::setupRailIcons()
-{
-    struct Entry { QToolButton *btn; QString path; };
-    const std::array<Entry, 3> entries = { {
-        { ui->btnToggleSidebar, u":/icons/rail_slice.svg"_s },
-        { ui->railBtnViz,       u":/icons/rail_viz.svg"_s  },
-        { ui->railBtnInfo,      u":/icons/rail_info.svg"_s },
-    } };
-    for (const auto &e : entries) {
-        e.btn->setIcon(QIcon(e.path));
-        e.btn->setIconSize({ 22, 22 });
-        e.btn->setText({});
-    }
-}
-
-void vtkWindowCatalogue3D::setupSidebarPages()
-{
+    // Style page content.
     const QString hdrStyle =
             u"QLabel { color: #8AB8CC; font-size: 10px; font-weight: 600;"
             u"         padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20); }"_s;
     const QString cardStyle =
             u"QFrame, QGroupBox { background-color: rgba(255,255,255,0.03);"
             u"  border: 1px solid rgba(4,138,191,0.14); border-radius: 6px; }"_s;
-
     ui->labelVizHdr->setStyleSheet(hdrStyle);
     ui->labelInfoHdr->setStyleSheet(hdrStyle);
-
     ui->groupViz->setStyleSheet(cardStyle);
     ui->groupInfo->setStyleSheet(cardStyle);
-}
 
-void vtkWindowCatalogue3D::setActiveRailButton(QToolButton *btn)
-{
-    for (QToolButton *b : { ui->railBtnViz, ui->railBtnInfo }) {
-        b->setProperty("active", b == btn);
-        b->style()->polish(b);
-    }
-}
-
-void vtkWindowCatalogue3D::switchToPage(int index)
-{
-    if (this->sidebarExpanded) {
-        ui->sidebarStack->setCurrentIndex(index);
-        setActiveRailButton(index == 0 ? ui->railBtnViz : ui->railBtnInfo);
-    } else {
-        this->pendingPageIndex = index;
-        setSidebarExpanded(true);
-    }
-}
-
-void vtkWindowCatalogue3D::toggleSidebar()
-{
-    setSidebarExpanded(!this->sidebarExpanded);
-}
-
-void vtkWindowCatalogue3D::setSidebarExpanded(bool expanded, bool animated)
-{
-    if (this->sidebarExpanded == expanded && !animated) {
-        return;
-    }
-    this->sidebarExpanded = expanded;
-
-    if (this->actionShowControlsSidebar) {
-        QSignalBlocker blocker(this->actionShowControlsSidebar);
-        this->actionShowControlsSidebar->setChecked(expanded);
-    }
-
-    ui->sidebarScrollArea->setVisible(expanded || !animated);
-
-    const int targetW = expanded ? 320 : 48;
-
-    if (!animated) {
-        ui->sidebarContainer->setMinimumWidth(targetW);
-        ui->sidebarContainer->setMaximumWidth(targetW);
-        ui->sidebarScrollArea->setVisible(expanded);
-        if (expanded && this->pendingPageIndex >= 0) {
-            ui->sidebarStack->setCurrentIndex(this->pendingPageIndex);
-            setActiveRailButton(this->pendingPageIndex == 0 ? ui->railBtnViz : ui->railBtnInfo);
-            this->pendingPageIndex = -1;
-        }
-        return;
-    }
-
-    if (this->sidebarAnimGroup) {
-        this->sidebarAnimGroup->stop();
-    }
-
-    auto *group = new QParallelAnimationGroup(this);
-    this->sidebarAnimGroup = group;
-
-    auto *animMin = new QPropertyAnimation(ui->sidebarContainer, "minimumWidth", group);
-    animMin->setDuration(200);
-    animMin->setStartValue(ui->sidebarContainer->minimumWidth());
-    animMin->setEndValue(targetW);
-
-    auto *animMax = new QPropertyAnimation(ui->sidebarContainer, "maximumWidth", group);
-    animMax->setDuration(200);
-    animMax->setStartValue(ui->sidebarContainer->maximumWidth());
-    animMax->setEndValue(targetW);
-
-    group->addAnimation(animMin);
-    group->addAnimation(animMax);
-
-    QObject::connect(group, &QParallelAnimationGroup::finished, this, [this, expanded]() {
-        ui->sidebarScrollArea->setVisible(expanded);
-        if (expanded && this->pendingPageIndex >= 0) {
-            ui->sidebarStack->setCurrentIndex(this->pendingPageIndex);
-            setActiveRailButton(this->pendingPageIndex == 0 ? ui->railBtnViz : ui->railBtnInfo);
-            this->pendingPageIndex = -1;
-        }
-    });
-
-    group->start(QAbstractAnimation::DeleteWhenStopped);
+    // View menu toggle — inserted before existing actions to keep it first.
+    this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
+            u"Controls Sidebar"_s, this);
+    ui->menuView->insertAction(ui->menuView->actions().isEmpty()
+                                       ? nullptr : ui->menuView->actions().first(),
+                               this->actionShowControlsSidebar);
+    ui->menuView->insertSeparator(ui->menuView->actions().value(1));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

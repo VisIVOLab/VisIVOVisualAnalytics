@@ -74,6 +74,8 @@ set(PROJECT_SOURCES
         src/auth/VisIVOUrlSchemeHandler.h
         src/app/DiagnosticsManager.cpp
         src/app/DiagnosticsManager.h
+        src/app/RecentDatasetsManager.cpp
+        src/app/RecentDatasetsManager.h
         src/gui/RemoteFileBrowserDialog.cpp
         src/gui/RemoteFileBrowserDialog.h
         src/gui/RemoteMomentWindow.cpp
@@ -115,6 +117,8 @@ set(PROJECT_SOURCES
         src/gui/NoiseController.h
         src/gui/NoiseRegionDialog.cpp
         src/gui/NoiseRegionDialog.h
+        src/gui/SidebarPanel.cpp
+        src/gui/SidebarPanel.h
         src/gui/vtkWindowCatalogue3D.cpp
         src/gui/vtkWindowCatalogue3D.h
         src/gui/vtkWindowCube.cpp

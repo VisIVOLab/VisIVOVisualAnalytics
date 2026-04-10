@@ -10,6 +10,7 @@
 #include "ProfileWidget.h"
 #include "PvController.h"
 #include "PvDiagramWidget.h"
+#include "SidebarPanel.h"
 #include "app/BackendClient.h"
 #include "app/DiagnosticsManager.h"
 #include "vtkInteractorStyleProfile.h"
@@ -2041,154 +2042,22 @@ vtkWindowCube::~vtkWindowCube()
 
 void vtkWindowCube::setupSidebar()
 {
-    // Style the sidebar container.
-    ui->sidebarContainer->setStyleSheet(
-            u"QWidget#sidebarContainer {"
-            "  background-color: #0E2940;"
-            "  border-right: 1px solid rgba(4, 138, 191, 0.18);"
-            "}"_s);
+    // The UI file creates a hand-rolled sidebarContainer in mainHLayout.
+    // Remove it from the layout and replace it with SidebarPanel, reusing the
+    // four page content widgets (they are reparented into SidebarPanel's scroll areas).
+    auto *mainLayout = qobject_cast<QHBoxLayout *>(ui->centralwidget->layout());
+    mainLayout->removeWidget(ui->sidebarContainer);
+    ui->sidebarContainer->hide();
 
-    setupSidebarRail();
-    setupSidebarPages();
+    this->m_sidebar = new SidebarPanel(220, this);
+    this->m_sidebar->addPage(u":/icons/rail_threshold.svg"_s, u"Threshold"_s,    ui->pageThreshold);
+    this->m_sidebar->addPage(u":/icons/rail_slice.svg"_s,     u"Cutting Plane"_s, ui->pageSlice);
+    this->m_sidebar->addPage(u":/icons/rail_contours.svg"_s,  u"Contours"_s,     ui->pageContours);
+    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,     u"Statistics"_s,   ui->pageStats);
+    this->m_sidebar->finalize(0);
+    mainLayout->insertWidget(0, this->m_sidebar);
 
-    // Start fully expanded — stacked panel visible.
-    ui->sidebarContainer->setMinimumWidth(48);
-    ui->sidebarContainer->setMaximumWidth(268);
-    ui->sidebarScrollArea->setVisible(true);
-
-    // Create the View menu action.
-    this->actionShowControlsSidebar = new QAction(u"Controls Sidebar"_s, this);
-    this->actionShowControlsSidebar->setCheckable(true);
-    this->actionShowControlsSidebar->setChecked(true);
-    this->actionShowControlsSidebar->setShortcut(QKeySequence(u"Ctrl+\\"_s));
-    QObject::connect(this->actionShowControlsSidebar, &QAction::toggled,
-                     this, [this](bool checked) { setSidebarExpanded(checked); });
-}
-
-void vtkWindowCube::setupSidebarRail()
-{
-    ui->sidebarRail->setStyleSheet(
-            u"QWidget#sidebarRail {"
-            "  background-color: #0A2236;"
-            "  border-right: 1px solid rgba(4, 138, 191, 0.18);"
-            "}"_s);
-
-    // Stylesheet for section buttons. The [active='true'] rule uses a property set
-    // via setProperty("active", …) + style()->polish() — no extra code paths needed.
-    const QString railBtnStyle =
-            u"QToolButton {"
-            "  background-color: transparent;"
-            "  border: none;"
-            "  border-radius: 6px;"
-            "  padding: 4px 0px;"
-            "}"
-            "QToolButton:hover   { background-color: #163D5E; }"
-            "QToolButton:pressed { background-color: #1A4870; }"
-            "QToolButton[active='true'] {"
-            "  background-color: #1B3A57;"
-            "  border-left: 2px solid #048ABF;"
-            "}"_s;
-
-    // Toggle button keeps a slightly different style (arrow, no active indicator).
-    const QString toggleBtnStyle =
-            u"QToolButton {"
-            "  background-color: transparent;"
-            "  color: #8AB8CC;"
-            "  border: none;"
-            "  border-radius: 6px;"
-            "  font-size: 13px;"
-            "  padding: 4px 0px;"
-            "}"
-            "QToolButton:hover   { background-color: #163D5E; color: #048ABF; }"
-            "QToolButton:pressed { background-color: #1A4870; }"_s;
-
-    ui->btnToggleSidebar->setStyleSheet(toggleBtnStyle);
-    ui->railBtnThreshold->setStyleSheet(railBtnStyle);
-    ui->railBtnSlice->setStyleSheet(railBtnStyle);
-    ui->railBtnContours->setStyleSheet(railBtnStyle);
-    ui->railBtnStats->setStyleSheet(railBtnStyle);
-
-    setupRailIcons();
-
-    // Threshold section is at the top — make it active by default.
-    setActiveRailButton(ui->railBtnThreshold);
-
-    // Wire toggle button.
-    QObject::connect(ui->btnToggleSidebar, &QToolButton::clicked,
-                     this, &vtkWindowCube::toggleSidebar);
-
-    // Section buttons: set active rail state and switch the stacked page.
-    QObject::connect(ui->railBtnThreshold, &QToolButton::clicked, this, [this]() {
-        setActiveRailButton(ui->railBtnThreshold);
-        switchToPage(0);
-    });
-    QObject::connect(ui->railBtnSlice, &QToolButton::clicked, this, [this]() {
-        setActiveRailButton(ui->railBtnSlice);
-        switchToPage(1);
-    });
-    QObject::connect(ui->railBtnContours, &QToolButton::clicked, this, [this]() {
-        setActiveRailButton(ui->railBtnContours);
-        switchToPage(2);
-    });
-    QObject::connect(ui->railBtnStats, &QToolButton::clicked, this, [this]() {
-        setActiveRailButton(ui->railBtnStats);
-        switchToPage(3);
-    });
-}
-
-void vtkWindowCube::switchToPage(int index)
-{
-    if (this->sidebarExpanded) {
-        ui->sidebarStack->setCurrentIndex(index);
-    } else {
-        // Record the page; setSidebarExpanded will switch once the animation finishes.
-        this->pendingPageIndex = index;
-        setSidebarExpanded(true);
-    }
-}
-
-void vtkWindowCube::toggleSidebar()
-{
-    setSidebarExpanded(!this->sidebarExpanded);
-}
-
-void vtkWindowCube::setupRailIcons()
-{
-    struct Entry {
-        QToolButton *btn;
-        const char  *resource;
-        const char  *tooltip;
-    };
-    const std::array<Entry, 4> entries = {{
-        { ui->railBtnThreshold, ":/icons/rail_threshold.svg", "Threshold"    },
-        { ui->railBtnSlice,     ":/icons/rail_slice.svg",     "Cutting plane" },
-        { ui->railBtnContours,  ":/icons/rail_contours.svg",  "Contours"     },
-        { ui->railBtnStats,     ":/icons/rail_stats.svg",     "Statistics"   },
-    }};
-    for (const auto &e : entries) {
-        e.btn->setText(QString());
-        e.btn->setIcon(QIcon(QString::fromUtf8(e.resource)));
-        e.btn->setIconSize(QSize(22, 22));
-        e.btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
-        e.btn->setToolTip(QString::fromUtf8(e.tooltip));
-    }
-}
-
-void vtkWindowCube::setActiveRailButton(QToolButton *btn)
-{
-    for (QToolButton *b : { ui->railBtnThreshold, ui->railBtnSlice,
-                             ui->railBtnContours,  ui->railBtnStats }) {
-        const bool active = (b == btn);
-        if (b->property("active").toBool() != active) {
-            b->setProperty("active", active);
-            b->style()->polish(b);
-        }
-    }
-}
-
-void vtkWindowCube::setupSidebarPages()
-{
-    // Page header label — section title bar.
+    // Style page content (header labels, card frames, read-only stat fields).
     const QString hdrStyle =
             u"QLabel {"
             "  color: #8AB8CC;"
@@ -2197,22 +2066,19 @@ void vtkWindowCube::setupSidebarPages()
             "  padding-bottom: 4px;"
             "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
             "}"_s;
-
-    // Sub-section label inside Stats page.
     const QString subHdrStyle =
             u"QLabel {"
             "  color: #5A8DAA;"
             "  font-size: 9px;"
             "  font-weight: 600;"
             "}"_s;
-
-    // Subtle card frame for each section's controls.
     const QString cardStyle =
             u"QFrame {"
             "  background-color: rgba(255, 255, 255, 0.03);"
             "  border: 1px solid rgba(4, 138, 191, 0.14);"
             "  border-radius: 6px;"
             "}"_s;
+    const QString roStyle = u"QLineEdit[readOnly='true'] { color: #7AAABB; }"_s;
 
     for (QLabel *lbl : { ui->labelThresholdHdr, ui->labelSliceHdr,
                           ui->labelContoursHdr,  ui->labelStatsHdr }) {
@@ -2221,88 +2087,15 @@ void vtkWindowCube::setupSidebarPages()
     for (QLabel *lbl : { ui->labelImg, ui->labelCubeStatsHdr }) {
         lbl->setStyleSheet(subHdrStyle);
     }
-    for (QFrame *f : { ui->frameThreshold, ui->frameSlice,
-                        ui->frameContours,  ui->frameImgStats, ui->frameCubeStats }) {
+    for (QFrame *f : { ui->frameThreshold, ui->frameSlice, ui->frameContours }) {
         f->setStyleSheet(cardStyle);
     }
-
-    // Read-only stat fields get a slightly dimmer text so they read as data, not inputs.
-    const QString roStyle = u"QLineEdit[readOnly='true'] { color: #7AAABB; }"_s;
     ui->frameImgStats->setStyleSheet(cardStyle + roStyle);
     ui->frameCubeStats->setStyleSheet(cardStyle + roStyle);
-}
 
-void vtkWindowCube::setSidebarExpanded(bool expanded, bool animated)
-{
-    if (this->sidebarExpanded == expanded)
-        return;
-    this->sidebarExpanded = expanded;
-
-    // Collapsing cancels any pending page switch requested via rail buttons.
-    if (!expanded)
-        this->pendingPageIndex = -1;
-
-    // Sync toggle button and menu action.
-    if (this->actionShowControlsSidebar)
-        this->actionShowControlsSidebar->setChecked(expanded);
-    ui->btnToggleSidebar->setChecked(expanded);
-    ui->btnToggleSidebar->setText(expanded ? u"◀"_s : u"▶"_s);
-    ui->btnToggleSidebar->setToolTip(
-            expanded ? u"Collapse controls sidebar"_s : u"Expand controls sidebar"_s);
-
-    const int fromWidth = ui->sidebarContainer->width();
-    const int toWidth = expanded ? 268 : 48;
-
-    if (animated) {
-        // stop() does NOT emit finished(), so the old lambda never fires.
-        // DeleteWhenStopped schedules the old group for deletion via deleteLater().
-        if (this->sidebarAnimGroup)
-            this->sidebarAnimGroup->stop();
-
-        auto *animMin = new QPropertyAnimation(ui->sidebarContainer, "minimumWidth", this);
-        animMin->setDuration(200);
-        animMin->setEasingCurve(QEasingCurve::InOutCubic);
-        animMin->setStartValue(fromWidth);
-        animMin->setEndValue(toWidth);
-
-        auto *animMax = new QPropertyAnimation(ui->sidebarContainer, "maximumWidth", this);
-        animMax->setDuration(200);
-        animMax->setEasingCurve(QEasingCurve::InOutCubic);
-        animMax->setStartValue(fromWidth);
-        animMax->setEndValue(toWidth);
-
-        auto *group = new QParallelAnimationGroup(this);
-        group->addAnimation(animMin);
-        group->addAnimation(animMax);
-
-        // Show scroll area immediately so it grows with the sidebar during expansion.
-        if (expanded)
-            ui->sidebarScrollArea->setVisible(true);
-
-        // Single finished() handler covers both directions:
-        //   • collapse → hide the scroll area
-        //   • expand   → flush any pending section scroll from a rail button click
-        QObject::connect(group, &QParallelAnimationGroup::finished, this, [this, expanded]() {
-            if (!expanded) {
-                ui->sidebarScrollArea->setVisible(false);
-            } else if (this->pendingPageIndex >= 0) {
-                ui->sidebarStack->setCurrentIndex(this->pendingPageIndex);
-                this->pendingPageIndex = -1;
-            }
-        });
-
-        this->sidebarAnimGroup = group;
-        group->start(QAbstractAnimation::DeleteWhenStopped);
-    } else {
-        ui->sidebarScrollArea->setVisible(expanded);
-        ui->sidebarContainer->setMinimumWidth(toWidth);
-        ui->sidebarContainer->setMaximumWidth(toWidth);
-        // Non-animated expand: flush pending page switch immediately.
-        if (expanded && this->pendingPageIndex >= 0) {
-            ui->sidebarStack->setCurrentIndex(this->pendingPageIndex);
-            this->pendingPageIndex = -1;
-        }
-    }
+    // View menu toggle action — wired bidirectionally by SidebarPanel.
+    this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
+            u"Controls Sidebar"_s, this);
 }
 
 void vtkWindowCube::closeEvent(QCloseEvent *event)
