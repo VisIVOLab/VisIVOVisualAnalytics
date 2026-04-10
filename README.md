@@ -4,7 +4,8 @@ VisIVO Visual Analytics is a scientific desktop application for interactive visu
 
 ## Key Features
 
-- Interactive 3D visualization of FITS cubes
+- Interactive 3D visualization of FITS cubes — isosurface and direct volume rendering
+- Volume rendering blend modes: Composite ray-casting, MIP (Maximum Intensity Projection), MinIP
 - Interactive 2D visualization of FITS images
 - Remote file browsing with FITS-aware metadata
 - Remote full-resolution slice computation with client-side cache and neighbor prefetch
@@ -12,10 +13,13 @@ VisIVO Visual Analytics is a scientific desktop application for interactive visu
 - Preview-to-full-resolution workflow for responsive remote cube opening
 - Moment map computation (orders 0, 1, 2, 6, 8, 10) locally and remotely
 - Position-velocity diagram generation
+- Configurable color maps per rendering mode (volume LUT independent of slice/moment LUTs)
+- Dockable, floatable workspace panels (3D cube view and 2D slice/detail view)
+- WCS axes overlay toggled from the View menu
 - Token-based authentication for secure remote access
 - Per-session dataset isolation for concurrent multi-user use
 - HPC deployment via Apptainer/Singularity container and SLURM job scripts
-- Asynchronous client updates for non-blocking interaction
+- Fully asynchronous backend communication — no UI freeze during computation
 
 ## Architecture Overview
 
@@ -154,12 +158,7 @@ Open the SSH tunnel on your laptop, then set **Server URL** to `http://localhost
 
 ### Client
 
-Requirements: CMake, a C++17 compiler, Qt 6, VTK.
-
-```bash
-cmake -S . -B build
-cmake --build build --parallel
-```
+See [BUILDING.md](BUILDING.md) for full dependency setup and build instructions.
 
 ### Client configuration
 
@@ -211,6 +210,19 @@ Tests use synthetic FITS fixtures (no real data required) and an in-process ASGI
 **Shared-secret token** — simpler than OAuth for the typical use case (a single researcher or small team connecting to their own HPC allocation). The token is generated once per installation and never transmitted in URLs.
 
 **Session isolation** — enables concurrent multi-user use and multiple simultaneously open datasets without server-side state collisions.
+
+## Recent Development
+
+**next-server branch**
+
+- **Dockable workspace** — the 3D cube view and the 2D slice/detail view are now independent `QDockWidget` panels. Each panel can be floated, resized, or closed independently. A "Reset Layout" action in the View menu restores the default side-by-side arrangement.
+- **3D View Settings tab** — the former "Threshold" sidebar tab is redesigned. Rendering mode (Isosurface / Volume), volume blend mode, threshold slider, and color map selection are organised into collapsible cards. Color Map and Surface Color cards are shown only for the active rendering mode.
+- **Volume rendering blend modes** — Composite ray-casting, MIP, and MinIP are selectable both from the sidebar and from the View → Volume Rendering submenu. The sidebar and menu stay in sync bidirectionally.
+- **Color map scope** — the LUT combo in the 3D View Settings tab now updates only the volume color transfer function. Slice and moment LUTs are managed independently and are not affected.
+- **Non-blocking async controllers** — `NoiseController`, `MomentMapController`, and `PvController` dispatch computation via `QtConcurrent::run` with per-request heap-allocated `QFutureWatcher`. The main thread never blocks waiting for results.
+- **Automatic backend health check at startup** — the client probes the configured backend URL on launch and shows a status indicator in the main window.
+- **WCS axes overlay** — toggled from View → Show WCS Axes.
+- **Backend LRU cache** — the overlay CSV catalogue cache is bounded (`functools.lru_cache(maxsize=32)`) instead of growing without limit.
 
 ## Roadmap
 
