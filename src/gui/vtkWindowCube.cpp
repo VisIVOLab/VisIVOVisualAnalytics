@@ -90,6 +90,7 @@
 #include <QLabel>
 #include <QList>
 #include <QMetaObject>
+#include <QMenu>
 #include <QMessageBox>
 #include <QScrollBar>
 #include <QSignalBlocker>
@@ -1461,6 +1462,40 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(this->actionResetLayout, &QAction::triggered,
                      this, &vtkWindowCube::resetWorkspaceLayout);
 
+    // ── Volume Rendering submenu ──────────────────────────────────────────
+    ui->menuView->addSeparator();
+    this->m_menuVolumeRendering = ui->menuView->addMenu(u"Volume Rendering"_s);
+    // Enabled only when Volume mode is active; starts disabled (Volume is off by default).
+    this->m_menuVolumeRendering->setEnabled(ui->actionVolume->isChecked());
+
+    auto *blendGroup = new QActionGroup(this);
+    blendGroup->setExclusive(true);
+
+    this->m_actionComposite = this->m_menuVolumeRendering->addAction(u"Composite"_s);
+    this->m_actionComposite->setCheckable(true);
+    this->m_actionComposite->setChecked(true);
+    this->m_actionComposite->setToolTip(
+            u"Full ray-casting with opacity transfer function"_s);
+    blendGroup->addAction(this->m_actionComposite);
+
+    this->m_actionMIP = this->m_menuVolumeRendering->addAction(u"MIP (Max Intensity)"_s);
+    this->m_actionMIP->setCheckable(true);
+    this->m_actionMIP->setToolTip(u"Project the maximum scalar value along each ray"_s);
+    blendGroup->addAction(this->m_actionMIP);
+
+    this->m_actionMinIP = this->m_menuVolumeRendering->addAction(u"MinIP (Min Intensity)"_s);
+    this->m_actionMinIP->setCheckable(true);
+    this->m_actionMinIP->setToolTip(u"Project the minimum scalar value along each ray"_s);
+    blendGroup->addAction(this->m_actionMinIP);
+
+    QObject::connect(blendGroup, &QActionGroup::triggered, this, [this](QAction *action) {
+        int idx = 0;
+        if (action == this->m_actionMIP)   idx = 1;
+        if (action == this->m_actionMinIP) idx = 2;
+        this->applyVolumeBlendMode(idx);
+        this->syncVolumeModeSidebar(idx);
+    });
+
     QObject::connect(this->actionShowWcsAxes, &QAction::toggled, this, [this](bool checked) {
     this->showWcsAxes = checked;
     this->lastSliceOverlayVisibleBounds = { std::numeric_limits<double>::quiet_NaN(),
@@ -2148,6 +2183,7 @@ void vtkWindowCube::setupSidebar()
         const QSignalBlocker b2(ui->actionVolume);
         ui->actionIsosurface->setChecked(wantIsosurface);
         ui->actionVolume->setChecked(!wantIsosurface);
+        this->updateVolumeModeVisibility(!wantIsosurface);
         this->changeCubeRender();
     });
     QObject::connect(ui->actionIsosurface, &QAction::toggled, this, [this](bool checked) {
@@ -2156,6 +2192,9 @@ void vtkWindowCube::setupSidebar()
             const QSignalBlocker b(this->m_comboRenderMode);
             this->m_comboRenderMode->setCurrentIndex(0);
         }
+        if (checked) {
+            this->updateVolumeModeVisibility(false);
+        }
     });
     QObject::connect(ui->actionVolume, &QAction::toggled, this, [this](bool checked) {
         if (checked && this->m_comboRenderMode
@@ -2163,6 +2202,22 @@ void vtkWindowCube::setupSidebar()
             const QSignalBlocker b(this->m_comboRenderMode);
             this->m_comboRenderMode->setCurrentIndex(1);
         }
+        if (checked) {
+            this->updateVolumeModeVisibility(true);
+        }
+    });
+
+    // ── Volume mode combo → apply blend mode ──────────────────────────────
+    QObject::connect(this->m_comboVolumeMode, &QComboBox::currentIndexChanged,
+                     this, [this](int idx) {
+        this->applyVolumeBlendMode(idx);
+        // Sync menu actions.
+        const QSignalBlocker b1(this->m_actionComposite);
+        const QSignalBlocker b2(this->m_actionMIP);
+        const QSignalBlocker b3(this->m_actionMinIP);
+        if (this->m_actionComposite) this->m_actionComposite->setChecked(idx == 0);
+        if (this->m_actionMIP)       this->m_actionMIP->setChecked(idx == 1);
+        if (this->m_actionMinIP)     this->m_actionMinIP->setChecked(idx == 2);
     });
 
     // ── LUT combo → apply color map ───────────────────────────────────────
@@ -2222,6 +2277,35 @@ QWidget *vtkWindowCube::setupThresholdPage()
 
         cl->addWidget(this->m_comboRenderMode);
         root->addWidget(card);
+    }
+
+    // ── Section 1b: Volume Mode (hidden when Isosurface is active) ────────
+    {
+        auto *modeCard = new QFrame();
+        modeCard->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(modeCard);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *lbl = new QLabel(u"VOLUME RENDERING"_s);
+        lbl->setStyleSheet(hdrStyle);
+        cl->addWidget(lbl);
+
+        this->m_comboVolumeMode = new QComboBox();
+        this->m_comboVolumeMode->addItem(u"Composite"_s);
+        this->m_comboVolumeMode->addItem(u"MIP (Max Intensity)"_s);
+        this->m_comboVolumeMode->addItem(u"MinIP (Min Intensity)"_s);
+        this->m_comboVolumeMode->setToolTip(
+                u"Composite: full ray-casting with opacity transfer function.\n"
+                "MIP: project the maximum scalar value along each ray.\n"
+                "MinIP: project the minimum scalar value along each ray."_s);
+        this->m_comboVolumeMode->setCurrentIndex(0);
+        cl->addWidget(this->m_comboVolumeMode);
+
+        // Visible only when Volume rendering is active.
+        modeCard->setVisible(ui->actionVolume->isChecked());
+        this->m_volumeModeCard = modeCard;
+        root->addWidget(modeCard);
     }
 
     // ── Section 2: Threshold ──────────────────────────────────────────────
@@ -2344,6 +2428,46 @@ void vtkWindowCube::applyColorMapByName(const QString &name)
     }
     if (ui->vtkImage->renderWindow()) {
         ui->vtkImage->renderWindow()->Render();
+    }
+}
+
+void vtkWindowCube::applyVolumeBlendMode(int idx)
+{
+    if (!this->volumeMapper) {
+        return;
+    }
+    switch (idx) {
+    case 1:
+        this->volumeMapper->SetBlendModeToMaximumIntensity();
+        break;
+    case 2:
+        this->volumeMapper->SetBlendModeToMinimumIntensity();
+        break;
+    default:
+        this->volumeMapper->SetBlendModeToComposite();
+        break;
+    }
+    if (ui->vtkCube->renderWindow()) {
+        ui->vtkCube->renderWindow()->Render();
+    }
+}
+
+void vtkWindowCube::syncVolumeModeSidebar(int idx)
+{
+    if (!this->m_comboVolumeMode) {
+        return;
+    }
+    const QSignalBlocker b(this->m_comboVolumeMode);
+    this->m_comboVolumeMode->setCurrentIndex(idx);
+}
+
+void vtkWindowCube::updateVolumeModeVisibility(bool volumeActive)
+{
+    if (this->m_volumeModeCard) {
+        this->m_volumeModeCard->setVisible(volumeActive);
+    }
+    if (this->m_menuVolumeRendering) {
+        this->m_menuVolumeRendering->setEnabled(volumeActive);
     }
 }
 
@@ -2508,6 +2632,8 @@ void vtkWindowCube::setupCubeRenderer()
     volumeProperty->SetInterpolationTypeToLinear();
     vtkNew<vtkGPUVolumeRayCastMapper> volumeMapper;
     volumeMapper->SetInputConnection(this->cubeDisplaySource->GetOutputPort());
+    volumeMapper->SetBlendModeToComposite(); // default
+    this->volumeMapper = volumeMapper;       // keep reference for blend-mode changes
     this->volume->SetMapper(volumeMapper);
     this->volume->SetProperty(volumeProperty);
     // By default, we show the isosurface

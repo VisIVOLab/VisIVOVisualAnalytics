@@ -32,6 +32,7 @@ class PvController;
 class QAction;
 class QCheckBox;
 class QComboBox;
+class QMenu;
 class SidebarPanel;
 class CatalogueTableModel;
 class QDockWidget;
@@ -42,6 +43,7 @@ class PvDiagramWidget;
 class QTableView;
 class vtkAxisActor2D;
 class vtkActor;
+class vtkGPUVolumeRayCastMapper;
 class vtkColorTransferFunction;
 class vtkContourTriangulator;
 class vtkCoordinate;
@@ -273,11 +275,21 @@ private:
 
     // ── 3D View Settings page ─────────────────────────────────────────────────
     QPointer<QComboBox> m_comboRenderMode;
+    QPointer<QComboBox> m_comboVolumeMode;   // Composite / MIP / MinIP
+    QPointer<QWidget>   m_volumeModeCard;    // shown only when Volume is active
     QPointer<QComboBox> m_comboLut;
     QPointer<QLabel>    m_lutPreviewLabel;
     QString             m_activeColorMapName;
+    // Menu actions for volume blend mode (created programmatically).
+    QPointer<QAction>   m_actionComposite;
+    QPointer<QAction>   m_actionMIP;
+    QPointer<QAction>   m_actionMinIP;
+    QPointer<QMenu>     m_menuVolumeRendering;
     QWidget *setupThresholdPage();
     void applyColorMapByName(const QString &name);
+    void applyVolumeBlendMode(int idx);  // 0=Composite, 1=MIP, 2=MinIP
+    void syncVolumeModeSidebar(int idx);
+    void updateVolumeModeVisibility(bool volumeActive);
 
     // ── Workspace docks ───────────────────────────────────────────────────────
     QPointer<QDockWidget> dockCubeView;
@@ -439,6 +451,7 @@ private:
     vtkNew<vtkVolume> volume;
     vtkNew<vtkColorTransferFunction> volumeColorTransferFunction;
     vtkNew<vtkPiecewiseFunction> volumeOpacity;
+    vtkSmartPointer<vtkGPUVolumeRayCastMapper> volumeMapper;  // stored for blend-mode changes
     vtkNew<vtkPlaneSource> remoteCuttingPlaneSource;
     vtkNew<vtkActor> remoteCuttingPlaneActor;
     bool remoteIsosurfaceReady{ false };
