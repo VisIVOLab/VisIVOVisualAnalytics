@@ -268,7 +268,6 @@ private:
     QPointer<QTableView> catalogueTableView;
     QPointer<CatalogueTableModel> catalogueTableModel;
     bool syncingCatalogueSelection{ false };
-    QPointer<QCheckBox> remoteRoiRefinementCheck;
     // ── Sidebar ───────────────────────────────────────────────────────────────
     SidebarPanel *m_sidebar{ nullptr };
     QPointer<QAction> actionShowControlsSidebar;
@@ -322,9 +321,11 @@ private:
     // ── Tools page ────────────────────────────────────────────────────────────
     // Buttons are created in setupToolsPage() and wired to their QActions after
     // menu Tools are set up in the constructor (post-setupSidebar).
+    QPointer<QAction>     actionCameraRoi;   // View menu + Tools sidebar
     QPointer<QToolButton> m_btnEstimateNoise;
     QPointer<QToolButton> m_btnDataProbe;
     QPointer<QToolButton> m_btnPvDiagram;
+    QPointer<QToolButton> m_btnCameraRoi;
     QWidget *setupToolsPage();
 
     // ── Info / Stats page ────────────────────────────────────────────────────

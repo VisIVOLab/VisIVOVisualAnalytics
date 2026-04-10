@@ -1517,14 +1517,17 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->updateDataStatePanel();
     this->updateSanityPanel();
     this->updateWcsStatusIndicator();
-    this->remoteRoiRefinementCheck = new QCheckBox(u"Use Camera ROI"_s, this);
-    this->remoteRoiRefinementCheck->setChecked(this->useCameraRoiRefinement);
-    this->remoteRoiRefinementCheck->setToolTip(
-            u"Unchecked: refine using the full dataset. Checked: refine using the current camera view."_s);
-    this->remoteRoiRefinementCheck->setVisible(true);
-    this->remoteRoiRefinementCheck->setEnabled(true);
-    this->statusBar()->addPermanentWidget(this->remoteRoiRefinementCheck);
-    QObject::connect(this->remoteRoiRefinementCheck, &QCheckBox::toggled, this,
+
+    // ── Camera ROI action – View menu + Tools sidebar ─────────────────────
+    this->actionCameraRoi = new QAction(u"Use Camera ROI"_s, this);
+    this->actionCameraRoi->setCheckable(true);
+    this->actionCameraRoi->setChecked(this->useCameraRoiRefinement);
+    this->actionCameraRoi->setToolTip(
+            u"When enabled, the high-resolution cube is loaded only for the current camera viewport.\n"
+            "Unchecked: full dataset is used for refinement."_s);
+    ui->menuView->addSeparator();
+    ui->menuView->addAction(this->actionCameraRoi);
+    QObject::connect(this->actionCameraRoi, &QAction::toggled, this,
                      [this](bool checked) {
                          this->useCameraRoiRefinement = checked;
                          this->currentRemoteRefinementModeLabel =
@@ -1539,7 +1542,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                      << QStringLiteral("[remote-roi] scheduling refinement reload");
                              return;
                          }
-
                          this->usingHighResCube = false;
                          qDebug().noquote()
                                  << QStringLiteral("[remote-roi] starting refinement reload");
@@ -2058,6 +2060,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         this->m_btnPvDiagram->setDefaultAction(this->actionExtractPvDiagram);
         this->m_btnPvDiagram->setToolTip(u"Draw a path in the 2D view to extract a position-velocity diagram."_s);
     }
+    if (this->m_btnCameraRoi && this->actionCameraRoi) {
+        this->m_btnCameraRoi->setDefaultAction(this->actionCameraRoi);
+    }
 
     this->updateBackendDerivedActionsAvailability();
     this->actionBoxRegion = ui->menuTools->addAction(u"Box Region Analysis"_s);
@@ -2565,6 +2570,24 @@ QWidget *vtkWindowCube::setupToolsPage()
 
         cl->addWidget(this->m_btnDataProbe);
         cl->addWidget(this->m_btnPvDiagram);
+
+        root->addWidget(card);
+    }
+
+    // ── Section 3: View ───────────────────────────────────────────────────
+    {
+        auto *hdr = new QLabel(u"VIEW"_s);
+        hdr->setStyleSheet(hdrStyle);
+        root->addWidget(hdr);
+
+        auto *card = new QFrame();
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 6, 8, 6);
+        cl->setSpacing(4);
+
+        this->m_btnCameraRoi = makeToolBtn(u"Use Camera ROI"_s);
+        cl->addWidget(this->m_btnCameraRoi);
 
         root->addWidget(card);
     }
@@ -5379,14 +5402,14 @@ void vtkWindowCube::updateCatalogueInfoPanel()
     }
     if (this->selectedCatalogueSourceIndex < 0
         || static_cast<std::size_t>(this->selectedCatalogueSourceIndex) >= this->catalogueOverlayEntries.size()) {
-        this->catalogueInfoLabel->setText(u"Source: none"_s);
-        this->catalogueInfoLabel->setToolTip(u"No source selected"_s);
+        this->catalogueInfoLabel->setVisible(false);
         return;
     }
 
     const QString summary = this->catalogueSourceSummary(this->selectedCatalogueSourceIndex);
     this->catalogueInfoLabel->setText(summary);
     this->catalogueInfoLabel->setToolTip(summary);
+    this->catalogueInfoLabel->setVisible(true);
 }
 
 QString vtkWindowCube::catalogueSourceSummary(int sourceIndex) const
@@ -6730,14 +6753,13 @@ void vtkWindowCube::updateMomentProvenancePanel()
     }
 
     if (!this->momentProvenanceState.valid) {
-        this->momentProvenanceLabel->setText(u"Moment map: none"_s);
-        this->momentProvenanceLabel->setToolTip(
-                u"No moment map has been computed for this dataset yet."_s);
+        this->momentProvenanceLabel->setVisible(false);
         return;
     }
 
     this->momentProvenanceLabel->setText(this->momentProvenanceState.summary);
     this->momentProvenanceLabel->setToolTip(this->momentProvenanceState.details);
+    this->momentProvenanceLabel->setVisible(true);
 }
 
 void vtkWindowCube::updateSanityPanel()
@@ -6827,25 +6849,28 @@ void vtkWindowCube::updateDataStatePanel()
             u"x=0..%1 y=0..%2 z=0..%3"_s.arg(std::max(0, this->remoteDatasetWidth - 1))
                     .arg(std::max(0, this->remoteDatasetHeight - 1))
                     .arg(std::max(0, this->remoteDatasetDepth - 1));
-    const QString note = u"Probe/profile: loaded block only"_s;
     const QString degenerateSummary = this->remoteDegenerateAxesSummary;
-    QString text = u"%1 | %2 | Loaded: %3 | Dataset: %4 | WCS: %5 | Axis3: %6"_s.arg(origin,
-                                                                                         representation,
-                                                                                         loadedBounds,
-                                                                                         datasetBounds,
-                                                                                         this->currentWcsFrameLabel(),
-                                                                                         this->spectralAxisTitle());
-    text += u" | Refine: %1"_s.arg(refinement);
-    if (!degenerateSummary.isEmpty()) {
-        text += u" | Collapsed axes"_s;
+
+    // Compact badge: just origin + resolution state + refinement mode.
+    QString badge = u"%1 \u00b7 %2"_s.arg(origin, representation);
+    if (this->useCameraRoiRefinement) {
+        badge += u" \u00b7 ROI"_s;
     }
-    text += u" | %1"_s.arg(note);
-    this->dataStateLabel->setText(text);
-    this->dataStateLabel->setToolTip(
-            degenerateSummary.isEmpty()
-                    ? u"Persistent data provenance: origin, current representation, loaded bounds, full dataset bounds, WCS frame, spectral-axis semantics, remote refinement strategy, and probe/profile scope."_s
-                    : u"Persistent data provenance: origin, current representation, loaded bounds, full dataset bounds, WCS frame, spectral-axis semantics, remote refinement strategy, and probe/profile scope.\n%1"_s
-                              .arg(degenerateSummary));
+    if (!degenerateSummary.isEmpty()) {
+        badge += u" \u26a0"_s; // warning sign — collapsed axes
+    }
+    this->dataStateLabel->setText(badge);
+
+    // Full provenance in tooltip.
+    QString tip =
+            u"Origin: %1\nResolution: %2\nRefinement: %3\nLoaded: %4\nDataset: %5\n"
+            "WCS frame: %6\nSpectral axis: %7\nProbe/profile: loaded block only"_s
+                    .arg(origin, representation, refinement, loadedBounds, datasetBounds,
+                         this->currentWcsFrameLabel(), this->spectralAxisTitle());
+    if (!degenerateSummary.isEmpty()) {
+        tip += u"\n\u26a0 Collapsed axes: %1"_s.arg(degenerateSummary);
+    }
+    this->dataStateLabel->setToolTip(tip);
     this->updateInfoStatsPage();
 }
 
