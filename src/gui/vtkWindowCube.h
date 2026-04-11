@@ -285,7 +285,7 @@ private:
     void updateVolumeModeVisibility(bool volumeActive);
 
     // ── Moment card state machine ─────────────────────────────────────────────
-    enum class MomentCardState { NoMoment, Computing, Ready, Error };
+    using MomentCardState = CubeUiAssembler::MomentCardData::State;
     MomentCardState m_momentCardState{ MomentCardState::NoMoment };
     QString         m_momentCardDetail;  // context string for Computing/Error states
     void setMomentCardState(MomentCardState state, const QString &detail = {});
@@ -297,7 +297,6 @@ private:
     void applyMomentLutByName(const QString &name);
     void update2dModeVisibility(bool sliceActive);
     void requestMomentMode();
-    void updateMomentInfoCard();
 
     // ── Tools page ────────────────────────────────────────────────────────────
     QPointer<QAction> actionCameraRoi;   // View menu + Tools sidebar

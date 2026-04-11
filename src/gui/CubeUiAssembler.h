@@ -64,6 +64,38 @@ public:
     void sync2dModeSidebar(bool sliceActive);
     void syncVolumeModeSidebar(int idx);   ///< idx: 0=Composite, 1=MIP, 2=MinIP
 
+    // ── Data structs for UI update methods ───────────────────────────────────
+
+    /// Pre-built data for the Moment Map info card.
+    /// vtkWindowCube builds this struct from its own state; assembler only renders.
+    struct MomentCardData {
+        enum class State { NoMoment, Computing, Ready, Error };
+        State   state            { State::NoMoment };
+        QString detail;               ///< context string for Computing/Error states
+        QString provenanceSummary;    ///< used when state == Ready
+        QString provenanceDetails;    ///< tooltip when state == Ready
+    };
+
+    /// Pre-built data for the Info/Stats page.
+    /// vtkWindowCube builds this struct from its own state; assembler only renders.
+    struct InfoStatsData {
+        QString loadStateText;
+        QString loadStateStyleSheet;
+        QString wcsFrame;
+        QString spectralAxis;
+        QString wcsBadgeText;
+        QString wcsBadgeStyleSheet;
+        QString wcsBadgeTooltip;
+        QString renderModeText;
+        QString imageModeText;
+        QString momentStateText;
+        QString momentStateStyleSheet;
+    };
+
+    // ── UI update methods (pure rendering — no internal state access) ─────────
+    void updateMomentCard(const MomentCardData &data);
+    void updateInfoStats(const InfoStatsData &data);
+
     // ── Widget accessors (used by vtkWindowCube's update/sync methods) ────────
     // 3D View Settings
     QComboBox *renderModeCombo()   const { return m_comboRenderMode; }

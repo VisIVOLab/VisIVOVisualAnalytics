@@ -690,3 +690,74 @@ void CubeUiAssembler::syncVolumeModeSidebar(int idx)
     const QSignalBlocker b(m_comboVolumeMode);
     m_comboVolumeMode->setCurrentIndex(idx);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// updateMomentCard  — pure label rendering from pre-built MomentCardData
+// ─────────────────────────────────────────────────────────────────────────────
+
+void CubeUiAssembler::updateMomentCard(const MomentCardData &data)
+{
+    auto *lbl = m_momentInfoLabel.data();
+    if (!lbl)
+        return;
+
+    static const QString infoColor  = u"color: #7AAABB;"_s;
+    static const QString busyColor  = u"color: #E8A840;"_s;
+    static const QString errorColor = u"color: #CC6060;"_s;
+
+    switch (data.state) {
+    case MomentCardData::State::NoMoment:
+        lbl->setStyleSheet(QStringLiteral("QLabel { font-size: 9px; %1 }").arg(infoColor));
+        lbl->setText(u"No moment map available.\nOpen Compute \u2192 Moment Map\nto generate one."_s);
+        lbl->setToolTip(QString());
+        break;
+    case MomentCardData::State::Computing:
+        lbl->setStyleSheet(QStringLiteral("QLabel { font-size: 9px; font-style: italic; %1 }").arg(busyColor));
+        lbl->setText(u"Computing moment map\u2026\n%1"_s.arg(data.detail));
+        lbl->setToolTip(u"Moment computation is running on the backend.\nThe panel will update automatically when done."_s);
+        break;
+    case MomentCardData::State::Ready:
+        lbl->setStyleSheet(QStringLiteral("QLabel { font-size: 9px; %1 }").arg(infoColor));
+        lbl->setText(data.provenanceSummary);
+        lbl->setToolTip(data.provenanceDetails);
+        break;
+    case MomentCardData::State::Error:
+        lbl->setStyleSheet(QStringLiteral("QLabel { font-size: 9px; %1 }").arg(errorColor));
+        lbl->setText(u"Moment computation failed.\n%1"_s.arg(
+                data.detail.isEmpty()
+                        ? u"Check the Diagnostics panel for details."_s
+                        : data.detail));
+        lbl->setToolTip(u"The last moment computation did not produce a result.\nSee the Diagnostics panel for the error."_s);
+        break;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// updateInfoStats  — pure label rendering from pre-built InfoStatsData
+// ─────────────────────────────────────────────────────────────────────────────
+
+void CubeUiAssembler::updateInfoStats(const InfoStatsData &data)
+{
+    if (auto *l = m_infoDsLoadState.data()) {
+        l->setText(data.loadStateText);
+        l->setStyleSheet(data.loadStateStyleSheet);
+    }
+    if (auto *l = m_infoWcsFrame.data())
+        l->setText(data.wcsFrame);
+    if (auto *l = m_infoSpectral.data())
+        l->setText(data.spectralAxis);
+    if (auto *badge = m_infoWcsBadge.data()) {
+        badge->setText(data.wcsBadgeText);
+        badge->setStyleSheet(data.wcsBadgeStyleSheet);
+        if (!data.wcsBadgeTooltip.isEmpty())
+            badge->setToolTip(data.wcsBadgeTooltip);
+    }
+    if (auto *l = m_infoRenderMode.data())
+        l->setText(data.renderModeText);
+    if (auto *l = m_info2dMode.data())
+        l->setText(data.imageModeText);
+    if (auto *l = m_infoMomentState.data()) {
+        l->setText(data.momentStateText);
+        l->setStyleSheet(data.momentStateStyleSheet);
+    }
+}

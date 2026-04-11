@@ -2364,72 +2364,64 @@ void vtkWindowCube::updateVolumeModeVisibility(bool volumeActive)
 
 void vtkWindowCube::updateInfoStatsPage()
 {
-    // Guard: labels are owned by m_uiAssembler and created during setupSidebar().
-    if (!m_uiAssembler || !m_uiAssembler->infoDsLoadState())
+    if (!m_uiAssembler)
         return;
 
-    // ── Dataset Summary ───────────────────────────────────────────────────────
-    auto *loadState = m_uiAssembler->infoDsLoadState();
+    // ── Dataset load state ────────────────────────────────────────────────────
+    CubeUiAssembler::InfoStatsData d;
     switch (this->remoteCubeDisplayState) {
     case RemoteCubeDisplayState::Preview:
-        loadState->setText(u"Preview proxy"_s);
-        loadState->setStyleSheet(u"QLabel { font-size: 9px; color: #E8A840; }"_s);
+        d.loadStateText        = u"Preview proxy"_s;
+        d.loadStateStyleSheet  = u"QLabel { font-size: 9px; color: #E8A840; }"_s;
         break;
     case RemoteCubeDisplayState::LoadingFullResolution:
-        loadState->setText(u"Loading full resolution\u2026"_s);
-        loadState->setStyleSheet(u"QLabel { font-size: 9px; color: #E8A840; font-style: italic; }"_s);
+        d.loadStateText        = u"Loading full resolution\u2026"_s;
+        d.loadStateStyleSheet  = u"QLabel { font-size: 9px; color: #E8A840; font-style: italic; }"_s;
         break;
     case RemoteCubeDisplayState::FullResolution:
-        loadState->setText(u"Full resolution"_s);
-        loadState->setStyleSheet(u"QLabel { font-size: 9px; color: #7AAABB; }"_s);
+        d.loadStateText        = u"Full resolution"_s;
+        d.loadStateStyleSheet  = u"QLabel { font-size: 9px; color: #7AAABB; }"_s;
         break;
     }
 
     // ── Coordinate / WCS ─────────────────────────────────────────────────────
-    if (auto *l = m_uiAssembler->infoWcsFrame())
-        l->setText(this->currentWcsFrameLabel());
-    if (auto *l = m_uiAssembler->infoSpectral())
-        l->setText(this->spectralAxisTitle());
-    if (auto *badge = m_uiAssembler->infoWcsBadge()) {
-        if (this->remoteWcsStatus.compare(u"ok"_s, Qt::CaseInsensitive) == 0) {
-            badge->setText(u"OK"_s);
-            badge->setStyleSheet(u"QLabel { font-size: 9px; color: #5DA87A; }"_s);
-        } else if (this->remoteWcsStatus.compare(u"degraded"_s, Qt::CaseInsensitive) == 0) {
-            badge->setText(u"Degraded"_s);
-            badge->setStyleSheet(u"QLabel { font-size: 9px; color: #E8A840; }"_s);
-        } else {
-            badge->setText(u"Repaired"_s);
-            badge->setStyleSheet(u"QLabel { font-size: 9px; color: #9a6700; }"_s);
-        }
-        if (!this->remoteWcsWarningMessage.isEmpty())
-            badge->setToolTip(this->remoteWcsWarningMessage);
+    d.wcsFrame    = this->currentWcsFrameLabel();
+    d.spectralAxis = this->spectralAxisTitle();
+    if (this->remoteWcsStatus.compare(u"ok"_s, Qt::CaseInsensitive) == 0) {
+        d.wcsBadgeText        = u"OK"_s;
+        d.wcsBadgeStyleSheet  = u"QLabel { font-size: 9px; color: #5DA87A; }"_s;
+    } else if (this->remoteWcsStatus.compare(u"degraded"_s, Qt::CaseInsensitive) == 0) {
+        d.wcsBadgeText        = u"Degraded"_s;
+        d.wcsBadgeStyleSheet  = u"QLabel { font-size: 9px; color: #E8A840; }"_s;
+    } else {
+        d.wcsBadgeText        = u"Repaired"_s;
+        d.wcsBadgeStyleSheet  = u"QLabel { font-size: 9px; color: #9a6700; }"_s;
     }
+    d.wcsBadgeTooltip = this->remoteWcsWarningMessage;
 
     // ── System / Status ───────────────────────────────────────────────────────
-    if (auto *l = m_uiAssembler->infoRenderMode())
-        l->setText(ui->actionIsosurface->isChecked() ? u"Isosurface"_s : u"Volume Rendering"_s);
-    if (auto *l = m_uiAssembler->info2dMode())
-        l->setText(this->viewingSlice() ? u"Slice"_s : u"Moment Map"_s);
-    if (auto *l = m_uiAssembler->infoMomentState()) {
-        switch (m_momentCardState) {
-        case MomentCardState::NoMoment:
-            l->setText(u"\u2014"_s);
-            l->setStyleSheet(u"QLabel { font-size: 9px; color: #AABBCC; }"_s);
-            break;
-        case MomentCardState::Computing:
-            l->setText(u"Computing\u2026"_s);
-            l->setStyleSheet(u"QLabel { font-size: 9px; color: #E8A840; font-style: italic; }"_s);
-            break;
-        case MomentCardState::Ready:
-            l->setText(this->momentProvenanceState.summary);
-            l->setStyleSheet(u"QLabel { font-size: 9px; color: #7AAABB; }"_s);
-            break;
-        case MomentCardState::Error:
-            l->setText(u"Error"_s);
-            l->setStyleSheet(u"QLabel { font-size: 9px; color: #CC6060; }"_s);
-            break;
-        }
+    d.renderModeText = ui->actionIsosurface->isChecked() ? u"Isosurface"_s : u"Volume Rendering"_s;
+    d.imageModeText  = this->viewingSlice() ? u"Slice"_s : u"Moment Map"_s;
+    switch (m_momentCardState) {
+    case MomentCardState::NoMoment:
+        d.momentStateText        = u"\u2014"_s;
+        d.momentStateStyleSheet  = u"QLabel { font-size: 9px; color: #AABBCC; }"_s;
+        break;
+    case MomentCardState::Computing:
+        d.momentStateText        = u"Computing\u2026"_s;
+        d.momentStateStyleSheet  = u"QLabel { font-size: 9px; color: #E8A840; font-style: italic; }"_s;
+        break;
+    case MomentCardState::Ready:
+        d.momentStateText        = this->momentProvenanceState.summary;
+        d.momentStateStyleSheet  = u"QLabel { font-size: 9px; color: #7AAABB; }"_s;
+        break;
+    case MomentCardState::Error:
+        d.momentStateText        = u"Error"_s;
+        d.momentStateStyleSheet  = u"QLabel { font-size: 9px; color: #CC6060; }"_s;
+        break;
     }
+
+    m_uiAssembler->updateInfoStats(d);
 }
 
 void vtkWindowCube::applySliceLutByName(const QString &name)
@@ -2554,48 +2546,18 @@ void vtkWindowCube::requestMomentMode()
 void vtkWindowCube::setMomentCardState(MomentCardState state, const QString &detail)
 {
     m_momentCardState = state;
-    if (!detail.isEmpty()) {
+    if (!detail.isEmpty())
         m_momentCardDetail = detail;
+
+    if (m_uiAssembler) {
+        CubeUiAssembler::MomentCardData data;
+        data.state              = state;
+        data.detail             = m_momentCardDetail;
+        data.provenanceSummary  = this->momentProvenanceState.summary;
+        data.provenanceDetails  = this->momentProvenanceState.details;
+        m_uiAssembler->updateMomentCard(data);
     }
-    this->updateMomentInfoCard();
     this->updateInfoStatsPage();
-}
-
-void vtkWindowCube::updateMomentInfoCard()
-{
-    auto *lbl = m_uiAssembler ? m_uiAssembler->momentInfoLabel() : nullptr;
-    if (!lbl)
-        return;
-
-    const QString infoColor  = u"color: #7AAABB;"_s;
-    const QString busyColor  = u"color: #E8A840;"_s;
-    const QString errorColor = u"color: #CC6060;"_s;
-
-    switch (m_momentCardState) {
-    case MomentCardState::NoMoment:
-        lbl->setStyleSheet(QStringLiteral("QLabel { font-size: 9px; %1 }").arg(infoColor));
-        lbl->setText(u"No moment map available.\nOpen Compute \u2192 Moment Map\nto generate one."_s);
-        lbl->setToolTip(QString());
-        break;
-    case MomentCardState::Computing:
-        lbl->setStyleSheet(QStringLiteral("QLabel { font-size: 9px; font-style: italic; %1 }").arg(busyColor));
-        lbl->setText(u"Computing moment map\u2026\n%1"_s.arg(m_momentCardDetail));
-        lbl->setToolTip(u"Moment computation is running on the backend.\nThe panel will update automatically when done."_s);
-        break;
-    case MomentCardState::Ready:
-        lbl->setStyleSheet(QStringLiteral("QLabel { font-size: 9px; %1 }").arg(infoColor));
-        lbl->setText(this->momentProvenanceState.summary);
-        lbl->setToolTip(this->momentProvenanceState.details);
-        break;
-    case MomentCardState::Error:
-        lbl->setStyleSheet(QStringLiteral("QLabel { font-size: 9px; %1 }").arg(errorColor));
-        lbl->setText(u"Moment computation failed.\n%1"_s.arg(
-                m_momentCardDetail.isEmpty()
-                        ? u"Check the Diagnostics panel for details."_s
-                        : m_momentCardDetail));
-        lbl->setToolTip(u"The last moment computation did not produce a result.\nSee the Diagnostics panel for the error."_s);
-        break;
-    }
 }
 
 void vtkWindowCube::update2dModeVisibility(bool sliceActive)
