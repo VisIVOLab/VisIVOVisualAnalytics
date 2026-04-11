@@ -2,6 +2,7 @@
 #include "ui_vtkWindowCube.h"
 
 #include "ColorMaps.h"
+#include "CubeUiAssembler.h"
 #include "CatalogueOverlayUtils.h"
 #include "CatalogueTableModel.h"
 #include "LUTCustomizerDialog.h"
@@ -1338,31 +1339,6 @@ AsyncIsosurfaceResult fetchRemoteIsosurface(const QString &backendUrl, const QSt
     return result;
 }
 
-// Generate a horizontal gradient QPixmap for a named color map.
-// Safe to call from the UI thread; w/h are in logical pixels.
-QPixmap buildLutPreview(const QString &name, int w, int h)
-{
-    vtkNew<vtkLookupTable> lut;
-    lut->SetTableRange(0., 1.);
-    lut->SetNumberOfTableValues(w);
-    ColorMaps::SetColorMap(lut, name.toStdString());
-    lut->Build();
-
-    QImage img(w, h, QImage::Format_RGB888);
-    for (int x = 0; x < w; ++x) {
-        const double t = (w > 1) ? static_cast<double>(x) / static_cast<double>(w - 1) : 0.0;
-        double rgb[3];
-        lut->GetColor(t, rgb);
-        const QColor c(std::clamp(static_cast<int>(rgb[0] * 255.0 + 0.5), 0, 255),
-                       std::clamp(static_cast<int>(rgb[1] * 255.0 + 0.5), 0, 255),
-                       std::clamp(static_cast<int>(rgb[2] * 255.0 + 0.5), 0, 255));
-        for (int y = 0; y < h; ++y) {
-            img.setPixel(x, y, c.rgb());
-        }
-    }
-    return QPixmap::fromImage(img);
-}
-
 } // anonymous namespace
 
 vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
@@ -1495,7 +1471,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         if (action == this->m_actionMIP)   idx = 1;
         if (action == this->m_actionMinIP) idx = 2;
         this->applyVolumeBlendMode(idx);
-        this->syncVolumeModeSidebar(idx);
+        m_uiAssembler->syncVolumeModeSidebar(idx);
     });
 
     QObject::connect(this->actionShowWcsAxes, &QAction::toggled, this, [this](bool checked) {
@@ -2047,21 +2023,12 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(this->actionEstimateNoise, &QAction::triggered,
                      this->noiseController, &NoiseController::startEstimation);
 
-    // Wire the sidebar Tools card buttons to their actions now that both exist.
-    // setDefaultAction() links button text, tooltip, enabled state, and checkability.
-    if (this->m_btnEstimateNoise) {
-        this->m_btnEstimateNoise->setDefaultAction(this->actionEstimateNoise);
-    }
-    if (this->m_btnDataProbe) {
-        this->m_btnDataProbe->setDefaultAction(ui->actionExtractSpectrum);
-        this->m_btnDataProbe->setToolTip(u"Probe data values at a point in the 2D view."_s);
-    }
-    if (this->m_btnPvDiagram) {
-        this->m_btnPvDiagram->setDefaultAction(this->actionExtractPvDiagram);
-        this->m_btnPvDiagram->setToolTip(u"Draw a path in the 2D view to extract a position-velocity diagram."_s);
-    }
-    if (this->m_btnCameraRoi && this->actionCameraRoi) {
-        this->m_btnCameraRoi->setDefaultAction(this->actionCameraRoi);
+    // Wire the sidebar Tools page buttons to their actions via CubeUiAssembler.
+    if (m_uiAssembler) {
+        m_uiAssembler->wireToolActions(this->actionEstimateNoise,
+                                       ui->actionExtractSpectrum,
+                                       this->actionExtractPvDiagram,
+                                       this->actionCameraRoi);
     }
 
     this->updateBackendDerivedActionsAvailability();
@@ -2192,23 +2159,32 @@ void vtkWindowCube::setupSidebar()
     mainLayout->removeWidget(ui->sidebarContainer);
     ui->sidebarContainer->hide();
 
-    // Build the redesigned "3D View Settings" page (creates m_comboRenderMode,
-    // m_comboLut, m_colorMapCard, m_surfaceColorCard; reparents sliderThreshold /
-    // lineThreshold / btnCubeColor into the new widget).
-    QWidget *page3dSettings = this->setupThresholdPage();
+    // Construct the assembler (owns all sidebar widget pointers).
+    m_uiAssembler = std::make_unique<CubeUiAssembler>(ui);
 
-    // Build the "2D View Settings" page (creates m_combo2dMode, m_comboSliceLut,
-    // m_sliceControlsCard, m_momentInfoCard; reparents sliderSlice / spinSlice /
-    // lineSpectral into the new widget).
-    QWidget *page2dSettings = this->setup2dViewPage();
+    // Build pages — each method reparents ui->* widgets and stores QPointers.
+    QWidget *page3dSettings = m_uiAssembler->buildThresholdPage();
+    QWidget *page2dSettings = m_uiAssembler->build2dViewPage();
+    QWidget *pageTools      = m_uiAssembler->buildToolsPage();
 
-    // Build the "Info / Statistics" page (reparents frameImgStats / frameCubeStats
-    // and adds new dynamic labels for dataset, WCS and system state).
-    QWidget *pageInfoStats = this->setupInfoStatsPage();
+    CubeUiAssembler::InfoStatsInput infoIn;
+    infoIn.filepath         = this->filepath;
+    infoIn.datasetWidth     = this->remoteDatasetWidth;
+    infoIn.datasetHeight    = this->remoteDatasetHeight;
+    infoIn.datasetDepth     = this->remoteDatasetDepth;
+    infoIn.wcsFrameLabel    = this->currentWcsFrameLabel();
+    infoIn.spectralAxisTitle = this->spectralAxisTitle();
+    infoIn.wcsStatus        = this->remoteWcsStatus;
+    infoIn.wcsWarningMessage = this->remoteWcsWarningMessage;
+    QWidget *pageInfoStats  = m_uiAssembler->buildInfoStatsPage(infoIn);
 
-    // Build the "Tools" page (creates tool buttons; wired to QActions after this
-    // function returns, when the menu Tools are constructed in the constructor).
-    QWidget *pageTools = this->setupToolsPage();
+    // Capture the default LUT names chosen by the assembler.
+    this->m_activeColorMapName  = m_uiAssembler->lutCombo()
+                                          ? m_uiAssembler->lutCombo()->currentText() : QString();
+    this->m_activeSliceLutName  = m_uiAssembler->sliceLutCombo()
+                                          ? m_uiAssembler->sliceLutCombo()->currentText() : QString();
+    this->m_activeMomentLutName = m_uiAssembler->momentLutCombo()
+                                          ? m_uiAssembler->momentLutCombo()->currentText() : QString();
 
     this->m_sidebar = new SidebarPanel(220, this);
     this->m_sidebar->addPage(u":/icons/rail_3d.svg"_s,    u"3D View Settings"_s, page3dSettings);
@@ -2218,17 +2194,12 @@ void vtkWindowCube::setupSidebar()
     this->m_sidebar->finalize(0);
     mainLayout->insertWidget(0, this->m_sidebar);
 
-    // ui->frameContours is reparented into setup2dViewPage().
-    // ui->labelImg, ui->frameImgStats, and ui->frameCubeStats are reparented and
-    // styled inside setupInfoStatsPage(); no additional styling needed here.
-
-    // ── Bidirectional sync: rendering mode combo ↔ menu actions ──────────
-    QObject::connect(this->m_comboRenderMode, &QComboBox::currentIndexChanged,
+    // ── Bidirectional sync: rendering mode combo ↔ menu actions ──────────────
+    QObject::connect(m_uiAssembler->renderModeCombo(), &QComboBox::currentIndexChanged,
                      this, [this](int idx) {
         const bool wantIsosurface = (idx == 0);
-        if (wantIsosurface == ui->actionIsosurface->isChecked()) {
-            return; // already in sync
-        }
+        if (wantIsosurface == ui->actionIsosurface->isChecked())
+            return;
         const QSignalBlocker b1(ui->actionIsosurface);
         const QSignalBlocker b2(ui->actionVolume);
         ui->actionIsosurface->setChecked(wantIsosurface);
@@ -2237,31 +2208,26 @@ void vtkWindowCube::setupSidebar()
         this->changeCubeRender();
     });
     QObject::connect(ui->actionIsosurface, &QAction::toggled, this, [this](bool checked) {
-        if (checked && this->m_comboRenderMode
-                && this->m_comboRenderMode->currentIndex() != 0) {
-            const QSignalBlocker b(this->m_comboRenderMode);
-            this->m_comboRenderMode->setCurrentIndex(0);
+        if (auto *c = m_uiAssembler->renderModeCombo(); checked && c && c->currentIndex() != 0) {
+            const QSignalBlocker b(c);
+            c->setCurrentIndex(0);
         }
-        if (checked) {
+        if (checked)
             this->updateVolumeModeVisibility(false);
-        }
     });
     QObject::connect(ui->actionVolume, &QAction::toggled, this, [this](bool checked) {
-        if (checked && this->m_comboRenderMode
-                && this->m_comboRenderMode->currentIndex() != 1) {
-            const QSignalBlocker b(this->m_comboRenderMode);
-            this->m_comboRenderMode->setCurrentIndex(1);
+        if (auto *c = m_uiAssembler->renderModeCombo(); checked && c && c->currentIndex() != 1) {
+            const QSignalBlocker b(c);
+            c->setCurrentIndex(1);
         }
-        if (checked) {
+        if (checked)
             this->updateVolumeModeVisibility(true);
-        }
     });
 
-    // ── Volume mode combo → apply blend mode ──────────────────────────────
-    QObject::connect(this->m_comboVolumeMode, &QComboBox::currentIndexChanged,
+    // ── Volume mode combo → apply blend mode ──────────────────────────────────
+    QObject::connect(m_uiAssembler->volumeModeCombo(), &QComboBox::currentIndexChanged,
                      this, [this](int idx) {
         this->applyVolumeBlendMode(idx);
-        // Sync menu actions.
         const QSignalBlocker b1(this->m_actionComposite);
         const QSignalBlocker b2(this->m_actionMIP);
         const QSignalBlocker b3(this->m_actionMinIP);
@@ -2270,21 +2236,19 @@ void vtkWindowCube::setupSidebar()
         if (this->m_actionMinIP)     this->m_actionMinIP->setChecked(idx == 2);
     });
 
-    // ── LUT combo → apply color map ───────────────────────────────────────
-    QObject::connect(this->m_comboLut, &QComboBox::currentTextChanged,
+    // ── LUT combo → apply 3D volume color map ────────────────────────────────
+    QObject::connect(m_uiAssembler->lutCombo(), &QComboBox::currentTextChanged,
                      this, [this](const QString &name) {
         this->applyColorMapByName(name);
     });
 
-    // ── Bidirectional sync: 2D mode combo ↔ actionSlice / actionMomentMap ─
-    QObject::connect(this->m_combo2dMode, &QComboBox::currentIndexChanged,
+    // ── Bidirectional sync: 2D mode combo ↔ actionSlice / actionMomentMap ────
+    QObject::connect(m_uiAssembler->combo2dMode(), &QComboBox::currentIndexChanged,
                      this, [this](int idx) {
         const bool wantSlice = (idx == 0);
-        if (wantSlice == ui->actionSlice->isChecked()) {
-            return; // already in sync
-        }
+        if (wantSlice == ui->actionSlice->isChecked())
+            return;
         if (wantSlice) {
-            // Switching to Slice — straightforward
             const QSignalBlocker b1(ui->actionSlice);
             const QSignalBlocker b2(ui->actionMomentMap);
             ui->actionSlice->setChecked(true);
@@ -2292,33 +2256,30 @@ void vtkWindowCube::setupSidebar()
             this->update2dModeVisibility(true);
             this->changeImageRenderer();
         } else {
-            // Switching to Moment — route through the availability guard
-            // (may revert the combo back to Slice if no moment is available
-            //  and the user cancels the dialog)
             this->requestMomentMode();
         }
     });
     QObject::connect(ui->actionSlice, &QAction::toggled, this, [this](bool checked) {
         if (checked) {
-            this->sync2dModeSidebar(true);
+            m_uiAssembler->sync2dModeSidebar(true);
             this->update2dModeVisibility(true);
         }
     });
     QObject::connect(ui->actionMomentMap, &QAction::toggled, this, [this](bool checked) {
         if (checked) {
-            this->sync2dModeSidebar(false);
+            m_uiAssembler->sync2dModeSidebar(false);
             this->update2dModeVisibility(false);
         }
     });
 
-    // ── Slice LUT combo → apply slice color map ───────────────────────────
-    QObject::connect(this->m_comboSliceLut, &QComboBox::currentTextChanged,
+    // ── Slice LUT combo → apply slice color map ───────────────────────────────
+    QObject::connect(m_uiAssembler->sliceLutCombo(), &QComboBox::currentTextChanged,
                      this, [this](const QString &name) {
         this->applySliceLutByName(name);
     });
 
-    // ── Moment LUT combo → apply moment color map ─────────────────────────
-    QObject::connect(this->m_comboMomentLut, &QComboBox::currentTextChanged,
+    // ── Moment LUT combo → apply moment color map ─────────────────────────────
+    QObject::connect(m_uiAssembler->momentLutCombo(), &QComboBox::currentTextChanged,
                      this, [this](const QString &name) {
         this->applyMomentLutByName(name);
     });
@@ -2328,273 +2289,10 @@ void vtkWindowCube::setupSidebar()
             u"Controls Sidebar"_s, this);
 }
 
-QWidget *vtkWindowCube::setupThresholdPage()
-{
-    // Style constants — same palette as the rest of the sidebar.
-    const QString hdrStyle =
-            u"QLabel {"
-            "  color: #8AB8CC;"
-            "  font-size: 10px;"
-            "  font-weight: 600;"
-            "  padding-bottom: 4px;"
-            "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
-            "}"_s;
-    const QString cardStyle =
-            u"QFrame {"
-            "  background-color: rgba(255, 255, 255, 0.03);"
-            "  border: 1px solid rgba(4, 138, 191, 0.14);"
-            "  border-radius: 6px;"
-            "}"_s;
-
-    auto *page = new QWidget();
-    auto *root = new QVBoxLayout(page);
-    root->setContentsMargins(12, 14, 12, 12);
-    root->setSpacing(12);
-
-    // ── Section 1: Rendering Mode ─────────────────────────────────────────
-    {
-        auto *hdr = new QLabel(u"RENDERING MODE"_s);
-        hdr->setStyleSheet(hdrStyle);
-        root->addWidget(hdr);
-
-        auto *card = new QFrame();
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(0);
-
-        this->m_comboRenderMode = new QComboBox();
-        this->m_comboRenderMode->addItem(u"Isosurface"_s);
-        this->m_comboRenderMode->addItem(u"Volume Rendering"_s);
-        this->m_comboRenderMode->setItemData(
-                0, u"Render an isosurface extracted at the rendering threshold."_s,
-                Qt::ToolTipRole);
-        this->m_comboRenderMode->setItemData(
-                1, u"Render the cube volume directly (supports Composite, MIP, MinIP)."_s,
-                Qt::ToolTipRole);
-        this->m_comboRenderMode->setToolTip(u"Select how the 3D cube is rendered."_s);
-        // Reflect current state (Volume is the default on startup).
-        this->m_comboRenderMode->setCurrentIndex(ui->actionVolume->isChecked() ? 1 : 0);
-
-        cl->addWidget(this->m_comboRenderMode);
-        root->addWidget(card);
-    }
-
-    // ── Section 1b: Volume Mode (hidden when Isosurface is active) ────────
-    {
-        auto *modeCard = new QFrame();
-        modeCard->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(modeCard);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(4);
-
-        auto *lbl = new QLabel(u"VOLUME RENDERING"_s);
-        lbl->setStyleSheet(hdrStyle);
-        cl->addWidget(lbl);
-
-        this->m_comboVolumeMode = new QComboBox();
-        this->m_comboVolumeMode->addItem(u"Composite"_s);
-        this->m_comboVolumeMode->addItem(u"MIP (Max Intensity)"_s);
-        this->m_comboVolumeMode->addItem(u"MinIP (Min Intensity)"_s);
-        this->m_comboVolumeMode->setToolTip(
-                u"Choose the volume blending method.\n"
-                "Composite: full ray-casting with opacity transfer function.\n"
-                "MIP: maximum intensity projection along each ray.\n"
-                "MinIP: minimum intensity projection along each ray."_s);
-        this->m_comboVolumeMode->setCurrentIndex(0);
-        cl->addWidget(this->m_comboVolumeMode);
-
-        // Visible only when Volume rendering is active.
-        modeCard->setVisible(ui->actionVolume->isChecked());
-        this->m_volumeModeCard = modeCard;
-        root->addWidget(modeCard);
-    }
-
-    // ── Section 2: Threshold ──────────────────────────────────────────────
-    {
-        auto *hdr = new QLabel(u"RENDERING THRESHOLD"_s);
-        hdr->setStyleSheet(hdrStyle);
-        root->addWidget(hdr);
-
-        auto *card = new QFrame();
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(6);
-
-        // Reparent the existing slider into the new card.
-        ui->sliderThreshold->setParent(card);
-        ui->sliderThreshold->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        ui->sliderThreshold->setToolTip(u"Set the rendering threshold for isosurface extraction and volume opacity."_s);
-        cl->addWidget(ui->sliderThreshold);
-
-        // Value row: line edit only (no color button here).
-        auto *row = new QHBoxLayout();
-        row->setSpacing(6);
-        ui->lineThreshold->setParent(card);
-        ui->lineThreshold->setToolTip(u"Current rendering threshold value."_s);
-        row->addWidget(ui->lineThreshold, 1);
-        cl->addLayout(row);
-
-        root->addWidget(card);
-    }
-
-    // ── Section 3: Surface Color (Isosurface mode only) ───────────────────
-    {
-        auto *surfCard = new QFrame();
-        surfCard->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(surfCard);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(6);
-
-        auto *hdr = new QLabel(u"SURFACE COLOR"_s);
-        hdr->setStyleSheet(hdrStyle);
-        cl->addWidget(hdr);
-
-        auto *row = new QHBoxLayout();
-        row->setSpacing(6);
-        ui->btnCubeColor->setParent(surfCard);
-        ui->btnCubeColor->setFixedSize(28, 28);
-        ui->btnCubeColor->setToolTip(u"Select the surface color for isosurface rendering."_s);
-        row->addWidget(ui->btnCubeColor);
-        row->addStretch();
-        cl->addLayout(row);
-
-        // Visible only when Isosurface rendering is active.
-        surfCard->setVisible(!ui->actionVolume->isChecked());
-        this->m_surfaceColorCard = surfCard;
-        root->addWidget(surfCard);
-    }
-
-    // ── Section 4: Color Map (Volume mode only) ───────────────────────────
-    {
-        auto *cmCard = new QFrame();
-        cmCard->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(cmCard);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(6);
-
-        auto *hdr = new QLabel(u"COLOR MAP"_s);
-        hdr->setStyleSheet(hdrStyle);
-        cl->addWidget(hdr);
-
-        // Combo with per-item gradient icons.
-        this->m_comboLut = new QComboBox();
-        this->m_comboLut->setIconSize(QSize(48, 12));
-        const auto names = ColorMaps::GetColorMapNames();
-        for (const auto &stdName : names) {
-            const QString qName = QString::fromStdString(stdName);
-            this->m_comboLut->addItem(QIcon(buildLutPreview(qName, 48, 12)), qName);
-        }
-        const QString defaultName = QString::fromStdString(ColorMaps::DefaultColorMap);
-        this->m_comboLut->setCurrentText(defaultName);
-        this->m_comboLut->setToolTip(u"Select the color map for volume rendering."_s);
-        this->m_activeColorMapName = defaultName;
-        cl->addWidget(this->m_comboLut);
-
-        // Visible only when Volume rendering is active.
-        cmCard->setVisible(ui->actionVolume->isChecked());
-        this->m_colorMapCard = cmCard;
-        root->addWidget(cmCard);
-    }
-
-    root->addStretch();
-    return page;
-}
-
-QWidget *vtkWindowCube::setupToolsPage()
-{
-    const QString hdrStyle =
-            u"QLabel {"
-            "  color: #8AB8CC;"
-            "  font-size: 10px;"
-            "  font-weight: 600;"
-            "  padding-bottom: 4px;"
-            "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
-            "}"_s;
-    const QString cardStyle =
-            u"QFrame {"
-            "  background-color: rgba(255, 255, 255, 0.03);"
-            "  border: 1px solid rgba(4, 138, 191, 0.14);"
-            "  border-radius: 6px;"
-            "}"_s;
-
-    auto *page = new QWidget();
-    auto *root = new QVBoxLayout(page);
-    root->setContentsMargins(12, 14, 12, 12);
-    root->setSpacing(12);
-
-    // Helper: create a placeholder QToolButton (text + enabled state are
-    // overwritten by setDefaultAction() once the QActions exist).
-    auto makeToolBtn = [](const QString &label) -> QToolButton * {
-        auto *btn = new QToolButton();
-        btn->setText(label);
-        btn->setEnabled(false);
-        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        return btn;
-    };
-
-    // ── Section 1: Analysis ───────────────────────────────────────────────
-    {
-        auto *hdr = new QLabel(u"ANALYSIS"_s);
-        hdr->setStyleSheet(hdrStyle);
-        root->addWidget(hdr);
-
-        auto *card = new QFrame();
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 6, 8, 6);
-        cl->setSpacing(4);
-
-        this->m_btnEstimateNoise = makeToolBtn(u"Estimate Noise\u2026"_s);
-        cl->addWidget(this->m_btnEstimateNoise);
-
-        root->addWidget(card);
-    }
-
-    // ── Section 2: Exploration ─────────────────────────────────────────────
-    {
-        auto *hdr = new QLabel(u"EXPLORATION"_s);
-        hdr->setStyleSheet(hdrStyle);
-        root->addWidget(hdr);
-
-        auto *card = new QFrame();
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 6, 8, 6);
-        cl->setSpacing(4);
-
-        this->m_btnDataProbe = makeToolBtn(u"Data Probe"_s);
-        this->m_btnPvDiagram = makeToolBtn(u"PV Diagram"_s);
-
-        cl->addWidget(this->m_btnDataProbe);
-        cl->addWidget(this->m_btnPvDiagram);
-
-        root->addWidget(card);
-    }
-
-    // ── Section 3: View ───────────────────────────────────────────────────
-    {
-        auto *hdr = new QLabel(u"VIEW"_s);
-        hdr->setStyleSheet(hdrStyle);
-        root->addWidget(hdr);
-
-        auto *card = new QFrame();
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 6, 8, 6);
-        cl->setSpacing(4);
-
-        this->m_btnCameraRoi = makeToolBtn(u"Use Camera ROI"_s);
-        cl->addWidget(this->m_btnCameraRoi);
-
-        root->addWidget(card);
-    }
-
-    root->addStretch();
-    return page;
-}
+// ── setupThresholdPage / setup2dViewPage / setupToolsPage / setupInfoStatsPage
+//    have been moved to CubeUiAssembler.  setupSidebar() calls them via
+//    m_uiAssembler->build*Page().
+// ─────────────────────────────────────────────────────────────────────────────
 
 void vtkWindowCube::applyColorMapByName(const QString &name)
 {
@@ -2647,455 +2345,88 @@ void vtkWindowCube::applyVolumeBlendMode(int idx)
     }
 }
 
-void vtkWindowCube::syncVolumeModeSidebar(int idx)
-{
-    if (!this->m_comboVolumeMode) {
-        return;
-    }
-    const QSignalBlocker b(this->m_comboVolumeMode);
-    this->m_comboVolumeMode->setCurrentIndex(idx);
-}
-
 void vtkWindowCube::updateVolumeModeVisibility(bool volumeActive)
 {
-    if (this->m_volumeModeCard) {
-        this->m_volumeModeCard->setVisible(volumeActive);
+    // Sidebar cards delegated to assembler.
+    if (m_uiAssembler) {
+        if (auto *c = m_uiAssembler->volumeModeCard())   c->setVisible(volumeActive);
+        if (auto *c = m_uiAssembler->colorMapCard())     c->setVisible(volumeActive);
+        if (auto *c = m_uiAssembler->surfaceColorCard()) c->setVisible(!volumeActive);
     }
-    if (this->m_colorMapCard) {
-        this->m_colorMapCard->setVisible(volumeActive);
-    }
-    if (this->m_surfaceColorCard) {
-        this->m_surfaceColorCard->setVisible(!volumeActive);
-    }
-    if (this->m_menuVolumeRendering) {
+    // Volume Rendering menu is owned by vtkWindowCube.
+    if (this->m_menuVolumeRendering)
         this->m_menuVolumeRendering->setEnabled(volumeActive);
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2D View Settings
 // ─────────────────────────────────────────────────────────────────────────────
 
-QWidget *vtkWindowCube::setup2dViewPage()
-{
-    const QString hdrStyle =
-            u"QLabel {"
-            "  color: #8AB8CC;"
-            "  font-size: 10px;"
-            "  font-weight: 600;"
-            "  padding-bottom: 4px;"
-            "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
-            "}"_s;
-    const QString cardStyle =
-            u"QFrame {"
-            "  background-color: rgba(255, 255, 255, 0.03);"
-            "  border: 1px solid rgba(4, 138, 191, 0.14);"
-            "  border-radius: 6px;"
-            "}"_s;
-
-    auto *page = new QWidget();
-    auto *root = new QVBoxLayout(page);
-    root->setContentsMargins(12, 14, 12, 12);
-    root->setSpacing(12);
-
-    const bool initiallySlice = ui->actionSlice->isChecked();
-
-    // ── Section 1: 2D Mode ────────────────────────────────────────────────
-    {
-        auto *hdr = new QLabel(u"2D MODE"_s);
-        hdr->setStyleSheet(hdrStyle);
-        root->addWidget(hdr);
-
-        auto *card = new QFrame();
-        card->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(0);
-
-        this->m_combo2dMode = new QComboBox();
-        this->m_combo2dMode->addItem(u"Slice"_s);
-        this->m_combo2dMode->addItem(u"Moment Map"_s);
-        this->m_combo2dMode->setItemData(0, u"Display a 2D slice through the cube."_s,
-                                          Qt::ToolTipRole);
-        this->m_combo2dMode->setItemData(1, u"Display the computed moment map of the cube."_s,
-                                          Qt::ToolTipRole);
-        this->m_combo2dMode->setToolTip(u"Select the 2D display mode."_s);
-        this->m_combo2dMode->setCurrentIndex(initiallySlice ? 0 : 1);
-        cl->addWidget(this->m_combo2dMode);
-
-        root->addWidget(card);
-    }
-
-    // ── Section 2: Slice Controls (Slice mode only) ────────────────────────
-    {
-        auto *sliceCard = new QFrame();
-        sliceCard->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(sliceCard);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(6);
-
-        auto *hdr = new QLabel(u"CUTTING PLANE"_s);
-        hdr->setStyleSheet(hdrStyle);
-        cl->addWidget(hdr);
-
-        // Reparent the existing slice controls into this card.
-        ui->sliderSlice->setParent(sliceCard);
-        ui->sliderSlice->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        cl->addWidget(ui->sliderSlice);
-
-        auto *row = new QHBoxLayout();
-        row->setSpacing(6);
-        ui->spinSlice->setParent(sliceCard);
-        row->addWidget(ui->spinSlice);
-        ui->lineSpectral->setParent(sliceCard);
-        row->addWidget(ui->lineSpectral, 1);
-        cl->addLayout(row);
-
-        sliceCard->setVisible(initiallySlice);
-        this->m_sliceControlsCard = sliceCard;
-        root->addWidget(sliceCard);
-    }
-
-    // ── Section 3: Slice Color Map (Slice mode only) ─────────────────────
-    {
-        auto *lutCard = new QFrame();
-        lutCard->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(lutCard);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(6);
-
-        auto *hdr = new QLabel(u"COLOR MAP"_s);
-        hdr->setStyleSheet(hdrStyle);
-        cl->addWidget(hdr);
-
-        this->m_comboSliceLut = new QComboBox();
-        this->m_comboSliceLut->setIconSize(QSize(48, 12));
-        const auto names = ColorMaps::GetColorMapNames();
-        for (const auto &stdName : names) {
-            const QString qName = QString::fromStdString(stdName);
-            this->m_comboSliceLut->addItem(QIcon(buildLutPreview(qName, 48, 12)), qName);
-        }
-        const QString defaultName = QString::fromStdString(ColorMaps::DefaultColorMap);
-        this->m_comboSliceLut->setCurrentText(defaultName);
-        this->m_comboSliceLut->setToolTip(u"Select the color map for slice views."_s);
-        this->m_activeSliceLutName = defaultName;
-        cl->addWidget(this->m_comboSliceLut);
-
-        lutCard->setVisible(initiallySlice);
-        this->m_sliceLutCard = lutCard;
-        root->addWidget(lutCard);
-    }
-
-    // ── Section 4: Contours (Slice mode only) ────────────────────────────
-    {
-        // Reparent the existing contours frame from the .ui file.
-        // All signal connections wired in the constructor (checkContours,
-        // lineLevel, lineLowerBound, lineUpperBound) remain valid after reparenting.
-        auto *hdr = new QLabel(u"CONTOURS"_s);
-        hdr->setStyleSheet(hdrStyle);
-
-        ui->frameContours->setStyleSheet(cardStyle);
-        ui->frameContours->setParent(page);
-
-        // Wrap in a container so visibility toggling keeps the header + frame together.
-        auto *contoursCard = new QWidget();
-        auto *ccl = new QVBoxLayout(contoursCard);
-        ccl->setContentsMargins(0, 0, 0, 0);
-        ccl->setSpacing(4);
-        ccl->addWidget(hdr);
-        ccl->addWidget(ui->frameContours);
-
-        contoursCard->setVisible(initiallySlice);
-        this->m_sliceContoursCard = contoursCard;
-        root->addWidget(contoursCard);
-    }
-
-    // ── Section 5: Moment Map Info (Moment mode only) ────────────────────
-    {
-        auto *momentCard = new QFrame();
-        momentCard->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(momentCard);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(4);
-
-        auto *hdr = new QLabel(u"MOMENT MAP"_s);
-        hdr->setStyleSheet(hdrStyle);
-        cl->addWidget(hdr);
-
-        // Dynamic label — updated by updateMomentInfoCard() when a moment is computed.
-        auto *info = new QLabel(u"No moment map available.\nOpen Compute \u2192 Moment Map\nto generate one."_s);
-        info->setWordWrap(true);
-        info->setStyleSheet(u"QLabel { color: #7AAABB; font-size: 9px; }"_s);
-        cl->addWidget(info);
-        this->m_momentInfoLabel = info;
-
-        momentCard->setVisible(!initiallySlice);
-        this->m_momentInfoCard = momentCard;
-        root->addWidget(momentCard);
-    }
-
-    // ── Section 6: Moment Color Map (Moment mode only) ────────────────────
-    {
-        auto *lutCard = new QFrame();
-        lutCard->setStyleSheet(cardStyle);
-        auto *cl = new QVBoxLayout(lutCard);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(6);
-
-        auto *hdr = new QLabel(u"COLOR MAP"_s);
-        hdr->setStyleSheet(hdrStyle);
-        cl->addWidget(hdr);
-
-        this->m_comboMomentLut = new QComboBox();
-        this->m_comboMomentLut->setIconSize(QSize(48, 12));
-        const auto names2 = ColorMaps::GetColorMapNames();
-        for (const auto &stdName : names2) {
-            const QString qName = QString::fromStdString(stdName);
-            this->m_comboMomentLut->addItem(QIcon(buildLutPreview(qName, 48, 12)), qName);
-        }
-        const QString defaultName2 = QString::fromStdString(ColorMaps::DefaultColorMap);
-        this->m_comboMomentLut->setCurrentText(defaultName2);
-        this->m_comboMomentLut->setToolTip(u"Select the color map for moment map views."_s);
-        this->m_activeMomentLutName = defaultName2;
-        cl->addWidget(this->m_comboMomentLut);
-
-        lutCard->setVisible(!initiallySlice);
-        this->m_momentLutCard = lutCard;
-        root->addWidget(lutCard);
-    }
-
-    root->addStretch();
-    return page;
-}
-
-QWidget *vtkWindowCube::setupInfoStatsPage()
-{
-    const QString hdrStyle =
-            u"QLabel { font-size: 8px; font-weight: 700; letter-spacing: 1px;"
-            "  color: rgba(4,138,191,0.75); margin-top: 6px; margin-bottom: 2px; }"_s;
-
-    const QString cardStyle =
-            u"QFrame {"
-            "  background: rgba(255,255,255,0.04);"
-            "  border: 1px solid rgba(4,138,191,0.18);"
-            "  border-radius: 4px;"
-            "}"_s;
-
-    // Read-only line-edit tint applied to the existing stats frames.
-    const QString roStyle = u"QLineEdit[readOnly='true'] { color: #7AAABB; }"_s;
-
-    // Helper: create a small read-only value label.
-    auto makeVal = [](const QString &text = {}) -> QLabel * {
-        auto *l = new QLabel(text);
-        l->setWordWrap(true);
-        l->setStyleSheet(u"QLabel { font-size: 9px; color: #AABBCC; }"_s);
-        return l;
-    };
-
-    auto *page = new QWidget();
-    auto *root = new QVBoxLayout(page);
-    root->setContentsMargins(8, 8, 8, 8);
-    root->setSpacing(4);
-
-    // ── 1. DATASET SUMMARY ────────────────────────────────────────────────────
-    {
-        auto *hdr = new QLabel(u"DATASET SUMMARY"_s);
-        hdr->setStyleSheet(hdrStyle);
-        root->addWidget(hdr);
-
-        auto *card = new QFrame();
-        card->setStyleSheet(cardStyle);
-        auto *fl = new QFormLayout(card);
-        fl->setContentsMargins(8, 6, 8, 6);
-        fl->setSpacing(3);
-        fl->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
-
-        this->m_infoDsName = makeVal(QFileInfo(this->filepath).fileName());
-        this->m_infoDsDimensions = makeVal(
-                u"%1 × %2 × %3"_s
-                        .arg(this->remoteDatasetWidth)
-                        .arg(this->remoteDatasetHeight)
-                        .arg(this->remoteDatasetDepth));
-        this->m_infoDsLoadState = makeVal(u"Preview"_s);
-
-        fl->addRow(u"File:"_s, this->m_infoDsName);
-        fl->addRow(u"Dimensions:"_s, this->m_infoDsDimensions);
-        fl->addRow(u"Load state:"_s, this->m_infoDsLoadState);
-
-        root->addWidget(card);
-    }
-
-    // ── 2. DATA STATISTICS ────────────────────────────────────────────────────
-    {
-        auto *hdr = new QLabel(u"DATA STATISTICS"_s);
-        hdr->setStyleSheet(hdrStyle);
-        root->addWidget(hdr);
-
-        // Reparent existing stats frames from the .ui file into this section.
-        // Pointer values remain valid; all existing data-population code still works.
-        auto *subHdr2d = new QLabel(u"2D IMAGE"_s);
-        subHdr2d->setStyleSheet(
-                u"QLabel { font-size: 8px; font-weight: 600; letter-spacing: 1px; color: rgba(4,138,191,0.55); }"_s);
-        root->addWidget(subHdr2d);
-
-        ui->labelImg->setStyleSheet(
-                u"QLabel { font-size: 8px; font-weight: 600; letter-spacing: 1px; color: rgba(4,138,191,0.55); }"_s);
-        ui->frameImgStats->setStyleSheet(cardStyle + roStyle);
-        ui->frameImgStats->setParent(page);
-        root->addWidget(ui->labelImg);
-        root->addWidget(ui->frameImgStats);
-
-        auto *subHdr3d = new QLabel(u"3D CUBE"_s);
-        subHdr3d->setStyleSheet(
-                u"QLabel { font-size: 8px; font-weight: 600; letter-spacing: 1px; color: rgba(4,138,191,0.55); }"_s);
-        root->addWidget(subHdr3d);
-
-        ui->frameCubeStats->setStyleSheet(cardStyle + roStyle);
-        ui->frameCubeStats->setParent(page);
-        root->addWidget(ui->frameCubeStats);
-    }
-
-    // ── 3. COORDINATE / WCS ───────────────────────────────────────────────────
-    {
-        auto *hdr = new QLabel(u"COORDINATE / WCS"_s);
-        hdr->setStyleSheet(hdrStyle);
-        root->addWidget(hdr);
-
-        auto *card = new QFrame();
-        card->setStyleSheet(cardStyle);
-        auto *fl = new QFormLayout(card);
-        fl->setContentsMargins(8, 6, 8, 6);
-        fl->setSpacing(3);
-        fl->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
-
-        this->m_infoWcsBadge = makeVal();
-        this->m_infoWcsFrame = makeVal(this->currentWcsFrameLabel());
-        this->m_infoSpectral = makeVal(this->spectralAxisTitle());
-
-        this->m_infoWcsBadge->setToolTip(u"World Coordinate System status for this dataset."_s);
-        this->m_infoWcsFrame->setToolTip(u"The celestial reference frame currently in use."_s);
-        this->m_infoSpectral->setToolTip(u"The spectral axis type and units for the third dimension."_s);
-
-        fl->addRow(u"WCS:"_s, this->m_infoWcsBadge);
-        fl->addRow(u"Frame:"_s, this->m_infoWcsFrame);
-        fl->addRow(u"Spectral axis:"_s, this->m_infoSpectral);
-
-        root->addWidget(card);
-    }
-
-    // ── 4. SYSTEM / STATUS ────────────────────────────────────────────────────
-    {
-        auto *hdr = new QLabel(u"SYSTEM / STATUS"_s);
-        hdr->setStyleSheet(hdrStyle);
-        root->addWidget(hdr);
-
-        auto *card = new QFrame();
-        card->setStyleSheet(cardStyle);
-        auto *fl = new QFormLayout(card);
-        fl->setContentsMargins(8, 6, 8, 6);
-        fl->setSpacing(3);
-        fl->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
-
-        this->m_infoRenderMode = makeVal(u"Isosurface"_s);
-        this->m_info2dMode = makeVal(u"Slice"_s);
-        this->m_infoMomentState = makeVal(u"—"_s);
-
-        this->m_infoRenderMode->setToolTip(u"Current 3D rendering mode (Isosurface or Volume Rendering)."_s);
-        this->m_info2dMode->setToolTip(u"Current 2D view mode (Slice or Moment Map)."_s);
-        this->m_infoMomentState->setToolTip(u"State of the last moment map computation."_s);
-
-        fl->addRow(u"Rendering mode:"_s, this->m_infoRenderMode);
-        fl->addRow(u"2D view:"_s, this->m_info2dMode);
-        fl->addRow(u"Moment map:"_s, this->m_infoMomentState);
-
-        root->addWidget(card);
-    }
-
-    root->addStretch();
-
-    // Populate dynamic fields that depend on state already known at setup time.
-    this->updateInfoStatsPage();
-
-    return page;
-}
-
 void vtkWindowCube::updateInfoStatsPage()
 {
-    // Guard: labels are created inside setupInfoStatsPage(); this is a no-op
-    // until the sidebar is fully set up.
-    if (!this->m_infoDsLoadState) {
+    // Guard: labels are owned by m_uiAssembler and created during setupSidebar().
+    if (!m_uiAssembler || !m_uiAssembler->infoDsLoadState())
         return;
-    }
 
     // ── Dataset Summary ───────────────────────────────────────────────────────
-    // m_infoDsName and m_infoDsDimensions are set once at construction (static).
-
+    auto *loadState = m_uiAssembler->infoDsLoadState();
     switch (this->remoteCubeDisplayState) {
     case RemoteCubeDisplayState::Preview:
-        this->m_infoDsLoadState->setText(u"Preview proxy"_s);
-        this->m_infoDsLoadState->setStyleSheet(u"QLabel { font-size: 9px; color: #E8A840; }"_s);
+        loadState->setText(u"Preview proxy"_s);
+        loadState->setStyleSheet(u"QLabel { font-size: 9px; color: #E8A840; }"_s);
         break;
     case RemoteCubeDisplayState::LoadingFullResolution:
-        this->m_infoDsLoadState->setText(u"Loading full resolution\u2026"_s);
-        this->m_infoDsLoadState->setStyleSheet(
-                u"QLabel { font-size: 9px; color: #E8A840; font-style: italic; }"_s);
+        loadState->setText(u"Loading full resolution\u2026"_s);
+        loadState->setStyleSheet(u"QLabel { font-size: 9px; color: #E8A840; font-style: italic; }"_s);
         break;
     case RemoteCubeDisplayState::FullResolution:
-        this->m_infoDsLoadState->setText(u"Full resolution"_s);
-        this->m_infoDsLoadState->setStyleSheet(u"QLabel { font-size: 9px; color: #7AAABB; }"_s);
+        loadState->setText(u"Full resolution"_s);
+        loadState->setStyleSheet(u"QLabel { font-size: 9px; color: #7AAABB; }"_s);
         break;
     }
 
     // ── Coordinate / WCS ─────────────────────────────────────────────────────
-    if (this->m_infoWcsFrame) {
-        this->m_infoWcsFrame->setText(this->currentWcsFrameLabel());
-    }
-    if (this->m_infoSpectral) {
-        this->m_infoSpectral->setText(this->spectralAxisTitle());
-    }
-    if (this->m_infoWcsBadge) {
+    if (auto *l = m_uiAssembler->infoWcsFrame())
+        l->setText(this->currentWcsFrameLabel());
+    if (auto *l = m_uiAssembler->infoSpectral())
+        l->setText(this->spectralAxisTitle());
+    if (auto *badge = m_uiAssembler->infoWcsBadge()) {
         if (this->remoteWcsStatus.compare(u"ok"_s, Qt::CaseInsensitive) == 0) {
-            this->m_infoWcsBadge->setText(u"OK"_s);
-            this->m_infoWcsBadge->setStyleSheet(u"QLabel { font-size: 9px; color: #5DA87A; }"_s);
+            badge->setText(u"OK"_s);
+            badge->setStyleSheet(u"QLabel { font-size: 9px; color: #5DA87A; }"_s);
         } else if (this->remoteWcsStatus.compare(u"degraded"_s, Qt::CaseInsensitive) == 0) {
-            this->m_infoWcsBadge->setText(u"Degraded"_s);
-            this->m_infoWcsBadge->setStyleSheet(u"QLabel { font-size: 9px; color: #E8A840; }"_s);
+            badge->setText(u"Degraded"_s);
+            badge->setStyleSheet(u"QLabel { font-size: 9px; color: #E8A840; }"_s);
         } else {
-            this->m_infoWcsBadge->setText(u"Repaired"_s);
-            this->m_infoWcsBadge->setStyleSheet(u"QLabel { font-size: 9px; color: #9a6700; }"_s);
+            badge->setText(u"Repaired"_s);
+            badge->setStyleSheet(u"QLabel { font-size: 9px; color: #9a6700; }"_s);
         }
-        if (!this->remoteWcsWarningMessage.isEmpty()) {
-            this->m_infoWcsBadge->setToolTip(this->remoteWcsWarningMessage);
-        }
+        if (!this->remoteWcsWarningMessage.isEmpty())
+            badge->setToolTip(this->remoteWcsWarningMessage);
     }
 
     // ── System / Status ───────────────────────────────────────────────────────
-    if (this->m_infoRenderMode) {
-        const bool iso = ui->actionIsosurface->isChecked();
-        this->m_infoRenderMode->setText(iso ? u"Isosurface"_s : u"Volume Rendering"_s);
-    }
-    if (this->m_info2dMode) {
-        const bool slc = this->viewingSlice();
-        this->m_info2dMode->setText(slc ? u"Slice"_s : u"Moment Map"_s);
-    }
-    if (this->m_infoMomentState) {
+    if (auto *l = m_uiAssembler->infoRenderMode())
+        l->setText(ui->actionIsosurface->isChecked() ? u"Isosurface"_s : u"Volume Rendering"_s);
+    if (auto *l = m_uiAssembler->info2dMode())
+        l->setText(this->viewingSlice() ? u"Slice"_s : u"Moment Map"_s);
+    if (auto *l = m_uiAssembler->infoMomentState()) {
         switch (m_momentCardState) {
         case MomentCardState::NoMoment:
-            this->m_infoMomentState->setText(u"\u2014"_s); // em-dash
-            this->m_infoMomentState->setStyleSheet(u"QLabel { font-size: 9px; color: #AABBCC; }"_s);
+            l->setText(u"\u2014"_s);
+            l->setStyleSheet(u"QLabel { font-size: 9px; color: #AABBCC; }"_s);
             break;
         case MomentCardState::Computing:
-            this->m_infoMomentState->setText(u"Computing\u2026"_s);
-            this->m_infoMomentState->setStyleSheet(
-                    u"QLabel { font-size: 9px; color: #E8A840; font-style: italic; }"_s);
+            l->setText(u"Computing\u2026"_s);
+            l->setStyleSheet(u"QLabel { font-size: 9px; color: #E8A840; font-style: italic; }"_s);
             break;
         case MomentCardState::Ready:
-            this->m_infoMomentState->setText(this->momentProvenanceState.summary);
-            this->m_infoMomentState->setStyleSheet(u"QLabel { font-size: 9px; color: #7AAABB; }"_s);
+            l->setText(this->momentProvenanceState.summary);
+            l->setStyleSheet(u"QLabel { font-size: 9px; color: #7AAABB; }"_s);
             break;
         case MomentCardState::Error:
-            this->m_infoMomentState->setText(u"Error"_s);
-            this->m_infoMomentState->setStyleSheet(u"QLabel { font-size: 9px; color: #CC6060; }"_s);
+            l->setText(u"Error"_s);
+            l->setStyleSheet(u"QLabel { font-size: 9px; color: #CC6060; }"_s);
             break;
         }
     }
@@ -3144,7 +2475,7 @@ void vtkWindowCube::requestMomentMode()
         const QSignalBlocker b2(ui->actionMomentMap);
         ui->actionSlice->setChecked(false);
         ui->actionMomentMap->setChecked(true);
-        this->sync2dModeSidebar(false);
+        m_uiAssembler->sync2dModeSidebar(false);
         this->update2dModeVisibility(false);
         this->changeImageRenderer();
         return;
@@ -3157,7 +2488,7 @@ void vtkWindowCube::requestMomentMode()
         const QSignalBlocker b2(ui->actionMomentMap);
         ui->actionSlice->setChecked(true);
         ui->actionMomentMap->setChecked(false);
-        this->sync2dModeSidebar(true);
+        m_uiAssembler->sync2dModeSidebar(true);
         this->update2dModeVisibility(true);
         return;
     }
@@ -3182,7 +2513,7 @@ void vtkWindowCube::requestMomentMode()
         const QSignalBlocker b2(ui->actionMomentMap);
         ui->actionSlice->setChecked(true);
         ui->actionMomentMap->setChecked(false);
-        this->sync2dModeSidebar(true);
+        m_uiAssembler->sync2dModeSidebar(true);
         this->update2dModeVisibility(true);
         return;
     }
@@ -3216,7 +2547,7 @@ void vtkWindowCube::requestMomentMode()
     const QSignalBlocker b2(ui->actionMomentMap);
     ui->actionSlice->setChecked(true);
     ui->actionMomentMap->setChecked(false);
-    this->sync2dModeSidebar(true);
+    m_uiAssembler->sync2dModeSidebar(true);
     this->update2dModeVisibility(true);
 }
 
@@ -3232,81 +2563,50 @@ void vtkWindowCube::setMomentCardState(MomentCardState state, const QString &det
 
 void vtkWindowCube::updateMomentInfoCard()
 {
-    if (!this->m_momentInfoLabel) {
+    auto *lbl = m_uiAssembler ? m_uiAssembler->momentInfoLabel() : nullptr;
+    if (!lbl)
         return;
-    }
 
-    // Common stylesheet fragments.
-    const QString baseStyle = u"QLabel { font-size: 9px; word-wrap: true; }"_s;
-    const QString infoColor = u"color: #7AAABB;"_s;
-    const QString busyColor = u"color: #E8A840;"_s; // warm amber — visually distinct
+    const QString infoColor  = u"color: #7AAABB;"_s;
+    const QString busyColor  = u"color: #E8A840;"_s;
     const QString errorColor = u"color: #CC6060;"_s;
 
     switch (m_momentCardState) {
     case MomentCardState::NoMoment:
-        this->m_momentInfoLabel->setStyleSheet(
-                QStringLiteral("QLabel { font-size: 9px; %1 }").arg(infoColor));
-        this->m_momentInfoLabel->setText(
-                u"No moment map available.\nOpen Compute \u2192 Moment Map\nto generate one."_s);
-        this->m_momentInfoLabel->setToolTip(QString());
+        lbl->setStyleSheet(QStringLiteral("QLabel { font-size: 9px; %1 }").arg(infoColor));
+        lbl->setText(u"No moment map available.\nOpen Compute \u2192 Moment Map\nto generate one."_s);
+        lbl->setToolTip(QString());
         break;
-
     case MomentCardState::Computing:
-        this->m_momentInfoLabel->setStyleSheet(
-                QStringLiteral("QLabel { font-size: 9px; font-style: italic; %1 }").arg(busyColor));
-        this->m_momentInfoLabel->setText(
-                u"Computing moment map\u2026\n%1"_s.arg(m_momentCardDetail));
-        this->m_momentInfoLabel->setToolTip(
-                u"Moment computation is running on the backend.\nThe panel will update automatically when done."_s);
+        lbl->setStyleSheet(QStringLiteral("QLabel { font-size: 9px; font-style: italic; %1 }").arg(busyColor));
+        lbl->setText(u"Computing moment map\u2026\n%1"_s.arg(m_momentCardDetail));
+        lbl->setToolTip(u"Moment computation is running on the backend.\nThe panel will update automatically when done."_s);
         break;
-
     case MomentCardState::Ready:
-        this->m_momentInfoLabel->setStyleSheet(
-                QStringLiteral("QLabel { font-size: 9px; %1 }").arg(infoColor));
-        this->m_momentInfoLabel->setText(this->momentProvenanceState.summary);
-        this->m_momentInfoLabel->setToolTip(this->momentProvenanceState.details);
+        lbl->setStyleSheet(QStringLiteral("QLabel { font-size: 9px; %1 }").arg(infoColor));
+        lbl->setText(this->momentProvenanceState.summary);
+        lbl->setToolTip(this->momentProvenanceState.details);
         break;
-
     case MomentCardState::Error:
-        this->m_momentInfoLabel->setStyleSheet(
-                QStringLiteral("QLabel { font-size: 9px; %1 }").arg(errorColor));
-        this->m_momentInfoLabel->setText(
-                u"Moment computation failed.\n%1"_s.arg(
-                        m_momentCardDetail.isEmpty()
-                                ? u"Check the Diagnostics panel for details."_s
-                                : m_momentCardDetail));
-        this->m_momentInfoLabel->setToolTip(
-                u"The last moment computation did not produce a result.\nSee the Diagnostics panel for the error."_s);
+        lbl->setStyleSheet(QStringLiteral("QLabel { font-size: 9px; %1 }").arg(errorColor));
+        lbl->setText(u"Moment computation failed.\n%1"_s.arg(
+                m_momentCardDetail.isEmpty()
+                        ? u"Check the Diagnostics panel for details."_s
+                        : m_momentCardDetail));
+        lbl->setToolTip(u"The last moment computation did not produce a result.\nSee the Diagnostics panel for the error."_s);
         break;
     }
 }
 
 void vtkWindowCube::update2dModeVisibility(bool sliceActive)
 {
-    if (this->m_sliceControlsCard) {
-        this->m_sliceControlsCard->setVisible(sliceActive);
-    }
-    if (this->m_sliceLutCard) {
-        this->m_sliceLutCard->setVisible(sliceActive);
-    }
-    if (this->m_sliceContoursCard) {
-        this->m_sliceContoursCard->setVisible(sliceActive);
-    }
-    if (this->m_momentInfoCard) {
-        this->m_momentInfoCard->setVisible(!sliceActive);
-    }
-    if (this->m_momentLutCard) {
-        this->m_momentLutCard->setVisible(!sliceActive);
-    }
-}
-
-void vtkWindowCube::sync2dModeSidebar(bool sliceActive)
-{
-    if (!this->m_combo2dMode) {
+    if (!m_uiAssembler)
         return;
-    }
-    const QSignalBlocker b(this->m_combo2dMode);
-    this->m_combo2dMode->setCurrentIndex(sliceActive ? 0 : 1);
+    if (auto *c = m_uiAssembler->sliceControlsCard())  c->setVisible(sliceActive);
+    if (auto *c = m_uiAssembler->sliceLutCard())       c->setVisible(sliceActive);
+    if (auto *c = m_uiAssembler->sliceContoursCard())  c->setVisible(sliceActive);
+    if (auto *c = m_uiAssembler->momentInfoCard())     c->setVisible(!sliceActive);
+    if (auto *c = m_uiAssembler->momentLutCard())      c->setVisible(!sliceActive);
 }
 
 void vtkWindowCube::setupWorkspaceDocks()
@@ -7600,7 +6900,7 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
     }
     // Sync the 2D sidebar (actions were blocked above so the toggled handler
     // did not fire; update manually here).
-    this->sync2dModeSidebar(false);
+    m_uiAssembler->sync2dModeSidebar(false);
     this->update2dModeVisibility(false);
 
     ui->vtkImage->setRenderWindow(this->momentWin);
@@ -7939,7 +7239,7 @@ void vtkWindowCube::changeImageRenderer()
         this->refreshPvOverlay();
     }
     // Keep the 2D sidebar in sync with the active mode.
-    this->sync2dModeSidebar(ui->actionSlice->isChecked());
+    m_uiAssembler->sync2dModeSidebar(ui->actionSlice->isChecked());
     this->update2dModeVisibility(ui->actionSlice->isChecked());
     this->updateInfoStatsPage();
     ui->vtkImage->renderWindow()->Render();
@@ -7997,9 +7297,11 @@ void vtkWindowCube::changeCubeColor()
             // Delegate full LUT application (updates slice, moment, and volume CTF).
             this->applyColorMapByName(palette);
             // Sync the sidebar combo so the two paths stay consistent.
-            if (this->m_comboLut) {
-                const QSignalBlocker b(this->m_comboLut);
-                this->m_comboLut->setCurrentText(palette);
+            if (m_uiAssembler) {
+                if (auto *c = m_uiAssembler->lutCombo()) {
+                    const QSignalBlocker b(c);
+                    c->setCurrentText(palette);
+                }
             }
         }
     }

@@ -108,6 +108,8 @@ set(PROJECT_SOURCES
         src/gui/HiPSViewportWidget.h
         src/gui/HiPSWindow.cpp
         src/gui/HiPSWindow.h
+        src/gui/CubeUiAssembler.cpp
+        src/gui/CubeUiAssembler.h
         src/gui/MomentMapController.cpp
         src/gui/MomentMapController.h
         src/gui/PvController.cpp

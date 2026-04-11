@@ -3,6 +3,7 @@
 
 #include "CatalogueOverlayUtils.h"
 #include "CubeOpenPreviewTask.h"
+#include "CubeUiAssembler.h"
 
 // Controllers are forward-declared here; their full headers are included in
 // vtkWindowCube.cpp where they are constructed and their methods are called.
@@ -30,9 +31,6 @@ class PvController;
 #include <vector>
 
 class QAction;
-class QCheckBox;
-class QToolButton;
-class QComboBox;
 class QMenu;
 class SidebarPanel;
 class CatalogueTableModel;
@@ -271,25 +269,19 @@ private:
     // ── Sidebar ───────────────────────────────────────────────────────────────
     SidebarPanel *m_sidebar{ nullptr };
     QPointer<QAction> actionShowControlsSidebar;
+    // Owns all sidebar widget pointers and the four page-build methods.
+    std::unique_ptr<CubeUiAssembler> m_uiAssembler;
     void setupSidebar();
 
-    // ── 3D View Settings page ─────────────────────────────────────────────────
-    QPointer<QComboBox> m_comboRenderMode;
-    QPointer<QComboBox> m_comboVolumeMode;   // Composite / MIP / MinIP
-    QPointer<QWidget>   m_volumeModeCard;    // shown only when Volume is active
-    QPointer<QComboBox> m_comboLut;
-    QPointer<QWidget>   m_colorMapCard;      // shown only when Volume is active
-    QPointer<QWidget>   m_surfaceColorCard;  // shown only when Isosurface is active
+    // ── 3D View Settings – VTK-side state (UI widgets are in m_uiAssembler) ──
     QString             m_activeColorMapName;
     // Menu actions for volume blend mode (created programmatically).
     QPointer<QAction>   m_actionComposite;
     QPointer<QAction>   m_actionMIP;
     QPointer<QAction>   m_actionMinIP;
     QPointer<QMenu>     m_menuVolumeRendering;
-    QWidget *setupThresholdPage();
     void applyColorMapByName(const QString &name);
     void applyVolumeBlendMode(int idx);  // 0=Composite, 1=MIP, 2=MinIP
-    void syncVolumeModeSidebar(int idx);
     void updateVolumeModeVisibility(bool volumeActive);
 
     // ── Moment card state machine ─────────────────────────────────────────────
@@ -298,47 +290,19 @@ private:
     QString         m_momentCardDetail;  // context string for Computing/Error states
     void setMomentCardState(MomentCardState state, const QString &detail = {});
 
-    // ── 2D View Settings page ─────────────────────────────────────────────────
-    QPointer<QComboBox> m_combo2dMode;        // Slice / Moment
-    QPointer<QWidget>   m_sliceControlsCard;   // shown only when Slice is active
-    QPointer<QWidget>   m_sliceLutCard;        // shown only when Slice is active
-    QPointer<QWidget>   m_sliceContoursCard;   // shown only when Slice is active
-    QPointer<QComboBox> m_comboSliceLut;
-    QPointer<QWidget>   m_momentInfoCard;     // shown only when Moment is active
-    QPointer<QLabel>    m_momentInfoLabel;    // updated when a moment is available
-    QPointer<QWidget>   m_momentLutCard;      // shown only when Moment is active
-    QPointer<QComboBox> m_comboMomentLut;
+    // ── 2D View Settings – VTK-side state (UI widgets are in m_uiAssembler) ──
     QString             m_activeSliceLutName;
     QString             m_activeMomentLutName;
-    QWidget *setup2dViewPage();
     void applySliceLutByName(const QString &name);
     void applyMomentLutByName(const QString &name);
     void update2dModeVisibility(bool sliceActive);
-    void sync2dModeSidebar(bool sliceActive);
     void requestMomentMode();
     void updateMomentInfoCard();
 
     // ── Tools page ────────────────────────────────────────────────────────────
-    // Buttons are created in setupToolsPage() and wired to their QActions after
-    // menu Tools are set up in the constructor (post-setupSidebar).
-    QPointer<QAction>     actionCameraRoi;   // View menu + Tools sidebar
-    QPointer<QToolButton> m_btnEstimateNoise;
-    QPointer<QToolButton> m_btnDataProbe;
-    QPointer<QToolButton> m_btnPvDiagram;
-    QPointer<QToolButton> m_btnCameraRoi;
-    QWidget *setupToolsPage();
+    QPointer<QAction> actionCameraRoi;   // View menu + Tools sidebar
 
     // ── Info / Stats page ────────────────────────────────────────────────────
-    QPointer<QLabel> m_infoDsName;
-    QPointer<QLabel> m_infoDsDimensions;
-    QPointer<QLabel> m_infoDsLoadState;
-    QPointer<QLabel> m_infoWcsBadge;
-    QPointer<QLabel> m_infoWcsFrame;
-    QPointer<QLabel> m_infoSpectral;
-    QPointer<QLabel> m_infoRenderMode;
-    QPointer<QLabel> m_info2dMode;
-    QPointer<QLabel> m_infoMomentState;
-    QWidget *setupInfoStatsPage();
     void updateInfoStatsPage();
 
     // ── Workspace docks ───────────────────────────────────────────────────────
