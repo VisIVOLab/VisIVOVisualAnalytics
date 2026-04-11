@@ -9,6 +9,7 @@
 #include <QWidget>
 
 class QAction;
+class QStatusBar;
 
 namespace Ui {
 class vtkWindowCube;
@@ -96,6 +97,38 @@ public:
     void updateMomentCard(const MomentCardData &data);
     void updateInfoStats(const InfoStatsData &data);
 
+    // ── Status-bar data structs ───────────────────────────────────────────────
+
+    /// Pre-built data for the WCS status label in the status bar.
+    struct WcsStatusData {
+        bool    visible    { true };
+        QString text;
+        QString styleSheet;
+        QString tooltip;
+    };
+
+    /// Pre-built data for the sanity-check label in the status bar.
+    struct SanityStatusData {
+        QString text;
+        QString tooltip;
+    };
+
+    /// Pre-built data for the data-state badge label in the status bar.
+    struct DataStateUiData {
+        QString text;
+        QString tooltip;
+    };
+
+    // ── Status-bar label lifecycle ────────────────────────────────────────────
+    /// Creates the three status-bar labels and registers them with @p bar.
+    /// Must be called once, after the assembler is constructed.
+    void initStatusBarLabels(QStatusBar *bar);
+
+    // ── Status-bar update methods (pure rendering) ────────────────────────────
+    void updateWcsStatus(const WcsStatusData &data);
+    void updateSanityStatus(const SanityStatusData &data);
+    void updateDataState(const DataStateUiData &data);
+
     // ── Widget accessors (used by vtkWindowCube's update/sync methods) ────────
     // 3D View Settings
     QComboBox *renderModeCombo()   const { return m_comboRenderMode; }
@@ -161,4 +194,8 @@ private:
     QPointer<QLabel>      m_infoRenderMode;
     QPointer<QLabel>      m_info2dMode;
     QPointer<QLabel>      m_infoMomentState;
+    // ── Status-bar labels ─────────────────────────────────────────────────────
+    QPointer<QLabel>      m_dataStateLabel;
+    QPointer<QLabel>      m_sanityLabel;
+    QPointer<QLabel>      m_wcsStatusLabel;
 };

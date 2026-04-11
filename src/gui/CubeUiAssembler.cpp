@@ -16,6 +16,7 @@
 #include <QPixmap>
 #include <QSignalBlocker>
 #include <QSizePolicy>
+#include <QStatusBar>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QFormLayout>
@@ -760,4 +761,73 @@ void CubeUiAssembler::updateInfoStats(const InfoStatsData &data)
         l->setText(data.momentStateText);
         l->setStyleSheet(data.momentStateStyleSheet);
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// initStatusBarLabels  — creates the three status-bar labels and registers them
+// ─────────────────────────────────────────────────────────────────────────────
+
+void CubeUiAssembler::initStatusBarLabels(QStatusBar *bar)
+{
+    m_dataStateLabel = new QLabel();
+    m_dataStateLabel->setStyleSheet(u"QLabel { padding-left: 8px; color: palette(window-text); }"_s);
+    m_dataStateLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    bar->addPermanentWidget(m_dataStateLabel);
+
+    m_sanityLabel = new QLabel();
+    m_sanityLabel->setStyleSheet(u"QLabel { padding-left: 8px; }"_s);
+    m_sanityLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    bar->addPermanentWidget(m_sanityLabel);
+
+    m_wcsStatusLabel = new QLabel();
+    m_wcsStatusLabel->setStyleSheet(u"QLabel { padding-left: 8px; font-weight: 600; }"_s);
+    m_wcsStatusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    bar->addPermanentWidget(m_wcsStatusLabel);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// updateWcsStatus  — pure label rendering from pre-built WcsStatusData
+// ─────────────────────────────────────────────────────────────────────────────
+
+void CubeUiAssembler::updateWcsStatus(const WcsStatusData &data)
+{
+    auto *lbl = m_wcsStatusLabel.data();
+    if (!lbl)
+        return;
+    if (!data.visible) {
+        lbl->clear();
+        lbl->setToolTip({});
+        lbl->hide();
+        return;
+    }
+    lbl->setText(data.text);
+    lbl->setStyleSheet(data.styleSheet);
+    lbl->setToolTip(data.tooltip);
+    lbl->show();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// updateSanityStatus  — pure label rendering from pre-built SanityStatusData
+// ─────────────────────────────────────────────────────────────────────────────
+
+void CubeUiAssembler::updateSanityStatus(const SanityStatusData &data)
+{
+    auto *lbl = m_sanityLabel.data();
+    if (!lbl)
+        return;
+    lbl->setText(data.text);
+    lbl->setToolTip(data.tooltip);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// updateDataState  — pure label rendering from pre-built DataStateUiData
+// ─────────────────────────────────────────────────────────────────────────────
+
+void CubeUiAssembler::updateDataState(const DataStateUiData &data)
+{
+    auto *lbl = m_dataStateLabel.data();
+    if (!lbl)
+        return;
+    lbl->setText(data.text);
+    lbl->setToolTip(data.tooltip);
 }

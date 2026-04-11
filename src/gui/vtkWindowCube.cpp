@@ -1403,18 +1403,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->hoverReadoutLabel->setStyleSheet(u"QLabel { padding-left: 8px; }"_s);
     this->hoverReadoutLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     this->statusBar()->addPermanentWidget(this->hoverReadoutLabel, 1);
-    this->dataStateLabel = new QLabel(this);
-    this->dataStateLabel->setStyleSheet(u"QLabel { padding-left: 8px; color: palette(window-text); }"_s);
-    this->dataStateLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    this->statusBar()->addPermanentWidget(this->dataStateLabel);
-    this->sanityLabel = new QLabel(this);
-    this->sanityLabel->setStyleSheet(u"QLabel { padding-left: 8px; }"_s);
-    this->sanityLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    this->statusBar()->addPermanentWidget(this->sanityLabel);
-    this->wcsStatusLabel = new QLabel(this);
-    this->wcsStatusLabel->setStyleSheet(u"QLabel { padding-left: 8px; font-weight: 600; }"_s);
-    this->wcsStatusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    this->statusBar()->addPermanentWidget(this->wcsStatusLabel);
+    m_uiAssembler->initStatusBarLabels(this->statusBar());
     this->momentProvenanceLabel = new QLabel(this);
     this->momentProvenanceLabel->setStyleSheet(u"QLabel { padding-left: 8px; color: palette(window-text); }"_s);
     this->momentProvenanceLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -6026,27 +6015,26 @@ void vtkWindowCube::updateMomentProvenancePanel()
 
 void vtkWindowCube::updateSanityPanel()
 {
-    if (!this->sanityLabel) {
+    if (!m_uiAssembler)
         return;
-    }
 
     auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
     const auto report = buildCubeSanityReport(this->remoteDatasetCtype, this->remoteDatasetCunit,
                                               this->remoteDatasetCrval, this->remoteDatasetCrpix,
                                               this->remoteDatasetCdelt, cubeImage);
-    this->sanityLabel->setText(report.summary);
-    this->sanityLabel->setToolTip(report.details);
+    CubeUiAssembler::SanityStatusData d;
+    d.text    = report.summary;
+    d.tooltip = report.details;
+    m_uiAssembler->updateSanityStatus(d);
 }
 
 void vtkWindowCube::updateWcsStatusIndicator()
 {
-    if (!this->wcsStatusLabel) {
+    if (!m_uiAssembler)
         return;
-    }
+
     if (this->remoteWcsStatus.compare(u"ok"_s, Qt::CaseInsensitive) == 0) {
-        this->wcsStatusLabel->clear();
-        this->wcsStatusLabel->setToolTip({});
-        this->wcsStatusLabel->hide();
+        m_uiAssembler->updateWcsStatus({false, {}, {}, {}});
         this->wcsDiagnosticPublished = false;
         return;
     }
@@ -6057,13 +6045,16 @@ void vtkWindowCube::updateWcsStatusIndicator()
             ? (degraded ? u"Remote cube opened with degraded WCS metadata."_s
                         : u"Remote cube opened with sanitized WCS metadata."_s)
             : this->remoteWcsWarningMessage;
-    this->wcsStatusLabel->setText(degraded ? u"WCS degraded"_s : u"WCS repaired"_s);
-    this->wcsStatusLabel->setStyleSheet(
-            degraded
-                    ? u"QLabel { padding-left: 8px; font-weight: 700; color: #b54708; }"_s
-                    : u"QLabel { padding-left: 8px; font-weight: 600; color: #9a6700; }"_s);
-    this->wcsStatusLabel->setToolTip(message);
-    this->wcsStatusLabel->show();
+
+    CubeUiAssembler::WcsStatusData d;
+    d.visible    = true;
+    d.text       = degraded ? u"WCS degraded"_s : u"WCS repaired"_s;
+    d.styleSheet = degraded
+            ? u"QLabel { padding-left: 8px; font-weight: 700; color: #b54708; }"_s
+            : u"QLabel { padding-left: 8px; font-weight: 600; color: #9a6700; }"_s;
+    d.tooltip    = message;
+    m_uiAssembler->updateWcsStatus(d);
+
     if (!this->wcsDiagnosticPublished) {
         DiagnosticsManager::instance()->publish(
                 DiagnosticsLevel::Warning,
@@ -6076,9 +6067,8 @@ void vtkWindowCube::updateWcsStatusIndicator()
 
 void vtkWindowCube::updateDataStatePanel()
 {
-    if (!this->dataStateLabel) {
+    if (!m_uiAssembler)
         return;
-    }
 
     auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
     constexpr QLatin1StringView origin{ "Remote" };
@@ -6121,7 +6111,6 @@ void vtkWindowCube::updateDataStatePanel()
     if (!degenerateSummary.isEmpty()) {
         badge += u" \u26a0"_s; // warning sign — collapsed axes
     }
-    this->dataStateLabel->setText(badge);
 
     // Full provenance in tooltip.
     QString tip =
@@ -6132,7 +6121,11 @@ void vtkWindowCube::updateDataStatePanel()
     if (!degenerateSummary.isEmpty()) {
         tip += u"\n\u26a0 Collapsed axes: %1"_s.arg(degenerateSummary);
     }
-    this->dataStateLabel->setToolTip(tip);
+
+    CubeUiAssembler::DataStateUiData d;
+    d.text    = badge;
+    d.tooltip = tip;
+    m_uiAssembler->updateDataState(d);
     this->updateInfoStatsPage();
 }
 

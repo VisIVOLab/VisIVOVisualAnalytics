@@ -257,9 +257,6 @@ private:
     QPointer<PvDiagramWidget> pvDiagramWidget;
     QPointer<QLabel> cubeOpenStateLabel;
     QPointer<QLabel> hoverReadoutLabel;
-    QPointer<QLabel> dataStateLabel;
-    QPointer<QLabel> sanityLabel;
-    QPointer<QLabel> wcsStatusLabel;
     QPointer<QLabel> momentProvenanceLabel;
     QPointer<QLabel> catalogueInfoLabel;
     QPointer<QDockWidget> catalogueDock;
