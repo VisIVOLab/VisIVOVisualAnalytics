@@ -59,7 +59,9 @@
 #include <vtkTextActor.h>
 #include <vtkTransform.h>
 #include <vtkTransformPolyDataFilter.h>
+#include <vtkDataArray.h>
 #include <vtkIdTypeArray.h>
+#include <vtkPointData.h>
 #include <vtkTextProperty.h>
 #include <vtkTrivialProducer.h>
 #include <vtkVolume.h>
@@ -1195,6 +1197,42 @@ vtkSmartPointer<vtkPolyData> decodeRemoteIsosurface(const QByteArray &pointsData
     return mesh;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Image statistics helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Compute finite-pixel mean and RMS from any vtkImageData scalar array.
+// Outputs are set to quiet_NaN when the image is null or has no finite pixels.
+static void computeImageStats(vtkImageData *img, double &meanOut, double &rmsOut)
+{
+    constexpr double qnan = std::numeric_limits<double>::quiet_NaN();
+    meanOut = qnan;
+    rmsOut  = qnan;
+    if (!img) return;
+    vtkDataArray *scalars = img->GetPointData()->GetScalars();
+    if (!scalars) return;
+    const vtkIdType n = scalars->GetNumberOfTuples();
+    double sum = 0.0, sumSq = 0.0;
+    vtkIdType count = 0;
+    for (vtkIdType i = 0; i < n; ++i) {
+        const double v = scalars->GetComponent(i, 0);
+        if (!std::isfinite(v)) continue;
+        sum   += v;
+        sumSq += v * v;
+        ++count;
+    }
+    if (count == 0) return;
+    meanOut = sum / static_cast<double>(count);
+    rmsOut  = std::sqrt(sumSq / static_cast<double>(count));
+}
+
+// Format a scalar statistic value for display.
+// Uses 6 significant digits in compact notation; returns "—" for non-finite values.
+static QString fmtStat(double v)
+{
+    return std::isfinite(v) ? QString::number(v, 'g', 6) : u"\u2014"_s;
+}
+
 RemoteCubePreviewResult fetchRemotePreview(const QString &backendUrl, const QString &datasetId,
                                            int downsample, const QString &sessionId,
                                            const QString &backendToken)
@@ -2158,12 +2196,15 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(ui->lineUpperBound, &QLineEdit::editingFinished, this,
                      &vtkWindowCube::updateContours);
 
-    // Backend-authoritative: statistics fields are blank until the backend preview
-    // populates them; actions disabled until first content arrives.
+    // Backend-authoritative: statistics fields show "—" until populated.
     ui->lineCubeMin->clear();
     ui->lineCubeMax->clear();
     ui->lineCubeMean->clear();
     ui->lineCubeRms->clear();
+    ui->lineImgMin->setText(u"\u2014"_s);
+    ui->lineImgMax->setText(u"\u2014"_s);
+    ui->lineImgMean->setText(u"\u2014"_s);
+    ui->lineImgRms->setText(u"\u2014"_s);
     this->setCubeOpenActionsEnabled(false);
     ui->actionIsosurface->setChecked(false);
     ui->actionVolume->setChecked(true);
@@ -5873,8 +5914,12 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     QElapsedTimer imgFieldsTimer;
     imgFieldsTimer.start();
     if (result.momentImageData) {
-        ui->lineImgMin->setText(QString::number(result.momentRange[0]));
-        ui->lineImgMax->setText(QString::number(result.momentRange[1]));
+        ui->lineImgMin->setText(fmtStat(result.momentRange[0]));
+        ui->lineImgMax->setText(fmtStat(result.momentRange[1]));
+        double mean, rms;
+        computeImageStats(result.momentImageData, mean, rms);
+        ui->lineImgMean->setText(fmtStat(mean));
+        ui->lineImgRms->setText(fmtStat(rms));
         this->updateLUTCustomizer();
     }
     if (this->probeModeActive && this->probeValid) {
@@ -5991,8 +6036,12 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     qDebug().noquote() << QStringLiteral("[remote-plane] render triggered");
 
     if (this->viewingSlice()) {
-        ui->lineImgMin->setText(QString::number(result.imageRange[0]));
-        ui->lineImgMax->setText(QString::number(result.imageRange[1]));
+        ui->lineImgMin->setText(fmtStat(result.imageRange[0]));
+        ui->lineImgMax->setText(fmtStat(result.imageRange[1]));
+        double mean, rms;
+        computeImageStats(result.imageData, mean, rms);
+        ui->lineImgMean->setText(fmtStat(mean));
+        ui->lineImgRms->setText(fmtStat(rms));
         this->updateLUTCustomizer();
     }
 
@@ -7134,8 +7183,12 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
     {
         const QSignalBlocker blockMin(ui->lineImgMin);
         const QSignalBlocker blockMax(ui->lineImgMax);
-        ui->lineImgMin->setText(QString::number(result.imageRange[0]));
-        ui->lineImgMax->setText(QString::number(result.imageRange[1]));
+        ui->lineImgMin->setText(fmtStat(result.imageRange[0]));
+        ui->lineImgMax->setText(fmtStat(result.imageRange[1]));
+        double mean, rms;
+        computeImageStats(result.imageData, mean, rms);
+        ui->lineImgMean->setText(fmtStat(mean));
+        ui->lineImgRms->setText(fmtStat(rms));
     }
 
     this->updateLUTCustomizer();
@@ -7413,12 +7466,14 @@ void vtkWindowCube::setProbeModeActive(bool active)
 void vtkWindowCube::changeImageRenderer()
 {
     double imgRange[2];
+    vtkImageData *imgForStats = nullptr;
 
     if (ui->actionSlice->isChecked()) {
         ui->vtkImage->setRenderWindow(this->sliceWin);
         ui->labelImg->setText(u"Slice:"_s);
         auto *sliceImage = vtkImageData::SafeDownCast(
                 this->remoteSliceDisplaySource->GetOutputDataObject(0));
+        imgForStats = sliceImage;
         if (sliceImage) {
             sliceImage->GetScalarRange(imgRange);
         } else {
@@ -7429,6 +7484,7 @@ void vtkWindowCube::changeImageRenderer()
         ui->vtkImage->setRenderWindow(this->momentWin);
         ui->labelImg->setText(u"Moment Map:"_s);
         auto *momentImage = vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
+        imgForStats = momentImage;
         if (momentImage) {
             momentImage->GetScalarRange(imgRange);
         } else {
@@ -7437,8 +7493,12 @@ void vtkWindowCube::changeImageRenderer()
         }
     }
 
-    ui->lineImgMin->setText(QString::number(imgRange[0]));
-    ui->lineImgMax->setText(QString::number(imgRange[1]));
+    ui->lineImgMin->setText(fmtStat(imgRange[0]));
+    ui->lineImgMax->setText(fmtStat(imgRange[1]));
+    double mean, rms;
+    computeImageStats(imgForStats, mean, rms);
+    ui->lineImgMean->setText(fmtStat(mean));
+    ui->lineImgRms->setText(fmtStat(rms));
     this->coordinate->SetViewport(ui->vtkImage->renderWindow()->GetRenderers()->GetFirstRenderer());
     if (this->probeModeActive && this->probeValid) {
         this->refreshProbeOverlay();

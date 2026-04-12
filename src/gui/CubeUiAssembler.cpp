@@ -578,35 +578,117 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
         root->addWidget(card);
     }
 
-    // ── 2. DATA STATISTICS ────────────────────────────────────────────────────
+    // ── 2. SYSTEM / STATUS ────────────────────────────────────────────────────
     {
+        auto *hdr = new QLabel(u"SYSTEM / STATUS"_s);
+        hdr->setStyleSheet(kInfoHdrStyle);
+        root->addWidget(hdr);
+
+        auto *card = new QFrame();
+        card->setStyleSheet(kInfoCardStyle);
+        auto *fl = new QFormLayout(card);
+        fl->setContentsMargins(8, 6, 8, 6);
+        fl->setSpacing(3);
+        fl->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+        m_infoRenderMode = makeVal(u"Isosurface"_s);
+        m_info2dMode     = makeVal(u"Slice"_s);
+        m_infoMomentState = makeVal(u"\u2014"_s);
+
+        m_infoRenderMode->setToolTip(u"Current 3D rendering mode (Isosurface or Volume Rendering)."_s);
+        m_info2dMode->setToolTip(u"Current 2D view mode (Slice or Moment Map)."_s);
+        m_infoMomentState->setToolTip(u"State of the last moment map computation."_s);
+
+        fl->addRow(u"Rendering mode:"_s, m_infoRenderMode);
+        fl->addRow(u"2D view:"_s,        m_info2dMode);
+        fl->addRow(u"Moment map:"_s,     m_infoMomentState);
+        root->addWidget(card);
+    }
+
+    // ── 3. DATA STATISTICS ────────────────────────────────────────────────────
+    // The QLineEdit widgets (lineImgMin, lineImgMax, etc.) are defined in the UI
+    // file and updated via ui-> calls in vtkWindowCube.cpp.  We reparent them
+    // into new key/value rows so values are never truncated in a half-width cell.
+    {
+        // Helper: detach all layout items from a frame's existing layout (the one
+        // created by setupUi) and return the cleared frame so we can install a
+        // fresh QFormLayout on it.
+        auto clearFrameLayout = [](QFrame *frame) {
+            if (auto *old = frame->layout()) {
+                while (old->count())
+                    delete old->takeAt(0); // deletes QLayoutItem, not the widget
+                delete old;
+            }
+        };
+
+        static const QString kSubHdrStyle =
+                u"QLabel { font-size: 8px; font-weight: 600; letter-spacing: 1px;"
+                "  color: rgba(4,138,191,0.55); }"_s;
+        static const QString kRoLineEdit =
+                u"QLineEdit { background: transparent; border: none;"
+                "  color: #7AAABB; font-family: Menlo, Consolas, monospace;"
+                "  font-size: 11px; padding: 0; }"_s;
+
         auto *hdr = new QLabel(u"DATA STATISTICS"_s);
         hdr->setStyleSheet(kInfoHdrStyle);
         root->addWidget(hdr);
 
-        auto *subHdr2d = new QLabel(u"2D IMAGE"_s);
-        subHdr2d->setStyleSheet(
-                u"QLabel { font-size: 8px; font-weight: 600; letter-spacing: 1px; color: rgba(4,138,191,0.55); }"_s);
-        root->addWidget(subHdr2d);
-
-        m_ui->labelImg->setStyleSheet(
-                u"QLabel { font-size: 8px; font-weight: 600; letter-spacing: 1px; color: rgba(4,138,191,0.55); }"_s);
-        m_ui->frameImgStats->setStyleSheet(kInfoCardStyle + kInfoRoStyle);
+        // ── 2D image sub-section ─────────────────────────────────────────────
+        m_ui->labelImg->setStyleSheet(kSubHdrStyle);
         m_ui->frameImgStats->setParent(page);
         root->addWidget(m_ui->labelImg);
+
+        clearFrameLayout(m_ui->frameImgStats);
+        // Hide legacy per-field labels — rows are now self-labelled via QFormLayout
+        for (auto *lbl : { m_ui->labelImgMin, m_ui->labelImgMax,
+                           m_ui->labelImgMean, m_ui->labelImgRms })
+            lbl->hide();
+        for (auto *le : { m_ui->lineImgMin, m_ui->lineImgMax,
+                          m_ui->lineImgMean, m_ui->lineImgRms }) {
+            le->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            le->setStyleSheet(kRoLineEdit);
+            le->setFrame(false);
+        }
+        m_ui->frameImgStats->setStyleSheet(kInfoCardStyle);
+        auto *flImg = new QFormLayout(m_ui->frameImgStats);
+        flImg->setContentsMargins(8, 6, 8, 6);
+        flImg->setSpacing(3);
+        flImg->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        flImg->addRow(u"Min:"_s,  m_ui->lineImgMin);
+        flImg->addRow(u"Max:"_s,  m_ui->lineImgMax);
+        flImg->addRow(u"Mean:"_s, m_ui->lineImgMean);
+        flImg->addRow(u"RMS:"_s,  m_ui->lineImgRms);
         root->addWidget(m_ui->frameImgStats);
 
+        // ── 3D cube sub-section ──────────────────────────────────────────────
         auto *subHdr3d = new QLabel(u"3D CUBE"_s);
-        subHdr3d->setStyleSheet(
-                u"QLabel { font-size: 8px; font-weight: 600; letter-spacing: 1px; color: rgba(4,138,191,0.55); }"_s);
+        subHdr3d->setStyleSheet(kSubHdrStyle);
         root->addWidget(subHdr3d);
 
-        m_ui->frameCubeStats->setStyleSheet(kInfoCardStyle + kInfoRoStyle);
         m_ui->frameCubeStats->setParent(page);
+        clearFrameLayout(m_ui->frameCubeStats);
+        for (auto *lbl : { m_ui->labelCubeMin, m_ui->labelCubeMax,
+                           m_ui->labelCubeMean, m_ui->labelCubeRms })
+            lbl->hide();
+        for (auto *le : { m_ui->lineCubeMin, m_ui->lineCubeMax,
+                          m_ui->lineCubeMean, m_ui->lineCubeRms }) {
+            le->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            le->setStyleSheet(kRoLineEdit);
+            le->setFrame(false);
+        }
+        m_ui->frameCubeStats->setStyleSheet(kInfoCardStyle);
+        auto *flCube = new QFormLayout(m_ui->frameCubeStats);
+        flCube->setContentsMargins(8, 6, 8, 6);
+        flCube->setSpacing(3);
+        flCube->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        flCube->addRow(u"Min:"_s,  m_ui->lineCubeMin);
+        flCube->addRow(u"Max:"_s,  m_ui->lineCubeMax);
+        flCube->addRow(u"Mean:"_s, m_ui->lineCubeMean);
+        flCube->addRow(u"RMS:"_s,  m_ui->lineCubeRms);
         root->addWidget(m_ui->frameCubeStats);
     }
 
-    // ── 3. COORDINATE / WCS ───────────────────────────────────────────────────
+    // ── 4. COORDINATE / WCS ───────────────────────────────────────────────────
     {
         auto *hdr = new QLabel(u"COORDINATE / WCS"_s);
         hdr->setStyleSheet(kInfoHdrStyle);
@@ -644,33 +726,6 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
         fl->addRow(u"WCS:"_s,          m_infoWcsBadge);
         fl->addRow(u"Frame:"_s,        m_infoWcsFrame);
         fl->addRow(u"Spectral axis:"_s, m_infoSpectral);
-        root->addWidget(card);
-    }
-
-    // ── 4. SYSTEM / STATUS ────────────────────────────────────────────────────
-    {
-        auto *hdr = new QLabel(u"SYSTEM / STATUS"_s);
-        hdr->setStyleSheet(kInfoHdrStyle);
-        root->addWidget(hdr);
-
-        auto *card = new QFrame();
-        card->setStyleSheet(kInfoCardStyle);
-        auto *fl = new QFormLayout(card);
-        fl->setContentsMargins(8, 6, 8, 6);
-        fl->setSpacing(3);
-        fl->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
-
-        m_infoRenderMode = makeVal(u"Isosurface"_s);
-        m_info2dMode     = makeVal(u"Slice"_s);
-        m_infoMomentState = makeVal(u"\u2014"_s);
-
-        m_infoRenderMode->setToolTip(u"Current 3D rendering mode (Isosurface or Volume Rendering)."_s);
-        m_info2dMode->setToolTip(u"Current 2D view mode (Slice or Moment Map)."_s);
-        m_infoMomentState->setToolTip(u"State of the last moment map computation."_s);
-
-        fl->addRow(u"Rendering mode:"_s, m_infoRenderMode);
-        fl->addRow(u"2D view:"_s,        m_info2dMode);
-        fl->addRow(u"Moment map:"_s,     m_infoMomentState);
         root->addWidget(card);
     }
 
