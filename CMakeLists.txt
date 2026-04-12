@@ -119,6 +119,8 @@ set(PROJECT_SOURCES
         src/gui/NoiseController.h
         src/gui/NoiseRegionDialog.cpp
         src/gui/NoiseRegionDialog.h
+        src/gui/ToolResultDialog.cpp
+        src/gui/ToolResultDialog.h
         src/gui/SidebarPanel.cpp
         src/gui/SidebarPanel.h
         src/gui/vtkWindowCatalogue3D.cpp

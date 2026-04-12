@@ -277,6 +277,13 @@ private:
     QPointer<QAction>   m_actionMIP;
     QPointer<QAction>   m_actionMinIP;
     QPointer<QMenu>     m_menuVolumeRendering;
+    /// Update only the volume color transfer function for a named LUT.
+    /// Reads the scalar range from the current cube data (requires applyCubeOpenResult
+    /// to have been called first). Does NOT Render and does NOT touch the combo box.
+    void applyVolumeLutToPipeline(const QString &name);
+    /// Update the LUT combo (silently) and apply to the VTK pipeline. No Render.
+    void setVolumeLut(const QString &name);
+    /// Full user-interaction path: update state, apply pipeline, Render.
     void applyColorMapByName(const QString &name);
     void applyVolumeBlendMode(int idx);  // 0=Composite, 1=MIP, 2=MinIP
     void updateVolumeModeVisibility(bool volumeActive);

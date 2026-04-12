@@ -48,6 +48,19 @@ static const QString kInfoHdrStyle =
         u"QLabel { font-size: 8px; font-weight: 700; letter-spacing: 1px;"
         "  color: rgba(4,138,191,0.75); margin-top: 6px; margin-bottom: 2px; }"_s;
 
+/// Shared helper: create a disabled placeholder QToolButton for the sidebar.
+/// Text and enabled state are overwritten by wireToolActions() once the
+/// corresponding QAction exists.
+static QToolButton *makeSidebarToolButton(const QString &label)
+{
+    auto *btn = new QToolButton();
+    btn->setText(label);
+    btn->setEnabled(false);
+    btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    return btn;
+}
+
 static const QString kInfoCardStyle =
         u"QFrame {"
         "  background: rgba(255,255,255,0.04);"
@@ -245,6 +258,24 @@ QWidget *CubeUiAssembler::buildThresholdPage()
         root->addWidget(cmCard);
     }
 
+    // ── Camera ROI ────────────────────────────────────────────────────────────
+    // Placed here because it controls how the 3D renderer refines the view.
+    {
+        auto *hdr = new QLabel(u"RENDERING OPTIONS"_s);
+        hdr->setStyleSheet(kSidebarHdrStyle);
+        root->addWidget(hdr);
+
+        auto *card = new QFrame();
+        card->setStyleSheet(kSidebarCardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 6, 8, 6);
+        cl->setSpacing(4);
+
+        m_btnCameraRoi = makeSidebarToolButton(u"Use Camera ROI"_s);
+        cl->addWidget(m_btnCameraRoi);
+        root->addWidget(card);
+    }
+
     root->addStretch();
     return page;
 }
@@ -416,6 +447,24 @@ QWidget *CubeUiAssembler::build2dViewPage()
         root->addWidget(lutCard);
     }
 
+    // ── WCS Axes overlay ──────────────────────────────────────────────────────
+    // Placed here because it is an overlay on the 2D view.
+    {
+        auto *hdr = new QLabel(u"OVERLAYS"_s);
+        hdr->setStyleSheet(kSidebarHdrStyle);
+        root->addWidget(hdr);
+
+        auto *card = new QFrame();
+        card->setStyleSheet(kSidebarCardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 6, 8, 6);
+        cl->setSpacing(4);
+
+        m_btnWcsAxes = makeSidebarToolButton(u"Show WCS Axes"_s);
+        cl->addWidget(m_btnWcsAxes);
+        root->addWidget(card);
+    }
+
     root->addStretch();
     return page;
 }
@@ -431,19 +480,8 @@ QWidget *CubeUiAssembler::buildToolsPage()
     root->setContentsMargins(12, 14, 12, 12);
     root->setSpacing(12);
 
-    // Helper: create a placeholder QToolButton.
-    // Text and enabled state are overwritten by wireToolActions() once the
-    // QActions exist (they are created after setupSidebar() returns).
-    auto makeToolBtn = [](const QString &label) -> QToolButton * {
-        auto *btn = new QToolButton();
-        btn->setText(label);
-        btn->setEnabled(false);
-        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        return btn;
-    };
-
     // ── ANALYSIS ──────────────────────────────────────────────────────────────
+    // All computation tools: noise, moment, PV, region analysis.
     {
         auto *hdr = new QLabel(u"ANALYSIS"_s);
         hdr->setStyleSheet(kSidebarHdrStyle);
@@ -455,12 +493,26 @@ QWidget *CubeUiAssembler::buildToolsPage()
         cl->setContentsMargins(8, 6, 8, 6);
         cl->setSpacing(4);
 
-        m_btnEstimateNoise = makeToolBtn(u"Estimate Noise\u2026"_s);
+        m_btnEstimateNoise  = makeSidebarToolButton(u"Estimate Noise\u2026"_s);
+        m_btnMomentMap      = makeSidebarToolButton(u"Moment Map\u2026"_s);
+        m_btnPvDiagram      = makeSidebarToolButton(u"PV Diagram"_s);
+        m_btnBoxRegion      = makeSidebarToolButton(u"Box Region"_s);
+        m_btnCircleRegion   = makeSidebarToolButton(u"Circle Region"_s);
+        m_btnPolygonRegion  = makeSidebarToolButton(u"Polygon Region"_s);
+        m_btnAnnulusRegion  = makeSidebarToolButton(u"Annulus Region"_s);
+
         cl->addWidget(m_btnEstimateNoise);
+        cl->addWidget(m_btnMomentMap);
+        cl->addWidget(m_btnPvDiagram);
+        cl->addWidget(m_btnBoxRegion);
+        cl->addWidget(m_btnCircleRegion);
+        cl->addWidget(m_btnPolygonRegion);
+        cl->addWidget(m_btnAnnulusRegion);
         root->addWidget(card);
     }
 
     // ── EXPLORATION ───────────────────────────────────────────────────────────
+    // Interactive exploration tools: point probe.
     {
         auto *hdr = new QLabel(u"EXPLORATION"_s);
         hdr->setStyleSheet(kSidebarHdrStyle);
@@ -472,27 +524,8 @@ QWidget *CubeUiAssembler::buildToolsPage()
         cl->setContentsMargins(8, 6, 8, 6);
         cl->setSpacing(4);
 
-        m_btnDataProbe = makeToolBtn(u"Data Probe"_s);
-        m_btnPvDiagram = makeToolBtn(u"PV Diagram"_s);
+        m_btnDataProbe = makeSidebarToolButton(u"Data Probe"_s);
         cl->addWidget(m_btnDataProbe);
-        cl->addWidget(m_btnPvDiagram);
-        root->addWidget(card);
-    }
-
-    // ── VIEW ──────────────────────────────────────────────────────────────────
-    {
-        auto *hdr = new QLabel(u"VIEW"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle);
-        root->addWidget(hdr);
-
-        auto *card = new QFrame();
-        card->setStyleSheet(kSidebarCardStyle);
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 6, 8, 6);
-        cl->setSpacing(4);
-
-        m_btnCameraRoi = makeToolBtn(u"Use Camera ROI"_s);
-        cl->addWidget(m_btnCameraRoi);
         root->addWidget(card);
     }
 
@@ -652,24 +685,60 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
 void CubeUiAssembler::wireToolActions(QAction *estimateNoise,
                                       QAction *extractSpectrum,
                                       QAction *extractPvDiagram,
-                                      QAction *cameraRoi)
+                                      QAction *cameraRoi,
+                                      QAction *momentMap,
+                                      QAction *wcsAxes,
+                                      QAction *boxRegion,
+                                      QAction *circleRegion,
+                                      QAction *polygonRegion,
+                                      QAction *annulusRegion)
 {
     // setDefaultAction() links button text, tooltip, enabled state, and
     // checkability to the action — keeps the sidebar and menu in sync.
+
+    // ── Analysis buttons (Tools tab) ─────────────────────────────────────────
     if (m_btnEstimateNoise && estimateNoise)
         m_btnEstimateNoise->setDefaultAction(estimateNoise);
 
-    if (m_btnDataProbe && extractSpectrum) {
-        m_btnDataProbe->setDefaultAction(extractSpectrum);
-        m_btnDataProbe->setToolTip(u"Probe data values at a point in the 2D view."_s);
-    }
+    if (m_btnMomentMap && momentMap)
+        m_btnMomentMap->setDefaultAction(momentMap);
+
     if (m_btnPvDiagram && extractPvDiagram) {
         m_btnPvDiagram->setDefaultAction(extractPvDiagram);
         m_btnPvDiagram->setToolTip(
                 u"Draw a path in the 2D view to extract a position-velocity diagram."_s);
     }
+
+    if (m_btnBoxRegion && boxRegion) {
+        m_btnBoxRegion->setDefaultAction(boxRegion);
+        m_btnBoxRegion->setToolTip(u"Draw a box region and compute statistics + spectral profile."_s);
+    }
+    if (m_btnCircleRegion && circleRegion) {
+        m_btnCircleRegion->setDefaultAction(circleRegion);
+        m_btnCircleRegion->setToolTip(u"Draw a circle region and compute statistics + spectral profile."_s);
+    }
+    if (m_btnPolygonRegion && polygonRegion) {
+        m_btnPolygonRegion->setDefaultAction(polygonRegion);
+        m_btnPolygonRegion->setToolTip(u"Draw a polygon region and compute statistics + spectral profile."_s);
+    }
+    if (m_btnAnnulusRegion && annulusRegion) {
+        m_btnAnnulusRegion->setDefaultAction(annulusRegion);
+        m_btnAnnulusRegion->setToolTip(u"Draw an annulus region and compute statistics + spectral profile."_s);
+    }
+
+    // ── Exploration buttons (Tools tab) ──────────────────────────────────────
+    if (m_btnDataProbe && extractSpectrum) {
+        m_btnDataProbe->setDefaultAction(extractSpectrum);
+        m_btnDataProbe->setToolTip(u"Probe data values at a point in the 2D view."_s);
+    }
+
+    // ── 3D View Settings page buttons ────────────────────────────────────────
     if (m_btnCameraRoi && cameraRoi)
         m_btnCameraRoi->setDefaultAction(cameraRoi);
+
+    // ── 2D View Settings page buttons ────────────────────────────────────────
+    if (m_btnWcsAxes && wcsAxes)
+        m_btnWcsAxes->setDefaultAction(wcsAxes);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

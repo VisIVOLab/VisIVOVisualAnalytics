@@ -8,6 +8,7 @@
 #include "LUTCustomizerDialog.h"
 #include "MomentMapController.h"
 #include "NoiseController.h"
+#include "ToolResultDialog.h"
 #include "ProfileWidget.h"
 #include "PvController.h"
 #include "PvDiagramWidget.h"
@@ -1662,8 +1663,16 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              this->m_initialThresholdApplied = true;
                          }
 
+                         // ── Synchronise the volume LUT to the pipeline ────────
+                         // setupCubeRenderer() built the color transfer function with
+                         // cubeRange = {0,0} (placeholder), so Inferno ends up mapped
+                         // over a degenerate range and VTK clamps all real data to the
+                         // endpoint color (yellow). Re-apply the selected LUT now that
+                         // the cube data and its scalar range are known.
+                         this->setVolumeLut(this->m_activeColorMapName);   // no Render
+
                          // Hide the 3D loading placeholder and do a single final render
-                         // that reflects both the real data and the correct initial threshold.
+                         // that reflects real data, correct threshold, and correct LUT.
                          this->m_cube3dLoadingActor->VisibilityOff();
                          ui->vtkCube->renderWindow()->Render();
 
@@ -1859,32 +1868,23 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                    : result.spectralAxisType)
                         : this->spectralAxisTitle();
 
-                // Provenance tooltip using the vertices captured at dispatch time.
+                // Build the path-info struct shown in the PV diagram header.
                 const auto &verts = result.capturedVertices;
                 const int usedWidth = result.widthPixels > 0 ? result.widthPixels
                                                               : result.capturedWidthPixels;
-                const QString details =
-                        u"Start: %1\nEnd: %2\nVertices: %3\nPath width: %4 px\n"
-                        "Path length: %5 px\n"
-                        "Sampling: nearest-neighbor perpendicular averaging\n"
-                        "Computation: Computed on backend-visible dataset\n"
-                        "Spectral axis: %6\nSpatial unit: %7\n"
-                        "Pixel scale: %8 arcsec/pixel"_s
-                                .arg(verts.size() >= 1
-                                             ? this->formatSpatialPointSummary(verts.front())
-                                             : QString{})
-                                .arg(verts.size() >= 2
-                                             ? this->formatSpatialPointSummary(verts.back())
-                                             : QString{})
-                                .arg(result.vertexCount > 0
-                                             ? result.vertexCount
-                                             : static_cast<int>(verts.size()))
-                                .arg(usedWidth)
-                                .arg(result.totalLength, 0, 'f', 2)
-                                .arg(yLabel)
-                                .arg(result.spatialUnit.isEmpty() ? u"pixels"_s
-                                                                  : result.spatialUnit)
-                                .arg(result.pixelScaleArcsecPerPixel, 0, 'g', 8);
+                PvDiagramWidget::PvPathInfo pvInfo;
+                pvInfo.startPoint    = verts.size() >= 1
+                        ? this->formatSpatialPointSummary(verts.front()) : QString{};
+                pvInfo.endPoint      = verts.size() >= 2
+                        ? this->formatSpatialPointSummary(verts.back())  : QString{};
+                pvInfo.vertexCount   = result.vertexCount > 0
+                        ? result.vertexCount : static_cast<int>(verts.size());
+                pvInfo.widthPixels   = usedWidth;
+                pvInfo.lengthPixels  = result.totalLength;
+                pvInfo.spectralAxisLabel = yLabel;
+                pvInfo.spatialUnit   = result.spatialUnit.isEmpty()
+                        ? u"pixels"_s : result.spatialUnit;
+                pvInfo.pixelScaleArcsecPerPixel = result.pixelScaleArcsecPerPixel;
 
                 // Create PvDiagramWidget lazily on first successful extraction.
                 if (!this->pvDiagramWidget) {
@@ -1894,6 +1894,11 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                             this->pvDiagramWidget, &PvDiagramWidget::destroyed, this,
                             [this]() {
                                 this->pvDiagramWidget = nullptr;
+                                // Window closed → remove the path overlay from
+                                // both the slice and moment 2D views.
+                                this->clearPv();
+                                if (ui->vtkImage->renderWindow())
+                                    ui->vtkImage->renderWindow()->Render();
                                 if (this->actionExtractPvDiagram
                                     && this->actionExtractPvDiagram->isChecked()) {
                                     this->actionExtractPvDiagram->setChecked(false);
@@ -1917,7 +1922,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 this->pvDiagramWidget->setPvData(pvPositions, spectral, result.values,
                                                  result.numSamples, result.depth,
                                                  xLabel, yLabel,
-                                                 u"PV Diagram (Polyline)"_s, details);
+                                                 u"PV Diagram (Polyline)"_s, pvInfo);
                 this->clearPersistentStatusMessage();
             },
             this);
@@ -2044,7 +2049,13 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         m_uiAssembler->wireToolActions(this->actionEstimateNoise,
                                        ui->actionExtractSpectrum,
                                        this->actionExtractPvDiagram,
-                                       this->actionCameraRoi);
+                                       this->actionCameraRoi,
+                                       ui->actionMomentMap,
+                                       this->actionShowWcsAxes,
+                                       this->actionBoxRegion,
+                                       this->actionCircleRegion,
+                                       this->actionPolygonRegion,
+                                       this->actionAnnulusRegion);
     }
 
     this->updateBackendDerivedActionsAvailability();
@@ -2310,29 +2321,60 @@ void vtkWindowCube::setupSidebar()
 //    m_uiAssembler->build*Page().
 // ─────────────────────────────────────────────────────────────────────────────
 
-void vtkWindowCube::applyColorMapByName(const QString &name)
+void vtkWindowCube::applyVolumeLutToPipeline(const QString &name)
 {
-    if (name.isEmpty()) {
+    if (name.isEmpty())
         return;
-    }
-    this->m_activeColorMapName = name;
+
     const std::string stdName = name.toStdString();
 
-    // Volume color transfer function only — slice and moment LUTs are NOT
-    // touched here; they are managed independently by their own rendering paths.
-    {
-        auto *cubeImage =
-                vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
-        double cubeRange[2] = { 0., 0. };
-        if (cubeImage) {
-            cubeImage->GetScalarRange(cubeRange);
-        }
-        vtkNew<vtkLookupTable> lut;
-        lut->SetTableRange(cubeRange[0], cubeRange[1]);
-        ColorMaps::SetColorMap(lut, stdName);
-        ColorMaps::SetColorTransferFunction(lut, this->volumeColorTransferFunction);
-        this->volumeColorTransferFunction->SetObjectName(stdName);
+    // Volume color transfer function only — slice/moment LUTs are managed separately.
+    // Use the scalar range of the current cube data so the CTF is mapped over the
+    // real data range (not the degenerate [0,0] placeholder range from setup time).
+    auto *cubeImage =
+            vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
+    double cubeRange[2] = { this->currentCubeVisibleRange[0],
+                            this->currentCubeVisibleRange[1] };
+    if (cubeImage) {
+        // GetScalarRange reflects the actual data values including any sanitisation.
+        cubeImage->GetScalarRange(cubeRange);
     }
+
+    vtkNew<vtkLookupTable> lut;
+    lut->SetTableRange(cubeRange[0], cubeRange[1]);
+    ColorMaps::SetColorMap(lut, stdName);
+    ColorMaps::SetColorTransferFunction(lut, this->volumeColorTransferFunction);
+    this->volumeColorTransferFunction->SetObjectName(stdName);
+    // NOTE: does NOT call Render() — caller decides when to render.
+}
+
+void vtkWindowCube::setVolumeLut(const QString &name)
+{
+    if (name.isEmpty())
+        return;
+
+    this->m_activeColorMapName = name;
+
+    // Update the combo without triggering the currentTextChanged signal (which
+    // would call applyColorMapByName and render prematurely).
+    if (auto *combo = m_uiAssembler ? m_uiAssembler->lutCombo() : nullptr) {
+        const QSignalBlocker block(combo);
+        combo->setCurrentText(name);
+    }
+
+    this->applyVolumeLutToPipeline(name);
+    // NOTE: does NOT call Render() — caller is responsible for the next render.
+}
+
+void vtkWindowCube::applyColorMapByName(const QString &name)
+{
+    if (name.isEmpty())
+        return;
+
+    this->m_activeColorMapName = name;
+
+    // Apply LUT to the VTK pipeline using the real data range.
+    this->applyVolumeLutToPipeline(name);
 
     // Re-render the 3D cube view.
     if (ui->vtkCube->renderWindow()) {
@@ -3684,7 +3726,13 @@ void vtkWindowCube::setPvModeActive(bool active)
     this->pvModeActive = active;
     if (!active) {
         this->pvDragging = false;
-        this->clearPv();
+        // Only clear the overlay if no PV Diagram window is currently open.
+        // When a window IS open it continues to show the path; clearPv() is
+        // called from the pvDiagramWidget::destroyed handler when the user
+        // closes that window.
+        if (!this->pvDiagramWidget) {
+            this->clearPv();
+        }
         this->setInteractorStyleImage();
         ui->vtkImage->setCursor(this->probeModeActive ? Qt::CrossCursor : Qt::ArrowCursor);
         if (ui->vtkImage->renderWindow()) {
@@ -4103,21 +4151,8 @@ void vtkWindowCube::analyzeCurrentRegion()
                                                  this->regionCurrentVoxel, this->regionPolygonVertices,
                                                  this->regionAnnulusInnerRadius);
 
-    QString text;
-    if (!stats.valid) {
-        text = u"No valid pixels in the selected region.\nBlanked/NaN voxels are ignored."_s;
-    } else {
-        text = u"Shape: %1\nValid pixels: %2 / %3\nBlanked/NaN: %4\nMin: %5\nMax: %6\nMean: %7\nMedian: %8\nStddev: %9\n\nComputed on valid pixels only."_s
-                       .arg(regionModeLabel(this->regionMode))
-                       .arg(stats.validCount)
-                       .arg(stats.totalCount)
-                       .arg(stats.blankedCount)
-                       .arg(stats.minValue, 0, 'g', 8)
-                       .arg(stats.maxValue, 0, 'g', 8)
-                       .arg(stats.mean, 0, 'g', 8)
-                       .arg(stats.median, 0, 'g', 8)
-                       .arg(stats.stddev, 0, 'g', 8);
-    }
+    auto fmt = [](double v) { return QString::number(v, 'g', 8); };
+    const QString shapeLabel = regionModeLabel(this->regionMode);
 
     auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
     if (cubeImage && stats.valid) {
@@ -4193,13 +4228,32 @@ void vtkWindowCube::analyzeCurrentRegion()
                                                 u"Region Spectrum (%1)"_s.arg(regionModeLabel(this->regionMode)));
             this->probePlotWidget->updateSpectrumPlotSeries(
                     spectral, meanValues, u"Mean"_s, sumValues, u"Sum"_s,
-                    u"Region Spectrum (%1)"_s.arg(regionModeLabel(this->regionMode)), false);
-            text += u"\n\nMean and sum spectra updated from the selected region."_s;
+                    u"Region Spectrum (%1)"_s.arg(shapeLabel), false);
         }
     }
 
-    text += u"\n\nComputed on the currently loaded data block."_s;
-    QMessageBox::information(this, u"Region Analysis"_s, text);
+    // ── Show results in ToolResultDialog ─────────────────────────────────────
+    ToolResultDialog dlg(this);
+    dlg.setTitle(u"Region Analysis"_s);
+    dlg.setSubtitle(shapeLabel + u"  ·  computed on the currently loaded data block"_s);
+
+    if (!stats.valid) {
+        dlg.addSection(u"Result"_s, {
+            { u"Status"_s, u"No valid pixels in the selected region (all blanked / NaN)"_s },
+        });
+    } else {
+        dlg.addSection(u"Statistics"_s, {
+            { u"Region"_s,       shapeLabel },
+            { u"Valid pixels"_s, u"%1 / %2"_s.arg(stats.validCount).arg(stats.totalCount) },
+            { u"Blanked"_s,      QString::number(stats.blankedCount) },
+            { u"Min"_s,          fmt(stats.minValue) },
+            { u"Max"_s,          fmt(stats.maxValue) },
+            { u"Mean"_s,         fmt(stats.mean) },
+            { u"Median"_s,       fmt(stats.median) },
+            { u"Std Dev"_s,      fmt(stats.stddev) },
+        });
+    }
+    dlg.exec();
 }
 
 bool vtkWindowCube::finalizePolygonRegion()
@@ -5170,12 +5224,55 @@ void vtkWindowCube::applyThresholdToPipeline(double threshold)
     // Isosurface isovalue
     this->isosurfaceFilter->SetValue(0, threshold);
 
-    // Volume opacity transfer function: invisible below threshold, ramps above.
-    this->volumeOpacity->RemoveAllPoints();
-    this->volumeOpacity->AddPoint(this->currentCubeInvisibleSentinel, 0.0);
-    this->volumeOpacity->AddPoint(this->currentCubeVisibleRange[0], 0.0);
-    this->volumeOpacity->AddPoint(threshold, 0.05);
-    this->volumeOpacity->AddPoint(this->currentCubeVisibleRange[1], 0.3);
+    // Volume opacity transfer function (Composite mode).
+    // MIP and MinIP ignore the opacity TF — this curve only affects Composite.
+    //
+    // Shape: fully transparent below threshold, steep ramp just above it,
+    // rapid saturation towards high values. Produces high contrast without
+    // requiring the user to tune additional parameters.
+    //
+    //  opacity
+    //  1.0 |                                  ___________
+    //  0.9 |                          _______/
+    //  0.6 |                  _______/
+    //  0.25|          _______/
+    //  0.0 |_________/
+    //       lower   t-ε   t   t+5%  t+20%   upper
+    {
+        const double lower  = this->currentCubeVisibleRange[0];
+        const double upper  = this->currentCubeVisibleRange[1];
+        const double span   = upper - lower;
+
+        // Guard: if range is degenerate or threshold is out of range, fall back to
+        // a safe flat ramp so the volume is still visible.
+        const bool valid = (span > 0.0)
+                        && (threshold >= lower)
+                        && (threshold <= upper);
+
+        this->volumeOpacity->RemoveAllPoints();
+        // Masked / NaN sentinel: always invisible.
+        this->volumeOpacity->AddPoint(this->currentCubeInvisibleSentinel, 0.0);
+
+        if (valid) {
+            // Transparent sub-threshold zone — slight pull-back so the knee is sharp.
+            this->volumeOpacity->AddPoint(lower,                         0.0);
+            this->volumeOpacity->AddPoint(threshold - 0.01 * span,       0.0);
+            // Steep ramp: threshold itself jumps to 0.25 (first visible voxels).
+            this->volumeOpacity->AddPoint(threshold,                     0.25);
+            // Rapid rise to 0.6 within 5 % of span above threshold.
+            this->volumeOpacity->AddPoint(
+                    std::min(threshold + 0.05 * span, upper),            0.6);
+            // Saturates near 0.9 at 20 % of span above threshold.
+            this->volumeOpacity->AddPoint(
+                    std::min(threshold + 0.20 * span, upper),            0.9);
+            // Full opacity at the top of the range.
+            this->volumeOpacity->AddPoint(upper,                         1.0);
+        } else {
+            // Fallback: gentle linear ramp across the full range.
+            this->volumeOpacity->AddPoint(lower,  0.0);
+            this->volumeOpacity->AddPoint(upper,  0.4);
+        }
+    }
 
     // In isosurface mode, schedule an async remote recompute.
     if (!this->cubeOpenWatcher.isRunning() && ui->actionIsosurface->isChecked()) {

@@ -179,12 +179,26 @@ void ProfileWidget::setupSpectrumPlot(const QString &xLabel, const QString &yLab
     ui->plot1->clearGraphs();
     ui->plot1->addGraph();
     ui->plot1->legend->setVisible(false);
-    ui->plot1->setInteractions(QCP::iRangeDrag);
+    ui->plot1->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
     ui->plot1->axisRect()->setRangeDrag(Qt::Horizontal);
     ui->plot1->plotLayout()->insertRow(0);
-    ui->plot1->plotLayout()->addElement(0, 0, new QCPTextElement(ui->plot1, u"Z Profile"_s));
+    auto *titleEl = new QCPTextElement(ui->plot1, u"Z Profile"_s);
+    titleEl->setTextColor(QColor(u"#c8d8f8"_s));
+    ui->plot1->plotLayout()->addElement(0, 0, titleEl);
     ui->plot1->xAxis->setLabel(xLabel);
     ui->plot1->yAxis->setLabel(yLabel);
+
+    // ── Dark theme — matches PvDiagramWidget styling ──────────────────────────
+    ui->plot1->setBackground(QColor(u"#141922"_s));
+    ui->plot1->axisRect()->setBackground(QColor(u"#0d1118"_s));
+    for (auto *axis : { ui->plot1->xAxis, ui->plot1->xAxis2,
+                        ui->plot1->yAxis, ui->plot1->yAxis2 }) {
+        axis->setBasePen(QPen(QColor(u"#4a5a7a"_s)));
+        axis->setTickPen(QPen(QColor(u"#4a5a7a"_s)));
+        axis->setSubTickPen(QPen(QColor(u"#2a3555"_s)));
+        axis->setTickLabelColor(QColor(u"#c0d0f0"_s));
+        axis->setLabelColor(QColor(u"#8ab4f8"_s));
+    }
 }
 
 void ProfileWidget::setLiveMode(bool live)
@@ -315,6 +329,9 @@ void ProfileWidget::updateSpectrumPlotSeries(const QVector<double> &key,
     ui->plot1->graph(1)->setName(secondaryLabel);
     ui->plot1->graph(1)->setPen(QPen(QColor(255, 170, 0), 2.0));
     ui->plot1->legend->setVisible(true);
+    ui->plot1->legend->setBrush(QColor(u"#1a2030"_s));
+    ui->plot1->legend->setBorderPen(QPen(QColor(u"#2a3555"_s)));
+    ui->plot1->legend->setTextColor(QColor(u"#c0d0f0"_s));
     ui->plot1->rescaleAxes();
     if (auto *titleElement = qobject_cast<QCPTextElement *>(ui->plot1->plotLayout()->element(0, 0))) {
         titleElement->setText(title);

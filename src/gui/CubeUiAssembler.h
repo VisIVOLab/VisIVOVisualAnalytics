@@ -59,7 +59,13 @@ public:
     void wireToolActions(QAction *estimateNoise,
                          QAction *extractSpectrum,
                          QAction *extractPvDiagram,
-                         QAction *cameraRoi);
+                         QAction *cameraRoi,
+                         QAction *momentMap,       ///< ui->actionMomentMap
+                         QAction *wcsAxes,         ///< actionShowWcsAxes
+                         QAction *boxRegion,       ///< actionBoxRegion
+                         QAction *circleRegion,    ///< actionCircleRegion
+                         QAction *polygonRegion,   ///< actionPolygonRegion
+                         QAction *annulusRegion);  ///< actionAnnulusRegion
 
     // ── Bidirectional sync helpers ────────────────────────────────────────────
     void sync2dModeSidebar(bool sliceActive);
@@ -179,11 +185,20 @@ private:
     QPointer<QLabel>      m_momentInfoLabel;
     QPointer<QWidget>     m_momentLutCard;
     QPointer<QComboBox>   m_comboMomentLut;
-    // ── Tools page buttons ────────────────────────────────────────────────────
+    // ── Tools page buttons (ANALYSIS) ─────────────────────────────────────────
     QPointer<QToolButton> m_btnEstimateNoise;
-    QPointer<QToolButton> m_btnDataProbe;
+    QPointer<QToolButton> m_btnMomentMap;
     QPointer<QToolButton> m_btnPvDiagram;
+    QPointer<QToolButton> m_btnBoxRegion;
+    QPointer<QToolButton> m_btnCircleRegion;
+    QPointer<QToolButton> m_btnPolygonRegion;
+    QPointer<QToolButton> m_btnAnnulusRegion;
+    // ── Tools page buttons (EXPLORATION) ──────────────────────────────────────
+    QPointer<QToolButton> m_btnDataProbe;
+    // ── 3D View Settings page buttons ─────────────────────────────────────────
     QPointer<QToolButton> m_btnCameraRoi;
+    // ── 2D View Settings page buttons ─────────────────────────────────────────
+    QPointer<QToolButton> m_btnWcsAxes;
     // ── Info / Stats labels ───────────────────────────────────────────────────
     QPointer<QLabel>      m_infoDsName;
     QPointer<QLabel>      m_infoDsDimensions;

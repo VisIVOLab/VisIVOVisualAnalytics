@@ -10,10 +10,11 @@
 #include "app/BackendClient.h"
 #include "app/DiagnosticsManager.h"
 
+#include "ToolResultDialog.h"
+
 #include <QDialog>
 #include <QFutureWatcher>
 #include <QMainWindow>
-#include <QMessageBox>
 #include <QPointer>
 #include <QStatusBar>
 #include <QtConcurrent>
@@ -216,28 +217,34 @@ void NoiseController::showResult(const CubeNoiseEstimateResult &result)
     const auto sigmaStats = summarize(result.sigma);
     const auto madStats   = summarize(result.mad);
 
-    const QString details =
-            u"Channels analyzed: %1 (%2..%3)\n"
-            "Region: x=%4..%5, y=%6..%7\n\n"
-            "Sigma summary\n"
-            "Mean: %8\nMedian: %9\nMin: %10\nMax: %11\n\n"
-            "MAD summary\n"
-            "Mean: %12\nMedian: %13\nMin: %14\nMax: %15"_s
-                    .arg(result.numChannels)
+    auto fmt = [](double v) -> QString {
+        return QString::number(v, 'g', 8);
+    };
+
+    const QString subtitle =
+            u"Channels: %1..%2  (%3 planes)  ·  region x=%4..%5, y=%6..%7"_s
                     .arg(result.channelStart)
                     .arg(result.channelEnd)
+                    .arg(result.numChannels)
                     .arg(result.x0).arg(result.x1)
-                    .arg(result.y0).arg(result.y1)
-                    .arg(sigmaStats[0], 0, 'g', 8)
-                    .arg(sigmaStats[1], 0, 'g', 8)
-                    .arg(sigmaStats[2], 0, 'g', 8)
-                    .arg(sigmaStats[3], 0, 'g', 8)
-                    .arg(madStats[0], 0, 'g', 8)
-                    .arg(madStats[1], 0, 'g', 8)
-                    .arg(madStats[2], 0, 'g', 8)
-                    .arg(madStats[3], 0, 'g', 8);
+                    .arg(result.y0).arg(result.y1);
 
-    QMessageBox::information(m_parentWindow, u"Noise Estimate"_s, details);
+    ToolResultDialog dlg(m_parentWindow);
+    dlg.setTitle(u"Noise Estimation"_s);
+    dlg.setSubtitle(subtitle);
+    dlg.addSection(u"Sigma"_s, {
+        { u"Mean"_s,   fmt(sigmaStats[0]) },
+        { u"Median"_s, fmt(sigmaStats[1]) },
+        { u"Min"_s,    fmt(sigmaStats[2]) },
+        { u"Max"_s,    fmt(sigmaStats[3]) },
+    });
+    dlg.addSection(u"MAD"_s, {
+        { u"Mean"_s,   fmt(madStats[0]) },
+        { u"Median"_s, fmt(madStats[1]) },
+        { u"Min"_s,    fmt(madStats[2]) },
+        { u"Max"_s,    fmt(madStats[3]) },
+    });
+    dlg.exec();
 
     if (auto *win = qobject_cast<QMainWindow *>(m_parentWindow)) {
         win->statusBar()->showMessage(u"Noise estimation completed."_s, 3000);
