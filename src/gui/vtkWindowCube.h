@@ -453,6 +453,17 @@ private:
     bool viewingIsosurface() const;
     bool viewingSlice() const;
 
+    // ── Loading placeholders (VTK 2D text actors shown while data is in flight) ─
+    vtkNew<vtkTextActor> m_cube3dLoadingActor;   ///< Shown in 3D view until first preview
+    vtkNew<vtkTextActor> m_slice2dLoadingActor;  ///< Shown in 2D view until first slice
+    bool m_initialThresholdApplied{ false };     ///< Guard: set threshold only on first load
+    /// Update UI widgets + VTK pipeline without triggering user-interaction signals.
+    /// Does NOT call Render() — caller is responsible for the next render.
+    void applyThreshold(float value);
+    /// Update only the VTK pipeline objects (opacity TF, isovalue) for a given threshold.
+    /// Requires currentCubeVisibleRange to be valid. Does NOT Render.
+    void applyThresholdToPipeline(double threshold);
+
     // Cube
     vtkNew<vtkTrivialProducer> cubeDisplaySource;
     vtkNew<vtkFlyingEdges3D> isosurfaceFilter;

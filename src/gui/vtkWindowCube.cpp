@@ -1620,6 +1620,10 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
                          const auto result = this->remotePreviewWatcher.result();
                          if (!result.valid || !result.cubeImageData) {
+                             this->m_cube3dLoadingActor->VisibilityOff();
+                             this->m_slice2dLoadingActor->VisibilityOff();
+                             ui->vtkCube->renderWindow()->Render();
+                             this->sliceWin->Render();
                              this->persistentStatusActive = false;
                              this->statusMessageClearTimer.stop();
                              this->statusBar()->showMessage(result.errorMessage.isEmpty()
@@ -1631,6 +1635,10 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                          const double span = result.cubeRange[1] - result.cubeRange[0];
                          this->lowerBound = static_cast<float>(result.cubeRange[0] + 0.1 * span);
                          this->upperBound = static_cast<float>(result.cubeRange[1]);
+
+                         // applyCubeOpenResult() sets currentCubeVisibleRange from the real data.
+                         // The initial threshold must be applied AFTER this, so that
+                         // applyThresholdToPipeline() sees correct range control points.
                          this->applyCubeOpenResult({ true,
                                                      { },
                                                      result.cubeImageData,
@@ -1640,6 +1648,25 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                                      result.dataExtent,
                                                      0.,
                                                      0. });
+
+                         // ── Data-driven initial threshold (first load only) ──
+                         // Target: ~75th percentile of visible range.
+                         // Formula: lowerBound + 65% of (upperBound - lowerBound).
+                         // Called here — after applyCubeOpenResult — so that
+                         // currentCubeVisibleRange is valid and the opacity TF is built
+                         // with the correct range anchor points.
+                         if (!this->m_initialThresholdApplied) {
+                             const float initial = this->lowerBound
+                                     + 0.65f * (this->upperBound - this->lowerBound);
+                             this->applyThreshold(initial);   // updates UI + pipeline, no Render
+                             this->m_initialThresholdApplied = true;
+                         }
+
+                         // Hide the 3D loading placeholder and do a single final render
+                         // that reflects both the real data and the correct initial threshold.
+                         this->m_cube3dLoadingActor->VisibilityOff();
+                         ui->vtkCube->renderWindow()->Render();
+
                          this->setRemoteCubeDisplayState(RemoteCubeDisplayState::Preview);
                          qDebug().noquote() << QStringLiteral("[remote-plane] preview valid");
                          if (!this->requestHighResCube()) {
@@ -2768,6 +2795,25 @@ void vtkWindowCube::setupCubeRenderer()
     this->axesWidget->SetEnabled(1);
     this->axesWidget->InteractiveOff();
 
+    // ── Loading placeholder text actor ────────────────────────────────────────
+    // Shown until the first real volume preview arrives from the backend.
+    // Hidden (VisibilityOff) in remotePreviewWatcher::finished.
+    {
+        auto *prop = this->m_cube3dLoadingActor->GetTextProperty();
+        prop->SetFontSize(16);
+        prop->SetColor(0.72, 0.84, 0.91);   // #B8D6E8 — matches app blue-gray palette
+        prop->SetJustificationToCentered();
+        prop->SetVerticalJustificationToCentered();
+        prop->BoldOff();
+        prop->ShadowOff();
+        this->m_cube3dLoadingActor->SetInput("Loading 3D view\xe2\x80\xa6");  // UTF-8 ellipsis
+        this->m_cube3dLoadingActor->GetPositionCoordinate()
+                ->SetCoordinateSystemToNormalizedViewport();
+        this->m_cube3dLoadingActor->SetPosition(0.5, 0.5);
+        this->m_cube3dLoadingActor->VisibilityOn();
+        ren->AddActor2D(this->m_cube3dLoadingActor);
+    }
+
     ren->ResetCamera();
     win->Render();
 
@@ -2992,6 +3038,25 @@ void vtkWindowCube::setupSliceRenderer()
     this->set2dWcsOverlayVisible(this->showWcsAxes);
     this->sliceWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::updateSliceWcsOverlay);
     this->sliceWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::updateCatalogueOverlayLabels);
+
+    // ── Loading placeholder text actor ────────────────────────────────────────
+    // Shown until the first remote slice tile arrives from the backend.
+    // Hidden (VisibilityOff) in applyRemoteSliceResult().
+    {
+        auto *prop = this->m_slice2dLoadingActor->GetTextProperty();
+        prop->SetFontSize(16);
+        prop->SetColor(0.72, 0.84, 0.91);   // #B8D6E8 — matches app blue-gray palette
+        prop->SetJustificationToCentered();
+        prop->SetVerticalJustificationToCentered();
+        prop->BoldOff();
+        prop->ShadowOff();
+        this->m_slice2dLoadingActor->SetInput("Loading 2D view\xe2\x80\xa6");  // UTF-8 ellipsis
+        this->m_slice2dLoadingActor->GetPositionCoordinate()
+                ->SetCoordinateSystemToNormalizedViewport();
+        this->m_slice2dLoadingActor->SetPosition(0.5, 0.5);
+        this->m_slice2dLoadingActor->VisibilityOn();
+        ren->AddActor2D(this->m_slice2dLoadingActor);
+    }
 
     ren->ResetCamera();
     this->sliceWin->Render();
@@ -5100,18 +5165,54 @@ bool vtkWindowCube::viewingSlice() const
     return ui->vtkImage->renderWindow() == this->sliceWin;
 }
 
-void vtkWindowCube::updateCube()
+void vtkWindowCube::applyThresholdToPipeline(double threshold)
 {
-    const double threshold = ui->lineThreshold->text().toDouble();
+    // Isosurface isovalue
     this->isosurfaceFilter->SetValue(0, threshold);
+
+    // Volume opacity transfer function: invisible below threshold, ramps above.
     this->volumeOpacity->RemoveAllPoints();
     this->volumeOpacity->AddPoint(this->currentCubeInvisibleSentinel, 0.0);
     this->volumeOpacity->AddPoint(this->currentCubeVisibleRange[0], 0.0);
     this->volumeOpacity->AddPoint(threshold, 0.05);
     this->volumeOpacity->AddPoint(this->currentCubeVisibleRange[1], 0.3);
+
+    // In isosurface mode, schedule an async remote recompute.
     if (!this->cubeOpenWatcher.isRunning() && ui->actionIsosurface->isChecked()) {
         this->scheduleIsosurfaceRecompute();
     }
+    // NOTE: does NOT call Render() — caller decides when to render.
+}
+
+void vtkWindowCube::applyThreshold(float value)
+{
+    // Clamp to the current display range.
+    const float clamped = std::clamp(value, this->lowerBound, this->upperBound);
+
+    // Update UI widgets without triggering user-interaction signals.
+    {
+        const QSignalBlocker blockLine(ui->lineThreshold);
+        ui->lineThreshold->setText(QString::number(clamped));
+
+        const float span = this->upperBound - this->lowerBound;
+        const int p = (span > 0.f)
+                ? static_cast<int>(100.f * (clamped - this->lowerBound) / span)
+                : 0;
+        const QSignalBlocker blockSlider(ui->sliderThreshold);
+        ui->sliderThreshold->setValue(p);
+    }
+
+    // Apply to the VTK pipeline. currentCubeVisibleRange must be valid at this point.
+    // (Call only after applyCubeOpenResult() has set the range from real data.)
+    this->applyThresholdToPipeline(static_cast<double>(clamped));
+    // NOTE: does NOT call Render() — caller is responsible for the next render.
+}
+
+void vtkWindowCube::updateCube()
+{
+    // Read the current threshold from the UI and apply it to the pipeline + render.
+    const double threshold = ui->lineThreshold->text().toDouble();
+    this->applyThresholdToPipeline(threshold);
     ui->vtkCube->renderWindow()->Render();
 }
 
@@ -5709,6 +5810,9 @@ void vtkWindowCube::requestRemoteSlice(int sliceIndex)
 
 void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
 {
+    // Hide 2D loading placeholder on first real slice tile.
+    this->m_slice2dLoadingActor->VisibilityOff();
+
     this->cacheRemoteSliceResult(result);
     this->remoteSliceDisplaySource->SetOutput(result.imageData);
     this->remoteSliceDisplaySource->Modified();
