@@ -23,6 +23,7 @@ SettingsDialog::SettingsDialog(Settings *settings, AuthWrapper *auth, QWidget *p
 
     // UI
     ui->comboTheme->setCurrentIndex(static_cast<int>(this->settings->getColorScheme()));
+    ui->comboPlotTheme->setCurrentIndex(this->settings->getPlotTheme());
 
     // Python
     ui->linePythonPath->setText(this->settings->getPythonLocation());
@@ -89,6 +90,7 @@ SettingsDialog::~SettingsDialog()
 void SettingsDialog::accept()
 {
     this->settings->setColorScheme(static_cast<Qt::ColorScheme>(ui->comboTheme->currentIndex()));
+    this->settings->setPlotTheme(ui->comboPlotTheme->currentIndex());
     this->settings->setPanoramicView(ui->linePanoramicView->text());
     this->settings->setMaxGlyphs(ui->lineMaxGlyphs->text().toInt());
     this->settings->setVLKBUrl(ui->lineVLKBUrl->text());

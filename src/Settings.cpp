@@ -45,6 +45,7 @@ void Settings::resetDefaults()
     this->settings->setValue(Settings::VLKBSearch.first, Settings::VLKBSearch.second);
     this->settings->setValue(Settings::BackendUrl.first, Settings::BackendUrl.second);
     this->settings->setValue(Settings::BackendToken.first, Settings::BackendToken.second);
+    this->settings->setValue(Settings::PlotTheme.first, Settings::PlotTheme.second);
 
     emit this->updated();
 }
@@ -182,6 +183,21 @@ void Settings::setBackendUrl(const QString &url)
 
 // Token default is empty: BackendClient will auto-resolve from env / ~/.visivo_token.
 const std::pair<QString, QVariant> Settings::BackendToken = { u"Backend/token"_s, u""_s };
+
+//----------------------------------------------------------------------------
+// Plot theme
+//----------------------------------------------------------------------------
+const std::pair<QString, QVariant> Settings::PlotTheme = { u"Plots/theme"_s, 0 };
+
+int Settings::getPlotTheme() const
+{
+    return this->settings->value(Settings::PlotTheme.first, Settings::PlotTheme.second).toInt();
+}
+
+void Settings::setPlotTheme(int theme)
+{
+    this->settings->setValue(Settings::PlotTheme.first, theme);
+}
 
 QString Settings::getBackendToken() const
 {

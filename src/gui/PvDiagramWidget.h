@@ -39,6 +39,12 @@ public:
                    const QString &title,
                    const PvPathInfo &info);
 
+    /// Apply dark (true) or light (false) plot theme.
+    void applyPlotTheme(bool dark);
+
+private slots:
+    void savePng();
+
 private:
     void buildHeaderUi();
     void updateHeaderUi(const PvPathInfo &info);

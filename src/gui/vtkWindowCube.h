@@ -136,6 +136,10 @@ public:
     ~vtkWindowCube() override;
     void closeEvent(QCloseEvent *event) override;
 
+    /// Set whether plots (PV Diagram, spectra) should use a dark background.
+    /// Called once by MainWindow after construction based on Settings::getPlotTheme().
+    void setDarkPlots(bool dark) { m_darkPlots = dark; }
+
 private slots:
     void resetCameraFront();
     void resetCameraBack();
@@ -263,6 +267,9 @@ private:
     QPointer<QTableView> catalogueTableView;
     QPointer<CatalogueTableModel> catalogueTableModel;
     bool syncingCatalogueSelection{ false };
+    // ── Plot theme ───────────────────────────────────────────────────────────
+    bool m_darkPlots{ true };
+
     // ── Sidebar ───────────────────────────────────────────────────────────────
     SidebarPanel *m_sidebar{ nullptr };
     QPointer<QAction> actionShowControlsSidebar;

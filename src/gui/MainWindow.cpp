@@ -370,13 +370,15 @@ void MainWindow::doOpenDataPath(const QString &path)
                            .arg(opened.degenerateAxesSummary.isEmpty()
                                         ? QStringLiteral("no collapsed axes")
                                         : opened.degenerateAxesSummary);
-        win = new vtkWindowCube(path, client.baseUrl(), opened.datasetId, opened.width,
-                                opened.height, opened.depth, opened.spacing, opened.origin,
-                                opened.ctype, opened.cunit, opened.crval, opened.crpix,
-                                opened.cdelt, opened.degenerateAxesSummary,
-                                opened.spectralAxisType, opened.spectralAxisUnit,
-                                opened.wcsStatus, opened.wcsWarningMessage,
-                                client.sessionId(), client.token(), this);
+        auto *cubeWin = new vtkWindowCube(path, client.baseUrl(), opened.datasetId, opened.width,
+                                          opened.height, opened.depth, opened.spacing,
+                                          opened.origin, opened.ctype, opened.cunit, opened.crval,
+                                          opened.crpix, opened.cdelt, opened.degenerateAxesSummary,
+                                          opened.spectralAxisType, opened.spectralAxisUnit,
+                                          opened.wcsStatus, opened.wcsWarningMessage,
+                                          client.sessionId(), client.token(), this);
+        cubeWin->setDarkPlots(this->settings->getPlotTheme() == 0);
+        win = cubeWin;
     } else {
         QMessageBox::information(
                 this, u"Unsupported dataset"_s,

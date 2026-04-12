@@ -14,13 +14,13 @@ class QVBoxLayout;
 /// key-value sections) in a clean, dark-themed layout consistent with the
 /// VisIVO cube viewer sidebar style.
 ///
-/// Usage:
-///   ToolResultDialog dlg(this);
-///   dlg.setTitle("Noise Estimation");
-///   dlg.setSubtitle("Channels 0–127  ·  region x=0..511, y=0..511");
-///   dlg.addSection("Sigma", {{"Mean", "0.00123"}, {"Median", "0.00119"}, ...});
-///   dlg.addSection("MAD",   {{"Mean", "0.00118"}, ...});
-///   dlg.exec();
+/// Usage (non-modal — caller must allocate on the heap):
+///   auto *dlg = new ToolResultDialog(this);
+///   dlg->setTitle("Noise Estimation");
+///   dlg->setSubtitle("Channels 0–127  ·  region x=0..511, y=0..511");
+///   dlg->addSection("Sigma", {{"Mean", "0.00123"}, {"Median", "0.00119"}, ...});
+///   dlg->addSection("MAD",   {{"Mean", "0.00118"}, ...});
+///   dlg->show();  // non-blocking; WA_DeleteOnClose handles cleanup
 class ToolResultDialog : public QDialog
 {
     Q_OBJECT

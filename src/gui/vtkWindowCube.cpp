@@ -1890,6 +1890,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 if (!this->pvDiagramWidget) {
                     qDebug().noquote() << QStringLiteral("[pv] creating PvDiagramWidget");
                     this->pvDiagramWidget = new PvDiagramWidget(this);
+                    this->pvDiagramWidget->applyPlotTheme(this->m_darkPlots);
                     QObject::connect(
                             this->pvDiagramWidget, &PvDiagramWidget::destroyed, this,
                             [this]() {
@@ -2044,6 +2045,33 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(this->actionEstimateNoise, &QAction::triggered,
                      this->noiseController, &NoiseController::startEstimation);
 
+    // Region analysis actions — created here so wireToolActions() can wire them
+    // to the sidebar buttons immediately below.
+    this->actionBoxRegion = ui->menuTools->addAction(u"Box Region Analysis"_s);
+    this->actionCircleRegion = ui->menuTools->addAction(u"Circle Region Analysis"_s);
+    this->actionPolygonRegion = ui->menuTools->addAction(u"Polygon Region Analysis"_s);
+    this->actionAnnulusRegion = ui->menuTools->addAction(u"Annulus Region Analysis"_s);
+    this->actionBoxRegion->setCheckable(true);
+    this->actionCircleRegion->setCheckable(true);
+    this->actionPolygonRegion->setCheckable(true);
+    this->actionAnnulusRegion->setCheckable(true);
+    {
+        auto *regionGroup = new QActionGroup(this);
+        regionGroup->setExclusive(false);
+        regionGroup->addAction(this->actionBoxRegion);
+        regionGroup->addAction(this->actionCircleRegion);
+        regionGroup->addAction(this->actionPolygonRegion);
+        regionGroup->addAction(this->actionAnnulusRegion);
+    }
+    QObject::connect(this->actionBoxRegion, &QAction::toggled, this,
+                     [this](bool checked) { this->setRegionMode(RegionMode::Box, checked); });
+    QObject::connect(this->actionCircleRegion, &QAction::toggled, this,
+                     [this](bool checked) { this->setRegionMode(RegionMode::Circle, checked); });
+    QObject::connect(this->actionPolygonRegion, &QAction::toggled, this,
+                     [this](bool checked) { this->setRegionMode(RegionMode::Polygon, checked); });
+    QObject::connect(this->actionAnnulusRegion, &QAction::toggled, this,
+                     [this](bool checked) { this->setRegionMode(RegionMode::Annulus, checked); });
+
     // Wire the sidebar Tools page buttons to their actions via CubeUiAssembler.
     if (m_uiAssembler) {
         m_uiAssembler->wireToolActions(this->actionEstimateNoise,
@@ -2059,28 +2087,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     }
 
     this->updateBackendDerivedActionsAvailability();
-    this->actionBoxRegion = ui->menuTools->addAction(u"Box Region Analysis"_s);
-    this->actionCircleRegion = ui->menuTools->addAction(u"Circle Region Analysis"_s);
-    this->actionPolygonRegion = ui->menuTools->addAction(u"Polygon Region Analysis"_s);
-    this->actionAnnulusRegion = ui->menuTools->addAction(u"Annulus Region Analysis"_s);
-    this->actionBoxRegion->setCheckable(true);
-    this->actionCircleRegion->setCheckable(true);
-    this->actionPolygonRegion->setCheckable(true);
-    this->actionAnnulusRegion->setCheckable(true);
-    auto *regionGroup = new QActionGroup(this);
-    regionGroup->setExclusive(false);
-    regionGroup->addAction(this->actionBoxRegion);
-    regionGroup->addAction(this->actionCircleRegion);
-    regionGroup->addAction(this->actionPolygonRegion);
-    regionGroup->addAction(this->actionAnnulusRegion);
-    QObject::connect(this->actionBoxRegion, &QAction::toggled, this,
-                     [this](bool checked) { this->setRegionMode(RegionMode::Box, checked); });
-    QObject::connect(this->actionCircleRegion, &QAction::toggled, this,
-                     [this](bool checked) { this->setRegionMode(RegionMode::Circle, checked); });
-    QObject::connect(this->actionPolygonRegion, &QAction::toggled, this,
-                     [this](bool checked) { this->setRegionMode(RegionMode::Polygon, checked); });
-    QObject::connect(this->actionAnnulusRegion, &QAction::toggled, this,
-                     [this](bool checked) { this->setRegionMode(RegionMode::Annulus, checked); });
     ui->menuTools->addSeparator();
     this->actionLoadCatalogueOverlay = ui->menuTools->addAction(u"Load Catalogue Overlay"_s);
     this->actionShowCatalogueOverlay = ui->menuTools->addAction(u"Show Catalogue Overlay"_s);
@@ -4154,106 +4160,157 @@ void vtkWindowCube::analyzeCurrentRegion()
     auto fmt = [](double v) { return QString::number(v, 'g', 8); };
     const QString shapeLabel = regionModeLabel(this->regionMode);
 
+    // ── Per-channel spectral profile ──────────────────────────────────────────
+    // Uses the 3D cube (cubeDisplaySource) to build mean-per-channel over the
+    // selected region. Coordinate mapping: region voxels (in 2D imageData space)
+    // are converted to physical world coords using imageData geometry, then to
+    // cubeImage voxel indices using cubeImage geometry.  This is robust to
+    // differing origins / spacings between the two datasets.
     auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
     if (cubeImage && stats.valid) {
+        // ── Geometry of the 2D display data (where region voxels live) ─────────
+        int extent2d[6];
+        double origin2d[3];
+        double spacing2d[3];
+        imageData->GetExtent(extent2d);
+        imageData->GetOrigin(origin2d);
+        imageData->GetSpacing(spacing2d);
+
+        // ── Geometry of the 3D cube data ──────────────────────────────────────
         int extent[6];
-        cubeImage->GetExtent(extent);
         double origin[3];
         double spacing[3];
+        cubeImage->GetExtent(extent);
         cubeImage->GetOrigin(origin);
         cubeImage->GetSpacing(spacing);
         const int zCount = extent[5] - extent[4] + 1;
+
         const auto regionBounds =
                 regionBounds2D(this->regionMode, this->regionAnchorVoxel, this->regionCurrentVoxel,
                                this->regionPolygonVertices);
+
         QVector<double> spectral(zCount);
         QVector<double> meanValues(zCount, 0.0);
-        QVector<double> sumValues(zCount, 0.0);
-        QVector<int> counts(zCount, 0);
-        for (int y = regionBounds[2]; y <= regionBounds[3]; ++y) {
-            for (int x = regionBounds[0]; x <= regionBounds[1]; ++x) {
-                const bool inside = pointInRegion(this->regionMode, this->regionAnchorVoxel,
-                                                  this->regionCurrentVoxel, this->regionPolygonVertices,
-                                                  this->regionAnnulusInnerRadius, x, y);
-                if (!inside) {
+        QVector<int>    counts(zCount, 0);
+
+        // Clamp the 2D loop to the actually-available extent to avoid
+        // unnecessary iterations.
+        const int xMin = std::max(extent2d[0], regionBounds[0]);
+        const int xMax = std::min(extent2d[1], regionBounds[1]);
+        const int yMin = std::max(extent2d[2], regionBounds[2]);
+        const int yMax = std::min(extent2d[3], regionBounds[3]);
+
+        for (int y = yMin; y <= yMax; ++y) {
+            for (int x = xMin; x <= xMax; ++x) {
+                if (!pointInRegion(this->regionMode, this->regionAnchorVoxel,
+                                   this->regionCurrentVoxel, this->regionPolygonVertices,
+                                   this->regionAnnulusInnerRadius, x, y)) {
                     continue;
                 }
-                const int localX = std::lround(extent[0] + (x - origin[0]) / spacing[0]);
-                const int localY = std::lround(extent[2] + (y - origin[1]) / spacing[1]);
-                if (localX < extent[0] || localX > extent[1] || localY < extent[2] || localY > extent[3]) {
+
+                // Convert 2D voxel index → physical world → cubeImage voxel.
+                // Using the two-step transform makes the mapping correct even if
+                // the datasets have different origins or spacings.
+                const double physX = origin2d[0] + static_cast<double>(x - extent2d[0]) * spacing2d[0];
+                const double physY = origin2d[1] + static_cast<double>(y - extent2d[2]) * spacing2d[1];
+                const int localX = std::lround(extent[0] + (physX - origin[0]) / spacing[0]);
+                const int localY = std::lround(extent[2] + (physY - origin[1]) / spacing[1]);
+
+                if (localX < extent[0] || localX > extent[1]
+                    || localY < extent[2] || localY > extent[3]) {
                     continue;
                 }
+
                 for (int localZ = extent[4]; localZ <= extent[5]; ++localZ) {
                     const int idx = localZ - extent[4];
-                    const double value = cubeImage->GetScalarComponentAsDouble(localX, localY, localZ, 0);
+                    const double value =
+                            cubeImage->GetScalarComponentAsDouble(localX, localY, localZ, 0);
                     if (!std::isfinite(value)) {
                         continue;
                     }
-                    const double datasetZ = origin[2] + (localZ - extent[4]) * spacing[2];
-                    bool ok = false;
-                    spectral[idx] = this->spectralAxisValue(datasetZ, &ok);
-                    if (!ok) {
-                        spectral[idx] = datasetZ;
+                    // Build spectral axis value once per channel (idempotent).
+                    if (counts[idx] == 0) {
+                        const double datasetZ = origin[2] + static_cast<double>(localZ - extent[4])
+                                                * spacing[2];
+                        bool ok = false;
+                        spectral[idx] = this->spectralAxisValue(datasetZ, &ok);
+                        if (!ok) {
+                            spectral[idx] = datasetZ;
+                        }
                     }
-                    sumValues[idx] += value;
+                    meanValues[idx] += value;
                     counts[idx] += 1;
                 }
             }
         }
 
+        // Normalise: convert accumulated sums to per-channel means.
+        // Channels with no valid pixels keep NaN so QCustomPlot skips them.
         bool haveSpectrum = false;
         for (int i = 0; i < zCount; ++i) {
             if (counts[i] > 0) {
-                meanValues[i] = sumValues[i] / static_cast<double>(counts[i]);
+                meanValues[i] /= static_cast<double>(counts[i]);
                 haveSpectrum = true;
             } else {
                 meanValues[i] = std::numeric_limits<double>::quiet_NaN();
-                sumValues[i] = std::numeric_limits<double>::quiet_NaN();
+                spectral[i]   = std::numeric_limits<double>::quiet_NaN();
             }
         }
 
         if (haveSpectrum) {
+            const QString plotTitle =
+                    u"Mean per channel — %1 region"_s.arg(shapeLabel);
             if (!this->probePlotWidget) {
                 this->probePlotWidget = new ProfileWidget(this);
-                const QString yLabel = u"Value"_s;
-                this->probePlotWidget->setUsageMode(ProfileWidget::UsageMode::RegionStatic,
-                                                    u"Region Spectrum"_s);
-                this->probePlotWidget->setupSpectrumPlot(this->spectralAxisTitle(),
-                                                         yLabel.isEmpty() ? u"Value"_s : yLabel);
+                this->probePlotWidget->setUsageMode(
+                        ProfileWidget::UsageMode::RegionStatic, plotTitle);
+                this->probePlotWidget->setupSpectrumPlot(
+                        this->spectralAxisTitle(), u"Mean value"_s);
+                this->probePlotWidget->applyPlotTheme(this->m_darkPlots);
             } else {
-                this->probePlotWidget->setUsageMode(ProfileWidget::UsageMode::RegionStatic,
-                                                    u"Region Spectrum"_s);
+                this->probePlotWidget->setUsageMode(
+                        ProfileWidget::UsageMode::RegionStatic, plotTitle);
             }
-            this->probePlotWidget->setUsageMode(ProfileWidget::UsageMode::RegionStatic,
-                                                u"Region Spectrum (%1)"_s.arg(regionModeLabel(this->regionMode)));
-            this->probePlotWidget->updateSpectrumPlotSeries(
-                    spectral, meanValues, u"Mean"_s, sumValues, u"Sum"_s,
-                    u"Region Spectrum (%1)"_s.arg(shapeLabel), false);
+            // Show a single Mean-per-channel series.
+            // Sum is intentionally omitted: its scale (N × pixel_value) is
+            // incompatible with Mean on a shared Y axis and causes misleading spikes.
+            this->probePlotWidget->updateSpectrumPlot(
+                    spectral, meanValues, plotTitle, /*live=*/false);
         }
     }
 
     // ── Show results in ToolResultDialog ─────────────────────────────────────
-    ToolResultDialog dlg(this);
-    dlg.setTitle(u"Region Analysis"_s);
-    dlg.setSubtitle(shapeLabel + u"  ·  computed on the currently loaded data block"_s);
+    // The dialog shows 2D global statistics (computed on the current slice or
+    // moment map).  The spectral plot (ProfileWidget) shows the mean per channel
+    // across all channels of the 3D cube — these are complementary views.
+    const QString dataSource = this->viewingSlice()
+            ? u"current 2D slice"_s : u"current moment map"_s;
+
+    auto *dlg = new ToolResultDialog(this);
+    dlg->setTitle(u"Region Analysis"_s);
+    dlg->setSubtitle(
+            u"%1  ·  global 2D statistics from the %2"_s.arg(shapeLabel, dataSource));
 
     if (!stats.valid) {
-        dlg.addSection(u"Result"_s, {
+        dlg->addSection(u"Result"_s, {
             { u"Status"_s, u"No valid pixels in the selected region (all blanked / NaN)"_s },
         });
     } else {
-        dlg.addSection(u"Statistics"_s, {
+        dlg->addSection(u"2D Statistics"_s, {
             { u"Region"_s,       shapeLabel },
             { u"Valid pixels"_s, u"%1 / %2"_s.arg(stats.validCount).arg(stats.totalCount) },
-            { u"Blanked"_s,      QString::number(stats.blankedCount) },
+            { u"Blanked / NaN"_s, QString::number(stats.blankedCount) },
             { u"Min"_s,          fmt(stats.minValue) },
             { u"Max"_s,          fmt(stats.maxValue) },
             { u"Mean"_s,         fmt(stats.mean) },
             { u"Median"_s,       fmt(stats.median) },
             { u"Std Dev"_s,      fmt(stats.stddev) },
         });
+        dlg->addSection(u"Note"_s, {
+            { u"Spectral profile"_s, u"Mean per channel across all cube channels (see plot window)"_s },
+        });
     }
-    dlg.exec();
+    dlg->show();
 }
 
 bool vtkWindowCube::finalizePolygonRegion()
@@ -5187,6 +5244,7 @@ void vtkWindowCube::updateProbePlot()
         this->probePlotWidget->setUsageMode(ProfileWidget::UsageMode::ProbeLive, u"Profile"_s);
         this->probePlotWidget->setupSpectrumPlot(xLabel.isEmpty() ? u"Z"_s : xLabel,
                                                  yLabel.isEmpty() ? u"Value"_s : yLabel);
+        this->probePlotWidget->applyPlotTheme(this->m_darkPlots);
         QObject::connect(this->probePlotWidget, &ProfileWidget::destroyed, this,
                          [this]() {
                              this->probePlotWidget = nullptr;
@@ -7274,6 +7332,7 @@ void vtkWindowCube::setInteractorStyleProfile()
                                                 this->filepath.toStdString(), this);
         this->profileWidget->setUsageMode(ProfileWidget::UsageMode::ProbeLive, u"Profile"_s);
         this->profileWidget->setupSpectrumPlot(this->spectralAxisTitle(), u"Value"_s);
+        this->profileWidget->applyPlotTheme(this->m_darkPlots);
         QObject::connect(this->profileWidget, &ProfileWidget::destroyed, this,
                          &vtkWindowCube::setInteractorStyleImage, Qt::QueuedConnection);
     }

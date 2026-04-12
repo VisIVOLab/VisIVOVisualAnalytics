@@ -11,6 +11,7 @@
 #include <memory>
 
 class QCPItemLine;
+class QPushButton;
 class vtkImageData;
 class vtkInteractorStyleProfile;
 
@@ -53,8 +54,13 @@ public:
                              const QVector<double> &keyY, const QVector<double> &valuesY,
                              double probeX, double probeY, bool live);
 
+    /// Apply dark (true) or light (false) plot theme to all active plots.
+    void applyPlotTheme(bool dark);
+
 private slots:
     void setLiveMode(bool live);
+    void savePlot1Png();
+    void savePlot2Png();
 
 private:
     Ui::ProfileWidget *ui;
@@ -69,6 +75,9 @@ private:
     QCPItemLine *refLineX;
     QCPItemLine *refLineY;
     UsageMode usageMode{ UsageMode::ProbeLive };
+
+    QPushButton *m_btnSavePlot1 { nullptr };
+    QPushButton *m_btnSavePlot2 { nullptr };
 
     void plotProfile(double x, double y, bool live);
     void plotSpectrum(double x, double y, bool live);

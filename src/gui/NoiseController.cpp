@@ -229,22 +229,22 @@ void NoiseController::showResult(const CubeNoiseEstimateResult &result)
                     .arg(result.x0).arg(result.x1)
                     .arg(result.y0).arg(result.y1);
 
-    ToolResultDialog dlg(m_parentWindow);
-    dlg.setTitle(u"Noise Estimation"_s);
-    dlg.setSubtitle(subtitle);
-    dlg.addSection(u"Sigma"_s, {
+    auto *dlg = new ToolResultDialog(m_parentWindow);
+    dlg->setTitle(u"Noise Estimation"_s);
+    dlg->setSubtitle(subtitle);
+    dlg->addSection(u"Sigma"_s, {
         { u"Mean"_s,   fmt(sigmaStats[0]) },
         { u"Median"_s, fmt(sigmaStats[1]) },
         { u"Min"_s,    fmt(sigmaStats[2]) },
         { u"Max"_s,    fmt(sigmaStats[3]) },
     });
-    dlg.addSection(u"MAD"_s, {
+    dlg->addSection(u"MAD"_s, {
         { u"Mean"_s,   fmt(madStats[0]) },
         { u"Median"_s, fmt(madStats[1]) },
         { u"Min"_s,    fmt(madStats[2]) },
         { u"Max"_s,    fmt(madStats[3]) },
     });
-    dlg.exec();
+    dlg->show();
 
     if (auto *win = qobject_cast<QMainWindow *>(m_parentWindow)) {
         win->statusBar()->showMessage(u"Noise estimation completed."_s, 3000);

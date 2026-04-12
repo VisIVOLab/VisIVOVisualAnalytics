@@ -6,8 +6,47 @@
 #include <vtkImageData.h>
 
 #include <QColor>
+#include <QDialogButtonBox>
+#include <QFileDialog>
+#include <QHBoxLayout>
+#include <QPushButton>
 
 using namespace Qt::StringLiterals;
+
+/// Build the save-PNG footer bar using the same pattern as ToolResultDialog:
+/// a QDialogButtonBox with ActionRole buttons lets the platform style size the
+/// buttons correctly without any manual width calculation.
+///
+/// The footer is appended to @p widget's existing QVBoxLayout (installed by
+/// setupUi), and the plot rows are given stretch=1 so the footer stays compact.
+static void buildSaveFooter(QWidget *widget,
+                             QPushButton *&btn1Out, QPushButton *&btn2Out)
+{
+    // ── Footer widget — same structure as ToolResultDialog's footer ───────────
+    auto *footer = new QWidget(widget);
+    auto *footerLayout = new QHBoxLayout(footer);
+    footerLayout->setContentsMargins(12, 10, 12, 10);
+
+    // QDialogButtonBox delegates sizing to the native platform style.
+    // On macOS this produces correctly-padded Aqua-style buttons — no
+    // manual setFixedWidth / fontMetrics needed.
+    auto *buttonBox = new QDialogButtonBox(footer);
+
+    btn1Out = new QPushButton(u"Save plot 1 as PNG\u2026"_s);
+    btn2Out = new QPushButton(u"Save plot 2 as PNG\u2026"_s);
+    buttonBox->addButton(btn1Out, QDialogButtonBox::ActionRole);
+    buttonBox->addButton(btn2Out, QDialogButtonBox::ActionRole);
+
+    footerLayout->addWidget(buttonBox);
+
+    // ── Attach to the outer VBoxLayout installed by setupUi ──────────────────
+    // Layout indices: [0]=checkLive, [1]=plot1, [2]=plot2  (from UI file)
+    auto *vLayout = qobject_cast<QVBoxLayout *>(widget->layout());
+    vLayout->setContentsMargins(0, 0, 0, 0);  // remove platform-default 9 px margins
+    vLayout->setStretch(1, 1);  // plot1 — expand
+    vLayout->setStretch(2, 1);  // plot2 — expand (0-height when hidden)
+    vLayout->addWidget(footer); // footer appended at stretch=0 (default)
+}
 
 ProfileWidget::ProfileWidget(vtkInteractorStyleProfile *style, vtkImageData *dataset,
                              const std::string &filepath, QWidget *parent)
@@ -20,6 +59,10 @@ ProfileWidget::ProfileWidget(vtkInteractorStyleProfile *style, vtkImageData *dat
     ui->setupUi(this);
     this->setAttribute(Qt::WA_DeleteOnClose);
     this->setWindowFlag(Qt::Window);
+
+    buildSaveFooter(this, m_btnSavePlot1, m_btnSavePlot2);
+    QObject::connect(m_btnSavePlot1, &QPushButton::clicked, this, &ProfileWidget::savePlot1Png);
+    QObject::connect(m_btnSavePlot2, &QPushButton::clicked, this, &ProfileWidget::savePlot2Png);
 
     // Get info from dataset
     this->ScalarPointer = static_cast<float *>(this->dataset->GetScalarPointer());
@@ -46,6 +89,10 @@ ProfileWidget::ProfileWidget(QWidget *parent)
     ui->setupUi(this);
     this->setAttribute(Qt::WA_DeleteOnClose);
     this->setWindowFlag(Qt::Window);
+
+    buildSaveFooter(this, m_btnSavePlot1, m_btnSavePlot2);
+    QObject::connect(m_btnSavePlot1, &QPushButton::clicked, this, &ProfileWidget::savePlot1Png);
+    QObject::connect(m_btnSavePlot2, &QPushButton::clicked, this, &ProfileWidget::savePlot2Png);
 }
 
 ProfileWidget::~ProfileWidget()
@@ -115,6 +162,8 @@ void ProfileWidget::setupImagePlots()
 void ProfileWidget::setupImagePlots(const QString &xLabel, const QString &yLabel)
 {
     this->applyUsageModeUi();
+    ui->plot1->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    ui->plot2->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     ui->plot1->clearGraphs();
     ui->plot2->clearGraphs();
     ui->plot1->addGraph();
@@ -176,6 +225,10 @@ void ProfileWidget::setupSpectrumPlot(const QString &xLabel, const QString &yLab
 {
     this->applyUsageModeUi();
     ui->plot2->hide();
+    if (m_btnSavePlot2) m_btnSavePlot2->hide();
+    if (m_btnSavePlot1)
+        m_btnSavePlot1->setText(u"Save spectrum as PNG\u2026"_s);
+    ui->plot1->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     ui->plot1->clearGraphs();
     ui->plot1->addGraph();
     ui->plot1->legend->setVisible(false);
@@ -183,22 +236,12 @@ void ProfileWidget::setupSpectrumPlot(const QString &xLabel, const QString &yLab
     ui->plot1->axisRect()->setRangeDrag(Qt::Horizontal);
     ui->plot1->plotLayout()->insertRow(0);
     auto *titleEl = new QCPTextElement(ui->plot1, u"Z Profile"_s);
-    titleEl->setTextColor(QColor(u"#c8d8f8"_s));
     ui->plot1->plotLayout()->addElement(0, 0, titleEl);
     ui->plot1->xAxis->setLabel(xLabel);
     ui->plot1->yAxis->setLabel(yLabel);
 
-    // ── Dark theme — matches PvDiagramWidget styling ──────────────────────────
-    ui->plot1->setBackground(QColor(u"#141922"_s));
-    ui->plot1->axisRect()->setBackground(QColor(u"#0d1118"_s));
-    for (auto *axis : { ui->plot1->xAxis, ui->plot1->xAxis2,
-                        ui->plot1->yAxis, ui->plot1->yAxis2 }) {
-        axis->setBasePen(QPen(QColor(u"#4a5a7a"_s)));
-        axis->setTickPen(QPen(QColor(u"#4a5a7a"_s)));
-        axis->setSubTickPen(QPen(QColor(u"#2a3555"_s)));
-        axis->setTickLabelColor(QColor(u"#c0d0f0"_s));
-        axis->setLabelColor(QColor(u"#8ab4f8"_s));
-    }
+    // Apply default dark theme (caller can override with applyPlotTheme).
+    applyPlotTheme(true);
 }
 
 void ProfileWidget::setLiveMode(bool live)
@@ -294,6 +337,7 @@ void ProfileWidget::updateSpectrumPlot(const QVector<double> &key, const QVector
     if (this->usageMode == UsageMode::ProbeLive) {
         ui->checkLive->setChecked(live);
     }
+    ui->plot1->graph()->setPen(QPen(QColor(0, 170, 255), 1.5));
     ui->plot1->graph()->setData(key, values);
     ui->plot1->rescaleAxes();
     if (auto *titleElement = qobject_cast<QCPTextElement *>(ui->plot1->plotLayout()->element(0, 0))) {
@@ -378,4 +422,55 @@ void ProfileWidget::updateImageProfiles(const QVector<double> &keyX, const QVect
 
     this->show();
     this->raise();
+}
+
+void ProfileWidget::applyPlotTheme(bool dark)
+{
+    auto applyToPlot = [dark](QCustomPlot *plot) {
+        if (!plot || !plot->isVisible()) return;
+        if (dark) {
+            plot->setBackground(QColor(u"#141922"_s));
+            plot->axisRect()->setBackground(QColor(u"#0d1118"_s));
+            if (auto *te = qobject_cast<QCPTextElement *>(plot->plotLayout()->element(0, 0)))
+                te->setTextColor(QColor(u"#c8d8f8"_s));
+            for (auto *axis : { plot->xAxis, plot->xAxis2, plot->yAxis, plot->yAxis2 }) {
+                axis->setBasePen(QPen(QColor(u"#4a5a7a"_s)));
+                axis->setTickPen(QPen(QColor(u"#4a5a7a"_s)));
+                axis->setSubTickPen(QPen(QColor(u"#2a3555"_s)));
+                axis->setTickLabelColor(QColor(u"#c0d0f0"_s));
+                axis->setLabelColor(QColor(u"#8ab4f8"_s));
+            }
+        } else {
+            plot->setBackground(Qt::white);
+            plot->axisRect()->setBackground(QColor(u"#f8f8f8"_s));
+            if (auto *te = qobject_cast<QCPTextElement *>(plot->plotLayout()->element(0, 0)))
+                te->setTextColor(Qt::black);
+            for (auto *axis : { plot->xAxis, plot->xAxis2, plot->yAxis, plot->yAxis2 }) {
+                axis->setBasePen(QPen(Qt::black));
+                axis->setTickPen(QPen(Qt::black));
+                axis->setSubTickPen(QPen(QColor(u"#888888"_s)));
+                axis->setTickLabelColor(Qt::black);
+                axis->setLabelColor(Qt::black);
+            }
+        }
+        plot->replot();
+    };
+    applyToPlot(ui->plot1);
+    applyToPlot(ui->plot2);
+}
+
+void ProfileWidget::savePlot1Png()
+{
+    const QString path = QFileDialog::getSaveFileName(
+            this, u"Save Plot as PNG"_s, u"profile.png"_s, u"PNG Image (*.png)"_s);
+    if (!path.isEmpty())
+        ui->plot1->savePng(path);
+}
+
+void ProfileWidget::savePlot2Png()
+{
+    const QString path = QFileDialog::getSaveFileName(
+            this, u"Save Plot as PNG"_s, u"profile2.png"_s, u"PNG Image (*.png)"_s);
+    if (!path.isEmpty())
+        ui->plot2->savePng(path);
 }

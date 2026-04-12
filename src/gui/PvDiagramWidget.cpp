@@ -3,11 +3,14 @@
 #include "ColorMaps.h"
 #include "qcustomplot.h"
 
+#include <QDialogButtonBox>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPushButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -49,30 +52,85 @@ PvDiagramWidget::PvDiagramWidget(QWidget *parent)
     // Here we just add the plot below.
     root->addWidget(this->plot, 1);
 
+    // ── Footer toolbar (Save PNG) ─────────────────────────────────────────────
+    auto *footer = new QFrame(this);
+    footer->setStyleSheet(u"QFrame { background: %1; border-top: 1px solid rgba(4,138,191,0.15); }"_s.arg(kHeaderBg));
+    auto *footerLayout = new QHBoxLayout(footer);
+    footerLayout->setContentsMargins(12, 10, 12, 10);
+
+    auto *buttonBox = new QDialogButtonBox(footer);
+    auto *btnSave = new QPushButton(u"Save as PNG\u2026"_s);
+    btnSave->setToolTip(u"Save the PV diagram as a PNG image"_s);
+    buttonBox->addButton(btnSave, QDialogButtonBox::ActionRole);
+    footerLayout->addWidget(buttonBox);
+
+    root->addWidget(footer);
+    QObject::connect(btnSave, &QPushButton::clicked, this, &PvDiagramWidget::savePng);
+
     // ── QCustomPlot setup ─────────────────────────────────────────────────────
     this->plot->plotLayout()->insertRow(0);
     this->titleElement = new QCPTextElement(this->plot, u"PV Diagram"_s);
     QFont titleFont = this->titleElement->font();
     titleFont.setPointSize(10);
     this->titleElement->setFont(titleFont);
-    this->titleElement->setTextColor(QColor(u"#c8d8f8"_s));
     this->plot->plotLayout()->addElement(0, 0, this->titleElement);
 
     this->colorMap = new QCPColorMap(this->plot->xAxis, this->plot->yAxis);
     this->colorMap->setInterpolate(false);
     this->plot->axisRect()->setupFullAxesBox(true);
 
-    // Dark background for the plot area.
-    this->plot->setBackground(QColor(kBg));
-    this->plot->axisRect()->setBackground(QColor(u"#0d1118"_s));
-    for (auto *axis : { this->plot->xAxis, this->plot->xAxis2,
-                        this->plot->yAxis, this->plot->yAxis2 }) {
-        axis->setBasePen(QPen(QColor(u"#4a5a7a"_s)));
-        axis->setTickPen(QPen(QColor(u"#4a5a7a"_s)));
-        axis->setSubTickPen(QPen(QColor(u"#2a3555"_s)));
-        axis->setTickLabelColor(QColor(u"#c0d0f0"_s));
-        axis->setLabelColor(QColor(u"#8ab4f8"_s));
+    // Apply default dark theme.
+    applyPlotTheme(true);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// applyPlotTheme
+// ─────────────────────────────────────────────────────────────────────────────
+
+void PvDiagramWidget::applyPlotTheme(bool dark)
+{
+    if (dark) {
+        this->plot->setBackground(QColor(kBg));
+        this->plot->axisRect()->setBackground(QColor(u"#0d1118"_s));
+        if (this->titleElement)
+            this->titleElement->setTextColor(QColor(u"#c8d8f8"_s));
+        for (auto *axis : { this->plot->xAxis, this->plot->xAxis2,
+                            this->plot->yAxis, this->plot->yAxis2 }) {
+            axis->setBasePen(QPen(QColor(u"#4a5a7a"_s)));
+            axis->setTickPen(QPen(QColor(u"#4a5a7a"_s)));
+            axis->setSubTickPen(QPen(QColor(u"#2a3555"_s)));
+            axis->setTickLabelColor(QColor(u"#c0d0f0"_s));
+            axis->setLabelColor(QColor(u"#8ab4f8"_s));
+        }
+    } else {
+        this->plot->setBackground(Qt::white);
+        this->plot->axisRect()->setBackground(QColor(u"#f8f8f8"_s));
+        if (this->titleElement)
+            this->titleElement->setTextColor(Qt::black);
+        for (auto *axis : { this->plot->xAxis, this->plot->xAxis2,
+                            this->plot->yAxis, this->plot->yAxis2 }) {
+            axis->setBasePen(QPen(Qt::black));
+            axis->setTickPen(QPen(Qt::black));
+            axis->setSubTickPen(QPen(QColor(u"#888888"_s)));
+            axis->setTickLabelColor(Qt::black);
+            axis->setLabelColor(Qt::black);
+        }
     }
+    this->plot->replot();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// savePng
+// ─────────────────────────────────────────────────────────────────────────────
+
+void PvDiagramWidget::savePng()
+{
+    const QString path = QFileDialog::getSaveFileName(
+            this, u"Save PV Diagram as PNG"_s, u"pv_diagram.png"_s,
+            u"PNG Image (*.png)"_s);
+    if (path.isEmpty())
+        return;
+    this->plot->savePng(path);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

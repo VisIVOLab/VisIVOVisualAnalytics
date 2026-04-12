@@ -39,6 +39,17 @@ public:
     void setColorScheme(Qt::ColorScheme scheme);
 
     /**
+   * @return Plot background theme: 0 = dark (default), 1 = light
+   */
+    int getPlotTheme() const;
+
+    /**
+   * Set plot background theme
+   * @param theme 0 = dark, 1 = light
+   */
+    void setPlotTheme(int theme);
+
+    /**
    * @return Python absolute path
    */
     QString getPythonLocation() const;
@@ -154,6 +165,9 @@ private:
     // Backend settings (R1, R8)
     static const std::pair<QString, QVariant> BackendUrl;
     static const std::pair<QString, QVariant> BackendToken;
+
+    // Plot theme
+    static const std::pair<QString, QVariant> PlotTheme;
 };
 
 #endif

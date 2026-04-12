@@ -25,6 +25,8 @@ static const QString kGroupColor    = u"rgba(4, 138, 191, 0.80)"_s;
 ToolResultDialog::ToolResultDialog(QWidget *parent)
     : QDialog(parent)
 {
+    setAttribute(Qt::WA_DeleteOnClose);
+    setWindowModality(Qt::NonModal);
     setWindowTitle(u"Analysis Result"_s);
     setMinimumWidth(440);
     setSizeGripEnabled(true);
