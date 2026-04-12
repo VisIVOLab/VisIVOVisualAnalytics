@@ -32,6 +32,23 @@ _TTL_SECONDS = int(os.environ.get("VISIVO_SESSION_TTL", "1800"))
 _ANON_SESSION_ID = "anonymous"
 
 
+def _safe_close_memmap(arr: object) -> None:
+    """Close a numpy memmap's underlying file descriptor safely.
+
+    Calling ``del arr`` alone is not sufficient on non-CPython runtimes because
+    the garbage collector may not run immediately.  Explicitly closing the
+    ``_mmap`` attribute releases the OS file descriptor right away.
+
+    Safe to call multiple times (idempotent) and on non-memmap objects (no-op).
+    """
+    try:
+        mmap_obj = getattr(arr, "_mmap", None)
+        if mmap_obj is not None:
+            mmap_obj.close()
+    except Exception:
+        pass
+
+
 class Session:
     """Holds all datasets opened by a single client connection."""
 
@@ -50,6 +67,24 @@ class Session:
 
     def idle_seconds(self) -> float:
         return time.monotonic() - self.last_accessed
+
+    def close(self) -> None:
+        """Release all resources held by this session.
+
+        Explicitly closes any ``np.memmap`` objects stored in VBT dataset
+        entries so that OS file descriptors are freed immediately rather than
+        waiting for the garbage collector.
+        """
+        for dataset_id, entry in self.datasets.items():
+            if entry.get("kind") == "vbt":
+                mm = entry.get("memmap")
+                if mm is not None:
+                    _safe_close_memmap(mm)
+                    logger.debug(
+                        "[sessions] closed memmap dataset_id=%s session_id=%s",
+                        dataset_id,
+                        self.session_id,
+                    )
 
     def try_acquire_task_slot(self) -> bool:
         """Atomically increment active-task counter if below the limit.
@@ -134,7 +169,9 @@ class SessionRegistry:
                 ]
             for sid in stale:
                 with self._lock:
-                    self._sessions.pop(sid, None)
+                    session = self._sessions.pop(sid, None)
+                if session is not None:
+                    session.close()
                 logger.info("[sessions] evicted stale session_id=%s", sid)
 
     def _start_eviction_thread(self) -> None:
