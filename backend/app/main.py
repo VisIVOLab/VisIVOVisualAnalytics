@@ -2167,7 +2167,14 @@ class TargetResolveResponse(BaseModel):
     source: str = ""
 
 
-def _resolve_target_sync(name: str) -> dict:
+@functools.lru_cache(maxsize=256)
+def _resolve_target_cached(name: str) -> dict:
+    """Internal cached worker.  *name* must already be normalised (strip+lower).
+
+    lru_cache keys on the function argument, so normalisation must happen
+    *before* this function is called — not inside it — to guarantee that
+    'M31', 'm31', and '  M31  ' all share the same cache slot.
+    """
     try:
         from astropy.coordinates import SkyCoord  # type: ignore
         coord = SkyCoord.from_name(name)
@@ -2181,6 +2188,23 @@ def _resolve_target_sync(name: str) -> dict:
             "valid": False, "error": str(exc),
             "ra_deg": 0.0, "dec_deg": 0.0, "resolved_name": "", "source": "",
         }
+
+
+def _resolve_target_sync(name: str) -> dict:
+    """Public entry point used by the route and run_in_executor.
+
+    Normalises the target name and delegates to the LRU-cached worker so that
+    'M31', 'm31', and '  M31  ' all produce a single Sesame request.
+    """
+    return _resolve_target_cached(name.strip().lower())
+
+
+def clear_resolver_cache() -> None:
+    """Invalidate the in-process Sesame resolver cache.
+
+    Useful for tests, session reloads, or when the user suspects stale results.
+    """
+    _resolve_target_cached.cache_clear()
 
 
 @app.post("/v1/resolve/target", response_model=TargetResolveResponse, tags=["resolve"])
