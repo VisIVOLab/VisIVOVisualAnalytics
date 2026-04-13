@@ -430,6 +430,9 @@ void MainWindow::doOpenCataloguePath(const QString &filepath)
     auto *win = new vtkWindowCatalogue3D(filepath, settings->getBackendUrl(),
                                          settings->getBackendToken(), this);
     win->setAttribute(Qt::WA_DeleteOnClose);
+    // On session expiry the window emits reopenRequested; reuse the normal open flow.
+    QObject::connect(win, &vtkWindowCatalogue3D::reopenRequested,
+                     this, &MainWindow::doOpenCataloguePath);
     win->show();
     win->raise();
     win->activateWindow();
@@ -593,10 +596,14 @@ void MainWindow::doOpenVbtPath(const QString &headerPath)
                             result.backendUrl, result.backendToken,
                             result.sessionId, this);
                 } else {
-                    win = new vtkWindowVbt(
+                    auto *vbtWin = new vtkWindowVbt(
                             result.openResult, result.subsetResult,
                             result.backendUrl, result.backendToken,
-                            result.sessionId, this);
+                            result.sessionId, headerPath, this);
+                    // On session expiry the window emits reopenRequested; reuse normal open flow.
+                    QObject::connect(vbtWin, &vtkWindowVbt::reopenRequested,
+                                     this, &MainWindow::doOpenVbtPath);
+                    win = vbtWin;
                 }
                 win->show();
                 win->raise();

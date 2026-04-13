@@ -59,6 +59,15 @@
 
 using namespace Qt::StringLiterals;
 
+/// Returns true when @p errorText looks like a backend session-expiry error.
+static bool isSessionExpiryError(const QString &errorText)
+{
+    const QString lower = errorText.toLower();
+    return lower.contains(u"session"_s)
+        || lower.contains(u"expired"_s)
+        || lower.contains(u"not found"_s);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared helper – "Add Filter" dialog
 // ─────────────────────────────────────────────────────────────────────────────
@@ -130,13 +139,15 @@ static QString findCoordField(const std::vector<BackendVbtFieldInfo> &fields, co
 
 vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResult subsetResult,
                            const QString &backendUrl, const QString &backendToken,
-                           const QString &sessionId, QWidget *parent)
+                           const QString &sessionId, const QString &headerPath,
+                           QWidget *parent)
     : QMainWindow(parent)
     , openResult(std::move(openResult))
     , subsetResult(std::move(subsetResult))
     , backendUrl(backendUrl)
     , backendToken(backendToken)
     , sessionId(sessionId)
+    , m_headerPath(headerPath)
 {
     this->xFieldName = findCoordField(this->openResult.fields, u"x"_s);
     this->yFieldName = findCoordField(this->openResult.fields, u"y"_s);
@@ -169,7 +180,24 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
                                      QStringLiteral("Filter failed: %1").arg(result.error),
                                      this->openResult.datasetId, this->sessionId,
                                      QStringLiteral("filter"));
-                             QMessageBox::warning(this, u"Filter error"_s, result.error);
+                             if (isSessionExpiryError(result.error)) {
+                                 QMessageBox msg(this);
+                                 msg.setWindowTitle(u"Session Expired"_s);
+                                 msg.setText(
+                                         u"The backend session for this dataset has expired.\n"
+                                         "The dataset needs to be reopened before continuing."_s);
+                                 auto *btnReopen = msg.addButton(
+                                         u"Re-open Dataset"_s, QMessageBox::AcceptRole);
+                                 msg.addButton(QMessageBox::Cancel);
+                                 msg.exec();
+                                 if (msg.clickedButton() == btnReopen) {
+                                     const QString path = this->m_headerPath;
+                                     emit reopenRequested(path);
+                                     this->close();
+                                 }
+                             } else {
+                                 QMessageBox::warning(this, u"Filter error"_s, result.error);
+                             }
                              return;
                          }
 
@@ -222,15 +250,32 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
 
                          const auto result = this->m_loadMoreWatcher.result();
                          if (!result.valid) {
-                             if (this->filterStatusLabel) {
-                                 this->filterStatusLabel->setText(
-                                         u"Load more failed: "_s + result.error);
-                             }
-                             if (this->btnLoadMore) {
-                                 this->btnLoadMore->setEnabled(true);
-                                 this->btnLoadMore->setText(
-                                         QStringLiteral("Load more (%1 remaining)")
-                                                 .arg(this->m_totalCount - this->m_currentOffset));
+                             if (isSessionExpiryError(result.error)) {
+                                 QMessageBox msg(this);
+                                 msg.setWindowTitle(u"Session Expired"_s);
+                                 msg.setText(
+                                         u"The backend session for this dataset has expired.\n"
+                                         "The dataset needs to be reopened before continuing."_s);
+                                 auto *btnReopen = msg.addButton(
+                                         u"Re-open Dataset"_s, QMessageBox::AcceptRole);
+                                 msg.addButton(QMessageBox::Cancel);
+                                 msg.exec();
+                                 if (msg.clickedButton() == btnReopen) {
+                                     const QString path = this->m_headerPath;
+                                     emit reopenRequested(path);
+                                     this->close();
+                                 }
+                             } else {
+                                 if (this->filterStatusLabel) {
+                                     this->filterStatusLabel->setText(
+                                             u"Load more failed: "_s + result.error);
+                                 }
+                                 if (this->btnLoadMore) {
+                                     this->btnLoadMore->setEnabled(true);
+                                     this->btnLoadMore->setText(
+                                             QStringLiteral("Load more (%1 remaining)")
+                                                     .arg(this->m_totalCount - this->m_currentOffset));
+                                 }
                              }
                              return;
                          }

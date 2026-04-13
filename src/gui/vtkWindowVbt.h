@@ -54,8 +54,14 @@ class vtkWindowVbt : public QMainWindow
 public:
     explicit vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResult subsetResult,
                           const QString &backendUrl, const QString &backendToken,
-                          const QString &sessionId, QWidget *parent = nullptr);
+                          const QString &sessionId, const QString &headerPath = {},
+                          QWidget *parent = nullptr);
     ~vtkWindowVbt() override = default;
+
+signals:
+    /// Emitted when a session-expiry error is detected and the user requests
+    /// that the dataset be reopened.  Connect to MainWindow::doOpenVbtPath.
+    void reopenRequested(const QString &headerPath);
 
 private:
     void setupUi();
@@ -81,6 +87,7 @@ private:
     const QString backendUrl;
     const QString backendToken;
     const QString sessionId;
+    const QString m_headerPath;   ///< original .head file path; used for session-expiry reopen
 
     QPointer<QVTKOpenGLNativeWidget> vtkWidget;
     QPointer<QComboBox> comboRenderMode;

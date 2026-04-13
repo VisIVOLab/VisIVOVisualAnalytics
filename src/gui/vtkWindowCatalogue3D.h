@@ -104,6 +104,9 @@ private slots:
 
 signals:
     void sourceSelectionChanged(int index);
+    /// Emitted when a session-expiry error is detected and the user requests
+    /// that the dataset be reopened.  Connect to MainWindow::doOpenCataloguePath.
+    void reopenRequested(const QString &filepath);
 
 private:
     enum class GeometryMode

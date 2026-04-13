@@ -86,7 +86,8 @@ CubeUiAssembler::~CubeUiAssembler() = default;
 // Static helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-QPixmap CubeUiAssembler::buildLutPreview(const QString &name, int w, int h)
+// Moved from class scope: only used in this translation unit.
+static QPixmap buildLutPreview(const QString &name, int w, int h)
 {
     vtkNew<vtkLookupTable> lut;
     lut->SetTableRange(0., 1.);
@@ -822,7 +823,7 @@ void CubeUiAssembler::syncVolumeModeSidebar(int idx)
 
 void CubeUiAssembler::updateMomentCard(const MomentCardData &data)
 {
-    auto *lbl = m_momentInfoLabel.data();
+    auto *lbl = m_momentInfoLabel;
     if (!lbl)
         return;
 
@@ -863,25 +864,25 @@ void CubeUiAssembler::updateMomentCard(const MomentCardData &data)
 
 void CubeUiAssembler::updateInfoStats(const InfoStatsData &data)
 {
-    if (auto *l = m_infoDsLoadState.data()) {
+    if (auto *l = m_infoDsLoadState) {
         l->setText(data.loadStateText);
         l->setStyleSheet(data.loadStateStyleSheet);
     }
-    if (auto *l = m_infoWcsFrame.data())
+    if (auto *l = m_infoWcsFrame)
         l->setText(data.wcsFrame);
-    if (auto *l = m_infoSpectral.data())
+    if (auto *l = m_infoSpectral)
         l->setText(data.spectralAxis);
-    if (auto *badge = m_infoWcsBadge.data()) {
+    if (auto *badge = m_infoWcsBadge) {
         badge->setText(data.wcsBadgeText);
         badge->setStyleSheet(data.wcsBadgeStyleSheet);
         if (!data.wcsBadgeTooltip.isEmpty())
             badge->setToolTip(data.wcsBadgeTooltip);
     }
-    if (auto *l = m_infoRenderMode.data())
+    if (auto *l = m_infoRenderMode)
         l->setText(data.renderModeText);
-    if (auto *l = m_info2dMode.data())
+    if (auto *l = m_info2dMode)
         l->setText(data.imageModeText);
-    if (auto *l = m_infoMomentState.data()) {
+    if (auto *l = m_infoMomentState) {
         l->setText(data.momentStateText);
         l->setStyleSheet(data.momentStateStyleSheet);
     }
@@ -915,7 +916,7 @@ void CubeUiAssembler::initStatusBarLabels(QStatusBar *bar)
 
 void CubeUiAssembler::updateWcsStatus(const WcsStatusData &data)
 {
-    auto *lbl = m_wcsStatusLabel.data();
+    auto *lbl = m_wcsStatusLabel;
     if (!lbl)
         return;
     if (!data.visible) {
@@ -936,7 +937,7 @@ void CubeUiAssembler::updateWcsStatus(const WcsStatusData &data)
 
 void CubeUiAssembler::updateSanityStatus(const SanityStatusData &data)
 {
-    auto *lbl = m_sanityLabel.data();
+    auto *lbl = m_sanityLabel;
     if (!lbl)
         return;
     lbl->setText(data.text);
@@ -949,7 +950,7 @@ void CubeUiAssembler::updateSanityStatus(const SanityStatusData &data)
 
 void CubeUiAssembler::updateDataState(const DataStateUiData &data)
 {
-    auto *lbl = m_dataStateLabel.data();
+    auto *lbl = m_dataStateLabel;
     if (!lbl)
         return;
     lbl->setText(data.text);

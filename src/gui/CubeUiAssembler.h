@@ -1,15 +1,17 @@
 #pragma once
 
-// QPointer<T> requires the full type definition (uses static_cast<T*> internally).
-#include <QComboBox>
-#include <QLabel>
-#include <QPointer>
+// All widget members below are raw pointers.  Their lifetime is guaranteed by
+// the Qt parent-child hierarchy: every widget is created as a child of a page
+// owned by Ui::vtkWindowCube, which is destroyed together with CubeUiAssembler.
+// Forward declarations keep this header free of heavyweight Qt widget includes.
 #include <QString>
-#include <QToolButton>
-#include <QWidget>
 
 class QAction;
+class QComboBox;
+class QLabel;
 class QStatusBar;
+class QToolButton;
+class QWidget;
 
 namespace Ui {
 class vtkWindowCube;
@@ -163,54 +165,51 @@ public:
     QLabel    *infoMomentState()   const { return m_infoMomentState; }
 
 private:
-    /// Generate a gradient QPixmap for a named color map (used as combo-box icons).
-    static QPixmap buildLutPreview(const QString &name, int w, int h);
-
     Ui::vtkWindowCube *m_ui;
 
     // ── 3D View Settings widgets ──────────────────────────────────────────────
-    QPointer<QComboBox>   m_comboRenderMode;
-    QPointer<QComboBox>   m_comboVolumeMode;
-    QPointer<QComboBox>   m_comboLut;
-    QPointer<QWidget>     m_volumeModeCard;
-    QPointer<QWidget>     m_surfaceColorCard;
-    QPointer<QWidget>     m_colorMapCard;
+    QComboBox            *m_comboRenderMode{ nullptr };
+    QComboBox            *m_comboVolumeMode{ nullptr };
+    QComboBox            *m_comboLut{ nullptr };
+    QWidget              *m_volumeModeCard{ nullptr };
+    QWidget              *m_surfaceColorCard{ nullptr };
+    QWidget              *m_colorMapCard{ nullptr };
     // ── 2D View Settings widgets ──────────────────────────────────────────────
-    QPointer<QComboBox>   m_combo2dMode;
-    QPointer<QWidget>     m_sliceControlsCard;
-    QPointer<QWidget>     m_sliceLutCard;
-    QPointer<QWidget>     m_sliceContoursCard;
-    QPointer<QComboBox>   m_comboSliceLut;
-    QPointer<QWidget>     m_momentInfoCard;
-    QPointer<QLabel>      m_momentInfoLabel;
-    QPointer<QWidget>     m_momentLutCard;
-    QPointer<QComboBox>   m_comboMomentLut;
+    QComboBox            *m_combo2dMode{ nullptr };
+    QWidget              *m_sliceControlsCard{ nullptr };
+    QWidget              *m_sliceLutCard{ nullptr };
+    QWidget              *m_sliceContoursCard{ nullptr };
+    QComboBox            *m_comboSliceLut{ nullptr };
+    QWidget              *m_momentInfoCard{ nullptr };
+    QLabel               *m_momentInfoLabel{ nullptr };
+    QWidget              *m_momentLutCard{ nullptr };
+    QComboBox            *m_comboMomentLut{ nullptr };
     // ── Tools page buttons (ANALYSIS) ─────────────────────────────────────────
-    QPointer<QToolButton> m_btnEstimateNoise;
-    QPointer<QToolButton> m_btnMomentMap;
-    QPointer<QToolButton> m_btnPvDiagram;
-    QPointer<QToolButton> m_btnBoxRegion;
-    QPointer<QToolButton> m_btnCircleRegion;
-    QPointer<QToolButton> m_btnPolygonRegion;
-    QPointer<QToolButton> m_btnAnnulusRegion;
+    QToolButton          *m_btnEstimateNoise{ nullptr };
+    QToolButton          *m_btnMomentMap{ nullptr };
+    QToolButton          *m_btnPvDiagram{ nullptr };
+    QToolButton          *m_btnBoxRegion{ nullptr };
+    QToolButton          *m_btnCircleRegion{ nullptr };
+    QToolButton          *m_btnPolygonRegion{ nullptr };
+    QToolButton          *m_btnAnnulusRegion{ nullptr };
     // ── Tools page buttons (EXPLORATION) ──────────────────────────────────────
-    QPointer<QToolButton> m_btnDataProbe;
+    QToolButton          *m_btnDataProbe{ nullptr };
     // ── 3D View Settings page buttons ─────────────────────────────────────────
-    QPointer<QToolButton> m_btnCameraRoi;
+    QToolButton          *m_btnCameraRoi{ nullptr };
     // ── 2D View Settings page buttons ─────────────────────────────────────────
-    QPointer<QToolButton> m_btnWcsAxes;
+    QToolButton          *m_btnWcsAxes{ nullptr };
     // ── Info / Stats labels ───────────────────────────────────────────────────
-    QPointer<QLabel>      m_infoDsName;
-    QPointer<QLabel>      m_infoDsDimensions;
-    QPointer<QLabel>      m_infoDsLoadState;
-    QPointer<QLabel>      m_infoWcsBadge;
-    QPointer<QLabel>      m_infoWcsFrame;
-    QPointer<QLabel>      m_infoSpectral;
-    QPointer<QLabel>      m_infoRenderMode;
-    QPointer<QLabel>      m_info2dMode;
-    QPointer<QLabel>      m_infoMomentState;
+    QLabel               *m_infoDsName{ nullptr };
+    QLabel               *m_infoDsDimensions{ nullptr };
+    QLabel               *m_infoDsLoadState{ nullptr };
+    QLabel               *m_infoWcsBadge{ nullptr };
+    QLabel               *m_infoWcsFrame{ nullptr };
+    QLabel               *m_infoSpectral{ nullptr };
+    QLabel               *m_infoRenderMode{ nullptr };
+    QLabel               *m_info2dMode{ nullptr };
+    QLabel               *m_infoMomentState{ nullptr };
     // ── Status-bar labels ─────────────────────────────────────────────────────
-    QPointer<QLabel>      m_dataStateLabel;
-    QPointer<QLabel>      m_sanityLabel;
-    QPointer<QLabel>      m_wcsStatusLabel;
+    QLabel               *m_dataStateLabel{ nullptr };
+    QLabel               *m_sanityLabel{ nullptr };
+    QLabel               *m_wcsStatusLabel{ nullptr };
 };

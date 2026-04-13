@@ -66,6 +66,7 @@
 
 #include <optional>
 
+/// Returns true when @p errorText looks like a backend session-expiry error.
 // ── std ───────────────────────────────────────────────────────────────────────
 #include <algorithm>
 #include <array>
@@ -83,6 +84,16 @@ static constexpr int kWCS_J2000    = 1;
 static constexpr int kWCS_GALACTIC = 3;
 
 using namespace Qt::StringLiterals;
+
+/// Used to offer the user an explicit "Re-open Dataset" recovery path instead
+/// of a generic warning.
+static bool isSessionExpiryError(const QString &errorText)
+{
+    const QString lower = errorText.toLower();
+    return lower.contains(u"session"_s)
+        || lower.contains(u"expired"_s)
+        || lower.contains(u"not found"_s);
+}
 
 // ── Anonymous helpers ─────────────────────────────────────────────────────────
 namespace {
@@ -214,7 +225,24 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                      u"Catalogue3D"_s,
                                      u"Filter failed: "_s + result.error,
                                      this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
-                             QMessageBox::warning(this, u"Filter error"_s, result.error);
+                             if (isSessionExpiryError(result.error)) {
+                                 QMessageBox msg(this);
+                                 msg.setWindowTitle(u"Session Expired"_s);
+                                 msg.setText(
+                                         u"The backend session for this dataset has expired.\n"
+                                         "The dataset needs to be reopened before continuing."_s);
+                                 auto *btnReopen = msg.addButton(
+                                         u"Re-open Dataset"_s, QMessageBox::AcceptRole);
+                                 msg.addButton(QMessageBox::Cancel);
+                                 msg.exec();
+                                 if (msg.clickedButton() == btnReopen) {
+                                     const QString path = this->filepath;
+                                     emit reopenRequested(path);
+                                     this->close();
+                                 }
+                             } else {
+                                 QMessageBox::warning(this, u"Filter error"_s, result.error);
+                             }
                              return;
                          }
 
@@ -272,15 +300,32 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
 
                 const auto result = this->m_loadMoreWatcher.result();
                 if (!result.valid) {
-                    if (this->filterStatusLabel) {
-                        this->filterStatusLabel->setText(
-                                u"Load more failed: "_s + result.error);
-                    }
-                    if (this->btnLoadMore) {
-                        this->btnLoadMore->setEnabled(true);
-                        this->btnLoadMore->setText(
-                                QStringLiteral("Load more (%1 remaining)")
-                                        .arg(this->m_totalCount - this->m_currentOffset));
+                    if (isSessionExpiryError(result.error)) {
+                        QMessageBox msg(this);
+                        msg.setWindowTitle(u"Session Expired"_s);
+                        msg.setText(
+                                u"The backend session for this dataset has expired.\n"
+                                "The dataset needs to be reopened before continuing."_s);
+                        auto *btnReopen = msg.addButton(
+                                u"Re-open Dataset"_s, QMessageBox::AcceptRole);
+                        msg.addButton(QMessageBox::Cancel);
+                        msg.exec();
+                        if (msg.clickedButton() == btnReopen) {
+                            const QString path = this->filepath;
+                            emit reopenRequested(path);
+                            this->close();
+                        }
+                    } else {
+                        if (this->filterStatusLabel) {
+                            this->filterStatusLabel->setText(
+                                    u"Load more failed: "_s + result.error);
+                        }
+                        if (this->btnLoadMore) {
+                            this->btnLoadMore->setEnabled(true);
+                            this->btnLoadMore->setText(
+                                    QStringLiteral("Load more (%1 remaining)")
+                                            .arg(this->m_totalCount - this->m_currentOffset));
+                        }
                     }
                     return;
                 }
