@@ -55,6 +55,8 @@ private:
     void updateBoundsContext();
     void updateScalarBar();
     void resetView();
+    void applyBackground();
+    void applyBoxActorColors(bool darkBackground);
     void applyKnownGoodVisibleFallback(double minValue, double maxValue, const double bounds[6]);
     static double percentileFromSortedSample(const std::vector<double> &values, double fraction);
     void setColorRange(double minValue, double maxValue);
@@ -69,6 +71,7 @@ private:
     QPointer<QComboBox> comboScalarField;
     QPointer<QComboBox> comboBlendMode;  // Composite / MIP / MinIP
     QPointer<QComboBox> comboScaleMode;
+    QPointer<QComboBox> comboBackground;
     QPointer<QSlider> sliderOpacity;
     QPointer<QDoubleSpinBox> spinRangeMin;
     QPointer<QDoubleSpinBox> spinRangeMax;

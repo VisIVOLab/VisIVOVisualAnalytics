@@ -393,7 +393,7 @@ void MainWindow::doOpenDataPath(const QString &path)
         this->recentMgr->record(path, name, opened.kind);
     }
 
-    win->show();
+    win->showMaximized();
     win->raise();
     win->activateWindow();
 }
@@ -605,7 +605,7 @@ void MainWindow::doOpenVbtPath(const QString &headerPath)
                                      this, &MainWindow::doOpenVbtPath);
                     win = vbtWin;
                 }
-                win->show();
+                win->showMaximized();
                 win->raise();
                 win->activateWindow();
 

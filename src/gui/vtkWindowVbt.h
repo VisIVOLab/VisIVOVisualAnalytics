@@ -67,12 +67,14 @@ private:
     void setupUi();
     void setupRenderer();
     void buildPointCloud();
+    void rebuildCoordinates();
     void applyFilter();
     void updateColorMapping();
     void updateScalarBar();
     void updateSummary();
     void updateBoundsContext();
     void applyBackground();
+    void applyBoxActorColors(bool darkBackground);
     void resetView();
     void updateRenderMode();
     QString activeColorFieldName() const;
@@ -91,11 +93,15 @@ private:
 
     QPointer<QVTKOpenGLNativeWidget> vtkWidget;
     QPointer<QComboBox> comboRenderMode;
+    QPointer<QComboBox> comboXField;
+    QPointer<QComboBox> comboYField;
+    QPointer<QComboBox> comboZField;
     QPointer<QComboBox> comboColorField;
     QPointer<QComboBox> comboColormap;
     QPointer<QComboBox> comboBackground;
     QPointer<QSlider> sliderPointSize;
     QPointer<QSlider> sliderRayIntensity;
+    QPointer<QLabel> m_labelRayIntensity;
     QPointer<QCheckBox> checkShowBox;
     QPointer<QCheckBox> checkShowLut;
     QPointer<QCheckBox> checkShowOrientation;
@@ -125,6 +131,7 @@ private:
     QPointer<QListWidget> fieldList;
     QPointer<QLabel> metadataLabel;
     bool updatingRangeControls{ false };
+    QString m_lastColorField;
 
     // ── Sidebar ──────────────────────────────────────────────────────────────
     SidebarPanel *m_sidebar{ nullptr };

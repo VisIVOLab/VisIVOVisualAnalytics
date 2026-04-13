@@ -6,6 +6,7 @@
 #include <vtkAxesActor.h>
 #include <vtkCamera.h>
 #include <vtkCubeAxesActor.h>
+#include <vtkProperty.h>
 #include <vtkImageData.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkPointData.h>
@@ -124,6 +125,8 @@ void vtkWindowVbtVolume::setupUi()
         this->setColorRange(this->dataScalarMin, this->dataScalarMax);
         this->updateTransferFunctions();
     });
+    QObject::connect(this->comboBackground, &QComboBox::currentIndexChanged, this,
+                     [this](int) { this->applyBackground(); });
     QObject::connect(this->spinRangeMin, &QDoubleSpinBox::valueChanged, this, [this](double) {
         if (this->updatingRangeControls) {
             return;
@@ -152,90 +155,152 @@ void vtkWindowVbtVolume::setupUi()
 
 void vtkWindowVbtVolume::setupSidebarUi()
 {
+    // ── Shared style helpers ──────────────────────────────────────────────────
+    const QString cardStyle =
+            u"QFrame#card { background: rgba(255,255,255,0.04); border-radius: 6px;"
+            u"  border: 1px solid rgba(255,255,255,0.06); }"_s;
+    const QString hdrStyle =
+            u"color: #8AB8CC; font-size: 10px; font-weight: 600;"
+            u" padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20);"_s;
+
+    const auto makeCard = [&](const QString &title, QWidget *content) -> QFrame* {
+        auto *card = new QFrame;
+        card->setObjectName(u"card"_s);
+        card->setStyleSheet(cardStyle);
+        auto *vl = new QVBoxLayout(card);
+        vl->setSpacing(6);
+        vl->setContentsMargins(10, 8, 10, 10);
+        auto *lbl = new QLabel(title);
+        lbl->setStyleSheet(hdrStyle);
+        vl->addWidget(lbl);
+        vl->addWidget(content);
+        return card;
+    };
+
     // ── Page 0: Volume controls ───────────────────────────────────────────────
     auto *pageVolume = new QWidget;
     auto *pageVolumeLayout = new QVBoxLayout(pageVolume);
     pageVolumeLayout->setContentsMargins(8, 8, 8, 8);
     pageVolumeLayout->setSpacing(8);
 
-    auto *hdrVolume = new QLabel(u"VOLUME SETTINGS"_s);
-    pageVolumeLayout->addWidget(hdrVolume);
+    // Card: Source
+    {
+        auto *inner = new QWidget;
+        auto *fl = new QFormLayout(inner);
+        fl->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        fl->setContentsMargins(0, 0, 0, 0);
+        fl->setSpacing(4);
 
-    auto *displayGroup = new QGroupBox(u"Volume"_s, pageVolume);
-    auto *displayLayout = new QFormLayout(displayGroup);
-    this->comboScalarField = new QComboBox(displayGroup);
-    for (const auto &field : this->openResult.fields) {
-        this->comboScalarField->addItem(field.name, field.name);
+        this->comboScalarField = new QComboBox(inner);
+        for (const auto &field : this->openResult.fields)
+            this->comboScalarField->addItem(field.name, field.name);
+
+        this->comboBlendMode = new QComboBox(inner);
+        this->comboBlendMode->addItems(
+                { u"Composite"_s, u"MIP (Max Intensity)"_s, u"MinIP (Min Intensity)"_s });
+        this->comboBlendMode->setToolTip(
+                u"Composite: full volume ray-casting with opacity transfer function.\n"
+                "MIP: show the maximum scalar value along each ray (ignores opacity TF).\n"
+                "MinIP: show the minimum scalar value along each ray."_s);
+
+        this->comboScaleMode = new QComboBox(inner);
+        this->comboScaleMode->addItems({ u"Linear"_s, u"Log"_s });
+
+        fl->addRow(u"Scalar"_s, this->comboScalarField);
+        fl->addRow(u"Mode"_s, this->comboBlendMode);
+        fl->addRow(u"Scale"_s, this->comboScaleMode);
+        pageVolumeLayout->addWidget(makeCard(u"SOURCE"_s, inner));
     }
-    this->comboBlendMode = new QComboBox(displayGroup);
-    this->comboBlendMode->addItems(
-            { u"Composite"_s, u"MIP (Max Intensity)"_s, u"MinIP (Min Intensity)"_s });
-    this->comboBlendMode->setToolTip(
-            u"Composite: full volume ray-casting with opacity transfer function.\n"
-            "MIP: show the maximum scalar value along each ray (ignores opacity TF).\n"
-            "MinIP: show the minimum scalar value along each ray."_s);
-    this->comboScaleMode = new QComboBox(displayGroup);
-    this->comboScaleMode->addItems({ u"Linear"_s, u"Log"_s });
-    this->sliderOpacity = new QSlider(Qt::Horizontal, displayGroup);
-    this->sliderOpacity->setRange(1, 100);
-    this->sliderOpacity->setValue(28);
-    this->sliderOpacity->setToolTip(
-            u"Composite: scales the opacity ramp — higher = more opaque.\n"
-            "MIP/MinIP: raises the threshold above which voxels are projection candidates."_s);
-    this->spinRangeMin = new QDoubleSpinBox(displayGroup);
-    this->spinRangeMax = new QDoubleSpinBox(displayGroup);
-    this->spinRangeMin->setDecimals(12);
-    this->spinRangeMax->setDecimals(12);
-    this->spinRangeMin->setRange(-1e30, 1e30);
-    this->spinRangeMax->setRange(-1e30, 1e30);
-    this->buttonAutoscale = new QPushButton(u"Autoscale"_s, displayGroup);
-    displayLayout->addRow(u"Scalar"_s, this->comboScalarField);
-    displayLayout->addRow(u"Mode"_s, this->comboBlendMode);
-    displayLayout->addRow(u"Scale"_s, this->comboScaleMode);
-    displayLayout->addRow(u"Range min"_s, this->spinRangeMin);
-    displayLayout->addRow(u"Range max"_s, this->spinRangeMax);
-    displayLayout->addRow(u"Opacity"_s, this->sliderOpacity);
-    displayLayout->addRow(this->buttonAutoscale);
-    pageVolumeLayout->addWidget(displayGroup);
 
-    auto *summaryGroup = new QGroupBox(u"Summary"_s, pageVolume);
-    auto *summaryLayout = new QVBoxLayout(summaryGroup);
-    this->summaryLabel = new QLabel(summaryGroup);
-    this->summaryLabel->setWordWrap(true);
-    summaryLayout->addWidget(this->summaryLabel);
-    pageVolumeLayout->addWidget(summaryGroup);
+    // Card: Color / Range
+    {
+        auto *inner = new QWidget;
+        auto *fl = new QFormLayout(inner);
+        fl->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        fl->setContentsMargins(0, 0, 0, 0);
+        fl->setSpacing(4);
+
+        this->spinRangeMin = new QDoubleSpinBox(inner);
+        this->spinRangeMax = new QDoubleSpinBox(inner);
+        this->spinRangeMin->setDecimals(12);
+        this->spinRangeMax->setDecimals(12);
+        this->spinRangeMin->setRange(-1e30, 1e30);
+        this->spinRangeMax->setRange(-1e30, 1e30);
+        this->buttonAutoscale = new QPushButton(u"Autoscale"_s, inner);
+
+        fl->addRow(u"Range min"_s, this->spinRangeMin);
+        fl->addRow(u"Range max"_s, this->spinRangeMax);
+        fl->addRow(this->buttonAutoscale);
+        pageVolumeLayout->addWidget(makeCard(u"COLOR RANGE"_s, inner));
+    }
+
+    // Card: Rendering
+    {
+        auto *inner = new QWidget;
+        auto *fl = new QFormLayout(inner);
+        fl->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        fl->setContentsMargins(0, 0, 0, 0);
+        fl->setSpacing(4);
+
+        this->sliderOpacity = new QSlider(Qt::Horizontal, inner);
+        this->sliderOpacity->setRange(1, 100);
+        this->sliderOpacity->setValue(28);
+        this->sliderOpacity->setToolTip(
+                u"Composite: scales the opacity ramp — higher = more opaque.\n"
+                "MIP/MinIP: raises the threshold above which voxels are projection candidates."_s);
+
+        this->comboBackground = new QComboBox(inner);
+        this->comboBackground->addItems({ u"Black"_s, u"Dark gray"_s, u"White"_s });
+
+        fl->addRow(u"Opacity"_s, this->sliderOpacity);
+        fl->addRow(u"Background"_s, this->comboBackground);
+        pageVolumeLayout->addWidget(makeCard(u"RENDERING"_s, inner));
+    }
+
+    // Card: Summary
+    {
+        auto *inner = new QWidget;
+        auto *vl = new QVBoxLayout(inner);
+        vl->setContentsMargins(0, 0, 0, 0);
+        this->summaryLabel = new QLabel(inner);
+        this->summaryLabel->setWordWrap(true);
+        this->summaryLabel->setStyleSheet(u"color: #6080a0; font-size: 10px;"_s);
+        vl->addWidget(this->summaryLabel);
+        pageVolumeLayout->addWidget(makeCard(u"SUMMARY"_s, inner));
+    }
     pageVolumeLayout->addStretch(1);
 
-    // ── Page 1: Metadata ──────────────────────────────────────────────────────
-    auto *pageMetadata = new QWidget;
-    auto *pageMetadataLayout = new QVBoxLayout(pageMetadata);
-    pageMetadataLayout->setContentsMargins(8, 8, 8, 8);
-    pageMetadataLayout->setSpacing(8);
+    // ── Page 1: Info ──────────────────────────────────────────────────────────
+    auto *pageInfo = new QWidget;
+    auto *pageInfoLayout = new QVBoxLayout(pageInfo);
+    pageInfoLayout->setContentsMargins(8, 8, 8, 8);
+    pageInfoLayout->setSpacing(8);
 
-    auto *hdrMetadata = new QLabel(u"VBT METADATA"_s);
-    pageMetadataLayout->addWidget(hdrMetadata);
-
-    this->metadataLabel = new QLabel(pageMetadata);
-    this->metadataLabel->setWordWrap(true);
-    pageMetadataLayout->addWidget(this->metadataLabel);
-
-    this->fieldList = new QListWidget(pageMetadata);
-    for (const auto &field : this->openResult.fields) {
-        this->fieldList->addItem(QStringLiteral("%1 [%2]").arg(field.name, field.type));
+    {
+        auto *inner = new QWidget;
+        auto *vl = new QVBoxLayout(inner);
+        vl->setContentsMargins(0, 0, 0, 0);
+        this->metadataLabel = new QLabel(inner);
+        this->metadataLabel->setWordWrap(true);
+        vl->addWidget(this->metadataLabel);
+        pageInfoLayout->addWidget(makeCard(u"DATASET INFO"_s, inner));
     }
-    pageMetadataLayout->addWidget(this->fieldList, 1);
+    {
+        auto *inner = new QWidget;
+        auto *vl = new QVBoxLayout(inner);
+        vl->setContentsMargins(0, 0, 0, 0);
+        this->fieldList = new QListWidget(inner);
+        for (const auto &field : this->openResult.fields)
+            this->fieldList->addItem(QStringLiteral("%1 [%2]").arg(field.name, field.type));
+        vl->addWidget(this->fieldList);
+        pageInfoLayout->addWidget(makeCard(u"FIELDS"_s, inner));
+    }
+    pageInfoLayout->addStretch(1);
 
     // ── Wire pages into SidebarPanel ──────────────────────────────────────────
-    const QString hdrStyle =
-            u"QLabel { color: #8AB8CC; font-size: 10px; font-weight: 600;"
-            u"         padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20); }"_s;
-    for (QLabel *lbl : { hdrVolume, hdrMetadata }) {
-        lbl->setStyleSheet(hdrStyle);
-    }
-
     this->m_sidebar = new SidebarPanel(320, this);
     this->m_sidebar->addPage(u":/icons/rail_display.svg"_s,  u"Volume Settings"_s, pageVolume);
-    this->m_sidebar->addPage(u":/icons/rail_metadata.svg"_s, u"VBT Metadata"_s,    pageMetadata);
+    this->m_sidebar->addPage(u":/icons/rail_metadata.svg"_s, u"Info"_s,            pageInfo);
     this->m_sidebar->finalize(0);
 }
 
@@ -274,10 +339,7 @@ void vtkWindowVbtVolume::setupRenderer()
     this->boxActor->DrawXGridlinesOff();
     this->boxActor->DrawYGridlinesOff();
     this->boxActor->DrawZGridlinesOff();
-    for (int axis = 0; axis < 3; ++axis) {
-        this->boxActor->GetTitleTextProperty(axis)->SetColor(0.85, 0.85, 0.85);
-        this->boxActor->GetLabelTextProperty(axis)->SetColor(0.75, 0.75, 0.75);
-    }
+    this->applyBoxActorColors(true); // default: dark background
     this->boxActor->SetVisibility(1);
     this->renderer->AddActor(this->boxActor.Get());
 
@@ -621,6 +683,40 @@ void vtkWindowVbtVolume::resetView()
 {
     this->renderer->ResetCamera();
     this->renderer->ResetCameraClippingRange();
+}
+
+void vtkWindowVbtVolume::applyBackground()
+{
+    if (!this->comboBackground) return;
+    const QString bg = this->comboBackground->currentText();
+    const bool dark = (bg != u"White"_s);
+    if (bg == u"White"_s) {
+        this->renderer->SetBackground(0.98, 0.98, 0.98);
+    } else if (bg == u"Dark gray"_s) {
+        this->renderer->SetBackground(0.16, 0.17, 0.19);
+    } else {
+        this->renderer->SetBackground(0.04, 0.04, 0.08);
+    }
+    this->applyBoxActorColors(dark);
+    // Update scalar bar text colour
+    const double textColor = dark ? 1.0 : 0.1;
+    this->scalarBar->GetTitleTextProperty()->SetColor(textColor, textColor, textColor);
+    this->scalarBar->GetLabelTextProperty()->SetColor(textColor, textColor, textColor);
+    this->renderWindow->Render();
+}
+
+void vtkWindowVbtVolume::applyBoxActorColors(bool darkBackground)
+{
+    const double textTitle = darkBackground ? 0.85 : 0.10;
+    const double textLabel = darkBackground ? 0.75 : 0.20;
+    const double lineColor = darkBackground ? 0.80 : 0.15;
+    for (int axis = 0; axis < 3; ++axis) {
+        this->boxActor->GetTitleTextProperty(axis)->SetColor(textTitle, textTitle, textTitle);
+        this->boxActor->GetLabelTextProperty(axis)->SetColor(textLabel, textLabel, textLabel);
+    }
+    this->boxActor->GetXAxesLinesProperty()->SetColor(lineColor, lineColor, lineColor);
+    this->boxActor->GetYAxesLinesProperty()->SetColor(lineColor, lineColor, lineColor);
+    this->boxActor->GetZAxesLinesProperty()->SetColor(lineColor, lineColor, lineColor);
 }
 
 void vtkWindowVbtVolume::applyKnownGoodVisibleFallback(double minValue, double maxValue,

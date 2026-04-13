@@ -26,6 +26,8 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QImage>
+#include <QPixmap>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
@@ -58,6 +60,28 @@
 #include <limits>
 
 using namespace Qt::StringLiterals;
+
+/// Build a gradient QIcon that previews a named colormap (80×14 px).
+static QIcon makeColormapIcon(const std::string &name, int iconW = 80, int iconH = 14)
+{
+    vtkNew<vtkLookupTable> lut;
+    lut->SetNumberOfTableValues(256);
+    lut->SetTableRange(0.0, 1.0);
+    ColorMaps::SetColorMap(lut.Get(), name);
+    lut->Build();
+    QImage img(iconW, iconH, QImage::Format_RGB32);
+    for (int x = 0; x < iconW; ++x) {
+        const int tableIdx = static_cast<int>(x * 255.0 / std::max(1, iconW - 1));
+        double rgba[4];
+        lut->GetTableValue(tableIdx, rgba);
+        const QRgb c = qRgb(static_cast<int>(rgba[0] * 255.0),
+                            static_cast<int>(rgba[1] * 255.0),
+                            static_cast<int>(rgba[2] * 255.0));
+        for (int y = 0; y < iconH; ++y)
+            img.setPixel(x, y, c);
+    }
+    return QIcon(QPixmap::fromImage(img));
+}
 
 /// Returns true when @p errorText looks like a backend session-expiry error.
 static bool isSessionExpiryError(const QString &errorText)
@@ -347,6 +371,19 @@ void vtkWindowVbt::setupUi()
     // ── Signal connections ────────────────────────────────────────────────────
     QObject::connect(this->comboRenderMode, &QComboBox::currentIndexChanged, this,
                      [this](int) { this->updateRenderMode(); });
+    // X / Y / Z mapping combos — rebuild point coordinates when changed
+    QObject::connect(this->comboXField, &QComboBox::currentIndexChanged, this, [this](int) {
+        this->xFieldName = this->comboXField->currentText();
+        this->rebuildCoordinates();
+    });
+    QObject::connect(this->comboYField, &QComboBox::currentIndexChanged, this, [this](int) {
+        this->yFieldName = this->comboYField->currentText();
+        this->rebuildCoordinates();
+    });
+    QObject::connect(this->comboZField, &QComboBox::currentIndexChanged, this, [this](int) {
+        this->zFieldName = this->comboZField->currentText();
+        this->rebuildCoordinates();
+    });
     QObject::connect(this->comboColorField, &QComboBox::currentIndexChanged, this,
                      [this](int) { this->updateColorMapping(); });
     QObject::connect(this->comboColormap, &QComboBox::currentIndexChanged, this,
@@ -488,100 +525,166 @@ void vtkWindowVbt::setupUi()
 
 void vtkWindowVbt::setupSidebarUi()
 {
+    // ── Shared style helpers ──────────────────────────────────────────────────
+    const QString cardStyle =
+            u"QFrame#card { background: rgba(255,255,255,0.04); border-radius: 6px;"
+            u"  border: 1px solid rgba(255,255,255,0.06); }"_s;
+    const QString hdrStyle =
+            u"color: #8AB8CC; font-size: 10px; font-weight: 600;"
+            u" padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20);"_s;
+
+    const auto makeCard = [&](const QString &title, QWidget *content) -> QFrame* {
+        auto *card = new QFrame;
+        card->setObjectName(u"card"_s);
+        card->setStyleSheet(cardStyle);
+        auto *vl = new QVBoxLayout(card);
+        vl->setSpacing(6);
+        vl->setContentsMargins(10, 8, 10, 10);
+        auto *lbl = new QLabel(title);
+        lbl->setStyleSheet(hdrStyle);
+        vl->addWidget(lbl);
+        vl->addWidget(content);
+        return card;
+    };
+
     // ── Page 0: Display ───────────────────────────────────────────────────────
     auto *pageDisplay = new QWidget;
     auto *pageDisplayLayout = new QVBoxLayout(pageDisplay);
     pageDisplayLayout->setContentsMargins(8, 8, 8, 8);
     pageDisplayLayout->setSpacing(8);
 
-    auto *hdrDisplay = new QLabel(u"DISPLAY SETTINGS"_s);
-    auto *displayInner = new QWidget;
-    auto *displayLayout = new QFormLayout(displayInner);
-    displayLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-    displayLayout->setContentsMargins(6, 6, 6, 6);
-    displayLayout->setSpacing(4);
-
-    this->comboRenderMode = new QComboBox(displayInner);
-    this->comboRenderMode->addItems({ u"Points"_s, u"Particle Ray-Casting"_s });
-
-    this->comboColorField = new QComboBox(displayInner);
-    this->comboColorField->addItem(u"Solid color"_s, QString());
-    for (const auto &field : this->openResult.fields) {
-        if (field.name == this->xFieldName || field.name == this->yFieldName
-            || field.name == this->zFieldName) {
-            continue;
-        }
-        this->comboColorField->addItem(field.name, field.name);
-    }
-    if (this->comboColorField->count() > 1) {
-        this->comboColorField->setCurrentIndex(1);
-    }
-
-    this->comboColormap = new QComboBox(displayInner);
-    for (const auto &name : ColorMaps::GetColorMapNames()) {
-        this->comboColormap->addItem(QString::fromStdString(name));
-    }
-    this->comboColormap->setCurrentText(QString::fromStdString(ColorMaps::DefaultColorMap));
-
-    this->comboBackground = new QComboBox(displayInner);
-    this->comboBackground->addItems({ u"Black"_s, u"Dark gray"_s, u"White"_s });
-
-    this->sliderPointSize = new QSlider(Qt::Horizontal, displayInner);
-    this->sliderPointSize->setRange(1, 12);
-    this->sliderPointSize->setValue(3);
-    this->sliderRayIntensity = new QSlider(Qt::Horizontal, displayInner);
-    this->sliderRayIntensity->setRange(1, 100);
-    this->sliderRayIntensity->setValue(35);
-
-    this->checkShowBox = new QCheckBox(u"Show bounding box"_s, displayInner);
-    this->checkShowBox->setChecked(true);
-    this->checkShowLut = new QCheckBox(u"Show color bar"_s, displayInner);
-    this->checkShowLut->setChecked(true);
-    this->checkShowOrientation = new QCheckBox(u"Show orientation axes"_s, displayInner);
-    this->checkShowOrientation->setChecked(true);
-
-    this->spinRangeMin = new QDoubleSpinBox(displayInner);
-    this->spinRangeMax = new QDoubleSpinBox(displayInner);
-    this->spinRangeMin->setDecimals(6);
-    this->spinRangeMax->setDecimals(6);
-    this->spinRangeMin->setRange(-1e30, 1e30);
-    this->spinRangeMax->setRange(-1e30, 1e30);
-
-    this->buttonAutoscale = new QPushButton(u"Autoscale"_s, displayInner);
-    this->buttonResetView = new QPushButton(u"Reset View"_s, displayInner);
-
-    displayLayout->addRow(u"Mode"_s, this->comboRenderMode);
-    displayLayout->addRow(u"Color field"_s, this->comboColorField);
-    displayLayout->addRow(u"Colormap"_s, this->comboColormap);
-    displayLayout->addRow(u"Range min"_s, this->spinRangeMin);
-    displayLayout->addRow(u"Range max"_s, this->spinRangeMax);
+    // Card: Source
     {
-        auto *row = new QWidget(displayInner);
-        auto *rl = new QHBoxLayout(row);
-        rl->setContentsMargins(0, 0, 0, 0);
-        rl->addWidget(this->buttonAutoscale);
-        rl->addWidget(this->buttonResetView);
-        displayLayout->addRow(row);
+        auto *inner = new QWidget;
+        auto *fl = new QFormLayout(inner);
+        fl->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        fl->setContentsMargins(0, 0, 0, 0);
+        fl->setSpacing(4);
+        this->comboRenderMode = new QComboBox(inner);
+        this->comboRenderMode->addItems({ u"Points"_s, u"Particle Ray-Casting"_s });
+        fl->addRow(u"Mode"_s, this->comboRenderMode);
+        pageDisplayLayout->addWidget(makeCard(u"SOURCE"_s, inner));
     }
-    displayLayout->addRow(u"Background"_s, this->comboBackground);
-    displayLayout->addRow(u"Point size"_s, this->sliderPointSize);
-    displayLayout->addRow(u"Ray intensity"_s, this->sliderRayIntensity);
-    displayLayout->addRow(this->checkShowBox);
-    displayLayout->addRow(this->checkShowLut);
-    displayLayout->addRow(this->checkShowOrientation);
 
-    auto *sep = new QFrame(displayInner);
-    sep->setFrameShape(QFrame::HLine);
-    sep->setFrameShadow(QFrame::Sunken);
-    displayLayout->addRow(sep);
+    // Card: Mapping
+    {
+        auto *inner = new QWidget;
+        auto *fl = new QFormLayout(inner);
+        fl->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        fl->setContentsMargins(0, 0, 0, 0);
+        fl->setSpacing(4);
 
-    this->summaryLabel = new QLabel(displayInner);
+        QStringList allFieldNames;
+        for (const auto &f : this->openResult.fields) allFieldNames << f.name;
+
+        this->comboXField = new QComboBox(inner);
+        this->comboYField = new QComboBox(inner);
+        this->comboZField = new QComboBox(inner);
+        this->comboXField->addItems(allFieldNames);
+        this->comboYField->addItems(allFieldNames);
+        this->comboZField->addItems(allFieldNames);
+        if (!this->xFieldName.isEmpty()) this->comboXField->setCurrentText(this->xFieldName);
+        if (!this->yFieldName.isEmpty()) this->comboYField->setCurrentText(this->yFieldName);
+        if (!this->zFieldName.isEmpty()) this->comboZField->setCurrentText(this->zFieldName);
+
+        this->comboColorField = new QComboBox(inner);
+        this->comboColorField->addItem(u"Solid color"_s, QString());
+        for (const auto &field : this->openResult.fields) {
+            if (field.name == this->xFieldName || field.name == this->yFieldName
+                || field.name == this->zFieldName)
+                continue;
+            this->comboColorField->addItem(field.name, field.name);
+        }
+        if (this->comboColorField->count() > 1)
+            this->comboColorField->setCurrentIndex(1);
+
+        fl->addRow(u"X"_s, this->comboXField);
+        fl->addRow(u"Y"_s, this->comboYField);
+        fl->addRow(u"Z"_s, this->comboZField);
+        fl->addRow(u"Scalar"_s, this->comboColorField);
+        pageDisplayLayout->addWidget(makeCard(u"MAPPING"_s, inner));
+    }
+
+    // Card: Color
+    {
+        auto *inner = new QWidget;
+        auto *fl = new QFormLayout(inner);
+        fl->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        fl->setContentsMargins(0, 0, 0, 0);
+        fl->setSpacing(4);
+
+        this->comboColormap = new QComboBox(inner);
+        this->comboColormap->setIconSize(QSize(80, 14));
+        for (const auto &name : ColorMaps::GetColorMapNames()) {
+            this->comboColormap->addItem(makeColormapIcon(name), QString::fromStdString(name));
+        }
+        this->comboColormap->setCurrentText(QString::fromStdString(ColorMaps::DefaultColorMap));
+
+        this->spinRangeMin = new QDoubleSpinBox(inner);
+        this->spinRangeMax = new QDoubleSpinBox(inner);
+        this->spinRangeMin->setDecimals(6);
+        this->spinRangeMax->setDecimals(6);
+        this->spinRangeMin->setRange(-1e30, 1e30);
+        this->spinRangeMax->setRange(-1e30, 1e30);
+        this->buttonAutoscale = new QPushButton(u"Autoscale"_s, inner);
+        this->buttonResetView = new QPushButton(u"Reset View"_s, inner);
+
+        fl->addRow(u"Colormap"_s, this->comboColormap);
+        fl->addRow(u"Range min"_s, this->spinRangeMin);
+        fl->addRow(u"Range max"_s, this->spinRangeMax);
+        {
+            auto *btnRow = new QWidget(inner);
+            auto *rl = new QHBoxLayout(btnRow);
+            rl->setContentsMargins(0, 0, 0, 0);
+            rl->addWidget(this->buttonAutoscale);
+            rl->addWidget(this->buttonResetView);
+            fl->addRow(btnRow);
+        }
+        pageDisplayLayout->addWidget(makeCard(u"COLOR"_s, inner));
+    }
+
+    // Card: Scene
+    {
+        auto *inner = new QWidget;
+        auto *fl = new QFormLayout(inner);
+        fl->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        fl->setContentsMargins(0, 0, 0, 0);
+        fl->setSpacing(4);
+
+        this->comboBackground = new QComboBox(inner);
+        this->comboBackground->addItems({ u"Black"_s, u"Dark gray"_s, u"White"_s });
+
+        this->sliderPointSize = new QSlider(Qt::Horizontal, inner);
+        this->sliderPointSize->setRange(1, 12);
+        this->sliderPointSize->setValue(3);
+
+        this->sliderRayIntensity = new QSlider(Qt::Horizontal, inner);
+        this->sliderRayIntensity->setRange(1, 100);
+        this->sliderRayIntensity->setValue(35);
+        auto *rayLabel = new QLabel(u"Ray intensity"_s);
+        this->m_labelRayIntensity = rayLabel;
+
+        this->checkShowBox = new QCheckBox(u"Show bounding box"_s, inner);
+        this->checkShowBox->setChecked(true);
+        this->checkShowLut = new QCheckBox(u"Show color bar"_s, inner);
+        this->checkShowLut->setChecked(true);
+        this->checkShowOrientation = new QCheckBox(u"Show orientation axes"_s, inner);
+        this->checkShowOrientation->setChecked(true);
+
+        fl->addRow(u"Background"_s, this->comboBackground);
+        fl->addRow(u"Point size"_s, this->sliderPointSize);
+        fl->addRow(rayLabel, this->sliderRayIntensity);
+        fl->addRow(this->checkShowBox);
+        fl->addRow(this->checkShowLut);
+        fl->addRow(this->checkShowOrientation);
+        pageDisplayLayout->addWidget(makeCard(u"SCENE"_s, inner));
+    }
+
+    this->summaryLabel = new QLabel(pageDisplay);
     this->summaryLabel->setWordWrap(true);
     this->summaryLabel->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-    displayLayout->addRow(this->summaryLabel);
-
-    pageDisplayLayout->addWidget(hdrDisplay);
-    pageDisplayLayout->addWidget(displayInner);
+    this->summaryLabel->setStyleSheet(u"color: #6080a0; font-size: 10px; padding: 4px;"_s);
+    pageDisplayLayout->addWidget(this->summaryLabel);
     pageDisplayLayout->addStretch(1);
 
     // ── Page 1: Filters ───────────────────────────────────────────────────────
@@ -590,78 +693,82 @@ void vtkWindowVbt::setupSidebarUi()
     pageFiltersLayout->setContentsMargins(8, 8, 8, 8);
     pageFiltersLayout->setSpacing(8);
 
-    auto *hdrFilters = new QLabel(u"FILTERS"_s);
-    pageFiltersLayout->addWidget(hdrFilters);
-
-    this->filterList = new QListWidget(pageFilters);
-    this->filterList->setFixedHeight(120);
-    this->filterList->setSelectionMode(QAbstractItemView::SingleSelection);
-    this->filterList->setToolTip(
-            u"Active filters combined with AND. Select a row and press Remove to delete it."_s);
-    pageFiltersLayout->addWidget(this->filterList);
-
     {
-        auto *btnRow = new QWidget(pageFilters);
-        auto *btnLayout = new QHBoxLayout(btnRow);
-        btnLayout->setContentsMargins(0, 0, 0, 0);
-        btnLayout->setSpacing(4);
+        auto *inner = new QWidget;
+        auto *vl = new QVBoxLayout(inner);
+        vl->setContentsMargins(0, 0, 0, 0);
+        vl->setSpacing(4);
+
+        this->filterList = new QListWidget(inner);
+        this->filterList->setFixedHeight(120);
+        this->filterList->setSelectionMode(QAbstractItemView::SingleSelection);
+        this->filterList->setToolTip(
+                u"Active filters combined with AND. Double-click to edit."_s);
+        vl->addWidget(this->filterList);
+
+        auto *btnRow = new QWidget(inner);
+        auto *bl = new QHBoxLayout(btnRow);
+        bl->setContentsMargins(0, 0, 0, 0);
+        bl->setSpacing(4);
         this->btnFilterAdd = new QPushButton(u"Add…"_s, btnRow);
         this->btnFilterRemove = new QPushButton(u"Remove"_s, btnRow);
         this->btnFilterClearAll = new QPushButton(u"Clear All"_s, btnRow);
         this->btnFilterApply = new QPushButton(u"Apply"_s, btnRow);
-        btnLayout->addWidget(this->btnFilterAdd);
-        btnLayout->addWidget(this->btnFilterRemove);
-        btnLayout->addWidget(this->btnFilterClearAll);
-        btnLayout->addStretch(1);
-        btnLayout->addWidget(this->btnFilterApply);
-        pageFiltersLayout->addWidget(btnRow);
+        bl->addWidget(this->btnFilterAdd);
+        bl->addWidget(this->btnFilterRemove);
+        bl->addWidget(this->btnFilterClearAll);
+        bl->addStretch(1);
+        bl->addWidget(this->btnFilterApply);
+        vl->addWidget(btnRow);
+
+        this->filterStatusLabel = new QLabel(inner);
+        this->filterStatusLabel->setWordWrap(true);
+        vl->addWidget(this->filterStatusLabel);
+
+        this->btnLoadMore = new QPushButton(u"Load more"_s, inner);
+        this->btnLoadMore->setVisible(false);
+        this->btnLoadMore->setToolTip(
+                u"Fetch the next page of results and append them to the current point cloud."_s);
+        vl->addWidget(this->btnLoadMore);
+
+        pageFiltersLayout->addWidget(makeCard(u"ACTIVE FILTERS"_s, inner));
     }
-
-    this->filterStatusLabel = new QLabel(pageFilters);
-    this->filterStatusLabel->setWordWrap(true);
-    pageFiltersLayout->addWidget(this->filterStatusLabel);
-
-    this->btnLoadMore = new QPushButton(u"Load more"_s, pageFilters);
-    this->btnLoadMore->setVisible(false);
-    this->btnLoadMore->setToolTip(
-            u"Fetch the next page of results and append them to the current point cloud."_s);
-    pageFiltersLayout->addWidget(this->btnLoadMore);
     QObject::connect(this->btnLoadMore, &QPushButton::clicked, this,
                      &vtkWindowVbt::loadMoreEntries);
-
     pageFiltersLayout->addStretch(1);
 
-    // ── Page 2: Metadata ──────────────────────────────────────────────────────
-    auto *pageMetadata = new QWidget;
-    auto *pageMetadataLayout = new QVBoxLayout(pageMetadata);
-    pageMetadataLayout->setContentsMargins(8, 8, 8, 8);
-    pageMetadataLayout->setSpacing(8);
+    // ── Page 2: Info ──────────────────────────────────────────────────────────
+    auto *pageInfo = new QWidget;
+    auto *pageInfoLayout = new QVBoxLayout(pageInfo);
+    pageInfoLayout->setContentsMargins(8, 8, 8, 8);
+    pageInfoLayout->setSpacing(8);
 
-    auto *hdrMetadata = new QLabel(u"VBT METADATA"_s);
-    pageMetadataLayout->addWidget(hdrMetadata);
-
-    this->metadataLabel = new QLabel(pageMetadata);
-    this->metadataLabel->setWordWrap(true);
-    pageMetadataLayout->addWidget(this->metadataLabel);
-
-    this->fieldList = new QListWidget(pageMetadata);
-    for (const auto &field : this->openResult.fields) {
-        this->fieldList->addItem(QStringLiteral("%1 [%2]").arg(field.name, field.type));
+    {
+        auto *inner = new QWidget;
+        auto *vl = new QVBoxLayout(inner);
+        vl->setContentsMargins(0, 0, 0, 0);
+        this->metadataLabel = new QLabel(inner);
+        this->metadataLabel->setWordWrap(true);
+        vl->addWidget(this->metadataLabel);
+        pageInfoLayout->addWidget(makeCard(u"DATASET INFO"_s, inner));
     }
-    pageMetadataLayout->addWidget(this->fieldList, 1);
+    {
+        auto *inner = new QWidget;
+        auto *vl = new QVBoxLayout(inner);
+        vl->setContentsMargins(0, 0, 0, 0);
+        this->fieldList = new QListWidget(inner);
+        for (const auto &field : this->openResult.fields)
+            this->fieldList->addItem(QStringLiteral("%1 [%2]").arg(field.name, field.type));
+        vl->addWidget(this->fieldList);
+        pageInfoLayout->addWidget(makeCard(u"FIELDS"_s, inner));
+    }
+    pageInfoLayout->addStretch(1);
 
     // ── Wire pages into SidebarPanel ──────────────────────────────────────────
-    const QString hdrStyle =
-            u"QLabel { color: #8AB8CC; font-size: 10px; font-weight: 600;"
-            u"         padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20); }"_s;
-    for (QLabel *lbl : { hdrDisplay, hdrFilters, hdrMetadata }) {
-        lbl->setStyleSheet(hdrStyle);
-    }
-
     this->m_sidebar = new SidebarPanel(320, this);
-    this->m_sidebar->addPage(u":/icons/rail_display.svg"_s,  u"Display Settings"_s, pageDisplay);
-    this->m_sidebar->addPage(u":/icons/rail_filter.svg"_s,   u"Filters"_s,          pageFilters);
-    this->m_sidebar->addPage(u":/icons/rail_metadata.svg"_s, u"VBT Metadata"_s,     pageMetadata);
+    this->m_sidebar->addPage(u":/icons/rail_display.svg"_s,  u"Display"_s, pageDisplay);
+    this->m_sidebar->addPage(u":/icons/rail_filter.svg"_s,   u"Filters"_s, pageFilters);
+    this->m_sidebar->addPage(u":/icons/rail_metadata.svg"_s, u"Info"_s,    pageInfo);
     this->m_sidebar->finalize(0);
 }
 
@@ -808,6 +915,19 @@ void vtkWindowVbt::loadMoreEntries()
             }));
 }
 
+void vtkWindowVbt::rebuildCoordinates()
+{
+    if (!this->actor) {
+        return;
+    }
+    this->renderer->RemoveActor(this->actor.Get());
+    this->points->Reset();
+    this->pointScalars->Reset();
+    this->polyData->Reset();
+    this->buildPointCloud();
+    this->updateColorMapping();
+}
+
 void vtkWindowVbt::setupRenderer()
 {
     this->vtkWidget->setRenderWindow(this->renderWindow.Get());
@@ -841,10 +961,7 @@ void vtkWindowVbt::setupRenderer()
     this->boxActor->DrawXGridlinesOff();
     this->boxActor->DrawYGridlinesOff();
     this->boxActor->DrawZGridlinesOff();
-    for (int axis = 0; axis < 3; ++axis) {
-        this->boxActor->GetTitleTextProperty(axis)->SetColor(0.85, 0.85, 0.85);
-        this->boxActor->GetLabelTextProperty(axis)->SetColor(0.75, 0.75, 0.75);
-    }
+    this->applyBoxActorColors(true); // default: dark background
     this->renderer->AddActor(this->boxActor.Get());
 
     this->gaussianMapper->SetInputData(this->polyData.Get());
@@ -958,6 +1075,10 @@ void vtkWindowVbt::updateRenderMode()
         return;
     }
     const bool rayCasting = this->comboRenderMode && this->comboRenderMode->currentIndex() == 1;
+
+    // Show Ray Intensity controls only in Particle Ray-Casting mode (MOD 3)
+    if (this->m_labelRayIntensity) this->m_labelRayIntensity->setVisible(rayCasting);
+    if (this->sliderRayIntensity)  this->sliderRayIntensity->setVisible(rayCasting);
     if (rayCasting) {
         // ── Density-adaptive splat sizing ─────────────────────────────────────
         // Goal: every particle contributes to the rendered image at every depth
@@ -1105,6 +1226,7 @@ void vtkWindowVbt::updateColorMapping()
         this->gaussianMapper->ScalarVisibilityOff();
         this->actor->GetProperty()->SetColor(0.8, 0.85, 1.0);
         qDebug() << "[VBT] updateColorMapping: solid color mode";
+        this->m_lastColorField.clear();
         this->updateScalarBar();
         this->updateRenderMode();
         this->renderWindow->Render();
@@ -1120,6 +1242,7 @@ void vtkWindowVbt::updateColorMapping()
         this->mapper->ScalarVisibilityOff();
         this->gaussianMapper->ScalarVisibilityOff();
         qDebug() << "[VBT] updateColorMapping: field" << fieldName << "not found in subset columns";
+        this->m_lastColorField.clear();
         this->updateScalarBar();
         this->updateRenderMode();
         this->renderWindow->Render();
@@ -1143,16 +1266,15 @@ void vtkWindowVbt::updateColorMapping()
     }
     this->dataScalarMin = minValue;
     this->dataScalarMax = maxValue;
-    // Reset the active range when: the range is invalid, OR the new data extends
-    // beyond the current range on either side.  This ensures that after clearing
-    // all filters (returning a wider dataset) the opacity function is rebuilt for
-    // the full data range so no points are accidentally mapped to opacity = 0.
-    const bool newDataFitsCurrent = (this->activeScalarMin < this->activeScalarMax)
-                                    && (minValue >= this->activeScalarMin)
-                                    && (maxValue <= this->activeScalarMax);
-    if (!newDataFitsCurrent) {
+    // Auto-reset range only when the field changes or the current range is invalid.
+    // This allows the user to set a custom (narrower) range via the spinboxes without
+    // it being immediately overwritten by the data bounds (MOD 4 fix).
+    const bool fieldChanged = (fieldName != this->m_lastColorField);
+    const bool rangeInvalid = !(this->activeScalarMin < this->activeScalarMax);
+    if (fieldChanged || rangeInvalid) {
         this->setScalarRange(minValue, maxValue);
     }
+    this->m_lastColorField = fieldName;
     this->pointScalars->Modified();
     this->polyData->GetPointData()->SetScalars(this->pointScalars.Get());
     ColorMaps::SetColorMap(this->scalarLut.Get(), this->activeColormapName().toStdString());
@@ -1199,6 +1321,7 @@ void vtkWindowVbt::applyBackground()
         return;
     }
     const QString background = this->comboBackground->currentText();
+    const bool dark = (background != u"White"_s);
     if (background == u"White"_s) {
         this->renderer->SetBackground(0.98, 0.98, 0.98);
     } else if (background == u"Dark gray"_s) {
@@ -1206,8 +1329,23 @@ void vtkWindowVbt::applyBackground()
     } else {
         this->renderer->SetBackground(0.06, 0.06, 0.1);
     }
+    this->applyBoxActorColors(dark);
     this->updateScalarBar();
     this->renderWindow->Render();
+}
+
+void vtkWindowVbt::applyBoxActorColors(bool darkBackground)
+{
+    const double textTitle = darkBackground ? 0.85 : 0.10;
+    const double textLabel = darkBackground ? 0.75 : 0.20;
+    const double lineColor = darkBackground ? 0.80 : 0.15;
+    for (int axis = 0; axis < 3; ++axis) {
+        this->boxActor->GetTitleTextProperty(axis)->SetColor(textTitle, textTitle, textTitle);
+        this->boxActor->GetLabelTextProperty(axis)->SetColor(textLabel, textLabel, textLabel);
+    }
+    this->boxActor->GetXAxesLinesProperty()->SetColor(lineColor, lineColor, lineColor);
+    this->boxActor->GetYAxesLinesProperty()->SetColor(lineColor, lineColor, lineColor);
+    this->boxActor->GetZAxesLinesProperty()->SetColor(lineColor, lineColor, lineColor);
 }
 
 void vtkWindowVbt::resetView()
