@@ -30,6 +30,7 @@ class QAction;
 class QCheckBox;
 class QDockWidget;
 class QLabel;
+class ToolResultDialog;
 class QTableView;
 class SidebarPanel;
 class vtkActor;
@@ -135,6 +136,8 @@ private:
     int remoteLoadGeneration{ 0 };
     QPointer<LUTCustomizerDialog> lutCustomizer;
     QPointer<ProfileWidget> profileWidget;
+    QPointer<ToolResultDialog> m_regionResultDialog;
+    int m_regionDialogGeneration{ 0 };
     QPointer<QCheckBox> wcsAxesCheck;
     QPointer<QLabel> hoverReadoutLabel;
     QPointer<QLabel> dataStateLabel;

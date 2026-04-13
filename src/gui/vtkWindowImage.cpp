@@ -13,6 +13,7 @@
 #include "LayerListModel.h"
 #include "ProfileWidget.h"
 #include "SidebarPanel.h"
+#include "ToolResultDialog.h"
 #include "vtkInteractorStyleProfile.h"
 #include "vtkLegendScaleActorWCS.h"
 #include "wcs.h"
@@ -43,15 +44,22 @@
 #include <vtkTextActor.h>
 #include <vtkTextProperty.h>
 
-#include <QActionGroup>
-#include <QAction>
 #include <QAbstractItemView>
+#include <QAction>
+#include <QActionGroup>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QDebug>
+#include <QIcon>
+#include <QImage>
+#include <QPixmap>
 #include <QDockWidget>
 #include <QElapsedTimer>
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QFormLayout>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QItemSelectionModel>
@@ -62,6 +70,7 @@
 #include <QStringList>
 #include <QToolButton>
 #include <QTableView>
+#include <QVBoxLayout>
 #include <QtConcurrentRun>
 
 #include <algorithm>
@@ -72,6 +81,40 @@
 using namespace Qt::StringLiterals;
 
 namespace {
+
+static QIcon makeColormapIcon(const std::string &name, int iconW = 80, int iconH = 14)
+{
+    vtkNew<vtkLookupTable> lut;
+    lut->SetNumberOfTableValues(256);
+    lut->SetTableRange(0.0, 1.0);
+    ColorMaps::SetColorMap(lut.Get(), name);
+    lut->Build();
+    QImage img(iconW, iconH, QImage::Format_RGB32);
+    for (int x = 0; x < iconW; ++x) {
+        const int tableIdx = static_cast<int>(x * 255.0 / std::max(1, iconW - 1));
+        double rgba[4];
+        lut->GetTableValue(tableIdx, rgba);
+        const QRgb c = qRgb(static_cast<int>(rgba[0] * 255.0),
+                            static_cast<int>(rgba[1] * 255.0),
+                            static_cast<int>(rgba[2] * 255.0));
+        for (int y = 0; y < iconH; ++y)
+            img.setPixel(x, y, c);
+    }
+    return QIcon(QPixmap::fromImage(img));
+}
+
+/// Returns at most the last two path segments of @p fullPath, preceded by "…/".
+/// E.g. "/home/user/data/fits" → "…/data/fits".  Paths with ≤ 2 segments are
+/// returned unchanged.
+static QString compactDirPath(const QString &fullPath)
+{
+    const QStringList parts = fullPath.split(u'/', Qt::SkipEmptyParts);
+    if (parts.size() <= 2) {
+        return fullPath;
+    }
+    return QStringLiteral("\u2026/%1/%2").arg(parts[parts.size() - 2], parts.last());
+}
+
 constexpr int overlayTickCount = 5;
 constexpr double polygonClosureTolerance = 3.0;
 constexpr double catalogueMarkerHalfSize = 3.0;
@@ -854,7 +897,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
       importService(std::make_unique<ImageLayerImportService>())
 {
     ui->setupUi(this);
-    this->setupSidebar();
+    // setupSidebar() is called later, after all QActions are initialised
     qDebug().noquote()
             << QStringLiteral("[wcs] remote metadata loaded ctype=%1,%2 cdelt=%3,%4")
                        .arg(this->remoteDatasetCtype[0], this->remoteDatasetCtype[1])
@@ -1053,8 +1096,9 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     this->actionShowCatalogueOverlay->setCheckable(true);
     this->actionShowCatalogueLabels->setCheckable(true);
     this->actionShowCatalogueOverlay->setEnabled(false);
+    this->actionShowCatalogueOverlay->setChecked(false);
     this->actionShowCatalogueLabels->setEnabled(false);
-    this->actionShowCatalogueLabels->setChecked(true);
+    this->actionShowCatalogueLabels->setChecked(false); // no catalogue loaded yet
     this->actionClearCatalogueOverlay->setEnabled(false);
     QObject::connect(this->actionLoadCatalogueOverlay, &QAction::triggered, this,
                      &vtkWindowImage::loadCatalogueOverlay);
@@ -1081,17 +1125,23 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
         this->setWcsOverlayVisible(checked);
         this->requestWcsOverlayRender();
     });
-    
-    // Color Maps Combobox
+
+    // All QActions are now initialised — safe to build the sidebar
+    this->setupSidebar();
+
+    // Color Maps Combobox — with gradient preview icon
+    ui->comboLut->setIconSize(QSize(80, 14));
     auto cmaps = ColorMaps::GetColorMapNames();
     std::for_each(cmaps.cbegin(), cmaps.cend(), [this](const std::string &name) {
-        ui->comboLut->addItem(QString::fromStdString(name));
+        ui->comboLut->addItem(makeColormapIcon(name), QString::fromStdString(name));
     });
     ui->comboLut->setCurrentText(QString::fromStdString(ColorMaps::DefaultColorMap));
     QObject::connect(ui->comboLut, &QComboBox::textActivated, this,
                      &vtkWindowImage::changeCurrentColorMap);
 
-    // LUT Customizer
+    // LUT Customizer — give the button a clear label and tooltip
+    ui->btnLutEdit->setText(u"Advanced…"_s);
+    ui->btnLutEdit->setToolTip(u"Open advanced LUT editor (histogram, manual range adjustment)"_s);
     QObject::connect(ui->btnLutEdit, &QPushButton::clicked, this,
                      &vtkWindowImage::showLUTCustomizer);
 
@@ -1102,7 +1152,17 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     QObject::connect(group, &QButtonGroup::buttonClicked, this,
                      &vtkWindowImage::changeCurrentColorScale);
 
-    // Layer Opacity
+    // Layer Opacity — label + tooltip
+    ui->sliderOpacity->setToolTip(u"Layer opacity (0 = transparent, 100 = opaque)"_s);
+    if (auto *fl = qobject_cast<QVBoxLayout *>(ui->frameLayerControls->layout())) {
+        const int sliderIdx = fl->indexOf(ui->sliderOpacity);
+        if (sliderIdx >= 0) {
+            auto *opacityLbl = new QLabel(u"Layer opacity"_s, ui->frameLayerControls);
+            opacityLbl->setStyleSheet(
+                    u"QLabel { color: #8AB8CC; font-size: 9px; font-weight: 600; margin-top: 4px; }"_s);
+            fl->insertWidget(sliderIdx, opacityLbl);
+        }
+    }
     QObject::connect(ui->sliderOpacity, &QSlider::actionTriggered, this,
                      &vtkWindowImage::changeCurrentLayerOpacity);
 
@@ -1563,18 +1623,9 @@ void vtkWindowImage::finishRegionInteraction()
     this->refreshRegionOverlay();
     this->analyzeCurrentRegion();
     ui->vtk->renderWindow()->Render();
-    if (this->regionMode == RegionMode::Box && this->actionBoxRegion && this->actionBoxRegion->isChecked()) {
-        this->actionBoxRegion->setChecked(false);
-    } else if (this->regionMode == RegionMode::Circle && this->actionCircleRegion
-               && this->actionCircleRegion->isChecked()) {
-        this->actionCircleRegion->setChecked(false);
-    } else if (this->regionMode == RegionMode::Annulus && this->actionAnnulusRegion
-               && this->actionAnnulusRegion->isChecked()) {
-        this->actionAnnulusRegion->setChecked(false);
-    } else if (this->regionMode == RegionMode::Polygon && this->actionPolygonRegion
-               && this->actionPolygonRegion->isChecked()) {
-        this->actionPolygonRegion->setChecked(false);
-    }
+    // Note: the region action is intentionally NOT unchecked here.
+    // The overlay stays visible while the result dialog is open, and is cleared
+    // (along with the action check state) when the dialog is closed.
 }
 
 bool vtkWindowImage::updateProbeFromDisplayPosition(int displayX, int displayY)
@@ -1887,27 +1938,75 @@ void vtkWindowImage::analyzeCurrentRegion()
         return;
     }
 
+    // Close any previous result dialog (its stale generation prevents cleanup races)
+    if (this->m_regionResultDialog) {
+        this->m_regionResultDialog->close();
+    }
+
     auto *imageData = this->layers->getImageData(this->layers->getMasterIndex());
     const auto stats = computeRegionStatistics2D(imageData, this->regionMode, this->regionAnchorVoxel,
                                                  this->regionCurrentVoxel, this->regionPolygonVertices,
                                                  this->regionAnnulusInnerRadius);
-    QString text;
+
+    const int myGeneration = ++this->m_regionDialogGeneration;
+    const RegionMode capturedMode = this->regionMode;
+
+    auto *dlg = new ToolResultDialog(this);
+    this->m_regionResultDialog = dlg;
+
+    dlg->setTitle(u"Region Analysis"_s);
+    dlg->setSubtitle(
+            QStringLiteral("%1  ·  computed on the currently loaded data block")
+                    .arg(regionModeLabel(capturedMode)));
+
     if (!stats.valid) {
-        text = u"No valid pixels in the selected region.\nBlanked/NaN pixels are ignored."_s;
+        dlg->addSection(u"Statistics"_s,
+                        { { u"Result"_s, u"No valid pixels in the selected region."_s },
+                          { u"Note"_s,   u"Blanked / NaN pixels are ignored."_s } });
     } else {
-        text = u"Shape: %1\nValid pixels: %2 / %3\nBlanked/NaN: %4\nMin: %5\nMax: %6\nMean: %7\nMedian: %8\nStddev: %9\n\nComputed on valid pixels only."_s
-                       .arg(regionModeLabel(this->regionMode))
-                       .arg(stats.validCount)
-                       .arg(stats.totalCount)
-                       .arg(stats.blankedCount)
-                       .arg(stats.minValue, 0, 'g', 8)
-                       .arg(stats.maxValue, 0, 'g', 8)
-                       .arg(stats.mean, 0, 'g', 8)
-                       .arg(stats.median, 0, 'g', 8)
-                       .arg(stats.stddev, 0, 'g', 8);
+        dlg->addSection(u"Statistics"_s,
+                        { { u"Valid pixels"_s,
+                            QStringLiteral("%1 / %2").arg(stats.validCount).arg(stats.totalCount) },
+                          { u"Blanked / NaN"_s, QString::number(stats.blankedCount) },
+                          { u"Min"_s,    QStringLiteral("%1").arg(stats.minValue, 0, 'g', 8) },
+                          { u"Max"_s,    QStringLiteral("%1").arg(stats.maxValue, 0, 'g', 8) },
+                          { u"Mean"_s,   QStringLiteral("%1").arg(stats.mean,     0, 'g', 8) },
+                          { u"Median"_s, QStringLiteral("%1").arg(stats.median,   0, 'g', 8) },
+                          { u"Std Dev"_s,QStringLiteral("%1").arg(stats.stddev,   0, 'g', 8) } });
+        dlg->addSection(u"Note"_s,
+                        { { QString(), u"Computed on valid pixels only."_s } });
     }
-    text += u"\n\nComputed on the currently loaded data block."_s;
-    QMessageBox::information(this, u"Region Statistics"_s, text);
+
+    // When the dialog is closed, clear the overlay and deactivate the region tool.
+    // The generation guard prevents the cleanup from running if a newer analysis has
+    // already replaced this dialog (e.g., the user drew a second region while this
+    // dialog was still open).
+    QObject::connect(dlg, &QObject::destroyed, this, [this, myGeneration, capturedMode]() {
+        if (this->m_regionDialogGeneration != myGeneration) {
+            return; // stale — a newer analysis supersedes this one
+        }
+        this->clearRegion();
+        // Deactivate the region action; setRegionMode() will restore the image interactor.
+        QAction *regionAction = nullptr;
+        switch (capturedMode) {
+        case RegionMode::Box:     regionAction = this->actionBoxRegion;     break;
+        case RegionMode::Circle:  regionAction = this->actionCircleRegion;  break;
+        case RegionMode::Polygon: regionAction = this->actionPolygonRegion; break;
+        case RegionMode::Annulus: regionAction = this->actionAnnulusRegion; break;
+        default: break;
+        }
+        if (regionAction && regionAction->isChecked()) {
+            regionAction->setChecked(false); // triggers setRegionMode(mode, false)
+        } else {
+            // Action was already unchecked; at minimum restore the interactor and render.
+            this->setInteractorStyleImage();
+            if (ui && ui->vtk && ui->vtk->renderWindow()) {
+                ui->vtk->renderWindow()->Render();
+            }
+        }
+    });
+
+    dlg->show();
 }
 
 bool vtkWindowImage::finalizePolygonRegion()
@@ -1940,9 +2039,8 @@ bool vtkWindowImage::finalizePolygonRegion()
     this->regionValid = true;
     this->refreshRegionOverlay();
     this->analyzeCurrentRegion();
-    if (this->actionPolygonRegion && this->actionPolygonRegion->isChecked()) {
-        this->actionPolygonRegion->setChecked(false);
-    }
+    // Note: polygon action is NOT unchecked here — the overlay stays visible while
+    // the result dialog is open and is cleared when the dialog closes.
     return true;
 }
 
@@ -2099,7 +2197,7 @@ void vtkWindowImage::clearCatalogueOverlay()
     }
     if (this->actionShowCatalogueLabels) {
         const QSignalBlocker blocker(this->actionShowCatalogueLabels);
-        this->actionShowCatalogueLabels->setChecked(true);
+        this->actionShowCatalogueLabels->setChecked(false);
         this->actionShowCatalogueLabels->setEnabled(false);
     }
     if (this->actionClearCatalogueOverlay) {
@@ -3573,7 +3671,20 @@ void vtkWindowImage::changeCurrentLayerOpacity()
 
 void vtkWindowImage::showCurrentLayerSettings()
 {
-    const int index = this->currentLayerIndex();
+    int index = this->currentLayerIndex();
+
+    // If nothing is selected but layers exist, auto-select the first one
+    if (index < 0 && this->layers && this->layers->rowCount() > 0) {
+        ui->listLayer->setCurrentIndex(this->layers->index(0, 0));
+        return; // currentChanged signal will re-invoke this function
+    }
+
+    const bool hasLayers = this->layers && this->layers->rowCount() > 0;
+    ui->frameLayerControls->setEnabled(hasLayers);
+    if (!hasLayers) {
+        return;
+    }
+
     const auto state = this->layerController->layerViewState(index);
     if (!state.valid) {
         return;
@@ -3606,50 +3717,297 @@ void vtkWindowImage::markDisplayStateAdjusted(const char *reason)
 
 void vtkWindowImage::setupSidebar()
 {
-    // Remove the UI-file sidebar container and replace it with SidebarPanel,
-    // reusing the three page content widgets via reparenting.
+    // Remove the UI-file sidebar container and replace it with SidebarPanel.
     auto *mainLayout = qobject_cast<QHBoxLayout *>(ui->centralwidget->layout());
     mainLayout->removeWidget(ui->sidebarContainer);
     ui->sidebarContainer->hide();
 
-    this->m_sidebar = new SidebarPanel(272, this);
-    this->m_sidebar->addPage(u":/icons/rail_layers.svg"_s,    u"Layer Settings"_s, ui->pageLayer);
-    this->m_sidebar->addPage(u":/icons/rail_catalogue.svg"_s, u"Catalogue"_s,       ui->pageCatalogue);
-    this->m_sidebar->addPage(u":/icons/rail_3d.svg"_s,        u"3D View"_s,         ui->page3D);
-    this->m_sidebar->finalize(0);
-    mainLayout->insertWidget(0, this->m_sidebar);
-
-    // Style page content.
+    // ── Shared style constants (same palette as VBT / catalogue viewers) ──────
     const QString hdrStyle =
-            u"QLabel {"
-            "  color: #8AB8CC;"
-            "  font-size: 10px;"
-            "  font-weight: 600;"
-            "  padding-bottom: 4px;"
-            "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
-            "}"_s;
-    const QString subHdrStyle =
-            u"QLabel {"
-            "  color: #5A8DAA;"
-            "  font-size: 9px;"
-            "  font-weight: 600;"
-            "}"_s;
+            u"QLabel { color: #8AB8CC; font-size: 10px; font-weight: 600;"
+            u"         padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20); }"_s;
     const QString cardStyle =
-            u"QFrame {"
-            "  background-color: rgba(255, 255, 255, 0.03);"
-            "  border: 1px solid rgba(4, 138, 191, 0.14);"
-            "  border-radius: 6px;"
-            "}"_s;
+            u"QFrame, QGroupBox { background-color: rgba(255,255,255,0.03);"
+            u"  border: 1px solid rgba(4,138,191,0.14); border-radius: 6px; }"_s;
+    const QString subHdrStyle =
+            u"QLabel { color: #8AB8CC; font-size: 9px; font-weight: 600; }"_s;
+    const QString keyStyle =
+            u"QLabel { color: #607090; font-size: 10px; }"_s;
+    const QString valStyle =
+            u"QLabel { color: #c0d0e0; font-size: 10px; font-family: monospace; }"_s;
+    const QString toolBtnStyle =
+            u"QToolButton { text-align: left; padding: 4px 8px; border-radius: 4px;"
+            u"              border: 1px solid transparent; }"
+            u"QToolButton:hover { background-color: rgba(4,138,191,0.12);"
+            u"                    border: 1px solid rgba(4,138,191,0.25); }"
+            u"QToolButton:checked { background-color: rgba(4,138,191,0.20);"
+            u"                      border: 1px solid rgba(4,138,191,0.40); }"_s;
 
-    for (QLabel *lbl : { ui->labelLayerHdr, ui->labelCatalogueHdr, ui->label3DHdr }) {
+    // ── Page 0: Layer Settings (from UI file) ──────────────────────────────────
+    // Apply styles to existing UI-file page widgets (page3D is hidden; not styled)
+    for (QLabel *lbl : { ui->labelLayerHdr, ui->labelCatalogueHdr }) {
         lbl->setStyleSheet(hdrStyle);
     }
     for (QLabel *lbl : { ui->labelLayerListHdr, ui->labelInventoryHdr, ui->labelObjectsHdr }) {
         lbl->setStyleSheet(subHdrStyle);
     }
-    for (QFrame *f : { ui->frameLayerControls, ui->frameCatalogueActions, ui->frame3D }) {
+    for (QFrame *f : { ui->frameLayerControls, ui->frameCatalogueActions }) {
         f->setStyleSheet(cardStyle);
     }
+
+    // ── Page 1: Tools ─────────────────────────────────────────────────────────
+    auto *pageTools = new QWidget;
+    auto *toolsLayout = new QVBoxLayout(pageTools);
+    toolsLayout->setContentsMargins(8, 8, 8, 8);
+    toolsLayout->setSpacing(8);
+
+    {
+        auto *hdr = new QLabel(u"TOOLS"_s, pageTools);
+        hdr->setStyleSheet(hdrStyle);
+        toolsLayout->addWidget(hdr);
+    }
+
+    // Helper: create a full-width tool button bound to an action
+    const auto makeToolBtn = [&toolBtnStyle](QAction *action, QWidget *parent) -> QToolButton * {
+        auto *btn = new QToolButton(parent);
+        btn->setDefaultAction(action);
+        btn->setStyleSheet(toolBtnStyle);
+        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        return btn;
+    };
+
+    // Card: Analysis Tools (probe + region stats)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Analysis Tools"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(ui->actionProfile,          card));
+        cl->addWidget(makeToolBtn(this->actionBoxRegion,      card));
+        cl->addWidget(makeToolBtn(this->actionCircleRegion,   card));
+        cl->addWidget(makeToolBtn(this->actionPolygonRegion,  card));
+        cl->addWidget(makeToolBtn(this->actionAnnulusRegion,  card));
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Catalogue Overlay
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Catalogue Overlay"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(this->actionLoadCatalogueOverlay,  card));
+        cl->addWidget(makeToolBtn(this->actionShowCatalogueOverlay,  card));
+        cl->addWidget(makeToolBtn(this->actionShowCatalogueLabels,   card));
+        cl->addWidget(makeToolBtn(this->actionClearCatalogueOverlay, card));
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: WCS Display (axes + format + frame)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"WCS Display"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(this->actionShowWcsAxes, card));
+
+        const QString secStyle =
+                u"QLabel { color: #607090; font-size: 9px; margin-top: 4px; }"_s;
+
+        auto *fmtHdr = new QLabel(u"Coordinate format"_s, card);
+        fmtHdr->setStyleSheet(secStyle);
+        cl->addWidget(fmtHdr);
+        cl->addWidget(makeToolBtn(this->actionWcsSexagesimal, card));
+        cl->addWidget(makeToolBtn(this->actionWcsDecimal,     card));
+
+        auto *frameHdr = new QLabel(u"Coordinate frame"_s, card);
+        frameHdr->setStyleSheet(secStyle);
+        cl->addWidget(frameHdr);
+        cl->addWidget(makeToolBtn(ui->actionGalactic, card));
+        cl->addWidget(makeToolBtn(ui->actionFK5,      card));
+        cl->addWidget(makeToolBtn(ui->actionEcliptic, card));
+        toolsLayout->addWidget(card);
+    }
+
+    toolsLayout->addStretch(1);
+
+    // ── Page 2: Info / Stats ─────────────────────────────────────────────────
+    auto *pageInfo = new QWidget;
+    auto *infoLayout = new QVBoxLayout(pageInfo);
+    infoLayout->setContentsMargins(8, 6, 8, 6);
+    infoLayout->setSpacing(4);
+
+    {
+        auto *hdr = new QLabel(u"INFO / STATS"_s, pageInfo);
+        hdr->setStyleSheet(hdrStyle);
+        infoLayout->addWidget(hdr);
+    }
+
+    // Field-name style: small, muted, uppercase feel
+    const QString fnHdrStyle =
+            u"QLabel { color: #607090; font-size: 9px; font-weight: 600; }"_s;
+    // Field-value style: readable, proportional (not monospace — avoids extra width)
+    const QString fnValStyle =
+            u"QLabel { color: #c0d0e0; font-size: 10px; }"_s;
+
+    // ── Card 1: Dataset (stacked label-over-value — no two-column layout) ─────
+    // Each field is a small header label stacked above its value label.
+    // Every value is full-card-width, word-wrapped where needed.
+    // This eliminates all horizontal overflow regardless of filename length.
+    {
+        auto *card = new QFrame(pageInfo);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(10, 8, 10, 8);
+        cl->setSpacing(0);
+
+        // Helper: add one stacked field (header + value) with optional word-wrap/tooltip
+        const auto addField = [&](const QString &header, const QString &value,
+                                  const QString &tip = {}, bool wrap = false) {
+            auto *hdrLbl = new QLabel(header);
+            hdrLbl->setStyleSheet(fnHdrStyle);
+            cl->addWidget(hdrLbl);
+
+            auto *valLbl = new QLabel(value);
+            valLbl->setStyleSheet(fnValStyle);
+            valLbl->setWordWrap(wrap);
+            valLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            if (!tip.isEmpty())
+                valLbl->setToolTip(tip);
+            cl->addWidget(valLbl);
+        };
+
+        const QFileInfo fi(this->filepath);
+        const int nLayers = this->layers ? this->layers->rowCount() : 1;
+
+        addField(u"Active Layer"_s, fi.fileName(), fi.absoluteFilePath(), /*wrap=*/true);
+        cl->addSpacing(5);
+        addField(u"Layers"_s, QString::number(nLayers));
+        cl->addSpacing(5);
+        addField(u"Directory"_s, compactDirPath(fi.absolutePath()), fi.absolutePath(), /*wrap=*/true);
+        cl->addSpacing(5);
+        addField(u"WCS"_s, this->remoteWcsStatus);
+
+        infoLayout->addWidget(card);
+    }
+
+    // ── Card 2: Axes (compact grid: Ax# | Type [unit] | Δ) ───────────────────
+    // Axis type names are always short — a 3-column grid stays within sidebar width.
+    {
+        bool hasAnyAxis = false;
+        for (int ax = 0; ax < 3 && !hasAnyAxis; ++ax)
+            hasAnyAxis = !this->remoteDatasetCtype[ax].isEmpty();
+
+        if (hasAnyAxis) {
+            auto *card = new QFrame(pageInfo);
+            card->setStyleSheet(cardStyle);
+            auto *gl = new QGridLayout(card);
+            gl->setContentsMargins(10, 6, 10, 6);
+            gl->setSpacing(2);
+            gl->setColumnStretch(1, 1); // type column absorbs available width
+
+            // Tiny column headers
+            const auto gridHdr = [&fnHdrStyle](const QString &t,
+                                               Qt::Alignment align = Qt::AlignLeft) -> QLabel * {
+                auto *l = new QLabel(t);
+                l->setStyleSheet(fnHdrStyle);
+                l->setAlignment(align);
+                return l;
+            };
+            gl->addWidget(gridHdr(u"Ax"_s),                     0, 0);
+            gl->addWidget(gridHdr(u"Type [unit]"_s),            0, 1);
+            gl->addWidget(gridHdr(u"\u0394"_s, Qt::AlignRight), 0, 2);
+
+            auto *sep = new QFrame;
+            sep->setFrameShape(QFrame::HLine);
+            sep->setStyleSheet(
+                    u"QFrame { border: none; border-top: 1px solid rgba(4,138,191,0.14);"
+                    u"         margin-bottom: 1px; }"_s);
+            gl->addWidget(sep, 1, 0, 1, 3);
+
+            int gridRow = 2;
+            for (int ax = 0; ax < 3; ++ax) {
+                const QString &ctype = this->remoteDatasetCtype[ax];
+                if (ctype.isEmpty())
+                    continue;
+                const QString &cunit = this->remoteDatasetCunit[ax];
+                const QString typeStr = cunit.isEmpty()
+                        ? ctype
+                        : QStringLiteral("%1 [%2]").arg(ctype, cunit);
+                const QString deltaStr =
+                        QStringLiteral("%1").arg(this->remoteDatasetCdelt[ax], 0, 'g', 5);
+
+                auto *axLbl = new QLabel(QString::number(ax + 1));
+                axLbl->setStyleSheet(fnHdrStyle);
+
+                auto *typeLbl = new QLabel(typeStr);
+                typeLbl->setStyleSheet(fnValStyle);
+                typeLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+                auto *deltaLbl = new QLabel(deltaStr);
+                deltaLbl->setStyleSheet(fnValStyle);
+                deltaLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+                deltaLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+                gl->addWidget(axLbl,    gridRow, 0);
+                gl->addWidget(typeLbl,  gridRow, 1);
+                gl->addWidget(deltaLbl, gridRow, 2);
+                ++gridRow;
+            }
+
+            infoLayout->addWidget(card);
+        }
+    }
+
+    // ── WCS Warning card (amber, only when present) ───────────────────────────
+    if (!this->remoteWcsWarningMessage.isEmpty()) {
+        auto *warnCard = new QFrame(pageInfo);
+        warnCard->setStyleSheet(cardStyle);
+        auto *wl = new QHBoxLayout(warnCard);
+        wl->setContentsMargins(10, 6, 10, 6);
+        wl->setSpacing(6);
+        auto *warnIcon = new QLabel(u"\u26A0"_s); // ⚠
+        warnIcon->setStyleSheet(u"QLabel { color: #CC8800; font-size: 12px; }"_s);
+        warnIcon->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+        auto *warnMsg = new QLabel(this->remoteWcsWarningMessage);
+        warnMsg->setStyleSheet(u"QLabel { color: #BB9900; font-size: 9px; }"_s);
+        warnMsg->setWordWrap(true);
+        wl->addWidget(warnIcon);
+        wl->addWidget(warnMsg, 1);
+        infoLayout->addWidget(warnCard);
+    }
+
+    infoLayout->addStretch(1);
+
+    // ── Wire pages into SidebarPanel ──────────────────────────────────────────
+    this->m_sidebar = new SidebarPanel(272, this);
+    this->m_sidebar->addPage(u":/icons/rail_layers.svg"_s,    u"Layer Settings"_s, ui->pageLayer);
+    this->m_sidebar->addPage(u":/icons/rail_catalogue.svg"_s, u"Catalogue"_s,       ui->pageCatalogue);
+    this->m_sidebar->addPage(u":/icons/rail_viz.svg"_s,        u"Tools"_s,           pageTools);
+    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,      u"Info / Stats"_s,    pageInfo);
+    // Note: the "3D View" page (ui->page3D) is intentionally omitted — not relevant
+    // for the 2D image viewer. The widget remains in the hidden sidebarContainer.
+    this->m_sidebar->finalize(0);
+    mainLayout->insertWidget(0, this->m_sidebar);
 
     this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
             u"Controls Sidebar"_s, this);

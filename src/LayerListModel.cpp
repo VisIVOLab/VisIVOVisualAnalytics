@@ -3,8 +3,10 @@
 #include "ImageLayerLoadTask.h"
 
 #include <QDataStream>
+#include <QFileInfo>
 #include <QIODevice>
 #include <QMimeData>
+#include <QSize>
 
 LayerListModel::LayerListModel(const std::string &filepath, QObject *parent)
     : QAbstractListModel(parent), layerSet(std::make_unique<ImageLayerSet>(filepath)),
@@ -141,10 +143,17 @@ QVariant LayerListModel::data(const QModelIndex &index, int role) const
 
     switch (role) {
     case Qt::DisplayRole: {
+        const auto full = QString::fromStdString(this->layerSet->filepath(index.row()));
+        return QFileInfo(full).fileName();
+    }
+    case Qt::ToolTipRole: {
         return QString::fromStdString(this->layerSet->filepath(index.row()));
     }
     case Qt::CheckStateRole: {
         return this->layerSet->isVisible(index.row()) ? Qt::Checked : Qt::Unchecked;
+    }
+    case Qt::SizeHintRole: {
+        return QSize(-1, 36);
     }
     default: {
         return QVariant();
