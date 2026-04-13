@@ -433,7 +433,7 @@ void MainWindow::doOpenCataloguePath(const QString &filepath)
     // On session expiry the window emits reopenRequested; reuse the normal open flow.
     QObject::connect(win, &vtkWindowCatalogue3D::reopenRequested,
                      this, &MainWindow::doOpenCataloguePath);
-    win->show();
+    win->showMaximized();
     win->raise();
     win->activateWindow();
 

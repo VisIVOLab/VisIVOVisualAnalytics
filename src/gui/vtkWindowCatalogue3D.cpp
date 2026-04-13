@@ -373,55 +373,6 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                 this->renderWindow->Render();
             });
 
-    this->comboGeometry = new QComboBox(this);
-    this->comboGeometry->addItems({ u"Ellipsoid"_s, u"Sphere"_s, u"Point"_s, u"Cross"_s });
-    this->comboSizeMode = new QComboBox(this);
-    this->comboSizeMode->addItems({ u"Fixed"_s, u"Major axis"_s, u"LLS"_s, u"Flux"_s });
-    this->comboFrame = new QComboBox(this);
-    this->comboFrame->addItems({ u"FK5 / J2000"_s, u"Galactic (l, b)"_s });
-    this->comboFrame->setCurrentIndex(0);
-    this->comboFrame->setToolTip(u"Coordinate frame used for 3D scene positions.\n"
-                                  "FK5 / J2000: standard equatorial (RA, Dec).\n"
-                                  "Galactic (l, b): galactic longitude and latitude."_s);
-    this->comboCosmology = new QComboBox(this);
-    this->comboCosmology->addItems({ u"Planck18"_s, u"Planck15"_s, u"Planck13"_s, u"WMAP9"_s });
-    this->comboCosmology->setCurrentIndex(0);
-    this->comboCosmology->setToolTip(
-            u"Cosmology model used to convert redshift → comoving distance.\n"
-            "Planck18 (default), Planck15, Planck13: ESA Planck results.\n"
-            "WMAP9: WMAP 9-year results.\n"
-            "Distances are computed on the backend via astropy."_s);
-    this->chkShowAxes = new QCheckBox(u"Show axes"_s, this);
-    this->chkShowAxes->setChecked(true);
-    this->chkShowBoundingBox = new QCheckBox(u"Show bounding box"_s, this);
-    this->chkShowBoundingBox->setChecked(false);
-    this->chkShowShells = new QCheckBox(u"Show redshift shells"_s, this);
-    this->chkShowShells->setChecked(false);
-
-    auto *geometryGroup = new QGroupBox(u"Geometry"_s, this);
-    auto *geometryLayout = new QFormLayout(geometryGroup);
-    geometryLayout->addRow(u"Shape"_s, this->comboGeometry);
-    auto *sizeGroup = new QGroupBox(u"Size"_s, this);
-    auto *sizeLayout = new QFormLayout(sizeGroup);
-    sizeLayout->addRow(u"Scale"_s, ui->sliderScale);
-    auto *sceneGroup = new QGroupBox(u"Scene"_s, this);
-    auto *sceneLayout = new QFormLayout(sceneGroup);
-    sceneLayout->addRow(this->chkShowAxes);
-    sceneLayout->addRow(this->chkShowBoundingBox);
-    sceneLayout->addRow(this->chkShowShells);
-    sceneLayout->addRow(u"Frame"_s, this->comboFrame);
-    sceneLayout->addRow(u"Cosmology"_s, this->comboCosmology);
-    auto *vizLayout = qobject_cast<QVBoxLayout *>(ui->groupViz->layout());
-    if (vizLayout) {
-        while (vizLayout->count() > 0) {
-            vizLayout->takeAt(0);
-        }
-        vizLayout->addWidget(geometryGroup);
-        vizLayout->addWidget(sizeGroup);
-        vizLayout->addWidget(sceneGroup);
-        vizLayout->addWidget(ui->chkLabels);
-        vizLayout->addWidget(ui->chkMorphColors);
-    }
     ui->labelStatus->setToolTip(
             u"3D positions use RA/Dec + redshift or distance. Source geometry is parametric."_s);
 
@@ -482,57 +433,12 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     this->populateMappingControls();
     this->refreshCatalogueTable();
 
-    // ── Filters dock (bottom) ─────────────────────────────────────────────────
+    // ── Filter signal/slot connections ───────────────────────────────────────
+    // Widgets (filterList, btnFilter*, filterStatusLabel, btnLoadMore) were
+    // created in setupSidebar().  Here we only wire interactions that require
+    // filterableFields, which comes from the schema populated above.
     {
-        auto *filterDock = new QDockWidget(u"Filters"_s, this);
-        filterDock->setObjectName(u"Cat3DFilterDock"_s);
-        filterDock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable
-                                | QDockWidget::DockWidgetClosable);
-
-        auto *filterWidget = new QWidget;
-        auto *filterVLayout = new QVBoxLayout(filterWidget);
-        filterVLayout->setContentsMargins(6, 4, 6, 4);
-        filterVLayout->setSpacing(4);
-
-        this->filterList = new QListWidget(filterWidget);
-        this->filterList->setFixedHeight(88);
-        this->filterList->setSelectionMode(QAbstractItemView::SingleSelection);
-        this->filterList->setToolTip(
-                u"Active filters combined with AND. Select a row and press Remove to delete it."_s);
-        filterVLayout->addWidget(this->filterList);
-
-        {
-            auto *btnRow = new QWidget(filterWidget);
-            auto *btnLayout = new QHBoxLayout(btnRow);
-            btnLayout->setContentsMargins(0, 0, 0, 0);
-            btnLayout->setSpacing(4);
-            this->btnFilterAdd = new QPushButton(u"Add…"_s, btnRow);
-            this->btnFilterRemove = new QPushButton(u"Remove"_s, btnRow);
-            this->btnFilterClearAll = new QPushButton(u"Clear All"_s, btnRow);
-            this->btnFilterApply = new QPushButton(u"Apply"_s, btnRow);
-            btnLayout->addWidget(this->btnFilterAdd);
-            btnLayout->addWidget(this->btnFilterRemove);
-            btnLayout->addWidget(this->btnFilterClearAll);
-            btnLayout->addStretch(1);
-            btnLayout->addWidget(this->btnFilterApply);
-            filterVLayout->addWidget(btnRow);
-        }
-
-        this->filterStatusLabel = new QLabel(filterWidget);
-        filterVLayout->addWidget(this->filterStatusLabel);
-
-        this->btnLoadMore = new QPushButton(u"Load more"_s, filterWidget);
-        this->btnLoadMore->setVisible(false);
-        this->btnLoadMore->setToolTip(
-                u"Fetch the next page of results and append them to the current scene."_s);
-        filterVLayout->addWidget(this->btnLoadMore);
-        QObject::connect(this->btnLoadMore, &QPushButton::clicked, this,
-                         &vtkWindowCatalogue3D::loadMoreEntries);
-
-        filterDock->setWidget(filterWidget);
-        this->addDockWidget(Qt::BottomDockWidgetArea, filterDock);
-
-        // Build the list of filterable field names from schema (non-string fields preferred)
+        // Build the list of filterable field names (non-string fields preferred).
         QStringList filterableFields;
         for (const auto &field : this->schema.fields) {
             if (field.type != QStringLiteral("string")) {
@@ -627,10 +533,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         QObject::connect(this->btnFilterApply, &QPushButton::clicked, this,
                          &vtkWindowCatalogue3D::applyFilter);
 
-        // ── View menu: dock toggle actions ────────────────────────────────────
-        ui->menuView->addSeparator();
-        filterDock->toggleViewAction()->setText(u"Filters"_s);
-        ui->menuView->addAction(filterDock->toggleViewAction());
+        // ── View menu: catalogue dock toggle ─────────────────────────────────
         if (this->catalogueDock) {
             this->catalogueDock->toggleViewAction()->setText(u"Catalogue Data"_s);
             ui->menuView->addAction(this->catalogueDock->toggleViewAction());
@@ -707,23 +610,210 @@ void vtkWindowCatalogue3D::setupSidebar()
     mainLayout->removeWidget(ui->sidebarContainer);
     ui->sidebarContainer->hide();
 
-    this->m_sidebar = new SidebarPanel(272, this);
-    this->m_sidebar->addPage(u":/icons/rail_viz.svg"_s,  u"Visualization"_s, ui->pageViz);
-    this->m_sidebar->addPage(u":/icons/rail_info.svg"_s, u"Source Info"_s,   ui->pageInfo);
-    this->m_sidebar->finalize(0);
-    mainLayout->insertWidget(0, this->m_sidebar);
+    this->m_sidebar = new SidebarPanel(296, this);
 
-    // Style page content.
+    // Shared card styles (same palette as cube viewer).
     const QString hdrStyle =
             u"QLabel { color: #8AB8CC; font-size: 10px; font-weight: 600;"
             u"         padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20); }"_s;
     const QString cardStyle =
             u"QFrame, QGroupBox { background-color: rgba(255,255,255,0.03);"
             u"  border: 1px solid rgba(4,138,191,0.14); border-radius: 6px; }"_s;
-    ui->labelVizHdr->setStyleSheet(hdrStyle);
-    ui->labelInfoHdr->setStyleSheet(hdrStyle);
-    ui->groupViz->setStyleSheet(cardStyle);
+    const QString subHdrStyle =
+            u"QLabel { color: #8AB8CC; font-size: 9px; font-weight: 600; }"_s;
+
+    // ── Visualization page ────────────────────────────────────────────────────
+    // Built programmatically so we own the layout cleanly.  ui->pageViz (from
+    // the .ui file) is left in the hidden sidebarContainer and not used.
+    {
+        auto *pageViz    = new QWidget;
+        auto *pageLayout = new QVBoxLayout(pageViz);
+        pageLayout->setContentsMargins(8, 8, 8, 8);
+        pageLayout->setSpacing(8);
+
+        auto *vizHdr = new QLabel(u"VISUALIZATION"_s, pageViz);
+        vizHdr->setStyleSheet(hdrStyle);
+        pageLayout->addWidget(vizHdr);
+
+        // ── Source Representation card ────────────────────────────────────────
+        auto *reprCard   = new QFrame(pageViz);
+        reprCard->setStyleSheet(cardStyle);
+        auto *reprLayout = new QVBoxLayout(reprCard);
+        reprLayout->setContentsMargins(8, 8, 8, 8);
+        reprLayout->setSpacing(6);
+        auto *reprHdr = new QLabel(u"Source Representation"_s, reprCard);
+        reprHdr->setStyleSheet(subHdrStyle);
+        reprLayout->addWidget(reprHdr);
+
+        this->comboGeometry = new QComboBox(reprCard);
+        this->comboGeometry->addItems({ u"Ellipsoid"_s, u"Sphere"_s, u"Point"_s, u"Cross"_s });
+        auto *reprForm = new QFormLayout;
+        reprForm->setContentsMargins(0, 0, 0, 0);
+        reprForm->addRow(u"Shape"_s, this->comboGeometry);
+        reprLayout->addLayout(reprForm);
+        reprLayout->addWidget(ui->chkLabels);
+        reprLayout->addWidget(ui->chkMorphColors);
+        pageLayout->addWidget(reprCard);
+
+        // ── Axis Mapping card ─────────────────────────────────────────────────
+        auto *axisCard   = new QFrame(pageViz);
+        axisCard->setStyleSheet(cardStyle);
+        auto *axisLayout = new QVBoxLayout(axisCard);
+        axisLayout->setContentsMargins(8, 8, 8, 8);
+        axisLayout->setSpacing(6);
+        auto *axisHdr = new QLabel(u"Axis Mapping"_s, axisCard);
+        axisHdr->setStyleSheet(subHdrStyle);
+        axisLayout->addWidget(axisHdr);
+
+        this->comboMapX = new QComboBox(axisCard);
+        this->comboMapY = new QComboBox(axisCard);
+        this->comboMapZ = new QComboBox(axisCard);
+        auto *axisForm = new QFormLayout;
+        axisForm->setContentsMargins(0, 0, 0, 0);
+        axisForm->addRow(u"X"_s, this->comboMapX);
+        axisForm->addRow(u"Y"_s, this->comboMapY);
+        axisForm->addRow(u"Z"_s, this->comboMapZ);
+        axisLayout->addLayout(axisForm);
+        pageLayout->addWidget(axisCard);
+
+        // ── Visual Encoding card ──────────────────────────────────────────────
+        auto *encCard   = new QFrame(pageViz);
+        encCard->setStyleSheet(cardStyle);
+        auto *encLayout = new QVBoxLayout(encCard);
+        encLayout->setContentsMargins(8, 8, 8, 8);
+        encLayout->setSpacing(6);
+        auto *encHdr = new QLabel(u"Visual Encoding"_s, encCard);
+        encHdr->setStyleSheet(subHdrStyle);
+        encLayout->addWidget(encHdr);
+
+        // Size combo doubles as comboSizeMode (same widget, two member aliases).
+        this->comboSizeMode = new QComboBox(encCard);
+        this->comboMapSize  = this->comboSizeMode;
+        this->comboMapColor = new QComboBox(encCard);
+        auto *encForm = new QFormLayout;
+        encForm->setContentsMargins(0, 0, 0, 0);
+        encForm->addRow(u"Size"_s,  this->comboSizeMode);
+        encForm->addRow(u"Color"_s, this->comboMapColor);
+        encForm->addRow(u"Scale"_s, ui->sliderScale);
+        encLayout->addLayout(encForm);
+        pageLayout->addWidget(encCard);
+
+        // ── Scene card ────────────────────────────────────────────────────────
+        auto *sceneCard   = new QFrame(pageViz);
+        sceneCard->setStyleSheet(cardStyle);
+        auto *sceneLayout = new QVBoxLayout(sceneCard);
+        sceneLayout->setContentsMargins(8, 8, 8, 8);
+        sceneLayout->setSpacing(6);
+        auto *sceneHdr = new QLabel(u"Scene"_s, sceneCard);
+        sceneHdr->setStyleSheet(subHdrStyle);
+        sceneLayout->addWidget(sceneHdr);
+
+        this->chkShowAxes        = new QCheckBox(u"Show axes"_s,          sceneCard);
+        this->chkShowBoundingBox = new QCheckBox(u"Show bounding box"_s,  sceneCard);
+        this->chkShowShells      = new QCheckBox(u"Show redshift shells"_s, sceneCard);
+        this->chkShowAxes->setChecked(true);
+        sceneLayout->addWidget(this->chkShowAxes);
+        sceneLayout->addWidget(this->chkShowBoundingBox);
+        sceneLayout->addWidget(this->chkShowShells);
+
+        this->comboFrame = new QComboBox(sceneCard);
+        this->comboFrame->addItems({ u"FK5 / J2000"_s, u"Galactic (l, b)"_s });
+        this->comboFrame->setToolTip(
+                u"Coordinate frame for 3D scene positions.\n"
+                "FK5 / J2000: standard equatorial (RA, Dec).\n"
+                "Galactic (l, b): galactic longitude and latitude."_s);
+        this->comboCosmology = new QComboBox(sceneCard);
+        this->comboCosmology->addItems(
+                { u"Planck18"_s, u"Planck15"_s, u"Planck13"_s, u"WMAP9"_s });
+        this->comboCosmology->setToolTip(
+                u"Cosmology model for redshift → comoving distance.\n"
+                "Distances are computed on the backend via astropy."_s);
+
+        auto *sceneForm = new QFormLayout;
+        sceneForm->setContentsMargins(0, 0, 0, 0);
+        sceneForm->addRow(u"Frame"_s,     this->comboFrame);
+        sceneForm->addRow(u"Cosmology"_s, this->comboCosmology);
+        sceneLayout->addLayout(sceneForm);
+        pageLayout->addWidget(sceneCard);
+
+        pageLayout->addStretch(1);
+        this->m_sidebar->addPage(u":/icons/rail_viz.svg"_s, u"Visualization"_s, pageViz);
+    }
+
+    // ── Source Info page (from UI file) ───────────────────────────────────────
     ui->groupInfo->setStyleSheet(cardStyle);
+    ui->labelInfoHdr->setStyleSheet(hdrStyle);
+    this->m_sidebar->addPage(u":/icons/rail_info.svg"_s, u"Source Info"_s, ui->pageInfo);
+
+    // ── Filters page ─────────────────────────────────────────────────────────
+    // Widgets assigned to members here; signal/slot connections wired later
+    // in the constructor body after the schema is known.
+    {
+        auto *pageFilters = new QWidget;
+        auto *pageLayout  = new QVBoxLayout(pageFilters);
+        pageLayout->setContentsMargins(8, 8, 8, 8);
+        pageLayout->setSpacing(8);
+
+        auto *hdr = new QLabel(u"FILTERS"_s, pageFilters);
+        hdr->setStyleSheet(hdrStyle);
+        pageLayout->addWidget(hdr);
+
+        // Active Filters card.
+        auto *filtersCard   = new QFrame(pageFilters);
+        filtersCard->setStyleSheet(cardStyle);
+        auto *filtersCardLayout = new QVBoxLayout(filtersCard);
+        filtersCardLayout->setContentsMargins(8, 8, 8, 8);
+        filtersCardLayout->setSpacing(6);
+
+        auto *listLabel = new QLabel(u"Active filters"_s, filtersCard);
+        listLabel->setStyleSheet(subHdrStyle);
+        filtersCardLayout->addWidget(listLabel);
+
+        this->filterList = new QListWidget(filtersCard);
+        this->filterList->setSelectionMode(QAbstractItemView::SingleSelection);
+        this->filterList->setToolTip(
+                u"Active filters combined with AND. Double-click a row to edit it."_s);
+        filtersCardLayout->addWidget(this->filterList);
+
+        this->filterStatusLabel = new QLabel(filtersCard);
+        this->filterStatusLabel->setWordWrap(true);
+        this->filterStatusLabel->setStyleSheet(u"QLabel { color: #8AB8CC; font-size: 9px; }"_s);
+        filtersCardLayout->addWidget(this->filterStatusLabel);
+
+        this->btnLoadMore = new QPushButton(u"Load more…"_s, filtersCard);
+        this->btnLoadMore->setVisible(false);
+        this->btnLoadMore->setToolTip(
+                u"Fetch the next page of results and append them to the current scene."_s);
+        filtersCardLayout->addWidget(this->btnLoadMore);
+        QObject::connect(this->btnLoadMore, &QPushButton::clicked,
+                         this, &vtkWindowCatalogue3D::loadMoreEntries);
+
+        pageLayout->addWidget(filtersCard);
+
+        // Actions card.
+        auto *actionsCard   = new QFrame(pageFilters);
+        actionsCard->setStyleSheet(cardStyle);
+        auto *actionsCardLayout = new QVBoxLayout(actionsCard);
+        actionsCardLayout->setContentsMargins(8, 8, 8, 8);
+        actionsCardLayout->setSpacing(4);
+
+        this->btnFilterAdd      = new QPushButton(u"Add…"_s,      actionsCard);
+        this->btnFilterRemove   = new QPushButton(u"Remove"_s,    actionsCard);
+        this->btnFilterClearAll = new QPushButton(u"Clear All"_s, actionsCard);
+        this->btnFilterApply    = new QPushButton(u"Apply"_s,     actionsCard);
+        actionsCardLayout->addWidget(this->btnFilterAdd);
+        actionsCardLayout->addWidget(this->btnFilterRemove);
+        actionsCardLayout->addWidget(this->btnFilterClearAll);
+        actionsCardLayout->addWidget(this->btnFilterApply);
+
+        pageLayout->addWidget(actionsCard);
+        pageLayout->addStretch(1);
+
+        this->m_sidebar->addPage(u":/icons/rail_filter.svg"_s, u"Filters"_s, pageFilters);
+    }
+
+    this->m_sidebar->finalize(0);
+    mainLayout->insertWidget(0, this->m_sidebar);
 
     // View menu toggle — inserted before existing actions to keep it first.
     this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
@@ -741,7 +831,12 @@ void vtkWindowCatalogue3D::setupSidebar()
 void vtkWindowCatalogue3D::applyFrameToEntries()
 {
     if (this->activeFrame == CoordFrame::FK5_J2000) {
-        // FK5/J2000 is the native output of the parser – already correct.
+        // Restore FK5/J2000 Cartesian positions from the stored RA/Dec.
+        // (Galactic mode overwrites sceneX/Y/Z in-place, so we must recompute
+        // rather than just returning, otherwise switching back from Galactic
+        // leaves the Galactic coordinates in the entries.)
+        for (auto &e : this->entries)
+            Catalogue3DParser::detail::fillCartesian(e, this->schema);
         return;
     }
 
@@ -1859,7 +1954,6 @@ void vtkWindowCatalogue3D::setSelectedSource(int idx)
     }
     updateHighlightSphere(selectSphere.Get(), selectActor.Get(), idx, 1.18);
     updateInfoPanel();
-    updateDockSelectionDetails();
     qInfo() << "[catalogue3d] selected source index:" << idx;
     emit this->sourceSelectionChanged(idx);
     renderWindow->Render();
@@ -2034,24 +2128,11 @@ void vtkWindowCatalogue3D::ensureCatalogueDock()
     this->catalogueDock->setObjectName(u"Catalogue3DDock"_s);
     auto *dockWidget = new QWidget(this->catalogueDock);
     auto *dockLayout = new QVBoxLayout(dockWidget);
-    dockLayout->setContentsMargins(6, 6, 6, 6);
-    dockLayout->setSpacing(6);
+    dockLayout->setContentsMargins(4, 4, 4, 4);
+    dockLayout->setSpacing(0);
 
-    auto *mappingGroup = new QGroupBox(u"Mappings"_s, dockWidget);
-    auto *mappingLayout = new QFormLayout(mappingGroup);
-    mappingLayout->setContentsMargins(6, 6, 6, 6);
-    this->comboMapX = new QComboBox(mappingGroup);
-    this->comboMapY = new QComboBox(mappingGroup);
-    this->comboMapZ = new QComboBox(mappingGroup);
-    this->comboMapSize = this->comboSizeMode;
-    this->comboMapColor = new QComboBox(mappingGroup);
-    mappingLayout->addRow(u"X"_s, this->comboMapX);
-    mappingLayout->addRow(u"Y"_s, this->comboMapY);
-    mappingLayout->addRow(u"Z"_s, this->comboMapZ);
-    mappingLayout->addRow(u"Size"_s, this->comboMapSize);
-    mappingLayout->addRow(u"Color"_s, this->comboMapColor);
-    dockLayout->addWidget(mappingGroup);
-
+    // Table only — mappings live in the Visualization sidebar page;
+    // selected-source details live in the Source Info sidebar page.
     this->catalogueTableView = new QTableView(dockWidget);
     this->catalogueTableModel = new Catalogue3DTableModel(this->catalogueDock);
     this->catalogueTableView->setModel(this->catalogueTableModel);
@@ -2065,12 +2146,6 @@ void vtkWindowCatalogue3D::ensureCatalogueDock()
     this->catalogueTableView->horizontalHeader()->setStretchLastSection(false);
     this->catalogueTableView->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     dockLayout->addWidget(this->catalogueTableView, 1);
-
-    this->catalogueDetailsView = new QTextEdit(dockWidget);
-    this->catalogueDetailsView->setReadOnly(true);
-    this->catalogueDetailsView->setPlaceholderText(u"No source selected"_s);
-    this->catalogueDetailsView->setMaximumHeight(140);
-    dockLayout->addWidget(this->catalogueDetailsView);
 
     this->catalogueDock->setWidget(dockWidget);
     this->addDockWidget(Qt::BottomDockWidgetArea, this->catalogueDock);
@@ -2133,7 +2208,6 @@ void vtkWindowCatalogue3D::refreshCatalogueTable()
     if (this->catalogueTableView) {
         this->catalogueTableView->resizeColumnsToContents();
     }
-    this->updateDockSelectionDetails();
 }
 
 void vtkWindowCatalogue3D::populateMappingControls()

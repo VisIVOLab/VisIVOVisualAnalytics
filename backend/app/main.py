@@ -1714,6 +1714,13 @@ async def cosmology_distance(
         luminosity_mpc = float(cosmo.luminosity_distance(z).to("Mpc").value)
         # kpc_proper_per_arcmin → divide by 60 to get kpc/arcsec
         kpc_per_arcsec = float(cosmo.kpc_proper_per_arcmin(z).value / 60.0) if z > 0.0 else 0.0
+    except ModuleNotFoundError as exc:
+        if "scipy" in str(exc).lower():
+            return CosmologyDistanceResponse(
+                valid=False,
+                error="Cosmology calculations require scipy, which is not installed in the backend environment. Run: pip install scipy",
+            )
+        return CosmologyDistanceResponse(valid=False, error=str(exc))
     except Exception as exc:
         return CosmologyDistanceResponse(valid=False, error=str(exc))
     return CosmologyDistanceResponse(
@@ -1786,6 +1793,13 @@ async def cosmology_distance_batch(
             model=request.model,
             distances_Mpc=distances_out,
         )
+    except ModuleNotFoundError as exc:
+        if "scipy" in str(exc).lower():
+            return CosmologyBatchResponse(
+                valid=False,
+                error="Cosmology calculations require scipy, which is not installed in the backend environment. Run: pip install scipy",
+            )
+        return CosmologyBatchResponse(valid=False, error=str(exc))
     except Exception as exc:
         return CosmologyBatchResponse(valid=False, error=str(exc))
 
