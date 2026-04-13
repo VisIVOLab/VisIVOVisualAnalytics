@@ -239,9 +239,6 @@ void ProfileWidget::setupSpectrumPlot(const QString &xLabel, const QString &yLab
     ui->plot1->plotLayout()->addElement(0, 0, titleEl);
     ui->plot1->xAxis->setLabel(xLabel);
     ui->plot1->yAxis->setLabel(yLabel);
-
-    // Apply default dark theme (caller can override with applyPlotTheme).
-    applyPlotTheme(true);
 }
 
 void ProfileWidget::setLiveMode(bool live)
@@ -373,9 +370,15 @@ void ProfileWidget::updateSpectrumPlotSeries(const QVector<double> &key,
     ui->plot1->graph(1)->setName(secondaryLabel);
     ui->plot1->graph(1)->setPen(QPen(QColor(255, 170, 0), 2.0));
     ui->plot1->legend->setVisible(true);
-    ui->plot1->legend->setBrush(QColor(u"#1a2030"_s));
-    ui->plot1->legend->setBorderPen(QPen(QColor(u"#2a3555"_s)));
-    ui->plot1->legend->setTextColor(QColor(u"#c0d0f0"_s));
+    if (m_darkTheme) {
+        ui->plot1->legend->setBrush(QColor(u"#1a2030"_s));
+        ui->plot1->legend->setBorderPen(QPen(QColor(u"#2a3555"_s)));
+        ui->plot1->legend->setTextColor(QColor(u"#c0d0f0"_s));
+    } else {
+        ui->plot1->legend->setBrush(Qt::white);
+        ui->plot1->legend->setBorderPen(QPen(Qt::black));
+        ui->plot1->legend->setTextColor(Qt::black);
+    }
     ui->plot1->rescaleAxes();
     if (auto *titleElement = qobject_cast<QCPTextElement *>(ui->plot1->plotLayout()->element(0, 0))) {
         titleElement->setText(title);
@@ -426,8 +429,9 @@ void ProfileWidget::updateImageProfiles(const QVector<double> &keyX, const QVect
 
 void ProfileWidget::applyPlotTheme(bool dark)
 {
+    m_darkTheme = dark;
     auto applyToPlot = [dark](QCustomPlot *plot) {
-        if (!plot || !plot->isVisible()) return;
+        if (!plot) return;
         if (dark) {
             plot->setBackground(QColor(u"#141922"_s));
             plot->axisRect()->setBackground(QColor(u"#0d1118"_s));
@@ -440,6 +444,11 @@ void ProfileWidget::applyPlotTheme(bool dark)
                 axis->setTickLabelColor(QColor(u"#c0d0f0"_s));
                 axis->setLabelColor(QColor(u"#8ab4f8"_s));
             }
+            if (plot->legend->visible()) {
+                plot->legend->setBrush(QColor(u"#1a2030"_s));
+                plot->legend->setBorderPen(QPen(QColor(u"#2a3555"_s)));
+                plot->legend->setTextColor(QColor(u"#c0d0f0"_s));
+            }
         } else {
             plot->setBackground(Qt::white);
             plot->axisRect()->setBackground(QColor(u"#f8f8f8"_s));
@@ -451,6 +460,11 @@ void ProfileWidget::applyPlotTheme(bool dark)
                 axis->setSubTickPen(QPen(QColor(u"#888888"_s)));
                 axis->setTickLabelColor(Qt::black);
                 axis->setLabelColor(Qt::black);
+            }
+            if (plot->legend->visible()) {
+                plot->legend->setBrush(Qt::white);
+                plot->legend->setBorderPen(QPen(Qt::black));
+                plot->legend->setTextColor(Qt::black);
             }
         }
         plot->replot();

@@ -78,6 +78,7 @@ private:
 
     QPushButton *m_btnSavePlot1 { nullptr };
     QPushButton *m_btnSavePlot2 { nullptr };
+    bool m_darkTheme{ true };
 
     void plotProfile(double x, double y, bool live);
     void plotSpectrum(double x, double y, bool live);
