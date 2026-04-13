@@ -1676,11 +1676,12 @@ class CosmologyDistanceRequest(BaseModel):
 class CosmologyDistanceResponse(BaseModel):
     valid: bool
     error: str
-    z: float = 0.0
+    # None when valid=False (missing/invalid redshift — 0.0 is a real physical value)
+    z: float | None = None
     model: str = ""
-    comoving_Mpc: float = 0.0
-    luminosity_Mpc: float = 0.0
-    proper_motion_kpc_per_arcsec: float = 0.0
+    comoving_Mpc: float | None = None
+    luminosity_Mpc: float | None = None
+    proper_motion_kpc_per_arcsec: float | None = None
 
 
 @app.post("/v1/cosmology/distance", response_model=CosmologyDistanceResponse, tags=["cosmology"])
@@ -1734,7 +1735,8 @@ class CosmologyBatchResponse(BaseModel):
     valid: bool
     error: str
     model: str = ""
-    distances_Mpc: list[float] = []
+    # None entries correspond to invalid (negative or non-finite) input redshifts.
+    distances_Mpc: list[float | None] = []
 
 
 @app.post("/v1/cosmology/distance/batch", response_model=CosmologyBatchResponse, tags=["cosmology"])
@@ -1745,7 +1747,9 @@ async def cosmology_distance_batch(
     """Compute comoving distances (Mpc) for a list of redshifts in one call.
 
     Accepts up to 100 000 redshift values.  Returns an array of comoving distances
-    in the same order.  Negative or non-finite values are replaced with 0.0.
+    in the same order.  Negative or non-finite input redshifts are replaced with
+    ``null`` (``None``) in the output rather than ``0.0`` so that callers can
+    distinguish a computed zero distance from a missing/invalid value.
     """
     models = _load_cosmology_models()
     if not models:
@@ -1766,15 +1770,20 @@ async def cosmology_distance_batch(
         import numpy as _np
         cosmo = models[request.model]
         zs = _np.array(request.redshifts, dtype=float)
-        distances = _np.zeros_like(zs)
+        distances = _np.full_like(zs, float("nan"))
         valid_mask = _np.isfinite(zs) & (zs >= 0.0)
         if valid_mask.any():
             distances[valid_mask] = cosmo.comoving_distance(zs[valid_mask]).to("Mpc").value
+        # NaN marks invalid redshifts; convert to None for JSON serialisation
+        # (JSON has no NaN literal, and 0.0 would be ambiguous with a real z=0 result).
+        distances_out: list[float | None] = [
+            None if not _np.isfinite(d) else float(d) for d in distances
+        ]
         return CosmologyBatchResponse(
             valid=True,
             error="",
             model=request.model,
-            distances_Mpc=distances.tolist(),
+            distances_Mpc=distances_out,
         )
     except Exception as exc:
         return CosmologyBatchResponse(valid=False, error=str(exc))
