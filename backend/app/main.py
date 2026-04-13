@@ -27,6 +27,7 @@ import logging
 import os
 import struct
 import threading
+import time
 import uuid
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
@@ -1806,6 +1807,118 @@ _HIPS_CACHE_DIR = _Path(
 )
 _HIPS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# ── HiPS disk-cache policy ────────────────────────────────────────────────────
+# Two independent eviction triggers:
+#   1. TTL  — files older than _HIPS_CACHE_TTL_SECONDS are deleted.
+#   2. Size — if total cache exceeds _HIPS_CACHE_MAX_BYTES, the least-recently-
+#             used files are deleted until the cache is back under the limit.
+# Both run at most once per _HIPS_CACHE_CLEANUP_INTERVAL_SECONDS so that a
+# burst of tile requests does not cause a stat(2) storm.
+
+_HIPS_CACHE_MAX_BYTES: int = int(
+    os.environ.get("VISIVO_HIPS_CACHE_MAX_BYTES", str(2 * 1024 * 1024 * 1024))  # 2 GiB
+)
+_HIPS_CACHE_TTL_SECONDS: int = int(
+    os.environ.get("VISIVO_HIPS_CACHE_TTL_SECONDS", str(7 * 24 * 3600))  # 7 days
+)
+_HIPS_CACHE_CLEANUP_INTERVAL_SECONDS: int = int(
+    os.environ.get("VISIVO_HIPS_CACHE_CLEANUP_INTERVAL", "60")
+)
+
+_last_hips_cache_cleanup_ts: float = 0.0
+
+
+def _iter_hips_cache_files():
+    """Yield every regular file under _HIPS_CACHE_DIR, skipping errors."""
+    for root, _dirs, files in os.walk(_HIPS_CACHE_DIR):
+        for name in files:
+            p = _Path(root) / name
+            try:
+                if p.is_file():
+                    yield p
+            except Exception:
+                continue
+
+
+def _purge_expired_hips_cache(now: float | None = None) -> int:
+    """Delete files whose mtime is older than _HIPS_CACHE_TTL_SECONDS.
+
+    Returns the number of files removed.
+    """
+    now = now if now is not None else time.time()
+    removed = 0
+    for p in _iter_hips_cache_files():
+        try:
+            age = now - p.stat().st_mtime
+            if age > _HIPS_CACHE_TTL_SECONDS:
+                p.unlink(missing_ok=True)
+                removed += 1
+        except Exception:
+            continue
+    if removed:
+        logger.info("[hips-cache] TTL purge: removed %d expired file(s)", removed)
+    return removed
+
+
+def _hips_cache_size_and_entries() -> tuple[int, list[tuple[_Path, os.stat_result]]]:
+    """Return (total_bytes, [(path, stat), ...]) for all cache files."""
+    total = 0
+    entries: list[tuple[_Path, os.stat_result]] = []
+    for p in _iter_hips_cache_files():
+        try:
+            st = p.stat()
+            total += st.st_size
+            entries.append((p, st))
+        except Exception:
+            continue
+    return total, entries
+
+
+def _enforce_hips_cache_size_limit() -> int:
+    """Delete LRU files until total cache size <= _HIPS_CACHE_MAX_BYTES.
+
+    Uses st_atime (last access time) when available; falls back to st_mtime so
+    that cache hits that call ``os.utime`` are respected for eviction ordering.
+    Returns the number of files removed.
+    """
+    total, entries = _hips_cache_size_and_entries()
+    if total <= _HIPS_CACHE_MAX_BYTES:
+        return 0
+
+    # Sort ascending by access time so the least-recently-used come first.
+    entries.sort(key=lambda x: getattr(x[1], "st_atime", x[1].st_mtime))
+
+    removed = 0
+    for p, st in entries:
+        if total <= _HIPS_CACHE_MAX_BYTES:
+            break
+        try:
+            p.unlink(missing_ok=True)
+            total -= st.st_size
+            removed += 1
+        except Exception:
+            continue
+
+    if removed:
+        logger.info("[hips-cache] size-limit eviction: removed %d file(s)", removed)
+    return removed
+
+
+def _maybe_cleanup_hips_cache() -> None:
+    """Run TTL purge + size-limit eviction at most once per cleanup interval.
+
+    Call this after every cache write so the policy is exercised regularly
+    without adding per-request filesystem overhead.
+    """
+    global _last_hips_cache_cleanup_ts
+    now = time.time()
+    if now - _last_hips_cache_cleanup_ts < _HIPS_CACHE_CLEANUP_INTERVAL_SECONDS:
+        return
+    _last_hips_cache_cleanup_ts = now
+    _purge_expired_hips_cache(now)
+    _enforce_hips_cache_size_limit()
+
+
 # Optional: healpy for HEALPix pixel queries
 _HEALPY_AVAILABLE = False
 try:
@@ -2048,6 +2161,10 @@ async def hips_allsky(
     cache_path = _allsky_cache_path(survey_id, order, fmt)
     if cache_path.exists():
         data = cache_path.read_bytes()
+        try:
+            os.utime(cache_path, None)   # update atime for LRU tracking
+        except Exception:
+            pass
     else:
         # Try each format until one works
         data = b""
@@ -2065,6 +2182,7 @@ async def hips_allsky(
 
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_bytes(data)
+        _maybe_cleanup_hips_cache()
 
     mt = ("image/jpeg" if fmt in ("jpeg", "jpg")
           else "image/fits" if fmt == "fits"
@@ -2095,6 +2213,10 @@ async def hips_tile(
     cache_path = _tile_cache_path(survey_id, order, pix, fmt)
     if cache_path.exists():
         data = cache_path.read_bytes()
+        try:
+            os.utime(cache_path, None)   # update atime for LRU tracking
+        except Exception:
+            pass
     else:
         data = b""
         last_err: Exception | None = None
@@ -2111,6 +2233,7 @@ async def hips_tile(
 
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_bytes(data)
+        _maybe_cleanup_hips_cache()
 
     mt = ("image/jpeg" if fmt in ("jpeg", "jpg")
           else "image/fits" if fmt == "fits"
