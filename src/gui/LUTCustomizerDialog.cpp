@@ -16,6 +16,12 @@
 #include <QDoubleValidator>
 #include <QElapsedTimer>
 #include <QDebug>
+#include <QIcon>
+#include <QImage>
+#include <QLabel>
+#include <QPixmap>
+#include <QSize>
+#include <QVBoxLayout>
 
 #include <algorithm>
 #include <cmath>
@@ -25,6 +31,28 @@ using namespace Qt::StringLiterals;
 
 namespace {
 constexpr vtkIdType histogramTargetSamples = 250000;
+
+// Gradient preview icon for combobox — same pattern used in vtkWindowImage and vtkWindowVbt.
+static QIcon makeColormapIcon(const std::string &name, int iconW = 80, int iconH = 14)
+{
+    vtkNew<vtkLookupTable> lut;
+    lut->SetNumberOfTableValues(256);
+    lut->SetTableRange(0.0, 1.0);
+    ColorMaps::SetColorMap(lut.Get(), name);
+    lut->Build();
+    QImage img(iconW, iconH, QImage::Format_RGB32);
+    for (int x = 0; x < iconW; ++x) {
+        const int idx = static_cast<int>(x * 255.0 / std::max(1, iconW - 1));
+        double rgba[4];
+        lut->GetTableValue(idx, rgba);
+        const QRgb c = qRgb(static_cast<int>(rgba[0] * 255.0),
+                            static_cast<int>(rgba[1] * 255.0),
+                            static_cast<int>(rgba[2] * 255.0));
+        for (int y = 0; y < iconH; ++y)
+            img.setPixel(x, y, c);
+    }
+    return QIcon(QPixmap::fromImage(img));
+}
 constexpr int histogramBinCount = 512;
 constexpr double logAxisEpsilon = 1e-12;
 
@@ -81,13 +109,16 @@ LUTCustomizerDialog::LUTCustomizerDialog(QWidget *parent)
     // Setup reset buttons
     ui->btnResetMin->setIcon(QIcon(u":/icons/RESET.png"_s));
     ui->btnResetMax->setIcon(QIcon(u":/icons/RESET.png"_s));
+    ui->btnResetMin->setToolTip(u"Reset min to data minimum"_s);
+    ui->btnResetMax->setToolTip(u"Reset max to data maximum"_s);
     QObject::connect(ui->btnResetMin, &QToolButton::clicked, this, &LUTCustomizerDialog::resetMin);
     QObject::connect(ui->btnResetMax, &QToolButton::clicked, this, &LUTCustomizerDialog::resetMax);
 
-    // Color Maps Combobox
+    // Color Maps Combobox — gradient preview icons (same pattern as other viewers)
+    ui->comboLut->setIconSize(QSize(80, 14));
     auto cmaps = ColorMaps::GetColorMapNames();
     std::for_each(cmaps.cbegin(), cmaps.cend(), [this](const std::string &name) {
-        ui->comboLut->addItem(QString::fromStdString(name));
+        ui->comboLut->addItem(makeColormapIcon(name), QString::fromStdString(name));
     });
     ui->comboLut->setCurrentText(QString::fromStdString(ColorMaps::DefaultColorMap));
 
@@ -98,6 +129,15 @@ LUTCustomizerDialog::LUTCustomizerDialog(QWidget *parent)
     // Apply button
     QObject::connect(ui->buttonBox, &QDialogButtonBox::clicked, this,
                      &LUTCustomizerDialog::buttonClicked);
+
+    // Hint label inserted between the plot and the Lookup Table group
+    auto *hintLbl = new QLabel(
+            u"Drag the \u25cf cyan (Min) or \u25cf orange (Max) line \u2014 or edit values below."_s,
+            this);
+    hintLbl->setStyleSheet(u"QLabel { color: #607080; font-size: 9px; padding: 0 4px; }"_s);
+    hintLbl->setAlignment(Qt::AlignCenter);
+    if (auto *vl = qobject_cast<QVBoxLayout *>(this->layout()))
+        vl->insertWidget(1, hintLbl);
 }
 
 LUTCustomizerDialog::~LUTCustomizerDialog()
@@ -107,15 +147,52 @@ LUTCustomizerDialog::~LUTCustomizerDialog()
 
 void LUTCustomizerDialog::setupPlot()
 {
+    // ── Dark background matching the app theme ────────────────────────────────
+    ui->plot->setBackground(QBrush(QColor(12, 22, 34)));
+    ui->plot->axisRect()->setBackground(QBrush(QColor(8, 16, 26)));
+    const QPen axisPen(QColor(80, 110, 140));
+    const QPen subTickPen(QColor(55, 75, 100));
+    const QColor tickLabelColor(155, 180, 210);
+    for (auto *axis : { ui->plot->xAxis, ui->plot->yAxis }) {
+        axis->setBasePen(axisPen);
+        axis->setTickPen(axisPen);
+        axis->setSubTickPen(subTickPen);
+        axis->setTickLabelColor(tickLabelColor);
+        axis->setLabelColor(tickLabelColor);
+    }
+    // Hide y-axis tick labels — counts are not meaningful as raw numbers
+    ui->plot->yAxis->setTickLabels(false);
+
     ui->plot->setInteractions(QCP::iSelectItems | QCP::iRangeDrag);
     ui->plot->axisRect()->setRangeDrag(Qt::Horizontal);
+
+    // ── Histogram graph — step-center bar style with semi-transparent fill ────
     ui->plot->addGraph();
+    ui->plot->graph()->setLineStyle(QCPGraph::lsStepCenter);
+    ui->plot->graph()->setPen(QPen(QColor(50, 150, 230, 200), 1));
+    ui->plot->graph()->setBrush(QBrush(QColor(40, 100, 180, 70)));
 
-    this->refLineMin = new QCPItemLine(ui->plot);
-    this->refLineMin->setPen({ Qt::red });
+    // ── Min marker — cyan, width 2 (QCPItemStraightLine extends to plot edges) ─
+    this->refLineMin = new QCPItemStraightLine(ui->plot);
+    QPen minPen(QColor(0, 190, 240));
+    minPen.setWidth(2);
+    this->refLineMin->setPen(minPen);
+    QPen minSelPen(QColor(80, 225, 255));
+    minSelPen.setWidth(3);
+    this->refLineMin->setSelectedPen(minSelPen);
+    this->refLineMin->point1->setCoords(0, 0);
+    this->refLineMin->point2->setCoords(0, 1);
 
-    this->refLineMax = new QCPItemLine(ui->plot);
-    this->refLineMax->setPen({ Qt::green });
+    // ── Max marker — orange, width 2 ─────────────────────────────────────────
+    this->refLineMax = new QCPItemStraightLine(ui->plot);
+    QPen maxPen(QColor(255, 140, 0));
+    maxPen.setWidth(2);
+    this->refLineMax->setPen(maxPen);
+    QPen maxSelPen(QColor(255, 205, 60));
+    maxSelPen.setWidth(3);
+    this->refLineMax->setSelectedPen(maxSelPen);
+    this->refLineMax->point1->setCoords(0, 0);
+    this->refLineMax->point2->setCoords(0, 1);
 
     QObject::connect(ui->plot, &QCustomPlot::itemClick, this,
                      &LUTCustomizerDialog::selectReferenceLine);
@@ -173,7 +250,7 @@ void LUTCustomizerDialog::plotHistogram()
         y[i] = bins[static_cast<std::size_t>(i)];
     }
     ui->plot->graph()->setData(x, y, true);
-    ui->plot->graph()->setBrush(Qt::blue);
+    // Graph pen/brush are set once in setupPlot() — don't override here.
     ui->plot->rescaleAxes();
     if (this->datasetRange[0] < 0) {
         ui->plot->xAxis->setRange(this->datasetRange[0] * 1.1, this->datasetRange[1] * 1.1);
@@ -181,11 +258,13 @@ void LUTCustomizerDialog::plotHistogram()
         ui->plot->xAxis->setRange(this->datasetRange[0] * 0.9, this->datasetRange[1] * 1.1);
     }
 
+    // QCPItemStraightLine is defined by two points; any two points with the same x
+    // give an infinite vertical line — no Y-range bookkeeping needed.
     const double *lutRange = this->lut->GetTableRange();
-    this->refLineMin->start->setCoords(lutRange[0], 0.);
-    this->refLineMin->end->setCoords(lutRange[0], ui->plot->yAxis->range().upper);
-    this->refLineMax->start->setCoords(lutRange[1], 0.);
-    this->refLineMax->end->setCoords(lutRange[1], ui->plot->yAxis->range().upper);
+    this->refLineMin->point1->setCoords(lutRange[0], 0);
+    this->refLineMin->point2->setCoords(lutRange[0], 1);
+    this->refLineMax->point1->setCoords(lutRange[1], 0);
+    this->refLineMax->point2->setCoords(lutRange[1], 1);
 
     this->changeAxisScaling(this->lut->UsingLogScale());
     qDebug().noquote()
@@ -230,22 +309,22 @@ void LUTCustomizerDialog::init(vtkImageData *dataset, vtkLookupTable *lut)
 void LUTCustomizerDialog::resetMin()
 {
     ui->lineMin->setText(QString::number(this->datasetRange[0]));
-    this->refLineMin->start->setCoords(this->datasetRange[0], 0.);
-    this->refLineMin->end->setCoords(this->datasetRange[0], ui->plot->yAxis->range().upper);
+    this->refLineMin->point1->setCoords(this->datasetRange[0], 0);
+    this->refLineMin->point2->setCoords(this->datasetRange[0], 1);
     ui->plot->replot();
 }
 
 void LUTCustomizerDialog::resetMax()
 {
     ui->lineMax->setText(QString::number(this->datasetRange[1]));
-    this->refLineMax->start->setCoords(this->datasetRange[1], 0.);
-    this->refLineMax->end->setCoords(this->datasetRange[1], ui->plot->yAxis->range().upper);
+    this->refLineMax->point1->setCoords(this->datasetRange[1], 0);
+    this->refLineMax->point2->setCoords(this->datasetRange[1], 1);
     ui->plot->replot();
 }
 
 void LUTCustomizerDialog::selectReferenceLine(QCPAbstractItem *item)
 {
-    this->selectedLine = qobject_cast<QCPItemLine *>(item);
+    this->selectedLine = qobject_cast<QCPItemStraightLine *>(item);
     ui->plot->setInteraction(QCP::iRangeDrag, false);
 }
 
@@ -255,16 +334,22 @@ void LUTCustomizerDialog::moveReferenceLine(QMouseEvent *event)
         return;
     }
 
-    const double x = ui->plot->xAxis->pixelToCoord(event->pos().x());
-    this->selectedLine->start->setCoords(x, 0.);
-    this->selectedLine->end->setCoords(x, ui->plot->yAxis->range().upper);
-    ui->plot->replot();
+    double x = ui->plot->xAxis->pixelToCoord(event->pos().x());
 
+    // Enforce Min < Max: prevent the two markers from crossing
     if (this->selectedLine == this->refLineMin) {
+        const double maxX = this->refLineMax->point1->coords().x();
+        x = std::min(x, maxX - 1e-10);
         ui->lineMin->setText(QString::number(x));
     } else {
+        const double minX = this->refLineMin->point1->coords().x();
+        x = std::max(x, minX + 1e-10);
         ui->lineMax->setText(QString::number(x));
     }
+
+    this->selectedLine->point1->setCoords(x, 0);
+    this->selectedLine->point2->setCoords(x, 1);
+    ui->plot->replot();
 }
 
 void LUTCustomizerDialog::deselectReferenceLine()
@@ -279,10 +364,10 @@ void LUTCustomizerDialog::updateReferenceLines()
 {
     const double minX = ui->lineMin->text().toDouble();
     const double maxX = ui->lineMax->text().toDouble();
-    this->refLineMin->start->setCoords(minX, 0.);
-    this->refLineMin->end->setCoords(minX, ui->plot->yAxis->range().upper);
-    this->refLineMax->start->setCoords(maxX, 0.);
-    this->refLineMax->end->setCoords(maxX, ui->plot->yAxis->range().upper);
+    this->refLineMin->point1->setCoords(minX, 0);
+    this->refLineMin->point2->setCoords(minX, 1);
+    this->refLineMax->point1->setCoords(maxX, 0);
+    this->refLineMax->point2->setCoords(maxX, 1);
     ui->plot->replot();
 }
 

@@ -7,7 +7,7 @@
 
 class QAbstractButton;
 class QCPAbstractItem;
-class QCPItemLine;
+class QCPItemStraightLine;
 class vtkImageData;
 class vtkLookupTable;
 
@@ -45,9 +45,9 @@ private slots:
 
 private:
     Ui::LUTCustomizerDialog *ui;
-    QCPItemLine *refLineMin;
-    QCPItemLine *refLineMax;
-    QCPItemLine *selectedLine;
+    QCPItemStraightLine *refLineMin;
+    QCPItemStraightLine *refLineMax;
+    QCPItemStraightLine *selectedLine;
 
     vtkSmartPointer<vtkImageData> dataset;
     vtkSmartPointer<vtkLookupTable> lut;
