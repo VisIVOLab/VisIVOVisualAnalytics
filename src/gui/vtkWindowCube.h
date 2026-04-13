@@ -164,6 +164,7 @@ private slots:
 
     void showLUTCustomizer();
     void updateLUTCustomizer();
+    void showLUTCustomizer3D();
 
     void setInteractorStyleImage();
     void setInteractorStyleProfile();
@@ -255,7 +256,8 @@ private:
     const QString remoteWcsWarningMessage;
     bool wcsDiagnosticPublished{ false };
 
-    QPointer<LUTCustomizerDialog> lutCustomizer;
+    QPointer<LUTCustomizerDialog> lutCustomizer;   ///< 2D slice/moment LUT editor
+    QPointer<LUTCustomizerDialog> lutCustomizer3D; ///< 3D volume LUT editor
     QPointer<ProfileWidget> profileWidget;
     QPointer<ProfileWidget> probePlotWidget;
     QPointer<PvDiagramWidget> pvDiagramWidget;
@@ -479,6 +481,7 @@ private:
     void applyThresholdToPipeline(double threshold);
 
     // Cube
+    vtkNew<vtkLookupTable> lutVolume;  ///< tracks 3D color-map state; kept in sync by applyVolumeLutToPipeline
     vtkNew<vtkTrivialProducer> cubeDisplaySource;
     vtkNew<vtkFlyingEdges3D> isosurfaceFilter;
     vtkNew<vtkActor> isosurface;

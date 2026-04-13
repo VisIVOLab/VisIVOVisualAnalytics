@@ -2358,6 +2358,17 @@ void vtkWindowCube::setupSidebar()
         this->applyMomentLutByName(name);
     });
 
+    // ── Advanced LUT editor buttons ───────────────────────────────────────────
+    // 3D volume (inside m_colorMapCard — hidden automatically in Isosurface mode)
+    QObject::connect(m_uiAssembler->lutEdit3dButton(), &QToolButton::clicked,
+                     this, &vtkWindowCube::showLUTCustomizer3D);
+    // 2D slice (inside m_sliceLutCard — hidden automatically in Moment mode)
+    QObject::connect(m_uiAssembler->lutEditSliceButton(), &QToolButton::clicked,
+                     this, &vtkWindowCube::showLUTCustomizer);
+    // 2D moment (inside m_momentLutCard — hidden automatically in Slice mode)
+    QObject::connect(m_uiAssembler->lutEditMomentButton(), &QToolButton::clicked,
+                     this, &vtkWindowCube::showLUTCustomizer);
+
     // View menu toggle action — wired bidirectionally by SidebarPanel.
     this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
             u"Controls Sidebar"_s, this);
@@ -2387,10 +2398,12 @@ void vtkWindowCube::applyVolumeLutToPipeline(const QString &name)
         cubeImage->GetScalarRange(cubeRange);
     }
 
-    vtkNew<vtkLookupTable> lut;
-    lut->SetTableRange(cubeRange[0], cubeRange[1]);
-    ColorMaps::SetColorMap(lut, stdName);
-    ColorMaps::SetColorTransferFunction(lut, this->volumeColorTransferFunction);
+    // Keep lutVolume member in sync — it is the authoritative LUT for the 3D
+    // LUT customizer dialog and must always reflect the current volume state.
+    this->lutVolume->SetTableRange(cubeRange[0], cubeRange[1]);
+    ColorMaps::SetColorMap(this->lutVolume, stdName);
+    this->lutVolume->Build();
+    ColorMaps::SetColorTransferFunction(this->lutVolume, this->volumeColorTransferFunction);
     this->volumeColorTransferFunction->SetObjectName(stdName);
     // NOTE: does NOT call Render() — caller decides when to render.
 }
@@ -7129,6 +7142,40 @@ void vtkWindowCube::updateLUTCustomizer()
                 vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0)),
                 this->lutMoment);
     }
+}
+
+void vtkWindowCube::showLUTCustomizer3D()
+{
+    if (!this->lutCustomizer3D) {
+        this->lutCustomizer3D = new LUTCustomizerDialog(this);
+        QObject::connect(this->lutCustomizer3D, &LUTCustomizerDialog::lutUpdated, this,
+                         [this]() {
+                             // lutVolume was already updated and rebuilt by the dialog.
+                             // Re-derive the CTF from the member LUT and re-render.
+                             const std::string name = this->lutVolume->GetObjectName();
+                             ColorMaps::SetColorTransferFunction(this->lutVolume,
+                                                                 this->volumeColorTransferFunction);
+                             this->volumeColorTransferFunction->SetObjectName(name);
+                             this->m_activeColorMapName = QString::fromStdString(name);
+                             // Keep the sidebar combo in sync (without re-triggering applyColorMapByName)
+                             if (auto *combo = m_uiAssembler ? m_uiAssembler->lutCombo() : nullptr) {
+                                 const QSignalBlocker blocker(combo);
+                                 combo->setCurrentText(this->m_activeColorMapName);
+                             }
+                             if (ui->vtkCube->renderWindow())
+                                 ui->vtkCube->renderWindow()->Render();
+                         });
+    }
+
+    // Always reinitialise with the current cube data and member LUT.
+    auto *cubeImage =
+            vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
+    if (cubeImage && cubeImage->GetNumberOfPoints() > 0) {
+        this->lutCustomizer3D->init(cubeImage, this->lutVolume);
+    }
+    this->lutCustomizer3D->show();
+    this->lutCustomizer3D->raise();
+    this->lutCustomizer3D->activateWindow();
 }
 
 void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)

@@ -254,6 +254,13 @@ QWidget *CubeUiAssembler::buildThresholdPage()
         m_comboLut->setToolTip(u"Select the color map for volume rendering."_s);
         cl->addWidget(m_comboLut);
 
+        m_btnLutEdit3D = new QToolButton();
+        m_btnLutEdit3D->setText(u"Advanced\u2026"_s);
+        m_btnLutEdit3D->setToolTip(u"Open advanced LUT editor for 3D volume rendering"_s);
+        m_btnLutEdit3D->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        m_btnLutEdit3D->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        cl->addWidget(m_btnLutEdit3D);
+
         cmCard->setVisible(m_ui->actionVolume->isChecked());
         m_colorMapCard = cmCard;
         root->addWidget(cmCard);
@@ -370,6 +377,13 @@ QWidget *CubeUiAssembler::build2dViewPage()
         m_comboSliceLut->setToolTip(u"Select the color map for slice views."_s);
         cl->addWidget(m_comboSliceLut);
 
+        m_btnLutEditSlice = new QToolButton();
+        m_btnLutEditSlice->setText(u"Advanced\u2026"_s);
+        m_btnLutEditSlice->setToolTip(u"Open advanced LUT editor for the 2D slice"_s);
+        m_btnLutEditSlice->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        m_btnLutEditSlice->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        cl->addWidget(m_btnLutEditSlice);
+
         lutCard->setVisible(initiallySlice);
         m_sliceLutCard = lutCard;
         root->addWidget(lutCard);
@@ -442,6 +456,13 @@ QWidget *CubeUiAssembler::build2dViewPage()
         m_comboMomentLut->setCurrentText(defaultName2);
         m_comboMomentLut->setToolTip(u"Select the color map for moment map views."_s);
         cl->addWidget(m_comboMomentLut);
+
+        m_btnLutEditMoment = new QToolButton();
+        m_btnLutEditMoment->setText(u"Advanced\u2026"_s);
+        m_btnLutEditMoment->setToolTip(u"Open advanced LUT editor for the moment map"_s);
+        m_btnLutEditMoment->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        m_btnLutEditMoment->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        cl->addWidget(m_btnLutEditMoment);
 
         lutCard->setVisible(!initiallySlice);
         m_momentLutCard = lutCard;

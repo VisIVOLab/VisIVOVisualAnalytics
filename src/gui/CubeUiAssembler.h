@@ -139,22 +139,25 @@ public:
 
     // ── Widget accessors (used by vtkWindowCube's update/sync methods) ────────
     // 3D View Settings
-    QComboBox *renderModeCombo()   const { return m_comboRenderMode; }
-    QComboBox *volumeModeCombo()   const { return m_comboVolumeMode; }
-    QComboBox *lutCombo()          const { return m_comboLut; }
-    QWidget   *volumeModeCard()    const { return m_volumeModeCard; }
-    QWidget   *surfaceColorCard()  const { return m_surfaceColorCard; }
-    QWidget   *colorMapCard()      const { return m_colorMapCard; }
+    QComboBox  *renderModeCombo()   const { return m_comboRenderMode; }
+    QComboBox  *volumeModeCombo()   const { return m_comboVolumeMode; }
+    QComboBox  *lutCombo()          const { return m_comboLut; }
+    QWidget    *volumeModeCard()    const { return m_volumeModeCard; }
+    QWidget    *surfaceColorCard()  const { return m_surfaceColorCard; }
+    QWidget    *colorMapCard()      const { return m_colorMapCard; }
+    QToolButton *lutEdit3dButton()  const { return m_btnLutEdit3D; }
     // 2D View Settings
-    QComboBox *combo2dMode()       const { return m_combo2dMode; }
-    QComboBox *sliceLutCombo()     const { return m_comboSliceLut; }
-    QComboBox *momentLutCombo()    const { return m_comboMomentLut; }
-    QWidget   *sliceControlsCard() const { return m_sliceControlsCard; }
-    QWidget   *sliceLutCard()      const { return m_sliceLutCard; }
-    QWidget   *sliceContoursCard() const { return m_sliceContoursCard; }
-    QWidget   *momentInfoCard()    const { return m_momentInfoCard; }
-    QWidget   *momentLutCard()     const { return m_momentLutCard; }
-    QLabel    *momentInfoLabel()   const { return m_momentInfoLabel; }
+    QComboBox  *combo2dMode()          const { return m_combo2dMode; }
+    QComboBox  *sliceLutCombo()        const { return m_comboSliceLut; }
+    QComboBox  *momentLutCombo()       const { return m_comboMomentLut; }
+    QWidget    *sliceControlsCard()    const { return m_sliceControlsCard; }
+    QWidget    *sliceLutCard()         const { return m_sliceLutCard; }
+    QWidget    *sliceContoursCard()    const { return m_sliceContoursCard; }
+    QWidget    *momentInfoCard()       const { return m_momentInfoCard; }
+    QWidget    *momentLutCard()        const { return m_momentLutCard; }
+    QLabel     *momentInfoLabel()      const { return m_momentInfoLabel; }
+    QToolButton *lutEditSliceButton()  const { return m_btnLutEditSlice; }
+    QToolButton *lutEditMomentButton() const { return m_btnLutEditMoment; }
     // Info / Stats
     QLabel    *infoDsLoadState()   const { return m_infoDsLoadState; }
     QLabel    *infoWcsBadge()      const { return m_infoWcsBadge; }
@@ -196,8 +199,11 @@ private:
     QToolButton          *m_btnDataProbe{ nullptr };
     // ── 3D View Settings page buttons ─────────────────────────────────────────
     QToolButton          *m_btnCameraRoi{ nullptr };
+    QToolButton          *m_btnLutEdit3D{ nullptr };
     // ── 2D View Settings page buttons ─────────────────────────────────────────
     QToolButton          *m_btnWcsAxes{ nullptr };
+    QToolButton          *m_btnLutEditSlice{ nullptr };
+    QToolButton          *m_btnLutEditMoment{ nullptr };
     // ── Info / Stats labels ───────────────────────────────────────────────────
     QLabel               *m_infoDsName{ nullptr };
     QLabel               *m_infoDsDimensions{ nullptr };
