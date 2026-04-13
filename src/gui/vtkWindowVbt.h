@@ -110,6 +110,18 @@ private:
     QPointer<QPushButton> buttonAutoscale;
     QPointer<QPushButton> buttonResetView;
     QPointer<QLabel> summaryLabel;
+    // Info page dynamic labels (updated by updateSummary())
+    QPointer<QLabel> m_infoModeVal;
+    QPointer<QLabel> m_infoColorVal;
+    QPointer<QLabel> m_infoXVal;
+    QPointer<QLabel> m_infoYVal;
+    QPointer<QLabel> m_infoZVal;
+    QPointer<QLabel> m_infoScalarVal;
+    QPointer<QLabel> m_infoDataMinVal;
+    QPointer<QLabel> m_infoDataMaxVal;
+    QPointer<QLabel> m_infoRangeMinVal;
+    QPointer<QLabel> m_infoRangeMaxVal;
+    QPointer<QLabel> m_infoMeanVal;
     // Multi-filter UI
     QPointer<QListWidget> filterList;
     QPointer<QPushButton> btnFilterAdd;
@@ -141,6 +153,7 @@ private:
     double activeScalarMax{ 1.0 };
     double dataScalarMin{ 0.0 };
     double dataScalarMax{ 1.0 };
+    double dataScalarMean{ 0.0 };
 
     vtkNew<vtkGenericOpenGLRenderWindow> renderWindow;
     vtkNew<vtkRenderer> renderer;

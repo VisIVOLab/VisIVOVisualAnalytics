@@ -26,6 +26,7 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFileInfo>
 #include <QImage>
 #include <QPixmap>
 #include <QDialog>
@@ -525,14 +526,21 @@ void vtkWindowVbt::setupUi()
 
 void vtkWindowVbt::setupSidebarUi()
 {
-    // ── Shared style helpers ──────────────────────────────────────────────────
-    const QString cardStyle =
-            u"QFrame#card { background: rgba(255,255,255,0.04); border-radius: 6px;"
-            u"  border: 1px solid rgba(255,255,255,0.06); }"_s;
+    // ── Shared style helpers (same palette as catalogue viewer) ──────────────
     const QString hdrStyle =
-            u"color: #8AB8CC; font-size: 10px; font-weight: 600;"
-            u" padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20);"_s;
+            u"QLabel { color: #8AB8CC; font-size: 10px; font-weight: 600;"
+            u"         padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20); }"_s;
+    const QString cardStyle =
+            u"QFrame, QGroupBox { background-color: rgba(255,255,255,0.03);"
+            u"  border: 1px solid rgba(4,138,191,0.14); border-radius: 6px; }"_s;
+    const QString subHdrStyle =
+            u"QLabel { color: #8AB8CC; font-size: 9px; font-weight: 600; }"_s;
+    const QString keyStyle =
+            u"QLabel { color: #607090; font-size: 10px; }"_s;
+    const QString valStyle =
+            u"QLabel { color: #c0d0e0; font-size: 10px; font-family: monospace; }"_s;
 
+    // makeCard: card frame with a section title header inside (used for Display page).
     const auto makeCard = [&](const QString &title, QWidget *content) -> QFrame* {
         auto *card = new QFrame;
         card->setObjectName(u"card"_s);
@@ -541,10 +549,23 @@ void vtkWindowVbt::setupSidebarUi()
         vl->setSpacing(6);
         vl->setContentsMargins(10, 8, 10, 10);
         auto *lbl = new QLabel(title);
-        lbl->setStyleSheet(hdrStyle);
+        lbl->setStyleSheet(
+                u"QLabel { color: #8AB8CC; font-size: 10px; font-weight: 600;"
+                u"         padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20);"
+                u"         border-radius: 0; border-left: none; border-right: none;"
+                u"         border-top: none; background: transparent; }"_s);
         vl->addWidget(lbl);
         vl->addWidget(content);
         return card;
+    };
+
+    // makeValueLabel: right-aligned, selectable, monospace value label.
+    const auto makeValLabel = [&valStyle](QWidget *parent = nullptr) -> QLabel* {
+        auto *lbl = new QLabel(u"—"_s, parent);
+        lbl->setStyleSheet(valStyle);
+        lbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        lbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        return lbl;
     };
 
     // ── Page 0: Display ───────────────────────────────────────────────────────
@@ -687,88 +708,254 @@ void vtkWindowVbt::setupSidebarUi()
     pageDisplayLayout->addWidget(this->summaryLabel);
     pageDisplayLayout->addStretch(1);
 
-    // ── Page 1: Filters ───────────────────────────────────────────────────────
+    // ── Page 1: Filters (same structure as catalogue viewer) ─────────────────
     auto *pageFilters = new QWidget;
     auto *pageFiltersLayout = new QVBoxLayout(pageFilters);
     pageFiltersLayout->setContentsMargins(8, 8, 8, 8);
     pageFiltersLayout->setSpacing(8);
 
     {
-        auto *inner = new QWidget;
-        auto *vl = new QVBoxLayout(inner);
-        vl->setContentsMargins(0, 0, 0, 0);
-        vl->setSpacing(4);
+        auto *hdr = new QLabel(u"FILTERS"_s, pageFilters);
+        hdr->setStyleSheet(hdrStyle);
+        pageFiltersLayout->addWidget(hdr);
+    }
 
-        this->filterList = new QListWidget(inner);
-        this->filterList->setFixedHeight(120);
+    // Card 1: Active Filters
+    {
+        auto *card = new QFrame(pageFilters);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+
+        auto *listHdr = new QLabel(u"Active filters"_s, card);
+        listHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(listHdr);
+
+        this->filterList = new QListWidget(card);
         this->filterList->setSelectionMode(QAbstractItemView::SingleSelection);
         this->filterList->setToolTip(
-                u"Active filters combined with AND. Double-click to edit."_s);
-        vl->addWidget(this->filterList);
+                u"Active filters combined with AND. Double-click a row to edit it."_s);
+        cl->addWidget(this->filterList);
 
-        auto *btnRow = new QWidget(inner);
-        auto *bl = new QHBoxLayout(btnRow);
-        bl->setContentsMargins(0, 0, 0, 0);
-        bl->setSpacing(4);
-        this->btnFilterAdd = new QPushButton(u"Add…"_s, btnRow);
-        this->btnFilterRemove = new QPushButton(u"Remove"_s, btnRow);
-        this->btnFilterClearAll = new QPushButton(u"Clear All"_s, btnRow);
-        this->btnFilterApply = new QPushButton(u"Apply"_s, btnRow);
-        bl->addWidget(this->btnFilterAdd);
-        bl->addWidget(this->btnFilterRemove);
-        bl->addWidget(this->btnFilterClearAll);
-        bl->addStretch(1);
-        bl->addWidget(this->btnFilterApply);
-        vl->addWidget(btnRow);
-
-        this->filterStatusLabel = new QLabel(inner);
+        this->filterStatusLabel = new QLabel(card);
         this->filterStatusLabel->setWordWrap(true);
-        vl->addWidget(this->filterStatusLabel);
+        this->filterStatusLabel->setStyleSheet(u"QLabel { color: #8AB8CC; font-size: 9px; }"_s);
+        cl->addWidget(this->filterStatusLabel);
 
-        this->btnLoadMore = new QPushButton(u"Load more"_s, inner);
+        this->btnLoadMore = new QPushButton(u"Load more…"_s, card);
         this->btnLoadMore->setVisible(false);
         this->btnLoadMore->setToolTip(
                 u"Fetch the next page of results and append them to the current point cloud."_s);
-        vl->addWidget(this->btnLoadMore);
+        cl->addWidget(this->btnLoadMore);
 
-        pageFiltersLayout->addWidget(makeCard(u"ACTIVE FILTERS"_s, inner));
+        pageFiltersLayout->addWidget(card);
     }
     QObject::connect(this->btnLoadMore, &QPushButton::clicked, this,
                      &vtkWindowVbt::loadMoreEntries);
+
+    // Card 2: Actions
+    {
+        auto *card = new QFrame(pageFilters);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        this->btnFilterAdd      = new QPushButton(u"Add…"_s,      card);
+        this->btnFilterRemove   = new QPushButton(u"Remove"_s,    card);
+        this->btnFilterClearAll = new QPushButton(u"Clear All"_s, card);
+        this->btnFilterApply    = new QPushButton(u"Apply"_s,     card);
+        cl->addWidget(this->btnFilterAdd);
+        cl->addWidget(this->btnFilterRemove);
+        cl->addWidget(this->btnFilterClearAll);
+        cl->addWidget(this->btnFilterApply);
+
+        pageFiltersLayout->addWidget(card);
+    }
     pageFiltersLayout->addStretch(1);
 
-    // ── Page 2: Info ──────────────────────────────────────────────────────────
+    // ── Page 2: Info / Stats ──────────────────────────────────────────────────
     auto *pageInfo = new QWidget;
     auto *pageInfoLayout = new QVBoxLayout(pageInfo);
     pageInfoLayout->setContentsMargins(8, 8, 8, 8);
     pageInfoLayout->setSpacing(8);
 
     {
-        auto *inner = new QWidget;
-        auto *vl = new QVBoxLayout(inner);
-        vl->setContentsMargins(0, 0, 0, 0);
-        this->metadataLabel = new QLabel(inner);
-        this->metadataLabel->setWordWrap(true);
-        vl->addWidget(this->metadataLabel);
-        pageInfoLayout->addWidget(makeCard(u"DATASET INFO"_s, inner));
+        auto *hdr = new QLabel(u"INFO / STATS"_s, pageInfo);
+        hdr->setStyleSheet(hdrStyle);
+        pageInfoLayout->addWidget(hdr);
     }
+
+    // Card 1: Dataset Summary (static + 2 dynamic rows)
     {
-        auto *inner = new QWidget;
-        auto *vl = new QVBoxLayout(inner);
-        vl->setContentsMargins(0, 0, 0, 0);
-        this->fieldList = new QListWidget(inner);
-        for (const auto &field : this->openResult.fields)
-            this->fieldList->addItem(QStringLiteral("%1 [%2]").arg(field.name, field.type));
-        vl->addWidget(this->fieldList);
-        pageInfoLayout->addWidget(makeCard(u"FIELDS"_s, inner));
+        auto *card = new QFrame(pageInfo);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Dataset Summary"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        auto *inner = new QWidget(card);
+        auto *fl = new QFormLayout(inner);
+        fl->setContentsMargins(0, 4, 0, 0);
+        fl->setSpacing(3);
+        fl->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+
+        // Static rows (set once at construction)
+        const QString fileName = this->m_headerPath.isEmpty()
+                ? u"—"_s : QFileInfo(this->m_headerPath).fileName();
+        auto *fileVal = new QLabel(fileName, inner);
+        fileVal->setStyleSheet(valStyle);
+        fileVal->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        fileVal->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        fileVal->setWordWrap(true);
+
+        auto *rowsVal = new QLabel(
+                QStringLiteral("%1").arg(this->openResult.numRows), inner);
+        rowsVal->setStyleSheet(valStyle);
+        rowsVal->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+        auto *fieldsVal = new QLabel(
+                QStringLiteral("%1").arg(this->openResult.fields.size()), inner);
+        fieldsVal->setStyleSheet(valStyle);
+        fieldsVal->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+        auto *kindVal = new QLabel(this->openResult.kind, inner);
+        kindVal->setStyleSheet(valStyle);
+        kindVal->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+        // Dynamic rows (updated by updateSummary)
+        this->m_infoModeVal  = makeValLabel(inner);
+        this->m_infoColorVal = makeValLabel(inner);
+
+        auto *k1 = new QLabel(u"File"_s, inner); k1->setStyleSheet(keyStyle);
+        auto *k2 = new QLabel(u"Rows"_s, inner); k2->setStyleSheet(keyStyle);
+        auto *k3 = new QLabel(u"Fields"_s, inner); k3->setStyleSheet(keyStyle);
+        auto *k4 = new QLabel(u"Kind"_s, inner); k4->setStyleSheet(keyStyle);
+        auto *k5 = new QLabel(u"Mode"_s, inner); k5->setStyleSheet(keyStyle);
+        auto *k6 = new QLabel(u"Color field"_s, inner); k6->setStyleSheet(keyStyle);
+
+        fl->addRow(k1, fileVal);
+        fl->addRow(k2, rowsVal);
+        fl->addRow(k3, fieldsVal);
+        fl->addRow(k4, kindVal);
+        fl->addRow(k5, this->m_infoModeVal);
+        fl->addRow(k6, this->m_infoColorVal);
+        cl->addWidget(inner);
+        pageInfoLayout->addWidget(card);
     }
+
+    // Card 2: Mapping Summary (all dynamic)
+    {
+        auto *card = new QFrame(pageInfo);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Mapping"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        auto *inner = new QWidget(card);
+        auto *fl = new QFormLayout(inner);
+        fl->setContentsMargins(0, 4, 0, 0);
+        fl->setSpacing(3);
+        fl->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+
+        this->m_infoXVal      = makeValLabel(inner);
+        this->m_infoYVal      = makeValLabel(inner);
+        this->m_infoZVal      = makeValLabel(inner);
+        this->m_infoScalarVal = makeValLabel(inner);
+
+        auto *kx = new QLabel(u"X"_s, inner); kx->setStyleSheet(keyStyle);
+        auto *ky = new QLabel(u"Y"_s, inner); ky->setStyleSheet(keyStyle);
+        auto *kz = new QLabel(u"Z"_s, inner); kz->setStyleSheet(keyStyle);
+        auto *ks = new QLabel(u"Scalar"_s, inner); ks->setStyleSheet(keyStyle);
+
+        fl->addRow(kx, this->m_infoXVal);
+        fl->addRow(ky, this->m_infoYVal);
+        fl->addRow(kz, this->m_infoZVal);
+        fl->addRow(ks, this->m_infoScalarVal);
+        cl->addWidget(inner);
+        pageInfoLayout->addWidget(card);
+    }
+
+    // Card 3: Data Range / Statistics (all dynamic)
+    {
+        auto *card = new QFrame(pageInfo);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Data Range / Statistics"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        auto *inner = new QWidget(card);
+        auto *fl = new QFormLayout(inner);
+        fl->setContentsMargins(0, 4, 0, 0);
+        fl->setSpacing(3);
+        fl->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+
+        this->m_infoDataMinVal   = makeValLabel(inner);
+        this->m_infoDataMaxVal   = makeValLabel(inner);
+        this->m_infoMeanVal      = makeValLabel(inner);
+        this->m_infoRangeMinVal  = makeValLabel(inner);
+        this->m_infoRangeMaxVal  = makeValLabel(inner);
+
+        auto *r1 = new QLabel(u"Data min"_s,    inner); r1->setStyleSheet(keyStyle);
+        auto *r2 = new QLabel(u"Data max"_s,    inner); r2->setStyleSheet(keyStyle);
+        auto *r3 = new QLabel(u"Mean"_s,        inner); r3->setStyleSheet(keyStyle);
+        auto *r4 = new QLabel(u"Display min"_s, inner); r4->setStyleSheet(keyStyle);
+        auto *r5 = new QLabel(u"Display max"_s, inner); r5->setStyleSheet(keyStyle);
+
+        fl->addRow(r1, this->m_infoDataMinVal);
+        fl->addRow(r2, this->m_infoDataMaxVal);
+        fl->addRow(r3, this->m_infoMeanVal);
+        fl->addRow(r4, this->m_infoRangeMinVal);
+        fl->addRow(r5, this->m_infoRangeMaxVal);
+        cl->addWidget(inner);
+        pageInfoLayout->addWidget(card);
+    }
+
+    // Card 4: Available Fields
+    {
+        auto *card = new QFrame(pageInfo);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Available Fields"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        this->fieldList = new QListWidget(card);
+        this->fieldList->setStyleSheet(
+                u"QListWidget { background: transparent; border: none; font-size: 10px; }"_s);
+        for (const auto &field : this->openResult.fields)
+            this->fieldList->addItem(QStringLiteral("%1  [%2]").arg(field.name, field.type));
+        cl->addWidget(this->fieldList);
+        pageInfoLayout->addWidget(card);
+    }
+
+    // metadataLabel kept for internal use (updateSummary compatibility), hidden
+    this->metadataLabel = new QLabel(pageInfo);
+    this->metadataLabel->hide();
+    pageInfoLayout->addWidget(this->metadataLabel);
     pageInfoLayout->addStretch(1);
 
     // ── Wire pages into SidebarPanel ──────────────────────────────────────────
     this->m_sidebar = new SidebarPanel(320, this);
-    this->m_sidebar->addPage(u":/icons/rail_display.svg"_s,  u"Display"_s, pageDisplay);
-    this->m_sidebar->addPage(u":/icons/rail_filter.svg"_s,   u"Filters"_s, pageFilters);
-    this->m_sidebar->addPage(u":/icons/rail_metadata.svg"_s, u"Info"_s,    pageInfo);
+    this->m_sidebar->addPage(u":/icons/rail_display.svg"_s, u"Display"_s,    pageDisplay);
+    this->m_sidebar->addPage(u":/icons/rail_filter.svg"_s,  u"Filters"_s,   pageFilters);
+    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,   u"Info / Stats"_s, pageInfo);
     this->m_sidebar->finalize(0);
 }
 
@@ -1254,18 +1441,21 @@ void vtkWindowVbt::updateColorMapping()
 
     double minValue = std::numeric_limits<double>::max();
     double maxValue = std::numeric_limits<double>::lowest();
+    double sumValue = 0.0;
     const auto &column = it->second;
     for (vtkIdType row = 0; row < static_cast<vtkIdType>(column.size()); ++row) {
         const double value = column[static_cast<std::size_t>(row)];
         this->pointScalars->SetValue(row, value);
         minValue = std::min(minValue, value);
         maxValue = std::max(maxValue, value);
+        sumValue += value;
     }
     if (!(minValue < maxValue)) {
         maxValue = minValue + 1.0;
     }
     this->dataScalarMin = minValue;
     this->dataScalarMax = maxValue;
+    this->dataScalarMean = column.empty() ? 0.0 : sumValue / static_cast<double>(column.size());
     // Auto-reset range only when the field changes or the current range is invalid.
     // This allows the user to set a custom (narrower) range via the spinboxes without
     // it being immediately overwritten by the data bounds (MOD 4 fix).
@@ -1357,29 +1547,50 @@ void vtkWindowVbt::resetView()
 
 void vtkWindowVbt::updateSummary()
 {
+    // ── Display page: compact status line ────────────────────────────────────
     if (this->summaryLabel) {
+        const QString colorField = this->activeColorFieldName();
         this->summaryLabel->setText(
-                QStringLiteral("Rows: %1\nFields: %2\nScalar type: %3\nMode: %4\nActive color: %5\nColormap: %6\nRange: [%7, %8]\nPoint size: %9\nRay intensity: %10")
-                        .arg(this->openResult.numRows)
-                        .arg(this->openResult.fields.size())
-                        .arg(this->openResult.scalarType)
-                        .arg(this->comboRenderMode ? this->comboRenderMode->currentText() : QStringLiteral("Points"))
-                        .arg(this->activeColorFieldName())
-                        .arg(this->activeColormapName())
-                        .arg(this->activeScalarMin, 0, 'g', 6)
-                        .arg(this->activeScalarMax, 0, 'g', 6)
-                        .arg(this->sliderPointSize ? this->sliderPointSize->value() : 0)
-                        .arg(this->sliderRayIntensity ? this->sliderRayIntensity->value() : 0));
+                QStringLiteral("%1 pts  ·  %2  ·  %3")
+                        .arg(this->subsetResult.numRows)
+                        .arg(this->comboRenderMode ? this->comboRenderMode->currentText()
+                                                   : QStringLiteral("Points"))
+                        .arg(colorField == u"solid"_s ? u"solid color"_s : colorField));
     }
-    if (this->metadataLabel) {
-        this->metadataLabel->setText(
-                QStringLiteral("Kind: %1\nFields: %2\nRows: %3\nScalar type: %4\nCoordinates: X=%5 Y=%6 Z=%7")
-                        .arg(this->openResult.kind)
-                        .arg(this->openResult.fields.size())
-                        .arg(this->openResult.numRows)
-                        .arg(this->openResult.scalarType)
-                        .arg(this->xFieldName.isEmpty() ? u"(none)"_s : this->xFieldName)
-                        .arg(this->yFieldName.isEmpty() ? u"(none)"_s : this->yFieldName)
-                        .arg(this->zFieldName.isEmpty() ? u"(none)"_s : this->zFieldName));
-    }
+
+    // ── Info page: Card 1 — dynamic rows ─────────────────────────────────────
+    const QString modeTxt = this->comboRenderMode
+            ? this->comboRenderMode->currentText() : QStringLiteral("Points");
+    const QString colorTxt = this->activeColorFieldName();
+
+    if (this->m_infoModeVal)  this->m_infoModeVal->setText(modeTxt);
+    if (this->m_infoColorVal) this->m_infoColorVal->setText(
+            colorTxt == u"solid"_s ? u"Solid color"_s : colorTxt);
+
+    // ── Info page: Card 2 — Mapping ───────────────────────────────────────────
+    const auto fieldOrNone = [](const QString &s) {
+        return s.isEmpty() ? QStringLiteral("—") : s;
+    };
+    if (this->m_infoXVal)      this->m_infoXVal->setText(fieldOrNone(this->xFieldName));
+    if (this->m_infoYVal)      this->m_infoYVal->setText(fieldOrNone(this->yFieldName));
+    if (this->m_infoZVal)      this->m_infoZVal->setText(fieldOrNone(this->zFieldName));
+    if (this->m_infoScalarVal) this->m_infoScalarVal->setText(
+            colorTxt == u"solid"_s ? u"—"_s : colorTxt);
+
+    // ── Info page: Card 3 — Data Range / Stats ────────────────────────────────
+    const bool hasData = (this->dataScalarMin < this->dataScalarMax
+                          || this->subsetResult.numRows > 0);
+    if (this->m_infoDataMinVal)
+        this->m_infoDataMinVal->setText(
+                hasData ? QString::number(this->dataScalarMin, 'g', 7) : u"—"_s);
+    if (this->m_infoDataMaxVal)
+        this->m_infoDataMaxVal->setText(
+                hasData ? QString::number(this->dataScalarMax, 'g', 7) : u"—"_s);
+    if (this->m_infoMeanVal)
+        this->m_infoMeanVal->setText(
+                hasData ? QString::number(this->dataScalarMean, 'g', 7) : u"—"_s);
+    if (this->m_infoRangeMinVal)
+        this->m_infoRangeMinVal->setText(QString::number(this->activeScalarMin, 'g', 7));
+    if (this->m_infoRangeMaxVal)
+        this->m_infoRangeMaxVal->setText(QString::number(this->activeScalarMax, 'g', 7));
 }
