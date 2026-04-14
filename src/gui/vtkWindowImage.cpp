@@ -12,6 +12,7 @@
 #include "LUTCustomizerDialog.h"
 #include "LayerListModel.h"
 #include "ProfileWidget.h"
+#include "RemoteFileBrowserDialog.h"
 #include "SidebarPanel.h"
 #include "ToolResultDialog.h"
 #include "vtkInteractorStyleProfile.h"
@@ -1518,21 +1519,18 @@ void vtkWindowImage::addLocalFile()
         return;
     }
 
-    const QString filepath = QFileDialog::getOpenFileName(this, u"Import FITS file"_s, QString(),
-                                                          u"FITS files (*.fits *.fit)"_s);
-
-    if (filepath.isEmpty()) {
+    RemoteFileBrowserDialog dialog(this->remoteBackendUrl, this);
+    dialog.setExtensionFilter({ u".fits"_s, u".fit"_s }, u"FITS files only"_s);
+    if (dialog.exec() != QDialog::Accepted) {
         return;
     }
 
-    const ImageLayerImportResult result =
-            this->importService->inspect(ImageLayerImportRequest { this->filepath, filepath });
-    if (!result.accepted) {
-        QMessageBox::warning(this, u"Import FITS file"_s, result.errorMessage);
+    const QString path = dialog.selectedFilePath();
+    if (path.isEmpty()) {
         return;
     }
 
-    this->addLayerImage(filepath.toStdString());
+    this->addLayerImage(path.toStdString());
 }
 
 void vtkWindowImage::setupRenderer()
