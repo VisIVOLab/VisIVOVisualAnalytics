@@ -3,7 +3,6 @@
 
 #include "app/RecentDatasetsManager.h"
 
-#include <QDir>
 #include <QMainWindow>
 #include <QPointer>
 
@@ -66,8 +65,7 @@ private:
 
     void openDiagnosticsWindow();
 
-    /// Returns (creating if needed) the temp directory for VLKB FITS downloads.
-    QDir vlkbTempDir() const;
+
 };
 
 

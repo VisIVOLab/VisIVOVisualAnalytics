@@ -388,6 +388,14 @@ struct BackendHiPSCatalogueOverlayResult
     bool truncated{ false };
 };
 
+struct BackendVlkbFetchResult
+{
+    bool valid{ false };
+    QString error;
+    /// Absolute path on the *backend* filesystem where the FITS file was saved.
+    QString path;
+};
+
 class QJsonDocument;
 class QJsonObject;
 class QUrl;
@@ -496,6 +504,13 @@ public:
             const QString &cataloguePath, double raDeg, double decDeg, double fovDeg,
             const QString &raField = {}, const QString &decField = {},
             int maxSources = 5000) const;
+
+    /** POST /v1/vlkb/fetch_cutout – download a VLKB SODA cutout server-side.
+     *  @param sodaUrl     Full SODA sync URL (ID + POS + POSSYS already encoded).
+     *  @param vlkbBearer  Optional VLKB bearer token forwarded in Authorization header.
+     *  Returns the backend-local path of the saved FITS file on success. */
+    BackendVlkbFetchResult vlkbFetchCutout(const QString &sodaUrl,
+                                            const QString &vlkbBearer = {}) const;
 
     BackendImageResult requestImagePreview(const QString &datasetId, int maxLongestSide) const;
     BackendImageResult requestImage(const QString &datasetId) const;

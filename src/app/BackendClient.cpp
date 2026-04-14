@@ -991,6 +991,9 @@ std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) cons
     if (path.endsWith(QStringLiteral("/cube/slice")) || path.endsWith(QStringLiteral("/image/preview"))) {
         return std::chrono::milliseconds(30000);
     }
+    if (path.endsWith(QStringLiteral("/vlkb/fetch_cutout"))) {
+        return std::chrono::milliseconds(300000); // FITS downloads can be large
+    }
     return std::chrono::milliseconds(120000);
 }
 
@@ -1374,5 +1377,28 @@ BackendHiPSCatalogueOverlayResult BackendClient::requestHiPSCatalogueOverlay(
         src.decDeg = s.value(QStringLiteral("dec")).toDouble();
         result.sources.append(src);
     }
+    return result;
+}
+
+// ── VLKB ──────────────────────────────────────────────────────────────────────
+
+BackendVlkbFetchResult BackendClient::vlkbFetchCutout(const QString &sodaUrl,
+                                                        const QString &vlkbBearer) const
+{
+    BackendVlkbFetchResult result;
+    const QUrl url(m_baseUrl + QStringLiteral("/v1/vlkb/fetch_cutout"));
+    QJsonObject bodyObj{{ QStringLiteral("soda_url"), sodaUrl }};
+    if (!vlkbBearer.isEmpty())
+        bodyObj[QStringLiteral("vlkb_bearer")] = vlkbBearer;
+    QString error;
+    const QByteArray payload = performPost(url, QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    result.valid = obj.value(QStringLiteral("valid")).toBool();
+    result.error = obj.value(QStringLiteral("error")).toString();
+    result.path  = obj.value(QStringLiteral("path")).toString();
     return result;
 }

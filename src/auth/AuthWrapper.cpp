@@ -23,6 +23,12 @@ void AuthWrapper::putAuthorizationHeader(AuthService service, QNetworkRequest &r
     this->authObject(service)->putAuthorizationHeader(req);
 }
 
+QString AuthWrapper::bearerToken(AuthService service) const
+{
+    auto *obj = this->authObject(service);
+    return obj ? obj->getAccessToken() : QString();
+}
+
 void AuthWrapper::grant(AuthService service)
 {
     this->authObject(service)->grant();

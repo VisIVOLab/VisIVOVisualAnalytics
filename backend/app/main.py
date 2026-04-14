@@ -2494,3 +2494,46 @@ async def hips_catalogue_overlay(
         total_in_view=d["total_in_view"],
         truncated=d["truncated"],
     )
+
+
+# ── VLKB cutout proxy ─────────────────────────────────────────────────────────
+
+class VlkbFetchCutoutRequest(BaseModel):
+    soda_url: str
+    vlkb_bearer: str = ""
+
+class VlkbFetchCutoutResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    path: str = ""
+
+@app.post("/v1/vlkb/fetch_cutout",
+          response_model=VlkbFetchCutoutResponse, tags=["vlkb"])
+async def vlkb_fetch_cutout(
+    request: VlkbFetchCutoutRequest,
+    _: None = _auth,
+) -> VlkbFetchCutoutResponse:
+    """Download a VLKB SODA cutout to a backend-local temp file and return the
+    absolute path so that open_dataset can read it directly."""
+    import tempfile as _tempfile
+    import urllib.request as _ur
+    import urllib.error as _ue
+
+    tmp_dir = Path(_tempfile.gettempdir()) / "visivo_vlkb"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    dest = tmp_dir / f"{uuid.uuid4().hex}.fits"
+
+    def _download() -> str:
+        req = _ur.Request(request.soda_url)
+        if request.vlkb_bearer:
+            req.add_header("Authorization", f"Bearer {request.vlkb_bearer}")
+        with _ur.urlopen(req, timeout=300) as resp:
+            dest.write_bytes(resp.read())
+        return str(dest)
+
+    try:
+        path = await asyncio.to_thread(_download)
+        return VlkbFetchCutoutResponse(valid=True, path=path)
+    except Exception as exc:
+        logger.error("[vlkb_fetch_cutout] %s", exc)
+        return VlkbFetchCutoutResponse(valid=False, error=str(exc))

@@ -21,6 +21,8 @@ public:
 
     bool hasTokens() const;
     void putAuthorizationHeader(QNetworkRequest &req);
+    /// Returns the raw bearer token, or an empty string if not authenticated.
+    QString getAccessToken() const { return this->accessToken; }
 
 public slots:
     void grant();

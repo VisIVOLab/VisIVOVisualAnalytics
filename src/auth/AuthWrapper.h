@@ -18,6 +18,8 @@ public:
 
     bool hasTokens(AuthService service) const;
     void putAuthorizationHeader(AuthService service, QNetworkRequest &req);
+    /// Returns the raw bearer token for @p service, or empty if not authenticated.
+    QString bearerToken(AuthService service) const;
 
 public slots:
     void grant(AuthService service);

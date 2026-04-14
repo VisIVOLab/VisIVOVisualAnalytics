@@ -730,34 +730,54 @@ void MainWindow::queryVlkb()
                          ui->btnQuery->setEnabled(true);
                          svc->deleteLater();
 
-                         auto *tree = new VLKBInventoryTree(votable, posStr, this);
+                         // Use nullptr parent so the tree appears as an independent window.
+                         auto *tree = new VLKBInventoryTree(votable, posStr, nullptr);
                          tree->setAttribute(Qt::WA_DeleteOnClose);
                          tree->show();
                          tree->raise();
 
-                         // When user double-clicks a dataset, trigger cutout download.
+                         // When user double-clicks a dataset, ask the backend to download
+                         // the FITS so it lands on the backend filesystem, not the client.
                          QObject::connect(tree, &VLKBInventoryTree::cutoutRequested, this,
-                                          [this, svc2 = new VlkbQueryService(
-                                                   this->settings->getVLKBUrl(),
-                                                   this->auth, this)](
-                                                  const QString &ivoID,
-                                                  const QString &pos) mutable {
-                                              svc2->downloadCutout(ivoID, pos, this->vlkbTempDir());
+                                          [this](const QString &ivoID, const QString &pos) {
+                                              const QString sodaUrl =
+                                                      this->settings->getVLKBUrl()
+                                                      + u"/soda/sync?ID="_s
+                                                      + QUrl::toPercentEncoding(ivoID)
+                                                      + u"&POS="_s
+                                                      + QUrl::toPercentEncoding(pos)
+                                                      + u"&POSSYS=GALACTIC"_s;
+                                              const QString bearer =
+                                                      this->auth->bearerToken(AuthService::VLKB);
 
+                                              auto *watcher =
+                                                      new QFutureWatcher<BackendVlkbFetchResult>(this);
                                               QObject::connect(
-                                                      svc2, &VlkbQueryService::cutoutFinished, this,
-                                                      [this, svc2](const QString &localPath) {
-                                                          svc2->deleteLater();
-                                                          this->doOpenDataPath(localPath);
+                                                      watcher,
+                                                      &QFutureWatcher<BackendVlkbFetchResult>::finished,
+                                                      this,
+                                                      [this, watcher]() {
+                                                          watcher->deleteLater();
+                                                          const auto res = watcher->result();
+                                                          if (!res.valid) {
+                                                              QMessageBox::critical(
+                                                                      this,
+                                                                      u"VLKB cutout failed"_s,
+                                                                      res.error);
+                                                              return;
+                                                          }
+                                                          this->doOpenDataPath(res.path);
                                                       });
-                                              QObject::connect(
-                                                      svc2, &VlkbQueryService::cutoutFailed, this,
-                                                      [this, svc2](const QString &err) {
-                                                          svc2->deleteLater();
-                                                          QMessageBox::critical(
-                                                                  this, u"VLKB cutout failed"_s,
-                                                                  err);
-                                                      });
+                                              const QString backendUrl =
+                                                      this->settings->getBackendUrl();
+                                              const QString backendToken =
+                                                      this->settings->getBackendToken();
+                                              watcher->setFuture(QtConcurrent::run(
+                                                      [backendUrl, backendToken,
+                                                       sodaUrl, bearer]() {
+                                                          BackendClient bc(backendUrl, backendToken);
+                                                          return bc.vlkbFetchCutout(sodaUrl, bearer);
+                                                      }));
                                           });
                      });
 
@@ -775,10 +795,3 @@ void MainWindow::queryVlkb()
     }
 }
 
-QDir MainWindow::vlkbTempDir() const
-{
-    QDir d(QDir::temp().absoluteFilePath(u"visivo_vlkb"_s));
-    if (!d.exists())
-        d.mkpath(u"."_s);
-    return d;
-}
