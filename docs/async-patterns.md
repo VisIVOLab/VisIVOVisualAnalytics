@@ -59,7 +59,17 @@ If preview fails → synchronous full open fallback.
 
 | Watcher | Type | Triggered by |
 |---------|------|--------------|
-| `layerWatcher` | `QFutureWatcher<ImageLayerLoadTask::Result>` | "Add layer" action |
+| `layerLoadWatcher` | `QFutureWatcher<ImageLayerLoadResult>` | "Add New Layer" / "Add New FITS File" (remote browse) / VLKB `addLayerFromBackendPath` |
+| `remoteImageWatcher` | `QFutureWatcher<ImageLayerLoadResult>` | initial remote image open (preview) |
+| `remoteFullImageWatcher` | `QFutureWatcher<ImageLayerLoadResult>` | full-resolution upgrade after preview |
+
+All three converge on `applyRemoteMasterLayer()` (for remote image watchers) or the `layerLoadWatcher` finished slot (for layer additions). All layer sources — local layer file dialog, remote `RemoteFileBrowserDialog`, and VLKB inventory — go through `addLayerImage()` → `loadImageLayer()` → `AstroUtils`/libwcs for correct WCS alignment.
+
+Open sequence for remote images:
+```
+open() → remoteImageWatcher → applyRemoteMasterLayer()  [preview]
+                             ↘ remoteFullImageWatcher → applyRemoteMasterLayer()  [full-res]
+```
 
 ### `vtkWindowCatalogue3D`
 
@@ -173,9 +183,11 @@ Each viewer has explicit "apply" methods that are called only from the UI thread
 | Viewer | Apply method |
 |--------|-------------|
 | `vtkWindowCube` | `applyPreview()`, `applyFullRes()`, `applyMomentMapResult()` |
-| `vtkWindowImage` | `applyLoadedLayer()` |
+| `vtkWindowImage` | `applyRemoteMasterLayer()` (remote image), `layerLoadWatcher` finished lambda (layers) |
 | `vtkWindowCatalogue3D` | inline in watcher lambda: calls `buildScene()`, `buildLabels()`, `refreshCatalogueTable()` |
 | `vtkWindowVbt` | inline in watcher lambda: calls `buildPointCloud()`, `updateColorMapping()` |
+
+The loading placeholder (`m_loadingActor`) is hidden inside the apply seam — always on the UI thread, always before `Render()` — so no synchronisation is required.
 
 ---
 

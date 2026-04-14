@@ -68,7 +68,7 @@ This note documents the current service boundaries, their implementation status,
 ## `ImageLayerImportService`
 
 ### Status
-**Local implementation, stable.**
+**Local implementation, stable. Remote layer path now also uses `loadImageLayer` directly.**
 
 ### Contract
 - `ImageLayerImportRequest { baseDatasetPath, layerFilepath }`
@@ -79,6 +79,11 @@ This note documents the current service boundaries, their implementation status,
 - `visivo_shared_core`
 - Validates WCS overlap and pixel-type compatibility between base dataset and candidate layer
 - Uses `AstroUtils` on local FITS files
+
+### Remote layer path (current)
+"Add New FITS File" in `vtkWindowImage` no longer goes through `ImageLayerImportService`. It opens a `RemoteFileBrowserDialog`, gets a backend-side path, and calls `addLayerImage(path)` directly. The layer is then loaded by `loadImageLayer()` / `AstroUtils` / libwcs — the same pipeline used by the existing "Add New Layer" action and VLKB layers.
+
+`ImageLayerImportService` is therefore used only for the legacy local-file path; all new remote/VLKB layer loading bypasses it.
 
 ### Future remote mapping
 - Replace path-based request with dataset/layer reference identifiers
@@ -209,8 +214,10 @@ All backend-calling code publishes structured entries before and after operation
 
 | Service | Local impl | Remote impl | Gap |
 |---------|-----------|-------------|-----|
+| `BackendLauncher` | ✓ (process mgmt) | — | none |
+| `StartupDialog` | ✓ (startup UX) | — | none |
 | `DatasetOpenService` | ✓ | — | local path; no dataset-ref model |
-| `ImageLayerImportService` | ✓ | — | local paths; no dataset-ref model |
+| `ImageLayerImportService` | ✓ (legacy local) | ✓ (remote browse → loadImageLayer) | service not used for remote path |
 | `MomentProcessingService` | — | ✓ (backend-auth) | no local staging pipeline |
 | `BackendClient` (all endpoints) | — | ✓ | none |
 | Tabular query + pagination | — | ✓ | none |
@@ -219,3 +226,4 @@ All backend-calling code publishes structured entries before and after operation
 | Auth (bearer token) | ✓ | — | none |
 | Auth (OIDC VLKB) | ✓ | — | no keychain |
 | Diagnostics (in-process) | ✓ | — | no external sink |
+| Loading placeholder | ✓ (all 4 viewers) | — | none |

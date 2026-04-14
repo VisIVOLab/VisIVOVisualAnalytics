@@ -6,8 +6,9 @@ VisIVO Visual Analytics is a scientific desktop application for interactive visu
 
 - Interactive 3D visualization of FITS cubes — isosurface and direct volume rendering
 - Volume rendering blend modes: Composite ray-casting, MIP (Maximum Intensity Projection), MinIP
-- Interactive 2D visualization of FITS images
-- Remote file browsing with FITS-aware metadata
+- Interactive 2D visualization of FITS images with multi-layer support
+- WCS-accurate multi-survey layer alignment (VLKB layers and remote FITS layers)
+- Remote file browsing for layers — browse and add backend-side FITS files as layers
 - Remote full-resolution slice computation with client-side cache and neighbor prefetch
 - Remote isosurface extraction with local VTK mesh rendering
 - Preview-to-full-resolution workflow for responsive remote cube opening
@@ -16,9 +17,11 @@ VisIVO Visual Analytics is a scientific desktop application for interactive visu
 - Configurable color maps per rendering mode (volume LUT independent of slice/moment LUTs)
 - Dockable, floatable workspace panels (3D cube view and 2D slice/detail view)
 - WCS axes overlay toggled from the View menu
+- Guided startup flow — auto-starts bundled backend, health-checks, and walks through token setup before the main window opens
 - Token-based authentication for secure remote access
 - Per-session dataset isolation for concurrent multi-user use
 - HPC deployment via Apptainer/Singularity container and SLURM job scripts
+- Loading placeholder in all viewers — a centred status message is shown while data is being fetched
 - Fully asynchronous backend communication — no UI freeze during computation
 
 ## Architecture Overview
@@ -82,7 +85,16 @@ Each time a client opens a dataset the backend returns a **session ID** (a UUID)
 1. Browse the remote filesystem and select a FITS image.
 2. The backend opens the dataset and returns image metadata.
 3. A preview is fetched first; full resolution loads in the background.
-4. The standard image viewer displays the result.
+4. The standard image viewer displays the result. A centred "Loading image…" placeholder is visible until the first image data arrives.
+
+### Add a Layer to the 2D Image Viewer
+
+1. With a FITS image already open, select **File → Add New FITS File**.
+2. A remote file browser opens (same backend-side browser used by Data Hub).
+3. Select any `.fits` or `.fit` file accessible on the backend.
+4. The layer is loaded using the same WCS-aware pipeline (`loadImageLayer` / `AstroUtils` / libwcs) as the "Add New Layer" action, ensuring correct alignment with the base image.
+
+VLKB layers added from the inventory tree also use this same pipeline, so all layer sources are aligned consistently.
 
 ## Remote File Browser
 
@@ -93,6 +105,37 @@ The remote file browser behaves like a practical filesystem browser.
 - FITS-focused filtering and sorting
 - Remembers the last visited directory during the current app session
 - Displays FITS header cards in a dedicated preview panel
+
+## Startup Flow
+
+When the application launches, a startup dialog guides the user through three sequential steps before the main window appears:
+
+1. **Backend** — the client health-checks the configured backend URL. If it is not reachable and auto-start is enabled (default), `BackendLauncher` starts the bundled `python -m uvicorn` process automatically. The process is kept alive for the entire application lifetime and terminated cleanly on exit.
+2. **Auth** — the client looks for an access token in `~/.visivo_token`. If none is found an inline form lets the user paste or type the token, with an explicit **Save & Continue** button that writes it to `~/.visivo_token`.
+3. **Ready** — after both backend and token are confirmed, the dialog auto-accepts and the main window opens.
+
+Error states show **Retry**, **Show Logs**, and **Quit** buttons. The log panel captures every line of stdout/stderr from the backend process and all launcher decision messages, making startup failures easy to diagnose.
+
+### Suppressing auto-start
+
+Pass `--no-backend-autostart` on the command line or set `VISIVO_NO_BACKEND_AUTOSTART` in the environment to skip the launch step and connect to an already-running backend instance.
+
+### Python interpreter resolution
+
+When `BackendLauncher` needs to start the backend it selects the Python interpreter using the following priority chain:
+
+| Priority | Source | Description |
+|---|---|---|
+| 1 | `VISIVO_BACKEND_PYTHON` env var | Explicit override — highest priority |
+| 2 | `$VIRTUAL_ENV/bin/python` | Active virtual environment in the calling shell |
+| 3 | `<backendDir>/../.venv/bin/python` | Project `.venv` in the dev tree |
+| 4 | `<appDir>/python3` | Bundled Python alongside the executable |
+| 5 | Settings / PATH-detected Python | Set in the Settings dialog at startup |
+| 6 | `python3` on PATH | Last resort; may not have uvicorn |
+
+The typical developer workflow `source .venv/bin/activate && open VisIVO.app` is covered by priority 2 (active venv). A production `.app` bundle with a bundled runtime is covered by priority 4.
+
+---
 
 ## Setup
 
@@ -215,12 +258,16 @@ Tests use synthetic FITS fixtures (no real data required) and an in-process ASGI
 
 **next-server branch**
 
+- **Guided startup flow** — a `StartupDialog` shown before `MainWindow` drives backend health-check, optional auto-start, and token setup. `BackendLauncher` manages the backend process lifetime and captures all stdout/stderr for the log panel.
+- **Smart Python resolution** — `BackendLauncher` walks a six-level priority chain (`VISIVO_BACKEND_PYTHON` → active venv → project `.venv` → bundled Python → Settings Python → PATH fallback) to find the right interpreter without manual configuration.
+- **Remote file browsing for image layers** — "File → Add New FITS File" in the image viewer now opens the backend-side `RemoteFileBrowserDialog` instead of a local file picker. The selected path is loaded through the same WCS-aware pipeline used by all other layer sources.
+- **Unified VLKB layer alignment** — VLKB survey layers added from the inventory tree route through `addLayerImage()` → `loadImageLayer()` → `AstroUtils` / libwcs, the same pipeline as the standard "Add New Layer" path. All layer sources are now aligned consistently regardless of how they were added.
+- **Loading placeholder in all viewers** — `vtkWindowImage`, `vtkWindowVbt`, and `vtkWindowVbtVolume` now display a centred "Loading…" message (font 16 pt, colour `#B8D6E8`) while data is being fetched, matching the existing pattern in `vtkWindowCube`.
 - **Dockable workspace** — the 3D cube view and the 2D slice/detail view are now independent `QDockWidget` panels. Each panel can be floated, resized, or closed independently. A "Reset Layout" action in the View menu restores the default side-by-side arrangement.
 - **3D View Settings tab** — the former "Threshold" sidebar tab is redesigned. Rendering mode (Isosurface / Volume), volume blend mode, threshold slider, and color map selection are organised into collapsible cards. Color Map and Surface Color cards are shown only for the active rendering mode.
 - **Volume rendering blend modes** — Composite ray-casting, MIP, and MinIP are selectable both from the sidebar and from the View → Volume Rendering submenu. The sidebar and menu stay in sync bidirectionally.
 - **Color map scope** — the LUT combo in the 3D View Settings tab now updates only the volume color transfer function. Slice and moment LUTs are managed independently and are not affected.
 - **Non-blocking async controllers** — `NoiseController`, `MomentMapController`, and `PvController` dispatch computation via `QtConcurrent::run` with per-request heap-allocated `QFutureWatcher`. The main thread never blocks waiting for results.
-- **Automatic backend health check at startup** — the client probes the configured backend URL on launch and shows a status indicator in the main window.
 - **WCS axes overlay** — toggled from View → Show WCS Axes.
 - **Backend LRU cache** — the overlay CSV catalogue cache is bounded (`functools.lru_cache(maxsize=32)`) instead of growing without limit.
 - **Plot background theme** — Settings → UI → Plot background lets the user choose between a dark (default) and light plot background. The preference is applied to the PV Diagram window and all spectrum/profile plot windows when they are opened. The setting is persisted in `Settings.ini` under `Plots/theme`.

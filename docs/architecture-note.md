@@ -13,6 +13,9 @@ It describes what is already true in the codebase today, which boundaries are no
 ┌─────────────────────────────────────────────────┐
 │              Qt/VTK Desktop Client               │
 │                                                  │
+│  main() ──► StartupDialog                        │
+│               │  BackendLauncher (process mgmt)  │
+│               ▼                                  │
 │  MainWindow ──► DataHubWidget                    │
 │      │                                           │
 │      ├──► vtkWindowCube        (local/remote)    │
@@ -28,6 +31,8 @@ It describes what is already true in the codebase today, which boundaries are no
 │  DiagnosticsManager (singleton, in-process log)  │
 └─────────────────────────────────────────────────┘
 ```
+
+`MainWindow` is created only after `StartupDialog` accepts — i.e., only after the backend is reachable and a token is available (or explicitly skipped). The backend process is owned by `BackendLauncher` in `main()` and outlives all windows.
 
 ---
 
@@ -58,20 +63,33 @@ Contents:
 
 Does not depend on Qt::Widgets.
 
+### `visivo_shared_core` — startup / app layer (`src/app/`)
+
+In addition to the original `BackendClient` and `DiagnosticsManager`:
+
+- `BackendLauncher` — manages the backend process lifecycle:
+  1. health-checks the configured URL
+  2. optionally starts `python -m uvicorn app.main:app` if not reachable
+  3. polls the health endpoint until ready (or times out)
+  4. emits `alreadyRunning`, `backendStarted`, or `failed` signals
+  5. captures all backend stdout/stderr into `capturedLogs()`
+  6. resolves the Python interpreter via a six-level priority chain (see README)
+
 ### Client GUI (`src/gui/`, `src/auth/`, `src/`)
 Qt widget layer and UI orchestration.
 
 Contents:
+- `StartupDialog` — pre-`MainWindow` dialog; drives Backend → Auth → Ready sequence
 - `MainWindow` — top-level shell, menus, action routing
 - `DataHubWidget` — landing page; health check, file browser, session start
 - `vtkWindowCube` — FITS cube viewer (local preview + remote full, moment, PV, noise)
-- `vtkWindowImage` — FITS image viewer (local + remote multi-layer)
+- `vtkWindowImage` — FITS image viewer (local + remote multi-layer); "Add New FITS File" uses `RemoteFileBrowserDialog`
 - `vtkWindowCatalogue3D` — 3-D catalogue viewer (remote CSV/backend)
 - `vtkWindowVbt` — VBT point-cloud viewer (remote)
 - `vtkWindowVbtVolume` — VBT volume viewer (remote)
 - `HiPSWindow` / `HiPSViewportWidget` — HiPS sky viewer with overlay
 - `RemoteMomentWindow` — standalone moment map viewer (async task-based)
-- `RemoteFileBrowserDialog` — file-picker backed by `/v1/files/list`
+- `RemoteFileBrowserDialog` — file-picker backed by `/v1/files/list`; reused for image layers
 - `NoiseRegionDialog` — region selector for noise computation
 - `ProfileWidget`, `PvDiagramWidget` — profile/PV plot widgets
 - `DiagnosticsWindow` — live table view of `DiagnosticsManager` entries
@@ -242,6 +260,21 @@ Key capabilities:
 
 ---
 
+## Loading placeholder
+
+All viewers show a centred `vtkTextActor` message while data is being fetched:
+
+| Viewer | Text | Disappears when |
+|--------|------|-----------------|
+| `vtkWindowCube` | "Loading…" (3D) / "Loading…" (2D slice) | `applyPreview()` / `applyRemoteSliceResult()` |
+| `vtkWindowImage` | "Loading image…" | `applyRemoteMasterLayer()` or full-res failure |
+| `vtkWindowVbt` | "Loading…" | end of `buildPointCloud()` |
+| `vtkWindowVbtVolume` | "Loading…" | end of `applySubsetResult()` |
+
+Style: font 16 pt, colour `(0.72, 0.84, 0.91)` (`#B8D6E8`), centered, NormalizedViewport `(0.5, 0.5)`, no bold, no shadow.
+
+---
+
 ## VBT viewer (`vtkWindowVbt`)
 
 Renders a remote VBT (VisIVO Binary Table) dataset as a 3-D point cloud.
@@ -291,6 +324,8 @@ Static library `visivo_test_support` (BackendClient + DiagnosticsManager) is sha
 
 | Boundary | Status |
 |----------|--------|
+| `BackendLauncher` | stable; all backend process management goes through here |
+| `StartupDialog` | stable; Backend → Auth → Ready sequence before main window |
 | `DatasetOpenService` | local, explicit request/result |
 | `ImageLayerImportService` | local, explicit request/result |
 | `MomentProcessingService` | backend-authoritative facade |
@@ -298,6 +333,8 @@ Static library `visivo_test_support` (BackendClient + DiagnosticsManager) is sha
 | `DiagnosticsManager` | stable singleton; all structured logging goes through here |
 | Async worker pattern | stable; each viewer owns its watchers explicitly |
 | Pagination state | stable; uniform across catalogue and VBT viewers |
+| Loading placeholder | stable; all four viewers use the same `vtkTextActor` pattern |
+| Layer alignment pipeline | stable; all layer sources (manual, remote, VLKB) route through `loadImageLayer` |
 
 ---
 
