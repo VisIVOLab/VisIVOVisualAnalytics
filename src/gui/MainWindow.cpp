@@ -5,6 +5,7 @@
 #include "AuthWrapper.h"
 #include "app/BackendClient.h"
 #include "app/RecentDatasetsManager.h"
+#include "app/ThemeManager.h"
 #include "DataHubWidget.h"
 #include "DiagnosticsWindow.h"
 #include "RemoteFileBrowserDialog.h"
@@ -36,7 +37,6 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QWebChannel>
-#include <qstylehints.h>
 #include <QPixmap>
 #include <QStyle>
 #include <QPainter>
@@ -313,7 +313,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
 void MainWindow::setApplicationTheme()
 {
-    QGuiApplication::styleHints()->setColorScheme(this->settings->getColorScheme());
+    ThemeManager::instance().apply(this->settings->getColorScheme(), qApp);
 }
 
 void MainWindow::openData()

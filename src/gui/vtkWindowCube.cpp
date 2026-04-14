@@ -15,6 +15,7 @@
 #include "SidebarPanel.h"
 #include "app/BackendClient.h"
 #include "app/DiagnosticsManager.h"
+#include "app/ThemeManager.h"
 #include "vtkInteractorStyleProfile.h"
 #include "vtkLegendScaleActorWCS.h"
 #include "wcs.h"
@@ -2915,7 +2916,9 @@ void vtkWindowCube::setupCubeRenderer()
     {
         auto *prop = this->m_cube3dLoadingActor->GetTextProperty();
         prop->SetFontSize(16);
-        prop->SetColor(0.72, 0.84, 0.91);   // #B8D6E8 — matches app blue-gray palette
+        double r, g, b;
+        ThemeManager::instance().vtkTextColor(r, g, b);
+        prop->SetColor(r, g, b);
         prop->SetJustificationToCentered();
         prop->SetVerticalJustificationToCentered();
         prop->BoldOff();
@@ -2926,6 +2929,13 @@ void vtkWindowCube::setupCubeRenderer()
         this->m_cube3dLoadingActor->SetPosition(0.5, 0.5);
         this->m_cube3dLoadingActor->VisibilityOn();
         ren->AddActor2D(this->m_cube3dLoadingActor);
+
+        QObject::connect(&ThemeManager::instance(), &ThemeManager::themeChanged,
+                         this, [this](EffectiveTheme) {
+                             double tr, tg, tb;
+                             ThemeManager::instance().vtkTextColor(tr, tg, tb);
+                             this->m_cube3dLoadingActor->GetTextProperty()->SetColor(tr, tg, tb);
+                         });
     }
 
     ren->ResetCamera();

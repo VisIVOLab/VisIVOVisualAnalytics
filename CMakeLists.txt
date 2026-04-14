@@ -76,6 +76,8 @@ set(PROJECT_SOURCES
         src/app/BackendLauncher.h
         src/app/DiagnosticsManager.cpp
         src/app/DiagnosticsManager.h
+        src/app/ThemeManager.cpp
+        src/app/ThemeManager.h
         src/app/RecentDatasetsManager.cpp
         src/app/RecentDatasetsManager.h
         src/gui/RemoteFileBrowserDialog.cpp

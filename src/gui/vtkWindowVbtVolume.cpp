@@ -1,5 +1,6 @@
 #include "vtkWindowVbtVolume.h"
 #include "app/BackendClient.h"
+#include "app/ThemeManager.h"
 
 #include <QVTKOpenGLNativeWidget.h>
 
@@ -355,7 +356,9 @@ void vtkWindowVbtVolume::setupRenderer()
     {
         auto *prop = this->m_loadingActor->GetTextProperty();
         prop->SetFontSize(16);
-        prop->SetColor(0.72, 0.84, 0.91);
+        double r, g, b;
+        ThemeManager::instance().vtkTextColor(r, g, b);
+        prop->SetColor(r, g, b);
         prop->SetJustificationToCentered();
         prop->SetVerticalJustificationToCentered();
         prop->BoldOff();
@@ -366,6 +369,13 @@ void vtkWindowVbtVolume::setupRenderer()
         this->m_loadingActor->SetPosition(0.5, 0.5);
         this->m_loadingActor->VisibilityOn();
         this->renderer->AddActor2D(this->m_loadingActor.Get());
+
+        QObject::connect(&ThemeManager::instance(), &ThemeManager::themeChanged,
+                         this, [this](EffectiveTheme) {
+                             double tr, tg, tb;
+                             ThemeManager::instance().vtkTextColor(tr, tg, tb);
+                             this->m_loadingActor->GetTextProperty()->SetColor(tr, tg, tb);
+                         });
     }
 
     qDebug().noquote()

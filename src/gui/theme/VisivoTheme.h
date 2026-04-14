@@ -112,8 +112,19 @@ QPushButton *makePrimaryButton(const QString &text, QWidget *parent = nullptr);
 QPushButton *makeSecondaryButton(const QString &text, QWidget *parent = nullptr);
 
 // ── Global theme application ──────────────────────────────────────────────────
-QString globalStyleSheet();
-void applyTo(QApplication *app);
+
+// Dark theme (VisIVO navy — canonical baseline).
+QString darkStyleSheet();
+void applyDarkTo(QApplication *app);
+
+// Light theme (VisIVO brand blues on light backgrounds).
+QString lightStyleSheet();
+void applyLightTo(QApplication *app);
+
+// Legacy alias — maps to applyDarkTo().
+inline void applyTo(QApplication *app) { applyDarkTo(app); }
+// Legacy alias — maps to darkStyleSheet().
+inline QString globalStyleSheet() { return darkStyleSheet(); }
 
 } // namespace VisivoTheme
 

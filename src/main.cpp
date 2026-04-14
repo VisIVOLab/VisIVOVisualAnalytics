@@ -1,14 +1,16 @@
 #include "MainWindow.h"
 #include "Version.h"
 #include "app/BackendLauncher.h"
+#include "app/ThemeManager.h"
 #include "gui/StartupDialog.h"
-#include "theme/VisivoTheme.h"
 
 #include <QVTKOpenGLNativeWidget.h>
 
 #include <QApplication>
+#include <QDir>
 #include <QIcon>
 #include <QLocale>
+#include <QSettings>
 #include <QSurfaceFormat>
 #include <QWebEngineUrlScheme>
 
@@ -45,10 +47,20 @@ int main(int argc, char *argv[])
     QApplication::setOrganizationName(u"Osservatorio Astrofisico di Catania"_s);
     QApplication::setOrganizationDomain(u"it.inaf.oact"_s);
 
-    // Apply Digital Observatory design system — must run after QApplication is
-    // constructed but before any window is created so palette + stylesheet are
-    // inherited by all top-level widgets.
-    VisivoTheme::applyTo(&app);
+    // Apply theme — must run after QApplication is constructed but before any
+    // window is created so palette + stylesheet are inherited by all widgets.
+    // Read the persisted scheme directly from QSettings to avoid the full
+    // Settings object (which spawns a python process to locate the interpreter).
+    {
+        const QString workDir  = QDir::home().absoluteFilePath(app.applicationName());
+        const QString iniPath  = QDir(workDir).absoluteFilePath(u"Settings.ini"_s);
+        QSettings rawSettings(iniPath, QSettings::IniFormat);
+        const auto storedInt   = rawSettings.value(u"UI/theme"_s,
+                                                     static_cast<int>(Qt::ColorScheme::Unknown))
+                                         .toInt();
+        const auto scheme      = static_cast<Qt::ColorScheme>(storedInt);
+        ThemeManager::instance().apply(scheme, &app);
+    }
 
     // Customize QDebug message format
     qSetMessagePattern("%{time} "
