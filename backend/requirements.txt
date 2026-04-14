@@ -7,3 +7,5 @@ vtk>=9.4
 pandas>=2.0
 healpy>=0.3
 scipy>=1.10
+numba>=0.59.0   # optional; falls back to numpy if unavailable
+dask[array]>=2024.1.0   # optional; out-of-core processing

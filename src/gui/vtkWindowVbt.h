@@ -89,7 +89,7 @@ private:
     QString zFieldName;
     const QString backendUrl;
     const QString backendToken;
-    const QString sessionId;
+    QString sessionId;
     const QString m_headerPath;   ///< original .head file path; used for session-expiry reopen
 
     QPointer<QVTKOpenGLNativeWidget> vtkWidget;
@@ -141,6 +141,9 @@ private:
     QPointer<QPushButton> btnLoadMore;
     QFutureWatcher<VbtFilterTaskResult> m_loadMoreWatcher;
     void loadMoreEntries();
+    // ── Session-expiry auto-recovery ──────────────────────────────────────────
+    QFutureWatcher<BackendVbtOpenResult> m_reopenWatcher;
+    void autoReopenThenLoadMore();
     QPointer<QListWidget> fieldList;
     QPointer<QLabel> metadataLabel;
     bool updatingRangeControls{ false };

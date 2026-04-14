@@ -282,6 +282,9 @@ private:
     QPointer<QPushButton> btnLoadMore;
     QFutureWatcher<Catalogue3DFilterTaskResult> m_loadMoreWatcher;
     void loadMoreEntries();
+    // ── Session-expiry auto-recovery ──────────────────────────────────────────
+    QFutureWatcher<BackendCatalogueInfo> m_reopenWatcher;
+    void autoReopenThenLoadMore();
     QString m_cosmologyModel{ QStringLiteral("Planck18") };
     bool m_cosmologyBusy{ false };
     QFutureWatcher<Catalogue3DCosmologyTaskResult> m_cosmologyWatcher;

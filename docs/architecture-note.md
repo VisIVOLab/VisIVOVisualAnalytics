@@ -368,3 +368,15 @@ The UI thread is responsible only for applying result structs to VTK pipelines a
 `visivo_shared_vtk` → no Qt::Widgets.
 GUI executable → can use all.
 Test suite → links only `visivo_test_support` (core subset).
+
+---
+
+## Performance Tuning
+
+### Backend environment variables
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `VISIVO_MOMENT_THREADS` | `0` (auto) | Number of threads for M0/M6/M10 moment chunking. `0` = `min(4, cpu_count)`. Positive values set the count explicitly. M1, M2, M8 are sequential (normalisation requires the full axis). |
+| `VISIVO_DASK_THRESHOLD_BYTES` | `4294967296` (4 GiB) | Cube byte size above which the Dask out-of-core path is selected (when Dask is installed). |
+| `VISIVO_WORKERS` | `min(4, cpu_count)` | Number of ProcessPoolExecutor workers for CPU-bound FITS operations. |

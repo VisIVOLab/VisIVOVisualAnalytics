@@ -17,7 +17,9 @@ so they can be reused in batch / headless pipelines without the web stack.
 from __future__ import annotations
 
 import base64
+import concurrent.futures as _cf
 import logging
+import os as _os
 import zlib
 from typing import Any
 
@@ -26,6 +28,123 @@ import numpy as np
 from .fits_dataset import ScientificFitsDataset
 
 logger = logging.getLogger("visivo.compute")
+
+# ── Optional Dask ────────────────────────────────────────────────────────────
+
+try:
+    import dask.array as _da  # type: ignore[import-untyped]
+    _DASK_OK = True
+except ImportError:
+    _DASK_OK = False
+
+# ── Optional Numba JIT ────────────────────────────────────────────────────────
+
+try:
+    from numba import njit, prange as _prange  # type: ignore[import-untyped]
+    _NUMBA_OK = True
+except ImportError:
+    _NUMBA_OK = False
+
+    def njit(*a, **kw):  # type: ignore[misc]
+        """No-op decorator used when numba is unavailable."""
+        def _wrap(f):  # type: ignore[misc]
+            return f
+        return _wrap
+
+    _prange = range  # type: ignore[assignment]
+
+# ── Parallel moment configuration ────────────────────────────────────────────
+
+_MOMENT_THREADS = int(_os.environ.get("VISIVO_MOMENT_THREADS", "0"))
+# 0 = auto: min(4, cpu_count); positive = explicit count
+
+
+def _n_moment_threads() -> int:
+    """Return the number of threads to use for parallelisable moment orders."""
+    n = _MOMENT_THREADS
+    if n <= 0:
+        try:
+            n = min(4, _os.cpu_count() or 1)
+        except Exception:
+            n = 1
+    return n
+
+# ── Numba JIT moment kernels ──────────────────────────────────────────────────
+
+
+@njit(parallel=True, cache=True)  # type: ignore[misc]
+def _moment1_numba(
+    cube: np.ndarray,
+    spectral_coords: np.ndarray,
+    valid_mask: np.ndarray,
+) -> np.ndarray:
+    """Intensity-weighted mean velocity (M1), parallelised over spatial pixels.
+
+    Accepts only numpy primitive arrays (no Python objects) so it can be
+    compiled by Numba.  Falls back silently to numpy when _NUMBA_OK is False.
+    """
+    nz = cube.shape[0]
+    ny = cube.shape[1]
+    nx = cube.shape[2]
+    result = np.zeros((ny, nx), dtype=np.float64)
+    weight_sum = np.zeros((ny, nx), dtype=np.float64)
+    for y in _prange(ny):
+        for x in range(nx):
+            for z in range(nz):
+                if valid_mask[z, y, x]:
+                    w = float(cube[z, y, x])
+                    result[y, x] += w * spectral_coords[z]
+                    weight_sum[y, x] += w
+    for y in _prange(ny):
+        for x in range(nx):
+            if weight_sum[y, x] > 0.0:
+                result[y, x] /= weight_sum[y, x]
+            else:
+                result[y, x] = np.nan
+    return result
+
+
+@njit(parallel=True, cache=True)  # type: ignore[misc]
+def _moment2_numba(
+    cube: np.ndarray,
+    spectral_coords: np.ndarray,
+    valid_mask: np.ndarray,
+) -> np.ndarray:
+    """Intensity-weighted velocity dispersion (M2), parallelised over spatial pixels."""
+    nz = cube.shape[0]
+    ny = cube.shape[1]
+    nx = cube.shape[2]
+    # First pass: compute M1.
+    m1 = np.zeros((ny, nx), dtype=np.float64)
+    weight_sum = np.zeros((ny, nx), dtype=np.float64)
+    for y in _prange(ny):
+        for x in range(nx):
+            for z in range(nz):
+                if valid_mask[z, y, x]:
+                    w = float(cube[z, y, x])
+                    m1[y, x] += w * spectral_coords[z]
+                    weight_sum[y, x] += w
+    for y in _prange(ny):
+        for x in range(nx):
+            if weight_sum[y, x] > 0.0:
+                m1[y, x] /= weight_sum[y, x]
+            else:
+                m1[y, x] = np.nan
+    # Second pass: compute M2 numerator.
+    result = np.zeros((ny, nx), dtype=np.float64)
+    for y in _prange(ny):
+        for x in range(nx):
+            if weight_sum[y, x] > 0.0:
+                for z in range(nz):
+                    if valid_mask[z, y, x]:
+                        w = float(cube[z, y, x])
+                        d = spectral_coords[z] - m1[y, x]
+                        result[y, x] += w * d * d
+                result[y, x] /= weight_sum[y, x]
+            else:
+                result[y, x] = np.nan
+    return result
+
 
 # ── Encoding helpers ──────────────────────────────────────────────────────────
 
@@ -159,6 +278,74 @@ def worker_cube_subvolume(
 # ── Worker: moment map ────────────────────────────────────────────────────────
 
 
+# ── Parallelised moment helpers ───────────────────────────────────────────────
+
+
+def _chunked_m0(
+    cube: np.ndarray, valid_mask: np.ndarray, delta: np.ndarray, n_threads: int
+) -> np.ndarray:
+    """Moment 0 (nansum over spectral axis), optionally parallelised.
+
+    Accumulates in float64 to avoid floating-point ordering differences
+    between chunked and sequential paths; result is cast back to float32.
+    """
+    nz = cube.shape[0]
+    if n_threads <= 1 or nz < 2 * n_threads:
+        return np.nansum(
+            np.where(valid_mask, cube, np.nan).astype(np.float64) * delta[:, None, None],
+            axis=0,
+        ).astype(np.float32)
+    edges = np.linspace(0, nz, n_threads + 1, dtype=int)
+
+    def _chunk(s: int, e: int) -> np.ndarray:
+        c = cube[s:e].astype(np.float64)
+        d = delta[s:e]
+        return np.nansum(np.where(valid_mask[s:e], c, np.nan) * d[:, None, None], axis=0)
+
+    with _cf.ThreadPoolExecutor(max_workers=n_threads) as pool:
+        parts = list(pool.map(lambda se: _chunk(*se), zip(edges[:-1], edges[1:])))
+    return np.sum(parts, axis=0).astype(np.float32)
+
+
+def _chunked_m6(cube: np.ndarray, valid_mask: np.ndarray, n_threads: int) -> np.ndarray:
+    """Moment 6 (sqrt of nanmean of squares), optionally parallelised."""
+    nz = cube.shape[0]
+    if n_threads <= 1 or nz < 2 * n_threads:
+        safe = np.where(valid_mask, cube, np.nan)
+        return np.sqrt(np.nanmean(safe * safe, axis=0, dtype=np.float32))
+    edges = np.linspace(0, nz, n_threads + 1, dtype=int)
+
+    def _chunk(s: int, e: int) -> tuple[np.ndarray, np.ndarray]:
+        safe = np.where(valid_mask[s:e], cube[s:e], np.nan).astype(np.float64)
+        count = np.sum(np.isfinite(safe), axis=0)
+        sum_sq = np.nansum(safe * safe, axis=0)
+        return sum_sq, count
+
+    with _cf.ThreadPoolExecutor(max_workers=n_threads) as pool:
+        results = list(pool.map(lambda se: _chunk(*se), zip(edges[:-1], edges[1:])))
+    total_sum = np.sum([r[0] for r in results], axis=0)
+    total_cnt = np.sum([r[1] for r in results], axis=0)
+    out = np.full(total_cnt.shape, np.nan, dtype=np.float32)
+    valid = total_cnt > 0
+    out[valid] = np.sqrt(total_sum[valid] / total_cnt[valid]).astype(np.float32)
+    return out
+
+
+def _chunked_m10(cube: np.ndarray, valid_mask: np.ndarray, n_threads: int) -> np.ndarray:
+    """Moment 10 (nanmin over spectral axis), optionally parallelised."""
+    nz = cube.shape[0]
+    if n_threads <= 1 or nz < 2 * n_threads:
+        return np.nanmin(np.where(valid_mask, cube, np.nan), axis=0)
+    edges = np.linspace(0, nz, n_threads + 1, dtype=int)
+
+    def _chunk(s: int, e: int) -> np.ndarray:
+        return np.nanmin(np.where(valid_mask[s:e], cube[s:e], np.nan), axis=0)
+
+    with _cf.ThreadPoolExecutor(max_workers=n_threads) as pool:
+        parts = list(pool.map(lambda se: _chunk(*se), zip(edges[:-1], edges[1:])))
+    return np.nanmin(parts, axis=0).astype(np.float32)
+
+
 def _moment_map_from_array(
     cube: np.ndarray,
     order: int,
@@ -166,19 +353,43 @@ def _moment_map_from_array(
     mask_enabled: bool,
     threshold_value: float,
 ) -> np.ndarray:
-    """Pure numpy moment-map computation (no VTK dependency)."""
+    """Pure numpy moment-map computation (no VTK dependency).
+
+    Orders M0, M6, M10 are split across _n_moment_threads() spectral chunks so
+    that numpy's GIL-releasing array operations run in true parallel.  M1, M2,
+    and M8 require the full spectral axis for normalisation and use the
+    sequential numpy path (which is already internally threaded via OpenMP/MKL).
+    """
     spectral_values = np.asarray(spectral_coordinates, dtype=np.float64)
     spectral_delta = _integrated_spacing(spectral_values)
 
     subset = np.asarray(cube, dtype=np.float32)
-    safe = np.where(np.isfinite(subset), subset, np.nan)
+    valid_mask = np.isfinite(subset)
     if mask_enabled:
-        safe = np.where(safe >= float(threshold_value), safe, np.nan)
+        valid_mask = valid_mask & (subset >= float(threshold_value))
+    # Build the "safe" array only for the sequential orders that need it as a
+    # materialised array; for chunked orders we pass cube + mask separately.
+    safe = np.where(valid_mask, subset, np.nan)
+
+    n_threads = _n_moment_threads()
 
     if order == 0:
-        return np.nansum(safe * spectral_delta[:, None, None], axis=0, dtype=np.float32)
+        return _chunked_m0(subset, valid_mask, spectral_delta, n_threads)
 
     if order == 1:
+        # Use Numba JIT path for large cubes (amortises JIT compilation cost).
+        _NUMBA_THRESHOLD = 64
+        used_numba = _NUMBA_OK and subset.shape[0] > _NUMBA_THRESHOLD
+        logger.debug("moment M1: using %s path", "numba" if used_numba else "numpy")
+        if used_numba:
+            # _moment1_numba expects float32 cube, float64 spectral, bool mask.
+            result_f64 = _moment1_numba(
+                np.ascontiguousarray(subset, dtype=np.float32),
+                np.ascontiguousarray(spectral_values, dtype=np.float64),
+                np.ascontiguousarray(valid_mask, dtype=np.bool_),
+            )
+            return result_f64.astype(np.float32)
+        # Sequential numpy fallback.
         weights = spectral_delta[:, None, None]
         m0 = np.nansum(safe * weights, axis=0, dtype=np.float32)
         num = np.nansum(safe * spectral_values[:, None, None] * weights, axis=0, dtype=np.float32)
@@ -188,6 +399,18 @@ def _moment_map_from_array(
         return out
 
     if order == 2:
+        # Use Numba JIT path for large cubes.
+        _NUMBA_THRESHOLD = 64
+        used_numba = _NUMBA_OK and subset.shape[0] > _NUMBA_THRESHOLD
+        logger.debug("moment M2: using %s path", "numba" if used_numba else "numpy")
+        if used_numba:
+            result_f64 = _moment2_numba(
+                np.ascontiguousarray(subset, dtype=np.float32),
+                np.ascontiguousarray(spectral_values, dtype=np.float64),
+                np.ascontiguousarray(valid_mask, dtype=np.bool_),
+            )
+            return result_f64.astype(np.float32)
+        # Sequential numpy fallback.
         weights = spectral_delta[:, None, None]
         m0 = np.nansum(safe * weights, axis=0, dtype=np.float32)
         m1_num = np.nansum(safe * spectral_values[:, None, None] * weights, axis=0, dtype=np.float32)
@@ -201,15 +424,110 @@ def _moment_map_from_array(
         return out
 
     if order == 6:
-        return np.sqrt(np.nanmean(safe * safe, axis=0, dtype=np.float32))
+        return _chunked_m6(subset, valid_mask, n_threads)
 
     if order == 8:
+        # Sequential: nanmax is harder to chunk correctly; numpy handles it well.
         return np.nanmax(safe, axis=0)
 
     if order == 10:
-        return np.nanmin(safe, axis=0)
+        return _chunked_m10(subset, valid_mask, n_threads)
 
     raise ValueError(f"Unsupported moment order: {order}.")
+
+
+def _moment_map_dask(
+    fits_path: str,
+    order: int,
+    channel_start: int,
+    channel_end: int,
+    mask_threshold: float,
+    mask_enabled: bool,
+    chunk_z: int = 64,
+) -> dict[str, Any]:
+    """Out-of-core moment computation via Dask arrays.
+
+    Uses ``dask.array.from_array`` so that only the spectral chunks needed for
+    each reduction step are loaded from disk at a time.  Designed for cubes
+    that do not fit in RAM (SKA-scale).
+
+    Returns the same dict structure as ``worker_moment``.
+    """
+    from astropy.io import fits as _fits  # noqa: PLC0415 (lazy import in worker)
+
+    dataset = ScientificFitsDataset(fits_path)
+    hdul, raw = dataset.open_memmap()
+    try:
+        data = dataset.squeeze_to_3d(raw)
+        if data.ndim != 3:
+            raise ValueError("Dask moment requires a 3D cube.")
+        z0 = max(0, min(int(channel_start), data.shape[0] - 1))
+        z1 = max(0, min(int(channel_end), data.shape[0] - 1))
+        if z0 > z1:
+            raise ValueError("Invalid channel range.")
+        spectral = dataset.spectral_axis_metadata(z0, z1)
+        # Wrap the memmap slice in a Dask array — data is NOT loaded yet.
+        sub_memmap = data[z0 : z1 + 1, :, :]
+        da_cube = _da.from_array(sub_memmap, chunks=(chunk_z, -1, -1))
+        spectral_values = np.asarray(spectral["coordinates"], dtype=np.float64)
+        spectral_delta = _integrated_spacing(spectral_values)
+        bunit = dataset.bunit
+        moment_unit = _moment_result_unit(order, bunit, str(spectral["axis_unit"]))
+    finally:
+        hdul.close()
+
+    # Apply validity mask lazily.
+    da_safe = _da.where(_da.isfinite(da_cube), da_cube, np.nan)
+    if mask_enabled:
+        da_safe = _da.where(da_safe >= float(mask_threshold), da_safe, np.nan)
+
+    da_delta = _da.from_array(spectral_delta[:, None, None], chunks=(chunk_z, -1, -1))
+
+    if order == 0:
+        da_result = _da.nansum(da_safe * da_delta, axis=0)
+    elif order == 6:
+        da_result = _da.sqrt(_da.nanmean(da_safe * da_safe, axis=0))
+    elif order == 8:
+        da_result = _da.nanmax(da_safe, axis=0)
+    elif order == 10:
+        da_result = _da.nanmin(da_safe, axis=0)
+    elif order == 1:
+        da_sv = _da.from_array(spectral_values[:, None, None], chunks=(chunk_z, -1, -1))
+        m0 = _da.nansum(da_safe * da_delta, axis=0)
+        num = _da.nansum(da_safe * da_sv * da_delta, axis=0)
+        da_result = _da.where(m0 != 0.0, num / m0, np.nan)
+    elif order == 2:
+        da_sv = _da.from_array(spectral_values[:, None, None], chunks=(chunk_z, -1, -1))
+        m0 = _da.nansum(da_safe * da_delta, axis=0)
+        m1 = _da.where(m0 != 0.0, _da.nansum(da_safe * da_sv * da_delta, axis=0) / m0, np.nan)
+        diff = da_sv - m1[None, :, :]
+        da_result = _da.where(m0 != 0.0,
+                              _da.nansum(da_safe * diff * diff * da_delta, axis=0) / m0,
+                              np.nan)
+    else:
+        raise ValueError(f"Unsupported moment order for Dask path: {order}.")
+
+    image = da_result.compute(
+        scheduler="threads", num_workers=_n_moment_threads()
+    ).astype(np.float32)
+
+    if not np.isfinite(image).any():
+        raise ValueError("No valid voxels found for the selected moment parameters (dask path).")
+
+    range_min, range_max = _finite_range(image)
+    return {
+        "width": int(image.shape[1]),
+        "height": int(image.shape[0]),
+        "scalar_type": "float32",
+        "range_min": range_min,
+        "range_max": range_max,
+        "spectral_axis_type": str(spectral["axis_type"]),
+        "spectral_axis_unit": str(spectral["axis_unit"]),
+        "moment_unit": moment_unit,
+        "bunit": bunit,
+        "moment_threads_used": _n_moment_threads(),
+        "data_base64": _b64f32(image),
+    }
 
 
 def _moment_unit(order: int, bunit: str, spectral_unit: str) -> str:
@@ -284,6 +602,7 @@ def worker_moment(
         "spectral_axis_unit": str(spectral["axis_unit"]),
         "moment_unit": moment_unit,
         "bunit": bunit,
+        "moment_threads_used": _n_moment_threads(),
         "data_base64": _b64f32(image),
     }
 

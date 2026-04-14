@@ -301,20 +301,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                 const auto result = this->m_loadMoreWatcher.result();
                 if (!result.valid) {
                     if (isSessionExpiryError(result.error)) {
-                        QMessageBox msg(this);
-                        msg.setWindowTitle(u"Session Expired"_s);
-                        msg.setText(
-                                u"The backend session for this dataset has expired.\n"
-                                "The dataset needs to be reopened before continuing."_s);
-                        auto *btnReopen = msg.addButton(
-                                u"Re-open Dataset"_s, QMessageBox::AcceptRole);
-                        msg.addButton(QMessageBox::Cancel);
-                        msg.exec();
-                        if (msg.clickedButton() == btnReopen) {
-                            const QString path = this->filepath;
-                            emit reopenRequested(path);
-                            this->close();
-                        }
+                        // Auto-recover: reopen the dataset and retry without
+                        // interrupting the user.
+                        this->autoReopenThenLoadMore();
                     } else {
                         if (this->filterStatusLabel) {
                             this->filterStatusLabel->setText(
@@ -375,6 +364,29 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
 
     ui->labelStatus->setToolTip(
             u"3D positions use RA/Dec + redshift or distance. Source geometry is parametric."_s);
+
+    // ── Connect auto-reopen watcher ───────────────────────────────────────────
+    QObject::connect(&this->m_reopenWatcher, &QFutureWatcher<BackendCatalogueInfo>::finished,
+                     this, [this]() {
+                         const auto result = this->m_reopenWatcher.result();
+                         if (!result.valid) {
+                             if (this->filterStatusLabel)
+                                 this->filterStatusLabel->setText(
+                                         u"Reconnect failed: "_s + result.error);
+                             if (this->btnLoadMore) {
+                                 this->btnLoadMore->setEnabled(true);
+                                 this->btnLoadMore->setText(
+                                         QStringLiteral("Load more (%1 remaining)")
+                                                 .arg(this->m_totalCount - this->m_currentOffset));
+                             }
+                             return;
+                         }
+                         this->remoteDatasetId = result.datasetId;
+                         this->remoteSessionId = result.sessionId;
+                         if (this->filterStatusLabel)
+                             this->filterStatusLabel->setText({});
+                         this->loadMoreEntries();
+                     });
 
     BackendClient client(backendUrl, backendToken);
     const auto opened = client.openCatalogue(filepath);
@@ -1158,6 +1170,26 @@ void vtkWindowCatalogue3D::loadMoreEntries()
                 out.totalRows = subset.totalRows;
                 out.valid = true;
                 return out;
+            }));
+}
+
+void vtkWindowCatalogue3D::autoReopenThenLoadMore()
+{
+    if (this->filterStatusLabel)
+        this->filterStatusLabel->setText(u"Session expired — reconnecting\u2026"_s);
+    if (this->btnLoadMore) {
+        this->btnLoadMore->setEnabled(false);
+        this->btnLoadMore->setText(u"Reconnecting\u2026"_s);
+    }
+
+    const QString url      = this->backendUrl;
+    const QString token    = this->backendToken;
+    const QString filePath = this->filepath;
+
+    this->m_reopenWatcher.setFuture(QtConcurrent::run(
+            [url, token, filePath]() -> BackendCatalogueInfo {
+                BackendClient client(url, token);
+                return client.openCatalogue(filePath);
             }));
 }
 

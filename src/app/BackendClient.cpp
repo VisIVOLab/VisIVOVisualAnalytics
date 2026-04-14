@@ -2,6 +2,7 @@
 #include "DiagnosticsManager.h"
 
 #include <QByteArray>
+#include <QDataStream>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
@@ -806,6 +807,87 @@ BackendMomentResult BackendClient::requestMoment(const QString &datasetId, int o
         return result;
     }
     return parseMomentResultObject(QJsonDocument::fromJson(payload).object());
+}
+
+BinaryArrayResult BackendClient::fetchMomentBinary(const QString &datasetId,
+                                                    int order,
+                                                    int channelStart, int channelEnd,
+                                                    bool maskEnabled, float threshold,
+                                                    const QString &sessionId)
+{
+    BinaryArrayResult result;
+    const QString prevSession = m_sessionId;
+    if (!sessionId.isEmpty())
+        m_sessionId = sessionId;
+
+    QString error;
+    const QJsonDocument body(
+            QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
+                         { QStringLiteral("moment_order"), order },
+                         { QStringLiteral("channel_start"), channelStart },
+                         { QStringLiteral("channel_end"), channelEnd },
+                         { QStringLiteral("mask_enabled"), maskEnabled },
+                         { QStringLiteral("threshold_value"), static_cast<double>(threshold) } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/moment/result/binary")), body, error);
+    m_sessionId = prevSession;
+
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    if (payload.size() < 12) {
+        result.error = QStringLiteral("Binary response too short (%1 bytes).").arg(payload.size());
+        return result;
+    }
+    QDataStream ds(payload);
+    ds.setByteOrder(QDataStream::BigEndian);
+    quint32 rows = 0, cols = 0, flags = 0;
+    ds >> rows >> cols >> flags;
+    result.rows = static_cast<int>(rows);
+    result.cols = static_cast<int>(cols);
+    result.data = payload.mid(12);  // raw float32 body
+    return result;
+}
+
+BinaryArrayResult BackendClient::fetchPvBinary(const QString &datasetId,
+                                                const QVector<QPointF> &path,
+                                                int slitWidth,
+                                                const QString &sessionId)
+{
+    BinaryArrayResult result;
+    const QString prevSession = m_sessionId;
+    if (!sessionId.isEmpty())
+        m_sessionId = sessionId;
+
+    QString error;
+    QJsonArray vertexArray;
+    for (const QPointF &pt : path)
+        vertexArray.append(QJsonArray{ static_cast<int>(qRound(pt.x())),
+                                       static_cast<int>(qRound(pt.y())) });
+    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
+                                          { QStringLiteral("vertices"), vertexArray },
+                                          { QStringLiteral("width_pixels"), slitWidth } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/pv/result/binary")), body, error);
+    m_sessionId = prevSession;
+
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    if (payload.size() < 12) {
+        result.error = QStringLiteral("Binary response too short (%1 bytes).").arg(payload.size());
+        return result;
+    }
+    QDataStream ds(payload);
+    ds.setByteOrder(QDataStream::BigEndian);
+    quint32 rows = 0, cols = 0, flags = 0;
+    ds >> rows >> cols >> flags;
+    result.rows = static_cast<int>(rows);
+    result.cols = static_cast<int>(cols);
+    result.data = payload.mid(12);
+    return result;
 }
 
 BackendTaskCreateResult BackendClient::createMomentTask(const QString &datasetId, int order,

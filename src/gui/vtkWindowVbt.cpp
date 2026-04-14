@@ -276,20 +276,9 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
                          const auto result = this->m_loadMoreWatcher.result();
                          if (!result.valid) {
                              if (isSessionExpiryError(result.error)) {
-                                 QMessageBox msg(this);
-                                 msg.setWindowTitle(u"Session Expired"_s);
-                                 msg.setText(
-                                         u"The backend session for this dataset has expired.\n"
-                                         "The dataset needs to be reopened before continuing."_s);
-                                 auto *btnReopen = msg.addButton(
-                                         u"Re-open Dataset"_s, QMessageBox::AcceptRole);
-                                 msg.addButton(QMessageBox::Cancel);
-                                 msg.exec();
-                                 if (msg.clickedButton() == btnReopen) {
-                                     const QString path = this->m_headerPath;
-                                     emit reopenRequested(path);
-                                     this->close();
-                                 }
+                                 // Auto-recover: reopen the dataset and retry without
+                                 // interrupting the user.
+                                 this->autoReopenThenLoadMore();
                              } else {
                                  if (this->filterStatusLabel) {
                                      this->filterStatusLabel->setText(
@@ -345,6 +334,31 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
                          this->updateColorMapping();
                          this->updateSummary();
                          this->renderWindow->Render();
+                     });
+
+    // ── Connect auto-reopen watcher ───────────────────────────────────────────
+    QObject::connect(&this->m_reopenWatcher, &QFutureWatcher<BackendVbtOpenResult>::finished,
+                     this, [this]() {
+                         const auto result = this->m_reopenWatcher.result();
+                         if (!result.valid) {
+                             // Reopen failed — let the user handle it manually.
+                             if (this->filterStatusLabel)
+                                 this->filterStatusLabel->setText(
+                                         u"Reconnect failed: "_s + result.error);
+                             if (this->btnLoadMore) {
+                                 this->btnLoadMore->setEnabled(true);
+                                 this->btnLoadMore->setText(
+                                         QStringLiteral("Load more (%1 remaining)")
+                                                 .arg(this->m_totalCount - this->m_currentOffset));
+                             }
+                             return;
+                         }
+                         // Session recovered — update IDs and retry load-more.
+                         this->openResult.datasetId = result.datasetId;
+                         this->sessionId            = result.sessionId;
+                         if (this->filterStatusLabel)
+                             this->filterStatusLabel->setText({});
+                         this->loadMoreEntries();
                      });
 }
 
@@ -1099,6 +1113,26 @@ void vtkWindowVbt::loadMoreEntries()
                 out.totalRows = queryResult.totalRows;
                 out.valid = true;
                 return out;
+            }));
+}
+
+void vtkWindowVbt::autoReopenThenLoadMore()
+{
+    if (this->filterStatusLabel)
+        this->filterStatusLabel->setText(u"Session expired — reconnecting\u2026"_s);
+    if (this->btnLoadMore) {
+        this->btnLoadMore->setEnabled(false);
+        this->btnLoadMore->setText(u"Reconnecting\u2026"_s);
+    }
+
+    const QString url   = this->backendUrl;
+    const QString token = this->backendToken;
+    const QString path  = this->m_headerPath;
+
+    this->m_reopenWatcher.setFuture(QtConcurrent::run(
+            [url, token, path]() -> BackendVbtOpenResult {
+                BackendClient client(url, token);
+                return client.openVbt(path);
             }));
 }
 

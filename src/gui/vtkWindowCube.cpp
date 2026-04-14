@@ -2663,13 +2663,25 @@ void vtkWindowCube::requestMomentMode()
 
 void vtkWindowCube::setMomentCardState(MomentCardState state, const QString &detail)
 {
+    // Ensure MomentCardState stays in sync with the assembler enum.
+    // If you add an enumerator to CubeUiAssembler::MomentCardData::State you must
+    // add it here too, and vice-versa.
+    static_assert(static_cast<int>(MomentCardState::NoMoment)
+                  == static_cast<int>(CubeUiAssembler::MomentCardData::State::NoMoment));
+    static_assert(static_cast<int>(MomentCardState::Computing)
+                  == static_cast<int>(CubeUiAssembler::MomentCardData::State::Computing));
+    static_assert(static_cast<int>(MomentCardState::Ready)
+                  == static_cast<int>(CubeUiAssembler::MomentCardData::State::Ready));
+    static_assert(static_cast<int>(MomentCardState::Error)
+                  == static_cast<int>(CubeUiAssembler::MomentCardData::State::Error));
+
     m_momentCardState = state;
     if (!detail.isEmpty())
         m_momentCardDetail = detail;
 
     if (m_uiAssembler) {
         CubeUiAssembler::MomentCardData data;
-        data.state              = state;
+        data.state              = static_cast<CubeUiAssembler::MomentCardData::State>(state);
         data.detail             = m_momentCardDetail;
         data.provenanceSummary  = this->momentProvenanceState.summary;
         data.provenanceDetails  = this->momentProvenanceState.details;

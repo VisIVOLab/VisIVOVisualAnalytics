@@ -75,6 +75,11 @@ def _pool_initializer() -> None:  # pragma: no cover
 
 _POOL = ProcessPoolExecutor(max_workers=_WORKERS, initializer=_pool_initializer)
 
+# ── Dask threshold (Step 4) ───────────────────────────────────────────────────
+# Cubes larger than this many bytes use the Dask out-of-core path when Dask is
+# installed.  Default: 4 GiB.  Set to 0 to always use Dask (when available).
+_DASK_THRESHOLD_BYTES = int(os.environ.get("VISIVO_DASK_THRESHOLD_BYTES", str(4 * 1024 ** 3)))
+
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 app = FastAPI(
@@ -734,7 +739,7 @@ async def _run_with_limit(session: Session, fn, *args) -> Any:
 
 
 async def _moment_product_payload(entry: dict[str, Any], request: MomentProductRequest) -> tuple[dict[str, Any], bool]:
-    from .compute import worker_moment
+    from .compute import _DASK_OK, worker_moment  # noqa: PLC0415
 
     dataset = ScientificFitsDataset(entry["path"])
     cache_params = {
@@ -749,15 +754,34 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
     if cached is not None:
         return dict(cached.payload), True
 
-    result = await _run(
-        worker_moment,
-        dataset.path,
-        request.moment_order,
-        request.channel_start,
-        request.channel_end,
-        request.mask_enabled,
-        request.threshold_value,
-    )
+    # Select the Dask out-of-core path for very large cubes.
+    cube_bytes = entry.get("width", 0) * entry.get("height", 0) * entry.get("depth", 0) * 4
+    use_dask = _DASK_OK and cube_bytes > _DASK_THRESHOLD_BYTES
+    if use_dask:
+        logger.info(
+            "[moment] using Dask path dataset_id=%s cube_bytes=%d threshold=%d",
+            request.dataset_id, cube_bytes, _DASK_THRESHOLD_BYTES,
+        )
+        from .compute import _moment_map_dask  # noqa: PLC0415
+        result = await _run(
+            _moment_map_dask,
+            dataset.path,
+            request.moment_order,
+            request.channel_start,
+            request.channel_end,
+            request.threshold_value,
+            request.mask_enabled,
+        )
+    else:
+        result = await _run(
+            worker_moment,
+            dataset.path,
+            request.moment_order,
+            request.channel_start,
+            request.channel_end,
+            request.mask_enabled,
+            request.threshold_value,
+        )
     PRODUCT_CACHE.put(
         key=cache_key,
         operation="moment",
@@ -1306,6 +1330,96 @@ async def moment_product(
     except Exception as exc:
         return MomentProductResponse(valid=False, error=str(exc))
     return MomentProductResponse(valid=True, error="", **result)
+
+
+def _array_to_binary(rows: int, cols: int, arr: np.ndarray) -> bytes:
+    """Pack a float32 array into the Visivo binary wire format.
+
+    Header (12 bytes, big-endian):
+      uint32  rows
+      uint32  cols
+      uint32  flags  (0 = plain float32, no compression)
+    Body: float32 little-endian, row-major, NaN for masked/invalid pixels.
+    """
+    header = struct.pack(">III", rows, cols, 0)
+    body = np.ascontiguousarray(arr, dtype="<f4").tobytes()
+    return header + body
+
+
+@app.post("/v1/moment/result/binary", tags=["products"])
+async def moment_result_binary(
+    request: MomentProductRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Return the moment-map array as a raw binary payload (no base64/JSON overhead).
+
+    Wire format — 12-byte header (big-endian uint32 × 3) followed by float32 LE body:
+      [0:4]  rows (height)
+      [4:8]  cols (width)
+      [8:12] flags (0 = plain float32)
+      [12:]  float32 row-major pixel values, NaN for masked pixels
+    """
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "cube":
+            raise HTTPException(422, "This endpoint requires a spectral cube dataset.")
+        result, from_cache = await _moment_product_payload(entry, request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    rows = result["height"]
+    cols = result["width"]
+    # Decode the base64 float32 payload already produced by compute.py.
+    raw_bytes = base64.b64decode(result["data_base64"])
+    arr = np.frombuffer(raw_bytes, dtype=np.float32).reshape(rows, cols)
+    content = _array_to_binary(rows, cols, arr)
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={"X-Visivo-From-Cache": "true" if from_cache else "false"},
+    )
+
+
+@app.post("/v1/pv/result/binary", tags=["cube"])
+async def pv_result_binary(
+    request: CubePvRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Return the PV-diagram array as a raw binary payload (no base64/JSON overhead).
+
+    Wire format — 12-byte header (big-endian uint32 × 3) followed by float32 LE body:
+      [0:4]  rows = n_spectral_channels
+      [4:8]  cols = n_path_pixels (num_samples)
+      [8:12] flags (0 = plain float32)
+      [12:]  float32 row-major pixel values, NaN for masked pixels
+    """
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "cube":
+            raise HTTPException(422, "This endpoint requires a spectral cube dataset.")
+        result, from_cache = await _pv_product_payload(entry, request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    rows = result["depth"]        # spectral channels
+    cols = result["num_samples"]  # path pixels
+    # Decode the qt-zlib compressed payload produced by compute.py.
+    import zlib as _zlib
+    raw_compressed = base64.b64decode(result["data_base64"])
+    raw_bytes = _zlib.decompress(raw_compressed[4:])   # skip the 4-byte Qt length prefix
+    arr = np.frombuffer(raw_bytes, dtype=np.float32).reshape(rows, cols)
+    content = _array_to_binary(rows, cols, arr)
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={"X-Visivo-From-Cache": "true" if from_cache else "false"},
+    )
 
 
 @app.post("/v1/cube/noise", response_model=CubeNoiseResponse, tags=["cube"])

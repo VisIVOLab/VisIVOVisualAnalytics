@@ -21,8 +21,11 @@ namespace {
  *   macOS bundle  : <app>.app/Contents/Resources/backend
  *   Linux install : <exe_dir>/backend
  *   Dev tree      : <exe_dir>/../backend
+ *
+ * @param[out] searchedOut  All candidate paths that were checked (populated even
+ *                          on failure, so callers can include them in error messages).
  */
-QString findBackendDir()
+QString findBackendDir(QStringList &searchedOut)
 {
     const QString appDir = QCoreApplication::applicationDirPath();
     const QStringList candidates = {
@@ -35,6 +38,7 @@ QString findBackendDir()
         QDir::cleanPath(appDir + u"/../../backend"_s),
         QDir::cleanPath(appDir + u"/../../../backend"_s),
     };
+    searchedOut = candidates;
     for (const QString &c : candidates) {
         if (QFileInfo::exists(c + u"/app/main.py"_s))
             return c;
@@ -260,12 +264,15 @@ void BackendLauncher::onInitialHealthDone()
 void BackendLauncher::launchProcess()
 {
     // ── Locate backend directory first (needed for .venv search) ─────────────
-    const QString backendDir = findBackendDir();
+    QStringList searchedPaths;
+    const QString backendDir = findBackendDir(searchedPaths);
     if (backendDir.isEmpty()) {
         emit failed(
                 u"Backend directory not found.\n\n"
                 "Expected a backend/ directory containing app/main.py "
-                "alongside the application."_s);
+                "alongside the application.\n\n"
+                "Searched:\n  • "_s
+                + searchedPaths.join(u"\n  • "_s));
         return;
     }
     appendLog(u"[launcher] Backend dir : %1"_s.arg(backendDir));

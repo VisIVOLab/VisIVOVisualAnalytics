@@ -3,10 +3,10 @@
 
 #include "CatalogueOverlayUtils.h"
 #include "CubeOpenPreviewTask.h"
-#include "CubeUiAssembler.h"
 
-// Controllers are forward-declared here; their full headers are included in
-// vtkWindowCube.cpp where they are constructed and their methods are called.
+// Forward-declared here; full headers are included in vtkWindowCube.cpp where
+// they are constructed and their methods are called.
+class CubeUiAssembler;
 class MomentMapController;
 class NoiseController;
 class PvController;
@@ -298,7 +298,9 @@ private:
     void updateVolumeModeVisibility(bool volumeActive);
 
     // ── Moment card state machine ─────────────────────────────────────────────
-    using MomentCardState = CubeUiAssembler::MomentCardData::State;
+    // Must stay in sync with CubeUiAssembler::MomentCardData::State (same
+    // enumerator values) — a static_assert in vtkWindowCube.cpp enforces this.
+    enum class MomentCardState { NoMoment, Computing, Ready, Error };
     MomentCardState m_momentCardState{ MomentCardState::NoMoment };
     QString         m_momentCardDetail;  // context string for Computing/Error states
     void setMomentCardState(MomentCardState state, const QString &detail = {});

@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QList>
 #include <QNetworkRequest>
+#include <QPointF>
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
@@ -108,6 +109,17 @@ struct BackendMomentResult
     QString wcsStatus{ QStringLiteral("ok") }; // "ok", "sanitized", or "degraded"
     QString wcsWarningMessage;                  // human-readable WCS warning, empty when ok
     QByteArray data;
+};
+
+/// Raw binary array result from the /binary transport endpoints.
+/// \c data holds \c rows*cols*4 bytes of float32 LE pixel values, row-major.
+/// NaN encodes masked / invalid pixels.
+struct BinaryArrayResult
+{
+    int rows{ 0 };
+    int cols{ 0 };
+    QByteArray data;   // raw float32 bytes, rows*cols*4 bytes
+    QString error;
 };
 
 struct BackendTaskCreateResult
@@ -545,6 +557,17 @@ public:
     static BackendMomentResult    parseMomentResultObject(const QJsonObject &object);
     static BackendCubePvResult    parsePvResultObject(const QJsonObject &object);
     static BackendCubeNoiseResult parseNoiseResultObject(const QJsonObject &object);
+
+    // ── Binary transport (avoids base64 overhead for large arrays) ───────────
+    BinaryArrayResult fetchMomentBinary(const QString &datasetId,
+                                        int order,
+                                        int channelStart, int channelEnd,
+                                        bool maskEnabled, float threshold,
+                                        const QString &sessionId);
+    BinaryArrayResult fetchPvBinary(const QString &datasetId,
+                                    const QVector<QPointF> &path,
+                                    int slitWidth,
+                                    const QString &sessionId);
 
 private:
     /** Build a QNetworkRequest with auth + session headers pre-applied. */
