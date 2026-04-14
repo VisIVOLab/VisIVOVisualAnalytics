@@ -399,6 +399,57 @@ void MainWindow::doOpenDataPath(const QString &path)
     win->activateWindow();
 }
 
+// ── VLKB image layer open ─────────────────────────────────────────────────────
+
+void MainWindow::openVlkbImageLayer(const QString &backendPath, const QString &displayName,
+                                     VLKBInventoryTree *tree)
+{
+    BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
+    const auto health = client.health();
+    if (!health.ok) {
+        QMessageBox::critical(
+                this, u"Backend unavailable"_s,
+                u"Cannot open VLKB dataset: the backend is not reachable.\n\nError: %1"_s.arg(
+                        health.error.isEmpty() ? u"No response"_s : health.error));
+        return;
+    }
+
+    const auto opened = client.openDataset(backendPath);
+    if (!opened.valid) {
+        QMessageBox::critical(
+                this, u"Could not open VLKB dataset"_s,
+                (opened.error.isEmpty() ? u"Backend returned no error detail."_s : opened.error));
+        return;
+    }
+
+    if (opened.kind != u"image"_s) {
+        // Not a 2D image — fall back to the generic open so cubes land in the right viewer.
+        doOpenDataPath(backendPath);
+        return;
+    }
+
+    auto *win = new vtkWindowImage(backendPath, client.baseUrl(), opened.datasetId,
+                                    opened.ctype, opened.cunit, opened.crval, opened.crpix,
+                                    opened.cdelt, opened.degenerateAxesSummary,
+                                    opened.wcsStatus, opened.wcsWarningMessage,
+                                    client.sessionId(), client.token(), this);
+
+    // Override the master layer name with the human-readable inventory label.
+    win->setLayerDisplayName(0, displayName);
+
+    // Associate this window with the inventory tree so subsequent 2D items from
+    // the same session are stacked as additional layers.
+    if (tree) tree->setLinkedImageWindow(win);
+
+    // Record in recent datasets using the display name, not the uuid path.
+    if (this->recentMgr)
+        this->recentMgr->record(backendPath, displayName, u"image"_s);
+
+    win->showMaximized();
+    win->raise();
+    win->activateWindow();
+}
+
 void MainWindow::openCatalogue3D()
 {
     BackendClient client(settings->getBackendUrl(), settings->getBackendToken());
@@ -739,7 +790,9 @@ void MainWindow::queryVlkb()
                          // When user double-clicks a dataset, ask the backend to download
                          // the FITS so it lands on the backend filesystem, not the client.
                          QObject::connect(tree, &VLKBInventoryTree::cutoutRequested, this,
-                                          [this](const QString &ivoID, const QString &pos) {
+                                          [this, tree](const QString &ivoID, const QString &pos,
+                                                       const QString &displayName,
+                                                       const QString &type) {
                                               const QString sodaUrl =
                                                       this->settings->getVLKBUrl()
                                                       + u"/soda/sync?ID="_s
@@ -756,7 +809,7 @@ void MainWindow::queryVlkb()
                                                       watcher,
                                                       &QFutureWatcher<BackendVlkbFetchResult>::finished,
                                                       this,
-                                                      [this, watcher]() {
+                                                      [this, tree, displayName, type, watcher]() {
                                                           watcher->deleteLater();
                                                           const auto res = watcher->result();
                                                           if (!res.valid) {
@@ -766,7 +819,24 @@ void MainWindow::queryVlkb()
                                                                       res.error);
                                                               return;
                                                           }
-                                                          this->doOpenDataPath(res.path);
+                                                          if (type == u"image"_s) {
+                                                              // 2D: reuse the existing viewer when
+                                                              // possible, add as layer instead of
+                                                              // opening a new window each time.
+                                                              if (tree && tree->linkedImageWindow()) {
+                                                                  tree->linkedImageWindow()
+                                                                          ->addLayerFromBackendPath(
+                                                                                  res.path,
+                                                                                  displayName);
+                                                              } else {
+                                                                  this->openVlkbImageLayer(
+                                                                          res.path, displayName, tree);
+                                                              }
+                                                          } else {
+                                                              // Cube / other: open in the appropriate
+                                                              // specialist viewer.
+                                                              this->doOpenDataPath(res.path);
+                                                          }
                                                       });
                                               const QString backendUrl =
                                                       this->settings->getBackendUrl();

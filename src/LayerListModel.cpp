@@ -143,10 +143,14 @@ QVariant LayerListModel::data(const QModelIndex &index, int role) const
 
     switch (role) {
     case Qt::DisplayRole: {
+        if (m_displayNameOverrides.contains(index.row()))
+            return m_displayNameOverrides.value(index.row());
         const auto full = QString::fromStdString(this->layerSet->filepath(index.row()));
         return QFileInfo(full).fileName();
     }
     case Qt::ToolTipRole: {
+        if (m_displayNameOverrides.contains(index.row()))
+            return m_displayNameOverrides.value(index.row());
         return QString::fromStdString(this->layerSet->filepath(index.row()));
     }
     case Qt::CheckStateRole: {
@@ -159,6 +163,18 @@ QVariant LayerListModel::data(const QModelIndex &index, int role) const
         return QVariant();
     }
     }
+}
+
+void LayerListModel::setLayerDisplayName(int row, const QString &name)
+{
+    if (row < 0 || row >= this->rowCount())
+        return;
+    if (name.isEmpty())
+        m_displayNameOverrides.remove(row);
+    else
+        m_displayNameOverrides.insert(row, name);
+    emit this->dataChanged(this->index(row), this->index(row),
+                           { Qt::DisplayRole, Qt::ToolTipRole });
 }
 
 bool LayerListModel::setData(const QModelIndex &index, const QVariant &value, int role)

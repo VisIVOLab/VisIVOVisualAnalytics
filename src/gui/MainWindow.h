@@ -14,6 +14,8 @@ class DiagnosticsWindow;
 class HiPSWindow;
 class QTabWidget;
 class Settings;
+class VLKBInventoryTree;
+class vtkWindowImage;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -54,6 +56,12 @@ private:
     void doOpenDataPath(const QString &path);
     void doOpenCataloguePath(const QString &path);
     void doOpenVbtPath(const QString &path);
+
+    /// Open a VLKB 2D cutout (backend path) in a new vtkWindowImage, label its
+    /// master layer with @p displayName, and associate the window with @p tree
+    /// so subsequent 2D items from the same inventory session are added as layers.
+    void openVlkbImageLayer(const QString &backendPath, const QString &displayName,
+                             VLKBInventoryTree *tree);
 
     Ui::MainWindow *ui;
     QPointer<Settings>               settings;

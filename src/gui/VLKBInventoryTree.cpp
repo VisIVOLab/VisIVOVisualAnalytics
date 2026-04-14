@@ -1,4 +1,5 @@
 #include "VLKBInventoryTree.h"
+#include "vtkWindowImage.h"
 
 #include <limits>
 
@@ -15,6 +16,18 @@
 #include <QXmlStreamReader>
 
 using namespace Qt::StringLiterals;
+
+// ── Linked window ─────────────────────────────────────────────────────────────
+
+vtkWindowImage *VLKBInventoryTree::linkedImageWindow() const
+{
+    return qobject_cast<vtkWindowImage *>(m_linkedImageWindow.data());
+}
+
+void VLKBInventoryTree::setLinkedImageWindow(vtkWindowImage *win)
+{
+    m_linkedImageWindow = win;
+}
 
 // ── Constructor ───────────────────────────────────────────────────────────────
 
@@ -226,7 +239,19 @@ void VLKBInventoryTree::onDoubleClicked(const QModelIndex &idx)
     if (c.ivoID.isEmpty())
         return;
 
-    emit cutoutRequested(c.ivoID, m_posCutout);
+    // Build a human-readable label: "Survey Transition" (e.g. "MAGPIS 20cm").
+    // Fall back to the ivoID tail if both fields are empty.
+    QString displayName;
+    if (!c.survey.isEmpty() || !c.transition.isEmpty()) {
+        displayName = c.survey;
+        if (!c.survey.isEmpty() && !c.transition.isEmpty())
+            displayName += u' ';
+        displayName += c.transition;
+    } else {
+        displayName = c.ivoID.section(u'/', -1);
+    }
+
+    emit cutoutRequested(c.ivoID, m_posCutout, displayName.simplified(), c.type);
 }
 
 // ── Style helpers ─────────────────────────────────────────────────────────────

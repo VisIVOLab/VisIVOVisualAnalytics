@@ -849,6 +849,62 @@ ImageLayerLoadResult fetchRemoteImageLayer(const QString &backendUrl, const QStr
     return result;
 }
 
+// ── VLKB additional-layer helper ──────────────────────────────────────────────
+// Opens a backend-side FITS path and fetches its full-resolution image.
+// Sets result.filepath = displayName so the layer list shows a human label.
+// Called from a worker thread via QtConcurrent::run.
+static ImageLayerLoadResult fetchVlkbAdditionalLayer(const QString &backendUrl,
+                                                      const QString &backendToken,
+                                                      const QString &backendPath,
+                                                      const QString &displayName)
+{
+    ImageLayerLoadResult result;
+    result.filepath = displayName.toStdString(); // used as the layer display name
+
+    BackendClient client(backendUrl, backendToken);
+    const auto opened = client.openDataset(backendPath);
+    if (!opened.valid) {
+        result.errorMessage = opened.error.isEmpty() ? "Could not open VLKB layer on backend."
+                                                     : opened.error.toStdString();
+        return result;
+    }
+    if (opened.kind != u"image"_s) {
+        result.errorMessage = "VLKB entry is not a 2D image (kind=" + opened.kind.toStdString() + ").";
+        return result;
+    }
+
+    const auto response = client.requestImage(opened.datasetId);
+    if (!response.valid) {
+        result.errorMessage = response.error.isEmpty() ? "Remote image request failed."
+                                                       : response.error.toStdString();
+        return result;
+    }
+    if (response.scalarType != u"float32"_s) {
+        result.errorMessage = "Unsupported remote image scalar type.";
+        return result;
+    }
+    const qsizetype expectedBytes =
+            static_cast<qsizetype>(response.width) * response.height
+            * static_cast<qsizetype>(sizeof(float));
+    if (response.width <= 0 || response.height <= 0 || response.data.size() != expectedBytes) {
+        result.errorMessage = "Invalid remote image payload.";
+        return result;
+    }
+
+    auto image = vtkSmartPointer<vtkImageData>::New();
+    image->SetExtent(0, response.width - 1, 0, response.height - 1, 0, 0);
+    image->SetOrigin(0., 0., 0.);
+    image->SetSpacing(1., 1., 1.);
+    image->AllocateScalars(VTK_FLOAT, 1);
+    std::memcpy(image->GetScalarPointer(), response.data.constData(),
+                static_cast<std::size_t>(expectedBytes));
+
+    result.imageData = image;
+    result.scalarRange = { response.rangeMin, response.rangeMax };
+    result.valid = true;
+    return result;
+}
+
 QString formatImageBoundsSummary(vtkImageData *imageData)
 {
     if (!imageData) {
@@ -953,6 +1009,20 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                          qDebug().noquote()
                                  << QStringLiteral("[perf][layer] UI apply: %1 ms")
                                             .arg(applyTimer.elapsed());
+                         this->clearPersistentStatusMessage();
+                     });
+    // VLKB additional-layer watcher
+    QObject::connect(&m_vlkbLayerWatcher, &QFutureWatcher<ImageLayerLoadResult>::finished, this,
+                     [this]() {
+                         this->setLayerImportEnabled(true);
+                         const auto result = m_vlkbLayerWatcher.result();
+                         if (!result.valid) {
+                             this->clearPersistentStatusMessage();
+                             QMessageBox::warning(this, u"VLKB layer failed"_s,
+                                                  QString::fromStdString(result.errorMessage));
+                             return;
+                         }
+                         this->applyLoadedLayer(result);
                          this->clearPersistentStatusMessage();
                      });
     QObject::connect(&this->remoteImageWatcher, &QFutureWatcher<ImageLayerLoadResult>::finished, this,
@@ -2997,7 +3067,7 @@ void vtkWindowImage::startRemoteFullResolutionLoad()
 bool vtkWindowImage::isBusy() const
 {
     return this->layerLoadWatcher.isRunning() || this->remoteImageWatcher.isRunning()
-            || this->remoteFullImageWatcher.isRunning();
+            || this->remoteFullImageWatcher.isRunning() || m_vlkbLayerWatcher.isRunning();
 }
 
 void vtkWindowImage::showPersistentStatusMessage(const QString &text, int minDurationMs)
@@ -4012,4 +4082,28 @@ void vtkWindowImage::setupSidebar()
     this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
             u"Controls Sidebar"_s, this);
     ui->menuView->addAction(this->actionShowControlsSidebar);
+}
+
+// ── VLKB layer support ────────────────────────────────────────────────────────
+
+void vtkWindowImage::addLayerFromBackendPath(const QString &backendPath,
+                                              const QString &displayName)
+{
+    if (this->isBusy()) {
+        qWarning().noquote()
+                << QStringLiteral("[vlkb-layer] viewer busy, ignoring addLayerFromBackendPath");
+        return;
+    }
+    this->setLayerImportEnabled(false);
+    this->showPersistentStatusMessage(
+            u"Loading VLKB layer \"%1\"..."_s.arg(displayName));
+    m_vlkbLayerWatcher.setFuture(QtConcurrent::run(
+            &fetchVlkbAdditionalLayer,
+            this->remoteBackendUrl, this->remoteBackendToken, backendPath, displayName));
+}
+
+void vtkWindowImage::setLayerDisplayName(int row, const QString &name)
+{
+    if (this->layers)
+        this->layers->setLayerDisplayName(row, name);
 }

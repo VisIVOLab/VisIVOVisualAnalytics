@@ -2,6 +2,8 @@
 #define LayerListModel_h
 
 #include <QAbstractListModel>
+#include <QHash>
+#include <QString>
 
 #include <memory>
 #include <string>
@@ -108,6 +110,12 @@ public:
    */
     void setColorMap(int index, const std::string &name);
 
+    /**
+     * Override the display name shown in the layer list for @p row.
+     * Passing an empty string removes the override (reverts to filename).
+     */
+    void setLayerDisplayName(int row, const QString &name);
+
     // Basic functionality:
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
 
@@ -129,6 +137,7 @@ public:
 private:
     std::unique_ptr<ImageLayerSet> layerSet;
     QString layerMimeType;
+    QHash<int, QString> m_displayNameOverrides; ///< row → human-readable label
 };
 
 #endif

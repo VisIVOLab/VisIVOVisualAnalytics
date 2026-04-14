@@ -74,6 +74,16 @@ public:
     ~vtkWindowImage();
     void closeEvent(QCloseEvent *event) override;
 
+    // ── VLKB layer support ────────────────────────────────────────────────────
+    /// Asynchronously open @p backendPath on the backend and add its image data
+    /// as a new layer in this viewer.  The layer is labelled @p displayName
+    /// in the layer list rather than the raw backend temp-file name.
+    /// Safe to call from the GUI thread while the viewer is open.
+    void addLayerFromBackendPath(const QString &backendPath, const QString &displayName);
+
+    /// Set/clear the human-readable label for an existing layer row.
+    void setLayerDisplayName(int row, const QString &name);
+
 private slots:
     void showLUTCustomizer();
     void updateLUTCustomizer();
@@ -163,6 +173,7 @@ private:
     QFutureWatcher<ImageLayerLoadResult> layerLoadWatcher;
     QFutureWatcher<ImageLayerLoadResult> remoteImageWatcher;
     QFutureWatcher<ImageLayerLoadResult> remoteFullImageWatcher;
+    QFutureWatcher<ImageLayerLoadResult> m_vlkbLayerWatcher;
     QTimer statusMessageClearTimer;
     QElapsedTimer statusMessageElapsed;
     int statusMessageMinDurationMs{ 0 };

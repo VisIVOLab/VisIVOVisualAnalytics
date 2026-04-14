@@ -1,8 +1,12 @@
 #pragma once
 
 #include <QHash>
+#include <QMainWindow>
+#include <QPointer>
 #include <QUuid>
 #include <QWidget>
+
+class vtkWindowImage;
 
 // ---------------------------------------------------------------------------
 // Cutout — one row returned by the VLKB SIAv2 inventory query.
@@ -48,11 +52,21 @@ public:
                                 QWidget          *parent = nullptr);
     ~VLKBInventoryTree() override = default;
 
+    /// Returns the vtkWindowImage that was opened from this inventory session,
+    /// or nullptr if it has never been set or has since been closed.
+    vtkWindowImage *linkedImageWindow() const;
+
+    /// Called by MainWindow after it creates a new vtkWindowImage for this session.
+    void setLinkedImageWindow(vtkWindowImage *win);
+
 signals:
     /// Emitted when the user double-clicks a leaf item.
-    /// @param ivoID     obs_publisher_did of the selected cutout.
-    /// @param posCutout POS string to pass to soda/sync.
-    void cutoutRequested(const QString &ivoID, const QString &posCutout);
+    /// @param ivoID       obs_publisher_did of the selected cutout.
+    /// @param posCutout   POS string to pass to soda/sync.
+    /// @param displayName Human-readable label (survey + band/transition).
+    /// @param type        "image" or "cube".
+    void cutoutRequested(const QString &ivoID, const QString &posCutout,
+                         const QString &displayName, const QString &type);
 
 private slots:
     void onDoubleClicked(const QModelIndex &idx);
@@ -68,7 +82,8 @@ private:
     int  groupIndexOf(double lambda) const;
 
     QTreeView *m_tree { nullptr };
-    QList<WavelengthGroup>   m_groups;
-    QHash<QUuid, Cutout>     m_cutouts;
-    QString                  m_posCutout;
+    QList<WavelengthGroup>       m_groups;
+    QHash<QUuid, Cutout>         m_cutouts;
+    QString                      m_posCutout;
+    QPointer<QMainWindow>        m_linkedImageWindow; ///< actual type: vtkWindowImage
 };
