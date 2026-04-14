@@ -27,6 +27,8 @@
 #include <QFileInfo>
 #include <QDoubleValidator>
 #include <QFileDialog>
+#include <QApplication>
+#include <QCoreApplication>
 #include <QFutureWatcher>
 #include <QMessageBox>
 #include <QMenu>
@@ -288,7 +290,25 @@ void MainWindow::closeEvent(QCloseEvent *event)
     const auto res = box.exec();
     if (res == QMessageBox::No) {
         event->ignore();
+        return;
     }
+
+    // User confirmed exit.  Accept this window's close, then force the whole
+    // application to terminate.
+    //
+    // We hide() — not close() — any remaining top-level windows so that their
+    // individual closeEvent busy-guards ("Loading image…", "Computing moment…"
+    // etc.) cannot block the shutdown.  hide() never sends a QCloseEvent.
+    //
+    // BackendLauncher lives on main()'s stack; its destructor runs as soon as
+    // QCoreApplication::exec() returns, terminating the backend process cleanly.
+    event->accept();
+    const auto topLevel = QApplication::topLevelWidgets();
+    for (QWidget *w : topLevel) {
+        if (w != this)
+            w->hide();
+    }
+    QCoreApplication::exit(0);
 }
 
 void MainWindow::setApplicationTheme()
