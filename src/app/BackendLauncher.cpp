@@ -42,6 +42,117 @@ QString findBackendDir()
     return {};
 }
 
+/** Returns true if @p path points to an existing, executable file. */
+bool isValidPythonExe(const QString &path)
+{
+    if (path.isEmpty())
+        return false;
+    const QFileInfo fi(path);
+    return fi.exists() && fi.isFile() && fi.isExecutable();
+}
+
+/**
+ * Resolve the Python interpreter to use for launching the backend.
+ *
+ * Priority:
+ *  1. VISIVO_BACKEND_PYTHON env var — explicit override, highest priority.
+ *  2. $VIRTUAL_ENV/bin/python       — active venv in the calling shell.
+ *  3. <backendDir>/../.venv/bin/python — project .venv in dev tree.
+ *  4. Bundled Python alongside the app executable.
+ *  5. @p settingsPython (detected at app startup via PATH).
+ *  6. Hard "python3" / "python" — last resort, may not have uvicorn.
+ *
+ * @param settingsPython  Value from Settings::getPythonLocation() (may be empty).
+ * @param backendDir      Resolved backend directory (used for .venv search).
+ * @param logOut          Accumulates human-readable log lines for the caller.
+ */
+struct PythonResolution
+{
+    QString exe;     // resolved interpreter path (or name for PATH lookup)
+    QString source;  // human-readable description for logging
+};
+
+PythonResolution resolvePythonExe(const QString &settingsPython,
+                                   const QString &backendDir,
+                                   QStringList   &logOut)
+{
+    // ── 1. Explicit override ─────────────────────────────────────────────────
+    const QString envOverride = qEnvironmentVariable("VISIVO_BACKEND_PYTHON");
+    if (!envOverride.isEmpty()) {
+        if (isValidPythonExe(envOverride)) {
+            logOut << u"[launcher] Python (VISIVO_BACKEND_PYTHON): %1"_s.arg(envOverride);
+            return { envOverride, u"VISIVO_BACKEND_PYTHON env var"_s };
+        }
+        logOut << u"[launcher] VISIVO_BACKEND_PYTHON=%1 — not executable, skipping"_s
+                          .arg(envOverride);
+    }
+
+    // ── 2. Active virtual environment ────────────────────────────────────────
+    const QString virtualEnv = qEnvironmentVariable("VIRTUAL_ENV");
+    if (!virtualEnv.isEmpty()) {
+#if defined(Q_OS_WIN)
+        const QString venvPython = QDir::cleanPath(virtualEnv + u"/Scripts/python.exe"_s);
+#else
+        const QString venvPython = QDir::cleanPath(virtualEnv + u"/bin/python"_s);
+#endif
+        if (isValidPythonExe(venvPython)) {
+            logOut << u"[launcher] Python (active venv, $VIRTUAL_ENV=%1): %2"_s
+                              .arg(virtualEnv, venvPython);
+            return { venvPython, u"active virtual environment ($VIRTUAL_ENV)"_s };
+        }
+        logOut << u"[launcher] VIRTUAL_ENV set but %1 not found, skipping"_s.arg(venvPython);
+    }
+
+    // ── 3. Project .venv in dev tree ─────────────────────────────────────────
+    //  Look for <backendDir>/../.venv/bin/python, which is the standard layout
+    //  when the developer runs:  python -m venv .venv && source .venv/bin/activate
+    //  from the repository root next to backend/.
+    if (!backendDir.isEmpty()) {
+#if defined(Q_OS_WIN)
+        const QString devVenvPython =
+                QDir::cleanPath(backendDir + u"/../.venv/Scripts/python.exe"_s);
+#else
+        const QString devVenvPython =
+                QDir::cleanPath(backendDir + u"/../.venv/bin/python"_s);
+#endif
+        if (isValidPythonExe(devVenvPython)) {
+            logOut << u"[launcher] Python (project .venv): %1"_s.arg(devVenvPython);
+            return { devVenvPython, u"project .venv (dev tree)"_s };
+        }
+    }
+
+    // ── 4. Bundled Python alongside the executable ───────────────────────────
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QStringList bundledCandidates = {
+#if defined(Q_OS_MACOS)
+        // <app>.app/Contents/MacOS/python3  (thin wrapper bundled by pyinstaller etc.)
+        QDir::cleanPath(appDir + u"/python3"_s),
+#endif
+        QDir::cleanPath(appDir + u"/python3"_s),
+        QDir::cleanPath(appDir + u"/python"_s),
+    };
+    for (const QString &c : bundledCandidates) {
+        if (isValidPythonExe(c)) {
+            logOut << u"[launcher] Python (bundled runtime): %1"_s.arg(c);
+            return { c, u"bundled backend runtime"_s };
+        }
+    }
+
+    // ── 5. Settings / PATH-detected python ───────────────────────────────────
+    if (isValidPythonExe(settingsPython)) {
+        logOut << u"[launcher] Python (system, via Settings): %1"_s.arg(settingsPython);
+        logOut << u"[launcher] NOTE: using system Python — ensure uvicorn and dependencies "
+                  "are installed in this environment."_s;
+        return { settingsPython, u"system Python (application settings)"_s };
+    }
+
+    // ── 6. Hard fallback — let the OS resolve from PATH ──────────────────────
+    logOut << u"[launcher] WARNING: no validated Python found, falling back to 'python3' on PATH."_s;
+    logOut << u"[launcher] If the backend fails to start, install uvicorn: "
+              "pip install uvicorn fastapi"_s;
+    return { u"python3"_s, u"system PATH fallback (python3)"_s };
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -148,13 +259,7 @@ void BackendLauncher::onInitialHealthDone()
 
 void BackendLauncher::launchProcess()
 {
-    if (m_pythonExe.isEmpty()) {
-        emit failed(
-                u"Python interpreter not found.\n\n"
-                "Install Python 3 and restart the application."_s);
-        return;
-    }
-
+    // ── Locate backend directory first (needed for .venv search) ─────────────
     const QString backendDir = findBackendDir();
     if (backendDir.isEmpty()) {
         emit failed(
@@ -163,11 +268,24 @@ void BackendLauncher::launchProcess()
                 "alongside the application."_s);
         return;
     }
-
     appendLog(u"[launcher] Backend dir : %1"_s.arg(backendDir));
-    appendLog(u"[launcher] Python      : %1"_s.arg(m_pythonExe));
 
-    // Extract host and port from the backend URL.
+    // ── Resolve Python interpreter (priority chain) ───────────────────────────
+    QStringList resolutionLog;
+    const auto [pythonExe, pythonSource] =
+            resolvePythonExe(m_pythonExe, backendDir, resolutionLog);
+    for (const QString &line : std::as_const(resolutionLog))
+        appendLog(line);
+
+    if (pythonExe.isEmpty()) {
+        emit failed(
+                u"Python interpreter not found.\n\n"
+                "Install Python 3 and restart the application."_s);
+        return;
+    }
+    appendLog(u"[launcher] Using Python: %1  (%2)"_s.arg(pythonExe, pythonSource));
+
+    // ── Extract host and port from the backend URL ────────────────────────────
     const QUrl parsedUrl(m_backendUrl);
     const int    port = parsedUrl.port(8000);
     const QString host = parsedUrl.host().isEmpty() ? u"127.0.0.1"_s : parsedUrl.host();
@@ -178,7 +296,7 @@ void BackendLauncher::launchProcess()
         u"--port"_s, QString::number(port),
         u"--no-access-log"_s,
     };
-    appendLog(u"[launcher] Command     : %1 %2"_s.arg(m_pythonExe, args.join(u" "_s)));
+    appendLog(u"[launcher] Command     : %1 %2"_s.arg(pythonExe, args.join(u" "_s)));
 
     m_process = new QProcess(this);
     m_process->setWorkingDirectory(backendDir);
@@ -202,7 +320,7 @@ void BackendLauncher::launchProcess()
                      this, &BackendLauncher::onProcessFinished);
 
     emit messageChanged(u"Starting backend…"_s);
-    m_process->start(m_pythonExe, args);
+    m_process->start(pythonExe, args);
 
     if (!m_process->waitForStarted(3000)) {
         const QString err = m_process->errorString();
