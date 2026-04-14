@@ -359,14 +359,11 @@ void MainWindow::doOpenDataPath(const QString &path)
                            .arg(opened.degenerateAxesSummary.isEmpty()
                                         ? QStringLiteral("no collapsed axes")
                                         : opened.degenerateAxesSummary);
-        auto *imageWin = new vtkWindowImage(path, client.baseUrl(), opened.datasetId,
-                                            opened.ctype, opened.cunit, opened.crval, opened.crpix,
-                                            opened.cdelt, opened.degenerateAxesSummary,
-                                            opened.wcsStatus, opened.wcsWarningMessage,
-                                            client.sessionId(), client.token(), this);
-        if (opened.effectiveCdeltValid)
-            imageWin->setMasterEffectiveCdelt(opened.effectiveCdelt);
-        win = imageWin;
+        win = new vtkWindowImage(path, client.baseUrl(), opened.datasetId,
+                                 opened.ctype, opened.cunit, opened.crval, opened.crpix,
+                                 opened.cdelt, opened.degenerateAxesSummary,
+                                 opened.wcsStatus, opened.wcsWarningMessage,
+                                 client.sessionId(), client.token(), this);
     } else if (opened.kind == u"cube"_s) {
         qDebug().noquote()
                 << QStringLiteral("[fits] active_axes=%1 -> opening as cube | %2")
@@ -436,9 +433,6 @@ void MainWindow::openVlkbImageLayer(const QString &backendPath, const QString &d
                                     opened.cdelt, opened.degenerateAxesSummary,
                                     opened.wcsStatus, opened.wcsWarningMessage,
                                     client.sessionId(), client.token(), this);
-    if (opened.effectiveCdeltValid)
-        win->setMasterEffectiveCdelt(opened.effectiveCdelt);
-
     // Override the master layer name with the human-readable inventory label.
     win->setLayerDisplayName(0, displayName);
 

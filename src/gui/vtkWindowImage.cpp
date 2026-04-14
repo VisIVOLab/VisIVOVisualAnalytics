@@ -907,13 +907,12 @@ static void tanSkyToPix(double lonDeg, double latDeg,
     pixY = eta_r * rad2deg / cdelt[1] + (crpix[1] - 1.0);
 }
 
-// ── VLKB additional-layer helper ──────────────────────────────────────────────
-// Opens a backend-side FITS path, fetches its full-resolution image, and
-// aligns it to the master layer using the same spacing + origin + rotation
-// approach as the legacy vtkwindow_new::addLayerImage /
-// ImageLayerSet::registerLayerToMaster.  No per-pixel resampling is done.
-// VTK composites the layers by placing each image at its world-space bounds.
-// Called from a worker thread via QtConcurrent::run.
+// ── (fetchVlkbAdditionalLayer removed) ───────────────────────────────────────
+// The VLKB add-layer path now reuses addLayerImage() directly, which calls
+// loadImageLayer() → AstroUtils/libwcs for WCS alignment.  This is the same
+// pipeline as "File → Add New Layer" and handles CD-matrix FITS correctly.
+// ─────────────────────────────────────────────────────────────────────────────
+#if 0  // dead code block kept for reference, not compiled
 static ImageLayerLoadResult fetchVlkbAdditionalLayer(const QString &backendUrl,
                                                       const QString &backendToken,
                                                       const QString &backendPath,
@@ -1103,6 +1102,7 @@ static ImageLayerLoadResult fetchVlkbAdditionalLayer(const QString &backendUrl,
     result.valid = true;
     return result;
 }
+#endif  // dead code block end
 
 QString formatImageBoundsSummary(vtkImageData *imageData)
 {
@@ -1198,6 +1198,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                                  QMessageBox::warning(this, u"Import FITS file"_s,
                                                       QString::fromStdString(result.errorMessage));
                              }
+                             m_pendingVlkbDisplayName.clear();
                              this->clearPersistentStatusMessage();
                              return;
                          }
@@ -1208,20 +1209,16 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                          qDebug().noquote()
                                  << QStringLiteral("[perf][layer] UI apply: %1 ms")
                                             .arg(applyTimer.elapsed());
-                         this->clearPersistentStatusMessage();
-                     });
-    // VLKB additional-layer watcher
-    QObject::connect(&m_vlkbLayerWatcher, &QFutureWatcher<ImageLayerLoadResult>::finished, this,
-                     [this]() {
-                         this->setLayerImportEnabled(true);
-                         const auto result = m_vlkbLayerWatcher.result();
-                         if (!result.valid) {
-                             this->clearPersistentStatusMessage();
-                             QMessageBox::warning(this, u"VLKB layer failed"_s,
-                                                  QString::fromStdString(result.errorMessage));
-                             return;
+
+                         // If this load was triggered by addLayerFromBackendPath (VLKB flow),
+                         // rename the newly-added layer to the user-friendly inventory label.
+                         if (!m_pendingVlkbDisplayName.isEmpty()) {
+                             const int lastIdx = this->layers ? this->layers->rowCount() - 1 : -1;
+                             if (lastIdx > 0)
+                                 this->setLayerDisplayName(lastIdx, m_pendingVlkbDisplayName);
+                             m_pendingVlkbDisplayName.clear();
                          }
-                         this->applyLoadedLayer(result);
+
                          this->clearPersistentStatusMessage();
                      });
     QObject::connect(&this->remoteImageWatcher, &QFutureWatcher<ImageLayerLoadResult>::finished, this,
@@ -3292,7 +3289,7 @@ void vtkWindowImage::startRemoteFullResolutionLoad()
 bool vtkWindowImage::isBusy() const
 {
     return this->layerLoadWatcher.isRunning() || this->remoteImageWatcher.isRunning()
-            || this->remoteFullImageWatcher.isRunning() || m_vlkbLayerWatcher.isRunning();
+            || this->remoteFullImageWatcher.isRunning();
 }
 
 void vtkWindowImage::showPersistentStatusMessage(const QString &text, int minDurationMs)
@@ -4311,12 +4308,6 @@ void vtkWindowImage::setupSidebar()
 
 // ── VLKB layer support ────────────────────────────────────────────────────────
 
-void vtkWindowImage::setMasterEffectiveCdelt(const std::array<double, 3> &cdelt)
-{
-    this->remoteDatasetEffectiveCdelt      = cdelt;
-    this->remoteDatasetEffectiveCdeltValid = true;
-}
-
 void vtkWindowImage::addLayerFromBackendPath(const QString &backendPath,
                                               const QString &displayName)
 {
@@ -4325,20 +4316,15 @@ void vtkWindowImage::addLayerFromBackendPath(const QString &backendPath,
                 << QStringLiteral("[vlkb-layer] viewer busy, ignoring addLayerFromBackendPath");
         return;
     }
-    this->setLayerImportEnabled(false);
-    this->showPersistentStatusMessage(
-            u"Loading VLKB layer \"%1\"..."_s.arg(displayName));
-    // Use effective CDELT (correct sign, from astropy) when available;
-    // fall back to raw remoteDatasetCdelt only for backends without astropy support.
-    const std::array<double, 3> &masterCdeltToPass =
-            this->remoteDatasetEffectiveCdeltValid
-            ? this->remoteDatasetEffectiveCdelt
-            : this->remoteDatasetCdelt;
-    m_vlkbLayerWatcher.setFuture(QtConcurrent::run(
-            &fetchVlkbAdditionalLayer,
-            this->remoteBackendUrl, this->remoteBackendToken, backendPath, displayName,
-            this->remoteDatasetCrpix, this->remoteDatasetCrval, masterCdeltToPass,
-            this->remoteDatasetCtype));
+    // Reuse the standard addLayerImage pipeline (vtkFITSReader + AstroUtils/libwcs).
+    // libwcs handles CD matrix correctly — no custom WCS math needed.
+    // The VLKB cutout FITS is saved on the backend filesystem; when the backend
+    // runs on the same machine as the client (the common case), backendPath is
+    // directly accessible as a local filesystem path.
+    m_pendingVlkbDisplayName = displayName;
+    this->addLayerImage(backendPath.toStdString());
+    // Override the generic "Loading layer..." message with the VLKB-specific label.
+    this->showPersistentStatusMessage(u"Loading VLKB layer \"%1\"..."_s.arg(displayName));
 }
 
 void vtkWindowImage::setLayerDisplayName(int row, const QString &name)
