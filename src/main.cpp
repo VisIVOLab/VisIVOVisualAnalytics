@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 #include "Version.h"
+#include "app/BackendLauncher.h"
+#include "gui/StartupDialog.h"
 #include "theme/VisivoTheme.h"
 
 #include <QVTKOpenGLNativeWidget.h>
@@ -60,6 +62,30 @@ int main(int argc, char *argv[])
 #endif
                        "%{if-category}%{category} %{endif}%{message}");
 
+    // ── Backend auto-start suppression ────────────────────────────────────────
+    // Honour either --no-backend-autostart CLI flag or VISIVO_NO_BACKEND_AUTOSTART
+    // env var so that developers / CI / users with an external backend can skip
+    // the launch step and connect to an already-running instance.
+    const QStringList cliArgs = QCoreApplication::arguments();
+    const bool noAutostart =
+            cliArgs.contains(u"--no-backend-autostart"_s)
+            || !qEnvironmentVariable("VISIVO_NO_BACKEND_AUTOSTART").isEmpty();
+
+    // ── Backend launcher (lives for the full application lifetime) ────────────
+    // Owned here in main() so the backend process is terminated cleanly when
+    // the application exits.
+    BackendLauncher launcher;
+
+    // ── Startup dialog ────────────────────────────────────────────────────────
+    // Drives the backend + auth sequence before the main window is shown.
+    // Creates MainWindow only after everything is ready.
+    StartupDialog startup(&launcher, noAutostart);
+    if (startup.exec() != QDialog::Accepted) {
+        // User clicked Quit or startup failed unrecoverably.
+        return 0;
+    }
+
+    // ── Main window ───────────────────────────────────────────────────────────
     MainWindow w;
     w.show();
 

@@ -72,12 +72,16 @@ set(PROJECT_SOURCES
         src/auth/OIDCAuthorizationCodeFlow.h
         src/auth/VisIVOUrlSchemeHandler.cpp
         src/auth/VisIVOUrlSchemeHandler.h
+        src/app/BackendLauncher.cpp
+        src/app/BackendLauncher.h
         src/app/DiagnosticsManager.cpp
         src/app/DiagnosticsManager.h
         src/app/RecentDatasetsManager.cpp
         src/app/RecentDatasetsManager.h
         src/gui/RemoteFileBrowserDialog.cpp
         src/gui/RemoteFileBrowserDialog.h
+        src/gui/StartupDialog.cpp
+        src/gui/StartupDialog.h
         src/gui/RemoteMomentWindow.cpp
         src/gui/RemoteMomentWindow.h
         src/gui/AboutDialog.cpp
