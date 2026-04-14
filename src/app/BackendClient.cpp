@@ -282,6 +282,31 @@ BackendOpenDatasetResult BackendClient::openDataset(const QString &path)
             result.cdelt[static_cast<std::size_t>(i)] = cdelt.at(i).toDouble(1.0);
         }
     }
+    result.pixelScaleArcsec =
+            object.value(QStringLiteral("pixel_scale_arcsec")).toDouble(0.0);
+    const QJsonValue effCdelt = object.value(QStringLiteral("effective_cdelt"));
+    if (effCdelt.isArray()) {
+        const QJsonArray ea = effCdelt.toArray();
+        if (ea.size() >= 2) {
+            result.effectiveCdelt[0] = ea.at(0).toDouble(1.0);
+            result.effectiveCdelt[1] = ea.at(1).toDouble(1.0);
+            result.effectiveCdelt[2] = ea.size() >= 3 ? ea.at(2).toDouble(1.0) : 1.0;
+            result.effectiveCdeltValid = true;
+        }
+    }
+    const QJsonValue ref00   = object.value(QStringLiteral("wcs_ref_sky_00"));
+    const QJsonValue ref0100 = object.value(QStringLiteral("wcs_ref_sky_0100"));
+    if (ref00.isArray() && ref0100.isArray()) {
+        const QJsonArray a00   = ref00.toArray();
+        const QJsonArray a0100 = ref0100.toArray();
+        if (a00.size() >= 2 && a0100.size() >= 2) {
+            result.wcsRefSky00[0]   = a00.at(0).toDouble();
+            result.wcsRefSky00[1]   = a00.at(1).toDouble();
+            result.wcsRefSky0100[0] = a0100.at(0).toDouble();
+            result.wcsRefSky0100[1] = a0100.at(1).toDouble();
+            result.wcsRefSkyValid   = true;
+        }
+    }
     return result;
 }
 

@@ -849,14 +849,79 @@ ImageLayerLoadResult fetchRemoteImageLayer(const QString &backendUrl, const QStr
     return result;
 }
 
+// ── WCS TAN projection helpers ────────────────────────────────────────────────
+// Implements gnomonic (TAN) forward and inverse transforms matching the math
+// used by AstroUtils / libwcs.  All angles in degrees; pixels are 0-indexed.
+//
+// crpix is the FITS 1-indexed reference pixel → we subtract 1 to get 0-indexed.
+// cdelt is degrees per pixel (typically negative for RA axis).
+
+/// 0-indexed pixel → celestial (lon, lat) in degrees via TAN projection.
+static void tanPixToSky(double pixX, double pixY,
+                        const std::array<double, 3> &crpix,
+                        const std::array<double, 3> &crval,
+                        const std::array<double, 3> &cdelt,
+                        double &lonDeg, double &latDeg)
+{
+    const double deg2rad = vtkMath::Pi() / 180.0;
+    const double rad2deg = 180.0 / vtkMath::Pi();
+
+    // Offset from reference pixel (0-indexed)
+    const double xi  = cdelt[0] * (pixX - (crpix[0] - 1.0));  // degrees
+    const double eta = cdelt[1] * (pixY - (crpix[1] - 1.0));  // degrees
+
+    const double xi_r  = xi  * deg2rad;
+    const double eta_r = eta * deg2rad;
+    const double lon0  = crval[0] * deg2rad;
+    const double lat0  = crval[1] * deg2rad;
+
+    const double D = std::cos(lat0) - eta_r * std::sin(lat0);
+    lonDeg = (lon0 + std::atan2(xi_r, D)) * rad2deg;
+    latDeg = std::atan2(std::sin(lat0) + eta_r * std::cos(lat0),
+                        std::sqrt(xi_r * xi_r + D * D)) * rad2deg;
+}
+
+/// Celestial (lon, lat) in degrees → 0-indexed pixel via TAN projection.
+static void tanSkyToPix(double lonDeg, double latDeg,
+                        const std::array<double, 3> &crpix,
+                        const std::array<double, 3> &crval,
+                        const std::array<double, 3> &cdelt,
+                        double &pixX, double &pixY)
+{
+    const double deg2rad = vtkMath::Pi() / 180.0;
+
+    const double lon   = lonDeg  * deg2rad;
+    const double lat   = latDeg  * deg2rad;
+    const double lon0  = crval[0] * deg2rad;
+    const double lat0  = crval[1] * deg2rad;
+
+    const double dlon  = lon - lon0;
+    const double denom = std::sin(lat0) * std::sin(lat)
+                       + std::cos(lat0) * std::cos(lat) * std::cos(dlon);
+    const double xi_r  = std::cos(lat) * std::sin(dlon) / denom;
+    const double eta_r = (std::cos(lat0) * std::sin(lat)
+                        - std::sin(lat0) * std::cos(lat) * std::cos(dlon)) / denom;
+
+    const double rad2deg = 180.0 / vtkMath::Pi();
+    pixX = xi_r  * rad2deg / cdelt[0] + (crpix[0] - 1.0);
+    pixY = eta_r * rad2deg / cdelt[1] + (crpix[1] - 1.0);
+}
+
 // ── VLKB additional-layer helper ──────────────────────────────────────────────
-// Opens a backend-side FITS path and fetches its full-resolution image.
-// Sets result.filepath = displayName so the layer list shows a human label.
+// Opens a backend-side FITS path, fetches its full-resolution image, and
+// aligns it to the master layer using the same spacing + origin + rotation
+// approach as the legacy vtkwindow_new::addLayerImage /
+// ImageLayerSet::registerLayerToMaster.  No per-pixel resampling is done.
+// VTK composites the layers by placing each image at its world-space bounds.
 // Called from a worker thread via QtConcurrent::run.
 static ImageLayerLoadResult fetchVlkbAdditionalLayer(const QString &backendUrl,
                                                       const QString &backendToken,
                                                       const QString &backendPath,
-                                                      const QString &displayName)
+                                                      const QString &displayName,
+                                                      const std::array<double, 3> &masterCrpix,
+                                                      const std::array<double, 3> &masterCrval,
+                                                      const std::array<double, 3> &masterCdelt,
+                                                      const std::array<QString, 3> &masterCtype)
 {
     ImageLayerLoadResult result;
     result.filepath = displayName.toStdString(); // used as the layer display name
@@ -891,16 +956,150 @@ static ImageLayerLoadResult fetchVlkbAdditionalLayer(const QString &backendUrl,
         return result;
     }
 
-    auto image = vtkSmartPointer<vtkImageData>::New();
-    image->SetExtent(0, response.width - 1, 0, response.height - 1, 0, 0);
-    image->SetOrigin(0., 0., 0.);
-    image->SetSpacing(1., 1., 1.);
-    image->AllocateScalars(VTK_FLOAT, 1);
-    std::memcpy(image->GetScalarPointer(), response.data.constData(),
+    // Build the raw layer image from the backend payload (no resampling).
+    auto rawImage = vtkSmartPointer<vtkImageData>::New();
+    rawImage->SetExtent(0, response.width - 1, 0, response.height - 1, 0, 0);
+    rawImage->AllocateScalars(VTK_FLOAT, 1);
+    std::memcpy(rawImage->GetScalarPointer(), response.data.constData(),
                 static_cast<std::size_t>(expectedBytes));
 
-    result.imageData = image;
+    result.imageData  = rawImage;
     result.scalarRange = { response.rangeMin, response.rangeMax };
+
+    // ── Legacy WCS alignment: spacing + origin + rotation ────────────────────
+    // Mirrors ImageLayerSet::registerLayerToMaster exactly:
+    //
+    //   1. Isotropic pixel-scale ratio  →  VTK spacing
+    //   2. WCS round-trip pixel (0,0) : layer→sky→master pixel  →  VTK origin
+    //   3. WCS round-trip pixel (0,100): slope → rotation angle  →  vtkTransform
+    //
+    // Frame conversion between layer and master (e.g. FK5 ↔ Galactic) is
+    // handled by wcscon if the CTYPE pairs differ.
+    //
+    // IMPORTANT: secpixLayer uses opened.pixelScaleArcsec (from astropy, handles
+    // CD matrix) instead of computing sqrt(|CDELT1*CDELT2|)*3600 from raw header
+    // CDELT which defaults to 1.0 (3600 arcsec/pix) for CD-matrix-only FITS.
+    // Similarly, sky coordinates for origin/rotation come from opened.wcsRefSky*
+    // (astropy WCS pixel_to_world) rather than our manual tanPixToSky, which also
+    // requires correct CDELT.
+
+    // ── Debug: master WCS params ──────────────────────────────────────────────
+    // masterCdelt here is already the effective CDELT (from addLayerFromBackendPath
+    // which substitutes remoteDatasetEffectiveCdelt when valid).
+    const double secpixMaster = std::sqrt(std::abs(masterCdelt[0] * masterCdelt[1])) * 3600.0;
+    qDebug().noquote()
+            << QStringLiteral("[vlkb-layer] MASTER  cdelt=(%1,%2) secpix=%3 arcsec/px"
+                               "  crpix=(%4,%5) crval=(%6,%7) ctype=(%8,%9)")
+                       .arg(masterCdelt[0], 0, 'g', 8).arg(masterCdelt[1], 0, 'g', 8)
+                       .arg(secpixMaster, 0, 'g', 6)
+                       .arg(masterCrpix[0], 0, 'f', 2).arg(masterCrpix[1], 0, 'f', 2)
+                       .arg(masterCrval[0], 0, 'f', 6).arg(masterCrval[1], 0, 'f', 6)
+                       .arg(masterCtype[0]).arg(masterCtype[1]);
+
+    // ── Debug: overlay WCS params ─────────────────────────────────────────────
+    const double secpixLayerFromCdelt =
+            std::sqrt(std::abs(opened.cdelt[0] * opened.cdelt[1])) * 3600.0;
+    qDebug().noquote()
+            << QStringLiteral("[vlkb-layer] OVERLAY cdelt=(%1,%2) secpix_cdelt=%3 secpix_astropy=%4"
+                               "  crpix=(%5,%6) crval=(%7,%8) ctype=(%9,%10)"
+                               "  wcsRefValid=%11")
+                       .arg(opened.cdelt[0], 0, 'g', 8).arg(opened.cdelt[1], 0, 'g', 8)
+                       .arg(secpixLayerFromCdelt, 0, 'g', 6)
+                       .arg(opened.pixelScaleArcsec, 0, 'g', 6)
+                       .arg(opened.crpix[0], 0, 'f', 2).arg(opened.crpix[1], 0, 'f', 2)
+                       .arg(opened.crval[0], 0, 'f', 6).arg(opened.crval[1], 0, 'f', 6)
+                       .arg(opened.ctype[0]).arg(opened.ctype[1])
+                       .arg(opened.wcsRefSkyValid ? QStringLiteral("yes") : QStringLiteral("no"));
+    if (opened.wcsRefSkyValid) {
+        qDebug().noquote()
+                << QStringLiteral("[vlkb-layer] OVERLAY wcsRef: pix(0,0)->sky(%1,%2)"
+                                   "  pix(0,100)->sky(%3,%4)")
+                           .arg(opened.wcsRefSky00[0], 0, 'f', 8).arg(opened.wcsRefSky00[1], 0, 'f', 8)
+                           .arg(opened.wcsRefSky0100[0], 0, 'f', 8).arg(opened.wcsRefSky0100[1], 0, 'f', 8);
+    }
+
+    // Use astropy pixel scale when available; fall back to CDELT only as last resort.
+    const double secpixLayer = (opened.pixelScaleArcsec > 0.0 && std::isfinite(opened.pixelScaleArcsec))
+                                ? opened.pixelScaleArcsec
+                                : secpixLayerFromCdelt;
+
+    if (secpixLayer > 0.0 && secpixMaster > 0.0
+            && std::isfinite(secpixLayer) && std::isfinite(secpixMaster)) {
+
+        // 1. Isotropic spacing
+        const double scaledPixel = secpixLayer / secpixMaster;
+        result.spacing = { scaledPixel, scaledPixel, 1.0 };
+
+        // Celestial frame codes (needed for cross-frame conversion via wcscon)
+        const int layerFrame  = inferCelestialFrameFromCtypePair(opened.ctype);
+        const int masterFrame = inferCelestialFrameFromCtypePair(masterCtype);
+        const bool needFrameConv = (layerFrame >= 0 && masterFrame >= 0
+                                    && layerFrame != masterFrame);
+
+        // Helper: convert sky coords from layer's frame to master's frame
+        auto toMasterFrame = [&](double &lon, double &lat) {
+            if (needFrameConv) {
+                wcscon(layerFrame, masterFrame, 2000.0, 2000.0, &lon, &lat, 2000.0);
+            }
+        };
+
+        // 2. Origin: layer pixel (0,0) → sky → master pixel
+        //    Prefer astropy-computed sky coord (wcsRefSky00) over manual tanPixToSky
+        //    to avoid CDELT=1.0 corruption in CD-matrix FITS.
+        double lon0, lat0;
+        if (opened.wcsRefSkyValid) {
+            lon0 = opened.wcsRefSky00[0];
+            lat0 = opened.wcsRefSky00[1];
+        } else {
+            tanPixToSky(0.0, 0.0, opened.crpix, opened.crval, opened.cdelt, lon0, lat0);
+        }
+        toMasterFrame(lon0, lat0);
+        double mx0, my0;
+        tanSkyToPix(lon0, lat0, masterCrpix, masterCrval, masterCdelt, mx0, my0);
+        result.origin = { mx0, my0, 0.0 };
+
+        // 3. Rotation: layer pixel (0,100) → sky → master pixel → slope → angle
+        double lon1, lat1;
+        if (opened.wcsRefSkyValid) {
+            lon1 = opened.wcsRefSky0100[0];
+            lat1 = opened.wcsRefSky0100[1];
+        } else {
+            tanPixToSky(0.0, 100.0, opened.crpix, opened.crval, opened.cdelt, lon1, lat1);
+        }
+        toMasterFrame(lon1, lat1);
+        double mx1, my1;
+        tanSkyToPix(lon1, lat1, masterCrpix, masterCrval, masterCdelt, mx1, my1);
+
+        const double dx = mx1 - mx0;
+        const double dy = my1 - my0;
+        if (std::abs(dx) > 1e-9) {
+            // Same formula as legacy vtkwindow_new::addLayerImage / registerLayerToMaster
+            const double m = std::abs(dy / dx);
+            result.rotationDegrees = 90.0 - std::atan(m) * 180.0 / M_PI;
+        }
+        // dx ≈ 0: overlay column maps to master column → no rotation
+
+        qDebug().noquote()
+                << QStringLiteral("[vlkb-layer] COMPUTED scaledPixel=%1"
+                                   " origin=(%2,%3) angle=%4°"
+                                   " frameConv=%5 skySource=%6")
+                           .arg(scaledPixel, 0, 'g', 6)
+                           .arg(mx0, 0, 'g', 8).arg(my0, 0, 'g', 8)
+                           .arg(result.rotationDegrees, 0, 'f', 4)
+                           .arg(needFrameConv ? QStringLiteral("yes") : QStringLiteral("no"))
+                           .arg(opened.wcsRefSkyValid ? QStringLiteral("astropy") : QStringLiteral("tanPixToSky"));
+    } else {
+        qWarning().noquote()
+                << QStringLiteral("[vlkb-layer] degenerate pixel scale for \"%1\","
+                                   " secpixLayer=%2 secpixMaster=%3"
+                                   " (layer cdelt=(%4,%5) astropy=%6);"
+                                   " using raw image without WCS alignment")
+                           .arg(displayName)
+                           .arg(secpixLayer).arg(secpixMaster)
+                           .arg(opened.cdelt[0]).arg(opened.cdelt[1])
+                           .arg(opened.pixelScaleArcsec);
+    }
+
     result.valid = true;
     return result;
 }
@@ -2736,10 +2935,12 @@ bool vtkWindowImage::catalogueWorldToPixel(double raDeg, double decDeg, std::arr
         || std::abs(this->remoteDatasetCdelt[1]) <= std::numeric_limits<double>::epsilon()) {
         return false;
     }
-    pixel[0] = ((nativeX - this->remoteDatasetCrval[0]) / this->remoteDatasetCdelt[0])
-            + this->remoteDatasetCrpix[0] - 1.0;
-    pixel[1] = ((nativeY - this->remoteDatasetCrval[1]) / this->remoteDatasetCdelt[1])
-            + this->remoteDatasetCrpix[1] - 1.0;
+    // Use the full TAN (gnomonic) inverse projection instead of the linear
+    // approximation that was here before.  The linear formula diverges from
+    // the true sky position by ~1 arcsec per degree from the reference pixel,
+    // which matters for fields wider than ~1 degree.
+    tanSkyToPix(nativeX, nativeY, this->remoteDatasetCrpix, this->remoteDatasetCrval,
+                this->remoteDatasetCdelt, pixel[0], pixel[1]);
     return std::isfinite(pixel[0]) && std::isfinite(pixel[1]);
 }
 
@@ -2886,8 +3087,32 @@ void vtkWindowImage::applyLoadedLayer(const ImageLayerLoadResult &result)
     timer.start();
     this->stack->AddImage(this->layers->addLayer(result));
     const int masterIndex = this->layers->getMasterIndex();
-    this->applyInitialAutoscale(this->layers->getImageData(masterIndex),
-                                this->layers->getLookupTable(masterIndex), "local apply");
+    const int newLayerIndex = this->layers->rowCount() - 1;
+
+    if (newLayerIndex > masterIndex) {
+        // Additional layer: autoscale it independently; leave master untouched
+        // so the user's existing display settings are preserved.
+        //
+        // NaN transparency: resampled VLKB layers fill out-of-bounds pixels with
+        // NaN.  If NanColor were white/opaque (the default), those regions would
+        // render as a white haze over the master image.  Setting alpha = 0 makes
+        // them fully transparent so the master shows through unaffected.
+        if (auto *newLut = this->layers->getLookupTable(newLayerIndex)) {
+            newLut->SetNanColor(0., 0., 0., 0.);
+        }
+        this->applyInitialAutoscale(this->layers->getImageData(newLayerIndex),
+                                    this->layers->getLookupTable(newLayerIndex),
+                                    "vlkb additional layer");
+        // Ensure savedLinearDisplayRanges covers all layers.
+        if (static_cast<int>(this->savedLinearDisplayRanges.size()) <= newLayerIndex) {
+            this->savedLinearDisplayRanges.resize(static_cast<std::size_t>(newLayerIndex + 1),
+                                                  { std::numeric_limits<double>::quiet_NaN(),
+                                                    std::numeric_limits<double>::quiet_NaN() });
+        }
+    } else {
+        this->applyInitialAutoscale(this->layers->getImageData(masterIndex),
+                                    this->layers->getLookupTable(masterIndex), "local apply");
+    }
     this->displayStateInitialized = true;
     this->updateLargeImageMode(this->layers->getImageData(masterIndex), "local apply");
     if (this->probeValid) {
@@ -4086,6 +4311,12 @@ void vtkWindowImage::setupSidebar()
 
 // ── VLKB layer support ────────────────────────────────────────────────────────
 
+void vtkWindowImage::setMasterEffectiveCdelt(const std::array<double, 3> &cdelt)
+{
+    this->remoteDatasetEffectiveCdelt      = cdelt;
+    this->remoteDatasetEffectiveCdeltValid = true;
+}
+
 void vtkWindowImage::addLayerFromBackendPath(const QString &backendPath,
                                               const QString &displayName)
 {
@@ -4097,9 +4328,17 @@ void vtkWindowImage::addLayerFromBackendPath(const QString &backendPath,
     this->setLayerImportEnabled(false);
     this->showPersistentStatusMessage(
             u"Loading VLKB layer \"%1\"..."_s.arg(displayName));
+    // Use effective CDELT (correct sign, from astropy) when available;
+    // fall back to raw remoteDatasetCdelt only for backends without astropy support.
+    const std::array<double, 3> &masterCdeltToPass =
+            this->remoteDatasetEffectiveCdeltValid
+            ? this->remoteDatasetEffectiveCdelt
+            : this->remoteDatasetCdelt;
     m_vlkbLayerWatcher.setFuture(QtConcurrent::run(
             &fetchVlkbAdditionalLayer,
-            this->remoteBackendUrl, this->remoteBackendToken, backendPath, displayName));
+            this->remoteBackendUrl, this->remoteBackendToken, backendPath, displayName,
+            this->remoteDatasetCrpix, this->remoteDatasetCrval, masterCdeltToPass,
+            this->remoteDatasetCtype));
 }
 
 void vtkWindowImage::setLayerDisplayName(int row, const QString &name)

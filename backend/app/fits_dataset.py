@@ -173,6 +173,56 @@ class ScientificFitsDataset:
     def _axis_float(self, key: str, default: float = 0.0) -> float:
         return float(self.header.get(key, default))
 
+    def _wcs_ref_pixel_sky(self, pix_x: float, pix_y: float) -> list[float] | None:
+        """Return [lon, lat] in degrees (native WCS frame) for a 0-indexed pixel via astropy."""
+        if self.wcs is None:
+            return None
+        try:
+            celestial = self.wcs.celestial
+            if celestial is None or celestial.pixel_n_dim < 2:
+                return None
+            coords = celestial.all_pix2world([[pix_x, pix_y]], 0)
+            lon, lat = float(coords[0][0]), float(coords[0][1])
+            if not (np.isfinite(lon) and np.isfinite(lat)):
+                return None
+            return [lon, lat]
+        except Exception as exc:
+            logger.warning("[fits] WCS ref pixel (%.0f,%.0f) failed for path=%s: %s",
+                           pix_x, pix_y, self.path, exc)
+            return None
+
+    def effective_cdelt(self) -> list[float] | None:
+        """Return [cdelt1_eff, cdelt2_eff] in deg/pix with CORRECT SIGN via astropy WCS.
+
+        Unlike the raw CDELT header keyword (which defaults to 1.0 for CD-matrix FITS),
+        this uses a 1-pixel perturbation at the reference pixel to derive the effective
+        per-axis pixel scale including the correct algebraic sign.  The sign encodes
+        image orientation (e.g. RA-axis is typically negative).
+        Returns None when WCS is unavailable.
+        """
+        if self.wcs is None:
+            return None
+        try:
+            celestial = self.wcs.celestial
+            if celestial is None or celestial.pixel_n_dim < 2:
+                return None
+            crpix1_0 = float(self.header.get("CRPIX1", 1.0)) - 1.0
+            crpix2_0 = float(self.header.get("CRPIX2", 1.0)) - 1.0
+            # sky at CRPIX (should equal CRVAL)
+            sky_ref  = celestial.all_pix2world([[crpix1_0,       crpix2_0      ]], 0)[0]
+            # sky at CRPIX + (1,0)  →  cdelt1 direction
+            sky_p1x  = celestial.all_pix2world([[crpix1_0+ 1.0,  crpix2_0      ]], 0)[0]
+            # sky at CRPIX + (0,1)  →  cdelt2 direction
+            sky_p1y  = celestial.all_pix2world([[crpix1_0,        crpix2_0+ 1.0]], 0)[0]
+            eff1 = float(sky_p1x[0] - sky_ref[0])
+            eff2 = float(sky_p1y[1] - sky_ref[1])
+            if not (np.isfinite(eff1) and np.isfinite(eff2)):
+                return None
+            return [eff1, eff2, float(self._axis_float("CDELT3", 1.0))]
+        except Exception as exc:
+            logger.warning("[fits] effective_cdelt failed for path=%s: %s", self.path, exc)
+            return None
+
     def geometry_metadata(self) -> dict[str, Any]:
         spacing = [self._axis_float("CDELT1", 1.0), self._axis_float("CDELT2", 1.0), self._axis_float("CDELT3", 1.0)]
         origin = [
@@ -220,6 +270,17 @@ class ScientificFitsDataset:
             "crval": [self._axis_float(f"CRVAL{i}") for i in range(1, 4)],
             "crpix": [self._axis_float(f"CRPIX{i}", 1.0) for i in range(1, 4)],
             "cdelt": spacing,
+            # Pixel scale from astropy WCS (handles CD matrix / PC matrix correctly).
+            # Clients should prefer this over sqrt(|CDELT1*CDELT2|) * 3600.
+            "pixel_scale_arcsec": float(self.spatial_pixel_scale_arcsec()),
+            # Effective per-axis CDELT in deg/pix WITH CORRECT SIGN, derived from a
+            # 1-pixel perturbation at CRPIX via astropy WCS.  Replaces raw CDELT
+            # (which defaults to 1.0 for CD-matrix-only FITS) in TAN sky↔pixel math.
+            "effective_cdelt": self.effective_cdelt(),
+            # Pre-computed sky coordinates (native frame, degrees) for layer alignment.
+            # Computed via astropy WCS pixel_to_world, bypassing CDELT limitations.
+            "wcs_ref_sky_00":   self._wcs_ref_pixel_sky(0.0,   0.0),
+            "wcs_ref_sky_0100": self._wcs_ref_pixel_sky(0.0, 100.0),
         }
 
     def cube_numpy_spectral_fits_axis(self) -> int:

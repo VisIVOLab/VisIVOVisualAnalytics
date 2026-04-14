@@ -84,6 +84,13 @@ public:
     /// Set/clear the human-readable label for an existing layer row.
     void setLayerDisplayName(int row, const QString &name);
 
+    /// Store the effective per-axis CDELT (deg/pix, correct sign) for the master
+    /// dataset, derived from astropy WCS.  Must be called after construction when
+    /// the BackendOpenDatasetResult.effectiveCdeltValid flag is true.
+    /// Used by fetchVlkbAdditionalLayer for tanSkyToPix(master) to avoid the
+    /// raw CDELT=1.0 default that CD-matrix FITS produce.
+    void setMasterEffectiveCdelt(const std::array<double, 3> &cdelt);
+
 private slots:
     void showLUTCustomizer();
     void updateLUTCustomizer();
@@ -136,6 +143,11 @@ private:
     const QString remoteDegenerateAxesSummary;
     const QString remoteWcsStatus;
     const QString remoteWcsWarningMessage;
+    /// Effective CDELT with correct sign from astropy (set via setMasterEffectiveCdelt).
+    /// Replaces raw remoteDatasetCdelt (which may be 1.0 for CD-matrix FITS) in
+    /// tanSkyToPix calls used during VLKB layer alignment.
+    std::array<double, 3> remoteDatasetEffectiveCdelt{ 1.0, 1.0, 1.0 };
+    bool remoteDatasetEffectiveCdeltValid{ false };
     bool wcsDiagnosticPublished{ false };
     bool remoteDisplayingPreview{ false };
     std::array<int, 2> remoteFullImageDims{ 0, 0 };

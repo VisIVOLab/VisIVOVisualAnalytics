@@ -70,6 +70,19 @@ struct BackendOpenDatasetResult
     std::array<double, 3> crval{ 0.0, 0.0, 0.0 };
     std::array<double, 3> crpix{ 1.0, 1.0, 1.0 };
     std::array<double, 3> cdelt{ 1.0, 1.0, 1.0 };
+    /// Pixel scale in arcsec from astropy (handles CD matrix / PC matrix).
+    /// Prefer over sqrt(|CDELT1*CDELT2|)*3600 for layer alignment.
+    double pixelScaleArcsec{ 0.0 };
+    /// Effective per-axis CDELT in deg/pix WITH CORRECT SIGN, derived from a
+    /// 1-pixel perturbation at CRPIX via astropy WCS.  Valid when effectiveCdeltValid=true.
+    /// Unlike the raw cdelt field, this is correct even for CD-matrix-only FITS.
+    std::array<double, 3> effectiveCdelt{ 1.0, 1.0, 1.0 };
+    bool effectiveCdeltValid{ false };
+    /// Sky coordinates (native WCS frame, degrees) of image pixels (0,0) and (0,100).
+    /// Computed server-side by astropy to bypass CDELT limitations.
+    std::array<double, 2> wcsRefSky00{ 0.0, 0.0 };
+    std::array<double, 2> wcsRefSky0100{ 0.0, 0.0 };
+    bool wcsRefSkyValid{ false };
 };
 
 struct BackendFileHeaderResult
