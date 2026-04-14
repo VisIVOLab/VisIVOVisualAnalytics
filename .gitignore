@@ -351,3 +351,4 @@ xcuserdata/
 /backend/app/__pycache__
 /backend/tests/__pycache__
 .claude/
+/legacy

@@ -17,6 +17,8 @@
 #include "HiPSWindow.h"
 #include "vtkWindowVbt.h"
 #include "vtkWindowVbtVolume.h"
+#include "VLKBInventoryTree.h"
+#include "vlkb/VlkbQueryService.h"
 
 #include <QButtonGroup>
 #include <QCloseEvent>
@@ -172,6 +174,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     ui->lineRadius->setValidator(new QDoubleValidator(ui->lineRadius));
     ui->lineDLon->setValidator(new QDoubleValidator(ui->lineDLon));
     ui->lineDLat->setValidator(new QDoubleValidator(ui->lineDLat));
+
+    QObject::connect(ui->btnQuery, &QPushButton::clicked, this, &MainWindow::queryVlkb);
 
     // ── Wire DataHub signals to MainWindow actions ────────────────────────────
     QObject::connect(this->dataHub, &DataHubWidget::openDataRequested,
@@ -685,4 +689,96 @@ void MainWindow::skyRegionSelected(const QString &point, const QString &area)
         ui->lineDLon->setText(QString::number(rect[0]));
         ui->lineDLat->setText(QString::number(rect[1]));
     }
+}
+
+// ── VLKB query ────────────────────────────────────────────────────────────────
+
+void MainWindow::queryVlkb()
+{
+    const double lon = ui->lineLon->text().toDouble();
+    const double lat = ui->lineLat->text().toDouble();
+
+    const bool useCircle = !ui->lineRadius->text().trimmed().isEmpty();
+    const double radius  =  ui->lineRadius->text().toDouble();  // used when useCircle
+    const double dl      =  ui->lineDLon->text().toDouble() * .5;
+    const double db      =  ui->lineDLat->text().toDouble() * .5;
+
+    if (ui->lineLon->text().isEmpty() || ui->lineLat->text().isEmpty()) {
+        QMessageBox::information(this, u"VLKB"_s,
+                                 u"Enter galactic longitude and latitude before querying."_s);
+        return;
+    }
+
+    // Build the POS string that will later be forwarded to SODA.
+    const QString posStr = useCircle
+            ? u"CIRCLE %1 %2 %3"_s.arg(QString::number(lon < 0. ? lon + 180. : lon),
+                                        QString::number(lat),
+                                        QString::number(radius))
+            : u"RANGE %1 %2 %3 %4"_s.arg(
+                      QString::number(lon - dl < 0. ? lon - dl + 180. : lon - dl),
+                      QString::number(lon + dl < 0. ? lon + dl + 180. : lon + dl),
+                      QString::number(lat - db),
+                      QString::number(lat + db));
+
+    ui->btnQuery->setEnabled(false);
+
+    auto *svc = new VlkbQueryService(this->settings->getVLKBUrl(), this->auth, this);
+
+    // On success — show the inventory tree; svc lives until it emits.
+    QObject::connect(svc, &VlkbQueryService::searchFinished, this,
+                     [this, svc, posStr](const QByteArray &votable) {
+                         ui->btnQuery->setEnabled(true);
+                         svc->deleteLater();
+
+                         auto *tree = new VLKBInventoryTree(votable, posStr, this);
+                         tree->setAttribute(Qt::WA_DeleteOnClose);
+                         tree->show();
+                         tree->raise();
+
+                         // When user double-clicks a dataset, trigger cutout download.
+                         QObject::connect(tree, &VLKBInventoryTree::cutoutRequested, this,
+                                          [this, svc2 = new VlkbQueryService(
+                                                   this->settings->getVLKBUrl(),
+                                                   this->auth, this)](
+                                                  const QString &ivoID,
+                                                  const QString &pos) mutable {
+                                              svc2->downloadCutout(ivoID, pos, this->vlkbTempDir());
+
+                                              QObject::connect(
+                                                      svc2, &VlkbQueryService::cutoutFinished, this,
+                                                      [this, svc2](const QString &localPath) {
+                                                          svc2->deleteLater();
+                                                          this->doOpenDataPath(localPath);
+                                                      });
+                                              QObject::connect(
+                                                      svc2, &VlkbQueryService::cutoutFailed, this,
+                                                      [this, svc2](const QString &err) {
+                                                          svc2->deleteLater();
+                                                          QMessageBox::critical(
+                                                                  this, u"VLKB cutout failed"_s,
+                                                                  err);
+                                                      });
+                                          });
+                     });
+
+    QObject::connect(svc, &VlkbQueryService::searchFailed, this,
+                     [this, svc](const QString &err) {
+                         ui->btnQuery->setEnabled(true);
+                         svc->deleteLater();
+                         QMessageBox::critical(this, u"VLKB query failed"_s, err);
+                     });
+
+    if (useCircle) {
+        svc->searchCircle(lon, lat, radius);
+    } else {
+        svc->searchRange(lon, lat, dl, db);
+    }
+}
+
+QDir MainWindow::vlkbTempDir() const
+{
+    QDir d(QDir::temp().absoluteFilePath(u"visivo_vlkb"_s));
+    if (!d.exists())
+        d.mkpath(u"."_s);
+    return d;
 }

@@ -3,6 +3,7 @@
 
 #include "app/RecentDatasetsManager.h"
 
+#include <QDir>
 #include <QMainWindow>
 #include <QPointer>
 
@@ -44,6 +45,7 @@ private slots:
     void changeViewSelectionMode();
     void skyRegionSelected(const QString &point, const QString &area);
     void reopenDataset(const RecentDataset &dataset);
+    void queryVlkb();   ///< Triggered by btnQuery in the VLKB panel
 
 private:
     void buildDataMenu();
@@ -63,6 +65,10 @@ private:
     QPointer<RecentDatasetsManager>  recentMgr;
 
     void openDiagnosticsWindow();
+
+    /// Returns (creating if needed) the temp directory for VLKB FITS downloads.
+    QDir vlkbTempDir() const;
 };
+
 
 #endif

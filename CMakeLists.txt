@@ -86,6 +86,10 @@ set(PROJECT_SOURCES
         src/gui/CatalogueTableModel.h
         src/gui/DataHubWidget.cpp
         src/gui/DataHubWidget.h
+        src/gui/VLKBInventoryTree.cpp
+        src/gui/VLKBInventoryTree.h
+        src/vlkb/VlkbQueryService.cpp
+        src/vlkb/VlkbQueryService.h
         src/gui/theme/VisivoTheme.cpp
         src/gui/theme/VisivoTheme.h
         src/gui/Catalogue3DTableModel.cpp
