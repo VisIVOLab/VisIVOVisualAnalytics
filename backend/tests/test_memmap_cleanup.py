@@ -7,6 +7,7 @@ Covers:
   3. SessionRegistry eviction — close() is called before session is popped
   4. Stale session with no VBT datasets — close() is a safe no-op
   5. Multiple VBT datasets in one session — all memmaps closed
+  6. Anonymous session FD flush (M3 fix) — datasets flushed on TTL, session kept alive
 
 Run with:
     cd backend
@@ -21,7 +22,12 @@ import tempfile
 import numpy as np
 import pytest
 
-from app.sessions import Session, SessionRegistry, _safe_close_memmap
+from app.sessions import (
+    Session,
+    SessionRegistry,
+    _safe_close_memmap,
+    _ANON_SESSION_ID,
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -251,3 +257,168 @@ def test_fd_count_does_not_grow_after_close(tmp_path):
 
     # Allow a small margin for test runner internals, but not 20 leaked fds.
     assert after - before < 5, f"FD leak detected: before={before} after={after}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 6. Anonymous session FD flush — M3 fix
+#    _flush_anon_datasets() closes VBT memmaps and clears datasets but keeps
+#    the anonymous session alive in the registry.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _make_stale_registry(ttl: int = 1) -> SessionRegistry:
+    """Return a registry with an extremely short TTL so tests can mark sessions
+    stale by advancing ``last_accessed`` directly, without sleeping."""
+    return SessionRegistry(ttl_seconds=ttl)
+
+
+def _force_stale(session: Session) -> None:
+    """Push ``last_accessed`` into the past so ``idle_seconds() > TTL``."""
+    session.last_accessed = 0.0  # epoch — guaranteed older than any TTL
+
+
+def test_anon_flush_releases_vbt_memmap(tmp_path):
+    """_flush_anon_datasets() closes a VBT memmap in the anonymous session."""
+    registry = _make_stale_registry()
+    anon = registry.get_or_create_anon()
+    arr = _make_memmap(tmp_path)
+    anon.datasets["ds1"] = {"kind": "vbt", "memmap": arr}
+
+    _force_stale(anon)
+    flushed = registry._flush_anon_datasets()
+
+    assert flushed == 1
+    assert _mmap_is_closed(arr), "VBT memmap must be closed after anonymous session flush"
+
+
+def test_anon_flush_keeps_session_alive(tmp_path):
+    """The anonymous session stays in the registry after its datasets are flushed."""
+    registry = _make_stale_registry()
+    anon = registry.get_or_create_anon()
+    arr = _make_memmap(tmp_path)
+    anon.datasets["ds1"] = {"kind": "vbt", "memmap": arr}
+
+    _force_stale(anon)
+    registry._flush_anon_datasets()
+
+    # Session must still be reachable by its well-known ID.
+    assert registry.get(_ANON_SESSION_ID) is anon, \
+        "Anonymous session must not be removed from the registry on flush"
+
+
+def test_anon_flush_clears_datasets_dict(tmp_path):
+    """After flush the anonymous session's datasets dict is empty."""
+    registry = _make_stale_registry()
+    anon = registry.get_or_create_anon()
+    arr = _make_memmap(tmp_path)
+    anon.datasets["ds1"] = {"kind": "vbt", "memmap": arr}
+
+    _force_stale(anon)
+    registry._flush_anon_datasets()
+
+    assert anon.datasets == {}, "datasets dict must be empty after flush"
+
+
+def test_anon_flush_multiple_vbt_datasets(tmp_path):
+    """All VBT memmaps in the anonymous session are closed on flush."""
+    registry = _make_stale_registry()
+    anon = registry.get_or_create_anon()
+    arr1 = np.memmap(str(tmp_path / "a.bin"), dtype="float32", mode="w+", shape=(10,))
+    arr2 = np.memmap(str(tmp_path / "b.bin"), dtype="float32", mode="w+", shape=(20,))
+    anon.datasets["ds1"] = {"kind": "vbt", "memmap": arr1}
+    anon.datasets["ds2"] = {"kind": "vbt", "memmap": arr2}
+
+    _force_stale(anon)
+    flushed = registry._flush_anon_datasets()
+
+    assert flushed == 2
+    assert _mmap_is_closed(arr1)
+    assert _mmap_is_closed(arr2)
+
+
+def test_anon_flush_skips_non_vbt_datasets(tmp_path):
+    """Non-VBT datasets in the anonymous session are evicted but not crashed."""
+    registry = _make_stale_registry()
+    anon = registry.get_or_create_anon()
+    anon.datasets["fits1"] = {"kind": "fits_cube", "path": "/fake.fits"}
+    anon.datasets["cat1"] = {"kind": "catalogue"}
+
+    _force_stale(anon)
+    flushed = registry._flush_anon_datasets()  # must not raise
+
+    assert flushed == 2, "both non-VBT entries should be counted as evicted"
+    assert anon.datasets == {}
+
+
+def test_anon_flush_no_op_when_not_stale(tmp_path):
+    """A recently-used anonymous session is NOT flushed."""
+    registry = SessionRegistry(ttl_seconds=3600)  # long TTL
+    anon = registry.get_or_create_anon()
+    arr = _make_memmap(tmp_path)
+    anon.datasets["ds1"] = {"kind": "vbt", "memmap": arr}
+    # Do NOT force stale — session was just touched by get_or_create_anon().
+
+    flushed = registry._flush_anon_datasets()
+
+    assert flushed == 0, "_flush_anon_datasets must not evict a fresh session"
+    assert not _mmap_is_closed(arr), "memmap must still be open"
+    assert "ds1" in anon.datasets
+
+
+def test_anon_flush_no_op_when_no_anon_session():
+    """Flushing when no anonymous session exists returns 0 without error."""
+    registry = _make_stale_registry()
+    # Do NOT call get_or_create_anon() — no anonymous session in registry.
+    flushed = registry._flush_anon_datasets()
+    assert flushed == 0
+
+
+def test_anon_flush_resets_idle_timer(tmp_path):
+    """After flush, the anonymous session's idle timer is reset (touch() called)."""
+    registry = _make_stale_registry()
+    anon = registry.get_or_create_anon()
+    anon.datasets["ds1"] = {"kind": "vbt", "memmap": _make_memmap(tmp_path)}
+
+    _force_stale(anon)
+    registry._flush_anon_datasets()
+
+    # idle_seconds() must now be much less than the forced-stale value.
+    assert anon.idle_seconds() < 5, \
+        "touch() must be called after flush to reset the idle timer"
+
+
+def test_anon_flush_idempotent(tmp_path):
+    """Calling _flush_anon_datasets() twice must not raise."""
+    registry = _make_stale_registry()
+    anon = registry.get_or_create_anon()
+    arr = _make_memmap(tmp_path)
+    anon.datasets["ds1"] = {"kind": "vbt", "memmap": arr}
+
+    _force_stale(anon)
+    registry._flush_anon_datasets()
+    # Second call: session was touched, so idle_seconds is small → no-op.
+    flushed2 = registry._flush_anon_datasets()
+    assert flushed2 == 0  # already flushed; timer was reset
+
+
+def test_anon_flush_new_datasets_after_flush_not_affected(tmp_path):
+    """Datasets added AFTER a flush are not evicted by a subsequent no-op flush."""
+    registry = SessionRegistry(ttl_seconds=3600)
+    anon = registry.get_or_create_anon()
+
+    # First batch — will be evicted
+    arr_old = _make_memmap(tmp_path, shape=(5,))
+    anon.datasets["old"] = {"kind": "vbt", "memmap": arr_old}
+    _force_stale(anon)
+    registry._flush_anon_datasets()
+    assert _mmap_is_closed(arr_old)
+
+    # New dataset added after flush — should survive
+    p = tmp_path / "new.bin"
+    arr_new = np.memmap(str(p), dtype="float32", mode="w+", shape=(5,))
+    anon.datasets["new"] = {"kind": "vbt", "memmap": arr_new}
+
+    # With long TTL the session was just touched — no flush should happen.
+    flushed = registry._flush_anon_datasets()
+    assert flushed == 0
+    assert not _mmap_is_closed(arr_new), "new dataset must not be touched"

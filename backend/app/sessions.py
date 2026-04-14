@@ -12,6 +12,21 @@ emitted.  Future client versions should always send the session header.
 
 Stale sessions (idle beyond VISIVO_SESSION_TTL seconds, default 1800)
 are evicted by a background daemon thread.
+
+Anonymous session resource management
+--------------------------------------
+The anonymous session is never *removed* from the registry (backward-compat
+clients expect it to be permanently available), but its datasets ARE flushed
+on the same TTL schedule as normal sessions.  Flushing means:
+
+  1. Under the registry lock, the ``datasets`` dict is swapped out atomically
+     so concurrent requests cannot acquire a stale entry.
+  2. Outside the lock, every VBT ``np.memmap`` in the evicted snapshot is
+     explicitly closed via ``_safe_close_memmap()``, releasing OS file
+     descriptors immediately.
+
+This prevents unbounded FD accumulation in long-running server processes
+while preserving the anonymous session identity.
 """
 
 from __future__ import annotations
@@ -158,21 +173,74 @@ class SessionRegistry:
 
     # ── Eviction ─────────────────────────────────────────────────────────────
 
+    def _flush_anon_datasets(self) -> int:
+        """Flush stale datasets from the anonymous session without removing it.
+
+        Atomically swaps out the anonymous session's ``datasets`` dict under the
+        registry lock, then closes every VBT memmap in the snapshot outside the
+        lock (so the lock is not held during I/O).
+
+        Returns the number of dataset entries that were evicted (0 if the
+        anonymous session does not exist or was not yet stale).
+
+        Thread-safe.  Safe to call from the eviction thread or from tests.
+        """
+        evicted: dict[str, dict] = {}
+
+        with self._lock:
+            anon = self._sessions.get(_ANON_SESSION_ID)
+            if anon is None or anon.idle_seconds() <= self._ttl:
+                return 0
+            # Swap out the datasets dict atomically while holding the lock so
+            # concurrent requests cannot acquire a reference to a stale entry.
+            evicted = anon.datasets
+            anon.datasets = {}
+            # Reset idle timer so the next eviction cycle does not immediately
+            # re-flush a session that now has zero datasets.
+            anon.touch()
+
+        # Close VBT memmaps outside the lock — I/O must not hold registry lock.
+        for dataset_id, entry in evicted.items():
+            if entry.get("kind") == "vbt":
+                mm = entry.get("memmap")
+                if mm is not None:
+                    _safe_close_memmap(mm)
+                    logger.debug(
+                        "[sessions] closed anonymous memmap dataset_id=%s",
+                        dataset_id,
+                    )
+
+        if evicted:
+            logger.info(
+                "[sessions] flushed %d stale dataset(s) from anonymous session",
+                len(evicted),
+            )
+        return len(evicted)
+
     def _evict_stale(self) -> None:
         while True:
             time.sleep(min(300, self._ttl // 2))
+
+            # Collect all stale normal sessions and pop them under a single
+            # lock acquisition so the lock is not re-taken per session.
+            stale_sessions: list[Session] = []
             with self._lock:
-                stale = [
+                stale_ids = [
                     sid
                     for sid, s in self._sessions.items()
                     if sid != _ANON_SESSION_ID and s.idle_seconds() > self._ttl
                 ]
-            for sid in stale:
-                with self._lock:
-                    session = self._sessions.pop(sid, None)
-                if session is not None:
-                    session.close()
-                logger.info("[sessions] evicted stale session_id=%s", sid)
+                for sid in stale_ids:
+                    stale_sessions.append(self._sessions.pop(sid))
+
+            # Close resources outside the lock.
+            for session in stale_sessions:
+                session.close()
+                logger.info("[sessions] evicted stale session_id=%s", session.session_id)
+
+            # Anonymous session: flush stale datasets (FD fix — M3).
+            # The session itself stays in the registry.
+            self._flush_anon_datasets()
 
     def _start_eviction_thread(self) -> None:
         t = threading.Thread(target=self._evict_stale, daemon=True, name="visivo-session-eviction")
