@@ -202,6 +202,12 @@ def _moment_result_unit(order: int, bunit: str, spectral_unit: str) -> str:
         return spectral_unit
     if order == 2:
         return f"{spectral_unit}^2" if spectral_unit else ""
+    if order == 3:
+        return ""                        # dimensionless (normalised skewness)
+    if order == 4:
+        return ""                        # dimensionless (excess kurtosis)
+    if order == 5:
+        return f"{spectral_unit}^5" if spectral_unit else ""   # raw 5th-order
     if order in {6, 8, 10}:
         return bunit
     return ""
@@ -423,6 +429,57 @@ def _moment_map_from_array(
         out[valid] = num[valid] / m0[valid]
         return out
 
+    if order in {3, 4, 5}:
+        # Higher-order central moments — share M0/M1/σ computation.
+        # Shape helpers.
+        sv = spectral_values[:, None, None]   # (nz, 1, 1)
+        weights = spectral_delta[:, None, None]
+
+        m0 = np.nansum(safe * weights, axis=0, dtype=np.float64)  # float64 for precision
+        valid_m0 = np.isfinite(m0) & (m0 != 0.0)
+
+        m1 = np.full(m0.shape, np.nan, dtype=np.float64)
+        m1_num = np.nansum(safe.astype(np.float64) * sv * weights, axis=0)
+        m1[valid_m0] = m1_num[valid_m0] / m0[valid_m0]
+
+        diff = sv - m1[None, :, :]            # (nz, ny, nx) velocity deviations
+
+        # M2 = intensity-weighted variance (σ²)
+        m2_num = np.nansum(safe.astype(np.float64) * diff * diff * weights, axis=0)
+        m2 = np.full(m0.shape, np.nan, dtype=np.float64)
+        m2[valid_m0] = m2_num[valid_m0] / m0[valid_m0]
+
+        sigma = np.sqrt(np.where(m2 > 0.0, m2, np.nan))  # (ny, nx), NaN where σ≤0
+
+        out = np.full(m0.shape, np.nan, dtype=np.float32)
+
+        if order == 3:
+            # Normalised skewness: M3 / σ³  (dimensionless)
+            m3_num = np.nansum(safe.astype(np.float64) * diff ** 3 * weights, axis=0)
+            m3 = np.full(m0.shape, np.nan, dtype=np.float64)
+            m3[valid_m0] = m3_num[valid_m0] / m0[valid_m0]
+            sigma3 = sigma ** 3
+            valid_s = valid_m0 & np.isfinite(sigma3) & (sigma3 != 0.0)
+            out[valid_s] = (m3[valid_s] / sigma3[valid_s]).astype(np.float32)
+
+        elif order == 4:
+            # Excess kurtosis: M4 / σ⁴ - 3  (dimensionless)
+            m4_num = np.nansum(safe.astype(np.float64) * diff ** 4 * weights, axis=0)
+            m4 = np.full(m0.shape, np.nan, dtype=np.float64)
+            m4[valid_m0] = m4_num[valid_m0] / m0[valid_m0]
+            sigma4 = sigma ** 4
+            valid_s = valid_m0 & np.isfinite(sigma4) & (sigma4 != 0.0)
+            out[valid_s] = (m4[valid_s] / sigma4[valid_s] - 3.0).astype(np.float32)
+
+        else:  # order == 5
+            # Raw 5th-order intensity-weighted central moment (diagnostic)
+            m5_num = np.nansum(safe.astype(np.float64) * diff ** 5 * weights, axis=0)
+            m5 = np.full(m0.shape, np.nan, dtype=np.float64)
+            m5[valid_m0] = m5_num[valid_m0] / m0[valid_m0]
+            out[valid_m0] = m5[valid_m0].astype(np.float32)
+
+        return out
+
     if order == 6:
         return _chunked_m6(subset, valid_mask, n_threads)
 
@@ -504,6 +561,30 @@ def _moment_map_dask(
         da_result = _da.where(m0 != 0.0,
                               _da.nansum(da_safe * diff * diff * da_delta, axis=0) / m0,
                               np.nan)
+    elif order in {3, 4, 5}:
+        da_sv = _da.from_array(spectral_values[:, None, None], chunks=(chunk_z, -1, -1))
+        m0 = _da.nansum(da_safe * da_delta, axis=0)
+        valid_m0 = m0 != 0.0
+        m1 = _da.where(valid_m0, _da.nansum(da_safe * da_sv * da_delta, axis=0) / m0, np.nan)
+        diff = da_sv - m1[None, :, :]
+        m2 = _da.where(valid_m0,
+                       _da.nansum(da_safe * diff * diff * da_delta, axis=0) / m0,
+                       np.nan)
+        sigma = _da.sqrt(_da.where(m2 > 0.0, m2, np.nan))
+        if order == 3:
+            m3_raw = _da.where(valid_m0,
+                               _da.nansum(da_safe * diff ** 3 * da_delta, axis=0) / m0,
+                               np.nan)
+            da_result = _da.where(sigma != 0.0, m3_raw / sigma ** 3, np.nan)
+        elif order == 4:
+            m4_raw = _da.where(valid_m0,
+                               _da.nansum(da_safe * diff ** 4 * da_delta, axis=0) / m0,
+                               np.nan)
+            da_result = _da.where(sigma != 0.0, m4_raw / sigma ** 4 - 3.0, np.nan)
+        else:  # order == 5
+            da_result = _da.where(valid_m0,
+                                  _da.nansum(da_safe * diff ** 5 * da_delta, axis=0) / m0,
+                                  np.nan)
     else:
         raise ValueError(f"Unsupported moment order for Dask path: {order}.")
 
@@ -994,4 +1075,281 @@ def worker_cube_preview(path: str, downsample: int) -> dict[str, Any]:
         "range_min": range_min,
         "range_max": range_max,
         "data_base64": _b64f32(preview),
+    }
+
+
+# ── S-02: Spectral line-width maps ────────────────────────────────────────────
+
+
+def _gaussian(x: np.ndarray, amplitude: float, mean: float, sigma: float) -> np.ndarray:
+    """1-D Gaussian for scipy curve_fit."""
+    return amplitude * np.exp(-0.5 * ((x - mean) / sigma) ** 2)
+
+
+def worker_linewidth(
+    path: str,
+    channel_start: int,
+    channel_end: int,
+    mask_enabled: bool,
+    threshold_value: float,
+) -> dict[str, Any]:
+    """Compute per-pixel FWHM (Gaussian fit) and equivalent-width maps.
+
+    FWHM  = 2.3548 × σ_gaussian  (spectral units)
+    EW    = M0 / peak_brightness  (spectral units)
+
+    Both maps are returned as float32 arrays encoded in base64.
+    """
+    from scipy.optimize import curve_fit  # noqa: PLC0415 (lazy – not in every worker)
+
+    dataset = ScientificFitsDataset(path)
+    hdul, raw = dataset.open_memmap()
+    try:
+        data = dataset.squeeze_to_3d(raw)
+        if data.ndim != 3:
+            raise ValueError("Line-width maps require a 3D spectral cube.")
+        nz, ny, nx = data.shape
+        z0 = max(0, min(int(channel_start), nz - 1))
+        z1 = max(0, min(int(channel_end), nz - 1))
+        if z0 > z1:
+            raise ValueError("Invalid channel range.")
+        spectral = dataset.spectral_axis_metadata(z0, z1)
+        bunit = dataset.bunit
+        subset = np.asarray(data[z0 : z1 + 1, :, :], dtype=np.float64)
+    finally:
+        hdul.close()
+
+    spectral_values = np.asarray(spectral["coordinates"], dtype=np.float64)
+    spectral_delta = _integrated_spacing(spectral_values)
+    weights = spectral_delta[:, None, None]
+
+    valid_mask = np.isfinite(subset)
+    if mask_enabled:
+        valid_mask = valid_mask & (subset >= float(threshold_value))
+    safe = np.where(valid_mask, subset, np.nan)
+
+    # Pre-compute M0 (integrated flux) for EW denominator
+    m0 = np.nansum(safe * weights, axis=0)  # (ny, nx)
+    # Peak brightness per pixel
+    peak = np.nanmax(safe, axis=0)          # (ny, nx)
+
+    fwhm_map = np.full((ny, nx), np.nan, dtype=np.float32)
+    ew_map = np.full((ny, nx), np.nan, dtype=np.float32)
+
+    for iy in range(ny):
+        for ix in range(nx):
+            spectrum = safe[:, iy, ix]
+            finite_mask = np.isfinite(spectrum)
+            if finite_mask.sum() < 4:
+                continue
+            sv = spectral_values[finite_mask]
+            sp = spectrum[finite_mask]
+            amp0 = float(np.nanmax(sp))
+            if amp0 <= 0.0:
+                continue
+            mean0 = float(np.average(sv, weights=np.abs(sp)))
+            sigma0 = float(np.sqrt(np.average((sv - mean0) ** 2, weights=np.abs(sp))))
+            if sigma0 == 0.0:
+                sigma0 = (sv[-1] - sv[0]) / 4.0
+            try:
+                popt, _ = curve_fit(
+                    _gaussian,
+                    sv,
+                    sp,
+                    p0=[amp0, mean0, sigma0],
+                    maxfev=1000,
+                    bounds=([0, sv.min(), 0], [np.inf, sv.max(), np.inf]),
+                )
+                fwhm_map[iy, ix] = float(2.3548 * abs(popt[2]))
+            except Exception:
+                pass
+            # EW independent of Gaussian fit
+            pk = float(peak[iy, ix])
+            m0v = float(m0[iy, ix])
+            if np.isfinite(pk) and pk > 0.0 and np.isfinite(m0v):
+                ew_map[iy, ix] = m0v / pk
+
+    fwhm_range = _finite_range(fwhm_map)
+    ew_range = _finite_range(ew_map)
+    spectral_unit = str(spectral["axis_unit"])
+    return {
+        "width": nx,
+        "height": ny,
+        "scalar_type": "float32",
+        "fwhm_unit": spectral_unit,
+        "ew_unit": spectral_unit,
+        "bunit": bunit,
+        "fwhm_range_min": fwhm_range[0],
+        "fwhm_range_max": fwhm_range[1],
+        "ew_range_min": ew_range[0],
+        "ew_range_max": ew_range[1],
+        "fwhm_base64": _b64f32(fwhm_map),
+        "ew_base64": _b64f32(ew_map),
+    }
+
+
+# ── S-03: Polynomial baseline subtraction ─────────────────────────────────────
+
+
+def worker_baseline(
+    path: str,
+    output_path: str,
+    channel_start: int,
+    channel_end: int,
+    poly_order: int,
+    line_free_channels: list[int] | None,
+) -> dict[str, Any]:
+    """Fit and subtract a per-pixel polynomial baseline from a spectral cube.
+
+    ``line_free_channels`` is an optional list of channel indices (within the
+    selected range) that should be used for fitting.  If None/empty, all
+    channels are used.
+
+    The baseline-subtracted cube is written to ``output_path`` as a new FITS
+    file so it can be registered as a new dataset in the session registry.
+
+    Returns metadata for the new dataset.
+    """
+    from astropy.io import fits as _fits  # noqa: PLC0415
+
+    dataset = ScientificFitsDataset(path)
+    hdul, raw = dataset.open_memmap()
+    try:
+        data = dataset.squeeze_to_3d(raw)
+        if data.ndim != 3:
+            raise ValueError("Baseline subtraction requires a 3D spectral cube.")
+        nz, ny, nx = data.shape
+        z0 = max(0, min(int(channel_start), nz - 1))
+        z1 = max(0, min(int(channel_end), nz - 1))
+        if z0 > z1:
+            raise ValueError("Invalid channel range.")
+        subset = np.asarray(data[z0 : z1 + 1, :, :], dtype=np.float32)
+        # Copy the primary header for the output cube
+        header = hdul[0].header.copy()
+    finally:
+        hdul.close()
+
+    nchans = subset.shape[0]
+    all_chan_idx = np.arange(nchans)
+
+    # Channels to use for fitting
+    if line_free_channels and len(line_free_channels) > 0:
+        fit_idx = np.array(
+            [i for i in line_free_channels if 0 <= i < nchans], dtype=int
+        )
+        if len(fit_idx) == 0:
+            fit_idx = all_chan_idx
+    else:
+        fit_idx = all_chan_idx
+
+    deg = max(0, min(int(poly_order), 10))
+
+    # Build Vandermonde matrix for fitting channels and all channels
+    V_fit = np.vander(fit_idx.astype(float), N=deg + 1, increasing=True)  # (nfit, deg+1)
+    V_all = np.vander(all_chan_idx.astype(float), N=deg + 1, increasing=True)  # (nchans, deg+1)
+
+    # Flatten spatial dimensions for vectorised least-squares
+    flat = subset.reshape(nchans, ny * nx).astype(np.float64)  # (nchans, npix)
+    flat_fit = flat[fit_idx, :]                                 # (nfit, npix)
+
+    # Solve V_fit @ coeffs = flat_fit  for all pixels simultaneously
+    coeffs, _residuals, _rank, _sv = np.linalg.lstsq(V_fit, flat_fit, rcond=None)
+    # coeffs: (deg+1, npix)
+
+    baseline = (V_all @ coeffs).astype(np.float32)  # (nchans, npix)
+    subtracted = (flat.astype(np.float32) - baseline).reshape(nchans, ny, nx)
+
+    # Write output FITS
+    header["NAXIS3"] = nchans
+    header["CRPIX3"] = header.get("CRPIX3", 1.0) - z0
+    primary_hdu = _fits.PrimaryHDU(data=subtracted, header=header)
+    hdul_out = _fits.HDUList([primary_hdu])
+    hdul_out.writeto(output_path, overwrite=True)
+
+    range_min, range_max = _finite_range(subtracted)
+    return {
+        "width": nx,
+        "height": ny,
+        "depth": nchans,
+        "scalar_type": "float32",
+        "range_min": float(range_min),
+        "range_max": float(range_max),
+        "poly_order": deg,
+        "fit_channels": len(fit_idx),
+        "output_path": output_path,
+    }
+
+
+# ── S-04: Spectral stacking ────────────────────────────────────────────────────
+
+
+def worker_stack(
+    paths: list[str],
+    method: str,
+    weights: list[float] | None,
+) -> dict[str, Any]:
+    """Stack N spectral cubes (same spatial footprint) along the spectral axis.
+
+    Each input path must point to a 3-D spectral cube with the same (ny, nx,
+    nchans) shape.  Stacking is performed on the **spatially-collapsed** 1-D
+    mean spectrum of each cube, producing a single 1-D output spectrum.
+
+    ``method`` is one of: ``"mean"`` (default), ``"median"``, ``"weighted_mean"``.
+    ``weights`` (length N, one per cube) are only used for ``"weighted_mean"``.
+
+    Returns rows=1, cols=n_chan binary-compatible result.
+    """
+    if not paths:
+        raise ValueError("No input paths supplied for stacking.")
+
+    method = (method or "mean").lower()
+    valid_methods = {"mean", "median", "weighted_mean"}
+    if method not in valid_methods:
+        raise ValueError(f"Unknown stacking method '{method}'. Choose from {valid_methods}.")
+
+    spectra: list[np.ndarray] = []
+    for p in paths:
+        ds = ScientificFitsDataset(p)
+        hdul, raw = ds.open_memmap()
+        try:
+            cube = ds.squeeze_to_3d(raw)
+            if cube.ndim != 3:
+                raise ValueError(f"Stack input '{p}' is not a 3-D cube.")
+            arr = np.asarray(cube, dtype=np.float64)
+        finally:
+            hdul.close()
+        # Collapse spatial dimensions → mean spectrum (nchans,)
+        spec = np.nanmean(arr.reshape(arr.shape[0], -1), axis=1)
+        spectra.append(spec)
+
+    # Verify all spectra have the same length
+    n_chan = spectra[0].shape[0]
+    if any(s.shape[0] != n_chan for s in spectra):
+        raise ValueError("All input cubes must have the same number of spectral channels.")
+
+    stack = np.stack(spectra, axis=0)  # (N, n_chan)
+
+    if method == "median":
+        result_1d = np.nanmedian(stack, axis=0)
+    elif method == "weighted_mean":
+        if weights and len(weights) == len(paths):
+            w = np.array(weights, dtype=np.float64)
+            w /= w.sum()
+            result_1d = np.nansum(stack * w[:, None], axis=0)
+        else:
+            result_1d = np.nanmean(stack, axis=0)
+    else:  # "mean"
+        result_1d = np.nanmean(stack, axis=0)
+
+    result_f32 = result_1d.astype(np.float32)
+    range_min, range_max = _finite_range(result_f32.reshape(1, -1))
+    return {
+        "rows": 1,
+        "cols": int(n_chan),
+        "scalar_type": "float32",
+        "method": method,
+        "n_cubes": len(paths),
+        "range_min": float(range_min),
+        "range_max": float(range_max),
+        "data_base64": _b64f32(result_f32.reshape(1, n_chan)),
     }

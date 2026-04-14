@@ -421,6 +421,70 @@ struct BackendVlkbFetchResult
     QString path;
 };
 
+// ── S-02: Line-width maps ─────────────────────────────────────────────────────
+
+struct BackendLinewidthResult
+{
+    bool valid{ false };
+    QString error;
+    int width{ 0 };
+    int height{ 0 };
+    QString fwhmUnit;
+    QString ewUnit;
+    QString bunit;
+    double fwhmRangeMin{ 0. };
+    double fwhmRangeMax{ 0. };
+    double ewRangeMin{ 0. };
+    double ewRangeMax{ 0. };
+    /// Two back-to-back binary frames: [FWHM frame][EW frame].
+    /// Each frame: 12-byte big-endian header + float32 LE body.
+    QByteArray binaryPayload;
+};
+
+// ── S-03: Baseline subtraction ────────────────────────────────────────────────
+
+struct BackendBaselineResult
+{
+    bool valid{ false };
+    QString error;
+    QString newDatasetId;
+    int width{ 0 };
+    int height{ 0 };
+    int depth{ 0 };
+    double rangeMin{ 0. };
+    double rangeMax{ 0. };
+    int polyOrder{ 0 };
+    int fitChannels{ 0 };
+    QString outputPath;
+};
+
+// ── S-04: Spectral stacking ───────────────────────────────────────────────────
+
+struct BackendStackResult
+{
+    bool valid{ false };
+    QString error;
+    /// Stacked 1-D spectrum: rows=1, cols=n_chan.
+    BinaryArrayResult spectrum;
+    QString method;
+    int nCubes{ 0 };
+};
+
+// ── S-05: SoFiA-2 source finding ──────────────────────────────────────────────
+
+struct BackendSourceFindSource
+{
+    QVariantMap fields;   // all SoFiA catalogue columns as key→QVariant
+};
+
+struct BackendSourceFindResult
+{
+    bool valid{ false };
+    QString error;
+    int nSources{ 0 };
+    QVector<BackendSourceFindSource> sources;
+};
+
 class QJsonDocument;
 class QJsonObject;
 class QUrl;
@@ -568,6 +632,42 @@ public:
                                     const QVector<QPointF> &path,
                                     int slitWidth,
                                     const QString &sessionId);
+
+    // ── S-02: Line-width maps ─────────────────────────────────────────────────
+    /** POST /v1/spectral/linewidth/binary — FWHM + EW maps concatenated as two
+     *  binary frames.  Parse with parseBinaryFrame() twice. */
+    BackendLinewidthResult fetchLinewidthBinary(const QString &datasetId,
+                                                int channelStart, int channelEnd,
+                                                bool maskEnabled, float threshold);
+
+    // ── S-03: Baseline subtraction ────────────────────────────────────────────
+    /** POST /v1/spectral/baseline/{session_id}/{dataset_id} — subtract a
+     *  polynomial baseline and register the result as a new session dataset. */
+    BackendBaselineResult requestBaseline(const QString &datasetId,
+                                          int channelStart, int channelEnd,
+                                          int polyOrder,
+                                          const QVector<int> &lineFreeChannels = {});
+
+    // ── S-04: Spectral stacking ───────────────────────────────────────────────
+    /** POST /v1/spectral/stack/binary — stack N cubes into a 1-D spectrum.
+     *  @param datasetIds  Dataset IDs already opened in this session.
+     *  @param method      "mean", "median", or "weighted_mean".
+     *  @param weights     Optional per-cube weights (used only for weighted_mean). */
+    BackendStackResult fetchStackBinary(const QStringList &datasetIds,
+                                         const QString &method = QStringLiteral("mean"),
+                                         const QVector<double> &weights = {});
+
+    // ── S-05: SoFiA-2 source finding ──────────────────────────────────────────
+    /** POST /v1/sourcefind/{dataset_id} — run SoFiA-2 on the cube.
+     *  Returns 503 if sofia2 is not on PATH (check result.error). */
+    BackendSourceFindResult runSourceFind(const QString &datasetId,
+                                           const QVariantMap &sofiaParams = {});
+
+    // ── Binary frame parsing ──────────────────────────────────────────────────
+    /** Parse one Visivo binary frame starting at \c offset into \c payload.
+     *  Fills \c result and advances \c offset by 12 + rows*cols*4 bytes. */
+    static bool parseBinaryFrame(const QByteArray &payload, int &offset,
+                                  BinaryArrayResult &result);
 
 private:
     /** Build a QNetworkRequest with auth + session headers pre-applied. */

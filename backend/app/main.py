@@ -2651,3 +2651,387 @@ async def vlkb_fetch_cutout(
     except Exception as exc:
         logger.error("[vlkb_fetch_cutout] %s", exc)
         return VlkbFetchCutoutResponse(valid=False, error=str(exc))
+
+
+# ── S-02: Spectral line-width maps ────────────────────────────────────────────
+
+class LinewidthRequest(BaseModel):
+    dataset_id: str
+    channel_start: int = 0
+    channel_end: int = 0
+    mask_enabled: bool = False
+    threshold_value: float = 0.0
+
+
+class LinewidthResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    width: int = 0
+    height: int = 0
+    scalar_type: str = ""
+    fwhm_unit: str = ""
+    ew_unit: str = ""
+    bunit: str = ""
+    fwhm_range_min: float = 0.0
+    fwhm_range_max: float = 0.0
+    ew_range_min: float = 0.0
+    ew_range_max: float = 0.0
+    fwhm_base64: str = ""
+    ew_base64: str = ""
+
+
+@app.post("/v1/spectral/linewidth", response_model=LinewidthResponse, tags=["spectral"])
+async def spectral_linewidth(
+    request: LinewidthRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> LinewidthResponse:
+    """Compute per-pixel FWHM (Gaussian fit) and equivalent-width maps.
+
+    Both result arrays are returned as base64-encoded float32 in the JSON
+    response.  Use ``/v1/spectral/linewidth/binary`` for the raw binary format.
+    """
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "cube":
+            raise HTTPException(422, "This endpoint requires a spectral cube dataset.")
+        from .compute import worker_linewidth  # noqa: PLC0415
+        result = await _run_with_limit(
+            session,
+            worker_linewidth,
+            entry["path"],
+            request.channel_start,
+            request.channel_end,
+            request.mask_enabled,
+            request.threshold_value,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return LinewidthResponse(valid=False, error=str(exc))
+    return LinewidthResponse(valid=True, **result)
+
+
+@app.post("/v1/spectral/linewidth/binary", tags=["spectral"])
+async def spectral_linewidth_binary(
+    request: LinewidthRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Return FWHM and EW maps as concatenated binary payloads.
+
+    The response body contains two back-to-back Visivo binary frames:
+      Frame 1 — FWHM map  (height × width float32)
+      Frame 2 — EW map    (height × width float32)
+
+    Each frame uses the 12-byte big-endian header:
+      uint32 rows, uint32 cols, uint32 flags=0
+    followed by float32 LE row-major pixel values.
+    """
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "cube":
+            raise HTTPException(422, "This endpoint requires a spectral cube dataset.")
+        from .compute import worker_linewidth  # noqa: PLC0415
+        result = await _run_with_limit(
+            session,
+            worker_linewidth,
+            entry["path"],
+            request.channel_start,
+            request.channel_end,
+            request.mask_enabled,
+            request.threshold_value,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    h, w = result["height"], result["width"]
+    fwhm = np.frombuffer(base64.b64decode(result["fwhm_base64"]), dtype=np.float32).reshape(h, w)
+    ew   = np.frombuffer(base64.b64decode(result["ew_base64"]),   dtype=np.float32).reshape(h, w)
+    content = _array_to_binary(h, w, fwhm) + _array_to_binary(h, w, ew)
+    return Response(content=content, media_type="application/octet-stream")
+
+
+# ── S-03: Polynomial baseline subtraction ─────────────────────────────────────
+
+class BaselineRequest(BaseModel):
+    session_id: str
+    dataset_id: str
+    channel_start: int = 0
+    channel_end: int = 0
+    poly_order: int = 1
+    line_free_channels: list[int] = []
+
+
+class BaselineResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    new_dataset_id: str = ""
+    width: int = 0
+    height: int = 0
+    depth: int = 0
+    range_min: float = 0.0
+    range_max: float = 0.0
+    poly_order: int = 0
+    fit_channels: int = 0
+    output_path: str = ""
+
+
+@app.post("/v1/spectral/baseline/{session_id}/{dataset_id}",
+          response_model=BaselineResponse, tags=["spectral"])
+async def spectral_baseline(
+    session_id: str,
+    dataset_id: str,
+    request: BaselineRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> BaselineResponse:
+    """Fit and subtract a per-pixel polynomial baseline from a spectral cube.
+
+    Registers the baseline-subtracted cube as a new dataset in the session
+    and returns its ``new_dataset_id`` so the client can open it without an
+    additional round-trip.
+    """
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "cube":
+            raise HTTPException(422, "This endpoint requires a spectral cube dataset.")
+
+        import tempfile as _tempfile  # noqa: PLC0415
+        tmp_dir = Path(_tempfile.gettempdir()) / "visivo_baseline"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        output_path = str(tmp_dir / f"{uuid.uuid4().hex}_baseline.fits")
+
+        from .compute import worker_baseline  # noqa: PLC0415
+        result = await _run_with_limit(
+            session,
+            worker_baseline,
+            entry["path"],
+            output_path,
+            request.channel_start,
+            request.channel_end,
+            request.poly_order,
+            request.line_free_channels or None,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return BaselineResponse(valid=False, error=str(exc))
+
+    new_id = f"ds_{uuid.uuid4().hex[:12]}"
+    session.datasets[new_id] = {
+        "path": result["output_path"],
+        "kind": "cube",
+        "width": result["width"],
+        "height": result["height"],
+        "depth": result["depth"],
+    }
+    return BaselineResponse(valid=True, new_dataset_id=new_id, **{
+        k: result[k] for k in ("width", "height", "depth", "range_min", "range_max",
+                                "poly_order", "fit_channels", "output_path")
+    })
+
+
+# ── S-04: Spectral stacking ────────────────────────────────────────────────────
+
+class StackRequest(BaseModel):
+    dataset_ids: list[str]
+    method: str = "mean"
+    weights: list[float] = []
+
+
+class StackResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    rows: int = 0
+    cols: int = 0
+    scalar_type: str = ""
+    method: str = ""
+    n_cubes: int = 0
+    range_min: float = 0.0
+    range_max: float = 0.0
+    data_base64: str = ""
+
+
+@app.post("/v1/spectral/stack", response_model=StackResponse, tags=["spectral"])
+async def spectral_stack(
+    request: StackRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> StackResponse:
+    """Stack N spectral cubes into a single mean spectrum.
+
+    ``dataset_ids`` must reference cube datasets already opened in this session.
+    ``method`` is one of ``"mean"`` (default), ``"median"``, ``"weighted_mean"``.
+    ``weights`` (one per cube) are used only for ``"weighted_mean"``; ignored otherwise.
+    """
+    try:
+        paths: list[str] = []
+        for did in request.dataset_ids:
+            e = _require_dataset(session, did)
+            if e["kind"] != "cube":
+                raise HTTPException(422, f"Dataset '{did}' is not a spectral cube.")
+            paths.append(e["path"])
+        from .compute import worker_stack  # noqa: PLC0415
+        result = await _run_with_limit(
+            session,
+            worker_stack,
+            paths,
+            request.method,
+            request.weights or None,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return StackResponse(valid=False, error=str(exc))
+    return StackResponse(valid=True, **result)
+
+
+@app.post("/v1/spectral/stack/binary", tags=["spectral"])
+async def spectral_stack_binary(
+    request: StackRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Return the stacked spectrum as a binary frame (rows=1, cols=n_chan).
+
+    Wire format:  12-byte big-endian header + float32 LE body.
+    """
+    try:
+        paths: list[str] = []
+        for did in request.dataset_ids:
+            e = _require_dataset(session, did)
+            if e["kind"] != "cube":
+                raise HTTPException(422, f"Dataset '{did}' is not a spectral cube.")
+            paths.append(e["path"])
+        from .compute import worker_stack  # noqa: PLC0415
+        result = await _run_with_limit(
+            session,
+            worker_stack,
+            paths,
+            request.method,
+            request.weights or None,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    rows, cols = result["rows"], result["cols"]
+    arr = np.frombuffer(base64.b64decode(result["data_base64"]), dtype=np.float32).reshape(rows, cols)
+    return Response(
+        content=_array_to_binary(rows, cols, arr),
+        media_type="application/octet-stream",
+    )
+
+
+# ── S-05: SoFiA-2 source finding ─────────────────────────────────────────────
+
+class SourceFindRequest(BaseModel):
+    dataset_id: str
+    sofia_params: dict[str, Any] = {}
+
+
+class SourceFindResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    n_sources: int = 0
+    sources: list[dict[str, Any]] = []
+
+
+@app.post("/v1/sourcefind/{dataset_id}",
+          response_model=SourceFindResponse, tags=["sourcefind"])
+async def source_find(
+    dataset_id: str,
+    request: SourceFindRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> SourceFindResponse:
+    """Run SoFiA-2 source finder on a spectral cube.
+
+    Requires ``sofia2`` to be on ``$PATH``.  Returns HTTP 503 if not found.
+    ``sofia_params`` is an optional dict of SoFiA parameter overrides (written
+    to a temporary .par file and passed to the subprocess).
+
+    Sources are parsed from the output VOTable (``*_cat.xml``) and returned
+    as a list of dicts with all SoFiA catalogue columns.
+    """
+    import shutil as _shutil           # noqa: PLC0415
+    import subprocess as _sp           # noqa: PLC0415
+    import tempfile as _tempfile       # noqa: PLC0415
+
+    entry = _require_dataset(session, dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "Source finding requires a spectral cube dataset.")
+
+    sofia_bin = _shutil.which("sofia2") or _shutil.which("sofia")
+    if sofia_bin is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="SoFiA-2 ('sofia2' or 'sofia') not found on PATH. "
+                   "Install SoFiA-2 and ensure it is accessible.",
+        )
+
+    cube_path = entry["path"]
+
+    def _run_sofia() -> SourceFindResponse:
+        import io as _io                          # noqa: PLC0415
+        from astropy.io.votable import parse as _vot_parse  # noqa: PLC0415
+
+        with _tempfile.TemporaryDirectory(prefix="visivo_sofia_") as tmpdir:
+            # Build parameter file
+            par_lines = [
+                f"input.data = {cube_path}",
+                f"output.directory = {tmpdir}",
+                "output.filename = sofia_out",
+                "output.writeCatASCII = false",
+                "output.writeCatXML = true",
+                "output.writeCatSQL = false",
+            ]
+            for k, v in request.sofia_params.items():
+                par_lines.append(f"{k} = {v}")
+            par_path = Path(tmpdir) / "sofia.par"
+            par_path.write_text("\n".join(par_lines))
+
+            proc = _sp.run(
+                [sofia_bin, str(par_path)],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"SoFiA-2 exited with code {proc.returncode}.\n"
+                    f"stderr: {proc.stderr[-2000:]}"
+                )
+
+            # Locate the VOTable catalogue
+            import glob as _glob  # noqa: PLC0415
+            vot_files = _glob.glob(str(Path(tmpdir) / "*_cat.xml"))
+            if not vot_files:
+                return SourceFindResponse(valid=True, n_sources=0, sources=[])
+
+            vot_path = vot_files[0]
+            vot = _vot_parse(vot_path)
+            table = vot.get_first_table().to_table()
+            sources = []
+            for row in table:
+                sources.append({col: _safe_scalar(row[col]) for col in table.colnames})
+            return SourceFindResponse(valid=True, n_sources=len(sources), sources=sources)
+
+    try:
+        return await asyncio.to_thread(_run_sofia)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("[source_find] %s", exc)
+        return SourceFindResponse(valid=False, error=str(exc))
+
+
+def _safe_scalar(v: Any) -> Any:
+    """Convert numpy scalars to Python natives for JSON serialisation."""
+    if hasattr(v, "item"):
+        return v.item()
+    return v

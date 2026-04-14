@@ -890,6 +890,186 @@ BinaryArrayResult BackendClient::fetchPvBinary(const QString &datasetId,
     return result;
 }
 
+// ── Binary frame parser ───────────────────────────────────────────────────────
+
+bool BackendClient::parseBinaryFrame(const QByteArray &payload, int &offset,
+                                      BinaryArrayResult &result)
+{
+    if (payload.size() - offset < 12) {
+        result.error = QStringLiteral("Binary frame header truncated at offset %1.").arg(offset);
+        return false;
+    }
+    QDataStream ds(payload.mid(offset, 12));
+    ds.setByteOrder(QDataStream::BigEndian);
+    quint32 rows = 0, cols = 0, flags = 0;
+    ds >> rows >> cols >> flags;
+    const int bodySize = static_cast<int>(rows) * static_cast<int>(cols) * 4;
+    if (payload.size() - offset - 12 < bodySize) {
+        result.error = QStringLiteral("Binary frame body truncated (need %1 bytes).").arg(bodySize);
+        return false;
+    }
+    result.rows = static_cast<int>(rows);
+    result.cols = static_cast<int>(cols);
+    result.data = payload.mid(offset + 12, bodySize);
+    offset += 12 + bodySize;
+    return true;
+}
+
+// ── S-02: Line-width maps ─────────────────────────────────────────────────────
+
+BackendLinewidthResult BackendClient::fetchLinewidthBinary(const QString &datasetId,
+                                                            int channelStart, int channelEnd,
+                                                            bool maskEnabled, float threshold)
+{
+    BackendLinewidthResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"),      datasetId },
+            { QStringLiteral("channel_start"),   channelStart },
+            { QStringLiteral("channel_end"),     channelEnd },
+            { QStringLiteral("mask_enabled"),    maskEnabled },
+            { QStringLiteral("threshold_value"), static_cast<double>(threshold) } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/spectral/linewidth/binary")),
+                        body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    // Parse the two concatenated binary frames (FWHM then EW).
+    int offset = 0;
+    BinaryArrayResult fwhm, ew;
+    if (!parseBinaryFrame(payload, offset, fwhm)) {
+        result.error = fwhm.error;
+        return result;
+    }
+    if (!parseBinaryFrame(payload, offset, ew)) {
+        result.error = ew.error;
+        return result;
+    }
+    result.valid  = true;
+    result.width  = fwhm.cols;
+    result.height = fwhm.rows;
+    result.binaryPayload = payload;
+    return result;
+}
+
+// ── S-03: Baseline subtraction ────────────────────────────────────────────────
+
+BackendBaselineResult BackendClient::requestBaseline(const QString &datasetId,
+                                                      int channelStart, int channelEnd,
+                                                      int polyOrder,
+                                                      const QVector<int> &lineFreeChannels)
+{
+    BackendBaselineResult result;
+    QString error;
+    QJsonArray lfcArray;
+    for (int ch : lineFreeChannels)
+        lfcArray.append(ch);
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("session_id"),         m_sessionId },
+            { QStringLiteral("dataset_id"),         datasetId },
+            { QStringLiteral("channel_start"),      channelStart },
+            { QStringLiteral("channel_end"),        channelEnd },
+            { QStringLiteral("poly_order"),         polyOrder },
+            { QStringLiteral("line_free_channels"), lfcArray } });
+    const QByteArray raw =
+            performPost(QUrl(m_baseUrl
+                             + QStringLiteral("/v1/spectral/baseline/")
+                             + m_sessionId + QStringLiteral("/") + datasetId),
+                        body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+    result.valid         = obj.value(QStringLiteral("valid")).toBool();
+    result.error         = obj.value(QStringLiteral("error")).toString();
+    result.newDatasetId  = obj.value(QStringLiteral("new_dataset_id")).toString();
+    result.width         = obj.value(QStringLiteral("width")).toInt();
+    result.height        = obj.value(QStringLiteral("height")).toInt();
+    result.depth         = obj.value(QStringLiteral("depth")).toInt();
+    result.rangeMin      = obj.value(QStringLiteral("range_min")).toDouble();
+    result.rangeMax      = obj.value(QStringLiteral("range_max")).toDouble();
+    result.polyOrder     = obj.value(QStringLiteral("poly_order")).toInt();
+    result.fitChannels   = obj.value(QStringLiteral("fit_channels")).toInt();
+    result.outputPath    = obj.value(QStringLiteral("output_path")).toString();
+    return result;
+}
+
+// ── S-04: Spectral stacking ───────────────────────────────────────────────────
+
+BackendStackResult BackendClient::fetchStackBinary(const QStringList &datasetIds,
+                                                    const QString &method,
+                                                    const QVector<double> &weights)
+{
+    BackendStackResult result;
+    QString error;
+    QJsonArray idsArray;
+    for (const QString &id : datasetIds)
+        idsArray.append(id);
+    QJsonArray wArray;
+    for (double w : weights)
+        wArray.append(w);
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_ids"), idsArray },
+            { QStringLiteral("method"),      method },
+            { QStringLiteral("weights"),     wArray } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/spectral/stack/binary")),
+                        body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    int offset = 0;
+    BinaryArrayResult frame;
+    if (!parseBinaryFrame(payload, offset, frame)) {
+        result.error = frame.error;
+        return result;
+    }
+    result.valid    = true;
+    result.spectrum = frame;
+    result.method   = method;
+    result.nCubes   = datasetIds.size();
+    return result;
+}
+
+// ── S-05: SoFiA-2 source finding ──────────────────────────────────────────────
+
+BackendSourceFindResult BackendClient::runSourceFind(const QString &datasetId,
+                                                      const QVariantMap &sofiaParams)
+{
+    BackendSourceFindResult result;
+    QString error;
+    QJsonObject paramsObj;
+    for (auto it = sofiaParams.constBegin(); it != sofiaParams.constEnd(); ++it)
+        paramsObj.insert(it.key(), QJsonValue::fromVariant(it.value()));
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"),   datasetId },
+            { QStringLiteral("sofia_params"), paramsObj } });
+    const QByteArray raw =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/sourcefind/") + datasetId),
+                        body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+    result.valid    = obj.value(QStringLiteral("valid")).toBool();
+    result.error    = obj.value(QStringLiteral("error")).toString();
+    result.nSources = obj.value(QStringLiteral("n_sources")).toInt();
+    const QJsonArray sources = obj.value(QStringLiteral("sources")).toArray();
+    for (const QJsonValue &v : sources) {
+        BackendSourceFindSource src;
+        const QJsonObject so = v.toObject();
+        for (const QString &key : so.keys())
+            src.fields.insert(key, so.value(key).toVariant());
+        result.sources.append(src);
+    }
+    return result;
+}
+
 BackendTaskCreateResult BackendClient::createMomentTask(const QString &datasetId, int order,
                                                         int channelStart, int channelEnd,
                                                         bool maskEnabled,
