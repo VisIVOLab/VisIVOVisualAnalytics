@@ -49,36 +49,24 @@
       <widget class="QWidget" name="layoutWidget">
        <layout class="QVBoxLayout" name="verticalLayout_2">
         <item>
-         <layout class="QHBoxLayout" name="horizontalLayout">
-          <item>
-           <widget class="QGroupBox" name="boxLoad">
-            <property name="title">
-             <string>Local data</string>
-            </property>
-            <layout class="QVBoxLayout" name="verticalLayout_3">
-             <item>
-              <widget class="QPushButton" name="btnLoadData"/>
-             </item>
-            </layout>
-           </widget>
-          </item>
-          <item>
-           <widget class="QGroupBox" name="box3D">
-            <property name="title">
-             <string>3D</string>
-            </property>
-            <layout class="QVBoxLayout" name="verticalLayout_4">
-             <item>
-              <widget class="QPushButton" name="btnSelect3D">
-               <property name="text">
-                <string>Select</string>
-               </property>
-              </widget>
-             </item>
-            </layout>
-           </widget>
-          </item>
-         </layout>
+         <widget class="QLabel" name="labelVlkbTitle">
+          <property name="text">
+           <string>VLKB</string>
+          </property>
+          <property name="styleSheet">
+           <string notr="true">QLabel { font-size: 15px; font-weight: bold; color: #c0d0e0; }</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="labelVlkbSubtitle">
+          <property name="text">
+           <string>Query the VLKB archive</string>
+          </property>
+          <property name="styleSheet">
+           <string notr="true">QLabel { font-size: 11px; color: #607080; }</string>
+          </property>
+         </widget>
         </item>
         <item>
          <widget class="QGroupBox" name="boxSelection">
@@ -307,8 +295,6 @@
   </customwidget>
  </customwidgets>
  <tabstops>
-  <tabstop>btnLoadData</tabstop>
-  <tabstop>btnSelect3D</tabstop>
   <tabstop>radioSelNone</tabstop>
   <tabstop>radioSelPoint</tabstop>
   <tabstop>radioSelRect</tabstop>

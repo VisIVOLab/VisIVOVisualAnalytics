@@ -89,7 +89,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 
     // ── Replace the .ui central widget with a tab container ─────────────────
     // The .ui-defined central widget (panoramic view + coordinate panel) is
-    // detached and becomes "Sky View" tab 1.  DataHubWidget becomes tab 0 so
+    // detached and becomes "VLKB" tab 1.  DataHubWidget becomes tab 0 so
     // the app opens on the backend-first landing page.
     auto *tabs = new QTabWidget(this);
     tabs->setDocumentMode(true);
@@ -110,11 +110,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // Reparent the existing central widget (built by ui->setupUi) into the tab.
     auto *skyPanel = this->centralWidget();
     skyPanel->setParent(tabs);
-    tabs->addTab(skyPanel, u"Sky View"_s);
+    tabs->addTab(skyPanel, u"VLKB"_s);
 
     this->setCentralWidget(tabs);
 
-    // Permanent tabs (Data Hub + Sky View) must not show a close button.
+    // Permanent tabs (Data Hub + VLKB) must not show a close button.
     tabs->tabBar()->setTabButton(0, QTabBar::RightSide, nullptr);
     tabs->tabBar()->setTabButton(1, QTabBar::RightSide, nullptr);
 
@@ -151,7 +151,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // ── Setup Menu About ──────────────────────────────────────────────────────
     QObject::connect(ui->actionAbout, &QAction::triggered, this, &MainWindow::openAboutDialog);
 
-    // ── Setup Panoramic View (Sky View tab) ───────────────────────────────────
+    // ── Setup Panoramic View (VLKB tab) ──────────────────────────────────────
     this->loadPanoramicView();
     auto webobj = new WebViewProcess(ui->view);
     auto webChannel = new QWebChannel(ui->view);
@@ -159,9 +159,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     ui->view->page()->setWebChannel(webChannel);
     QObject::connect(webobj, &WebViewProcess::processJavascript, this,
                      &MainWindow::skyRegionSelected);
-
-    ui->btnLoadData->setIcon(QIcon(u":/icons/FILE_OPEN.png"_s));
-    QObject::connect(ui->btnLoadData, &QPushButton::clicked, this, &MainWindow::openData);
 
     auto groupSelection = new QButtonGroup(this);
     groupSelection->addButton(ui->radioSelNone);
