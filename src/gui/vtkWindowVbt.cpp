@@ -1190,6 +1190,23 @@ void vtkWindowVbt::setupRenderer()
     // vtkPointGaussianMapper may not honour consistently across VTK builds.
     this->gaussianMapper->SetOpacityArray("VbtScalar");
     this->gaussianMapper->SetScalarOpacityFunction(this->gaussianOpacityFunction.Get());
+
+    // Loading placeholder — visible until buildPointCloud() completes.
+    {
+        auto *prop = this->m_loadingActor->GetTextProperty();
+        prop->SetFontSize(16);
+        prop->SetColor(0.72, 0.84, 0.91);
+        prop->SetJustificationToCentered();
+        prop->SetVerticalJustificationToCentered();
+        prop->BoldOff();
+        prop->ShadowOff();
+        this->m_loadingActor->SetInput("Loading\xe2\x80\xa6");
+        this->m_loadingActor->GetPositionCoordinate()
+                ->SetCoordinateSystemToNormalizedViewport();
+        this->m_loadingActor->SetPosition(0.5, 0.5);
+        this->m_loadingActor->VisibilityOn();
+        this->renderer->AddActor2D(this->m_loadingActor.Get());
+    }
 }
 
 void vtkWindowVbt::buildPointCloud()
@@ -1252,6 +1269,7 @@ void vtkWindowVbt::buildPointCloud()
                  << "Z=" << (this->zFieldName.isEmpty() ? QStringLiteral("(none)") : this->zFieldName);
     }
 
+    this->m_loadingActor->VisibilityOff();
     this->updateRenderMode();
     this->resetView();
 }

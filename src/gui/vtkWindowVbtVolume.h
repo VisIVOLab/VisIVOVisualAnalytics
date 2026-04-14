@@ -14,6 +14,7 @@
 #include <vtkRenderer.h>
 #include <vtkScalarBarActor.h>
 #include <vtkSmartVolumeMapper.h>
+#include <vtkTextActor.h>
 #include <vtkVolume.h>
 #include <vtkVolumeProperty.h>
 
@@ -109,6 +110,7 @@ private:
     vtkNew<vtkScalarBarActor> scalarBar;
     vtkNew<vtkOrientationMarkerWidget> axesWidget;
     vtkSmartPointer<vtkImageData> currentImageData;
+    vtkNew<vtkTextActor> m_loadingActor;
 };
 
 #endif

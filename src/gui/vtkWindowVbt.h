@@ -18,6 +18,7 @@
 #include <vtkPolyDataMapper.h>
 #include <vtkRenderer.h>
 #include <vtkScalarBarActor.h>
+#include <vtkTextActor.h>
 
 #include <QFutureWatcher>
 #include <QMainWindow>
@@ -169,6 +170,7 @@ private:
     vtkNew<vtkCubeAxesActor> boxActor;
     vtkNew<vtkScalarBarActor> scalarBar;
     vtkNew<vtkOrientationMarkerWidget> axesWidget;
+    vtkNew<vtkTextActor> m_loadingActor;
 };
 
 #endif

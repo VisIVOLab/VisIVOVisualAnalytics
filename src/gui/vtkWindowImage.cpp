@@ -1266,6 +1266,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                              qDebug().noquote()
                                      << QStringLiteral("[remote-image] full-resolution load failed: %1")
                                                 .arg(QString::fromStdString(result.errorMessage));
+                             this->m_loadingActor->VisibilityOff();
                              this->persistentStatusActive = false;
                              this->statusMessageClearTimer.stop();
                              this->statusBar()->showMessage(result.errorMessage.empty()
@@ -1710,6 +1711,23 @@ void vtkWindowImage::setupRenderer()
     this->setWcsOverlayVisible(this->showWcsAxes);
     win->AddObserver(vtkCommand::EndEvent, this, &vtkWindowImage::updateWcsOverlay);
     win->AddObserver(vtkCommand::EndEvent, this, &vtkWindowImage::updateCatalogueOverlayLabels);
+
+    // Loading placeholder — visible until first image data arrives.
+    {
+        auto *prop = this->m_loadingActor->GetTextProperty();
+        prop->SetFontSize(16);
+        prop->SetColor(0.72, 0.84, 0.91);
+        prop->SetJustificationToCentered();
+        prop->SetVerticalJustificationToCentered();
+        prop->BoldOff();
+        prop->ShadowOff();
+        this->m_loadingActor->SetInput("Loading image\xe2\x80\xa6");
+        this->m_loadingActor->GetPositionCoordinate()
+                ->SetCoordinateSystemToNormalizedViewport();
+        this->m_loadingActor->SetPosition(0.5, 0.5);
+        this->m_loadingActor->VisibilityOn();
+        ren->AddActor2D(this->m_loadingActor);
+    }
 
     ren->ResetCamera();
     win->Render();
@@ -3252,6 +3270,7 @@ void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result)
     if (this->probeValid) {
         this->refreshProbeOverlay();
     }
+    this->m_loadingActor->VisibilityOff();
     this->updateDataStatePanel();
     this->updateSanityPanel();
     this->updateLUTCustomizer();

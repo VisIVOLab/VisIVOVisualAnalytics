@@ -351,6 +351,23 @@ void vtkWindowVbtVolume::setupRenderer()
     this->scalarBar->SetVisibility(1);
     this->renderer->AddViewProp(this->scalarBar.Get());
 
+    // Loading placeholder — visible until applySubsetResult() finishes.
+    {
+        auto *prop = this->m_loadingActor->GetTextProperty();
+        prop->SetFontSize(16);
+        prop->SetColor(0.72, 0.84, 0.91);
+        prop->SetJustificationToCentered();
+        prop->SetVerticalJustificationToCentered();
+        prop->BoldOff();
+        prop->ShadowOff();
+        this->m_loadingActor->SetInput("Loading\xe2\x80\xa6");
+        this->m_loadingActor->GetPositionCoordinate()
+                ->SetCoordinateSystemToNormalizedViewport();
+        this->m_loadingActor->SetPosition(0.5, 0.5);
+        this->m_loadingActor->VisibilityOn();
+        this->renderer->AddActor2D(this->m_loadingActor.Get());
+    }
+
     qDebug().noquote()
             << QStringLiteral("[vbt-volume] renderer setup mapper=%1 volume_actor=1 box_actor=1 scalar_bar=1 props=%2")
                        .arg(this->volumeMapper->GetClassName())
@@ -506,6 +523,7 @@ void vtkWindowVbtVolume::applySubsetResult(const BackendVbtSubsetResult &subset)
 
     this->updateTransferFunctions();
     this->resetView();
+    this->m_loadingActor->VisibilityOff();
     this->renderWindow->Render();
     this->updateSummary();
 }

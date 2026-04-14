@@ -196,6 +196,7 @@ private:
     vtkNew<vtkTextActor> overlayYTitleActor;
     std::vector<vtkSmartPointer<vtkTextActor>> overlayXTickActors;
     std::vector<vtkSmartPointer<vtkTextActor>> overlayYTickActors;
+    vtkNew<vtkTextActor> m_loadingActor;
     vtkNew<vtkScalarBarActor> colorbar;
     vtkNew<vtkCoordinate> coordinate;
     bool showWcsAxes{ true };
