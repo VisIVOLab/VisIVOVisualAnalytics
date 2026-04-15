@@ -203,11 +203,11 @@ def _moment_result_unit(order: int, bunit: str, spectral_unit: str) -> str:
     if order == 2:
         return f"{spectral_unit}^2" if spectral_unit else ""
     if order == 3:
-        return ""                        # dimensionless (normalised skewness)
+        return "dimensionless (skewness)"
     if order == 4:
-        return ""                        # dimensionless (excess kurtosis)
+        return "dimensionless (excess kurtosis)"
     if order == 5:
-        return f"{spectral_unit}^5" if spectral_unit else ""   # raw 5th-order
+        return "dimensionless (standardised 5th moment)"
     if order in {6, 8, 10}:
         return bunit
     return ""
@@ -431,54 +431,62 @@ def _moment_map_from_array(
 
     if order in {3, 4, 5}:
         # Higher-order central moments — share M0/M1/σ computation.
-        # Shape helpers.
-        sv = spectral_values[:, None, None]   # (nz, 1, 1)
-        weights = spectral_delta[:, None, None]
+        try:
+            # Shape helpers.
+            sv = spectral_values[:, None, None]   # (nz, 1, 1)
+            weights = spectral_delta[:, None, None]
 
-        m0 = np.nansum(safe * weights, axis=0, dtype=np.float64)  # float64 for precision
-        valid_m0 = np.isfinite(m0) & (m0 != 0.0)
+            m0 = np.nansum(safe * weights, axis=0, dtype=np.float64)  # float64 for precision
+            valid_m0 = np.isfinite(m0) & (m0 != 0.0)
 
-        m1 = np.full(m0.shape, np.nan, dtype=np.float64)
-        m1_num = np.nansum(safe.astype(np.float64) * sv * weights, axis=0)
-        m1[valid_m0] = m1_num[valid_m0] / m0[valid_m0]
+            m1 = np.full(m0.shape, np.nan, dtype=np.float64)
+            m1_num = np.nansum(safe.astype(np.float64) * sv * weights, axis=0)
+            m1[valid_m0] = m1_num[valid_m0] / m0[valid_m0]
 
-        diff = sv - m1[None, :, :]            # (nz, ny, nx) velocity deviations
+            diff = sv - m1[None, :, :]            # (nz, ny, nx) velocity deviations
 
-        # M2 = intensity-weighted variance (σ²)
-        m2_num = np.nansum(safe.astype(np.float64) * diff * diff * weights, axis=0)
-        m2 = np.full(m0.shape, np.nan, dtype=np.float64)
-        m2[valid_m0] = m2_num[valid_m0] / m0[valid_m0]
+            # M2 = intensity-weighted variance (σ²)
+            m2_num = np.nansum(safe.astype(np.float64) * diff * diff * weights, axis=0)
+            m2 = np.full(m0.shape, np.nan, dtype=np.float64)
+            m2[valid_m0] = m2_num[valid_m0] / m0[valid_m0]
 
-        sigma = np.sqrt(np.where(m2 > 0.0, m2, np.nan))  # (ny, nx), NaN where σ≤0
+            # Guard div-by-zero: replace non-positive variance with NaN
+            sigma = np.sqrt(np.where(m2 > 0.0, m2, np.nan))  # (ny, nx), NaN where σ≤0
 
-        out = np.full(m0.shape, np.nan, dtype=np.float32)
+            out = np.full(m0.shape, np.nan, dtype=np.float32)
 
-        if order == 3:
-            # Normalised skewness: M3 / σ³  (dimensionless)
-            m3_num = np.nansum(safe.astype(np.float64) * diff ** 3 * weights, axis=0)
-            m3 = np.full(m0.shape, np.nan, dtype=np.float64)
-            m3[valid_m0] = m3_num[valid_m0] / m0[valid_m0]
-            sigma3 = sigma ** 3
-            valid_s = valid_m0 & np.isfinite(sigma3) & (sigma3 != 0.0)
-            out[valid_s] = (m3[valid_s] / sigma3[valid_s]).astype(np.float32)
+            if order == 3:
+                # Normalised skewness: M3 / σ³  (dimensionless)
+                m3_num = np.nansum(safe.astype(np.float64) * diff ** 3 * weights, axis=0)
+                m3 = np.full(m0.shape, np.nan, dtype=np.float64)
+                m3[valid_m0] = m3_num[valid_m0] / m0[valid_m0]
+                sigma3 = sigma ** 3
+                valid_s = valid_m0 & np.isfinite(sigma3) & (sigma3 != 0.0)
+                out[valid_s] = (m3[valid_s] / sigma3[valid_s]).astype(np.float32)
 
-        elif order == 4:
-            # Excess kurtosis: M4 / σ⁴ - 3  (dimensionless)
-            m4_num = np.nansum(safe.astype(np.float64) * diff ** 4 * weights, axis=0)
-            m4 = np.full(m0.shape, np.nan, dtype=np.float64)
-            m4[valid_m0] = m4_num[valid_m0] / m0[valid_m0]
-            sigma4 = sigma ** 4
-            valid_s = valid_m0 & np.isfinite(sigma4) & (sigma4 != 0.0)
-            out[valid_s] = (m4[valid_s] / sigma4[valid_s] - 3.0).astype(np.float32)
+            elif order == 4:
+                # Excess kurtosis: M4 / σ⁴ - 3  (dimensionless)
+                m4_num = np.nansum(safe.astype(np.float64) * diff ** 4 * weights, axis=0)
+                m4 = np.full(m0.shape, np.nan, dtype=np.float64)
+                m4[valid_m0] = m4_num[valid_m0] / m0[valid_m0]
+                sigma4 = sigma ** 4
+                valid_s = valid_m0 & np.isfinite(sigma4) & (sigma4 != 0.0)
+                out[valid_s] = (m4[valid_s] / sigma4[valid_s] - 3.0).astype(np.float32)
 
-        else:  # order == 5
-            # Raw 5th-order intensity-weighted central moment (diagnostic)
-            m5_num = np.nansum(safe.astype(np.float64) * diff ** 5 * weights, axis=0)
-            m5 = np.full(m0.shape, np.nan, dtype=np.float64)
-            m5[valid_m0] = m5_num[valid_m0] / m0[valid_m0]
-            out[valid_m0] = m5[valid_m0].astype(np.float32)
+            else:  # order == 5
+                # Standardised 5th moment: μ₅ / σ⁵ (dimensionless, consistent with M3/M4)
+                m5_num = np.nansum(safe.astype(np.float64) * diff ** 5 * weights, axis=0)
+                m5 = np.full(m0.shape, np.nan, dtype=np.float64)
+                m5[valid_m0] = m5_num[valid_m0] / m0[valid_m0]
+                sigma5 = sigma ** 5
+                valid_s = valid_m0 & np.isfinite(sigma5) & (sigma5 != 0.0)
+                out[valid_s] = (m5[valid_s] / sigma5[valid_s]).astype(np.float32)
 
-        return out
+            return out
+
+        except Exception:
+            logger.exception("moment order %d failed in _moment_map_from_array", order)
+            raise
 
     if order == 6:
         return _chunked_m6(subset, valid_mask, n_threads)
@@ -582,9 +590,10 @@ def _moment_map_dask(
                                np.nan)
             da_result = _da.where(sigma != 0.0, m4_raw / sigma ** 4 - 3.0, np.nan)
         else:  # order == 5
-            da_result = _da.where(valid_m0,
-                                  _da.nansum(da_safe * diff ** 5 * da_delta, axis=0) / m0,
-                                  np.nan)
+            m5_raw = _da.where(valid_m0,
+                               _da.nansum(da_safe * diff ** 5 * da_delta, axis=0) / m0,
+                               np.nan)
+            da_result = _da.where(sigma != 0.0, m5_raw / sigma ** 5, np.nan)
     else:
         raise ValueError(f"Unsupported moment order for Dask path: {order}.")
 

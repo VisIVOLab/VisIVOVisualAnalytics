@@ -6,8 +6,11 @@
 #include "CatalogueOverlayUtils.h"
 #include "CatalogueTableModel.h"
 #include "LUTCustomizerDialog.h"
+#include "BaselineDialog.h"
+#include "LinewidthDialog.h"
 #include "MomentMapController.h"
 #include "NoiseController.h"
+#include "StackDialog.h"
 #include "ToolResultDialog.h"
 #include "ProfileWidget.h"
 #include "PvController.h"
@@ -1813,11 +1816,15 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                             [this]() {
                                 if (this->m_momentCardState == MomentCardState::Computing) {
                                     this->setMomentCardState(MomentCardState::Error);
+                                    const QString errMsg =
+                                            this->momentController && !this->momentController->lastError().isEmpty()
+                                            ? this->momentController->lastError()
+                                            : QStringLiteral("Moment computation failed.");
                                     DiagnosticsManager::instance()->publish(
                                             DiagnosticsLevel::Warning,
                                             DiagnosticsCategory::Scientific,
                                             QStringLiteral("MomentMap"),
-                                            QStringLiteral("Moment computation failed."),
+                                            errMsg,
                                             this->remoteDatasetId,
                                             this->remoteSessionId,
                                             QStringLiteral("moment"));
@@ -2033,20 +2040,64 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     cubeGroup->addAction(ui->actionVolume);
     QObject::connect(cubeGroup, &QActionGroup::triggered, this, &vtkWindowCube::changeCubeRender);
 
-    // Setup menu Moment – wired through the thin setMomentOrder() wrapper so the
-    // cross-system isBusy() guard still applies before delegating to the controller.
-    QObject::connect(ui->actionMoment0, &QAction::triggered, this,
+    // Compute Moment – single action always opens the dialog (FIX 1+2).
+    QObject::connect(ui->actionComputeMoment, &QAction::triggered, this,
                      [this]() { this->setMomentOrder(0); });
-    QObject::connect(ui->actionMoment1, &QAction::triggered, this,
-                     [this]() { this->setMomentOrder(1); });
-    QObject::connect(ui->actionMoment2, &QAction::triggered, this,
-                     [this]() { this->setMomentOrder(2); });
-    QObject::connect(ui->actionMoment6, &QAction::triggered, this,
-                     [this]() { this->setMomentOrder(6); });
-    QObject::connect(ui->actionMoment8, &QAction::triggered, this,
-                     [this]() { this->setMomentOrder(8); });
-    QObject::connect(ui->actionMoment10, &QAction::triggered, this,
-                     [this]() { this->setMomentOrder(10); });
+
+    // S-02 Line-width map
+    QObject::connect(ui->actionLinewidthMap, &QAction::triggered, this, [this]() {
+        if (this->isBusy() || !this->hasBackendVisibleDataset()) {
+            return;
+        }
+        BackendClient *client = new BackendClient(this->remoteBackendUrl,
+                                                  this->remoteBackendToken);
+        client->setSessionId(this->remoteSessionId);
+        auto *dlg = new LinewidthDialog(client,
+                                        this->remoteSessionId,
+                                        this->remoteDatasetId,
+                                        this->remoteDatasetDepth,
+                                        static_cast<double>(this->lowerBound),
+                                        this);
+        QObject::connect(dlg, &QDialog::finished, [client](int) { delete client; });
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->open();
+    });
+
+    // S-03 Baseline subtraction
+    QObject::connect(ui->actionBaselineSubtract, &QAction::triggered, this, [this]() {
+        if (this->isBusy() || !this->hasBackendVisibleDataset()) {
+            return;
+        }
+        BackendClient *client = new BackendClient(this->remoteBackendUrl,
+                                                  this->remoteBackendToken);
+        client->setSessionId(this->remoteSessionId);
+        auto *dlg = new BaselineDialog(client,
+                                       this->remoteSessionId,
+                                       this->remoteDatasetId,
+                                       this->remoteDatasetDepth,
+                                       this);
+        QObject::connect(dlg, &QDialog::finished, [client](int) { delete client; });
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->open();
+    });
+
+    // S-04 Stack spectral cubes
+    QObject::connect(ui->actionStackCubes, &QAction::triggered, this, [this]() {
+        if (!this->hasBackendVisibleDataset()) {
+            return;
+        }
+        BackendClient *client = new BackendClient(this->remoteBackendUrl,
+                                                  this->remoteBackendToken);
+        client->setSessionId(this->remoteSessionId);
+        auto *dlg = new StackDialog(client,
+                                    this->remoteSessionId,
+                                    QStringList{ this->remoteDatasetId },
+                                    this);
+        QObject::connect(dlg, &QDialog::finished, [client](int) { delete client; });
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->open();
+    });
+
     this->updateBackendDerivedActionsAvailability();
 
     // Setup menu WCS
@@ -7328,26 +7379,17 @@ void vtkWindowCube::setMomentActionsEnabled(bool enabled)
 {
     const bool available = this->hasBackendVisibleDataset();
     const bool finalEnabled = enabled && available;
-    ui->actionMoment0->setEnabled(finalEnabled);
-    ui->actionMoment1->setEnabled(finalEnabled);
-    ui->actionMoment2->setEnabled(finalEnabled);
-    ui->actionMoment6->setEnabled(finalEnabled);
-    ui->actionMoment8->setEnabled(finalEnabled);
-    ui->actionMoment10->setEnabled(finalEnabled);
-
     const QString tooltip = available ? QString {} : kMomentBackendTooltip;
-    ui->actionMoment0->setToolTip(tooltip);
-    ui->actionMoment1->setToolTip(tooltip);
-    ui->actionMoment2->setToolTip(tooltip);
-    ui->actionMoment6->setToolTip(tooltip);
-    ui->actionMoment8->setToolTip(tooltip);
-    ui->actionMoment10->setToolTip(tooltip);
-    ui->actionMoment0->setStatusTip(tooltip);
-    ui->actionMoment1->setStatusTip(tooltip);
-    ui->actionMoment2->setStatusTip(tooltip);
-    ui->actionMoment6->setStatusTip(tooltip);
-    ui->actionMoment8->setStatusTip(tooltip);
-    ui->actionMoment10->setStatusTip(tooltip);
+
+    ui->actionComputeMoment->setEnabled(finalEnabled);
+    ui->actionComputeMoment->setToolTip(tooltip);
+    ui->actionComputeMoment->setStatusTip(tooltip);
+
+    // S-02/03/04 spectral tool actions follow the same availability rule
+    const bool spectralEnabled = available && !this->isBusy();
+    ui->actionLinewidthMap->setEnabled(spectralEnabled);
+    ui->actionBaselineSubtract->setEnabled(spectralEnabled);
+    ui->actionStackCubes->setEnabled(available);   // stacking is never "busy"
 }
 
 bool vtkWindowCube::hasBackendVisibleDataset() const
@@ -7358,12 +7400,6 @@ bool vtkWindowCube::hasBackendVisibleDataset() const
 void vtkWindowCube::updateBackendDerivedActionsAvailability()
 {
     const bool available = this->hasBackendVisibleDataset();
-    if (ui->menuMoment) {
-        ui->menuMoment->setEnabled(available);
-        ui->menuMoment->setToolTipsVisible(true);
-        ui->menuMoment->menuAction()->setToolTip(available ? QString {} : kMomentBackendTooltip);
-        ui->menuMoment->menuAction()->setStatusTip(available ? QString {} : kMomentBackendTooltip);
-    }
     this->setMomentActionsEnabled(
             !(this->momentController && this->momentController->isBusy()));
 
@@ -7398,9 +7434,6 @@ void vtkWindowCube::setCubeOpenActionsEnabled(bool enabled)
         this->updateBackendDerivedActionsAvailability();
     } else {
         this->setMomentActionsEnabled(false);
-        if (ui->menuMoment) {
-            ui->menuMoment->setEnabled(false);
-        }
         ui->actionIsosurface->setEnabled(false);
         if (this->actionExtractPvDiagram) {
             this->actionExtractPvDiagram->setEnabled(false);

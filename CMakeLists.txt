@@ -122,6 +122,16 @@ set(PROJECT_SOURCES
         src/gui/CubeUiAssembler.h
         src/gui/MomentMapController.cpp
         src/gui/MomentMapController.h
+        src/gui/ScienceMapWindow.cpp
+        src/gui/ScienceMapWindow.h
+        src/gui/LinewidthDialog.cpp
+        src/gui/LinewidthDialog.h
+        src/gui/BaselineDialog.cpp
+        src/gui/BaselineDialog.h
+        src/gui/StackDialog.cpp
+        src/gui/StackDialog.h
+        src/gui/SourceFindDialog.cpp
+        src/gui/SourceFindDialog.h
         src/gui/PvController.cpp
         src/gui/PvController.h
         src/gui/PvTypes.h

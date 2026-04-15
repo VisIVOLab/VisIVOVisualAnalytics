@@ -12,7 +12,10 @@ VisIVO Visual Analytics is a scientific desktop application for interactive visu
 - Remote full-resolution slice computation with client-side cache and neighbor prefetch
 - Remote isosurface extraction with local VTK mesh rendering
 - Preview-to-full-resolution workflow for responsive remote cube opening
-- Moment map computation (orders 0, 1, 2, 6, 8, 10) locally and remotely
+- Moment map computation (all standard orders: 0–2, 3/4/5 higher-order statistical moments, 6, 8, 10) locally and remotely
+- Spectral line-width maps — per-pixel FWHM (Gaussian fit) and equivalent-width maps
+- Spectral baseline subtraction — polynomial or median baseline fit and removal, result registered as new dataset
+- Spectral cube stacking — mean, median, or weighted-mean combination of N open cubes
 - Position-velocity diagram generation
 - Configurable color maps per rendering mode (volume LUT independent of slice/moment LUTs)
 - Dockable, floatable workspace panels (3D cube view and 2D slice/detail view)
@@ -256,7 +259,16 @@ Tests use synthetic FITS fixtures (no real data required) and an in-process ASGI
 
 ## Recent Development
 
-**next-server branch**
+**next-server branch — spectral analysis improvements (2026-04)**
+
+- **Moment orders 3, 4, 5 fully supported** — M3 (skewness = μ₃/σ³), M4 (excess kurtosis = μ₄/σ⁴ − 3), and M5 (standardised 5th moment = μ₅/σ⁵) are now correctly computed in both the numpy and Dask paths. All three are dimensionless and normalised consistently with one another. The C++ `isSupportedMomentOrder()` guard was extended to include these orders (previously returned "Unsupported moment order" at runtime).
+- **Unified moment dialog** — the Moment submenu (six individual order actions) is replaced by a single **Tools → Compute Moment…** action that always opens a configuration dialog. The dialog lets the user select any supported order, channel range, and optional threshold mask in one step.
+- **Surface real backend error text** — `MomentMapController` stores the backend error message with the `"MomentMap M<order>: …"` prefix and exposes it via `lastError()`. The status-bar deferred-error path in `vtkWindowCube` now shows the actual backend message instead of a generic string.
+- **Line-width map guard** — `LinewidthDialog` validates `width > 0 && height > 0` before constructing the `ScienceMapWindow`, preventing a crash on all-NaN output (when all pixels fail to fit).
+- **Session ID plumbing** — `LinewidthDialog`, `BaselineDialog`, and `StackDialog` all accept a `sessionId` parameter and call `client->setSessionId()` before making any request, fixing the double-slash URL and 401 errors that occurred when session ID was not forwarded.
+- **StackDialog redesign** — replaced the plain list with a checkable `QListWidget`. A live counter label shows "N selected" in red when fewer than 2 cubes are chosen; the Compute button is disabled until at least 2 are selected.
+- **Backend spectral endpoints** — `/v1/spectral/linewidth`, `/v1/spectral/linewidth/binary`, `/v1/spectral/baseline/{session_id}/{dataset_id}`, `/v1/spectral/stack`, `/v1/spectral/stack/binary` added. These support per-pixel Gaussian FWHM and equivalent-width fitting, polynomial/median baseline subtraction, and mean/median/weighted-mean cube stacking. Source-finder integration via `/v1/spectral/sourcefind` (SoFiA-2 backend).
+- **next-server branch**
 
 - **Guided startup flow** — a `StartupDialog` shown before `MainWindow` drives backend health-check, optional auto-start, and token setup. `BackendLauncher` manages the backend process lifetime and captures all stdout/stderr for the log panel.
 - **Smart Python resolution** — `BackendLauncher` walks a six-level priority chain (`VISIVO_BACKEND_PYTHON` → active venv → project `.venv` → bundled Python → Settings Python → PATH fallback) to find the right interpreter without manual configuration.

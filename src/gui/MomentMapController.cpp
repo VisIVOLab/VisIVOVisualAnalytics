@@ -131,15 +131,15 @@ void MomentMapController::startComputation(int defaultOrder)
         }
 
         if (!result.valid || !result.imageData) {
+            self->m_lastError = result.errorMessage.isEmpty()
+                    ? u"MomentMap M%1: backend returned an error with no detail."_s.arg(config.order)
+                    : u"MomentMap M%1: %2"_s.arg(config.order).arg(result.errorMessage);
             if (auto *win = qobject_cast<QMainWindow *>(self->m_parentWindow)) {
-                if (!result.errorMessage.isEmpty()) {
-                    win->statusBar()->showMessage(result.errorMessage);
-                } else {
-                    win->statusBar()->clearMessage();
-                }
+                win->statusBar()->showMessage(self->m_lastError);
             }
             return;
         }
+        self->m_lastError.clear();
 
         // Build provenance strings (pure string work – no UI access needed here).
         // vtkWindowCube's onCompleted lambda appends the two WCS-specific fields
@@ -225,13 +225,16 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
     layout->addLayout(form);
 
     auto *momentCombo = new QComboBox(&dialog);
-    const std::array<std::pair<int, QString>, 6> orders = {
-            std::pair{ 0, u"Moment 0: Integrated intensity"_s },
-            std::pair{ 1, u"Moment 1: Intensity-weighted coordinate"_s },
-            std::pair{ 2, u"Moment 2: Variance (NOT velocity dispersion)"_s },
-            std::pair{ 6, u"Moment 6: RMS"_s },
-            std::pair{ 8, u"Moment 8: Maximum"_s },
-            std::pair{ 10, u"Moment 10: Minimum"_s },
+    const std::array<std::pair<int, QString>, 9> orders = {
+            std::pair{ 0,  u"Moment 0: Integrated intensity (M0)"_s },
+            std::pair{ 1,  u"Moment 1: Intensity-weighted coordinate (M1)"_s },
+            std::pair{ 2,  u"Moment 2: Variance – NOT velocity dispersion (M2)"_s },
+            std::pair{ 3,  u"Moment 3: Skewness (M3)"_s },
+            std::pair{ 4,  u"Moment 4: Excess kurtosis (M4)"_s },
+            std::pair{ 5,  u"Moment 5: 5th-order diagnostic (M5)"_s },
+            std::pair{ 6,  u"Moment 6: RMS (M6)"_s },
+            std::pair{ 8,  u"Moment 8: Maximum (M8)"_s },
+            std::pair{ 10, u"Moment 10: Minimum (M10)"_s },
     };
     int defaultIndex = 0;
     for (int i = 0; i < static_cast<int>(orders.size()); ++i) {
@@ -311,20 +314,16 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
 QString MomentMapController::describeMomentOrder(int order)
 {
     switch (order) {
-    case 0:
-        return u"Moment 0"_s;
-    case 1:
-        return u"Moment 1"_s;
-    case 2:
-        return u"Moment 2 (Variance \u2013 NOT dispersion)"_s;
-    case 6:
-        return u"Moment 6 (RMS)"_s;
-    case 8:
-        return u"Moment 8 (Max)"_s;
-    case 10:
-        return u"Moment 10 (Min)"_s;
-    default:
-        return u"Moment"_s;
+    case 0:  return u"Moment 0 (Integrated intensity)"_s;
+    case 1:  return u"Moment 1 (Intensity-weighted coordinate)"_s;
+    case 2:  return u"Moment 2 (Variance \u2013 NOT dispersion)"_s;
+    case 3:  return u"Moment 3 (Skewness)"_s;
+    case 4:  return u"Moment 4 (Excess kurtosis)"_s;
+    case 5:  return u"Moment 5 (5th-order diagnostic)"_s;
+    case 6:  return u"Moment 6 (RMS)"_s;
+    case 8:  return u"Moment 8 (Maximum)"_s;
+    case 10: return u"Moment 10 (Minimum)"_s;
+    default: return u"Moment %1"_s.arg(order);
     }
 }
 

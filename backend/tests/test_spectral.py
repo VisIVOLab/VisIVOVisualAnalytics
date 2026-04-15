@@ -139,6 +139,84 @@ class TestHigherOrderMoments:
         with pytest.raises(ValueError, match="Unsupported moment order"):
             _moment_map_from_array(data, 99, spectral, False, 0.0)
 
+    # ── New tight-tolerance tests (spec §S-01) ─────────────────────────────────
+
+    def test_m3_and_m4_symmetric_gaussian_tight(self):
+        """Noise-free symmetric Gaussian → |M3| < 0.05 and |M4| < 0.1 (excess kurtosis).
+
+        Uses a large noiseless cube so numerical effects from finite-grid
+        sampling are the only source of error.
+        """
+        from app.compute import _moment_map_from_array
+
+        nz, ny, nx = 64, 4, 4
+        chans = np.arange(nz, dtype=np.float64)
+        center = nz / 2.0
+        sigma = 6.0
+        profile = np.exp(-0.5 * ((chans - center) / sigma) ** 2).astype(np.float32)
+        # Identical Gaussian profile in every spatial pixel — result must be uniform.
+        cube = (profile[:, None, None] * np.ones((1, ny, nx), dtype=np.float32))
+        spectral = chans.copy()  # channel indices as velocity values
+
+        m3 = _moment_map_from_array(cube, 3, spectral, False, 0.0)
+        m4 = _moment_map_from_array(cube, 4, spectral, False, 0.0)
+
+        med_m3 = float(np.abs(np.nanmedian(m3)))
+        med_m4 = float(np.abs(np.nanmedian(m4)))
+        assert med_m3 < 0.05, f"|M3 median| = {med_m3:.4f}, expected < 0.05"
+        assert med_m4 < 0.1,  f"|M4 median| = {med_m4:.4f}, expected < 0.1"
+
+    def test_m3_sign_for_right_skewed_profile(self):
+        """Right-skewed spectral profile → M3 > 0 (positive skewness).
+
+        Profile: v * exp(-v / scale) — peaks at v=scale, then decays with a
+        long right tail.  Mean > mode → positive third standardised moment.
+        """
+        from app.compute import _moment_map_from_array
+
+        nz, ny, nx = 64, 4, 4
+        chans = np.arange(nz, dtype=np.float64)
+        scale = 8.0
+        profile = (chans * np.exp(-chans / scale)).astype(np.float32)
+        # Keep only positive values (they already are)
+        cube = profile[:, None, None] * np.ones((1, ny, nx), dtype=np.float32)
+        spectral = chans.copy()
+
+        m3 = _moment_map_from_array(cube, 3, spectral, False, 0.0)
+        finite = m3[np.isfinite(m3)]
+        assert finite.size > 0, "M3 should have finite pixels"
+        assert float(np.nanmedian(m3)) > 0.0, (
+            f"Right-skewed profile must give positive M3, got {np.nanmedian(m3):.4f}"
+        )
+
+    def test_m5_returns_finite_correct_shape(self):
+        """M5 (standardised 5th moment = μ₅/σ⁵) returns finite float32 map.
+
+        For a symmetric Gaussian the value should be near zero (|M5| < 0.1
+        after normalisation), and well within ±100 even for a skewed profile.
+        """
+        from app.compute import _moment_map_from_array
+
+        nz, ny, nx = 32, 4, 4
+        chans = np.arange(nz, dtype=np.float64)
+        center = nz / 2.0
+        sigma = 3.0
+        profile = np.exp(-0.5 * ((chans - center) / sigma) ** 2).astype(np.float32)
+        cube = profile[:, None, None] * np.ones((1, ny, nx), dtype=np.float32)
+        spectral = chans.copy()
+
+        m5 = _moment_map_from_array(cube, 5, spectral, False, 0.0)
+
+        assert m5.dtype == np.float32, f"Expected float32, got {m5.dtype}"
+        assert m5.shape == (ny, nx), f"Expected ({ny}, {nx}), got {m5.shape}"
+        assert np.isfinite(m5).all(), (
+            f"All M5 pixels should be finite; got {np.isnan(m5).sum()} NaN values"
+        )
+        # Normalised by σ⁵ → dimensionless; symmetric Gaussian → near zero
+        assert float(np.abs(np.nanmedian(m5))) < 0.1, (
+            f"|M5 median| = {np.nanmedian(m5):.4f}, expected < 0.1 after σ⁵ normalisation"
+        )
+
 
 # ── S-02: Line-width maps ──────────────────────────────────────────────────────
 

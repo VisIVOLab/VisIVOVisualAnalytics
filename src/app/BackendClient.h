@@ -457,6 +457,9 @@ struct BackendBaselineResult
     int polyOrder{ 0 };
     int fitChannels{ 0 };
     QString outputPath;
+    double rmsBefore{ 0. };  ///< RMS of the original cube over the fit channels
+    double rmsAfter{ 0. };   ///< RMS of the baseline-subtracted cube
+    QString method;          ///< "polynomial" or "median"
 };
 
 // ── S-04: Spectral stacking ───────────────────────────────────────────────────
@@ -842,21 +845,26 @@ public:
                                                 bool maskEnabled, float threshold);
 
     // ── S-03: Baseline subtraction ────────────────────────────────────────────
-    /** POST /v1/spectral/baseline/{session_id}/{dataset_id} — subtract a
-     *  polynomial baseline and register the result as a new session dataset. */
+    /** POST /v1/spectral/baseline/{session_id}/{dataset_id} — subtract a baseline
+     *  and register the result as a new session dataset.
+     *  @param method        "polynomial" (default) or "median"
+     *  @param lineFreeRanges  channel ranges [[start,end],…] to use for the fit */
     BackendBaselineResult requestBaseline(const QString &datasetId,
                                           int channelStart, int channelEnd,
                                           int polyOrder,
-                                          const QVector<int> &lineFreeChannels = {});
+                                          const QString &method = QStringLiteral("polynomial"),
+                                          const QVector<QPair<int,int>> &lineFreeRanges = {});
 
     // ── S-04: Spectral stacking ───────────────────────────────────────────────
     /** POST /v1/spectral/stack/binary — stack N cubes into a 1-D spectrum.
      *  @param datasetIds  Dataset IDs already opened in this session.
      *  @param method      "mean", "median", or "weighted_mean".
-     *  @param weights     Optional per-cube weights (used only for weighted_mean). */
+     *  @param weights     Optional per-cube weights (used only for weighted_mean).
+     *  @param weightBy    "uniform", "rms", or "peak" (auto-weights for weighted_mean). */
     BackendStackResult fetchStackBinary(const QStringList &datasetIds,
                                          const QString &method = QStringLiteral("mean"),
-                                         const QVector<double> &weights = {});
+                                         const QVector<double> &weights = {},
+                                         const QString &weightBy = QStringLiteral("uniform"));
 
     // ── S-05: SoFiA-2 source finding ──────────────────────────────────────────
     /** POST /v1/sourcefind/{dataset_id} — run SoFiA-2 on the cube.

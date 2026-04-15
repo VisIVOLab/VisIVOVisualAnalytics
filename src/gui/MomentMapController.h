@@ -88,6 +88,10 @@ public:
     // Valid only after startComputation() returns with isBusy() == true.
     const Config &lastAcceptedConfig() const { return m_currentConfig; }
 
+    // Error message from the most recent failed computation.
+    // Empty if the last computation succeeded or none has run yet.
+    const QString &lastError() const { return m_lastError; }
+
 public slots:
     // Opens the dialog with defaultOrder pre-selected; if accepted, dispatches
     // the async computation.  Re-entrancy-safe: no-op if already running.
@@ -116,6 +120,7 @@ private:
     Config m_currentConfig;
     int m_currentRequestId{ 0 };
     bool m_busy{ false };
+    QString m_lastError;
 };
 
 #endif // MomentMapController_h

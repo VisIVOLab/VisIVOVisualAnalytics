@@ -6,11 +6,15 @@
 #include "app/BackendClient.h"
 #include "app/RecentDatasetsManager.h"
 #include "app/ThemeManager.h"
+#include "BaselineDialog.h"
 #include "DataHubWidget.h"
 #include "DiagnosticsWindow.h"
+#include "LinewidthDialog.h"
 #include "RemoteFileBrowserDialog.h"
 #include "Settings.h"
 #include "SettingsDialog.h"
+#include "SourceFindDialog.h"
+#include "StackDialog.h"
 #include "WebViewProcess.h"
 #include "vtkWindowCatalogue3D.h"
 #include "vtkWindowCube.h"
@@ -152,6 +156,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     QObject::connect(diagnosticsAction, &QAction::triggered, this,
                      [this]() { this->openDiagnosticsWindow(); });
 
+    // ── Science menu ──────────────────────────────────────────────────────────
+    this->buildScienceMenu();
+
     // ── Setup Menu About ──────────────────────────────────────────────────────
     QObject::connect(ui->actionAbout, &QAction::triggered, this, &MainWindow::openAboutDialog);
 
@@ -227,6 +234,70 @@ void MainWindow::buildDataMenu()
     actHiPS->setToolTip(u"Open the HiPS panoramic sky viewer (coming soon)."_s);
     QObject::connect(actHiPS, &QAction::triggered, this, &MainWindow::openHiPS);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Science menu
+// ─────────────────────────────────────────────────────────────────────────────
+
+void MainWindow::buildScienceMenu()
+{
+    auto *sciMenu = new QMenu(u"Science"_s, this);
+    this->menuBar()->insertMenu(ui->menuHelp->menuAction(), sciMenu);
+    m_scienceMenu = sciMenu;
+
+    m_actLinewidth = sciMenu->addAction(u"Line-Width Map…"_s);
+    m_actLinewidth->setEnabled(false);
+    m_actLinewidth->setToolTip(u"Compute FWHM / Equivalent-Width map (S-02). Open a dataset first."_s);
+    QObject::connect(m_actLinewidth, &QAction::triggered, this, [this]() {
+        auto *client = new BackendClient(m_sciBackendUrl, m_sciToken);
+        client->setSessionId(m_sciSessionId);
+        auto *dlg = new LinewidthDialog(client, m_sciSessionId, m_sciDatasetId, m_sciDepth, m_sciThreshold, this);
+        QObject::connect(dlg, &QDialog::finished, [client](int) { delete client; });
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->open();
+    });
+
+    m_actBaseline = sciMenu->addAction(u"Baseline Subtraction…"_s);
+    m_actBaseline->setEnabled(false);
+    m_actBaseline->setToolTip(u"Subtract a polynomial or median spectral baseline (S-03). Open a dataset first."_s);
+    QObject::connect(m_actBaseline, &QAction::triggered, this, [this]() {
+        auto *client = new BackendClient(m_sciBackendUrl, m_sciToken);
+        client->setSessionId(m_sciSessionId);
+        auto *dlg = new BaselineDialog(client, m_sciSessionId, m_sciDatasetId, m_sciDepth, this);
+        QObject::connect(dlg, &QDialog::finished, [client](int) { delete client; });
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->open();
+    });
+
+    m_actStack = sciMenu->addAction(u"Spectral Stacking…"_s);
+    m_actStack->setEnabled(true);  // no dataset needed upfront — user selects from list
+    m_actStack->setToolTip(u"Stack multiple session datasets into a 1-D spectrum (S-04)."_s);
+    QObject::connect(m_actStack, &QAction::triggered, this, [this]() {
+        QStringList datasets;
+        if (!m_sciDatasetId.isEmpty()) {
+            datasets << m_sciDatasetId;
+        }
+        auto *client = new BackendClient(m_sciBackendUrl, m_sciToken);
+        client->setSessionId(m_sciSessionId);
+        auto *dlg = new StackDialog(client, m_sciSessionId, datasets, this);
+        QObject::connect(dlg, &QDialog::finished, [client](int) { delete client; });
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->open();
+    });
+
+    m_actSourceFind = sciMenu->addAction(u"Source Finding (SoFiA-2)…"_s);
+    m_actSourceFind->setEnabled(false);
+    m_actSourceFind->setToolTip(u"Run SoFiA-2 on the current dataset (S-05). Open a dataset first."_s);
+    QObject::connect(m_actSourceFind, &QAction::triggered, this, [this]() {
+        auto *client = new BackendClient(m_sciBackendUrl, m_sciToken);
+        auto *dlg = new SourceFindDialog(client, m_sciDatasetId, this);
+        QObject::connect(dlg, &QObject::destroyed, this, [client]() { delete client; });
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->open();
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 void MainWindow::syncDataHubSettings()
 {
@@ -413,6 +484,17 @@ void MainWindow::doOpenDataPath(const QString &path)
         const QString name = QFileInfo(path).fileName();
         this->recentMgr->record(path, name, opened.kind);
     }
+
+    // ── Science menu context ──────────────────────────────────────────────────
+    // Keep last-opened dataset info so Science menu actions can use it.
+    m_sciBackendUrl = client.baseUrl();
+    m_sciSessionId  = client.sessionId();
+    m_sciToken      = client.token();
+    m_sciDatasetId  = opened.datasetId;
+    m_sciDepth      = opened.depth > 0 ? opened.depth : 1;
+    if (m_actLinewidth)   m_actLinewidth->setEnabled(true);
+    if (m_actBaseline)    m_actBaseline->setEnabled(true);
+    if (m_actSourceFind)  m_actSourceFind->setEnabled(true);
 
     win->showMaximized();
     win->raise();

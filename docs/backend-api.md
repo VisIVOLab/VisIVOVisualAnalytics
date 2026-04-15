@@ -160,6 +160,22 @@ Synchronous moment map computation (small datasets / fast moments).
 ```
 Response: `valid`, `width`, `height`, `scalar_type`, `range_min`, `range_max`, `spectral_axis_type`, `spectral_axis_unit`, `moment_unit`, `bunit`, `wcs_status`, `wcs_warning_message`, base64 `data`.
 
+Supported `order` values and their definitions:
+
+| Order | Name | Formula | Unit |
+|-------|------|---------|------|
+| 0 | Integrated intensity | Σ(I·dv) | BUNIT·spectral |
+| 1 | Intensity-weighted coordinate | Σ(I·v·dv)/M0 | spectral |
+| 2 | Intensity-weighted variance | Σ(I·(v−M1)²·dv)/M0 | spectral² |
+| 3 | Skewness | μ₃/σ³ | dimensionless |
+| 4 | Excess kurtosis | μ₄/σ⁴ − 3 | dimensionless |
+| 5 | Standardised 5th moment | μ₅/σ⁵ | dimensionless |
+| 6 | RMS | √(Σ(I²·dv)/Σ(dv)) | BUNIT |
+| 8 | Maximum value | max(I) | BUNIT |
+| 10 | Minimum value | min(I) | BUNIT |
+
+For orders 3–5, `spectral_delta` (channel spacing) is used as the integration weight. NaN/blanked voxels are excluded. Variance must be positive; pixels where σ=0 or M0=0 are set to NaN.
+
 ### `POST /v1/products/isosurface`
 ```json
 { "dataset_id": "...", "threshold": 0.05 }
@@ -237,6 +253,80 @@ Given a viewport (RA/Dec center + FOV), return tile pixel indices at the appropr
 
 ### `POST /v1/hips/catalogue_overlay`
 Given a HiPS survey viewport, return catalogue sources within the field as `BackendHiPSCatalogueSource[]`.
+
+---
+
+## Spectral
+
+All spectral endpoints require `X-Visivo-Token` and `X-Visivo-Session`.
+
+### `POST /v1/spectral/linewidth`
+Per-pixel line-width map. Returns both FWHM (Gaussian fit) and equivalent-width maps as base64 float32.
+
+```json
+{
+  "dataset_id": "...",
+  "channel_start": 10,
+  "channel_end": 50,
+  "mask_enabled": false,
+  "threshold_value": 0.0,
+  "method": null,
+  "rest_freq_hz": null
+}
+```
+`method`: `null` = both maps (JSON path); `"fwhm"` or `"ew"` selects one (binary path).
+`rest_freq_hz`: rest frequency in Hz for velocity-axis conversion (FWHM only).
+
+Response: `valid`, `width`, `height`, `scalar_type`, `fwhm_unit`, `ew_unit`, `bunit`, `fwhm_range_min/max`, `ew_range_min/max`, `fwhm_base64`, `ew_base64`.
+
+### `POST /v1/spectral/linewidth/binary`
+Same request. Returns a binary payload with two concatenated frames (FWHM then EW), each prefixed with a 12-byte header (width int32, height int32, n_bytes int32). Use `BackendClient::parseBinaryFrame()` to decode.
+
+### `GET /v1/spectral/linewidth/{dataset_id}`
+Retrieve a previously computed linewidth result by dataset ID.
+
+---
+
+### `POST /v1/spectral/baseline/{session_id}/{dataset_id}`
+Fit and subtract a per-pixel polynomial or median baseline from a spectral cube.
+
+```json
+{
+  "session_id": "...",
+  "dataset_id": "...",
+  "channel_start": 0,
+  "channel_end": 0,
+  "poly_order": 1,
+  "method": "polynomial",
+  "line_free_channels": [[5, 15], [80, 120]]
+}
+```
+`method`: `"polynomial"` or `"median"`.
+`line_free_channels`: flat list `[5, 6, 7]` or list of ranges `[[5, 15], [80, 120]]`.
+
+Response: `valid`, `new_dataset_id` (registered in session — use it directly for moment computation), `width`, `height`, `depth`, `range_min/max`, `poly_order`, `method`, `fit_channels`, `rms_before`, `rms_after`, `output_path`.
+
+---
+
+### `POST /v1/spectral/stack`
+Stack N open cubes into a single combined spectrum map.
+
+```json
+{
+  "dataset_ids": ["...", "..."],
+  "method": "mean",
+  "weight_by": "uniform",
+  "weights": []
+}
+```
+`method`: `"mean"` (default), `"median"`, `"weighted_mean"`.
+`weight_by`: `"uniform"`, `"rms"`, `"peak"` (used when `method="weighted_mean"` and `weights` is empty).
+`weights`: explicit per-cube weights (used only for `"weighted_mean"`).
+
+Response: `valid`, `rows`, `cols`, `scalar_type`, `method`, `n_cubes`, `range_min/max`, `data_base64`.
+
+### `POST /v1/spectral/stack/binary`
+Same request. Returns a single binary frame (same format as `/linewidth/binary`).
 
 ---
 

@@ -5,6 +5,7 @@
 
 #include <QMainWindow>
 #include <QPointer>
+#include <QString>
 
 #include <memory>
 
@@ -12,6 +13,8 @@ class AuthWrapper;
 class DataHubWidget;
 class DiagnosticsWindow;
 class HiPSWindow;
+class QAction;
+class QMenu;
 class QTabWidget;
 class Settings;
 class VLKBInventoryTree;
@@ -50,6 +53,7 @@ private slots:
 
 private:
     void buildDataMenu();
+    void buildScienceMenu();
     void syncDataHubSettings();
 
     // Path-based open helpers (skip the file browser dialog, used for reopen).
@@ -70,6 +74,20 @@ private:
     QPointer<DataHubWidget>          dataHub;
     QPointer<QTabWidget>             m_tabs;
     QPointer<RecentDatasetsManager>  recentMgr;
+
+    // Science menu — tracks the most recently opened backend dataset.
+    QString  m_sciBackendUrl;
+    QString  m_sciSessionId;
+    QString  m_sciToken;
+    QString  m_sciDatasetId;
+    int      m_sciDepth{ 1 };
+    double   m_sciThreshold{ 0.0 };
+
+    QPointer<QMenu>   m_scienceMenu;
+    QPointer<QAction> m_actLinewidth;
+    QPointer<QAction> m_actBaseline;
+    QPointer<QAction> m_actStack;
+    QPointer<QAction> m_actSourceFind;
 
     void openDiagnosticsWindow();
 

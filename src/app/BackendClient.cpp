@@ -959,19 +959,26 @@ BackendLinewidthResult BackendClient::fetchLinewidthBinary(const QString &datase
 BackendBaselineResult BackendClient::requestBaseline(const QString &datasetId,
                                                       int channelStart, int channelEnd,
                                                       int polyOrder,
-                                                      const QVector<int> &lineFreeChannels)
+                                                      const QString &method,
+                                                      const QVector<QPair<int,int>> &lineFreeRanges)
 {
     BackendBaselineResult result;
     QString error;
+    // Encode line-free ranges as [[start,end],...] pairs
     QJsonArray lfcArray;
-    for (int ch : lineFreeChannels)
-        lfcArray.append(ch);
+    for (const auto &range : lineFreeRanges) {
+        QJsonArray pair;
+        pair.append(range.first);
+        pair.append(range.second);
+        lfcArray.append(pair);
+    }
     const QJsonDocument body(QJsonObject{
             { QStringLiteral("session_id"),         m_sessionId },
             { QStringLiteral("dataset_id"),         datasetId },
             { QStringLiteral("channel_start"),      channelStart },
             { QStringLiteral("channel_end"),        channelEnd },
             { QStringLiteral("poly_order"),         polyOrder },
+            { QStringLiteral("method"),             method },
             { QStringLiteral("line_free_channels"), lfcArray } });
     const QByteArray raw =
             performPost(QUrl(m_baseUrl
@@ -994,6 +1001,9 @@ BackendBaselineResult BackendClient::requestBaseline(const QString &datasetId,
     result.polyOrder     = obj.value(QStringLiteral("poly_order")).toInt();
     result.fitChannels   = obj.value(QStringLiteral("fit_channels")).toInt();
     result.outputPath    = obj.value(QStringLiteral("output_path")).toString();
+    result.rmsBefore     = obj.value(QStringLiteral("rms_before")).toDouble();
+    result.rmsAfter      = obj.value(QStringLiteral("rms_after")).toDouble();
+    result.method        = obj.value(QStringLiteral("method")).toString(method);
     return result;
 }
 
@@ -1001,7 +1011,8 @@ BackendBaselineResult BackendClient::requestBaseline(const QString &datasetId,
 
 BackendStackResult BackendClient::fetchStackBinary(const QStringList &datasetIds,
                                                     const QString &method,
-                                                    const QVector<double> &weights)
+                                                    const QVector<double> &weights,
+                                                    const QString &weightBy)
 {
     BackendStackResult result;
     QString error;
@@ -1014,7 +1025,8 @@ BackendStackResult BackendClient::fetchStackBinary(const QStringList &datasetIds
     const QJsonDocument body(QJsonObject{
             { QStringLiteral("dataset_ids"), idsArray },
             { QStringLiteral("method"),      method },
-            { QStringLiteral("weights"),     wArray } });
+            { QStringLiteral("weights"),     wArray },
+            { QStringLiteral("weight_by"),   weightBy } });
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/spectral/stack/binary")),
                         body, error);

@@ -603,15 +603,6 @@
     <addaction name="actionSlice"/>
     <addaction name="actionMomentMap"/>
    </widget>
-   <widget class="QMenu" name="menuMoment">
-    <property name="title"><string>Moment</string></property>
-    <addaction name="actionMoment0"/>
-    <addaction name="actionMoment1"/>
-    <addaction name="actionMoment2"/>
-    <addaction name="actionMoment6"/>
-    <addaction name="actionMoment8"/>
-    <addaction name="actionMoment10"/>
-   </widget>
    <widget class="QMenu" name="menuWCS">
     <property name="title"><string>WCS</string></property>
     <addaction name="actionGalactic"/>
@@ -621,11 +612,16 @@
    <widget class="QMenu" name="menuTools">
     <property name="title"><string>Tools</string></property>
     <addaction name="actionExtractSpectrum"/>
+    <addaction name="separator"/>
+    <addaction name="actionComputeMoment"/>
+    <addaction name="separator"/>
+    <addaction name="actionLinewidthMap"/>
+    <addaction name="actionBaselineSubtract"/>
+    <addaction name="actionStackCubes"/>
    </widget>
    <addaction name="menuCamera"/>
    <addaction name="menuEdit"/>
    <addaction name="menuView"/>
-   <addaction name="menuMoment"/>
    <addaction name="menuWCS"/>
    <addaction name="menuTools"/>
   </widget>
@@ -660,35 +656,21 @@
   <action name="actionCameraLeft">
    <property name="text"><string>Left</string></property>
   </action>
-  <action name="actionMoment0">
-   <property name="text">
-    <string>0th order - the integrated value of the spectrum</string>
-   </property>
+  <action name="actionComputeMoment">
+   <property name="text"><string>Compute Moment…</string></property>
+   <property name="toolTip"><string>Open moment-map dialog</string></property>
   </action>
-  <action name="actionMoment1">
-   <property name="text">
-    <string>1st order - the intensity weighted coordinate</string>
-   </property>
+  <action name="actionLinewidthMap">
+   <property name="text"><string>Line-width Map…</string></property>
+   <property name="toolTip"><string>Compute line-width map</string></property>
   </action>
-  <action name="actionMoment2">
-   <property name="text">
-    <string>2nd order - the intensity weighted dispersion of the coordinate</string>
-   </property>
+  <action name="actionBaselineSubtract">
+   <property name="text"><string>Baseline Subtraction…</string></property>
+   <property name="toolTip"><string>Subtract spectral baseline</string></property>
   </action>
-  <action name="actionMoment6">
-   <property name="text">
-    <string>6th order - the root mean square of the spectrum</string>
-   </property>
-  </action>
-  <action name="actionMoment8">
-   <property name="text">
-    <string>8th order - the maximum value of the spectrum</string>
-   </property>
-  </action>
-  <action name="actionMoment10">
-   <property name="text">
-    <string>10th order - the minimum value of the spectrum</string>
-   </property>
+  <action name="actionStackCubes">
+   <property name="text"><string>Stack Spectral Cubes…</string></property>
+   <property name="toolTip"><string>Stack multiple spectral cubes</string></property>
   </action>
   <action name="actionGalactic">
    <property name="checkable"><bool>true</bool></property>
