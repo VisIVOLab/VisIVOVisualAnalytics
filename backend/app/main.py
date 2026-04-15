@@ -3035,3 +3035,264 @@ def _safe_scalar(v: Any) -> Any:
     if hasattr(v, "item"):
         return v.item()
     return v
+
+
+# ── A-01: Aperture photometry ─────────────────────────────────────────────────
+
+class AperturePhotometryRequest(BaseModel):
+    dataset_id: str
+    ra_deg: float
+    dec_deg: float
+    aperture_arcsec: float = 10.0
+    annulus_inner_arcsec: float = 15.0
+    annulus_outer_arcsec: float = 25.0
+    channel: int | None = None
+
+
+class AperturePhotometryResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    flux_jy: float = 0.0
+    flux_err_jy: float = 0.0
+    background_jy_per_pix: float = 0.0
+    n_pix_aperture: int = 0
+    channel: int | None = None
+    pix_x: float = 0.0
+    pix_y: float = 0.0
+    pixel_scale_arcsec: float = 0.0
+
+
+@app.post("/v1/photometry/aperture/{dataset_id}",
+          response_model=AperturePhotometryResponse, tags=["photometry"])
+async def photometry_aperture(
+    dataset_id: str,
+    request: AperturePhotometryRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> AperturePhotometryResponse:
+    """Circular aperture photometry at a sky position.
+
+    Requires ``photutils``.  Returns HTTP 503 if not installed.
+    """
+    entry = _require_dataset(session, dataset_id)
+    try:
+        from .compute import worker_aperture_photometry  # noqa: PLC0415
+        result = await _run_with_limit(
+            session,
+            worker_aperture_photometry,
+            entry["path"],
+            request.channel,
+            request.ra_deg,
+            request.dec_deg,
+            request.aperture_arcsec,
+            request.annulus_inner_arcsec,
+            request.annulus_outer_arcsec,
+        )
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": str(exc), "install": "pip install photutils", "feature": "A-01"},
+        ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return AperturePhotometryResponse(valid=False, error=str(exc))
+    return AperturePhotometryResponse(valid=True, **result)
+
+
+# ── A-02: 2-D Gaussian source fitting ────────────────────────────────────────
+
+class GaussFit2DRequest(BaseModel):
+    dataset_id: str
+    ra_deg: float
+    dec_deg: float
+    box_arcsec: float = 60.0
+    channel: int | None = None
+
+
+class GaussFit2DResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    peak_jy_beam: float = 0.0
+    integrated_flux_jy: float = 0.0
+    major_arcsec: float = 0.0
+    minor_arcsec: float = 0.0
+    pa_deg: float = 0.0
+    deconvolved_major_arcsec: float | None = None
+    deconvolved_minor_arcsec: float | None = None
+    fit_rms: float = 0.0
+    center_pix_x: float = 0.0
+    center_pix_y: float = 0.0
+    background: float = 0.0
+
+
+@app.post("/v1/photometry/gaussfit/{dataset_id}",
+          response_model=GaussFit2DResponse, tags=["photometry"])
+async def photometry_gaussfit(
+    dataset_id: str,
+    request: GaussFit2DRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> GaussFit2DResponse:
+    """Fit a 2-D elliptical Gaussian to a source and optionally deconvolve the beam."""
+    entry = _require_dataset(session, dataset_id)
+    try:
+        from .compute import worker_gauss_fit_2d  # noqa: PLC0415
+        result = await _run_with_limit(
+            session,
+            worker_gauss_fit_2d,
+            entry["path"],
+            request.channel,
+            request.ra_deg,
+            request.dec_deg,
+            request.box_arcsec,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return GaussFit2DResponse(valid=False, error=str(exc))
+    return GaussFit2DResponse(valid=True, **result)
+
+
+# ── A-03: WCS reprojection ────────────────────────────────────────────────────
+
+class ReprojectRequest(BaseModel):
+    dataset_id: str
+    target_wcs: dict[str, Any]
+    target_shape: list[int]   # [ny, nx]
+    order: int = 1            # 1 = bilinear, 3 = exact
+
+
+class ReprojectResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    new_dataset_id: str = ""
+    width: int = 0
+    height: int = 0
+    range_min: float = 0.0
+    range_max: float = 0.0
+    output_path: str = ""
+    order: int = 1
+
+
+@app.post("/v1/astrometry/reproject/{dataset_id}",
+          response_model=ReprojectResponse, tags=["astrometry"])
+async def astrometry_reproject(
+    dataset_id: str,
+    request: ReprojectRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> ReprojectResponse:
+    """Reproject a FITS image to a new WCS grid.
+
+    Requires ``reproject``.  Returns HTTP 503 if not installed.
+    Registers the reprojected image as a new session dataset.
+    """
+    entry = _require_dataset(session, dataset_id)
+    if len(request.target_shape) < 2:
+        raise HTTPException(422, "target_shape must have exactly 2 elements [ny, nx].")
+
+    import tempfile as _tempfile  # noqa: PLC0415
+    tmp_dir = Path(_tempfile.gettempdir()) / "visivo_reproject"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    output_path = str(tmp_dir / f"{uuid.uuid4().hex}_reproject.fits")
+
+    try:
+        from .compute import worker_reproject  # noqa: PLC0415
+        result = await _run_with_limit(
+            session,
+            worker_reproject,
+            entry["path"],
+            output_path,
+            request.target_wcs,
+            request.target_shape,
+            request.order,
+        )
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": str(exc), "install": "pip install reproject", "feature": "A-03"},
+        ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return ReprojectResponse(valid=False, error=str(exc))
+
+    new_id = f"ds_{uuid.uuid4().hex[:12]}"
+    session.datasets[new_id] = {
+        "path": result["output_path"],
+        "kind": "image",
+        "width": result["width"],
+        "height": result["height"],
+        "depth": 1,
+    }
+    return ReprojectResponse(valid=True, new_dataset_id=new_id, **{
+        k: result[k] for k in ("width", "height", "range_min", "range_max",
+                                "output_path", "order")
+    })
+
+
+# ── A-04: External catalogue cross-match ─────────────────────────────────────
+
+class CrossmatchResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    n_sources: int = 0
+    truncated: bool = False
+    centre_ra_deg: float = 0.0
+    centre_dec_deg: float = 0.0
+    search_radius_deg: float = 0.0
+    sources: list[dict[str, Any]] = []
+
+
+@app.get("/v1/astrometry/crossmatch/{dataset_id}",
+         response_model=CrossmatchResponse, tags=["astrometry"])
+async def astrometry_crossmatch(
+    dataset_id: str,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+    radius_arcsec: float = Query(default=60.0, ge=1.0, le=7200.0),
+    catalogue: str = Query(default="simbad"),
+) -> Response:
+    """Cross-match the FITS image footprint against an external catalogue.
+
+    Supported catalogues: ``simbad``, ``2MASS``, ``NVSS``, ``FIRST``.
+    Returns up to 500 sources.  If the result is truncated the response
+    header ``X-Truncated: true`` is set.
+    Requires ``astroquery``.  Returns HTTP 503 if not installed.
+    """
+    entry = _require_dataset(session, dataset_id)
+    try:
+        # Network I/O — use thread pool, not process pool, so mocks work in tests.
+        from .compute import worker_crossmatch  # noqa: PLC0415
+        result = await asyncio.to_thread(
+            worker_crossmatch,
+            entry["path"],
+            radius_arcsec,
+            catalogue,
+            500,
+        )
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": str(exc), "install": "pip install astroquery", "feature": "A-04"},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return Response(
+            content=CrossmatchResponse(valid=False, error=str(exc)).model_dump_json(),
+            media_type="application/json",
+        )
+
+    resp_data = CrossmatchResponse(valid=True, **result)
+    resp_headers: dict[str, str] = {}
+    if result.get("truncated"):
+        resp_headers["X-Truncated"] = "true"
+    return Response(
+        content=resp_data.model_dump_json(),
+        media_type="application/json",
+        headers=resp_headers,
+    )

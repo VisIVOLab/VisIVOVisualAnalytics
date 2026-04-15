@@ -1689,3 +1689,160 @@ BackendVlkbFetchResult BackendClient::vlkbFetchCutout(const QString &sodaUrl,
     result.path  = obj.value(QStringLiteral("path")).toString();
     return result;
 }
+
+// ── A-01: Aperture photometry ─────────────────────────────────────────────────
+
+BackendAperturePhotometryResult BackendClient::requestAperturePhotometry(
+        const QString &datasetId,
+        double raDeg, double decDeg,
+        double apertureArcsec,
+        double annulusInnerArcsec,
+        double annulusOuterArcsec,
+        int channel)
+{
+    BackendAperturePhotometryResult result;
+    QString error;
+    QJsonObject bodyObj{
+        { QStringLiteral("dataset_id"),           datasetId },
+        { QStringLiteral("ra_deg"),               raDeg },
+        { QStringLiteral("dec_deg"),              decDeg },
+        { QStringLiteral("aperture_arcsec"),      apertureArcsec },
+        { QStringLiteral("annulus_inner_arcsec"), annulusInnerArcsec },
+        { QStringLiteral("annulus_outer_arcsec"), annulusOuterArcsec },
+    };
+    if (channel >= 0)
+        bodyObj[QStringLiteral("channel")] = channel;
+    const QByteArray raw =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/photometry/aperture/") + datasetId),
+                        QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) { result.error = error; return result; }
+    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+    result.valid               = obj.value(QStringLiteral("valid")).toBool();
+    result.error               = obj.value(QStringLiteral("error")).toString();
+    result.fluxJy              = obj.value(QStringLiteral("flux_jy")).toDouble();
+    result.fluxErrJy           = obj.value(QStringLiteral("flux_err_jy")).toDouble();
+    result.backgroundJyPerPix  = obj.value(QStringLiteral("background_jy_per_pix")).toDouble();
+    result.nPixAperture        = obj.value(QStringLiteral("n_pix_aperture")).toInt();
+    result.channel             = obj.value(QStringLiteral("channel")).toInt(-1);
+    result.pixX                = obj.value(QStringLiteral("pix_x")).toDouble();
+    result.pixY                = obj.value(QStringLiteral("pix_y")).toDouble();
+    result.pixelScaleArcsec    = obj.value(QStringLiteral("pixel_scale_arcsec")).toDouble();
+    return result;
+}
+
+// ── A-02: 2-D Gaussian source fitting ────────────────────────────────────────
+
+BackendGaussFit2DResult BackendClient::requestGaussFit2D(
+        const QString &datasetId,
+        double raDeg, double decDeg,
+        double boxArcsec,
+        int channel)
+{
+    BackendGaussFit2DResult result;
+    QString error;
+    QJsonObject bodyObj{
+        { QStringLiteral("dataset_id"), datasetId },
+        { QStringLiteral("ra_deg"),     raDeg },
+        { QStringLiteral("dec_deg"),    decDeg },
+        { QStringLiteral("box_arcsec"), boxArcsec },
+    };
+    if (channel >= 0)
+        bodyObj[QStringLiteral("channel")] = channel;
+    const QByteArray raw =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/photometry/gaussfit/") + datasetId),
+                        QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) { result.error = error; return result; }
+    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+    result.valid               = obj.value(QStringLiteral("valid")).toBool();
+    result.error               = obj.value(QStringLiteral("error")).toString();
+    result.peakJyBeam          = obj.value(QStringLiteral("peak_jy_beam")).toDouble();
+    result.integratedFluxJy    = obj.value(QStringLiteral("integrated_flux_jy")).toDouble();
+    result.majorArcsec         = obj.value(QStringLiteral("major_arcsec")).toDouble();
+    result.minorArcsec         = obj.value(QStringLiteral("minor_arcsec")).toDouble();
+    result.paDeg               = obj.value(QStringLiteral("pa_deg")).toDouble();
+    result.fitRms              = obj.value(QStringLiteral("fit_rms")).toDouble();
+    result.centerPixX          = obj.value(QStringLiteral("center_pix_x")).toDouble();
+    result.centerPixY          = obj.value(QStringLiteral("center_pix_y")).toDouble();
+    result.background          = obj.value(QStringLiteral("background")).toDouble();
+    const QJsonValue dmaj = obj.value(QStringLiteral("deconvolved_major_arcsec"));
+    const QJsonValue dmin = obj.value(QStringLiteral("deconvolved_minor_arcsec"));
+    result.deconvolvedMajorArcsec = dmaj.isNull() ? std::numeric_limits<double>::quiet_NaN()
+                                                   : dmaj.toDouble();
+    result.deconvolvedMinorArcsec = dmin.isNull() ? std::numeric_limits<double>::quiet_NaN()
+                                                   : dmin.toDouble();
+    return result;
+}
+
+// ── A-03: WCS reprojection ────────────────────────────────────────────────────
+
+BackendReprojectResult BackendClient::requestReproject(
+        const QString &datasetId,
+        const QVariantMap &targetWcs,
+        int targetNy, int targetNx,
+        int order)
+{
+    BackendReprojectResult result;
+    QString error;
+    QJsonObject wcsObj;
+    for (auto it = targetWcs.constBegin(); it != targetWcs.constEnd(); ++it)
+        wcsObj.insert(it.key(), QJsonValue::fromVariant(it.value()));
+    const QJsonDocument body(QJsonObject{
+        { QStringLiteral("dataset_id"),   datasetId },
+        { QStringLiteral("target_wcs"),   wcsObj },
+        { QStringLiteral("target_shape"), QJsonArray{ targetNy, targetNx } },
+        { QStringLiteral("order"),        order },
+    });
+    const QByteArray raw =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/astrometry/reproject/") + datasetId),
+                        body, error);
+    if (!error.isEmpty()) { result.error = error; return result; }
+    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+    result.valid         = obj.value(QStringLiteral("valid")).toBool();
+    result.error         = obj.value(QStringLiteral("error")).toString();
+    result.newDatasetId  = obj.value(QStringLiteral("new_dataset_id")).toString();
+    result.width         = obj.value(QStringLiteral("width")).toInt();
+    result.height        = obj.value(QStringLiteral("height")).toInt();
+    result.rangeMin      = obj.value(QStringLiteral("range_min")).toDouble();
+    result.rangeMax      = obj.value(QStringLiteral("range_max")).toDouble();
+    result.outputPath    = obj.value(QStringLiteral("output_path")).toString();
+    result.order         = obj.value(QStringLiteral("order")).toInt();
+    return result;
+}
+
+// ── A-04: Catalogue cross-match ───────────────────────────────────────────────
+
+BackendCrossmatchResult BackendClient::requestCrossmatch(
+        const QString &datasetId,
+        double radiusArcsec,
+        const QString &catalogue)
+{
+    BackendCrossmatchResult result;
+    QString error;
+    const QUrl url(m_baseUrl
+                   + QStringLiteral("/v1/astrometry/crossmatch/") + datasetId
+                   + QStringLiteral("?radius_arcsec=") + QString::number(radiusArcsec)
+                   + QStringLiteral("&catalogue=") + catalogue);
+    const QByteArray raw = performGet(url, error);
+    if (!error.isEmpty()) { result.error = error; return result; }
+    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+    result.valid           = obj.value(QStringLiteral("valid")).toBool();
+    result.error           = obj.value(QStringLiteral("error")).toString();
+    result.nSources        = obj.value(QStringLiteral("n_sources")).toInt();
+    result.truncated       = obj.value(QStringLiteral("truncated")).toBool();
+    result.centreRaDeg     = obj.value(QStringLiteral("centre_ra_deg")).toDouble();
+    result.centreDecDeg    = obj.value(QStringLiteral("centre_dec_deg")).toDouble();
+    result.searchRadiusDeg = obj.value(QStringLiteral("search_radius_deg")).toDouble();
+    const QJsonArray srcArr = obj.value(QStringLiteral("sources")).toArray();
+    result.sources.reserve(srcArr.size());
+    for (const QJsonValue &v : srcArr) {
+        const QJsonObject so = v.toObject();
+        BackendCrossmatchSource src;
+        src.raDeg            = so.value(QStringLiteral("ra_deg")).toDouble();
+        src.decDeg           = so.value(QStringLiteral("dec_deg")).toDouble();
+        src.name             = so.value(QStringLiteral("name")).toString();
+        src.catalogueId      = so.value(QStringLiteral("catalogue_id")).toString();
+        src.separationArcsec = so.value(QStringLiteral("separation_arcsec")).toDouble();
+        result.sources.append(src);
+    }
+    return result;
+}

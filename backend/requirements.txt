@@ -9,3 +9,9 @@ healpy>=0.3
 scipy>=1.10
 numba>=0.59.0   # optional; falls back to numpy if unavailable
 dask[array]>=2024.1.0   # optional; out-of-core processing
+# optional – feature A-01
+photutils>=1.10.0
+# optional – feature A-03
+reproject>=0.13
+# optional – feature A-04
+astroquery>=0.4.7

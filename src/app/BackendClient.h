@@ -13,6 +13,7 @@
 #include <chrono>
 
 #include <array>
+#include <limits>
 #include <map>
 #include <vector>
 
@@ -485,6 +486,79 @@ struct BackendSourceFindResult
     QVector<BackendSourceFindSource> sources;
 };
 
+// ── A-01: Aperture photometry ─────────────────────────────────────────────────
+
+struct BackendAperturePhotometryResult
+{
+    bool valid{ false };
+    QString error;
+    double fluxJy{ 0. };
+    double fluxErrJy{ 0. };
+    double backgroundJyPerPix{ 0. };
+    int nPixAperture{ 0 };
+    int channel{ -1 };          // -1 means "not set"
+    double pixX{ 0. };
+    double pixY{ 0. };
+    double pixelScaleArcsec{ 0. };
+};
+
+// ── A-02: 2-D Gaussian source fitting ────────────────────────────────────────
+
+struct BackendGaussFit2DResult
+{
+    bool valid{ false };
+    QString error;
+    double peakJyBeam{ 0. };
+    double integratedFluxJy{ 0. };
+    double majorArcsec{ 0. };
+    double minorArcsec{ 0. };
+    double paDeg{ 0. };
+    double deconvolvedMajorArcsec{ std::numeric_limits<double>::quiet_NaN() };
+    double deconvolvedMinorArcsec{ std::numeric_limits<double>::quiet_NaN() };
+    double fitRms{ 0. };
+    double centerPixX{ 0. };
+    double centerPixY{ 0. };
+    double background{ 0. };
+};
+
+// ── A-03: WCS reprojection ────────────────────────────────────────────────────
+
+struct BackendReprojectResult
+{
+    bool valid{ false };
+    QString error;
+    QString newDatasetId;
+    int width{ 0 };
+    int height{ 0 };
+    double rangeMin{ 0. };
+    double rangeMax{ 0. };
+    QString outputPath;
+    int order{ 1 };
+};
+
+// ── A-04: Catalogue cross-match ───────────────────────────────────────────────
+
+struct BackendCrossmatchSource
+{
+    double raDeg{ 0. };
+    double decDeg{ 0. };
+    QString name;
+    QString catalogueId;
+    double separationArcsec{ 0. };
+};
+
+struct BackendCrossmatchResult
+{
+    bool valid{ false };
+    QString error;
+    int nSources{ 0 };
+    bool truncated{ false };
+    double centreRaDeg{ 0. };
+    double centreDecDeg{ 0. };
+    double searchRadiusDeg{ 0. };
+    QVector<BackendCrossmatchSource> sources;
+};
+
 class QJsonDocument;
 class QJsonObject;
 class QUrl;
@@ -668,6 +742,42 @@ public:
      *  Fills \c result and advances \c offset by 12 + rows*cols*4 bytes. */
     static bool parseBinaryFrame(const QByteArray &payload, int &offset,
                                   BinaryArrayResult &result);
+
+    // ── A-01: Aperture photometry ─────────────────────────────────────────────
+    /** POST /v1/photometry/aperture/{dataset_id} */
+    BackendAperturePhotometryResult requestAperturePhotometry(
+            const QString &datasetId,
+            double raDeg, double decDeg,
+            double apertureArcsec,
+            double annulusInnerArcsec,
+            double annulusOuterArcsec,
+            int channel = -1);
+
+    // ── A-02: 2-D Gaussian source fitting ────────────────────────────────────
+    /** POST /v1/photometry/gaussfit/{dataset_id} */
+    BackendGaussFit2DResult requestGaussFit2D(
+            const QString &datasetId,
+            double raDeg, double decDeg,
+            double boxArcsec,
+            int channel = -1);
+
+    // ── A-03: WCS reprojection ────────────────────────────────────────────────
+    /** POST /v1/astrometry/reproject/{dataset_id}
+     *  @param targetWcs   FITS header key→value pairs for the target WCS.
+     *  @param targetShape [ny, nx] of the output grid. */
+    BackendReprojectResult requestReproject(
+            const QString &datasetId,
+            const QVariantMap &targetWcs,
+            int targetNy, int targetNx,
+            int order = 1);
+
+    // ── A-04: Catalogue cross-match ───────────────────────────────────────────
+    /** GET /v1/astrometry/crossmatch/{dataset_id}
+     *  @param catalogue  "simbad", "2MASS", "NVSS", or "FIRST". */
+    BackendCrossmatchResult requestCrossmatch(
+            const QString &datasetId,
+            double radiusArcsec = 60.0,
+            const QString &catalogue = QStringLiteral("simbad"));
 
 private:
     /** Build a QNetworkRequest with auth + session headers pre-applied. */
