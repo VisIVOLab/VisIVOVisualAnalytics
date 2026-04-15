@@ -2980,6 +2980,10 @@ async def spectral_baseline(
         return BaselineResponse(valid=False, error=str(exc))
 
     new_id = f"ds_{uuid.uuid4().hex[:12]}"
+    logger.info(
+        "[BASELINE] registering new dataset  new_id=%s  path=%s  depth=%s  width=%s  height=%s",
+        new_id, result["output_path"], result["depth"], result["width"], result["height"],
+    )
     session.datasets[new_id] = {
         "path": result["output_path"],
         "kind": "cube",

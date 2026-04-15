@@ -2067,17 +2067,14 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         if (this->isBusy() || !this->hasBackendVisibleDataset()) {
             return;
         }
-        BackendClient *client = new BackendClient(this->remoteBackendUrl,
-                                                  this->remoteBackendToken);
-        client->setSessionId(this->remoteSessionId);
-        auto *dlg = new BaselineDialog(client,
+        auto *dlg = new BaselineDialog(this->remoteBackendUrl,
+                                       this->remoteBackendToken,
                                        this->remoteSessionId,
                                        this->remoteDatasetId,
                                        this->remoteDatasetDepth,
                                        this);
-        QObject::connect(dlg, &QDialog::finished, [client](int) { delete client; });
         dlg->setAttribute(Qt::WA_DeleteOnClose);
-        dlg->open();
+        dlg->show();
     });
 
     // S-04 Stack spectral cubes

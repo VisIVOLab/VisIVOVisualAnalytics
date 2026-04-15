@@ -1209,19 +1209,37 @@ def _expand_channel_ranges(
     Accepts either:
     - A flat list of channel indices: [5, 6, 7, 20, 21]
     - A list of [start, end] pairs:   [[5, 7], [20, 21]]
+
+    Raises ValueError if ``line_free_channels`` is None or empty, and if the
+    resulting index array is empty after bounds-filtering.  The fallback to
+    all channels has been removed — fitting on all channels silently absorbs
+    real spectral-line signal, which is scientifically incorrect.
     """
     if not line_free_channels:
-        return np.arange(nchans)
+        raise ValueError(
+            "line_free_channels is required for baseline subtraction. "
+            "Provide at least one line-free spectral range so the fit does not "
+            "absorb real emission-line signal."
+        )
     # Detect format: if first element is a list/tuple use range expansion
     indices: list[int] = []
     for item in line_free_channels:
         if isinstance(item, (list, tuple)):
             start, end = int(item[0]), int(item[1])
+            if start > end:
+                raise ValueError(
+                    f"Invalid line-free range [{start}, {end}]: start must be ≤ end."
+                )
             indices.extend(range(start, end + 1))
         else:
             indices.append(int(item))
     fit_idx = np.array([i for i in indices if 0 <= i < nchans], dtype=int)
-    return fit_idx if len(fit_idx) > 0 else np.arange(nchans)
+    if len(fit_idx) == 0:
+        raise ValueError(
+            f"No valid line-free channels after bounds-checking against cube depth {nchans}. "
+            "All provided indices were out of range [0, nchans-1]."
+        )
+    return fit_idx
 
 
 def worker_baseline(
@@ -1247,38 +1265,99 @@ def worker_baseline(
     if method not in {"polynomial", "median"}:
         raise ValueError(f"Unknown baseline method '{method}'. Choose polynomial or median.")
 
+    # ── Validate line-free channels upfront ──────────────────────────────────────
+    # This check is intentionally done before any FITS I/O so the error is fast
+    # and unambiguous.  Fitting on all channels silently absorbs real line signal.
+    if not line_free_channels:
+        raise ValueError(
+            "Line-free channels are required for baseline subtraction. "
+            "Specify at least one spectral range that contains no emission or "
+            "absorption signal so the baseline fit is not contaminated."
+        )
+
+    logger.info(
+        "[BASELINE] start  path=%s  channel_start=%s  channel_end=%s  "
+        "method=%s  poly_order=%s  line_free_channels=%s",
+        path, channel_start, channel_end, method, poly_order, line_free_channels,
+    )
+
     dataset = ScientificFitsDataset(path)
     hdul, raw = dataset.open_memmap()
     try:
+        logger.info("[BASELINE] raw FITS shape (memmap): %s  dtype=%s", raw.shape, raw.dtype)
         data = dataset.squeeze_to_3d(raw)
+        logger.info("[BASELINE] after squeeze_to_3d: shape=%s  ndim=%s", data.shape, data.ndim)
         if data.ndim != 3:
             raise ValueError("Baseline subtraction requires a 3D spectral cube.")
         nz, ny, nx = data.shape
-        z0 = max(0, min(int(channel_start), nz - 1))
-        z1 = max(0, min(int(channel_end), nz - 1))
+        logger.info("[BASELINE] cube dims  nz=%s  ny=%s  nx=%s", nz, ny, nx)
+
+        # Resolve channel range.
+        # channel_end == 0 is the sentinel meaning "through the last channel"
+        # (this is how the Qt client signals "use the full spectral axis").
+        z0 = max(0, int(channel_start))
+        z1 = int(channel_end) if int(channel_end) > 0 else nz - 1
+        z0 = min(z0, nz - 1)
+        z1 = min(z1, nz - 1)
+        logger.info("[BASELINE] resolved channel range  z0=%s  z1=%s  (nchans=%s)", z0, z1, z1 - z0 + 1)
         if z0 > z1:
-            raise ValueError("Invalid channel range.")
+            raise ValueError(
+                f"Invalid channel range: start={z0} > end={z1} (cube depth={nz})."
+            )
+
         subset = np.asarray(data[z0 : z1 + 1, :, :], dtype=np.float32)
+        logger.info("[BASELINE] subset shape after slice: %s", subset.shape)
         header = hdul[0].header.copy()
     finally:
         hdul.close()
 
     nchans = subset.shape[0]
-    all_chan_idx = np.arange(nchans)
+    # Hard invariant: the extracted subset must span the requested depth.
+    if subset.shape != (nchans, ny, nx):
+        raise RuntimeError(
+            f"[BASELINE] Unexpected subset shape {subset.shape}; expected ({nchans}, {ny}, {nx})."
+        )
+
+    # Expand line-free ranges to a sorted index array and validate.
+    # _expand_channel_ranges raises ValueError if the result is empty.
     fit_idx = _expand_channel_ranges(line_free_channels, nchans)
 
+    # For polynomial fitting, require enough channels to constrain the fit.
+    # A degree-d polynomial needs at least d+2 points to be over-determined.
+    if method == "polynomial":
+        deg = max(0, min(int(poly_order), 10))
+        min_required = deg + 2
+        if len(fit_idx) < min_required:
+            raise ValueError(
+                f"Not enough line-free channels for a degree-{deg} polynomial fit. "
+                f"Need at least {min_required} points, but only {len(fit_idx)} "
+                f"line-free channel(s) were selected. "
+                "Either lower the polynomial order or widen the line-free ranges."
+            )
+    else:
+        deg = 0  # unused for median but kept for symmetry
+
+    logger.info(
+        "[BASELINE] fit_idx: %d of %d channels selected  first=%s  last=%s",
+        len(fit_idx), nchans,
+        int(fit_idx[0]) if len(fit_idx) else "n/a",
+        int(fit_idx[-1]) if len(fit_idx) else "n/a",
+    )
+
+    all_chan_idx = np.arange(nchans)
     flat = subset.reshape(nchans, ny * nx).astype(np.float64)  # (nchans, npix)
 
-    # RMS before subtraction
-    rms_before = float(np.sqrt(np.nanmean(flat ** 2)))
+    # RMS before subtraction (finite values only)
+    finite_before = np.isfinite(flat)
+    rms_before = float(np.sqrt(np.mean(flat[finite_before] ** 2))) if finite_before.any() else float("nan")
 
     if method == "median":
         # Median of line-free channels per pixel → constant baseline
         baseline_1d = np.nanmedian(flat[fit_idx, :], axis=0)  # (npix,)
         baseline = np.broadcast_to(baseline_1d, (nchans, ny * nx)).copy()
     else:
-        # Polynomial least-squares fit
-        deg = max(0, min(int(poly_order), 10))
+        # Polynomial least-squares fit constrained to line-free channels only.
+        # The fitted model is then evaluated on ALL channels for subtraction.
         V_fit = np.vander(fit_idx.astype(float), N=deg + 1, increasing=True)
         V_all = np.vander(all_chan_idx.astype(float), N=deg + 1, increasing=True)
         flat_fit = flat[fit_idx, :]
@@ -1286,13 +1365,51 @@ def worker_baseline(
         baseline = V_all @ coeffs   # (nchans, npix)
 
     subtracted = (flat - baseline).astype(np.float32).reshape(nchans, ny, nx)
-    rms_after = float(np.sqrt(np.nanmean(subtracted ** 2)))
+    logger.info("[BASELINE] subtracted shape: %s", subtracted.shape)
 
-    # Write output FITS
+    # Hard invariants before FITS write — any shape mismatch raises immediately.
+    if subtracted.ndim != 3:
+        raise RuntimeError(
+            f"[BASELINE] subtracted cube is not 3D: ndim={subtracted.ndim}  shape={subtracted.shape}"
+        )
+    if subtracted.shape != (nchans, ny, nx):
+        raise RuntimeError(
+            f"[BASELINE] shape mismatch after subtraction: {subtracted.shape} != ({nchans}, {ny}, {nx})."
+        )
+
+    # RMS after subtraction — finite values only, guard against degenerate output.
+    finite_after = np.isfinite(subtracted)
+    logger.info(
+        "[BASELINE] corrected finite voxels: %d / %d",
+        int(finite_after.sum()), int(finite_after.size),
+    )
+    if not finite_after.any():
+        raise RuntimeError(
+            "Baseline subtraction produced no finite voxels. "
+            "The fit may be numerically ill-conditioned. "
+            "Try a lower polynomial order or different line-free ranges."
+        )
+    rms_after = float(np.sqrt(np.mean(subtracted[finite_after] ** 2)))
+    logger.info(
+        "[BASELINE] corrected range: min=%s  max=%s  rms_after=%s",
+        float(np.min(subtracted[finite_after])),
+        float(np.max(subtracted[finite_after])),
+        rms_after,
+    )
+
+    # Write output FITS, preserving spatial and spectral WCS from the input.
+    # Only NAXIS3 and CRPIX3 are updated to reflect the channel sub-range;
+    # all other spectral keywords (CTYPE3, CUNIT3, CRVAL3, CDELT3) are kept
+    # so that the output cube is correctly located in velocity/frequency space.
     header["NAXIS3"] = nchans
-    header["CRPIX3"] = header.get("CRPIX3", 1.0) - z0
+    header["CRPIX3"] = float(header.get("CRPIX3", 1.0)) - z0
+    logger.info(
+        "[BASELINE] writing FITS  output_path=%s  data.shape=%s  NAXIS3=%s",
+        output_path, subtracted.shape, nchans,
+    )
     primary_hdu = _fits.PrimaryHDU(data=subtracted, header=header)
     _fits.HDUList([primary_hdu]).writeto(output_path, overwrite=True)
+    logger.info("[BASELINE] FITS written successfully")
 
     range_min, range_max = _finite_range(subtracted)
     return {

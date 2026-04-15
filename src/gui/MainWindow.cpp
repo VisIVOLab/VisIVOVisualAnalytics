@@ -262,12 +262,11 @@ void MainWindow::buildScienceMenu()
     m_actBaseline->setEnabled(false);
     m_actBaseline->setToolTip(u"Subtract a polynomial or median spectral baseline (S-03). Open a dataset first."_s);
     QObject::connect(m_actBaseline, &QAction::triggered, this, [this]() {
-        auto *client = new BackendClient(m_sciBackendUrl, m_sciToken);
-        client->setSessionId(m_sciSessionId);
-        auto *dlg = new BaselineDialog(client, m_sciSessionId, m_sciDatasetId, m_sciDepth, this);
-        QObject::connect(dlg, &QDialog::finished, [client](int) { delete client; });
+        auto *dlg = new BaselineDialog(m_sciBackendUrl, m_sciToken,
+                                       m_sciSessionId, m_sciDatasetId,
+                                       m_sciDepth, this);
         dlg->setAttribute(Qt::WA_DeleteOnClose);
-        dlg->open();
+        dlg->show();
     });
 
     m_actStack = sciMenu->addAction(u"Spectral Stacking…"_s);

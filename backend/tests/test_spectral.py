@@ -285,11 +285,15 @@ class TestBaselineWorker:
         _write_simple_cube(path, data)
         self.cube_path = path
 
+    # Fixture cube: 32 channels, linear ramp baseline + noise, no emission.
+    # Line-free sidebands suitable for all fixture-based tests:
+    _LF_32 = [[0, 10], [20, 31]]   # two sidebands, no signal region to protect
+
     def test_baseline_rms_reduced(self):
         """After linear baseline subtraction the RMS should drop significantly."""
         from app.compute import worker_baseline
         out_path = str(self.tmp_path / "baseline_out.fits")
-        result = worker_baseline(self.cube_path, out_path, 0, 31, 1, None)
+        result = worker_baseline(self.cube_path, out_path, 0, 31, 1, self._LF_32)
         assert result["output_path"] == out_path
         with fits.open(out_path) as h:
             residual = h[0].data
@@ -299,13 +303,13 @@ class TestBaselineWorker:
     def test_output_file_written(self):
         from app.compute import worker_baseline
         out_path = str(self.tmp_path / "baseline_out2.fits")
-        worker_baseline(self.cube_path, out_path, 0, 31, 1, None)
+        worker_baseline(self.cube_path, out_path, 0, 31, 1, self._LF_32)
         assert Path(out_path).exists()
 
     def test_metadata_returned(self):
         from app.compute import worker_baseline
         out_path = str(self.tmp_path / "baseline_out3.fits")
-        result = worker_baseline(self.cube_path, out_path, 0, 31, 1, None)
+        result = worker_baseline(self.cube_path, out_path, 0, 31, 1, self._LF_32)
         assert result["width"] == 6
         assert result["height"] == 6
         assert result["depth"] == 32
@@ -318,6 +322,325 @@ class TestBaselineWorker:
         line_free = list(range(0, 10)) + list(range(22, 32))
         result = worker_baseline(self.cube_path, out_path, 0, 31, 1, line_free)
         assert result["fit_channels"] == len(line_free)
+
+    # ── Regression tests for the NAXIS3=1 collapse bug ────────────────────────
+
+    def test_full_depth_sentinel_channel_end_zero(self):
+        """channel_start=0, channel_end=0 is the 'use all channels' sentinel.
+
+        This is the exact call the Qt client always makes.  Before the fix,
+        z1 was clamped to 0 → data[0:1] → NAXIS3=1 in the output.
+        """
+        from app.compute import worker_baseline
+        out_path = str(self.tmp_path / "baseline_sentinel.fits")
+        # Mimic exactly what the Qt client sends (line-free sidebands required)
+        result = worker_baseline(self.cube_path, out_path, 0, 0, 1, self._LF_32)
+        assert result["depth"] == 32, (
+            f"Expected depth=32 (full cube) but got {result['depth']}. "
+            "channel_end=0 must be treated as the 'last channel' sentinel."
+        )
+        with fits.open(out_path) as h:
+            assert h[0].data.shape == (32, 6, 6), (
+                f"Output shape {h[0].data.shape} != (32, 6, 6). "
+                "NAXIS3 must equal the input spectral depth."
+            )
+
+    def test_output_shape_equals_input_shape(self):
+        """Output cube shape must exactly match the input cube shape.
+
+        Regression for the bug where output NAXIS3 was written as 1.
+        """
+        from app.compute import worker_baseline
+        out_path = str(self.tmp_path / "baseline_shape.fits")
+        nz, ny, nx = 32, 6, 6  # matches the fixture
+        result = worker_baseline(self.cube_path, out_path, 0, 0, 1, self._LF_32)
+        assert (result["depth"], result["height"], result["width"]) == (nz, ny, nx)
+        with fits.open(out_path) as h:
+            assert h[0].data.shape == (nz, ny, nx)
+            assert h[0].header["NAXIS3"] == nz
+
+    def test_naxis3_never_one_when_input_is_deep(self):
+        """A deep cube (109 channels, like WALLABY) must never produce NAXIS3=1."""
+        from app.compute import worker_baseline
+        # Synthetic cube shaped like the WALLABY example: 196×280×109
+        # Use a smaller proxy (109×8×8) to keep the test fast.
+        rng = np.random.default_rng(42)
+        nz, ny, nx = 109, 8, 8
+        chans = np.arange(nz, dtype=np.float32)
+        baseline = 0.1 * chans[:, None, None]
+        signal = np.zeros((nz, ny, nx), dtype=np.float32)
+        signal[50:60] = 1.0  # fake emission line in channels 50-59
+        noise = (rng.standard_normal((nz, ny, nx)) * 0.02).astype(np.float32)
+        data = baseline + signal + noise
+        cube_path = str(self.tmp_path / "wallaby_proxy.fits")
+        _write_simple_cube(cube_path, data)
+
+        # Line-free sidebands outside the 50-59 emission window
+        lf_109 = [[0, 40], [70, 108]]
+        out_path = str(self.tmp_path / "wallaby_baseline.fits")
+        # Qt client always sends channel_start=0, channel_end=0
+        result = worker_baseline(cube_path, out_path, 0, 0, 1, lf_109)
+
+        assert result["depth"] == nz, (
+            f"WALLABY-proxy: expected depth={nz}, got {result['depth']}."
+        )
+        with fits.open(out_path) as h:
+            assert h[0].data.shape[0] == nz, (
+                f"NAXIS3={h[0].data.shape[0]} but input had {nz} channels."
+            )
+            assert h[0].header["NAXIS3"] == nz
+
+    def test_corrected_cube_not_all_zeros(self):
+        """After baseline subtraction the corrected cube must retain signal.
+
+        The cube has a linear ramp baseline + noise; after subtraction the
+        residuals must not be all zeros and the std must remain above the
+        noise floor.
+        """
+        from app.compute import worker_baseline
+        out_path = str(self.tmp_path / "baseline_nonzero.fits")
+        worker_baseline(self.cube_path, out_path, 0, 0, 1, self._LF_32)
+        with fits.open(out_path) as h:
+            residual = h[0].data
+        assert not np.all(residual == 0.0), "Corrected cube is all zeros."
+        assert float(np.nanstd(residual)) > 0.0, "Corrected cube has zero variance."
+
+    def test_line_signal_survives_subtraction(self):
+        """Real spectral line signal must survive baseline subtraction.
+
+        Build a cube with a known Gaussian emission line on top of a linear
+        baseline.  After subtraction, the line peak should be detectable at
+        the same channel and the line-free regions should be near-zero.
+        """
+        from app.compute import worker_baseline
+        rng = np.random.default_rng(7)
+        nz, ny, nx = 32, 4, 4
+        chans = np.arange(nz, dtype=np.float32)
+
+        # Linear baseline
+        baseline = 0.5 * chans[:, None, None] * np.ones((nz, ny, nx), dtype=np.float32)
+        # Gaussian emission line at channel 16, FWHM ≈ 5 channels
+        sigma = 2.0
+        line = 5.0 * np.exp(-0.5 * ((chans - 16.0) / sigma) ** 2)
+        line = line[:, None, None] * np.ones((nz, ny, nx), dtype=np.float32)
+        noise = (rng.standard_normal((nz, ny, nx)) * 0.05).astype(np.float32)
+        data = (baseline + line + noise).astype(np.float32)
+
+        cube_path = str(self.tmp_path / "signal_cube.fits")
+        _write_simple_cube(cube_path, data)
+
+        # Line-free regions: channels 0-10 and 22-31
+        line_free = [[0, 10], [22, 31]]
+        out_path = str(self.tmp_path / "signal_baseline.fits")
+        result = worker_baseline(cube_path, out_path, 0, 0, 1, line_free)
+
+        assert result["depth"] == nz
+
+        with fits.open(out_path) as h:
+            residual = h[0].data  # (nz, ny, nx)
+
+        # Peak of the emission line should survive — mean residual at line
+        # center must be significantly above the noise floor.
+        line_peak_mean = float(np.mean(residual[15:18, :, :]))
+        line_free_rms = float(np.sqrt(np.mean(residual[[0, 1, 2, 29, 30, 31]] ** 2)))
+        assert line_peak_mean > 3.0 * line_free_rms, (
+            f"Line peak ({line_peak_mean:.3f}) not detectable above "
+            f"3σ noise ({3 * line_free_rms:.3f}) after baseline subtraction."
+        )
+
+    def test_wcs_spectral_keywords_preserved(self):
+        """CTYPE3 / CUNIT3 / CRVAL3 / CDELT3 must be unchanged in the output.
+
+        The fix must not accidentally drop or corrupt the spectral WCS axis.
+        """
+        from app.compute import worker_baseline
+        out_path = str(self.tmp_path / "baseline_wcs.fits")
+        worker_baseline(self.cube_path, out_path, 0, 0, 1, self._LF_32)
+        with fits.open(out_path) as h:
+            hdr = h[0].header
+        assert hdr["CTYPE3"] == "VRAD"
+        assert hdr["CUNIT3"] == "km/s"
+        assert hdr["CDELT3"] == 1.0
+        # CRVAL3 is preserved (baseline subtraction does not shift the axis)
+        assert "CRVAL3" in hdr
+
+    def test_sofia_4d_stokes_input_preserves_depth(self):
+        """SoFiA outputs 4-D FITS with a degenerate Stokes axis (NAXIS4=1).
+
+        squeeze_to_3d must collapse (1, nz, ny, nx) → (nz, ny, nx) without
+        losing the spectral axis.  The output must have NAXIS3=nz, not 1.
+        """
+        from app.compute import worker_baseline
+        rng = np.random.default_rng(99)
+        nz, ny, nx = 64, 5, 5
+        # Build a 4-D array: shape (1, nz, ny, nx) — Stokes-I only
+        chans = np.arange(nz, dtype=np.float32)
+        data_3d = (0.1 * chans[:, None, None]
+                   + rng.standard_normal((nz, ny, nx)).astype(np.float32) * 0.02)
+        data_4d = data_3d[np.newaxis, ...]   # (1, nz, ny, nx)
+
+        # Write a 4-D FITS file the way SoFiA would
+        cube_path = str(self.tmp_path / "sofia_4d.fits")
+        hdu = fits.PrimaryHDU(data_4d.astype(np.float32))
+        h = hdu.header
+        h["NAXIS"] = 4
+        h["NAXIS1"] = nx; h["NAXIS2"] = ny; h["NAXIS3"] = nz; h["NAXIS4"] = 1
+        h["CTYPE3"] = "VRAD"; h["CRVAL3"] = 0.0; h["CRPIX3"] = 1.0
+        h["CDELT3"] = 1.0; h["CUNIT3"] = "km/s"
+        h["BUNIT"] = "Jy/beam"
+        hdu.writeto(cube_path, overwrite=True)
+
+        out_path = str(self.tmp_path / "sofia_baseline.fits")
+        # Line-free sidebands for 64-channel cube with no signal
+        result = worker_baseline(cube_path, out_path, 0, 0, 1, [[0, 20], [50, 63]])
+
+        assert result["depth"] == nz, (
+            f"4-D SoFiA input: expected depth={nz}, got {result['depth']}. "
+            "squeeze_to_3d must not collapse the spectral axis."
+        )
+        with fits.open(out_path) as h:
+            assert h[0].data.shape == (nz, ny, nx), (
+                f"Output shape {h[0].data.shape} != ({nz}, {ny}, {nx}). "
+                "NAXIS3 must equal the input spectral depth after squeezing Stokes."
+            )
+            assert h[0].header["NAXIS3"] == nz
+
+
+    # ── Policy and validation regression tests ────────────────────────────────
+
+    def test_missing_line_free_channels_raises(self):
+        """Calling worker_baseline with no line-free channels must raise ValueError.
+
+        Policy A: silently fitting on all channels absorbs real signal and is
+        scientifically incorrect.  The worker must reject the call, not proceed.
+        """
+        from app.compute import worker_baseline
+        out_path = str(self.tmp_path / "should_not_exist.fits")
+        with pytest.raises(ValueError, match="[Ll]ine.free channels"):
+            worker_baseline(self.cube_path, out_path, 0, 0, 1, None)
+        assert not Path(out_path).exists(), "Output file must not be created on validation failure."
+
+    def test_empty_list_line_free_channels_raises(self):
+        """An explicit empty list must also be rejected — same as None."""
+        from app.compute import worker_baseline
+        out_path = str(self.tmp_path / "should_not_exist2.fits")
+        with pytest.raises(ValueError, match="[Ll]ine.free channels"):
+            worker_baseline(self.cube_path, out_path, 0, 0, 1, [])
+
+    def test_poly_order_too_high_raises(self):
+        """Polynomial order higher than (fit_channels - 2) must raise ValueError.
+
+        Degree-d polynomial requires at least d+2 data points to be over-
+        determined.  Providing only 2 line-free channels with order=2 must fail.
+        """
+        from app.compute import worker_baseline
+        out_path = str(self.tmp_path / "poly_order_too_high.fits")
+        # Only 2 line-free channels — insufficient for degree-2 (needs ≥ 4)
+        with pytest.raises(ValueError, match="[Nn]ot enough"):
+            worker_baseline(self.cube_path, out_path, 0, 0, 2, [[0, 1]])
+
+    def test_poly_order_minimum_boundary_passes(self):
+        """Exactly deg+2 line-free channels is the minimum accepted for order=1."""
+        from app.compute import worker_baseline
+        out_path = str(self.tmp_path / "poly_order_boundary.fits")
+        # order=1 needs ≥ 3 channels; provide exactly 3
+        result = worker_baseline(self.cube_path, out_path, 0, 0, 1, [[0, 2]])
+        assert result["fit_channels"] == 3
+
+    def test_out_of_range_channels_raise(self):
+        """Channels outside [0, nz-1] must produce a ValueError."""
+        from app.compute import worker_baseline
+        out_path = str(self.tmp_path / "oob.fits")
+        with pytest.raises(ValueError, match="[Oo]ut of range|[Nn]o valid"):
+            # Fixture cube has 32 channels (0-31); 500 is out of range
+            worker_baseline(self.cube_path, out_path, 0, 0, 1, [[500, 510]])
+
+    def test_line_survives_with_explicit_line_free_sidebands(self):
+        """Canonical scientific test: Gaussian line must survive baseline subtraction.
+
+        Build a cube:
+          - linear baseline ramp (slope=0.5 per channel)
+          - Gaussian emission at channel 16 (sigma=2), peak amplitude 5
+          - small Gaussian noise (σ=0.05)
+        Fit baseline using line-free sidebands ch 0-10 and ch 22-31 only.
+        Assert:
+          1. output shape preserved
+          2. line peak is detectable at ≥ 3σ above the line-free rms
+          3. rms_after < rms_before (baseline was actually removed)
+          4. fit_channels == 21 (= 11 + 10)
+        """
+        from app.compute import worker_baseline
+        rng = np.random.default_rng(7)
+        nz, ny, nx = 32, 4, 4
+        chans = np.arange(nz, dtype=np.float32)
+        slope    = 0.5 * chans[:, None, None] * np.ones((nz, ny, nx), dtype=np.float32)
+        sigma    = 2.0
+        line     = 5.0 * np.exp(-0.5 * ((chans - 16.0) / sigma) ** 2)
+        line     = line[:, None, None] * np.ones((nz, ny, nx), dtype=np.float32)
+        noise    = (rng.standard_normal((nz, ny, nx)) * 0.05).astype(np.float32)
+        data     = (slope + line + noise).astype(np.float32)
+
+        cube_path = str(self.tmp_path / "line_cube_canonical.fits")
+        _write_simple_cube(cube_path, data)
+
+        line_free = [[0, 10], [22, 31]]
+        out_path  = str(self.tmp_path / "line_baseline_canonical.fits")
+        result    = worker_baseline(cube_path, out_path, 0, 0, 1, line_free)
+
+        # Shape preserved
+        assert result["depth"] == nz
+        assert result["fit_channels"] == 21   # 11 + 10
+
+        with fits.open(out_path) as h:
+            residual = h[0].data  # (nz, ny, nx)
+
+        # Line survived: peak SNR > 3σ
+        peak_mean     = float(np.mean(residual[14:19, :, :]))
+        linefree_rms  = float(np.sqrt(np.mean(residual[[0, 1, 2, 29, 30, 31]] ** 2)))
+        assert peak_mean > 3.0 * linefree_rms, (
+            f"Line peak ({peak_mean:.3f}) ≤ 3σ ({3 * linefree_rms:.3f}): "
+            "baseline subtraction absorbed the signal."
+        )
+
+        # RMS improved
+        assert result["rms_after"] < result["rms_before"], (
+            "rms_after must be smaller than rms_before after baseline removal."
+        )
+
+    def test_rms_after_is_not_zero_for_valid_cube(self):
+        """rms_after must never be falsely 0.0 for a valid (non-trivial) cube."""
+        from app.compute import worker_baseline
+        out_path = str(self.tmp_path / "rms_nonzero.fits")
+        result = worker_baseline(self.cube_path, out_path, 0, 0, 1, self._LF_32)
+        assert result["rms_after"] > 0.0, (
+            f"rms_after={result['rms_after']} — should be > 0 for a noisy cube."
+        )
+
+    def test_rms_after_is_finite(self):
+        """rms_after must be a finite float — nan/inf indicate a broken result."""
+        from app.compute import worker_baseline
+        out_path = str(self.tmp_path / "rms_finite.fits")
+        result = worker_baseline(self.cube_path, out_path, 0, 0, 1, self._LF_32)
+        assert np.isfinite(result["rms_after"]), (
+            f"rms_after={result['rms_after']} is not finite."
+        )
+
+    def test_median_method_requires_line_free(self):
+        """Median method must also require explicit line-free channels."""
+        from app.compute import worker_baseline
+        out_path = str(self.tmp_path / "median_no_lf.fits")
+        with pytest.raises(ValueError, match="[Ll]ine.free channels"):
+            worker_baseline(self.cube_path, out_path, 0, 0, 0, None, method="median")
+
+    def test_median_method_with_line_free(self):
+        """Median baseline with explicit line-free channels must succeed."""
+        from app.compute import worker_baseline
+        out_path = str(self.tmp_path / "median_lf.fits")
+        result = worker_baseline(
+            self.cube_path, out_path, 0, 0, 0, self._LF_32, method="median"
+        )
+        assert result["depth"] == 32
+        assert result["rms_after"] > 0.0
 
 
 # ── S-04: Spectral stacking ────────────────────────────────────────────────────
