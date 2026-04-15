@@ -56,6 +56,7 @@ class ScientificFitsDataset:
             minor=float(header["BMIN"]) if "BMIN" in header else None,
             pa=float(header["BPA"]) if "BPA" in header else None,
         )
+        self._stokes_planes: dict[str, int] | None = None  # lazy
         self._log_axis_debug()
 
     @staticmethod
@@ -411,6 +412,58 @@ class ScientificFitsDataset:
                 logger.warning("[fits] proj_plane_pixel_scales failed for path=%s: %s. Using CDELT1 fallback.", self.path, exc)
         cdelt1_deg = abs(float(self.header.get("CDELT1", 1.0)))
         return cdelt1_deg * 3600.0
+
+    # ── Stokes axis detection ─────────────────────────────────────────────────
+
+    @property
+    def stokes_planes(self) -> dict[str, int]:
+        """Map Stokes plane names (I, Q, U, V) to their 0-based slice index.
+
+        Scans all FITS axes for CTYPE == 'STOKES'.  The pixel value in the
+        FITS Stokes convention is:
+          1 → I,  2 → Q,  3 → U,  4 → V,
+         -1 → RR, -2 → LL, -3 → RL, -4 → LR  (unused here)
+
+        The returned slice index is the 0-based position along the numpy
+        array axis that corresponds to the Stokes FITS axis, after the
+        standard FITS → numpy axis reversal.
+        """
+        if self._stokes_planes is not None:
+            return self._stokes_planes
+
+        _STOKES_NAMES = {1: "I", 2: "Q", 3: "U", 4: "V"}
+        result: dict[str, int] = {}
+
+        stokes_fits_axis: int | None = None
+        for axis in range(1, self.naxis + 1):
+            ctype = str(self.header.get(f"CTYPE{axis}", "")).strip().upper()
+            if ctype == "STOKES":
+                stokes_fits_axis = axis
+                break
+
+        if stokes_fits_axis is not None:
+            n_stokes = self.axis_sizes[stokes_fits_axis - 1]
+            crpix  = float(self.header.get(f"CRPIX{stokes_fits_axis}", 1.0))
+            crval  = float(self.header.get(f"CRVAL{stokes_fits_axis}", 1.0))
+            cdelt  = float(self.header.get(f"CDELT{stokes_fits_axis}", 1.0))
+            # numpy axis = naxis - fits_axis  (FITS is Fortran-order, numpy is C-order)
+            numpy_axis = self.naxis - stokes_fits_axis
+            for pix_0based in range(n_stokes):
+                stokes_value = int(round(crval + (pix_0based + 1 - crpix) * cdelt))
+                name = _STOKES_NAMES.get(stokes_value)
+                if name is not None:
+                    result[name] = pix_0based   # slice index along the Stokes numpy axis
+
+        self._stokes_planes = result
+        return result
+
+    def stokes_numpy_axis(self) -> int | None:
+        """Return the numpy axis index of the Stokes dimension, or None."""
+        for axis in range(1, self.naxis + 1):
+            ctype = str(self.header.get(f"CTYPE{axis}", "")).strip().upper()
+            if ctype == "STOKES":
+                return self.naxis - axis
+        return None
 
     def provenance_context(self) -> dict[str, Any]:
         return {

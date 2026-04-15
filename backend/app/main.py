@@ -738,6 +738,26 @@ async def _run_with_limit(session: Session, fn, *args) -> Any:
         session.release_task_slot()
 
 
+def _record_history(
+    session: Session,
+    endpoint: str,
+    params: dict,
+    dataset_id: str | None = None,
+    result_dataset_id: str | None = None,
+) -> None:
+    """Append an entry to the session history for R-01 / R-02 (PROV-JSON)."""
+    entry: dict = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "endpoint": endpoint,
+        "params": params,
+    }
+    if dataset_id is not None:
+        entry["dataset_id"] = dataset_id
+    if result_dataset_id is not None:
+        entry["result_dataset_id"] = result_dataset_id
+    session.history.append(entry)
+
+
 async def _moment_product_payload(entry: dict[str, Any], request: MomentProductRequest) -> tuple[dict[str, Any], bool]:
     from .compute import _DASK_OK, worker_moment  # noqa: PLC0415
 
@@ -1329,6 +1349,12 @@ async def moment_product(
         raise
     except Exception as exc:
         return MomentProductResponse(valid=False, error=str(exc))
+    _record_history(
+        session,
+        endpoint="/v1/products/moment",
+        params=request.model_dump(),
+        dataset_id=request.dataset_id,
+    )
     return MomentProductResponse(valid=True, error="", **result)
 
 
@@ -1845,6 +1871,77 @@ async def cosmology_distance(
         comoving_Mpc=comoving_mpc,
         luminosity_Mpc=luminosity_mpc,
         proper_motion_kpc_per_arcsec=kpc_per_arcsec,
+    )
+
+
+class CosmologyDistancesResponse(BaseModel):
+    """Full response for GET /v1/cosmology/distances (C-02 spec)."""
+    valid: bool
+    error: str = ""
+    z: float | None = None
+    H0: float | None = None
+    Om0: float | None = None
+    Ode0: float | None = None
+    comoving_Mpc: float | None = None
+    luminosity_Mpc: float | None = None
+    angular_diameter_Mpc: float | None = None
+    lookback_time_Gyr: float | None = None
+    age_Gyr: float | None = None
+
+
+@app.get("/v1/cosmology/distances",
+         response_model=CosmologyDistancesResponse, tags=["cosmology"])
+async def cosmology_distances(
+    _: None = _auth,
+    z: float = Query(description="Redshift (0 ≤ z ≤ 20)"),
+    H0: float = Query(default=67.74, description="Hubble constant km/s/Mpc (50–100)"),
+    Om0: float = Query(default=0.3089, description="Matter density parameter"),
+    Ode0: float = Query(default=0.6911, description="Dark energy density parameter"),
+) -> CosmologyDistancesResponse:
+    """Compute cosmological distances for a given redshift and cosmology.
+
+    Uses ``astropy.cosmology.FlatLambdaCDM`` with user-supplied H0, Om0, Ode0.
+
+    Validation: 0 ≤ z ≤ 20, 50 ≤ H0 ≤ 100, Om0+Ode0 ≤ 1.05.
+
+    Feature C-02.
+    """
+    # Validate inputs
+    errors: list[str] = []
+    if not (0.0 <= z <= 20.0):
+        errors.append(f"z={z} out of range [0, 20].")
+    if not (50.0 <= H0 <= 100.0):
+        errors.append(f"H0={H0} out of range [50, 100] km/s/Mpc.")
+    if Om0 + Ode0 > 1.05:
+        errors.append(f"Om0+Ode0={Om0+Ode0:.3f} > 1.05.")
+    if errors:
+        raise HTTPException(422, "; ".join(errors))
+
+    try:
+        from astropy.cosmology import FlatLambdaCDM  # noqa: PLC0415
+        import astropy.units as _u  # noqa: PLC0415
+    except ImportError:
+        return CosmologyDistancesResponse(
+            valid=False, error="astropy is not installed on this server.")
+
+    try:
+        cosmo = FlatLambdaCDM(H0=H0, Om0=Om0)
+        z_f = float(z)
+        d_c = float(cosmo.comoving_distance(z_f).to("Mpc").value)
+        d_l = float(cosmo.luminosity_distance(z_f).to("Mpc").value)
+        d_a = float(cosmo.angular_diameter_distance(z_f).to("Mpc").value)
+        t_lb = float(cosmo.lookback_time(z_f).to("Gyr").value) if z_f > 0.0 else 0.0
+        age = float(cosmo.age(z_f).to("Gyr").value)
+    except Exception as exc:
+        return CosmologyDistancesResponse(valid=False, error=str(exc))
+
+    return CosmologyDistancesResponse(
+        valid=True, z=z_f, H0=H0, Om0=Om0, Ode0=Ode0,
+        comoving_Mpc=d_c,
+        luminosity_Mpc=d_l,
+        angular_diameter_Mpc=d_a,
+        lookback_time_Gyr=t_lb,
+        age_Gyr=age,
     )
 
 
@@ -2661,6 +2758,8 @@ class LinewidthRequest(BaseModel):
     channel_end: int = 0
     mask_enabled: bool = False
     threshold_value: float = 0.0
+    method: str | None = None       # None=both (binary); "fwhm" | "ew" selects one map
+    rest_freq_hz: float | None = None  # rest frequency for velocity-axis conversion
 
 
 class LinewidthResponse(BaseModel):
@@ -2750,8 +2849,62 @@ async def spectral_linewidth_binary(
     h, w = result["height"], result["width"]
     fwhm = np.frombuffer(base64.b64decode(result["fwhm_base64"]), dtype=np.float32).reshape(h, w)
     ew   = np.frombuffer(base64.b64decode(result["ew_base64"]),   dtype=np.float32).reshape(h, w)
-    content = _array_to_binary(h, w, fwhm) + _array_to_binary(h, w, ew)
+    # method=None → return both frames concatenated (legacy behaviour)
+    method = (request.method or "").lower()
+    if method == "ew":
+        content = _array_to_binary(h, w, ew)
+    elif method == "fwhm":
+        content = _array_to_binary(h, w, fwhm)
+    else:
+        content = _array_to_binary(h, w, fwhm) + _array_to_binary(h, w, ew)
     return Response(content=content, media_type="application/octet-stream")
+
+
+@app.get("/v1/spectral/linewidth/{dataset_id}", tags=["spectral"])
+async def spectral_linewidth_get(
+    dataset_id: str,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+    method: str = Query(default="fwhm", description='"fwhm" or "ew"'),
+    rest_freq_hz: float | None = Query(default=None),
+    channel_start: int = Query(default=0),
+    channel_end: int = Query(default=0),
+) -> Response:
+    """Spec-conformant GET linewidth endpoint.
+
+    Returns a single binary frame (rows×cols float32) for the requested
+    ``method`` (``fwhm`` or ``ew``).
+
+    Feature S-02.
+    """
+    entry = _require_dataset(session, dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "This endpoint requires a spectral cube dataset.")
+    try:
+        from .compute import worker_linewidth  # noqa: PLC0415
+        result = await _run_with_limit(
+            session,
+            worker_linewidth,
+            entry["path"],
+            channel_start,
+            channel_end,
+            False,
+            0.0,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    h, w = result["height"], result["width"]
+    if method.lower() == "ew":
+        arr = np.frombuffer(base64.b64decode(result["ew_base64"]),
+                            dtype=np.float32).reshape(h, w)
+    else:
+        arr = np.frombuffer(base64.b64decode(result["fwhm_base64"]),
+                            dtype=np.float32).reshape(h, w)
+    return Response(content=_array_to_binary(h, w, arr),
+                    media_type="application/octet-stream")
 
 
 # ── S-03: Polynomial baseline subtraction ─────────────────────────────────────
@@ -2762,7 +2915,9 @@ class BaselineRequest(BaseModel):
     channel_start: int = 0
     channel_end: int = 0
     poly_order: int = 1
-    line_free_channels: list[int] = []
+    method: str = "polynomial"     # "polynomial" | "median"
+    # Accept flat list [5,6,7] OR list of ranges [[5,7],[20,21]]
+    line_free_channels: list = []
 
 
 class BaselineResponse(BaseModel):
@@ -2775,7 +2930,10 @@ class BaselineResponse(BaseModel):
     range_min: float = 0.0
     range_max: float = 0.0
     poly_order: int = 0
+    method: str = ""
     fit_channels: int = 0
+    rms_before: float = 0.0
+    rms_after: float = 0.0
     output_path: str = ""
 
 
@@ -2814,6 +2972,7 @@ async def spectral_baseline(
             request.channel_end,
             request.poly_order,
             request.line_free_channels or None,
+            request.method,
         )
     except HTTPException:
         raise
@@ -2828,9 +2987,17 @@ async def spectral_baseline(
         "height": result["height"],
         "depth": result["depth"],
     }
+    _record_history(
+        session,
+        endpoint=f"/v1/sessions/{session_id}/datasets/{dataset_id}/spectral/baseline",
+        params=request.model_dump(),
+        dataset_id=dataset_id,
+        result_dataset_id=new_id,
+    )
     return BaselineResponse(valid=True, new_dataset_id=new_id, **{
         k: result[k] for k in ("width", "height", "depth", "range_min", "range_max",
-                                "poly_order", "fit_channels", "output_path")
+                                "poly_order", "method", "fit_channels",
+                                "rms_before", "rms_after", "output_path")
     })
 
 
@@ -2838,8 +3005,9 @@ async def spectral_baseline(
 
 class StackRequest(BaseModel):
     dataset_ids: list[str]
-    method: str = "mean"
-    weights: list[float] = []
+    method: str = "mean"           # "mean" | "median" | "weighted_mean"
+    weight_by: str = "uniform"     # "uniform" | "rms" | "peak"
+    weights: list[float] = []      # explicit per-cube weights (optional)
 
 
 class StackResponse(BaseModel):
@@ -2881,11 +3049,17 @@ async def spectral_stack(
             paths,
             request.method,
             request.weights or None,
+            request.weight_by,
         )
     except HTTPException:
         raise
     except Exception as exc:
         return StackResponse(valid=False, error=str(exc))
+    _record_history(
+        session,
+        endpoint="/v1/spectral/stack",
+        params=request.model_dump(),
+    )
     return StackResponse(valid=True, **result)
 
 
@@ -2913,6 +3087,7 @@ async def spectral_stack_binary(
             paths,
             request.method,
             request.weights or None,
+            request.weight_by,
         )
     except HTTPException:
         raise
@@ -3295,4 +3470,882 @@ async def astrometry_crossmatch(
         content=resp_data.model_dump_json(),
         media_type="application/json",
         headers=resp_headers,
+    )
+
+
+# ── P-01: Stokes parameter maps ───────────────────────────────────────────────
+
+class StokesResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    plane: str = ""
+    channel: int | None = None
+    width: int = 0
+    height: int = 0
+    scalar_type: str = ""
+    range_min: float = 0.0
+    range_max: float = 0.0
+    data_base64: str = ""
+
+
+@app.get("/v1/stokes/{dataset_id}", response_model=StokesResponse, tags=["polarisation"])
+async def stokes_plane(
+    dataset_id: str,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+    plane: str = Query(default="I"),
+    channel: int = Query(default=0),
+) -> StokesResponse:
+    """Extract a single Stokes plane (I, Q, U or V) from a dataset.
+
+    The dataset must have a Stokes axis (FITS CTYPE == 'STOKES').
+    """
+    entry = _require_dataset(session, dataset_id)
+    try:
+        from .compute import worker_stokes_plane  # noqa: PLC0415
+        result = await _run_with_limit(
+            session,
+            worker_stokes_plane,
+            entry["path"],
+            plane.upper(),
+            channel,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return StokesResponse(valid=False, error=str(exc))
+    return StokesResponse(valid=True, **result)
+
+
+@app.get("/v1/stokes/{dataset_id}/binary", tags=["polarisation"])
+async def stokes_plane_binary(
+    dataset_id: str,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+    plane: str = Query(default="I"),
+    channel: int = Query(default=0),
+) -> Response:
+    """Return a Stokes plane as a raw binary frame (12-byte header + float32 body)."""
+    entry = _require_dataset(session, dataset_id)
+    try:
+        from .compute import worker_stokes_plane  # noqa: PLC0415
+        result = await _run_with_limit(
+            session,
+            worker_stokes_plane,
+            entry["path"],
+            plane.upper(),
+            channel,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    h, w = result["height"], result["width"]
+    arr = np.frombuffer(base64.b64decode(result["data_base64"]), dtype=np.float32).reshape(h, w)
+    return Response(content=_array_to_binary(h, w, arr), media_type="application/octet-stream")
+
+
+# ── P-02: Polarised intensity and position-angle maps ────────────────────────
+
+class PolarisationPiRequest(BaseModel):
+    dataset_id: str
+    channel: int | None = None
+    line_free_channels: list[int] = []
+
+
+class PolarisationPiResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    pi_dataset_id: str = ""
+    pa_dataset_id: str = ""
+    width: int = 0
+    height: int = 0
+    channel: int | None = None
+    sigma_qu2: float = 0.0
+    pi_range_min: float = 0.0
+    pi_range_max: float = 0.0
+    pa_range_min: float = 0.0
+    pa_range_max: float = 0.0
+
+
+@app.post("/v1/polarisation/pi/{dataset_id}",
+          response_model=PolarisationPiResponse, tags=["polarisation"])
+async def polarisation_pi(
+    dataset_id: str,
+    request: PolarisationPiRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> PolarisationPiResponse:
+    """Compute bias-corrected polarised intensity and position-angle maps.
+
+    Registers PI and PA arrays as new session datasets.
+    """
+    entry = _require_dataset(session, dataset_id)
+    try:
+        from .compute import worker_polarisation_pi_pa  # noqa: PLC0415
+        result = await _run_with_limit(
+            session,
+            worker_polarisation_pi_pa,
+            entry["path"],
+            request.channel,
+            request.line_free_channels or None,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return PolarisationPiResponse(valid=False, error=str(exc))
+
+    # Store as in-memory float32 arrays keyed in the session
+    pi_id = f"ds_{uuid.uuid4().hex[:12]}"
+    pa_id = f"ds_{uuid.uuid4().hex[:12]}"
+    session.datasets[pi_id] = {
+        "path": entry["path"],   # same FITS, read via binary endpoint
+        "kind": "pi_map",
+        "width": result["width"],
+        "height": result["height"],
+        "_data_base64": result["pi_base64"],
+    }
+    session.datasets[pa_id] = {
+        "path": entry["path"],
+        "kind": "pa_map",
+        "width": result["width"],
+        "height": result["height"],
+        "_data_base64": result["pa_base64"],
+    }
+    return PolarisationPiResponse(
+        valid=True,
+        pi_dataset_id=pi_id,
+        pa_dataset_id=pa_id,
+        **{k: result[k] for k in (
+            "width", "height", "channel", "sigma_qu2",
+            "pi_range_min", "pi_range_max", "pa_range_min", "pa_range_max",
+        )},
+    )
+
+
+@app.post("/v1/polarisation/pi/result/binary", tags=["polarisation"])
+async def polarisation_pi_binary(
+    request: PolarisationPiRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Return PI and PA maps as two concatenated binary frames."""
+    entry = _require_dataset(session, request.dataset_id)
+    try:
+        from .compute import worker_polarisation_pi_pa  # noqa: PLC0415
+        result = await _run_with_limit(
+            session,
+            worker_polarisation_pi_pa,
+            entry["path"],
+            request.channel,
+            request.line_free_channels or None,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    h, w = result["height"], result["width"]
+    pi_arr = np.frombuffer(base64.b64decode(result["pi_base64"]), dtype=np.float32).reshape(h, w)
+    pa_arr = np.frombuffer(base64.b64decode(result["pa_base64"]), dtype=np.float32).reshape(h, w)
+    content = _array_to_binary(h, w, pi_arr) + _array_to_binary(h, w, pa_arr)
+    return Response(content=content, media_type="application/octet-stream")
+
+
+# ── P-03: Rotation Measure synthesis ─────────────────────────────────────────
+
+class RmSynthesisRequest(BaseModel):
+    dataset_id: str
+    phi_range_rad_m2: list[float]   # [phi_min, phi_max]
+    dphi_rad_m2: float = 1.0
+
+
+class RmSynthesisResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    n_phi: int = 0
+    n_freq: int = 0
+    width: int = 0
+    height: int = 0
+    phi_min: float = 0.0
+    phi_max: float = 0.0
+    d_phi: float = 0.0
+    phi_grid: list[float] = []
+    rmsf: list[float] = []
+    range_min: float = 0.0
+    range_max: float = 0.0
+    data_base64: str = ""   # n_phi × ny × nx float32, base64
+
+
+@app.post("/v1/polarisation/rmsynthesis/{dataset_id}",
+          response_model=RmSynthesisResponse, tags=["polarisation"])
+async def polarisation_rmsynthesis(
+    dataset_id: str,
+    request: RmSynthesisRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> RmSynthesisResponse:
+    """RM synthesis (Brentjens & de Bruyn 2005).
+
+    Requires a dataset with Q and U Stokes planes and a frequency spectral axis.
+    Returns |F(φ)| (Faraday dispersion function) as a 3-D binary array and the
+    RMSF as a 1-D JSON list.
+    """
+    if len(request.phi_range_rad_m2) < 2:
+        raise HTTPException(422, "phi_range_rad_m2 must have exactly 2 elements [phi_min, phi_max].")
+    entry = _require_dataset(session, dataset_id)
+    try:
+        from .compute import worker_rm_synthesis  # noqa: PLC0415
+        result = await _run_with_limit(
+            session,
+            worker_rm_synthesis,
+            entry["path"],
+            float(request.phi_range_rad_m2[0]),
+            float(request.phi_range_rad_m2[1]),
+            float(request.dphi_rad_m2),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return RmSynthesisResponse(valid=False, error=str(exc))
+    return RmSynthesisResponse(valid=True, **result)
+
+
+@app.post("/v1/polarisation/rmsynthesis/{dataset_id}/binary", tags=["polarisation"])
+async def polarisation_rmsynthesis_binary(
+    dataset_id: str,
+    request: RmSynthesisRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Return the FDF cube |F(φ)| as a binary frame (n_phi*ny rows × nx cols float32)."""
+    if len(request.phi_range_rad_m2) < 2:
+        raise HTTPException(422, "phi_range_rad_m2 must have exactly 2 elements.")
+    entry = _require_dataset(session, dataset_id)
+    try:
+        from .compute import worker_rm_synthesis  # noqa: PLC0415
+        result = await _run_with_limit(
+            session,
+            worker_rm_synthesis,
+            entry["path"],
+            float(request.phi_range_rad_m2[0]),
+            float(request.phi_range_rad_m2[1]),
+            float(request.dphi_rad_m2),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    n_phi, ny, nx = result["n_phi"], result["height"], result["width"]
+    arr = np.frombuffer(base64.b64decode(result["data_base64"]),
+                        dtype=np.float32).reshape(n_phi * ny, nx)
+    return Response(
+        content=_array_to_binary(n_phi * ny, nx, arr),
+        media_type="application/octet-stream",
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Domain C – Cosmology & Statistical Analysis
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── C-01: Angular power spectrum ──────────────────────────────────────────────
+
+class AngularPowerRequest(BaseModel):
+    channel: int = 0
+    n_bins: int = 64
+
+
+class AngularPowerResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    channel: int = 0
+    width: int = 0
+    height: int = 0
+    n_bins: int = 0
+    k_bins: list[float] = []
+    ell: list[float] = []         # angular multipoles ℓ ≈ 2π*k/θ_pix
+    cl: list[float] = []          # mean power per bin (C_ℓ)
+    cl_err: list[float] = []      # standard error on C_ℓ per bin
+    power: list[float] = []       # alias for cl (backward compat)
+    k_unit: str = "pixel^-1"
+    power_unit: str = "counts^2"
+
+
+async def _run_angular_power(
+    dataset_id: str, channel: int, n_bins: int,
+    _: None, session: "Session",
+) -> AngularPowerResponse:
+    entry = _require_dataset(session, dataset_id)
+    try:
+        from .compute import worker_angular_power_spectrum  # noqa: PLC0415
+        result = await _run_with_limit(
+            session,
+            worker_angular_power_spectrum,
+            entry["path"],
+            channel,
+            n_bins,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return AngularPowerResponse(valid=False, error=str(exc))
+    return AngularPowerResponse(valid=True, **result)
+
+
+@app.post("/v1/cosmology/angular_power/{dataset_id}",
+          response_model=AngularPowerResponse, tags=["cosmology"])
+async def angular_power_spectrum(
+    dataset_id: str,
+    request: AngularPowerRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> AngularPowerResponse:
+    """Azimuthally averaged angular power spectrum of a 2-D FITS slice (POST).
+
+    Uses a 2-D Hann-windowed real FFT followed by azimuthal binning.
+    Returns k_bins (pixel⁻¹), ell (angular multipoles), cl and cl_err.
+
+    Feature C-01.
+    """
+    return await _run_angular_power(dataset_id, request.channel, request.n_bins, _, session)
+
+
+@app.get("/v1/cosmology/powerspectrum/{dataset_id}",
+         response_model=AngularPowerResponse, tags=["cosmology"])
+async def power_spectrum_get(
+    dataset_id: str,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+    channel: int = Query(default=0),
+    n_bins: int = Query(default=64),
+) -> AngularPowerResponse:
+    """Azimuthally averaged angular power spectrum of a 2-D FITS slice (GET).
+
+    Spec-conformant GET alias for the POST endpoint.
+    Returns ``ell``, ``cl``, and ``cl_err`` fields.
+
+    Feature C-01.
+    """
+    return await _run_angular_power(dataset_id, channel, n_bins, _, session)
+
+
+# ── C-03: Skeleton / void detection ───────────────────────────────────────────
+
+class SkeletonRequest(BaseModel):
+    channel: int = 0
+    threshold: float | None = None
+    mode: str = "skeleton"
+    smooth_sigma_pix: float = 0.0
+    persistence_threshold: float | None = None
+
+
+class SkeletonResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    install: str = ""
+    feature: str = ""
+    channel: int = 0
+    width: int = 0
+    height: int = 0
+    threshold: float = 0.0
+    mode: str = ""
+    smooth_sigma_pix: float = 0.0
+    n_skeleton_pixels: int = 0
+    range_min: float = 0.0
+    range_max: float = 0.0
+    data_base64: str = ""     # float32 LE, 0.0 or 255.0
+    endpoints: list = []      # [[row, col], ...] filament endpoint coordinates
+
+
+async def _run_skeleton(
+    session: "Session",
+    entry: dict,
+    request: "SkeletonRequest",
+) -> dict:
+    from .compute import worker_skeleton  # noqa: PLC0415
+    return await _run_with_limit(
+        session,
+        worker_skeleton,
+        entry["path"],
+        request.channel,
+        request.threshold,
+        request.mode,
+        request.smooth_sigma_pix,
+        request.persistence_threshold,
+    )
+
+
+@app.post("/v1/analysis/skeleton/{dataset_id}",
+          response_model=SkeletonResponse, tags=["analysis"])
+async def analysis_skeleton(
+    dataset_id: str,
+    request: SkeletonRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> SkeletonResponse:
+    """Morphological skeleton (medial-axis) or void mask of a 2-D FITS slice.
+
+    Requires ``scikit-image``.  Returns a binary mask (0 / 255) as a base64-
+    encoded float32 array the same size as the input slice.
+
+    Feature C-03.
+    """
+    entry = _require_dataset(session, dataset_id)
+    try:
+        result = await _run_skeleton(session, entry, request)
+    except ImportError as exc:
+        return SkeletonResponse(
+            valid=False,
+            error=str(exc),
+            install="pip install scikit-image",
+            feature="C-03",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return SkeletonResponse(valid=False, error=str(exc))
+    return SkeletonResponse(valid=True, **result)
+
+
+@app.post("/v1/cosmology/skeleton/{dataset_id}",
+          response_model=SkeletonResponse, tags=["cosmology"])
+async def cosmology_skeleton(
+    dataset_id: str,
+    request: SkeletonRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> SkeletonResponse:
+    """Alias of ``/v1/analysis/skeleton`` under the cosmology namespace.
+
+    Feature C-03.
+    """
+    entry = _require_dataset(session, dataset_id)
+    try:
+        result = await _run_skeleton(session, entry, request)
+    except ImportError as exc:
+        return SkeletonResponse(
+            valid=False,
+            error=str(exc),
+            install="pip install scikit-image",
+            feature="C-03",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return SkeletonResponse(valid=False, error=str(exc))
+    return SkeletonResponse(valid=True, **result)
+
+
+@app.post("/v1/analysis/skeleton/{dataset_id}/binary", tags=["analysis"])
+async def analysis_skeleton_binary(
+    dataset_id: str,
+    request: SkeletonRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Return the skeleton mask as a binary frame (float32 LE)."""
+    entry = _require_dataset(session, dataset_id)
+    try:
+        result = await _run_skeleton(session, entry, request)
+    except ImportError as exc:
+        raise HTTPException(
+            503,
+            {"error": str(exc), "install": "pip install scikit-image", "feature": "C-03"},
+        ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    h, w = result["height"], result["width"]
+    arr = np.frombuffer(base64.b64decode(result["data_base64"]),
+                        dtype=np.float32).reshape(h, w)
+    return Response(
+        content=_array_to_binary(h, w, arr),
+        media_type="application/octet-stream",
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Domain R – Reproducibility & Provenance
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── R-01: CARTA script export ─────────────────────────────────────────────────
+
+class CartaExportRequest(BaseModel):
+    dataset_ids: list[str] = []    # empty = all session datasets
+
+
+class CartaExportResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    script: str = ""
+    n_datasets: int = 0
+
+
+def _build_carta_script(session: "Session", dataset_ids: list[str]) -> str:  # noqa: F821
+    """Generate a CARTA Python-scripting-API script that re-opens every dataset.
+
+    Uses the CARTA scripting API (carta.connect / cc.open_file).  The script is
+    self-contained and can be executed with ``carta-script <script.py>``.
+    """
+    lines: list[str] = [
+        "#!/usr/bin/env python3",
+        '"""Auto-generated CARTA replay script – feature R-01."""',
+        "import carta",
+        "",
+        "cc = carta.connect('http://localhost:3002')",
+        "",
+    ]
+    ids_to_export = dataset_ids if dataset_ids else list(session.datasets.keys())
+    for ds_id in ids_to_export:
+        entry = session.datasets.get(ds_id)
+        if entry is None:
+            continue
+        path = entry.get("path", "")
+        kind = entry.get("kind", "fits")
+        comment = f"# dataset_id={ds_id!r} kind={kind!r}"
+        lines.append(comment)
+        lines.append(f"cc.open_file({path!r})")
+        lines.append("")
+    if len(lines) <= 6:   # only header
+        lines.append("# No datasets to export.")
+    return "\n".join(lines)
+
+
+@app.post("/v1/reproducibility/carta_script",
+          response_model=CartaExportResponse, tags=["reproducibility"])
+async def carta_export(
+    request: CartaExportRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> CartaExportResponse:
+    """Generate a CARTA scripting-API Python script (JSON response).
+
+    Feature R-01.
+    """
+    try:
+        script = _build_carta_script(session, request.dataset_ids)
+    except Exception as exc:
+        return CartaExportResponse(valid=False, error=str(exc))
+    ids = request.dataset_ids or list(session.datasets.keys())
+    n = sum(1 for ds_id in ids if ds_id in session.datasets)
+    return CartaExportResponse(valid=True, script=script, n_datasets=n)
+
+
+@app.get("/v1/reproducibility/carta_script",
+         tags=["reproducibility"])
+async def carta_export_get(
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Download the CARTA scripting-API replay script as a plain-text file.
+
+    Returns ``Content-Type: text/plain`` with
+    ``Content-Disposition: attachment; filename=visivo_replay.carta.py``.
+
+    Spec-conformant GET endpoint for feature R-01.
+    """
+    try:
+        script = _build_carta_script(session, [])
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+    return Response(
+        content=script,
+        media_type="text/plain",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="visivo_{session.session_id[:8]}.carta.py"'
+            )
+        },
+    )
+
+
+# ── R-02: PROV-JSON provenance export ─────────────────────────────────────────
+
+class ProvJsonResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    prov: dict = {}
+
+
+def _build_prov_json(session: "Session") -> dict:  # noqa: F821
+    """Build a W3C PROV-JSON document for the current session.
+
+    All three required PROV edges are emitted:
+    - ``wasGeneratedBy``  result_dataset_id ← activity
+    - ``used``            activity → input dataset_id
+    - ``wasDerivedFrom``  result_dataset_id ← input dataset_id
+    """
+    import datetime
+
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    prefix = {"visivo": "https://vialactea.iaps.inaf.it/prov/"}
+    entities: dict = {}
+    activities: dict = {}
+    generated_by: dict = {}
+    used_by: dict = {}
+    derived_from: dict = {}
+
+    # Each opened dataset is an entity
+    for ds_id, entry in session.datasets.items():
+        entities[f"visivo:{ds_id}"] = {
+            "prov:type": entry.get("kind", "fits"),
+            "visivo:path": entry.get("path", ""),
+            "visivo:width": entry.get("width", 0),
+            "visivo:height": entry.get("height", 0),
+        }
+
+    # Each history entry is an activity
+    for idx, record in enumerate(session.history):
+        act_id = f"visivo:act_{idx:04d}"
+        activities[act_id] = {
+            "prov:type": record.get("endpoint", "unknown"),
+            "prov:startTime": record.get("timestamp", now_iso),
+            "visivo:params": record.get("params", {}),
+        }
+        input_ds_id = record.get("dataset_id")
+        result_ds_id = record.get("result_dataset_id")
+
+        # used: activity used the input entity
+        if input_ds_id:
+            used_by[f"visivo:used_{idx:04d}"] = {
+                "prov:activity": act_id,
+                "prov:entity": f"visivo:{input_ds_id}",
+            }
+
+        # wasGeneratedBy: result entity was generated by activity
+        if result_ds_id:
+            generated_by[f"visivo:gen_{idx:04d}"] = {
+                "prov:entity": f"visivo:{result_ds_id}",
+                "prov:activity": act_id,
+            }
+
+        # wasDerivedFrom: result entity was derived from input entity
+        if input_ds_id and result_ds_id:
+            derived_from[f"visivo:deriv_{idx:04d}"] = {
+                "prov:generatedEntity": f"visivo:{result_ds_id}",
+                "prov:usedEntity": f"visivo:{input_ds_id}",
+                "prov:activity": act_id,
+            }
+
+    return {
+        "prefix": prefix,
+        "entity": entities,
+        "activity": activities,
+        "wasGeneratedBy": generated_by,
+        "used": used_by,
+        "wasDerivedFrom": derived_from,
+    }
+
+
+@app.get("/v1/reproducibility/provenance",
+         response_model=ProvJsonResponse, tags=["reproducibility"])
+async def prov_json_export(
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> ProvJsonResponse:
+    """Export a W3C PROV-JSON document describing the current session's provenance.
+
+    The document lists all opened datasets as PROV entities and every recorded
+    operation as a PROV activity linked to the dataset(s) it produced.
+
+    Feature R-02.
+    """
+    try:
+        prov = _build_prov_json(session)
+    except Exception as exc:
+        return ProvJsonResponse(valid=False, error=str(exc))
+    return ProvJsonResponse(valid=True, prov=prov)
+
+
+# ── R-03: Parameter snapshots ─────────────────────────────────────────────────
+
+import datetime as _datetime
+import hashlib as _hashlib
+import hmac as _hmac
+import json as _json
+import uuid as _uuid
+
+# ── R-03 snapshot store (in-process LRU, keyed by UUID) ──────────────────────
+# Maps snapshot_id → {label, timestamp, hmac, state}
+_SNAPSHOT_STORE: dict[str, dict] = {}
+_SNAPSHOT_MAX = 1000   # simple cap; evict oldest when exceeded
+
+_SNAPSHOT_SECRET = os.environ.get("VISIVO_SNAPSHOT_SECRET", "dev-secret-change-me")
+
+
+def _snapshot_hmac(payload: str) -> str:
+    return _hmac.new(_SNAPSHOT_SECRET.encode(), payload.encode(), _hashlib.sha256).hexdigest()
+
+
+class SnapshotEntry(BaseModel):
+    operation: str = ""
+    endpoint: str = ""    # auto-recorded entries use endpoint; manual ones use operation
+    dataset_id: str = ""
+    result_dataset_id: str = ""
+    timestamp: str = ""
+    params: dict = {}
+
+
+class SnapshotListResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    n_entries: int = 0
+    history: list[SnapshotEntry] = []
+
+
+class SnapshotCreateRequest(BaseModel):
+    label: str = ""
+
+
+class SnapshotCreateResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    snapshot_id: str = ""
+    label: str = ""
+    timestamp: str = ""
+    hmac: str = ""
+
+
+class SnapshotRetrieveResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    snapshot_id: str = ""
+    label: str = ""
+    timestamp: str = ""
+    hmac: str = ""
+    state: dict = {}
+
+
+@app.get("/v1/reproducibility/snapshots",
+         response_model=SnapshotListResponse, tags=["reproducibility"])
+async def list_snapshots(
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> SnapshotListResponse:
+    """Return the ordered list of parameter snapshots recorded for this session.
+
+    Feature R-03.
+    """
+    entries = [
+        SnapshotEntry(
+            operation=r.get("operation", ""),
+            endpoint=r.get("endpoint", ""),
+            dataset_id=r.get("dataset_id", ""),
+            result_dataset_id=r.get("result_dataset_id", ""),
+            timestamp=r.get("timestamp", ""),
+            params=r.get("params", {}),
+        )
+        for r in session.history
+    ]
+    return SnapshotListResponse(valid=True, n_entries=len(entries), history=entries)
+
+
+@app.post("/v1/reproducibility/snapshots",
+          response_model=SnapshotListResponse, tags=["reproducibility"])
+async def record_snapshot(
+    entry: SnapshotEntry,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> SnapshotListResponse:
+    """Manually record a parameter snapshot for reproducibility tracking.
+
+    Feature R-03.
+    """
+    record = entry.model_dump()
+    if not record.get("timestamp"):
+        record["timestamp"] = _datetime.datetime.now(_datetime.timezone.utc).isoformat()
+    session.history.append(record)
+    return SnapshotListResponse(valid=True, n_entries=len(session.history),
+                                history=[SnapshotEntry(**r) for r in session.history])
+
+
+@app.post("/v1/reproducibility/snapshot",
+          response_model=SnapshotCreateResponse, tags=["reproducibility"])
+async def create_snapshot(
+    request: SnapshotCreateRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> SnapshotCreateResponse:
+    """Serialise full session state, sign with HMAC-SHA256, store by UUID.
+
+    Returns a ``snapshot_id`` (UUID4) that can be used with
+    ``GET /v1/reproducibility/snapshot/{snapshot_id}`` to retrieve the
+    snapshot later and verify its HMAC.
+
+    Feature R-03.
+    """
+    ts = _datetime.datetime.now(_datetime.timezone.utc).isoformat()
+    # Build serialisable state snapshot
+    state = {
+        "session_id": session.session_id,
+        "datasets": {
+            ds_id: {k: v for k, v in entry.items()
+                    if k not in ("_data_base64", "memmap")}
+            for ds_id, entry in session.datasets.items()
+        },
+        "history": list(session.history),
+        "label": request.label,
+        "timestamp": ts,
+    }
+    payload = _json.dumps(state, sort_keys=True, default=str)
+    hmac_val = _snapshot_hmac(payload)
+    snap_id = str(_uuid.uuid4())
+
+    # Evict oldest when at capacity
+    if len(_SNAPSHOT_STORE) >= _SNAPSHOT_MAX:
+        oldest = next(iter(_SNAPSHOT_STORE))
+        del _SNAPSHOT_STORE[oldest]
+
+    _SNAPSHOT_STORE[snap_id] = {
+        "label": request.label,
+        "timestamp": ts,
+        "hmac": hmac_val,
+        "state": state,
+        "payload": payload,
+    }
+
+    return SnapshotCreateResponse(
+        valid=True,
+        snapshot_id=snap_id,
+        label=request.label,
+        timestamp=ts,
+        hmac=hmac_val,
+    )
+
+
+@app.get("/v1/reproducibility/snapshot/{snapshot_id}",
+         response_model=SnapshotRetrieveResponse, tags=["reproducibility"])
+async def retrieve_snapshot(
+    snapshot_id: str,
+    _: None = _auth,
+    provided_hmac: str = Query(default=""),
+) -> SnapshotRetrieveResponse:
+    """Retrieve a stored snapshot by UUID and optionally verify its HMAC.
+
+    If ``provided_hmac`` is non-empty and does not match the stored HMAC,
+    returns HTTP 403.
+
+    Feature R-03.
+    """
+    record = _SNAPSHOT_STORE.get(snapshot_id)
+    if record is None:
+        raise HTTPException(404, f"Snapshot '{snapshot_id}' not found.")
+
+    if provided_hmac:
+        expected = record["hmac"]
+        if not _hmac.compare_digest(provided_hmac, expected):
+            raise HTTPException(403, "HMAC verification failed: snapshot has been tampered with.")
+
+    return SnapshotRetrieveResponse(
+        valid=True,
+        snapshot_id=snapshot_id,
+        label=record["label"],
+        timestamp=record["timestamp"],
+        hmac=record["hmac"],
+        state=record["state"],
     )

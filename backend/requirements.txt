@@ -2,16 +2,13 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 astropy>=6.1
 numpy>=2.0
-# R4: pin relaxed from ==9.6.0 → >=9.4 to support conda-forge builds on HPC archs (RHEL 8/9)
 vtk>=9.4
 pandas>=2.0
 healpy>=0.3
 scipy>=1.10
-numba>=0.59.0   # optional; falls back to numpy if unavailable
-dask[array]>=2024.1.0   # optional; out-of-core processing
-# optional – feature A-01
+numba>=0.59.0   
+dask[array]>=2024.1.0 
 photutils>=1.10.0
-# optional – feature A-03
 reproject>=0.13
-# optional – feature A-04
 astroquery>=0.4.7
+scikit-image>=0.22

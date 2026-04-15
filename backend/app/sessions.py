@@ -73,6 +73,9 @@ class Session:
         self.datasets: dict[str, dict[str, Any]] = {}
         self.created_at: float = time.monotonic()
         self.last_accessed: float = time.monotonic()
+        # R-02/R-03: operation provenance history (append-only, newest last)
+        # Each entry is a dict with at least: operation, dataset_id, timestamp, params
+        self.history: list[dict[str, Any]] = []
         # Per-session concurrency limit (HPC safety)
         self._active_tasks: int = 0
         self._task_lock: threading.Lock = threading.Lock()

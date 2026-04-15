@@ -559,6 +559,133 @@ struct BackendCrossmatchResult
     QVector<BackendCrossmatchSource> sources;
 };
 
+// ── P-01: Stokes plane extraction ────────────────────────────────────────────
+
+struct BackendStokesPlaneResult
+{
+    bool valid{ false };
+    QString error;
+    QString plane;      ///< "I", "Q", "U", or "V"
+    int channel{ 0 };
+    int width{ 0 };
+    int height{ 0 };
+    float rangeMin{ 0.f };
+    float rangeMax{ 0.f };
+    QByteArray data;    ///< float32 LE, width × height, from binary endpoint
+};
+
+// ── P-02: Polarised intensity and position angle ──────────────────────────────
+
+struct BackendPolarisationPiResult
+{
+    bool valid{ false };
+    QString error;
+    int width{ 0 };
+    int height{ 0 };
+    int channel{ 0 };
+    double sigmaQu2{ 0. };         ///< variance estimate σ²_QU used for bias correction
+    float piRangeMin{ 0.f };
+    float piRangeMax{ 0.f };
+    float paRangeMin{ 0.f };
+    float paRangeMax{ 0.f };
+    QString piDatasetId;
+    QString paDatasetId;
+    QByteArray piData;             ///< float32 LE PI map (from /binary endpoint)
+    QByteArray paData;             ///< float32 LE PA map (from /binary endpoint)
+};
+
+// ── P-03: Rotation Measure synthesis ─────────────────────────────────────────
+
+struct BackendRmSynthesisResult
+{
+    bool valid{ false };
+    QString error;
+    int nPhi{ 0 };
+    int nFreq{ 0 };
+    int width{ 0 };
+    int height{ 0 };
+    double phiMin{ 0. };
+    double phiMax{ 0. };
+    double dPhi{ 0. };
+    QVector<double> phiGrid;      ///< φ sample points in rad/m²
+    QVector<double> rmsf;         ///< RM spread function |R(φ)|
+    float rangeMin{ 0.f };
+    float rangeMax{ 0.f };
+    QByteArray fdfData;           ///< float32 LE FDF cube (nPhi*height rows × width cols)
+};
+
+// ── C-01: Angular power spectrum ─────────────────────────────────────────────
+
+struct BackendAngularPowerResult
+{
+    bool valid{ false };
+    QString error;
+    int channel{ 0 };
+    int width{ 0 };
+    int height{ 0 };
+    int nBins{ 0 };
+    QVector<double> kBins;        ///< wavenumber bin centres (pixel⁻¹)
+    QVector<double> power;        ///< mean power per bin (counts²)
+    QString kUnit;
+    QString powerUnit;
+};
+
+// ── C-03: Skeleton / void detection ──────────────────────────────────────────
+
+struct BackendSkeletonResult
+{
+    bool valid{ false };
+    QString error;
+    QString install;              ///< non-empty when scikit-image is absent
+    QString feature;
+    int channel{ 0 };
+    int width{ 0 };
+    int height{ 0 };
+    double threshold{ 0. };
+    QString mode;                 ///< "skeleton" or "void"
+    int nSkeletonPixels{ 0 };
+    float rangeMin{ 0.f };
+    float rangeMax{ 0.f };
+    QByteArray data;              ///< float32 LE 0/255 mask from binary endpoint
+};
+
+// ── R-01: CARTA script export ─────────────────────────────────────────────────
+
+struct BackendCartaExportResult
+{
+    bool valid{ false };
+    QString error;
+    QString script;               ///< Python script content
+    int nDatasets{ 0 };
+};
+
+// ── R-02: PROV-JSON provenance ────────────────────────────────────────────────
+
+struct BackendProvJsonResult
+{
+    bool valid{ false };
+    QString error;
+    QJsonObject prov;             ///< Raw W3C PROV-JSON document
+};
+
+// ── R-03: Parameter snapshots ─────────────────────────────────────────────────
+
+struct BackendSnapshotEntry
+{
+    QString operation;
+    QString datasetId;
+    QString timestamp;
+    QVariantMap params;
+};
+
+struct BackendSnapshotListResult
+{
+    bool valid{ false };
+    QString error;
+    int nEntries{ 0 };
+    QVector<BackendSnapshotEntry> history;
+};
+
 class QJsonDocument;
 class QJsonObject;
 class QUrl;
@@ -778,6 +905,69 @@ public:
             const QString &datasetId,
             double radiusArcsec = 60.0,
             const QString &catalogue = QStringLiteral("simbad"));
+
+    // ── P-01: Stokes plane extraction ─────────────────────────────────────────
+    /** GET /v1/stokes/{dataset_id}/binary?plane=I&channel=0
+     *  Returns the Stokes plane as a binary frame (float32 LE). */
+    BackendStokesPlaneResult requestStokesPlane(
+            const QString &datasetId,
+            const QString &plane = QStringLiteral("I"),
+            int channel = 0);
+
+    // ── P-02: Polarised intensity and angle ───────────────────────────────────
+    /** POST /v1/polarisation/pi/result/binary
+     *  Returns PI and PA maps as two concatenated binary frames. */
+    BackendPolarisationPiResult requestPolarisationPi(
+            const QString &datasetId,
+            int channel = 0,
+            const QVector<int> &lineFreeChannels = {});
+
+    // ── P-03: Rotation Measure synthesis ──────────────────────────────────────
+    /** POST /v1/polarisation/rmsynthesis/{dataset_id}/binary
+     *  Returns the FDF cube |F(φ)| as a binary frame (nPhi*ny rows × nx cols float32).
+     *  @param phiRange  [phi_min, phi_max] in rad/m².
+     *  @param dPhi      φ step in rad/m². */
+    BackendRmSynthesisResult requestRmSynthesis(
+            const QString &datasetId,
+            double phiMin = -100.0,
+            double phiMax = 100.0,
+            double dPhi = 1.0);
+
+    // ── C-01: Angular power spectrum ──────────────────────────────────────────
+    /** POST /v1/cosmology/angular_power/{dataset_id} */
+    BackendAngularPowerResult requestAngularPower(
+            const QString &datasetId,
+            int channel = 0,
+            int nBins = 64);
+
+    // ── C-03: Skeleton / void detection ───────────────────────────────────────
+    /** POST /v1/analysis/skeleton/{dataset_id}/binary
+     *  @param threshold  nullptr → server uses mean.
+     *  @param mode       "skeleton" or "void". */
+    BackendSkeletonResult requestSkeleton(
+            const QString &datasetId,
+            int channel = 0,
+            double *threshold = nullptr,
+            const QString &mode = QStringLiteral("skeleton"));
+
+    // ── R-01: CARTA script export ─────────────────────────────────────────────
+    /** POST /v1/reproducibility/carta_script
+     *  @param datasetIds  Empty list = all session datasets. */
+    BackendCartaExportResult requestCartaExport(
+            const QStringList &datasetIds = {});
+
+    // ── R-02: PROV-JSON provenance ────────────────────────────────────────────
+    /** GET /v1/reproducibility/provenance */
+    BackendProvJsonResult requestProvJson();
+
+    // ── R-03: Parameter snapshots ─────────────────────────────────────────────
+    /** GET /v1/reproducibility/snapshots — list all recorded snapshots. */
+    BackendSnapshotListResult listSnapshots();
+    /** POST /v1/reproducibility/snapshots — record a parameter snapshot. */
+    BackendSnapshotListResult recordSnapshot(
+            const QString &operation,
+            const QString &datasetId = {},
+            const QVariantMap &params = {});
 
 private:
     /** Build a QNetworkRequest with auth + session headers pre-applied. */
