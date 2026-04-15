@@ -6,6 +6,7 @@
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
+class QLabel;
 class QPushButton;
 class QSpinBox;
 
@@ -15,6 +16,20 @@ class QSpinBox;
  * Non-modal scientific tool window.  Computation runs asynchronously on a
  * pooled thread.  The window may be kept open and reused for multiple compute
  * runs; it is always safe to close it, even mid-computation.
+ *
+ * Spectral-axis awareness
+ * ───────────────────────
+ * The constructor accepts the backend-reported spectral axis type (CTYPE3-style
+ * string, e.g. "VRAD", "FREQ") and unit (CUNIT3-style string, e.g. "km/s",
+ * "GHz").  These are classified into SpectralAxisType to decide:
+ *
+ *   • Velocity cubes  — "Rest frequency" row is hidden; the backend can
+ *     compute FWHM/EW directly in velocity units with no conversion.
+ *   • Frequency/Wavelength cubes — "Rest frequency" row is shown and its
+ *     value is validated (> 0) before dispatch.  The value is passed to the
+ *     backend as rest_freq_hz for velocity-axis conversion.
+ *   • Unknown — treated conservatively as frequency/wavelength (rest freq
+ *     shown, but zero is accepted so the user can still run without it).
  *
  * Lifetime safety
  * ───────────────
@@ -39,13 +54,28 @@ class LinewidthDialog : public QMainWindow
 
 public:
     /**
-     * @param backendUrl        Backend base URL, e.g. "http://host:8000".
-     * @param backendToken      Auth token (may be empty — BackendClient reads ~/.visivo_token).
-     * @param sessionId         Active session identifier.
-     * @param datasetId         Dataset to run the computation on.
-     * @param depth             Spectral depth of the cube (clamps channel spinners).
-     * @param initialThreshold  Default value for the threshold mask spinner.
-     * @param parent            Optional parent widget.
+     * Classification of the spectral (third) axis of the cube.
+     * Drives whether a rest-frequency input is shown to the user.
+     */
+    enum class SpectralAxisType {
+        Velocity,    ///< VRAD, VOPT, FELO, VELO — no rest-freq conversion needed.
+        Frequency,   ///< FREQ — rest-freq required for velocity-axis output.
+        Wavelength,  ///< WAVE, AWAV — rest-freq required for velocity-axis output.
+        Unknown,     ///< Channels or unrecognised — rest-freq shown but optional.
+    };
+
+    /**
+     * @param backendUrl            Backend base URL, e.g. "http://host:8000".
+     * @param backendToken          Auth token (may be empty — BackendClient reads ~/.visivo_token).
+     * @param sessionId             Active session identifier.
+     * @param datasetId             Dataset to run the computation on.
+     * @param depth                 Spectral depth of the cube (clamps channel spinners).
+     * @param initialThreshold      Default value for the threshold mask spinner.
+     * @param spectralAxisType      Backend-reported CTYPE3 string (e.g. "VRAD", "FREQ").
+     *                              Pass an empty string when unknown.
+     * @param spectralAxisUnit      Backend-reported CUNIT3 string (e.g. "km/s", "GHz").
+     *                              Pass an empty string when unknown.
+     * @param parent                Optional parent widget.
      */
     LinewidthDialog(const QString &backendUrl,
                     const QString &backendToken,
@@ -53,6 +83,8 @@ public:
                     const QString &datasetId,
                     int depth,
                     double initialThreshold,
+                    const QString &spectralAxisType = QString(),
+                    const QString &spectralAxisUnit = QString(),
                     QWidget *parent = nullptr);
 
 protected:
@@ -64,6 +96,13 @@ private slots:
 private:
     void setUiBusy(bool busy);
 
+    /** Classify the raw CTYPE3/CUNIT3 strings into SpectralAxisType. */
+    static SpectralAxisType classifySpectralAxis(const QString &axisType,
+                                                 const QString &axisUnit);
+
+    /** Human-readable description of \a type, suitable for a UI label. */
+    static QString spectralAxisTypeLabel(SpectralAxisType type);
+
     // Backend context — value copies, safe to capture by value in worker lambdas.
     QString  m_backendUrl;
     QString  m_backendToken;
@@ -71,13 +110,19 @@ private:
     QString  m_datasetId;
     int      m_depth{ 1 };
 
+    // Spectral axis classification (derived once in constructor).
+    SpectralAxisType m_spectralAxisType{ SpectralAxisType::Unknown };
+    QString          m_spectralAxisUnit;   // raw unit string, e.g. "km/s"
+
     // Re-entrancy guard and stale-result fence.
     bool     m_busy{ false };
     int      m_currentRequestId{ 0 };
 
     // Form widgets.
+    QLabel         *m_axisInfoLabel{ nullptr };   ///< Read-only "Spectral axis: …" display.
     QComboBox      *m_methodCombo{ nullptr };
-    QDoubleSpinBox *m_restFreqSpin{ nullptr };
+    QLabel         *m_restFreqLabel{ nullptr };   ///< Hidden for velocity axes.
+    QDoubleSpinBox *m_restFreqSpin{ nullptr };    ///< Hidden for velocity axes.
     QSpinBox       *m_chanStartSpin{ nullptr };
     QSpinBox       *m_chanEndSpin{ nullptr };
     QCheckBox      *m_maskCheck{ nullptr };

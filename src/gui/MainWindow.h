@@ -82,6 +82,8 @@ private:
     QString  m_sciDatasetId;
     int      m_sciDepth{ 1 };
     double   m_sciThreshold{ 0.0 };
+    QString  m_sciSpectralAxisType;  ///< Backend CTYPE3, e.g. "VRAD", "FREQ".
+    QString  m_sciSpectralAxisUnit;  ///< Backend CUNIT3, e.g. "km/s", "GHz".
 
     QPointer<QMenu>   m_scienceMenu;
     QPointer<QAction> m_actLinewidth;

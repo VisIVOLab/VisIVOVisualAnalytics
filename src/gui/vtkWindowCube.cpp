@@ -2055,6 +2055,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                         this->remoteDatasetId,
                                         this->remoteDatasetDepth,
                                         static_cast<double>(this->lowerBound),
+                                        this->remoteSpectralAxisType,
+                                        this->remoteSpectralAxisUnit,
                                         this);
         dlg->setAttribute(Qt::WA_DeleteOnClose);
         dlg->show();

@@ -10,6 +10,7 @@
 #include <QFormLayout>
 #include <QFutureWatcher>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSpinBox>
@@ -25,6 +26,50 @@
 using namespace Qt::StringLiterals;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Static helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+LinewidthDialog::SpectralAxisType
+LinewidthDialog::classifySpectralAxis(const QString &axisType, const QString &axisUnit)
+{
+    const QString t = axisType.trimmed().toUpper();
+    const QString u = axisUnit.trimmed().toLower();
+
+    // Velocity — FITS standard types and unit-based fallback.
+    if (t.startsWith(u"VRAD"_s) || t.startsWith(u"VOPT"_s)
+            || t.startsWith(u"FELO"_s) || t.startsWith(u"VELO"_s)
+            || t.contains(u"VELO"_s)
+            || u == u"m/s"_s || u == u"km/s"_s) {
+        return SpectralAxisType::Velocity;
+    }
+    // Frequency — FITS FREQ type and common Hz-family units.
+    if (t.startsWith(u"FREQ"_s)
+            || u == u"hz"_s || u == u"khz"_s || u == u"mhz"_s || u == u"ghz"_s) {
+        return SpectralAxisType::Frequency;
+    }
+    // Wavelength — FITS WAVE / AWAV and common length units.
+    if (t.startsWith(u"WAVE"_s) || t.startsWith(u"AWAV"_s)
+            || u == u"m"_s || u == u"nm"_s || u == u"um"_s
+            || u == u"angstrom"_s || u == u"aa"_s) {
+        return SpectralAxisType::Wavelength;
+    }
+    return SpectralAxisType::Unknown;
+}
+
+QString LinewidthDialog::spectralAxisTypeLabel(SpectralAxisType type)
+{
+    switch (type) {
+    case SpectralAxisType::Velocity:   return u"Velocity"_s;
+    case SpectralAxisType::Frequency:  return u"Frequency"_s;
+    case SpectralAxisType::Wavelength: return u"Wavelength"_s;
+    case SpectralAxisType::Unknown:    return u"Unknown"_s;
+    }
+    return u"Unknown"_s;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constructor
+// ─────────────────────────────────────────────────────────────────────────────
 
 LinewidthDialog::LinewidthDialog(const QString &backendUrl,
                                  const QString &backendToken,
@@ -32,6 +77,8 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
                                  const QString &datasetId,
                                  int depth,
                                  double initialThreshold,
+                                 const QString &spectralAxisType,
+                                 const QString &spectralAxisUnit,
                                  QWidget *parent)
     : QMainWindow(parent)
     , m_backendUrl(backendUrl)
@@ -39,9 +86,11 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
     , m_sessionId(sessionId)
     , m_datasetId(datasetId)
     , m_depth(std::max(1, depth))
+    , m_spectralAxisType(classifySpectralAxis(spectralAxisType, spectralAxisUnit))
+    , m_spectralAxisUnit(spectralAxisUnit.trimmed())
 {
     setWindowTitle(u"Line-Width Map"_s);
-    setMinimumWidth(480);
+    setMinimumWidth(500);
 
     // ── Central widget ────────────────────────────────────────────────────────
     auto *central = new QWidget(this);
@@ -57,6 +106,22 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
     form->setVerticalSpacing(8);
     mainLayout->addLayout(form);
 
+    // ── Spectral axis info (read-only) ────────────────────────────────────────
+    m_axisInfoLabel = new QLabel(central);
+    {
+        const QString typeStr  = spectralAxisTypeLabel(m_spectralAxisType);
+        const QString unitPart = m_spectralAxisUnit.isEmpty()
+                ? QString()
+                : u" (%1)"_s.arg(m_spectralAxisUnit);
+        m_axisInfoLabel->setText(typeStr + unitPart);
+    }
+    m_axisInfoLabel->setToolTip(
+            u"Spectral (third) axis classification derived from dataset WCS metadata.\n"
+            "This determines whether a rest frequency is required for computation."_s);
+    // Style: slightly subdued to distinguish it from editable fields.
+    m_axisInfoLabel->setStyleSheet(u"color: palette(mid);"_s);
+    form->addRow(u"Spectral axis"_s, m_axisInfoLabel);
+
     // ── Method ───────────────────────────────────────────────────────────────
     m_methodCombo = new QComboBox(central);
     m_methodCombo->addItem(u"FWHM"_s,             u"fwhm"_s);
@@ -64,20 +129,21 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
     form->addRow(u"Method"_s, m_methodCombo);
 
     // ── Rest frequency ────────────────────────────────────────────────────────
-    m_restFreqSpin = new QDoubleSpinBox(central);
-    m_restFreqSpin->setRange(0.0, 1000.0);
+    // Only shown for frequency / wavelength / unknown axes; hidden for velocity.
+    m_restFreqLabel = new QLabel(u"Rest frequency"_s, central);
+    m_restFreqSpin  = new QDoubleSpinBox(central);
+    m_restFreqSpin->setRange(0.0, 1'000.0);
     m_restFreqSpin->setDecimals(6);
     m_restFreqSpin->setSuffix(u" GHz"_s);
     m_restFreqSpin->setValue(0.0);
-    // Only relevant for FWHM (velocity-axis conversion).
-    form->addRow(u"Rest frequency"_s, m_restFreqSpin);
+    m_restFreqSpin->setToolTip(
+            u"Rest frequency used to convert from frequency to velocity.\n"
+            "Required for frequency and wavelength axes."_s);
+    form->addRow(m_restFreqLabel, m_restFreqSpin);
 
-    auto updateRestFreq = [this]() {
-        m_restFreqSpin->setEnabled(!m_busy
-                                   && m_methodCombo->currentData().toString() == u"fwhm"_s);
-    };
-    updateRestFreq();
-    connect(m_methodCombo, &QComboBox::currentIndexChanged, this, updateRestFreq);
+    const bool isVelocity = (m_spectralAxisType == SpectralAxisType::Velocity);
+    m_restFreqLabel->setVisible(!isVelocity);
+    m_restFreqSpin->setVisible(!isVelocity);
 
     // ── Channel range ─────────────────────────────────────────────────────────
     m_chanStartSpin = new QSpinBox(central);
@@ -99,15 +165,15 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
     m_thresholdSpin->setDecimals(6);
     m_thresholdSpin->setValue(initialThreshold);
     m_thresholdSpin->setEnabled(false);
-    form->addRow(u"Mask threshold"_s, m_thresholdSpin);
+    form->addRow(u"Threshold"_s, m_thresholdSpin);
 
     connect(m_maskCheck, &QCheckBox::toggled, m_thresholdSpin, &QWidget::setEnabled);
 
     // ── Buttons ───────────────────────────────────────────────────────────────
     auto *btnLayout = new QHBoxLayout();
     btnLayout->addStretch();
-    m_computeBtn    = new QPushButton(u"Compute"_s, central);
-    auto *closeBtn  = new QPushButton(u"Close"_s,   central);
+    m_computeBtn   = new QPushButton(u"Compute"_s, central);
+    auto *closeBtn = new QPushButton(u"Close"_s,   central);
     m_computeBtn->setDefault(true);
     btnLayout->addWidget(m_computeBtn);
     btnLayout->addWidget(closeBtn);
@@ -121,9 +187,9 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
 
 void LinewidthDialog::closeEvent(QCloseEvent *event)
 {
-    // Accept the close immediately.  If a worker is in-flight it completes on
-    // the thread pool but the finished() handler checks QPointer<LinewidthDialog>
-    // and returns without touching any UI once this object is gone.
+    // Accept immediately.  If a worker is in-flight it completes on the thread
+    // pool, but the finished() handler checks QPointer<LinewidthDialog> and
+    // returns without touching any UI once this object is gone.
     event->accept();
 }
 
@@ -135,12 +201,34 @@ void LinewidthDialog::onCompute()
         return; // guard against accidental double-click re-entrancy
     }
 
+    // ── Channel range validation ──────────────────────────────────────────────
     const int chanStart = m_chanStartSpin->value() - 1; // convert to 0-based
     const int chanEnd   = m_chanEndSpin->value()   - 1;
-    if (chanStart > chanEnd) {
+    if (chanStart < 0 || chanEnd >= m_depth || chanStart > chanEnd) {
         QMessageBox::warning(this, u"Line-Width Map"_s,
-                             u"Start channel must be ≤ end channel."_s);
+                             chanStart > chanEnd
+                                     ? u"Start channel must be ≤ end channel."_s
+                                     : u"Channel range is outside the valid range for this dataset."_s);
         return;
+    }
+
+    // ── Rest-frequency validation (frequency / wavelength axes only) ──────────
+    double restFreqHz = 0.0;
+    if (m_spectralAxisType != SpectralAxisType::Velocity) {
+        const double restFreqGHz = m_restFreqSpin->value();
+        if (m_spectralAxisType == SpectralAxisType::Frequency
+                || m_spectralAxisType == SpectralAxisType::Wavelength) {
+            // Strict validation for known non-velocity axes.
+            if (restFreqGHz <= 0.0) {
+                QMessageBox::warning(this, u"Line-Width Map"_s,
+                                     u"A rest frequency > 0 is required for %1 axes.\n"
+                                     "Enter the line rest frequency in GHz."_s
+                                     .arg(spectralAxisTypeLabel(m_spectralAxisType).toLower()));
+                return;
+            }
+        }
+        // Convert GHz → Hz for the backend.
+        restFreqHz = restFreqGHz * 1.0e9;
     }
 
     // ── Capture all parameters by value on the UI thread ─────────────────────
@@ -168,7 +256,7 @@ void LinewidthDialog::onCompute()
         const auto result = watcher->result();
         watcher->deleteLater();
 
-        // ── Window was closed while we were running — discard cleanly ─────────
+        // ── Window closed while running — discard cleanly ─────────────────────
         if (!self) {
             return;
         }
@@ -205,9 +293,9 @@ void LinewidthDialog::onCompute()
         const bool ok1 = BackendClient::parseBinaryFrame(result.binaryPayload, offset, fwhmFrame);
         const bool ok2 = BackendClient::parseBinaryFrame(result.binaryPayload, offset, ewFrame);
 
-        const bool wantFwhm               = (method == u"fwhm"_s);
-        const BinaryArrayResult &frame    = wantFwhm ? fwhmFrame : ewFrame;
-        const bool frameOk                = wantFwhm ? ok1 : ok2;
+        const bool wantFwhm            = (method == u"fwhm"_s);
+        const BinaryArrayResult &frame = wantFwhm ? fwhmFrame : ewFrame;
+        const bool frameOk             = wantFwhm ? ok1 : ok2;
 
         if (!frameOk || frame.data.isEmpty()) {
             const QString parseErr =
@@ -225,7 +313,7 @@ void LinewidthDialog::onCompute()
             return;
         }
 
-        // ── Guard against empty result (all pixels failed to fit) ─────────────
+        // ── Guard against empty result ────────────────────────────────────────
         if (result.width == 0 || result.height == 0) {
             const QString emptyMsg =
                     u"Result is empty — all pixels failed to fit.\n"
@@ -286,12 +374,13 @@ void LinewidthDialog::onCompute()
     // No raw pointers, no `this`, no `[&]`, no shared mutable state.
     watcher->setFuture(QtConcurrent::run(
             [backendUrl, backendToken, sessionId, datasetId,
-             chanStart, chanEnd, maskEnabled, threshold]() -> BackendLinewidthResult {
+             chanStart, chanEnd, maskEnabled, threshold, restFreqHz]() -> BackendLinewidthResult {
                 BackendClient localClient(backendUrl, backendToken);
                 localClient.setSessionId(sessionId);
                 return localClient.fetchLinewidthBinary(datasetId,
                                                         chanStart, chanEnd,
-                                                        maskEnabled, threshold);
+                                                        maskEnabled, threshold,
+                                                        restFreqHz);
             }));
 }
 
@@ -301,7 +390,10 @@ void LinewidthDialog::setUiBusy(bool busy)
 {
     m_computeBtn->setEnabled(!busy);
     m_methodCombo->setEnabled(!busy);
-    m_restFreqSpin->setEnabled(!busy && m_methodCombo->currentData().toString() == u"fwhm"_s);
+    // Keep rest-freq visible/hidden state; only toggle enabled when not velocity.
+    if (m_spectralAxisType != SpectralAxisType::Velocity) {
+        m_restFreqSpin->setEnabled(!busy);
+    }
     m_chanStartSpin->setEnabled(!busy);
     m_chanEndSpin->setEnabled(!busy);
     m_maskCheck->setEnabled(!busy);

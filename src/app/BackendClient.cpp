@@ -919,16 +919,23 @@ bool BackendClient::parseBinaryFrame(const QByteArray &payload, int &offset,
 
 BackendLinewidthResult BackendClient::fetchLinewidthBinary(const QString &datasetId,
                                                             int channelStart, int channelEnd,
-                                                            bool maskEnabled, float threshold)
+                                                            bool maskEnabled, float threshold,
+                                                            double restFreqHz)
 {
     BackendLinewidthResult result;
     QString error;
-    const QJsonDocument body(QJsonObject{
+    QJsonObject bodyObj{
             { QStringLiteral("dataset_id"),      datasetId },
             { QStringLiteral("channel_start"),   channelStart },
             { QStringLiteral("channel_end"),     channelEnd },
             { QStringLiteral("mask_enabled"),    maskEnabled },
-            { QStringLiteral("threshold_value"), static_cast<double>(threshold) } });
+            { QStringLiteral("threshold_value"), static_cast<double>(threshold) } };
+    // Only include rest_freq_hz when the caller provides a meaningful value.
+    // Velocity-axis cubes must omit it; frequency/wavelength axes supply it.
+    if (restFreqHz > 0.0) {
+        bodyObj.insert(QStringLiteral("rest_freq_hz"), restFreqHz);
+    }
+    const QJsonDocument body(bodyObj);
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/spectral/linewidth/binary")),
                         body, error);

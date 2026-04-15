@@ -839,10 +839,16 @@ public:
 
     // ── S-02: Line-width maps ─────────────────────────────────────────────────
     /** POST /v1/spectral/linewidth/binary — FWHM + EW maps concatenated as two
-     *  binary frames.  Parse with parseBinaryFrame() twice. */
+     *  binary frames.  Parse with parseBinaryFrame() twice.
+     *
+     *  @param restFreqHz  Rest frequency in Hz.  Pass 0.0 (default) to omit
+     *                     the field from the request — correct for velocity-axis
+     *                     cubes.  Pass a positive value for frequency / wavelength
+     *                     axes when velocity-unit output is required. */
     BackendLinewidthResult fetchLinewidthBinary(const QString &datasetId,
                                                 int channelStart, int channelEnd,
-                                                bool maskEnabled, float threshold);
+                                                bool maskEnabled, float threshold,
+                                                double restFreqHz = 0.0);
 
     // ── S-03: Baseline subtraction ────────────────────────────────────────────
     /** POST /v1/spectral/baseline/{session_id}/{dataset_id} — subtract a baseline

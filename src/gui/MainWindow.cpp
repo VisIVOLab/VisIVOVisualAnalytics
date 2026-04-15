@@ -251,7 +251,9 @@ void MainWindow::buildScienceMenu()
     QObject::connect(m_actLinewidth, &QAction::triggered, this, [this]() {
         auto *dlg = new LinewidthDialog(m_sciBackendUrl, m_sciToken,
                                         m_sciSessionId, m_sciDatasetId,
-                                        m_sciDepth, m_sciThreshold, this);
+                                        m_sciDepth, m_sciThreshold,
+                                        m_sciSpectralAxisType, m_sciSpectralAxisUnit,
+                                        this);
         dlg->setAttribute(Qt::WA_DeleteOnClose);
         dlg->show();
     });
@@ -486,11 +488,13 @@ void MainWindow::doOpenDataPath(const QString &path)
 
     // ── Science menu context ──────────────────────────────────────────────────
     // Keep last-opened dataset info so Science menu actions can use it.
-    m_sciBackendUrl = client.baseUrl();
-    m_sciSessionId  = client.sessionId();
-    m_sciToken      = client.token();
-    m_sciDatasetId  = opened.datasetId;
-    m_sciDepth      = opened.depth > 0 ? opened.depth : 1;
+    m_sciBackendUrl        = client.baseUrl();
+    m_sciSessionId         = client.sessionId();
+    m_sciToken             = client.token();
+    m_sciDatasetId         = opened.datasetId;
+    m_sciDepth             = opened.depth > 0 ? opened.depth : 1;
+    m_sciSpectralAxisType  = opened.spectralAxisType;
+    m_sciSpectralAxisUnit  = opened.spectralAxisUnit;
     if (m_actLinewidth)   m_actLinewidth->setEnabled(true);
     if (m_actBaseline)    m_actBaseline->setEnabled(true);
     if (m_actSourceFind)  m_actSourceFind->setEnabled(true);
