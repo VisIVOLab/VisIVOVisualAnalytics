@@ -2049,18 +2049,15 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         if (this->isBusy() || !this->hasBackendVisibleDataset()) {
             return;
         }
-        BackendClient *client = new BackendClient(this->remoteBackendUrl,
-                                                  this->remoteBackendToken);
-        client->setSessionId(this->remoteSessionId);
-        auto *dlg = new LinewidthDialog(client,
+        auto *dlg = new LinewidthDialog(this->remoteBackendUrl,
+                                        this->remoteBackendToken,
                                         this->remoteSessionId,
                                         this->remoteDatasetId,
                                         this->remoteDatasetDepth,
                                         static_cast<double>(this->lowerBound),
                                         this);
-        QObject::connect(dlg, &QDialog::finished, [client](int) { delete client; });
         dlg->setAttribute(Qt::WA_DeleteOnClose);
-        dlg->open();
+        dlg->show();
     });
 
     // S-03 Baseline subtraction

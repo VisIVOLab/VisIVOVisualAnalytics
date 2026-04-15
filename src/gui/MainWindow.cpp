@@ -249,12 +249,11 @@ void MainWindow::buildScienceMenu()
     m_actLinewidth->setEnabled(false);
     m_actLinewidth->setToolTip(u"Compute FWHM / Equivalent-Width map (S-02). Open a dataset first."_s);
     QObject::connect(m_actLinewidth, &QAction::triggered, this, [this]() {
-        auto *client = new BackendClient(m_sciBackendUrl, m_sciToken);
-        client->setSessionId(m_sciSessionId);
-        auto *dlg = new LinewidthDialog(client, m_sciSessionId, m_sciDatasetId, m_sciDepth, m_sciThreshold, this);
-        QObject::connect(dlg, &QDialog::finished, [client](int) { delete client; });
+        auto *dlg = new LinewidthDialog(m_sciBackendUrl, m_sciToken,
+                                        m_sciSessionId, m_sciDatasetId,
+                                        m_sciDepth, m_sciThreshold, this);
         dlg->setAttribute(Qt::WA_DeleteOnClose);
-        dlg->open();
+        dlg->show();
     });
 
     m_actBaseline = sciMenu->addAction(u"Baseline Subtraction…"_s);
