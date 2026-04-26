@@ -18,6 +18,7 @@ set(qt_components
         NetworkAuth
         PrintSupport
         WebEngineWidgets
+        Xml
 )
 foreach (module IN LISTS qt_components)
     list(APPEND qt_modules "Qt::${module}")
@@ -80,6 +81,10 @@ set(PROJECT_SOURCES
         src/app/ThemeManager.h
         src/app/RecentDatasetsManager.cpp
         src/app/RecentDatasetsManager.h
+        src/app/SampClient.cpp
+        src/app/SampClient.h
+        src/app/SampMessageHandler.cpp
+        src/app/SampMessageHandler.h
         src/gui/RemoteFileBrowserDialog.cpp
         src/gui/RemoteFileBrowserDialog.h
         src/gui/StartupDialog.cpp

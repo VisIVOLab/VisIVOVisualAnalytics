@@ -13,6 +13,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcessEnvironment>
+#include <QThreadStorage>
 #include <QDebug>
 #include <QStandardPaths>
 #include <QTimer>
@@ -43,6 +44,17 @@ QByteArray decodeCompressedPayload(const QByteArray &encoded, const QString &com
     return {};
 }
 
+} // namespace
+
+namespace {
+    QThreadStorage<QNetworkAccessManager*> s_namStorage;
+
+    QNetworkAccessManager* getThreadLocalNam() {
+        if (!s_namStorage.hasLocalData()) {
+            s_namStorage.setLocalData(new QNetworkAccessManager());
+        }
+        return s_namStorage.localData();
+    }
 } // namespace
 
 // ── Construction ──────────────────────────────────────────────────────────────
@@ -1393,11 +1405,11 @@ BackendCubeNoiseResult BackendClient::parseNoiseResultObject(const QJsonObject &
 
 QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
 {
-    QNetworkAccessManager nam;
+    QNetworkAccessManager *nam = getThreadLocalNam();
     QNetworkRequest request = buildRequest(url);
 
     QEventLoop loop;
-    QNetworkReply *reply = nam.get(request);
+    QNetworkReply *reply = nam->get(request);
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     QTimer timeoutTimer;
     timeoutTimer.setSingleShot(true);
@@ -1445,11 +1457,11 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
 QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body,
                                       QString &error) const
 {
-    QNetworkAccessManager nam;
+    QNetworkAccessManager *nam = getThreadLocalNam();
     QNetworkRequest request = buildRequest(url);
 
     QEventLoop loop;
-    QNetworkReply *reply = nam.post(request, body.toJson(QJsonDocument::Compact));
+    QNetworkReply *reply = nam->post(request, body.toJson(QJsonDocument::Compact));
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     QTimer timeoutTimer;
     timeoutTimer.setSingleShot(true);

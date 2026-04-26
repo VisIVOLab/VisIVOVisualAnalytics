@@ -25,6 +25,14 @@ from typing import Any
 
 import numpy as np
 
+_HAS_GPU = False
+try:
+    import cupy as xp
+    xp.zeros(1)  # Test GPU availability
+    _HAS_GPU = True
+except Exception:
+    import numpy as xp
+
 from .fits_dataset import ScientificFitsDataset
 
 logger = logging.getLogger("visivo.compute")
@@ -284,16 +292,22 @@ def worker_cube_subvolume(
 # ── Worker: moment map ────────────────────────────────────────────────────────
 
 
-# ── Parallelised moment helpers ───────────────────────────────────────────────
+# ── Parallelised CPU moment helpers (used when GPU is unavailable) ────────────
+
+
+def _as_numpy(array) -> np.ndarray:
+    """Helper to safely copy a tensor back to system RAM if it's on the GPU."""
+    return array.get() if hasattr(array, 'get') else array
 
 
 def _chunked_m0(
     cube: np.ndarray, valid_mask: np.ndarray, delta: np.ndarray, n_threads: int
 ) -> np.ndarray:
-    """Moment 0 (nansum over spectral axis), optionally parallelised.
+    """Moment 0 (nansum over spectral axis), optionally parallelised over CPU threads.
 
     Accumulates in float64 to avoid floating-point ordering differences
     between chunked and sequential paths; result is cast back to float32.
+    Used as CPU fallback when CuPy/GPU is unavailable.
     """
     nz = cube.shape[0]
     if n_threads <= 1 or nz < 2 * n_threads:
@@ -314,7 +328,7 @@ def _chunked_m0(
 
 
 def _chunked_m6(cube: np.ndarray, valid_mask: np.ndarray, n_threads: int) -> np.ndarray:
-    """Moment 6 (sqrt of nanmean of squares), optionally parallelised."""
+    """Moment 6 (sqrt of nanmean of squares), optionally parallelised over CPU threads."""
     nz = cube.shape[0]
     if n_threads <= 1 or nz < 2 * n_threads:
         safe = np.where(valid_mask, cube, np.nan)
@@ -338,7 +352,7 @@ def _chunked_m6(cube: np.ndarray, valid_mask: np.ndarray, n_threads: int) -> np.
 
 
 def _chunked_m10(cube: np.ndarray, valid_mask: np.ndarray, n_threads: int) -> np.ndarray:
-    """Moment 10 (nanmin over spectral axis), optionally parallelised."""
+    """Moment 10 (nanmin over spectral axis), optionally parallelised over CPU threads."""
     nz = cube.shape[0]
     if n_threads <= 1 or nz < 2 * n_threads:
         return np.nanmin(np.where(valid_mask, cube, np.nan), axis=0)
@@ -359,46 +373,52 @@ def _moment_map_from_array(
     mask_enabled: bool,
     threshold_value: float,
 ) -> np.ndarray:
-    """Pure numpy moment-map computation (no VTK dependency).
+    """Moment-map computation with GPU acceleration when CuPy is available.
 
-    Orders M0, M6, M10 are split across _n_moment_threads() spectral chunks so
-    that numpy's GIL-releasing array operations run in true parallel.  M1, M2,
-    and M8 require the full spectral axis for normalisation and use the
-    sequential numpy path (which is already internally threaded via OpenMP/MKL).
+    When _HAS_GPU is True, orders M0, M6, M8, M10 are dispatched to the GPU
+    via CuPy.  M1/M2 always go through the Numba JIT path (large cubes) or
+    the numpy/cupy fallback; M3/M4/M5 run in float64 on CPU for precision.
+
+    When _HAS_GPU is False, orders M0, M6, M10 are split across
+    _n_moment_threads() CPU spectral chunks so that numpy's GIL-releasing
+    array operations run in true parallel.
     """
-    spectral_values = np.asarray(spectral_coordinates, dtype=np.float64)
-    spectral_delta = _integrated_spacing(spectral_values)
+    spectral_values_np = np.asarray(spectral_coordinates, dtype=np.float64)
+    spectral_delta_np = _integrated_spacing(spectral_values_np)
 
-    subset = np.asarray(cube, dtype=np.float32)
-    valid_mask = np.isfinite(subset)
+    subset_np = np.asarray(cube, dtype=np.float32)
+    valid_mask = np.isfinite(subset_np)
     if mask_enabled:
-        valid_mask = valid_mask & (subset >= float(threshold_value))
-    # Build the "safe" array only for the sequential orders that need it as a
-    # materialised array; for chunked orders we pass cube + mask separately.
-    safe = np.where(valid_mask, subset, np.nan)
+        valid_mask = valid_mask & (subset_np >= float(threshold_value))
+    safe_np = np.where(valid_mask, subset_np, np.nan)
 
     n_threads = _n_moment_threads()
 
     if order == 0:
-        return _chunked_m0(subset, valid_mask, spectral_delta, n_threads)
+        if _HAS_GPU:
+            spectral_delta_gpu = xp.asarray(spectral_delta_np, dtype=xp.float64)
+            safe_gpu = xp.asarray(safe_np, dtype=xp.float32)
+            res = xp.nansum(safe_gpu * spectral_delta_gpu[:, None, None], axis=0, dtype=xp.float32)
+            return _as_numpy(res)
+        return _chunked_m0(subset_np, valid_mask, spectral_delta_np, n_threads)
 
     if order == 1:
         # Use Numba JIT path for large cubes (amortises JIT compilation cost).
         _NUMBA_THRESHOLD = 64
-        used_numba = _NUMBA_OK and subset.shape[0] > _NUMBA_THRESHOLD
+        used_numba = _NUMBA_OK and subset_np.shape[0] > _NUMBA_THRESHOLD
         logger.debug("moment M1: using %s path", "numba" if used_numba else "numpy")
         if used_numba:
             # _moment1_numba expects float32 cube, float64 spectral, bool mask.
             result_f64 = _moment1_numba(
-                np.ascontiguousarray(subset, dtype=np.float32),
-                np.ascontiguousarray(spectral_values, dtype=np.float64),
+                np.ascontiguousarray(subset_np, dtype=np.float32),
+                np.ascontiguousarray(spectral_values_np, dtype=np.float64),
                 np.ascontiguousarray(valid_mask, dtype=np.bool_),
             )
             return result_f64.astype(np.float32)
-        # Sequential numpy fallback.
-        weights = spectral_delta[:, None, None]
-        m0 = np.nansum(safe * weights, axis=0, dtype=np.float32)
-        num = np.nansum(safe * spectral_values[:, None, None] * weights, axis=0, dtype=np.float32)
+        # Sequential numpy/cupy fallback.
+        weights = spectral_delta_np[:, None, None]
+        m0 = np.nansum(safe_np * weights, axis=0, dtype=np.float32)
+        num = np.nansum(safe_np * spectral_values_np[:, None, None] * weights, axis=0, dtype=np.float32)
         out = np.full(m0.shape, np.nan, dtype=np.float32)
         valid = np.isfinite(m0) & (m0 != 0.0)
         out[valid] = num[valid] / m0[valid]
@@ -407,46 +427,47 @@ def _moment_map_from_array(
     if order == 2:
         # Use Numba JIT path for large cubes.
         _NUMBA_THRESHOLD = 64
-        used_numba = _NUMBA_OK and subset.shape[0] > _NUMBA_THRESHOLD
+        used_numba = _NUMBA_OK and subset_np.shape[0] > _NUMBA_THRESHOLD
         logger.debug("moment M2: using %s path", "numba" if used_numba else "numpy")
         if used_numba:
             result_f64 = _moment2_numba(
-                np.ascontiguousarray(subset, dtype=np.float32),
-                np.ascontiguousarray(spectral_values, dtype=np.float64),
+                np.ascontiguousarray(subset_np, dtype=np.float32),
+                np.ascontiguousarray(spectral_values_np, dtype=np.float64),
                 np.ascontiguousarray(valid_mask, dtype=np.bool_),
             )
             return result_f64.astype(np.float32)
         # Sequential numpy fallback.
-        weights = spectral_delta[:, None, None]
-        m0 = np.nansum(safe * weights, axis=0, dtype=np.float32)
-        m1_num = np.nansum(safe * spectral_values[:, None, None] * weights, axis=0, dtype=np.float32)
+        weights = spectral_delta_np[:, None, None]
+        m0 = np.nansum(safe_np * weights, axis=0, dtype=np.float32)
+        m1_num = np.nansum(safe_np * spectral_values_np[:, None, None] * weights, axis=0, dtype=np.float32)
         m1 = np.full(m0.shape, np.nan, dtype=np.float32)
         valid = np.isfinite(m0) & (m0 != 0.0)
         m1[valid] = m1_num[valid] / m0[valid]
-        diff = spectral_values[:, None, None] - m1[None, :, :]
-        num = np.nansum(safe * diff * diff * weights, axis=0, dtype=np.float32)
+        diff = spectral_values_np[:, None, None] - m1[None, :, :]
+        num = np.nansum(safe_np * diff * diff * weights, axis=0, dtype=np.float32)
         out = np.full(m0.shape, np.nan, dtype=np.float32)
         out[valid] = num[valid] / m0[valid]
         return out
 
     if order in {3, 4, 5}:
         # Higher-order central moments — share M0/M1/σ computation.
+        # Always run on CPU in float64 for numerical precision.
         try:
             # Shape helpers.
-            sv = spectral_values[:, None, None]   # (nz, 1, 1)
-            weights = spectral_delta[:, None, None]
+            sv = spectral_values_np[:, None, None]   # (nz, 1, 1)
+            weights = spectral_delta_np[:, None, None]
 
-            m0 = np.nansum(safe * weights, axis=0, dtype=np.float64)  # float64 for precision
+            m0 = np.nansum(safe_np * weights, axis=0, dtype=np.float64)  # float64 for precision
             valid_m0 = np.isfinite(m0) & (m0 != 0.0)
 
             m1 = np.full(m0.shape, np.nan, dtype=np.float64)
-            m1_num = np.nansum(safe.astype(np.float64) * sv * weights, axis=0)
+            m1_num = np.nansum(safe_np.astype(np.float64) * sv * weights, axis=0)
             m1[valid_m0] = m1_num[valid_m0] / m0[valid_m0]
 
             diff = sv - m1[None, :, :]            # (nz, ny, nx) velocity deviations
 
             # M2 = intensity-weighted variance (σ²)
-            m2_num = np.nansum(safe.astype(np.float64) * diff * diff * weights, axis=0)
+            m2_num = np.nansum(safe_np.astype(np.float64) * diff * diff * weights, axis=0)
             m2 = np.full(m0.shape, np.nan, dtype=np.float64)
             m2[valid_m0] = m2_num[valid_m0] / m0[valid_m0]
 
@@ -457,7 +478,7 @@ def _moment_map_from_array(
 
             if order == 3:
                 # Normalised skewness: M3 / σ³  (dimensionless)
-                m3_num = np.nansum(safe.astype(np.float64) * diff ** 3 * weights, axis=0)
+                m3_num = np.nansum(safe_np.astype(np.float64) * diff ** 3 * weights, axis=0)
                 m3 = np.full(m0.shape, np.nan, dtype=np.float64)
                 m3[valid_m0] = m3_num[valid_m0] / m0[valid_m0]
                 sigma3 = sigma ** 3
@@ -466,7 +487,7 @@ def _moment_map_from_array(
 
             elif order == 4:
                 # Excess kurtosis: M4 / σ⁴ - 3  (dimensionless)
-                m4_num = np.nansum(safe.astype(np.float64) * diff ** 4 * weights, axis=0)
+                m4_num = np.nansum(safe_np.astype(np.float64) * diff ** 4 * weights, axis=0)
                 m4 = np.full(m0.shape, np.nan, dtype=np.float64)
                 m4[valid_m0] = m4_num[valid_m0] / m0[valid_m0]
                 sigma4 = sigma ** 4
@@ -475,7 +496,7 @@ def _moment_map_from_array(
 
             else:  # order == 5
                 # Standardised 5th moment: μ₅ / σ⁵ (dimensionless, consistent with M3/M4)
-                m5_num = np.nansum(safe.astype(np.float64) * diff ** 5 * weights, axis=0)
+                m5_num = np.nansum(safe_np.astype(np.float64) * diff ** 5 * weights, axis=0)
                 m5 = np.full(m0.shape, np.nan, dtype=np.float64)
                 m5[valid_m0] = m5_num[valid_m0] / m0[valid_m0]
                 sigma5 = sigma ** 5
@@ -489,14 +510,26 @@ def _moment_map_from_array(
             raise
 
     if order == 6:
-        return _chunked_m6(subset, valid_mask, n_threads)
+        if _HAS_GPU:
+            safe_gpu = xp.asarray(safe_np, dtype=xp.float32)
+            res = xp.sqrt(xp.nanmean(safe_gpu * safe_gpu, axis=0, dtype=xp.float32))
+            return _as_numpy(res)
+        return _chunked_m6(subset_np, valid_mask, n_threads)
 
     if order == 8:
+        if _HAS_GPU:
+            safe_gpu = xp.asarray(safe_np, dtype=xp.float32)
+            res = xp.nanmax(safe_gpu, axis=0)
+            return _as_numpy(res)
         # Sequential: nanmax is harder to chunk correctly; numpy handles it well.
-        return np.nanmax(safe, axis=0)
+        return np.nanmax(safe_np, axis=0)
 
     if order == 10:
-        return _chunked_m10(subset, valid_mask, n_threads)
+        if _HAS_GPU:
+            safe_gpu = xp.asarray(safe_np, dtype=xp.float32)
+            res = xp.nanmin(safe_gpu, axis=0)
+            return _as_numpy(res)
+        return _chunked_m10(subset_np, valid_mask, n_threads)
 
     raise ValueError(f"Unsupported moment order: {order}.")
 

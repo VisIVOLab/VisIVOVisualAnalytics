@@ -6,9 +6,19 @@ vtk>=9.4
 pandas>=2.0
 healpy>=0.3
 scipy>=1.10
-numba>=0.59.0   
-dask[array]>=2024.1.0 
+numba>=0.59.0
+dask[array]>=2024.1.0
 photutils>=1.10.0
 reproject>=0.13
 astroquery>=0.4.7
 scikit-image>=0.22
+
+# -- Optional: GPU Acceleration (NVIDIA) --
+# To enable GPU acceleration for CPU-bound tasks (Moment Maps, etc.),
+# uncomment the line matching your CUDA version, or install via conda.
+# cupy-cuda11x  # For CUDA 11.x
+
+# -- Optional: Distributed Computing (Dask) --
+# To enable multi-node distributed scaling for CPU-bound tasks,
+# uncomment the line below and set VISIVO_DASK_SCHEDULER environment variable.
+# dask[distributed]>=2024.1.0
