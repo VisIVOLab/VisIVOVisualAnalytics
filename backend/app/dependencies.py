@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from astropy.io import fits
+from astropy.table import Table
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from .auth import verify_token
@@ -224,29 +225,23 @@ def _normalize_catalogue_field(raw: str) -> str:
     return "".join(ch.upper() for ch in raw if ch.isalnum())
 
 
-def _catalogue_csv_metadata(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.reader(handle)
-        headers = next(reader, [])
-    if not headers:
-        raise ValueError("CSV catalogue is empty.")
+def _catalogue_field_type(dtype: Any) -> str:
+    if pd.api.types.is_bool_dtype(dtype):
+        return "bool"
+    if pd.api.types.is_integer_dtype(dtype):
+        return "int"
+    if pd.api.types.is_float_dtype(dtype):
+        return "float"
+    return "string"
 
-    frame = pd.read_csv(path, nrows=256)
+
+def _catalogue_metadata_from_dataframe(frame: pd.DataFrame, fmt: str) -> dict[str, Any]:
     fields: list[dict[str, str]] = []
     normalized_to_actual: dict[str, str] = {}
     for column in frame.columns:
         name = str(column)
         normalized_to_actual[_normalize_catalogue_field(name)] = name
-        dtype = frame[column].dtype
-        if pd.api.types.is_bool_dtype(dtype):
-            field_type = "bool"
-        elif pd.api.types.is_integer_dtype(dtype):
-            field_type = "int"
-        elif pd.api.types.is_float_dtype(dtype):
-            field_type = "float"
-        else:
-            field_type = "string"
-        fields.append({"name": name, "type": field_type})
+        fields.append({"name": name, "type": _catalogue_field_type(frame[column].dtype)})
 
     ra_field = ""
     dec_field = ""
@@ -259,16 +254,43 @@ def _catalogue_csv_metadata(path: Path) -> dict[str, Any]:
             dec_field = normalized_to_actual[alias]
             break
     if not ra_field or not dec_field:
-        raise ValueError("CSV catalogue requires RA and DEC columns.")
+        raise ValueError("Catalogue requires RA and DEC columns.")
 
-    row_count = max(0, sum(1 for _ in path.open("r", encoding="utf-8")) - 1)
     return {
         "kind": "catalogue",
-        "format": "csv",
-        "num_rows": row_count,
+        "format": fmt,
+        "num_rows": int(len(frame.index)),
         "fields": fields,
         "coordinate_fields": {"ra": ra_field, "dec": dec_field},
     }
+
+
+def _catalogue_csv_metadata(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        headers = next(reader, [])
+    if not headers:
+        raise ValueError("CSV catalogue is empty.")
+    frame = pd.read_csv(path)
+    return _catalogue_metadata_from_dataframe(frame, "csv")
+
+
+def _catalogue_load_dataframe(path: Path, fmt: str) -> pd.DataFrame:
+    fmt_lower = fmt.strip().lower()
+    if fmt_lower == "csv":
+        return pd.read_csv(path)
+    if fmt_lower in {"votable", "vot", "xml"}:
+        return Table.read(path, format="votable").to_pandas()
+    if fmt_lower in {"fits", "fit", "fits-table"}:
+        return Table.read(path, format="fits").to_pandas()
+    raise ValueError(f"Unsupported catalogue format: {fmt}")
+
+
+def _catalogue_metadata(path: Path, fmt: str) -> tuple[pd.DataFrame, dict[str, Any]]:
+    frame = _catalogue_load_dataframe(path, fmt)
+    if frame.empty and len(frame.columns) == 0:
+        raise ValueError("Catalogue is empty.")
+    return frame, _catalogue_metadata_from_dataframe(frame, fmt.strip().lower())
 
 
 async def _get_dask_client():
@@ -636,4 +658,3 @@ def _catalogue_overlay_sync(
 
     return {"valid": True, "error": "", "sources": sources,
             "total_in_view": total, "truncated": truncated}
-

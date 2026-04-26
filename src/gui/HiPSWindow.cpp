@@ -79,6 +79,18 @@ HiPSWindow::HiPSWindow(const QString &backendUrl, const QString &backendToken, Q
                      this, &HiPSWindow::onResolveFinished);
 }
 
+void HiPSWindow::setCenter(double raDeg, double decDeg)
+{
+    if (!m_viewport) {
+        return;
+    }
+    m_viewport->setCenter(raDeg, decDeg);
+    if (m_coordsLabel) {
+        m_coordsLabel->setText(QStringLiteral("%1  %2").arg(fmtRa(raDeg), fmtDec(decDeg)));
+    }
+    showStatus(QStringLiteral("Centred on SAMP sky coordinates."));
+}
+
 // ── UI setup ──────────────────────────────────────────────────────────────────
 
 void HiPSWindow::setupUi()

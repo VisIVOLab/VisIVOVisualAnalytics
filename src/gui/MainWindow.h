@@ -10,9 +10,12 @@
 #include <memory>
 
 class AuthWrapper;
+class BackendClient;
 class DataHubWidget;
 class DiagnosticsWindow;
 class HiPSWindow;
+class SampClient;
+class SampMessageHandler;
 class QAction;
 class QMenu;
 class QTabWidget;
@@ -53,8 +56,16 @@ private slots:
 
 private:
     void buildDataMenu();
+    void buildSampMenu();
     void buildScienceMenu();
     void syncDataHubSettings();
+    void syncSampSettings();
+    void updateSampActions();
+    void handleSampFitsDataset(const QString &backendPath, const QString &mtype);
+    void handleSampTableLoad(const QString &url, const QString &localPath);
+    void handleSampSkyCoord(double raDeg, double decDeg);
+    void sendCurrentFitsViaSamp();
+    void sendCurrentCatalogueViaSamp();
 
     // Path-based open helpers (skip the file browser dialog, used for reopen).
     void doOpenDataPath(const QString &path);
@@ -72,8 +83,12 @@ private:
     QPointer<AuthWrapper>            auth;
     QPointer<DiagnosticsWindow>      diagnosticsWindow;
     QPointer<DataHubWidget>          dataHub;
+    QPointer<HiPSWindow>             m_lastHiPSWindow;
     QPointer<QTabWidget>             m_tabs;
     QPointer<RecentDatasetsManager>  recentMgr;
+    std::unique_ptr<BackendClient>   m_sampBackendClient;
+    QPointer<SampClient>             m_sampClient;
+    QPointer<SampMessageHandler>     m_sampHandler;
 
     // Science menu — tracks the most recently opened backend dataset.
     QString  m_sciBackendUrl;
@@ -90,6 +105,16 @@ private:
     QPointer<QAction> m_actBaseline;
     QPointer<QAction> m_actStack;
     QPointer<QAction> m_actSourceFind;
+    QPointer<QMenu>   m_sampMenu;
+    QPointer<QAction> m_actSampConnect;
+    QPointer<QAction> m_actSampDisconnect;
+    QPointer<QAction> m_actSampSendCurrentFits;
+    QPointer<QAction> m_actSampSendCurrentCatalogue;
+    QString           m_sampCurrentFitsPath;
+    QString           m_sampCurrentFitsName;
+    QString           m_sampCurrentCataloguePath;
+    QString           m_sampCurrentCatalogueName;
+    QString           m_sampCurrentCatalogueFormat;
 
     void openDiagnosticsWindow();
 

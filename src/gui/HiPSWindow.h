@@ -47,6 +47,7 @@ public:
     ~HiPSWindow() override = default;
 
     void openSurveyUrl(const QString &url);
+    void setCenter(double raDeg, double decDeg);
 
 private slots:
     // Primary survey

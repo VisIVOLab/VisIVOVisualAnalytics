@@ -36,12 +36,12 @@ void SampMessageHandler::onMessageReceived(const SampMessage &message)
     qDebug() << "[SampMessageHandler] mtype=" << message.mtype
              << "sender=" << message.senderId;
 
-    if (message.mtype == QStringLiteral(SampClient::MTYPE_IMAGE_FITS)) {
+    if (message.mtype == QString::fromLatin1(SampClient::MTYPE_IMAGE_FITS)) {
         handleImageLoadFits(message);
-    } else if (message.mtype == QStringLiteral(SampClient::MTYPE_TABLE_VOTABLE) ||
-               message.mtype == QStringLiteral(SampClient::MTYPE_TABLE_FITS)) {
+    } else if (message.mtype == QString::fromLatin1(SampClient::MTYPE_TABLE_VOTABLE) ||
+               message.mtype == QString::fromLatin1(SampClient::MTYPE_TABLE_FITS)) {
         handleTableLoad(message);
-    } else if (message.mtype == QStringLiteral(SampClient::MTYPE_COORD_SKY)) {
+    } else if (message.mtype == QString::fromLatin1(SampClient::MTYPE_COORD_SKY)) {
         handleCoordPointAtSky(message);
     } else {
         // Hub lifecycle events (shutdown, register, unregister) are handled

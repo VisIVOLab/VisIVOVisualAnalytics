@@ -81,12 +81,11 @@ private:
     /**
      * Resolve a SAMP URL to a backend-accessible path.
      *
-     * - file:// URLs: strip the scheme, return the local path directly
-     *   (assumes backend and client run on the same machine, or a shared fs).
-     * - http:// URLs: the backend fetches the file on demand when the user
-     *   opens the dataset; we just pass the URL as-is.
+     * - file:// URLs: strip the scheme, return the local client path.
+     * - http:// / https:// URLs: return the URL as-is.
      *
-     * Returns the resolved path/URL string.
+     * MainWindow is responsible for staging the file on the backend when the
+     * backend cannot access the resolved location directly.
      */
     static QString resolveUrl(const QString &url);
 

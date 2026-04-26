@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -354,6 +355,116 @@ BackendCatalogueInfo BackendClient::openCatalogue(const QString &path, const QSt
         result.fields.push_back({ field.value(QStringLiteral("name")).toString(),
                                   field.value(QStringLiteral("type")).toString() });
     }
+    return result;
+}
+
+BackendSampSendResult BackendClient::sendFitsToSamp(const QString &path,
+                                                    const QString &filename) const
+{
+    BackendSampSendResult result;
+    QString error;
+    QJsonObject bodyObj{ { QStringLiteral("path"), path } };
+    if (!filename.isEmpty()) {
+        bodyObj.insert(QStringLiteral("filename"), filename);
+    }
+    const QJsonDocument body(bodyObj);
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/samp/send-fits")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.jobId = object.value(QStringLiteral("job_id")).toString();
+    result.sentDirect = object.value(QStringLiteral("sent_direct")).toBool(false);
+    return result;
+}
+
+BackendSampSendResult BackendClient::sendCatalogueToSamp(const QString &path,
+                                                         const QString &format,
+                                                         const QString &filename) const
+{
+    BackendSampSendResult result;
+    QString error;
+    QJsonObject bodyObj{
+        { QStringLiteral("path"), path },
+        { QStringLiteral("format"), format },
+    };
+    if (!filename.isEmpty()) {
+        bodyObj.insert(QStringLiteral("filename"), filename);
+    }
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/samp/send-catalogue")),
+                        QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.jobId = object.value(QStringLiteral("job_id")).toString();
+    result.sentDirect = object.value(QStringLiteral("sent_direct")).toBool(false);
+    return result;
+}
+
+BackendSampImportResult BackendClient::importSampUrl(const QString &url,
+                                                     const QString &filename) const
+{
+    BackendSampImportResult result;
+    QString error;
+    QJsonObject bodyObj{ { QStringLiteral("url"), url } };
+    if (!filename.isEmpty()) {
+        bodyObj.insert(QStringLiteral("filename"), filename);
+    }
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/samp/import-url")),
+                        QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.token = object.value(QStringLiteral("token")).toString();
+    result.backendPath = object.value(QStringLiteral("backend_path")).toString();
+    result.filename = object.value(QStringLiteral("filename")).toString();
+    return result;
+}
+
+BackendSampImportResult BackendClient::uploadFileToSampStorage(const QString &localPath,
+                                                               const QString &filename) const
+{
+    BackendSampImportResult result;
+    QFile file(localPath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        result.error = QStringLiteral("Failed to read local file: %1").arg(localPath);
+        return result;
+    }
+    const QByteArray raw = file.readAll();
+    file.close();
+
+    QString error;
+    const QString resolvedName =
+            filename.isEmpty() ? QFileInfo(localPath).fileName() : filename;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("filename"), resolvedName },
+            { QStringLiteral("content_base64"), QString::fromUtf8(raw.toBase64()) } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/samp/upload-file")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.token = object.value(QStringLiteral("token")).toString();
+    result.backendPath = object.value(QStringLiteral("backend_path")).toString();
+    result.filename = object.value(QStringLiteral("filename")).toString();
     return result;
 }
 

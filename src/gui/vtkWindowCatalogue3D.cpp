@@ -130,6 +130,22 @@ const QMap<QString, int> kKnownMorphologies = {
         { QStringLiteral("other"),        9 },
 };
 
+QString catalogueFormatForPath(const QString &path)
+{
+    const QString suffix = QFileInfo(path).suffix().trimmed().toLower();
+    if (suffix == QStringLiteral("csv")) {
+        return QStringLiteral("csv");
+    }
+    if (suffix == QStringLiteral("vot") || suffix == QStringLiteral("votable")
+        || suffix == QStringLiteral("xml")) {
+        return QStringLiteral("votable");
+    }
+    if (suffix == QStringLiteral("fits") || suffix == QStringLiteral("fit")) {
+        return QStringLiteral("fits");
+    }
+    return QStringLiteral("csv");
+}
+
 } // namespace
 
 // ── "Add Filter" dialog ───────────────────────────────────────────────────────
@@ -389,7 +405,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                      });
 
     BackendClient client(backendUrl, backendToken);
-    const auto opened = client.openCatalogue(filepath);
+    const auto opened = client.openCatalogue(filepath, catalogueFormatForPath(filepath));
     if (!opened.valid) {
         QMessageBox::critical(this, u"Catalogue Error"_s, opened.error);
         ui->labelStatus->setText(u"Load error: "_s + opened.error);
@@ -1189,7 +1205,7 @@ void vtkWindowCatalogue3D::autoReopenThenLoadMore()
     this->m_reopenWatcher.setFuture(QtConcurrent::run(
             [url, token, filePath]() -> BackendCatalogueInfo {
                 BackendClient client(url, token);
-                return client.openCatalogue(filePath);
+                return client.openCatalogue(filePath, catalogueFormatForPath(filePath));
             }));
 }
 

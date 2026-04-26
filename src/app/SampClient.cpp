@@ -214,9 +214,9 @@ void SampClient::sendImageFits(const QString &url, const QString &name,
     params[QStringLiteral("samp.name")] = params[QStringLiteral("name")];
 
     if (recipientId.isEmpty())
-        notifyAll(QStringLiteral(MTYPE_IMAGE_FITS), params);
+        notifyAll(QString::fromLatin1(MTYPE_IMAGE_FITS), params);
     else
-        notify(recipientId, QStringLiteral(MTYPE_IMAGE_FITS), params);
+        notify(recipientId, QString::fromLatin1(MTYPE_IMAGE_FITS), params);
 }
 
 void SampClient::sendTableVotable(const QString &url, const QString &name,
@@ -229,9 +229,9 @@ void SampClient::sendTableVotable(const QString &url, const QString &name,
     params[QStringLiteral("table-id")] = tableId.isEmpty() ? url : tableId;
 
     if (recipientId.isEmpty())
-        notifyAll(QStringLiteral(MTYPE_TABLE_VOTABLE), params);
+        notifyAll(QString::fromLatin1(MTYPE_TABLE_VOTABLE), params);
     else
-        notify(recipientId, QStringLiteral(MTYPE_TABLE_VOTABLE), params);
+        notify(recipientId, QString::fromLatin1(MTYPE_TABLE_VOTABLE), params);
 }
 
 void SampClient::sendPointAtSky(double raDeg, double decDeg,
@@ -242,9 +242,9 @@ void SampClient::sendPointAtSky(double raDeg, double decDeg,
     params[QStringLiteral("dec")] = QString::number(decDeg, 'f', 6);
 
     if (recipientId.isEmpty())
-        notifyAll(QStringLiteral(MTYPE_COORD_SKY), params);
+        notifyAll(QString::fromLatin1(MTYPE_COORD_SKY), params);
     else
-        notify(recipientId, QStringLiteral(MTYPE_COORD_SKY), params);
+        notify(recipientId, QString::fromLatin1(MTYPE_COORD_SKY), params);
 }
 
 // ── Hub client list ───────────────────────────────────────────────────────────
@@ -351,7 +351,7 @@ void SampClient::pollHub()
         }
 
         // Hub shutdown event: clean up
-        if (msg.mtype == QStringLiteral(MTYPE_HUB_SHUTDOWN)) {
+        if (msg.mtype == QString::fromLatin1(MTYPE_HUB_SHUTDOWN)) {
             m_connected = false;
             m_pollTimer->stop();
             m_backendPendingTimer->stop();
@@ -482,11 +482,11 @@ void SampClient::declareSubscriptions()
     // Each entry in the subscriptions map is mtype → {} (empty params dict)
     QVariantMap subs;
     const QStringList supported = {
-        QStringLiteral(MTYPE_IMAGE_FITS),
-        QStringLiteral(MTYPE_TABLE_VOTABLE),
-        QStringLiteral(MTYPE_TABLE_FITS),
-        QStringLiteral(MTYPE_COORD_SKY),
-        QStringLiteral(MTYPE_HUB_SHUTDOWN),
+        QString::fromLatin1(MTYPE_IMAGE_FITS),
+        QString::fromLatin1(MTYPE_TABLE_VOTABLE),
+        QString::fromLatin1(MTYPE_TABLE_FITS),
+        QString::fromLatin1(MTYPE_COORD_SKY),
+        QString::fromLatin1(MTYPE_HUB_SHUTDOWN),
     };
     for (const QString &mt : supported)
         subs[mt] = QVariantMap();
@@ -573,7 +573,7 @@ QVariant SampClient::xmlRpcCall(const QString &method,
 {
     const QByteArray body = buildXmlRpcRequest(method, params);
 
-    QNetworkRequest req(QUrl(m_hubUrl));
+    QNetworkRequest req{QUrl(m_hubUrl)};
     req.setHeader(QNetworkRequest::ContentTypeHeader,
                   QByteArrayLiteral("text/xml"));
     req.setHeader(QNetworkRequest::ContentLengthHeader, body.size());

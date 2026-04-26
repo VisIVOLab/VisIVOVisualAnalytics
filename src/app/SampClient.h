@@ -41,6 +41,7 @@
 class QNetworkAccessManager;
 class QNetworkReply;
 class BackendClient;
+class QDomElement;
 
 // ── Data types ────────────────────────────────────────────────────────────────
 

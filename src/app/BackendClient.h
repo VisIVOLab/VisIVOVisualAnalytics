@@ -245,6 +245,23 @@ struct BackendCatalogueSubset
     QList<QVariantMap> rows;
 };
 
+struct BackendSampSendResult
+{
+    bool valid{ false };
+    QString error;
+    QString jobId;
+    bool sentDirect{ false };
+};
+
+struct BackendSampImportResult
+{
+    bool valid{ false };
+    QString error;
+    QString token;
+    QString backendPath;
+    QString filename;
+};
+
 // ── Tabular query (shared for catalogue + VBT point) ─────────────────────────
 
 struct BackendTabularFilter
@@ -757,6 +774,14 @@ public:
      */
     BackendOpenDatasetResult openDataset(const QString &path);
     BackendCatalogueInfo openCatalogue(const QString &path, const QString &format = QStringLiteral("csv"));
+    BackendSampSendResult sendFitsToSamp(const QString &path,
+                                         const QString &filename = QString()) const;
+    BackendSampSendResult sendCatalogueToSamp(const QString &path, const QString &format,
+                                              const QString &filename = QString()) const;
+    BackendSampImportResult importSampUrl(const QString &url,
+                                          const QString &filename = QString()) const;
+    BackendSampImportResult uploadFileToSampStorage(const QString &localPath,
+                                                    const QString &filename = QString()) const;
 
     BackendCubePreviewResult requestPreview(const QString &datasetId, int downsample) const;
     BackendCubeSliceResult requestSlice(const QString &datasetId, const QString &axis,

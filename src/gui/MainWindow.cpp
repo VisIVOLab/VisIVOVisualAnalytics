@@ -4,6 +4,8 @@
 #include "AboutDialog.h"
 #include "AuthWrapper.h"
 #include "app/BackendClient.h"
+#include "app/SampClient.h"
+#include "app/SampMessageHandler.h"
 #include "app/RecentDatasetsManager.h"
 #include "app/ThemeManager.h"
 #include "BaselineDialog.h"
@@ -44,6 +46,7 @@
 #include <QPixmap>
 #include <QStyle>
 #include <QPainter>
+#include <QUrl>
 #include <QtConcurrent>
 
 #include "app/DiagnosticsManager.h"
@@ -77,6 +80,30 @@ QPixmap makeLightDialogQuestionPixmap(int size)
     return pm;
 }
 
+bool backendUrlIsLocal(const QString &url)
+{
+    const QUrl parsed(url);
+    const QString host = parsed.host().trimmed().toLower();
+    return host.isEmpty() || host == QStringLiteral("127.0.0.1")
+           || host == QStringLiteral("localhost") || host == QStringLiteral("::1");
+}
+
+QString catalogueFormatForPath(const QString &path)
+{
+    const QString suffix = QFileInfo(path).suffix().trimmed().toLower();
+    if (suffix == QStringLiteral("csv")) {
+        return QStringLiteral("csv");
+    }
+    if (suffix == QStringLiteral("vot") || suffix == QStringLiteral("votable")
+        || suffix == QStringLiteral("xml")) {
+        return QStringLiteral("votable");
+    }
+    if (suffix == QStringLiteral("fits") || suffix == QStringLiteral("fit")) {
+        return QStringLiteral("fits");
+    }
+    return QStringLiteral("csv");
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWindow)
@@ -91,9 +118,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // Create core objects
     this->settings = new Settings(workDir, this);
     this->auth = new AuthWrapper(this);
+    this->m_sampBackendClient = std::make_unique<BackendClient>(
+            this->settings->getBackendUrl(), this->settings->getBackendToken());
+    this->m_sampClient = new SampClient(this->m_sampBackendClient.get(), this);
+    this->m_sampHandler =
+            new SampMessageHandler(this->m_sampClient, this->m_sampBackendClient.get(), this);
     QObject::connect(this->settings, &Settings::updated, this, &MainWindow::setApplicationTheme);
     QObject::connect(this->settings, &Settings::updated, this, &MainWindow::loadPanoramicView);
     QObject::connect(this->settings, &Settings::updated, this, &MainWindow::syncDataHubSettings);
+    QObject::connect(this->settings, &Settings::updated, this, &MainWindow::syncSampSettings);
 
     // ── Replace the .ui central widget with a tab container ─────────────────
     // The .ui-defined central widget (panoramic view + coordinate panel) is
@@ -156,6 +189,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     QObject::connect(diagnosticsAction, &QAction::triggered, this,
                      [this]() { this->openDiagnosticsWindow(); });
 
+    // ── SAMP menu ─────────────────────────────────────────────────────────────
+    this->buildSampMenu();
+
     // ── Science menu ──────────────────────────────────────────────────────────
     this->buildScienceMenu();
 
@@ -198,6 +234,43 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 
     // ── Initial DataHub state ─────────────────────────────────────────────────
     this->syncDataHubSettings();
+    this->syncSampSettings();
+    this->updateSampActions();
+
+    QObject::connect(this->m_sampHandler, &SampMessageHandler::fitsDatasetOpened,
+                     this, &MainWindow::handleSampFitsDataset);
+    QObject::connect(this->m_sampHandler, &SampMessageHandler::votableLoaded,
+                     this, &MainWindow::handleSampTableLoad);
+    QObject::connect(this->m_sampHandler, &SampMessageHandler::skyCoordReceived,
+                     this, &MainWindow::handleSampSkyCoord);
+    QObject::connect(this->m_sampHandler, &SampMessageHandler::sampConnected, this,
+                     [this](const QString &publicId, const QString &hubUrl) {
+                         DiagnosticsManager::instance()->publish(
+                                 DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
+                                 QStringLiteral("SAMP"),
+                                 QStringLiteral("Connected to SAMP Hub as %1 (%2).")
+                                         .arg(publicId, hubUrl),
+                                 QString(), QString(), QStringLiteral("connect"));
+                         this->statusBar()->showMessage(u"SAMP connected"_s, 3000);
+                         this->updateSampActions();
+                     });
+    QObject::connect(this->m_sampHandler, &SampMessageHandler::sampDisconnected, this, [this]() {
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("SAMP"),
+                QStringLiteral("Disconnected from SAMP Hub."),
+                QString(), QString(), QStringLiteral("disconnect"));
+        this->statusBar()->showMessage(u"SAMP disconnected"_s, 3000);
+        this->updateSampActions();
+    });
+    QObject::connect(this->m_sampHandler, &SampMessageHandler::sampError, this,
+                     [this](const QString &description) {
+                         DiagnosticsManager::instance()->publish(
+                                 DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
+                                 QStringLiteral("SAMP"), description,
+                                 QString(), QString(), QStringLiteral("error"));
+                         this->statusBar()->showMessage(description, 5000);
+                         this->updateSampActions();
+                     });
 
     // Load theme
     this->setApplicationTheme();
@@ -233,6 +306,42 @@ void MainWindow::buildDataMenu()
     auto *actHiPS = dataMenu->addAction(u"HiPS Viewer…"_s);
     actHiPS->setToolTip(u"Open the HiPS panoramic sky viewer (coming soon)."_s);
     QObject::connect(actHiPS, &QAction::triggered, this, &MainWindow::openHiPS);
+}
+
+void MainWindow::buildSampMenu()
+{
+    auto *sampMenu = new QMenu(u"SAMP"_s, this);
+    this->menuBar()->insertMenu(ui->menuHelp->menuAction(), sampMenu);
+    m_sampMenu = sampMenu;
+
+    m_actSampConnect = sampMenu->addAction(u"Connect To Hub"_s);
+    QObject::connect(m_actSampConnect, &QAction::triggered, this, [this]() {
+        this->syncSampSettings();
+        const auto health = this->m_sampBackendClient->health();
+        if (!health.ok) {
+            QMessageBox::critical(
+                    this, u"Backend unavailable"_s,
+                    u"Cannot connect SAMP integration because the backend is not reachable.\n\n"
+                    "Error: %1"_s.arg(health.error.isEmpty() ? u"No response"_s : health.error));
+            return;
+        }
+        this->m_sampClient->connectToHub();
+    });
+
+    m_actSampDisconnect = sampMenu->addAction(u"Disconnect From Hub"_s);
+    QObject::connect(m_actSampDisconnect, &QAction::triggered, this, [this]() {
+        this->m_sampClient->disconnectFromHub();
+    });
+
+    sampMenu->addSeparator();
+
+    m_actSampSendCurrentFits = sampMenu->addAction(u"Send Current FITS Dataset"_s);
+    QObject::connect(m_actSampSendCurrentFits, &QAction::triggered,
+                     this, &MainWindow::sendCurrentFitsViaSamp);
+
+    m_actSampSendCurrentCatalogue = sampMenu->addAction(u"Send Current Catalogue"_s);
+    QObject::connect(m_actSampSendCurrentCatalogue, &QAction::triggered,
+                     this, &MainWindow::sendCurrentCatalogueViaSamp);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -307,11 +416,51 @@ void MainWindow::syncDataHubSettings()
     }
 }
 
+void MainWindow::syncSampSettings()
+{
+    if (!this->m_sampBackendClient) {
+        return;
+    }
+    this->m_sampBackendClient->setBaseUrl(this->settings->getBackendUrl());
+    this->m_sampBackendClient->setToken(this->settings->getBackendToken());
+}
+
+void MainWindow::updateSampActions()
+{
+    const bool connected = this->m_sampClient && this->m_sampClient->isConnected();
+    const bool hasCurrentFits = !this->m_sampCurrentFitsPath.isEmpty();
+    const bool hasCurrentCatalogue = !this->m_sampCurrentCataloguePath.isEmpty();
+    if (m_actSampConnect) {
+        m_actSampConnect->setEnabled(!connected);
+    }
+    if (m_actSampDisconnect) {
+        m_actSampDisconnect->setEnabled(connected);
+    }
+    if (m_actSampSendCurrentFits) {
+        m_actSampSendCurrentFits->setEnabled(connected && hasCurrentFits);
+        m_actSampSendCurrentFits->setToolTip(
+                hasCurrentFits
+                        ? u"Broadcast the current FITS dataset to SAMP-compatible tools."_s
+                        : u"Open a FITS image or cube first."_s);
+    }
+    if (m_actSampSendCurrentCatalogue) {
+        m_actSampSendCurrentCatalogue->setEnabled(connected && hasCurrentCatalogue);
+        m_actSampSendCurrentCatalogue->setToolTip(
+                hasCurrentCatalogue
+                        ? u"Broadcast the current catalogue to SAMP-compatible tools."_s
+                        : u"Open a catalogue first."_s);
+    }
+}
+
 void MainWindow::openHiPS()
 {
     const QString backendUrl   = this->settings->getBackendUrl();
     const QString backendToken = this->settings->getBackendToken();
     auto *hipsWidget = new HiPSWindow(backendUrl, backendToken, m_tabs);
+    this->m_lastHiPSWindow = hipsWidget;
+    QObject::connect(hipsWidget, &QObject::destroyed, this, [this]() {
+        this->m_lastHiPSWindow.clear();
+    });
     const int idx = m_tabs->addTab(hipsWidget, u"HiPS Viewer"_s);
     m_tabs->setCurrentIndex(idx);
 
@@ -479,6 +628,13 @@ void MainWindow::doOpenDataPath(const QString &path)
         return;
     }
 
+    this->m_sampCurrentFitsPath = path;
+    this->m_sampCurrentFitsName = QFileInfo(path).fileName();
+    this->m_sampCurrentCataloguePath.clear();
+    this->m_sampCurrentCatalogueName.clear();
+    this->m_sampCurrentCatalogueFormat.clear();
+    this->updateSampActions();
+
     // Record in recent datasets (uses the final kind returned by the backend).
     if (this->recentMgr) {
         const QString name = QFileInfo(path).fileName();
@@ -544,6 +700,13 @@ void MainWindow::openVlkbImageLayer(const QString &backendPath, const QString &d
     // the same session are stacked as additional layers.
     if (tree) tree->setLinkedImageWindow(win);
 
+    this->m_sampCurrentFitsPath = backendPath;
+    this->m_sampCurrentFitsName = displayName;
+    this->m_sampCurrentCataloguePath.clear();
+    this->m_sampCurrentCatalogueName.clear();
+    this->m_sampCurrentCatalogueFormat.clear();
+    this->updateSampActions();
+
     // Record in recent datasets using the display name, not the uuid path.
     if (this->recentMgr)
         this->recentMgr->record(backendPath, displayName, u"image"_s);
@@ -569,7 +732,9 @@ void MainWindow::openCatalogue3D()
     }
 
     RemoteFileBrowserDialog dialog(client.baseUrl(), this);
-    dialog.setExtensionFilter({u".csv"_s}, u"CSV catalogues only"_s);
+    dialog.setExtensionFilter({u".csv"_s, u".vot"_s, u".votable"_s, u".xml"_s,
+                               u".fits"_s, u".fit"_s},
+                              u"Catalogue tables"_s);
     if (dialog.exec() != QDialog::Accepted)
         return;
 
@@ -582,6 +747,12 @@ void MainWindow::openCatalogue3D()
 
 void MainWindow::doOpenCataloguePath(const QString &filepath)
 {
+    this->m_sampCurrentFitsPath.clear();
+    this->m_sampCurrentFitsName.clear();
+    this->m_sampCurrentCataloguePath = filepath;
+    this->m_sampCurrentCatalogueName = QFileInfo(filepath).fileName();
+    this->m_sampCurrentCatalogueFormat = catalogueFormatForPath(filepath);
+    this->updateSampActions();
     auto *win = new vtkWindowCatalogue3D(filepath, settings->getBackendUrl(),
                                          settings->getBackendToken(), this);
     win->setAttribute(Qt::WA_DeleteOnClose);
@@ -716,6 +887,12 @@ void MainWindow::openVbt()
 
 void MainWindow::doOpenVbtPath(const QString &headerPath)
 {
+    this->m_sampCurrentFitsPath.clear();
+    this->m_sampCurrentFitsName.clear();
+    this->m_sampCurrentCataloguePath.clear();
+    this->m_sampCurrentCatalogueName.clear();
+    this->m_sampCurrentCatalogueFormat.clear();
+    this->updateSampActions();
     const QString backendUrl   = this->settings->getBackendUrl();
     const QString backendToken = this->settings->getBackendToken();
 
@@ -778,6 +955,175 @@ void MainWindow::doOpenVbtPath(const QString &headerPath)
 
     watcher->setFuture(
             QtConcurrent::run(&runVbtOpenTask, headerPath, backendUrl, backendToken));
+}
+
+void MainWindow::handleSampFitsDataset(const QString &backendPath, const QString &mtype)
+{
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("SAMP"),
+            QStringLiteral("Received %1 for %2").arg(mtype, backendPath),
+            QString(), QString(), QStringLiteral("receive"));
+
+    this->syncSampSettings();
+
+    QString stagedPath = backendPath;
+    const QUrl url(backendPath);
+    if (url.isValid()
+        && (url.scheme() == QStringLiteral("http") || url.scheme() == QStringLiteral("https"))) {
+        const auto imported = this->m_sampBackendClient->importSampUrl(
+                backendPath, QFileInfo(url.path()).fileName());
+        if (!imported.valid) {
+            const QString message =
+                    QStringLiteral("Failed to import the SAMP FITS URL into the backend: %1")
+                            .arg(imported.error);
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Warning, DiagnosticsCategory::Remote, QStringLiteral("SAMP"),
+                    message, QString(), QString(), QStringLiteral("receive"));
+            QMessageBox::warning(this, u"SAMP receive failed"_s, message);
+            return;
+        }
+        stagedPath = imported.backendPath;
+    } else if (!backendUrlIsLocal(this->settings->getBackendUrl())
+               && QFileInfo(backendPath).isAbsolute()) {
+        const auto uploaded = this->m_sampBackendClient->uploadFileToSampStorage(backendPath);
+        if (!uploaded.valid) {
+            const QString message =
+                    QStringLiteral("Failed to stage the desktop-local FITS file on the backend: %1")
+                            .arg(uploaded.error);
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Warning, DiagnosticsCategory::Remote, QStringLiteral("SAMP"),
+                    message, QString(), QString(), QStringLiteral("receive"));
+            QMessageBox::warning(this, u"SAMP receive failed"_s, message);
+            return;
+        }
+        stagedPath = uploaded.backendPath;
+    }
+
+    this->doOpenDataPath(stagedPath);
+}
+
+void MainWindow::handleSampTableLoad(const QString &url, const QString &localPath)
+{
+    this->syncSampSettings();
+
+    QString stagedPath = localPath.isEmpty() ? url : localPath;
+    const QUrl parsed(url);
+    if (parsed.isValid()
+        && (parsed.scheme() == QStringLiteral("http") || parsed.scheme() == QStringLiteral("https"))) {
+        const auto imported = this->m_sampBackendClient->importSampUrl(
+                url, QFileInfo(parsed.path()).fileName());
+        if (!imported.valid) {
+            const QString message =
+                    QStringLiteral("Failed to import the SAMP table into the backend: %1")
+                            .arg(imported.error);
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Warning, DiagnosticsCategory::Remote, QStringLiteral("SAMP"),
+                    message, QString(), QString(), QStringLiteral("receive"));
+            QMessageBox::warning(this, u"SAMP table import failed"_s, message);
+            return;
+        }
+        stagedPath = imported.backendPath;
+    } else if (!backendUrlIsLocal(this->settings->getBackendUrl())
+               && QFileInfo(stagedPath).isAbsolute()) {
+        const auto uploaded = this->m_sampBackendClient->uploadFileToSampStorage(stagedPath);
+        if (!uploaded.valid) {
+            const QString message =
+                    QStringLiteral("Failed to stage the SAMP table on the backend: %1")
+                            .arg(uploaded.error);
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Warning, DiagnosticsCategory::Remote, QStringLiteral("SAMP"),
+                    message, QString(), QString(), QStringLiteral("receive"));
+            QMessageBox::warning(this, u"SAMP table import failed"_s, message);
+            return;
+        }
+        stagedPath = uploaded.backendPath;
+    }
+
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("SAMP"),
+            QStringLiteral("Received SAMP table %1").arg(url),
+            QString(), QString(), QStringLiteral("receive"));
+    this->doOpenCataloguePath(stagedPath);
+}
+
+void MainWindow::handleSampSkyCoord(double raDeg, double decDeg)
+{
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("SAMP"),
+            QStringLiteral("Received coord.pointAt.sky RA=%1 Dec=%2")
+                    .arg(raDeg, 0, 'f', 6)
+                    .arg(decDeg, 0, 'f', 6),
+            QString(), QString(), QStringLiteral("receive"));
+
+    if (!this->m_lastHiPSWindow) {
+        this->openHiPS();
+    }
+    if (this->m_lastHiPSWindow) {
+        this->m_lastHiPSWindow->setCenter(raDeg, decDeg);
+        this->m_lastHiPSWindow->raise();
+        this->m_lastHiPSWindow->activateWindow();
+    }
+}
+
+void MainWindow::sendCurrentFitsViaSamp()
+{
+    if (this->m_sampCurrentFitsPath.isEmpty()) {
+        return;
+    }
+    this->syncSampSettings();
+    const auto result =
+            this->m_sampBackendClient->sendFitsToSamp(this->m_sampCurrentFitsPath,
+                                                      this->m_sampCurrentFitsName);
+    if (!result.valid) {
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Warning, DiagnosticsCategory::Remote, QStringLiteral("SAMP"),
+                QStringLiteral("Failed to send FITS dataset via SAMP: %1").arg(result.error),
+                QString(), QString(), QStringLiteral("send"));
+        QMessageBox::critical(
+                this, u"SAMP send failed"_s,
+                u"Could not send the current FITS dataset via SAMP.\n\n%1"_s.arg(
+                        result.error.isEmpty() ? u"Backend returned no error detail."_s
+                                               : result.error));
+        return;
+    }
+
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("SAMP"),
+            QStringLiteral("Sent FITS dataset via SAMP (%1).")
+                    .arg(result.sentDirect ? QStringLiteral("direct") : result.jobId),
+            QString(), QString(), QStringLiteral("send"));
+    this->statusBar()->showMessage(u"SAMP send queued"_s, 3000);
+}
+
+void MainWindow::sendCurrentCatalogueViaSamp()
+{
+    if (this->m_sampCurrentCataloguePath.isEmpty()) {
+        return;
+    }
+    this->syncSampSettings();
+    const auto result =
+            this->m_sampBackendClient->sendCatalogueToSamp(this->m_sampCurrentCataloguePath,
+                                                           this->m_sampCurrentCatalogueFormat,
+                                                           this->m_sampCurrentCatalogueName);
+    if (!result.valid) {
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Warning, DiagnosticsCategory::Remote, QStringLiteral("SAMP"),
+                QStringLiteral("Failed to send catalogue via SAMP: %1").arg(result.error),
+                QString(), QString(), QStringLiteral("send"));
+        QMessageBox::critical(
+                this, u"SAMP send failed"_s,
+                u"Could not send the current catalogue via SAMP.\n\n%1"_s.arg(
+                        result.error.isEmpty() ? u"Backend returned no error detail."_s
+                                               : result.error));
+        return;
+    }
+
+    DiagnosticsManager::instance()->publish(
+            DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("SAMP"),
+            QStringLiteral("Sent catalogue via SAMP (%1).")
+                    .arg(result.sentDirect ? QStringLiteral("direct") : result.jobId),
+            QString(), QString(), QStringLiteral("send"));
+    this->statusBar()->showMessage(u"SAMP catalogue send queued"_s, 3000);
 }
 
 
@@ -967,4 +1313,3 @@ void MainWindow::queryVlkb()
         svc->searchRange(lon, lat, dl, db);
     }
 }
-

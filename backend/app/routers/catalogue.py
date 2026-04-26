@@ -30,20 +30,12 @@ async def open_catalogue(
     session: Session = Depends(get_session),
 ) -> CatalogueOpenResponse:
     path = _normalize_path(request.path)
-    if request.format.lower() != "csv":
-        return CatalogueOpenResponse(valid=False, error="Only CSV catalogue format is supported.")
     if not path.exists() or not path.is_file():
         return CatalogueOpenResponse(valid=False, error="Catalogue file not found.")
     try:
-        metadata = _catalogue_csv_metadata(path)
+        dataframe, metadata = _catalogue_metadata(path, request.format)
     except Exception as exc:
         return CatalogueOpenResponse(valid=False, error=str(exc))
-
-    # Load the full CSV once at open time so subsequent queries read from memory.
-    try:
-        dataframe = pd.read_csv(path)
-    except Exception as exc:
-        return CatalogueOpenResponse(valid=False, error=f"Failed to load CSV: {exc}")
 
     dataset_id = f"cat_{uuid.uuid4().hex[:12]}"
     session.datasets[dataset_id] = {"path": str(path), "dataframe": dataframe, **metadata}
