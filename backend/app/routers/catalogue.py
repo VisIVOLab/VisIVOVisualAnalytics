@@ -22,6 +22,7 @@ import asyncio
 router = APIRouter(tags=['catalogue'])
 
 logger = logging.getLogger('visivo.backend')
+_auth = Depends(verify_token)
 
 @router.post("/v1/catalogue/open", response_model=CatalogueOpenResponse, tags=["catalogue"])
 async def open_catalogue(

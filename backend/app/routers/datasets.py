@@ -22,6 +22,7 @@ import asyncio
 router = APIRouter(tags=['datasets'])
 
 logger = logging.getLogger('visivo.backend')
+_auth = Depends(verify_token)
 
 @router.post("/v1/datasets/open", response_model=OpenDatasetResponse, tags=["datasets"])
 async def open_dataset(

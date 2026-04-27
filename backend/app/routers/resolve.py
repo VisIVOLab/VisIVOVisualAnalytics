@@ -22,6 +22,7 @@ import asyncio
 router = APIRouter(tags=['resolve'])
 
 logger = logging.getLogger('visivo.backend')
+_auth = Depends(verify_token)
 
 @router.post("/v1/resolve/target", response_model=TargetResolveResponse, tags=["resolve"])
 async def resolve_target(

@@ -354,3 +354,6 @@ xcuserdata/
 /legacy
 /dist-dmg
 VisIVOVisualAnalytics.dmg
+/backend/app/routers/__pycache__
+/backend/app/routers/__pycache__
+/backend/app/routers/__pycache__

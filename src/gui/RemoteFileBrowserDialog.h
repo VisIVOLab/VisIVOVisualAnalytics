@@ -24,7 +24,8 @@ class RemoteFileBrowserDialog : public QDialog
     Q_OBJECT
 
 public:
-    explicit RemoteFileBrowserDialog(const QString &backendUrl, QWidget *parent = nullptr);
+    explicit RemoteFileBrowserDialog(const QString &backendUrl, const QString &backendToken = QString(),
+                                     QWidget *parent = nullptr);
     ~RemoteFileBrowserDialog() override;
 
     QString selectedFilePath() const;

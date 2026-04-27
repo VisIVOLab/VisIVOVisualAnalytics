@@ -1,15 +1,20 @@
 import asyncio
+import asyncio as _asyncio
 import base64
 import csv
 import functools
 import logging
+import math as _math
 import os
 import struct
 import threading
+import urllib.error as _urllib_error
+import urllib.request as _urllib_request
 import uuid
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from pathlib import Path as _Path
 from typing import Any
 import numpy as np
 import pandas as pd
@@ -36,6 +41,75 @@ try:
 except ImportError:
     pass
 _auth = Depends(verify_token)
+
+# ── Module-level constants used across routers ───────────────────────────────
+# These were lost during the refactor that split main.py into routers; the
+# routers' `from ..dependencies import *` only picks them up if they are
+# defined here AND listed in __all__ below (Python star-imports skip names
+# starting with "_" unless explicitly exported).
+
+_FITS_SUFFIXES = {".fits", ".fit", ".fts"}
+
+_COSMOLOGY_MODELS: dict[str, Any] = {}
+
+_HIPS_CACHE_DIR = _Path(
+    os.environ.get(
+        "VISIVO_HIPS_CACHE",
+        str(_Path.home() / ".cache" / "visivo" / "hips"),
+    )
+)
+_HIPS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_HIPS_CACHE_MAX_BYTES: int = int(
+    os.environ.get("VISIVO_HIPS_CACHE_MAX_BYTES", str(2 * 1024 * 1024 * 1024))
+)
+_HIPS_CACHE_TTL_SECONDS: int = int(
+    os.environ.get("VISIVO_HIPS_CACHE_TTL_SECONDS", str(7 * 24 * 3600))
+)
+_HIPS_CACHE_CLEANUP_INTERVAL_SECONDS: int = int(
+    os.environ.get("VISIVO_HIPS_CACHE_CLEANUP_INTERVAL", "60")
+)
+
+_HEALPY_AVAILABLE = False
+try:
+    import healpy as _hp  # type: ignore
+    _HEALPY_AVAILABLE = True
+except ImportError:
+    logger.warning(
+        "[startup] healpy not installed – /v1/hips/*/query_tiles will be unavailable."
+    )
+
+_RA_CANDIDATES = ["ra", "RA", "Ra", "RAJ2000", "ra_deg", "RAdeg", "ALPHA_J2000"]
+_DEC_CANDIDATES = ["dec", "Dec", "DEC", "DEJ2000", "dec_deg", "DECdeg", "DELTA_J2000"]
+
+# Star-import allow-list: Python's `from x import *` skips underscore-prefixed
+# names unless they appear in __all__. Routers rely on this module's helpers
+# (e.g. _normalize_path, _is_fits) being available, so list them explicitly.
+__all__ = [
+    "logger",
+    "_WORKERS", "_POOL", "_DASK_CLIENT", "_DASK_SCHEDULER", "_VTK_AVAILABLE",
+    "_auth",
+    "_FITS_SUFFIXES",
+    "_COSMOLOGY_MODELS",
+    "_HIPS_CACHE_DIR", "_HIPS_CACHE_MAX_BYTES", "_HIPS_CACHE_TTL_SECONDS",
+    "_HIPS_CACHE_CLEANUP_INTERVAL_SECONDS",
+    "_HEALPY_AVAILABLE",
+    "_RA_CANDIDATES", "_DEC_CANDIDATES",
+    "_default_worker_count", "_pool_initializer", "_error",
+    "_apply_tabular_query",
+    "_normalize_path", "_parse_vbt_header", "_is_fits",
+    "_normalize_catalogue_field", "_catalogue_field_type",
+    "_catalogue_metadata_from_dataframe", "_catalogue_csv_metadata",
+    "_catalogue_load_dataframe", "_catalogue_metadata",
+    "_get_dask_client", "_run", "_run_with_limit",
+    "_moment_product_payload", "_pv_product_payload",
+    "_require_dataset", "_require_cube_path", "_fits_metadata",
+    "_progress_ticker",
+    "_load_cosmology_models",
+    "_hips_fetch_sync", "_hips_fetch", "_parse_hips_properties",
+    "_best_tile_formats", "_tile_url", "_allsky_url",
+    "_tile_cache_path", "_allsky_cache_path", "_get_tiles_for_fov",
+    "_resolve_target_sync", "_load_overlay_csv", "_catalogue_overlay_sync",
+]
 
 def _default_worker_count() -> int:
     """

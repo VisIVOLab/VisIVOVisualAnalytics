@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import logging
 import uuid
+from pathlib import Path
 from fastapi import FastAPI, Depends, Request, Response
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from .auth import verify_token
 from .routers import (
@@ -43,6 +45,11 @@ app = FastAPI(
     redoc_url="/v1/redoc",
     openapi_url="/v1/openapi.json",
 )
+
+_repo_root = Path(__file__).resolve().parents[2]
+_samp_static_dir = _repo_root / "icons"
+if _samp_static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_samp_static_dir)), name="static")
 
 # ── Middleware: X-Request-ID (R8) ─────────────────────────────────────────────
 @app.middleware("http")

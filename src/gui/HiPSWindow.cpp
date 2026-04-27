@@ -420,7 +420,7 @@ void HiPSWindow::onLoadCatalogueClicked()
     }
 
     // Open the remote file browser to pick a CSV
-    RemoteFileBrowserDialog dialog(m_backendUrl, this);
+    RemoteFileBrowserDialog dialog(m_backendUrl, m_backendToken, this);
     dialog.setExtensionFilter({u".csv"_s, u".tsv"_s, u".txt"_s}, u"Catalogues (CSV)"_s);
     if (dialog.exec() != QDialog::Accepted) {
         m_catBtn->setChecked(false);

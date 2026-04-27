@@ -104,6 +104,20 @@ QString catalogueFormatForPath(const QString &path)
     return QStringLiteral("csv");
 }
 
+QString sampDisplayName(const QString &publicId)
+{
+    if (publicId.trimmed().isEmpty()) {
+        return QStringLiteral("VisIVO");
+    }
+    return QStringLiteral("VisIVO [%1]").arg(publicId);
+}
+
+QString sampPeerLabel(const SampClientInfo &info)
+{
+    const QString name = info.name.trimmed().isEmpty() ? QStringLiteral("Unnamed") : info.name.trimmed();
+    return QStringLiteral("%1 [%2]").arg(name, info.id);
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWindow)
@@ -245,13 +259,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                      this, &MainWindow::handleSampSkyCoord);
     QObject::connect(this->m_sampHandler, &SampMessageHandler::sampConnected, this,
                      [this](const QString &publicId, const QString &hubUrl) {
+                         const QString displayName = sampDisplayName(publicId);
                          DiagnosticsManager::instance()->publish(
                                  DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
                                  QStringLiteral("SAMP"),
                                  QStringLiteral("Connected to SAMP Hub as %1 (%2).")
-                                         .arg(publicId, hubUrl),
+                                         .arg(displayName, hubUrl),
                                  QString(), QString(), QStringLiteral("connect"));
-                         this->statusBar()->showMessage(u"SAMP connected"_s, 3000);
+                         this->statusBar()->showMessage(
+                                 QStringLiteral("SAMP connected: %1").arg(displayName), 3000);
                          this->updateSampActions();
                      });
     QObject::connect(this->m_sampHandler, &SampMessageHandler::sampDisconnected, this, [this]() {
@@ -270,6 +286,24 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                                  QString(), QString(), QStringLiteral("error"));
                          this->statusBar()->showMessage(description, 5000);
                          this->updateSampActions();
+                     });
+    QObject::connect(this->m_sampClient, &SampClient::clientListChanged, this,
+                     [this](const QList<SampClientInfo> &clients) {
+                         QString message;
+                         if (clients.isEmpty()) {
+                             message = QStringLiteral("SAMP Hub peers: none.");
+                         } else {
+                             QStringList labels;
+                             labels.reserve(clients.size());
+                             for (const SampClientInfo &info : clients) {
+                                 labels.push_back(sampPeerLabel(info));
+                             }
+                             message = QStringLiteral("SAMP Hub peers: %1").arg(labels.join(QStringLiteral(", ")));
+                         }
+                         DiagnosticsManager::instance()->publish(
+                                 DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
+                                 QStringLiteral("SAMP"), message,
+                                 QString(), QString(), QStringLiteral("peers"));
                      });
 
     // Load theme
@@ -554,7 +588,7 @@ void MainWindow::openData()
         return;
     }
 
-    RemoteFileBrowserDialog dialog(client.baseUrl(), this);
+    RemoteFileBrowserDialog dialog(client.baseUrl(), client.token(), this);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
@@ -731,7 +765,7 @@ void MainWindow::openCatalogue3D()
         return;
     }
 
-    RemoteFileBrowserDialog dialog(client.baseUrl(), this);
+    RemoteFileBrowserDialog dialog(client.baseUrl(), client.token(), this);
     dialog.setExtensionFilter({u".csv"_s, u".vot"_s, u".votable"_s, u".xml"_s,
                                u".fits"_s, u".fit"_s},
                               u"Catalogue tables"_s);
@@ -871,7 +905,7 @@ void MainWindow::openVbt()
         return;
     }
 
-    RemoteFileBrowserDialog dialog(client.baseUrl(), this);
+    RemoteFileBrowserDialog dialog(client.baseUrl(), client.token(), this);
     dialog.setExtensionFilter({u".bin.head"_s}, u"VBT files only"_s);
     if (dialog.exec() != QDialog::Accepted) {
         return;

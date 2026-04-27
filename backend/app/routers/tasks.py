@@ -22,6 +22,7 @@ import asyncio
 router = APIRouter(tags=['tasks'])
 
 logger = logging.getLogger('visivo.backend')
+_auth = Depends(verify_token)
 
 @router.post("/v1/tasks/moment", response_model=TaskCreateResponse, tags=["tasks"])
 async def create_moment_task(

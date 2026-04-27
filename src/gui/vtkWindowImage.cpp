@@ -1521,7 +1521,7 @@ void vtkWindowImage::addLocalFile()
         return;
     }
 
-    RemoteFileBrowserDialog dialog(this->remoteBackendUrl, this);
+    RemoteFileBrowserDialog dialog(this->remoteBackendUrl, this->remoteBackendToken, this);
     dialog.setExtensionFilter({ u".fits"_s, u".fit"_s }, u"FITS files only"_s);
     if (dialog.exec() != QDialog::Accepted) {
         return;

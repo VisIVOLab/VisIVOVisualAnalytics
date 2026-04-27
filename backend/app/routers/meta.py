@@ -22,6 +22,8 @@ import asyncio
 router = APIRouter(tags=['meta'])
 
 logger = logging.getLogger('visivo.backend')
+_auth = Depends(verify_token)
+_configured_workers = int(os.environ.get("VISIVO_WORKERS", "4"))
 
 @router.get("/v1/health", tags=["meta"])
 async def health(_: None = _auth) -> dict:
@@ -29,7 +31,7 @@ async def health(_: None = _auth) -> dict:
     task_stats = TASKS.stats()
     return {
         "ok": True,
-        "workers": _WORKERS,
+        "workers": _configured_workers,
         "active_sessions": REGISTRY.stats()["active_sessions"],
         "product_cache_entries": cache_stats["entries"],
         "product_cache_capacity": cache_stats["max_entries"],

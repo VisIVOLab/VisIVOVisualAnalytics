@@ -22,6 +22,7 @@ import asyncio
 router = APIRouter(tags=['cosmology'])
 
 logger = logging.getLogger('visivo.backend')
+_auth = Depends(verify_token)
 
 @router.post("/v1/cosmology/distance", response_model=CosmologyDistanceResponse, tags=["cosmology"])
 async def cosmology_distance(

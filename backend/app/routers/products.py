@@ -22,6 +22,7 @@ import asyncio
 router = APIRouter(tags=['products'])
 
 logger = logging.getLogger('visivo.backend')
+_auth = Depends(verify_token)
 
 @router.post("/v1/products/moment", response_model=MomentProductResponse, tags=["products"])
 async def moment_product(
@@ -51,7 +52,7 @@ async def isosurface_product(
             valid=False,
             error="VTK Python bindings are not installed on this server. Isosurface is unavailable.",
         )
-    from .compute import worker_isosurface
+    from ..compute import worker_isosurface
     try:
         entry = _require_dataset(session, request.dataset_id)
         if entry["kind"] != "cube":

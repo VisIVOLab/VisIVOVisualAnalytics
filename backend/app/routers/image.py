@@ -22,6 +22,7 @@ import asyncio
 router = APIRouter(tags=['image'])
 
 logger = logging.getLogger('visivo.backend')
+_auth = Depends(verify_token)
 
 @router.post("/v1/image/full", response_model=ImageFullResponse, tags=["image"])
 async def image_full(
@@ -29,7 +30,7 @@ async def image_full(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> ImageFullResponse:
-    from .compute import worker_image_full
+    from ..compute import worker_image_full
     try:
         entry = _require_dataset(session, request.dataset_id)
         if entry["kind"] != "image":
@@ -47,7 +48,7 @@ async def image_preview(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> ImageFullResponse:
-    from .compute import worker_image_preview
+    from ..compute import worker_image_preview
     try:
         entry = _require_dataset(session, request.dataset_id)
         if entry["kind"] != "image":

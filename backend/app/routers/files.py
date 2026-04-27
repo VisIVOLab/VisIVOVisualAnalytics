@@ -22,6 +22,7 @@ import asyncio
 router = APIRouter(tags=['files'])
 
 logger = logging.getLogger('visivo.backend')
+_auth = Depends(verify_token)
 
 @router.get("/v1/files/list", response_model=FilesListResponse, tags=["files"])
 async def list_files(

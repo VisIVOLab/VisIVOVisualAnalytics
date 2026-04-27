@@ -21,4 +21,4 @@ scikit-image>=0.22
 # -- Optional: Distributed Computing (Dask) --
 # To enable multi-node distributed scaling for CPU-bound tasks,
 # uncomment the line below and set VISIVO_DASK_SCHEDULER environment variable.
-# dask[distributed]>=2024.1.0
+#dask[distributed]>=2024.1.0

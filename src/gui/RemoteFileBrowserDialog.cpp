@@ -61,9 +61,11 @@ public:
 };
 }
 
-RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl, QWidget *parent)
+RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl,
+                                                 const QString &backendToken,
+                                                 QWidget *parent)
     : QDialog(parent),
-      client(std::make_unique<BackendClient>(backendUrl)),
+      client(std::make_unique<BackendClient>(backendUrl, backendToken)),
       pathEdit(new QLineEdit(this)),
       entriesTree(new QTreeWidget(this)),
       openButton(new QPushButton(u"Open"_s, this)),

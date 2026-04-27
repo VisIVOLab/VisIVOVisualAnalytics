@@ -462,19 +462,48 @@ bool SampClient::registerWithHub(QString &errorOut)
 
 void SampClient::declareMetadata()
 {
+    const QString displayName = QStringLiteral("VisIVO Visual Analytics");
     QVariantMap meta;
-    meta[QStringLiteral("samp.name")]             = QStringLiteral("VisIVO");
+    meta[QStringLiteral("samp.name")]             = displayName;
     meta[QStringLiteral("samp.description.text")] =
-        QStringLiteral("VisIVO Visual Analytics — astrophysical data viewer");
+        QStringLiteral("VisIVO Visual Analytics");
+    meta[QStringLiteral("name")]                  = displayName;
+    meta[QStringLiteral("description")]           =
+        QStringLiteral("VisIVO Visual Analytics");
     meta[QStringLiteral("samp.icon.url")] =
-        m_backend->baseUrl() + QStringLiteral("/static/visivo_icon.png");
-    meta[QStringLiteral("author.name")]   = QStringLiteral("INAF-OAC VisIVO Team");
+        m_backend->baseUrl() + QStringLiteral("/static/VisIVO_128.png");
+    meta[QStringLiteral("author.name")]   = QStringLiteral("INAF-OACT VisIVO Team");
+    meta[QStringLiteral("home.page")]     = QStringLiteral("https://visivolab.inaf.it/");
 
     QString err;
     xmlRpcCall(QStringLiteral("samp.hub.declareMetadata"),
                { m_privateKey, meta }, err);
-    if (!err.isEmpty())
+    if (!err.isEmpty()) {
         qWarning() << "[SampClient] declareMetadata error:" << err;
+        emit error(QStringLiteral("SAMP metadata declaration failed: %1").arg(err));
+        return;
+    }
+
+    QString verifyErr;
+    const QVariant declared =
+            xmlRpcCall(QStringLiteral("samp.hub.getMetadata"),
+                       { m_privateKey, m_publicId }, verifyErr);
+    if (!verifyErr.isEmpty()) {
+        qWarning() << "[SampClient] getMetadata(self) error:" << verifyErr;
+        emit error(QStringLiteral("SAMP metadata verification failed: %1").arg(verifyErr));
+        return;
+    }
+    const QString echoedName =
+            declared.toMap().value(QStringLiteral("samp.name")).toString().trimmed();
+    if (echoedName != displayName) {
+        const QString message =
+                QStringLiteral("SAMP hub did not persist the expected client name. "
+                               "Expected '%1', got '%2'.")
+                        .arg(displayName, echoedName.isEmpty() ? QStringLiteral("<empty>")
+                                                               : echoedName);
+        qWarning() << "[SampClient]" << message;
+        emit error(message);
+    }
 }
 
 void SampClient::declareSubscriptions()
@@ -503,6 +532,7 @@ void SampClient::reportStatusToBackend()
     // POST /v1/samp/hub-status
     const QList<SampClientInfo> clients = m_connected ? registeredClients()
                                                       : QList<SampClientInfo>{};
+    emit clientListChanged(clients);
     QJsonArray clientsArr;
     for (const SampClientInfo &c : clients) {
         QJsonObject obj;

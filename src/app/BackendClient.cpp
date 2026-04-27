@@ -1517,104 +1517,195 @@ BackendCubeNoiseResult BackendClient::parseNoiseResultObject(const QJsonObject &
 QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
 {
     QNetworkAccessManager *nam = getThreadLocalNam();
-    QNetworkRequest request = buildRequest(url);
+    const QString fallbackToken = BackendClient::readTokenFile().trimmed();
+    const QStringList tokenCandidates = [&]() {
+        QStringList tokens;
+        tokens << this->m_token.trimmed();
+        if (!fallbackToken.isEmpty() && fallbackToken != this->m_token.trimmed()) {
+            tokens << fallbackToken;
+        }
+        return tokens;
+    }();
 
-    QEventLoop loop;
-    QNetworkReply *reply = nam->get(request);
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    QTimer timeoutTimer;
-    timeoutTimer.setSingleShot(true);
-    QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, [&]() {
-        error = QStringLiteral("Backend request timed out after %1 ms: %2")
-                        .arg(this->requestTimeoutFor(url).count())
-                        .arg(url.path());
-        qWarning().noquote() << error;
+    QByteArray finalData;
+    QString lastError;
+    int lastStatus = 0;
+
+    for (int attempt = 0; attempt < tokenCandidates.size(); ++attempt) {
+        QString attemptError;
+        const QString token = tokenCandidates.at(attempt);
+        QNetworkRequest request = buildRequest(url);
+        if (!token.isEmpty()) {
+            request.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), token.toUtf8());
+        }
+
+        QEventLoop loop;
+        QNetworkReply *reply = nam->get(request);
+        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        QTimer timeoutTimer;
+        timeoutTimer.setSingleShot(true);
+        QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, [&]() {
+            attemptError = QStringLiteral("Backend request timed out after %1 ms: %2")
+                                   .arg(this->requestTimeoutFor(url).count())
+                                   .arg(url.path());
+            qWarning().noquote() << attemptError;
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
+                    QStringLiteral("BackendClient"), attemptError, {}, this->m_sessionId);
+            reply->abort();
+            loop.quit();
+        });
+        timeoutTimer.start(static_cast<int>(this->requestTimeoutFor(url).count()));
+        loop.exec();
+        timeoutTimer.stop();
+
+        const QByteArray data = reply->readAll();
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (attemptError.isEmpty() && reply->error() != QNetworkReply::NoError) {
+            attemptError = reply->errorString();
+        } else if (attemptError.isEmpty() && status >= 400) {
+            attemptError = QString::fromUtf8(data);
+        }
+        reply->deleteLater();
+
+        if (status == 401 && attempt + 1 < tokenCandidates.size()) {
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Warning, DiagnosticsCategory::Backend,
+                    QStringLiteral("BackendClient"),
+                    QStringLiteral("Backend GET for %1 returned 401. Retrying with refreshed token.")
+                            .arg(url.path()),
+                    {}, this->m_sessionId);
+            continue;
+        }
+
+        if (attemptError.isEmpty()) {
+            if (token != this->m_token) {
+                const_cast<BackendClient *>(this)->m_token = token;
+            }
+            return data;
+        }
+
+        finalData = data;
+        lastError = attemptError;
+        lastStatus = status;
+        break;
+    }
+
+    error = lastError;
+    if (lastStatus >= 400) {
         DiagnosticsManager::instance()->publish(
                 DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
-                QStringLiteral("BackendClient"), error, {}, this->m_sessionId);
-        reply->abort();
-        loop.quit();
-    });
-    timeoutTimer.start(static_cast<int>(this->requestTimeoutFor(url).count()));
-    loop.exec();
-    timeoutTimer.stop();
-
-    const QByteArray data = reply->readAll();
-    if (error.isEmpty() && reply->error() != QNetworkReply::NoError) {
-        error = reply->errorString();
+                QStringLiteral("BackendClient"),
+                QStringLiteral("Backend GET returned HTTP %1 for %2: %3")
+                        .arg(lastStatus)
+                        .arg(url.path(), error),
+                {}, this->m_sessionId);
+    } else if (!error.isEmpty()) {
         DiagnosticsManager::instance()->publish(
                 DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
                 QStringLiteral("BackendClient"),
                 QStringLiteral("Backend GET failed for %1: %2").arg(url.path(), error), {},
                 this->m_sessionId);
-    } else if (error.isEmpty()) {
-        const int status =
-                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        if (status >= 400) {
-            error = QString::fromUtf8(data);
-            DiagnosticsManager::instance()->publish(
-                    DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
-                    QStringLiteral("BackendClient"),
-                    QStringLiteral("Backend GET returned HTTP %1 for %2: %3")
-                            .arg(status)
-                            .arg(url.path(), error),
-                    {}, this->m_sessionId);
-        }
     }
-    reply->deleteLater();
-    return data;
+    return finalData;
 }
 
 QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body,
                                       QString &error) const
 {
     QNetworkAccessManager *nam = getThreadLocalNam();
-    QNetworkRequest request = buildRequest(url);
+    const QByteArray bodyBytes = body.toJson(QJsonDocument::Compact);
+    const QString fallbackToken = BackendClient::readTokenFile().trimmed();
+    const QStringList tokenCandidates = [&]() {
+        QStringList tokens;
+        tokens << this->m_token.trimmed();
+        if (!fallbackToken.isEmpty() && fallbackToken != this->m_token.trimmed()) {
+            tokens << fallbackToken;
+        }
+        return tokens;
+    }();
 
-    QEventLoop loop;
-    QNetworkReply *reply = nam->post(request, body.toJson(QJsonDocument::Compact));
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    QTimer timeoutTimer;
-    timeoutTimer.setSingleShot(true);
-    QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, [&]() {
-        error = QStringLiteral("Backend request timed out after %1 ms: %2")
-                        .arg(this->requestTimeoutFor(url).count())
-                        .arg(url.path());
-        qWarning().noquote() << error;
+    QByteArray finalData;
+    QString lastError;
+    int lastStatus = 0;
+
+    for (int attempt = 0; attempt < tokenCandidates.size(); ++attempt) {
+        QString attemptError;
+        const QString token = tokenCandidates.at(attempt);
+        QNetworkRequest request = buildRequest(url);
+        if (!token.isEmpty()) {
+            request.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), token.toUtf8());
+        }
+
+        QEventLoop loop;
+        QNetworkReply *reply = nam->post(request, bodyBytes);
+        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        QTimer timeoutTimer;
+        timeoutTimer.setSingleShot(true);
+        QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, [&]() {
+            attemptError = QStringLiteral("Backend request timed out after %1 ms: %2")
+                                   .arg(this->requestTimeoutFor(url).count())
+                                   .arg(url.path());
+            qWarning().noquote() << attemptError;
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
+                    QStringLiteral("BackendClient"), attemptError, {}, this->m_sessionId);
+            reply->abort();
+            loop.quit();
+        });
+        timeoutTimer.start(static_cast<int>(this->requestTimeoutFor(url).count()));
+        loop.exec();
+        timeoutTimer.stop();
+
+        const QByteArray data = reply->readAll();
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (attemptError.isEmpty() && reply->error() != QNetworkReply::NoError) {
+            attemptError = reply->errorString();
+        } else if (attemptError.isEmpty() && status >= 400) {
+            attemptError = QString::fromUtf8(data);
+        }
+        reply->deleteLater();
+
+        if (status == 401 && attempt + 1 < tokenCandidates.size()) {
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Warning, DiagnosticsCategory::Backend,
+                    QStringLiteral("BackendClient"),
+                    QStringLiteral("Backend POST for %1 returned 401. Retrying with refreshed token.")
+                            .arg(url.path()),
+                    {}, this->m_sessionId);
+            continue;
+        }
+
+        if (attemptError.isEmpty()) {
+            if (token != this->m_token) {
+                const_cast<BackendClient *>(this)->m_token = token;
+            }
+            return data;
+        }
+
+        finalData = data;
+        lastError = attemptError;
+        lastStatus = status;
+        break;
+    }
+
+    error = lastError;
+    if (lastStatus >= 400) {
         DiagnosticsManager::instance()->publish(
                 DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
-                QStringLiteral("BackendClient"), error, {}, this->m_sessionId);
-        reply->abort();
-        loop.quit();
-    });
-    timeoutTimer.start(static_cast<int>(this->requestTimeoutFor(url).count()));
-    loop.exec();
-    timeoutTimer.stop();
-
-    const QByteArray data = reply->readAll();
-    if (error.isEmpty() && reply->error() != QNetworkReply::NoError) {
-        error = reply->errorString();
+                QStringLiteral("BackendClient"),
+                QStringLiteral("Backend POST returned HTTP %1 for %2: %3")
+                        .arg(lastStatus)
+                        .arg(url.path(), error),
+                {}, this->m_sessionId);
+    } else if (!error.isEmpty()) {
         DiagnosticsManager::instance()->publish(
                 DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
                 QStringLiteral("BackendClient"),
                 QStringLiteral("Backend POST failed for %1: %2").arg(url.path(), error), {},
                 this->m_sessionId);
-    } else if (error.isEmpty()) {
-        const int status =
-                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        if (status >= 400) {
-            error = QString::fromUtf8(data);
-            DiagnosticsManager::instance()->publish(
-                    DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
-                    QStringLiteral("BackendClient"),
-                    QStringLiteral("Backend POST returned HTTP %1 for %2: %3")
-                            .arg(status)
-                            .arg(url.path(), error),
-                    {}, this->m_sessionId);
-        }
     }
-    reply->deleteLater();
-    return data;
+    return finalData;
 }
 
 QByteArray BackendClient::decodePayload(const QJsonObject &object, const QString &base64Field,

@@ -22,6 +22,7 @@ import asyncio
 router = APIRouter(tags=['cube'])
 
 logger = logging.getLogger('visivo.backend')
+_auth = Depends(verify_token)
 
 @router.post("/v1/cube/noise", response_model=CubeNoiseResponse, tags=["cube"])
 async def cube_noise(
@@ -30,7 +31,7 @@ async def cube_noise(
     session: Session = Depends(get_session),
 ) -> CubeNoiseResponse:
     """Estimate per-channel noise (MAD and Gaussian sigma) in an emission-free region."""
-    from .compute import worker_noise_estimate
+    from ..compute import worker_noise_estimate
     try:
         path = _require_cube_path(session, request.dataset_id)
         result = await _run_with_limit(
@@ -54,7 +55,7 @@ async def cube_preview(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> CubePreviewResponse:
-    from .compute import worker_cube_preview
+    from ..compute import worker_cube_preview
     try:
         path = _require_cube_path(session, request.dataset_id)
         result = await _run_with_limit(session, worker_cube_preview, path, request.downsample)
@@ -70,7 +71,7 @@ async def cube_slice(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> CubeSliceResponse:
-    from .compute import worker_cube_slice
+    from ..compute import worker_cube_slice
     try:
         path = _require_cube_path(session, request.dataset_id)
         if request.axis.lower() != "z":
@@ -88,7 +89,7 @@ async def cube_subvolume(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> CubeSubvolumeResponse:
-    from .compute import worker_cube_subvolume
+    from ..compute import worker_cube_subvolume
     try:
         path = _require_cube_path(session, request.dataset_id)
         result = await _run_with_limit(

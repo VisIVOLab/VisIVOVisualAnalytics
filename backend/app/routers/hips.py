@@ -22,6 +22,7 @@ import asyncio
 router = APIRouter(tags=['hips'])
 
 logger = logging.getLogger('visivo.backend')
+_auth = Depends(verify_token)
 
 @router.post("/v1/hips/open", response_model=HiPSSurveyResponse, tags=["hips"])
 async def hips_open(

@@ -22,6 +22,7 @@ import asyncio
 router = APIRouter(tags=['vbt'])
 
 logger = logging.getLogger('visivo.backend')
+_auth = Depends(verify_token)
 
 @router.post("/v1/vbt/open", response_model=VbtOpenResponse, tags=["vbt"])
 async def vbt_open(
