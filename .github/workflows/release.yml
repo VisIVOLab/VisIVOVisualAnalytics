@@ -178,7 +178,9 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          "$Qt6_DIR/bin/macdeployqt" dist/VisIVOVisualAnalytics.app \
+          # macdeployqt is on PATH (install-qt-action adds Qt's bin/).
+          # $Qt6_DIR is not exported by the action, so use the binary directly.
+          macdeployqt dist/VisIVOVisualAnalytics.app \
             -libpath="$PWD/vtk-install/lib" \
             -verbose=1
 
@@ -258,6 +260,10 @@ jobs:
             https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
           chmod +x linuxdeploy linuxdeploy-plugin-qt
 
+          # linuxdeploy-plugin-qt picks qmake from $QMAKE or PATH; install-qt-action
+          # puts qmake on PATH, so set QMAKE explicitly for robustness.
+          export QMAKE="$(command -v qmake)"
+
           # GH runners don't have FUSE — extract and run instead
           ./linuxdeploy --appimage-extract-and-run --appdir AppDir \
             --plugin qt \
@@ -266,7 +272,6 @@ jobs:
             -d AppDir/usr/share/applications/visivo.desktop \
             -i AppDir/usr/share/icons/hicolor/256x256/apps/visivo.png \
             --library-path "$PWD/vtk-install/lib:$PWD/cfitsio-install/lib:$PWD/cfitsio-install/lib64"
-        # linuxdeploy resolves Qt automatically via $QMAKE / $Qt6_DIR set by install-qt-action.
 
       - name: Rename AppImage
         if: runner.os == 'Linux'
