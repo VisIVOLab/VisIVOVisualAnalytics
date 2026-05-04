@@ -26,6 +26,7 @@ on:
 env:
   QT_VERSION: '6.10.1'
   VTK_VERSION: '9.5.0'
+  CFITSIO_VERSION: '4.6.3'  # Linux: built from source. macOS: from Homebrew.
 
 jobs:
   build:
@@ -38,17 +39,14 @@ jobs:
             name: linux-x86_64
             qt_host: linux
             qt_arch: linux_gcc_64
-            vcpkg_triplet: x64-linux
           - os: macos-13
             name: macos-x86_64
             qt_host: mac
             qt_arch: clang_64
-            vcpkg_triplet: x64-osx
           - os: macos-14
             name: macos-arm64
             qt_host: mac
             qt_arch: clang_64
-            vcpkg_triplet: arm64-osx
 
     runs-on: ${{ matrix.os }}
 
@@ -73,7 +71,10 @@ jobs:
 
       - name: Install system deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install ninja
+        # Homebrew's cfitsio ships the CMake config (CFITSIO::cfitsio target)
+        # the project's CMakeLists expects. vcpkg's port exports as
+        # `unofficial-cfitsio` with a different target name, so don't use it.
+        run: brew install ninja cfitsio
 
       # ── Qt 6.10 (cached by the action) ──────────────────────────────────
       - name: Install Qt
@@ -86,15 +87,36 @@ jobs:
           modules: 'qtwebengine qtwebchannel qtpositioning qtnetworkauth'
           cache: true
 
-      # ── vcpkg (for cfitsio CMake config) ────────────────────────────────
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
+      # ── cfitsio on Linux: built from source (cached). The upstream CMake
+      #    build exports the CFITSIO::cfitsio target the project expects.
+      #    On macOS we use Homebrew's cfitsio (installed above) which ships
+      #    the same config — no separate step needed.
+      - name: Cache cfitsio install (Linux)
+        if: runner.os == 'Linux'
+        id: cache-cfitsio
+        uses: actions/cache@v4
         with:
-          vcpkgGitCommitId: '120deac3062162151622ca4860575a33844ba10b'
+          path: cfitsio-install
+          key: cfitsio-${{ env.CFITSIO_VERSION }}-${{ matrix.os }}-v1
 
-      - name: Install cfitsio via vcpkg
+      - name: Build cfitsio from source (Linux)
+        if: runner.os == 'Linux' && steps.cache-cfitsio.outputs.cache-hit != 'true'
         shell: bash
-        run: '"$VCPKG_ROOT/vcpkg" install cfitsio --triplet ${{ matrix.vcpkg_triplet }}'
+        run: |
+          curl -fsSL -o cfitsio.tar.gz \
+            "https://heasarc.gsfc.nasa.gov/FTP/software/fitsio/c/cfitsio-${CFITSIO_VERSION}.tar.gz"
+          mkdir cfitsio-src
+          tar -xzf cfitsio.tar.gz --strip-components=1 -C cfitsio-src
+          cmake -S cfitsio-src -B cfitsio-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON \
+            -DUSE_BZIP2=OFF \
+            -DUSE_CURL=OFF \
+            -DTESTS=OFF \
+            -DUTILS=OFF \
+            -DCMAKE_INSTALL_PREFIX="$PWD/cfitsio-install"
+          cmake --build cfitsio-build --parallel
+          cmake --install cfitsio-build
 
       # ── VTK 9.5 (built from source, cached) ─────────────────────────────
       - name: Cache VTK install tree
@@ -126,11 +148,17 @@ jobs:
       - name: Configure
         shell: bash
         run: |
+          # CMAKE_PREFIX_PATH order: VTK first, then platform-specific cfitsio.
+          # macOS: Homebrew's cfitsio (auto-detected via brew --prefix).
+          # Linux: locally-built cfitsio install tree.
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            CFITSIO_PREFIX="$(brew --prefix cfitsio)"
+          else
+            CFITSIO_PREFIX="$PWD/cfitsio-install"
+          fi
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
-            -DVCPKG_TARGET_TRIPLET=${{ matrix.vcpkg_triplet }} \
-            -DCMAKE_PREFIX_PATH="$PWD/vtk-install" \
+            -DCMAKE_PREFIX_PATH="$PWD/vtk-install;$CFITSIO_PREFIX" \
             -DCMAKE_INSTALL_PREFIX="$PWD/dist"
 
       - name: Build
@@ -214,7 +242,7 @@ jobs:
             -e build/VisIVOVisualAnalytics \
             -d AppDir/usr/share/applications/visivo.desktop \
             -i AppDir/usr/share/icons/hicolor/256x256/apps/visivo.png \
-            --library-path "$PWD/vtk-install/lib:$VCPKG_ROOT/installed/${{ matrix.vcpkg_triplet }}/lib"
+            --library-path "$PWD/vtk-install/lib:$PWD/cfitsio-install/lib:$PWD/cfitsio-install/lib64"
         # linuxdeploy resolves Qt automatically via $QMAKE / $Qt6_DIR set by install-qt-action.
 
       - name: Rename AppImage
