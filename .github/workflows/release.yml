@@ -1,0 +1,246 @@
+# Tagged-release builds for VisIVO Visual Analytics.
+#
+# Triggers
+#   - push of a tag matching v* (e.g. v0.0.3) → builds + attaches to the GitHub release
+#   - workflow_dispatch                       → manual run for testing the pipeline
+#
+# Outputs (per matrix entry)
+#   - macOS:  VisIVOVisualAnalytics-macos-{x86_64,arm64}.dmg
+#   - Linux:  VisIVOVisualAnalytics-linux-x86_64.AppImage
+#
+# The Python backend is bundled next to the executable:
+#   - macOS:  <App>.app/Contents/Resources/backend/
+#   - Linux:  <AppDir>/usr/bin/backend/  (inside the AppImage)
+#
+# Builds are unsigned — internal-tester distribution only.
+# First run is slow (~45–60 min for VTK); subsequent runs hit the cache.
+
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  QT_VERSION: '6.10.1'
+  VTK_VERSION: '9.5.0'
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            name: linux-x86_64
+            qt_host: linux
+            qt_arch: linux_gcc_64
+            vcpkg_triplet: x64-linux
+          - os: macos-13
+            name: macos-x86_64
+            qt_host: mac
+            qt_arch: clang_64
+            vcpkg_triplet: x64-osx
+          - os: macos-14
+            name: macos-arm64
+            qt_host: mac
+            qt_arch: clang_64
+            vcpkg_triplet: arm64-osx
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── System dependencies ──────────────────────────────────────────────
+      - name: Install system deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config \
+            libgl1-mesa-dev libglu1-mesa-dev \
+            libx11-dev libxkbcommon-dev libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-sync1 \
+            libxcb-util1 libxcb-xfixes0 libxcb-xkb1 libxcb1-dev \
+            libfontconfig1 libdbus-1-3 \
+            libnss3 libxdamage1 libxrandr2 libasound2 libxcomposite1 \
+            file
+
+      - name: Install system deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      # ── Qt 6.10 (cached by the action) ──────────────────────────────────
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: ${{ matrix.qt_host }}
+          target: desktop
+          arch: ${{ matrix.qt_arch }}
+          modules: 'qtwebengine qtwebchannel qtpositioning qtnetworkauth'
+          cache: true
+
+      # ── vcpkg (for cfitsio CMake config) ────────────────────────────────
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: '120deac3062162151622ca4860575a33844ba10b'
+
+      - name: Install cfitsio via vcpkg
+        shell: bash
+        run: '"$VCPKG_ROOT/vcpkg" install cfitsio --triplet ${{ matrix.vcpkg_triplet }}'
+
+      # ── VTK 9.5 (built from source, cached) ─────────────────────────────
+      - name: Cache VTK install tree
+        id: cache-vtk
+        uses: actions/cache@v4
+        with:
+          path: vtk-install
+          key: vtk-${{ env.VTK_VERSION }}-qt${{ env.QT_VERSION }}-${{ matrix.os }}-${{ matrix.qt_arch }}-v1
+
+      - name: Build VTK from source
+        if: steps.cache-vtk.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          git clone --depth 1 --branch v${{ env.VTK_VERSION }} \
+            https://gitlab.kitware.com/vtk/vtk.git vtk-src
+          cmake -S vtk-src -B vtk-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON \
+            -DBUILD_TESTING=OFF \
+            -DVTK_BUILD_EXAMPLES=OFF \
+            -DVTK_GROUP_ENABLE_Qt=YES \
+            -DVTK_QT_VERSION=6 \
+            -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON \
+            -DCMAKE_INSTALL_PREFIX="$PWD/vtk-install"
+          cmake --build vtk-build --parallel
+          cmake --install vtk-build
+
+      # ── Configure & build the desktop client ─────────────────────────────
+      - name: Configure
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.vcpkg_triplet }} \
+            -DCMAKE_PREFIX_PATH="$PWD/vtk-install" \
+            -DCMAKE_INSTALL_PREFIX="$PWD/dist"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      # ── macOS install + bundle ───────────────────────────────────────────
+      - name: Install (deploys Qt frameworks via macdeployqt)
+        if: runner.os == 'macOS'
+        run: cmake --install build
+
+      - name: Bundle Python backend (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          BACKEND_DEST="dist/VisIVOVisualAnalytics.app/Contents/Resources/backend"
+          mkdir -p "$BACKEND_DEST"
+          cp -R backend/app "$BACKEND_DEST/"
+          cp backend/__init__.py backend/requirements.txt "$BACKEND_DEST/"
+          [ -f backend/pytest.ini ] && cp backend/pytest.ini "$BACKEND_DEST/" || true
+          find "$BACKEND_DEST" -name __pycache__ -type d -prune -exec rm -rf {} +
+
+      - name: Build DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        working-directory: dist
+        run: |
+          hdiutil create \
+            -volname "VisIVO Visual Analytics" \
+            -srcfolder VisIVOVisualAnalytics.app \
+            -ov -format UDZO \
+            "../VisIVOVisualAnalytics-${{ matrix.name }}.dmg"
+
+      # ── Linux install + AppImage ─────────────────────────────────────────
+      - name: Stage AppDir + bundle backend (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          APPDIR="$PWD/AppDir"
+          rm -rf "$APPDIR"
+          cmake --install build --prefix "$APPDIR/usr"
+
+          # Backend next to the executable
+          BACKEND_DEST="$APPDIR/usr/bin/backend"
+          mkdir -p "$BACKEND_DEST"
+          cp -R backend/app "$BACKEND_DEST/"
+          cp backend/__init__.py backend/requirements.txt "$BACKEND_DEST/"
+          [ -f backend/pytest.ini ] && cp backend/pytest.ini "$BACKEND_DEST/" || true
+          find "$BACKEND_DEST" -name __pycache__ -type d -prune -exec rm -rf {} +
+
+          # Desktop entry + icon (linuxdeploy needs both)
+          mkdir -p "$APPDIR/usr/share/applications"
+          mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+          cp icons/VisIVO_256.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/visivo.png"
+          cat > "$APPDIR/usr/share/applications/visivo.desktop" <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=VisIVO Visual Analytics
+          Exec=VisIVOVisualAnalytics
+          Icon=visivo
+          Categories=Science;Education;
+          Terminal=false
+          DESKTOP
+
+      - name: Build AppImage with linuxdeploy
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          QML_SOURCES_PATHS: ${{ github.workspace }}/src
+        run: |
+          # linuxdeploy + Qt plugin (continuous releases — both single AppImages)
+          curl -fsSL -o linuxdeploy \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -fsSL -o linuxdeploy-plugin-qt \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
+
+          # GH runners don't have FUSE — extract and run instead
+          ./linuxdeploy --appimage-extract-and-run --appdir AppDir \
+            --plugin qt \
+            --output appimage \
+            -e build/VisIVOVisualAnalytics \
+            -d AppDir/usr/share/applications/visivo.desktop \
+            -i AppDir/usr/share/icons/hicolor/256x256/apps/visivo.png \
+            --library-path "$PWD/vtk-install/lib:$VCPKG_ROOT/installed/${{ matrix.vcpkg_triplet }}/lib"
+        # linuxdeploy resolves Qt automatically via $QMAKE / $Qt6_DIR set by install-qt-action.
+
+      - name: Rename AppImage
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -x
+          mv VisIVO*Visual*Analytics*.AppImage \
+             "VisIVOVisualAnalytics-${{ matrix.name }}.AppImage"
+
+      # ── Upload + attach to release ───────────────────────────────────────
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VisIVOVisualAnalytics-${{ matrix.name }}
+          path: |
+            VisIVOVisualAnalytics-*.dmg
+            VisIVOVisualAnalytics-*.AppImage
+          if-no-files-found: error
+
+      - name: Attach to GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            VisIVOVisualAnalytics-*.dmg
+            VisIVOVisualAnalytics-*.AppImage
+          generate_release_notes: true
+          fail_on_unmatched_files: false
