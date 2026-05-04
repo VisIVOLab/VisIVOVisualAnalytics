@@ -169,20 +169,53 @@ jobs:
         if: runner.os == 'macOS'
         run: cmake --install build
 
-      # qt_generate_deploy_app_script bundles Qt + libs reachable via standard
-      # search paths, but VTK dylibs are referenced as @rpath/libvtk*.dylib and
-      # the deploy script doesn't know to look in vtk-install/lib. Re-run
-      # macdeployqt explicitly with -libpath so it resolves and bundles them
-      # (with proper install_name rewrites).
+      # qt_generate_deploy_app_script bundles Qt + libs whose dependencies
+      # macdeployqt can resolve. VTK dylibs are referenced as @rpath/libvtk*.dylib
+      # and macdeployqt -libpath doesn't reliably follow them, so we copy them
+      # in manually and fix install_names ourselves. Then re-run macdeployqt to
+      # pick up Qt deps of the VTK libs and re-sign.
       - name: Bundle VTK dylibs into the app (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          # macdeployqt is on PATH (install-qt-action adds Qt's bin/).
-          # $Qt6_DIR is not exported by the action, so use the binary directly.
-          macdeployqt dist/VisIVOVisualAnalytics.app \
-            -libpath="$PWD/vtk-install/lib" \
-            -verbose=1
+          set -euo pipefail
+          APP="dist/VisIVOVisualAnalytics.app"
+          FW="$APP/Contents/Frameworks"
+          mkdir -p "$FW"
+
+          # Copy real files + symlinks (cp -a preserves symlinks; cp -P avoids
+          # following them). Match libvtk*.dylib and the per-version variants.
+          shopt -s nullglob
+          cp -aP vtk-install/lib/libvtk*.dylib* "$FW/"
+
+          # Normalize each real (non-symlink) VTK dylib:
+          #   - id  -> @rpath/<basename>
+          #   - any non-@rpath libvtk*.dylib reference -> @rpath/<basename>
+          for lib in "$FW"/libvtk*.dylib; do
+            [ -L "$lib" ] && continue
+            base="$(basename "$lib")"
+            chmod u+w "$lib"
+            install_name_tool -id "@rpath/$base" "$lib"
+            # Rewrite VTK→VTK refs that still use absolute or build-time paths.
+            otool -L "$lib" | awk 'NR>1 {print $1}' | \
+              while read -r dep; do
+                case "$dep" in
+                  *libvtk*.dylib)
+                    case "$dep" in
+                      @rpath/*) ;;
+                      *)
+                        install_name_tool -change "$dep" \
+                          "@rpath/$(basename "$dep")" "$lib"
+                        ;;
+                    esac
+                    ;;
+                esac
+              done
+          done
+
+          # Re-run macdeployqt so it picks up VTK→Qt links, re-rewrites paths,
+          # and re-signs everything in the bundle as a coherent unit.
+          macdeployqt "$APP" -libpath="$PWD/vtk-install/lib" -verbose=1
 
       - name: Bundle Python backend (macOS)
         if: runner.os == 'macOS'
