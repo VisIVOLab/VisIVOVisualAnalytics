@@ -169,6 +169,19 @@ jobs:
         if: runner.os == 'macOS'
         run: cmake --install build
 
+      # qt_generate_deploy_app_script bundles Qt + libs reachable via standard
+      # search paths, but VTK dylibs are referenced as @rpath/libvtk*.dylib and
+      # the deploy script doesn't know to look in vtk-install/lib. Re-run
+      # macdeployqt explicitly with -libpath so it resolves and bundles them
+      # (with proper install_name rewrites).
+      - name: Bundle VTK dylibs into the app (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          "$Qt6_DIR/bin/macdeployqt" dist/VisIVOVisualAnalytics.app \
+            -libpath="$PWD/vtk-install/lib" \
+            -verbose=1
+
       - name: Bundle Python backend (macOS)
         if: runner.os == 'macOS'
         shell: bash
@@ -179,6 +192,16 @@ jobs:
           cp backend/__init__.py backend/requirements.txt "$BACKEND_DEST/"
           [ -f backend/pytest.ini ] && cp backend/pytest.ini "$BACKEND_DEST/" || true
           find "$BACKEND_DEST" -name __pycache__ -type d -prune -exec rm -rf {} +
+
+      # Re-sign the whole bundle ad-hoc AFTER all modifications (Qt deploy +
+      # backend copy). On Apple Silicon any tampering with a signed bundle
+      # produces SIGKILL "Code Signature Invalid" at dyld load time.
+      - name: Re-sign bundle ad-hoc (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          codesign --force --deep --sign - dist/VisIVOVisualAnalytics.app
+          codesign --verify --deep --strict --verbose=2 dist/VisIVOVisualAnalytics.app
 
       - name: Build DMG
         if: runner.os == 'macOS'
