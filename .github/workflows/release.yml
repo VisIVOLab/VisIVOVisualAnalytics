@@ -328,14 +328,17 @@ jobs:
           # puts qmake on PATH, so set QMAKE explicitly for robustness.
           export QMAKE="$(command -v qmake)"
 
+          # linuxdeploy uses $LD_LIBRARY_PATH to resolve dylib dependencies
+          # (it has no --library-path flag). Point it at VTK and cfitsio.
+          export LD_LIBRARY_PATH="$PWD/vtk-install/lib:$PWD/cfitsio-install/lib:$PWD/cfitsio-install/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
           # GH runners don't have FUSE — extract and run instead
           ./linuxdeploy --appimage-extract-and-run --appdir AppDir \
             --plugin qt \
             --output appimage \
             -e build/VisIVOVisualAnalytics \
             -d AppDir/usr/share/applications/visivo.desktop \
-            -i AppDir/usr/share/icons/hicolor/256x256/apps/visivo.png \
-            --library-path "$PWD/vtk-install/lib:$PWD/cfitsio-install/lib:$PWD/cfitsio-install/lib64"
+            -i AppDir/usr/share/icons/hicolor/256x256/apps/visivo.png
 
       # Package the AppImage together with the backend setup script and
       # requirements.txt in a tar.gz. Tester extracts, runs setup_backend.sh
