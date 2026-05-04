@@ -385,12 +385,31 @@ jobs:
             VisIVOVisualAnalytics-*.tar.gz
           if-no-files-found: error
 
+  # Single release-publishing job that runs once after the whole matrix is
+  # complete. Doing the upload inside each matrix job races on the same release
+  # via the Releases API and produces "HttpError: Server Error" intermittently.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifact tree
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.dmg' -o -name '*.tar.gz' \) \
+            -exec cp -v {} release/ \;
+          ls -la release/
+
       - name: Attach to GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            VisIVOVisualAnalytics-*.dmg
-            VisIVOVisualAnalytics-*.tar.gz
+          files: release/*
           generate_release_notes: true
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
