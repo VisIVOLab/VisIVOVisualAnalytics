@@ -125,6 +125,38 @@ PythonResolution resolvePythonExe(const QString &settingsPython,
         }
     }
 
+    // ── 3b. User-data venv (created by the setup_backend script) ─────────────
+    //  Released bundles (DMG / AppImage) ship a setup script that creates a
+    //  venv in a writable user-data location, so the signed app bundle / read-
+    //  only AppImage stays untouched. Keep these paths in sync with the
+    //  setup_backend.command (macOS) and setup_backend.sh (Linux) scripts.
+    {
+#if defined(Q_OS_MACOS)
+        const QString userVenvDir =
+                QDir::homePath() + u"/Library/Application Support/VisIVO/.venv"_s;
+        const QString userVenvPython =
+                QDir::cleanPath(userVenvDir + u"/bin/python"_s);
+#elif defined(Q_OS_WIN)
+        const QString appData = qEnvironmentVariable("APPDATA");
+        const QString userVenvDir = appData.isEmpty()
+                ? QString()
+                : QDir::cleanPath(appData + u"/VisIVO/.venv"_s);
+        const QString userVenvPython = userVenvDir.isEmpty()
+                ? QString()
+                : QDir::cleanPath(userVenvDir + u"/Scripts/python.exe"_s);
+#else
+        const QString xdgDataHome = qEnvironmentVariable(
+                "XDG_DATA_HOME", QDir::homePath() + u"/.local/share"_s);
+        const QString userVenvDir = xdgDataHome + u"/VisIVO/.venv"_s;
+        const QString userVenvPython =
+                QDir::cleanPath(userVenvDir + u"/bin/python"_s);
+#endif
+        if (!userVenvPython.isEmpty() && isValidPythonExe(userVenvPython)) {
+            logOut << u"[launcher] Python (user-data venv): %1"_s.arg(userVenvPython);
+            return { userVenvPython, u"user-data venv (setup_backend script)"_s };
+        }
+    }
+
     // ── 4. Bundled Python alongside the executable ───────────────────────────
     const QString appDir = QCoreApplication::applicationDirPath();
     const QStringList bundledCandidates = {

@@ -6,11 +6,19 @@
 #
 # Outputs (per matrix entry)
 #   - macOS:  VisIVOVisualAnalytics-macos-{x86_64,arm64}.dmg
-#   - Linux:  VisIVOVisualAnalytics-linux-x86_64.AppImage
+#                contains: VisIVOVisualAnalytics.app + Setup Backend.command
+#   - Linux:  VisIVOVisualAnalytics-linux-x86_64.tar.gz
+#                contains: <name>.AppImage + setup_backend.sh + requirements.txt
 #
-# The Python backend is bundled next to the executable:
+# The Python backend code is bundled next to the executable:
 #   - macOS:  <App>.app/Contents/Resources/backend/
 #   - Linux:  <AppDir>/usr/bin/backend/  (inside the AppImage)
+#
+# The Python venv is NOT bundled — testers run the setup script once, which
+# creates a venv in a writable user-data location:
+#   - macOS:  ~/Library/Application Support/VisIVO/.venv
+#   - Linux:  ${XDG_DATA_HOME:-~/.local/share}/VisIVO/.venv
+# The BackendLauncher in the desktop client picks it up automatically.
 #
 # Builds are unsigned — internal-tester distribution only.
 # First run is slow (~45–60 min for VTK); subsequent runs hit the cache.
@@ -238,16 +246,39 @@ jobs:
           codesign --force --deep --sign - dist/VisIVOVisualAnalytics.app
           codesign --verify --deep --strict --verbose=2 dist/VisIVOVisualAnalytics.app
 
+      # Stage the .app together with the backend setup script in a folder,
+      # then turn that folder into the DMG. Tester sees both side by side
+      # when they mount the disk image.
       - name: Build DMG
         if: runner.os == 'macOS'
         shell: bash
-        working-directory: dist
         run: |
+          STAGE=dmg-staging
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          cp -R dist/VisIVOVisualAnalytics.app "$STAGE/"
+          cp scripts/setup_backend.command "$STAGE/Setup Backend.command"
+          chmod +x "$STAGE/Setup Backend.command"
+          cat > "$STAGE/README.txt" <<'README'
+          VisIVO Visual Analytics — first-time setup
+          ==========================================
+
+          1. Drag VisIVOVisualAnalytics.app into /Applications.
+          2. Double-click "Setup Backend.command" to install the Python
+             backend (requires Python 3.11+ on the system).
+             This creates a venv at:
+                 ~/Library/Application Support/VisIVO/.venv
+          3. Launch VisIVOVisualAnalytics from /Applications.
+
+          If macOS refuses to open the app or the script:
+             right-click → Open, then confirm. (The bundle is ad-hoc
+             signed, not notarized — internal-tester distribution.)
+          README
           hdiutil create \
             -volname "VisIVO Visual Analytics" \
-            -srcfolder VisIVOVisualAnalytics.app \
+            -srcfolder "$STAGE" \
             -ov -format UDZO \
-            "../VisIVOVisualAnalytics-${{ matrix.name }}.dmg"
+            "VisIVOVisualAnalytics-${{ matrix.name }}.dmg"
 
       # ── Linux install + AppImage ─────────────────────────────────────────
       - name: Stage AppDir + bundle backend (Linux)
@@ -306,13 +337,37 @@ jobs:
             -i AppDir/usr/share/icons/hicolor/256x256/apps/visivo.png \
             --library-path "$PWD/vtk-install/lib:$PWD/cfitsio-install/lib:$PWD/cfitsio-install/lib64"
 
-      - name: Rename AppImage
+      # Package the AppImage together with the backend setup script and
+      # requirements.txt in a tar.gz. Tester extracts, runs setup_backend.sh
+      # once, then runs the AppImage normally.
+      - name: Package Linux release
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -x
-          mv VisIVO*Visual*Analytics*.AppImage \
-             "VisIVOVisualAnalytics-${{ matrix.name }}.AppImage"
+          PKG="VisIVOVisualAnalytics-${{ matrix.name }}"
+          rm -rf "$PKG"
+          mkdir "$PKG"
+          mv VisIVO*Visual*Analytics*.AppImage "$PKG/$PKG.AppImage"
+          chmod +x "$PKG/$PKG.AppImage"
+          cp scripts/setup_backend.sh "$PKG/setup_backend.sh"
+          chmod +x "$PKG/setup_backend.sh"
+          cp backend/requirements.txt "$PKG/requirements.txt"
+          cat > "$PKG/README.txt" <<README
+          VisIVO Visual Analytics — first-time setup
+          ==========================================
+
+          1. ./setup_backend.sh
+             Installs the Python backend in:
+                \$XDG_DATA_HOME/VisIVO/.venv  (default: ~/.local/share/VisIVO/.venv)
+             Requires Python 3.11+ with the venv module
+             (Debian/Ubuntu: sudo apt install python3 python3-venv python3-pip).
+
+          2. ./$PKG.AppImage
+             Launches the desktop client; it will pick up the venv created
+             in step 1 automatically.
+          README
+          tar -czf "$PKG.tar.gz" "$PKG"
 
       # ── Upload + attach to release ───────────────────────────────────────
       - name: Upload artifact
@@ -321,7 +376,7 @@ jobs:
           name: VisIVOVisualAnalytics-${{ matrix.name }}
           path: |
             VisIVOVisualAnalytics-*.dmg
-            VisIVOVisualAnalytics-*.AppImage
+            VisIVOVisualAnalytics-*.tar.gz
           if-no-files-found: error
 
       - name: Attach to GitHub release
@@ -330,6 +385,6 @@ jobs:
         with:
           files: |
             VisIVOVisualAnalytics-*.dmg
-            VisIVOVisualAnalytics-*.AppImage
+            VisIVOVisualAnalytics-*.tar.gz
           generate_release_notes: true
           fail_on_unmatched_files: false
