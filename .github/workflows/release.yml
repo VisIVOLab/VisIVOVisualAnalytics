@@ -203,6 +203,21 @@ jobs:
           cmake --install vtk-build
 
       # ── Configure & build the desktop client ─────────────────────────────
+      - name: Diagnose VTK install layout (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "=== Top-level vtk-install/ ==="
+          ls -la vtk-install/ || echo "(missing)"
+          echo "=== lib/ ==="
+          ls -la vtk-install/lib/ 2>/dev/null || echo "(no lib/)"
+          echo "=== lib/cmake/ ==="
+          ls -la vtk-install/lib/cmake/ 2>/dev/null || echo "(no lib/cmake/)"
+          echo "=== Where are the *.cmake config files? ==="
+          find vtk-install -name '*-config.cmake' -o -name '*Config.cmake' 2>/dev/null | head -20
+          echo "=== Cache hit? ==="
+          echo "VTK cache hit: ${{ steps.cache-vtk.outputs.cache-hit }}"
+
       - name: Configure
         shell: bash
         run: |
