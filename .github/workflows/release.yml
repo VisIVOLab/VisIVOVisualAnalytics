@@ -132,11 +132,12 @@ jobs:
         if: runner.os == 'Windows' && steps.cache-zlib.outputs.cache-hit != 'true'
         shell: bash
         run: |
+          WS="$(pwd -W 2>/dev/null || pwd)"
           git clone --depth 1 --branch v1.3.1 https://github.com/madler/zlib.git zlib-src
           cmake -S zlib-src -B zlib-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=ON \
-            -DCMAKE_INSTALL_PREFIX="$PWD/zlib-install"
+            -DCMAKE_INSTALL_PREFIX="$WS/zlib-install"
           cmake --build zlib-build --parallel
           cmake --install zlib-build
 
@@ -152,6 +153,7 @@ jobs:
         if: runner.os != 'macOS' && steps.cache-cfitsio.outputs.cache-hit != 'true'
         shell: bash
         run: |
+          WS="$(pwd -W 2>/dev/null || pwd)"
           curl -fsSL -o cfitsio.tar.gz \
             "https://heasarc.gsfc.nasa.gov/FTP/software/fitsio/c/cfitsio-${CFITSIO_VERSION}.tar.gz"
           mkdir cfitsio-src
@@ -159,7 +161,7 @@ jobs:
           # On Windows, point CMake at our locally-built zlib.
           ZLIB_PREFIX_ARG=""
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            ZLIB_PREFIX_ARG="-DCMAKE_PREFIX_PATH=$PWD/zlib-install"
+            ZLIB_PREFIX_ARG="-DCMAKE_PREFIX_PATH=$WS/zlib-install"
           fi
           cmake -S cfitsio-src -B cfitsio-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -169,7 +171,7 @@ jobs:
             -DTESTS=OFF \
             -DUTILS=OFF \
             $ZLIB_PREFIX_ARG \
-            -DCMAKE_INSTALL_PREFIX="$PWD/cfitsio-install"
+            -DCMAKE_INSTALL_PREFIX="$WS/cfitsio-install"
           cmake --build cfitsio-build --parallel
           cmake --install cfitsio-build
 
@@ -185,6 +187,7 @@ jobs:
         if: steps.cache-vtk.outputs.cache-hit != 'true'
         shell: bash
         run: |
+          WS="$(pwd -W 2>/dev/null || pwd)"
           git clone --depth 1 --branch v${{ env.VTK_VERSION }} \
             https://gitlab.kitware.com/vtk/vtk.git vtk-src
           cmake -S vtk-src -B vtk-build -G Ninja \
@@ -195,7 +198,7 @@ jobs:
             -DVTK_GROUP_ENABLE_Qt=YES \
             -DVTK_QT_VERSION=6 \
             -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON \
-            -DCMAKE_INSTALL_PREFIX="$PWD/vtk-install"
+            -DCMAKE_INSTALL_PREFIX="$WS/vtk-install"
           cmake --build vtk-build --parallel
           cmake --install vtk-build
 
@@ -203,18 +206,24 @@ jobs:
       - name: Configure
         shell: bash
         run: |
+          # On Windows, Git Bash $PWD returns POSIX paths (/d/a/…) that CMake
+          # mishandles when joined with ';' in CMAKE_PREFIX_PATH. `pwd -W` is a
+          # Git Bash extension that yields Windows-native paths (D:/a/…). On
+          # Linux/macOS it fails; fall back to plain pwd.
+          WS="$(pwd -W 2>/dev/null || pwd)"
+
           # CMAKE_PREFIX_PATH order: VTK first, then platform-specific cfitsio.
           # macOS: Homebrew's cfitsio (auto-detected via brew --prefix).
-          # Linux: locally-built cfitsio install tree.
+          # Linux/Windows: locally-built cfitsio install tree.
           if [[ "${{ runner.os }}" == "macOS" ]]; then
             CFITSIO_PREFIX="$(brew --prefix cfitsio)"
           else
-            CFITSIO_PREFIX="$PWD/cfitsio-install"
+            CFITSIO_PREFIX="$WS/cfitsio-install"
           fi
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$PWD/vtk-install;$CFITSIO_PREFIX" \
-            -DCMAKE_INSTALL_PREFIX="$PWD/dist"
+            -DCMAKE_PREFIX_PATH="$WS/vtk-install;$CFITSIO_PREFIX" \
+            -DCMAKE_INSTALL_PREFIX="$WS/dist"
 
       - name: Build
         run: cmake --build build --parallel
