@@ -238,7 +238,7 @@ void DataHubWidget::buildUi()
         }
         titleLabel->setStyleSheet(
                 QStringLiteral("color: %1; background: transparent;")
-                        .arg(QLatin1StringView(VisivoTheme::kPrimary)));
+                        .arg(QLatin1StringView(VisivoTheme::kPrimary())));
         titleCol->addWidget(titleLabel);
 
         // Subtitle — Lato Regular, muted.
@@ -254,7 +254,7 @@ void DataHubWidget::buildUi()
         }
         sub->setStyleSheet(
                 QStringLiteral("color: %1; background: transparent;")
-                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant)));
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         titleCol->addWidget(sub);
 
         headerRow->addLayout(titleCol, 1);
@@ -299,8 +299,8 @@ void DataHubWidget::buildUi()
                 content);
         footer->setWordWrap(true);
         footer->setStyleSheet(
-                QStringLiteral("color: rgba(145, 170, 235, 0.55); font-size: 11px; "
-                                "background: transparent;"));
+                QStringLiteral("color: %1; font-size: 11px; background: transparent;")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         vbox->addWidget(footer);
     }
 
@@ -321,8 +321,8 @@ QFrame *DataHubWidget::buildBackendCard()
                     "  border-radius: 12px;"
                     "  border: 1px solid rgba(4, 138, 191, 0.22);"
                     "}")
-                    .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerLow),
-                         QLatin1StringView(VisivoTheme::kSurfaceContainerHigh)));
+                    .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerLow()),
+                         QLatin1StringView(VisivoTheme::kSurfaceContainerHigh())));
     card->setObjectName(u"backendCard"_s);
 
     auto *hbox = new QHBoxLayout(card);
@@ -358,7 +358,7 @@ QFrame *DataHubWidget::buildBackendCard()
         this->labelBackendUrl->setFont(f);
         this->labelBackendUrl->setStyleSheet(
                 QStringLiteral("color: %1; background: transparent;")
-                        .arg(QLatin1StringView(VisivoTheme::kOnSurface)));
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
         this->labelBackendUrl->setTextInteractionFlags(Qt::TextSelectableByMouse);
         this->labelBackendUrl->setCursor(Qt::IBeamCursor);
         this->labelBackendUrl->setWordWrap(true);
@@ -369,7 +369,7 @@ QFrame *DataHubWidget::buildBackendCard()
     this->labelStatusDetail = new QLabel(u"Set the backend URL in Edit → Settings."_s, card);
     this->labelStatusDetail->setStyleSheet(
             QStringLiteral("color: %1; font-size: 12px; background: transparent;")
-                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant)));
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
     this->labelStatusDetail->setWordWrap(true);
     infoCol->addWidget(this->labelStatusDetail);
 
@@ -451,8 +451,8 @@ QFrame *DataHubWidget::makeActionCard(const QString &iconKind, const QString &ti
                     "  background-color: %2;"
                     "  border-color: rgba(4, 138, 191, 0.38);"
                     "}")
-                    .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerHigh),
-                         QLatin1StringView(VisivoTheme::kSurfaceBright)));
+                    .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerHigh()),
+                         QLatin1StringView(VisivoTheme::kSurfaceBright())));
 
     auto *hbox = new QHBoxLayout(card);
     hbox->setContentsMargins(20, 20, 20, 20);
@@ -460,7 +460,7 @@ QFrame *DataHubWidget::makeActionCard(const QString &iconKind, const QString &ti
 
     // Larger SVG icon on the left: primary visual anchor for the card.
     auto *iconLbl = new QLabel(card);
-    iconLbl->setPixmap(actionCardIconPixmap(iconKind, QString::fromLatin1(VisivoTheme::kPrimary), 48));
+    iconLbl->setPixmap(actionCardIconPixmap(iconKind, QString::fromLatin1(VisivoTheme::kPrimary()), 48));
     iconLbl->setFixedSize(56, 56);
     iconLbl->setAlignment(Qt::AlignCenter);
     iconLbl->setStyleSheet(QStringLiteral("background: transparent; border: none;"));
@@ -480,7 +480,7 @@ QFrame *DataHubWidget::makeActionCard(const QString &iconKind, const QString &ti
         titleLbl->setFont(f);
         titleLbl->setStyleSheet(
                 QStringLiteral("color: %1; background: transparent; border: none;")
-                        .arg(QLatin1StringView(VisivoTheme::kOnSurface)));
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
         titleLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
     }
     textCol->addWidget(titleLbl);
@@ -490,7 +490,7 @@ QFrame *DataHubWidget::makeActionCard(const QString &iconKind, const QString &ti
     descLbl->setWordWrap(true);
     descLbl->setStyleSheet(
             QStringLiteral("color: %1; font-size: 11px; background: transparent; border: none;")
-                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant)));
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
     descLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
     descLbl->setMaximumHeight(36);
     descLbl->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -585,7 +585,7 @@ void DataHubWidget::refreshRecentDatasets()
         empty->setStyleSheet(
                 QStringLiteral("color: %1; font-size: 12px; background: transparent; "
                                 "padding: 16px 8px;")
-                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant)));
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         this->recentItemsLayout->insertWidget(0, empty);
         return;
     }
@@ -595,17 +595,24 @@ void DataHubWidget::refreshRecentDatasets()
         auto *row = new QFrame(nullptr);
         row->setAttribute(Qt::WA_Hover);
         row->setCursor(Qt::PointingHandCursor);
+        // Idle row tint flips between a faint white-on-dark overlay and a
+        // faint black-on-light overlay so the row separation is visible in
+        // either theme without dominating the brand blue accent.
+        const QLatin1StringView idleTint = VisivoTheme::isDark()
+                ? "rgba(255,255,255,0.02)"_L1
+                : "rgba(0,0,0,0.03)"_L1;
         row->setStyleSheet(
                 QStringLiteral(
                         "QFrame {"
-                        "  background-color: rgba(255,255,255,0.02);"
+                        "  background-color: %1;"
                         "  border: 1px solid rgba(4,138,191,0.10);"
                         "  border-radius: 8px;"
                         "}"
                         "QFrame:hover {"
                         "  background-color: rgba(4,138,191,0.09);"
                         "  border-color: rgba(4,138,191,0.28);"
-                        "}"));
+                        "}")
+                        .arg(idleTint));
 
         auto *hbox = new QHBoxLayout(row);
         hbox->setContentsMargins(12, 10, 12, 10);
@@ -616,7 +623,7 @@ void DataHubWidget::refreshRecentDatasets()
         auto *iconLbl = new QLabel(row);
         iconLbl->setPixmap(
                 actionCardIconPixmap(ti.iconKind,
-                                     QString::fromLatin1(VisivoTheme::kPrimaryDim), 28));
+                                     QString::fromLatin1(VisivoTheme::kPrimaryDim()), 28));
         iconLbl->setFixedSize(32, 32);
         iconLbl->setAlignment(Qt::AlignCenter);
         iconLbl->setStyleSheet(u"background: transparent; border: none;"_s);
@@ -637,7 +644,7 @@ void DataHubWidget::refreshRecentDatasets()
         }
         nameLbl->setStyleSheet(
                 QStringLiteral("color: %1; background: transparent; border: none;")
-                        .arg(QLatin1StringView(VisivoTheme::kOnSurface)));
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
         nameLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
         nameLbl->setToolTip(ds.id); // full path on hover
         textCol->addWidget(nameLbl);
@@ -646,7 +653,7 @@ void DataHubWidget::refreshRecentDatasets()
                 QStringLiteral("%1 · %2").arg(ti.label, ds.source), row);
         metaLbl->setStyleSheet(
                 QStringLiteral("color: %1; font-size: 10px; background: transparent; border: none;")
-                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant)));
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         metaLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
         textCol->addWidget(metaLbl);
 
@@ -656,7 +663,7 @@ void DataHubWidget::refreshRecentDatasets()
         auto *timeLbl = new QLabel(timeAgo(ds.lastOpened), row);
         timeLbl->setStyleSheet(
                 QStringLiteral("color: %1; font-size: 10px; background: transparent; border: none;")
-                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant)));
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         timeLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
         timeLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         hbox->addWidget(timeLbl, 0, Qt::AlignVCenter);
@@ -693,7 +700,7 @@ QFrame *DataHubWidget::buildSystemInsightsPanel()
         lbl->setStyleSheet(
                 QStringLiteral("color: %1; font-size: 10px; letter-spacing: 0.1em; "
                                 "background: transparent;")
-                        .arg(QLatin1StringView(VisivoTheme::kPrimaryDim)));
+                        .arg(QLatin1StringView(VisivoTheme::kPrimaryDim())));
         metricBox->addWidget(lbl);
         this->labelWorkers = new QLabel(u"—"_s, card);
         {
@@ -703,7 +710,7 @@ QFrame *DataHubWidget::buildSystemInsightsPanel()
             this->labelWorkers->setFont(f);
             this->labelWorkers->setStyleSheet(
                     QStringLiteral("color: %1; background: transparent;")
-                            .arg(QLatin1StringView(VisivoTheme::kOnSurface)));
+                            .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
         }
         metricBox->addWidget(this->labelWorkers);
         vbox->addLayout(metricBox);
@@ -716,7 +723,7 @@ QFrame *DataHubWidget::buildSystemInsightsPanel()
         lbl->setStyleSheet(
                 QStringLiteral("color: %1; font-size: 10px; letter-spacing: 0.1em; "
                                 "background: transparent;")
-                        .arg(QLatin1StringView(VisivoTheme::kPrimaryDim)));
+                        .arg(QLatin1StringView(VisivoTheme::kPrimaryDim())));
         metricBox->addWidget(lbl);
         this->labelSessions = new QLabel(u"—"_s, card);
         {
@@ -726,7 +733,7 @@ QFrame *DataHubWidget::buildSystemInsightsPanel()
             this->labelSessions->setFont(f);
             this->labelSessions->setStyleSheet(
                     QStringLiteral("color: %1; background: transparent;")
-                            .arg(QLatin1StringView(VisivoTheme::kOnSurface)));
+                            .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
         }
         metricBox->addWidget(this->labelSessions);
         vbox->addLayout(metricBox);
@@ -739,7 +746,7 @@ QFrame *DataHubWidget::buildSystemInsightsPanel()
         lbl->setStyleSheet(
                 QStringLiteral("color: %1; font-size: 10px; letter-spacing: 0.1em; "
                                 "background: transparent;")
-                        .arg(QLatin1StringView(VisivoTheme::kPrimaryDim)));
+                        .arg(QLatin1StringView(VisivoTheme::kPrimaryDim())));
         metricBox->addWidget(lbl);
         this->labelTaskRegistry = new QLabel(u"—"_s, card);
         {
@@ -749,7 +756,7 @@ QFrame *DataHubWidget::buildSystemInsightsPanel()
             this->labelTaskRegistry->setFont(f);
             this->labelTaskRegistry->setStyleSheet(
                     QStringLiteral("color: %1; background: transparent;")
-                            .arg(QLatin1StringView(VisivoTheme::kOnSurface)));
+                            .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
         }
         metricBox->addWidget(this->labelTaskRegistry);
         vbox->addLayout(metricBox);
@@ -769,8 +776,9 @@ QFrame *DataHubWidget::buildSystemInsightsPanel()
                 card);
         quote->setWordWrap(true);
         quote->setStyleSheet(
-                QStringLiteral("color: rgba(145, 170, 235, 0.6); font-size: 11px; "
-                                "font-style: italic; background: transparent;"));
+                QStringLiteral("color: %1; font-size: 11px; "
+                                "font-style: italic; background: transparent;")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         vbox->addWidget(quote);
     }
 
@@ -800,8 +808,8 @@ void DataHubWidget::setBackendUrl(const QString &url, const QString &token)
                         "  padding: 3px 10px;"
                         "  border-radius: 10px; border: none;"
                         "}")
-                        .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerHighest),
-                             QLatin1StringView(VisivoTheme::kOnSurfaceVariant)));
+                        .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerHighest()),
+                             QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
     }
     if (this->labelStatusDetail) {
         this->labelStatusDetail->setText(u"Click \"Check Connection\" to verify backend reachability."_s);
@@ -823,8 +831,8 @@ void DataHubWidget::refreshStatus()
                             "  letter-spacing: 0.12em; padding: 3px 10px;"
                             "  border-radius: 10px; border: none;"
                             "}")
-                            .arg(QLatin1StringView(VisivoTheme::kWarningContainer),
-                                 QLatin1StringView(VisivoTheme::kOnWarningContainer)));
+                            .arg(QLatin1StringView(VisivoTheme::kWarningContainer()),
+                                 QLatin1StringView(VisivoTheme::kOnWarningContainer())));
         }
         if (this->labelStatusDetail) {
             this->labelStatusDetail->setText(
@@ -855,8 +863,8 @@ void DataHubWidget::refreshStatus()
                             "  letter-spacing: 0.12em; padding: 3px 10px;"
                             "  border-radius: 10px; border: none;"
                             "}")
-                            .arg(QLatin1StringView(VisivoTheme::kTertiaryContainer),
-                                 QLatin1StringView(VisivoTheme::kOnTertiaryFixed)));
+                            .arg(QLatin1StringView(VisivoTheme::kTertiaryContainer()),
+                                 QLatin1StringView(VisivoTheme::kOnTertiaryFixed())));
         }
         if (this->labelStatusDetail) {
             this->labelStatusDetail->setText(
@@ -894,8 +902,8 @@ void DataHubWidget::refreshStatus()
                             "  letter-spacing: 0.12em; padding: 3px 10px;"
                             "  border-radius: 10px; border: none;"
                             "}")
-                            .arg(QLatin1StringView(VisivoTheme::kErrorContainer),
-                                 QLatin1StringView(VisivoTheme::kOnErrorContainer)));
+                            .arg(QLatin1StringView(VisivoTheme::kErrorContainer()),
+                                 QLatin1StringView(VisivoTheme::kOnErrorContainer())));
         }
         if (this->labelStatusDetail) {
             this->labelStatusDetail->setText(

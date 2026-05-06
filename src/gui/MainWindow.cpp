@@ -15,6 +15,7 @@
 #include "RemoteFileBrowserDialog.h"
 #include "Settings.h"
 #include "SettingsDialog.h"
+#include "theme/VisivoTheme.h"
 #include "SourceFindDialog.h"
 #include "StackDialog.h"
 #include "WebViewProcess.h"
@@ -55,7 +56,9 @@ using namespace Qt::StringLiterals;
 
 namespace {
 
-QPixmap makeLightDialogQuestionPixmap(int size)
+// Renders a "?" glyph at the current theme's primary text colour so it stays
+// readable on either dark or light dialog backgrounds.
+QPixmap makeDialogQuestionPixmap(int size)
 {
     QPixmap pm(size, size);
     pm.fill(Qt::transparent);
@@ -63,7 +66,7 @@ QPixmap makeLightDialogQuestionPixmap(int size)
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
 
-    const QColor fg(QStringLiteral("#E6F4F9"));
+    const QColor fg(QString::fromLatin1(VisivoTheme::kOnSurface()));
     QPen pen(fg);
     pen.setWidthF(3.2);
     pen.setCapStyle(Qt::RoundCap);
@@ -539,7 +542,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
     box.setDefaultButton(QMessageBox::No);
 
-    box.setIconPixmap(makeLightDialogQuestionPixmap(40));
+    box.setIconPixmap(makeDialogQuestionPixmap(40));
 
     const auto res = box.exec();
     if (res == QMessageBox::No) {

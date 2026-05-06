@@ -18,6 +18,14 @@ using namespace Qt::StringLiterals;
 
 namespace VisivoTheme {
 
+// ── Theme mode (set by applyDarkTo / applyLightTo, read by inline accessors) ─
+namespace {
+Mode g_mode = Mode::Dark;
+}
+
+void setMode(Mode m) { g_mode = m; }
+Mode currentMode()   { return g_mode; }
+
 // ── Font loading ──────────────────────────────────────────────────────────────
 
 bool loadBundledFonts()
@@ -57,7 +65,7 @@ QLabel *makeSectionLabel(const QString &text, QWidget *parent)
                     "  letter-spacing: 0.18em;"
                     "  background-color: transparent;"
                     "}")
-                    .arg(QLatin1StringView(kOnSurfaceVariant),
+                    .arg(QLatin1StringView(kOnSurfaceVariant()),
                          QLatin1StringView(kBrandFamily)));
     return lbl;
 }
@@ -65,7 +73,7 @@ QLabel *makeSectionLabel(const QString &text, QWidget *parent)
 QFrame *makeCard(QWidget *parent, bool elevated)
 {
     auto *card = new QFrame(parent);
-    const QLatin1StringView bg(elevated ? kSurfaceContainerHighest : kSurfaceContainerHigh);
+    const QLatin1StringView bg(elevated ? kSurfaceContainerHighest() : kSurfaceContainerHigh());
     card->setStyleSheet(
             QStringLiteral(
                     "QFrame {"
@@ -83,20 +91,20 @@ QLabel *makeBadge(const QString &text, BadgeKind kind, QWidget *parent)
     QLatin1StringView bg, fg;
     switch (kind) {
     case BadgeKind::Success:
-        bg = QLatin1StringView(kTertiaryContainer);
-        fg = QLatin1StringView(kOnTertiaryFixed);
+        bg = QLatin1StringView(kTertiaryContainer());
+        fg = QLatin1StringView(kOnTertiaryFixed());
         break;
     case BadgeKind::Error:
-        bg = QLatin1StringView(kErrorContainer);
-        fg = QLatin1StringView(kOnErrorContainer);
+        bg = QLatin1StringView(kErrorContainer());
+        fg = QLatin1StringView(kOnErrorContainer());
         break;
     case BadgeKind::Warning:
-        bg = QLatin1StringView(kWarningContainer);
-        fg = QLatin1StringView(kOnWarningContainer);
+        bg = QLatin1StringView(kWarningContainer());
+        fg = QLatin1StringView(kOnWarningContainer());
         break;
     default:
-        bg = QLatin1StringView(kSurfaceContainerHighest);
-        fg = QLatin1StringView(kOnSurfaceVariant);
+        bg = QLatin1StringView(kSurfaceContainerHighest());
+        fg = QLatin1StringView(kOnSurfaceVariant());
         break;
     }
     lbl->setStyleSheet(
@@ -142,11 +150,11 @@ QPushButton *makePrimaryButton(const QString &text, QWidget *parent)
                     "  background-color: rgba(4, 138, 191, 0.25);"
                     "  color: rgba(255,255,255, 0.45);"
                     "}")
-                    .arg(QLatin1StringView(kPrimary),
-                         QLatin1StringView(kOnPrimary),
+                    .arg(QLatin1StringView(kPrimary()),
+                         QLatin1StringView(kOnPrimary()),
                          QLatin1StringView(kBrandFamily),
-                         QLatin1StringView(kPrimaryDim),
-                         QLatin1StringView(kPrimaryFixed)));
+                         QLatin1StringView(kPrimaryDim()),
+                         QLatin1StringView(kPrimaryFixed())));
     return btn;
 }
 
@@ -174,13 +182,74 @@ QPushButton *makeSecondaryButton(const QString &text, QWidget *parent)
                     "QPushButton:pressed {"
                     "  background-color: %6;"
                     "}")
-                    .arg(QLatin1StringView(kSurfaceContainerHigh),
-                         QLatin1StringView(kPrimary),
+                    .arg(QLatin1StringView(kSurfaceContainerHigh()),
+                         QLatin1StringView(kPrimary()),
                          QLatin1StringView(kBrandFamily),
-                         QLatin1StringView(kSurfaceContainerHighest),
-                         QLatin1StringView(kPrimary),
-                         QLatin1StringView(kSurfaceBright)));
+                         QLatin1StringView(kSurfaceContainerHighest()),
+                         QLatin1StringView(kPrimary()),
+                         QLatin1StringView(kSurfaceBright())));
     return btn;
+}
+
+// ── Stylesheet helpers (theme-aware) ──────────────────────────────────────────
+
+QString sidebarHeaderStyleSheet()
+{
+    return QStringLiteral(
+                   "QLabel {"
+                   "  color: %1;"
+                   "  font-size: 10px;"
+                   "  font-weight: 600;"
+                   "  padding-bottom: 4px;"
+                   "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
+                   "}")
+            .arg(QLatin1StringView(kOnSurfaceVariant()));
+}
+
+QString sidebarSubHeaderStyleSheet()
+{
+    return QStringLiteral("QLabel { color: %1; font-size: 9px; font-weight: 600; }")
+            .arg(QLatin1StringView(kOnSurfaceVariant()));
+}
+
+QString sidebarCardStyleSheet()
+{
+    // Idle card tint must read on the surrounding surface in either theme.
+    const QLatin1StringView tint = isDark()
+            ? "rgba(255, 255, 255, 0.03)"_L1
+            : "rgba(0, 0, 0, 0.03)"_L1;
+    return QStringLiteral(
+                   "QFrame, QGroupBox {"
+                   "  background-color: %1;"
+                   "  border: 1px solid rgba(4, 138, 191, 0.14);"
+                   "  border-radius: 6px;"
+                   "}")
+            .arg(tint);
+}
+
+QString infoKeyStyleSheet()
+{
+    return QStringLiteral("QLabel { color: %1; font-size: 10px; }")
+            .arg(QLatin1StringView(kOnSurfaceVariant()));
+}
+
+QString infoValueStyleSheet()
+{
+    return QStringLiteral(
+                   "QLabel { color: %1; font-size: 10px; font-family: monospace; }")
+            .arg(QLatin1StringView(kOnSurface()));
+}
+
+QString sidebarToolButtonStyleSheet()
+{
+    // Brand-blue alpha overlays for hover/checked — readable on either theme.
+    return QStringLiteral(
+            "QToolButton { text-align: left; padding: 4px 8px; border-radius: 4px;"
+            "              border: 1px solid transparent; }"
+            "QToolButton:hover { background-color: rgba(4,138,191,0.12);"
+            "                    border: 1px solid rgba(4,138,191,0.25); }"
+            "QToolButton:checked { background-color: rgba(4,138,191,0.20);"
+            "                      border: 1px solid rgba(4,138,191,0.40); }");
 }
 
 // ── Dark QSS ──────────────────────────────────────────────────────────────────
@@ -604,8 +673,15 @@ QString darkStyleSheet()
 
 QLabel *createVisivoLogoLabel(int height, QWidget *parent)
 {
+    // Pick the logo variant that reads against the active surface palette:
+    //   • Dark theme → white logo (high contrast on navy)
+    //   • Light theme → colored brand logo (the canonical VisIVO mark)
+    const QString logoPath = isDark()
+            ? QStringLiteral(":/icons/visivo_logo_white.svg")
+            : QStringLiteral(":/icons/VisIVO.svg");
+
     // Try the SVG resource first — crisp at any DPI.
-    QSvgRenderer renderer(QStringLiteral(":/icons/visivo_logo_white.svg"));
+    QSvgRenderer renderer(logoPath);
     if (renderer.isValid()) {
         const QSize svgSize = renderer.defaultSize();
         // Scale width to match requested height while preserving aspect ratio.
@@ -644,6 +720,11 @@ QLabel *createVisivoLogoLabel(int height, QWidget *parent)
 
 void applyDarkTo(QApplication *app)
 {
+    // Mark the active theme so factory functions / inline accessors return the
+    // dark palette. Must be set BEFORE building the QPalette below, because the
+    // accessors are conditional on currentMode().
+    setMode(Mode::Dark);
+
     // ── 1. Register bundled fonts first ───────────────────────────────────────
     // Must happen before any QFont or QSS that references "Lato".
     loadBundledFonts();
@@ -660,25 +741,25 @@ void applyDarkTo(QApplication *app)
     // ── 3. QPalette ───────────────────────────────────────────────────────────
     // Ensures widgets that skip QSS get coherent VisIVO-navy colours.
     QPalette pal;
-    pal.setColor(QPalette::Window,          QColor(kBackground));
-    pal.setColor(QPalette::WindowText,      QColor(kOnSurface));
-    pal.setColor(QPalette::Base,            QColor(kSurfaceContainerLow));
-    pal.setColor(QPalette::AlternateBase,   QColor(kSurface));
-    pal.setColor(QPalette::Text,            QColor(kOnSurface));
-    pal.setColor(QPalette::BrightText,      QColor(kPrimary));
-    pal.setColor(QPalette::Button,          QColor(kSurfaceContainerHigh));
-    pal.setColor(QPalette::ButtonText,      QColor(kOnSurface));
-    pal.setColor(QPalette::Highlight,       QColor(kSurfaceBright));
-    pal.setColor(QPalette::HighlightedText, QColor(kPrimary));
-    pal.setColor(QPalette::Link,            QColor(kPrimary));
-    pal.setColor(QPalette::LinkVisited,     QColor(kPrimaryDim));
-    pal.setColor(QPalette::ToolTipBase,     QColor(kSurfaceContainerHigh));
-    pal.setColor(QPalette::ToolTipText,     QColor(kOnSurface));
-    pal.setColor(QPalette::PlaceholderText, QColor(kOnSurfaceVariant));
-    pal.setColor(QPalette::Mid,             QColor(kOutlineVariant));
-    pal.setColor(QPalette::Midlight,        QColor(kSurfaceContainer));
-    pal.setColor(QPalette::Dark,            QColor(kSurfaceContainerLow));
-    pal.setColor(QPalette::Shadow,          QColor(kBackground));
+    pal.setColor(QPalette::Window,          QColor(kBackground()));
+    pal.setColor(QPalette::WindowText,      QColor(kOnSurface()));
+    pal.setColor(QPalette::Base,            QColor(kSurfaceContainerLow()));
+    pal.setColor(QPalette::AlternateBase,   QColor(kSurface()));
+    pal.setColor(QPalette::Text,            QColor(kOnSurface()));
+    pal.setColor(QPalette::BrightText,      QColor(kPrimary()));
+    pal.setColor(QPalette::Button,          QColor(kSurfaceContainerHigh()));
+    pal.setColor(QPalette::ButtonText,      QColor(kOnSurface()));
+    pal.setColor(QPalette::Highlight,       QColor(kSurfaceBright()));
+    pal.setColor(QPalette::HighlightedText, QColor(kPrimary()));
+    pal.setColor(QPalette::Link,            QColor(kPrimary()));
+    pal.setColor(QPalette::LinkVisited,     QColor(kPrimaryDim()));
+    pal.setColor(QPalette::ToolTipBase,     QColor(kSurfaceContainerHigh()));
+    pal.setColor(QPalette::ToolTipText,     QColor(kOnSurface()));
+    pal.setColor(QPalette::PlaceholderText, QColor(kOnSurfaceVariant()));
+    pal.setColor(QPalette::Mid,             QColor(kOutlineVariant()));
+    pal.setColor(QPalette::Midlight,        QColor(kSurfaceContainer()));
+    pal.setColor(QPalette::Dark,            QColor(kSurfaceContainerLow()));
+    pal.setColor(QPalette::Shadow,          QColor(kBackground()));
     app->setPalette(pal);
 
     // ── 4. QSS ────────────────────────────────────────────────────────────────
@@ -1117,6 +1198,10 @@ QString lightStyleSheet()
 
 void applyLightTo(QApplication *app)
 {
+    // Mark the active theme so factory functions / inline accessors return the
+    // light palette. Must be set BEFORE building widgets through any factory.
+    setMode(Mode::Light);
+
     // ── 1. Register bundled fonts (idempotent) ────────────────────────────────
     loadBundledFonts();
 

@@ -4,6 +4,7 @@
 #include "app/DiagnosticsManager.h"
 #include "Catalogue3DTableModel.h"
 #include "Catalogue3DParser.h"
+#include "theme/VisivoTheme.h"
 
 // ── VTK ──────────────────────────────────────────────────────────────────────
 #include <QVTKOpenGLNativeWidget.h>
@@ -641,14 +642,9 @@ void vtkWindowCatalogue3D::setupSidebar()
     this->m_sidebar = new SidebarPanel(296, this);
 
     // Shared card styles (same palette as cube viewer).
-    const QString hdrStyle =
-            u"QLabel { color: #8AB8CC; font-size: 10px; font-weight: 600;"
-            u"         padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20); }"_s;
-    const QString cardStyle =
-            u"QFrame, QGroupBox { background-color: rgba(255,255,255,0.03);"
-            u"  border: 1px solid rgba(4,138,191,0.14); border-radius: 6px; }"_s;
-    const QString subHdrStyle =
-            u"QLabel { color: #8AB8CC; font-size: 9px; font-weight: 600; }"_s;
+    const QString hdrStyle    = VisivoTheme::sidebarHeaderStyleSheet();
+    const QString cardStyle   = VisivoTheme::sidebarCardStyleSheet();
+    const QString subHdrStyle = VisivoTheme::sidebarSubHeaderStyleSheet();
 
     // ── Visualization page ────────────────────────────────────────────────────
     // Built programmatically so we own the layout cleanly.  ui->pageViz (from
@@ -805,7 +801,9 @@ void vtkWindowCatalogue3D::setupSidebar()
 
         this->filterStatusLabel = new QLabel(filtersCard);
         this->filterStatusLabel->setWordWrap(true);
-        this->filterStatusLabel->setStyleSheet(u"QLabel { color: #8AB8CC; font-size: 9px; }"_s);
+        this->filterStatusLabel->setStyleSheet(
+                QStringLiteral("QLabel { color: %1; font-size: 9px; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         filtersCardLayout->addWidget(this->filterStatusLabel);
 
         this->btnLoadMore = new QPushButton(u"Load more…"_s, filtersCard);

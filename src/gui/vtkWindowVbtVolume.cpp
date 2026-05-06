@@ -1,6 +1,7 @@
 #include "vtkWindowVbtVolume.h"
 #include "app/BackendClient.h"
 #include "app/ThemeManager.h"
+#include "theme/VisivoTheme.h"
 
 #include <QVTKOpenGLNativeWidget.h>
 
@@ -157,12 +158,21 @@ void vtkWindowVbtVolume::setupUi()
 void vtkWindowVbtVolume::setupSidebarUi()
 {
     // ── Shared style helpers ──────────────────────────────────────────────────
+    // Card scopes to QFrame#card so only volume cards pick up the tint.
+    const QLatin1StringView cardTint = VisivoTheme::isDark()
+            ? "rgba(255,255,255,0.04)"_L1
+            : "rgba(0,0,0,0.04)"_L1;
+    const QLatin1StringView cardBorder = VisivoTheme::isDark()
+            ? "rgba(255,255,255,0.06)"_L1
+            : "rgba(0,0,0,0.10)"_L1;
     const QString cardStyle =
-            u"QFrame#card { background: rgba(255,255,255,0.04); border-radius: 6px;"
-            u"  border: 1px solid rgba(255,255,255,0.06); }"_s;
+            QStringLiteral("QFrame#card { background: %1; border-radius: 6px;"
+                           "  border: 1px solid %2; }")
+                    .arg(cardTint, cardBorder);
     const QString hdrStyle =
-            u"color: #8AB8CC; font-size: 10px; font-weight: 600;"
-            u" padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20);"_s;
+            QStringLiteral("color: %1; font-size: 10px; font-weight: 600;"
+                           " padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20);")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
 
     const auto makeCard = [&](const QString &title, QWidget *content) -> QFrame* {
         auto *card = new QFrame;

@@ -37,44 +37,98 @@ class QWidget;
 // ---------------------------------------------------------------------------
 namespace VisivoTheme {
 
+// ── Theme mode tracking ───────────────────────────────────────────────────────
+// Set by applyDarkTo() / applyLightTo(); read by the color functions below.
+// All colors that vary between dark and light are returned by inline accessors
+// so widgets built via the factory functions or composing inline stylesheets
+// automatically pick up the right palette at construction time.
+//
+// NOTE: changing the mode after widgets are constructed only updates the
+//       global QSS — already-constructed widgets keep their inline styles.
+//       Recreate them (or restart) to fully refresh.
+enum class Mode { Dark, Light };
+void setMode(Mode m);
+Mode currentMode();
+inline bool isDark() { return currentMode() == Mode::Dark; }
+
 // ── Brand palette — VisIVO Brand Guidelines §Primary Colors ──────────────────
-inline constexpr auto kNavy        = "#0E2940";   // primary dark
-inline constexpr auto kBlue        = "#0367A6";   // corporate blue accent
-inline constexpr auto kBlueBright  = "#048ABF";   // bright blue / hover
+// Brand colors are theme-invariant: same blue on dark and light shells.
+inline constexpr auto kNavy       = "#0E2940";
+inline constexpr auto kBlue       = "#0367A6";
+inline constexpr auto kBlueBright = "#048ABF";
 
-// ── Surface palette — navy-based dark shell ───────────────────────────────────
-inline constexpr auto kBackground              = "#091E30";
-inline constexpr auto kSurface                 = "#091E30";
-inline constexpr auto kSurfaceContainerLow     = "#0E2940";
-inline constexpr auto kSurfaceContainer        = "#12334F";
-inline constexpr auto kSurfaceContainerHigh    = "#163D5E";
-inline constexpr auto kSurfaceContainerHighest = "#1A4870";
-inline constexpr auto kSurfaceBright           = "#1F5280";
-inline constexpr auto kSurfaceVariant          = "#1A4870";
+// ── Surface palette ───────────────────────────────────────────────────────────
+// Returns a hex color (as a static C-string) appropriate for the active theme.
+inline const char *kBackground() {
+    return isDark() ? "#091E30" : "#F2F6FA";
+}
+inline const char *kSurface() {
+    return isDark() ? "#091E30" : "#FFFFFF";
+}
+inline const char *kSurfaceContainerLow() {
+    return isDark() ? "#0E2940" : "#EBF2F8";
+}
+inline const char *kSurfaceContainer() {
+    return isDark() ? "#12334F" : "#FFFFFF";
+}
+inline const char *kSurfaceContainerHigh() {
+    return isDark() ? "#163D5E" : "#E0ECF5";
+}
+inline const char *kSurfaceContainerHighest() {
+    return isDark() ? "#1A4870" : "#D5E6F2";
+}
+inline const char *kSurfaceBright() {
+    return isDark() ? "#1F5280" : "#FFFFFF";
+}
+inline const char *kSurfaceVariant() {
+    return isDark() ? "#1A4870" : "#D5E6F2";
+}
 
-// ── Primary accent (interactive elements) ─────────────────────────────────────
-inline constexpr auto kPrimary         = "#048ABF";   // bright blue — buttons, icons, links
-inline constexpr auto kPrimaryDim      = "#0367A6";   // corporate blue — hover dim
-inline constexpr auto kOnPrimary       = "#FFFFFF";   // white text on filled buttons
-inline constexpr auto kPrimaryFixed    = "#5BB8D8";   // lighter blue for pressed state
-inline constexpr auto kPrimaryFixedDim = "#3AAECF";
+// ── Primary accent (theme-invariant brand blues) ──────────────────────────────
+inline const char *kPrimary()         { return "#048ABF"; }
+inline const char *kPrimaryDim()      { return "#0367A6"; }
+inline const char *kOnPrimary()       { return "#FFFFFF"; }
+inline const char *kPrimaryFixed()    { return "#5BB8D8"; }
+inline const char *kPrimaryFixedDim() { return "#3AAECF"; }
 
-// ── Text ─────────────────────────────────────────────────────────────────────
-inline constexpr auto kOnSurface        = "#E6F4F9";   // primary text (VisIVO blue tint)
-inline constexpr auto kOnSurfaceVariant = "#8AB8CC";   // secondary / muted text
-inline constexpr auto kSecondary        = "#6A9EB8";   // tertiary muted
+// ── Text ──────────────────────────────────────────────────────────────────────
+inline const char *kOnSurface() {
+    return isDark() ? "#E6F4F9" : "#1A2B3C";
+}
+inline const char *kOnSurfaceVariant() {
+    return isDark() ? "#8AB8CC" : "#5A7A8F";
+}
+inline const char *kSecondary() {
+    return isDark() ? "#6A9EB8" : "#5A7A8F";
+}
 
 // ── Borders ───────────────────────────────────────────────────────────────────
-inline constexpr auto kOutline        = "#245A80";
-inline constexpr auto kOutlineVariant = "#163D5E";
+inline const char *kOutline() {
+    return isDark() ? "#245A80" : "#AABFCC";
+}
+inline const char *kOutlineVariant() {
+    return isDark() ? "#163D5E" : "#C5D5E0";
+}
 
 // ── Semantic states ───────────────────────────────────────────────────────────
-inline constexpr auto kTertiaryContainer  = "#1A6B45";   // success badge bg
-inline constexpr auto kOnTertiaryFixed    = "#C8F0DB";   // success badge text
-inline constexpr auto kErrorContainer     = "#7A2020";   // error badge bg
-inline constexpr auto kOnErrorContainer   = "#FFB3B3";   // error badge text
-inline constexpr auto kWarningContainer   = "#5C3D10";   // warning badge bg
-inline constexpr auto kOnWarningContainer = "#FFD08A";   // warning badge text
+inline const char *kTertiaryContainer()  {
+    return isDark() ? "#1A6B45" : "#D7F2E2";
+}
+inline const char *kOnTertiaryFixed()    {
+    return isDark() ? "#C8F0DB" : "#1A6B45";
+}
+inline const char *kErrorContainer()     {
+    return isDark() ? "#7A2020" : "#FBE2E2";
+}
+inline const char *kOnErrorContainer()   {
+    return isDark() ? "#FFB3B3" : "#7A2020";
+}
+inline const char *kWarningContainer()   {
+    return isDark() ? "#5C3D10" : "#FCEAC7";
+}
+inline const char *kOnWarningContainer() {
+    return isDark() ? "#FFD08A" : "#5C3D10";
+}
 
 // ── Typography — Lato as the primary brand typeface ───────────────────────────
 // Lato is bundled via Qt resources. The fallback chain ensures graceful
@@ -110,6 +164,28 @@ QLabel *makeBadge(const QString &text, BadgeKind kind = BadgeKind::Neutral,
 
 QPushButton *makePrimaryButton(const QString &text, QWidget *parent = nullptr);
 QPushButton *makeSecondaryButton(const QString &text, QWidget *parent = nullptr);
+
+// ── Stylesheet helpers shared across visualization windows ───────────────────
+// These return fresh QStrings keyed off the current theme so call sites get
+// the right palette regardless of when they're invoked.
+
+// QLabel — small uppercase section header inside a sidebar card.
+QString sidebarHeaderStyleSheet();
+
+// QLabel — secondary smaller header (no bottom border).
+QString sidebarSubHeaderStyleSheet();
+
+// QFrame / QGroupBox — outlined card frame around grouped sidebar widgets.
+QString sidebarCardStyleSheet();
+
+// QLabel — muted key text in info grids ("RA", "Dec", …).
+QString infoKeyStyleSheet();
+
+// QLabel — primary monospace value text in info grids.
+QString infoValueStyleSheet();
+
+// QToolButton — sidebar action button with brand-blue hover / checked tint.
+QString sidebarToolButtonStyleSheet();
 
 // ── Global theme application ──────────────────────────────────────────────────
 

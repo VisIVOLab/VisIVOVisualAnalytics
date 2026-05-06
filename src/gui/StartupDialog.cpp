@@ -3,6 +3,7 @@
 #include "app/BackendClient.h"
 #include "app/BackendLauncher.h"
 #include "Settings.h"
+#include "theme/VisivoTheme.h"
 
 #include <QApplication>
 #include <QDir>
@@ -31,16 +32,19 @@ namespace {
 
 constexpr int kDialogWidth = 460;
 
-// Step state → CSS colour for the icon label.
-const char *iconColor(StartupDialog::StepState state)
+// Step state → CSS colour for the icon label. Pending uses a theme-aware
+// muted colour so it stays legible on both light and dark surfaces; Active /
+// Done / Error are intentionally fixed (brand blue + universal semantic hues).
+QString iconColor(StartupDialog::StepState state)
 {
     switch (state) {
-    case StartupDialog::StepState::Pending: return "#4A6A80";
-    case StartupDialog::StepState::Active:  return "#048ABF";
-    case StartupDialog::StepState::Done:    return "#4CAF50";
-    case StartupDialog::StepState::Error:   return "#EF5350";
+    case StartupDialog::StepState::Pending:
+        return QString::fromLatin1(VisivoTheme::kOnSurfaceVariant());
+    case StartupDialog::StepState::Active:  return u"#048ABF"_s;
+    case StartupDialog::StepState::Done:    return u"#4CAF50"_s;
+    case StartupDialog::StepState::Error:   return u"#EF5350"_s;
     }
-    return "#4A6A80";
+    return QString::fromLatin1(VisivoTheme::kOnSurfaceVariant());
 }
 
 // Step state → Unicode icon character
@@ -119,26 +123,30 @@ void StartupDialog::buildUi()
         auto *row = new QHBoxLayout;
         row->setSpacing(14);
 
-        auto *logoLabel = new QLabel(this);
-        const QIcon logo(u":/icons/visivo_logo_white.svg"_s);
-        if (!logo.isNull())
-            logoLabel->setPixmap(logo.pixmap(40, 40));
-        else
-            logoLabel->setText(u"⬡"_s); // fallback symbol
-        logoLabel->setFixedSize(40, 40);
-        row->addWidget(logoLabel);
+        // Theme-aware logo: white mark on dark, colored mark on light.
+        if (auto *logoLabel = VisivoTheme::createVisivoLogoLabel(40, this)) {
+            row->addWidget(logoLabel);
+        } else {
+            auto *fallback = new QLabel(u"⬡"_s, this);
+            fallback->setFixedSize(40, 40);
+            row->addWidget(fallback);
+        }
 
         auto *titleCol = new QVBoxLayout;
         titleCol->setSpacing(2);
 
         auto *titleLabel = new QLabel(u"VisIVO Visual Analytics"_s, this);
-        titleLabel->setStyleSheet(u"font-size: 16px; font-weight: bold; color: #E6F4F9;"_s);
+        titleLabel->setStyleSheet(
+                u"font-size: 16px; font-weight: bold; color: %1;"_s
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
         titleCol->addWidget(titleLabel);
 
         const QString version = QApplication::applicationVersion();
         if (!version.isEmpty()) {
             auto *versionLabel = new QLabel(u"v%1"_s.arg(version), this);
-            versionLabel->setStyleSheet(u"font-size: 11px; color: #8AB8CC;"_s);
+            versionLabel->setStyleSheet(
+                    u"font-size: 11px; color: %1;"_s
+                            .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
             titleCol->addWidget(versionLabel);
         }
         row->addLayout(titleCol);
@@ -148,11 +156,21 @@ void StartupDialog::buildUi()
 
     root->addSpacing(20);
 
+    // Theme-aware colours used across the dialog body.
+    const QLatin1StringView surfaceLow      = QLatin1StringView(VisivoTheme::kSurfaceContainerLow());
+    const QLatin1StringView onSurfaceTxt    = QLatin1StringView(VisivoTheme::kOnSurface());
+    const QLatin1StringView mutedTxt        = QLatin1StringView(VisivoTheme::kOnSurfaceVariant());
+    // The log panel uses an even-darker surface in dark mode and a slight
+    // tint in light mode to read like a console area.
+    const QLatin1StringView logBg = VisivoTheme::isDark()
+            ? "#060E18"_L1
+            : QLatin1StringView(VisivoTheme::kSurfaceContainerHighest());
+
     // ── Step rows ─────────────────────────────────────────────────────────────
     {
         auto *stepsFrame = new QFrame(this);
         stepsFrame->setStyleSheet(
-                u"QFrame { background: #0E2940; border-radius: 8px; }"_s);
+                u"QFrame { background: %1; border-radius: 8px; }"_s.arg(surfaceLow));
         auto *grid = new QGridLayout(stepsFrame);
         grid->setContentsMargins(16, 14, 16, 14);
         grid->setHorizontalSpacing(10);
@@ -163,14 +181,14 @@ void StartupDialog::buildUi()
             StepRow r;
             r.icon = new QLabel(u"○"_s, stepsFrame);
             r.icon->setStyleSheet(
-                    u"font-size: 16px; color: #4A6A80; font-weight: bold;"_s);
+                    u"font-size: 16px; color: %1; font-weight: bold;"_s.arg(mutedTxt));
             r.icon->setFixedWidth(20);
             r.icon->setAlignment(Qt::AlignCenter);
             r.text = new QLabel(labelText, stepsFrame);
-            r.text->setStyleSheet(u"font-size: 13px; color: #8AB8CC;"_s);
+            r.text->setStyleSheet(u"font-size: 13px; color: %1;"_s.arg(mutedTxt));
             r.detail = new QLabel(stepsFrame);
             r.detail->setStyleSheet(
-                    u"font-size: 12px; color: #4A6A80; font-style: italic;"_s);
+                    u"font-size: 12px; color: %1; font-style: italic;"_s.arg(mutedTxt));
             r.detail->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
             grid->addWidget(r.icon,   row, 0, Qt::AlignVCenter);
             grid->addWidget(r.text,   row, 1, Qt::AlignVCenter);
@@ -193,8 +211,9 @@ void StartupDialog::buildUi()
         m_progress->setFixedHeight(3);
         m_progress->setTextVisible(false);
         m_progress->setStyleSheet(
-                u"QProgressBar { background: #0E2940; border: none; border-radius: 2px; }"
-                "QProgressBar::chunk { background: #048ABF; border-radius: 2px; }"_s);
+                u"QProgressBar { background: %1; border: none; border-radius: 2px; }"
+                "QProgressBar::chunk { background: #048ABF; border-radius: 2px; }"_s
+                        .arg(surfaceLow));
         root->addWidget(m_progress);
     }
 
@@ -203,7 +222,7 @@ void StartupDialog::buildUi()
     // ── Status message ────────────────────────────────────────────────────────
     {
         m_statusLabel = new QLabel(u"Starting…"_s, this);
-        m_statusLabel->setStyleSheet(u"font-size: 12px; color: #8AB8CC;"_s);
+        m_statusLabel->setStyleSheet(u"font-size: 12px; color: %1;"_s.arg(mutedTxt));
         m_statusLabel->setAlignment(Qt::AlignLeft);
         m_statusLabel->setWordWrap(true);
         root->addWidget(m_statusLabel);
@@ -223,7 +242,7 @@ void StartupDialog::buildUi()
                 u"VLKB services require an API token to access remote data.\n"
                 "Paste your token below to continue."_s,
                 m_authPanel);
-        authDesc->setStyleSheet(u"font-size: 12px; color: #8AB8CC;"_s);
+        authDesc->setStyleSheet(u"font-size: 12px; color: %1;"_s.arg(mutedTxt));
         authDesc->setWordWrap(true);
         authLayout->addWidget(authDesc);
 
@@ -235,7 +254,8 @@ void StartupDialog::buildUi()
         m_tokenSaveHint = new QLabel(
                 u"The token will be saved to  ~/.visivo_token  and to application settings."_s,
                 m_authPanel);
-        m_tokenSaveHint->setStyleSheet(u"font-size: 11px; color: #4A6A80; font-style: italic;"_s);
+        m_tokenSaveHint->setStyleSheet(
+                u"font-size: 11px; color: %1; font-style: italic;"_s.arg(mutedTxt));
         m_tokenSaveHint->setWordWrap(true);
         authLayout->addWidget(m_tokenSaveHint);
 
@@ -249,8 +269,9 @@ void StartupDialog::buildUi()
         m_logView->setVisible(false);
         m_logView->setFixedHeight(160);
         m_logView->setStyleSheet(
-                u"QTextEdit { background: #060E18; color: #8AB8CC; "
-                "font-family: monospace; font-size: 11px; border: none; }"_s);
+                u"QTextEdit { background: %1; color: %2; "
+                "font-family: monospace; font-size: 11px; border: none; }"_s
+                        .arg(logBg, onSurfaceTxt));
         root->addWidget(m_logView);
     }
 
@@ -499,14 +520,18 @@ void StartupDialog::setStep(StepId step, StepState state, const QString &detail)
         row->icon->setText(QString::fromUtf8(iconGlyph(state)));
         row->icon->setStyleSheet(
                 u"font-size: 16px; font-weight: bold; color: %1;"_s
-                .arg(QString::fromLatin1(iconColor(state))));
+                .arg(iconColor(state)));
     }
-    // Text colour: bright when active/done/error, muted when pending
+    // Text colour: bright when active/done/error, muted when pending.
+    // Both ends of the spectrum come from the theme palette so the contrast
+    // tracks the surrounding card whether dark or light.
     if (row->text) {
         const bool active = (state != StepState::Pending);
+        const QString textColor = active
+                ? QString::fromLatin1(VisivoTheme::kOnSurface())
+                : QString::fromLatin1(VisivoTheme::kOnSurfaceVariant());
         row->text->setStyleSheet(
-                active ? u"font-size: 13px; color: #E6F4F9;"_s
-                       : u"font-size: 13px; color: #4A6A80;"_s);
+                u"font-size: 13px; color: %1;"_s.arg(textColor));
     }
     // Detail
     if (row->detail) {
@@ -515,7 +540,7 @@ void StartupDialog::setStep(StepId step, StepState state, const QString &detail)
             switch (state) {
             case StepState::Done:  return u"#4CAF50"_s;
             case StepState::Error: return u"#EF5350"_s;
-            default:               return u"#8AB8CC"_s;
+            default:               return QString::fromLatin1(VisivoTheme::kOnSurfaceVariant());
             }
         }();
         row->detail->setStyleSheet(

@@ -2,6 +2,7 @@
 
 #include "app/DiagnosticsManager.h"
 #include "app/ThemeManager.h"
+#include "theme/VisivoTheme.h"
 
 #include <QVTKOpenGLNativeWidget.h>
 
@@ -542,21 +543,14 @@ void vtkWindowVbt::setupUi()
 void vtkWindowVbt::setupSidebarUi()
 {
     // ── Shared style helpers (same palette as catalogue viewer) ──────────────
-    const QString hdrStyle =
-            u"QLabel { color: #8AB8CC; font-size: 10px; font-weight: 600;"
-            u"         padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20); }"_s;
-    const QString cardStyle =
-            u"QFrame, QGroupBox { background-color: rgba(255,255,255,0.03);"
-            u"  border: 1px solid rgba(4,138,191,0.14); border-radius: 6px; }"_s;
-    const QString subHdrStyle =
-            u"QLabel { color: #8AB8CC; font-size: 9px; font-weight: 600; }"_s;
-    const QString keyStyle =
-            u"QLabel { color: #607090; font-size: 10px; }"_s;
-    const QString valStyle =
-            u"QLabel { color: #c0d0e0; font-size: 10px; font-family: monospace; }"_s;
+    const QString hdrStyle    = VisivoTheme::sidebarHeaderStyleSheet();
+    const QString cardStyle   = VisivoTheme::sidebarCardStyleSheet();
+    const QString subHdrStyle = VisivoTheme::sidebarSubHeaderStyleSheet();
+    const QString keyStyle    = VisivoTheme::infoKeyStyleSheet();
+    const QString valStyle    = VisivoTheme::infoValueStyleSheet();
 
     // makeCard: card frame with a section title header inside (used for Display page).
-    const auto makeCard = [&](const QString &title, QWidget *content) -> QFrame* {
+    const auto makeCard = [&hdrStyle, &cardStyle](const QString &title, QWidget *content) -> QFrame* {
         auto *card = new QFrame;
         card->setObjectName(u"card"_s);
         card->setStyleSheet(cardStyle);
@@ -564,11 +558,7 @@ void vtkWindowVbt::setupSidebarUi()
         vl->setSpacing(6);
         vl->setContentsMargins(10, 8, 10, 10);
         auto *lbl = new QLabel(title);
-        lbl->setStyleSheet(
-                u"QLabel { color: #8AB8CC; font-size: 10px; font-weight: 600;"
-                u"         padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20);"
-                u"         border-radius: 0; border-left: none; border-right: none;"
-                u"         border-top: none; background: transparent; }"_s);
+        lbl->setStyleSheet(hdrStyle);
         vl->addWidget(lbl);
         vl->addWidget(content);
         return card;
@@ -755,7 +745,9 @@ void vtkWindowVbt::setupSidebarUi()
 
         this->filterStatusLabel = new QLabel(card);
         this->filterStatusLabel->setWordWrap(true);
-        this->filterStatusLabel->setStyleSheet(u"QLabel { color: #8AB8CC; font-size: 9px; }"_s);
+        this->filterStatusLabel->setStyleSheet(
+                QStringLiteral("QLabel { color: %1; font-size: 9px; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         cl->addWidget(this->filterStatusLabel);
 
         this->btnLoadMore = new QPushButton(u"Load more…"_s, card);

@@ -3,6 +3,7 @@
 // See SidebarPanel.h for the public API.
 
 #include "SidebarPanel.h"
+#include "theme/VisivoTheme.h"
 
 #include <QAction>
 #include <QFrame>
@@ -150,47 +151,62 @@ void SidebarPanel::finalize(int initialPage)
 
 void SidebarPanel::applyStyles()
 {
+    // Theme-aware colors. Containers track the surface palette so the sidebar
+    // blends with the surrounding shell in either dark or light mode. Hover /
+    // pressed / active accents derive from the brand blue alpha overlay so they
+    // read on any background.
+    const auto containerBg = QLatin1StringView(VisivoTheme::kSurfaceContainerLow());
+    const auto railBg      = QLatin1StringView(VisivoTheme::kSurface());
+    const auto hoverBg     = QLatin1StringView(VisivoTheme::kSurfaceContainerHigh());
+    const auto pressedBg   = QLatin1StringView(VisivoTheme::kSurfaceContainerHighest());
+    const auto activeBg    = QLatin1StringView(VisivoTheme::kSurfaceContainerHigh());
+    const auto mutedText   = QLatin1StringView(VisivoTheme::kOnSurfaceVariant());
+
     // Container background.
     setStyleSheet(
-            u"QWidget#sidebarContainer {"
-            "  background-color: #0E2940;"
-            "  border-right: 1px solid rgba(4, 138, 191, 0.18);"
-            "}"_s);
+            QStringLiteral("QWidget#sidebarContainer {"
+                           "  background-color: %1;"
+                           "  border-right: 1px solid rgba(4, 138, 191, 0.18);"
+                           "}")
+                    .arg(containerBg));
 
     // Rail.
     m_rail->setStyleSheet(
-            u"QWidget#sidebarRail {"
-            "  background-color: #0A2236;"
-            "  border-right: 1px solid rgba(4, 138, 191, 0.18);"
-            "}"_s);
+            QStringLiteral("QWidget#sidebarRail {"
+                           "  background-color: %1;"
+                           "  border-right: 1px solid rgba(4, 138, 191, 0.18);"
+                           "}")
+                    .arg(railBg));
 
     // Section buttons share one stylesheet; [active='true'] is flipped via
     // setProperty("active", …) + style()->polish() — no extra code paths needed.
     const QString railBtnStyle =
-            u"QToolButton {"
-            "  background-color: transparent;"
-            "  border: none;"
-            "  border-radius: 6px;"
-            "  padding: 4px 0px;"
-            "}"
-            "QToolButton:hover   { background-color: #163D5E; }"
-            "QToolButton:pressed { background-color: #1A4870; }"
-            "QToolButton[active='true'] {"
-            "  background-color: #1B3A57;"
-            "  border-left: 2px solid #048ABF;"
-            "}"_s;
+            QStringLiteral("QToolButton {"
+                           "  background-color: transparent;"
+                           "  border: none;"
+                           "  border-radius: 6px;"
+                           "  padding: 4px 0px;"
+                           "}"
+                           "QToolButton:hover   { background-color: %1; }"
+                           "QToolButton:pressed { background-color: %2; }"
+                           "QToolButton[active='true'] {"
+                           "  background-color: %3;"
+                           "  border-left: 2px solid #048ABF;"
+                           "}")
+                    .arg(hoverBg, pressedBg, activeBg);
 
     const QString toggleBtnStyle =
-            u"QToolButton {"
-            "  background-color: transparent;"
-            "  color: #8AB8CC;"
-            "  border: none;"
-            "  border-radius: 6px;"
-            "  font-size: 13px;"
-            "  padding: 4px 0px;"
-            "}"
-            "QToolButton:hover   { background-color: #163D5E; color: #048ABF; }"
-            "QToolButton:pressed { background-color: #1A4870; }"_s;
+            QStringLiteral("QToolButton {"
+                           "  background-color: transparent;"
+                           "  color: %1;"
+                           "  border: none;"
+                           "  border-radius: 6px;"
+                           "  font-size: 13px;"
+                           "  padding: 4px 0px;"
+                           "}"
+                           "QToolButton:hover   { background-color: %2; color: #048ABF; }"
+                           "QToolButton:pressed { background-color: %3; }")
+                    .arg(mutedText, hoverBg, pressedBg);
 
     m_toggleBtn->setStyleSheet(toggleBtnStyle);
     for (QToolButton *btn : m_railBtns) {

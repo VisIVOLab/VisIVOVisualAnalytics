@@ -15,6 +15,7 @@
 #include "ProfileWidget.h"
 #include "RemoteFileBrowserDialog.h"
 #include "SidebarPanel.h"
+#include "theme/VisivoTheme.h"
 #include "ToolResultDialog.h"
 #include "vtkInteractorStyleProfile.h"
 #include "vtkLegendScaleActorWCS.h"
@@ -1428,7 +1429,9 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
         if (sliderIdx >= 0) {
             auto *opacityLbl = new QLabel(u"Layer opacity"_s, ui->frameLayerControls);
             opacityLbl->setStyleSheet(
-                    u"QLabel { color: #8AB8CC; font-size: 9px; font-weight: 600; margin-top: 4px; }"_s);
+                    QStringLiteral("QLabel { color: %1; font-size: 9px; "
+                                   "font-weight: 600; margin-top: 4px; }")
+                            .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
             fl->insertWidget(sliderIdx, opacityLbl);
         }
     }
@@ -4043,25 +4046,12 @@ void vtkWindowImage::setupSidebar()
     ui->sidebarContainer->hide();
 
     // ── Shared style constants (same palette as VBT / catalogue viewers) ──────
-    const QString hdrStyle =
-            u"QLabel { color: #8AB8CC; font-size: 10px; font-weight: 600;"
-            u"         padding-bottom: 4px; border-bottom: 1px solid rgba(4,138,191,0.20); }"_s;
-    const QString cardStyle =
-            u"QFrame, QGroupBox { background-color: rgba(255,255,255,0.03);"
-            u"  border: 1px solid rgba(4,138,191,0.14); border-radius: 6px; }"_s;
-    const QString subHdrStyle =
-            u"QLabel { color: #8AB8CC; font-size: 9px; font-weight: 600; }"_s;
-    const QString keyStyle =
-            u"QLabel { color: #607090; font-size: 10px; }"_s;
-    const QString valStyle =
-            u"QLabel { color: #c0d0e0; font-size: 10px; font-family: monospace; }"_s;
-    const QString toolBtnStyle =
-            u"QToolButton { text-align: left; padding: 4px 8px; border-radius: 4px;"
-            u"              border: 1px solid transparent; }"
-            u"QToolButton:hover { background-color: rgba(4,138,191,0.12);"
-            u"                    border: 1px solid rgba(4,138,191,0.25); }"
-            u"QToolButton:checked { background-color: rgba(4,138,191,0.20);"
-            u"                      border: 1px solid rgba(4,138,191,0.40); }"_s;
+    const QString hdrStyle     = VisivoTheme::sidebarHeaderStyleSheet();
+    const QString cardStyle    = VisivoTheme::sidebarCardStyleSheet();
+    const QString subHdrStyle  = VisivoTheme::sidebarSubHeaderStyleSheet();
+    const QString keyStyle     = VisivoTheme::infoKeyStyleSheet();
+    const QString valStyle     = VisivoTheme::infoValueStyleSheet();
+    const QString toolBtnStyle = VisivoTheme::sidebarToolButtonStyleSheet();
 
     // ── Page 0: Layer Settings (from UI file) ──────────────────────────────────
     // Apply styles to existing UI-file page widgets (page3D is hidden; not styled)
@@ -4151,7 +4141,8 @@ void vtkWindowImage::setupSidebar()
         cl->addWidget(makeToolBtn(this->actionShowWcsAxes, card));
 
         const QString secStyle =
-                u"QLabel { color: #607090; font-size: 9px; margin-top: 4px; }"_s;
+                QStringLiteral("QLabel { color: %1; font-size: 9px; margin-top: 4px; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
 
         auto *fmtHdr = new QLabel(u"Coordinate format"_s, card);
         fmtHdr->setStyleSheet(secStyle);
@@ -4184,10 +4175,12 @@ void vtkWindowImage::setupSidebar()
 
     // Field-name style: small, muted, uppercase feel
     const QString fnHdrStyle =
-            u"QLabel { color: #607090; font-size: 9px; font-weight: 600; }"_s;
+            QStringLiteral("QLabel { color: %1; font-size: 9px; font-weight: 600; }")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
     // Field-value style: readable, proportional (not monospace — avoids extra width)
     const QString fnValStyle =
-            u"QLabel { color: #c0d0e0; font-size: 10px; }"_s;
+            QStringLiteral("QLabel { color: %1; font-size: 10px; }")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurface()));
 
     // ── Card 1: Dataset (stacked label-over-value — no two-column layout) ─────
     // Each field is a small header label stacked above its value label.

@@ -11,6 +11,7 @@
 #include "MomentMapController.h"
 #include "NoiseController.h"
 #include "StackDialog.h"
+#include "theme/VisivoTheme.h"
 #include "ToolResultDialog.h"
 #include "ProfileWidget.h"
 #include "PvController.h"
@@ -2769,32 +2770,35 @@ void vtkWindowCube::setupWorkspaceDocks()
     // horizontally so the dock area gets the rest of the window width.
     ui->centralwidget->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Expanding);
 
-    // Shared dock stylesheet — matches the dark/blue-accent theme used by the sidebar.
+    // Shared dock stylesheet. The title-bar text color tracks the theme so the
+    // section labels stay legible whether the app shell is dark or light.
     const QString dockStyle =
-            u"QDockWidget {"
-            "  border: 1px solid rgba(4, 138, 191, 0.22);"
-            "}"
-            "QDockWidget::title {"
-            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-            "      stop:0 rgba(4,138,191,0.18), stop:1 rgba(4,138,191,0.06));"
-            "  color: #8AB8CC;"
-            "  font-size: 10px;"
-            "  font-weight: 600;"
-            "  text-transform: uppercase;"
-            "  padding: 5px 10px;"
-            "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
-            "}"
-            "QDockWidget::close-button, QDockWidget::float-button {"
-            "  border: none;"
-            "  background: transparent;"
-            "  subcontrol-position: top right;"
-            "  subcontrol-origin: margin;"
-            "  top: 3px;"
-            "}"
-            "QDockWidget::close-button:hover, QDockWidget::float-button:hover {"
-            "  background: rgba(4, 138, 191, 0.25);"
-            "  border-radius: 3px;"
-            "}"_s;
+            QStringLiteral(
+                    "QDockWidget {"
+                    "  border: 1px solid rgba(4, 138, 191, 0.22);"
+                    "}"
+                    "QDockWidget::title {"
+                    "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+                    "      stop:0 rgba(4,138,191,0.18), stop:1 rgba(4,138,191,0.06));"
+                    "  color: %1;"
+                    "  font-size: 10px;"
+                    "  font-weight: 600;"
+                    "  text-transform: uppercase;"
+                    "  padding: 5px 10px;"
+                    "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
+                    "}"
+                    "QDockWidget::close-button, QDockWidget::float-button {"
+                    "  border: none;"
+                    "  background: transparent;"
+                    "  subcontrol-position: top right;"
+                    "  subcontrol-origin: margin;"
+                    "  top: 3px;"
+                    "}"
+                    "QDockWidget::close-button:hover, QDockWidget::float-button:hover {"
+                    "  background: rgba(4, 138, 191, 0.25);"
+                    "  border-radius: 3px;"
+                    "}")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
 
     // ── 3D View dock ─────────────────────────────────────────────────────────
     auto *dockCube = new QDockWidget(u"3D View"_s, this);

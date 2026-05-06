@@ -1,6 +1,7 @@
 #include "CubeUiAssembler.h"
 #include "ui_vtkWindowCube.h"
 #include "ColorMaps.h"
+#include "theme/VisivoTheme.h"
 
 #include <vtkLookupTable.h>
 #include <vtkNew.h>
@@ -25,28 +26,47 @@
 using namespace Qt::Literals::StringLiterals;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sidebar style constants shared across all build methods
+// Sidebar style helpers — built lazily so they pick up the theme that was
+// applied AFTER static initialization (ThemeManager runs in main()).
+// Returning fresh QStrings keeps the logic theme-aware on every call.
 // ─────────────────────────────────────────────────────────────────────────────
 
-static const QString kSidebarHdrStyle =
-        u"QLabel {"
-        "  color: #8AB8CC;"
-        "  font-size: 10px;"
-        "  font-weight: 600;"
-        "  padding-bottom: 4px;"
-        "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
-        "}"_s;
+static QString kSidebarHdrStyle()
+{
+    return QStringLiteral(
+                   "QLabel {"
+                   "  color: %1;"
+                   "  font-size: 10px;"
+                   "  font-weight: 600;"
+                   "  padding-bottom: 4px;"
+                   "  border-bottom: 1px solid rgba(4, 138, 191, 0.20);"
+                   "}")
+            .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
+}
 
-static const QString kSidebarCardStyle =
-        u"QFrame {"
-        "  background-color: rgba(255, 255, 255, 0.03);"
-        "  border: 1px solid rgba(4, 138, 191, 0.14);"
-        "  border-radius: 6px;"
-        "}"_s;
+static QString kSidebarCardStyle()
+{
+    // Idle card tint: subtle white-on-dark or black-on-light overlay so the
+    // card is distinguishable from the surrounding panel without dominating.
+    const QLatin1StringView tint = VisivoTheme::isDark()
+            ? "rgba(255, 255, 255, 0.03)"_L1
+            : "rgba(0, 0, 0, 0.03)"_L1;
+    return QStringLiteral(
+                   "QFrame {"
+                   "  background-color: %1;"
+                   "  border: 1px solid rgba(4, 138, 191, 0.14);"
+                   "  border-radius: 6px;"
+                   "}")
+            .arg(tint);
+}
 
-static const QString kInfoHdrStyle =
-        u"QLabel { font-size: 8px; font-weight: 700; letter-spacing: 1px;"
-        "  color: rgba(4,138,191,0.75); margin-top: 6px; margin-bottom: 2px; }"_s;
+static QString kInfoHdrStyle()
+{
+    // Brand-blue overlay reads on either theme — leave fixed.
+    return QStringLiteral(
+            "QLabel { font-size: 8px; font-weight: 700; letter-spacing: 1px;"
+            "  color: rgba(4,138,191,0.75); margin-top: 6px; margin-bottom: 2px; }");
+}
 
 /// Shared helper: create a disabled placeholder QToolButton for the sidebar.
 /// Text and enabled state are overwritten by wireToolActions() once the
@@ -123,11 +143,11 @@ QWidget *CubeUiAssembler::buildThresholdPage()
     // ── Section 1: Rendering Mode ─────────────────────────────────────────────
     {
         auto *hdr = new QLabel(u"RENDERING MODE"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle);
+        hdr->setStyleSheet(kSidebarHdrStyle());
         root->addWidget(hdr);
 
         auto *card = new QFrame();
-        card->setStyleSheet(kSidebarCardStyle);
+        card->setStyleSheet(kSidebarCardStyle());
         auto *cl = new QVBoxLayout(card);
         cl->setContentsMargins(8, 8, 8, 8);
         cl->setSpacing(0);
@@ -150,13 +170,13 @@ QWidget *CubeUiAssembler::buildThresholdPage()
     // ── Section 1b: Volume Mode (hidden when Isosurface is active) ───────────
     {
         auto *modeCard = new QFrame();
-        modeCard->setStyleSheet(kSidebarCardStyle);
+        modeCard->setStyleSheet(kSidebarCardStyle());
         auto *cl = new QVBoxLayout(modeCard);
         cl->setContentsMargins(8, 8, 8, 8);
         cl->setSpacing(4);
 
         auto *lbl = new QLabel(u"VOLUME RENDERING"_s);
-        lbl->setStyleSheet(kSidebarHdrStyle);
+        lbl->setStyleSheet(kSidebarHdrStyle());
         cl->addWidget(lbl);
 
         m_comboVolumeMode = new QComboBox();
@@ -179,11 +199,11 @@ QWidget *CubeUiAssembler::buildThresholdPage()
     // ── Section 2: Rendering Threshold ───────────────────────────────────────
     {
         auto *hdr = new QLabel(u"RENDERING THRESHOLD"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle);
+        hdr->setStyleSheet(kSidebarHdrStyle());
         root->addWidget(hdr);
 
         auto *card = new QFrame();
-        card->setStyleSheet(kSidebarCardStyle);
+        card->setStyleSheet(kSidebarCardStyle());
         auto *cl = new QVBoxLayout(card);
         cl->setContentsMargins(8, 8, 8, 8);
         cl->setSpacing(6);
@@ -207,13 +227,13 @@ QWidget *CubeUiAssembler::buildThresholdPage()
     // ── Section 3: Surface Color (Isosurface mode only) ──────────────────────
     {
         auto *surfCard = new QFrame();
-        surfCard->setStyleSheet(kSidebarCardStyle);
+        surfCard->setStyleSheet(kSidebarCardStyle());
         auto *cl = new QVBoxLayout(surfCard);
         cl->setContentsMargins(8, 8, 8, 8);
         cl->setSpacing(6);
 
         auto *hdr = new QLabel(u"SURFACE COLOR"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle);
+        hdr->setStyleSheet(kSidebarHdrStyle());
         cl->addWidget(hdr);
 
         auto *row = new QHBoxLayout();
@@ -233,13 +253,13 @@ QWidget *CubeUiAssembler::buildThresholdPage()
     // ── Section 4: Color Map (Volume mode only) ───────────────────────────────
     {
         auto *cmCard = new QFrame();
-        cmCard->setStyleSheet(kSidebarCardStyle);
+        cmCard->setStyleSheet(kSidebarCardStyle());
         auto *cl = new QVBoxLayout(cmCard);
         cl->setContentsMargins(8, 8, 8, 8);
         cl->setSpacing(6);
 
         auto *hdr = new QLabel(u"COLOR MAP"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle);
+        hdr->setStyleSheet(kSidebarHdrStyle());
         cl->addWidget(hdr);
 
         m_comboLut = new QComboBox();
@@ -270,11 +290,11 @@ QWidget *CubeUiAssembler::buildThresholdPage()
     // Placed here because it controls how the 3D renderer refines the view.
     {
         auto *hdr = new QLabel(u"RENDERING OPTIONS"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle);
+        hdr->setStyleSheet(kSidebarHdrStyle());
         root->addWidget(hdr);
 
         auto *card = new QFrame();
-        card->setStyleSheet(kSidebarCardStyle);
+        card->setStyleSheet(kSidebarCardStyle());
         auto *cl = new QVBoxLayout(card);
         cl->setContentsMargins(8, 6, 8, 6);
         cl->setSpacing(4);
@@ -304,11 +324,11 @@ QWidget *CubeUiAssembler::build2dViewPage()
     // ── Section 1: 2D Mode ────────────────────────────────────────────────────
     {
         auto *hdr = new QLabel(u"2D MODE"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle);
+        hdr->setStyleSheet(kSidebarHdrStyle());
         root->addWidget(hdr);
 
         auto *card = new QFrame();
-        card->setStyleSheet(kSidebarCardStyle);
+        card->setStyleSheet(kSidebarCardStyle());
         auto *cl = new QVBoxLayout(card);
         cl->setContentsMargins(8, 8, 8, 8);
         cl->setSpacing(0);
@@ -327,13 +347,13 @@ QWidget *CubeUiAssembler::build2dViewPage()
     // ── Section 2: Slice Controls (Slice mode only) ───────────────────────────
     {
         auto *sliceCard = new QFrame();
-        sliceCard->setStyleSheet(kSidebarCardStyle);
+        sliceCard->setStyleSheet(kSidebarCardStyle());
         auto *cl = new QVBoxLayout(sliceCard);
         cl->setContentsMargins(8, 8, 8, 8);
         cl->setSpacing(6);
 
         auto *hdr = new QLabel(u"CUTTING PLANE"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle);
+        hdr->setStyleSheet(kSidebarHdrStyle());
         cl->addWidget(hdr);
 
         m_ui->sliderSlice->setParent(sliceCard);
@@ -356,13 +376,13 @@ QWidget *CubeUiAssembler::build2dViewPage()
     // ── Section 3: Slice Color Map (Slice mode only) ──────────────────────────
     {
         auto *lutCard = new QFrame();
-        lutCard->setStyleSheet(kSidebarCardStyle);
+        lutCard->setStyleSheet(kSidebarCardStyle());
         auto *cl = new QVBoxLayout(lutCard);
         cl->setContentsMargins(8, 8, 8, 8);
         cl->setSpacing(6);
 
         auto *hdr = new QLabel(u"COLOR MAP"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle);
+        hdr->setStyleSheet(kSidebarHdrStyle());
         cl->addWidget(hdr);
 
         m_comboSliceLut = new QComboBox();
@@ -392,9 +412,9 @@ QWidget *CubeUiAssembler::build2dViewPage()
     // ── Section 4: Contours (Slice mode only) ─────────────────────────────────
     {
         auto *hdr = new QLabel(u"CONTOURS"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle);
+        hdr->setStyleSheet(kSidebarHdrStyle());
 
-        m_ui->frameContours->setStyleSheet(kSidebarCardStyle);
+        m_ui->frameContours->setStyleSheet(kSidebarCardStyle());
         m_ui->frameContours->setParent(page);
 
         auto *contoursCard = new QWidget();
@@ -412,13 +432,13 @@ QWidget *CubeUiAssembler::build2dViewPage()
     // ── Section 5: Moment Map Info (Moment mode only) ─────────────────────────
     {
         auto *momentCard = new QFrame();
-        momentCard->setStyleSheet(kSidebarCardStyle);
+        momentCard->setStyleSheet(kSidebarCardStyle());
         auto *cl = new QVBoxLayout(momentCard);
         cl->setContentsMargins(8, 8, 8, 8);
         cl->setSpacing(4);
 
         auto *hdr = new QLabel(u"MOMENT MAP"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle);
+        hdr->setStyleSheet(kSidebarHdrStyle());
         cl->addWidget(hdr);
 
         auto *info = new QLabel(
@@ -436,13 +456,13 @@ QWidget *CubeUiAssembler::build2dViewPage()
     // ── Section 6: Moment Color Map (Moment mode only) ────────────────────────
     {
         auto *lutCard = new QFrame();
-        lutCard->setStyleSheet(kSidebarCardStyle);
+        lutCard->setStyleSheet(kSidebarCardStyle());
         auto *cl = new QVBoxLayout(lutCard);
         cl->setContentsMargins(8, 8, 8, 8);
         cl->setSpacing(6);
 
         auto *hdr = new QLabel(u"COLOR MAP"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle);
+        hdr->setStyleSheet(kSidebarHdrStyle());
         cl->addWidget(hdr);
 
         m_comboMomentLut = new QComboBox();
@@ -473,11 +493,11 @@ QWidget *CubeUiAssembler::build2dViewPage()
     // Placed here because it is an overlay on the 2D view.
     {
         auto *hdr = new QLabel(u"OVERLAYS"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle);
+        hdr->setStyleSheet(kSidebarHdrStyle());
         root->addWidget(hdr);
 
         auto *card = new QFrame();
-        card->setStyleSheet(kSidebarCardStyle);
+        card->setStyleSheet(kSidebarCardStyle());
         auto *cl = new QVBoxLayout(card);
         cl->setContentsMargins(8, 6, 8, 6);
         cl->setSpacing(4);
@@ -506,11 +526,11 @@ QWidget *CubeUiAssembler::buildToolsPage()
     // All computation tools: noise, moment, PV, region analysis.
     {
         auto *hdr = new QLabel(u"ANALYSIS"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle);
+        hdr->setStyleSheet(kSidebarHdrStyle());
         root->addWidget(hdr);
 
         auto *card = new QFrame();
-        card->setStyleSheet(kSidebarCardStyle);
+        card->setStyleSheet(kSidebarCardStyle());
         auto *cl = new QVBoxLayout(card);
         cl->setContentsMargins(8, 6, 8, 6);
         cl->setSpacing(4);
@@ -537,11 +557,11 @@ QWidget *CubeUiAssembler::buildToolsPage()
     // Interactive exploration tools: point probe.
     {
         auto *hdr = new QLabel(u"EXPLORATION"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle);
+        hdr->setStyleSheet(kSidebarHdrStyle());
         root->addWidget(hdr);
 
         auto *card = new QFrame();
-        card->setStyleSheet(kSidebarCardStyle);
+        card->setStyleSheet(kSidebarCardStyle());
         auto *cl = new QVBoxLayout(card);
         cl->setContentsMargins(8, 6, 8, 6);
         cl->setSpacing(4);
@@ -576,7 +596,7 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
     // ── 1. DATASET SUMMARY ────────────────────────────────────────────────────
     {
         auto *hdr = new QLabel(u"DATASET SUMMARY"_s);
-        hdr->setStyleSheet(kInfoHdrStyle);
+        hdr->setStyleSheet(kInfoHdrStyle());
         root->addWidget(hdr);
 
         auto *card = new QFrame();
@@ -603,7 +623,7 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
     // ── 2. SYSTEM / STATUS ────────────────────────────────────────────────────
     {
         auto *hdr = new QLabel(u"SYSTEM / STATUS"_s);
-        hdr->setStyleSheet(kInfoHdrStyle);
+        hdr->setStyleSheet(kInfoHdrStyle());
         root->addWidget(hdr);
 
         auto *card = new QFrame();
@@ -652,7 +672,7 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
                 "  font-size: 11px; padding: 0; }"_s;
 
         auto *hdr = new QLabel(u"DATA STATISTICS"_s);
-        hdr->setStyleSheet(kInfoHdrStyle);
+        hdr->setStyleSheet(kInfoHdrStyle());
         root->addWidget(hdr);
 
         // ── 2D image sub-section ─────────────────────────────────────────────
@@ -713,7 +733,7 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
     // ── 4. COORDINATE / WCS ───────────────────────────────────────────────────
     {
         auto *hdr = new QLabel(u"COORDINATE / WCS"_s);
-        hdr->setStyleSheet(kInfoHdrStyle);
+        hdr->setStyleSheet(kInfoHdrStyle());
         root->addWidget(hdr);
 
         auto *card = new QFrame();
