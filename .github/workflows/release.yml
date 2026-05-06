@@ -117,13 +117,36 @@ jobs:
       #    build exports the CFITSIO::cfitsio target the project expects.
       #    On macOS we use Homebrew's cfitsio (installed above) which ships
       #    the same config — no separate step needed.
+      # cfitsio's CMake build requires ZLIB. Linux gets it from apt; macOS has
+      # it in the SDK. Windows MSVC has neither, so we build zlib from source
+      # first and feed its install prefix to cfitsio.
+      - name: Cache zlib install (Windows)
+        if: runner.os == 'Windows'
+        id: cache-zlib
+        uses: actions/cache@v4
+        with:
+          path: zlib-install
+          key: zlib-1.3.1-${{ matrix.os }}-v1
+
+      - name: Build zlib from source (Windows)
+        if: runner.os == 'Windows' && steps.cache-zlib.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          git clone --depth 1 --branch v1.3.1 https://github.com/madler/zlib.git zlib-src
+          cmake -S zlib-src -B zlib-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX="$PWD/zlib-install"
+          cmake --build zlib-build --parallel
+          cmake --install zlib-build
+
       - name: Cache cfitsio install (Linux/Windows)
         if: runner.os != 'macOS'
         id: cache-cfitsio
         uses: actions/cache@v4
         with:
           path: cfitsio-install
-          key: cfitsio-${{ env.CFITSIO_VERSION }}-${{ matrix.os }}-v1
+          key: cfitsio-${{ env.CFITSIO_VERSION }}-${{ matrix.os }}-v2
 
       - name: Build cfitsio from source (Linux/Windows)
         if: runner.os != 'macOS' && steps.cache-cfitsio.outputs.cache-hit != 'true'
@@ -133,6 +156,11 @@ jobs:
             "https://heasarc.gsfc.nasa.gov/FTP/software/fitsio/c/cfitsio-${CFITSIO_VERSION}.tar.gz"
           mkdir cfitsio-src
           tar -xzf cfitsio.tar.gz --strip-components=1 -C cfitsio-src
+          # On Windows, point CMake at our locally-built zlib.
+          ZLIB_PREFIX_ARG=""
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            ZLIB_PREFIX_ARG="-DCMAKE_PREFIX_PATH=$PWD/zlib-install"
+          fi
           cmake -S cfitsio-src -B cfitsio-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=ON \
@@ -140,6 +168,7 @@ jobs:
             -DUSE_CURL=OFF \
             -DTESTS=OFF \
             -DUTILS=OFF \
+            $ZLIB_PREFIX_ARG \
             -DCMAKE_INSTALL_PREFIX="$PWD/cfitsio-install"
           cmake --build cfitsio-build --parallel
           cmake --install cfitsio-build
@@ -315,9 +344,11 @@ jobs:
           BIN="dist/bin"
 
           # qt_deploy_runtime_dependencies on Windows does NOT chase non-Qt
-          # @rpath-equivalent refs into VTK/cfitsio; copy their DLLs explicitly.
-          # Look in both bin/ (Windows convention) and lib/.
-          for src in vtk-install/bin vtk-install/lib cfitsio-install/bin cfitsio-install/lib; do
+          # @rpath-equivalent refs into VTK/cfitsio/zlib; copy their DLLs
+          # explicitly. Look in both bin/ (Windows convention) and lib/.
+          for src in vtk-install/bin vtk-install/lib \
+                     cfitsio-install/bin cfitsio-install/lib \
+                     zlib-install/bin zlib-install/lib; do
             [ -d "$src" ] || continue
             cp -v "$src"/*.dll "$BIN/" 2>/dev/null || true
           done
