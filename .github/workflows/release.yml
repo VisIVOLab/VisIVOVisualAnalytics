@@ -5,19 +5,24 @@
 #   - workflow_dispatch                       → manual run for testing the pipeline
 #
 # Outputs (per matrix entry)
-#   - macOS:  VisIVOVisualAnalytics-macos-{x86_64,arm64}.dmg
-#                contains: VisIVOVisualAnalytics.app + Setup Backend.command
-#   - Linux:  VisIVOVisualAnalytics-linux-x86_64.tar.gz
-#                contains: <name>.AppImage + setup_backend.sh + requirements.txt
+#   - macOS arm64: VisIVOVisualAnalytics-macos-arm64.dmg
+#                  contains: VisIVOVisualAnalytics.app + Setup Backend.command
+#   - Linux x86_64: VisIVOVisualAnalytics-linux-x86_64.tar.gz
+#                   contains: *.AppImage + setup_backend.sh + requirements.txt
+#   - Windows x86_64: VisIVOVisualAnalytics-windows-x86_64.zip
+#                     contains: bin/<exe + DLLs + plugins/ + backend/>
+#                              + setup_backend.bat + requirements.txt
 #
 # The Python backend code is bundled next to the executable:
-#   - macOS:  <App>.app/Contents/Resources/backend/
-#   - Linux:  <AppDir>/usr/bin/backend/  (inside the AppImage)
+#   - macOS:   <App>.app/Contents/Resources/backend/
+#   - Linux:   <AppDir>/usr/bin/backend/  (inside the AppImage)
+#   - Windows: bin\backend\
 #
 # The Python venv is NOT bundled — testers run the setup script once, which
 # creates a venv in a writable user-data location:
-#   - macOS:  ~/Library/Application Support/VisIVO/.venv
-#   - Linux:  ${XDG_DATA_HOME:-~/.local/share}/VisIVO/.venv
+#   - macOS:   ~/Library/Application Support/VisIVO/.venv
+#   - Linux:   ${XDG_DATA_HOME:-~/.local/share}/VisIVO/.venv
+#   - Windows: %APPDATA%\VisIVO\.venv
 # The BackendLauncher in the desktop client picks it up automatically.
 #
 # Builds are unsigned — internal-tester distribution only.
@@ -47,14 +52,14 @@ jobs:
             name: linux-x86_64
             qt_host: linux
             qt_arch: linux_gcc_64
-          - os: macos-13
-            name: macos-x86_64
-            qt_host: mac
-            qt_arch: clang_64
           - os: macos-14
             name: macos-arm64
             qt_host: mac
             qt_arch: clang_64
+          - os: windows-2022
+            name: windows-x86_64
+            qt_host: windows
+            qt_arch: win64_msvc2022_64
 
     runs-on: ${{ matrix.os }}
 
@@ -84,6 +89,16 @@ jobs:
         # `unofficial-cfitsio` with a different target name, so don't use it.
         run: brew install ninja cfitsio
 
+      # MSVC 2022 ships with the windows-2022 runner image but the env vars
+      # (PATH to cl.exe, INCLUDE, LIB, …) need to be activated for every step.
+      # ilammy/msvc-dev-cmd does it once and persists the env to the rest of
+      # the job. Ninja is also bundled with VS 2022.
+      - name: Setup MSVC env (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       # ── Qt 6.10 (cached by the action) ──────────────────────────────────
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
@@ -102,16 +117,16 @@ jobs:
       #    build exports the CFITSIO::cfitsio target the project expects.
       #    On macOS we use Homebrew's cfitsio (installed above) which ships
       #    the same config — no separate step needed.
-      - name: Cache cfitsio install (Linux)
-        if: runner.os == 'Linux'
+      - name: Cache cfitsio install (Linux/Windows)
+        if: runner.os != 'macOS'
         id: cache-cfitsio
         uses: actions/cache@v4
         with:
           path: cfitsio-install
           key: cfitsio-${{ env.CFITSIO_VERSION }}-${{ matrix.os }}-v1
 
-      - name: Build cfitsio from source (Linux)
-        if: runner.os == 'Linux' && steps.cache-cfitsio.outputs.cache-hit != 'true'
+      - name: Build cfitsio from source (Linux/Windows)
+        if: runner.os != 'macOS' && steps.cache-cfitsio.outputs.cache-hit != 'true'
         shell: bash
         run: |
           curl -fsSL -o cfitsio.tar.gz \
@@ -283,6 +298,70 @@ jobs:
             -ov -format UDZO \
             "VisIVOVisualAnalytics-${{ matrix.name }}.dmg"
 
+      # ── Windows install + bundle + zip ───────────────────────────────────
+      - name: Install + run windeployqt (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # qt_generate_deploy_app_script triggers windeployqt on Windows during
+          # cmake --install, copying Qt DLLs and platform plugins next to the .exe.
+          cmake --install build
+
+      - name: Bundle VTK + cfitsio DLLs and Python backend (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="dist/bin"
+
+          # qt_deploy_runtime_dependencies on Windows does NOT chase non-Qt
+          # @rpath-equivalent refs into VTK/cfitsio; copy their DLLs explicitly.
+          # Look in both bin/ (Windows convention) and lib/.
+          for src in vtk-install/bin vtk-install/lib cfitsio-install/bin cfitsio-install/lib; do
+            [ -d "$src" ] || continue
+            cp -v "$src"/*.dll "$BIN/" 2>/dev/null || true
+          done
+
+          # Backend Python code next to the .exe
+          BACKEND_DEST="$BIN/backend"
+          mkdir -p "$BACKEND_DEST"
+          cp -R backend/app "$BACKEND_DEST/"
+          cp backend/__init__.py backend/requirements.txt "$BACKEND_DEST/"
+          [ -f backend/pytest.ini ] && cp backend/pytest.ini "$BACKEND_DEST/" || true
+          find "$BACKEND_DEST" -name __pycache__ -type d -prune -exec rm -rf {} +
+
+      - name: Package Windows release
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -x
+          PKG="VisIVOVisualAnalytics-${{ matrix.name }}"
+          rm -rf "$PKG"
+          # Layout: <PKG>/bin/<exe + DLLs + plugins/ + backend/>
+          #         <PKG>/setup_backend.bat
+          #         <PKG>/requirements.txt
+          #         <PKG>/README.txt
+          mkdir -p "$PKG"
+          cp -R dist/* "$PKG/"
+          cp scripts/setup_backend.bat "$PKG/setup_backend.bat"
+          cp backend/requirements.txt "$PKG/requirements.txt"
+          cat > "$PKG/README.txt" <<README
+          VisIVO Visual Analytics — first-time setup (Windows)
+          ====================================================
+
+          1. setup_backend.bat
+             Double-click to install the Python backend in:
+                 %APPDATA%\VisIVO\.venv
+             Requires Python 3.11+ from https://www.python.org/downloads/
+             (tick "Add python.exe to PATH" during install).
+
+          2. bin\\VisIVOVisualAnalytics.exe
+             Double-click to launch. SmartScreen will warn the first time;
+             click "More info" -> "Run anyway".
+          README
+          # PowerShell zip is reliable cross-runner; bash zip may be missing.
+          powershell -Command "Compress-Archive -Path '$PKG' -DestinationPath '$PKG.zip' -Force"
+
       # ── Linux install + AppImage ─────────────────────────────────────────
       - name: Stage AppDir + bundle backend (Linux)
         if: runner.os == 'Linux'
@@ -383,6 +462,7 @@ jobs:
           path: |
             VisIVOVisualAnalytics-*.dmg
             VisIVOVisualAnalytics-*.tar.gz
+            VisIVOVisualAnalytics-*.zip
           if-no-files-found: error
 
   # Single release-publishing job that runs once after the whole matrix is
@@ -403,7 +483,7 @@ jobs:
       - name: Flatten artifact tree
         run: |
           mkdir -p release
-          find artifacts -type f \( -name '*.dmg' -o -name '*.tar.gz' \) \
+          find artifacts -type f \( -name '*.dmg' -o -name '*.tar.gz' -o -name '*.zip' \) \
             -exec cp -v {} release/ \;
           ls -la release/
 
