@@ -70,3 +70,16 @@ set_target_properties(wcs PROPERTIES
 target_compile_definitions(wcs PRIVATE _FILE_OFFSET_BITS=64)
 
 target_include_directories(wcs INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# libwcs is POSIX-only C; on MSVC there's no <unistd.h>. Drop a shim that
+# remaps the small set of POSIX I/O calls the sources use to their MSVC
+# (<io.h> / <process.h>) underscore-prefixed equivalents. Only added to this
+# target's include path so we don't pollute the rest of the project.
+if (MSVC)
+    target_include_directories(wcs PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/win32")
+    # Suppress noisy POSIX-deprecation warnings raised by the legacy C code.
+    target_compile_definitions(wcs PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            _CRT_NONSTDC_NO_DEPRECATE
+    )
+endif ()
