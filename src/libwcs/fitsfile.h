@@ -1221,6 +1221,7 @@ double fd2ep();	/* FITS standard date string to fractional year (epoch) */
 double fd2epb(); /* FITS standard date string to Besselian epoch */
 double fd2epj(); /* FITS standard date string to Julian epoch */
 char *fd2fd();	/* Any FITS standard date string to ISO FITS date string */
+char *fd2mfd();	/* Any FITS standard date string to date string with month name */
 char *fd2of();	/* Any FITS standard date string to old FITS date and time */
 char *fd2ofd();	/* Any FITS standard date string to old FITS date string */
 char *fd2oft(); /* Any FITS standard date string to old FITS time string */
