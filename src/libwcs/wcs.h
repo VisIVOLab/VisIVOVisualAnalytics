@@ -739,7 +739,7 @@ struct WorldCoor *wcsninitc(); /* set up a WCS structure from a FITS image heade
 struct WorldCoor *wcsxinit(); /* set up a WCS structure from arguments */
 struct WorldCoor *wcskinit(); /* set up a WCS structure from keyword values */
 char *uppercase();	/* Convert string of any case to uppercase */
-void wcsfree(void);	/* Free a WCS structure and its contents */
+void wcsfree();	/* Free a WCS structure and its contents */
 int wcstype();		/* Set projection type from header CTYPEs */
 void wcscdset();	/* Set scaling and rotation from CD matrix */
 void wcsdeltset();	/* set scaling and rotation from CDELTs and CROTA2 */
