@@ -1,6 +1,18 @@
 #ifndef wcslib_h_
 #define wcslib_h_
 
+/* MSVC <string.h> declares wcsset()/wcsrev() as wide-character string helpers
+ * with signatures that conflict with libwcs's same-named functions. Rename
+ * libwcs's symbols out of the way on Windows so both can coexist. The macros
+ * apply only to declarations and uses processed AFTER this header is included
+ * (libwcs sources include <string.h> before wcslib.h, so the standard
+ * declarations stay untouched). Internal patch only; libwcs's public headers
+ * inside this project use the renamed symbols transparently. */
+#ifdef _MSC_VER
+#  define wcsset libwcs_wcsset
+#  define wcsrev libwcs_wcsrev
+#endif
+
 /*=============================================================================
 *
 *   WCSLIB - an implementation of the FITS WCS proposal.

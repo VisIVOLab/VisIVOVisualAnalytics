@@ -81,5 +81,8 @@ if (MSVC)
     target_compile_definitions(wcs PRIVATE
             _CRT_SECURE_NO_WARNINGS
             _CRT_NONSTDC_NO_DEPRECATE
+            _WINSOCK_DEPRECATED_NO_WARNINGS
     )
+    # webread.c uses BSD socket APIs that Windows exposes through Winsock2.
+    target_link_libraries(wcs PRIVATE ws2_32)
 endif ()
