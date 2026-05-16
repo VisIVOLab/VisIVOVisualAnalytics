@@ -9,6 +9,7 @@
 #include "app/RecentDatasetsManager.h"
 #include "app/ThemeManager.h"
 #include "BaselineDialog.h"
+#include "CommandPalette.h"
 #include "DataHubWidget.h"
 #include "DiagnosticsWindow.h"
 #include "LinewidthDialog.h"
@@ -165,22 +166,34 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     QObject::connect(this->dataHub, &DataHubWidget::reopenDatasetRequested,
                      this, &MainWindow::reopenDataset);
 
-    // Reparent the existing central widget (built by ui->setupUi) into the tab.
+    // Detach the .ui-defined central widget (the VLKB sky panel) but DO NOT
+    // add it to the tab strip on startup. VLKB now opens on demand only —
+    // via the Data Hub Quick action or the ⌘K command palette, both routed
+    // through revealVLKBTab(). The widget is kept alive (parent = tabs so it
+    // shares the lifecycle) and hidden until first reveal, so the inventory
+    // tree state survives between open/close cycles.
     auto *skyPanel = this->centralWidget();
     skyPanel->setParent(tabs);
-    tabs->addTab(skyPanel, u"VLKB"_s);
+    skyPanel->hide();
+    this->m_vlkbPanel = skyPanel;
 
     this->setCentralWidget(tabs);
 
-    // Permanent tabs (Data Hub + VLKB) must not show a close button.
+    // Data Hub is permanent (no close button). VLKB, when present, can be
+    // closed via the standard X — see the close handler below.
     tabs->tabBar()->setTabButton(0, QTabBar::RightSide, nullptr);
-    tabs->tabBar()->setTabButton(1, QTabBar::RightSide, nullptr);
 
-    // Close user-added tabs (index ≥ 2) on request; ignore permanent ones.
-    QObject::connect(tabs, &QTabWidget::tabCloseRequested, this, [tabs](int index) {
-        if (index >= 2) {
-            QWidget *w = tabs->widget(index);
-            tabs->removeTab(index);
+    QObject::connect(tabs, &QTabWidget::tabCloseRequested, this,
+                     [this, tabs](int index) {
+        if (index == 0) return;                  // Data Hub is permanent
+        QWidget *w = tabs->widget(index);
+        tabs->removeTab(index);
+        if (w == this->m_vlkbPanel) {
+            // Keep the VLKB panel alive (just hide it) so reopening preserves
+            // the user's inventory tree expansion / selection.
+            w->setParent(nullptr);
+            w->hide();
+        } else {
             w->deleteLater();
         }
     });
@@ -248,6 +261,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                      this, &MainWindow::openVbt);
     QObject::connect(this->dataHub, &DataHubWidget::openHiPSRequested,
                      this, &MainWindow::openHiPS);
+    QObject::connect(this->dataHub, &DataHubWidget::openVLKBRequested,
+                     this, [this]() { this->revealVLKBTab(); });
+    QObject::connect(this->dataHub, &DataHubWidget::commandPaletteRequested,
+                     this, &MainWindow::openCommandPalette);
 
     // ── Initial DataHub state ─────────────────────────────────────────────────
     this->syncDataHubSettings();
@@ -312,6 +329,16 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // Load theme
     this->setApplicationTheme();
 
+    // ── Command palette (⌘K / Ctrl+K) ────────────────────────────────────────
+    {
+        auto *paletteAction = new QAction(u"Command Palette"_s, this);
+        paletteAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+K")));
+        paletteAction->setShortcutContext(Qt::ApplicationShortcut);
+        QObject::connect(paletteAction, &QAction::triggered,
+                         this, &MainWindow::openCommandPalette);
+        this->addAction(paletteAction);
+    }
+
     this->setMinimumSize(1200, 840);
     this->resize(1280, 840);
 }
@@ -319,6 +346,103 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 MainWindow::~MainWindow()
 {
     delete ui;
+}
+
+// ── VLKB tab reveal (closeable but persistent) ───────────────────────────────
+
+void MainWindow::revealVLKBTab()
+{
+    if (!this->m_tabs || !this->m_vlkbPanel) return;
+
+    // Already in the tab strip → just focus it.
+    const int existing = this->m_tabs->indexOf(this->m_vlkbPanel);
+    if (existing >= 0) {
+        this->m_tabs->setCurrentIndex(existing);
+        return;
+    }
+
+    // User had closed it earlier; re-add right after the Data Hub.
+    this->m_vlkbPanel->setParent(this->m_tabs);
+    this->m_vlkbPanel->show();
+    const int idx = this->m_tabs->insertTab(1, this->m_vlkbPanel, u"VLKB"_s);
+    this->m_tabs->setCurrentIndex(idx);
+}
+
+// ── Command palette (⌘K) ─────────────────────────────────────────────────────
+
+void MainWindow::openCommandPalette()
+{
+    if (!this->m_commandPalette) {
+        this->m_commandPalette = new CommandPalette(this);
+    }
+    this->rebuildCommandPalette();
+    this->m_commandPalette->show();
+    this->m_commandPalette->raise();
+    this->m_commandPalette->activateWindow();
+}
+
+void MainWindow::rebuildCommandPalette()
+{
+    if (!this->m_commandPalette) return;
+
+    // Static actions are added once; dynamic ones (Recent datasets) get
+    // refreshed each call by clearing their group first.
+    static bool s_staticAdded = false;
+    if (!s_staticAdded) {
+        // ── File ────────────────────────────────────────────────────────────
+        this->m_commandPalette->addAction(
+                {u"⌘"_s, u"Open Remote Dataset…"_s,
+                 u"File · backend filesystem · FITS"_s, u"⌘O"_s, u"File"_s,
+                 [this]() { this->openData(); }});
+        this->m_commandPalette->addAction(
+                {u"✦"_s, u"Open 3D Catalogue…"_s,
+                 u"File · CSV / VOTable in 3D viewer"_s, QString(), u"File"_s,
+                 [this]() { this->openCatalogue3D(); }});
+        this->m_commandPalette->addAction(
+                {u"▦"_s, u"Open VBT…"_s,
+                 u"File · VisIVO Binary Table point-cloud"_s, QString(), u"File"_s,
+                 [this]() { this->openVbt(); }});
+        this->m_commandPalette->addAction(
+                {u"◐"_s, u"HiPS Viewer…"_s,
+                 u"File · hierarchical sky surveys"_s, QString(), u"File"_s,
+                 [this]() { this->openHiPS(); }});
+        this->m_commandPalette->addAction(
+                {u"◑"_s, u"VLKB Inventory"_s,
+                 u"File · browse remote VLKB sources"_s, QString(), u"File"_s,
+                 [this]() { this->revealVLKBTab(); }});
+
+        // ── Application ─────────────────────────────────────────────────────
+        this->m_commandPalette->addAction(
+                {u"⚙"_s, u"Open Settings…"_s,
+                 u"Edit · backend URL, theme, token"_s, u"⌘,"_s,
+                 u"Application"_s,
+                 [this]() { this->openSettingsDialog(); }});
+        this->m_commandPalette->addAction(
+                {u"ⓘ"_s, u"About VisIVO Visual Analytics"_s,
+                 u"Version, credits"_s, QString(), u"Application"_s,
+                 [this]() { this->openAboutDialog(); }});
+
+        s_staticAdded = true;
+    }
+
+    // ── Recent datasets (dynamic) ───────────────────────────────────────────
+    this->m_commandPalette->clearGroup(u"Recent datasets"_s);
+    if (this->recentMgr) {
+        const auto recent = this->recentMgr->datasets();
+        // Cap at 6 to keep the palette tidy.
+        const int limit = std::min<int>(6, recent.size());
+        for (int i = 0; i < limit; ++i) {
+            const RecentDataset ds = recent[i];
+            const QString sub =
+                    ds.type.isEmpty()
+                            ? u"remote"_s
+                            : QStringLiteral("%1 · remote").arg(ds.type.toUpper());
+            this->m_commandPalette->addAction(
+                    {u"▣"_s, ds.displayName, sub, QString(),
+                     u"Recent datasets"_s,
+                     [this, ds]() { this->reopenDataset(ds); }});
+        }
+    }
 }
 
 void MainWindow::buildDataMenu()

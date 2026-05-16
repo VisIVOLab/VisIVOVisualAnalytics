@@ -66,6 +66,27 @@ BackendClient::BackendClient(QString baseUrl, QString token)
     // R1: Auto-resolve token from env / file if not provided explicitly.
     if (m_token.isEmpty()) {
         m_token = BackendClient::readTokenFile();
+        return;
+    }
+
+    // For LOCAL backends, ~/.visivo_token is written by the running backend's
+    // auth.py at startup and is therefore the authoritative source. If the
+    // explicit token from Settings is stale (e.g. the backend was restarted
+    // and regenerated its token), every request would 401 and trigger the
+    // retry path, polluting the diagnostics log. Prefer the file token here
+    // to short-circuit that ping-pong. Remote backends keep using the
+    // explicit token because ~/.visivo_token belongs to the local machine.
+    const QUrl parsed(m_baseUrl);
+    const QString host = parsed.host().trimmed().toLower();
+    const bool isLocal = host.isEmpty()
+                         || host == QLatin1StringView("localhost")
+                         || host == QLatin1StringView("127.0.0.1")
+                         || host == QLatin1StringView("::1");
+    if (isLocal) {
+        const QString fileToken = BackendClient::readTokenFile();
+        if (!fileToken.isEmpty() && fileToken != m_token) {
+            m_token = fileToken;
+        }
     }
 }
 
@@ -167,6 +188,23 @@ BackendHealthResult BackendClient::health() const
     result.taskRegistryEntries = object.value(QStringLiteral("task_registry_entries")).toInt();
     result.taskTtlEnabled = object.value(QStringLiteral("task_ttl_enabled")).toBool(false);
     result.taskTtlSeconds = object.value(QStringLiteral("task_ttl_seconds")).toInt();
+
+    // Live activity: running counter + last-finished trail.
+    result.runningTasks = object.value(QStringLiteral("running_tasks")).toInt();
+    const QJsonArray recentArr = object.value(QStringLiteral("recent_tasks")).toArray();
+    result.recentTasks.clear();
+    result.recentTasks.reserve(static_cast<std::size_t>(recentArr.size()));
+    for (const QJsonValue &v : recentArr) {
+        const QJsonObject t = v.toObject();
+        BackendRecentTask task;
+        task.operation       = t.value(QStringLiteral("operation")).toString();
+        task.status          = t.value(QStringLiteral("status")).toString();
+        task.durationSeconds = t.value(QStringLiteral("duration_seconds")).toDouble(0.0);
+        task.ageSeconds      = t.value(QStringLiteral("age_seconds")).toDouble(0.0);
+        task.cacheHit        = t.value(QStringLiteral("cache_hit")).toBool(false);
+        result.recentTasks.push_back(std::move(task));
+    }
+
     if (!result.ok) {
         result.error = QStringLiteral("Backend health check failed.");
     }

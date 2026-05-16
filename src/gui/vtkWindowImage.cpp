@@ -15,6 +15,7 @@
 #include "ProfileWidget.h"
 #include "RemoteFileBrowserDialog.h"
 #include "SidebarPanel.h"
+#include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
 #include "ToolResultDialog.h"
 #include "vtkInteractorStyleProfile.h"
@@ -70,7 +71,10 @@
 #include <QMetaObject>
 #include <QMessageBox>
 #include <QSignalBlocker>
+#include <QPlainTextEdit>
+#include <QDialog>
 #include <QStringList>
+#include <QToolBar>
 #include <QToolButton>
 #include <QTableView>
 #include <QVBoxLayout>
@@ -1155,13 +1159,15 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
       importService(std::make_unique<ImageLayerImportService>())
 {
     ui->setupUi(this);
+    this->setupViewerToolbar();
     // setupSidebar() is called later, after all QActions are initialised
     qDebug().noquote()
             << QStringLiteral("[wcs] remote metadata loaded ctype=%1,%2 cdelt=%3,%4")
                        .arg(this->remoteDatasetCtype[0], this->remoteDatasetCtype[1])
                        .arg(this->remoteDatasetCdelt[0], 0, 'g', 12)
                        .arg(this->remoteDatasetCdelt[1], 0, 'g', 12);
-    this->setWindowTitle(this->filepath);
+    // The file path is shown in the Layout B path-pill toolbar.
+    this->setWindowTitle(u"VisIVO Visual Analytics"_s);
     this->setAttribute(Qt::WA_DeleteOnClose);
     this->hoverReadoutLabel = new QLabel(this);
     this->hoverReadoutLabel->setStyleSheet(u"QLabel { padding-left: 8px; }"_s);
@@ -1468,6 +1474,11 @@ void vtkWindowImage::closeEvent(QCloseEvent *event)
         this->showPersistentStatusMessage(u"Loading image..."_s);
         event->ignore();
         return;
+    }
+
+    // Cache the last-view thumbnail for the Data Hub recents panel.
+    if (ui && ui->vtk) {
+        ThumbnailCache::captureFromWidget(ui->vtk, this->filepath);
     }
 
     QMainWindow::closeEvent(event);
@@ -4034,6 +4045,121 @@ void vtkWindowImage::markDisplayStateAdjusted(const char *reason)
     this->userAdjustedDisplayState = true;
     qDebug().noquote() << QStringLiteral("[image] display state adjusted reason=%1")
                                   .arg(QString::fromUtf8(reason ? reason : "unknown"));
+}
+
+// ── FITS header dialog (shown on primary tag click) ──────────────────────────
+
+void vtkWindowImage::showFitsHeaderDialog()
+{
+    BackendClient client(this->remoteBackendUrl, this->remoteBackendToken);
+    const auto result = client.fileHeader(this->filepath);
+
+    auto *dlg = new QDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowModality(Qt::NonModal);
+    dlg->setWindowTitle(u"FITS Header — %1"_s.arg(QFileInfo(this->filepath).fileName()));
+    dlg->resize(620, 480);
+
+    auto *vbox = new QVBoxLayout(dlg);
+    vbox->setContentsMargins(0, 0, 0, 0);
+    vbox->setSpacing(0);
+
+    auto *header = new QFrame(dlg);
+    header->setStyleSheet(
+            QStringLiteral(
+                    "QFrame {"
+                    "  background-color: %1;"
+                    "  border-bottom: 1px solid %2;"
+                    "}"
+                    "QFrame QLabel { background: transparent; }")
+                    .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerLow()),
+                         QLatin1StringView(VisivoTheme::kOutline())));
+    auto *headerLayout = new QVBoxLayout(header);
+    headerLayout->setContentsMargins(16, 12, 16, 12);
+    headerLayout->setSpacing(2);
+    auto *title = new QLabel(u"FITS Header"_s, header);
+    title->setStyleSheet(
+            QStringLiteral("color: %1; font-size: 14px; font-weight: 700;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
+    headerLayout->addWidget(title);
+    auto *sub = new QLabel(this->filepath, header);
+    sub->setStyleSheet(
+            QStringLiteral("color: %1; font-size: 11px; "
+                            "font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    sub->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    headerLayout->addWidget(sub);
+    vbox->addWidget(header);
+
+    auto *body = new QPlainTextEdit(dlg);
+    body->setReadOnly(true);
+    body->setLineWrapMode(QPlainTextEdit::NoWrap);
+    body->setStyleSheet(
+            QStringLiteral(
+                    "QPlainTextEdit {"
+                    "  background-color: %1; color: %2;"
+                    "  font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;"
+                    "  font-size: 11px;"
+                    "  border: none;"
+                    "  padding: 12px 14px;"
+                    "}")
+                    .arg(QLatin1StringView(VisivoTheme::kSurface()),
+                         QLatin1StringView(VisivoTheme::kOnSurface())));
+    if (result.valid && !result.cards.isEmpty()) {
+        body->setPlainText(result.cards.join(u"\n"_s));
+    } else if (!result.valid) {
+        body->setPlainText(
+                QStringLiteral("Could not load FITS header.\n\n%1")
+                        .arg(result.error.isEmpty() ? u"Unknown error."_s : result.error));
+    } else {
+        body->setPlainText(u"(empty header)"_s);
+    }
+    vbox->addWidget(body, 1);
+
+    dlg->show();
+}
+
+// ── Layout B viewer toolbar ──────────────────────────────────────────────────
+
+void vtkWindowImage::setupViewerToolbar()
+{
+    VisivoTheme::ViewerToolbarSpec spec;
+    spec.filePath = this->filepath;
+    spec.primaryTag = QStringLiteral("IMAGE");
+    spec.secondaryTag = QStringLiteral("remote · full-res");
+
+    QToolButton *findBtn = nullptr;
+    QToolButton *cmdBtn  = nullptr;
+    QToolButton *expBtn  = nullptr;
+    QToolButton *tagBtn  = nullptr;
+    QWidget *bar = VisivoTheme::makeViewerToolbar(
+            spec, &findBtn, &cmdBtn, &expBtn, &tagBtn, this);
+
+    if (tagBtn) {
+        QObject::connect(tagBtn, &QToolButton::clicked, this, [this]() {
+            this->showFitsHeaderDialog();
+        });
+    }
+
+    auto *qtBar = new QToolBar(this);
+    qtBar->setObjectName(u"viewerToolbarHost"_s);
+    qtBar->setMovable(false);
+    qtBar->setFloatable(false);
+    qtBar->setContextMenuPolicy(Qt::PreventContextMenu);
+    qtBar->setStyleSheet(
+            QStringLiteral(
+                    "QToolBar#viewerToolbarHost {"
+                    "  background-color: transparent;"
+                    "  border: none;"
+                    "  padding: 6px 10px 4px 10px;"
+                    "  spacing: 0px;"
+                    "}"));
+    qtBar->addWidget(bar);
+    this->addToolBar(Qt::TopToolBarArea, qtBar);
+
+    Q_UNUSED(findBtn);
+    Q_UNUSED(cmdBtn);
+    Q_UNUSED(expBtn);
 }
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────

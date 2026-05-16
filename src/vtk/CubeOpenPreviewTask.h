@@ -20,6 +20,11 @@ struct CubeOpenStageResult
     std::array<int, 6> dataExtent{ 0, -1, 0, -1, 0, -1 };
     double cubeMean{ 0. };
     double cubeRms{ 0. };
+    // When true, cubeImageData has already been sanitized off-thread:
+    // NaN voxels were replaced with invisibleSentinel, cubeRange holds the
+    // finite-only visible range. The GUI thread can skip its own pass.
+    bool preSanitized{ false };
+    double invisibleSentinel{ -1.0 };
 };
 
 CubeOpenStageResult loadCubeOpenPreview(const QString &filepath);

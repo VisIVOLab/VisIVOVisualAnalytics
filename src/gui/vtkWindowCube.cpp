@@ -11,6 +11,7 @@
 #include "MomentMapController.h"
 #include "NoiseController.h"
 #include "StackDialog.h"
+#include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
 #include "ToolResultDialog.h"
 #include "ProfileWidget.h"
@@ -84,7 +85,9 @@
 #include <QHBoxLayout>
 #include <QImage>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QPushButton>
+#include <QToolBar>
 #include <QToolButton>
 #include <QDebug>
 #include <QDialog>
@@ -275,6 +278,24 @@ double computeBlankFraction(vtkImageData *imageData)
     if (total <= 0) {
         return 0.0;
     }
+
+    // Fast path: float / single-component scalars (the backend always returns
+    // float32 volumes). Iterating with a raw pointer is ~100× faster than the
+    // virtual GetScalarComponentAsDouble loop — the slow path used to take
+    // ~3 s on a 512×512×200 cube and was being called 3× per full-res swap,
+    // accounting for the entire observed UI freeze.
+    if (imageData->GetScalarType() == VTK_FLOAT && imageData->GetNumberOfScalarComponents() == 1) {
+        const auto *values = static_cast<const float *>(imageData->GetScalarPointer());
+        qsizetype blanked = 0;
+        for (qsizetype i = 0; i < total; ++i) {
+            if (!std::isfinite(values[i])) {
+                ++blanked;
+            }
+        }
+        return static_cast<double>(blanked) / static_cast<double>(total);
+    }
+
+    // Generic fallback for non-float / multi-component scalars.
     qsizetype blanked = 0;
     for (int z = extent[4]; z <= extent[5]; ++z) {
         for (int y = extent[2]; y <= extent[3]; ++y) {
@@ -853,6 +874,93 @@ SanitizedCubeStats sanitizeCubeScalarsInPlace(vtkImageData *image)
     return { { rangeMin, rangeMax }, invisibleSentinel };
 }
 
+struct SanitizedCubeFullStats
+{
+    std::array<double, 2> visibleRange{ 0., 0. };
+    double invisibleSentinel{ -1.0 };
+    double mean{ 0. };
+    double rms{ 0. };
+};
+
+// Worker-thread variant: combines sanitize + range + mean/rms in two passes
+// over the voxel buffer, instead of three (sanitize=2 passes, stats=1 pass).
+// Designed to run off the GUI thread so the swap to full-resolution data is
+// cheap (no scan needed in applyCubeOpenResult when result.preSanitized=true).
+SanitizedCubeFullStats sanitizeAndStatsCubeInPlace(vtkImageData *image)
+{
+    SanitizedCubeFullStats stats;
+    if (!image) {
+        return stats;
+    }
+
+    if (image->GetScalarType() != VTK_FLOAT || image->GetNumberOfScalarComponents() != 1) {
+        double scalarRange[2] = { 0., 0. };
+        image->GetScalarRange(scalarRange);
+        const double range = scalarRange[1] - scalarRange[0];
+        stats.visibleRange = { scalarRange[0], scalarRange[1] };
+        stats.invisibleSentinel =
+                range > 0.0 ? (scalarRange[0] - 0.01 * range) : (scalarRange[0] - 1.0);
+        return stats;
+    }
+
+    int extent[6];
+    image->GetExtent(extent);
+    const auto voxelCount = static_cast<qsizetype>(extent[1] - extent[0] + 1)
+            * static_cast<qsizetype>(extent[3] - extent[2] + 1)
+            * static_cast<qsizetype>(extent[5] - extent[4] + 1);
+    if (voxelCount <= 0) {
+        return stats;
+    }
+
+    auto *values = static_cast<float *>(image->GetScalarPointer());
+    double rangeMin = std::numeric_limits<double>::infinity();
+    double rangeMax = -std::numeric_limits<double>::infinity();
+    double sum = 0.;
+    double sumSq = 0.;
+    qsizetype finiteCount = 0;
+    for (qsizetype i = 0; i < voxelCount; ++i) {
+        const float value = values[i];
+        if (!std::isfinite(value)) {
+            continue;
+        }
+        const double d = static_cast<double>(value);
+        if (d < rangeMin) rangeMin = d;
+        if (d > rangeMax) rangeMax = d;
+        sum += d;
+        sumSq += d * d;
+        ++finiteCount;
+    }
+
+    if (!std::isfinite(rangeMin) || !std::isfinite(rangeMax)) {
+        rangeMin = 0.;
+        rangeMax = 0.;
+    }
+
+    const double range = rangeMax - rangeMin;
+    const float invisibleSentinel =
+            static_cast<float>(range > 0.0 ? (rangeMin - 0.01 * range) : (rangeMin - 1.0));
+
+    qsizetype replaced = 0;
+    for (qsizetype i = 0; i < voxelCount; ++i) {
+        if (!std::isfinite(values[i])) {
+            values[i] = invisibleSentinel;
+            ++replaced;
+        }
+    }
+
+    if (replaced > 0) {
+        image->Modified();
+    }
+
+    stats.visibleRange = { rangeMin, rangeMax };
+    stats.invisibleSentinel = invisibleSentinel;
+    if (finiteCount > 0) {
+        stats.mean = sum / static_cast<double>(finiteCount);
+        stats.rms = std::sqrt(sumSq / static_cast<double>(finiteCount));
+    }
+    return stats;
+}
+
 bool validBounds(const double bounds[6])
 {
     return std::isfinite(bounds[0]) && std::isfinite(bounds[1]) && std::isfinite(bounds[2])
@@ -1115,50 +1223,6 @@ vtkSmartPointer<vtkImageData> decodeRemoteSlice(const QByteArray &data, int widt
     return image;
 }
 
-void computeVolumeStats(vtkImageData *image, std::array<double, 2> &range, double &mean, double &rms)
-{
-    range = { 0., 0. };
-    mean = 0.;
-    rms = 0.;
-    if (!image) {
-        return;
-    }
-
-    double scalarRange[2];
-    image->GetScalarRange(scalarRange);
-    range = { scalarRange[0], scalarRange[1] };
-
-    int extent[6];
-    image->GetExtent(extent);
-    const auto voxelCount = static_cast<qsizetype>(extent[1] - extent[0] + 1)
-            * static_cast<qsizetype>(extent[3] - extent[2] + 1)
-            * static_cast<qsizetype>(extent[5] - extent[4] + 1);
-    if (voxelCount <= 0) {
-        return;
-    }
-
-    const auto *values = static_cast<const float *>(image->GetScalarPointer());
-    double sum = 0.;
-    double sumSq = 0.;
-    qsizetype finiteCount = 0;
-    for (qsizetype i = 0; i < voxelCount; ++i) {
-        const double value = values[i];
-        if (!std::isfinite(value)) {
-            continue;
-        }
-        sum += value;
-        sumSq += value * value;
-        ++finiteCount;
-    }
-
-    if (finiteCount <= 0) {
-        return;
-    }
-
-    mean = sum / static_cast<double>(finiteCount);
-    rms = std::sqrt(sumSq / static_cast<double>(finiteCount));
-}
-
 vtkSmartPointer<vtkPolyData> decodeRemoteIsosurface(const QByteArray &pointsData,
                                                     const QByteArray &polysData, int numPoints,
                                                     int numPolys)
@@ -1337,7 +1401,13 @@ RemoteCubeSubvolumeResult fetchRemoteSubvolume(const QString &backendUrl, const 
 
     result.valid = true;
     result.dataExtent = roi;
-    computeVolumeStats(result.cubeImageData, result.cubeRange, result.cubeMean, result.cubeRms);
+    // Sanitize + compute range/mean/rms here on the worker thread so the GUI
+    // does not stall scanning the full volume when swapping to full-resolution.
+    const auto stats = sanitizeAndStatsCubeInPlace(result.cubeImageData);
+    result.cubeRange = stats.visibleRange;
+    result.invisibleSentinel = stats.invisibleSentinel;
+    result.cubeMean = stats.mean;
+    result.cubeRms = stats.rms;
     return result;
 }
 
@@ -1428,9 +1498,12 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
       level(15)
 {
     ui->setupUi(this);
+    this->setupViewerToolbar();
     this->setupSidebar();
     this->setupWorkspaceDocks();
-    this->setWindowTitle(this->filepath);
+    // The file path is shown in the Layout B path-pill toolbar; the OS title
+    // bar carries the brand name to avoid duplicate context.
+    this->setWindowTitle(u"VisIVO Visual Analytics"_s);
     this->setAttribute(Qt::WA_DeleteOnClose);
     qDebug().noquote()
             << QStringLiteral("[wcs] remote metadata loaded ctype=%1,%2,%3 cdelt=%4,%5,%6")
@@ -1763,7 +1836,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                                      { 0., 0. },
                                                      result.dataExtent,
                                                      result.cubeMean,
-                                                     result.cubeRms });
+                                                     result.cubeRms,
+                                                     /*preSanitized=*/true,
+                                                     result.invisibleSentinel });
                          if (auto *cubeImage = vtkImageData::SafeDownCast(
                                      this->cubeDisplaySource->GetOutputDataObject(0))) {
                              double bounds[6];
@@ -2272,6 +2347,131 @@ vtkWindowCube::~vtkWindowCube()
 }
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
+
+void vtkWindowCube::showFitsHeaderDialog()
+{
+    // Reuse the same backend endpoint the Remote File Browser already uses.
+    BackendClient client(this->remoteBackendUrl, this->remoteBackendToken);
+    const auto result = client.fileHeader(this->filepath);
+
+    auto *dlg = new QDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowModality(Qt::NonModal);
+    dlg->setWindowTitle(u"FITS Header — %1"_s.arg(QFileInfo(this->filepath).fileName()));
+    dlg->resize(620, 480);
+
+    auto *vbox = new QVBoxLayout(dlg);
+    vbox->setContentsMargins(0, 0, 0, 0);
+    vbox->setSpacing(0);
+
+    auto *header = new QFrame(dlg);
+    header->setStyleSheet(
+            QStringLiteral(
+                    "QFrame {"
+                    "  background-color: %1;"
+                    "  border-bottom: 1px solid %2;"
+                    "}"
+                    "QFrame QLabel { background: transparent; }")
+                    .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerLow()),
+                         QLatin1StringView(VisivoTheme::kOutline())));
+    auto *headerLayout = new QVBoxLayout(header);
+    headerLayout->setContentsMargins(16, 12, 16, 12);
+    headerLayout->setSpacing(2);
+    auto *title = new QLabel(u"FITS Header"_s, header);
+    title->setStyleSheet(
+            QStringLiteral("color: %1; font-size: 14px; font-weight: 700;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
+    headerLayout->addWidget(title);
+    auto *sub = new QLabel(this->filepath, header);
+    sub->setStyleSheet(
+            QStringLiteral("color: %1; font-size: 11px; "
+                            "font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    sub->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    headerLayout->addWidget(sub);
+    vbox->addWidget(header);
+
+    auto *body = new QPlainTextEdit(dlg);
+    body->setReadOnly(true);
+    body->setLineWrapMode(QPlainTextEdit::NoWrap);
+    body->setStyleSheet(
+            QStringLiteral(
+                    "QPlainTextEdit {"
+                    "  background-color: %1; color: %2;"
+                    "  font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;"
+                    "  font-size: 11px;"
+                    "  border: none;"
+                    "  padding: 12px 14px;"
+                    "}")
+                    .arg(QLatin1StringView(VisivoTheme::kSurface()),
+                         QLatin1StringView(VisivoTheme::kOnSurface())));
+    if (result.valid && !result.cards.isEmpty()) {
+        body->setPlainText(result.cards.join(u"\n"_s));
+    } else if (!result.valid) {
+        body->setPlainText(
+                QStringLiteral("Could not load FITS header.\n\n%1")
+                        .arg(result.error.isEmpty() ? u"Unknown error."_s : result.error));
+    } else {
+        body->setPlainText(u"(empty header)"_s);
+    }
+    vbox->addWidget(body, 1);
+
+    dlg->show();
+}
+
+void vtkWindowCube::setupViewerToolbar()
+{
+    // Layout B principle: a thin horizontal "screen header" above the central
+    // area showing the file context (path-pill), data tags, and quick actions
+    // (Find / Command / Export). Hosted via QMainWindow::addToolBar so we
+    // don't have to restructure the .ui file's central widget — the toolbar
+    // sits between the menu bar and centralwidget by default.
+    VisivoTheme::ViewerToolbarSpec spec;
+    spec.filePath = this->filepath;
+    spec.primaryTag = QStringLiteral("CUBE · %1×%2×%3")
+                              .arg(this->remoteDatasetWidth)
+                              .arg(this->remoteDatasetHeight)
+                              .arg(this->remoteDatasetDepth);
+    spec.secondaryTag = QStringLiteral("remote · full-res");
+
+    QToolButton *findBtn = nullptr;
+    QToolButton *cmdBtn  = nullptr;
+    QToolButton *expBtn  = nullptr;
+    QToolButton *tagBtn  = nullptr;
+    QWidget *bar = VisivoTheme::makeViewerToolbar(
+            spec, &findBtn, &cmdBtn, &expBtn, &tagBtn, this);
+
+    // Click on the "CUBE · …" tag opens the FITS header viewer.
+    if (tagBtn) {
+        QObject::connect(tagBtn, &QToolButton::clicked, this, [this]() {
+            this->showFitsHeaderDialog();
+        });
+    }
+
+    auto *qtBar = new QToolBar(this);
+    qtBar->setObjectName(u"viewerToolbarHost"_s);
+    qtBar->setMovable(false);
+    qtBar->setFloatable(false);
+    qtBar->setContextMenuPolicy(Qt::PreventContextMenu);
+    // Strip QToolBar's default chrome — let the inner widget supply its own.
+    qtBar->setStyleSheet(
+            QStringLiteral(
+                    "QToolBar#viewerToolbarHost {"
+                    "  background-color: transparent;"
+                    "  border: none;"
+                    "  padding: 6px 10px 4px 10px;"
+                    "  spacing: 0px;"
+                    "}"));
+    qtBar->addWidget(bar);
+    this->addToolBar(Qt::TopToolBarArea, qtBar);
+
+    // The Find/Command/Export buttons are deliberately left unwired for now —
+    // they read as visual affordances. Find triggers Edit→Find, Command opens
+    // the future ⌘K palette, Export hooks into the existing export menu.
+    Q_UNUSED(findBtn);
+    Q_UNUSED(cmdBtn);
+    Q_UNUSED(expBtn);
+}
 
 void vtkWindowCube::setupSidebar()
 {
@@ -2855,6 +3055,12 @@ void vtkWindowCube::resetWorkspaceLayout()
 
 void vtkWindowCube::closeEvent(QCloseEvent *event)
 {
+    // Capture a thumbnail of the last view BEFORE the cube renderer is torn
+    // down — the Data Hub's recents list shows it next to this dataset.
+    if (!this->isBusy() && ui && ui->vtkCube) {
+        ThumbnailCache::captureFromWidget(ui->vtkCube, this->filepath);
+    }
+
     if (this->isBusy()) {
         if (this->cubeOpenWatcher.isRunning() || this->remotePreviewWatcher.isRunning()
             || this->remoteHighResCubeWatcher.isRunning()) {
@@ -2915,6 +3121,10 @@ void vtkWindowCube::setupCubeRenderer()
     vtkNew<vtkGPUVolumeRayCastMapper> volumeMapper;
     volumeMapper->SetInputConnection(this->cubeDisplaySource->GetOutputPort());
     volumeMapper->SetBlendModeToComposite(); // default
+    // Lower sample density during interaction so frames stay responsive
+    // immediately after a full-resolution swap (when GPU caches are cold).
+    volumeMapper->SetAutoAdjustSampleDistances(1);
+    volumeMapper->SetUseJittering(1);
     this->volumeMapper = volumeMapper;       // keep reference for blend-mode changes
     this->volume->SetMapper(volumeMapper);
     this->volume->SetProperty(volumeProperty);
@@ -5894,8 +6104,12 @@ void vtkWindowCube::updateRemoteCuttingPlane(int sliceIndex)
                        .arg(bounds[4], 0, 'g', 12)
                        .arg(bounds[5], 0, 'g', 12)
                        .arg(this->remoteCuttingPlaneActor->GetVisibility());
-    ui->vtkCube->renderWindow()->Render();
-    qDebug().noquote() << QStringLiteral("[remote-plane] render triggered");
+    // NOTE: caller is responsible for the next Render(). We used to call Render
+    // here, but all 3 callers (applyCubeOpenResult, applyRemoteSliceResult,
+    // updateRemoteSliceDragFeedback) already trigger a Render immediately
+    // afterwards — and during the full-res swap that internal Render was
+    // firing the synchronous GPU volume upload *before* the deferred render
+    // in applyCubeOpenResult, causing the macOS beach-ball.
 }
 
 void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
@@ -5910,9 +6124,17 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     const auto *currentCubeImage =
             vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
     if (currentCubeImage != result.cubeImageData.GetPointer()) {
-        const auto sanitized = sanitizeCubeScalarsInPlace(result.cubeImageData);
-        this->currentCubeVisibleRange = sanitized.visibleRange;
-        this->currentCubeInvisibleSentinel = sanitized.invisibleSentinel;
+        if (result.preSanitized) {
+            // Worker thread already scanned + sanitized the volume; just adopt
+            // the visible range and sentinel without re-scanning here (which
+            // would freeze the UI for multi-GB cubes).
+            this->currentCubeVisibleRange = result.cubeRange;
+            this->currentCubeInvisibleSentinel = result.invisibleSentinel;
+        } else {
+            const auto sanitized = sanitizeCubeScalarsInPlace(result.cubeImageData);
+            this->currentCubeVisibleRange = sanitized.visibleRange;
+            this->currentCubeInvisibleSentinel = sanitized.invisibleSentinel;
+        }
     }
 
     this->cubeDisplaySource->SetOutput(result.cubeImageData);
@@ -5954,12 +6176,20 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
 
     QElapsedTimer cubeFieldsTimer;
     cubeFieldsTimer.start();
+    QElapsedTimer stepTimer;
+    stepTimer.start();
     ui->lineCubeMin->setText(QString::number(this->currentCubeVisibleRange[0]));
+    qDebug().noquote() << QStringLiteral("[perf][cube] setText lineCubeMin: %1 ms").arg(stepTimer.restart());
     ui->lineCubeMax->setText(QString::number(this->currentCubeVisibleRange[1]));
+    qDebug().noquote() << QStringLiteral("[perf][cube] setText lineCubeMax: %1 ms").arg(stepTimer.restart());
     ui->lineCubeMean->setText(QString::number(result.cubeMean));
+    qDebug().noquote() << QStringLiteral("[perf][cube] setText lineCubeMean: %1 ms").arg(stepTimer.restart());
     ui->lineCubeRms->setText(QString::number(result.cubeRms));
+    qDebug().noquote() << QStringLiteral("[perf][cube] setText lineCubeRms: %1 ms").arg(stepTimer.restart());
     ui->lineSpectral->setText(this->formatSpectralAxisValue(clampedSlice));
+    qDebug().noquote() << QStringLiteral("[perf][cube] setText lineSpectral: %1 ms").arg(stepTimer.restart());
     this->refreshSpectralAxisUi();
+    qDebug().noquote() << QStringLiteral("[perf][cube] refreshSpectralAxisUi: %1 ms").arg(stepTimer.restart());
     qDebug().noquote()
             << QStringLiteral("[perf][cube] apply cube UI fields: %1 ms").arg(
                        cubeFieldsTimer.elapsed());
@@ -6021,7 +6251,11 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
 
     this->setCubeRenderModeLocally(ui->actionIsosurface->isChecked());
     {
-        this->updateRemoteCuttingPlane(clampedSlice);
+        // NOTE: do NOT call updateRemoteCuttingPlane() here — it triggers a
+        // synchronous Render(), which would be the *first* render with the new
+        // volume data and would block the UI thread on the GPU texture upload.
+        // It is deferred into the singleShot below so the upload happens after
+        // the event loop has had a chance to pump pending UI events.
         if (ui->actionIsosurface->isChecked()) {
             const double threshold = ui->lineThreshold->text().toDouble();
             qDebug().noquote()
@@ -6048,22 +6282,65 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
                 }
                 this->setCubeRenderModeLocally(false);
             } else {
-                this->scheduleIsosurfaceRecompute();
+                // Push the isosurface recompute well after the GPU has settled
+                // from the volume upload below, so the iso compute does not
+                // pile on top of the swap stall (C). 500 ms + 150 ms debounce.
+                QTimer::singleShot(500, this, [this]() {
+                    if (ui->actionIsosurface->isChecked()) {
+                        this->scheduleIsosurfaceRecompute();
+                    }
+                });
             }
         }
     }
     cubeRenderer->Modified();
     ui->vtkCube->renderWindow()->Modified();
 
-    QElapsedTimer renderTimer;
-    renderTimer.start();
-    ui->vtkCube->renderWindow()->Render();
-    ui->vtkImage->renderWindow()->Render();
-    QTimer::singleShot(0, this, [this]() { ui->vtkCube->renderWindow()->Render(); });
-    this->requestRemoteSlice(clampedSlice);
-    qDebug().noquote()
-            << QStringLiteral("[perf][cube] apply render: %1 ms").arg(renderTimer.elapsed());
-    qDebug().noquote() << QStringLiteral("[perf][cube] apply total: %1 ms").arg(
+    // Defer the final renders by one event-loop tick (B). The data swap above
+    // is cheap; the cost is the GPU volume upload that happens on the next
+    // Render(). Letting the event loop pump first means pending UI events
+    // (paint, status updates, cursor) are processed before the GPU stall,
+    // so the transition no longer feels like a freeze of the whole app.
+    QElapsedTimer scheduleTimer;
+    scheduleTimer.start();
+    QTimer::singleShot(50, this, [this, clampedSlice, scheduleTimer]() {
+        qDebug().noquote()
+                << QStringLiteral("[perf][cube] singleShot fired after gap: %1 ms")
+                           .arg(scheduleTimer.elapsed());
+        QElapsedTimer stepTimer;
+        stepTimer.start();
+        this->updateRemoteCuttingPlane(clampedSlice);
+        qDebug().noquote()
+                << QStringLiteral("[perf][cube] deferred updateRemoteCuttingPlane: %1 ms")
+                           .arg(stepTimer.restart());
+        // Pump pending paint / status updates BEFORE the cube Render(), so
+        // "Loading full resolution..." and any other UI changes are visible
+        // before the synchronous GPU volume upload below blocks the thread.
+        QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+        qDebug().noquote()
+                << QStringLiteral("[perf][cube] deferred processEvents: %1 ms")
+                           .arg(stepTimer.restart());
+
+        // First Render with the new volume — this is the actual GPU texture
+        // upload. Inherently synchronous in vtkGPUVolumeRayCastMapper, but it
+        // now happens after the event loop pumped, so the user sees the
+        // updated status message instead of a fully unresponsive app.
+        ui->vtkCube->renderWindow()->Render();
+        qDebug().noquote()
+                << QStringLiteral("[perf][cube] apply cube Render (GPU upload): %1 ms")
+                           .arg(stepTimer.restart());
+
+        ui->vtkImage->renderWindow()->Render();
+        qDebug().noquote()
+                << QStringLiteral("[perf][cube] deferred image Render: %1 ms")
+                           .arg(stepTimer.restart());
+
+        this->requestRemoteSlice(clampedSlice);
+        qDebug().noquote()
+                << QStringLiteral("[perf][cube] deferred requestRemoteSlice: %1 ms")
+                           .arg(stepTimer.restart());
+    });
+    qDebug().noquote() << QStringLiteral("[perf][cube] apply total (sync): %1 ms").arg(
             totalTimer.elapsed());
 }
 
@@ -6255,13 +6532,17 @@ QString vtkWindowCube::spectralAxisTooltip() const
 
 void vtkWindowCube::refreshSpectralAxisUi()
 {
+    QElapsedTimer t;
+    t.start();
     const auto descriptor = this->spectralAxisDescriptor();
     const QString title = this->spectralAxisTitle();
     const QString tooltip = this->spectralAxisTooltip();
+    qDebug().noquote() << QStringLiteral("[perf][spectral] descriptors: %1 ms").arg(t.restart());
     ui->labelSliceHdr->setText(u"CUTTING PLANE (%1)"_s.arg(title).toUpper());
     ui->labelSliceHdr->setToolTip(tooltip);
     ui->lineSpectral->setToolTip(tooltip);
     ui->lineSpectral->setStatusTip(tooltip);
+    qDebug().noquote() << QStringLiteral("[perf][spectral] header/tooltip: %1 ms").arg(t.restart());
     qDebug().noquote()
             << QStringLiteral("[spectral] axis3 title=%1 unit=%2 source=%3")
                        .arg(descriptor.label,
@@ -6271,7 +6552,9 @@ void vtkWindowCube::refreshSpectralAxisUi()
                                     ? QStringLiteral("backend_wcs")
                                     : descriptor.sourceLabel);
     this->updateDataStatePanel();
+    qDebug().noquote() << QStringLiteral("[perf][spectral] updateDataStatePanel: %1 ms").arg(t.restart());
     this->updateSanityPanel();
+    qDebug().noquote() << QStringLiteral("[perf][spectral] updateSanityPanel: %1 ms").arg(t.restart());
 }
 
 bool vtkWindowCube::remoteHasWcsAxis(int axis) const

@@ -51,6 +51,5 @@ private:
     QComboBox               *m_methodCombo{ nullptr };
     QComboBox               *m_weightByCombo{ nullptr };
     QPushButton             *m_stackBtn{ nullptr };
-    QDialogButtonBox        *m_buttons{ nullptr };
     QPointer<QProgressDialog> m_progress;
 };

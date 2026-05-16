@@ -1,6 +1,8 @@
 #include "DataHubWidget.h"
 #include "app/BackendClient.h"
 #include "app/RecentDatasetsManager.h"
+#include "app/ThemeManager.h"
+#include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
 
 #include <QDateTime>
@@ -20,6 +22,8 @@
 #include <QPixmap>
 #include <QSvgRenderer>
 #include <QTimer>
+
+#include <cmath>
 
 using namespace Qt::StringLiterals;
 
@@ -186,6 +190,67 @@ DataHubWidget::DataHubWidget(QWidget *parent) : QWidget(parent)
     // Automatic backend health check at startup.
     QTimer::singleShot(0, this, &DataHubWidget::refreshStatus);
 
+    // Periodic refresh of System Insights so the running counter and recent
+    // operations trail stay current without a manual click. 4 s is a balance
+    // between responsiveness for short tasks (moment maps run in seconds) and
+    // not flooding the backend with health pings.
+    this->insightsTimer = new QTimer(this);
+    this->insightsTimer->setInterval(4000);
+    QObject::connect(this->insightsTimer, &QTimer::timeout,
+                     this, &DataHubWidget::refreshStatus);
+    this->insightsTimer->start();
+
+    // Theme change → full rebuild of the hub UI. Most of our widgets bake
+    // theme hex values into inline stylesheets at construction time, so a
+    // QSS-only refresh would only re-tint the global rules and leave the
+    // hub's cards/labels stranded in the previous theme. A rebuild is the
+    // pragmatic way to get every label, chip, and pill back in sync.
+    QObject::connect(&ThemeManager::instance(), &ThemeManager::themeChanged,
+                     this, [this](EffectiveTheme) { this->rebuildOnThemeChange(); });
+}
+
+// ── rebuildOnThemeChange ─────────────────────────────────────────────────────
+
+void DataHubWidget::rebuildOnThemeChange()
+{
+    // Clear every QPointer that buildUi populates so the helper methods
+    // don't reach for dangling labels mid-rebuild. Backend URL/token and
+    // the RecentDatasetsManager pointer are user state and are preserved.
+    this->labelBackendUrl.clear();
+    this->labelStatusBadge.clear();
+    this->labelStatusDetail.clear();
+    this->btnCheckConnection.clear();
+
+    this->labelRunningTasks.clear();
+    this->labelRunningCaption.clear();
+    this->labelRecentHeader.clear();
+    this->recentTasksContainer.clear();
+    this->labelRecentEmpty.clear();
+    this->labelCapacity.clear();
+
+    this->statusBarHealth.clear();
+    this->statusBarWorkers.clear();
+    this->statusBarSession.clear();
+    this->statusBarSanity.clear();
+
+    this->recentItemsLayout.clear();
+
+    // Rip out the old layout (and all of its child widgets) by parenting it
+    // to a throwaway QWidget that goes out of scope here. Standard Qt idiom
+    // for replacing a widget's layout — `delete this->layout()` alone leaves
+    // the children orphaned in the parent.
+    if (auto *old = this->layout()) {
+        QWidget temp;
+        temp.setLayout(old);
+    }
+
+    this->buildUi();
+
+    // Repopulate live data after the new tree is in place.
+    if (!this->backendUrl.isEmpty()) {
+        QTimer::singleShot(0, this, &DataHubWidget::refreshStatus);
+    }
+    this->refreshRecentDatasets();
 }
 
 // ── buildUi ──────────────────────────────────────────────────────────────────
@@ -270,120 +335,449 @@ void DataHubWidget::buildUi()
         vbox->addWidget(sep);
     }
 
-    // ── 2. Operational Backend card ───────────────────────────────────────────
+    // ── 2. Global search bar (opens ⌘K command palette) ──────────────────────
+    vbox->addWidget(buildSearchBar());
+
+    // ── 3. Backend toolbar (path-pill + connection status) ───────────────────
     vbox->addWidget(buildBackendCard());
 
-    // ── 3. Primary Operations section label + 4-card grid ────────────────────
-    vbox->addWidget(VisivoTheme::makeSectionLabel(u"Primary Operations"_s, content));
-    vbox->addWidget(buildActionGrid());
-
-    // ── 4. Lower row: Recent Datasets + System Insights ───────────────────────
+    // ── 4. Mission Control body: 60/40 two-column layout ─────────────────────
+    //    LEFT (60%): Recent Datasets — the user's main entry into work
+    //    RIGHT (40%): Quick actions stack + Last 5 jobs feed
     {
         auto *row = new QHBoxLayout;
         row->setSpacing(16);
-        row->addWidget(buildRecentDatasetsPanel(), 2);
-        row->addWidget(buildSystemInsightsPanel(), 1);
-        vbox->addLayout(row);
+
+        row->addWidget(buildRecentDatasetsPanel(), 60);
+
+        auto *rightCol = new QVBoxLayout;
+        rightCol->setSpacing(16);
+        rightCol->addWidget(buildQuickActionsList());
+        rightCol->addWidget(buildLast5JobsPanel(), 1);
+        row->addLayout(rightCol, 40);
+
+        vbox->addLayout(row, 1);
     }
 
-    // ── 5. Footer ─────────────────────────────────────────────────────────────
+    // ── 5. Credits line (small, right-aligned) ───────────────────────────────
     {
-        auto *sep = new QFrame(content);
-        sep->setFixedHeight(1);
-        sep->setStyleSheet(
-                QStringLiteral("background-color: rgba(4, 138, 191, 0.15); border: none;"));
-        vbox->addWidget(sep);
-
-        auto *footer = new QLabel(
-                u"VisIVO Visual Analytics, crafted with ❤️ by VisIVOLab team"_s,
+        auto *credits = new QLabel(
+                u"VisIVO Visual Analytics, crafted with ❤ by VisIVOLab team"_s,
                 content);
-        footer->setWordWrap(true);
-        footer->setStyleSheet(
-                QStringLiteral("color: %1; font-size: 11px; background: transparent;")
-                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
-        vbox->addWidget(footer);
+        credits->setStyleSheet(
+                QStringLiteral("color: %1; font-size: 10px; "
+                                "background: transparent; padding: 4px 0 0 0;")
+                        .arg(QLatin1StringView(VisivoTheme::kSecondary())));
+        credits->setAlignment(Qt::AlignCenter);
+        vbox->addWidget(credits);
     }
 
-    vbox->addStretch(1);
+    // ── 6. Status bar (Layout B: bottom-anchored, dense, inspector-grade) ────
+    //    Health + activity + session + sanity badge in a single thin row.
+    vbox->addWidget(buildStatusBar());
 }
 
-// ── buildBackendCard ─────────────────────────────────────────────────────────
+// ── buildBackendCard (Layout B: thin toolbar with path-pill) ─────────────────
 
 QFrame *DataHubWidget::buildBackendCard()
 {
-    // Wide banner: gradient feel via a slightly brighter surface-container-high.
-    auto *card = new QFrame(this);
-    card->setStyleSheet(
+    // Layout B's `.va-toolbar`: a slim horizontal bar at the top of a screen,
+    // anchored by a path-pill that shows the active context (here: the backend
+    // endpoint URL). Status badge + workers tag + Check Connection sit to the
+    // right. Replaces the previous large "Operational Backend" card.
+    auto *bar = new QFrame(this);
+    bar->setObjectName(u"backendCard"_s);
+    bar->setStyleSheet(
             QStringLiteral(
                     "QFrame#backendCard {"
-                    "  background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
-                    "    stop:0 %1, stop:1 %2);"
-                    "  border-radius: 12px;"
-                    "  border: 1px solid rgba(4, 138, 191, 0.22);"
+                    "  background-color: %1;"
+                    "  border: 1px solid %2;"
+                    "  border-radius: 8px;"
                     "}")
                     .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerLow()),
-                         QLatin1StringView(VisivoTheme::kSurfaceContainerHigh())));
-    card->setObjectName(u"backendCard"_s);
+                         QLatin1StringView(VisivoTheme::kOutline())));
 
-    auto *hbox = new QHBoxLayout(card);
-    hbox->setContentsMargins(24, 20, 24, 20);
-    hbox->setSpacing(20);
+    auto *hbox = new QHBoxLayout(bar);
+    hbox->setContentsMargins(12, 8, 12, 8);
+    hbox->setSpacing(10);
 
-    // Left: info stack
-    auto *infoCol = new QVBoxLayout;
-    infoCol->setSpacing(8);
+    // ── Path-pill: home icon + backend URL (selectable). The home glyph sets
+    //    the visual rhythm; the URL itself is mono-spaced and selectable so
+    //    users can copy it.
+    auto *pill = new QFrame(bar);
+    pill->setObjectName(u"pathPill"_s);
+    pill->setStyleSheet(
+            QStringLiteral(
+                    "QFrame#pathPill {"
+                    "  background-color: %1;"
+                    "  border: 1px solid %2;"
+                    "  border-radius: 6px;"
+                    "}"
+                    "QLabel { background: transparent; }")
+                    .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerHigh()),
+                         QLatin1StringView(VisivoTheme::kOutline())));
+    auto *pillLayout = new QHBoxLayout(pill);
+    pillLayout->setContentsMargins(10, 4, 10, 4);
+    pillLayout->setSpacing(8);
 
-    // "OPERATIONAL BACKEND" label + badge row
+    auto *pillIcon = new QLabel(u"⌂"_s, pill);
+    pillIcon->setStyleSheet(
+            QStringLiteral("color: %1; font-size: 13px;")
+                    .arg(QLatin1StringView(VisivoTheme::kPrimary())));
+    pillLayout->addWidget(pillIcon);
+
+    this->labelBackendUrl = new QLabel(u"(not configured)"_s, pill);
     {
-        auto *topRow = new QHBoxLayout;
-        topRow->setSpacing(10);
-        topRow->setContentsMargins(0, 0, 0, 0);
-
-        auto *sectionLbl = VisivoTheme::makeSectionLabel(u"Operational Backend"_s, card);
-        topRow->addWidget(sectionLbl);
-
-        this->labelStatusBadge = VisivoTheme::makeBadge(
-                u"● Status unknown"_s, VisivoTheme::BadgeKind::Neutral, card);
-        topRow->addWidget(this->labelStatusBadge);
-        topRow->addStretch(1);
-        infoCol->addLayout(topRow);
-    }
-
-    // Backend URL — large, prominent. Lato Bold matches brand heading weight.
-    this->labelBackendUrl = new QLabel(u"(not configured)"_s, card);
-    {
-        QFont f(QStringLiteral("Lato"));
-        f.setPixelSize(18);
-        f.setWeight(QFont::Bold);
+        QFont f(QStringLiteral("JetBrains Mono"));
+        f.setStyleHint(QFont::Monospace);
+        f.setPixelSize(12);
         this->labelBackendUrl->setFont(f);
-        this->labelBackendUrl->setStyleSheet(
-                QStringLiteral("color: %1; background: transparent;")
-                        .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
-        this->labelBackendUrl->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        this->labelBackendUrl->setCursor(Qt::IBeamCursor);
-        this->labelBackendUrl->setWordWrap(true);
-        infoCol->addWidget(this->labelBackendUrl);
     }
+    this->labelBackendUrl->setStyleSheet(
+            QStringLiteral("color: %1;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
+    this->labelBackendUrl->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    this->labelBackendUrl->setCursor(Qt::IBeamCursor);
+    pillLayout->addWidget(this->labelBackendUrl);
 
-    // Detail / error text
-    this->labelStatusDetail = new QLabel(u"Set the backend URL in Edit → Settings."_s, card);
+    hbox->addWidget(pill);
+
+    // ── Status badge (Connected / Unreachable / unknown) ─────────────────────
+    this->labelStatusBadge = VisivoTheme::makeBadge(
+            u"● Status unknown"_s, VisivoTheme::BadgeKind::Neutral, bar);
+    hbox->addWidget(this->labelStatusBadge);
+
+    // ── Detail caption (sits inline, replacing the old separate detail row).
+    //    Visible only when the badge state needs it (errors, hints).
+    this->labelStatusDetail = new QLabel(
+            u"Set the backend URL in Edit → Settings."_s, bar);
     this->labelStatusDetail->setStyleSheet(
-            QStringLiteral("color: %1; font-size: 12px; background: transparent;")
+            QStringLiteral("color: %1; font-size: 11px; background: transparent;")
                     .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
-    this->labelStatusDetail->setWordWrap(true);
-    infoCol->addWidget(this->labelStatusDetail);
+    hbox->addWidget(this->labelStatusDetail, 1);
 
-    hbox->addLayout(infoCol, 1);
-
-    // Right: button
-    this->btnCheckConnection = VisivoTheme::makePrimaryButton(u"Check Connection"_s, card);
-    this->btnCheckConnection->setMinimumWidth(170);
-    hbox->addWidget(this->btnCheckConnection, 0, Qt::AlignVCenter);
-
+    // ── Check Connection button (right edge) ────────────────────────────────
+    this->btnCheckConnection = VisivoTheme::makeSecondaryButton(
+            u"Check Connection"_s, bar);
     QObject::connect(this->btnCheckConnection, &QPushButton::clicked,
                      this, &DataHubWidget::refreshStatus);
+    hbox->addWidget(this->btnCheckConnection, 0, Qt::AlignVCenter);
+
+    return bar;
+}
+
+// ── buildSearchBar (Mission Control: global ⌘K search at top) ────────────────
+
+QFrame *DataHubWidget::buildSearchBar()
+{
+    // Wide search field that doubles as the command palette trigger. We don't
+    // implement live-filtering here — clicking anywhere on the bar opens the
+    // shared CommandPalette which already covers filesystem + recents +
+    // VLKB-eventually + actions.
+    auto *bar = new QFrame(this);
+    bar->setObjectName(u"hubSearchBar"_s);
+    bar->setCursor(Qt::PointingHandCursor);
+    bar->setStyleSheet(
+            QStringLiteral(
+                    "QFrame#hubSearchBar {"
+                    "  background-color: %1;"
+                    "  border: 1px solid %2;"
+                    "  border-radius: 8px;"
+                    "}"
+                    "QFrame#hubSearchBar:hover {"
+                    "  border-color: %3;"
+                    "}"
+                    "QFrame#hubSearchBar QLabel { background: transparent; }")
+                    .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerHigh()),
+                         QLatin1StringView(VisivoTheme::kOutline()),
+                         QLatin1StringView(VisivoTheme::kPrimary())));
+
+    auto *hbox = new QHBoxLayout(bar);
+    hbox->setContentsMargins(14, 9, 14, 9);
+    hbox->setSpacing(10);
+
+    auto *icon = new QLabel(u"⌕"_s, bar);
+    icon->setStyleSheet(
+            QStringLiteral("color: %1; font-size: 16px;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    hbox->addWidget(icon);
+
+    auto *placeholder = new QLabel(
+            u"Search FITS files, catalogues, recent sessions, actions…"_s, bar);
+    placeholder->setStyleSheet(
+            QStringLiteral("color: %1; font-size: 13px;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    hbox->addWidget(placeholder, 1);
+
+    // Scope chips — read-only hints showing what the palette covers.
+    auto makeScope = [&](const QString &t) {
+        auto *l = new QLabel(t, bar);
+        l->setStyleSheet(
+                QStringLiteral(
+                        "background: %1; color: %2;"
+                        "font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;"
+                        "font-size: 10px; padding: 2px 6px; border-radius: 3px;"
+                        "border: 1px solid %3;")
+                        .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerLow()),
+                             QLatin1StringView(VisivoTheme::kSecondary()),
+                             QLatin1StringView(VisivoTheme::kOutline())));
+        return l;
+    };
+    hbox->addWidget(makeScope(u"recents"_s));
+    hbox->addWidget(makeScope(u"actions"_s));
+
+    auto *kbd = new QLabel(u"⌘ K"_s, bar);
+    kbd->setStyleSheet(
+            QStringLiteral(
+                    "background: %1; color: %2;"
+                    "font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;"
+                    "font-size: 11px; padding: 3px 8px; border-radius: 4px;"
+                    "border: 1px solid %3;")
+                    .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerLow()),
+                         QLatin1StringView(VisivoTheme::kOnSurface()),
+                         QLatin1StringView(VisivoTheme::kOutline())));
+    hbox->addWidget(kbd);
+
+    // Click anywhere on the bar = open palette.
+    bar->installEventFilter(this);
+
+    return bar;
+}
+
+// ── buildQuickActionsList (Mission Control: compact vertical list) ───────────
+
+QFrame *DataHubWidget::buildQuickActionsList()
+{
+    // Replaces the 4-big-card "Primary Operations" grid. Each row is a
+    // single-line action with icon + label + subtitle + optional shortcut hint
+    // — denser, less landing-page-y, more "tool on a desk".
+    auto *card = VisivoTheme::makeCard(this, /*elevated=*/true);
+
+    auto *vbox = new QVBoxLayout(card);
+    vbox->setContentsMargins(20, 16, 20, 16);
+    vbox->setSpacing(8);
+
+    vbox->addWidget(VisivoTheme::makeSectionLabel(u"Quick actions"_s, card));
+
+    struct Spec {
+        QString iconKind;    // matches existing actionCardSvg() vocabulary
+        QString title;
+        QString subtitle;
+        QString shortcut;
+        const char *signalName;  // we connect via switch
+    };
+    const std::array<Spec, 5> specs{
+            Spec{u"dataset"_s,   u"Open Remote Dataset…"_s,
+                 u"Browse FITS on the backend filesystem"_s, u"⌘O"_s, "openDataRequested"},
+            Spec{u"catalogue"_s, u"Open 3D Catalogue…"_s,
+                 u"CSV / VOTable in the source viewer"_s, QString(),  "openCatalogueRequested"},
+            Spec{u"vbt"_s,       u"Open VBT…"_s,
+                 u"VisIVO Binary Table — points / volumes"_s, u"⇧⌘B"_s, "openVbtRequested"},
+            // Sky-map engines: both open as their own viewer tabs.
+            Spec{u"hips"_s,      u"HiPS Viewer"_s,
+                 u"Hierarchical sky surveys (DSS, 2MASS, …)"_s, QString(),
+                 "openHiPSRequested"},
+            Spec{u"hips"_s,      u"VLKB Inventory"_s,
+                 u"Browse VLKB sources & add as image layers"_s, QString(),
+                 "openVLKBRequested"},
+    };
+
+    for (const auto &s : specs) {
+        auto *row = new QFrame(card);
+        row->setObjectName(u"qaRow"_s);
+        row->setCursor(Qt::PointingHandCursor);
+        row->setStyleSheet(
+                QStringLiteral(
+                        "QFrame#qaRow {"
+                        "  background: transparent;"
+                        "  border: 1px solid transparent;"
+                        "  border-radius: 6px;"
+                        "}"
+                        "QFrame#qaRow:hover {"
+                        "  background-color: %1;"
+                        "  border-color: %2;"
+                        "}"
+                        "QFrame#qaRow QLabel { background: transparent; }")
+                        .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerHigh()),
+                             QLatin1StringView(VisivoTheme::kOutline())));
+
+        auto *rl = new QHBoxLayout(row);
+        rl->setContentsMargins(10, 8, 10, 8);
+        rl->setSpacing(12);
+
+        auto *icon = new QLabel(row);
+        icon->setPixmap(actionCardIconPixmap(
+                s.iconKind,
+                QString::fromLatin1(VisivoTheme::kPrimaryDim()), 22));
+        icon->setFixedSize(28, 28);
+        icon->setAlignment(Qt::AlignCenter);
+        rl->addWidget(icon);
+
+        auto *labelCol = new QVBoxLayout;
+        labelCol->setContentsMargins(0, 0, 0, 0);
+        labelCol->setSpacing(0);
+        auto *title = new QLabel(s.title, row);
+        title->setStyleSheet(
+                QStringLiteral("color: %1; font-size: 13px; font-weight: 600;")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
+        labelCol->addWidget(title);
+        auto *sub = new QLabel(s.subtitle, row);
+        sub->setStyleSheet(
+                QStringLiteral("color: %1; font-size: 11px;")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        labelCol->addWidget(sub);
+        rl->addLayout(labelCol, 1);
+
+        if (!s.shortcut.isEmpty()) {
+            auto *kbd = new QLabel(s.shortcut, row);
+            kbd->setStyleSheet(
+                    QStringLiteral(
+                            "background: %1; color: %2;"
+                            "font-family: 'JetBrains Mono', 'SF Mono', monospace;"
+                            "font-size: 10px; padding: 2px 6px; border-radius: 3px;"
+                            "border: 1px solid %3;")
+                            .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerLow()),
+                                 QLatin1StringView(VisivoTheme::kOnSurfaceVariant()),
+                                 QLatin1StringView(VisivoTheme::kOutline())));
+            rl->addWidget(kbd);
+        }
+
+        // Wire click via property so the eventFilter can dispatch.
+        row->setProperty("qaSignal", QString::fromLatin1(s.signalName));
+        row->installEventFilter(this);
+
+        vbox->addWidget(row);
+    }
+
+    vbox->addStretch(1);
+    return card;
+}
+
+// ── buildLast5JobsPanel (extracted from old System Insights) ─────────────────
+
+QFrame *DataHubWidget::buildLast5JobsPanel()
+{
+    auto *card = VisivoTheme::makeCard(this, /*elevated=*/true);
+
+    auto *vbox = new QVBoxLayout(card);
+    vbox->setContentsMargins(20, 16, 20, 16);
+    vbox->setSpacing(10);
+
+    auto *hdrRow = new QHBoxLayout;
+    hdrRow->setContentsMargins(0, 0, 0, 0);
+    hdrRow->addWidget(VisivoTheme::makeSectionLabel(u"Last 5 jobs"_s, card));
+    hdrRow->addStretch(1);
+    this->labelRunningCaption = new QLabel(u"Idle"_s, card);
+    this->labelRunningCaption->setStyleSheet(
+            QStringLiteral("color: %1; font-size: 11px; background: transparent;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    hdrRow->addWidget(this->labelRunningCaption);
+    vbox->addLayout(hdrRow);
+
+    // Reuse the existing recent-tasks rendering machinery: same container +
+    // empty-state label + header that updateSystemInsights() already updates.
+    this->labelRecentHeader = new QLabel(u""_s, card);
+    this->labelRecentHeader->setVisible(false);  // header is now the section label
+
+    this->recentTasksContainer = new QWidget(card);
+    this->recentTasksContainer->setStyleSheet(u"background: transparent;"_s);
+    auto *recentLayout = new QVBoxLayout(this->recentTasksContainer);
+    recentLayout->setContentsMargins(0, 0, 0, 0);
+    recentLayout->setSpacing(6);
+    vbox->addWidget(this->recentTasksContainer);
+
+    this->labelRecentEmpty = new QLabel(
+            u"No jobs yet. Open a dataset and run a tool to see history."_s, card);
+    this->labelRecentEmpty->setWordWrap(true);
+    this->labelRecentEmpty->setStyleSheet(
+            QStringLiteral("color: %1; font-size: 11px; font-style: italic; "
+                            "background: transparent;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    vbox->addWidget(this->labelRecentEmpty);
+
+    vbox->addStretch(1);
+
+    // Capacity footer (workers + sessions) stays — it's the only static info
+    // worth keeping per design feedback.
+    auto *sep = new QFrame(card);
+    sep->setFixedHeight(1);
+    sep->setStyleSheet(
+            QStringLiteral("background-color: rgba(4, 138, 191, 0.18); border: none;"));
+    vbox->addWidget(sep);
+
+    this->labelCapacity = new QLabel(u"Backend capacity: —"_s, card);
+    this->labelCapacity->setStyleSheet(
+            QStringLiteral("color: %1; font-size: 11px; background: transparent;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    vbox->addWidget(this->labelCapacity);
 
     return card;
+}
+
+// ── buildStatusBar (Layout B: thin bottom strip with health/session/sanity) ──
+
+QFrame *DataHubWidget::buildStatusBar()
+{
+    // Bottom status strip — info COMPLEMENTARY to the backend toolbar at the
+    // top (which already shows URL + Connected pill + workers/sessions text).
+    // We avoid duplicating those readouts and instead surface counts that
+    // aren't visible elsewhere on the hub:
+    //   • Recent datasets count (with pinned subset if any)
+    //   • Currently-running tasks
+    //   • Sanity badge
+    auto *bar = new QFrame(this);
+    bar->setObjectName(u"statusBar"_s);
+    bar->setStyleSheet(
+            QStringLiteral(
+                    "QFrame#statusBar {"
+                    "  background-color: %1;"
+                    "  border-top: 1px solid %2;"
+                    "  border-radius: 0;"
+                    "}"
+                    "QFrame#statusBar QLabel { background: transparent; }")
+                    .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerLow()),
+                         QLatin1StringView(VisivoTheme::kOutline())));
+
+    auto *hbox = new QHBoxLayout(bar);
+    hbox->setContentsMargins(14, 6, 14, 6);
+    hbox->setSpacing(14);
+
+    const QString mutedStyle =
+            QStringLiteral("color: %1; font-size: 11px;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
+
+    // Datasets readout: "14 datasets · 2 pinned" — populated in refreshStatus.
+    // Repurposes the existing statusBarHealth pointer slot to keep the diff
+    // small; the label is no longer about health state, it's about content.
+    this->statusBarHealth = new QLabel(u"— datasets"_s, bar);
+    this->statusBarHealth->setStyleSheet(mutedStyle);
+    hbox->addWidget(this->statusBarHealth);
+
+    auto pipe = [&]() {
+        auto *p = new QLabel(u"·"_s, bar);
+        p->setStyleSheet(
+                QStringLiteral("color: %1; font-size: 12px;")
+                        .arg(QLatin1StringView(VisivoTheme::kSecondary())));
+        hbox->addWidget(p);
+    };
+
+    pipe();
+    // Running-tasks readout: "1 job running" / "no jobs" — keeps the user
+    // aware of activity without scrolling to "Last 5 jobs".
+    this->statusBarWorkers = new QLabel(u"no jobs"_s, bar);
+    this->statusBarWorkers->setStyleSheet(mutedStyle);
+    hbox->addWidget(this->statusBarWorkers);
+
+    hbox->addStretch(1);
+
+    // Sanity badge stays at the right edge; it's the one signal we DO want
+    // duplicated because it's the global "is the backend behaving" indicator.
+    this->statusBarSanity = VisivoTheme::makeBadge(
+            u"sanity ok"_s, VisivoTheme::BadgeKind::Success, bar);
+    this->statusBarSanity->setVisible(false);
+    hbox->addWidget(this->statusBarSanity);
+
+    return bar;
 }
 
 // ── buildActionGrid ───────────────────────────────────────────────────────────
@@ -618,17 +1012,28 @@ void DataHubWidget::refreshRecentDatasets()
         hbox->setContentsMargins(12, 10, 12, 10);
         hbox->setSpacing(10);
 
-        // Type icon (24×24 — smaller than action cards).
+        // Mission Control thumbnail (96×64). Falls back to a typed gradient
+        // placeholder if no real preview has been captured yet — the
+        // ThumbnailCache populates the on-disk PNG when the user closes the
+        // matching viewer, so the panel fills in over normal use.
         const auto ti = typeInfo(ds.type);
-        auto *iconLbl = new QLabel(row);
-        iconLbl->setPixmap(
-                actionCardIconPixmap(ti.iconKind,
-                                     QString::fromLatin1(VisivoTheme::kPrimaryDim()), 28));
-        iconLbl->setFixedSize(32, 32);
-        iconLbl->setAlignment(Qt::AlignCenter);
-        iconLbl->setStyleSheet(u"background: transparent; border: none;"_s);
-        iconLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
-        hbox->addWidget(iconLbl, 0, Qt::AlignVCenter);
+        auto *thumb = new QLabel(row);
+        thumb->setFixedSize(ThumbnailCache::kDefaultWidth,
+                            ThumbnailCache::kDefaultHeight);
+        thumb->setAlignment(Qt::AlignCenter);
+        QPixmap thumbPix = ThumbnailCache::load(ds.id);
+        if (thumbPix.isNull()) {
+            thumbPix = ThumbnailCache::placeholder(ds.type);
+        }
+        thumb->setPixmap(thumbPix);
+        thumb->setStyleSheet(
+                QStringLiteral(
+                        "background: #04060a;"
+                        "border: 1px solid %1;"
+                        "border-radius: 4px;")
+                        .arg(QLatin1StringView(VisivoTheme::kOutlineVariant())));
+        thumb->setAttribute(Qt::WA_TransparentForMouseEvents);
+        hbox->addWidget(thumb, 0, Qt::AlignVCenter);
 
         // Text column: display name (bold) + type/source (small).
         auto *textCol = new QVBoxLayout;
@@ -685,84 +1090,84 @@ void DataHubWidget::refreshRecentDatasets()
 QFrame *DataHubWidget::buildSystemInsightsPanel()
 {
     auto *card = VisivoTheme::makeCard(this, true /* elevated */);
-    card->setMinimumWidth(200);
+    card->setMinimumWidth(220);
 
     auto *vbox = new QVBoxLayout(card);
     vbox->setContentsMargins(20, 16, 20, 16);
-    vbox->setSpacing(16);
+    vbox->setSpacing(14);
 
     vbox->addWidget(VisivoTheme::makeSectionLabel(u"System Insights"_s, card));
 
-    // Worker count
+    // ── Live activity: running tasks count + small caption ───────────────────
+    // Replaces the old static "Workers/Sessions/Task Registry" trio that didn't
+    // change during a session. Now shows what the backend is *currently doing*.
     {
         auto *metricBox = new QVBoxLayout;
-        auto *lbl = new QLabel(u"Active Workers"_s, card);
+        metricBox->setSpacing(2);
+
+        auto *lbl = new QLabel(u"Active operations"_s, card);
         lbl->setStyleSheet(
                 QStringLiteral("color: %1; font-size: 10px; letter-spacing: 0.1em; "
                                 "background: transparent;")
-                        .arg(QLatin1StringView(VisivoTheme::kPrimaryDim())));
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         metricBox->addWidget(lbl);
-        this->labelWorkers = new QLabel(u"—"_s, card);
-        {
-            QFont f(QStringLiteral("Lato"));
-            f.setPixelSize(32);
-            f.setWeight(QFont::Black);
-            this->labelWorkers->setFont(f);
-            this->labelWorkers->setStyleSheet(
-                    QStringLiteral("color: %1; background: transparent;")
-                            .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
-        }
-        metricBox->addWidget(this->labelWorkers);
-        vbox->addLayout(metricBox);
-    }
 
-    // Session count
-    {
-        auto *metricBox = new QVBoxLayout;
-        auto *lbl = new QLabel(u"Active Sessions"_s, card);
-        lbl->setStyleSheet(
-                QStringLiteral("color: %1; font-size: 10px; letter-spacing: 0.1em; "
+        this->labelRunningTasks = new QLabel(u"—"_s, card);
+        QFont f(QStringLiteral("Lato"));
+        f.setPixelSize(32);
+        f.setWeight(QFont::Black);
+        this->labelRunningTasks->setFont(f);
+        this->labelRunningTasks->setStyleSheet(
+                QStringLiteral("color: %1; background: transparent;")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
+        metricBox->addWidget(this->labelRunningTasks);
+
+        // Sub-caption that switches between "idle" and "in flight…" depending
+        // on running count. Stays a fixed-height label so the panel doesn't
+        // jump as state changes.
+        this->labelRunningCaption = new QLabel(u"Idle"_s, card);
+        this->labelRunningCaption->setStyleSheet(
+                QStringLiteral("color: %1; font-size: 11px; "
                                 "background: transparent;")
-                        .arg(QLatin1StringView(VisivoTheme::kPrimaryDim())));
-        metricBox->addWidget(lbl);
-        this->labelSessions = new QLabel(u"—"_s, card);
-        {
-            QFont f(QStringLiteral("Lato"));
-            f.setPixelSize(32);
-            f.setWeight(QFont::Black);
-            this->labelSessions->setFont(f);
-            this->labelSessions->setStyleSheet(
-                    QStringLiteral("color: %1; background: transparent;")
-                            .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
-        }
-        metricBox->addWidget(this->labelSessions);
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        metricBox->addWidget(this->labelRunningCaption);
         vbox->addLayout(metricBox);
     }
 
-    // Task registry
+    // ── Recent operations list ───────────────────────────────────────────────
+    // Up to N most recently finished tasks, each rendered as
+    // "<icon> <operation>   <duration> · <age>". Populated in refreshStatus
+    // from health.recentTasks. Hidden entirely when the list is empty.
     {
-        auto *metricBox = new QVBoxLayout;
-        auto *lbl = new QLabel(u"Task Registry"_s, card);
-        lbl->setStyleSheet(
-                QStringLiteral("color: %1; font-size: 10px; letter-spacing: 0.1em; "
+        auto *recentHdr = new QLabel(u"RECENT"_s, card);
+        recentHdr->setStyleSheet(
+                QStringLiteral("color: %1; font-size: 10px; font-weight: 700; "
+                                "letter-spacing: 0.18em; "
+                                "background: transparent; margin-top: 4px;")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        recentHdr->setObjectName(u"recentTasksHeader"_s);
+        vbox->addWidget(recentHdr);
+        this->labelRecentHeader = recentHdr;
+
+        this->recentTasksContainer = new QWidget(card);
+        this->recentTasksContainer->setStyleSheet(u"background: transparent;"_s);
+        auto *recentLayout = new QVBoxLayout(this->recentTasksContainer);
+        recentLayout->setContentsMargins(0, 0, 0, 0);
+        recentLayout->setSpacing(4);
+        vbox->addWidget(this->recentTasksContainer);
+
+        // Empty-state placeholder shown when no recent tasks are reported.
+        this->labelRecentEmpty = new QLabel(
+                u"No operations yet. Open a dataset to start."_s, card);
+        this->labelRecentEmpty->setWordWrap(true);
+        this->labelRecentEmpty->setStyleSheet(
+                QStringLiteral("color: %1; font-size: 11px; font-style: italic; "
                                 "background: transparent;")
-                        .arg(QLatin1StringView(VisivoTheme::kPrimaryDim())));
-        metricBox->addWidget(lbl);
-        this->labelTaskRegistry = new QLabel(u"—"_s, card);
-        {
-            QFont f(QStringLiteral("Lato"));
-            f.setPixelSize(32);
-            f.setWeight(QFont::Black);
-            this->labelTaskRegistry->setFont(f);
-            this->labelTaskRegistry->setStyleSheet(
-                    QStringLiteral("color: %1; background: transparent;")
-                            .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
-        }
-        metricBox->addWidget(this->labelTaskRegistry);
-        vbox->addLayout(metricBox);
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        vbox->addWidget(this->labelRecentEmpty);
     }
 
-    // Separator + quote
+    // ── Separator + Backend capacity footer ──────────────────────────────────
     {
         auto *sep = new QFrame(card);
         sep->setFixedHeight(1);
@@ -770,16 +1175,11 @@ QFrame *DataHubWidget::buildSystemInsightsPanel()
                 QStringLiteral("background-color: rgba(4, 138, 191, 0.18); border: none;"));
         vbox->addWidget(sep);
 
-        auto *quote = new QLabel(
-                u"Scientific operations are computed on remote backend nodes to ensure "
-                "data integrity and high-performance processing."_s,
-                card);
-        quote->setWordWrap(true);
-        quote->setStyleSheet(
-                QStringLiteral("color: %1; font-size: 11px; "
-                                "font-style: italic; background: transparent;")
+        this->labelCapacity = new QLabel(u"Backend capacity: —"_s, card);
+        this->labelCapacity->setStyleSheet(
+                QStringLiteral("color: %1; font-size: 11px; background: transparent;")
                         .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
-        vbox->addWidget(quote);
+        vbox->addWidget(this->labelCapacity);
     }
 
     vbox->addStretch(1);
@@ -814,6 +1214,33 @@ void DataHubWidget::setBackendUrl(const QString &url, const QString &token)
     if (this->labelStatusDetail) {
         this->labelStatusDetail->setText(u"Click \"Check Connection\" to verify backend reachability."_s);
     }
+}
+
+// ── eventFilter (Mission Control click dispatch) ─────────────────────────────
+
+bool DataHubWidget::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() == QEvent::MouseButtonRelease) {
+        // Search bar → command palette.
+        if (auto *w = qobject_cast<QFrame *>(watched);
+            w && w->objectName() == u"hubSearchBar"_s) {
+            emit commandPaletteRequested();
+            return true;
+        }
+        // Quick-action rows store their target signal in the "qaSignal" property
+        // so we don't have to multiplex via subclassing.
+        if (auto *w = qobject_cast<QFrame *>(watched);
+            w && w->objectName() == u"qaRow"_s) {
+            const QString sig = w->property("qaSignal").toString();
+            if      (sig == u"openDataRequested"_s)      emit openDataRequested();
+            else if (sig == u"openCatalogueRequested"_s) emit openCatalogueRequested();
+            else if (sig == u"openVbtRequested"_s)       emit openVbtRequested();
+            else if (sig == u"openHiPSRequested"_s)      emit openHiPSRequested();
+            else if (sig == u"openVLKBRequested"_s)      emit openVLKBRequested();
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 // ── refreshStatus ─────────────────────────────────────────────────────────────
@@ -872,25 +1299,44 @@ void DataHubWidget::refreshStatus()
                             .arg(health.workers)
                             .arg(health.activeSessions));
         }
-        if (this->labelWorkers) {
-            this->labelWorkers->setText(
-                    health.workers > 0 ? QString::number(health.workers) : u"—"_s);
+        // We're in the `health.ok` branch — every value is authoritative.
+        // Populate the live activity readouts from the new health snapshot.
+        this->updateSystemInsights(health);
+
+        // Bottom status bar: counts that aren't already in the top toolbar
+        // (dataset count + currently-running tasks + sanity).
+        const int datasetCount = this->recentMgr ? this->recentMgr->datasets().size() : 0;
+        if (this->statusBarHealth) {
+            this->statusBarHealth->setText(
+                    datasetCount == 1
+                            ? QStringLiteral("1 dataset")
+                            : QStringLiteral("%1 datasets").arg(datasetCount));
+            this->statusBarHealth->setStyleSheet(
+                    QStringLiteral("color: %1; font-size: 11px;")
+                            .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         }
-        if (this->labelSessions) {
-            this->labelSessions->setText(
-                    health.activeSessions > 0 ? QString::number(health.activeSessions) : u"—"_s);
+        if (this->statusBarWorkers) {
+            const int n = health.runningTasks;
+            this->statusBarWorkers->setText(
+                    n == 0 ? u"no jobs running"_s
+                           : (n == 1 ? u"1 job running"_s
+                                     : QStringLiteral("%1 jobs running").arg(n)));
+            this->statusBarWorkers->setStyleSheet(
+                    QStringLiteral("color: %1; font-size: 11px;")
+                            .arg(QLatin1StringView(
+                                    n > 0 ? VisivoTheme::kRunning()
+                                          : VisivoTheme::kOnSurfaceVariant())));
         }
-        if (this->labelTaskRegistry) {
-            this->labelTaskRegistry->setText(
-                    health.taskRegistryEntries > 0
-                            ? QString::number(health.taskRegistryEntries)
-                            : u"—"_s);
+        if (this->statusBarSanity) {
+            this->statusBarSanity->setText(u"sanity ok"_s);
+            this->statusBarSanity->setVisible(true);
         }
+
         qDebug().noquote()
-                << QStringLiteral("[DataHub] backend reachable — workers=%1 sessions=%2 tasks=%3")
+                << QStringLiteral("[DataHub] backend reachable — workers=%1 running=%2 sessions=%3")
                            .arg(health.workers)
-                           .arg(health.activeSessions)
-                           .arg(health.taskRegistryEntries);
+                           .arg(health.runningTasks)
+                           .arg(health.activeSessions);
     } else {
         if (this->labelStatusBadge) {
             this->labelStatusBadge->setText(u"● Unreachable"_s);
@@ -911,12 +1357,31 @@ void DataHubWidget::refreshStatus()
                             ? u"No response from backend."_s
                             : health.error);
         }
-        // Reset metrics to unknown
-        for (auto *lbl : { this->labelWorkers.data(),
-                           this->labelSessions.data(),
-                           this->labelTaskRegistry.data() }) {
-            if (lbl) lbl->setText(u"—"_s);
+        // Reset live activity readouts to "unknown" placeholder state.
+        if (this->labelRunningTasks)   this->labelRunningTasks->setText(u"—"_s);
+        if (this->labelRunningCaption) this->labelRunningCaption->setText(u"Backend unreachable"_s);
+        if (this->labelCapacity)       this->labelCapacity->setText(u"Backend capacity: —"_s);
+        this->clearRecentTasksUi();
+
+        // Bottom status bar: dataset count is still meaningful even when the
+        // backend is unreachable; the running-jobs cell becomes "—" and the
+        // sanity badge hides.
+        const int datasetCount = this->recentMgr ? this->recentMgr->datasets().size() : 0;
+        if (this->statusBarHealth) {
+            this->statusBarHealth->setText(
+                    datasetCount == 1 ? QStringLiteral("1 dataset")
+                                       : QStringLiteral("%1 datasets").arg(datasetCount));
+            this->statusBarHealth->setStyleSheet(
+                    QStringLiteral("color: %1; font-size: 11px;")
+                            .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         }
+        if (this->statusBarWorkers) {
+            this->statusBarWorkers->setText(u"jobs —"_s);
+            this->statusBarWorkers->setStyleSheet(
+                    QStringLiteral("color: %1; font-size: 11px;")
+                            .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        }
+        if (this->statusBarSanity) this->statusBarSanity->setVisible(false);
         qDebug().noquote()
                 << QStringLiteral("[DataHub] backend unreachable — %1").arg(health.error);
     }
@@ -924,5 +1389,147 @@ void DataHubWidget::refreshStatus()
     if (this->btnCheckConnection) {
         this->btnCheckConnection->setEnabled(true);
         this->btnCheckConnection->setText(u"Check Connection"_s);
+    }
+}
+
+// ── System Insights helpers ──────────────────────────────────────────────────
+
+namespace {
+
+// Compact "12s", "1m", "3m 24s" form for showing a duration in the recent
+// list. Anything past an hour collapses to "Xh".
+QString formatDurationShort(double seconds)
+{
+    if (!std::isfinite(seconds) || seconds < 0.0) return u"—"_s;
+    if (seconds < 1.0)   return QStringLiteral("%1ms").arg(int(seconds * 1000.0));
+    if (seconds < 60.0)  return QStringLiteral("%1s").arg(seconds, 0, 'f', seconds < 10.0 ? 1 : 0);
+    if (seconds < 3600.0) {
+        const int m = int(seconds / 60.0);
+        const int s = int(seconds) % 60;
+        return s == 0 ? QStringLiteral("%1m").arg(m)
+                      : QStringLiteral("%1m %2s").arg(m).arg(s);
+    }
+    return QStringLiteral("%1h").arg(seconds / 3600.0, 0, 'f', 1);
+}
+
+// "just now", "12s ago", "3m ago", "2h ago" — for the "age" of a finished task.
+QString formatAgoShort(double seconds)
+{
+    if (!std::isfinite(seconds) || seconds < 0.0) return u""_s;
+    if (seconds < 5.0)    return u"just now"_s;
+    if (seconds < 60.0)   return QStringLiteral("%1s ago").arg(int(seconds));
+    if (seconds < 3600.0) return QStringLiteral("%1m ago").arg(int(seconds / 60.0));
+    if (seconds < 86400.0) return QStringLiteral("%1h ago").arg(int(seconds / 3600.0));
+    return QStringLiteral("%1d ago").arg(int(seconds / 86400.0));
+}
+
+// Single status pill: ✓ for success, ✗ for failure, ◌ for cancelled.
+QString statusGlyph(const QString &status)
+{
+    if (status == u"failed"_s)    return QStringLiteral("✗");
+    if (status == u"cancelled"_s) return QStringLiteral("◌");
+    return QStringLiteral("✓");
+}
+
+QString statusColor(const QString &status)
+{
+    if (status == u"failed"_s)    return u"#EF5350"_s;
+    if (status == u"cancelled"_s) return u"#FFA726"_s;
+    return u"#4CAF50"_s; // done
+}
+
+} // namespace
+
+void DataHubWidget::clearRecentTasksUi()
+{
+    if (!this->recentTasksContainer) return;
+    auto *layout = this->recentTasksContainer->layout();
+    if (!layout) return;
+    while (QLayoutItem *item = layout->takeAt(0)) {
+        if (auto *w = item->widget()) w->deleteLater();
+        delete item;
+    }
+    if (this->labelRecentEmpty)  this->labelRecentEmpty->setVisible(true);
+    if (this->labelRecentHeader) this->labelRecentHeader->setVisible(false);
+    this->recentTasksContainer->setVisible(false);
+}
+
+void DataHubWidget::updateSystemInsights(const BackendHealthResult &health)
+{
+    // Running counter + caption switching between "Idle" and "in flight…".
+    if (this->labelRunningTasks) {
+        this->labelRunningTasks->setText(QString::number(health.runningTasks));
+    }
+    if (this->labelRunningCaption) {
+        this->labelRunningCaption->setText(
+                health.runningTasks == 0
+                        ? u"Idle — backend ready."_s
+                        : QStringLiteral("%1 operation%2 in flight…")
+                                  .arg(health.runningTasks)
+                                  .arg(health.runningTasks == 1 ? u""_s : u"s"_s));
+    }
+
+    // Backend capacity footer (workers + active sessions when > 0).
+    if (this->labelCapacity) {
+        QString text = QStringLiteral("Backend capacity: %1 worker%2")
+                               .arg(health.workers)
+                               .arg(health.workers == 1 ? u""_s : u"s"_s);
+        if (health.activeSessions > 0) {
+            text += QStringLiteral(" · %1 session%2")
+                            .arg(health.activeSessions)
+                            .arg(health.activeSessions == 1 ? u""_s : u"s"_s);
+        }
+        this->labelCapacity->setText(text);
+    }
+
+    // Recent operations list — rebuild from scratch each refresh so order
+    // and ages stay accurate. Backend caps the list at 5 entries.
+    if (!this->recentTasksContainer) return;
+    auto *layout = qobject_cast<QVBoxLayout *>(this->recentTasksContainer->layout());
+    if (!layout) return;
+    while (QLayoutItem *item = layout->takeAt(0)) {
+        if (auto *w = item->widget()) w->deleteLater();
+        delete item;
+    }
+
+    const bool hasItems = !health.recentTasks.empty();
+    if (this->labelRecentEmpty)  this->labelRecentEmpty->setVisible(!hasItems);
+    if (this->labelRecentHeader) this->labelRecentHeader->setVisible(hasItems);
+    this->recentTasksContainer->setVisible(hasItems);
+
+    for (const auto &task : health.recentTasks) {
+        auto *row = new QWidget(this->recentTasksContainer);
+        row->setStyleSheet(u"background: transparent;"_s);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(8);
+
+        auto *icon = new QLabel(statusGlyph(task.status), row);
+        icon->setStyleSheet(
+                QStringLiteral("color: %1; font-size: 12px; font-weight: 700; "
+                                "background: transparent;").arg(statusColor(task.status)));
+        icon->setFixedWidth(14);
+        rowLayout->addWidget(icon);
+
+        QString opLabel = task.operation;
+        if (task.cacheHit) {
+            opLabel += QStringLiteral(" (cache)");
+        }
+        auto *op = new QLabel(opLabel, row);
+        op->setStyleSheet(
+                QStringLiteral("color: %1; font-size: 11px; background: transparent;")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
+        rowLayout->addWidget(op, 1);
+
+        const QString meta = QStringLiteral("%1 · %2")
+                                     .arg(formatDurationShort(task.durationSeconds),
+                                          formatAgoShort(task.ageSeconds));
+        auto *metaLbl = new QLabel(meta, row);
+        metaLbl->setStyleSheet(
+                QStringLiteral("color: %1; font-size: 10px; background: transparent;")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        rowLayout->addWidget(metaLbl);
+
+        layout->addWidget(row);
     }
 }

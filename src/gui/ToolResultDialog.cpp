@@ -1,4 +1,5 @@
 #include "ToolResultDialog.h"
+#include "theme/VisivoTheme.h"
 
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -6,21 +7,26 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QScreen>
 #include <QScrollArea>
+#include <QShowEvent>
 #include <QVBoxLayout>
+#include <QWindow>
 
 using namespace Qt::StringLiterals;
 
-// Palette constants matching the VisIVO cube viewer sidebar theme.
-static const QString kDlgBg         = u"#141922"_s;
-static const QString kHeaderBg      = u"#1e2738"_s;
-static const QString kHeaderBorder  = u"#2a3a5a"_s;
-static const QString kSectionBorder = u"rgba(4, 138, 191, 0.25)"_s;
-static const QString kKeyColor      = u"#7888a8"_s;
-static const QString kValueColor    = u"#d0deff"_s;
-static const QString kTitleColor    = u"#e0eaff"_s;
-static const QString kSubtitleColor = u"#8a9abf"_s;
-static const QString kGroupColor    = u"rgba(4, 138, 191, 0.80)"_s;
+namespace {
+// Helpers that return Layout B-tinted theme colors as QStrings, so the QSS
+// templates below stay readable.
+QString tBg()         { return QString::fromLatin1(VisivoTheme::kSurface()); }
+QString tHeaderBg()   { return QString::fromLatin1(VisivoTheme::kSurfaceContainerLow()); }
+QString tBorder()     { return QString::fromLatin1(VisivoTheme::kOutline()); }
+QString tTitle()      { return QString::fromLatin1(VisivoTheme::kOnSurface()); }
+QString tSubtitle()   { return QString::fromLatin1(VisivoTheme::kOnSurfaceVariant()); }
+QString tKey()        { return QString::fromLatin1(VisivoTheme::kOnSurfaceVariant()); }
+QString tValue()      { return QString::fromLatin1(VisivoTheme::kOnSurface()); }
+QString tGroupTitle() { return QString::fromLatin1(VisivoTheme::kPrimary()); }
+}
 
 ToolResultDialog::ToolResultDialog(QWidget *parent)
     : QDialog(parent)
@@ -28,12 +34,20 @@ ToolResultDialog::ToolResultDialog(QWidget *parent)
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowModality(Qt::NonModal);
     setWindowTitle(u"Analysis Result"_s);
-    setMinimumWidth(440);
+    setMinimumWidth(360);
     setSizeGripEnabled(true);
+    // A frameless tool window reads as a "side-sheet" rather than a regular
+    // OS dialog — closer to the Layout B intent of attaching analysis output
+    // to the viewer rather than spawning loose floating windows.
+    setWindowFlag(Qt::Tool, true);
 
     auto *outerLayout = new QVBoxLayout(this);
     outerLayout->setSpacing(0);
     outerLayout->setContentsMargins(0, 0, 0, 0);
+
+    // Outer container styling (matches Layout B's surface ramp).
+    setStyleSheet(
+            QStringLiteral("ToolResultDialog { background: %1; }").arg(tBg()));
 
     // ── Header ───────────────────────────────────────────────────────────────
     auto *headerWidget = new QWidget();
@@ -42,7 +56,7 @@ ToolResultDialog::ToolResultDialog(QWidget *parent)
             u"QWidget#toolResultHeader {"
             "  background: %1;"
             "  border-bottom: 1px solid %2;"
-            "}"_s.arg(kHeaderBg, kHeaderBorder));
+            "}"_s.arg(tHeaderBg(), tBorder()));
 
     auto *headerLayout = new QVBoxLayout(headerWidget);
     headerLayout->setContentsMargins(16, 12, 16, 12);
@@ -50,12 +64,13 @@ ToolResultDialog::ToolResultDialog(QWidget *parent)
 
     m_titleLabel = new QLabel();
     m_titleLabel->setStyleSheet(
-            u"font-size: 14px; font-weight: bold; color: %1;"_s.arg(kTitleColor));
+            u"font-size: 14px; font-weight: bold; color: %1; background: transparent;"_s
+                    .arg(tTitle()));
     headerLayout->addWidget(m_titleLabel);
 
     m_subtitleLabel = new QLabel();
     m_subtitleLabel->setStyleSheet(
-            u"font-size: 11px; color: %1;"_s.arg(kSubtitleColor));
+            u"font-size: 11px; color: %1; background: transparent;"_s.arg(tSubtitle()));
     m_subtitleLabel->setWordWrap(true);
     m_subtitleLabel->hide();
     headerLayout->addWidget(m_subtitleLabel);
@@ -66,10 +81,10 @@ ToolResultDialog::ToolResultDialog(QWidget *parent)
     auto *scrollArea = new QScrollArea();
     scrollArea->setFrameShape(QFrame::NoFrame);
     scrollArea->setWidgetResizable(true);
-    scrollArea->setStyleSheet(u"QScrollArea { background: %1; }"_s.arg(kDlgBg));
+    scrollArea->setStyleSheet(u"QScrollArea { background: %1; border: none; }"_s.arg(tBg()));
 
     auto *bodyWidget = new QWidget();
-    bodyWidget->setStyleSheet(u"background: %1;"_s.arg(kDlgBg));
+    bodyWidget->setStyleSheet(u"background: %1;"_s.arg(tBg()));
     m_bodyLayout = new QVBoxLayout(bodyWidget);
     m_bodyLayout->setContentsMargins(14, 12, 14, 12);
     m_bodyLayout->setSpacing(10);
@@ -82,7 +97,7 @@ ToolResultDialog::ToolResultDialog(QWidget *parent)
     auto *footer = new QWidget();
     footer->setStyleSheet(
             u"QWidget { background: %1; border-top: 1px solid %2; }"_s
-                    .arg(kHeaderBg, kHeaderBorder));
+                    .arg(tHeaderBg(), tBorder()));
     auto *footerLayout = new QHBoxLayout(footer);
     footerLayout->setContentsMargins(12, 8, 12, 8);
 
@@ -91,6 +106,35 @@ ToolResultDialog::ToolResultDialog(QWidget *parent)
     footerLayout->addWidget(buttons);
 
     outerLayout->addWidget(footer);
+}
+
+void ToolResultDialog::showEvent(QShowEvent *event)
+{
+    QDialog::showEvent(event);
+    if (m_anchored) return;            // only on first show
+    if (!parentWidget()) return;       // free-floating fallback if parentless
+
+    // Anchor as a side-sheet on the right edge of the top-level parent: same
+    // height, fixed width, abutting the right border. Matches Layout B's
+    // intent of having region/analysis readouts pinned to the viewer rather
+    // than floating somewhere on screen.
+    QWidget *root = parentWidget()->window();
+    if (!root) return;
+    const QRect parentGeo = root->geometry();
+    const int width  = qBound(360, parentGeo.width() / 4, 460);
+    const int height = parentGeo.height();
+    int x = parentGeo.right() - width + 1;
+    int y = parentGeo.top();
+
+    // Keep the sheet on-screen if the parent is right-aligned to the display.
+    if (auto *scr = root->screen()) {
+        const QRect avail = scr->availableGeometry();
+        x = qMin(x, avail.right() - width);
+        y = qMax(y, avail.top());
+    }
+
+    setGeometry(x, y, width, height);
+    m_anchored = true;
 }
 
 void ToolResultDialog::setTitle(const QString &title)
@@ -121,18 +165,21 @@ void ToolResultDialog::addSection(const QString &sectionTitle,
     auto *box = new QGroupBox(sectionTitle);
     box->setStyleSheet(
             u"QGroupBox {"
+            "  background: transparent;"
             "  border: 1px solid %1;"
-            "  border-radius: 5px;"
-            "  margin-top: 8px;"
+            "  border-radius: 6px;"
+            "  margin-top: 10px;"
             "  color: %2;"
-            "  font-weight: bold;"
-            "  font-size: 11px;"
+            "  font-weight: 700;"
+            "  font-size: 10px;"
+            "  letter-spacing: 0.10em;"
             "}"
             "QGroupBox::title {"
             "  subcontrol-origin: margin;"
-            "  left: 8px;"
-            "  padding: 0 4px;"
-            "}"_s.arg(kSectionBorder, kGroupColor));
+            "  left: 10px;"
+            "  padding: 0 6px;"
+            "  text-transform: uppercase;"
+            "}"_s.arg(tBorder(), tGroupTitle()));
 
     auto *form = new QFormLayout(box);
     form->setContentsMargins(12, 14, 12, 10);
@@ -143,11 +190,13 @@ void ToolResultDialog::addSection(const QString &sectionTitle,
     for (const auto &row : rows) {
         auto *keyLabel = new QLabel(row.first + u":"_s);
         keyLabel->setStyleSheet(
-                u"color: %1; font-size: 11px;"_s.arg(kKeyColor));
+                u"color: %1; font-size: 11px; background: transparent;"_s.arg(tKey()));
 
         auto *valLabel = new QLabel(row.second);
         valLabel->setStyleSheet(
-                u"color: %1; font-size: 11px;"_s.arg(kValueColor));
+                u"color: %1; font-size: 11px; background: transparent; "
+                "font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;"_s
+                        .arg(tValue()));
         valLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
         form->addRow(keyLabel, valLabel);

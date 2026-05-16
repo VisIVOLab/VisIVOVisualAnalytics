@@ -1,39 +1,42 @@
 #ifndef VisivoTheme_h
 #define VisivoTheme_h
 
+#include <QPixmap>
 #include <QString>
 
 class QApplication;
+class QColor;
 class QFrame;
 class QLabel;
 class QPushButton;
+class QToolButton;
 class QWidget;
 
 // ---------------------------------------------------------------------------
-// VisivoTheme — VisIVO Brand Design System
+// VisivoTheme — VisIVO "Observatory console" design system (Layout B).
 //
-// Color palette sourced from the official VisIVO Brand Guidelines PDF.
+// The palette derives from the OKLCH ramp shipped in the Claude-Design bundle
+// (`visivo/project/tokens.js`) — cool-neutral surfaces with very low chroma
+// and the brand blue (#048ABF) reserved for primary actions. Hex values are
+// the sRGB conversions of those OKLCH coordinates and live as inline string
+// literals so widgets stay theme-aware via the accessor functions below.
 //
-// Primary palette (blues):
-//   kNavy      #0E2940   deep navy — base background / darkest surface
-//   kBlue      #0367A6   corporate blue — primary interactive accent
-//   kBlueBright#048ABF   bright blue — hover / active / secondary accent
-//   kBlueTint  #E6F4F9   very light blue tint (reference only, light mode)
+// Surface ramp (dark / light):
+//   kBackground / kSurface         deepest bg / canvas      #090F14 / #F8FAFD
+//   kSurfaceContainerLow           card / panel             #11181F / #F1F4F7
+//   kSurfaceContainerHigh          hover / raised           #192229 / #E7ECF0
+//   kSurfaceContainerHighest       input / top-of-stack     #242E37 / #DCE2E7
 //
-// Surface hierarchy (dark application shell, navy-based):
-//   kSurface                  #091E30   deepest background
-//   kSurfaceContainerLow      #0E2940   base navy (brand primary dark)
-//   kSurfaceContainer         #12334F   standard panels
-//   kSurfaceContainerHigh     #163D5E   elevated / active widgets
-//   kSurfaceContainerHighest  #1A4870   floating / selected elements
-//   kSurfaceBright            #1F5280   hover / focus surfaces
-//
-// Typography:
-//   kBrandFamily   Lato (bundled) — primary brand typeface for all UI
-//   kDataFamily    Lato (same) — Inter only as optional system fallback
+// Brand & semantic colors:
+//   kPrimary       #048ABF   brand blue (theme-invariant)
+//   kSuccess       green     completed operations
+//   kWarning       amber     near-threshold / sanity
+//   kError         red       failures / disconnects
+//   kRunning       teal      live activity (distinct hue from primary)
+//   kCache         lavender  cache hits / cold-storage retrievals
 //
 // Usage:
-//   VisivoTheme::applyTo(qApp);   ← call in main() after QApplication created
+//   VisivoTheme::applyDarkTo(qApp);   ← call after QApplication is created
 // ---------------------------------------------------------------------------
 namespace VisivoTheme {
 
@@ -51,83 +54,112 @@ void setMode(Mode m);
 Mode currentMode();
 inline bool isDark() { return currentMode() == Mode::Dark; }
 
-// ── Brand palette — VisIVO Brand Guidelines §Primary Colors ──────────────────
-// Brand colors are theme-invariant: same blue on dark and light shells.
+// ── Brand palette ────────────────────────────────────────────────────────────
+// The brand blue is theme-invariant. kNavy/kBlue are kept as legacy aliases
+// for the few SAMP/branding paths that hard-code the historical navy/blue.
 inline constexpr auto kNavy       = "#0E2940";
 inline constexpr auto kBlue       = "#0367A6";
 inline constexpr auto kBlueBright = "#048ABF";
 
-// ── Surface palette ───────────────────────────────────────────────────────────
-// Returns a hex color (as a static C-string) appropriate for the active theme.
+// ── Surface ramp (cool-neutral) ──────────────────────────────────────────────
+// IMPORTANT — Layout B Light principle:
+//   Data viewport surfaces (VTK render windows, LUT-preview thumbnails, the
+//   colorbar strips) intentionally stay DARK in the light theme. Scientific
+//   colormaps (Inferno / Viridis / Magma) are designed against black; on a
+//   white background they wash out. The constants below describe the *chrome*
+//   palette only — viewport backgrounds are set independently in the VTK
+//   render-window initializers and must NOT switch with the theme.
+//
+// Dark values were converted from the bundle's OKLCH ramp; light values are
+// the hand-tuned design tokens from `VisIVO Layout B Light.html`.
+//
+// surface0 ─ deepest canvas / viewport-adjacent gutter
 inline const char *kBackground() {
-    return isDark() ? "#091E30" : "#F2F6FA";
+    return isDark() ? "#090F14" : "#FFFFFF";
 }
 inline const char *kSurface() {
-    return isDark() ? "#091E30" : "#FFFFFF";
+    return isDark() ? "#090F14" : "#FFFFFF";
 }
+// surface1 ─ cards / panels
 inline const char *kSurfaceContainerLow() {
-    return isDark() ? "#0E2940" : "#EBF2F8";
+    return isDark() ? "#11181F" : "#FAFBFD";
 }
 inline const char *kSurfaceContainer() {
-    return isDark() ? "#12334F" : "#FFFFFF";
+    return isDark() ? "#11181F" : "#FAFBFD";
 }
+// surface2 ─ raised / hover (toolbars, status bar, vb-rail)
 inline const char *kSurfaceContainerHigh() {
-    return isDark() ? "#163D5E" : "#E0ECF5";
+    return isDark() ? "#192229" : "#F1F4F9";
 }
+// surface3 ─ input fields / top-of-stack (path-pill, chips background)
 inline const char *kSurfaceContainerHighest() {
-    return isDark() ? "#1A4870" : "#D5E6F2";
+    return isDark() ? "#242E37" : "#F4F6FA";
 }
 inline const char *kSurfaceBright() {
-    return isDark() ? "#1F5280" : "#FFFFFF";
+    return isDark() ? "#242E37" : "#F4F6FA";
 }
 inline const char *kSurfaceVariant() {
-    return isDark() ? "#1A4870" : "#D5E6F2";
+    return isDark() ? "#242E37" : "#F4F6FA";
 }
 
-// ── Primary accent (theme-invariant brand blues) ──────────────────────────────
+// ── Primary accent (theme-invariant brand blues) ─────────────────────────────
 inline const char *kPrimary()         { return "#048ABF"; }
-inline const char *kPrimaryDim()      { return "#0367A6"; }
-inline const char *kOnPrimary()       { return "#FFFFFF"; }
+inline const char *kPrimaryDim() {
+    return isDark() ? "#005574" : "#007CA5";
+}
+inline const char *kOnPrimary()       {
+    return isDark() ? "#F6F9FC" : "#FAFCFE";
+}
 inline const char *kPrimaryFixed()    { return "#5BB8D8"; }
 inline const char *kPrimaryFixedDim() { return "#3AAECF"; }
 
-// ── Text ──────────────────────────────────────────────────────────────────────
+// ── Text ─────────────────────────────────────────────────────────────────────
 inline const char *kOnSurface() {
-    return isDark() ? "#E6F4F9" : "#1A2B3C";
+    return isDark() ? "#F1F4F6" : "#1C2734";
 }
 inline const char *kOnSurfaceVariant() {
-    return isDark() ? "#8AB8CC" : "#5A7A8F";
+    return isDark() ? "#9FA6AC" : "#5B6A7E";
 }
 inline const char *kSecondary() {
-    return isDark() ? "#6A9EB8" : "#5A7A8F";
+    return isDark() ? "#6B737A" : "#8A99AE";
 }
 
-// ── Borders ───────────────────────────────────────────────────────────────────
+// ── Borders ──────────────────────────────────────────────────────────────────
 inline const char *kOutline() {
-    return isDark() ? "#245A80" : "#AABFCC";
+    return isDark() ? "#2B343C" : "#D8DEE7";
 }
 inline const char *kOutlineVariant() {
-    return isDark() ? "#163D5E" : "#C5D5E0";
+    return isDark() ? "#2B343C" : "#E6EBF2";
 }
 
-// ── Semantic states ───────────────────────────────────────────────────────────
+// ── Semantic states ──────────────────────────────────────────────────────────
+// Foreground hues from the Layout B token ramp. Container variants are
+// derived as low-alpha tints of the same hue so badges read on either theme.
+inline const char *kSuccess() { return isDark() ? "#57BC80" : "#14874E"; }
+inline const char *kWarning() { return isDark() ? "#E8AA4E" : "#B77610"; }
+inline const char *kError()   { return isDark() ? "#D67069" : "#BD413F"; }
+inline const char *kRunning() { return isDark() ? "#17D0D8" : "#0081A5"; }
+inline const char *kCache()   { return isDark() ? "#A39FC8" : "#716B98"; }
+
+// Container shades for badges (low-luminance fill on dark, low-saturation
+// tint on light). Hex values picked to keep the foreground readable on top.
 inline const char *kTertiaryContainer()  {
-    return isDark() ? "#1A6B45" : "#D7F2E2";
+    return isDark() ? "#1A2D24" : "#DFEEE5";
 }
 inline const char *kOnTertiaryFixed()    {
-    return isDark() ? "#C8F0DB" : "#1A6B45";
+    return isDark() ? "#57BC80" : "#14874E";
 }
 inline const char *kErrorContainer()     {
-    return isDark() ? "#7A2020" : "#FBE2E2";
+    return isDark() ? "#2D1614" : "#F4DAD8";
 }
 inline const char *kOnErrorContainer()   {
-    return isDark() ? "#FFB3B3" : "#7A2020";
+    return isDark() ? "#D67069" : "#BD413F";
 }
 inline const char *kWarningContainer()   {
-    return isDark() ? "#5C3D10" : "#FCEAC7";
+    return isDark() ? "#2C2210" : "#F4E5C9";
 }
 inline const char *kOnWarningContainer() {
-    return isDark() ? "#FFD08A" : "#5C3D10";
+    return isDark() ? "#E8AA4E" : "#B77610";
 }
 
 // ── Typography — Lato as the primary brand typeface ───────────────────────────
@@ -186,6 +218,42 @@ QString infoValueStyleSheet();
 
 // QToolButton — sidebar action button with brand-blue hover / checked tint.
 QString sidebarToolButtonStyleSheet();
+
+// ── Layout B viewer toolbar ──────────────────────────────────────────────────
+// Slim horizontal bar that anchors a viewer screen: a path-pill on the left
+// (icon + selectable file path), one or more tag chips, and an action zone on
+// the right (Find / Command / Export). Used at the top of the cube and image
+// viewers so they share the same Layout B "screen" header.
+
+struct ViewerToolbarSpec
+{
+    QString filePath;       // "/Users/foo/cubehi-clean-m31.fits"
+    QString primaryTag;     // "CUBE · 1024×1024×112" (cyan accent)
+    QString secondaryTag;   // "remote · full-res" (neutral)
+};
+
+// Returns a fully built QWidget for placement at the top of a viewer's central
+// area. Out parameters expose the action buttons so the caller can wire them
+// to handlers; pass nullptr to skip any. `primaryTagButton` returns the
+// "CUBE · 1024×…" tag chip rendered as a clickable button so callers can hook
+// it up (e.g. to open the FITS header dialog).
+QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
+                           QToolButton **findButton,
+                           QToolButton **commandButton,
+                           QToolButton **exportButton,
+                           QToolButton **primaryTagButton = nullptr,
+                           QWidget *parent = nullptr);
+
+// Small "Tools → Foo…" breadcrumb chip used in the footer of tool dialogs to
+// echo the menu path the user came from. Read-only label, mono-spaced, dim.
+QLabel *makeBreadcrumbTag(const QString &text, QWidget *parent = nullptr);
+
+// Renders a Qt-resource SVG icon at the given pixel size, substituting any
+// `currentColor` references in the SVG with the active theme's muted-text
+// colour (kOnSurfaceVariant). Used by the viewer rail buttons so the icons
+// follow the theme without needing per-theme SVG variants.
+QPixmap renderThemeIcon(const QString &resourcePath, int size,
+                        const QColor *colorOverride = nullptr);
 
 // ── Global theme application ──────────────────────────────────────────────────
 

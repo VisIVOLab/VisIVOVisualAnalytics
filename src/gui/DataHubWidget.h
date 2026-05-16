@@ -9,7 +9,9 @@
 class QFrame;
 class QLabel;
 class QPushButton;
+class QTimer;
 class QVBoxLayout;
+struct BackendHealthResult;
 
 // ---------------------------------------------------------------------------
 // DataHubWidget  —  Digital Observatory landing page
@@ -42,6 +44,9 @@ public slots:
     // Synchronous health-check → updates status badge + system-insights panel.
     void refreshStatus();
 
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
     // Rebuilds the Recent Datasets panel from the current manager state.
     // Called automatically when manager emits changed().
     void refreshRecentDatasets();
@@ -51,6 +56,11 @@ signals:
     void openCatalogueRequested();
     void openVbtRequested();
     void openHiPSRequested();
+    /// Switch to the existing VLKB tab in MainWindow.
+    void openVLKBRequested();
+
+    /// User clicked the global search bar — host should open the command palette.
+    void commandPaletteRequested();
 
     // Emitted when the user clicks a recent dataset item.
     // MainWindow handles this by reopening the dataset using the stored path.
@@ -63,12 +73,27 @@ private:
     QFrame *buildActionGrid();
     QFrame *buildRecentDatasetsPanel();
     QFrame *buildSystemInsightsPanel();
+    QFrame *buildStatusBar();
+
+    // ── "Mission Control" Data Hub (new design) helpers ─────────────────────
+    QFrame *buildSearchBar();             // global ⌘K search bar at top
+    QFrame *buildQuickActionsList();      // compact vertical list (replaces 4-card grid)
+    QFrame *buildLast5JobsPanel();        // recent-tasks feed extracted from old insights
 
     // Creates a single interactive action card (icon symbol + title + desc).
     // Installs an event filter so the frame emits the given signal on click.
 QFrame *makeActionCard(const QString &iconKind, const QString &title,
                        const QString &desc, QWidget *parent = nullptr);
-                       
+
+    // System Insights live-activity helpers.
+    void updateSystemInsights(const BackendHealthResult &health);
+    void clearRecentTasksUi();
+
+    // Tear down + rebuild the entire hub UI when ThemeManager reports a
+    // theme switch — needed because most widgets cache theme hex values
+    // in inline stylesheets at construction time.
+    void rebuildOnThemeChange();
+
     QString backendUrl;
     QString backendToken;
 
@@ -78,10 +103,22 @@ QFrame *makeActionCard(const QString &iconKind, const QString &title,
     QPointer<QLabel>       labelStatusDetail;
     QPointer<QPushButton>  btnCheckConnection;
 
-    // System insights panel
-    QPointer<QLabel> labelWorkers;
-    QPointer<QLabel> labelSessions;
-    QPointer<QLabel> labelTaskRegistry;
+    // System insights panel — live activity readouts.
+    QPointer<QLabel>   labelRunningTasks;
+    QPointer<QLabel>   labelRunningCaption;
+    QPointer<QLabel>   labelRecentHeader;
+    QPointer<QWidget>  recentTasksContainer;
+    QPointer<QLabel>   labelRecentEmpty;
+    QPointer<QLabel>   labelCapacity;
+
+    // Bottom status bar (Layout B): health dot + workers + session + sanity.
+    QPointer<QLabel>   statusBarHealth;
+    QPointer<QLabel>   statusBarWorkers;
+    QPointer<QLabel>   statusBarSession;
+    QPointer<QLabel>   statusBarSanity;
+
+    // Periodic refresh of System Insights while the widget is visible.
+    QPointer<QTimer> insightsTimer;
 
     // Recent datasets — manager pointer (not owned), layout for dynamic items.
     RecentDatasetsManager *recentMgr{ nullptr };

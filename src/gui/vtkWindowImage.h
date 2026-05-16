@@ -188,6 +188,13 @@ private:
     QPointer<QAction> actionShowControlsSidebar;
     void setupSidebar();
 
+    // Layout B-style top toolbar: path-pill + tag chips + Find/Command/Export.
+    void setupViewerToolbar();
+
+    // Opens a non-modal dialog showing the FITS header cards for `filepath`.
+    // Triggered by the primary tag chip in the viewer toolbar.
+    void showFitsHeaderDialog();
+
     // Renderer
     vtkNew<vtkLegendScaleActorWCS> legendWCS;
     vtkNew<vtkAxisActor2D> overlayXAxis;

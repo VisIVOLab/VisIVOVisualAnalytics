@@ -1,6 +1,7 @@
 #include "BaselineDialog.h"
 #include "BackendClient.h"
 #include "DiagnosticsManager.h"
+#include "theme/VisivoTheme.h"
 
 #include <QCloseEvent>
 #include <QComboBox>
@@ -90,16 +91,18 @@ BaselineDialog::BaselineDialog(const QString &backendUrl,
     updatePolyOrder();
     connect(m_methodCombo, &QComboBox::currentIndexChanged, this, updatePolyOrder);
 
-    // ── Buttons ───────────────────────────────────────────────────────────────
+    // ── Footer (Layout B tool-dlg pattern: breadcrumb left, actions right) ────
     auto *btnLayout = new QHBoxLayout();
+    btnLayout->addWidget(VisivoTheme::makeBreadcrumbTag(
+            u"Tools → Baseline…"_s, central));
     btnLayout->addStretch();
-    m_computeBtn   = new QPushButton(u"Subtract Baseline"_s, central);
-    auto *closeBtn = new QPushButton(u"Close"_s, central);
+    auto *closeBtn = VisivoTheme::makeSecondaryButton(u"Close"_s, central);
+    m_computeBtn   = VisivoTheme::makePrimaryButton(u"Subtract Baseline"_s, central);
     m_computeBtn->setDefault(true);
     // Explicitly NOT checkable — must behave as a plain command button.
     m_computeBtn->setCheckable(false);
-    btnLayout->addWidget(m_computeBtn);
     btnLayout->addWidget(closeBtn);
+    btnLayout->addWidget(m_computeBtn);
     mainLayout->addLayout(btnLayout);
 
     connect(m_computeBtn, &QPushButton::clicked, this, &BaselineDialog::onCompute);

@@ -94,6 +94,10 @@ set(PROJECT_SOURCES
         src/gui/RemoteMomentWindow.h
         src/gui/AboutDialog.cpp
         src/gui/AboutDialog.h
+        src/gui/CommandPalette.cpp
+        src/gui/CommandPalette.h
+        src/app/ThumbnailCache.cpp
+        src/app/ThumbnailCache.h
         src/gui/CatalogueTableModel.cpp
         src/gui/CatalogueTableModel.h
         src/gui/DataHubWidget.cpp

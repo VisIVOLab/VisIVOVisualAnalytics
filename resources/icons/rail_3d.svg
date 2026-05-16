@@ -1,11 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
-  <!-- Front face -->
-  <rect x="4" y="8" width="11" height="11" rx="0.5"
-        stroke="#8AB8CC" stroke-width="1.5"/>
-  <!-- Top face -->
-  <polyline points="4,8 8,4 19,4 15,8"
-            stroke="#8AB8CC" stroke-width="1.5" stroke-linejoin="round"/>
-  <!-- Right face (accent) -->
-  <polyline points="15,8 19,4 19,15 15,19"
-            stroke="#048ABF" stroke-width="1.5" stroke-linejoin="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+     stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Cube wireframe — 3D view settings -->
+  <path d="M12 2 3 7v10l9 5 9-5V7l-9-5z"/>
+  <path d="M3 7l9 5 9-5"/>
+  <path d="M12 12v10"/>
 </svg>

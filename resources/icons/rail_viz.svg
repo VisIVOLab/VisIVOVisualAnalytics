@@ -1,7 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
-  <!-- Eye outline -->
-  <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"
-        stroke="#8AB8CC" stroke-width="1.5" stroke-linejoin="round"/>
-  <!-- Iris -->
-  <circle cx="12" cy="12" r="2.5" stroke="#048ABF" stroke-width="1.5"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+     stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Sliders — Visualization controls -->
+  <path d="M4 7h11"/>
+  <path d="M19 7h1"/>
+  <circle cx="17" cy="7" r="2"/>
+  <path d="M4 17h5"/>
+  <path d="M13 17h7"/>
+  <circle cx="11" cy="17" r="2"/>
 </svg>

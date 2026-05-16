@@ -39,8 +39,14 @@ public:
     void addSection(const QString &sectionTitle,
                     const QList<QPair<QString, QString>> &rows);
 
+protected:
+    /// On first show, anchor the dialog to the right edge of the parent
+    /// window so it reads as a side-sheet rather than a free-floating popup.
+    void showEvent(QShowEvent *event) override;
+
 private:
     QLabel      *m_titleLabel    { nullptr };
     QLabel      *m_subtitleLabel { nullptr };
     QVBoxLayout *m_bodyLayout    { nullptr };
+    bool         m_anchored      { false };
 };

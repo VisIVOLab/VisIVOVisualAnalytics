@@ -11,6 +11,7 @@
 
 class AuthWrapper;
 class BackendClient;
+class CommandPalette;
 class DataHubWidget;
 class DiagnosticsWindow;
 class HiPSWindow;
@@ -86,6 +87,21 @@ private:
     QPointer<HiPSWindow>             m_lastHiPSWindow;
     QPointer<QTabWidget>             m_tabs;
     QPointer<RecentDatasetsManager>  recentMgr;
+    // VLKB tab is closeable but the widget itself is preserved across
+    // close/reopen so the inventory state is not lost. Held here so we can
+    // distinguish it from genuinely-disposable tabs in the close handler.
+    QPointer<QWidget>                m_vlkbPanel;
+    QPointer<CommandPalette>         m_commandPalette;
+
+    // Build/refresh the command palette's action set. Called on demand each
+    // time ⌘K is pressed so dynamic groups (recent datasets) stay current.
+    void rebuildCommandPalette();
+    void openCommandPalette();
+
+    // Brings the VLKB panel to focus. Re-adds the tab if the user previously
+    // closed it. Used by both the Data Hub Quick action and the command
+    // palette entry.
+    void revealVLKBTab();
     std::unique_ptr<BackendClient>   m_sampBackendClient;
     QPointer<SampClient>             m_sampClient;
     QPointer<SampMessageHandler>     m_sampHandler;

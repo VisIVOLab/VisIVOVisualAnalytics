@@ -50,6 +50,5 @@ private:
 
     // ── Buttons ─────────────────────────────────────────────────────────────
     QPushButton             *m_runBtn{ nullptr };
-    QDialogButtonBox        *m_buttons{ nullptr };
     QPointer<QProgressDialog> m_progress;
 };

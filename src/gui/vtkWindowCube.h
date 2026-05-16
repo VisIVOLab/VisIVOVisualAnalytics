@@ -107,6 +107,9 @@ struct RemoteCubeSubvolumeResult
     std::array<int, 6> dataExtent{ 0, -1, 0, -1, 0, -1 };
     double cubeMean{ 0. };
     double cubeRms{ 0. };
+    // Sanitization already performed on the worker thread: NaN voxels
+    // replaced with invisibleSentinel; cubeRange is the finite-only visible range.
+    double invisibleSentinel{ -1.0 };
 };
 
 class vtkWindowCube : public QMainWindow
@@ -278,6 +281,13 @@ private:
     // Owns all sidebar widget pointers and the four page-build methods.
     std::unique_ptr<CubeUiAssembler> m_uiAssembler;
     void setupSidebar();
+
+    // Layout B-style top toolbar: path-pill + tag chips + Find/Command/Export.
+    void setupViewerToolbar();
+
+    // Opens a non-modal dialog showing the FITS header cards for `filepath`.
+    // Triggered by the primary tag chip in the viewer toolbar.
+    void showFitsHeaderDialog();
 
     // ── 3D View Settings – VTK-side state (UI widgets are in m_uiAssembler) ──
     QString             m_activeColorMapName;

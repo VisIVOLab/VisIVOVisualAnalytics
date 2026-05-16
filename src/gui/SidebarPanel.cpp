@@ -92,9 +92,31 @@ int SidebarPanel::addPage(const QString &iconResource, const QString &tooltip, Q
 
     const int index = m_stack->addWidget(scrollArea);
 
-    // Rail button for this section.
+    // Rail button for this section. We render the SVG with `currentColor`
+    // substituted by the active theme's muted-text hex via VisivoTheme so
+    // the icons match the chrome (no more pre-baked light-blue strokes that
+    // wash out on light theme).
     auto *btn = new QToolButton(m_rail);
-    btn->setIcon(QIcon(iconResource));
+    {
+        QIcon icon;
+        const QPixmap muted = VisivoTheme::renderThemeIcon(iconResource, 22);
+        if (!muted.isNull()) {
+            icon.addPixmap(muted, QIcon::Normal);
+            // Active state: brand-blue tint when checked / on rail-button
+            // [active='true'] property — keeps the rail's selected indicator
+            // visually consistent with Layout B.
+            const QColor primary(QString::fromLatin1(VisivoTheme::kPrimary()));
+            const QPixmap active =
+                    VisivoTheme::renderThemeIcon(iconResource, 22, &primary);
+            if (!active.isNull()) {
+                icon.addPixmap(active, QIcon::Active);
+                icon.addPixmap(active, QIcon::Selected);
+            }
+            btn->setIcon(icon);
+        } else {
+            btn->setIcon(QIcon(iconResource));   // fallback
+        }
+    }
     btn->setIconSize(QSize(22, 22));
     btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
     btn->setToolTip(tooltip);

@@ -2,6 +2,7 @@
 #include "ScienceMapWindow.h"
 #include "BackendClient.h"
 #include "DiagnosticsManager.h"
+#include "theme/VisivoTheme.h"
 
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -170,13 +171,16 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
     connect(m_maskCheck, &QCheckBox::toggled, m_thresholdSpin, &QWidget::setEnabled);
 
     // ── Buttons ───────────────────────────────────────────────────────────────
+    // Layout B tool-dlg footer: breadcrumb chip left, secondary + primary right.
     auto *btnLayout = new QHBoxLayout();
+    btnLayout->addWidget(VisivoTheme::makeBreadcrumbTag(
+            u"Tools → Line-width…"_s, central));
     btnLayout->addStretch();
-    m_computeBtn   = new QPushButton(u"Compute"_s, central);
-    auto *closeBtn = new QPushButton(u"Close"_s,   central);
+    auto *closeBtn = VisivoTheme::makeSecondaryButton(u"Close"_s, central);
+    m_computeBtn   = VisivoTheme::makePrimaryButton(u"Compute"_s, central);
     m_computeBtn->setDefault(true);
-    btnLayout->addWidget(m_computeBtn);
     btnLayout->addWidget(closeBtn);
+    btnLayout->addWidget(m_computeBtn);
     mainLayout->addLayout(btnLayout);
 
     connect(m_computeBtn, &QPushButton::clicked, this, &LinewidthDialog::onCompute);

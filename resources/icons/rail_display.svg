@@ -1,8 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
-  <!-- Monitor frame -->
-  <rect x="2" y="3" width="20" height="14" rx="1.5" stroke="#8AB8CC" stroke-width="1.5"/>
-  <!-- Stand stem -->
-  <line x1="12" y1="17" x2="12" y2="20" stroke="#8AB8CC" stroke-width="1.5" stroke-linecap="round"/>
-  <!-- Stand base -->
-  <line x1="8" y1="20" x2="16" y2="20" stroke="#048ABF" stroke-width="1.5" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+     stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Volume cube — Display / volume settings -->
+  <path d="M12 2 3 7v10l9 5 9-5V7l-9-5z"/>
+  <path d="M3 7l9 5 9-5"/>
+  <path d="M12 12v10"/>
 </svg>

@@ -29,6 +29,7 @@ _configured_workers = int(os.environ.get("VISIVO_WORKERS", "4"))
 async def health(_: None = _auth) -> dict:
     cache_stats = PRODUCT_CACHE.stats()
     task_stats = TASKS.stats()
+    task_snapshot = TASKS.snapshot(recent_limit=5)
     return {
         "ok": True,
         "workers": _configured_workers,
@@ -38,6 +39,9 @@ async def health(_: None = _auth) -> dict:
         "task_registry_entries": task_stats["entries"],
         "task_ttl_enabled": task_stats["ttl_enabled"],
         "task_ttl_seconds": task_stats["ttl_seconds"],
+        # Live activity for the desktop client's System Insights panel.
+        "running_tasks": task_snapshot["running_count"],
+        "recent_tasks": task_snapshot["recent_tasks"],
         "timestamp": datetime.now(tz=timezone.utc).isoformat(),
     }
 

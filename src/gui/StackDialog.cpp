@@ -1,4 +1,5 @@
 #include "StackDialog.h"
+#include "theme/VisivoTheme.h"
 
 #include "BackendClient.h"
 
@@ -90,16 +91,21 @@ StackDialog::StackDialog(BackendClient *client,
     updateWeightBy();
     connect(m_methodCombo, &QComboBox::currentIndexChanged, this, updateWeightBy);
 
-    // ── Buttons ───────────────────────────────────────────────────────────────
-    m_buttons = new QDialogButtonBox(this);
-    m_stackBtn = m_buttons->addButton(u"Stack"_s, QDialogButtonBox::AcceptRole);
+    // ── Footer (Layout B tool-dlg pattern) ────────────────────────────────────
+    auto *btnRow = new QHBoxLayout();
+    btnRow->addWidget(VisivoTheme::makeBreadcrumbTag(u"Tools → Stack…"_s, this));
+    btnRow->addStretch();
+
+    auto *cancelBtn = VisivoTheme::makeSecondaryButton(u"Cancel"_s, this);
+    m_stackBtn      = VisivoTheme::makePrimaryButton(u"Stack"_s, this);
     m_stackBtn->setEnabled(false);   // disabled until ≥ 2 checked
-    m_buttons->addButton(QDialogButtonBox::Cancel);
-    mainLayout->addWidget(m_buttons);
+    btnRow->addWidget(cancelBtn);
+    btnRow->addWidget(m_stackBtn);
+    mainLayout->addLayout(btnRow);
 
     connect(m_datasetList, &QListWidget::itemChanged, this, &StackDialog::onItemChanged);
     connect(m_stackBtn,    &QPushButton::clicked,     this, &StackDialog::onCompute);
-    connect(m_buttons,     &QDialogButtonBox::rejected, this, &QDialog::reject);
+    connect(cancelBtn,     &QPushButton::clicked,     this, &QDialog::reject);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -237,5 +243,12 @@ void StackDialog::setUiBusy(bool busy)
     m_datasetList->setEnabled(!busy);
     m_methodCombo->setEnabled(!busy);
     m_weightByCombo->setEnabled(!busy && m_methodCombo->currentData().toString() == u"weighted_mean"_s);
-    m_buttons->setEnabled(!busy);
+    // Disable the primary action while a compute is running. The cancel
+    // button stays enabled so the user can still abort the dialog.
+    if (busy) {
+        if (m_stackBtn) m_stackBtn->setEnabled(false);
+    } else {
+        // Recompute "≥ 2 checked" enabled state via the existing handler.
+        onItemChanged();
+    }
 }

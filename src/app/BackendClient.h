@@ -27,6 +27,17 @@ struct BackendFileEntry
     bool isFits{ false };
 };
 
+// One finished task as reported by /v1/health (newest first). Used to render
+// the "Recent operations" trail in the DataHub System Insights panel.
+struct BackendRecentTask
+{
+    QString operation;        // "moment", "pv", "image_full", …
+    QString status;           // "done" | "failed" | "cancelled"
+    double durationSeconds{ 0.0 };
+    double ageSeconds{ 0.0 }; // seconds since the task finished
+    bool cacheHit{ false };
+};
+
 struct BackendHealthResult
 {
     bool ok{ false };
@@ -38,6 +49,9 @@ struct BackendHealthResult
     int taskRegistryEntries{ 0 };
     bool taskTtlEnabled{ false };
     int taskTtlSeconds{ 0 };
+    // Live activity, populated from the new /v1/health snapshot fields.
+    int runningTasks{ 0 };
+    std::vector<BackendRecentTask> recentTasks;
 };
 
 struct BackendListFilesResult

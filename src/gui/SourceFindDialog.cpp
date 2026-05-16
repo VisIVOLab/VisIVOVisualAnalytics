@@ -1,6 +1,7 @@
 #include "SourceFindDialog.h"
 
 #include "BackendClient.h"
+#include "theme/VisivoTheme.h"
 
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -83,14 +84,19 @@ SourceFindDialog::SourceFindDialog(BackendClient *client,
     m_table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     mainLayout->addWidget(m_table, 1);
 
-    // ── Buttons ───────────────────────────────────────────────────────────────
-    m_buttons = new QDialogButtonBox(this);
-    m_runBtn = m_buttons->addButton(u"Run SoFiA-2"_s, QDialogButtonBox::AcceptRole);
-    m_buttons->addButton(QDialogButtonBox::Close);
-    mainLayout->addWidget(m_buttons);
+    // ── Footer (Layout B tool-dlg pattern: breadcrumb + actions) ──────────────
+    auto *btnRow = new QHBoxLayout();
+    btnRow->addWidget(VisivoTheme::makeBreadcrumbTag(
+            u"Tools → Source Finder…"_s, this));
+    btnRow->addStretch();
+    auto *closeBtn = VisivoTheme::makeSecondaryButton(u"Close"_s, this);
+    m_runBtn       = VisivoTheme::makePrimaryButton(u"Run SoFiA-2"_s, this);
+    btnRow->addWidget(closeBtn);
+    btnRow->addWidget(m_runBtn);
+    mainLayout->addLayout(btnRow);
 
-    connect(m_runBtn,  &QPushButton::clicked,      this, &SourceFindDialog::onRun);
-    connect(m_buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    connect(m_runBtn,  &QPushButton::clicked, this, &SourceFindDialog::onRun);
+    connect(closeBtn,  &QPushButton::clicked, this, &QDialog::reject);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
