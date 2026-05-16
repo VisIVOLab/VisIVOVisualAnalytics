@@ -1319,10 +1319,14 @@ RemoteCubePreviewResult fetchRemotePreview(const QString &backendUrl, const QStr
                                            int downsample, const QString &sessionId,
                                            const QString &backendToken)
 {
+    qDebug().noquote() << QStringLiteral("[preview-debug] fetcher start ds=%1 down=%2").arg(datasetId).arg(downsample);
     RemoteCubePreviewResult result;
     BackendClient client(backendUrl, backendToken);
     client.setSessionId(sessionId);
     const auto response = client.requestPreview(datasetId, downsample);
+    qDebug().noquote() << QStringLiteral("[preview-debug] fetcher response valid=%1 error=%2 w=%3 h=%4 d=%5")
+                                  .arg(response.valid).arg(response.error)
+                                  .arg(response.width).arg(response.height).arg(response.depth);
     if (!response.valid) {
         result.errorMessage = response.error.isEmpty() ? u"Remote preview request failed."_s
                                                        : response.error;
@@ -1513,6 +1517,30 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 {
     ui->setupUi(this);
     this->setupViewerToolbar();
+
+    // Pre-create the QActions and QActionGroups the sidebar's "Cube Extras"
+    // page binds to. Menu placement, tooltips, presets and signal handlers
+    // are configured further down in the constructor — but the pointers must
+    // exist before setupSidebar() so the sidebar can wire its widgets.
+    this->actionShowCuttingPlane = new QAction(u"Show Cutting Plane"_s, this);
+    this->actionShowCuttingPlane->setCheckable(true);
+    this->actionShowCuttingPlane->setChecked(true);
+    this->actionShow3dWcsAxes = new QAction(u"Show 3D WCS Axes"_s, this);
+    this->actionShow3dWcsAxes->setCheckable(true);
+    this->actionShow3dWcsAxes->setChecked(false);
+    this->actionPlaySlices = new QAction(u"Play Slices"_s, this);
+    this->actionPlaySlices->setCheckable(true);
+    this->actionPlaySlices->setChecked(false);
+    this->actionPickSpectrum3d = new QAction(u"Pick Spectrum on Plane Click"_s, this);
+    this->actionPickSpectrum3d->setCheckable(true);
+    this->actionPickSpectrum3d->setChecked(false);
+    this->cuttingPlaneOpacityGroup = new QActionGroup(this);
+    this->cuttingPlaneOpacityGroup->setExclusive(true);
+    this->animationFpsGroup = new QActionGroup(this);
+    this->animationFpsGroup->setExclusive(true);
+    this->animationModeGroup = new QActionGroup(this);
+    this->animationModeGroup->setExclusive(true);
+
     this->setupSidebar();
     this->setupWorkspaceDocks();
     // The file path is shown in the Layout B path-pill toolbar; the OS title
@@ -1611,10 +1639,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     }); 
 
     // ── Cutting plane visibility + opacity submenu (View menu) ────────────
+    // QAction itself was pre-created above setupSidebar(); here we configure
+    // its tooltip and place it in the menu.
     ui->menuView->addSeparator();
-    this->actionShowCuttingPlane = new QAction(u"Show Cutting Plane"_s, this);
-    this->actionShowCuttingPlane->setCheckable(true);
-    this->actionShowCuttingPlane->setChecked(true);
     this->actionShowCuttingPlane->setToolTip(
             u"Show the 2D slice mapped as a textured plane inside the 3D cube view."_s);
     ui->menuView->addAction(this->actionShowCuttingPlane);
@@ -1628,10 +1655,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     });
     {
         auto *opacityMenu = ui->menuView->addMenu(u"Cutting Plane Opacity"_s);
-        this->cuttingPlaneOpacityGroup = new QActionGroup(this);
-        this->cuttingPlaneOpacityGroup->setExclusive(true);
+        // cuttingPlaneOpacityGroup was pre-created above setupSidebar().
         const std::array<int, 5> presets { 25, 50, 75, 100, 0 };
-        const int defaultPercent = 100;
+        const int defaultPercent = 50;   // match setupCubeRenderer's plane opacity
         for (int pct : presets) {
             const QString label =
                     pct == 0 ? u"Transparent (0%)"_s : u"%1%"_s.arg(pct);
@@ -1648,9 +1674,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     }
 
     // ── 3D WCS axes (vtkCubeAxesActor) toggle ────────────────────────────
-    this->actionShow3dWcsAxes = new QAction(u"Show 3D WCS Axes"_s, this);
-    this->actionShow3dWcsAxes->setCheckable(true);
-    this->actionShow3dWcsAxes->setChecked(false);
     this->actionShow3dWcsAxes->setToolTip(
             u"Show a labeled bounding box in the 3D cube view with RA / DEC / "
             "Velocity ticks derived from the WCS metadata."_s);
@@ -1660,9 +1683,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
     // ── Slice animation (play/pause + FPS + mode) ────────────────────────
     ui->menuView->addSeparator();
-    this->actionPlaySlices = new QAction(u"Play Slices"_s, this);
-    this->actionPlaySlices->setCheckable(true);
-    this->actionPlaySlices->setChecked(false);
     this->actionPlaySlices->setToolTip(
             u"Auto-advance the slice index, animating the cutting plane through "
             "the cube along the spectral axis."_s);
@@ -1671,8 +1691,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                      [this](bool checked) { this->setSliceAnimationActive(checked); });
     {
         auto *fpsMenu = ui->menuView->addMenu(u"Animation Speed"_s);
-        this->animationFpsGroup = new QActionGroup(this);
-        this->animationFpsGroup->setExclusive(true);
+        // animationFpsGroup was pre-created above setupSidebar().
         const std::array<int, 5> fpsPresets { 2, 5, 10, 15, 30 };
         for (int fps : fpsPresets) {
             auto *action = fpsMenu->addAction(u"%1 fps"_s.arg(fps));
@@ -1692,8 +1711,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     }
     {
         auto *modeMenu = ui->menuView->addMenu(u"Animation Mode"_s);
-        this->animationModeGroup = new QActionGroup(this);
-        this->animationModeGroup->setExclusive(true);
+        // animationModeGroup was pre-created above setupSidebar().
         struct Entry { AnimationMode mode; QString label; };
         const std::array<Entry, 3> entries {
             Entry{ AnimationMode::Loop,   u"Loop"_s },
@@ -1719,9 +1737,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                      &vtkWindowCube::advanceSliceAnimation);
 
     // ── 3D spectral picker toggle ────────────────────────────────────────
-    this->actionPickSpectrum3d = new QAction(u"Pick Spectrum on Plane Click"_s, this);
-    this->actionPickSpectrum3d->setCheckable(true);
-    this->actionPickSpectrum3d->setChecked(false);
     this->actionPickSpectrum3d->setToolTip(
             u"When enabled, clicking on the cutting plane inside the 3D view "
             "extracts the spectral profile at that voxel into the probe plot."_s);
@@ -1857,6 +1872,17 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->setupCubeRenderer();
     this->setupSliceRenderer();
     this->setupMomentRenderer();
+
+    // Attach the cutting-plane texture now that setupSliceRenderer() has
+    // wired sliceColors with a real input and LUT — connecting it earlier
+    // (e.g. inside setupCubeRenderer) feeds the first 3D Render a broken
+    // texture and the entire scene fails to draw.
+    this->remoteCuttingPlaneTexture = vtkSmartPointer<vtkTexture>::New();
+    this->remoteCuttingPlaneTexture->SetInputConnection(this->sliceColors->GetOutputPort());
+    this->remoteCuttingPlaneTexture->InterpolateOn();
+    this->remoteCuttingPlaneTexture->RepeatOff();
+    this->remoteCuttingPlaneActor->SetTexture(this->remoteCuttingPlaneTexture);
+
     this->updateDataStatePanel();
     this->updateSanityPanel();
     QTimer::singleShot(0, this, [this]() {
@@ -1904,9 +1930,12 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                      });
     QObject::connect(&this->remotePreviewWatcher, &QFutureWatcher<RemoteCubePreviewResult>::finished, this,
                      [this]() {
+                         qDebug().noquote() << QStringLiteral("[preview-debug] watcher::finished fired");
                          const int requestId =
                                  this->remotePreviewWatcher.property("requestId").toInt();
                          if (requestId != this->currentRemotePreviewRequestId) {
+                             qDebug().noquote() << QStringLiteral("[preview-debug] stale requestId=%1 vs current=%2 — return")
+                                                           .arg(requestId).arg(this->currentRemotePreviewRequestId);
                              return;
                          }
 
@@ -2514,9 +2543,15 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->setRemoteCubeDisplayState(RemoteCubeDisplayState::Preview);
     this->showPersistentStatusMessage(u"Loading preview..."_s);
     this->remotePreviewWatcher.setProperty("requestId", ++this->currentRemotePreviewRequestId);
+    qDebug().noquote() << QStringLiteral("[preview-debug] launching fetcher requestId=%1 url=%2 dataset=%3")
+                                  .arg(this->currentRemotePreviewRequestId)
+                                  .arg(this->remoteBackendUrl)
+                                  .arg(this->remoteDatasetId);
     this->remotePreviewWatcher.setFuture(
             QtConcurrent::run(&fetchRemotePreview, this->remoteBackendUrl, this->remoteDatasetId,
                               4, this->remoteSessionId, this->remoteBackendToken));
+    qDebug().noquote() << QStringLiteral("[preview-debug] setFuture returned, isRunning=%1")
+                                  .arg(this->remotePreviewWatcher.isRunning());
 }
 
 vtkWindowCube::~vtkWindowCube()
@@ -2711,11 +2746,11 @@ void vtkWindowCube::setupSidebar()
         opacityRow->addWidget(new QLabel(u"Opacity"_s, planeBox));
         auto *opacitySlider = new QSlider(Qt::Horizontal, planeBox);
         opacitySlider->setRange(0, 100);
-        opacitySlider->setValue(100);
+        opacitySlider->setValue(50);   // match setupCubeRenderer's plane opacity
         opacitySlider->setSingleStep(5);
         opacitySlider->setPageStep(25);
         opacityRow->addWidget(opacitySlider, /*stretch=*/1);
-        auto *opacityVal = new QLabel(u"100%"_s, planeBox);
+        auto *opacityVal = new QLabel(u"50%"_s, planeBox);
         opacityVal->setMinimumWidth(36);
         opacityRow->addWidget(opacityVal);
         planeLay->addLayout(opacityRow);
@@ -3536,18 +3571,13 @@ void vtkWindowCube::setupCubeRenderer()
         planeMapper->ScalarVisibilityOff();
         this->remoteCuttingPlaneActor->SetMapper(planeMapper);
 
-        this->remoteCuttingPlaneTexture = vtkSmartPointer<vtkTexture>::New();
-        this->remoteCuttingPlaneTexture->SetInputConnection(this->sliceColors->GetOutputPort());
-        this->remoteCuttingPlaneTexture->InterpolateOn();
-        this->remoteCuttingPlaneTexture->RepeatOff();
-        this->remoteCuttingPlaneActor->SetTexture(this->remoteCuttingPlaneTexture);
-
-        // Keep the red edge as the plane indicator. White base color lets the
-        // RGBA texture pass through unchanged. Fully opaque by default so the
-        // slice content is readable; the user can rotate around the cube to
-        // see the volume on either side.
+        // The slice texture is attached AFTER setupSliceRenderer() finishes
+        // (see the ctor, right after this->setupMomentRenderer()). Here we
+        // only configure the plane's solid-colour fallback: a translucent
+        // white surface with a red outline so the plane is still identifiable
+        // before the first slice tile arrives.
         this->remoteCuttingPlaneActor->GetProperty()->SetColor(1.0, 1.0, 1.0);
-        this->remoteCuttingPlaneActor->GetProperty()->SetOpacity(1.0);
+        this->remoteCuttingPlaneActor->GetProperty()->SetOpacity(0.5);
         this->remoteCuttingPlaneActor->GetProperty()->EdgeVisibilityOn();
         this->remoteCuttingPlaneActor->GetProperty()->SetEdgeColor(1.0, 0.0, 0.0);
         this->remoteCuttingPlaneActor->GetProperty()->SetLineWidth(3.0);
@@ -8708,6 +8738,11 @@ void vtkWindowCube::handle3dPickEvent()
 
     this->probeValid = true;
     this->probeFrozen = true;  // hold the pick — 2D mouse moves should not overwrite it
+    // updateProbePlot() early-returns if probeModeActive==false; the 3D pick
+    // is an explicit user request to see the spectrum, so flip the flag here
+    // (without calling setProbeModeActive() — that would also flip the 2D
+    // cursor and disable region/PV actions, which is out of scope for 3D pick).
+    this->probeModeActive = true;
     this->probeVoxel = { voxelX, voxelY, voxelZ };
     auto *sliceImage =
             vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0));
