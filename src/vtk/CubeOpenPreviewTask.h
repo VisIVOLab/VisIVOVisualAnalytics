@@ -25,6 +25,9 @@ struct CubeOpenStageResult
     // finite-only visible range. The GUI thread can skip its own pass.
     bool preSanitized{ false };
     double invisibleSentinel{ -1.0 };
+    // Fraction of NaN/inf voxels found during sanitization (0..1). Cached so
+    // the sanity panel does not need to rescan the volume on the GUI thread.
+    double blankFraction{ 0. };
 };
 
 CubeOpenStageResult loadCubeOpenPreview(const QString &filepath);

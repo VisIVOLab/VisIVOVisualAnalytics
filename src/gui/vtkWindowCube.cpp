@@ -656,7 +656,7 @@ SanityReport buildCubeSanityReport(const std::array<QString, 3> &ctype,
                                    const std::array<double, 3> &crval,
                                    const std::array<double, 3> &crpix,
                                    const std::array<double, 3> &cdelt,
-                                   vtkImageData *cubeImage)
+                                   double blankFraction)
 {
     const auto pairRecognized = [&ctype]() {
         const QString c1 = ctype[0].trimmed().toUpper();
@@ -699,7 +699,6 @@ SanityReport buildCubeSanityReport(const std::array<QString, 3> &ctype,
         unknowns << u"Spectral-axis semantics are ambiguous (CTYPE3=%1)."_s.arg(ctype[2]);
     }
 
-    const double blankFraction = computeBlankFraction(cubeImage);
     if (blankFraction >= 0.2) {
         warnings << u"Current loaded cube block is heavily blanked/NaN (%1%)."_s.arg(blankFraction * 100.0, 0, 'f', 1);
     }
@@ -880,6 +879,10 @@ struct SanitizedCubeFullStats
     double invisibleSentinel{ -1.0 };
     double mean{ 0. };
     double rms{ 0. };
+    // Fraction of NaN/inf voxels that were replaced by the sentinel during
+    // sanitization. Carried in the result so updateSanityPanel does not need
+    // to rescan the (possibly multi-GB) volume on the GUI thread.
+    double blankFraction{ 0. };
 };
 
 // Worker-thread variant: combines sanitize + range + mean/rms in two passes
@@ -958,6 +961,7 @@ SanitizedCubeFullStats sanitizeAndStatsCubeInPlace(vtkImageData *image)
         stats.mean = sum / static_cast<double>(finiteCount);
         stats.rms = std::sqrt(sumSq / static_cast<double>(finiteCount));
     }
+    stats.blankFraction = static_cast<double>(replaced) / static_cast<double>(voxelCount);
     return stats;
 }
 
@@ -1408,6 +1412,7 @@ RemoteCubeSubvolumeResult fetchRemoteSubvolume(const QString &backendUrl, const 
     result.invisibleSentinel = stats.invisibleSentinel;
     result.cubeMean = stats.mean;
     result.cubeRms = stats.rms;
+    result.blankFraction = stats.blankFraction;
     return result;
 }
 
@@ -1838,7 +1843,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                                      result.cubeMean,
                                                      result.cubeRms,
                                                      /*preSanitized=*/true,
-                                                     result.invisibleSentinel });
+                                                     result.invisibleSentinel,
+                                                     result.blankFraction });
                          if (auto *cubeImage = vtkImageData::SafeDownCast(
                                      this->cubeDisplaySource->GetOutputDataObject(0))) {
                              double bounds[6];
@@ -6130,10 +6136,15 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
             // would freeze the UI for multi-GB cubes).
             this->currentCubeVisibleRange = result.cubeRange;
             this->currentCubeInvisibleSentinel = result.invisibleSentinel;
+            this->currentCubeBlankFraction = result.blankFraction;
         } else {
             const auto sanitized = sanitizeCubeScalarsInPlace(result.cubeImageData);
             this->currentCubeVisibleRange = sanitized.visibleRange;
             this->currentCubeInvisibleSentinel = sanitized.invisibleSentinel;
+            // sanitizeCubeScalarsInPlace does not compute blankFraction; the
+            // preview cube is small so a single quick rescan via the fast-path
+            // computeBlankFraction is acceptable.
+            this->currentCubeBlankFraction = computeBlankFraction(result.cubeImageData);
         }
     }
 
@@ -6176,20 +6187,12 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
 
     QElapsedTimer cubeFieldsTimer;
     cubeFieldsTimer.start();
-    QElapsedTimer stepTimer;
-    stepTimer.start();
     ui->lineCubeMin->setText(QString::number(this->currentCubeVisibleRange[0]));
-    qDebug().noquote() << QStringLiteral("[perf][cube] setText lineCubeMin: %1 ms").arg(stepTimer.restart());
     ui->lineCubeMax->setText(QString::number(this->currentCubeVisibleRange[1]));
-    qDebug().noquote() << QStringLiteral("[perf][cube] setText lineCubeMax: %1 ms").arg(stepTimer.restart());
     ui->lineCubeMean->setText(QString::number(result.cubeMean));
-    qDebug().noquote() << QStringLiteral("[perf][cube] setText lineCubeMean: %1 ms").arg(stepTimer.restart());
     ui->lineCubeRms->setText(QString::number(result.cubeRms));
-    qDebug().noquote() << QStringLiteral("[perf][cube] setText lineCubeRms: %1 ms").arg(stepTimer.restart());
     ui->lineSpectral->setText(this->formatSpectralAxisValue(clampedSlice));
-    qDebug().noquote() << QStringLiteral("[perf][cube] setText lineSpectral: %1 ms").arg(stepTimer.restart());
     this->refreshSpectralAxisUi();
-    qDebug().noquote() << QStringLiteral("[perf][cube] refreshSpectralAxisUi: %1 ms").arg(stepTimer.restart());
     qDebug().noquote()
             << QStringLiteral("[perf][cube] apply cube UI fields: %1 ms").arg(
                        cubeFieldsTimer.elapsed());
@@ -6301,44 +6304,26 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     // Render(). Letting the event loop pump first means pending UI events
     // (paint, status updates, cursor) are processed before the GPU stall,
     // so the transition no longer feels like a freeze of the whole app.
-    QElapsedTimer scheduleTimer;
-    scheduleTimer.start();
-    QTimer::singleShot(50, this, [this, clampedSlice, scheduleTimer]() {
-        qDebug().noquote()
-                << QStringLiteral("[perf][cube] singleShot fired after gap: %1 ms")
-                           .arg(scheduleTimer.elapsed());
-        QElapsedTimer stepTimer;
-        stepTimer.start();
+    QTimer::singleShot(50, this, [this, clampedSlice]() {
         this->updateRemoteCuttingPlane(clampedSlice);
-        qDebug().noquote()
-                << QStringLiteral("[perf][cube] deferred updateRemoteCuttingPlane: %1 ms")
-                           .arg(stepTimer.restart());
         // Pump pending paint / status updates BEFORE the cube Render(), so
         // "Loading full resolution..." and any other UI changes are visible
         // before the synchronous GPU volume upload below blocks the thread.
         QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-        qDebug().noquote()
-                << QStringLiteral("[perf][cube] deferred processEvents: %1 ms")
-                           .arg(stepTimer.restart());
 
+        QElapsedTimer renderTimer;
+        renderTimer.start();
         // First Render with the new volume — this is the actual GPU texture
-        // upload. Inherently synchronous in vtkGPUVolumeRayCastMapper, but it
-        // now happens after the event loop pumped, so the user sees the
-        // updated status message instead of a fully unresponsive app.
+        // upload. Inherently synchronous in vtkGPUVolumeRayCastMapper. Kept
+        // as a canary timer so future regressions on volume-upload cost are
+        // visible in logs.
         ui->vtkCube->renderWindow()->Render();
         qDebug().noquote()
                 << QStringLiteral("[perf][cube] apply cube Render (GPU upload): %1 ms")
-                           .arg(stepTimer.restart());
+                           .arg(renderTimer.elapsed());
 
         ui->vtkImage->renderWindow()->Render();
-        qDebug().noquote()
-                << QStringLiteral("[perf][cube] deferred image Render: %1 ms")
-                           .arg(stepTimer.restart());
-
         this->requestRemoteSlice(clampedSlice);
-        qDebug().noquote()
-                << QStringLiteral("[perf][cube] deferred requestRemoteSlice: %1 ms")
-                           .arg(stepTimer.restart());
     });
     qDebug().noquote() << QStringLiteral("[perf][cube] apply total (sync): %1 ms").arg(
             totalTimer.elapsed());
@@ -6532,17 +6517,13 @@ QString vtkWindowCube::spectralAxisTooltip() const
 
 void vtkWindowCube::refreshSpectralAxisUi()
 {
-    QElapsedTimer t;
-    t.start();
     const auto descriptor = this->spectralAxisDescriptor();
     const QString title = this->spectralAxisTitle();
     const QString tooltip = this->spectralAxisTooltip();
-    qDebug().noquote() << QStringLiteral("[perf][spectral] descriptors: %1 ms").arg(t.restart());
     ui->labelSliceHdr->setText(u"CUTTING PLANE (%1)"_s.arg(title).toUpper());
     ui->labelSliceHdr->setToolTip(tooltip);
     ui->lineSpectral->setToolTip(tooltip);
     ui->lineSpectral->setStatusTip(tooltip);
-    qDebug().noquote() << QStringLiteral("[perf][spectral] header/tooltip: %1 ms").arg(t.restart());
     qDebug().noquote()
             << QStringLiteral("[spectral] axis3 title=%1 unit=%2 source=%3")
                        .arg(descriptor.label,
@@ -6552,9 +6533,7 @@ void vtkWindowCube::refreshSpectralAxisUi()
                                     ? QStringLiteral("backend_wcs")
                                     : descriptor.sourceLabel);
     this->updateDataStatePanel();
-    qDebug().noquote() << QStringLiteral("[perf][spectral] updateDataStatePanel: %1 ms").arg(t.restart());
     this->updateSanityPanel();
-    qDebug().noquote() << QStringLiteral("[perf][spectral] updateSanityPanel: %1 ms").arg(t.restart());
 }
 
 bool vtkWindowCube::remoteHasWcsAxis(int axis) const
@@ -6695,10 +6674,12 @@ void vtkWindowCube::updateSanityPanel()
     if (!m_uiAssembler)
         return;
 
-    auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
+    // blankFraction is cached from the worker-thread sanitization, so this
+    // method runs in O(1) — no per-call rescan of the (possibly multi-GB) cube.
     const auto report = buildCubeSanityReport(this->remoteDatasetCtype, this->remoteDatasetCunit,
                                               this->remoteDatasetCrval, this->remoteDatasetCrpix,
-                                              this->remoteDatasetCdelt, cubeImage);
+                                              this->remoteDatasetCdelt,
+                                              this->currentCubeBlankFraction);
     CubeUiAssembler::SanityStatusData d;
     d.text    = report.summary;
     d.tooltip = report.details;

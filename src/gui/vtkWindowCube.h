@@ -110,6 +110,9 @@ struct RemoteCubeSubvolumeResult
     // Sanitization already performed on the worker thread: NaN voxels
     // replaced with invisibleSentinel; cubeRange is the finite-only visible range.
     double invisibleSentinel{ -1.0 };
+    // Fraction of NaN/inf voxels found in the subvolume (0..1). Cached so the
+    // sanity panel does not need to rescan the full cube on the GUI thread.
+    double blankFraction{ 0. };
 };
 
 class vtkWindowCube : public QMainWindow
@@ -424,6 +427,10 @@ private:
 
     std::array<double, 2> currentCubeVisibleRange{ 0., 0. };
     double currentCubeInvisibleSentinel{ -1.0 };
+    // Fraction of NaN/inf voxels in the currently displayed cube. Populated
+    // by applyCubeOpenResult from the worker-thread sanitization stats, and
+    // consumed by updateSanityPanel so the panel never rescans the volume.
+    double currentCubeBlankFraction{ 0. };
     float lowerBound;
     float upperBound;
 
