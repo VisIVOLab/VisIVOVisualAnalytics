@@ -422,6 +422,15 @@ void MainWindow::rebuildCommandPalette()
                  u"Version, credits"_s, QString(), u"Application"_s,
                  [this]() { this->openAboutDialog(); }});
 
+        // ── View ────────────────────────────────────────────────────────────
+        // Diagnostics is in MainWindow's View menu but easy to miss; expose it
+        // in the palette so it's reachable from anywhere via ⌘K + "diag".
+        this->m_commandPalette->addAction(
+                {u"⚠"_s, u"Open Diagnostics Window"_s,
+                 u"View · backend / SAMP / scientific log feed"_s, QString(),
+                 u"View"_s,
+                 [this]() { this->openDiagnosticsWindow(); }});
+
         s_staticAdded = true;
     }
 
@@ -650,12 +659,10 @@ void MainWindow::reopenDataset(const RecentDataset &dataset)
 
 void MainWindow::openDiagnosticsWindow()
 {
-    if (!this->diagnosticsWindow) {
-        this->diagnosticsWindow = new DiagnosticsWindow(nullptr, Qt::Window);
-    }
-    this->diagnosticsWindow->show();
-    this->diagnosticsWindow->raise();
-    this->diagnosticsWindow->activateWindow();
+    // Route through the process-wide singleton so child windows (cube/image
+    // viewers, ⌘K palette) and MainWindow's own View menu all share one
+    // instance — and one model — instead of opening multiple panels.
+    this->diagnosticsWindow = DiagnosticsWindow::showSingleton();
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)

@@ -3,6 +3,7 @@
 
 #include "ColorMaps.h"
 #include "CubeUiAssembler.h"
+#include "DiagnosticsWindow.h"
 #include "CatalogueOverlayUtils.h"
 #include "CatalogueTableModel.h"
 #include "LUTCustomizerDialog.h"
@@ -49,9 +50,15 @@
 #include <vtkLineSource.h>
 #include <vtkLookupTable.h>
 #include <vtkOrientationMarkerWidget.h>
+#include <vtkCallbackCommand.h>
+#include <vtkCommand.h>
+#include <vtkCubeAxesActor.h>
 #include <vtkOutlineFilter.h>
+#include <vtkPropPicker.h>
+#include <vtkRenderWindowInteractor.h>
 #include <vtkPlaneSource.h>
 #include <vtkPiecewiseFunction.h>
+#include <vtkTexture.h>
 #include <vtkPoints.h>
 #include <vtkPolyData.h>
 #include <vtkPolyDataMapper.h>
@@ -109,6 +116,8 @@
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSizePolicy>
+#include <QGroupBox>
+#include <QSlider>
 #include <QSpinBox>
 #include <QTableView>
 #include <QThread>
@@ -1601,9 +1610,172 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->requestWcsOverlayRender();
     }); 
 
+    // ── Cutting plane visibility + opacity submenu (View menu) ────────────
+    ui->menuView->addSeparator();
+    this->actionShowCuttingPlane = new QAction(u"Show Cutting Plane"_s, this);
+    this->actionShowCuttingPlane->setCheckable(true);
+    this->actionShowCuttingPlane->setChecked(true);
+    this->actionShowCuttingPlane->setToolTip(
+            u"Show the 2D slice mapped as a textured plane inside the 3D cube view."_s);
+    ui->menuView->addAction(this->actionShowCuttingPlane);
+    QObject::connect(this->actionShowCuttingPlane, &QAction::toggled, this, [this](bool checked) {
+        if (this->remoteCuttingPlaneActor) {
+            this->remoteCuttingPlaneActor->SetVisibility(checked ? 1 : 0);
+        }
+        if (ui->vtkCube->renderWindow()) {
+            ui->vtkCube->renderWindow()->Render();
+        }
+    });
+    {
+        auto *opacityMenu = ui->menuView->addMenu(u"Cutting Plane Opacity"_s);
+        this->cuttingPlaneOpacityGroup = new QActionGroup(this);
+        this->cuttingPlaneOpacityGroup->setExclusive(true);
+        const std::array<int, 5> presets { 25, 50, 75, 100, 0 };
+        const int defaultPercent = 100;
+        for (int pct : presets) {
+            const QString label =
+                    pct == 0 ? u"Transparent (0%)"_s : u"%1%"_s.arg(pct);
+            auto *action = opacityMenu->addAction(label);
+            action->setCheckable(true);
+            action->setChecked(pct == defaultPercent);
+            action->setData(pct);
+            this->cuttingPlaneOpacityGroup->addAction(action);
+        }
+        QObject::connect(this->cuttingPlaneOpacityGroup, &QActionGroup::triggered, this,
+                         [this](QAction *action) {
+                             this->setCuttingPlaneOpacity(action->data().toInt() / 100.0);
+                         });
+    }
+
+    // ── 3D WCS axes (vtkCubeAxesActor) toggle ────────────────────────────
+    this->actionShow3dWcsAxes = new QAction(u"Show 3D WCS Axes"_s, this);
+    this->actionShow3dWcsAxes->setCheckable(true);
+    this->actionShow3dWcsAxes->setChecked(false);
+    this->actionShow3dWcsAxes->setToolTip(
+            u"Show a labeled bounding box in the 3D cube view with RA / DEC / "
+            "Velocity ticks derived from the WCS metadata."_s);
+    ui->menuView->addAction(this->actionShow3dWcsAxes);
+    QObject::connect(this->actionShow3dWcsAxes, &QAction::toggled, this,
+                     [this](bool checked) { this->apply3dWcsAxesVisibility(checked); });
+
+    // ── Slice animation (play/pause + FPS + mode) ────────────────────────
+    ui->menuView->addSeparator();
+    this->actionPlaySlices = new QAction(u"Play Slices"_s, this);
+    this->actionPlaySlices->setCheckable(true);
+    this->actionPlaySlices->setChecked(false);
+    this->actionPlaySlices->setToolTip(
+            u"Auto-advance the slice index, animating the cutting plane through "
+            "the cube along the spectral axis."_s);
+    ui->menuView->addAction(this->actionPlaySlices);
+    QObject::connect(this->actionPlaySlices, &QAction::toggled, this,
+                     [this](bool checked) { this->setSliceAnimationActive(checked); });
+    {
+        auto *fpsMenu = ui->menuView->addMenu(u"Animation Speed"_s);
+        this->animationFpsGroup = new QActionGroup(this);
+        this->animationFpsGroup->setExclusive(true);
+        const std::array<int, 5> fpsPresets { 2, 5, 10, 15, 30 };
+        for (int fps : fpsPresets) {
+            auto *action = fpsMenu->addAction(u"%1 fps"_s.arg(fps));
+            action->setCheckable(true);
+            action->setChecked(fps == this->animationFps);
+            action->setData(fps);
+            this->animationFpsGroup->addAction(action);
+        }
+        QObject::connect(this->animationFpsGroup, &QActionGroup::triggered, this,
+                         [this](QAction *action) {
+                             this->animationFps = std::max(1, action->data().toInt());
+                             if (this->sliceAnimationTimer.isActive()) {
+                                 this->sliceAnimationTimer.start(
+                                         std::max(1, 1000 / this->animationFps));
+                             }
+                         });
+    }
+    {
+        auto *modeMenu = ui->menuView->addMenu(u"Animation Mode"_s);
+        this->animationModeGroup = new QActionGroup(this);
+        this->animationModeGroup->setExclusive(true);
+        struct Entry { AnimationMode mode; QString label; };
+        const std::array<Entry, 3> entries {
+            Entry{ AnimationMode::Loop,   u"Loop"_s },
+            Entry{ AnimationMode::Bounce, u"Bounce"_s },
+            Entry{ AnimationMode::Once,   u"Stop at End"_s },
+        };
+        for (const auto &e : entries) {
+            auto *action = modeMenu->addAction(e.label);
+            action->setCheckable(true);
+            action->setChecked(e.mode == this->animationMode);
+            action->setData(static_cast<int>(e.mode));
+            this->animationModeGroup->addAction(action);
+        }
+        QObject::connect(this->animationModeGroup, &QActionGroup::triggered, this,
+                         [this](QAction *action) {
+                             this->animationMode =
+                                     static_cast<AnimationMode>(action->data().toInt());
+                             this->animationDirection = +1;
+                         });
+    }
+    this->sliceAnimationTimer.setSingleShot(false);
+    QObject::connect(&this->sliceAnimationTimer, &QTimer::timeout, this,
+                     &vtkWindowCube::advanceSliceAnimation);
+
+    // ── 3D spectral picker toggle ────────────────────────────────────────
+    this->actionPickSpectrum3d = new QAction(u"Pick Spectrum on Plane Click"_s, this);
+    this->actionPickSpectrum3d->setCheckable(true);
+    this->actionPickSpectrum3d->setChecked(false);
+    this->actionPickSpectrum3d->setToolTip(
+            u"When enabled, clicking on the cutting plane inside the 3D view "
+            "extracts the spectral profile at that voxel into the probe plot."_s);
+    ui->menuView->addAction(this->actionPickSpectrum3d);
+    QObject::connect(this->actionPickSpectrum3d, &QAction::toggled, this, [this](bool checked) {
+        if (checked) {
+            this->install3dPickObserver();
+            // Make the picking mode obvious: cross cursor on the 3D widget and
+            // a status hint. Without this the toggle does nothing visible until
+            // the user happens to click on the plane.
+            ui->vtkCube->setCursor(Qt::CrossCursor);
+            this->statusBar()->showMessage(
+                    u"3D pick: click the cutting plane to extract its spectral profile. "
+                    "Click off-plane to rotate as usual."_s,
+                    5000);
+        } else {
+            this->remove3dPickObserver();
+            ui->vtkCube->unsetCursor();
+            this->statusBar()->clearMessage();
+        }
+    });
+
     this->updateDataStatePanel();
     this->updateSanityPanel();
     this->updateWcsStatusIndicator();
+
+    // ── Diagnostics + Command palette (replicated across windows) ────────
+    // These two entries make the app-wide "View → Diagnostics" and "⌘K"
+    // affordances reachable from this child window too, so the user does
+    // not have to switch back to the main window.
+    ui->menuView->addSeparator();
+    auto *actionDiagnostics = new QAction(u"Diagnostics"_s, this);
+    actionDiagnostics->setToolTip(u"Open the application-wide diagnostics log window."_s);
+    ui->menuView->addAction(actionDiagnostics);
+    QObject::connect(actionDiagnostics, &QAction::triggered, this,
+                     []() { DiagnosticsWindow::showSingleton(); });
+
+    auto *actionCommandPalette = new QAction(u"Command Palette…"_s, this);
+    actionCommandPalette->setShortcut(QKeySequence(QStringLiteral("Ctrl+K")));
+    actionCommandPalette->setShortcutContext(Qt::ApplicationShortcut);
+    actionCommandPalette->setToolTip(
+            u"Quick action search — same palette as the main window (⌘K)."_s);
+    ui->menuView->addAction(actionCommandPalette);
+    QObject::connect(actionCommandPalette, &QAction::triggered, this, [this]() {
+        // Find the MainWindow instance and ask it to open the palette. We
+        // don't link against MainWindow here to avoid a circular include;
+        // instead we walk top-level widgets and use a metacall.
+        for (QWidget *w : QApplication::topLevelWidgets()) {
+            if (w->inherits("MainWindow")) {
+                QMetaObject::invokeMethod(w, "openCommandPalette", Qt::QueuedConnection);
+                return;
+            }
+        }
+    });
 
     // ── Camera ROI action – View menu + Tools sidebar ─────────────────────
     this->actionCameraRoi = new QAction(u"Use Camera ROI"_s, this);
@@ -2349,6 +2521,10 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
 vtkWindowCube::~vtkWindowCube()
 {
+    // Stop the slice animation timer and detach any vtk observer we installed,
+    // so we don't fire callbacks after the widget hierarchy starts going away.
+    this->sliceAnimationTimer.stop();
+    this->remove3dPickObserver();
     delete ui;
 }
 
@@ -2515,10 +2691,208 @@ void vtkWindowCube::setupSidebar()
     this->m_activeMomentLutName = m_uiAssembler->momentLutCombo()
                                           ? m_uiAssembler->momentLutCombo()->currentText() : QString();
 
+    // ── Page "Cube Extras": mirrors View-menu options as sidebar widgets ─────
+    // Bidirectional sync with the underlying QAction objects so menu and
+    // sidebar are always one source of truth (the action).
+    QWidget *pageExtras = new QWidget;
+    {
+        auto *vbox = new QVBoxLayout(pageExtras);
+        vbox->setContentsMargins(8, 8, 8, 8);
+        vbox->setSpacing(10);
+
+        // Cutting plane group
+        auto *planeBox = new QGroupBox(u"Cutting Plane"_s, pageExtras);
+        auto *planeLay = new QVBoxLayout(planeBox);
+        planeLay->setSpacing(6);
+        auto *planeShowCb = new QCheckBox(u"Show cutting plane"_s, planeBox);
+        planeShowCb->setChecked(this->actionShowCuttingPlane->isChecked());
+        planeLay->addWidget(planeShowCb);
+        auto *opacityRow = new QHBoxLayout;
+        opacityRow->addWidget(new QLabel(u"Opacity"_s, planeBox));
+        auto *opacitySlider = new QSlider(Qt::Horizontal, planeBox);
+        opacitySlider->setRange(0, 100);
+        opacitySlider->setValue(100);
+        opacitySlider->setSingleStep(5);
+        opacitySlider->setPageStep(25);
+        opacityRow->addWidget(opacitySlider, /*stretch=*/1);
+        auto *opacityVal = new QLabel(u"100%"_s, planeBox);
+        opacityVal->setMinimumWidth(36);
+        opacityRow->addWidget(opacityVal);
+        planeLay->addLayout(opacityRow);
+        vbox->addWidget(planeBox);
+
+        // 3D reference axes group
+        auto *axesBox = new QGroupBox(u"3D Reference"_s, pageExtras);
+        auto *axesLay = new QVBoxLayout(axesBox);
+        auto *axesCb = new QCheckBox(u"Show 3D WCS axes"_s, axesBox);
+        axesCb->setChecked(this->actionShow3dWcsAxes->isChecked());
+        axesLay->addWidget(axesCb);
+        vbox->addWidget(axesBox);
+
+        // Animation group
+        auto *animBox = new QGroupBox(u"Slice Animation"_s, pageExtras);
+        auto *animLay = new QVBoxLayout(animBox);
+        animLay->setSpacing(6);
+        auto *playBtn = new QPushButton(u"▶  Play"_s, animBox);   // ▶ Play
+        playBtn->setCheckable(true);
+        playBtn->setChecked(this->actionPlaySlices->isChecked());
+        animLay->addWidget(playBtn);
+        auto *fpsRow = new QHBoxLayout;
+        fpsRow->addWidget(new QLabel(u"Speed"_s, animBox));
+        auto *fpsSpin = new QSpinBox(animBox);
+        fpsSpin->setRange(1, 60);
+        fpsSpin->setSuffix(u" fps"_s);
+        fpsSpin->setValue(this->animationFps);
+        fpsRow->addWidget(fpsSpin);
+        fpsRow->addStretch(1);
+        animLay->addLayout(fpsRow);
+        auto *modeRow = new QHBoxLayout;
+        modeRow->addWidget(new QLabel(u"Mode"_s, animBox));
+        auto *modeCombo = new QComboBox(animBox);
+        modeCombo->addItem(u"Loop"_s,        static_cast<int>(AnimationMode::Loop));
+        modeCombo->addItem(u"Bounce"_s,      static_cast<int>(AnimationMode::Bounce));
+        modeCombo->addItem(u"Stop at End"_s, static_cast<int>(AnimationMode::Once));
+        modeCombo->setCurrentIndex(modeCombo->findData(static_cast<int>(this->animationMode)));
+        modeRow->addWidget(modeCombo, /*stretch=*/1);
+        animLay->addLayout(modeRow);
+        vbox->addWidget(animBox);
+
+        // Interaction group
+        auto *interactBox = new QGroupBox(u"3D Interaction"_s, pageExtras);
+        auto *interactLay = new QVBoxLayout(interactBox);
+        auto *pickCb = new QCheckBox(u"Pick spectrum on plane click"_s, interactBox);
+        pickCb->setChecked(this->actionPickSpectrum3d->isChecked());
+        pickCb->setToolTip(
+                u"Click the cutting plane in the 3D view to extract the spectral profile at "
+                "that (RA, DEC) position into the probe plot."_s);
+        interactLay->addWidget(pickCb);
+        vbox->addWidget(interactBox);
+
+        vbox->addStretch(1);
+
+        // ── Bidirectional sync wiring (action ↔ widget). The actions remain
+        //    the single source of truth — both menu and sidebar update them.
+        const auto syncCheck = [](QAction *act, QCheckBox *cb) {
+            QObject::connect(act, &QAction::toggled, cb, [cb](bool v) {
+                if (cb->isChecked() == v) return;
+                const QSignalBlocker block(cb);
+                cb->setChecked(v);
+            });
+            QObject::connect(cb, &QCheckBox::toggled, act, [act](bool v) {
+                if (act->isChecked() == v) return;
+                act->setChecked(v);  // routes through the existing toggled() handler
+            });
+        };
+        syncCheck(this->actionShowCuttingPlane, planeShowCb);
+        syncCheck(this->actionShow3dWcsAxes,    axesCb);
+        syncCheck(this->actionPickSpectrum3d,   pickCb);
+
+        // Play button ↔ actionPlaySlices, and label flips ▶/⏸
+        const auto refreshPlayLabel = [playBtn](bool playing) {
+            playBtn->setText(playing ? u"⏸  Pause"_s : u"▶  Play"_s);
+        };
+        refreshPlayLabel(playBtn->isChecked());
+        QObject::connect(this->actionPlaySlices, &QAction::toggled, playBtn,
+                         [playBtn, refreshPlayLabel](bool v) {
+                             if (playBtn->isChecked() != v) {
+                                 const QSignalBlocker block(playBtn);
+                                 playBtn->setChecked(v);
+                             }
+                             refreshPlayLabel(v);
+                         });
+        QObject::connect(playBtn, &QPushButton::toggled, this->actionPlaySlices,
+                         [this](bool v) {
+                             if (this->actionPlaySlices->isChecked() != v) {
+                                 this->actionPlaySlices->setChecked(v);
+                             }
+                         });
+
+        // Opacity slider ↔ cuttingPlaneOpacityGroup. The menu group exposes
+        // 25/50/75/100/0 presets; the slider gives free-form control and we
+        // sync the closest preset action when the user drags it.
+        QObject::connect(opacitySlider, &QSlider::valueChanged, this,
+                         [this, opacityVal](int pct) {
+                             opacityVal->setText(u"%1%"_s.arg(pct));
+                             this->setCuttingPlaneOpacity(pct / 100.0);
+                             if (this->cuttingPlaneOpacityGroup) {
+                                 // Reflect to the menu radio that matches (if any).
+                                 for (auto *a : this->cuttingPlaneOpacityGroup->actions()) {
+                                     if (a->data().toInt() == pct) {
+                                         const QSignalBlocker block(a);
+                                         a->setChecked(true);
+                                         break;
+                                     }
+                                 }
+                             }
+                         });
+        QObject::connect(this->cuttingPlaneOpacityGroup, &QActionGroup::triggered, opacitySlider,
+                         [opacitySlider](QAction *a) {
+                             const int pct = a->data().toInt();
+                             if (opacitySlider->value() != pct) {
+                                 const QSignalBlocker block(opacitySlider);
+                                 opacitySlider->setValue(pct);
+                             }
+                         });
+
+        // FPS spin ↔ animationFpsGroup (menu radios). Spin is continuous;
+        // we set the matching radio when it lands on a preset, else clear.
+        QObject::connect(fpsSpin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int v) {
+            this->animationFps = std::max(1, v);
+            if (this->sliceAnimationTimer.isActive()) {
+                this->sliceAnimationTimer.start(std::max(1, 1000 / this->animationFps));
+            }
+            if (this->animationFpsGroup) {
+                for (auto *a : this->animationFpsGroup->actions()) {
+                    if (a->data().toInt() == v) {
+                        const QSignalBlocker block(a);
+                        a->setChecked(true);
+                        return;
+                    }
+                }
+            }
+        });
+        QObject::connect(this->animationFpsGroup, &QActionGroup::triggered, fpsSpin,
+                         [fpsSpin](QAction *a) {
+                             const int v = a->data().toInt();
+                             if (fpsSpin->value() != v) {
+                                 const QSignalBlocker block(fpsSpin);
+                                 fpsSpin->setValue(v);
+                             }
+                         });
+
+        // Mode combo ↔ animationModeGroup
+        QObject::connect(modeCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                         [this, modeCombo](int) {
+                             const auto m = static_cast<AnimationMode>(
+                                     modeCombo->currentData().toInt());
+                             this->animationMode = m;
+                             this->animationDirection = +1;
+                             if (this->animationModeGroup) {
+                                 for (auto *a : this->animationModeGroup->actions()) {
+                                     if (a->data().toInt() == static_cast<int>(m)) {
+                                         const QSignalBlocker block(a);
+                                         a->setChecked(true);
+                                         break;
+                                     }
+                                 }
+                             }
+                         });
+        QObject::connect(this->animationModeGroup, &QActionGroup::triggered, modeCombo,
+                         [modeCombo](QAction *a) {
+                             const int v = a->data().toInt();
+                             const int idx = modeCombo->findData(v);
+                             if (idx >= 0 && modeCombo->currentIndex() != idx) {
+                                 const QSignalBlocker block(modeCombo);
+                                 modeCombo->setCurrentIndex(idx);
+                             }
+                         });
+    }
+
     this->m_sidebar = new SidebarPanel(220, this);
     this->m_sidebar->addPage(u":/icons/rail_3d.svg"_s,    u"3D View Settings"_s, page3dSettings);
     this->m_sidebar->addPage(u":/icons/rail_slice.svg"_s, u"2D View Settings"_s, page2dSettings);
     this->m_sidebar->addPage(u":/icons/rail_filter.svg"_s, u"Tools"_s,           pageTools);
+    this->m_sidebar->addPage(u":/icons/rail_layers.svg"_s, u"Cube Extras"_s,     pageExtras);
     this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s, u"Info / Stats"_s,     pageInfoStats);
     this->m_sidebar->finalize(0);
     mainLayout->insertWidget(0, this->m_sidebar);
@@ -3061,6 +3435,11 @@ void vtkWindowCube::resetWorkspaceLayout()
 
 void vtkWindowCube::closeEvent(QCloseEvent *event)
 {
+    // Stop any background timers / observers we own before tearing down the
+    // VTK widgets, so we don't try to update destroyed objects on the way out.
+    this->sliceAnimationTimer.stop();
+    this->remove3dPickObserver();
+
     // Capture a thumbnail of the last view BEFORE the cube renderer is torn
     // down — the Data Hub's recents list shows it next to this dataset.
     if (!this->isBusy() && ui && ui->vtkCube) {
@@ -3146,12 +3525,29 @@ void vtkWindowCube::setupCubeRenderer()
     ren->AddViewProp(outlineActor);
 
     {
+        // The cutting plane shows the actual 2D slice content textured onto
+        // the plane in the 3D view (instead of a plain green fill). The
+        // texture pipeline reuses sliceColors → it updates automatically
+        // whenever a new slice tile arrives via remoteSliceDisplaySource.
+        // vtkPlaneSource emits texture coordinates (origin→(0,0), point1→
+        // (1,0), point2→(0,1)) that match the slice image orientation.
         vtkNew<vtkPolyDataMapper> planeMapper;
         planeMapper->SetInputConnection(this->remoteCuttingPlaneSource->GetOutputPort());
         planeMapper->ScalarVisibilityOff();
         this->remoteCuttingPlaneActor->SetMapper(planeMapper);
-        this->remoteCuttingPlaneActor->GetProperty()->SetColor(0.1, 1.0, 0.1);
-        this->remoteCuttingPlaneActor->GetProperty()->SetOpacity(0.55);
+
+        this->remoteCuttingPlaneTexture = vtkSmartPointer<vtkTexture>::New();
+        this->remoteCuttingPlaneTexture->SetInputConnection(this->sliceColors->GetOutputPort());
+        this->remoteCuttingPlaneTexture->InterpolateOn();
+        this->remoteCuttingPlaneTexture->RepeatOff();
+        this->remoteCuttingPlaneActor->SetTexture(this->remoteCuttingPlaneTexture);
+
+        // Keep the red edge as the plane indicator. White base color lets the
+        // RGBA texture pass through unchanged. Fully opaque by default so the
+        // slice content is readable; the user can rotate around the cube to
+        // see the volume on either side.
+        this->remoteCuttingPlaneActor->GetProperty()->SetColor(1.0, 1.0, 1.0);
+        this->remoteCuttingPlaneActor->GetProperty()->SetOpacity(1.0);
         this->remoteCuttingPlaneActor->GetProperty()->EdgeVisibilityOn();
         this->remoteCuttingPlaneActor->GetProperty()->SetEdgeColor(1.0, 0.0, 0.0);
         this->remoteCuttingPlaneActor->GetProperty()->SetLineWidth(3.0);
@@ -6206,6 +6602,11 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     cubeFitTimer.start();
     refitCubeCamera(cubeRenderer, result.cubeImageData);
     cubeRenderer->ResetCameraClippingRange();
+    // Keep the 3D WCS axes (if the user enabled them) aligned with the new
+    // cube bounds and WCS range. No-op when the actor hasn't been created yet.
+    if (this->wcs3dAxesActor) {
+        this->refresh3dWcsAxes();
+    }
     qDebug().noquote()
             << QStringLiteral("[perf][cube] apply cube clipping sync: %1 ms").arg(
                        cubeFitTimer.elapsed());
@@ -6298,6 +6699,12 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     }
     cubeRenderer->Modified();
     ui->vtkCube->renderWindow()->Modified();
+
+    // Keep the 3D WCS axes (if visible) in sync with the new cube bounds.
+    if (this->wcs3dAxesActor && this->actionShow3dWcsAxes
+        && this->actionShow3dWcsAxes->isChecked()) {
+        this->refresh3dWcsAxes();
+    }
 
     // Defer the final renders by one event-loop tick (B). The data swap above
     // is cheap; the cost is the GPU volume upload that happens on the next
@@ -8086,6 +8493,243 @@ void vtkWindowCube::startAsyncIsosurface(double isoValue)
 void vtkWindowCube::scheduleIsosurfaceRecompute()
 {
     this->isosurfaceDebounceTimer.start(150);
+}
+
+// ── Cutting plane visibility / opacity ──────────────────────────────────────
+void vtkWindowCube::setCuttingPlaneOpacity(double opacity)
+{
+    if (!this->remoteCuttingPlaneActor) {
+        return;
+    }
+    opacity = std::clamp(opacity, 0.0, 1.0);
+    this->remoteCuttingPlaneActor->GetProperty()->SetOpacity(opacity);
+    // Edge stays visible even at opacity 0 so the plane location is still
+    // identifiable; toggle SetVisibility(0) via the Show Cutting Plane action
+    // to hide it entirely.
+    if (ui->vtkCube->renderWindow()) {
+        ui->vtkCube->renderWindow()->Render();
+    }
+}
+
+// ── Slice animation (play / pause through spectral axis) ────────────────────
+void vtkWindowCube::setSliceAnimationActive(bool active)
+{
+    if (active) {
+        this->animationDirection = +1;
+        this->sliceAnimationTimer.start(std::max(1, 1000 / this->animationFps));
+    } else {
+        this->sliceAnimationTimer.stop();
+    }
+}
+
+void vtkWindowCube::advanceSliceAnimation()
+{
+    if (!ui->spinSlice) {
+        return;
+    }
+    const int minIndex = ui->spinSlice->minimum();
+    const int maxIndex = ui->spinSlice->maximum();
+    if (maxIndex <= minIndex) {
+        return;
+    }
+    int next = ui->spinSlice->value() + this->animationDirection;
+    if (next > maxIndex) {
+        switch (this->animationMode) {
+        case AnimationMode::Loop:   next = minIndex; break;
+        case AnimationMode::Bounce: this->animationDirection = -1; next = maxIndex - 1; break;
+        case AnimationMode::Once:
+            next = maxIndex;
+            this->sliceAnimationTimer.stop();
+            if (this->actionPlaySlices) {
+                this->actionPlaySlices->setChecked(false);
+            }
+            break;
+        }
+    } else if (next < minIndex) {
+        // Only reachable in Bounce mode.
+        this->animationDirection = +1;
+        next = minIndex + 1;
+    }
+    ui->spinSlice->setValue(std::clamp(next, minIndex, maxIndex));
+}
+
+// ── 3D WCS axes (vtkCubeAxesActor) ──────────────────────────────────────────
+void vtkWindowCube::apply3dWcsAxesVisibility(bool visible)
+{
+    auto *renderer = ui->vtkCube->renderWindow()
+            ? ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer()
+            : nullptr;
+    if (!renderer) {
+        return;
+    }
+    if (visible) {
+        if (!this->wcs3dAxesActor) {
+            this->wcs3dAxesActor = vtkSmartPointer<vtkCubeAxesActor>::New();
+            this->wcs3dAxesActor->SetCamera(renderer->GetActiveCamera());
+            // Show only the X/Y/Z labels, ticks and minor ticks; no inner grid
+            // lines to keep the 3D view readable.
+            this->wcs3dAxesActor->XAxisMinorTickVisibilityOff();
+            this->wcs3dAxesActor->YAxisMinorTickVisibilityOff();
+            this->wcs3dAxesActor->ZAxisMinorTickVisibilityOff();
+            this->wcs3dAxesActor->SetFlyModeToOuterEdges();
+        }
+        this->refresh3dWcsAxes();
+        if (!renderer->HasViewProp(this->wcs3dAxesActor)) {
+            renderer->AddViewProp(this->wcs3dAxesActor);
+        }
+    } else if (this->wcs3dAxesActor && renderer->HasViewProp(this->wcs3dAxesActor)) {
+        renderer->RemoveViewProp(this->wcs3dAxesActor);
+    }
+    if (ui->vtkCube->renderWindow()) {
+        ui->vtkCube->renderWindow()->Render();
+    }
+}
+
+void vtkWindowCube::refresh3dWcsAxes()
+{
+    if (!this->wcs3dAxesActor) {
+        return;
+    }
+    auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
+    if (!cubeImage) {
+        return;
+    }
+    double bounds[6];
+    cubeImage->GetBounds(bounds);
+    this->wcs3dAxesActor->SetBounds(bounds);
+
+    // Each axis is labeled with its WCS coordinate range at the bounding-box
+    // corners. remoteVoxelToWcs falls back to voxel indices if metadata is
+    // missing, so we always have *some* label.
+    const auto axisLabel = [this](int axis) {
+        QString title = this->remoteAxisTitle(axis);
+        if (title.isEmpty()) {
+            title = u"Axis %1"_s.arg(axis + 1);
+        }
+        return title.toStdString();
+    };
+    this->wcs3dAxesActor->SetXTitle(axisLabel(0).c_str());
+    this->wcs3dAxesActor->SetYTitle(axisLabel(1).c_str());
+    this->wcs3dAxesActor->SetZTitle(axisLabel(2).c_str());
+
+    const auto setRange = [this, bounds](int axis, vtkCubeAxesActor *a) {
+        const int idxMin = axis * 2;
+        const int idxMax = idxMin + 1;
+        bool okMin = false, okMax = false;
+        const double wMin = this->remoteVoxelToWcs(axis, bounds[idxMin], &okMin);
+        const double wMax = this->remoteVoxelToWcs(axis, bounds[idxMax], &okMax);
+        if (!okMin || !okMax || !std::isfinite(wMin) || !std::isfinite(wMax)) {
+            return; // Leave default voxel-space range when WCS is unusable.
+        }
+        switch (axis) {
+        case 0: a->SetXAxisRange(wMin, wMax); break;
+        case 1: a->SetYAxisRange(wMin, wMax); break;
+        case 2: a->SetZAxisRange(wMin, wMax); break;
+        }
+    };
+    setRange(0, this->wcs3dAxesActor);
+    setRange(1, this->wcs3dAxesActor);
+    setRange(2, this->wcs3dAxesActor);
+}
+
+// ── 3D spectral picker ──────────────────────────────────────────────────────
+void vtkWindowCube::install3dPickObserver()
+{
+    auto *iren = ui->vtkCube->renderWindow()
+            ? ui->vtkCube->renderWindow()->GetInteractor()
+            : nullptr;
+    if (!iren || this->cube3dPickObserverTag != 0) {
+        return;
+    }
+    auto cb = vtkSmartPointer<vtkCallbackCommand>::New();
+    cb->SetClientData(this);
+    cb->SetCallback([](vtkObject *, unsigned long, void *clientData, void *) {
+        auto *self = static_cast<vtkWindowCube *>(clientData);
+        self->handle3dPickEvent();
+    });
+    this->cube3dPickObserverTag =
+            iren->AddObserver(vtkCommand::LeftButtonReleaseEvent, cb, 1.0);
+}
+
+void vtkWindowCube::remove3dPickObserver()
+{
+    auto *iren = ui->vtkCube->renderWindow()
+            ? ui->vtkCube->renderWindow()->GetInteractor()
+            : nullptr;
+    if (iren && this->cube3dPickObserverTag != 0) {
+        iren->RemoveObserver(this->cube3dPickObserverTag);
+    }
+    this->cube3dPickObserverTag = 0;
+}
+
+void vtkWindowCube::handle3dPickEvent()
+{
+    auto *iren = ui->vtkCube->renderWindow()
+            ? ui->vtkCube->renderWindow()->GetInteractor()
+            : nullptr;
+    auto *renderer = ui->vtkCube->renderWindow()
+            ? ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer()
+            : nullptr;
+    if (!iren || !renderer || !this->remoteCuttingPlaneActor) {
+        return;
+    }
+
+    int pos[2];
+    iren->GetEventPosition(pos);
+    auto picker = vtkSmartPointer<vtkPropPicker>::New();
+    if (picker->Pick(pos[0], pos[1], 0., renderer) == 0) {
+        return;
+    }
+    if (picker->GetViewProp() != this->remoteCuttingPlaneActor.GetPointer()) {
+        return; // User clicked on volume / outline / axes — ignore.
+    }
+
+    double world[3];
+    picker->GetPickPosition(world);
+
+    // Map world XY (in cube-image coords) → voxel index on the current slice.
+    auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
+    if (!cubeImage) {
+        return;
+    }
+    int extent[6];
+    double origin[3], spacing[3];
+    cubeImage->GetExtent(extent);
+    cubeImage->GetOrigin(origin);
+    cubeImage->GetSpacing(spacing);
+    const int voxelX = std::lround(extent[0] + (world[0] - origin[0]) / spacing[0]);
+    const int voxelY = std::lround(extent[2] + (world[1] - origin[1]) / spacing[1]);
+    const int voxelZ = this->clampRemoteSliceIndex(ui->spinSlice->value() - 1);
+    if (voxelX < extent[0] || voxelX > extent[1]
+        || voxelY < extent[2] || voxelY > extent[3]) {
+        this->statusBar()->showMessage(u"Pick outside cube bounds."_s, 1500);
+        return;
+    }
+
+    this->probeValid = true;
+    this->probeFrozen = true;  // hold the pick — 2D mouse moves should not overwrite it
+    this->probeVoxel = { voxelX, voxelY, voxelZ };
+    auto *sliceImage =
+            vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0));
+    if (sliceImage) {
+        this->updateProbeReadout(sliceImage);
+    }
+    // updateProbePlot() lazily creates/raises the ProfileWidget; making the
+    // pick visible is the whole point of this mode, so we ensure the plot
+    // window is shown + raised even if the user had previously closed it.
+    this->updateProbePlot();
+    if (this->probePlotWidget) {
+        this->probePlotWidget->show();
+        this->probePlotWidget->raise();
+    }
+    this->refreshProbeOverlay();
+    if (this->sliceWin) {
+        this->sliceWin->Render();
+    }
+    this->statusBar()->showMessage(
+            u"Spectrum extracted at voxel (%1, %2) — slice %3"_s
+                    .arg(voxelX).arg(voxelY).arg(voxelZ + 1),
+            3000);
 }
 
 void vtkWindowCube::setCubeRenderModeLocally(bool isosurfaceMode)

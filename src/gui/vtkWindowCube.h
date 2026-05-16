@@ -31,6 +31,7 @@ class PvController;
 #include <vector>
 
 class QAction;
+class QActionGroup;
 class QMenu;
 class SidebarPanel;
 class CatalogueTableModel;
@@ -42,6 +43,7 @@ class PvDiagramWidget;
 class QTableView;
 class vtkAxisActor2D;
 class vtkActor;
+class vtkCubeAxesActor;
 class vtkGPUVolumeRayCastMapper;
 class vtkColorTransferFunction;
 class vtkContourTriangulator;
@@ -63,6 +65,7 @@ class vtkPolyData;
 class vtkRegularPolygonSource;
 class vtkRenderer;
 class vtkTextActor;
+class vtkTexture;
 class vtkTrivialProducer;
 class vtkVolume;
 
@@ -511,6 +514,35 @@ private:
     vtkSmartPointer<vtkGPUVolumeRayCastMapper> volumeMapper;  // stored for blend-mode changes
     vtkNew<vtkPlaneSource> remoteCuttingPlaneSource;
     vtkNew<vtkActor> remoteCuttingPlaneActor;
+    // Texture sampling the 2D slice colors (sliceColors output) mapped onto
+    // the cutting plane in the 3D view, so the plane shows the actual slice
+    // content instead of a plain green fill.
+    vtkSmartPointer<vtkTexture> remoteCuttingPlaneTexture;
+
+    // ── 3D View options (configurable via the View menu) ─────────────────────
+    QPointer<QAction> actionShowCuttingPlane;       // toggle plane visibility
+    QPointer<QAction> actionShow3dWcsAxes;          // toggle WCS axis labels
+    QPointer<QAction> actionPlaySlices;             // play/pause slice loop
+    QPointer<QAction> actionPickSpectrum3d;         // pick spectrum on plane click
+    QActionGroup    *cuttingPlaneOpacityGroup{ nullptr };
+    QActionGroup    *animationFpsGroup{ nullptr };
+    QActionGroup    *animationModeGroup{ nullptr };
+    enum class AnimationMode { Loop, Bounce, Once };
+    AnimationMode animationMode{ AnimationMode::Loop };
+    int animationFps{ 5 };
+    int animationDirection{ +1 };
+    QTimer sliceAnimationTimer;
+    void setCuttingPlaneOpacity(double opacity);
+    void advanceSliceAnimation();
+    void setSliceAnimationActive(bool active);
+    void apply3dWcsAxesVisibility(bool visible);
+    void refresh3dWcsAxes();   // re-fits ranges/labels from current cube + WCS
+    vtkSmartPointer<vtkCubeAxesActor> wcs3dAxesActor;
+    // Pick handler tag on the cube interactor (so we can disconnect cleanly).
+    unsigned long cube3dPickObserverTag{ 0 };
+    void install3dPickObserver();
+    void remove3dPickObserver();
+    void handle3dPickEvent();
     bool remoteIsosurfaceReady{ false };
     void applyCubeOpenResult(const CubeOpenStageResult &result);
     void applyIsosurfaceResult(const AsyncIsosurfaceResult &result);

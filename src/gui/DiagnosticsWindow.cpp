@@ -9,6 +9,7 @@
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QItemSelectionModel>
+#include <QPointer>
 #include <QPushButton>
 #include <QTableView>
 #include <QVBoxLayout>
@@ -45,6 +46,20 @@ bool DiagnosticsFilterModel::filterAcceptsRow(int sourceRow, const QModelIndex &
         return false;
     }
     return QSortFilterProxyModel::filterAcceptsRow(sourceRow, sourceParent);
+}
+
+DiagnosticsWindow *DiagnosticsWindow::showSingleton()
+{
+    // One window per process; reused by MainWindow's View menu, the cube /
+    // image viewer windows, and the ⌘K command palette.
+    static QPointer<DiagnosticsWindow> s_instance;
+    if (!s_instance) {
+        s_instance = new DiagnosticsWindow(nullptr, Qt::Window);
+    }
+    s_instance->show();
+    s_instance->raise();
+    s_instance->activateWindow();
+    return s_instance;
 }
 
 DiagnosticsWindow::DiagnosticsWindow(QWidget *parent, Qt::WindowFlags flags)

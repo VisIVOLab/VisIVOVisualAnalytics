@@ -37,6 +37,12 @@ class DiagnosticsWindow : public QWidget
 public:
     explicit DiagnosticsWindow(QWidget *parent = nullptr, Qt::WindowFlags flags = Qt::Window);
 
+    /// Show the global diagnostics window. Lazily constructs a process-wide
+    /// singleton so any window (MainWindow, vtkWindowCube, vtkWindowImage,
+    /// …) can call this without owning its own instance. Returns the
+    /// singleton pointer for callers that want to position it.
+    static DiagnosticsWindow *showSingleton();
+
 private slots:
     void copySelectedMessages();
 

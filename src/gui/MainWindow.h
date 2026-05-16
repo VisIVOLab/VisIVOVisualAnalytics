@@ -96,7 +96,10 @@ private:
     // Build/refresh the command palette's action set. Called on demand each
     // time ⌘K is pressed so dynamic groups (recent datasets) stay current.
     void rebuildCommandPalette();
-    void openCommandPalette();
+    // Q_INVOKABLE so child windows (vtkWindowCube, vtkWindowImage, …) can
+    // open the palette via QMetaObject::invokeMethod without linking against
+    // MainWindow's class definition.
+    Q_INVOKABLE void openCommandPalette();
 
     // Brings the VLKB panel to focus. Re-adds the tab if the user previously
     // closed it. Used by both the Data Hub Quick action and the command

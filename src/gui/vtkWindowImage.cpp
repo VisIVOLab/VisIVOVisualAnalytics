@@ -7,6 +7,7 @@
 #include "CatalogueTableModel.h"
 #include "ColorMaps.h"
 #include "CatalogueOverlayUtils.h"
+#include "DiagnosticsWindow.h"
 #include "ImageLayerController.h"
 #include "ImageLayerImportService.h"
 #include "ImageLayerLoadTask.h"
@@ -51,9 +52,11 @@
 #include <QAbstractItemView>
 #include <QAction>
 #include <QActionGroup>
+#include <QApplication>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QDebug>
+#include <QKeySequence>
 #include <QIcon>
 #include <QImage>
 #include <QPixmap>
@@ -1400,6 +1403,29 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
         this->lastOverlayViewportSize = { -1, -1 };
         this->setWcsOverlayVisible(checked);
         this->requestWcsOverlayRender();
+    });
+
+    // ── Diagnostics + Command palette (replicated across windows) ─────────
+    ui->menuView->addSeparator();
+    auto *actionDiagnostics = new QAction(u"Diagnostics"_s, this);
+    actionDiagnostics->setToolTip(u"Open the application-wide diagnostics log window."_s);
+    ui->menuView->addAction(actionDiagnostics);
+    QObject::connect(actionDiagnostics, &QAction::triggered, this,
+                     []() { DiagnosticsWindow::showSingleton(); });
+
+    auto *actionCommandPalette = new QAction(u"Command Palette…"_s, this);
+    actionCommandPalette->setShortcut(QKeySequence(QStringLiteral("Ctrl+K")));
+    actionCommandPalette->setShortcutContext(Qt::ApplicationShortcut);
+    actionCommandPalette->setToolTip(
+            u"Quick action search — same palette as the main window (⌘K)."_s);
+    ui->menuView->addAction(actionCommandPalette);
+    QObject::connect(actionCommandPalette, &QAction::triggered, this, [this]() {
+        for (QWidget *w : QApplication::topLevelWidgets()) {
+            if (w->inherits("MainWindow")) {
+                QMetaObject::invokeMethod(w, "openCommandPalette", Qt::QueuedConnection);
+                return;
+            }
+        }
     });
 
     // All QActions are now initialised — safe to build the sidebar
