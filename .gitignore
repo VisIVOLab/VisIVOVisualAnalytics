@@ -226,7 +226,8 @@ CMakeUserPresets.json
 .LSOverride
 
 # Icon must end with two \r
-Icon
+Icon
+
 
 # Thumbnails
 ._*
@@ -358,3 +359,5 @@ VisIVOVisualAnalytics.dmg
 /backend/app/routers/__pycache__
 /backend/app/routers/__pycache__
 /backend/app/routers/__pycache__
+/docs/_build
+/docs/context-chat.md

@@ -1,0 +1,147 @@
+"""Sphinx configuration for VisIVO Visual Analytics docs.
+
+Designed to build cleanly both locally (``make html`` in this directory) and
+on Read the Docs (via ``.readthedocs.yaml`` in the repository root). All
+content lives as Markdown next to this file; MyST parses ``.md`` into
+Sphinx's document tree.
+"""
+
+from __future__ import annotations
+
+import datetime
+import os
+import sys
+
+# ── Project information ──────────────────────────────────────────────────────
+
+project = "VisIVO Visual Analytics"
+author = "VisIVOLab"
+copyright = f"{datetime.datetime.now().year}, {author}"
+# Single-source the release string from the top-level CMakeLists.txt project()
+# version when possible; fall back to "dev" if the file is unavailable.
+release = "dev"
+try:
+    _cml = os.path.join(os.path.dirname(__file__), "..", "CMakeLists.txt")
+    with open(_cml, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line.lower().startswith("project("):
+                # project(VisIVOVisualAnalytics VERSION 0.0.2 …)
+                tokens = line.split()
+                for i, tok in enumerate(tokens):
+                    if tok.upper() == "VERSION" and i + 1 < len(tokens):
+                        release = tokens[i + 1].rstrip(")")
+                        break
+                break
+except OSError:
+    pass
+
+version = release  # short X.Y; same as full release here
+
+# ── General configuration ────────────────────────────────────────────────────
+
+extensions = [
+    # Markdown via MyST. Most content in docs/ is `.md`; MyST lets Sphinx
+    # ingest it without a conversion step.
+    "myst_parser",
+    # Generates :ref:`label` targets automatically from every section heading
+    # so cross-document links Just Work.
+    "sphinx.ext.autosectionlabel",
+    # "Copy" button on code blocks.
+    "sphinx_copybutton",
+    # Grids / cards / dropdowns / tabs (modern docs UI primitives).
+    "sphinx_design",
+]
+
+# Treat both .rst and .md as source documents.
+source_suffix = {
+    ".rst": "restructuredtext",
+    ".md": "markdown",
+}
+
+# MyST extensions used in the markdown sources.
+myst_enable_extensions = [
+    "colon_fence",      # ::: admonitions
+    "deflist",          # term/definition lists
+    "linkify",          # auto-link bare URLs
+    "substitution",     # |variables|
+    "tasklist",         # GitHub-style task lists
+    "attrs_inline",     # inline attributes
+    "fieldlist",        # field lists in markdown
+]
+myst_heading_anchors = 4   # generate slugs for h1..h4
+
+# autosectionlabel: prefix labels with the document path so identical headings
+# in different files don't collide. Cap at depth 2 so we don't generate labels
+# for repeated sub-headings (e.g. "Status" / "Contract" appear under every
+# service in service-mapping-note.md and would otherwise produce duplicate
+# label warnings).
+autosectionlabel_prefix_document = True
+autosectionlabel_maxdepth = 2
+
+templates_path = ["_templates"]
+
+# Skip the sphinx scaffolding directory (left over from sphinx-quickstart),
+# the build output, and the docs python project files / lock files which are
+# not documentation content.
+exclude_patterns = [
+    "build",
+    "source",
+    "_build",
+    "Thumbs.db",
+    ".DS_Store",
+    "requirements.txt",
+    "pyproject.toml",
+    "uv.lock",
+    "Makefile",
+    ".gitignore",
+    # Session-local scratch notes — git-ignored, never published. Excluded
+    # here so Sphinx does not warn about a stray file when a developer has
+    # one in their working tree.
+    "context-chat.md",
+]
+
+# ── HTML output ──────────────────────────────────────────────────────────────
+
+html_theme = "furo"
+html_title = f"{project} {release}"
+html_static_path = ["_static"]
+html_show_sourcelink = False
+
+# Furo customisation — light + dark palettes consistent with the desktop app's
+# "deep blue + accent" theme.
+html_theme_options = {
+    "sidebar_hide_name": False,
+    "navigation_with_keys": True,
+    "light_css_variables": {
+        "color-brand-primary":  "#0b5fff",
+        "color-brand-content":  "#0b5fff",
+    },
+    "dark_css_variables": {
+        "color-brand-primary":  "#6aa6ff",
+        "color-brand-content":  "#6aa6ff",
+    },
+    "footer_icons": [
+        {
+            "name": "GitHub",
+            "url":  "https://github.com/VisIVOLab/ViaLacteaVisualAnalytics",
+            "html": "",  # furo uses an svg icon by default
+            "class": "fa-brands fa-github",
+        },
+    ],
+}
+
+# Disable Sphinx's noisy warning about Pygments lexers it can't infer from a
+# fenced block language tag (most code blocks here are illustrative).
+#
+# Also suppress `myst.xref_missing` for inter-document `page#anchor` links.
+# MyST emits this warning whenever a link's anchor cannot be statically
+# verified against another document's heading slug (it can't follow them
+# across pages with the current parser settings), but the generated HTML
+# links *do* work because `myst_heading_anchors = 4` creates the matching
+# slugs on the target pages. Suppressing keeps the strict build (`-W`) green
+# without papering over real broken cross-references between Sphinx labels.
+suppress_warnings = [
+    "misc.highlighting_failure",
+    "myst.xref_missing",
+]

@@ -1,0 +1,144 @@
+# Spectral cube viewer
+
+The cube viewer (`vtkWindowCube`) is the workspace for any 3-D FITS spectral
+cube — typically with two spatial axes (RA, Dec or l, b) and one spectral
+axis (frequency, optical velocity, radio velocity, or generic). It opens
+automatically when you open a FITS file that the backend classifies as a
+`cube` dataset.
+
+## Layout
+
+The window is split into two synchronised dock areas plus a side panel:
+
+| Dock | What it shows |
+|------|---------------|
+| **3-D view** | Volume / isosurface rendering of the whole cube, with an orientation marker and the *cutting plane* indicator. |
+| **2-D view** | The currently selected slice along the spectral axis (or a moment map, see below). |
+| **Sidebar** | Tabs for *3-D View Settings*, *2-D View Settings*, *Tools*, *Cube Extras*, *Info / Stats*. |
+| **Toolbar (top)** | Dataset path pill, tag chips (resolution, mode), and the **Find / Command / Export** buttons. |
+
+The bottom **status bar** carries three live indicators: the **data state**
+(*Preview*, *Loading full resolution…*, *Full resolution*), the **WCS
+status** (OK / repaired / degraded), and the **Sanity** badge (NaN fraction
+and metadata consistency).
+
+## Preview → full-resolution flow
+
+When you open a cube, the backend first sends a small downsampled **preview**
+(factor 4 on each axis) so the viewer becomes interactive in a fraction of a
+second. In the background it then prepares the **full-resolution** cube and
+swaps it in. The transition is asynchronous: you can rotate the camera and
+scrub through slices while the upgrade is in flight.
+
+You can constrain the full-resolution fetch to the **viewport ROI** of the
+3-D camera (toggle *View → Use Camera ROI*). This is useful for very large
+cubes when you only want detail in the region you're inspecting.
+
+## Slice navigation
+
+Use the slice slider and spin box (right of the 2-D dock) or the keyboard
+arrows. The active slice index is shown in the *Cutting plane* card; the
+cutting-plane indicator in the 3-D view updates in real time.
+
+```{tip}
+The cutting plane is **textured with the live slice contents** — what you
+see on the plane is exactly what is shown in the 2-D dock. Its opacity is
+adjustable from *View → Cutting Plane Opacity* (or the *Cube Extras*
+sidebar): lower opacity to see the volume behind, higher opacity to
+emphasise the slice.
+```
+
+### Slice animation (movie mode)
+
+Auto-advance the slice axis as a movie — useful for spotting coherent
+structures across velocity channels:
+
+- **Play / Pause** — *View → Play Slice Animation* (or <kbd>Space</kbd>),
+  or the *Cube Extras* sidebar button.
+- **Speed** — 2, 5, 10, 15, 30 frames/s.
+- **Mode** — *Loop*, *Bounce* (back and forth), or *Stop at End*.
+
+## 3-D rendering modes
+
+Pick between two complementary 3-D views from the top-right viewer toolbar:
+
+- **Volume rendering** — semi-transparent rendering of the whole cube using
+  `vtkGPUVolumeRayCastMapper`. Sub-modes (*View → Volume Rendering*):
+  - *Composite* — opacity-weighted ray casting (default).
+  - *MIP* (maximum intensity projection) — emphasises the brightest emission
+    along each ray; great for finding line peaks.
+  - *MinIP* (minimum intensity) — symmetric to MIP; useful on absorption.
+- **Isosurface** — extracts a closed surface at a user-given threshold
+  (`vtkFlyingEdges3D` server-side). Adjust the threshold with the slider in
+  the *3-D View Settings* sidebar. The compute is asynchronous; the volume
+  stays visible until the mesh is ready.
+
+You can switch render mode at any time. The colour map is shared between
+volume rendering and the slice view.
+
+## Color maps and transfer function
+
+- The active **color map** is picked from the *3-D View Settings* sidebar
+  (Inferno, Viridis, Magma, Plasma, Cividis, …).
+- For volume rendering, the **opacity transfer function** maps low values
+  to fully transparent and high values to fully opaque. Customise it from
+  *3-D View → Advanced…* (LUT editor) — drag the control points to
+  emphasise emission peaks or remove background.
+- For the slice / moment maps, the **2-D LUT editor** opens from the
+  *2-D View Settings* sidebar. Both editors are non-modal: keep them open
+  while you scrub through slices to fine-tune in real time.
+
+## Probing a spectrum
+
+To inspect the spectrum at a pixel:
+
+1. Open the **Probe mode** in the 2-D view (Tools → *Probe* or the probe
+   button). The cursor becomes a cross-hair.
+2. Click anywhere on the slice. A *Profile* window opens showing the
+   intensity along the spectral axis at that pixel.
+3. Keep clicking to update the probe interactively. Toggle **freeze** to
+   keep the current pick while you mouse over other positions.
+
+You can also pick a spectrum directly from the **3-D view**: enable
+*View → Pick Spectrum on Plane Click* (or the *Cube Extras* sidebar
+checkbox). The cursor over the 3-D view becomes a cross; clicking on the
+textured cutting plane extracts the spectral profile at that (RA, Dec)
+position and raises the *Profile* window automatically.
+
+## Regions, PV diagrams, noise
+
+These are all explained on a dedicated page:
+[Regions, PV diagrams, noise](region-pv-noise).
+
+## WCS axes and overlays
+
+- *View → Show WCS Axes* paints sky-coordinate ticks on the 2-D slice and
+  moment maps. Toggle between **sexagesimal** (HMS / DMS) and **decimal**
+  with the *WCS format* radio in the same menu.
+- *View → Show 3D WCS Axes* draws a labelled bounding box in the 3-D view
+  with RA / Dec / Velocity ticks derived from the cube WCS. Useful as a
+  spatial reference when rotating the camera.
+- *Tools → Load Catalogue Overlay* lets you overlay sources from a CSV /
+  VOTable on the slice; see [Catalogues](catalogues-hips).
+
+## Saving and exporting
+
+- **Export** in the top-right toolbar saves a PNG of the current 2-D view
+  or a PNG snapshot of the 3-D view (camera position respected).
+- Moment-map results can be re-opened as a new dataset (the backend
+  registers them in the same session); see [Moment maps](moment-maps).
+- Baseline-subtracted cubes are also registered as a new `dataset_id` you
+  can open in a fresh cube viewer; see [Spectral tools](spectral-tools).
+
+## Performance notes
+
+- The first full-resolution swap can take a few hundred ms because of the
+  initial GPU texture upload; subsequent slice changes are sub-frame.
+- The backend reuses a multi-process worker pool. Long computations
+  (moment, isosurface, line-width, baseline, stacking) are gated so they
+  never starve interactive requests like slice fetches — you can keep
+  scrolling and rotating the cube while a heavy compute is running. See
+  the [heavy-task throttle](../async-patterns#heavy-task-throttle-backend-side)
+  in the developer reference for the gritty details.
+- *Camera ROI* in the View menu limits the full-resolution fetch to the
+  current viewport (recommended for cubes > ~2 GB).

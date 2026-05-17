@@ -1,0 +1,26 @@
+# Read the Docs build configuration for VisIVO Visual Analytics.
+# Reference: https://docs.readthedocs.io/en/stable/config-file/v2.html
+
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.12"
+
+# Sphinx project: configuration lives directly in docs/ (no source/ subdir).
+sphinx:
+  configuration: docs/conf.py
+  builder: html
+  # Treat warnings as errors so broken cross-references / missing files block
+  # the build. Drop `fail_on_warning` if you prefer warnings to be soft.
+  fail_on_warning: false
+
+# Build the HTML for download (PDF/ePub disabled by default; uncomment if
+# you need them — they require LaTeX + tex live in the build image).
+formats: []
+
+# Install the doc toolchain (sphinx, furo, myst-parser, …) before building.
+python:
+  install:
+    - requirements: docs/requirements.txt

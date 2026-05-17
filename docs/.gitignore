@@ -1,6 +1,9 @@
 # Include Makefile excluded by root gitignore
 !Makefile
 
+# Session-local scratch notes — never publish (per-developer working file).
+context-chat.md
+
 ### Python ###
 # Byte-compiled / optimized / DLL files
 __pycache__/
