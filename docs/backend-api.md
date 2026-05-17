@@ -258,12 +258,9 @@ Given a HiPS survey viewport, return catalogue sources within the field as `Back
 
 ## Spectral
 
-> ⚠️ The `/v1/spectral/*` routes are referenced by `BackendClient` and exercised by
-> `backend/tests/test_spectral.py`, but the corresponding FastAPI router is **not
-> currently included** in `backend/app/main.py`. They are documented here as the
-> contract the client expects; treat them as planned / work-in-progress until the
-> router is wired up. All endpoints will require `X-Visivo-Token` and
-> `X-Visivo-Session`.
+Implemented in `backend/app/routers/spectral.py`. All endpoints require
+`X-Visivo-Token` and `X-Visivo-Session`. Three feature blocks:
+S-02 (linewidth maps), S-03 (baseline subtraction), S-04 (spectral stacking).
 
 ### `POST /v1/spectral/linewidth`
 Per-pixel line-width map. Returns both FWHM (Gaussian fit) and equivalent-width maps as base64 float32.

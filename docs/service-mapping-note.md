@@ -31,7 +31,7 @@ This note documents the current service boundaries, their implementation status,
 | hips | `openHiPS()`, `requestHiPSAllsky()`, `requestHiPSTile()`, `requestHiPSTilesForView()`, `requestHiPSCatalogueOverlay()` |
 | resolve | `resolveTarget()` |
 | samp | `requestSampStatus()`, send / receive / inbox / files-register / import-url / upload-file / send-fits / send-catalogue (delegated to `SAMPClient` in `src/app/`) |
-| spectral (planned) | `requestLinewidthMap()`, `requestBaselineSubtract()`, `requestSpectralStack()` — client-side methods present; backend router not yet wired (see `backend-api.md`) |
+| spectral | `requestLinewidthBinary()`, `requestBaselineSubtract()`, `requestSpectralStackBinary()` (S-02 / S-03 / S-04) |
 
 ### Token resolution
 1. Explicit `setToken()` / `Settings`

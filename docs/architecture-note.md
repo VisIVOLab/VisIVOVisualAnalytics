@@ -126,7 +126,7 @@ The client talks to it exclusively through `BackendClient` (REST/HTTP, bearer-to
 | `hips` | `POST /v1/hips/open`; `GET /v1/hips/{id}/allsky`, `/tile/…`; `POST /query_tiles`, `/catalogue_overlay` | HiPS sky survey tiles + source overlay |
 | `resolve` | `POST /v1/resolve/target` | astronomical name → sky coordinates |
 | `samp` | `POST /v1/samp/send`/`receive`/`connect`/`files/register`/`import-url`/`upload-file`/`send-fits`/`send-catalogue`; `GET /v1/samp/pending`/`inbox`/`status`/`files/{token}` | SAMP messaging + file sharing; **no auth dependency** so the local SAMP hub can reach it directly |
-| `spectral` (planned) | `/v1/spectral/linewidth`, `/baseline`, `/stack` and variants | client methods present; backend router not yet wired into `main.py` |
+| `spectral` | `POST /v1/spectral/linewidth`, `/linewidth/binary`, `/baseline/{sid}/{did}`, `/stack`, `/stack/binary`; `GET /v1/spectral/linewidth/{ds_id}` | per-pixel FWHM + EW maps (S-02), polynomial / median baseline subtraction (S-03), spectral stacking (S-04) |
 
 ### Backend session model
 - `POST /v1/datasets/open` returns a `session_id`; the client echoes it as `X-Visivo-Session` in all subsequent requests for that dataset

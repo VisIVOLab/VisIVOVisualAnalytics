@@ -29,23 +29,33 @@ _api_key_header = APIKeyHeader(name=_HEADER_NAME, auto_error=False)
 
 
 def _resolve_token() -> str:
-    """Return the active bearer token, generating one if necessary."""
+    """Return the active bearer token, generating one if necessary.
+
+    Always prints the active token to stdout at startup so the operator can
+    copy-paste it into the client even when `VISIVO_TOKEN` was inherited
+    from the environment (otherwise the only feedback would be a logger.info
+    that is suppressed when logging.basicConfig has not been called yet —
+    which is the case during module-import in main.py).
+    """
     env_token = os.environ.get("VISIVO_TOKEN", "").strip()
     if env_token:
-        logger.info("[auth] Using VISIVO_TOKEN from environment.")
+        print(  # noqa: T201 – intentional: visible at startup
+            f"\n[VisIVO] Backend token (from VISIVO_TOKEN env): {env_token}\n"
+        )
         return env_token
 
     generated = secrets.token_urlsafe(32)
     try:
         _TOKEN_FILE.write_text(generated + "\n")
         _TOKEN_FILE.chmod(0o600)
-        logger.info("[auth] Token written to %s (mode 600).", _TOKEN_FILE)
     except OSError as exc:
-        logger.warning("[auth] Could not write token file: %s", exc)
+        # Print rather than log: logging.basicConfig may not have run yet.
+        print(f"\n[VisIVO] WARNING: could not write {_TOKEN_FILE}: {exc}\n")  # noqa: T201
 
     print(  # noqa: T201 – intentional: operators need to see the token at startup
         f"\n[VisIVO] Backend token: {generated}\n"
         f"[VisIVO] Or set: export VISIVO_TOKEN={generated}\n"
+        f"[VisIVO] Token written to {_TOKEN_FILE} (mode 600).\n"
     )
     return generated
 

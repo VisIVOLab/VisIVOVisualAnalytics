@@ -30,6 +30,7 @@ from .routers import (
     hips,
     resolve,
     samp,
+    spectral,
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -73,6 +74,7 @@ app.include_router(image.router, dependencies=[_auth])
 app.include_router(cosmology.router, dependencies=[_auth])
 app.include_router(hips.router, dependencies=[_auth])
 app.include_router(resolve.router, dependencies=[_auth])
+app.include_router(spectral.router, dependencies=[_auth])
 # SAMP: /v1/samp/files/{token} is public (no auth) for VO tool access;
 # all other /v1/samp/* routes use per-route auth declared in the router itself.
 app.include_router(samp.router)
