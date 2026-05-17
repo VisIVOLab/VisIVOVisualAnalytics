@@ -43,17 +43,29 @@ All background work follows the same structure:
 
 | Watcher | Type | Triggered by |
 |---------|------|--------------|
-| `previewWatcher` | `QFutureWatcher<CubeOpenPreviewTask::Result>` | initial cube open |
-| `fullResWatcher` | `QFutureWatcher<…>` | after preview succeeds |
-| `momentWatcher` | `QFutureWatcher<MomentMapComputeTask::Result>` | moment order / channel range change |
-| `pvWatcher` | `QFutureWatcher<…>` | PV polyline drawn by user |
+| `remotePreviewWatcher` | `QFutureWatcher<RemoteCubePreviewResult>` | initial cube open (downsampled preview) |
+| `remoteHighResCubeWatcher` | `QFutureWatcher<RemoteCubeSubvolumeResult>` | after preview succeeds, or on Camera-ROI refinement |
+| `remoteSliceFetchesInFlight` (set, multiple `QFutureWatcher` instances) | `QFutureWatcher<RemoteCubeSliceResult>` | slice slider change, prefetch of neighbour slices |
+| `isosurfaceWatcher` | `QFutureWatcher<AsyncIsosurfaceResult>` | isosurface mode toggled / threshold edited |
+| `cubeOpenWatcher` | `QFutureWatcher<CubeOpenStageResult>` | legacy local FITS open path (unused in backend-authoritative mode) |
 
-Open sequence:
+Long-running tools are delegated to controllers (each owns its own watcher):
+
+| Controller | Watcher(s) | Triggered by |
+|------------|------------|--------------|
+| `MomentMapController` | moment compute watcher | moment order / channel range change |
+| `NoiseController` | noise watcher | noise region applied |
+| `PvController` | PV watcher | PV polyline drawn by user |
+
+Open sequence (backend-authoritative mode):
 ```
-open() → previewWatcher → applyPreview()
-                        ↘ fullResWatcher → applyFullRes()
+open() → remotePreviewWatcher → applyCubeOpenResult(preview)
+                              ↘ requestHighResCube()
+                                  → remoteHighResCubeWatcher
+                                      → applyCubeOpenResult(full-res, preSanitized=true)
 ```
-If preview fails → synchronous full open fallback.
+Both watchers converge on the same `applyCubeOpenResult()` apply seam — the second call
+swaps the cube data and reuses the worker-side sanitization (no UI-thread rescan).
 
 ### `vtkWindowImage`
 
@@ -77,6 +89,7 @@ open() → remoteImageWatcher → applyRemoteMasterLayer()  [preview]
 |---------|------|--------------|
 | `filterWatcher` | `QFutureWatcher<Catalogue3DFilterTaskResult>` | "Apply" button or initial open |
 | `m_loadMoreWatcher` | `QFutureWatcher<Catalogue3DFilterTaskResult>` | "Load more" button |
+| `m_reopenWatcher` | `QFutureWatcher<BackendCatalogueInfo>` | reopen with a refreshed session (after backend restart) |
 | `m_cosmologyWatcher` | `QFutureWatcher<Catalogue3DCosmologyTaskResult>` | cosmology model combo change |
 
 ### `vtkWindowVbt`
@@ -85,6 +98,7 @@ open() → remoteImageWatcher → applyRemoteMasterLayer()  [preview]
 |---------|------|--------------|
 | `filterWatcher` | `QFutureWatcher<VbtFilterTaskResult>` | "Apply" button or initial open |
 | `m_loadMoreWatcher` | `QFutureWatcher<VbtFilterTaskResult>` | "Load more" button |
+| `m_reopenWatcher` | `QFutureWatcher<BackendVbtOpenResult>` | reopen with a refreshed session |
 
 ---
 
@@ -182,12 +196,77 @@ Each viewer has explicit "apply" methods that are called only from the UI thread
 
 | Viewer | Apply method |
 |--------|-------------|
-| `vtkWindowCube` | `applyPreview()`, `applyFullRes()`, `applyMomentMapResult()` |
+| `vtkWindowCube` | `applyCubeOpenResult()` (preview AND full-res, branches on `result.preSanitized`), `applyRemoteSliceResult()`, `applyIsosurfaceResult()`, `applyMomentMapResult()` |
 | `vtkWindowImage` | `applyRemoteMasterLayer()` (remote image), `layerLoadWatcher` finished lambda (layers) |
 | `vtkWindowCatalogue3D` | inline in watcher lambda: calls `buildScene()`, `buildLabels()`, `refreshCatalogueTable()` |
 | `vtkWindowVbt` | inline in watcher lambda: calls `buildPointCloud()`, `updateColorMapping()` |
 
 The loading placeholder (`m_loadingActor`) is hidden inside the apply seam — always on the UI thread, always before `Render()` — so no synchronisation is required.
+
+---
+
+## Worker-side data preparation (cube swap)
+
+For large data results (multi-GB cubes) the UI thread cannot afford to scan the
+voxel buffer in the apply seam — that would freeze the app for seconds and
+trigger the macOS beach-ball. The pattern is:
+
+1. **Worker does all O(N) data work** before returning the result struct.
+   For `fetchRemoteSubvolume()` this means:
+   - Decode bytes → `vtkImageData` (raw float32).
+   - One pass: scan all voxels to compute visible min/max, mean, rms, and
+     count NaN/inf voxels (`sanitizeAndStatsCubeInPlace()`, two-pass: range
+     pass + NaN-replace pass; combined to reduce three full scans to two).
+   - Replace NaN/inf with a sentinel below min (so VTK opacity TF can hide it).
+   - Compute `blankFraction = replaced / total`.
+2. **Result struct carries derived stats** so the UI can skip the rescan:
+   - `RemoteCubeSubvolumeResult` exposes `cubeRange` (visible-only range),
+     `invisibleSentinel`, `cubeMean`, `cubeRms`, `blankFraction`.
+   - When forwarded to `applyCubeOpenResult()` the call sets
+     `preSanitized=true` on the `CubeOpenStageResult` it constructs.
+3. **Apply seam is O(1) with respect to data size**:
+   - `if (result.preSanitized) { adopt range + sentinel; }` — no rescan.
+   - `currentCubeBlankFraction` is cached as a member; `updateSanityPanel()`
+     consumes it directly without touching voxel data.
+   - `computeBlankFraction()` itself was rewritten with a raw-pointer fast
+     path for VTK_FLOAT single-component scalars (≈100× faster than the
+     `GetScalarComponentAsDouble()` triple loop) — it's used only as the
+     fallback when the apply seam runs with `preSanitized=false`
+     (preview path; cubes are small there).
+
+This pattern made the full-resolution swap go from ~10 s of beach-ball to
+sub-50 ms of apply on a 512×512×200 float cube.
+
+---
+
+## Deferred render after data swap
+
+The next pitfall after sanitization was the first `Render()` on the swapped
+volume: `vtkGPUVolumeRayCastMapper` performs the texture upload + shader
+compile synchronously on the UI thread the first time the volume mapper sees
+new data. Doing this inside `applyCubeOpenResult()` produces a noticeable
+freeze even when the apply itself is cheap.
+
+The pattern:
+
+1. **Cheap pipeline updates first** (data swap, mapper `Modified()`, UI text
+   fields, slider sync) — synchronous, sub-100 ms.
+2. **Defer the first Render via `QTimer::singleShot(50, …)`** so the Qt event
+   loop pumps one tick before the GPU stall hits. Inside the lambda:
+   - `QApplication::processEvents(QEventLoop::ExcludeUserInputEvents)` so the
+     status bar ("Loading full resolution…") repaints before the stall.
+   - The cube `Render()` (GPU upload happens here, inherently synchronous).
+   - The slice `Render()` and the deferred slice fetch.
+3. **Avoid stacking implicit renders** in functions invoked from the apply
+   seam. `updateRemoteCuttingPlane()` used to call `Render()` internally and
+   that triggered the GPU upload *before* the deferred singleShot — the
+   internal Render was removed and all three callers (`applyCubeOpenResult`,
+   `applyRemoteSliceResult`, `updateRemoteSliceDragFeedback`) now drive their
+   own Render explicitly afterwards.
+4. **Postpone secondary heavy compute** further out: e.g. an isosurface
+   recompute scheduled after a full-res swap waits `QTimer::singleShot(500, …)
+   → scheduleIsosurfaceRecompute()` so the GPU upload has settled before the
+   iso fetch fires.
 
 ---
 

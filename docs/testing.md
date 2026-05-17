@@ -9,12 +9,12 @@ tests/
   CMakeLists.txt          # visivo_test_support + VisIVOTests
   main.cpp                # QCoreApplication + QTest::qExec for each class
   TestBackendClient.h     # Q_OBJECT test class declaration
-  test_backendclient.cpp  # 16 tests
+  test_backendclient.cpp  # 14 tests
   TestCatalogueParser.h
-  test_catalogue_parser.cpp  # 26 tests
+  test_catalogue_parser.cpp  # 24 tests
 ```
 
-Total: **42 tests**.
+Total: **38 tests**.
 
 ---
 
@@ -45,7 +45,7 @@ Does **not** pull in Qt::Widgets, VTK, or libwcs.
 
 ---
 
-## `TestBackendClient` (16 tests)
+## `TestBackendClient` (14 tests)
 
 All tests use `QJsonObject` literals — no network calls.
 
@@ -79,7 +79,7 @@ All tests use `QJsonObject` literals — no network calls.
 
 ---
 
-## `TestCatalogueParser` (26 tests)
+## `TestCatalogueParser` (24 tests)
 
 ### `detectedRedshiftField`
 | Test | Input schema | Expected result |

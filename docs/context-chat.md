@@ -250,13 +250,18 @@ Tests added in `backend/tests/test_spectral.py`:
 
 ```
 POST /v1/products/moment          Moment map (orders 0–2, 3/4/5, 6, 8, 10)
-POST /v1/spectral/linewidth       FWHM + EW maps (JSON, both frames)
-POST /v1/spectral/linewidth/binary  Same, raw binary (two frames: FWHM then EW)
-GET  /v1/spectral/linewidth/{id}  Retrieve cached result
-POST /v1/spectral/baseline/{sid}/{did}  Baseline subtraction → new_dataset_id
-POST /v1/spectral/stack           Stack cubes (JSON)
-POST /v1/spectral/stack/binary    Stack cubes (raw binary, single frame)
+POST /v1/spectral/linewidth       FWHM + EW maps (JSON, both frames)        — see note
+POST /v1/spectral/linewidth/binary  Same, raw binary (two frames: FWHM then EW) — see note
+GET  /v1/spectral/linewidth/{id}  Retrieve cached result                    — see note
+POST /v1/spectral/baseline/{sid}/{did}  Baseline subtraction → new_dataset_id — see note
+POST /v1/spectral/stack           Stack cubes (JSON)                        — see note
+POST /v1/spectral/stack/binary    Stack cubes (raw binary, single frame)    — see note
 ```
+
+> ⚠️ The `/v1/spectral/*` routes are referenced by `BackendClient` and exercised by
+> `backend/tests/test_spectral.py`, but the corresponding FastAPI router is **not
+> currently included** in `backend/app/main.py` (see `docs/backend-api.md`). Treat as
+> planned / work-in-progress until the router is wired.
 
 Binary frame format (each frame): `[width:int32][height:int32][n_bytes:int32][float32…]`
 Decode with `BackendClient::parseBinaryFrame(payload, offset, result)`.

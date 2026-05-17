@@ -30,6 +30,8 @@ This note documents the current service boundaries, their implementation status,
 | cosmology | `requestCosmologyDistanceBatch()` |
 | hips | `openHiPS()`, `requestHiPSAllsky()`, `requestHiPSTile()`, `requestHiPSTilesForView()`, `requestHiPSCatalogueOverlay()` |
 | resolve | `resolveTarget()` |
+| samp | `requestSampStatus()`, send / receive / inbox / files-register / import-url / upload-file / send-fits / send-catalogue (delegated to `SAMPClient` in `src/app/`) |
+| spectral (planned) | `requestLinewidthMap()`, `requestBaselineSubtract()`, `requestSpectralStack()` — client-side methods present; backend router not yet wired (see `backend-api.md`) |
 
 ### Token resolution
 1. Explicit `setToken()` / `Settings`
@@ -206,7 +208,12 @@ DiagnosticsManager::instance()->publish(
 );
 ```
 
-All backend-calling code publishes structured entries before and after operations. `DiagnosticsWindow` (View menu) shows them in a live table. No external sink (file, remote log collector) is implemented yet.
+All backend-calling code publishes structured entries before and after operations. `DiagnosticsWindow::showSingleton()` exposes a process-wide window, reachable from:
+- *View → Diagnostics* in `MainWindow`
+- *View → Diagnostics* in child windows (`vtkWindowCube`, `vtkWindowImage`)
+- *Command Palette → "Open Diagnostics Window"* (⌘K from any window)
+
+No external sink (file, remote log collector) is implemented yet.
 
 ---
 

@@ -258,7 +258,12 @@ Given a HiPS survey viewport, return catalogue sources within the field as `Back
 
 ## Spectral
 
-All spectral endpoints require `X-Visivo-Token` and `X-Visivo-Session`.
+> ⚠️ The `/v1/spectral/*` routes are referenced by `BackendClient` and exercised by
+> `backend/tests/test_spectral.py`, but the corresponding FastAPI router is **not
+> currently included** in `backend/app/main.py`. They are documented here as the
+> contract the client expects; treat them as planned / work-in-progress until the
+> router is wired up. All endpoints will require `X-Visivo-Token` and
+> `X-Visivo-Session`.
 
 ### `POST /v1/spectral/linewidth`
 Per-pixel line-width map. Returns both FWHM (Gaussian fit) and equivalent-width maps as base64 float32.
@@ -327,6 +332,41 @@ Response: `valid`, `rows`, `cols`, `scalar_type`, `method`, `n_cubes`, `range_mi
 
 ### `POST /v1/spectral/stack/binary`
 Same request. Returns a single binary frame (same format as `/linewidth/binary`).
+
+---
+
+## SAMP
+
+The SAMP router (`backend/app/routers/samp.py`) is included **without auth dependencies**
+(no `X-Visivo-Token`) so a SAMP hub running on the user's machine can reach it directly.
+
+### Messaging
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/v1/samp/send` | Send a SAMP message to one / all peers (legacy generic send). |
+| `POST` | `/v1/samp/receive` | Inbound delivery hook used by the bundled hub bridge. |
+| `GET`  | `/v1/samp/pending` | Pull pending out-bound messages enqueued by the client. |
+| `GET`  | `/v1/samp/inbox` | Pull messages addressed to the running session. |
+
+### Status / hub lifecycle
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET`  | `/v1/samp/status` | Current hub connection state. |
+| `POST` | `/v1/samp/hub-status` | Register the local hub status (heartbeat). |
+| `POST` | `/v1/samp/connect` | Bring the session up against the active hub. |
+
+### File transfer / registration
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/v1/samp/files/register` | Register a backend-side FITS file as a SAMP-shareable token. |
+| `POST` | `/v1/samp/import-url` | Import a remote URL into the session. |
+| `POST` | `/v1/samp/upload-file` | Upload a local FITS to the backend for sharing. |
+| `GET`  | `/v1/samp/files/{token}` | Serve a previously registered file by token. |
+| `POST` | `/v1/samp/send-fits` | Broadcast a FITS to peers via SAMP. |
+| `POST` | `/v1/samp/send-catalogue` | Broadcast a catalogue (votable) to peers. |
 
 ---
 

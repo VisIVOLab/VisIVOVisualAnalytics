@@ -99,12 +99,13 @@ Compound names like `flux_z` normalise to `FLUXZ` and do not match `Z`.
 
 ## Sidebar pages
 
-The sidebar uses a rail + stacked-widget layout:
-1. **Visualisation** — geometry, size, scene (frame, cosmology, axes, shells)
-2. **Mapping** — axis/size/colour field assignment
-3. **Filter** — multi-filter list + Apply + Load more
-4. **Info** — selected source metadata
-5. **Catalogue** — dock with full table view
+The sidebar uses a rail + stacked-widget layout with three pages:
+
+1. **Visualization** — geometry / size mode + Axis Mapping card (X/Y/Z, size, colour field assignment) + scene controls (frame, cosmology, axes, shells)
+2. **Source Info** — selected source metadata (from `ui->pageInfo`)
+3. **Filters** — multi-filter list + Apply + Load more
+
+The full catalogue table view is a separate `QDockWidget`, not a sidebar page.
 
 ---
 

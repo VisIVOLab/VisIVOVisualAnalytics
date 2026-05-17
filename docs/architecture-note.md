@@ -125,6 +125,8 @@ The client talks to it exclusively through `BackendClient` (REST/HTTP, bearer-to
 | `cosmology` | `POST /v1/cosmology/distance`, `/distance/batch` | redshift → comoving distance (astropy) |
 | `hips` | `POST /v1/hips/open`; `GET /v1/hips/{id}/allsky`, `/tile/…`; `POST /query_tiles`, `/catalogue_overlay` | HiPS sky survey tiles + source overlay |
 | `resolve` | `POST /v1/resolve/target` | astronomical name → sky coordinates |
+| `samp` | `POST /v1/samp/send`/`receive`/`connect`/`files/register`/`import-url`/`upload-file`/`send-fits`/`send-catalogue`; `GET /v1/samp/pending`/`inbox`/`status`/`files/{token}` | SAMP messaging + file sharing; **no auth dependency** so the local SAMP hub can reach it directly |
+| `spectral` (planned) | `/v1/spectral/linewidth`, `/baseline`, `/stack` and variants | client methods present; backend router not yet wired into `main.py` |
 
 ### Backend session model
 - `POST /v1/datasets/open` returns a `session_id`; the client echoes it as `X-Visivo-Session` in all subsequent requests for that dataset
@@ -171,6 +173,9 @@ Result structs (all in `BackendClient.h`):
 | `BackendHiPSCatalogueOverlayResult` | `requestHiPSCatalogueOverlay()` |
 | `BackendTaskCreateResult` | `createMomentTask()`, `createPvTask()` |
 | `BackendTaskStatusResult` | `requestTaskStatus()`, `waitForTaskCompletion()` |
+| `BackendSampSendResult` | SAMP send / send-fits / send-catalogue |
+| `BackendSampImportResult` | SAMP import-url / upload-file |
+| `BackendCatalogueSubset` | `requestCatalogueSubset()` (legacy bulk fetch) |
 
 ---
 
@@ -186,12 +191,17 @@ All viewers follow the same pattern:
 
 ### Active async paths
 
-| Viewer | Watcher | Triggered by |
-|--------|---------|--------------|
-| `vtkWindowCube` | `previewWatcher`, `fullResWatcher`, `momentWatcher`, `pvWatcher` | open, moment order change, PV line draw |
-| `vtkWindowImage` | `layerWatcher` | "Add layer" action |
+| Viewer | Watcher(s) | Triggered by |
+|--------|------------|--------------|
+| `vtkWindowCube` | `remotePreviewWatcher`, `remoteHighResCubeWatcher`, per-slice + `isosurfaceWatcher`; tools delegated to `MomentMapController`, `NoiseController`, `PvController` | open, slice change, threshold change, moment/PV requests |
+| `vtkWindowImage` | `layerLoadWatcher`, `remoteImageWatcher`, `remoteFullImageWatcher` | local "Add layer", remote image preview, remote full-res upgrade |
 | `vtkWindowCatalogue3D` | `filterWatcher`, `m_loadMoreWatcher`, `m_cosmologyWatcher` | Apply filter, Load more, cosmology model change |
 | `vtkWindowVbt` | `filterWatcher`, `m_loadMoreWatcher` | Apply filter, Load more |
+
+The cube preview→full-res path uses worker-side sanitization and a deferred-Render
+pattern to keep the UI thread reactive during the swap — see
+`docs/async-patterns.md` (sections *Worker-side data preparation* and
+*Deferred render after data swap*) for the details.
 
 ### Pagination (large datasets)
 
@@ -236,7 +246,83 @@ Static bearer token, resolved by `BackendClient` from:
 - `publish(level, category, source, message, datasetId, sessionId, operationTag)` — called from any thread
 - Categories: `Scientific`, `Client`, `Backend`, `Task`, `WCS`, `Remote`, `Rendering`, `Performance`
 - `DiagnosticsModel` exposes the log as a `QAbstractTableModel` for `DiagnosticsWindow`
-- `DiagnosticsWindow` is accessible from the `View` menu at runtime
+- `DiagnosticsWindow::showSingleton()` returns the one process-wide window, lazily
+  created on first call. Used by `MainWindow::openDiagnosticsWindow()`, the *Command
+  Palette* entry "Open Diagnostics Window", and the replicated *View → Diagnostics*
+  action in child windows (`vtkWindowCube`, `vtkWindowImage`). All entry points share
+  the same model — no duplicate panels.
+
+### Command Palette (⌘K)
+
+`CommandPalette` (`src/gui/`) is a search-driven action launcher owned by
+`MainWindow`. `Ctrl+K` is registered as an `ApplicationShortcut` so it fires from
+any window. Child windows also expose an explicit *View → Command Palette…* entry
+that routes through `QMetaObject::invokeMethod(mainWindow, "openCommandPalette",
+QueuedConnection)` — `MainWindow::openCommandPalette` is declared `Q_INVOKABLE` so
+child windows do not need to link against `MainWindow` to trigger it.
+
+---
+
+## Cube viewer (`vtkWindowCube`) — interactive extras
+
+In addition to the volume / isosurface / slice / moment / PV / noise pipelines,
+the cube viewer exposes a set of configurable interaction extras driven from
+the *View* menu and mirrored in the sidebar's *Cube Extras* page. All toggles
+use `QAction` as the single source of truth; menu and sidebar widgets sync
+bidirectionally via signal-blocker guarded `connect` pairs.
+
+| Feature | QAction / group | Menu | Sidebar widget |
+|---------|-----------------|------|----------------|
+| Cutting plane visibility | `actionShowCuttingPlane` | View → Show Cutting Plane | "Show cutting plane" checkbox |
+| Cutting plane opacity (0–100%) | `cuttingPlaneOpacityGroup` (25 / 50 / 75 / 100 / 0%) | View → Cutting Plane Opacity → … | continuous slider |
+| 3D WCS axes (vtkCubeAxesActor) | `actionShow3dWcsAxes` | View → Show 3D WCS Axes | "Show 3D WCS axes" checkbox |
+| Slice animation | `actionPlaySlices` + `animationFpsGroup` + `animationModeGroup` | View → Play Slices / Animation Speed / Animation Mode | "▶ Play" button + FPS spin + Mode combo |
+| 3D pick on plane click | `actionPickSpectrum3d` | View → Pick Spectrum on Plane Click | "Pick spectrum on plane click" checkbox |
+
+Implementation notes:
+
+- **Cutting plane is a textured `vtkActor`.** The plane source feeds a
+  `vtkPolyDataMapper`; a `vtkTexture` is attached to the actor with input
+  `sliceColors->GetOutputPort()` (the same `vtkImageMapToColors` pipeline
+  that drives the 2D slice view). Slice tile updates propagate to the 3D
+  plane automatically via the VTK pipeline. The texture is wired in the
+  constructor *after* `setupSliceRenderer()` so that `sliceColors` has a
+  valid input by the time the first 3D Render runs; otherwise the volume
+  scene would not draw at all.
+- **Animation timer** is a `QTimer` member; `setSliceAnimationActive(true)`
+  starts it with `1000 / fps` interval, `advanceSliceAnimation()` drives
+  `spinSlice` according to mode (Loop / Bounce / Stop at End). The timer
+  is stopped in `closeEvent()`.
+- **3D spectral pick** installs a `vtkCallbackCommand` on the cube
+  interactor's `LeftButtonReleaseEvent` (priority 1.0). On pick:
+  `vtkPropPicker` resolves the prop under the cursor; if it is
+  `remoteCuttingPlaneActor`, the world XY is mapped to voxel indices and
+  fed into the existing probe pipeline (`updateProbePlot()` →
+  `ProfileWidget`). `probeModeActive` is flipped on directly (skipping
+  `setProbeModeActive` so the 2D cursor and region actions are left
+  untouched). The observer is removed in `closeEvent()` and when the
+  toggle is unchecked.
+- **3D WCS axes** wraps a `vtkCubeAxesActor` with titles from
+  `remoteAxisTitle(0..2)` and ranges from `remoteVoxelToWcs` on the cube
+  bounds; `applyCubeOpenResult()` refreshes the actor whenever the cube
+  bounds change (preview → full-res, ROI switch).
+
+### QAction creation ordering
+
+QActions referenced by the sidebar's *Cube Extras* page must be created
+*before* `setupSidebar()` is called — otherwise the sidebar dereferences
+null pointers and the window segfaults. In the constructor:
+
+```
+ui->setupUi(this);
+setupViewerToolbar();
+// 1. Pre-create QActions + QActionGroups used by sidebar
+actionShowCuttingPlane = new QAction(…); …
+cuttingPlaneOpacityGroup = new QActionGroup(this); …
+// 2. Build sidebar (binds widgets to the pre-created actions)
+setupSidebar();
+// 3. Later: attach tooltips, populate menus, connect signal handlers
+```
 
 ---
 
@@ -306,8 +392,8 @@ QTest-based headless suite; no VTK, no Qt::Widgets, no live backend.
 
 | File | Tests | What it covers |
 |------|-------|----------------|
-| `test_backendclient.cpp` | 16 | `parseMomentResultObject`, `parsePvResultObject`, `parseNoiseResultObject` |
-| `test_catalogue_parser.cpp` | 26 | `detectedRedshiftField`, `detectedDistanceField`, `comovingDistanceMpc`, `entryDistanceMpc` |
+| `test_backendclient.cpp` | 14 | `parseMomentResultObject`, `parsePvResultObject`, `parseNoiseResultObject` |
+| `test_catalogue_parser.cpp` | 24 | `detectedRedshiftField`, `detectedDistanceField`, `comovingDistanceMpc`, `entryDistanceMpc` |
 
 Build:
 ```
