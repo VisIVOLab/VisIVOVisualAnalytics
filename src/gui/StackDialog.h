@@ -3,6 +3,7 @@
 #include <QDialog>
 #include <QPointer>
 #include <QStringList>
+#include <vector>
 
 class BackendClient;
 class QDialogButtonBox;
@@ -15,24 +16,49 @@ class QPushButton;
 /**
  * S-04 — Spectral stacking dialog.
  *
- * Shows a checkable list of session datasets (FIX 6 redesign), lets the user
- * select ≥ 2 cubes, and calls BackendClient::fetchStackBinary() async.
- * The resulting 1-D spectrum is displayed in a dedicated QCustomPlot window.
+ * Shows a checkable list of session datasets, lets the user select ≥ 2 cubes,
+ * and calls BackendClient::fetchStackBinary() async. The resulting 1-D
+ * spectrum is displayed in a dedicated QCustomPlot window.
  */
 class StackDialog : public QDialog
 {
     Q_OBJECT
 
 public:
+    /// Minimal description of a session dataset for the selection list. The
+    /// shape fields are used to disable cubes incompatible with the current
+    /// one (different spatial/spectral grid → cannot be stacked together).
+    struct DatasetEntry
+    {
+        QString datasetId;
+        QString kind;     ///< "cube" | "image" | "" (unknown)
+        QString label;    ///< human-readable name (falls back to datasetId)
+        int width{ 0 };
+        int height{ 0 };
+        int depth{ 0 };
+    };
+
     /**
-     * @param client          BackendClient instance (not owned).
-     * @param sessionId       Backend session identifier — set on client before requests.
-     * @param sessionDatasets Dataset IDs currently open in the session.
-     * @param parent          Optional parent widget.
+     * Legacy overload (kept for back-compat): receives a flat list of dataset
+     * IDs and assumes they are all stackable. Prefer the @ref DatasetEntry
+     * overload so the dialog can filter incompatible cubes.
      */
     StackDialog(BackendClient *client,
                 const QString &sessionId,
                 const QStringList &sessionDatasets,
+                QWidget *parent = nullptr);
+
+    /**
+     * @param client      BackendClient instance (not owned).
+     * @param sessionId   Backend session identifier — set on client before requests.
+     * @param datasets    Datasets currently open in the session (with metadata).
+     * @param currentId   Dataset to pre-check on open (empty = none).
+     * @param parent      Optional parent widget.
+     */
+    StackDialog(BackendClient *client,
+                const QString &sessionId,
+                const std::vector<DatasetEntry> &datasets,
+                const QString &currentId,
                 QWidget *parent = nullptr);
 
 private slots:

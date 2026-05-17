@@ -552,16 +552,51 @@ void MainWindow::buildScienceMenu()
     m_actStack->setEnabled(true);  // no dataset needed upfront — user selects from list
     m_actStack->setToolTip(u"Stack multiple session datasets into a 1-D spectrum (S-04)."_s);
     QObject::connect(m_actStack, &QAction::triggered, this, [this]() {
-        QStringList datasets;
-        if (!m_sciDatasetId.isEmpty()) {
-            datasets << m_sciDatasetId;
+        const QString url       = m_sciBackendUrl;
+        const QString token     = m_sciToken;
+        const QString sessionId = m_sciSessionId;
+        const QString currentId = m_sciDatasetId;
+        if (sessionId.isEmpty()) {
+            QMessageBox::information(this, u"Spectral Stacking"_s,
+                                     u"Open a dataset first to establish a backend session, "
+                                     "then open the additional cubes you want to stack."_s);
+            return;
         }
-        auto *client = new BackendClient(m_sciBackendUrl, m_sciToken);
-        client->setSessionId(m_sciSessionId);
-        auto *dlg = new StackDialog(client, m_sciSessionId, datasets, this);
-        QObject::connect(dlg, &QDialog::finished, [client](int) { delete client; });
-        dlg->setAttribute(Qt::WA_DeleteOnClose);
-        dlg->open();
+        auto *watcher = new QFutureWatcher<BackendSessionDatasetsResult>(this);
+        QPointer<MainWindow> self(this);
+        QObject::connect(watcher, &QFutureWatcher<BackendSessionDatasetsResult>::finished,
+                         this, [self, watcher, url, token, sessionId, currentId]() {
+                             const auto listing = watcher->result();
+                             watcher->deleteLater();
+                             if (!self) return;
+                             if (!listing.valid) {
+                                 QMessageBox::warning(self, u"Spectral Stacking"_s,
+                                                      u"Could not list session datasets: %1"_s
+                                                              .arg(listing.error));
+                                 return;
+                             }
+                             std::vector<StackDialog::DatasetEntry> entries;
+                             entries.reserve(listing.datasets.size());
+                             for (const auto &d : listing.datasets) {
+                                 const QString fileName = QFileInfo(d.path).fileName();
+                                 const QString label = fileName.isEmpty() ? d.datasetId : fileName;
+                                 entries.push_back({ d.datasetId, d.kind, label,
+                                                     d.width, d.height, d.depth });
+                             }
+                             auto *client = new BackendClient(url, token);
+                             client->setSessionId(sessionId);
+                             auto *dlg = new StackDialog(client, sessionId, entries,
+                                                         currentId, self);
+                             QObject::connect(dlg, &QDialog::finished,
+                                              [client](int) { delete client; });
+                             dlg->setAttribute(Qt::WA_DeleteOnClose);
+                             dlg->open();
+                         });
+        watcher->setFuture(QtConcurrent::run([url, token, sessionId]() {
+            BackendClient c(url, token);
+            c.setSessionId(sessionId);
+            return c.listSessionDatasets(sessionId);
+        }));
     });
 
     m_actSourceFind = sciMenu->addAction(u"Source Finding (SoFiA-2)…"_s);

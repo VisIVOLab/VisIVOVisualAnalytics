@@ -62,6 +62,24 @@ struct BackendListFilesResult
     std::vector<BackendFileEntry> entries;
 };
 
+struct BackendSessionDatasetEntry
+{
+    QString datasetId;
+    QString kind;        ///< "cube" | "image" | "" if unknown
+    QString path;
+    int width{ 0 };
+    int height{ 0 };
+    int depth{ 0 };
+};
+
+struct BackendSessionDatasetsResult
+{
+    bool valid{ false };
+    QString error;
+    QString sessionId;
+    std::vector<BackendSessionDatasetEntry> datasets;
+};
+
 struct BackendOpenDatasetResult
 {
     bool valid{ false };
@@ -780,6 +798,11 @@ public:
     BackendHealthResult health() const;
     BackendListFilesResult listFiles(const QString &path) const;
     BackendFileHeaderResult fileHeader(const QString &path) const;
+
+    /// GET /v1/sessions/{session_id}/datasets — enumerate datasets currently
+    /// open in a backend session. Used by cross-dataset tools (Spectral
+    /// Stacking, etc.) to populate selection lists.
+    BackendSessionDatasetsResult listSessionDatasets(const QString &sessionId) const;
 
     /**
      * Open a FITS dataset on the backend.

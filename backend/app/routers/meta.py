@@ -49,3 +49,30 @@ async def health(_: None = _auth) -> dict:
 async def session_stats(_: None = _auth) -> dict:
     """Expose session registry statistics (admin endpoint)."""
     return REGISTRY.stats()
+
+
+@router.get("/v1/sessions/{session_id}/datasets", tags=["meta"])
+async def session_datasets(session_id: str, _: None = _auth) -> dict:
+    """Enumerate the datasets currently open in a backend session.
+
+    Used by the desktop client to populate selection lists for cross-dataset
+    tools (e.g. Spectral Stacking, where the user picks ≥2 cubes opened in
+    the same session). Returns minimal metadata so the client can filter by
+    kind / shape without opening each dataset.
+
+    Returns ``404`` if the session does not exist (e.g. backend restarted).
+    """
+    session = REGISTRY.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+    datasets = []
+    for ds_id, entry in session.datasets.items():
+        datasets.append({
+            "dataset_id": ds_id,
+            "kind": entry.get("kind", ""),
+            "path": entry.get("path", ""),
+            "width": int(entry.get("width", 0) or 0),
+            "height": int(entry.get("height", 0) or 0),
+            "depth": int(entry.get("depth", 0) or 0),
+        })
+    return {"session_id": session_id, "datasets": datasets}

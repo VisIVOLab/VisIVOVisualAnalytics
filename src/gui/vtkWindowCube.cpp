@@ -2365,16 +2365,52 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         if (!this->hasBackendVisibleDataset()) {
             return;
         }
-        BackendClient *client = new BackendClient(this->remoteBackendUrl,
-                                                  this->remoteBackendToken);
-        client->setSessionId(this->remoteSessionId);
-        auto *dlg = new StackDialog(client,
-                                    this->remoteSessionId,
-                                    QStringList{ this->remoteDatasetId },
-                                    this);
-        QObject::connect(dlg, &QDialog::finished, [client](int) { delete client; });
-        dlg->setAttribute(Qt::WA_DeleteOnClose);
-        dlg->open();
+        // Enumerate ALL cube datasets open in this backend session, not just
+        // this window's own dataset, so the user can actually pick ≥2 cubes
+        // to stack. Done in a worker because BackendClient is synchronous.
+        const QString url       = this->remoteBackendUrl;
+        const QString token     = this->remoteBackendToken;
+        const QString sessionId = this->remoteSessionId;
+        const QString currentId = this->remoteDatasetId;
+        auto *watcher = new QFutureWatcher<BackendSessionDatasetsResult>(this);
+        QPointer<vtkWindowCube> self(this);
+        QObject::connect(watcher, &QFutureWatcher<BackendSessionDatasetsResult>::finished,
+                         this, [self, watcher, url, token, sessionId, currentId]() {
+                             const auto listing = watcher->result();
+                             watcher->deleteLater();
+                             if (!self) return;
+                             if (!listing.valid) {
+                                 QMessageBox::warning(self,
+                                                      u"Stack spectral cubes"_s,
+                                                      u"Could not list session datasets: %1"_s
+                                                              .arg(listing.error));
+                                 return;
+                             }
+                             std::vector<StackDialog::DatasetEntry> entries;
+                             entries.reserve(listing.datasets.size());
+                             for (const auto &d : listing.datasets) {
+                                 // Use the file basename as the human label so the user can
+                                 // tell the cubes apart; fall back to the dataset id when
+                                 // the backend did not report a path.
+                                 const QString fileName = QFileInfo(d.path).fileName();
+                                 const QString label = fileName.isEmpty() ? d.datasetId : fileName;
+                                 entries.push_back({ d.datasetId, d.kind, label,
+                                                     d.width, d.height, d.depth });
+                             }
+                             auto *client = new BackendClient(url, token);
+                             client->setSessionId(sessionId);
+                             auto *dlg = new StackDialog(client, sessionId, entries,
+                                                         currentId, self);
+                             QObject::connect(dlg, &QDialog::finished,
+                                              [client](int) { delete client; });
+                             dlg->setAttribute(Qt::WA_DeleteOnClose);
+                             dlg->open();
+                         });
+        watcher->setFuture(QtConcurrent::run([url, token, sessionId]() {
+            BackendClient c(url, token);
+            c.setSessionId(sessionId);
+            return c.listSessionDatasets(sessionId);
+        }));
     });
 
     this->updateBackendDerivedActionsAvailability();

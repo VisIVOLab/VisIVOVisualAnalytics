@@ -29,6 +29,24 @@ StackDialog::StackDialog(BackendClient *client,
                          const QString &sessionId,
                          const QStringList &sessionDatasets,
                          QWidget *parent)
+    : StackDialog(client, sessionId,
+                  [&sessionDatasets]() {
+                      std::vector<DatasetEntry> v;
+                      v.reserve(static_cast<std::size_t>(sessionDatasets.size()));
+                      for (const QString &id : sessionDatasets) {
+                          v.push_back({ id, QStringLiteral("cube"), id, 0, 0, 0 });
+                      }
+                      return v;
+                  }(),
+                  /*currentId=*/QString(), parent)
+{
+}
+
+StackDialog::StackDialog(BackendClient *client,
+                         const QString &sessionId,
+                         const std::vector<DatasetEntry> &datasets,
+                         const QString &currentId,
+                         QWidget *parent)
     : QDialog(parent)
     , m_client(client)
     , m_sessionId(sessionId)
@@ -44,18 +62,69 @@ StackDialog::StackDialog(BackendClient *client,
     // ── Explanation ───────────────────────────────────────────────────────────
     auto *infoLabel = new QLabel(
             u"Select two or more cubes to stack. All cubes must share the same "
-            "spectral grid and spatial shape."_s, this);
+            "spectral grid and spatial shape — cubes with a different shape "
+            "than the current one are listed as disabled."_s, this);
     infoLabel->setWordWrap(true);
     mainLayout->addWidget(infoLabel);
 
     // ── Checkable dataset list ────────────────────────────────────────────────
-    mainLayout->addWidget(new QLabel(u"Datasets in session:"_s, this));
+    mainLayout->addWidget(new QLabel(u"Cubes in session:"_s, this));
     m_datasetList = new QListWidget(this);
     m_datasetList->setSelectionMode(QAbstractItemView::NoSelection);
-    for (const QString &id : sessionDatasets) {
-        auto *item = new QListWidgetItem(id, m_datasetList);
+
+    // Resolve the reference shape from currentId (when known) — used to grey
+    // out cubes that cannot be stacked together. If currentId is empty or its
+    // shape is zero we fall back to the first cube with a non-zero shape.
+    int refW = 0, refH = 0, refD = 0;
+    auto adoptShape = [&](const DatasetEntry &e) {
+        if (!refW && !refH && !refD && e.width > 0 && e.height > 0 && e.depth > 0) {
+            refW = e.width; refH = e.height; refD = e.depth;
+        }
+    };
+    for (const auto &e : datasets) {
+        if (e.datasetId == currentId) adoptShape(e);
+    }
+    if (refW == 0) {
+        for (const auto &e : datasets) adoptShape(e);
+    }
+
+    int cubeCount = 0;
+    for (const auto &e : datasets) {
+        // Only cube datasets can be stacked. Skip "image" / unknown kinds so
+        // the list stays focused on what the operator can actually use.
+        if (!e.kind.isEmpty() && e.kind != QStringLiteral("cube")) {
+            continue;
+        }
+        const QString label = e.label.isEmpty() ? e.datasetId : e.label;
+        const bool shapeKnown = e.width > 0 && e.height > 0 && e.depth > 0;
+        const bool compatible = refW == 0 || !shapeKnown
+                || (e.width == refW && e.height == refH && e.depth == refD);
+        const QString suffix = shapeKnown
+                ? u"  (%1×%2×%3)"_s.arg(e.width).arg(e.height).arg(e.depth)
+                : QString();
+        auto *item = new QListWidgetItem(label + suffix, m_datasetList);
+        item->setData(Qt::UserRole, e.datasetId);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(Qt::Unchecked);
+        if (!compatible) {
+            // Keep visible so the user understands why a known cube isn't
+            // selectable, but disable + tooltip.
+            item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
+            item->setToolTip(
+                    u"Shape %1×%2×%3 differs from reference %4×%5×%6 — cannot be stacked."_s
+                            .arg(e.width).arg(e.height).arg(e.depth)
+                            .arg(refW).arg(refH).arg(refD));
+            item->setCheckState(Qt::Unchecked);
+        } else {
+            item->setCheckState(e.datasetId == currentId
+                                    ? Qt::Checked : Qt::Unchecked);
+        }
+        ++cubeCount;
+    }
+    if (cubeCount == 0) {
+        auto *empty = new QListWidgetItem(
+                u"(no cube datasets open in this session — open ≥ 2 cubes first)"_s,
+                m_datasetList);
+        empty->setFlags(Qt::NoItemFlags);
     }
     mainLayout->addWidget(m_datasetList, 1);
 
@@ -142,9 +211,13 @@ void StackDialog::onCompute()
 {
     QStringList selected;
     for (int i = 0; i < m_datasetList->count(); ++i) {
-        if (m_datasetList->item(i)->checkState() == Qt::Checked) {
-            selected << m_datasetList->item(i)->text();
-        }
+        auto *item = m_datasetList->item(i);
+        if (item->checkState() != Qt::Checked) continue;
+        // The visible item text now also carries "(W×H×D)"; the real dataset
+        // id is stored in Qt::UserRole. Fall back to text() for items added
+        // via the legacy (QStringList) constructor that did not set UserRole.
+        const QString id = item->data(Qt::UserRole).toString();
+        selected << (id.isEmpty() ? item->text() : id);
     }
     if (selected.size() < 2) {
         QMessageBox::warning(this, u"Stack spectral cubes"_s,

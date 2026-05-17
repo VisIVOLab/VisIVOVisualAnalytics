@@ -242,6 +242,52 @@ BackendListFilesResult BackendClient::listFiles(const QString &path) const
     return result;
 }
 
+BackendSessionDatasetsResult BackendClient::listSessionDatasets(const QString &sessionId) const
+{
+    BackendSessionDatasetsResult result;
+    result.sessionId = sessionId;
+    if (sessionId.isEmpty()) {
+        result.error = QStringLiteral("listSessionDatasets() requires a non-empty session id.");
+        return result;
+    }
+    QString error;
+    QUrl url(m_baseUrl + QStringLiteral("/v1/sessions/") + sessionId
+             + QStringLiteral("/datasets"));
+    const QByteArray payload = performGet(url, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    // The endpoint omits a `valid` field on the happy path; presence of
+    // `session_id` is the success marker. Honour `error`/`detail` if set
+    // (e.g. 404 on stale session) so the UI can show a meaningful message.
+    if (object.contains(QStringLiteral("error"))) {
+        result.error = object.value(QStringLiteral("error")).toString();
+        return result;
+    }
+    if (object.contains(QStringLiteral("detail")) && !object.contains(QStringLiteral("datasets"))) {
+        result.error = object.value(QStringLiteral("detail")).toString();
+        return result;
+    }
+    result.sessionId = object.value(QStringLiteral("session_id")).toString(sessionId);
+    const QJsonArray entries = object.value(QStringLiteral("datasets")).toArray();
+    result.datasets.reserve(static_cast<std::size_t>(entries.size()));
+    for (const QJsonValue &v : entries) {
+        const QJsonObject e = v.toObject();
+        BackendSessionDatasetEntry d;
+        d.datasetId = e.value(QStringLiteral("dataset_id")).toString();
+        d.kind      = e.value(QStringLiteral("kind")).toString();
+        d.path      = e.value(QStringLiteral("path")).toString();
+        d.width     = e.value(QStringLiteral("width")).toInt(0);
+        d.height    = e.value(QStringLiteral("height")).toInt(0);
+        d.depth     = e.value(QStringLiteral("depth")).toInt(0);
+        result.datasets.push_back(d);
+    }
+    result.valid = true;
+    return result;
+}
+
 BackendFileHeaderResult BackendClient::fileHeader(const QString &path) const
 {
     BackendFileHeaderResult result;
