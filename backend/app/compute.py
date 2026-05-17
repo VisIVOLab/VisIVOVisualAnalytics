@@ -1134,6 +1134,9 @@ def worker_linewidth(
     channel_end: int,
     mask_enabled: bool,
     threshold_value: float,
+    snr_threshold: float = 3.0,
+    iy_start: int | None = None,
+    iy_end: int | None = None,
 ) -> dict[str, Any]:
     """Compute per-pixel FWHM (Gaussian fit) and equivalent-width maps.
 
@@ -1141,6 +1144,16 @@ def worker_linewidth(
     EW    = M0 / peak_brightness  (spectral units)
 
     Both maps are returned as float32 arrays encoded in base64.
+
+    Optimisations:
+    - ``snr_threshold``: pixels with peak/MAD-noise below this value are
+      skipped (no Gauss fit attempted). Default 3.0 — typical "noise pixel"
+      detection threshold in radio astronomy. Set to 0 to disable.
+    - ``iy_start``/``iy_end``: process only rows in ``[iy_start, iy_end)``;
+      used by the parallel orchestrator to spread work across the worker
+      pool. When both are None the entire image is processed. The returned
+      maps are still full-image shaped (ny × nx) with NaN outside the chunk
+      so chunks can be combined by simple nan-aware merge.
     """
     from scipy.optimize import curve_fit  # noqa: PLC0415 (lazy – not in every worker)
 
@@ -1157,7 +1170,11 @@ def worker_linewidth(
             raise ValueError("Invalid channel range.")
         spectral = dataset.spectral_axis_metadata(z0, z1)
         bunit = dataset.bunit
-        subset = np.asarray(data[z0 : z1 + 1, :, :], dtype=np.float64)
+        # Subset only the rows we need to keep memory pressure down when the
+        # chunk is small. Spectral axis is always loaded in full.
+        row_lo = 0 if iy_start is None else max(0, min(int(iy_start), ny))
+        row_hi = ny if iy_end is None else max(row_lo, min(int(iy_end), ny))
+        subset = np.asarray(data[z0 : z1 + 1, row_lo:row_hi, :], dtype=np.float64)
     finally:
         hdul.close()
 
@@ -1170,17 +1187,38 @@ def worker_linewidth(
         valid_mask = valid_mask & (subset >= float(threshold_value))
     safe = np.where(valid_mask, subset, np.nan)
 
-    # Pre-compute M0 (integrated flux) for EW denominator
-    m0 = np.nansum(safe * weights, axis=0)  # (ny, nx)
-    # Peak brightness per pixel
-    peak = np.nanmax(safe, axis=0)          # (ny, nx)
+    # Pre-compute M0 (integrated flux) and peak per pixel (vectorised)
+    m0_chunk = np.nansum(safe * weights, axis=0)
+    peak_chunk = np.nanmax(safe, axis=0)
 
+    # Per-pixel noise estimate via MAD across the spectral axis. Used to skip
+    # background pixels (no real line) before paying for a Gauss fit. Vectorised
+    # over the chunk so this is essentially free vs. the per-pixel fit cost.
+    med_chunk = np.nanmedian(safe, axis=0)
+    mad_chunk = 1.4826 * np.nanmedian(np.abs(safe - med_chunk[None, :, :]), axis=0)
+    # SNR=peak/noise. Where noise is 0 or non-finite, SNR is set to 0 → skipped.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        snr_chunk = np.where(np.isfinite(mad_chunk) & (mad_chunk > 0),
+                             peak_chunk / mad_chunk, 0.0)
+
+    # Allocate FULL-image arrays so chunks can be merged with simple combine.
     fwhm_map = np.full((ny, nx), np.nan, dtype=np.float32)
     ew_map = np.full((ny, nx), np.nan, dtype=np.float32)
 
-    for iy in range(ny):
+    cy = row_hi - row_lo                        # chunk height
+    snr_cutoff = max(0.0, float(snr_threshold))
+    for iy_local in range(cy):
+        iy = row_lo + iy_local
         for ix in range(nx):
-            spectrum = safe[:, iy, ix]
+            if snr_chunk[iy_local, ix] < snr_cutoff:
+                # Still record EW (cheap, vectorised values) even when the
+                # Gauss fit is skipped: it does not require a fit.
+                pk = float(peak_chunk[iy_local, ix])
+                m0v = float(m0_chunk[iy_local, ix])
+                if np.isfinite(pk) and pk > 0.0 and np.isfinite(m0v):
+                    ew_map[iy, ix] = m0v / pk
+                continue
+            spectrum = safe[:, iy_local, ix]
             finite_mask = np.isfinite(spectrum)
             if finite_mask.sum() < 4:
                 continue
@@ -1205,9 +1243,8 @@ def worker_linewidth(
                 fwhm_map[iy, ix] = float(2.3548 * abs(popt[2]))
             except Exception:
                 pass
-            # EW independent of Gaussian fit
-            pk = float(peak[iy, ix])
-            m0v = float(m0[iy, ix])
+            pk = float(peak_chunk[iy_local, ix])
+            m0v = float(m0_chunk[iy_local, ix])
             if np.isfinite(pk) and pk > 0.0 and np.isfinite(m0v):
                 ew_map[iy, ix] = m0v / pk
 
