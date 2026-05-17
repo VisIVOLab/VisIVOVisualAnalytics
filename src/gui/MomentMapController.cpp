@@ -6,6 +6,8 @@
 
 #include "MomentMapController.h"
 
+#include "app/DiagnosticsManager.h"
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
@@ -137,9 +139,24 @@ void MomentMapController::startComputation(int defaultOrder)
             if (auto *win = qobject_cast<QMainWindow *>(self->m_parentWindow)) {
                 win->statusBar()->showMessage(self->m_lastError);
             }
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Error, DiagnosticsCategory::Scientific,
+                    QStringLiteral("MomentMapController"),
+                    self->m_lastError, self->m_datasetId, self->m_sessionId,
+                    QStringLiteral("moment"));
             return;
         }
         self->m_lastError.clear();
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Info, DiagnosticsCategory::Scientific,
+                QStringLiteral("MomentMapController"),
+                QStringLiteral("Moment M%1 computed (channels %2-%3, mask=%4, threshold=%5).")
+                        .arg(config.order)
+                        .arg(config.channelStart)
+                        .arg(config.channelEnd)
+                        .arg(config.maskEnabled ? QStringLiteral("on") : QStringLiteral("off"))
+                        .arg(config.thresholdValue, 0, 'g', 6),
+                self->m_datasetId, self->m_sessionId, QStringLiteral("moment"));
 
         // Build provenance strings (pure string work – no UI access needed here).
         // vtkWindowCube's onCompleted lambda appends the two WCS-specific fields

@@ -6,6 +6,7 @@
 #include <QMainWindow>
 #include <QPointer>
 #include <QString>
+#include <QTimer>
 
 #include <memory>
 
@@ -92,6 +93,15 @@ private:
     // distinguish it from genuinely-disposable tabs in the close handler.
     QPointer<QWidget>                m_vlkbPanel;
     QPointer<CommandPalette>         m_commandPalette;
+
+    // Backend diagnostics mirror — polls /v1/diagnostics/events every few
+    // seconds and re-publishes each new entry into DiagnosticsManager, so
+    // the desktop Diagnostics window shows backend log lines next to the
+    // client-side ones. ``m_backendDiagSince`` is the high-water-mark.
+    QTimer  m_backendDiagPollTimer;
+    qint64  m_backendDiagSince{ 0 };
+    bool    m_backendDiagPollInFlight{ false };
+    void    pollBackendDiagnosticsOnce();
 
     // Build/refresh the command palette's action set. Called on demand each
     // time ⌘K is pressed so dynamic groups (recent datasets) stay current.

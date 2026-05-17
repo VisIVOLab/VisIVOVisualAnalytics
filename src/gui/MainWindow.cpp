@@ -339,8 +339,71 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         this->addAction(paletteAction);
     }
 
+    // ── Backend diagnostics mirror ───────────────────────────────────────────
+    // Periodically pull /v1/diagnostics/events from the backend and republish
+    // each new entry into DiagnosticsManager so the desktop window shows one
+    // unified log (client events + backend logger output). Long enough not
+    // to thrash the network, short enough to feel real-time.
+    m_backendDiagPollTimer.setInterval(2000);
+    QObject::connect(&m_backendDiagPollTimer, &QTimer::timeout,
+                     this, &MainWindow::pollBackendDiagnosticsOnce);
+    m_backendDiagPollTimer.start();
+
     this->setMinimumSize(1200, 840);
     this->resize(1280, 840);
+}
+
+void MainWindow::pollBackendDiagnosticsOnce()
+{
+    if (m_backendDiagPollInFlight) return;       // skip if the previous poll hasn't returned
+    const QString url   = this->settings ? this->settings->getBackendUrl()   : QString();
+    const QString token = this->settings ? this->settings->getBackendToken() : QString();
+    if (url.isEmpty()) return;
+
+    m_backendDiagPollInFlight = true;
+    const qint64 since = m_backendDiagSince;
+    auto *watcher = new QFutureWatcher<BackendDiagnosticsEventsResult>(this);
+    QPointer<MainWindow> self(this);
+    QObject::connect(watcher, &QFutureWatcher<BackendDiagnosticsEventsResult>::finished,
+                     this, [self, watcher]() {
+                         const auto res = watcher->result();
+                         watcher->deleteLater();
+                         if (!self) return;
+                         self->m_backendDiagPollInFlight = false;
+                         if (!res.valid) return;
+                         for (const auto &e : res.events) {
+                             // Map level / category strings → enums; default to
+                             // Info / Backend if unknown so a future backend
+                             // adds new tags without breaking the GUI.
+                             DiagnosticsLevel lvl = DiagnosticsLevel::Info;
+                             const QString L = e.level.toLower();
+                             if (L == QLatin1String("debug"))        lvl = DiagnosticsLevel::Debug;
+                             else if (L == QLatin1String("warning")) lvl = DiagnosticsLevel::Warning;
+                             else if (L == QLatin1String("error"))   lvl = DiagnosticsLevel::Error;
+
+                             DiagnosticsCategory cat = DiagnosticsCategory::Backend;
+                             const QString C = e.category;
+                             if (C == QLatin1String("Scientific"))      cat = DiagnosticsCategory::Scientific;
+                             else if (C == QLatin1String("Client"))     cat = DiagnosticsCategory::Client;
+                             else if (C == QLatin1String("Task"))       cat = DiagnosticsCategory::Task;
+                             else if (C == QLatin1String("WCS"))        cat = DiagnosticsCategory::WCS;
+                             else if (C == QLatin1String("Remote"))     cat = DiagnosticsCategory::Remote;
+                             else if (C == QLatin1String("Rendering"))  cat = DiagnosticsCategory::Rendering;
+                             else if (C == QLatin1String("Performance"))cat = DiagnosticsCategory::Performance;
+
+                             DiagnosticsManager::instance()->publish(
+                                     lvl, cat, e.source.isEmpty()
+                                                 ? QStringLiteral("backend")
+                                                 : QStringLiteral("backend:") + e.source,
+                                     e.message, e.datasetId, e.sessionId, e.operationTag);
+                         }
+                         self->m_backendDiagSince =
+                                 std::max(self->m_backendDiagSince, res.lastId);
+                     });
+    watcher->setFuture(QtConcurrent::run([url, token, since]() {
+        BackendClient c(url, token);
+        return c.pollBackendDiagnostics(since);
+    }));
 }
 
 MainWindow::~MainWindow()

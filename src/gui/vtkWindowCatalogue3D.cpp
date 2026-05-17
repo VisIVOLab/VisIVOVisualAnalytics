@@ -2,6 +2,7 @@
 #include "ui_vtkWindowCatalogue3D.h"
 
 #include "app/DiagnosticsManager.h"
+#include "DiagnosticsWindow.h"
 #include "Catalogue3DTableModel.h"
 #include "Catalogue3DParser.h"
 #include "theme/VisivoTheme.h"
@@ -38,7 +39,10 @@
 
 // ── Qt ───────────────────────────────────────────────────────────────────────
 #include <QAction>
+#include <QApplication>
 #include <QCheckBox>
+#include <QKeySequence>
+#include <QMetaObject>
 #include <QComboBox>
 #include <QDebug>
 #include <QDialog>
@@ -567,6 +571,28 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             this->catalogueDock->toggleViewAction()->setText(u"Catalogue Data"_s);
             ui->menuView->addAction(this->catalogueDock->toggleViewAction());
         }
+
+        // ── Diagnostics + Command Palette (replicated across windows) ────────
+        ui->menuView->addSeparator();
+        auto *actionDiagnostics = new QAction(u"Diagnostics"_s, this);
+        actionDiagnostics->setToolTip(u"Open the application-wide diagnostics log window."_s);
+        ui->menuView->addAction(actionDiagnostics);
+        QObject::connect(actionDiagnostics, &QAction::triggered, this,
+                         []() { DiagnosticsWindow::showSingleton(); });
+
+        auto *actionCommandPalette = new QAction(u"Command Palette…"_s, this);
+        actionCommandPalette->setShortcut(QKeySequence(QStringLiteral("Ctrl+K")));
+        actionCommandPalette->setShortcutContext(Qt::ApplicationShortcut);
+        ui->menuView->addAction(actionCommandPalette);
+        QObject::connect(actionCommandPalette, &QAction::triggered, this, [this]() {
+            for (QWidget *w : QApplication::topLevelWidgets()) {
+                if (w->inherits("MainWindow")) {
+                    QMetaObject::invokeMethod(w, "openCommandPalette",
+                                              Qt::QueuedConnection);
+                    return;
+                }
+            }
+        });
     }
 
     // ── Connect UI controls ───────────────────────────────────────────────────

@@ -80,6 +80,30 @@ struct BackendSessionDatasetsResult
     std::vector<BackendSessionDatasetEntry> datasets;
 };
 
+/// One diagnostics event mirrored from the backend's in-process ring buffer.
+/// Same shape as the Python ``DiagnosticsEvent`` schema; consumed by the
+/// client poller that re-publishes events into ``DiagnosticsManager``.
+struct BackendDiagnosticsEvent
+{
+    qint64  id{ 0 };
+    double  ts{ 0. };               ///< UNIX epoch seconds
+    QString level;                  ///< "debug" | "info" | "warning" | "error"
+    QString category;               ///< Scientific / Backend / Task / WCS / Remote / …
+    QString source;
+    QString message;
+    QString datasetId;
+    QString sessionId;
+    QString operationTag;
+};
+
+struct BackendDiagnosticsEventsResult
+{
+    bool valid{ false };
+    QString error;
+    qint64 lastId{ 0 };             ///< Highest id present in the backend buffer
+    std::vector<BackendDiagnosticsEvent> events;
+};
+
 struct BackendOpenDatasetResult
 {
     bool valid{ false };
@@ -803,6 +827,13 @@ public:
     /// open in a backend session. Used by cross-dataset tools (Spectral
     /// Stacking, etc.) to populate selection lists.
     BackendSessionDatasetsResult listSessionDatasets(const QString &sessionId) const;
+
+    /// GET /v1/diagnostics/events?since=N — pull new entries from the
+    /// backend's in-process diagnostics ring buffer. Designed for periodic
+    /// polling from MainWindow so the client can re-publish backend log
+    /// records into its own DiagnosticsManager.
+    BackendDiagnosticsEventsResult pollBackendDiagnostics(qint64 sinceId,
+                                                          int limit = 500) const;
 
     /**
      * Open a FITS dataset on the backend.

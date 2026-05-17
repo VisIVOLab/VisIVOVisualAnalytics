@@ -109,10 +109,17 @@ html_static_path = ["_static"]
 html_show_sourcelink = False
 
 # Furo customisation — light + dark palettes consistent with the desktop app's
-# "deep blue + accent" theme.
+# "deep blue + accent" theme. Two logo variants: dark wordmark on light theme,
+# white wordmark on dark theme — both live in docs/_static/.
 html_theme_options = {
-    "sidebar_hide_name": False,
+    # When a logo is set, hide the redundant text title in the sidebar header.
+    "sidebar_hide_name": True,
     "navigation_with_keys": True,
+    # Light theme uses the brand-coloured wordmark (orange "i" dot + blue
+    # orbit + dark-blue lettering) — same SVG shipped as the app icon at
+    # icons/VisIVO.svg. Dark theme uses the all-white variant.
+    "light_logo": "visivo_logo_light.svg",
+    "dark_logo":  "visivo_logo_white.svg",
     "light_css_variables": {
         "color-brand-primary":  "#0b5fff",
         "color-brand-content":  "#0b5fff",
@@ -130,6 +137,10 @@ html_theme_options = {
         },
     ],
 }
+
+# Favicon shown in browser tabs (same logo, tiny scale). Use the coloured
+# variant so it's recognisable on both light and dark browser chromes.
+html_favicon = "_static/visivo_logo_light.svg"
 
 # Disable Sphinx's noisy warning about Pygments lexers it can't infer from a
 # fenced block language tag (most code blocks here are illustrative).

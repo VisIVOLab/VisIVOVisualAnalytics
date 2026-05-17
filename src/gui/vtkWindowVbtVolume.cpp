@@ -1,7 +1,12 @@
 #include "vtkWindowVbtVolume.h"
 #include "app/BackendClient.h"
 #include "app/ThemeManager.h"
+#include "DiagnosticsWindow.h"
 #include "theme/VisivoTheme.h"
+
+#include <QApplication>
+#include <QKeySequence>
+#include <QMetaObject>
 
 #include <QVTKOpenGLNativeWidget.h>
 
@@ -149,6 +154,27 @@ void vtkWindowVbtVolume::setupUi()
     this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
             u"Controls Sidebar"_s, this);
     viewMenu->addAction(this->actionShowControlsSidebar);
+
+    // ── Diagnostics + Command Palette (replicated across windows) ────────────
+    viewMenu->addSeparator();
+    auto *actionDiagnostics = new QAction(u"Diagnostics"_s, this);
+    actionDiagnostics->setToolTip(u"Open the application-wide diagnostics log window."_s);
+    viewMenu->addAction(actionDiagnostics);
+    QObject::connect(actionDiagnostics, &QAction::triggered, this,
+                     []() { DiagnosticsWindow::showSingleton(); });
+
+    auto *actionCommandPalette = new QAction(u"Command Palette…"_s, this);
+    actionCommandPalette->setShortcut(QKeySequence(QStringLiteral("Ctrl+K")));
+    actionCommandPalette->setShortcutContext(Qt::ApplicationShortcut);
+    viewMenu->addAction(actionCommandPalette);
+    QObject::connect(actionCommandPalette, &QAction::triggered, this, [this]() {
+        for (QWidget *w : QApplication::topLevelWidgets()) {
+            if (w->inherits("MainWindow")) {
+                QMetaObject::invokeMethod(w, "openCommandPalette", Qt::QueuedConnection);
+                return;
+            }
+        }
+    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

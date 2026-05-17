@@ -31,11 +31,18 @@ from .routers import (
     resolve,
     samp,
     spectral,
+    diagnostics,
 )
+from .diagnostics_buffer import install_logging_handler
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("visivo.backend")
+
+# Mirror every emitted log record into the diagnostics ring buffer so the
+# desktop client can pull them via /v1/diagnostics/events and surface them
+# alongside its own client-side events. Idempotent.
+install_logging_handler()
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -75,6 +82,7 @@ app.include_router(cosmology.router, dependencies=[_auth])
 app.include_router(hips.router, dependencies=[_auth])
 app.include_router(resolve.router, dependencies=[_auth])
 app.include_router(spectral.router, dependencies=[_auth])
+app.include_router(diagnostics.router, dependencies=[_auth])
 # SAMP: /v1/samp/files/{token} is public (no auth) for VO tool access;
 # all other /v1/samp/* routes use per-route auth declared in the router itself.
 app.include_router(samp.router)

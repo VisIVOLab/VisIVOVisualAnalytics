@@ -1,7 +1,11 @@
 #include "RemoteMomentWindow.h"
 
 #include "ColorMaps.h"
+#include "DiagnosticsWindow.h"
 
+#include <QApplication>
+#include <QKeySequence>
+#include <QMetaObject>
 #include <QVTKOpenGLNativeWidget.h>
 #include <vtkCamera.h>
 #include <vtkGenericOpenGLRenderWindow.h>
@@ -85,6 +89,27 @@ RemoteMomentWindow::RemoteMomentWindow(const QString &backendUrl, const QString 
     this->colorbar->SetMaximumWidthInPixels(100);
     this->colorbar->SetPosition(0.9, 0.1);
     this->renderer->AddViewProp(this->colorbar);
+
+    // ── View menu: Diagnostics + Command Palette (replicated across windows) ─
+    auto *viewMenu = this->menuBar()->addMenu(u"View"_s);
+    auto *actionDiagnostics = new QAction(u"Diagnostics"_s, this);
+    actionDiagnostics->setToolTip(u"Open the application-wide diagnostics log window."_s);
+    viewMenu->addAction(actionDiagnostics);
+    QObject::connect(actionDiagnostics, &QAction::triggered, this,
+                     []() { DiagnosticsWindow::showSingleton(); });
+
+    auto *actionCommandPalette = new QAction(u"Command Palette…"_s, this);
+    actionCommandPalette->setShortcut(QKeySequence(QStringLiteral("Ctrl+K")));
+    actionCommandPalette->setShortcutContext(Qt::ApplicationShortcut);
+    viewMenu->addAction(actionCommandPalette);
+    QObject::connect(actionCommandPalette, &QAction::triggered, this, [this]() {
+        for (QWidget *w : QApplication::topLevelWidgets()) {
+            if (w->inherits("MainWindow")) {
+                QMetaObject::invokeMethod(w, "openCommandPalette", Qt::QueuedConnection);
+                return;
+            }
+        }
+    });
 
     auto *momentMenu = this->menuBar()->addMenu(u"Moment"_s);
     const QList<QPair<int, QString>> momentOrders = {

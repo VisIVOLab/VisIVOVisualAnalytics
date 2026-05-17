@@ -4,6 +4,7 @@
 #include <QByteArray>
 #include <QDataStream>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
@@ -285,6 +286,49 @@ BackendSessionDatasetsResult BackendClient::listSessionDatasets(const QString &s
         result.datasets.push_back(d);
     }
     result.valid = true;
+    return result;
+}
+
+BackendDiagnosticsEventsResult BackendClient::pollBackendDiagnostics(qint64 sinceId,
+                                                                     int limit) const
+{
+    BackendDiagnosticsEventsResult result;
+    QString error;
+    QUrl url(m_baseUrl + QStringLiteral("/v1/diagnostics/events"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("since"), QString::number(std::max<qint64>(0, sinceId)));
+    q.addQueryItem(QStringLiteral("limit"), QString::number(std::clamp(limit, 1, 2000)));
+    url.setQuery(q);
+    const QByteArray payload = performGet(url, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    if (obj.contains(QStringLiteral("error"))
+        && !obj.contains(QStringLiteral("events"))) {
+        result.error = obj.value(QStringLiteral("error")).toString();
+        return result;
+    }
+    result.valid  = obj.value(QStringLiteral("valid")).toBool(true);
+    result.lastId = static_cast<qint64>(
+            obj.value(QStringLiteral("last_id")).toDouble(0.0));
+    const QJsonArray arr = obj.value(QStringLiteral("events")).toArray();
+    result.events.reserve(static_cast<std::size_t>(arr.size()));
+    for (const QJsonValue &v : arr) {
+        const QJsonObject e = v.toObject();
+        BackendDiagnosticsEvent ev;
+        ev.id       = static_cast<qint64>(e.value(QStringLiteral("id")).toDouble(0.0));
+        ev.ts       = e.value(QStringLiteral("ts")).toDouble(0.0);
+        ev.level    = e.value(QStringLiteral("level")).toString();
+        ev.category = e.value(QStringLiteral("category")).toString();
+        ev.source   = e.value(QStringLiteral("source")).toString();
+        ev.message  = e.value(QStringLiteral("message")).toString();
+        ev.datasetId    = e.value(QStringLiteral("dataset_id")).toString();
+        ev.sessionId    = e.value(QStringLiteral("session_id")).toString();
+        ev.operationTag = e.value(QStringLiteral("operation_tag")).toString();
+        result.events.push_back(std::move(ev));
+    }
     return result;
 }
 
@@ -1598,8 +1642,19 @@ BackendCubeNoiseResult BackendClient::parseNoiseResultObject(const QJsonObject &
     return result;
 }
 
+// Suppress publish-on-success for paths we don't want to flood the diagnostics
+// table with: the diagnostics poll itself (would loop), and the DataHub
+// health heartbeat (every few seconds). Failures are always logged.
+static bool _isDiagnosticsQuietPath(const QString &path)
+{
+    return path.startsWith(QStringLiteral("/v1/diagnostics/"))
+        || path == QStringLiteral("/v1/health");
+}
+
 QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
 {
+    QElapsedTimer perfTimer;
+    perfTimer.start();
     QNetworkAccessManager *nam = getThreadLocalNam();
     const QString fallbackToken = BackendClient::readTokenFile().trimmed();
     const QStringList tokenCandidates = [&]() {
@@ -1666,6 +1721,17 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
             if (token != this->m_token) {
                 const_cast<BackendClient *>(this)->m_token = token;
             }
+            if (!_isDiagnosticsQuietPath(url.path())) {
+                DiagnosticsManager::instance()->publish(
+                        DiagnosticsLevel::Info, DiagnosticsCategory::Backend,
+                        QStringLiteral("BackendClient"),
+                        QStringLiteral("GET %1 → %2 (%3 ms, %4 bytes)")
+                                .arg(url.path())
+                                .arg(status > 0 ? status : 200)
+                                .arg(perfTimer.elapsed())
+                                .arg(data.size()),
+                        {}, this->m_sessionId);
+            }
             return data;
         }
 
@@ -1697,6 +1763,8 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
 QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body,
                                       QString &error) const
 {
+    QElapsedTimer perfTimer;
+    perfTimer.start();
     QNetworkAccessManager *nam = getThreadLocalNam();
     const QByteArray bodyBytes = body.toJson(QJsonDocument::Compact);
     const QString fallbackToken = BackendClient::readTokenFile().trimmed();
@@ -1763,6 +1831,17 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
         if (attemptError.isEmpty()) {
             if (token != this->m_token) {
                 const_cast<BackendClient *>(this)->m_token = token;
+            }
+            if (!_isDiagnosticsQuietPath(url.path())) {
+                DiagnosticsManager::instance()->publish(
+                        DiagnosticsLevel::Info, DiagnosticsCategory::Backend,
+                        QStringLiteral("BackendClient"),
+                        QStringLiteral("POST %1 → %2 (%3 ms, %4 bytes)")
+                                .arg(url.path())
+                                .arg(status > 0 ? status : 200)
+                                .arg(perfTimer.elapsed())
+                                .arg(data.size()),
+                        {}, this->m_sessionId);
             }
             return data;
         }
