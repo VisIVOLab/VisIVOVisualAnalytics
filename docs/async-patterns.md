@@ -270,6 +270,65 @@ The pattern:
 
 ---
 
+## Heavy-task throttle (backend-side)
+
+The backend shares a single `ProcessPoolExecutor` of `VISIVO_WORKERS`
+processes across **all** endpoints. Without a throttle, a long compute (a
+moment map, an isosurface mesh, a linewidth fit, a baseline subtract, a
+spectral stack) can occupy every pool slot and starve interactive requests
+— even when the GUI itself is fully async, the user experiences a "frozen"
+viewer because slice / probe / subvolume calls queue behind the heavy job.
+
+The fix is a single global `asyncio.Semaphore` (`_HEAVY_SEM`) declared in
+`backend/app/dependencies.py`, with capacity `VISIVO_HEAVY_SLOTS` =
+`max(1, VISIVO_WORKERS - 1)`. Endpoints are explicitly classified:
+
+| Tier | Helper (in `dependencies.py`) | What it adds over `_run` |
+|------|-------------------------------|--------------------------|
+| Interactive | `_run(fn, *args)` | nothing — pool directly |
+| Interactive (per-session rate-limited) | `_run_with_limit(session, fn, *args)` | acquires per-session task slot (HTTP 429 on overflow) |
+| Heavy | `_run_heavy(fn, *args)` | `async with _HEAVY_SEM` around `_run` |
+| Heavy (per-session rate-limited) | `_run_heavy_with_limit(session, fn, *args)` | both of the above |
+
+Classification:
+
+| Endpoint | Helper | Tier |
+|----------|--------|------|
+| `POST /v1/cube/preview`           | `_run_with_limit` | interactive |
+| `POST /v1/cube/slice`             | `_run_with_limit` | interactive |
+| `POST /v1/cube/subvolume`         | `_run_with_limit` | interactive (user-driven; full-res ROI fetches expect snappy response) |
+| `POST /v1/cube/noise`             | `_run_with_limit` | interactive |
+| `POST /v1/image/full` / `/preview`| `_run_with_limit` | interactive |
+| `POST /v1/cube/pv`                | `_run_heavy` (in `_pv_product_payload`) | heavy |
+| `POST /v1/products/moment`        | `_run_heavy` (in `_moment_product_payload`) | heavy |
+| `POST /v1/products/isosurface`    | `_run_heavy_with_limit` | heavy |
+| `POST /v1/spectral/linewidth*`    | per-chunk `_run_heavy` from orchestrator | heavy (parallel chunks) |
+| `POST /v1/spectral/baseline/*`    | `_run_heavy_with_limit` | heavy |
+| `POST /v1/spectral/stack*`        | `_run_heavy_with_limit` | heavy |
+
+**Guarantee**: with the default settings (`VISIVO_WORKERS=4`,
+`VISIVO_HEAVY_SLOTS=3`), at most 3 heavy invocations occupy the pool at any
+moment, so at least 1 worker is always available to serve a slice / probe /
+subvolume / preview request immediately.
+
+**Linewidth-specific note**: the linewidth orchestrator splits the row axis
+into `_LINEWIDTH_PARALLEL_CHUNKS` (default = `VISIVO_WORKERS`) and submits
+each chunk via `_run_heavy`. With the semaphore in place this fans out to
+`_HEAVY_SLOTS` concurrent chunks; the remaining chunks queue behind the
+semaphore, not in the pool itself, so interactive requests still bypass
+them at the executor level.
+
+Override via env:
+
+```
+VISIVO_WORKERS=8           # total pool size
+VISIVO_HEAVY_SLOTS=6       # explicit cap on concurrent heavy tasks
+VISIVO_HEAVY_SLOTS=$WORKERS  # disable the throttle (heavy can saturate pool)
+VISIVO_LINEWIDTH_CHUNKS=2  # cap chunk fan-out independently
+```
+
+---
+
 ## Common pitfalls
 
 ### Do not capture `this` members by reference in worker lambdas

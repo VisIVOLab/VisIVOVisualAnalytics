@@ -18,7 +18,7 @@ This note documents the current service boundaries, their implementation status,
 ### Covered operations (by tag)
 | Tag | Methods |
 |-----|---------|
-| meta | `health()` |
+| meta | `health()`, `listSessionDatasets()` — enumerate datasets currently open in a session (drives the StackDialog cube selector and any other cross-dataset tool) |
 | files | `listFiles()`, `fileHeader()` |
 | datasets | `openDataset()` |
 | catalogue | `openCatalogue()`, `requestCatalogueSubset()`, `queryTabularCatalogue()` |
@@ -39,6 +39,21 @@ This note documents the current service boundaries, their implementation status,
 
 ### Session management
 `openDataset()` stores `session_id`; echoed as `X-Visivo-Session` in all subsequent calls for that dataset. `openCatalogue()` and `openVbt()` return their own session IDs; viewers call `client.setSessionId()` accordingly.
+
+### Pool-sharing contract (server-side)
+The backend's single ProcessPoolExecutor is shared across all endpoints, but
+its slots are reserved between interactive and heavy tiers so a long compute
+never starves UI-driven calls:
+
+- Interactive helpers (`_run`, `_run_with_limit`): preview / slice /
+  subvolume / probe / noise / image.
+- Heavy helpers (`_run_heavy`, `_run_heavy_with_limit`): moment / isosurface
+  / pv / spectral linewidth / baseline / stack — gated by a global
+  `asyncio.Semaphore` of size `max(1, VISIVO_WORKERS - 1)`.
+
+This is transparent to `BackendClient`: it just makes synchronous HTTP
+calls; the throttle lives entirely on the FastAPI side. See
+`docs/async-patterns.md` for the full classification table.
 
 ---
 

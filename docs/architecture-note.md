@@ -113,7 +113,7 @@ The client talks to it exclusively through `BackendClient` (REST/HTTP, bearer-to
 
 | Tag | Endpoints | Notes |
 |-----|-----------|-------|
-| `meta` | `GET /v1/health`, `GET /v1/sessions` | startup health check, session enumeration |
+| `meta` | `GET /v1/health`, `GET /v1/sessions`, `GET /v1/sessions/{session_id}/datasets` | startup health check, session stats, per-session dataset enumeration (used by cross-dataset tools like Spectral Stacking) |
 | `files` | `GET /v1/files/list`, `POST /v1/files/header` | backend-side filesystem browser |
 | `datasets` | `POST /v1/datasets/open` | open FITS/dataset, returns `datasetId` + WCS metadata |
 | `catalogue` | `POST /v1/catalogue/open`, `/subset`, `/query` | CSV catalogue; paginated query via `limit`/`offset` |
@@ -176,6 +176,7 @@ Result structs (all in `BackendClient.h`):
 | `BackendSampSendResult` | SAMP send / send-fits / send-catalogue |
 | `BackendSampImportResult` | SAMP import-url / upload-file |
 | `BackendCatalogueSubset` | `requestCatalogueSubset()` (legacy bulk fetch) |
+| `BackendSessionDatasetsResult` / `BackendSessionDatasetEntry` | `listSessionDatasets()` — enumerate cubes / images currently open in a backend session (drives cross-dataset selection UIs) |
 
 ---
 
@@ -386,6 +387,56 @@ Key capabilities:
 
 ---
 
+## Tool dialogs (uniform modality)
+
+All "tool" dialogs launched from menus or the Tools sidebar are now opened
+**non-modal** (`QDialog::show()`), so the user can keep interacting with the
+viewers, panels, and other tools while a long compute is running. The list
+covers `LinewidthDialog`, `BaselineDialog`, `StackDialog`, `SourceFindDialog`,
+`LUTCustomizerDialog` (2D + 3D), the FITS header viewer, and the moment
+description popup. Long-running operations show their own scoped progress
+indicator inside the dialog (a `QProgressDialog` window-modal to the dialog
+itself, not to the application) so the "busy" state is still clear.
+
+`StackDialog` is built around an explicit `DatasetEntry` list:
+
+- The caller (`MainWindow` or `vtkWindowCube`) calls
+  `BackendClient::listSessionDatasets(sessionId)` in a worker, gets the full
+  set of cubes open in the backend session, and passes them with the
+  `currentDatasetId` of the calling window.
+- The dialog pre-checks the current cube, hides non-cube entries, and
+  disables (with tooltip) cubes whose `(width × height × depth)` does not
+  match the reference shape — they cannot be stacked together.
+- Item label = basename of the FITS file; the true `dataset_id` lives in
+  `Qt::UserRole`.
+
+---
+
+## Heavy-task throttle (backend pool sharing)
+
+The single `ProcessPoolExecutor` in the backend (size `VISIVO_WORKERS`,
+default 4) is shared by every endpoint. A global `asyncio.Semaphore`
+(`_HEAVY_SEM`) in `backend/app/dependencies.py` caps how many long-running
+"heavy" invocations can hold a pool slot at once, leaving the rest free for
+interactive requests:
+
+- Helpers: `_run`, `_run_with_limit` (interactive); `_run_heavy`,
+  `_run_heavy_with_limit` (heavy, semaphore-gated).
+- Default heavy capacity: `max(1, VISIVO_WORKERS - 1)`.
+- Classification: moment / isosurface / PV / spectral (linewidth, baseline,
+  stack) → heavy; preview / slice / subvolume / noise / image → interactive.
+
+Net effect: a slice scroll, ROI subvolume, or probe issued while a moment /
+linewidth / stack is running is processed by the free worker instead of
+queueing behind the long job. The chunk dispatch inside the linewidth
+orchestrator also goes through `_run_heavy`, so its parallelism is bounded
+by the semaphore rather than by the pool size.
+
+Tunables: `VISIVO_HEAVY_SLOTS`, `VISIVO_LINEWIDTH_CHUNKS`,
+`VISIVO_LINEWIDTH_SNR` (see `docs/async-patterns.md`).
+
+---
+
 ## Unit Tests (`tests/`)
 
 QTest-based headless suite; no VTK, no Qt::Widgets, no live backend.
@@ -466,3 +517,7 @@ Test suite → links only `visivo_test_support` (core subset).
 | `VISIVO_MOMENT_THREADS` | `0` (auto) | Number of threads for M0/M6/M10 moment chunking. `0` = `min(4, cpu_count)`. Positive values set the count explicitly. M1, M2, M8 are sequential (normalisation requires the full axis). |
 | `VISIVO_DASK_THRESHOLD_BYTES` | `4294967296` (4 GiB) | Cube byte size above which the Dask out-of-core path is selected (when Dask is installed). |
 | `VISIVO_WORKERS` | `min(4, cpu_count)` | Number of ProcessPoolExecutor workers for CPU-bound FITS operations. |
+| `VISIVO_HEAVY_SLOTS` | `max(1, VISIVO_WORKERS-1)` | Max concurrent heavy tasks (moment / isosurface / pv / spectral). Leaves `WORKERS - HEAVY_SLOTS` pool slots reserved for interactive requests so the GUI stays responsive while compute is running. |
+| `VISIVO_LINEWIDTH_CHUNKS` | `VISIVO_WORKERS` | Row-chunks the linewidth orchestrator fans out per request. Already gated by `VISIVO_HEAVY_SLOTS`, so usually no need to lower this. |
+| `VISIVO_LINEWIDTH_SNR` | `3.0` | Per-pixel SNR cutoff for skipping background pixels before the Gaussian fit (`0` disables skip). |
+| `VISIVO_PRODUCT_CACHE_ENTRIES` | `32` | LRU capacity of the in-process product cache (shared by moment, isosurface, pv, linewidth results). |

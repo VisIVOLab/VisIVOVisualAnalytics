@@ -35,7 +35,25 @@ Backend liveness and capacity.
 ```
 
 ### `GET /v1/sessions`
-List active dataset sessions.
+Aggregate session-registry statistics.
+
+### `GET /v1/sessions/{session_id}/datasets`
+Enumerate the datasets currently open in a backend session. Used by
+cross-dataset tools (Spectral Stacking, etc.) to populate selection lists in
+the desktop client. Returns `404` if the session does not exist.
+
+```json
+{
+  "session_id": "anon-abc",
+  "datasets": [
+    { "dataset_id": "ds_f558b5d90c55", "kind": "cube",
+      "path": "/data/cubehi-clean-m31.fits",
+      "width": 512, "height": 512, "depth": 200 },
+    { "dataset_id": "ds_…", "kind": "cube", "path": "…",
+      "width": 512, "height": 512, "depth": 200 }
+  ]
+}
+```
 
 ---
 
@@ -380,3 +398,30 @@ Returns `ra_deg`, `dec_deg`, `resolved_name`.
 ## Error convention
 All endpoints return `{ "valid": false, "error": "<message>" }` on failure.
 HTTP status is typically 200 even for logical errors; the client checks `valid`.
+
+---
+
+## Worker pool & heavy-task throttle
+
+CPU-bound work runs in a single process pool of `VISIVO_WORKERS` (default 4)
+workers. To keep the GUI responsive while a long compute is running, endpoints
+are classified into two tiers:
+
+| Tier | Helper | Examples |
+|------|--------|----------|
+| **Interactive** | `_run` / `_run_with_limit` | `/v1/cube/preview`, `/slice`, `/subvolume`, `/noise`, `/image/*` |
+| **Heavy** | `_run_heavy` / `_run_heavy_with_limit` | `/v1/products/moment`, `/products/isosurface`, `/v1/cube/pv`, `/v1/spectral/*` |
+
+Heavy invocations are gated by a global `asyncio.Semaphore` (`_HEAVY_SEM`)
+with capacity `VISIVO_HEAVY_SLOTS` — defaulting to `max(1, VISIVO_WORKERS-1)`
+— so the pool is never fully saturated by long jobs and an interactive
+request (slice scroll, ROI subvolume, probe) always finds a free worker.
+
+Tunables:
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `VISIVO_WORKERS` | 4 | Total ProcessPoolExecutor workers |
+| `VISIVO_HEAVY_SLOTS` | `max(1, WORKERS-1)` | Max concurrent heavy tasks (rest of the pool stays available for interactive requests) |
+| `VISIVO_LINEWIDTH_CHUNKS` | `VISIVO_WORKERS` | Row-chunks the linewidth compute is split into (already throttled by `_HEAVY_SEM`) |
+| `VISIVO_LINEWIDTH_SNR` | 3.0 | SNR cutoff for skipping background pixels in linewidth fit (0 disables skip) |
