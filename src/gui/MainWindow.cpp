@@ -590,7 +590,8 @@ void MainWindow::buildScienceMenu()
                              QObject::connect(dlg, &QDialog::finished,
                                               [client](int) { delete client; });
                              dlg->setAttribute(Qt::WA_DeleteOnClose);
-                             dlg->open();
+                             // Non-modal — consistent with the other tool dialogs.
+                             dlg->show();
                          });
         watcher->setFuture(QtConcurrent::run([url, token, sessionId]() {
             BackendClient c(url, token);
@@ -607,7 +608,8 @@ void MainWindow::buildScienceMenu()
         auto *dlg = new SourceFindDialog(client, m_sciDatasetId, this);
         QObject::connect(dlg, &QObject::destroyed, this, [client]() { delete client; });
         dlg->setAttribute(Qt::WA_DeleteOnClose);
-        dlg->open();
+        // Non-modal — consistent with the other tool dialogs.
+        dlg->show();
     });
 }
 

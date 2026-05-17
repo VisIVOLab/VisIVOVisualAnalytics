@@ -101,6 +101,7 @@ __all__ = [
     "_catalogue_metadata_from_dataframe", "_catalogue_csv_metadata",
     "_catalogue_load_dataframe", "_catalogue_metadata",
     "_get_dask_client", "_run", "_run_with_limit",
+    "_run_heavy", "_run_heavy_with_limit",
     "_moment_product_payload", "_pv_product_payload",
     "_require_dataset", "_require_cube_path", "_fits_metadata",
     "_progress_ticker",
@@ -384,7 +385,13 @@ async def _get_dask_client():
 
 
 async def _run(fn, *args) -> Any:
-    """Run a CPU-bound function via Dask (if configured) or local ProcessPoolExecutor."""
+    """Run a CPU-bound function via Dask (if configured) or local ProcessPoolExecutor.
+
+    Use this for INTERACTIVE / short tasks (slice, preview, probe, noise stats,
+    subvolume, cutting-plane updates). Heavy / long tasks (moment, isosurface,
+    spectral linewidth/baseline/stack) should go through ``_run_heavy`` instead
+    so they share the pool fairly with interactive requests.
+    """
     client = await _get_dask_client()
     if client:
         future = client.submit(fn, *args)
@@ -392,6 +399,47 @@ async def _run(fn, *args) -> Any:
     else:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(_POOL, fn, *args)
+
+
+# ── Heavy-task throttle ──────────────────────────────────────────────────────
+#
+# A global asyncio Semaphore gates how many "heavy" tasks (multi-second
+# scientific compute) can occupy worker pool slots simultaneously. We cap it
+# at ``VISIVO_WORKERS - 1`` so there is always at least one pool slot free for
+# interactive requests (cube slice scroll, ROI subvolume, probe, …) — the GUI
+# stays responsive even while a long compute is running.
+#
+# Set ``VISIVO_HEAVY_SLOTS=N`` to override (e.g. =VISIVO_WORKERS for maximum
+# throughput when interactive responsiveness is not needed; =1 to serialise
+# heavy tasks completely).
+_HEAVY_SLOTS = max(
+    1,
+    int(os.environ.get(
+        "VISIVO_HEAVY_SLOTS",
+        str(max(1, _WORKERS - 1)),
+    )),
+)
+_HEAVY_SEM: asyncio.Semaphore | None = None
+
+
+def _heavy_semaphore() -> asyncio.Semaphore:
+    """Lazy-init the semaphore so it binds to the running event loop."""
+    global _HEAVY_SEM
+    if _HEAVY_SEM is None:
+        _HEAVY_SEM = asyncio.Semaphore(_HEAVY_SLOTS)
+    return _HEAVY_SEM
+
+
+async def _run_heavy(fn, *args) -> Any:
+    """Like ``_run()``, but throttled by the heavy-task semaphore.
+
+    Use for long-running scientific compute (moment maps, isosurface, spectral
+    linewidth / baseline / stack). Guarantees at least one pool slot remains
+    free for interactive requests dispatched via plain ``_run()``.
+    """
+    sem = _heavy_semaphore()
+    async with sem:
+        return await _run(fn, *args)
 
 
 async def _run_with_limit(session: Session, fn, *args) -> Any:
@@ -406,6 +454,27 @@ async def _run_with_limit(session: Session, fn, *args) -> Any:
         )
     try:
         return await _run(fn, *args)
+    finally:
+        session.release_task_slot()
+
+
+async def _run_heavy_with_limit(session: Session, fn, *args) -> Any:
+    """Like ``_run_with_limit``, but throttled by the heavy-task semaphore.
+
+    Combines the per-session rate limit (HTTP 429 on overflow) with the global
+    heavy-task throttle that leaves at least one pool slot free for interactive
+    requests. Use for moment / isosurface / spectral compute endpoints.
+    """
+    if not session.try_acquire_task_slot():
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                "Too many concurrent compute tasks for this session. "
+                "Wait for a running task to finish before submitting another."
+            ),
+        )
+    try:
+        return await _run_heavy(fn, *args)
     finally:
         session.release_task_slot()
 
@@ -426,7 +495,8 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
     if cached is not None:
         return dict(cached.payload), True
 
-    result = await _run(
+    # Heavy task — throttled so other interactive requests stay responsive.
+    result = await _run_heavy(
         worker_moment,
         dataset.path,
         request.moment_order,
@@ -465,7 +535,9 @@ async def _pv_product_payload(entry: dict[str, Any], request: CubePvRequest) -> 
     if cached is not None:
         return dict(cached.payload), True
 
-    result = await _run(
+    # Heavy task — throttled so cube interaction (slice scroll, ROI) stays
+    # responsive while a PV diagram is being computed.
+    result = await _run_heavy(
         worker_pv,
         dataset.path,
         request.vertices,

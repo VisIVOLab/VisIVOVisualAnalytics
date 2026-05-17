@@ -2404,7 +2404,11 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              QObject::connect(dlg, &QDialog::finished,
                                               [client](int) { delete client; });
                              dlg->setAttribute(Qt::WA_DeleteOnClose);
-                             dlg->open();
+                             // Non-modal to stay consistent with the other tool
+                             // dialogs (Linewidth, Baseline, LUT customizer); the
+                             // long-running compute already shows its own modal
+                             // QProgressDialog so the wait is still indicated.
+                             dlg->show();
                          });
         watcher->setFuture(QtConcurrent::run([url, token, sessionId]() {
             BackendClient c(url, token);

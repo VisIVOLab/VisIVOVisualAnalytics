@@ -37,7 +37,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from ..auth import verify_token
-from ..dependencies import _run, _require_dataset, _run_with_limit
+from ..dependencies import _run_heavy, _require_dataset, _run_heavy_with_limit
 from ..product_cache import PRODUCT_CACHE
 from ..sessions import Session, get_session
 
@@ -142,10 +142,23 @@ def _array_to_binary(rows: int, cols: int, arr: np.ndarray) -> bytes:
 # noise-rejection level and matches the value used in similar VLKB tools.
 _LINEWIDTH_SNR_THRESHOLD = float(os.environ.get("VISIVO_LINEWIDTH_SNR", "3.0"))
 
-# Number of row-chunks the linewidth job is split into. Capped to the worker
-# pool size so we never queue chunks waiting for their own pool slots.
+# Number of row-chunks the linewidth job is split into.
+#
+# Default = VISIVO_WORKERS (full pool). The dispatch is still safe for
+# interactive responsiveness because each chunk goes through ``_run_heavy``,
+# which is gated by the global ``_HEAVY_SEM`` semaphore (capped at
+# ``VISIVO_HEAVY_SLOTS`` = ``max(1, VISIVO_WORKERS-1)`` by default) — so the
+# pool will never be fully saturated by linewidth chunks and slice / probe /
+# subvolume requests always have a worker available.
+#
+# Override with ``VISIVO_LINEWIDTH_CHUNKS=N`` if you want to constrain the
+# chunk count independently from the heavy-task semaphore.
 _LINEWIDTH_PARALLEL_CHUNKS = max(
-    1, int(os.environ.get("VISIVO_LINEWIDTH_CHUNKS", os.environ.get("VISIVO_WORKERS", "4")))
+    1,
+    int(os.environ.get(
+        "VISIVO_LINEWIDTH_CHUNKS",
+        os.environ.get("VISIVO_WORKERS", "4"),
+    )),
 )
 
 
@@ -263,7 +276,11 @@ async def _compute_linewidth(
             cursor += length
 
         tasks = [
-            _run(
+            # Each chunk is a heavy task; the global heavy-task semaphore
+            # ensures at most VISIVO_HEAVY_SLOTS chunks run concurrently,
+            # leaving ≥1 pool slot free for interactive requests even if
+            # _LINEWIDTH_PARALLEL_CHUNKS == VISIVO_WORKERS.
+            _run_heavy(
                 worker_linewidth,
                 path, int(channel_start), int(channel_end),
                 bool(mask_enabled), float(threshold_value),
@@ -447,7 +464,7 @@ async def spectral_baseline(
         output_path = str(tmp_dir / f"{uuid.uuid4().hex}_baseline.fits")
 
         from ..compute import worker_baseline  # noqa: PLC0415
-        result = await _run_with_limit(
+        result = await _run_heavy_with_limit(
             session,
             worker_baseline,
             entry["path"],
@@ -504,7 +521,7 @@ async def spectral_stack(
                 raise HTTPException(422, f"Dataset '{did}' is not a spectral cube.")
             paths.append(e["path"])
         from ..compute import worker_stack  # noqa: PLC0415
-        result = await _run_with_limit(
+        result = await _run_heavy_with_limit(
             session,
             worker_stack,
             paths,
@@ -537,7 +554,7 @@ async def spectral_stack_binary(
                 raise HTTPException(422, f"Dataset '{did}' is not a spectral cube.")
             paths.append(e["path"])
         from ..compute import worker_stack  # noqa: PLC0415
-        result = await _run_with_limit(
+        result = await _run_heavy_with_limit(
             session,
             worker_stack,
             paths,

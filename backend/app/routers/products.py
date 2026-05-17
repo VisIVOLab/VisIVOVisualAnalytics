@@ -63,7 +63,10 @@ async def isosurface_product(
         if cached is not None:
             logger.debug("[isosurface] cache hit dataset_id=%s threshold=%s", request.dataset_id, request.threshold)
             return IsosurfaceProductResponse(valid=True, error="", **cached.payload)
-        result = await _run_with_limit(
+        # Heavy task — gated by the heavy-task semaphore so it leaves at
+        # least one worker pool slot free for interactive slice / probe /
+        # subvolume requests.
+        result = await _run_heavy_with_limit(
             session,
             worker_isosurface,
             entry["path"],
