@@ -108,6 +108,8 @@ set(PROJECT_SOURCES
         src/vlkb/VlkbQueryService.h
         src/gui/theme/VisivoTheme.cpp
         src/gui/theme/VisivoTheme.h
+        src/gui/theme/SegmentedToggle.cpp
+        src/gui/theme/SegmentedToggle.h
         src/gui/Catalogue3DTableModel.cpp
         src/gui/Catalogue3DTableModel.h
         src/gui/DiagnosticsWindow.cpp

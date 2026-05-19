@@ -2,6 +2,7 @@
 #include "ui_vtkWindowCube.h"
 #include "ColorMaps.h"
 #include "theme/VisivoTheme.h"
+#include "theme/SegmentedToggle.h"
 
 #include <vtkLookupTable.h>
 #include <vtkNew.h>
@@ -88,6 +89,89 @@ static const QString kInfoCardStyle =
         "  border-radius: 4px;"
         "}"_s;
 
+// ── Inspector (sidebar "Inspector" page) — visual tokens matching the
+// ── Observatory Console design: flat sections separated by 1px dividers,
+// ── KV rows with muted label / monospace value, optional file badge header.
+// ──
+// ── See docs/architecture-note.md "Cube viewer — interactive extras" for the
+// ── higher-level rationale.
+
+/// Section divider: a `QFrame` with a single bottom hairline border.
+static QString kInspectorSectionStyle()
+{
+    return QStringLiteral(
+                   "QFrame#inspectorSection {"
+                   "  background: transparent;"
+                   "  border: none;"
+                   "  border-bottom: 1px solid %1;"
+                   "}")
+            .arg(QLatin1StringView(VisivoTheme::kOutline()));
+}
+
+/// Uppercase section title (DATASET, STATISTICS, …)
+static QString kInspectorTitleStyle()
+{
+    return QStringLiteral(
+                   "QLabel {"
+                   "  color: %1;"
+                   "  font-size: 11px;"
+                   "  font-weight: 700;"
+                   "  letter-spacing: 0.6px;"
+                   "  text-transform: uppercase;"
+                   "  padding: 0;"
+                   "  border: none;"
+                   "}")
+            .arg(QLatin1StringView(VisivoTheme::kOnSurface()));
+}
+
+/// Sub-section header inside a section (e.g. "2D IMAGE", "3D CUBE", "WCS · J2000").
+static QString kInspectorSubLabelStyle()
+{
+    return QStringLiteral(
+                   "QLabel {"
+                   "  color: %1;"
+                   "  font-size: 10px;"
+                   "  font-weight: 600;"
+                   "  letter-spacing: 0.4px;"
+                   "  margin-top: 6px;"
+                   "  margin-bottom: 2px;"
+                   "}")
+            .arg(QLatin1StringView(VisivoTheme::kSecondary()));
+}
+
+/// KV row label (left, secondary text).
+static QString kInspectorKvLabelStyle()
+{
+    return QStringLiteral("QLabel { color: %1; font-size: 11px; border: none; }")
+            .arg(QLatin1StringView(VisivoTheme::kSecondary()));
+}
+
+/// KV row value (right, monospace, primary text).
+static QString kInspectorKvValueStyle()
+{
+    return QStringLiteral(
+                   "QLabel { color: %1; font-family: Menlo, Consolas, monospace;"
+                   "  font-size: 12px; border: none; }")
+            .arg(QLatin1StringView(VisivoTheme::kOnSurface()));
+}
+
+/// Small inline pill badge — used in the inspector file header.
+static QString kInspectorBadgeStyle()
+{
+    return QStringLiteral(
+            "QLabel {"
+            "  color: #048ABF;"
+            "  background: rgba(4, 138, 191, 0.18);"
+            "  font-family: Menlo, Consolas, monospace;"
+            "  font-size: 9px;"
+            "  font-weight: 700;"
+            "  letter-spacing: 0.6px;"
+            "  padding: 1px 5px;"
+            "  border: none;"
+            "  border-radius: 3px;"
+            "}");
+}
+
 static const QString kInfoRoStyle =
         u"QLineEdit[readOnly='true'] { color: #7AAABB; }"_s;
 
@@ -152,15 +236,13 @@ QWidget *CubeUiAssembler::buildThresholdPage()
         cl->setContentsMargins(8, 8, 8, 8);
         cl->setSpacing(0);
 
-        m_comboRenderMode = new QComboBox();
-        m_comboRenderMode->addItem(u"Isosurface"_s);
-        m_comboRenderMode->addItem(u"Volume Rendering"_s);
-        m_comboRenderMode->setItemData(0,
-                u"Render an isosurface extracted at the rendering threshold."_s,
-                Qt::ToolTipRole);
-        m_comboRenderMode->setItemData(1,
-                u"Render the cube volume directly (supports Composite, MIP, MinIP)."_s,
-                Qt::ToolTipRole);
+        m_comboRenderMode = new SegmentedToggle();
+        m_comboRenderMode->addItem(
+                u"Isosurface"_s,
+                u"Render an isosurface extracted at the rendering threshold."_s);
+        m_comboRenderMode->addItem(
+                u"Volume"_s,
+                u"Render the cube volume directly (supports Composite, MIP, MinIP)."_s);
         m_comboRenderMode->setToolTip(u"Select how the 3D cube is rendered."_s);
         m_comboRenderMode->setCurrentIndex(m_ui->actionVolume->isChecked() ? 1 : 0);
         cl->addWidget(m_comboRenderMode);
@@ -179,15 +261,18 @@ QWidget *CubeUiAssembler::buildThresholdPage()
         lbl->setStyleSheet(kSidebarHdrStyle());
         cl->addWidget(lbl);
 
-        m_comboVolumeMode = new QComboBox();
-        m_comboVolumeMode->addItem(u"Composite"_s);
-        m_comboVolumeMode->addItem(u"MIP (Max Intensity)"_s);
-        m_comboVolumeMode->addItem(u"MinIP (Min Intensity)"_s);
+        m_comboVolumeMode = new SegmentedToggle();
+        m_comboVolumeMode->addItem(
+                u"Composite"_s,
+                u"Full ray-casting with opacity transfer function."_s);
+        m_comboVolumeMode->addItem(
+                u"MIP"_s,
+                u"Maximum intensity projection along each ray."_s);
+        m_comboVolumeMode->addItem(
+                u"MinIP"_s,
+                u"Minimum intensity projection along each ray."_s);
         m_comboVolumeMode->setToolTip(
-                u"Choose the volume blending method.\n"
-                "Composite: full ray-casting with opacity transfer function.\n"
-                "MIP: maximum intensity projection along each ray.\n"
-                "MinIP: minimum intensity projection along each ray."_s);
+                u"Choose the volume blending method."_s);
         m_comboVolumeMode->setCurrentIndex(0);
         cl->addWidget(m_comboVolumeMode);
 
@@ -583,68 +668,118 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
 {
     auto makeVal = [](const QString &text = {}) -> QLabel * {
         auto *l = new QLabel(text);
-        l->setWordWrap(true);
-        l->setStyleSheet(u"QLabel { font-size: 9px; color: #AABBCC; }"_s);
+        l->setStyleSheet(kInspectorKvValueStyle());
+        l->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        l->setWordWrap(false);
         return l;
+    };
+
+    // Build one flat section ("State", "Statistics", "WCS") with a 1px
+    // bottom hairline divider, matching the Observatory Console design.
+    auto makeSection = [](const QString &title, QWidget *parent)
+            -> std::pair<QFrame *, QFormLayout *> {
+        auto *section = new QFrame(parent);
+        section->setObjectName(QStringLiteral("inspectorSection"));
+        section->setStyleSheet(kInspectorSectionStyle());
+
+        auto *col = new QVBoxLayout(section);
+        col->setContentsMargins(0, 10, 0, 10);
+        col->setSpacing(6);
+
+        auto *titleLbl = new QLabel(title, section);
+        titleLbl->setStyleSheet(kInspectorTitleStyle());
+        col->addWidget(titleLbl);
+
+        auto *fl = new QFormLayout();
+        fl->setContentsMargins(0, 0, 0, 0);
+        fl->setHorizontalSpacing(12);
+        fl->setVerticalSpacing(4);
+        fl->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        fl->setFormAlignment(Qt::AlignTop);
+        fl->setRowWrapPolicy(QFormLayout::DontWrapRows);
+        fl->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+        col->addLayout(fl);
+
+        return { section, fl };
+    };
+
+    auto addRow = [](QFormLayout *fl, const QString &k, QWidget *v) {
+        auto *lbl = new QLabel(k);
+        lbl->setStyleSheet(kInspectorKvLabelStyle());
+        fl->addRow(lbl, v);
     };
 
     auto *page = new QWidget();
     auto *root = new QVBoxLayout(page);
-    root->setContentsMargins(8, 8, 8, 8);
-    root->setSpacing(4);
+    root->setContentsMargins(14, 0, 14, 0);
+    root->setSpacing(0);
 
     // ── 1. DATASET SUMMARY ────────────────────────────────────────────────────
+    // File header: badge + filename + dimensions (no card box).
     {
-        auto *hdr = new QLabel(u"DATASET SUMMARY"_s);
-        hdr->setStyleSheet(kInfoHdrStyle());
-        root->addWidget(hdr);
+        auto *header = new QFrame(page);
+        header->setObjectName(QStringLiteral("inspectorSection"));
+        header->setStyleSheet(kInspectorSectionStyle());
 
-        auto *card = new QFrame();
-        card->setStyleSheet(kInfoCardStyle);
-        auto *fl = new QFormLayout(card);
-        fl->setContentsMargins(8, 6, 8, 6);
-        fl->setSpacing(3);
-        fl->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        auto *col = new QVBoxLayout(header);
+        col->setContentsMargins(0, 14, 0, 12);
+        col->setSpacing(4);
 
-        m_infoDsName = makeVal(QFileInfo(info.filepath).fileName());
-        m_infoDsDimensions = makeVal(
+        auto *top = new QHBoxLayout();
+        top->setContentsMargins(0, 0, 0, 0);
+        top->setSpacing(8);
+
+        auto *badge = new QLabel(u"CUBE"_s, header);
+        badge->setStyleSheet(kInspectorBadgeStyle());
+        badge->setAlignment(Qt::AlignCenter);
+        badge->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+        top->addWidget(badge);
+
+        m_infoDsName = new QLabel(QFileInfo(info.filepath).fileName(), header);
+        m_infoDsName->setStyleSheet(QStringLiteral(
+                    "QLabel { color: %1; font-size: 13px; font-weight: 700; border: none; }")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
+        m_infoDsName->setWordWrap(true);
+        top->addWidget(m_infoDsName, 1);
+
+        col->addLayout(top);
+
+        m_infoDsDimensions = new QLabel(
                 u"%1 \u00d7 %2 \u00d7 %3"_s
                         .arg(info.datasetWidth)
                         .arg(info.datasetHeight)
-                        .arg(info.datasetDepth));
-        m_infoDsLoadState = makeVal(u"Preview"_s);
+                        .arg(info.datasetDepth),
+                header);
+        m_infoDsDimensions->setStyleSheet(QStringLiteral(
+                    "QLabel { color: %1; font-family: Menlo, Consolas, monospace;"
+                    "  font-size: 10px; border: none; }")
+                    .arg(QLatin1StringView(VisivoTheme::kSecondary())));
+        col->addWidget(m_infoDsDimensions);
 
-        fl->addRow(u"File:"_s,       m_infoDsName);
-        fl->addRow(u"Dimensions:"_s, m_infoDsDimensions);
-        fl->addRow(u"Load state:"_s, m_infoDsLoadState);
-        root->addWidget(card);
+        root->addWidget(header);
     }
 
     // ── 2. SYSTEM / STATUS ────────────────────────────────────────────────────
+    // State section: load progress + render mode + 2D mode + moment status.
     {
-        auto *hdr = new QLabel(u"SYSTEM / STATUS"_s);
-        hdr->setStyleSheet(kInfoHdrStyle());
-        root->addWidget(hdr);
+        auto [section, fl] = makeSection(u"State"_s, page);
 
-        auto *card = new QFrame();
-        card->setStyleSheet(kInfoCardStyle);
-        auto *fl = new QFormLayout(card);
-        fl->setContentsMargins(8, 6, 8, 6);
-        fl->setSpacing(3);
-        fl->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
-
-        m_infoRenderMode = makeVal(u"Isosurface"_s);
-        m_info2dMode     = makeVal(u"Slice"_s);
+        m_infoDsLoadState = makeVal(u"Preview"_s);
+        m_infoRenderMode  = makeVal(u"Isosurface"_s);
+        m_info2dMode      = makeVal(u"Slice"_s);
         m_infoMomentState = makeVal(u"\u2014"_s);
 
+        m_infoDsLoadState->setToolTip(u"Preview, loading full resolution, or full resolution."_s);
         m_infoRenderMode->setToolTip(u"Current 3D rendering mode (Isosurface or Volume Rendering)."_s);
         m_info2dMode->setToolTip(u"Current 2D view mode (Slice or Moment Map)."_s);
         m_infoMomentState->setToolTip(u"State of the last moment map computation."_s);
 
-        fl->addRow(u"Rendering mode:"_s, m_infoRenderMode);
-        fl->addRow(u"2D view:"_s,        m_info2dMode);
-        fl->addRow(u"Moment map:"_s,     m_infoMomentState);
-        root->addWidget(card);
+        addRow(fl, u"Load state"_s, m_infoDsLoadState);
+        addRow(fl, u"3D mode"_s,    m_infoRenderMode);
+        addRow(fl, u"2D mode"_s,    m_info2dMode);
+        addRow(fl, u"Moment map"_s, m_infoMomentState);
+
+        root->addWidget(section);
     }
 
     // ── 3. DATA STATISTICS ────────────────────────────────────────────────────
@@ -663,51 +798,46 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
             }
         };
 
-        static const QString kSubHdrStyle =
-                u"QLabel { font-size: 8px; font-weight: 600; letter-spacing: 1px;"
-                "  color: rgba(4,138,191,0.55); }"_s;
         static const QString kRoLineEdit =
                 u"QLineEdit { background: transparent; border: none;"
-                "  color: #7AAABB; font-family: Menlo, Consolas, monospace;"
-                "  font-size: 11px; padding: 0; }"_s;
+                "  color: %1; font-family: Menlo, Consolas, monospace;"
+                "  font-size: 12px; padding: 0; }"_s;
+        const QString roCss = QString(kRoLineEdit)
+                .arg(QLatin1StringView(VisivoTheme::kOnSurface()));
 
-        auto *hdr = new QLabel(u"DATA STATISTICS"_s);
-        hdr->setStyleSheet(kInfoHdrStyle());
-        root->addWidget(hdr);
+        auto [section, fl] = makeSection(u"Statistics"_s, page);
 
         // ── 2D image sub-section ─────────────────────────────────────────────
-        m_ui->labelImg->setStyleSheet(kSubHdrStyle);
-        m_ui->frameImgStats->setParent(page);
-        root->addWidget(m_ui->labelImg);
+        auto *imgSub = new QLabel(u"2D image"_s);
+        imgSub->setStyleSheet(kInspectorSubLabelStyle());
+        // Insert sub-header above the form layout so the section title +
+        // sub-header + KV rows read top-to-bottom.
+        fl->addRow(imgSub);
+        m_ui->labelImg->hide();   // legacy header, replaced by `imgSub`
+        m_ui->frameImgStats->hide();  // legacy frame; we reuse only its line-edits
 
         clearFrameLayout(m_ui->frameImgStats);
-        // Hide legacy per-field labels — rows are now self-labelled via QFormLayout
         for (auto *lbl : { m_ui->labelImgMin, m_ui->labelImgMax,
                            m_ui->labelImgMean, m_ui->labelImgRms })
             lbl->hide();
         for (auto *le : { m_ui->lineImgMin, m_ui->lineImgMax,
                           m_ui->lineImgMean, m_ui->lineImgRms }) {
             le->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            le->setStyleSheet(kRoLineEdit);
+            le->setStyleSheet(roCss);
             le->setFrame(false);
+            le->setParent(section);
         }
-        m_ui->frameImgStats->setStyleSheet(kInfoCardStyle);
-        auto *flImg = new QFormLayout(m_ui->frameImgStats);
-        flImg->setContentsMargins(8, 6, 8, 6);
-        flImg->setSpacing(3);
-        flImg->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        flImg->addRow(u"Min:"_s,  m_ui->lineImgMin);
-        flImg->addRow(u"Max:"_s,  m_ui->lineImgMax);
-        flImg->addRow(u"Mean:"_s, m_ui->lineImgMean);
-        flImg->addRow(u"RMS:"_s,  m_ui->lineImgRms);
-        root->addWidget(m_ui->frameImgStats);
+        addRow(fl, u"Min"_s,  m_ui->lineImgMin);
+        addRow(fl, u"Max"_s,  m_ui->lineImgMax);
+        addRow(fl, u"Mean"_s, m_ui->lineImgMean);
+        addRow(fl, u"RMS"_s,  m_ui->lineImgRms);
 
         // ── 3D cube sub-section ──────────────────────────────────────────────
-        auto *subHdr3d = new QLabel(u"3D CUBE"_s);
-        subHdr3d->setStyleSheet(kSubHdrStyle);
-        root->addWidget(subHdr3d);
+        auto *cubeSub = new QLabel(u"3D cube"_s);
+        cubeSub->setStyleSheet(kInspectorSubLabelStyle());
+        fl->addRow(cubeSub);
+        m_ui->frameCubeStats->hide();   // legacy frame; we keep only its line-edits
 
-        m_ui->frameCubeStats->setParent(page);
         clearFrameLayout(m_ui->frameCubeStats);
         for (auto *lbl : { m_ui->labelCubeMin, m_ui->labelCubeMax,
                            m_ui->labelCubeMean, m_ui->labelCubeRms })
@@ -715,33 +845,21 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
         for (auto *le : { m_ui->lineCubeMin, m_ui->lineCubeMax,
                           m_ui->lineCubeMean, m_ui->lineCubeRms }) {
             le->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            le->setStyleSheet(kRoLineEdit);
+            le->setStyleSheet(roCss);
             le->setFrame(false);
+            le->setParent(section);
         }
-        m_ui->frameCubeStats->setStyleSheet(kInfoCardStyle);
-        auto *flCube = new QFormLayout(m_ui->frameCubeStats);
-        flCube->setContentsMargins(8, 6, 8, 6);
-        flCube->setSpacing(3);
-        flCube->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        flCube->addRow(u"Min:"_s,  m_ui->lineCubeMin);
-        flCube->addRow(u"Max:"_s,  m_ui->lineCubeMax);
-        flCube->addRow(u"Mean:"_s, m_ui->lineCubeMean);
-        flCube->addRow(u"RMS:"_s,  m_ui->lineCubeRms);
-        root->addWidget(m_ui->frameCubeStats);
+        addRow(fl, u"Min"_s,  m_ui->lineCubeMin);
+        addRow(fl, u"Max"_s,  m_ui->lineCubeMax);
+        addRow(fl, u"Mean"_s, m_ui->lineCubeMean);
+        addRow(fl, u"RMS"_s,  m_ui->lineCubeRms);
+
+        root->addWidget(section);
     }
 
-    // ── 4. COORDINATE / WCS ───────────────────────────────────────────────────
+    // WCS section: status badge + reference frame + spectral axis.
     {
-        auto *hdr = new QLabel(u"COORDINATE / WCS"_s);
-        hdr->setStyleSheet(kInfoHdrStyle());
-        root->addWidget(hdr);
-
-        auto *card = new QFrame();
-        card->setStyleSheet(kInfoCardStyle);
-        auto *fl = new QFormLayout(card);
-        fl->setContentsMargins(8, 6, 8, 6);
-        fl->setSpacing(3);
-        fl->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        auto [section, fl] = makeSection(u"WCS"_s, page);
 
         m_infoWcsBadge = makeVal();
         m_infoWcsFrame = makeVal(info.wcsFrameLabel);
@@ -751,24 +869,29 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
         m_infoWcsFrame->setToolTip(u"The celestial reference frame currently in use."_s);
         m_infoSpectral->setToolTip(u"The spectral axis type and units for the third dimension."_s);
 
-        // Populate WCS badge with initial status.
+        // Populate WCS badge with initial status. Colours: green = ok,
+        // amber = degraded, ochre = repaired (theme-invariant accents).
         if (info.wcsStatus.compare(u"ok"_s, Qt::CaseInsensitive) == 0) {
             m_infoWcsBadge->setText(u"OK"_s);
-            m_infoWcsBadge->setStyleSheet(u"QLabel { font-size: 9px; color: #5DA87A; }"_s);
+            m_infoWcsBadge->setStyleSheet(u"QLabel { font-size: 12px; color: #5DA87A;"
+                                          " font-family: Menlo, Consolas, monospace; }"_s);
         } else if (info.wcsStatus.compare(u"degraded"_s, Qt::CaseInsensitive) == 0) {
             m_infoWcsBadge->setText(u"Degraded"_s);
-            m_infoWcsBadge->setStyleSheet(u"QLabel { font-size: 9px; color: #E8A840; }"_s);
+            m_infoWcsBadge->setStyleSheet(u"QLabel { font-size: 12px; color: #E8A840;"
+                                          " font-family: Menlo, Consolas, monospace; }"_s);
         } else {
             m_infoWcsBadge->setText(u"Repaired"_s);
-            m_infoWcsBadge->setStyleSheet(u"QLabel { font-size: 9px; color: #9a6700; }"_s);
+            m_infoWcsBadge->setStyleSheet(u"QLabel { font-size: 12px; color: #B77610;"
+                                          " font-family: Menlo, Consolas, monospace; }"_s);
         }
         if (!info.wcsWarningMessage.isEmpty())
             m_infoWcsBadge->setToolTip(info.wcsWarningMessage);
 
-        fl->addRow(u"WCS:"_s,          m_infoWcsBadge);
-        fl->addRow(u"Frame:"_s,        m_infoWcsFrame);
-        fl->addRow(u"Spectral axis:"_s, m_infoSpectral);
-        root->addWidget(card);
+        addRow(fl, u"Status"_s,        m_infoWcsBadge);
+        addRow(fl, u"Frame"_s,         m_infoWcsFrame);
+        addRow(fl, u"Spectral axis"_s, m_infoSpectral);
+
+        root->addWidget(section);
     }
 
     root->addStretch();

@@ -202,12 +202,22 @@ void SidebarPanel::applyStyles()
 
     // Section buttons share one stylesheet; [active='true'] is flipped via
     // setProperty("active", …) + style()->polish() — no extra code paths needed.
+    // Rail button stylesheet.
+    //
+    // Centering note: the active-state indicator is a 2px coloured border on
+    // the left edge. To keep the icon optically centred at all times, we
+    // reserve those 2px on every button via `border-left: 2px solid transparent`
+    // and add a matching `padding-right: 2px`. Without this, only the active
+    // button's icon would shift 2px right and the rail would look misaligned.
     const QString railBtnStyle =
             QStringLiteral("QToolButton {"
                            "  background-color: transparent;"
-                           "  border: none;"
+                           "  border-top: none;"
+                           "  border-right: none;"
+                           "  border-bottom: none;"
+                           "  border-left: 2px solid transparent;"
                            "  border-radius: 6px;"
-                           "  padding: 4px 0px;"
+                           "  padding: 4px 2px 4px 0px;"
                            "}"
                            "QToolButton:hover   { background-color: %1; }"
                            "QToolButton:pressed { background-color: %2; }"

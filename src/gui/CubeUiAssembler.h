@@ -12,6 +12,7 @@ class QLabel;
 class QStatusBar;
 class QToolButton;
 class QWidget;
+class SegmentedToggle;
 
 namespace Ui {
 class vtkWindowCube;
@@ -139,9 +140,14 @@ public:
 
     // ── Widget accessors (used by vtkWindowCube's update/sync methods) ────────
     // 3D View Settings
-    QComboBox  *renderModeCombo()   const { return m_comboRenderMode; }
-    QComboBox  *volumeModeCombo()   const { return m_comboVolumeMode; }
-    QComboBox  *lutCombo()          const { return m_comboLut; }
+    // The "Render Mode" (Isosurface / Volume) and "Volume Rendering"
+    // (Composite / MIP / MinIP) selectors are SegmentedToggle widgets — a
+    // pair-of-pills control that matches the Observatory Console design.
+    // They expose a QComboBox-flavoured API (currentIndex / setCurrentIndex
+    // / currentIndexChanged) so the rest of the wiring stayed intact.
+    SegmentedToggle *renderModeCombo()   const { return m_comboRenderMode; }
+    SegmentedToggle *volumeModeCombo()   const { return m_comboVolumeMode; }
+    QComboBox       *lutCombo()          const { return m_comboLut; }
     QWidget    *volumeModeCard()    const { return m_volumeModeCard; }
     QWidget    *surfaceColorCard()  const { return m_surfaceColorCard; }
     QWidget    *colorMapCard()      const { return m_colorMapCard; }
@@ -171,8 +177,8 @@ private:
     Ui::vtkWindowCube *m_ui;
 
     // ── 3D View Settings widgets ──────────────────────────────────────────────
-    QComboBox            *m_comboRenderMode{ nullptr };
-    QComboBox            *m_comboVolumeMode{ nullptr };
+    SegmentedToggle      *m_comboRenderMode{ nullptr };
+    SegmentedToggle      *m_comboVolumeMode{ nullptr };
     QComboBox            *m_comboLut{ nullptr };
     QWidget              *m_volumeModeCard{ nullptr };
     QWidget              *m_surfaceColorCard{ nullptr };

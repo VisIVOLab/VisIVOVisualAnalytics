@@ -4,6 +4,7 @@
 #include "ColorMaps.h"
 #include "CubeUiAssembler.h"
 #include "DiagnosticsWindow.h"
+#include "theme/SegmentedToggle.h"
 #include "CatalogueOverlayUtils.h"
 #include "CatalogueTableModel.h"
 #include "LUTCustomizerDialog.h"
@@ -2968,12 +2969,12 @@ void vtkWindowCube::setupSidebar()
     this->m_sidebar->addPage(u":/icons/rail_slice.svg"_s, u"2D View Settings"_s, page2dSettings);
     this->m_sidebar->addPage(u":/icons/rail_filter.svg"_s, u"Tools"_s,           pageTools);
     this->m_sidebar->addPage(u":/icons/rail_layers.svg"_s, u"Cube Extras"_s,     pageExtras);
-    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s, u"Info / Stats"_s,     pageInfoStats);
+    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s, u"Inspector"_s,        pageInfoStats);
     this->m_sidebar->finalize(0);
     mainLayout->insertWidget(0, this->m_sidebar);
 
     // ── Bidirectional sync: rendering mode combo ↔ menu actions ──────────────
-    QObject::connect(m_uiAssembler->renderModeCombo(), &QComboBox::currentIndexChanged,
+    QObject::connect(m_uiAssembler->renderModeCombo(), &SegmentedToggle::currentIndexChanged,
                      this, [this](int idx) {
         const bool wantIsosurface = (idx == 0);
         if (wantIsosurface == ui->actionIsosurface->isChecked())
@@ -3003,7 +3004,7 @@ void vtkWindowCube::setupSidebar()
     });
 
     // ── Volume mode combo → apply blend mode ──────────────────────────────────
-    QObject::connect(m_uiAssembler->volumeModeCombo(), &QComboBox::currentIndexChanged,
+    QObject::connect(m_uiAssembler->volumeModeCombo(), &SegmentedToggle::currentIndexChanged,
                      this, [this](int idx) {
         this->applyVolumeBlendMode(idx);
         const QSignalBlocker b1(this->m_actionComposite);

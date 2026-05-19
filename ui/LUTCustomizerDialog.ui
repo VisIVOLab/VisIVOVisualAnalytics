@@ -80,18 +80,7 @@
        <widget class="QComboBox" name="comboLut"/>
       </item>
       <item row="3" column="1" colspan="2">
-       <widget class="QComboBox" name="comboScale">
-        <item>
-         <property name="text">
-          <string>Linear</string>
-         </property>
-        </item>
-        <item>
-         <property name="text">
-          <string>Log</string>
-         </property>
-        </item>
-       </widget>
+       <widget class="SegmentedToggle" name="comboScale" native="true"/>
       </item>
       <item row="0" column="2">
        <widget class="QToolButton" name="btnResetMin"/>
@@ -119,6 +108,12 @@
    <class>QCustomPlot</class>
    <extends>QWidget</extends>
    <header>qcustomplot.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>SegmentedToggle</class>
+   <extends>QWidget</extends>
+   <header>theme/SegmentedToggle.h</header>
    <container>1</container>
   </customwidget>
  </customwidgets>

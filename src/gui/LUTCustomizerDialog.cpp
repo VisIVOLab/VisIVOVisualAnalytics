@@ -2,6 +2,7 @@
 #include "ui_LUTCustomizerDialog.h"
 
 #include "ColorMaps.h"
+#include "theme/SegmentedToggle.h"
 
 #include <vtkDataSetAttributes.h>
 #include <vtkDoubleArray.h>
@@ -122,8 +123,15 @@ LUTCustomizerDialog::LUTCustomizerDialog(QWidget *parent)
     });
     ui->comboLut->setCurrentText(QString::fromStdString(ColorMaps::DefaultColorMap));
 
-    // Axis scaling
-    QObject::connect(ui->comboScale, &QComboBox::currentIndexChanged, this,
+    // Axis scaling — segmented Linear / Log control (replaces the previous
+    // QComboBox in the .ui; the SegmentedToggle exposes the same API).
+    ui->comboScale->addItem(
+            u"Linear"_s,
+            u"Linear mapping of scalar value → colour."_s);
+    ui->comboScale->addItem(
+            u"Log"_s,
+            u"Logarithmic mapping (range minimum must be strictly positive)."_s);
+    QObject::connect(ui->comboScale, &SegmentedToggle::currentIndexChanged, this,
                      &LUTCustomizerDialog::changeAxisScaling);
 
     // Apply button
@@ -160,17 +168,28 @@ void LUTCustomizerDialog::setupPlot()
         axis->setTickLabelColor(tickLabelColor);
         axis->setLabelColor(tickLabelColor);
     }
-    // Hide y-axis tick labels — counts are not meaningful as raw numbers
-    ui->plot->yAxis->setTickLabels(false);
+    // Astrophysical cubes are dominated by background / near-zero voxels.
+    // On a linear Y axis the background bin can be ~10⁵× larger than any
+    // signal bin, flattening everything else to a single pixel of height —
+    // the user effectively sees one spike and nothing else. Logarithmic Y
+    // surfaces both the background peak and the long emission tail, which
+    // is what the LUT customiser really wants to display. The Y ticks stay
+    // shown (raw counts) so the user can read the dynamic range.
+    ui->plot->yAxis->setScaleType(QCPAxis::stLogarithmic);
+    ui->plot->yAxis->setTicker(QSharedPointer<QCPAxisTickerLog>(new QCPAxisTickerLog));
+    ui->plot->yAxis->setTickLabels(true);
+    ui->plot->yAxis->setNumberFormat(u"eb"_s);   // "10^N" exponent format
+    ui->plot->yAxis->setNumberPrecision(0);
 
     ui->plot->setInteractions(QCP::iSelectItems | QCP::iRangeDrag);
     ui->plot->axisRect()->setRangeDrag(Qt::Horizontal);
 
-    // ── Histogram graph — step-center bar style with semi-transparent fill ────
+    // ── Histogram graph — impulse style (vertical bars from y=0). lsImpulse
+    // ── reads correctly on both linear and log Y, unlike lsStepCenter which
+    // ── shows step transitions even where adjacent bins are zero.
     ui->plot->addGraph();
-    ui->plot->graph()->setLineStyle(QCPGraph::lsStepCenter);
-    ui->plot->graph()->setPen(QPen(QColor(50, 150, 230, 200), 1));
-    ui->plot->graph()->setBrush(QBrush(QColor(40, 100, 180, 70)));
+    ui->plot->graph()->setLineStyle(QCPGraph::lsImpulse);
+    ui->plot->graph()->setPen(QPen(QColor(50, 150, 230, 220), 1));
 
     // ── Min marker — cyan, width 2 (QCPItemStraightLine extends to plot edges) ─
     this->refLineMin = new QCPItemStraightLine(ui->plot);
@@ -251,12 +270,26 @@ void LUTCustomizerDialog::plotHistogram()
     }
     ui->plot->graph()->setData(x, y, true);
     // Graph pen/brush are set once in setupPlot() — don't override here.
-    ui->plot->rescaleAxes();
-    if (this->datasetRange[0] < 0) {
-        ui->plot->xAxis->setRange(this->datasetRange[0] * 1.1, this->datasetRange[1] * 1.1);
-    } else {
-        ui->plot->xAxis->setRange(this->datasetRange[0] * 0.9, this->datasetRange[1] * 1.1);
+    //
+    // Y range: rescale on the actual bin counts. On a logarithmic Y axis the
+    // lower bound must be > 0; QCustomPlot's rescaleAxes() already handles
+    // this for log scale by ignoring zero/negative values, but we set an
+    // explicit floor of 1 (count) to make sure the first decade is visible
+    // regardless of the bin distribution.
+    ui->plot->graph()->rescaleValueAxis(false, true);   // y = counts
+    {
+        QCPRange yr = ui->plot->yAxis->range();
+        if (ui->plot->yAxis->scaleType() == QCPAxis::stLogarithmic) {
+            yr.lower = std::max(1.0, yr.lower);
+            yr.upper = std::max(yr.upper, yr.lower * 10.0);
+        } else {
+            yr.lower = 0.0;
+        }
+        ui->plot->yAxis->setRange(yr);
     }
+    // X range is set authoritatively by changeAxisScaling() below — it knows
+    // whether log or linear is active and uses the positive-floor estimate to
+    // avoid log(0)/log(negative) issues when the dataset spans zero.
 
     // QCPItemStraightLine is defined by two points; any two points with the same x
     // give an infinite vertical line — no Y-range bookkeeping needed.
@@ -283,6 +316,14 @@ void LUTCustomizerDialog::changeAxisScaling(bool logarithmic)
     } else {
         ui->plot->xAxis->setScaleType(QCPAxis::stLinear);
         ui->plot->xAxis->setTicker(QSharedPointer<QCPAxisTicker>(new QCPAxisTicker));
+        // Linear range: include the whole dataset value range with a small
+        // padding so the cyan/orange markers are not clipped at the borders.
+        if (std::isfinite(this->datasetRange[0]) && std::isfinite(this->datasetRange[1])
+            && this->datasetRange[0] < this->datasetRange[1]) {
+            const double pad = 0.02 * (this->datasetRange[1] - this->datasetRange[0]);
+            ui->plot->xAxis->setRange(this->datasetRange[0] - pad,
+                                      this->datasetRange[1] + pad);
+        }
     }
 
     ui->plot->replot();
