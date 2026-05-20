@@ -2,6 +2,7 @@
 #include "ui_vtkWindowCube.h"
 
 #include "ColorMaps.h"
+#include "ChannelOverlay.h"
 #include "CubeUiAssembler.h"
 #include "DiagnosticsWindow.h"
 #include "theme/SegmentedToggle.h"
@@ -2550,6 +2551,40 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         ui->spinSlice->setMaximum(maxSliceValue);
         ui->sliderSlice->setValue(1);
         ui->spinSlice->setValue(1);
+    }
+
+    // ── Floating channel scrubber anchored at the bottom of the 3D view ────
+    // (mirrors ui->spinSlice; design ref: cubeviewer.jsx "Channel scrubber")
+    {
+        this->channelOverlay = new ChannelOverlay(ui->vtkCube);
+        this->channelOverlay->setRange(ui->spinSlice->minimum(),
+                                       ui->spinSlice->maximum());
+        this->channelOverlay->setChannel(ui->spinSlice->value());
+        this->channelOverlay->setSpectralLabel(ui->lineSpectral->text());
+        ui->vtkCube->installEventFilter(this->channelOverlay);
+        this->channelOverlay->show();
+
+        // Overlay → sidebar spin: drives the existing slice-fetch pipeline.
+        QObject::connect(this->channelOverlay, &ChannelOverlay::channelChanged,
+                         this, [this](int v) {
+                             if (ui->spinSlice->value() == v) return;
+                             ui->spinSlice->setValue(v);
+                         });
+        // Sidebar spin → overlay (programmatic updates: range change, animation,
+        // user drag of the sidebar slider). SignalBlocker inside ChannelOverlay
+        // prevents the bidirectional loop.
+        QObject::connect(ui->spinSlice, &QSpinBox::valueChanged, this, [this](int v) {
+            if (this->channelOverlay) {
+                this->channelOverlay->setChannel(v);
+                this->channelOverlay->setSpectralLabel(ui->lineSpectral->text());
+            }
+        });
+        QObject::connect(ui->sliderSlice, &QSlider::rangeChanged, this,
+                         [this](int lo, int hi) {
+                             if (this->channelOverlay) {
+                                 this->channelOverlay->setRange(lo, hi);
+                             }
+                         });
     }
 
     // Setup Contours UI

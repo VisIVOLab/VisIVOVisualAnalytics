@@ -40,6 +40,7 @@ class QLabel;
 class LUTCustomizerDialog;
 class ProfileWidget;
 class PvDiagramWidget;
+class ChannelOverlay;
 class QTableView;
 class vtkAxisActor2D;
 class vtkActor;
@@ -269,6 +270,10 @@ private:
     QPointer<LUTCustomizerDialog> lutCustomizer3D; ///< 3D volume LUT editor
     QPointer<ProfileWidget> profileWidget;
     QPointer<ProfileWidget> probePlotWidget;
+    // Floating channel scrubber anchored at the bottom of the 3D viewport.
+    // Created as a child of ui->vtkCube; positioned via an installed event
+    // filter on resize. See ChannelOverlay.h.
+    QPointer<ChannelOverlay> channelOverlay;
     QPointer<PvDiagramWidget> pvDiagramWidget;
     QPointer<QLabel> cubeOpenStateLabel;
     QPointer<QLabel> hoverReadoutLabel;
