@@ -55,6 +55,8 @@ SidebarPanel::SidebarPanel(int expandedWidth, QWidget *parent)
     m_toggleBtn->setCheckable(false);
     m_toggleBtn->setText(u"◀"_s);
     m_toggleBtn->setToolTip(u"Collapse controls sidebar"_s);
+    m_toggleBtn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_toggleBtn->setFixedHeight(28);
     m_railLayout->addWidget(m_toggleBtn);
 
     // Spacer pushed to the end; section buttons are inserted before it.
@@ -121,6 +123,14 @@ int SidebarPanel::addPage(const QString &iconResource, const QString &tooltip, Q
     btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
     btn->setToolTip(tooltip);
     btn->setAutoRaise(true);
+    // Force the button to fill the rail's usable width, otherwise QToolButton's
+    // default size policy (Minimum × Fixed) lets QVBoxLayout centre a narrow
+    // ~30 px button inside the 40 px content area — the icon then sits in the
+    // button's geometry centre but the button itself is offset from the rail
+    // edges, which reads as "icons drift left" relative to the active-state
+    // 2 px brand bar that anchors the rail. Expanding horizontally fixes both.
+    btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    btn->setFixedHeight(36);
 
     // Insert before the trailing stretch (which is at count()-1).
     m_railLayout->insertWidget(m_railLayout->count() - 1, btn);

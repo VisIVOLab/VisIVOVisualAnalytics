@@ -711,7 +711,10 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
 
     auto *page = new QWidget();
     auto *root = new QVBoxLayout(page);
-    root->setContentsMargins(14, 0, 14, 0);
+    // Match the symmetric horizontal margins of the other sidebar pages
+    // (3D View Settings / 2D View Settings / Tools / Cube Extras all use 8 px)
+    // so the rail-to-content gap doesn't visually shift between tabs.
+    root->setContentsMargins(8, 0, 8, 0);
     root->setSpacing(0);
 
     // ── 1. DATASET SUMMARY ────────────────────────────────────────────────────
