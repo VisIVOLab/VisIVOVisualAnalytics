@@ -3,11 +3,11 @@
 #include <QDebug>
 
 #ifdef VISIVO_HAS_VR
+#  include <vtkOpenXRManager.h>
 #  include <vtkOpenXRRenderWindow.h>
 #  include <vtkOpenXRRenderWindowInteractor.h>
 #  include <vtkOpenXRRenderer.h>
 #  include <vtkRenderer.h>
-#  include <vtkRendererCollection.h>
 #  include <vtkVolume.h>
 #  include <vtkNew.h>
 #  include <vtkSmartPointer.h>
@@ -101,6 +101,30 @@ bool CubeVRController::open(vtkRenderer *desktopRenderer, vtkVolume *cubeVolume)
     d->renderWindow = vtkSmartPointer<vtkOpenXRRenderWindow>::New();
     d->renderWindow->Initialize();
 
+    // vtkOpenXRRenderWindow::Initialize() does NOT clear `Initialized` when
+    // the OpenXR session creation fails (no HMD, runtime missing, form-factor
+    // unavailable, etc.) — the OpenGL half is independent and reports success.
+    // The canonical signal is vtkOpenXRManager::IsSessionRunning(), which only
+    // flips true after BeginSession() succeeds. If it's still false we MUST
+    // bail before constructing the interactor: interactor->Initialize() calls
+    // renderWindow->Initialize() a second time, which trips the loader's
+    // single-XrInstance rule (XR_ERROR_LIMIT_REACHED) and any subsequent
+    // Render() then blocks against a null XrSession.
+    //
+    // Finalize() is also required even on the failure path: a partially-built
+    // XrInstance is left behind by the failed Initialize(), and only Finalize()
+    // releases it so the *next* open() attempt isn't poisoned.
+    if (!vtkOpenXRManager::GetInstance().IsSessionRunning()) {
+        m_lastError = u"Could not start an OpenXR session. Make sure an HMD is "
+                      u"connected and the OpenXR runtime (SteamVR / Oculus / "
+                      u"WMR) is running, then try again."_s;
+        if (d->renderWindow->GetInitialized()) {
+            d->renderWindow->Finalize();
+        }
+        d->renderWindow = nullptr;
+        return false;
+    }
+
     // Build the OpenXR-flavoured renderer (not the factory default, which is
     // a plain vtkOpenGLRenderer and is rejected by vtkOpenXRRenderWindow).
     d->vrRenderer = vtkSmartPointer<vtkOpenXRRenderer>::New();
@@ -110,24 +134,6 @@ bool CubeVRController::open(vtkRenderer *desktopRenderer, vtkVolume *cubeVolume)
     d->vrRenderer->AddVolume(cubeVolume);
     d->vrRenderer->SetBackground(0.04, 0.05, 0.08);
     d->renderWindow->AddRenderer(d->vrRenderer);
-
-    // vtkOpenXRRenderWindow::Initialize() does NOT clear `Initialized` when
-    // the OpenXR session creation fails (no HMD, runtime missing, etc.) —
-    // the OpenGL half is independent and reports success. The reliable
-    // signal is whether our renderer made it into the window's collection:
-    // AddRenderer() above silently no-ops when the OpenXR session is dead.
-    // If it didn't land, bail with a clean diagnostic and do NOT proceed
-    // to interactor->Start() (which would block the UI thread forever
-    // waiting for events that never come).
-    if (!d->renderWindow->GetRenderers()
-        || d->renderWindow->GetRenderers()->GetFirstRenderer() != d->vrRenderer) {
-        m_lastError = u"Could not start an OpenXR session. Make sure an HMD is "
-                      u"connected and the OpenXR runtime (SteamVR / Oculus / "
-                      u"WMR) is running, then try again."_s;
-        d->vrRenderer   = nullptr;
-        d->renderWindow = nullptr;
-        return false;
-    }
 
     d->interactor = vtkSmartPointer<vtkOpenXRRenderWindowInteractor>::New();
     d->interactor->SetRenderWindow(d->renderWindow);
