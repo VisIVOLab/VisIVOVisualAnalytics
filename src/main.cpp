@@ -15,6 +15,7 @@
 #include <QWebEngineUrlScheme>
 
 #include <clocale>
+#include <vtkOutputWindow.h>
 #include <vtkWindow.h>
 
 using namespace Qt::StringLiterals;
@@ -33,6 +34,16 @@ int main(int argc, char *argv[])
 
     // Set OpenGL profile needed for VTK
     QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
+
+    // Route VTK warnings/errors to stderr instead of the GUI popup window.
+    // On Windows, VTK's default output sink is vtkWin32OutputWindow — a modal
+    // popup that hijacks focus and freezes when many messages arrive in a
+    // short window (e.g. the burst of "XR_ERROR_*" diagnostics emitted when
+    // an OpenXR session fails to start without a connected HMD). On every
+    // platform we just want the messages in the terminal / Qt log, never as
+    // a separate window. Must be set before any VTK code touches the global
+    // instance, hence here at the very top of main.
+    vtkOutputWindow::GetInstance()->SetDisplayModeToAlwaysStdErr();
 
     QApplication app(argc, argv);
 
