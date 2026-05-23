@@ -40,8 +40,26 @@ find_package(VTK 9.5.0 CONFIG REQUIRED COMPONENTS
 )
 message(STATUS "Using VTK v${VTK_VERSION}")
 
-find_package(cfitsio CONFIG REQUIRED)
-message(STATUS "Using cfitsio v${cfitsio_VERSION}")
+# CFITSIO is shipped under two different CMake package names in the wild:
+#   * "cfitsio"             — the upstream / Homebrew / conda / source build
+#                             (exports target CFITSIO::cfitsio)
+#   * "unofficial-cfitsio"  — vcpkg's port, since cfitsio's own build doesn't
+#                             install a CMake config file
+#                             (exports target unofficial::cfitsio::cfitsio)
+# Try the upstream name first, then fall back to vcpkg's, and normalise the
+# rest of the project on CFITSIO::cfitsio via an alias.
+find_package(cfitsio CONFIG QUIET)
+if (cfitsio_FOUND)
+    message(STATUS "Using cfitsio v${cfitsio_VERSION} (upstream CMake config)")
+else ()
+    find_package(unofficial-cfitsio CONFIG REQUIRED)
+    message(STATUS "Using cfitsio (vcpkg port: unofficial-cfitsio)")
+    if (NOT TARGET CFITSIO::cfitsio)
+        add_library(CFITSIO::cfitsio INTERFACE IMPORTED)
+        target_link_libraries(CFITSIO::cfitsio
+                INTERFACE unofficial::cfitsio::cfitsio)
+    endif ()
+endif ()
 
 get_target_property(cfitsio_include_dirs CFITSIO::cfitsio INTERFACE_INCLUDE_DIRECTORIES)
 if (cfitsio_include_dirs)
