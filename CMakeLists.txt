@@ -393,6 +393,53 @@ qt_generate_deploy_app_script(
 
 install(SCRIPT ${deploy_script})
 
+# ── Windows runtime DLL deployment ───────────────────────────────────────────
+#
+# On Windows the OS only looks for DLLs alongside the exe (or on PATH), so a
+# freshly built VisIVO can't even start without the VTK / OpenXR / cfitsio /
+# vcpkg DLLs sitting next to it. We solve this in two layers:
+#
+#   1. Post-build COPY:  every build automatically mirrors the exe's
+#      transitive runtime-DLL set into the build output dir, so launching
+#      ./VisIVOVisualAnalytics.exe straight after a build just works. Qt's
+#      own DLLs / plugins / WebEngine assets are NOT in $<TARGET_RUNTIME_DLLS>
+#      (Qt is a special citizen) — run windeployqt manually, or set
+#      VISIVO_AUTO_WINDEPLOYQT=ON to chain it onto every build.
+#
+#   2. Install:          `cmake --install build` lays the same DLL set down
+#      next to the installed exe, so a distributable bundle is one command.
+#      qt_generate_deploy_app_script (above) handles Qt's part on Windows too.
+if (WIN32)
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    $<TARGET_RUNTIME_DLLS:${PROJECT_NAME}>
+                    $<TARGET_FILE_DIR:${PROJECT_NAME}>
+            COMMAND_EXPAND_LISTS
+            VERBATIM)
+
+    install(FILES $<TARGET_RUNTIME_DLLS:${PROJECT_NAME}>
+            DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+    option(VISIVO_AUTO_WINDEPLOYQT
+            "Run windeployqt after every build to mirror Qt DLLs/plugins next to the exe"
+            OFF)
+    if (VISIVO_AUTO_WINDEPLOYQT)
+        find_program(WINDEPLOYQT_EXE windeployqt
+                HINTS "${Qt6_DIR}/../../../bin")
+        if (WINDEPLOYQT_EXE)
+            add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                    COMMAND "${WINDEPLOYQT_EXE}"
+                            --no-compiler-runtime
+                            --no-translations
+                            $<TARGET_FILE:${PROJECT_NAME}>
+                    VERBATIM)
+        else ()
+            message(WARNING "VISIVO_AUTO_WINDEPLOYQT=ON but windeployqt was not found "
+                    "under ${Qt6_DIR}/../../../bin — falling back to manual deploy.")
+        endif ()
+    endif ()
+endif ()
+
 # ── Unit tests (opt-in via -DBUILD_TESTING=ON) ────────────────────────────────
 option(BUILD_TESTING "Build the VisIVO unit-test suite" OFF)
 if (BUILD_TESTING)
