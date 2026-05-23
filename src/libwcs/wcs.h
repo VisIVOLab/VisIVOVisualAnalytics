@@ -269,7 +269,7 @@ struct IRAFsurface {
 extern "C" {
 #endif
 
-#ifdef __STDC__   /* Full ANSI prototypes */
+#if defined(__STDC__) || defined(__cplusplus)   /* Full ANSI prototypes (also when included from C++, since C++ has no K&R style) */
 
     /* WCS data structure initialization subroutines in wcsinit.c */
     struct WorldCoor *wcsinit ( /* set up WCS structure from a FITS image header */
