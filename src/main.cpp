@@ -7,6 +7,7 @@
 #include <QVTKOpenGLNativeWidget.h>
 
 #include <QApplication>
+#include <QDebug>
 #include <QDir>
 #include <QIcon>
 #include <QLocale>
@@ -15,8 +16,43 @@
 #include <QWebEngineUrlScheme>
 
 #include <clocale>
+#include <vtkNew.h>
+#include <vtkObjectFactory.h>
 #include <vtkOutputWindow.h>
 #include <vtkWindow.h>
+
+namespace {
+// VTK's default "output window" on Windows is vtkWin32OutputWindow, a modal
+// popup that overrides DisplayText() so SetDisplayMode(...) on the global
+// instance has no effect — the popup still appears. The only way to fully
+// silence it is to swap the global instance for one that NEVER touches the OS
+// GUI. We use a minimal subclass that forwards everything to qWarning(), so
+// VTK diagnostics stay visible in stdout/stderr and any Qt log handler the
+// app installs catches them along with regular Qt messages.
+class VTKToQtOutputWindow : public vtkOutputWindow
+{
+public:
+    vtkTypeMacro(VTKToQtOutputWindow, vtkOutputWindow);
+    static VTKToQtOutputWindow *New()
+    {
+        auto *self = new VTKToQtOutputWindow;
+        self->InitializeObjectBase();
+        return self;
+    }
+    void DisplayText(const char *msg) override
+    {
+        if (msg && *msg) {
+            qWarning().noquote() << "[vtk]" << msg;
+        }
+    }
+protected:
+    VTKToQtOutputWindow()  = default;
+    ~VTKToQtOutputWindow() override = default;
+private:
+    VTKToQtOutputWindow(const VTKToQtOutputWindow &) = delete;
+    void operator=(const VTKToQtOutputWindow &)      = delete;
+};
+} // namespace
 
 using namespace Qt::StringLiterals;
 
@@ -35,15 +71,15 @@ int main(int argc, char *argv[])
     // Set OpenGL profile needed for VTK
     QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
 
-    // Route VTK warnings/errors to stderr instead of the GUI popup window.
-    // On Windows, VTK's default output sink is vtkWin32OutputWindow — a modal
-    // popup that hijacks focus and freezes when many messages arrive in a
-    // short window (e.g. the burst of "XR_ERROR_*" diagnostics emitted when
-    // an OpenXR session fails to start without a connected HMD). On every
-    // platform we just want the messages in the terminal / Qt log, never as
-    // a separate window. Must be set before any VTK code touches the global
-    // instance, hence here at the very top of main.
-    vtkOutputWindow::GetInstance()->SetDisplayModeToAlwaysStdErr();
+    // Replace VTK's global output window with one that forwards to qWarning,
+    // bypassing the Windows-only vtkWin32OutputWindow popup (whose own
+    // DisplayText override ignores SetDisplayMode, so the more obvious fix
+    // doesn't work — see VTKToQtOutputWindow above). Must run BEFORE any
+    // VTK code can lazily build the default instance via the factory.
+    {
+        vtkNew<VTKToQtOutputWindow> qtOut;
+        vtkOutputWindow::SetInstance(qtOut);
+    }
 
     QApplication app(argc, argv);
 
