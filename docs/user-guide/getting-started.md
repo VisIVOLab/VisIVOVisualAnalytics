@@ -29,7 +29,7 @@ on the same machine or on a remote node.
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --host 127.0.0.1 --port 8001
+uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 On the first launch a token is printed:

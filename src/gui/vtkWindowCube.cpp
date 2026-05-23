@@ -2458,28 +2458,24 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                      this->noiseController, &NoiseController::startEstimation);
 
     // ── Tools → Open in VR ─────────────────────────────────────────────────
-    // Always present in the menu so users discover the feature; disabled when
-    // not available (VR not compiled in, or no OpenXR runtime / HMD found).
-    // The tooltip explains exactly what's missing — no silent failure.
+    // Always present in the menu so users discover the feature; disabled only
+    // when VR isn't compiled in. We *don't* runtime-probe up front: most
+    // OpenXR loaders cap the process at one xrInstance and the probe leaks
+    // enough state that the real open() then fails with LIMIT_REACHED.
+    // Instead, click → real attempt → friendly error dialog on failure.
     {
         auto *actVR = ui->menuTools->addAction(u"Open in VR"_s);
         const bool compiled = CubeVRController::isCompiledIn();
-        // Only probe the runtime if compiled in — the probe creates an
-        // OpenXR session which is wasted work on builds without VR support.
-        const bool runtime  = compiled && CubeVRController::isRuntimeAvailable();
-        actVR->setEnabled(compiled && runtime);
+        actVR->setEnabled(compiled);
         if (!compiled) {
             actVR->setToolTip(u"This build was compiled without VR support. "
                               u"Rebuild with -DVISIVO_ENABLE_VR=ON (requires VTK "
                               u"with the RenderingOpenXR module)."_s);
-        } else if (!runtime) {
-            actVR->setToolTip(u"No OpenXR runtime is active. Install / start "
-                              u"your headset runtime (SteamVR, Oculus, WMR, …) "
-                              u"and ensure the HMD is connected."_s);
         } else {
-            actVR->setToolTip(u"Open the current cube in your VR headset. The "
-                              u"desktop volume, LUT and threshold remain "
-                              u"synchronised with the VR view."_s);
+            actVR->setToolTip(u"Open the current cube in your VR headset. "
+                              u"Requires a running OpenXR runtime (SteamVR / "
+                              u"Oculus / WMR) and a connected HMD. The desktop "
+                              u"volume, LUT and threshold stay synchronised."_s);
         }
         QObject::connect(actVR, &QAction::triggered, this, [this]() {
             auto *cubeRen = ui->vtkCube->renderWindow()

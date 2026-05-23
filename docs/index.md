@@ -151,7 +151,7 @@ For full instructions see [Getting started](user-guide/getting-started).
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --host 127.0.0.1 --port 8001
+uvicorn app.main:app --host 127.0.0.1 --port 8000
 # A bearer token is printed at startup (and saved to ~/.visivo_token)
 
 # 2. desktop client (Qt 6.5+ / VTK 9.5+ / C++17)

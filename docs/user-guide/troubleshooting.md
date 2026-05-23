@@ -32,11 +32,11 @@ the action.
 
 ### Backend health is red in the Startup Dialog
 
-The desktop client cannot reach `http://127.0.0.1:8001/v1/health`
+The desktop client cannot reach `http://127.0.0.1:8000/v1/health`
 (or the URL set in *Settings*). Check:
 
 - Is `uvicorn` running? Look at the terminal where you launched it.
-- Is the port correct? Default is `8001`.
+- Is the port correct? Default is `8000`.
 - Firewall? On macOS, the first run may pop up a "Allow incoming
   connections?" dialog. Allow it.
 - Token mismatch? If you previously set `VISIVO_TOKEN` in your shell and
