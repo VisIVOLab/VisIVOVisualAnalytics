@@ -112,6 +112,8 @@ set(PROJECT_SOURCES
         src/gui/theme/SegmentedToggle.h
         src/gui/ChannelOverlay.cpp
         src/gui/ChannelOverlay.h
+        src/gui/CubeVRController.cpp
+        src/gui/CubeVRController.h
         src/gui/Catalogue3DTableModel.cpp
         src/gui/Catalogue3DTableModel.h
         src/gui/DiagnosticsWindow.cpp
@@ -270,6 +272,35 @@ add_subdirectory(src/vtk)
 target_compile_definitions(${PROJECT_NAME} PRIVATE
         $<$<CONFIG:Release>:QT_NO_DEBUG_OUTPUT>
 )
+
+# ── Optional: VR (OpenXR) support for the cube viewer ────────────────────────
+#
+# Off by default — keeps macOS / vanilla VTK builds working unchanged. To
+# enable:
+#   1. Rebuild VTK with -DVTK_MODULE_ENABLE_VTK_RenderingOpenXR=YES
+#      (Windows: needs the Khronos OpenXR SDK; Linux: monado / SteamVR OpenXR)
+#   2. Configure VisIVO with -DVISIVO_ENABLE_VR=ON
+#
+# When ON we additionally check that VTK actually exports the
+# `VTK::RenderingOpenXR` target — if not we WARN and silently fall back to a
+# VR-less build instead of failing, so a misconfigured user environment never
+# blocks the desktop build.
+option(VISIVO_ENABLE_VR
+    "Enable VR (OpenXR) rendering for the cube viewer (requires VTK with RenderingOpenXR module)"
+    OFF)
+
+if (VISIVO_ENABLE_VR)
+    if (TARGET VTK::RenderingOpenXR)
+        message(STATUS "VisIVO: VR support ENABLED (VTK::RenderingOpenXR found)")
+        target_compile_definitions(${PROJECT_NAME} PRIVATE VISIVO_HAS_VR=1)
+        target_link_libraries(${PROJECT_NAME} PRIVATE VTK::RenderingOpenXR)
+    else ()
+        message(WARNING
+            "VISIVO_ENABLE_VR=ON but VTK::RenderingOpenXR is not available in this "
+            "VTK build. Building WITHOUT VR support. Rebuild VTK with "
+            "-DVTK_MODULE_ENABLE_VTK_RenderingOpenXR=YES if you need it.")
+    endif ()
+endif ()
 
 target_include_directories(${PROJECT_NAME} PRIVATE
         "${CMAKE_CURRENT_BINARY_DIR}"

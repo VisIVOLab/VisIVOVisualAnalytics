@@ -4,6 +4,7 @@
 #include "ColorMaps.h"
 #include "ChannelOverlay.h"
 #include "CubeUiAssembler.h"
+#include "CubeVRController.h"
 #include "DiagnosticsWindow.h"
 #include "theme/SegmentedToggle.h"
 #include "CatalogueOverlayUtils.h"
@@ -2455,6 +2456,47 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->actionEstimateNoise = ui->menuTools->addAction(u"Estimate Noise..."_s);
     QObject::connect(this->actionEstimateNoise, &QAction::triggered,
                      this->noiseController, &NoiseController::startEstimation);
+
+    // ── Tools → Open in VR ─────────────────────────────────────────────────
+    // Always present in the menu so users discover the feature; disabled when
+    // not available (VR not compiled in, or no OpenXR runtime / HMD found).
+    // The tooltip explains exactly what's missing — no silent failure.
+    {
+        auto *actVR = ui->menuTools->addAction(u"Open in VR"_s);
+        const bool compiled = CubeVRController::isCompiledIn();
+        // Only probe the runtime if compiled in — the probe creates an
+        // OpenXR session which is wasted work on builds without VR support.
+        const bool runtime  = compiled && CubeVRController::isRuntimeAvailable();
+        actVR->setEnabled(compiled && runtime);
+        if (!compiled) {
+            actVR->setToolTip(u"This build was compiled without VR support. "
+                              "Rebuild with -DVISIVO_ENABLE_VR=ON (requires VTK "
+                              "with the RenderingOpenXR module)."_s);
+        } else if (!runtime) {
+            actVR->setToolTip(u"No OpenXR runtime is active. Install / start "
+                              "your headset runtime (SteamVR, Oculus, WMR, …) "
+                              "and ensure the HMD is connected."_s);
+        } else {
+            actVR->setToolTip(u"Open the current cube in your VR headset. The "
+                              "desktop volume, LUT and threshold remain "
+                              "synchronised with the VR view."_s);
+        }
+        QObject::connect(actVR, &QAction::triggered, this, [this]() {
+            auto *cubeRen = ui->vtkCube->renderWindow()
+                    ? ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer()
+                    : nullptr;
+            if (!cubeRen || !this->volume) {
+                QMessageBox::warning(this, u"Open in VR"_s,
+                                     u"The cube is not ready yet — wait for the "
+                                     "preview to load and try again."_s);
+                return;
+            }
+            CubeVRController vr(this);
+            if (!vr.open(cubeRen, this->volume)) {
+                QMessageBox::warning(this, u"Open in VR"_s, vr.lastError());
+            }
+        });
+    }
 
     // Region analysis actions — created here so wireToolActions() can wire them
     // to the sidebar buttons immediately below.

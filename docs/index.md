@@ -135,6 +135,9 @@ testing
 * - SAMP send/receive with TOPCAT / Aladin
   - Built-in SAMP hub bridge
   - File / catalogue exchange
+* - Open the cube in a VR headset (Windows / Linux, opt-in build)
+  - **Tools → Open in VR** in the cube window
+  - OpenXR stereo render of the live volume — LUT / threshold / opacity TF stay synchronised with the desktop
 ```
 
 ---

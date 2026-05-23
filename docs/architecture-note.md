@@ -308,6 +308,39 @@ Implementation notes:
   bounds; `applyCubeOpenResult()` refreshes the actor whenever the cube
   bounds change (preview → full-res, ROI switch).
 
+### Optional: VR (OpenXR) offload
+
+The cube viewer can hand off the current `vtkVolume` (with its live LUT /
+opacity TF / threshold) to a head-mounted display via a second OpenXR-backed
+render window — same actor, same mapper, so every desktop-side parameter
+change is reflected in the headset on the next frame without any IPC.
+
+Build is **opt-in** and **does not affect the default macOS / Linux / Windows
+build**. Three states:
+
+| `cmake -DVISIVO_ENABLE_VR=…` | VTK has `RenderingOpenXR`? | Result |
+|------------------------------|----------------------------|--------|
+| `OFF` (default)              | irrelevant                 | Identical to today: *Tools → Open in VR* still appears in the menu but is disabled with an explanatory tooltip. |
+| `ON`                         | no                         | CMake prints a `WARNING`, falls back to a no-VR build. Menu entry stays disabled. |
+| `ON`                         | yes                        | `VISIVO_HAS_VR=1` defined; `VTK::RenderingOpenXR` linked. *Tools → Open in VR* is enabled when an OpenXR runtime + HMD are detected at runtime. |
+
+Implementation notes:
+
+- [`src/gui/CubeVRController.{h,cpp}`](../src/gui/CubeVRController.h) — PIMPL
+  controller. The header is always compilable; OpenXR includes live behind
+  `#ifdef VISIVO_HAS_VR` in the `.cpp` only.
+- `CubeVRController::isCompiledIn()` — compile-time flag.
+- `CubeVRController::isRuntimeAvailable()` — lazy runtime probe (`vtkOpenXRRenderWindow::Initialize()`), result cached for the session.
+- `CubeVRController::open(renderer, volume)` — shares the desktop volume actor with a second `vtkOpenXRRenderWindow`. Currently blocks the UI thread for the duration of the session (matches the user mental model "I'm in VR until I take the headset off"); a future iteration can move this to a `QThread` with a mutex on the shared mapper.
+- macOS is not a supported VR target (Apple removed SteamVR support in 2020; no Vision Pro / OpenXR runtime). The build flag is honoured anyway — it just falls into the "no runtime" branch.
+
+To enable end-to-end on Windows / Linux:
+
+1. Rebuild VTK with `-DVTK_MODULE_ENABLE_VTK_RenderingOpenXR=YES`. Requires the Khronos OpenXR loader headers (Linux: `libopenxr-loader1-dev` / equivalent; Windows: Khronos OpenXR SDK).
+2. Install an OpenXR runtime (SteamVR, Oculus, WMR, Monado, …) — pick the one bundled with your HMD vendor.
+3. Configure VisIVO with `cmake -DVISIVO_ENABLE_VR=ON …`.
+4. Launch, open a cube, *Tools → Open in VR*.
+
 ### QAction creation ordering
 
 QActions referenced by the sidebar's *Cube Extras* page must be created
@@ -521,3 +554,9 @@ Test suite → links only `visivo_test_support` (core subset).
 | `VISIVO_LINEWIDTH_CHUNKS` | `VISIVO_WORKERS` | Row-chunks the linewidth orchestrator fans out per request. Already gated by `VISIVO_HEAVY_SLOTS`, so usually no need to lower this. |
 | `VISIVO_LINEWIDTH_SNR` | `3.0` | Per-pixel SNR cutoff for skipping background pixels before the Gaussian fit (`0` disables skip). |
 | `VISIVO_PRODUCT_CACHE_ENTRIES` | `32` | LRU capacity of the in-process product cache (shared by moment, isosurface, pv, linewidth results). |
+
+### Client build flags (CMake)
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `VISIVO_ENABLE_VR` | `OFF` | Enable the optional VR (OpenXR) cube viewer offload. Requires a VTK built with `-DVTK_MODULE_ENABLE_VTK_RenderingOpenXR=YES`; otherwise CMake falls back to a no-VR build with a warning. macOS is not a supported VR target (no OpenXR runtime available); the flag is accepted but the *Tools → Open in VR* action stays disabled at runtime. See the *"Optional: VR (OpenXR) offload"* subsection above for the full enablement procedure. |
