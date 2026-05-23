@@ -75,9 +75,9 @@ BaselineDialog::BaselineDialog(const QString &backendUrl,
     m_lineFreeEdit->setPlaceholderText(u"e.g.  1-50, 200-300  (1-based, inclusive)"_s);
     auto *hintLabel = new QLabel(
             u"<i><b>Required.</b> Enter spectral ranges that contain <b>no signal</b> "
-            "(line-free regions). The baseline is estimated from these channels only "
-            "and then subtracted from the full spectrum. "
-            "Fitting on all channels will absorb real line emission.</i>"_s, central);
+            u"(line-free regions). The baseline is estimated from these channels only "
+            u"and then subtracted from the full spectrum. "
+            u"Fitting on all channels will absorb real line emission.</i>"_s, central);
     hintLabel->setWordWrap(true);
     form->addRow(u"Line-free ranges"_s, m_lineFreeEdit);
     form->addRow(QString(), hintLabel);
@@ -134,11 +134,11 @@ void BaselineDialog::onCompute()
             this,
             u"Baseline Subtraction"_s,
             u"Line-free channels are required.\n\n"
-            "Enter at least one spectral range that contains no signal "
-            "(e.g. \"1-50, 200-300\"). The baseline is fitted on those channels "
-            "only and subtracted from the full spectrum.\n\n"
-            "Fitting on all channels would absorb real line emission and "
-            "produce an over-subtracted, nearly empty cube."_s);
+            u"Enter at least one spectral range that contains no signal "
+            u"(e.g. \"1-50, 200-300\"). The baseline is fitted on those channels "
+            u"only and subtracted from the full spectrum.\n\n"
+            u"Fitting on all channels would absorb real line emission and "
+            u"produce an over-subtracted, nearly empty cube."_s);
         m_lineFreeEdit->setFocus();
         return;
     }
@@ -208,13 +208,13 @@ void BaselineDialog::onCompute()
         // ── Success: build summary and notify ─────────────────────────────────
         const QString summary =
                 u"Baseline subtraction complete.\n\n"
-                "Method: %1\n"
-                "New dataset ID: %2\n"
-                "Output path: %3\n"
-                "RMS before: %4\n"
-                "RMS after:  %5\n"
-                "Fit channels: %6\n"
-                "Dimensions: %7 × %8 × %9 (W×H×D)"_s
+                u"Method: %1\n"
+                u"New dataset ID: %2\n"
+                u"Output path: %3\n"
+                u"RMS before: %4\n"
+                u"RMS after:  %5\n"
+                u"Fit channels: %6\n"
+                u"Dimensions: %7 × %8 × %9 (W×H×D)"_s
                         .arg(result.method.isEmpty() ? u"n/a"_s : result.method)
                         .arg(result.newDatasetId)
                         .arg(result.outputPath.isEmpty() ? u"n/a"_s : result.outputPath)

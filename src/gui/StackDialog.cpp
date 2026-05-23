@@ -62,8 +62,8 @@ StackDialog::StackDialog(BackendClient *client,
     // ── Explanation ───────────────────────────────────────────────────────────
     auto *infoLabel = new QLabel(
             u"Select two or more cubes to stack. All cubes must share the same "
-            "spectral grid and spatial shape — cubes with a different shape "
-            "than the current one are listed as disabled."_s, this);
+            u"spectral grid and spatial shape — cubes with a different shape "
+            u"than the current one are listed as disabled."_s, this);
     infoLabel->setWordWrap(true);
     mainLayout->addWidget(infoLabel);
 

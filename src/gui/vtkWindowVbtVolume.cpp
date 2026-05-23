@@ -237,8 +237,8 @@ void vtkWindowVbtVolume::setupSidebarUi()
                 { u"Composite"_s, u"MIP (Max Intensity)"_s, u"MinIP (Min Intensity)"_s });
         this->comboBlendMode->setToolTip(
                 u"Composite: full volume ray-casting with opacity transfer function.\n"
-                "MIP: show the maximum scalar value along each ray (ignores opacity TF).\n"
-                "MinIP: show the minimum scalar value along each ray."_s);
+                u"MIP: show the maximum scalar value along each ray (ignores opacity TF).\n"
+                u"MinIP: show the minimum scalar value along each ray."_s);
 
         this->comboScaleMode = new QComboBox(inner);
         this->comboScaleMode->addItems({ u"Linear"_s, u"Log"_s });
@@ -284,7 +284,7 @@ void vtkWindowVbtVolume::setupSidebarUi()
         this->sliderOpacity->setValue(28);
         this->sliderOpacity->setToolTip(
                 u"Composite: scales the opacity ramp — higher = more opaque.\n"
-                "MIP/MinIP: raises the threshold above which voxels are projection candidates."_s);
+                u"MIP/MinIP: raises the threshold above which voxels are projection candidates."_s);
 
         this->comboBackground = new QComboBox(inner);
         this->comboBackground->addItems({ u"Black"_s, u"Dark gray"_s, u"White"_s });

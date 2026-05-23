@@ -555,7 +555,7 @@ void MainWindow::buildSampMenu()
             QMessageBox::critical(
                     this, u"Backend unavailable"_s,
                     u"Cannot connect SAMP integration because the backend is not reachable.\n\n"
-                    "Error: %1"_s.arg(health.error.isEmpty() ? u"No response"_s : health.error));
+                    u"Error: %1"_s.arg(health.error.isEmpty() ? u"No response"_s : health.error));
             return;
         }
         this->m_sampClient->connectToHub();
@@ -622,7 +622,7 @@ void MainWindow::buildScienceMenu()
         if (sessionId.isEmpty()) {
             QMessageBox::information(this, u"Spectral Stacking"_s,
                                      u"Open a dataset first to establish a backend session, "
-                                     "then open the additional cubes you want to stack."_s);
+                                     u"then open the additional cubes you want to stack."_s);
             return;
         }
         auto *watcher = new QFutureWatcher<BackendSessionDatasetsResult>(this);
@@ -815,8 +815,8 @@ void MainWindow::openData()
         QMessageBox::critical(
                 this, u"Backend unavailable"_s,
                 u"Cannot open a dataset: the backend is not reachable.\n\n"
-                "Start a local backend or configure a remote backend URL in Settings, "
-                "then try again.\n\nError: %1"_s.arg(health.error.isEmpty()
+                u"Start a local backend or configure a remote backend URL in Settings, "
+                u"then try again.\n\nError: %1"_s.arg(health.error.isEmpty()
                                                               ? u"No response"_s
                                                               : health.error));
         return;
@@ -843,7 +843,7 @@ void MainWindow::doOpenDataPath(const QString &path)
         QMessageBox::critical(
                 this, u"Backend unavailable"_s,
                 u"Cannot open a dataset: the backend is not reachable.\n\n"
-                "Error: %1"_s.arg(health.error.isEmpty() ? u"No response"_s : health.error));
+                u"Error: %1"_s.arg(health.error.isEmpty() ? u"No response"_s : health.error));
         return;
     }
 
@@ -852,8 +852,8 @@ void MainWindow::doOpenDataPath(const QString &path)
         QMessageBox::critical(
                 this, u"Could not open dataset"_s,
                 u"The backend could not open this dataset.\n\n%1\n\n"
-                "Supported formats: FITS (image, cube). For HDF5, Gadget, VOTable, "
-                "or simulation data, convert with VisIVOServer first."_s.arg(
+                u"Supported formats: FITS (image, cube). For HDF5, Gadget, VOTable, "
+                u"or simulation data, convert with VisIVOServer first."_s.arg(
                         opened.error.isEmpty() ? u"Backend returned no error detail."_s
                                                : opened.error));
         return;
@@ -892,7 +892,7 @@ void MainWindow::doOpenDataPath(const QString &path)
         QMessageBox::information(
                 this, u"Unsupported dataset"_s,
                 u"The backend reported an unsupported dataset kind: '%1'.\n\n"
-                "Only FITS images and spectral cubes are supported."_s.arg(opened.kind));
+                u"Only FITS images and spectral cubes are supported."_s.arg(opened.kind));
         return;
     }
 
@@ -992,8 +992,8 @@ void MainWindow::openCatalogue3D()
         QMessageBox::critical(
                 this, u"Backend unavailable"_s,
                 u"Cannot open a catalogue: the backend is not reachable.\n\n"
-                "Start a local backend or configure a remote backend URL in Settings, "
-                "then try again.\n\nError: %1"_s.arg(health.error.isEmpty()
+                u"Start a local backend or configure a remote backend URL in Settings, "
+                u"then try again.\n\nError: %1"_s.arg(health.error.isEmpty()
                                                               ? u"No response"_s
                                                               : health.error));
         return;
@@ -1132,8 +1132,8 @@ void MainWindow::openVbt()
         QMessageBox::critical(
                 this, u"Backend unavailable"_s,
                 u"Cannot open a VBT dataset: the backend is not reachable.\n\n"
-                "Start a local backend or configure a remote backend URL in Settings, "
-                "then try again.\n\nError: %1"_s.arg(health.error.isEmpty()
+                u"Start a local backend or configure a remote backend URL in Settings, "
+                u"then try again.\n\nError: %1"_s.arg(health.error.isEmpty()
                                                               ? u"No response"_s
                                                               : health.error));
         return;

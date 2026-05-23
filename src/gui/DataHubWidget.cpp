@@ -972,7 +972,7 @@ void DataHubWidget::refreshRecentDatasets()
         // Empty-state label.
         auto *empty = new QLabel(
                 u"No recently opened datasets.\n"
-                "Open a dataset using the actions above."_s,
+                u"Open a dataset using the actions above."_s,
                 nullptr);
         empty->setAlignment(Qt::AlignCenter);
         empty->setWordWrap(true);

@@ -68,7 +68,7 @@ NoiseRegionDialog::NoiseRegionDialog(int width, int height, int depth, QWidget *
     // ── Layout ────────────────────────────────────────────────────────────
     auto *root = new QVBoxLayout(this);
     root->addWidget(new QLabel(u"Choose the region used to estimate noise.\n"
-                               "Defaults to the full cube extent."_s));
+                               u"Defaults to the full cube extent."_s));
     root->addWidget(spatialGroup);
     root->addWidget(spectralGroup);
     root->addWidget(btnBox);

@@ -178,14 +178,14 @@ PythonResolution resolvePythonExe(const QString &settingsPython,
     if (isValidPythonExe(settingsPython)) {
         logOut << u"[launcher] Python (system, via Settings): %1"_s.arg(settingsPython);
         logOut << u"[launcher] NOTE: using system Python — ensure uvicorn and dependencies "
-                  "are installed in this environment."_s;
+                  u"are installed in this environment."_s;
         return { settingsPython, u"system Python (application settings)"_s };
     }
 
     // ── 6. Hard fallback — let the OS resolve from PATH ──────────────────────
     logOut << u"[launcher] WARNING: no validated Python found, falling back to 'python3' on PATH."_s;
     logOut << u"[launcher] If the backend fails to start, install uvicorn: "
-              "pip install uvicorn fastapi"_s;
+              u"pip install uvicorn fastapi"_s;
     return { u"python3"_s, u"system PATH fallback (python3)"_s };
 }
 
@@ -282,7 +282,7 @@ void BackendLauncher::onInitialHealthDone()
     if (m_noAutostart) {
         emit failed(
                 u"The backend is not running and auto-start is disabled.\n\n"
-                "Start the backend manually, then click Retry."_s);
+                u"Start the backend manually, then click Retry."_s);
         return;
     }
 
@@ -301,9 +301,9 @@ void BackendLauncher::launchProcess()
     if (backendDir.isEmpty()) {
         emit failed(
                 u"Backend directory not found.\n\n"
-                "Expected a backend/ directory containing app/main.py "
-                "alongside the application.\n\n"
-                "Searched:\n  • "_s
+                u"Expected a backend/ directory containing app/main.py "
+                u"alongside the application.\n\n"
+                u"Searched:\n  • "_s
                 + searchedPaths.join(u"\n  • "_s));
         return;
     }
@@ -319,7 +319,7 @@ void BackendLauncher::launchProcess()
     if (pythonExe.isEmpty()) {
         emit failed(
                 u"Python interpreter not found.\n\n"
-                "Install Python 3 and restart the application."_s);
+                u"Install Python 3 and restart the application."_s);
         return;
     }
     appendLog(u"[launcher] Using Python: %1  (%2)"_s.arg(pythonExe, pythonSource));
@@ -396,7 +396,7 @@ void BackendLauncher::onPollTick()
             appendLog(QString::fromLocal8Bit(m_process->readAllStandardError()));
         }
         emit failed(u"The backend did not respond within %1 seconds.\n\n"
-                    "Use 'Show Logs' for details."_s.arg(kMaxWaitMs / 1000));
+                    u"Use 'Show Logs' for details."_s.arg(kMaxWaitMs / 1000));
         return;
     }
 
@@ -405,7 +405,7 @@ void BackendLauncher::onPollTick()
         m_pollTimer.stop();
         emit failed(
                 u"The backend process exited unexpectedly before becoming reachable.\n\n"
-                "Use 'Show Logs' for details."_s);
+                u"Use 'Show Logs' for details."_s);
         return;
     }
 

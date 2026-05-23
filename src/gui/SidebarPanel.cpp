@@ -260,26 +260,26 @@ void SidebarPanel::applyStyles()
         if (auto *sa = qobject_cast<QScrollArea *>(m_stack->widget(i))) {
             sa->setStyleSheet(
                     u"QScrollArea {"
-                    "  background-color: transparent;"
-                    "  border: none;"
-                    "}"
-                    "QScrollArea > QWidget > QWidget {"
-                    "  background-color: transparent;"
-                    "}"_s);
+                    u"  background-color: transparent;"
+                    u"  border: none;"
+                    u"}"
+                    u"QScrollArea > QWidget > QWidget {"
+                    u"  background-color: transparent;"
+                    u"}"_s);
             if (sa->verticalScrollBar()) {
                 sa->verticalScrollBar()->setStyleSheet(
                         u"QScrollBar:vertical {"
-                        "  background: transparent;"
-                        "  width: 6px;"
-                        "  margin: 0;"
-                        "}"
-                        "QScrollBar::handle:vertical {"
-                        "  background: rgba(4, 138, 191, 0.35);"
-                        "  border-radius: 3px;"
-                        "  min-height: 20px;"
-                        "}"
-                        "QScrollBar::add-line:vertical,"
-                        "QScrollBar::sub-line:vertical { height: 0; }"_s);
+                        u"  background: transparent;"
+                        u"  width: 6px;"
+                        u"  margin: 0;"
+                        u"}"
+                        u"QScrollBar::handle:vertical {"
+                        u"  background: rgba(4, 138, 191, 0.35);"
+                        u"  border-radius: 3px;"
+                        u"  min-height: 20px;"
+                        u"}"
+                        u"QScrollBar::add-line:vertical,"
+                        u"QScrollBar::sub-line:vertical { height: 0; }"_s);
             }
         }
     }

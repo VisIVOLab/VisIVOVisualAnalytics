@@ -54,9 +54,9 @@ ToolResultDialog::ToolResultDialog(QWidget *parent)
     headerWidget->setObjectName(u"toolResultHeader"_s);
     headerWidget->setStyleSheet(
             u"QWidget#toolResultHeader {"
-            "  background: %1;"
-            "  border-bottom: 1px solid %2;"
-            "}"_s.arg(tHeaderBg(), tBorder()));
+            u"  background: %1;"
+            u"  border-bottom: 1px solid %2;"
+            u"}"_s.arg(tHeaderBg(), tBorder()));
 
     auto *headerLayout = new QVBoxLayout(headerWidget);
     headerLayout->setContentsMargins(16, 12, 16, 12);
@@ -165,21 +165,21 @@ void ToolResultDialog::addSection(const QString &sectionTitle,
     auto *box = new QGroupBox(sectionTitle);
     box->setStyleSheet(
             u"QGroupBox {"
-            "  background: transparent;"
-            "  border: 1px solid %1;"
-            "  border-radius: 6px;"
-            "  margin-top: 10px;"
-            "  color: %2;"
-            "  font-weight: 700;"
-            "  font-size: 10px;"
-            "  letter-spacing: 0.10em;"
-            "}"
-            "QGroupBox::title {"
-            "  subcontrol-origin: margin;"
-            "  left: 10px;"
-            "  padding: 0 6px;"
-            "  text-transform: uppercase;"
-            "}"_s.arg(tBorder(), tGroupTitle()));
+            u"  background: transparent;"
+            u"  border: 1px solid %1;"
+            u"  border-radius: 6px;"
+            u"  margin-top: 10px;"
+            u"  color: %2;"
+            u"  font-weight: 700;"
+            u"  font-size: 10px;"
+            u"  letter-spacing: 0.10em;"
+            u"}"
+            u"QGroupBox::title {"
+            u"  subcontrol-origin: margin;"
+            u"  left: 10px;"
+            u"  padding: 0 6px;"
+            u"  text-transform: uppercase;"
+            u"}"_s.arg(tBorder(), tGroupTitle()));
 
     auto *form = new QFormLayout(box);
     form->setContentsMargins(12, 14, 12, 10);
@@ -195,7 +195,7 @@ void ToolResultDialog::addSection(const QString &sectionTitle,
         auto *valLabel = new QLabel(row.second);
         valLabel->setStyleSheet(
                 u"color: %1; font-size: 11px; background: transparent; "
-                "font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;"_s
+                u"font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;"_s
                         .arg(tValue()));
         valLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
 

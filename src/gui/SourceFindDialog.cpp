@@ -148,8 +148,8 @@ void SourceFindDialog::onRun()
                 QMessageBox::critical(
                         self, u"SoFiA-2 Not Available"_s,
                         u"SoFiA-2 (sofia2) was not found on the server's PATH.\n\n"
-                        "Install SoFiA-2 and ensure it is accessible to the "
-                        "VisIVO backend process, then retry."_s);
+                        u"Install SoFiA-2 and ensure it is accessible to the "
+                        u"VisIVO backend process, then retry."_s);
             } else {
                 QMessageBox::critical(self, u"Source Finding"_s,
                                       result.error.isEmpty()

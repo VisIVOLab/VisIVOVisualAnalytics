@@ -118,7 +118,7 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
     }
     m_axisInfoLabel->setToolTip(
             u"Spectral (third) axis classification derived from dataset WCS metadata.\n"
-            "This determines whether a rest frequency is required for computation."_s);
+            u"This determines whether a rest frequency is required for computation."_s);
     // Style: slightly subdued to distinguish it from editable fields.
     m_axisInfoLabel->setStyleSheet(u"color: palette(mid);"_s);
     form->addRow(u"Spectral axis"_s, m_axisInfoLabel);
@@ -139,7 +139,7 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
     m_restFreqSpin->setValue(0.0);
     m_restFreqSpin->setToolTip(
             u"Rest frequency used to convert from frequency to velocity.\n"
-            "Required for frequency and wavelength axes."_s);
+            u"Required for frequency and wavelength axes."_s);
     form->addRow(m_restFreqLabel, m_restFreqSpin);
 
     const bool isVelocity = (m_spectralAxisType == SpectralAxisType::Velocity);
@@ -226,7 +226,7 @@ void LinewidthDialog::onCompute()
             if (restFreqGHz <= 0.0) {
                 QMessageBox::warning(this, u"Line-Width Map"_s,
                                      u"A rest frequency > 0 is required for %1 axes.\n"
-                                     "Enter the line rest frequency in GHz."_s
+                                     u"Enter the line rest frequency in GHz."_s
                                      .arg(spectralAxisTypeLabel(m_spectralAxisType).toLower()));
                 return;
             }
@@ -321,7 +321,7 @@ void LinewidthDialog::onCompute()
         if (result.width == 0 || result.height == 0) {
             const QString emptyMsg =
                     u"Result is empty — all pixels failed to fit.\n"
-                    "Try widening the channel range or lowering the threshold."_s;
+                    u"Try widening the channel range or lowering the threshold."_s;
             QMessageBox::warning(self, u"Line-Width Map"_s, emptyMsg);
             DiagnosticsManager::instance()->publish(
                     DiagnosticsLevel::Warning,

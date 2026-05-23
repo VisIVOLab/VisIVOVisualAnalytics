@@ -143,9 +143,9 @@ void PvDiagramWidget::buildHeaderUi()
     auto *header = new QFrame(this);
     header->setStyleSheet(
             u"QFrame {"
-            "  background: %1;"
-            "  border-bottom: 1px solid rgba(4,138,191,0.20);"
-            "}"_s.arg(kHeaderBg));
+            u"  background: %1;"
+            u"  border-bottom: 1px solid rgba(4,138,191,0.20);"
+            u"}"_s.arg(kHeaderBg));
 
     auto *hLayout = new QHBoxLayout(header);
     hLayout->setContentsMargins(12, 8, 12, 8);
@@ -155,18 +155,18 @@ void PvDiagramWidget::buildHeaderUi()
         auto *box = new QGroupBox(title, header);
         box->setStyleSheet(
                 u"QGroupBox {"
-                "  border: 1px solid %1;"
-                "  border-radius: 4px;"
-                "  margin-top: 6px;"
-                "  color: %2;"
-                "  font-weight: bold;"
-                "  font-size: 10px;"
-                "}"
-                "QGroupBox::title {"
-                "  subcontrol-origin: margin;"
-                "  left: 8px;"
-                "  padding: 0 3px;"
-                "}"_s.arg(kGroupBorder, kGroupTitle));
+                u"  border: 1px solid %1;"
+                u"  border-radius: 4px;"
+                u"  margin-top: 6px;"
+                u"  color: %2;"
+                u"  font-weight: bold;"
+                u"  font-size: 10px;"
+                u"}"
+                u"QGroupBox::title {"
+                u"  subcontrol-origin: margin;"
+                u"  left: 8px;"
+                u"  padding: 0 3px;"
+                u"}"_s.arg(kGroupBorder, kGroupTitle));
 
         auto *form = new QFormLayout(box);
         form->setContentsMargins(8, 10, 8, 8);

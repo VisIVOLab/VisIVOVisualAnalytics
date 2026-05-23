@@ -178,15 +178,15 @@ void MomentMapController::startComputation(int defaultOrder)
         // to complete the tooltip, using spectralAxisTitle() / currentWcsFrameLabel().
         const QString details =
                 u"Moment type: %1\n"
-                "Unit: %2\n"
-                "BUNIT: %3\n"
-                "Spectral axis: %4 [%5]\n"
-                "Channel range: %6\n"
-                "Mask: %7\n"
-                "Threshold: %8\n"
-                "NaN/blanking: excluded from computation\n"
-                "Valid-pixel policy: only finite unmasked voxels contribute\n"
-                "Source scope: %9"_s
+                u"Unit: %2\n"
+                u"BUNIT: %3\n"
+                u"Spectral axis: %4 [%5]\n"
+                u"Channel range: %6\n"
+                u"Mask: %7\n"
+                u"Threshold: %8\n"
+                u"NaN/blanking: excluded from computation\n"
+                u"Valid-pixel policy: only finite unmasked voxels contribute\n"
+                u"Source scope: %9"_s
                         .arg(describeMomentOrder(config.order))
                         .arg(unitLabel)
                         .arg(result.bunit.isEmpty() ? u"\u2014"_s : result.bunit)

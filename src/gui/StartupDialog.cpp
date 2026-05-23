@@ -212,7 +212,7 @@ void StartupDialog::buildUi()
         m_progress->setTextVisible(false);
         m_progress->setStyleSheet(
                 u"QProgressBar { background: %1; border: none; border-radius: 2px; }"
-                "QProgressBar::chunk { background: #048ABF; border-radius: 2px; }"_s
+                u"QProgressBar::chunk { background: #048ABF; border-radius: 2px; }"_s
                         .arg(surfaceLow));
         root->addWidget(m_progress);
     }
@@ -240,7 +240,7 @@ void StartupDialog::buildUi()
 
         auto *authDesc = new QLabel(
                 u"VLKB services require an API token to access remote data.\n"
-                "Paste your token below to continue."_s,
+                u"Paste your token below to continue."_s,
                 m_authPanel);
         authDesc->setStyleSheet(u"font-size: 12px; color: %1;"_s.arg(mutedTxt));
         authDesc->setWordWrap(true);
@@ -270,7 +270,7 @@ void StartupDialog::buildUi()
         m_logView->setFixedHeight(160);
         m_logView->setStyleSheet(
                 u"QTextEdit { background: %1; color: %2; "
-                "font-family: monospace; font-size: 11px; border: none; }"_s
+                u"font-family: monospace; font-size: 11px; border: none; }"_s
                         .arg(logBg, onSurfaceTxt));
         root->addWidget(m_logView);
     }

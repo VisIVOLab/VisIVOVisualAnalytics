@@ -136,7 +136,7 @@ bool CubeVRController::open(vtkRenderer *desktopRenderer, vtkVolume *cubeVolume)
     Q_UNUSED(desktopRenderer);
     Q_UNUSED(cubeVolume);
     m_lastError = u"VR support is not compiled in. Rebuild with -DVISIVO_ENABLE_VR=ON "
-                  "(requires VTK built with VTK_MODULE_ENABLE_VTK_RenderingOpenXR=YES)."_s;
+                  u"(requires VTK built with VTK_MODULE_ENABLE_VTK_RenderingOpenXR=YES)."_s;
     return false;
 #endif
 }

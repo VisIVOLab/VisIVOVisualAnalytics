@@ -251,7 +251,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                  msg.setWindowTitle(u"Session Expired"_s);
                                  msg.setText(
                                          u"The backend session for this dataset has expired.\n"
-                                         "The dataset needs to be reopened before continuing."_s);
+                                         u"The dataset needs to be reopened before continuing."_s);
                                  auto *btnReopen = msg.addButton(
                                          u"Re-open Dataset"_s, QMessageBox::AcceptRole);
                                  msg.addButton(QMessageBox::Cancel);
@@ -770,14 +770,14 @@ void vtkWindowCatalogue3D::setupSidebar()
         this->comboFrame->addItems({ u"FK5 / J2000"_s, u"Galactic (l, b)"_s });
         this->comboFrame->setToolTip(
                 u"Coordinate frame for 3D scene positions.\n"
-                "FK5 / J2000: standard equatorial (RA, Dec).\n"
-                "Galactic (l, b): galactic longitude and latitude."_s);
+                u"FK5 / J2000: standard equatorial (RA, Dec).\n"
+                u"Galactic (l, b): galactic longitude and latitude."_s);
         this->comboCosmology = new QComboBox(sceneCard);
         this->comboCosmology->addItems(
                 { u"Planck18"_s, u"Planck15"_s, u"Planck13"_s, u"WMAP9"_s });
         this->comboCosmology->setToolTip(
                 u"Cosmology model for redshift → comoving distance.\n"
-                "Distances are computed on the backend via astropy."_s);
+                u"Distances are computed on the backend via astropy."_s);
 
         auto *sceneForm = new QFormLayout;
         sceneForm->setContentsMargins(0, 0, 0, 0);

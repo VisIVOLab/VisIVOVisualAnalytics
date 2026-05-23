@@ -1679,7 +1679,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // ── 3D WCS axes (vtkCubeAxesActor) toggle ────────────────────────────
     this->actionShow3dWcsAxes->setToolTip(
             u"Show a labeled bounding box in the 3D cube view with RA / DEC / "
-            "Velocity ticks derived from the WCS metadata."_s);
+            u"Velocity ticks derived from the WCS metadata."_s);
     ui->menuView->addAction(this->actionShow3dWcsAxes);
     QObject::connect(this->actionShow3dWcsAxes, &QAction::toggled, this,
                      [this](bool checked) { this->apply3dWcsAxesVisibility(checked); });
@@ -1688,7 +1688,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     ui->menuView->addSeparator();
     this->actionPlaySlices->setToolTip(
             u"Auto-advance the slice index, animating the cutting plane through "
-            "the cube along the spectral axis."_s);
+            u"the cube along the spectral axis."_s);
     ui->menuView->addAction(this->actionPlaySlices);
     QObject::connect(this->actionPlaySlices, &QAction::toggled, this,
                      [this](bool checked) { this->setSliceAnimationActive(checked); });
@@ -1742,7 +1742,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // ── 3D spectral picker toggle ────────────────────────────────────────
     this->actionPickSpectrum3d->setToolTip(
             u"When enabled, clicking on the cutting plane inside the 3D view "
-            "extracts the spectral profile at that voxel into the probe plot."_s);
+            u"extracts the spectral profile at that voxel into the probe plot."_s);
     ui->menuView->addAction(this->actionPickSpectrum3d);
     QObject::connect(this->actionPickSpectrum3d, &QAction::toggled, this, [this](bool checked) {
         if (checked) {
@@ -1753,7 +1753,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             ui->vtkCube->setCursor(Qt::CrossCursor);
             this->statusBar()->showMessage(
                     u"3D pick: click the cutting plane to extract its spectral profile. "
-                    "Click off-plane to rotate as usual."_s,
+                    u"Click off-plane to rotate as usual."_s,
                     5000);
         } else {
             this->remove3dPickObserver();
@@ -1801,7 +1801,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->actionCameraRoi->setChecked(this->useCameraRoiRefinement);
     this->actionCameraRoi->setToolTip(
             u"When enabled, the high-resolution cube is loaded only for the current camera viewport.\n"
-            "Unchecked: full dataset is used for refinement."_s);
+            u"Unchecked: full dataset is used for refinement."_s);
     ui->menuView->addSeparator();
     ui->menuView->addAction(this->actionCameraRoi);
     QObject::connect(this->actionCameraRoi, &QAction::toggled, this,
@@ -2470,16 +2470,16 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         actVR->setEnabled(compiled && runtime);
         if (!compiled) {
             actVR->setToolTip(u"This build was compiled without VR support. "
-                              "Rebuild with -DVISIVO_ENABLE_VR=ON (requires VTK "
-                              "with the RenderingOpenXR module)."_s);
+                              u"Rebuild with -DVISIVO_ENABLE_VR=ON (requires VTK "
+                              u"with the RenderingOpenXR module)."_s);
         } else if (!runtime) {
             actVR->setToolTip(u"No OpenXR runtime is active. Install / start "
-                              "your headset runtime (SteamVR, Oculus, WMR, …) "
-                              "and ensure the HMD is connected."_s);
+                              u"your headset runtime (SteamVR, Oculus, WMR, …) "
+                              u"and ensure the HMD is connected."_s);
         } else {
             actVR->setToolTip(u"Open the current cube in your VR headset. The "
-                              "desktop volume, LUT and threshold remain "
-                              "synchronised with the VR view."_s);
+                              u"desktop volume, LUT and threshold remain "
+                              u"synchronised with the VR view."_s);
         }
         QObject::connect(actVR, &QAction::triggered, this, [this]() {
             auto *cubeRen = ui->vtkCube->renderWindow()
@@ -2488,7 +2488,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             if (!cubeRen || !this->volume) {
                 QMessageBox::warning(this, u"Open in VR"_s,
                                      u"The cube is not ready yet — wait for the "
-                                     "preview to load and try again."_s);
+                                     u"preview to load and try again."_s);
                 return;
             }
             CubeVRController vr(this);
@@ -2917,7 +2917,7 @@ void vtkWindowCube::setupSidebar()
         pickCb->setChecked(this->actionPickSpectrum3d->isChecked());
         pickCb->setToolTip(
                 u"Click the cutting plane in the 3D view to extract the spectral profile at "
-                "that (RA, DEC) position into the probe plot."_s);
+                u"that (RA, DEC) position into the probe plot."_s);
         interactLay->addWidget(pickCb);
         vbox->addWidget(interactBox);
 
@@ -6023,7 +6023,7 @@ void vtkWindowCube::extractCurrentPvDiagram()
     if (this->remoteDatasetId.isEmpty()) {
         const QString message =
                 u"PV computation requires a backend-visible dataset. "
-                "Stage or open it on the backend first."_s;
+                u"Stage or open it on the backend first."_s;
         qWarning().noquote() << QStringLiteral("[pv] missing backend dataset_id");
         DiagnosticsManager::instance()->publish(DiagnosticsLevel::Warning,
                                                 DiagnosticsCategory::Remote,
@@ -7328,7 +7328,7 @@ void vtkWindowCube::updateDataStatePanel()
     // Full provenance in tooltip.
     QString tip =
             u"Origin: %1\nResolution: %2\nRefinement: %3\nLoaded: %4\nDataset: %5\n"
-            "WCS frame: %6\nSpectral axis: %7\nProbe/profile: loaded block only"_s
+            u"WCS frame: %6\nSpectral axis: %7\nProbe/profile: loaded block only"_s
                     .arg(origin, representation, refinement, loadedBounds, datasetBounds,
                          this->currentWcsFrameLabel(), this->spectralAxisTitle());
     if (!degenerateSummary.isEmpty()) {

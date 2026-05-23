@@ -84,10 +84,10 @@ static QToolButton *makeSidebarToolButton(const QString &label)
 
 static const QString kInfoCardStyle =
         u"QFrame {"
-        "  background: rgba(255,255,255,0.04);"
-        "  border: 1px solid rgba(4,138,191,0.18);"
-        "  border-radius: 4px;"
-        "}"_s;
+        u"  background: rgba(255,255,255,0.04);"
+        u"  border: 1px solid rgba(4,138,191,0.18);"
+        u"  border-radius: 4px;"
+        u"}"_s;
 
 // ── Inspector (sidebar "Inspector" page) — visual tokens matching the
 // ── Observatory Console design: flat sections separated by 1px dividers,
@@ -803,8 +803,8 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
 
         static const QString kRoLineEdit =
                 u"QLineEdit { background: transparent; border: none;"
-                "  color: %1; font-family: Menlo, Consolas, monospace;"
-                "  font-size: 12px; padding: 0; }"_s;
+                u"  color: %1; font-family: Menlo, Consolas, monospace;"
+                u"  font-size: 12px; padding: 0; }"_s;
         const QString roCss = QString(kRoLineEdit)
                 .arg(QLatin1StringView(VisivoTheme::kOnSurface()));
 
@@ -877,15 +877,15 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
         if (info.wcsStatus.compare(u"ok"_s, Qt::CaseInsensitive) == 0) {
             m_infoWcsBadge->setText(u"OK"_s);
             m_infoWcsBadge->setStyleSheet(u"QLabel { font-size: 12px; color: #5DA87A;"
-                                          " font-family: Menlo, Consolas, monospace; }"_s);
+                                          u" font-family: Menlo, Consolas, monospace; }"_s);
         } else if (info.wcsStatus.compare(u"degraded"_s, Qt::CaseInsensitive) == 0) {
             m_infoWcsBadge->setText(u"Degraded"_s);
             m_infoWcsBadge->setStyleSheet(u"QLabel { font-size: 12px; color: #E8A840;"
-                                          " font-family: Menlo, Consolas, monospace; }"_s);
+                                          u" font-family: Menlo, Consolas, monospace; }"_s);
         } else {
             m_infoWcsBadge->setText(u"Repaired"_s);
             m_infoWcsBadge->setStyleSheet(u"QLabel { font-size: 12px; color: #B77610;"
-                                          " font-family: Menlo, Consolas, monospace; }"_s);
+                                          u" font-family: Menlo, Consolas, monospace; }"_s);
         }
         if (!info.wcsWarningMessage.isEmpty())
             m_infoWcsBadge->setToolTip(info.wcsWarningMessage);

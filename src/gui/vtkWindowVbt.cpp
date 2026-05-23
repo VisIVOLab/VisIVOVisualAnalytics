@@ -217,7 +217,7 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
                                  msg.setWindowTitle(u"Session Expired"_s);
                                  msg.setText(
                                          u"The backend session for this dataset has expired.\n"
-                                         "The dataset needs to be reopened before continuing."_s);
+                                         u"The dataset needs to be reopened before continuing."_s);
                                  auto *btnReopen = msg.addButton(
                                          u"Re-open Dataset"_s, QMessageBox::AcceptRole);
                                  msg.addButton(QMessageBox::Cancel);
