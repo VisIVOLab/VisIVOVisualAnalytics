@@ -28,6 +28,22 @@ endforeach ()
 find_package(Qt6 6.10.0 CONFIG REQUIRED COMPONENTS ${qt_components})
 message(STATUS "Using Qt v${Qt6_VERSION}")
 
+# VR opt-in flag is declared up here (instead of next to its use site below) so
+# we can resolve `OpenXR::openxr_loader` BEFORE find_package(VTK). VTK ≥ 9.6
+# built with RenderingOpenXR encodes that target in its link interface, and
+# CMake fails the include if no `find_package(OpenXR)` has registered it yet.
+option(VISIVO_ENABLE_VR
+    "Enable VR (OpenXR) rendering for the cube viewer (requires VTK with RenderingOpenXR module)"
+    OFF)
+if (VISIVO_ENABLE_VR)
+    # QUIET: if VTK happens to not have OpenXR after all we still want a clean
+    # configure — the later block downgrades to a non-VR build with a WARNING.
+    find_package(OpenXR CONFIG QUIET)
+    if (OpenXR_FOUND)
+        message(STATUS "Found OpenXR loader for VR build")
+    endif ()
+endif ()
+
 find_package(VTK 9.5.0 CONFIG REQUIRED COMPONENTS
         CommonColor
         FiltersModeling
@@ -41,23 +57,34 @@ find_package(VTK 9.5.0 CONFIG REQUIRED COMPONENTS
 message(STATUS "Using VTK v${VTK_VERSION}")
 
 # CFITSIO is shipped under two different CMake package names in the wild:
-#   * "cfitsio"             — the upstream / Homebrew / conda / source build
-#                             (exports target CFITSIO::cfitsio)
-#   * "unofficial-cfitsio"  — vcpkg's port, since cfitsio's own build doesn't
-#                             install a CMake config file
-#                             (exports target unofficial::cfitsio::cfitsio)
-# Try the upstream name first, then fall back to vcpkg's, and normalise the
-# rest of the project on CFITSIO::cfitsio via an alias.
+#   * "cfitsio"            — upstream / Homebrew / conda / source build
+#                            (exports target CFITSIO::cfitsio)
+#   * "unofficial-cfitsio" — vcpkg's port (since cfitsio's own build doesn't
+#                            install a CMake config file). Across vcpkg
+#                            versions the actual target name has been either
+#                            `unofficial::cfitsio::cfitsio` (old) or a bare
+#                            `cfitsio` (current), so we try both.
+# The rest of the project links against CFITSIO::cfitsio — we synthesise that
+# as an INTERFACE alias whenever the lookup falls back to the vcpkg port.
 find_package(cfitsio CONFIG QUIET)
-if (cfitsio_FOUND)
+if (cfitsio_FOUND AND TARGET CFITSIO::cfitsio)
     message(STATUS "Using cfitsio v${cfitsio_VERSION} (upstream CMake config)")
 else ()
     find_package(unofficial-cfitsio CONFIG REQUIRED)
-    message(STATUS "Using cfitsio (vcpkg port: unofficial-cfitsio)")
+    if (TARGET unofficial::cfitsio::cfitsio)
+        set(_cfitsio_vcpkg_target unofficial::cfitsio::cfitsio)
+    elseif (TARGET cfitsio)
+        set(_cfitsio_vcpkg_target cfitsio)
+    else ()
+        message(FATAL_ERROR
+            "find_package(unofficial-cfitsio) succeeded but neither "
+            "unofficial::cfitsio::cfitsio nor a bare 'cfitsio' target was "
+            "defined — vcpkg port layout may have changed.")
+    endif ()
+    message(STATUS "Using cfitsio (vcpkg port, target: ${_cfitsio_vcpkg_target})")
     if (NOT TARGET CFITSIO::cfitsio)
         add_library(CFITSIO::cfitsio INTERFACE IMPORTED)
-        target_link_libraries(CFITSIO::cfitsio
-                INTERFACE unofficial::cfitsio::cfitsio)
+        target_link_libraries(CFITSIO::cfitsio INTERFACE ${_cfitsio_vcpkg_target})
     endif ()
 endif ()
 
@@ -293,6 +320,11 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 
 # ── Optional: VR (OpenXR) support for the cube viewer ────────────────────────
 #
+# The VISIVO_ENABLE_VR option is declared near the top of this file so that
+# `find_package(OpenXR)` can run before `find_package(VTK)` (VTK ≥ 9.6 with
+# RenderingOpenXR carries an unresolved transitive dep on OpenXR::openxr_loader
+# in its link interface otherwise). Here we just consume the result.
+#
 # Off by default — keeps macOS / vanilla VTK builds working unchanged. To
 # enable:
 #   1. Rebuild VTK with -DVTK_MODULE_ENABLE_VTK_RenderingOpenXR=YES
@@ -303,10 +335,6 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 # `VTK::RenderingOpenXR` target — if not we WARN and silently fall back to a
 # VR-less build instead of failing, so a misconfigured user environment never
 # blocks the desktop build.
-option(VISIVO_ENABLE_VR
-    "Enable VR (OpenXR) rendering for the cube viewer (requires VTK with RenderingOpenXR module)"
-    OFF)
-
 if (VISIVO_ENABLE_VR)
     if (TARGET VTK::RenderingOpenXR)
         message(STATUS "VisIVO: VR support ENABLED (VTK::RenderingOpenXR found)")
