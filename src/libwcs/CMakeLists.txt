@@ -82,6 +82,14 @@ if (MSVC)
             _CRT_SECURE_NO_WARNINGS
             _CRT_NONSTDC_NO_DEPRECATE
             _WINSOCK_DEPRECATED_NO_WARNINGS
+            # POSIX function names → MSVC underscore-prefixed equivalents.
+            # Defined at the target level (not just inside win32/unistd.h) so
+            # that sources which don't pull in <unistd.h> — notably wcscon.c —
+            # still get the mapping. S_ISDIR/S_ISREG stay in the shim because
+            # they need _S_IFMT from <sys/stat.h>.
+            strcasecmp=_stricmp
+            strncasecmp=_strnicmp
+            ftruncate=_chsize
     )
     # webread.c uses BSD socket APIs that Windows exposes through Winsock2.
     target_link_libraries(wcs PRIVATE ws2_32)

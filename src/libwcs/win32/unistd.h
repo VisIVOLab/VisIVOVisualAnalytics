@@ -56,7 +56,9 @@
 #define unlink     _unlink
 #define write      _write
 #define getpid     _getpid
-#define ftruncate  _chsize    /* _chsize(fd, long size) — compatible for libwcs */
+#ifndef ftruncate
+#  define ftruncate _chsize   /* _chsize(fd, long size) — compatible for libwcs */
+#endif
 
 /* POSIX <strings.h> case-insensitive compares. MSVC keeps them in <string.h>
  * with an underscore prefix. */
