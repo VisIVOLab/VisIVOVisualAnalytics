@@ -144,19 +144,76 @@ region and channel range.
 ### How to use it
 
 1. **Tools → Estimate Noise** in the cube viewer.
-2. The *Noise Region* dialog appears:
-   - **Spatial region**: pick from existing regions (Box / Circle / …) or
-     draw a new one on the slice.
-   - **Channel range**: choose a window. For per-channel noise estimation
-     of the entire cube, leave defaults; for a quick scalar σ over a
-     specific line-free band, set start = end of the bandpass region.
-3. Click **Compute**. The result panel shows:
-   - **MAD per channel** (vector of length `n_channels` in the window).
-   - **σ per channel** = 1.4826 × MAD (robust 1σ).
-   - **Median σ** across channels (a single scalar useful as RMS in
-     moment dialogs).
-4. Click *Save as RMS* to auto-populate the **RMS** field of the moment
-   and line-width dialogs.
+2. The *Noise Region — Select Region* dialog appears with six spinboxes:
+   - **Spatial region** — `x min / x max`, `y min / y max` in slice pixel
+     coordinates. Defaults to the full cube extent. *Reset to Full Extent*
+     restores the defaults.
+   - **Channel range** — `Channel start / end`. Defaults to all channels.
+     For per-channel σ across the full cube, leave defaults; for a single
+     scalar σ over a specific line-free band, narrow to those channels.
+3. Click **OK**. The dialog closes and the backend starts computing.
+4. The result panel shows summary stats over the per-channel arrays:
+   - **σ per channel** = 1.4826 × MAD (robust 1σ for Gaussian noise),
+     summarised as *Mean / Median / Min / Max*.
+   - **MAD per channel**, same four summary stats.
+   - **Subtitle** with the selected region and a warning when too much of
+     the selection is blank — see [Blank-pixel handling](#blank-pixel-handling).
+
+### Live preview overlays
+
+While the *Noise Region* dialog is open — and through the result dialog's
+lifetime — the cube viewer paints two synchronised amber overlays so you
+can see exactly where σ is being sampled:
+
+- **2D slice** — an amber outline rectangle following `(x0..x1, y0..y1)`.
+  Distinct colour from the cyan Box-region tool so the two never collide.
+- **3D volume** — a semi-transparent amber box (translucent face +
+  wireframe edge) that mirrors the same `(x, y)` rectangle and extrudes
+  it along the spectral axis over `chStart..chEnd`. The volume rendering
+  stays visible through the translucent face so you can see emission
+  features inside the sampling box.
+
+Both overlays update **live** as you tune any of the six spinboxes —
+including the channel range, so the 3D box stretches/shrinks along Z in
+real time.
+
+The overlays survive the picker → compute → result-dialog sequence so
+you can read the σ numbers while still seeing where they came from. They
+are torn down automatically when you close the result dialog.
+
+```{tip}
+The 3D box is the quickest way to verify your channel range avoids the
+line: rotate the camera so you look down the spectral axis, then resize
+the box along Z until it sits in a flat (line-free) region of the volume.
+```
+
+### Blank-pixel handling
+
+Many radio / IR cubes use exactly `0.0` for off-source pixels instead of
+NaN. If you compute MAD over a region that mostly overlaps that blanked
+area, the formula collapses (`median(finite)=0` AND `median(|finite-0|)=0`)
+and you get `σ=0` for every channel — clearly wrong, but easy to miss
+without context.
+
+The backend has a **zero-as-blank heuristic** in
+`worker_noise_estimate`: when more than half the finite pixels in a
+channel are exactly 0, those zeros are excluded from that channel's MAD
+(treated as blanks). Zeros are kept in when they are a minority because
+some cubes (post-baseline subtraction, calibrated brightness
+temperatures) legitimately have noise centred on zero.
+
+The response also carries a `blank_fraction` field (0–1) covering the
+whole selection. The result-dialog subtitle surfaces it:
+
+- `blank_fraction > 20 %` → soft warning "X % of the selected pixels are
+  blank, result still computed over all finite pixels".
+- `blank_fraction > 50 %` → stronger advice "σ excluding zeros — pick a
+  tighter region inside the data footprint for a clean estimate", and
+  σ/MAD are computed on the non-zero subset only.
+
+When you see this warning, restrict the spatial region to a clearly-non-
+blank area (use the amber overlays as a guide — anywhere the box sits
+over the black border of the slice is contributing zeros).
 
 ### Why MAD instead of stddev?
 
