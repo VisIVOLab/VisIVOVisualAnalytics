@@ -30,9 +30,20 @@ public:
     int channelStart() const;
     int channelEnd()   const;
 
+signals:
+    // Emitted whenever any spinbox value changes (spatial or spectral) so
+    // the cube viewer can paint live preview overlays: an amber rectangle
+    // on the 2D slice (using x0..x1, y0..y1) AND a semi-transparent box
+    // inside the 3D volume (using x0..x1, y0..y1, chStart..chEnd as the
+    // X/Y/Z extent in pixel space, since the volume's Z axis is the
+    // channel index).
+    void regionPreviewChanged(int x0, int x1, int y0, int y1,
+                              int chStart, int chEnd);
+
 private:
     void validate();
     void resetToFullExtent();
+    void emitRegion();
 
     const int m_width;
     const int m_height;

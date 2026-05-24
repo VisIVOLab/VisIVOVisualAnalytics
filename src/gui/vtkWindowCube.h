@@ -52,6 +52,7 @@ class vtkCoordinate;
 class vtkFlyingEdges2D;
 class vtkFlyingEdges3D;
 class vtkGenericOpenGLRenderWindow;
+class vtkCubeSource;
 class vtkImageData;
 class vtkImageMapToColors;
 class vtkLegendScaleActorWCS;
@@ -228,6 +229,24 @@ public:
         Polygon,
         Annulus,
     };
+
+public slots:
+    // Live noise-region preview overlays, used while the NoiseRegionDialog
+    // is open (and kept on through the result dialog) so the user can see
+    // exactly where the noise was sampled — relative to the data footprint
+    // on the slice AND relative to the spectral range inside the volume.
+    //
+    // The slot paints two things in pixel coordinates:
+    //   - on the 2D slice: an amber outline rectangle (x0..x1, y0..y1)
+    //   - in the 3D view : a semi-transparent amber box that spans
+    //     (x0..x1, y0..y1, chStart..chEnd), i.e. uses the channel range
+    //     as its Z extent (the volume's Z axis IS the channel index in
+    //     this viewer's coordinate system).
+    //
+    // Driven by NoiseRegionDialog::regionPreviewChanged.
+    void setNoiseRegionPreview(int x0, int x1, int y0, int y1,
+                               int chStart, int chEnd);
+    void clearNoiseRegionPreview();
 
 private:
     struct MomentMapApplyResult
@@ -615,6 +634,25 @@ private:
     vtkNew<vtkLineSource> sliceRegionBottomLine;
     vtkNew<vtkLineSource> sliceRegionLeftLine;
     vtkNew<vtkLineSource> sliceRegionRightLine;
+    // Noise-region preview overlay: separate set of line sources / actors so
+    // it doesn't collide visually with an active Box-region drawing (which
+    // uses sliceRegion*). Same pixel-coord convention; drawn in amber.
+    // Two layers:
+    //   * 2D slice  → four line sources outlining the (x,y) rectangle
+    //   * 3D volume → vtkCubeSource bounded by (x,y, channels) plus a
+    //                  semi-transparent face actor and a wireframe edge
+    //                  actor that share the same data.
+    vtkNew<vtkLineSource> noisePreviewTopLine;
+    vtkNew<vtkLineSource> noisePreviewBottomLine;
+    vtkNew<vtkLineSource> noisePreviewLeftLine;
+    vtkNew<vtkLineSource> noisePreviewRightLine;
+    vtkNew<vtkActor> noisePreviewTopActor;
+    vtkNew<vtkActor> noisePreviewBottomActor;
+    vtkNew<vtkActor> noisePreviewLeftActor;
+    vtkNew<vtkActor> noisePreviewRightActor;
+    vtkNew<vtkCubeSource> noisePreviewCubeSource;
+    vtkNew<vtkActor>      noisePreviewCubeFaceActor;
+    vtkNew<vtkActor>      noisePreviewCubeEdgeActor;
     vtkNew<vtkActor> sliceRegionTopActor;
     vtkNew<vtkActor> sliceRegionBottomActor;
     vtkNew<vtkActor> sliceRegionLeftActor;

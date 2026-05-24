@@ -114,15 +114,27 @@ void ToolResultDialog::showEvent(QShowEvent *event)
     if (m_anchored) return;            // only on first show
     if (!parentWidget()) return;       // free-floating fallback if parentless
 
-    // Anchor as a side-sheet on the right edge of the top-level parent: same
-    // height, fixed width, abutting the right border. Matches Layout B's
-    // intent of having region/analysis readouts pinned to the viewer rather
-    // than floating somewhere on screen.
+    // Anchor as a side-sheet on the right edge of the top-level parent. The
+    // sheet keeps a fixed comfortable width but its HEIGHT is set from the
+    // dialog's own content (Noise Estimation has eight scalar rows; PV info
+    // has ~five — a full-window-height empty box looks broken). We cap to
+    // the parent's height so a huge analysis dump still doesn't overflow.
     QWidget *root = parentWidget()->window();
     if (!root) return;
     const QRect parentGeo = root->geometry();
     const int width  = qBound(360, parentGeo.width() / 4, 460);
-    const int height = parentGeo.height();
+
+    // Force the layout to compute the preferred size now that all sections
+    // have been added (addSection() runs BEFORE show()). adjustSize() polls
+    // sizeHint() and resizes the dialog to it; we then use the final height
+    // — but never larger than the parent window.
+    adjustSize();
+    const int naturalH = sizeHint().height();
+    // Bound the height: at least a sensible minimum so the header isn't
+    // squashed, and never bigger than the parent. The scroll area inside
+    // takes over if the content really exceeds the cap.
+    const int height = qBound(200, naturalH, parentGeo.height());
+
     int x = parentGeo.right() - width + 1;
     int y = parentGeo.top();
 

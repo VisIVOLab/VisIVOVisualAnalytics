@@ -1639,6 +1639,7 @@ BackendCubeNoiseResult BackendClient::parseNoiseResultObject(const QJsonObject &
     result.x1 = region.value(QStringLiteral("x1")).toInt();
     result.y0 = region.value(QStringLiteral("y0")).toInt();
     result.y1 = region.value(QStringLiteral("y1")).toInt();
+    result.blankFraction = object.value(QStringLiteral("blank_fraction")).toDouble(0.0);
     return result;
 }
 

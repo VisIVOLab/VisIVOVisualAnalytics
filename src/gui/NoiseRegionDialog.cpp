@@ -73,16 +73,32 @@ NoiseRegionDialog::NoiseRegionDialog(int width, int height, int depth, QWidget *
     root->addWidget(spectralGroup);
     root->addWidget(btnBox);
 
-    // Wire live validation
-    const auto validate = [this]() { this->validate(); };
-    QObject::connect(m_x0Spin,    &QSpinBox::valueChanged, this, validate);
-    QObject::connect(m_x1Spin,    &QSpinBox::valueChanged, this, validate);
-    QObject::connect(m_y0Spin,    &QSpinBox::valueChanged, this, validate);
-    QObject::connect(m_y1Spin,    &QSpinBox::valueChanged, this, validate);
-    QObject::connect(m_chStartSpin, &QSpinBox::valueChanged, this, validate);
-    QObject::connect(m_chEndSpin,   &QSpinBox::valueChanged, this, validate);
+    // Wire live validation + live preview emission. All six spinboxes (4
+    // spatial + 2 spectral) notify the cube viewer via regionPreviewChanged
+    // so it can keep the 2D slice rectangle AND the 3D volume box in sync
+    // with the user's selection while they tune the bounds.
+    const auto onAny = [this]() {
+        this->validate();
+        this->emitRegion();
+    };
+    QObject::connect(m_x0Spin,      &QSpinBox::valueChanged, this, onAny);
+    QObject::connect(m_x1Spin,      &QSpinBox::valueChanged, this, onAny);
+    QObject::connect(m_y0Spin,      &QSpinBox::valueChanged, this, onAny);
+    QObject::connect(m_y1Spin,      &QSpinBox::valueChanged, this, onAny);
+    QObject::connect(m_chStartSpin, &QSpinBox::valueChanged, this, onAny);
+    QObject::connect(m_chEndSpin,   &QSpinBox::valueChanged, this, onAny);
 
     validate();
+    // Emit once at construction so the cube viewer paints the initial
+    // (full-extent) overlays right away when the dialog opens.
+    emitRegion();
+}
+
+void NoiseRegionDialog::emitRegion()
+{
+    emit regionPreviewChanged(m_x0Spin->value(), m_x1Spin->value(),
+                              m_y0Spin->value(), m_y1Spin->value(),
+                              m_chStartSpin->value(), m_chEndSpin->value());
 }
 
 void NoiseRegionDialog::validate()

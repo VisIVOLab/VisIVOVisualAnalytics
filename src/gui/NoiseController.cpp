@@ -7,10 +7,13 @@
 
 #include "CubeNoiseTypes.h"
 #include "NoiseRegionDialog.h"
+#include "ToolResultDialog.h"
+// vtkWindowCube is included in the .cpp (not the .h) so the controller's
+// header stays decoupled. We need the full type here to qobject_cast the
+// parent widget for the live preview-rectangle hookup.
+#include "vtkWindowCube.h"
 #include "app/BackendClient.h"
 #include "app/DiagnosticsManager.h"
-
-#include "ToolResultDialog.h"
 
 #include <QDialog>
 #include <QFutureWatcher>
@@ -55,16 +58,17 @@ static CubeNoiseEstimateResult runNoiseRequest(const QString &backendUrl,
         return result;
     }
 
-    result.valid        = true;
-    result.channelStart = response.channelStart;
-    result.channelEnd   = response.channelEnd;
-    result.numChannels  = response.numChannels;
-    result.mad          = response.mad;
-    result.sigma        = response.sigma;
-    result.x0           = response.x0;
-    result.x1           = response.x1;
-    result.y0           = response.y0;
-    result.y1           = response.y1;
+    result.valid         = true;
+    result.channelStart  = response.channelStart;
+    result.channelEnd    = response.channelEnd;
+    result.numChannels   = response.numChannels;
+    result.mad           = response.mad;
+    result.sigma         = response.sigma;
+    result.x0            = response.x0;
+    result.x1            = response.x1;
+    result.y0            = response.y0;
+    result.y1            = response.y1;
+    result.blankFraction = response.blankFraction;
     return result;
 }
 
@@ -103,9 +107,31 @@ void NoiseController::startEstimation()
     }
 
     NoiseRegionDialog dlg(m_width, m_height, m_depth, m_parentWindow);
-    if (dlg.exec() != QDialog::Accepted) {
+
+    // Live preview overlays (amber rectangle on the 2D slice + amber semi-
+    // transparent box inside the 3D volume): connect the dialog's
+    // regionPreviewChanged signal to the cube viewer's preview slot so the
+    // user sees their selection in both views while tuning the spinboxes.
+    // qobject_cast is safe here — m_parentWindow is the cube viewer that
+    // owns this controller. If the parent ever isn't a cube window (no
+    // current case), the cast yields null and the connect is a no-op.
+    auto *cube = qobject_cast<vtkWindowCube *>(m_parentWindow);
+    if (cube) {
+        QObject::connect(&dlg, &NoiseRegionDialog::regionPreviewChanged,
+                         cube, &vtkWindowCube::setNoiseRegionPreview);
+    }
+
+    const int rc = dlg.exec();
+
+    if (rc != QDialog::Accepted) {
+        // User cancelled — clear immediately so the slice/volume look pristine.
+        if (cube) cube->clearNoiseRegionPreview();
         return;
     }
+    // On Accept the overlay stays VISIBLE: the user just told us which
+    // region to sample, so we keep showing it through the async compute
+    // and the result dialog. It gets cleared when the result dialog is
+    // closed (see ToolResultDialog wiring in showResult()).
 
     const int x0           = dlg.x0();
     const int x1           = dlg.x1();
@@ -221,13 +247,28 @@ void NoiseController::showResult(const CubeNoiseEstimateResult &result)
         return QString::number(v, 'g', 8);
     };
 
-    const QString subtitle =
+    QString subtitle =
             u"Channels: %1..%2  (%3 planes)  ·  region x=%4..%5, y=%6..%7"_s
                     .arg(result.channelStart)
                     .arg(result.channelEnd)
                     .arg(result.numChannels)
                     .arg(result.x0).arg(result.x1)
                     .arg(result.y0).arg(result.y1);
+
+    // If the region overlaps a lot of off-source blanked pixels, MAD/σ get
+    // pulled down toward the value of the blank marker (typically 0). Make
+    // that explicit so the user doesn't read a misleading "σ=0" — and so
+    // they know to retry with a tighter spatial box.
+    if (result.blankFraction > 0.20) {
+        const int pct = static_cast<int>(std::round(result.blankFraction * 100.0));
+        subtitle += u"\n⚠ %1 % of the selected pixels are blank (=0). "_s.arg(pct);
+        if (result.blankFraction > 0.50) {
+            subtitle += u"σ excluding zeros — pick a tighter region inside "
+                        u"the data footprint for a clean estimate."_s;
+        } else {
+            subtitle += u"Result still computed over all finite pixels."_s;
+        }
+    }
 
     auto *dlg = new ToolResultDialog(m_parentWindow);
     dlg->setTitle(u"Noise Estimation"_s);
@@ -244,6 +285,18 @@ void NoiseController::showResult(const CubeNoiseEstimateResult &result)
         { u"Min"_s,    fmt(madStats[2]) },
         { u"Max"_s,    fmt(madStats[3]) },
     });
+
+    // Tear down the noise-region preview overlays (2D rect + 3D box) when
+    // the user closes the result dialog. QObject::destroyed fires after
+    // close() because ToolResultDialog uses WA_DeleteOnClose; using a
+    // QPointer guards against the cube viewer being destroyed first.
+    if (auto *cube = qobject_cast<vtkWindowCube *>(m_parentWindow)) {
+        QPointer<vtkWindowCube> cubePtr(cube);
+        QObject::connect(dlg, &QObject::destroyed, cube, [cubePtr]() {
+            if (cubePtr) cubePtr->clearNoiseRegionPreview();
+        });
+    }
+
     dlg->show();
 
     if (auto *win = qobject_cast<QMainWindow *>(m_parentWindow)) {

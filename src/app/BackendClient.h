@@ -274,6 +274,10 @@ struct BackendCubeNoiseResult
     int x1{ 0 };
     int y0{ 0 };
     int y1{ 0 };
+    // Fraction (0..1) of finite pixels in the region that were exactly 0.
+    // High values typically mean the region overlaps off-source blanked
+    // area; the dialog surfaces a warning when this is the case.
+    double blankFraction{ 0.0 };
 };
 
 struct BackendCatalogueFieldInfo

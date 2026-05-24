@@ -50,6 +50,7 @@
 #include <vtkImageSliceMapper.h>
 #include <vtkInteractorStyleImage.h>
 #include <vtkInteractorStyleUser.h>
+#include <vtkCubeSource.h>
 #include <vtkLineSource.h>
 #include <vtkLookupTable.h>
 #include <vtkOrientationMarkerWidget.h>
@@ -3717,6 +3718,41 @@ void vtkWindowCube::setupCubeRenderer()
     outlineActor->SetMapper(outlineMapper);
     ren->AddViewProp(outlineActor);
 
+    // ── Noise-region preview cube (3D) ────────────────────────────────────
+    // Semi-transparent amber box inside the volume that mirrors the slice's
+    // (x0..x1, y0..y1) rectangle and extrudes it along Z over the user's
+    // chosen channel range. Two actors share the same cube source: a
+    // filled-face actor at low opacity (translucent fill) and a wireframe
+    // actor at higher opacity (crisp edges). Both default to hidden — they
+    // get bounds and visibility from setNoiseRegionPreview() while the
+    // NoiseRegionDialog is open and through the result dialog's lifetime.
+    {
+        vtkNew<vtkPolyDataMapper> faceMapper;
+        faceMapper->SetInputConnection(this->noisePreviewCubeSource->GetOutputPort());
+        faceMapper->ScalarVisibilityOff();
+        this->noisePreviewCubeFaceActor->SetMapper(faceMapper);
+        this->noisePreviewCubeFaceActor->GetProperty()->SetColor(0.95, 0.65, 0.15);
+        this->noisePreviewCubeFaceActor->GetProperty()->SetOpacity(0.18);
+        this->noisePreviewCubeFaceActor->GetProperty()->SetRepresentationToSurface();
+        this->noisePreviewCubeFaceActor->GetProperty()->LightingOff();
+        this->noisePreviewCubeFaceActor->PickableOff();
+        this->noisePreviewCubeFaceActor->VisibilityOff();
+        ren->AddViewProp(this->noisePreviewCubeFaceActor);
+
+        vtkNew<vtkPolyDataMapper> edgeMapper;
+        edgeMapper->SetInputConnection(this->noisePreviewCubeSource->GetOutputPort());
+        edgeMapper->ScalarVisibilityOff();
+        this->noisePreviewCubeEdgeActor->SetMapper(edgeMapper);
+        this->noisePreviewCubeEdgeActor->GetProperty()->SetColor(0.95, 0.65, 0.15);
+        this->noisePreviewCubeEdgeActor->GetProperty()->SetOpacity(0.95);
+        this->noisePreviewCubeEdgeActor->GetProperty()->SetRepresentationToWireframe();
+        this->noisePreviewCubeEdgeActor->GetProperty()->SetLineWidth(2.0);
+        this->noisePreviewCubeEdgeActor->GetProperty()->LightingOff();
+        this->noisePreviewCubeEdgeActor->PickableOff();
+        this->noisePreviewCubeEdgeActor->VisibilityOff();
+        ren->AddViewProp(this->noisePreviewCubeEdgeActor);
+    }
+
     {
         // The cutting plane shows the actual 2D slice content textured onto
         // the plane in the 3D view (instead of a plain green fill). The
@@ -3942,6 +3978,23 @@ void vtkWindowCube::setupSliceRenderer()
     configureRegionLineActor(this->sliceRegionBottomLine, this->sliceRegionBottomActor);
     configureRegionLineActor(this->sliceRegionLeftLine, this->sliceRegionLeftActor);
     configureRegionLineActor(this->sliceRegionRightLine, this->sliceRegionRightActor);
+    // Noise-region preview rectangle: amber, slightly thicker, drawn over
+    // the slice while the NoiseRegionDialog is open. Distinct colour from
+    // the active Box region (cyan above) so the two never get confused.
+    const auto configureNoisePreviewActor = [sliceRenderer](vtkLineSource *line, vtkActor *actor) {
+        vtkNew<vtkPolyDataMapper> mapper;
+        mapper->SetInputConnection(line->GetOutputPort());
+        actor->SetMapper(mapper);
+        actor->GetProperty()->SetColor(0.95, 0.65, 0.15);  // amber
+        actor->GetProperty()->SetLineWidth(2.5);
+        actor->GetProperty()->SetOpacity(0.9);
+        actor->VisibilityOff();
+        sliceRenderer->AddActor(actor);
+    };
+    configureNoisePreviewActor(this->noisePreviewTopLine,    this->noisePreviewTopActor);
+    configureNoisePreviewActor(this->noisePreviewBottomLine, this->noisePreviewBottomActor);
+    configureNoisePreviewActor(this->noisePreviewLeftLine,   this->noisePreviewLeftActor);
+    configureNoisePreviewActor(this->noisePreviewRightLine,  this->noisePreviewRightActor);
     this->sliceRegionCircleSource->SetNumberOfSides(96);
     this->sliceRegionCircleSource->GeneratePolygonOff();
     vtkNew<vtkPolyDataMapper> sliceRegionCircleMapper;
@@ -4937,6 +4990,73 @@ void vtkWindowCube::refreshRegionOverlay()
                   this->momentRegionPolygonCells, this->momentRegionPolygonData,
                   this->momentRegionPolygonActor, this->momentRegionPolygonFillData,
                   this->momentRegionPolygonTriangulator, this->momentRegionPolygonFillActor);
+}
+
+void vtkWindowCube::setNoiseRegionPreview(int x0, int x1, int y0, int y1,
+                                          int chStart, int chEnd)
+{
+    // Normalise so a user dragging max<min (allowed by the spinbox while
+    // they're editing) doesn't produce an inverted rectangle. Pixel-coord
+    // convention matches the Box region tool — the slight half-pixel
+    // misalignment between line centres and image cells is invisible under
+    // the line width.
+    const double xLo = static_cast<double>(std::min(x0, x1));
+    const double xHi = static_cast<double>(std::max(x0, x1));
+    const double yLo = static_cast<double>(std::min(y0, y1));
+    const double yHi = static_cast<double>(std::max(y0, y1));
+    const double zLo = static_cast<double>(std::min(chStart, chEnd));
+    const double zHi = static_cast<double>(std::max(chStart, chEnd));
+
+    // ── 2D slice rectangle ──────────────────────────────────────────────
+    this->noisePreviewTopLine   ->SetPoint1(xLo, yHi, 0.0);
+    this->noisePreviewTopLine   ->SetPoint2(xHi, yHi, 0.0);
+    this->noisePreviewBottomLine->SetPoint1(xLo, yLo, 0.0);
+    this->noisePreviewBottomLine->SetPoint2(xHi, yLo, 0.0);
+    this->noisePreviewLeftLine  ->SetPoint1(xLo, yLo, 0.0);
+    this->noisePreviewLeftLine  ->SetPoint2(xLo, yHi, 0.0);
+    this->noisePreviewRightLine ->SetPoint1(xHi, yLo, 0.0);
+    this->noisePreviewRightLine ->SetPoint2(xHi, yHi, 0.0);
+
+    this->noisePreviewTopActor   ->VisibilityOn();
+    this->noisePreviewBottomActor->VisibilityOn();
+    this->noisePreviewLeftActor  ->VisibilityOn();
+    this->noisePreviewRightActor ->VisibilityOn();
+
+    // ── 3D volume box ───────────────────────────────────────────────────
+    // SetBounds takes (xmin,xmax, ymin,ymax, zmin,zmax) in the volume's
+    // local coordinate frame. The default cube load uses spacing (1,1,1)
+    // and origin (0,0,0), so user pixel coordinates map identically. For
+    // ROI-cropped cubes the volume's origin sits at the ROI corner — we
+    // could adjust here, but the spinboxes in NoiseRegionDialog are
+    // already full-cube pixel indices (0..width-1, 0..depth-1) and the
+    // backend interprets them the same way, so any offset is consistent.
+    this->noisePreviewCubeSource->SetBounds(xLo, xHi, yLo, yHi, zLo, zHi);
+    this->noisePreviewCubeFaceActor->VisibilityOn();
+    this->noisePreviewCubeEdgeActor->VisibilityOn();
+
+    if (ui->vtkImage && ui->vtkImage->renderWindow()) {
+        ui->vtkImage->renderWindow()->Render();
+    }
+    if (ui->vtkCube && ui->vtkCube->renderWindow()) {
+        ui->vtkCube->renderWindow()->Render();
+    }
+}
+
+void vtkWindowCube::clearNoiseRegionPreview()
+{
+    this->noisePreviewTopActor    ->VisibilityOff();
+    this->noisePreviewBottomActor ->VisibilityOff();
+    this->noisePreviewLeftActor   ->VisibilityOff();
+    this->noisePreviewRightActor  ->VisibilityOff();
+    this->noisePreviewCubeFaceActor->VisibilityOff();
+    this->noisePreviewCubeEdgeActor->VisibilityOff();
+
+    if (ui->vtkImage && ui->vtkImage->renderWindow()) {
+        ui->vtkImage->renderWindow()->Render();
+    }
+    if (ui->vtkCube && ui->vtkCube->renderWindow()) {
+        ui->vtkCube->renderWindow()->Render();
+    }
 }
 
 void vtkWindowCube::clearRegion()

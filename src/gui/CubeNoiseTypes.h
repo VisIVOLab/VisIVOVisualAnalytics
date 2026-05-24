@@ -25,6 +25,10 @@ struct CubeNoiseEstimateResult
     int x1{ 0 };
     int y0{ 0 };
     int y1{ 0 };
+    // Fraction (0..1) of finite pixels in the region that were exactly 0.
+    // Surfaced as a warning in the result dialog when high — see the
+    // "zero-as-blank" rationale in backend compute.worker_noise_estimate.
+    double blankFraction{ 0.0 };
 };
 
 #endif // CubeNoiseTypes_h

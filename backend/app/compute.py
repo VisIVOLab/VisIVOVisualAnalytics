@@ -993,17 +993,43 @@ def worker_noise_estimate(
 
     mad_values: list[float] = []
     sigma_values: list[float] = []
+    total_finite = 0
+    total_zero   = 0
     for z in range(region.shape[0]):
         plane = region[z].ravel()
         finite = plane[np.isfinite(plane)]
-        if len(finite) < 2:
+        total_finite += int(finite.size)
+        if finite.size:
+            total_zero += int(np.count_nonzero(finite == 0))
+        if finite.size < 2:
             mad_values.append(float("nan"))
             sigma_values.append(float("nan"))
+            continue
+        # Zero-as-blank heuristic: a lot of radio/IR cubes use exactly 0.0 for
+        # off-source pixels instead of NaN. If you compute MAD over a region
+        # that mostly overlaps that blanked area, the median of the finite
+        # pixels is 0 and |finite - 0| also has median 0 — you get a flat
+        # zero noise that hides the actual data noise. When more than half
+        # the finite pixels in this channel are exactly 0, treat them as
+        # blanks and use only the non-zero pixels for the MAD. We keep zeros
+        # in when they are a minority because some cubes (post-baseline
+        # subtraction, calibrated brightness temperatures) legitimately have
+        # noise centred on zero.
+        nonzero = finite[finite != 0]
+        if nonzero.size >= 2 and nonzero.size < finite.size / 2:
+            sample = nonzero
         else:
-            median = float(np.median(finite))
-            mad = float(np.median(np.abs(finite - median)))
-            mad_values.append(mad)
-            sigma_values.append(mad * 1.4826)  # MAD → σ for Gaussian noise
+            sample = finite
+        median = float(np.median(sample))
+        mad = float(np.median(np.abs(sample - median)))
+        mad_values.append(mad)
+        sigma_values.append(mad * 1.4826)  # MAD → σ for Gaussian noise
+
+    # Surface what fraction of finite pixels in the whole selection are
+    # exactly zero — the dialog uses this to warn the user when the result
+    # is suspicious (e.g. "80 % of the region is blanked; pick a tighter
+    # box inside the data footprint").
+    blank_fraction = float(total_zero / total_finite) if total_finite else 0.0
 
     return {
         "channel_start": z0,
@@ -1012,6 +1038,7 @@ def worker_noise_estimate(
         "mad": mad_values,
         "sigma": sigma_values,
         "region": {"x0": x0c, "x1": x1c, "y0": y0c, "y1": y1c},
+        "blank_fraction": blank_fraction,
     }
 
 

@@ -239,6 +239,10 @@ class CubeNoiseResponse(BaseModel):
     mad: list[float] = []
     sigma: list[float] = []
     region: dict = {}
+    # Fraction (0..1) of finite pixels in the selected region that were
+    # exactly 0. A high value typically means the region overlaps off-source
+    # blanked area and the noise estimate may be unreliable.
+    blank_fraction: float = 0.0
 
 
 class CatalogueOpenRequest(BaseModel):
