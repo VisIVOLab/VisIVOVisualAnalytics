@@ -63,7 +63,11 @@ public:
                          QAction *extractSpectrum,
                          QAction *extractPvDiagram,
                          QAction *cameraRoi,
-                         QAction *momentMap,       ///< ui->actionMomentMap
+                         QAction *momentMap,       ///< ui->actionComputeMoment
+                         QAction *linewidthMap,    ///< ui->actionLinewidthMap
+                         QAction *baselineSub,     ///< ui->actionBaselineSubtract
+                         QAction *stackCubes,      ///< ui->actionStackCubes
+                         QAction *openInVR,        ///< Tools → Open in VR (or nullptr)
                          QAction *wcsAxes,         ///< actionShowWcsAxes
                          QAction *boxRegion,       ///< actionBoxRegion
                          QAction *circleRegion,    ///< actionCircleRegion
@@ -193,16 +197,21 @@ private:
     QLabel               *m_momentInfoLabel{ nullptr };
     QWidget              *m_momentLutCard{ nullptr };
     QComboBox            *m_comboMomentLut{ nullptr };
+    // ── Tools page buttons (EXPLORATION) ──────────────────────────────────────
+    QToolButton          *m_btnDataProbe{ nullptr };
+    QToolButton          *m_btnOpenInVR{ nullptr };
     // ── Tools page buttons (ANALYSIS) ─────────────────────────────────────────
     QToolButton          *m_btnEstimateNoise{ nullptr };
     QToolButton          *m_btnMomentMap{ nullptr };
+    QToolButton          *m_btnLineWidth{ nullptr };
+    QToolButton          *m_btnBaselineSub{ nullptr };
+    QToolButton          *m_btnStackCubes{ nullptr };
     QToolButton          *m_btnPvDiagram{ nullptr };
+    // ── Tools page buttons (REGIONS) ──────────────────────────────────────────
     QToolButton          *m_btnBoxRegion{ nullptr };
     QToolButton          *m_btnCircleRegion{ nullptr };
     QToolButton          *m_btnPolygonRegion{ nullptr };
     QToolButton          *m_btnAnnulusRegion{ nullptr };
-    // ── Tools page buttons (EXPLORATION) ──────────────────────────────────────
-    QToolButton          *m_btnDataProbe{ nullptr };
     // ── 3D View Settings page buttons ─────────────────────────────────────────
     QToolButton          *m_btnCameraRoi{ nullptr };
     QToolButton          *m_btnLutEdit3D{ nullptr };

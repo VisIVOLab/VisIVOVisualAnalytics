@@ -88,22 +88,126 @@ volume rendering and the slice view.
   *2-D View Settings* sidebar. Both editors are non-modal: keep them open
   while you scrub through slices to fine-tune in real time.
 
-## Probing a spectrum
+## Tools menu
 
-To inspect the spectrum at a pixel:
+The cube viewer's *Tools* menu (and the matching *Tools* sidebar tab) is
+organised in four groups that go from cheap interactive lookups down to
+heavier compute, in this order:
 
-1. Open the **Probe mode** in the 2-D view (Tools → *Probe* or the probe
-   button). The cursor becomes a cross-hair.
-2. Click anywhere on the slice. A *Profile* window opens showing the
-   intensity along the spectral axis at that pixel.
-3. Keep clicking to update the probe interactively. Toggle **freeze** to
-   keep the current pick while you mouse over other positions.
+```{list-table}
+:header-rows: 1
+:widths: 18 36 46
+
+* - Group
+  - Tools
+  - When you reach for them
+* - **EXPLORATION**
+  - Extract Spectrum, Open in VR
+  - Cheap, interactive — look at one spectrum, immerse in the cube.
+* - **ANALYSIS**
+  - Estimate Noise, Compute Moment, Line-width Map, Baseline Subtraction,
+    Stack Spectral Cubes, Extract PV Diagram
+  - Compute-on-cube tools that produce a derived map / cube / spectrum.
+    All run on the backend with the heavy-task throttle, so the viewer
+    stays interactive.
+* - **REGIONS**
+  - Box / Circle / Polygon / Annulus
+  - Draw a shape on the slice → instant region statistics + per-region
+    spectral profile. See [Regions, PV, noise](region-pv-noise).
+* - **CATALOGUE**
+  - Load / Show / Show Labels / Clear Catalogue Overlay
+  - Manage source overlays drawn on top of the slice / moment.
+    See [Catalogues](catalogues-hips#catalogue-overlay-on-cubes--images).
+```
+
+Every entry is available both in the menu bar **and** as a tool button on
+the *Tools* sidebar tab — same action under the hood, so checked state and
+enable/disable propagate automatically between the two surfaces. Catalogue
+overlay management is menu-only (the four entries are state toggles, not
+"do-this-action" buttons).
+
+### Extract Spectrum (probe a single pixel)
+
+The cheapest interactive lookup the cube can offer. You pick a pixel; the
+backend returns the 1-D intensity profile along the spectral axis at that
+line of sight, drawn in a *Profile* window.
+
+**How to use it:**
+
+1. **Tools → Extract Spectrum** in the cube viewer (or the *Data Probe*
+   sidebar button, or the probe icon in the 2-D toolbar). The cursor
+   becomes a cross-hair on the slice.
+2. Click anywhere on the 2-D slice. A *Profile* window opens with the
+   spectrum at that pixel and the X-axis already converted to the cube's
+   spectral unit (velocity / frequency / channel).
+3. Keep clicking to update the probe interactively. Toggle **freeze** in
+   the Profile window to keep the current pick while you mouse over other
+   positions for visual comparison.
 
 You can also pick a spectrum directly from the **3-D view**: enable
 *View → Pick Spectrum on Plane Click* (or the *Cube Extras* sidebar
-checkbox). The cursor over the 3-D view becomes a cross; clicking on the
-textured cutting plane extracts the spectral profile at that (RA, Dec)
-position and raises the *Profile* window automatically.
+checkbox). Clicking on the textured cutting plane extracts the spectral
+profile at that (RA, Dec) position and raises the *Profile* window
+automatically.
+
+**Why it matters scientifically:** moment maps and region statistics
+average away the per-channel detail. The single-pixel spectrum is what
+you need to identify line shape (Gaussian vs multi-peak vs absorption),
+spot self-absorption dips, hand-pick line-free channels before running
+[Baseline Subtraction](spectral-tools#baseline-subtraction-s-03), or
+visually confirm a [moment-1 velocity gradient](moment-maps) is driven by
+a real shift in line centroid rather than by a noise feature.
+
+### Open in VR
+
+Open the current cube in a VR headset and explore the volume in stereo.
+The same `vtkVolume` actor used by the desktop renderer is shared with
+the OpenXR render window, so the LUT, threshold and opacity transfer
+function you've tuned on the desktop are mirrored live into the headset
+view.
+
+**Requirements** (see also the
+[VR enablement guide in the architecture note](../architecture-note)):
+
+- The VisIVO client must be built with `-DVISIVO_ENABLE_VR=ON`, against a
+  VTK with the `RenderingOpenXR` module compiled in. Default Mac builds
+  ship VR off (Apple removed OpenXR support); Windows / Linux builds need
+  to opt in explicitly.
+- A working **OpenXR runtime** must be installed and active on the host:
+  SteamVR, Oculus runtime, Windows Mixed Reality, or Monado on Linux.
+- A **headset** must be connected and recognised by that runtime.
+
+**How to use it:**
+
+1. Make sure your OpenXR runtime (SteamVR / Oculus / WMR / Monado) is
+   running and the HMD is detected by it.
+2. Open a cube and wait for the full-resolution swap to complete (the
+   bottom-status indicator goes green).
+3. **Tools → Open in VR** in the cube window (or *Open in VR* in the
+   *Tools* sidebar).
+4. Put the headset on. The cube appears in front of you, sized to a
+   comfortable arm-reach by default.
+
+If anything is missing — runtime not started, headset disconnected, VR
+not compiled in — the action either pops up a friendly *"Could not start
+an OpenXR session"* dialog or, in the not-compiled case, shows a
+disabled menu item with a tooltip listing the rebuild flags. Nothing
+crashes; the desktop viewer stays usable.
+
+```{caution}
+The current iteration runs the OpenXR session on the UI thread: the
+desktop window is blocked until you exit VR (take the headset off and
+press the runtime's quit gesture, or close the VR session in SteamVR /
+Oculus dashboard). A future revision will move the session to a worker
+QThread.
+```
+
+**Why it matters scientifically:** stereoscopic rendering exposes
+3-D structure (spectral-spatial coherence, filaments, shells) that flat
+slice scrolling or even rotating the desktop volume tends to hide. Useful
+for spotting where lines from different velocity ranges connect spatially
+— typical use cases are outflow lobes, expanding bubbles, and filament
+networks where the eye benefits from real parallax.
 
 ## Regions, PV diagrams, noise
 

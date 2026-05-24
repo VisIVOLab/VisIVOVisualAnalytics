@@ -2446,38 +2446,49 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->applyDefaultWcsFormatForSelectedFrame();
 
     // Setup menu Tools
+    //
+    // Final structure (consistent with the sidebar Tools page):
+    //   EXPLORATION : Extract Spectrum, Open in VR
+    //   ───────────
+    //   ANALYSIS    : Estimate Noise, Compute Moment, Line-width Map,
+    //                 Baseline Subtraction, Stack Spectral Cubes,
+    //                 Extract PV Diagram
+    //   ───────────
+    //   REGIONS     : Box / Circle / Polygon / Annulus
+    //   ───────────
+    //   CATALOGUE   : Load / Show / Show Labels / Clear
+    //
+    // The .ui file pre-populates the EXPLORATION head and the four ANALYSIS
+    // items from the .ui (Compute Moment, Line-width, Baseline, Stack); the
+    // other actions are created in code and slotted into the right group
+    // via QMenu::insertAction(beforeAction, ...).
+
     ui->actionExtractSpectrum->setCheckable(true);
     QObject::connect(ui->actionExtractSpectrum, &QAction::toggled, this,
                      &vtkWindowCube::setProbeModeActive);
-    this->actionExtractPvDiagram = ui->menuTools->addAction(u"Extract PV Diagram"_s);
-    this->actionExtractPvDiagram->setCheckable(true);
-    QObject::connect(this->actionExtractPvDiagram, &QAction::toggled, this,
-                     &vtkWindowCube::setPvModeActive);
-    this->actionEstimateNoise = ui->menuTools->addAction(u"Estimate Noise..."_s);
-    QObject::connect(this->actionEstimateNoise, &QAction::triggered,
-                     this->noiseController, &NoiseController::startEstimation);
 
-    // ── Tools → Open in VR ─────────────────────────────────────────────────
-    // Always present in the menu so users discover the feature; disabled only
-    // when VR isn't compiled in. We *don't* runtime-probe up front: most
-    // OpenXR loaders cap the process at one xrInstance and the probe leaks
-    // enough state that the real open() then fails with LIMIT_REACHED.
-    // Instead, click → real attempt → friendly error dialog on failure.
+    // EXPLORATION: Open in VR, inserted right after Extract Spectrum (i.e.
+    // before the first separator the .ui placed between EXPLORATION and
+    // ANALYSIS). We *don't* runtime-probe up front: most OpenXR loaders cap
+    // the process at one xrInstance and the probe leaks enough state that
+    // the real open() then fails with LIMIT_REACHED. Instead, click → real
+    // attempt → friendly error dialog on failure.
+    QAction *actOpenInVR = nullptr;
     {
-        auto *actVR = ui->menuTools->addAction(u"Open in VR"_s);
+        actOpenInVR = new QAction(u"Open in VR"_s, ui->menuTools);
         const bool compiled = CubeVRController::isCompiledIn();
-        actVR->setEnabled(compiled);
+        actOpenInVR->setEnabled(compiled);
         if (!compiled) {
-            actVR->setToolTip(u"This build was compiled without VR support. "
-                              u"Rebuild with -DVISIVO_ENABLE_VR=ON (requires VTK "
-                              u"with the RenderingOpenXR module)."_s);
+            actOpenInVR->setToolTip(u"This build was compiled without VR support. "
+                                    u"Rebuild with -DVISIVO_ENABLE_VR=ON (requires VTK "
+                                    u"with the RenderingOpenXR module)."_s);
         } else {
-            actVR->setToolTip(u"Open the current cube in your VR headset. "
-                              u"Requires a running OpenXR runtime (SteamVR / "
-                              u"Oculus / WMR) and a connected HMD. The desktop "
-                              u"volume, LUT and threshold stay synchronised."_s);
+            actOpenInVR->setToolTip(u"Open the current cube in your VR headset. "
+                                    u"Requires a running OpenXR runtime (SteamVR / "
+                                    u"Oculus / WMR) and a connected HMD. The desktop "
+                                    u"volume, LUT and threshold stay synchronised."_s);
         }
-        QObject::connect(actVR, &QAction::triggered, this, [this]() {
+        QObject::connect(actOpenInVR, &QAction::triggered, this, [this]() {
             auto *cubeRen = ui->vtkCube->renderWindow()
                     ? ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer()
                     : nullptr;
@@ -2492,12 +2503,38 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 QMessageBox::warning(this, u"Open in VR"_s, vr.lastError());
             }
         });
+        // Insert into EXPLORATION group — i.e. right after Extract Spectrum,
+        // before the first separator that the .ui placed after it.
+        const auto toolsActions = ui->menuTools->actions();
+        QAction *firstSep = nullptr;
+        for (QAction *a : toolsActions) {
+            if (a->isSeparator()) { firstSep = a; break; }
+        }
+        if (firstSep) {
+            ui->menuTools->insertAction(firstSep, actOpenInVR);
+        } else {
+            ui->menuTools->addAction(actOpenInVR);
+        }
     }
 
-    // Region analysis actions — created here so wireToolActions() can wire them
-    // to the sidebar buttons immediately below.
-    this->actionBoxRegion = ui->menuTools->addAction(u"Box Region Analysis"_s);
-    this->actionCircleRegion = ui->menuTools->addAction(u"Circle Region Analysis"_s);
+    // ANALYSIS: Estimate Noise goes at the head of the group (before Compute
+    // Moment), to match the sidebar's "Estimate Noise → Moment Map" order.
+    this->actionEstimateNoise = new QAction(u"Estimate Noise..."_s, ui->menuTools);
+    QObject::connect(this->actionEstimateNoise, &QAction::triggered,
+                     this->noiseController, &NoiseController::startEstimation);
+    ui->menuTools->insertAction(ui->actionComputeMoment, this->actionEstimateNoise);
+
+    // ANALYSIS: Extract PV Diagram goes at the tail of the group (after Stack
+    // Spectral Cubes, which is currently the last action defined in .ui).
+    this->actionExtractPvDiagram = ui->menuTools->addAction(u"Extract PV Diagram"_s);
+    this->actionExtractPvDiagram->setCheckable(true);
+    QObject::connect(this->actionExtractPvDiagram, &QAction::toggled, this,
+                     &vtkWindowCube::setPvModeActive);
+
+    // REGIONS group
+    ui->menuTools->addSeparator();
+    this->actionBoxRegion     = ui->menuTools->addAction(u"Box Region Analysis"_s);
+    this->actionCircleRegion  = ui->menuTools->addAction(u"Circle Region Analysis"_s);
     this->actionPolygonRegion = ui->menuTools->addAction(u"Polygon Region Analysis"_s);
     this->actionAnnulusRegion = ui->menuTools->addAction(u"Annulus Region Analysis"_s);
     this->actionBoxRegion->setCheckable(true);
@@ -2528,6 +2565,10 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                        this->actionExtractPvDiagram,
                                        this->actionCameraRoi,
                                        ui->actionComputeMoment,
+                                       ui->actionLinewidthMap,
+                                       ui->actionBaselineSubtract,
+                                       ui->actionStackCubes,
+                                       actOpenInVR,
                                        this->actionShowWcsAxes,
                                        this->actionBoxRegion,
                                        this->actionCircleRegion,
@@ -2536,10 +2577,13 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     }
 
     this->updateBackendDerivedActionsAvailability();
+
+    // CATALOGUE group (menu-only — overlay state toggles don't fit the
+    // sidebar's "do this action" tool-button paradigm).
     ui->menuTools->addSeparator();
-    this->actionLoadCatalogueOverlay = ui->menuTools->addAction(u"Load Catalogue Overlay"_s);
-    this->actionShowCatalogueOverlay = ui->menuTools->addAction(u"Show Catalogue Overlay"_s);
-    this->actionShowCatalogueLabels = ui->menuTools->addAction(u"Show Catalogue Labels"_s);
+    this->actionLoadCatalogueOverlay  = ui->menuTools->addAction(u"Load Catalogue Overlay"_s);
+    this->actionShowCatalogueOverlay  = ui->menuTools->addAction(u"Show Catalogue Overlay"_s);
+    this->actionShowCatalogueLabels   = ui->menuTools->addAction(u"Show Catalogue Labels"_s);
     this->actionClearCatalogueOverlay = ui->menuTools->addAction(u"Clear Catalogue Overlay"_s);
     this->actionShowCatalogueOverlay->setCheckable(true);
     this->actionShowCatalogueLabels->setCheckable(true);
@@ -3735,7 +3779,7 @@ void vtkWindowCube::setupCubeRenderer()
                 ->SetCoordinateSystemToNormalizedViewport();
         this->m_cube3dLoadingActor->SetPosition(0.5, 0.5);
         this->m_cube3dLoadingActor->VisibilityOn();
-        ren->AddActor2D(this->m_cube3dLoadingActor);
+        ren->AddViewProp(this->m_cube3dLoadingActor);
 
         QObject::connect(&ThemeManager::instance(), &ThemeManager::themeChanged,
                          this, [this](EffectiveTheme) {
@@ -3986,7 +4030,7 @@ void vtkWindowCube::setupSliceRenderer()
                 ->SetCoordinateSystemToNormalizedViewport();
         this->m_slice2dLoadingActor->SetPosition(0.5, 0.5);
         this->m_slice2dLoadingActor->VisibilityOn();
-        ren->AddActor2D(this->m_slice2dLoadingActor);
+        ren->AddViewProp(this->m_slice2dLoadingActor);
     }
 
     ren->ResetCamera();

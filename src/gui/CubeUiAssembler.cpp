@@ -607,53 +607,61 @@ QWidget *CubeUiAssembler::buildToolsPage()
     root->setContentsMargins(12, 14, 12, 12);
     root->setSpacing(12);
 
-    // ── ANALYSIS ──────────────────────────────────────────────────────────────
-    // All computation tools: noise, moment, PV, region analysis.
-    {
-        auto *hdr = new QLabel(u"ANALYSIS"_s);
+    // Local helper: build one group (header + card + buttons), same visual
+    // treatment as before but factored out so each of the three groups stays
+    // one block long. Returns the card's inner layout, ready for buttons.
+    auto makeGroup = [&](const QString &title) -> QVBoxLayout * {
+        auto *hdr = new QLabel(title);
         hdr->setStyleSheet(kSidebarHdrStyle());
         root->addWidget(hdr);
-
         auto *card = new QFrame();
         card->setStyleSheet(kSidebarCardStyle());
         auto *cl = new QVBoxLayout(card);
         cl->setContentsMargins(8, 6, 8, 6);
         cl->setSpacing(4);
+        root->addWidget(card);
+        return cl;
+    };
 
-        m_btnEstimateNoise  = makeSidebarToolButton(u"Estimate Noise\u2026"_s);
-        m_btnMomentMap      = makeSidebarToolButton(u"Moment Map\u2026"_s);
-        m_btnPvDiagram      = makeSidebarToolButton(u"PV Diagram"_s);
-        m_btnBoxRegion      = makeSidebarToolButton(u"Box Region"_s);
-        m_btnCircleRegion   = makeSidebarToolButton(u"Circle Region"_s);
-        m_btnPolygonRegion  = makeSidebarToolButton(u"Polygon Region"_s);
-        m_btnAnnulusRegion  = makeSidebarToolButton(u"Annulus Region"_s);
+    // EXPLORATION group: interactive viewing -- point probe + VR offload.
+    {
+        auto *cl = makeGroup(u"EXPLORATION"_s);
+        m_btnDataProbe = makeSidebarToolButton(u"Data Probe"_s);
+        m_btnOpenInVR  = makeSidebarToolButton(u"Open in VR"_s);
+        cl->addWidget(m_btnDataProbe);
+        cl->addWidget(m_btnOpenInVR);
+    }
 
+    // ANALYSIS group: all compute-on-cube tools in the same order as the
+    // Tools menu (noise -> moment -> line-width -> baseline -> stack -> PV).
+    {
+        auto *cl = makeGroup(u"ANALYSIS"_s);
+        m_btnEstimateNoise = makeSidebarToolButton(u"Estimate Noise\u2026"_s);
+        m_btnMomentMap     = makeSidebarToolButton(u"Moment Map\u2026"_s);
+        m_btnLineWidth     = makeSidebarToolButton(u"Line-width Map\u2026"_s);
+        m_btnBaselineSub   = makeSidebarToolButton(u"Baseline Subtraction\u2026"_s);
+        m_btnStackCubes    = makeSidebarToolButton(u"Stack Spectral Cubes\u2026"_s);
+        m_btnPvDiagram     = makeSidebarToolButton(u"PV Diagram"_s);
         cl->addWidget(m_btnEstimateNoise);
         cl->addWidget(m_btnMomentMap);
+        cl->addWidget(m_btnLineWidth);
+        cl->addWidget(m_btnBaselineSub);
+        cl->addWidget(m_btnStackCubes);
         cl->addWidget(m_btnPvDiagram);
+    }
+
+    // REGIONS group: drawing tools -- pick a shape, compute statistics +
+    // spectral profile.
+    {
+        auto *cl = makeGroup(u"REGIONS"_s);
+        m_btnBoxRegion     = makeSidebarToolButton(u"Box Region"_s);
+        m_btnCircleRegion  = makeSidebarToolButton(u"Circle Region"_s);
+        m_btnPolygonRegion = makeSidebarToolButton(u"Polygon Region"_s);
+        m_btnAnnulusRegion = makeSidebarToolButton(u"Annulus Region"_s);
         cl->addWidget(m_btnBoxRegion);
         cl->addWidget(m_btnCircleRegion);
         cl->addWidget(m_btnPolygonRegion);
         cl->addWidget(m_btnAnnulusRegion);
-        root->addWidget(card);
-    }
-
-    // ── EXPLORATION ───────────────────────────────────────────────────────────
-    // Interactive exploration tools: point probe.
-    {
-        auto *hdr = new QLabel(u"EXPLORATION"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle());
-        root->addWidget(hdr);
-
-        auto *card = new QFrame();
-        card->setStyleSheet(kSidebarCardStyle());
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 6, 8, 6);
-        cl->setSpacing(4);
-
-        m_btnDataProbe = makeSidebarToolButton(u"Data Probe"_s);
-        cl->addWidget(m_btnDataProbe);
-        root->addWidget(card);
     }
 
     root->addStretch();
@@ -910,6 +918,10 @@ void CubeUiAssembler::wireToolActions(QAction *estimateNoise,
                                       QAction *extractPvDiagram,
                                       QAction *cameraRoi,
                                       QAction *momentMap,
+                                      QAction *linewidthMap,
+                                      QAction *baselineSub,
+                                      QAction *stackCubes,
+                                      QAction *openInVR,
                                       QAction *wcsAxes,
                                       QAction *boxRegion,
                                       QAction *circleRegion,
@@ -919,19 +931,32 @@ void CubeUiAssembler::wireToolActions(QAction *estimateNoise,
     // setDefaultAction() links button text, tooltip, enabled state, and
     // checkability to the action — keeps the sidebar and menu in sync.
 
-    // ── Analysis buttons (Tools tab) ─────────────────────────────────────────
+    // ── EXPLORATION buttons ──────────────────────────────────────────────────
+    if (m_btnDataProbe && extractSpectrum) {
+        m_btnDataProbe->setDefaultAction(extractSpectrum);
+        m_btnDataProbe->setToolTip(u"Probe data values at a point in the 2D view."_s);
+    }
+    if (m_btnOpenInVR && openInVR)
+        m_btnOpenInVR->setDefaultAction(openInVR);
+
+    // ── ANALYSIS buttons ─────────────────────────────────────────────────────
     if (m_btnEstimateNoise && estimateNoise)
         m_btnEstimateNoise->setDefaultAction(estimateNoise);
-
     if (m_btnMomentMap && momentMap)
         m_btnMomentMap->setDefaultAction(momentMap);
-
+    if (m_btnLineWidth && linewidthMap)
+        m_btnLineWidth->setDefaultAction(linewidthMap);
+    if (m_btnBaselineSub && baselineSub)
+        m_btnBaselineSub->setDefaultAction(baselineSub);
+    if (m_btnStackCubes && stackCubes)
+        m_btnStackCubes->setDefaultAction(stackCubes);
     if (m_btnPvDiagram && extractPvDiagram) {
         m_btnPvDiagram->setDefaultAction(extractPvDiagram);
         m_btnPvDiagram->setToolTip(
                 u"Draw a path in the 2D view to extract a position-velocity diagram."_s);
     }
 
+    // ── REGIONS buttons ──────────────────────────────────────────────────────
     if (m_btnBoxRegion && boxRegion) {
         m_btnBoxRegion->setDefaultAction(boxRegion);
         m_btnBoxRegion->setToolTip(u"Draw a box region and compute statistics + spectral profile."_s);
@@ -947,12 +972,6 @@ void CubeUiAssembler::wireToolActions(QAction *estimateNoise,
     if (m_btnAnnulusRegion && annulusRegion) {
         m_btnAnnulusRegion->setDefaultAction(annulusRegion);
         m_btnAnnulusRegion->setToolTip(u"Draw an annulus region and compute statistics + spectral profile."_s);
-    }
-
-    // ── Exploration buttons (Tools tab) ──────────────────────────────────────
-    if (m_btnDataProbe && extractSpectrum) {
-        m_btnDataProbe->setDefaultAction(extractSpectrum);
-        m_btnDataProbe->setToolTip(u"Probe data values at a point in the 2D view."_s);
     }
 
     // ── 3D View Settings page buttons ────────────────────────────────────────

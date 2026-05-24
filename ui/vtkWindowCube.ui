@@ -611,13 +611,18 @@
    </widget>
    <widget class="QMenu" name="menuTools">
     <property name="title"><string>Tools</string></property>
+    <!-- EXPLORATION group -->
     <addaction name="actionExtractSpectrum"/>
+    <!-- (Open in VR is inserted here dynamically in vtkWindowCube.cpp) -->
     <addaction name="separator"/>
+    <!-- ANALYSIS group: Estimate Noise + Extract PV Diagram are inserted
+         around these in cpp so all six compute tools stay contiguous. -->
     <addaction name="actionComputeMoment"/>
-    <addaction name="separator"/>
     <addaction name="actionLinewidthMap"/>
     <addaction name="actionBaselineSubtract"/>
     <addaction name="actionStackCubes"/>
+    <!-- REGIONS group + CATALOGUE group are appended in cpp (with their
+         own separators) so menu and sidebar grouping stay consistent. -->
    </widget>
    <addaction name="menuCamera"/>
    <addaction name="menuEdit"/>

@@ -95,19 +95,76 @@ For million-row catalogues the backend exposes a paginated query API:
 ## Catalogue overlay on cubes / images
 
 In any **cube viewer** or **image viewer** you can overlay a catalogue on
-the 2-D slice / moment / image:
+the 2-D slice / moment / image. The whole feature is driven by four menu
+entries under *Tools → Catalogue* (in the cube viewer) — three checkable
+state toggles plus one one-shot loader:
 
-1. **Tools → Load Catalogue Overlay** — pick a CSV / VOTable. The backend
-   parses it and returns the source list.
-2. Sources are drawn as glyphs (with optional labels) on the viewer.
-3. The *Catalogue dock* shows a sortable / filterable table:
-   - Click a row → centre the view on the source.
-   - Hover a glyph → highlight the row.
-   - Right-click selection → send via SAMP (see below).
+```{list-table}
+:header-rows: 1
+:widths: 28 16 56
+
+* - Tool
+  - Type
+  - What it does
+* - **Load Catalogue Overlay**
+  - One-shot
+  - Open a file picker (or paste a backend path) for a CSV / VOTable.
+    The backend parses it (`/v1/catalogue/open`), returns the source
+    list, and the client renders the glyphs immediately on the slice.
+    Each call replaces the currently-loaded overlay.
+* - **Show Catalogue Overlay**
+  - Toggle
+  - Show / hide the glyph layer without unloading the catalogue. Useful
+    when you want to compare slice features against the catalogue back
+    and forth — much cheaper than re-loading.
+* - **Show Catalogue Labels**
+  - Toggle
+  - Show / hide the per-source labels (object name from the catalogue's
+    name column). Labels are crowded on dense fields, so they default
+    to *off*. The viewer caps the number of visible labels (≈ 200) to
+    keep rendering fluid; when the field has many more sources, only
+    the brightest / most central are labelled.
+* - **Clear Catalogue Overlay**
+  - One-shot
+  - Drop the catalogue entirely — glyphs, labels, and the table dock.
+    Frees backend memory and resets the *Show…* toggles. Run a *Load*
+    again to bring it back.
+```
+
+The overlay also drives a dock-window table:
+
+- Click a row → centre the view on the source (smooth fly-in animation).
+- Hover a glyph → highlight the matching row in the table.
+- Right-click selection → send via SAMP (see below).
 
 The overlay respects the viewer's WCS frame (J2000 / Galactic / Ecliptic);
 each source is projected through `wcscon()` so you see the same point
 regardless of the active frame.
+
+```{tip}
+**Workflow sequence**: *Load* once to bring sources in → toggle *Show
+Catalogue Overlay* off and on as you scrub channels to compare emission
+against catalogued positions → enable *Show Catalogue Labels* only when
+you actually need names (cluttering otherwise) → *Clear* when you switch
+to a different catalogue.
+```
+
+### Why overlay a catalogue on a cube?
+
+Three common use cases:
+
+1. **Source identification** — overlaying a YSO catalogue on a moment-0
+   map tells you which IR-bright pre-main-sequence sources sit inside
+   the molecular emission you're integrating, helping disentangle
+   star formation context from diffuse cloud structure.
+2. **Cross-survey comparison** — overlay a centimetre-continuum source
+   list on a HI cube to see whether neutral-hydrogen self-absorption
+   features coincide with background continuum positions (classic
+   technique for HISA studies).
+3. **Pointing / coordinate sanity check** — when you receive a new cube
+   from a different observatory, overlaying a well-known catalogue
+   (e.g. 2MASS PSCs, Spitzer point sources) is a quick way to spot
+   coordinate-system or astrometric offsets before any science analysis.
 
 ## HiPS viewer
 
