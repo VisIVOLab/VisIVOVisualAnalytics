@@ -1,0 +1,116 @@
+# Sync the contents of `docs/` (plus `.readthedocs.yaml`) into the public
+# `VisIVOLab/VisIVO-doc` repository, which Read the Docs uses as the source
+# for https://visivo.readthedocs.io.
+#
+# Why this exists: the main repo (ViaLacteaVisualAnalytics) is private and
+# RTD Community can only build from public repositories. The cleanest way to
+# keep RTD happy without paying for RTD Business is to mirror only the docs
+# tree into a public repo that RTD points at. Editors keep working on the
+# private repo; the mirror is generated and read-only for humans.
+#
+# Setup (one-off):
+#   1. Generate an SSH key pair:
+#        ssh-keygen -t ed25519 -C "visivo-doc-sync" -f visivo-doc-key -N ""
+#   2. Add the *public* key (`visivo-doc-key.pub`) as a Deploy Key on the
+#      VisIVO-doc repo: Settings → Deploy keys → Add deploy key. Check
+#      "Allow write access".
+#   3. Add the *private* key (`visivo-doc-key`, full file) as an Actions
+#      secret on THIS repo: Settings → Secrets and variables → Actions →
+#      New repository secret. Name: VISIVO_DOC_DEPLOY_KEY.
+#   4. Push this workflow. The next push that touches `docs/` (or a manual
+#      "Run workflow" trigger) will populate the mirror.
+
+name: Sync docs to public mirror
+
+on:
+  push:
+    branches:
+      - next-server
+      - master
+    paths:
+      - "docs/**"
+      - ".readthedocs.yaml"
+      - ".github/workflows/sync-docs.yml"
+  # Allow re-running the sync from the Actions UI even when no doc file
+  # changed (useful after the first setup, or to force a rebuild on RTD).
+  workflow_dispatch:
+
+# Cancel any in-flight sync for the same branch — if you push twice quickly,
+# only the latest source state matters.
+concurrency:
+  group: sync-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout this repo (source)
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Checkout VisIVO-doc (public mirror, write access via deploy key)
+        uses: actions/checkout@v4
+        with:
+          repository: VisIVOLab/VisIVO-doc
+          ssh-key: ${{ secrets.VISIVO_DOC_DEPLOY_KEY }}
+          path: mirror
+          # Need full history so subsequent commits show meaningful diffs
+          # against what RTD last built, not against a shallow root.
+          fetch-depth: 0
+
+      - name: Replace mirror contents with current docs tree
+        run: |
+          set -euo pipefail
+
+          # Wipe everything except the .git/ directory; mirror is fully
+          # regenerated from source on each sync, so stale files (renamed,
+          # deleted) don't linger forever.
+          find mirror -mindepth 1 -maxdepth 1 -not -name ".git" -exec rm -rf {} +
+
+          # Copy the docs tree + RTD config to the mirror root.
+          cp -R source/docs mirror/docs
+          cp source/.readthedocs.yaml mirror/.readthedocs.yaml
+
+          # Leave a README that makes the situation obvious for anyone who
+          # lands on this repo directly via Google or via the RTD project
+          # page's "View source" link.
+          cat > mirror/README.md <<'README'
+          # VisIVO documentation (auto-generated mirror)
+
+          This repository is the public source that
+          [Read the Docs](https://visivo.readthedocs.io/) builds for the
+          VisIVO project documentation. **Do not edit files here directly.**
+
+          The contents of this repo are auto-generated from the `docs/`
+          subtree of the (private) source repository
+          [`VisIVOLab/ViaLacteaVisualAnalytics`](https://github.com/VisIVOLab/ViaLacteaVisualAnalytics)
+          via a [GitHub Actions workflow](https://github.com/VisIVOLab/ViaLacteaVisualAnalytics/blob/next-server/.github/workflows/sync-docs.yml).
+          Every push to the upstream `docs/` triggers a sync that overwrites
+          the contents of this repo and re-runs the RTD build.
+
+          To propose changes to the docs, open a PR against the source repo.
+          README
+
+      - name: Commit and push if anything changed
+        working-directory: mirror
+        run: |
+          set -euo pipefail
+          git config user.name  "VisIVO docs sync"
+          git config user.email "visivo-docs-sync@inaf.it"
+          git add -A
+          if git diff --staged --quiet; then
+            echo "::notice::No documentation changes to sync."
+            exit 0
+          fi
+          # Commit message embeds the upstream commit SHA + first line of
+          # its message so the mirror's git log is a useful trail.
+          UPSTREAM_SUBJECT="$(git -C ../source log -1 --pretty=%s)"
+          git commit -m "Sync docs from upstream @ ${GITHUB_SHA:0:7}
+
+          Source: ${{ github.repository }}@${{ github.ref_name }}
+          Subject: ${UPSTREAM_SUBJECT}"
+          git push
