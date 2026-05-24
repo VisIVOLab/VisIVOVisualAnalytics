@@ -94,6 +94,18 @@ catalogue3d-viewer
 testing
 ```
 
+```{toctree}
+:caption: VisIVO Server (CLI tools)
+:hidden:
+:maxdepth: 2
+
+server/visivo_server
+server/visivo_importer
+server/visivo_filter
+server/visivo_viewer
+server/visivo_utils
+```
+
 ---
 
 ## What you can do with it
@@ -195,6 +207,10 @@ every tool together with the page that documents its scientific use.
   - Built-in SAMP hub bridge (auto-discovers running hub)
   - File / catalogue exchange
   - [Catalogues · SAMP](user-guide/catalogues-hips#samp)
+* - Open VBT / volume binary tables produced by the VisIVO Server CLI
+  - **File → Open** (or *Data Hub*) — any `.bin` / `.head` VBT pair
+  - Particle viewer (`vtkWindowVbt` / `vtkWindowCatalogue3D`)
+  - [VisIVO Server](server/visivo_server)
 ```
 
 ---
