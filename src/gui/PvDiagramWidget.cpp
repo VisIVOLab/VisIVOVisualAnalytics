@@ -2,6 +2,7 @@
 
 #include "ColorMaps.h"
 #include "qcustomplot.h"
+#include "theme/VisivoTheme.h"
 
 #include <QDialogButtonBox>
 #include <QFileDialog>
@@ -18,14 +19,19 @@
 
 using namespace Qt::StringLiterals;
 
-// ── Style constants (match the cube-viewer sidebar palette) ───────────────────
-
-static const QString kBg          = u"#141922"_s;
-static const QString kHeaderBg    = u"#1a2030"_s;
-static const QString kGroupBorder = u"rgba(4, 138, 191, 0.25)"_s;
-static const QString kGroupTitle  = u"rgba(4, 138, 191, 0.90)"_s;
-static const QString kKeyColor    = u"#7888a8"_s;
-static const QString kValueColor  = u"#d0deff"_s;
+// ── Theme accessors ───────────────────────────────────────────────────────────
+// Use VisivoTheme tokens so the PV window shares the exact same surface ramp
+// as ToolResultDialog (Noise / Stack / Region info dialogs). Hardcoded hex
+// codes are deliberately gone — they used to drift from the global theme.
+namespace {
+QString tBg()         { return QString::fromLatin1(VisivoTheme::kSurface()); }
+QString tHeaderBg()   { return QString::fromLatin1(VisivoTheme::kSurfaceContainerLow()); }
+QString tBorder()     { return QString::fromLatin1(VisivoTheme::kOutline()); }
+QString tTitle()      { return QString::fromLatin1(VisivoTheme::kOnSurface()); }
+QString tKey()        { return QString::fromLatin1(VisivoTheme::kOnSurfaceVariant()); }
+QString tValue()      { return QString::fromLatin1(VisivoTheme::kOnSurface()); }
+QString tGroupTitle() { return QString::fromLatin1(VisivoTheme::kPrimary()); }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -37,7 +43,7 @@ PvDiagramWidget::PvDiagramWidget(QWidget *parent)
     this->setWindowFlag(Qt::Window);
     this->setWindowTitle(u"PV Diagram"_s);
     this->resize(960, 700);
-    this->setStyleSheet(u"background: %1;"_s.arg(kBg));
+    this->setStyleSheet(u"PvDiagramWidget { background: %1; }"_s.arg(tBg()));
 
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
@@ -54,7 +60,8 @@ PvDiagramWidget::PvDiagramWidget(QWidget *parent)
 
     // ── Footer toolbar (Save PNG) ─────────────────────────────────────────────
     auto *footer = new QFrame(this);
-    footer->setStyleSheet(u"QFrame { background: %1; border-top: 1px solid rgba(4,138,191,0.15); }"_s.arg(kHeaderBg));
+    footer->setStyleSheet(u"QFrame { background: %1; border-top: 1px solid %2; }"_s
+                                  .arg(tHeaderBg(), tBorder()));
     auto *footerLayout = new QHBoxLayout(footer);
     footerLayout->setContentsMargins(12, 10, 12, 10);
 
@@ -90,17 +97,25 @@ PvDiagramWidget::PvDiagramWidget(QWidget *parent)
 void PvDiagramWidget::applyPlotTheme(bool dark)
 {
     if (dark) {
-        this->plot->setBackground(QColor(kBg));
-        this->plot->axisRect()->setBackground(QColor(u"#0d1118"_s));
+        // Plot background follows the global surface colour so the canvas
+        // visually melts into the surrounding window. Axes / labels use the
+        // on-surface tokens for consistency with the rest of the app.
+        this->plot->setBackground(QColor(tBg()));
+        this->plot->axisRect()->setBackground(
+                QColor(QString::fromLatin1(VisivoTheme::kBackground())));
         if (this->titleElement)
-            this->titleElement->setTextColor(QColor(u"#c8d8f8"_s));
+            this->titleElement->setTextColor(QColor(tTitle()));
+        const QColor axisLine(tBorder());
+        const QColor subTick(QString::fromLatin1(VisivoTheme::kOutlineVariant()));
+        const QColor tickLbl(tValue());
+        const QColor axisLbl(QString::fromLatin1(VisivoTheme::kPrimary()));
         for (auto *axis : { this->plot->xAxis, this->plot->xAxis2,
                             this->plot->yAxis, this->plot->yAxis2 }) {
-            axis->setBasePen(QPen(QColor(u"#4a5a7a"_s)));
-            axis->setTickPen(QPen(QColor(u"#4a5a7a"_s)));
-            axis->setSubTickPen(QPen(QColor(u"#2a3555"_s)));
-            axis->setTickLabelColor(QColor(u"#c0d0f0"_s));
-            axis->setLabelColor(QColor(u"#8ab4f8"_s));
+            axis->setBasePen(QPen(axisLine));
+            axis->setTickPen(QPen(axisLine));
+            axis->setSubTickPen(QPen(subTick));
+            axis->setTickLabelColor(tickLbl);
+            axis->setLabelColor(axisLbl);
         }
     } else {
         this->plot->setBackground(Qt::white);
@@ -141,37 +156,44 @@ void PvDiagramWidget::savePng()
 void PvDiagramWidget::buildHeaderUi()
 {
     auto *header = new QFrame(this);
+    header->setObjectName(u"pvDiagramHeader"_s);
+    // Matches ToolResultDialog's header band (header bg + bottom hairline).
     header->setStyleSheet(
-            u"QFrame {"
+            u"QFrame#pvDiagramHeader {"
             u"  background: %1;"
-            u"  border-bottom: 1px solid rgba(4,138,191,0.20);"
-            u"}"_s.arg(kHeaderBg));
+            u"  border-bottom: 1px solid %2;"
+            u"}"_s.arg(tHeaderBg(), tBorder()));
 
     auto *hLayout = new QHBoxLayout(header);
-    hLayout->setContentsMargins(12, 8, 12, 8);
-    hLayout->setSpacing(16);
+    hLayout->setContentsMargins(14, 10, 14, 10);
+    hLayout->setSpacing(12);
 
     auto makeGroup = [&](const QString &title) -> QFormLayout * {
         auto *box = new QGroupBox(title, header);
+        // Same section card chrome as ToolResultDialog: rounded outline,
+        // uppercase tracking, brand-blue label.
         box->setStyleSheet(
                 u"QGroupBox {"
+                u"  background: transparent;"
                 u"  border: 1px solid %1;"
-                u"  border-radius: 4px;"
-                u"  margin-top: 6px;"
+                u"  border-radius: 6px;"
+                u"  margin-top: 10px;"
                 u"  color: %2;"
-                u"  font-weight: bold;"
+                u"  font-weight: 700;"
                 u"  font-size: 10px;"
+                u"  letter-spacing: 0.10em;"
                 u"}"
                 u"QGroupBox::title {"
                 u"  subcontrol-origin: margin;"
-                u"  left: 8px;"
-                u"  padding: 0 3px;"
-                u"}"_s.arg(kGroupBorder, kGroupTitle));
+                u"  left: 10px;"
+                u"  padding: 0 6px;"
+                u"  text-transform: uppercase;"
+                u"}"_s.arg(tBorder(), tGroupTitle()));
 
         auto *form = new QFormLayout(box);
-        form->setContentsMargins(8, 10, 8, 8);
-        form->setHorizontalSpacing(16);
-        form->setVerticalSpacing(4);
+        form->setContentsMargins(12, 14, 12, 10);
+        form->setHorizontalSpacing(24);
+        form->setVerticalSpacing(6);
         form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
         hLayout->addWidget(box, 1);
@@ -182,9 +204,14 @@ void PvDiagramWidget::buildHeaderUi()
                        const QString &key,
                        QLabel *&labelOut) {
         auto *keyLbl = new QLabel(key + u":"_s);
-        keyLbl->setStyleSheet(u"color: %1; font-size: 10px;"_s.arg(kKeyColor));
+        keyLbl->setStyleSheet(
+                u"color: %1; font-size: 11px; background: transparent;"_s.arg(tKey()));
         labelOut = new QLabel(u"—"_s);
-        labelOut->setStyleSheet(u"color: %1; font-size: 10px;"_s.arg(kValueColor));
+        // Mono value font + selectable, same as ToolResultDialog values.
+        labelOut->setStyleSheet(
+                u"color: %1; font-size: 11px; background: transparent; "
+                u"font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;"_s
+                        .arg(tValue()));
         labelOut->setTextInteractionFlags(Qt::TextSelectableByMouse);
         form->addRow(keyLbl, labelOut);
     };

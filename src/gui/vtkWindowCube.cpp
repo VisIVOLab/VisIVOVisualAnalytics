@@ -2240,6 +2240,23 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                             });
                 }
 
+                // Now that the widget exists, it's safe to flip PV mode off.
+                // Doing this earlier (right after the user finished drawing)
+                // would race with the async extraction: setPvModeActive(false)
+                // calls clearPv() unless pvDiagramWidget is non-null, so the
+                // polyline would vanish before the plot opened.
+                if (this->actionExtractPvDiagram
+                    && this->actionExtractPvDiagram->isChecked()) {
+                    this->actionExtractPvDiagram->setChecked(false);
+                }
+                // refreshPvOverlay() keeps the polyline visible because
+                // pvDiagramWidget is now non-null (see the guard in
+                // refreshPvOverlay()), so the overlay survives the
+                // PV-mode-off transition.
+                this->refreshPvOverlay();
+                if (ui->vtkImage->renderWindow())
+                    ui->vtkImage->renderWindow()->Render();
+
                 // Choose spatial axis (prefer physical arcsec when available).
                 const bool hasArcsec = !result.positionsArcsec.isEmpty()
                         && result.positionsArcsec.size() == result.positions.size();
@@ -4566,9 +4583,12 @@ void vtkWindowCube::finalizePvInteraction()
 
     this->extractCurrentPvDiagram();
     ui->vtkImage->renderWindow()->Render();
-    if (this->actionExtractPvDiagram && this->actionExtractPvDiagram->isChecked()) {
-        this->actionExtractPvDiagram->setChecked(false);
-    }
+    // DO NOT toggle off actionExtractPvDiagram here. It triggers
+    // setPvModeActive(false) → clearPv() (guarded by `if (!pvDiagramWidget)`
+    // which is still null until the async backend response arrives), wiping
+    // the polyline before the plot window can take over the overlay's
+    // lifetime. The uncheck happens later, inside the pvWatcher 'finished'
+    // handler, right after pvDiagramWidget is created.
 }
 
 bool vtkWindowCube::updateProbeFromDisplayPosition(int displayX, int displayY)
@@ -5096,14 +5116,25 @@ void vtkWindowCube::refreshPvOverlay()
                                    vtkActor *upperActor, vtkPoints *lowerPoints,
                                    vtkCellArray *lowerCells, vtkPolyData *lowerData,
                                    vtkActor *lowerActor) {
-        if (!imageData || !this->pvModeActive) {
+        // Hide if there's nothing to draw on. The polyline stays visible
+        // through the PvDiagramWidget's lifetime even after PV mode is
+        // toggled off — that way the user can see the path the plot was
+        // computed from. clearPv() (called from the widget's destroyed
+        // handler) is what actually removes it.
+        const bool keepingForPlotWindow = (this->pvDiagramWidget != nullptr);
+        if (!imageData || (!this->pvModeActive && !keepingForPlotWindow)) {
             actor->VisibilityOff();
             upperActor->VisibilityOff();
             lowerActor->VisibilityOff();
             return;
         }
         std::vector<std::array<int, 2>> drawVertices = this->pvPolylineVertices;
-        if (this->pvDragging && this->pvCursorValid
+        // The hovering cursor preview only makes sense while the user is
+        // actively drawing — don't extend the saved polyline with the
+        // current mouse position when we're just keeping it on screen
+        // because the plot window is open.
+        if (this->pvModeActive
+            && this->pvDragging && this->pvCursorValid
             && (drawVertices.empty() || drawVertices.back() != this->pvCurrentVoxel)) {
             drawVertices.push_back(this->pvCurrentVoxel);
         }
