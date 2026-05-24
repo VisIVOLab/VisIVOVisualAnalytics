@@ -1,5 +1,5 @@
 # Testing
-
+ 
 ## Suite overview
 
 QTest-based headless unit suite under `tests/`. No VTK, no Qt::Widgets, no live backend required.
