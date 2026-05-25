@@ -2570,8 +2570,14 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->actionPolygonRegion->setCheckable(true);
     this->actionAnnulusRegion->setCheckable(true);
     {
+        // ExclusiveOptional = at most one of the four region-shape actions
+        // can be checked at any moment, but the user can also have NONE
+        // active (clicking the currently-active shape un-checks it, which
+        // turns off region drawing entirely). The old setExclusive(false)
+        // let the user check Circle + Polygon together, which then made
+        // the cube viewer enter an undefined region-mode state.
         auto *regionGroup = new QActionGroup(this);
-        regionGroup->setExclusive(false);
+        regionGroup->setExclusionPolicy(QActionGroup::ExclusionPolicy::ExclusiveOptional);
         regionGroup->addAction(this->actionBoxRegion);
         regionGroup->addAction(this->actionCircleRegion);
         regionGroup->addAction(this->actionPolygonRegion);
