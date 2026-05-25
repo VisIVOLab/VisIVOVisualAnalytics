@@ -5,6 +5,7 @@
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
 
+#include <QApplication>
 #include <QDateTime>
 #include <QDebug>
 #include <QEvent>
@@ -1247,6 +1248,11 @@ bool DataHubWidget::eventFilter(QObject *watched, QEvent *event)
 
 void DataHubWidget::refreshStatus()
 {
+    // Don't refresh status while a modal dialog is up — see the same guard
+    // in MainWindow::pollBackendDiagnosticsOnce(). Updating the badge's
+    // stylesheet here causes a parent-window event burst on macOS that
+    // dismisses native save dialogs spawned by secondary windows.
+    if (QApplication::activeModalWidget() != nullptr) return;
     if (this->backendUrl.isEmpty()) {
         if (this->labelStatusBadge) {
             this->labelStatusBadge->setText(u"● Not configured"_s);

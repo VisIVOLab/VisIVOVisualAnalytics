@@ -11,6 +11,8 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QApplication>
+#include <QEventLoop>
 #include <QPushButton>
 #include <QVBoxLayout>
 
@@ -140,9 +142,22 @@ void PvDiagramWidget::applyPlotTheme(bool dark)
 
 void PvDiagramWidget::savePng()
 {
-    const QString path = QFileDialog::getSaveFileName(
-            this, u"Save PV Diagram as PNG"_s, u"pv_diagram.png"_s,
-            u"PNG Image (*.png)"_s);
+    // Native standalone Save dialog. Make ourselves the key window first
+    // so macOS restores focus to this PV window on close — see
+    // ProfileWidget::runAppModalSaveDialog for the rationale on why every
+    // other (sheet, parented) variant has issues here.
+    this->raise();
+    this->activateWindow();
+    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 50);
+    QFileDialog dlg(nullptr, u"Save PV Diagram as PNG"_s);
+    dlg.setAcceptMode(QFileDialog::AcceptSave);
+    dlg.setFileMode(QFileDialog::AnyFile);
+    dlg.setDefaultSuffix(u"png"_s);
+    dlg.setNameFilters({ u"PNG image (*.png)"_s, u"All files (*)"_s });
+    dlg.selectFile(u"pv_diagram.png"_s);
+    dlg.setWindowModality(Qt::ApplicationModal);
+    if (dlg.exec() != QDialog::Accepted) return;
+    const QString path = dlg.selectedFiles().value(0);
     if (path.isEmpty())
         return;
     this->plot->savePng(path);

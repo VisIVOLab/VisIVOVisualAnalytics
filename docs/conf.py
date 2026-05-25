@@ -14,7 +14,11 @@ import sys
 
 # ── Project information ──────────────────────────────────────────────────────
 
-project = "VisIVO Visual Analytics"
+# Site name: the docs now cover both the desktop tool (Visual Analytics)
+# AND the CLI toolkit (Server), so the top-level project name is just
+# "VisIVO". Each component identifies itself in its respective section /
+# page titles.
+project = "VisIVO"
 author = "VisIVOLab"
 copyright = f"{datetime.datetime.now().year}, {author}"
 # Single-source the release string from the top-level CMakeLists.txt project()

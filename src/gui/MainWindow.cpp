@@ -356,6 +356,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 void MainWindow::pollBackendDiagnosticsOnce()
 {
     if (m_backendDiagPollInFlight) return;       // skip if the previous poll hasn't returned
+    // Don't poll while a modal dialog is up. On macOS the network-reply UI
+    // burst (events being appended to the diagnostics manager, possible
+    // UI repaints on the DataHub status pill, etc.) is enough to make the
+    // OS steal focus back to MainWindow — which dismisses native save
+    // dialogs spawned by the secondary windows (Spectrum probe, PV plot,
+    // …). Pausing during modal dialogs makes those saves stable.
+    if (QApplication::activeModalWidget() != nullptr) return;
     const QString url   = this->settings ? this->settings->getBackendUrl()   : QString();
     const QString token = this->settings ? this->settings->getBackendToken() : QString();
     if (url.isEmpty()) return;

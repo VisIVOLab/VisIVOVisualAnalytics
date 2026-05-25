@@ -11,7 +11,10 @@
 #include <memory>
 
 class QCPItemLine;
+class QFrame;
+class QLabel;
 class QPushButton;
+class QToolButton;
 class vtkImageData;
 class vtkInteractorStyleProfile;
 
@@ -57,10 +60,37 @@ public:
     /// Apply dark (true) or light (false) plot theme to all active plots.
     void applyPlotTheme(bool dark);
 
+    /// Populate the spectrum header meta row. Pass empty strings to omit a
+    /// field. Pixel coordinates are shown verbatim; the optional wcsLabel is
+    /// the formatted RA/Dec or Galactic l/b string the caller already
+    /// computed (so we don't have to depend on AstroUtils here).
+    void setSpectrumContext(const QString &fileLabel,
+                            int pixelX, int pixelY,
+                            const QString &wcsLabel = QString());
+
+    /// Show / hide the "🔒 Frozen at …" badge in the header. When false, the
+    /// header shows the live indicator instead. The cube viewer sets this
+    /// from its own probeFrozen state; the widget does NOT auto-toggle.
+    void setSpectrumFrozen(bool frozen);
+
+    /// Mark a channel as the "current" one (the slice the cube viewer is
+    /// displaying). Drawn as a vertical reference line on the spectrum.
+    /// Pass spectralValueAtChannel = NaN to clear the marker.
+    void setSpectrumCurrentChannel(double spectralValueAtChannel);
+
+signals:
+    /// Emitted when the user toggles the Pin button in the header. The cube
+    /// viewer connects this to its probeFrozen state so the spectrum freezes
+    /// in place even when the mouse keeps moving over the slice.
+    void freezeToggled(bool frozen);
+
 private slots:
-    void setLiveMode(bool live);
     void savePlot1Png();
     void savePlot2Png();
+    /// Save the current spectrum (key + values) as a CSV: header line +
+    /// two columns. Only meaningful in spectrum-mode — the button is
+    /// hidden in image-profile mode.
+    void saveSpectrumCsv();
 
 private:
     Ui::ProfileWidget *ui;
@@ -74,15 +104,61 @@ private:
     vtkSmartPointer<vtkInteractorStyleProfile> interactor;
     QCPItemLine *refLineX;
     QCPItemLine *refLineY;
+    QCPItemLine *m_channelMarker{ nullptr };
     UsageMode usageMode{ UsageMode::ProbeLive };
 
     QPushButton *m_btnSavePlot1 { nullptr };
     QPushButton *m_btnSavePlot2 { nullptr };
+    QPushButton *m_btnSaveCsv   { nullptr };
     bool m_darkTheme{ true };
+    // Tracks whether we've already shown the window once. raise() and
+    // activateWindow() must only run on the very first appearance — if we
+    // call them on every hover update (which happens many times per second
+    // during live probe), they steal focus from any modal native dialog
+    // currently attached to this window (e.g. the Save-as file picker),
+    // which on macOS shows up as the file picker closing by itself.
+    bool m_initiallyRaised{ false };
+    // True while a Save dialog spawned by this widget is open. Suppresses
+    // all internal redraw / state-mutation paths (plotSpectrum, refreshes,
+    // channel marker) for the dialog's lifetime — even ApplicationModal
+    // doesn't stop timers / async callbacks from firing, and on macOS any
+    // mutation of the parent window can dismiss an NSSavePanel sheet.
+    bool m_dialogInProgress{ false };
+    void showAndRaiseFirstTime();
+
+    // Cached current spectrum (last data passed to updateSpectrumPlot /
+    // plotSpectrum), used for CSV export. Two parallel vectors of the same
+    // length: m_lastSpectrumKey holds the x-axis values (spectral coord)
+    // and m_lastSpectrumValues the y-axis intensity. Empty until first draw.
+    QVector<double> m_lastSpectrumKey;
+    QVector<double> m_lastSpectrumValues;
+    QString         m_lastSpectrumXLabel;
+    QString         m_lastSpectrumYLabel;
+
+    // ── Spectrum-mode header chrome ─────────────────────────────────────────
+    // Created lazily when setupSpectrumPlot() runs so image-mode users don't
+    // pay for the extra widgets.
+    QFrame      *m_specHeader     { nullptr };
+    QLabel      *m_specTitleLabel { nullptr };
+    QLabel      *m_specMetaLabel  { nullptr };
+    QLabel      *m_specStatusLabel{ nullptr };
+    QToolButton *m_specPinBtn     { nullptr };
+    QFrame      *m_specStatsBar   { nullptr };
+    QLabel      *m_specStatsLabel { nullptr };
+
+    QString m_fileLabel;
+    int     m_pixelX{ 0 };
+    int     m_pixelY{ 0 };
+    QString m_wcsLabel;
+    bool    m_frozen{ false };
 
     void plotProfile(double x, double y, bool live);
     void plotSpectrum(double x, double y, bool live);
     void applyUsageModeUi(const QString &windowTitle = QString());
+    void buildSpectrumHeader();
+    void refreshSpectrumHeader();
+    void refreshSpectrumStats(const QVector<double> &spectralKey,
+                              const QVector<double> &values);
 };
 
 #endif

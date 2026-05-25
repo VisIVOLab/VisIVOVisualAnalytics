@@ -1,27 +1,58 @@
-# VisIVO Visual Analytics
+# VisIVO
 
-**An interactive desktop tool for exploring radio-astronomy data —
-spectral cubes, 2-D maps, 3-D catalogues, and HiPS surveys — backed by a
-scientific compute service.**
+**Tools for exploring and analysing astronomy data — interactive desktop
+viewing plus a command-line processing toolkit.**
 
-VisIVO Visual Analytics gives astronomers a fast workspace for inspecting
-FITS data and deriving the products needed for science: moment maps,
-position–velocity diagrams, spectral profiles, line-width and equivalent-width
-maps, baseline-subtracted cubes, stacked spectra, isosurfaces, region
-statistics, and source overlays. Visualisation runs on the desktop;
-heavy computation runs on a co-located backend that can be embedded with the
-app or deployed on an HPC cluster.
+VisIVO is a family of two complementary components developed at INAF,
+sharing the same data formats (FITS, plus VisIVO's own Volume Binary
+Table — VBT) so workflows mix freely between them:
+
+- **VisIVO Visual Analytics** — desktop GUI for spectral cubes, 2-D maps,
+  3-D catalogues, HiPS surveys, source overlays. Backed by a scientific
+  compute service that runs either embedded with the app or on a remote
+  HPC cluster. Interactive slice navigation, moment maps, position–velocity
+  diagrams, line-width / equivalent-width maps, baseline subtraction,
+  spectral stacking, region statistics, MAD-based noise, optional VR.
+- **VisIVO Server** — command-line toolkit for *building*, *filtering*,
+  *viewing*, and *managing* large particle catalogues / volume data as
+  VBTs. Used to prepare datasets that the desktop client then opens
+  (numerical simulations, exoplanet samples, randomly-downsampled mock
+  fields, etc.).
+
+::::{grid} 1 2 2 2
+:gutter: 3
+:class-container: sd-mb-4
+
+:::{grid-item-card} 🖥️ VisIVO Visual Analytics
+:link: user-guide/getting-started
+:link-type: doc
+
+The desktop tool — start here for FITS cubes and images.
++++
+Install, launch the backend, open your first FITS dataset →
+[Getting started](user-guide/getting-started)
+:::
+
+:::{grid-item-card} ⚙️ VisIVO Server
+:link: server/visivo_server
+:link-type: doc
+
+The CLI toolkit — build / filter / view VBTs from the shell.
++++
+Importer, Filter, Viewer, Utils →
+[VisIVO Server](server/visivo_server)
+:::
+::::
+
+## Visual Analytics — quick tour
+
+The desktop tool is organised around six main areas. Each card below
+opens the page that documents both the UI workflow and the scientific
+interpretation of the products it produces.
 
 ::::{grid} 1 2 2 3
 :gutter: 3
 :class-container: sd-mb-4
-
-:::{grid-item-card} 🚀 Getting started
-:link: user-guide/getting-started
-:link-type: doc
-
-Install, launch the backend, open your first FITS dataset.
-:::
 
 :::{grid-item-card} 🧊 Spectral cube viewer
 :link: user-guide/cube-viewer
@@ -60,6 +91,52 @@ extraction, MAD-based noise.
 
 3-D catalogue scatter, multi-layer 2-D images, all-sky HiPS surveys,
 SAMP messaging with TOPCAT/Aladin.
+:::
+
+:::{grid-item-card} 🛠️ Troubleshooting
+:link: user-guide/troubleshooting
+:link-type: doc
+
+Backend not reachable, sanity warnings, slow swaps, common pitfalls.
+:::
+::::
+
+## VisIVO Server — quick tour
+
+::::{grid} 1 2 2 2
+:gutter: 3
+:class-container: sd-mb-4
+
+:::{grid-item-card} 📥 Importer
+:link: server/visivo_importer
+:link-type: doc
+
+Convert HDF5 / ASCII / FITS / binary inputs into VBT — the format both
+the Server tools and the desktop viewer consume natively.
+:::
+
+:::{grid-item-card} 🔬 Filter
+:link: server/visivo_filter
+:link-type: doc
+
+Operations on VBTs: extraction, decimation, randomisation, merging,
+sub-volume selection, scalar generation.
+:::
+
+:::{grid-item-card} 👁 Viewer
+:link: server/visivo_viewer
+:link-type: doc
+
+Render VBTs from the shell into images / movies (headless), useful for
+HPC post-processing pipelines.
+:::
+
+:::{grid-item-card} 🧰 Utils
+:link: server/visivo_utils
+:link-type: doc
+
+Helpers for inspecting VBTs, converting between encodings, batch
+operations.
 :::
 ::::
 
