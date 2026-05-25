@@ -1959,8 +1959,15 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              return;
                          }
 
+                         // The cube's min/max is dominated by background blanks and a
+                         // few bright peaks, so taking literal min as the volume
+                         // floor and lowerBound = min + 10% leaves most of the
+                         // interesting emission below the visibility threshold.
+                         // 3% gives a tighter noise-floor cut that still hides
+                         // the constant-zero background but keeps faint emission
+                         // (the bulk of the science signal) visible.
                          const double span = result.cubeRange[1] - result.cubeRange[0];
-                         this->lowerBound = static_cast<float>(result.cubeRange[0] + 0.1 * span);
+                         this->lowerBound = static_cast<float>(result.cubeRange[0] + 0.03 * span);
                          this->upperBound = static_cast<float>(result.cubeRange[1]);
 
                          // applyCubeOpenResult() sets currentCubeVisibleRange from the real data.
@@ -1977,14 +1984,17 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                                      0. });
 
                          // ── Data-driven initial threshold (first load only) ──
-                         // Target: ~75th percentile of visible range.
-                         // Formula: lowerBound + 65% of (upperBound - lowerBound).
-                         // Called here — after applyCubeOpenResult — so that
-                         // currentCubeVisibleRange is valid and the opacity TF is built
-                         // with the correct range anchor points.
+                         // Picks the isosurface level on first load. Used to be
+                         // 65% of (upper-lower) — too aggressive for HI / molecular
+                         // cubes whose interesting emission tail sits in the lower
+                         // half of the visible range, so users saw only a couple of
+                         // bright peaks and assumed the cube was empty. 20% catches
+                         // the bulk of the emission contour while still hiding the
+                         // background noise floor, and the user can always raise it
+                         // via the 3D View Settings slider.
                          if (!this->m_initialThresholdApplied) {
                              const float initial = this->lowerBound
-                                     + 0.65f * (this->upperBound - this->lowerBound);
+                                     + 0.20f * (this->upperBound - this->lowerBound);
                              this->applyThreshold(initial);   // updates UI + pipeline, no Render
                              this->m_initialThresholdApplied = true;
                          }
@@ -3717,11 +3727,24 @@ void vtkWindowCube::setupCubeRenderer()
     ColorMaps::SetColorMap(lutVolume);
     ColorMaps::SetColorTransferFunction(lutVolume, this->volumeColorTransferFunction);
     this->volumeColorTransferFunction->SetObjectName(lutVolume->GetObjectName());
+    // Opacity transfer function. Previous defaults (5% at threshold, 30% at
+    // max) made the volume rendering near-invisible — even the brightest
+    // peaks topped out at 30% opacity, indistinguishable from background.
+    // The new ramp goes:
+    //     sentinel / min  → 0.0    (fully transparent: blanks + below-noise)
+    //     lowerBound      → 0.12   (faint emission becomes visible)
+    //     midpoint        → 0.45   (mid-range structures stand out)
+    //     max             → 0.85   (peaks read clearly without saturating)
+    // This produces a much more legible default render for HI / molecular
+    // cubes whose emission is concentrated in the lower half of the range.
+    // Users can still customise via the LUT editor (3D View → Advanced…).
+    const double midpoint = 0.5 * (this->lowerBound + cubeRange[1]);
     this->volumeOpacity->RemoveAllPoints();
     this->volumeOpacity->AddPoint(this->currentCubeInvisibleSentinel, 0.0);
-    this->volumeOpacity->AddPoint(cubeRange[0], 0.0);
-    this->volumeOpacity->AddPoint(this->lowerBound, 0.05);
-    this->volumeOpacity->AddPoint(cubeRange[1], 0.3);
+    this->volumeOpacity->AddPoint(cubeRange[0],    0.0);
+    this->volumeOpacity->AddPoint(this->lowerBound, 0.12);
+    this->volumeOpacity->AddPoint(midpoint,         0.45);
+    this->volumeOpacity->AddPoint(cubeRange[1],     0.85);
     vtkNew<vtkVolumeProperty> volumeProperty;
     volumeProperty->SetColor(this->volumeColorTransferFunction);
     volumeProperty->SetScalarOpacity(this->volumeOpacity);
