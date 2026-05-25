@@ -1,11 +1,13 @@
 #include "BaselineDialog.h"
 #include "BackendClient.h"
 #include "DiagnosticsManager.h"
+#include "theme/ToolDialogStyle.h"
 #include "theme/VisivoTheme.h"
 
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QFormLayout>
+#include <QFrame>
 #include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -42,45 +44,57 @@ BaselineDialog::BaselineDialog(const QString &backendUrl,
 {
     setWindowTitle(u"Spectral Baseline Subtraction"_s);
     setMinimumWidth(520);
+    // Shared input theme (chevron dropdown, consistent border/hover/focus
+    // on combos and spinboxes) — see ToolDialogStyle for the rationale.
+    setStyleSheet(ToolDialogStyle::inputCss());
 
     // ── Central widget ────────────────────────────────────────────────────────
     auto *central = new QWidget(this);
     setCentralWidget(central);
 
     auto *mainLayout = new QVBoxLayout(central);
-    mainLayout->setContentsMargins(12, 12, 12, 12);
-    mainLayout->setSpacing(8);
+    mainLayout->setContentsMargins(16, 14, 16, 14);
+    mainLayout->setSpacing(10);
+    mainLayout->addWidget(ToolDialogStyle::makeBreadcrumb(central, u"Baseline Subtraction"_s));
 
-    auto *form = new QFormLayout();
-    form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
-    form->setHorizontalSpacing(12);
-    form->setVerticalSpacing(8);
-    mainLayout->addLayout(form);
+    // ── METHOD: fit type + polynomial order ──────────────────────────────
+    auto *methodForm = ToolDialogStyle::addSection(mainLayout, u"Method"_s, central);
 
-    // ── Method ───────────────────────────────────────────────────────────────
     m_methodCombo = new QComboBox(central);
     m_methodCombo->addItem(u"Polynomial"_s, u"polynomial"_s);
     m_methodCombo->addItem(u"Median"_s,     u"median"_s);
-    form->addRow(u"Method"_s, m_methodCombo);
+    methodForm->addRow(u"Fit"_s, m_methodCombo);
 
-    // ── Polynomial order ──────────────────────────────────────────────────────
     m_polyOrderLabel = new QLabel(u"Polynomial order"_s, central);
     m_polyOrderSpin  = new QSpinBox(central);
     m_polyOrderSpin->setRange(0, 10);
     m_polyOrderSpin->setValue(1);
-    form->addRow(m_polyOrderLabel, m_polyOrderSpin);
+    methodForm->addRow(m_polyOrderLabel, m_polyOrderSpin);
 
-    // ── Line-free channel ranges ──────────────────────────────────────────────
+    auto *methodHint = new QLabel(
+            u"Polynomial of the chosen order is fit to the line-free channels "
+            u"and subtracted from the full spectrum. Median collapses the "
+            u"line-free range to a single per-pixel level (equivalent to "
+            u"poly_order = 0). Higher orders chase instrumental ripples."_s, central);
+    methodHint->setStyleSheet(ToolDialogStyle::helperCss());
+    methodHint->setWordWrap(true);
+    methodForm->addRow(QString(), methodHint);
+
+    // ── LINE-FREE CHANNELS: the input the user MUST give ─────────────────
+    auto *channelsForm = ToolDialogStyle::addSection(mainLayout,
+                                                     u"Line-free channels"_s, central);
+
     m_lineFreeEdit = new QLineEdit(central);
     m_lineFreeEdit->setPlaceholderText(u"e.g.  1-50, 200-300  (1-based, inclusive)"_s);
-    auto *hintLabel = new QLabel(
-            u"<i><b>Required.</b> Enter spectral ranges that contain <b>no signal</b> "
-            u"(line-free regions). The baseline is estimated from these channels only "
-            u"and then subtracted from the full spectrum. "
-            u"Fitting on all channels will absorb real line emission.</i>"_s, central);
-    hintLabel->setWordWrap(true);
-    form->addRow(u"Line-free ranges"_s, m_lineFreeEdit);
-    form->addRow(QString(), hintLabel);
+    channelsForm->addRow(u"Ranges"_s, m_lineFreeEdit);
+
+    auto *channelsHint = new QLabel(
+            u"<b>Required.</b> Enter spectral ranges that contain no signal. "
+            u"The baseline is estimated from these channels only — fitting on "
+            u"all channels will absorb real line emission."_s, central);
+    channelsHint->setStyleSheet(ToolDialogStyle::helperCss());
+    channelsHint->setWordWrap(true);
+    channelsForm->addRow(QString(), channelsHint);
 
     // Disable poly-order for median mode.
     auto updatePolyOrder = [this]() {
@@ -91,15 +105,29 @@ BaselineDialog::BaselineDialog(const QString &backendUrl,
     updatePolyOrder();
     connect(m_methodCombo, &QComboBox::currentIndexChanged, this, updatePolyOrder);
 
-    // ── Footer (Layout B tool-dlg pattern: breadcrumb left, actions right) ────
+    // ── METHODOLOGY footer ───────────────────────────────────────────────
+    auto *divider = new QFrame(central);
+    divider->setFrameShape(QFrame::HLine);
+    divider->setStyleSheet(
+            QStringLiteral("color: %1;")
+                    .arg(QString::fromLatin1(VisivoTheme::kOutline())));
+    mainLayout->addWidget(divider);
+
+    auto *methodologyLabel = new QLabel(
+            u"Fit runs per pixel · output is a new cube dataset registered in "
+            u"the current session, openable in a fresh cube viewer."_s, central);
+    methodologyLabel->setStyleSheet(ToolDialogStyle::helperCss());
+    methodologyLabel->setWordWrap(true);
+    mainLayout->addWidget(methodologyLabel);
+
+    // ── Footer: Cancel + primary action, aligned right. The old
+    // bottom-left breadcrumb pill is gone — the top breadcrumb header
+    // (added by ToolDialogStyle::makeBreadcrumb) carries that info.
     auto *btnLayout = new QHBoxLayout();
-    btnLayout->addWidget(VisivoTheme::makeBreadcrumbTag(
-            u"Tools → Baseline…"_s, central));
     btnLayout->addStretch();
     auto *closeBtn = VisivoTheme::makeSecondaryButton(u"Close"_s, central);
     m_computeBtn   = VisivoTheme::makePrimaryButton(u"Subtract Baseline"_s, central);
     m_computeBtn->setDefault(true);
-    // Explicitly NOT checkable — must behave as a plain command button.
     m_computeBtn->setCheckable(false);
     btnLayout->addWidget(closeBtn);
     btnLayout->addWidget(m_computeBtn);

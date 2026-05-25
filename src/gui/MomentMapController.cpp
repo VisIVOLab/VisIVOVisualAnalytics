@@ -7,6 +7,8 @@
 #include "MomentMapController.h"
 
 #include "app/DiagnosticsManager.h"
+#include "theme/ToolDialogStyle.h"
+#include "theme/VisivoTheme.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -14,11 +16,14 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QFrame>
 #include <QFutureWatcher>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QPointer>
+#include <QPushButton>
 #include <QSizePolicy>
 #include <QSpinBox>
 #include <QStatusBar>
@@ -226,20 +231,22 @@ void MomentMapController::startComputation(int defaultOrder)
 
 bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config)
 {
+    // Shared visual chrome (input theming + section headers + helper text)
+    // is in ToolDialogStyle so every parameter dialog looks the same.
+    const QString tBorder = QString::fromLatin1(VisivoTheme::kOutline());
+    const QString tMuted  = QString::fromLatin1(VisivoTheme::kOnSurfaceVariant());
+
     QDialog dialog(m_parentWindow);
     dialog.setWindowTitle(u"Moment Map Settings"_s);
-    dialog.setMinimumWidth(560);
+    dialog.setMinimumWidth(580);
+    dialog.setStyleSheet(ToolDialogStyle::inputCss());
     auto *layout = new QVBoxLayout(&dialog);
-    layout->setContentsMargins(12, 12, 12, 12);
-    layout->setSpacing(8);
-    auto *form = new QFormLayout();
-    form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
-    form->setRowWrapPolicy(QFormLayout::WrapLongRows);
-    form->setLabelAlignment(Qt::AlignLeft | Qt::AlignTop);
-    form->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
-    form->setHorizontalSpacing(12);
-    form->setVerticalSpacing(8);
-    layout->addLayout(form);
+    layout->setContentsMargins(16, 14, 16, 14);
+    layout->setSpacing(10);
+    layout->addWidget(ToolDialogStyle::makeBreadcrumb(&dialog, u"Compute Moment"_s));
+
+    // ── COMPUTE: moment order + per-order helper text ──────────────────────
+    auto *computeForm = ToolDialogStyle::addSection(layout, u"Compute"_s, &dialog);
 
     auto *momentCombo = new QComboBox(&dialog);
     const std::array<std::pair<int, QString>, 9> orders = {
@@ -253,6 +260,22 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
             std::pair{ 8,  u"Moment 8: Maximum (M8)"_s },
             std::pair{ 10, u"Moment 10: Minimum (M10)"_s },
     };
+    // One-liner per moment order — gives the user the *why* without having
+    // to open the docs. Phrased for working astronomers, not specs.
+    auto orderHint = [](int order) -> QString {
+        switch (order) {
+        case 0:  return u"Sum I·Δv over the channel range — total line flux per pixel."_s;
+        case 1:  return u"Intensity-weighted spectral centroid — reveals velocity gradients (rotation, outflows)."_s;
+        case 2:  return u"Spectral variance, NOT FWHM. Use the Line-width Map tool for FWHM/EW."_s;
+        case 3:  return u"Asymmetry of the line profile — positive = high-velocity tail."_s;
+        case 4:  return u"Peakedness vs Gaussian — positive = leptokurtic; negative = flat / double-peaked."_s;
+        case 5:  return u"Standardised 5th moment — sensitive to asymmetric tails on top of skewness."_s;
+        case 6:  return u"Root-mean-square brightness — quick signal-strength map."_s;
+        case 8:  return u"Maximum intensity per spectrum — robust for narrow lines, equivalent to a peak map."_s;
+        case 10: return u"Minimum intensity per spectrum — useful for absorption studies."_s;
+        }
+        return {};
+    };
     int defaultIndex = 0;
     for (int i = 0; i < static_cast<int>(orders.size()); ++i) {
         momentCombo->addItem(orders[static_cast<std::size_t>(i)].second,
@@ -263,14 +286,63 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
     }
     momentCombo->setCurrentIndex(defaultIndex);
 
+    auto *orderHintLabel = new QLabel(orderHint(defaultOrder), &dialog);
+    orderHintLabel->setStyleSheet(ToolDialogStyle::helperCss());
+    orderHintLabel->setWordWrap(true);
+    QObject::connect(momentCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                     orderHintLabel, [orderHintLabel, momentCombo, orderHint](int /*idx*/) {
+                         orderHintLabel->setText(orderHint(momentCombo->currentData().toInt()));
+                     });
+
+    computeForm->addRow(u"Moment order"_s, momentCombo);
+    computeForm->addRow(QString(), orderHintLabel);
+
+    // ── CHANNEL RANGE: start/end on one row + range size hint ──────────────
+    auto *rangeForm = ToolDialogStyle::addSection(layout, u"Channel range"_s, &dialog);
+
     const int totalChannels = std::max(1, m_depth);
     auto *channelStartSpin = new QSpinBox(&dialog);
-    auto *channelEndSpin = new QSpinBox(&dialog);
+    auto *channelEndSpin   = new QSpinBox(&dialog);
     channelStartSpin->setRange(1, totalChannels);
     channelEndSpin->setRange(1, totalChannels);
     channelStartSpin->setValue(std::clamp(config.channelStart + 1, 1, totalChannels));
     channelEndSpin->setValue(std::clamp(
             config.channelEnd > 0 ? config.channelEnd + 1 : totalChannels, 1, totalChannels));
+
+    // Put both spinboxes on the same row with a tiny "to" separator so the
+    // form is more compact and the relationship between the two is clear.
+    auto *rangeRow = new QWidget(&dialog);
+    auto *rangeLay = new QHBoxLayout(rangeRow);
+    rangeLay->setContentsMargins(0, 0, 0, 0);
+    rangeLay->setSpacing(8);
+    rangeLay->addWidget(channelStartSpin, 1);
+    auto *toLbl = new QLabel(u"→"_s, rangeRow);
+    toLbl->setStyleSheet(QStringLiteral("color: %1; font-weight: 600;").arg(tMuted));
+    rangeLay->addWidget(toLbl);
+    rangeLay->addWidget(channelEndSpin, 1);
+
+    auto *rangeHintLabel = new QLabel(&dialog);
+    rangeHintLabel->setStyleSheet(ToolDialogStyle::helperCss());
+    rangeHintLabel->setWordWrap(true);
+    auto refreshRangeHint = [rangeHintLabel, channelStartSpin, channelEndSpin, totalChannels]() {
+        const int s = channelStartSpin->value();
+        const int e = channelEndSpin->value();
+        const int n = (e >= s) ? (e - s + 1) : 0;
+        const QString warn = (e < s)
+                ? u"  ⚠ start must be ≤ end"_s
+                : QString();
+        rangeHintLabel->setText(u"%1 of %2 channels selected%3"_s
+                                        .arg(n).arg(totalChannels).arg(warn));
+    };
+    QObject::connect(channelStartSpin, &QSpinBox::valueChanged, &dialog, refreshRangeHint);
+    QObject::connect(channelEndSpin,   &QSpinBox::valueChanged, &dialog, refreshRangeHint);
+    refreshRangeHint();
+
+    rangeForm->addRow(u"Start → End"_s, rangeRow);
+    rangeForm->addRow(QString(), rangeHintLabel);
+
+    // ── MASKING: checkbox + threshold value ────────────────────────────────
+    auto *maskForm = ToolDialogStyle::addSection(layout, u"Masking"_s, &dialog);
 
     auto *maskCheck = new QCheckBox(u"Enable threshold mask"_s, &dialog);
     maskCheck->setChecked(config.maskEnabled);
@@ -281,28 +353,45 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
     thresholdSpin->setEnabled(config.maskEnabled);
     QObject::connect(maskCheck, &QCheckBox::toggled, thresholdSpin, &QWidget::setEnabled);
 
-    auto *blankingLabel = new QLabel(u"NaN/blanked voxels excluded automatically"_s, &dialog);
-    blankingLabel->setWordWrap(true);
-    blankingLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
-    blankingLabel->setMinimumHeight(blankingLabel->fontMetrics().lineSpacing() * 2 + 8);
-    auto *scopeLabel = new QLabel(describeMomentScope(), &dialog);
-    scopeLabel->setWordWrap(true);
-    scopeLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
-    scopeLabel->setMinimumHeight(scopeLabel->fontMetrics().lineSpacing() * 2 + 8);
+    auto *maskHintLabel = new QLabel(
+            u"When enabled, only voxels with intensity above the threshold "
+            u"contribute to the moment — typical use is masking out below "
+            u"~3·σ noise to clean up M1/M2."_s, &dialog);
+    maskHintLabel->setStyleSheet(ToolDialogStyle::helperCss());
+    maskHintLabel->setWordWrap(true);
 
-    form->addRow(u"Moment order"_s, momentCombo);
-    form->addRow(u"Start channel"_s, channelStartSpin);
-    form->addRow(u"End channel"_s, channelEndSpin);
-    form->addRow(u"Mask"_s, maskCheck);
-    form->addRow(u"Mask threshold"_s, thresholdSpin);
-    form->addRow(u"NaN/blanking"_s, blankingLabel);
-    form->addRow(u"Source scope"_s, scopeLabel);
+    maskForm->addRow(u"Mask"_s,           maskCheck);
+    maskForm->addRow(u"Mask threshold"_s, thresholdSpin);
+    maskForm->addRow(QString(),           maskHintLabel);
 
-    auto *buttons =
-            new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-    layout->addWidget(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    // ── FOOTER: combined NaN/blanking + source-scope info ──────────────────
+    // The old two-row form was visually noisy for two static facts. One
+    // compact muted line keeps the same information density without
+    // dominating the dialog.
+    auto *divider = new QFrame(&dialog);
+    divider->setFrameShape(QFrame::HLine);
+    divider->setStyleSheet(QStringLiteral("color: %1;").arg(tBorder));
+    layout->addWidget(divider);
+
+    auto *contextLabel = new QLabel(
+            u"NaN / blanked voxels are excluded automatically · %1"_s
+                    .arg(describeMomentScope()), &dialog);
+    contextLabel->setStyleSheet(ToolDialogStyle::helperCss());
+    contextLabel->setWordWrap(true);
+    layout->addWidget(contextLabel);
+
+    // ── BUTTONS: Close (secondary) + Compute (primary brand-blue),
+    // styled via VisivoTheme so they match every other tool dialog. ─────
+    auto *btnRow = new QHBoxLayout();
+    btnRow->addStretch();
+    auto *closeBtn = VisivoTheme::makeSecondaryButton(u"Close"_s, &dialog);
+    auto *okBtn    = VisivoTheme::makePrimaryButton(u"Compute"_s, &dialog);
+    okBtn->setDefault(true);
+    btnRow->addWidget(closeBtn);
+    btnRow->addWidget(okBtn);
+    layout->addLayout(btnRow);
+    QObject::connect(okBtn,    &QPushButton::clicked, &dialog, &QDialog::accept);
+    QObject::connect(closeBtn, &QPushButton::clicked, &dialog, &QDialog::reject);
 
     if (dialog.exec() != QDialog::Accepted) {
         return false;

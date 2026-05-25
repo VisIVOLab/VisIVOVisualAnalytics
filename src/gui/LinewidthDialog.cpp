@@ -2,6 +2,7 @@
 #include "ScienceMapWindow.h"
 #include "BackendClient.h"
 #include "DiagnosticsManager.h"
+#include "theme/ToolDialogStyle.h"
 #include "theme/VisivoTheme.h"
 
 #include <QCheckBox>
@@ -92,6 +93,8 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
 {
     setWindowTitle(u"Line-Width Map"_s);
     setMinimumWidth(500);
+    // Shared input theme — see ToolDialogStyle.
+    setStyleSheet(ToolDialogStyle::inputCss());
 
     // ── Central widget ────────────────────────────────────────────────────────
     auto *central = new QWidget(this);
@@ -100,6 +103,7 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
     auto *mainLayout = new QVBoxLayout(central);
     mainLayout->setContentsMargins(12, 12, 12, 12);
     mainLayout->setSpacing(8);
+    mainLayout->addWidget(ToolDialogStyle::makeBreadcrumb(central, u"Line-Width Map"_s));
 
     auto *form = new QFormLayout();
     form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
@@ -170,11 +174,10 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
 
     connect(m_maskCheck, &QCheckBox::toggled, m_thresholdSpin, &QWidget::setEnabled);
 
-    // ── Buttons ───────────────────────────────────────────────────────────────
-    // Layout B tool-dlg footer: breadcrumb chip left, secondary + primary right.
+    // ── Buttons: Close (secondary) + Compute (primary), right-aligned.
+    // The old bottom-left breadcrumb pill is gone — the top breadcrumb
+    // header added by ToolDialogStyle::makeBreadcrumb carries that info.
     auto *btnLayout = new QHBoxLayout();
-    btnLayout->addWidget(VisivoTheme::makeBreadcrumbTag(
-            u"Tools → Line-width…"_s, central));
     btnLayout->addStretch();
     auto *closeBtn = VisivoTheme::makeSecondaryButton(u"Close"_s, central);
     m_computeBtn   = VisivoTheme::makePrimaryButton(u"Compute"_s, central);

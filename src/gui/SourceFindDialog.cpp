@@ -1,6 +1,7 @@
 #include "SourceFindDialog.h"
 
 #include "BackendClient.h"
+#include "theme/ToolDialogStyle.h"
 #include "theme/VisivoTheme.h"
 
 #include <QComboBox>
@@ -33,10 +34,13 @@ SourceFindDialog::SourceFindDialog(BackendClient *client,
     setWindowTitle(u"SoFiA-2 Source Finding"_s);
     setMinimumWidth(700);
     resize(800, 600);
+    // Shared input theme — see ToolDialogStyle.
+    setStyleSheet(ToolDialogStyle::inputCss());
 
     auto *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(12, 12, 12, 12);
     mainLayout->setSpacing(8);
+    mainLayout->addWidget(ToolDialogStyle::makeBreadcrumb(this, u"Source Finding"_s));
 
     // ── Parameters form ───────────────────────────────────────────────────────
     auto *form = new QFormLayout();
@@ -84,10 +88,10 @@ SourceFindDialog::SourceFindDialog(BackendClient *client,
     m_table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     mainLayout->addWidget(m_table, 1);
 
-    // ── Footer (Layout B tool-dlg pattern: breadcrumb + actions) ──────────────
+    // ── Footer: Close (secondary) + Run (primary), right-aligned. The
+    // old bottom-left breadcrumb pill is gone — the top breadcrumb
+    // header (ToolDialogStyle::makeBreadcrumb) carries that info now.
     auto *btnRow = new QHBoxLayout();
-    btnRow->addWidget(VisivoTheme::makeBreadcrumbTag(
-            u"Tools → Source Finder…"_s, this));
     btnRow->addStretch();
     auto *closeBtn = VisivoTheme::makeSecondaryButton(u"Close"_s, this);
     m_runBtn       = VisivoTheme::makePrimaryButton(u"Run SoFiA-2"_s, this);

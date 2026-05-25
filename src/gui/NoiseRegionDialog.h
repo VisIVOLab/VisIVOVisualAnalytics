@@ -3,6 +3,7 @@
 
 #include <QDialog>
 
+class QLabel;
 class QPushButton;
 class QSpinBox;
 
@@ -56,6 +57,11 @@ private:
     QSpinBox *m_chStartSpin{ nullptr };
     QSpinBox *m_chEndSpin{ nullptr };
     QPushButton *m_okBtn{ nullptr };
+    // Helper labels under each section: refreshed live in validate() with
+    // pixel / channel counts plus scientific picking guidance, so the user
+    // doesn't have to read the docs to know what makes a good region.
+    QLabel *m_spatialHint  { nullptr };
+    QLabel *m_spectralHint { nullptr };
 };
 
 #endif // NoiseRegionDialog_h

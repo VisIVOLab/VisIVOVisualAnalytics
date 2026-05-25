@@ -304,6 +304,7 @@ qt_add_resources(${PROJECT_NAME} rail_icons
         resources/icons/rail_display.svg
         resources/icons/rail_filter.svg
         resources/icons/rail_metadata.svg
+        resources/icons/chevron_down.svg
 )
 
 add_subdirectory(src/libwcs)

@@ -1,4 +1,5 @@
 #include "StackDialog.h"
+#include "theme/ToolDialogStyle.h"
 #include "theme/VisivoTheme.h"
 
 #include "BackendClient.h"
@@ -8,6 +9,7 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QFrame>
 #include <QFutureWatcher>
 #include <QLabel>
 #include <QListWidget>
@@ -54,21 +56,28 @@ StackDialog::StackDialog(BackendClient *client,
     setWindowTitle(u"Stack spectral cubes"_s);
     setMinimumWidth(540);
     resize(540, 520);
+    // Shared input theme — see ToolDialogStyle.
+    setStyleSheet(ToolDialogStyle::inputCss());
 
     auto *mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(12, 12, 12, 12);
-    mainLayout->setSpacing(8);
+    mainLayout->setContentsMargins(16, 14, 16, 14);
+    mainLayout->setSpacing(10);
+    mainLayout->addWidget(ToolDialogStyle::makeBreadcrumb(this, u"Stack Spectral Cubes"_s));
 
-    // ── Explanation ───────────────────────────────────────────────────────────
+    // ── Intro line (matches the muted-helper look of MomentMap / Noise) ──
     auto *infoLabel = new QLabel(
             u"Select two or more cubes to stack. All cubes must share the same "
-            u"spectral grid and spatial shape — cubes with a different shape "
-            u"than the current one are listed as disabled."_s, this);
+            u"spectral grid and spatial shape — incompatible cubes are listed "
+            u"as disabled below."_s, this);
+    infoLabel->setStyleSheet(ToolDialogStyle::helperCss());
     infoLabel->setWordWrap(true);
     mainLayout->addWidget(infoLabel);
 
-    // ── Checkable dataset list ────────────────────────────────────────────────
-    mainLayout->addWidget(new QLabel(u"Cubes in session:"_s, this));
+    // ── CUBES SECTION (header + list + selection counter) ───────────────
+    auto *cubesHdr = new QLabel(u"Cubes in session"_s, this);
+    cubesHdr->setStyleSheet(ToolDialogStyle::sectionCss());
+    mainLayout->addWidget(cubesHdr);
+
     m_datasetList = new QListWidget(this);
     m_datasetList->setSelectionMode(QAbstractItemView::NoSelection);
 
@@ -128,29 +137,33 @@ StackDialog::StackDialog(BackendClient *client,
     }
     mainLayout->addWidget(m_datasetList, 1);
 
-    // ── Live selection counter ────────────────────────────────────────────────
+    // Live selection counter — muted helper styling for consistency.
     m_selectionLabel = new QLabel(u"Selected: 0 cubes"_s, this);
+    m_selectionLabel->setStyleSheet(ToolDialogStyle::helperCss());
     mainLayout->addWidget(m_selectionLabel);
 
-    auto *form = new QFormLayout();
-    form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
-    form->setHorizontalSpacing(12);
-    form->setVerticalSpacing(8);
-    mainLayout->addLayout(form);
+    // ── COMBINATION SECTION (header + method + weight) ──────────────────
+    auto *form = ToolDialogStyle::addSection(mainLayout, u"Combination"_s, this);
 
-    // ── Stacking method ────────────────────────────────────────────────────────
     m_methodCombo = new QComboBox(this);
     m_methodCombo->addItem(u"Mean"_s,          u"mean"_s);
     m_methodCombo->addItem(u"Median"_s,        u"median"_s);
     m_methodCombo->addItem(u"Weighted Mean"_s, u"weighted_mean"_s);
     form->addRow(u"Method"_s, m_methodCombo);
 
-    // ── Weight-by ─────────────────────────────────────────────────────────────
     m_weightByCombo = new QComboBox(this);
     m_weightByCombo->addItem(u"Uniform"_s, u"uniform"_s);
     m_weightByCombo->addItem(u"RMS"_s,     u"rms"_s);
     m_weightByCombo->addItem(u"Peak"_s,    u"peak"_s);
     form->addRow(u"Weight by"_s, m_weightByCombo);
+
+    auto *methodHint = new QLabel(
+            u"Mean: best SNR for similar-noise cubes. Median: robust to "
+            u"outliers / spikes. Weighted Mean: enable when cubes have "
+            u"different noise levels (RMS) or peak brightness."_s, this);
+    methodHint->setStyleSheet(ToolDialogStyle::helperCss());
+    methodHint->setWordWrap(true);
+    form->addRow(QString(), methodHint);
 
     // weight_by only matters for weighted_mean
     auto updateWeightBy = [this]() {
@@ -160,12 +173,26 @@ StackDialog::StackDialog(BackendClient *client,
     updateWeightBy();
     connect(m_methodCombo, &QComboBox::currentIndexChanged, this, updateWeightBy);
 
-    // ── Footer (Layout B tool-dlg pattern) ────────────────────────────────────
+    // ── METHODOLOGY footer ───────────────────────────────────────────────
+    auto *divider = new QFrame(this);
+    divider->setFrameShape(QFrame::HLine);
+    divider->setStyleSheet(
+            QStringLiteral("color: %1;")
+                    .arg(QString::fromLatin1(VisivoTheme::kOutline())));
+    mainLayout->addWidget(divider);
+
+    auto *methodologyLabel = new QLabel(
+            u"Stacking is spatial pixel-by-pixel · cubes must share the same "
+            u"WCS / shape · output is a 1-D combined spectrum."_s, this);
+    methodologyLabel->setStyleSheet(ToolDialogStyle::helperCss());
+    methodologyLabel->setWordWrap(true);
+    mainLayout->addWidget(methodologyLabel);
+
+    // ── Buttons row ───────────────────────────────────────────────────────
     auto *btnRow = new QHBoxLayout();
-    btnRow->addWidget(VisivoTheme::makeBreadcrumbTag(u"Tools → Stack…"_s, this));
     btnRow->addStretch();
 
-    auto *cancelBtn = VisivoTheme::makeSecondaryButton(u"Cancel"_s, this);
+    auto *cancelBtn = VisivoTheme::makeSecondaryButton(u"Close"_s, this);
     m_stackBtn      = VisivoTheme::makePrimaryButton(u"Stack"_s, this);
     m_stackBtn->setEnabled(false);   // disabled until ≥ 2 checked
     btnRow->addWidget(cancelBtn);

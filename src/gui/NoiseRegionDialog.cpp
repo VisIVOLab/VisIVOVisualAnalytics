@@ -1,10 +1,14 @@
 #include "NoiseRegionDialog.h"
 
+#include "theme/ToolDialogStyle.h"
+#include "theme/VisivoTheme.h"
+
 #include <QDialogButtonBox>
 #include <QFormLayout>
-#include <QGroupBox>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLocale>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
@@ -19,59 +23,115 @@ NoiseRegionDialog::NoiseRegionDialog(int width, int height, int depth, QWidget *
 {
     setWindowTitle(u"Noise Estimation — Select Region"_s);
     setModal(true);
+    // Shared input theme — see ToolDialogStyle.
+    setStyleSheet(ToolDialogStyle::inputCss());
 
     const int xMax = std::max(0, width  - 1);
     const int yMax = std::max(0, height - 1);
     const int zMax = std::max(0, depth  - 1);
+    const QString tMuted  = QString::fromLatin1(VisivoTheme::kOnSurfaceVariant());
+    const QString tBorder = QString::fromLatin1(VisivoTheme::kOutline());
 
     auto makeSpinBox = [&](int lo, int hi, int val) -> QSpinBox * {
         auto *sb = new QSpinBox(this);
         sb->setRange(lo, hi);
         sb->setValue(val);
+        sb->setMinimumWidth(80);
+        sb->setAlignment(Qt::AlignRight);
         return sb;
     };
+    // Compact start→end row: two spinboxes separated by a muted arrow, so
+    // the form takes one line per axis instead of two (x min + x max).
+    auto makeRangeRow = [&](QSpinBox *lo, QSpinBox *hi) -> QWidget * {
+        auto *w = new QWidget(this);
+        auto *h = new QHBoxLayout(w);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(8);
+        h->addWidget(lo, 1);
+        auto *arrow = new QLabel(u"→"_s, w);
+        arrow->setStyleSheet(QStringLiteral("color: %1; font-weight: 600;").arg(tMuted));
+        h->addWidget(arrow);
+        h->addWidget(hi, 1);
+        return w;
+    };
 
-    // ── Spatial group ─────────────────────────────────────────────────────
-    auto *spatialGroup = new QGroupBox(u"Spatial region (pixels)"_s, this);
-    auto *spatialForm  = new QFormLayout(spatialGroup);
+    // ── Root layout + breadcrumb + intro ─────────────────────────────────
+    auto *root = new QVBoxLayout(this);
+    root->setContentsMargins(16, 14, 16, 14);
+    root->setSpacing(10);
+
+    root->addWidget(ToolDialogStyle::makeBreadcrumb(this, u"Estimate Noise"_s));
+
+    auto *intro = new QLabel(
+            u"Pick a region of the cube where the signal is line-free — the "
+            u"backend computes a robust noise estimate over it. Defaults to "
+            u"the full cube extent."_s, this);
+    intro->setStyleSheet(ToolDialogStyle::helperCss());
+    intro->setWordWrap(true);
+    root->addWidget(intro);
+
+    // ── SPATIAL REGION ───────────────────────────────────────────────────
+    auto *spatialForm = ToolDialogStyle::addSection(root, u"Spatial region (pixels)"_s, this);
 
     m_x0Spin = makeSpinBox(0, xMax, 0);
     m_x1Spin = makeSpinBox(0, xMax, xMax);
     m_y0Spin = makeSpinBox(0, yMax, 0);
     m_y1Spin = makeSpinBox(0, yMax, yMax);
 
-    spatialForm->addRow(u"x min:"_s, m_x0Spin);
-    spatialForm->addRow(u"x max:"_s, m_x1Spin);
-    spatialForm->addRow(u"y min:"_s, m_y0Spin);
-    spatialForm->addRow(u"y max:"_s, m_y1Spin);
+    spatialForm->addRow(u"X (columns)"_s, makeRangeRow(m_x0Spin, m_x1Spin));
+    spatialForm->addRow(u"Y (rows)"_s,    makeRangeRow(m_y0Spin, m_y1Spin));
 
-    // ── Spectral group ────────────────────────────────────────────────────
-    auto *spectralGroup = new QGroupBox(u"Spectral range (channels)"_s, this);
-    auto *spectralForm  = new QFormLayout(spectralGroup);
+    m_spatialHint = new QLabel(this);
+    m_spatialHint->setStyleSheet(ToolDialogStyle::helperCss());
+    m_spatialHint->setWordWrap(true);
+    spatialForm->addRow(QString(), m_spatialHint);
+
+    // ── SPECTRAL RANGE ───────────────────────────────────────────────────
+    auto *spectralForm = ToolDialogStyle::addSection(root, u"Spectral range (channels)"_s, this);
 
     m_chStartSpin = makeSpinBox(0, zMax, 0);
     m_chEndSpin   = makeSpinBox(0, zMax, zMax);
 
-    spectralForm->addRow(u"Channel start:"_s, m_chStartSpin);
-    spectralForm->addRow(u"Channel end:"_s,   m_chEndSpin);
+    spectralForm->addRow(u"Start → End"_s, makeRangeRow(m_chStartSpin, m_chEndSpin));
 
-    // ── Buttons ───────────────────────────────────────────────────────────
-    auto *btnBox = new QDialogButtonBox(this);
-    m_okBtn = btnBox->addButton(QDialogButtonBox::Ok);
-    btnBox->addButton(QDialogButtonBox::Cancel);
-    auto *resetBtn = btnBox->addButton(u"Reset to Full Extent"_s, QDialogButtonBox::ResetRole);
+    m_spectralHint = new QLabel(this);
+    m_spectralHint->setStyleSheet(ToolDialogStyle::helperCss());
+    m_spectralHint->setWordWrap(true);
+    spectralForm->addRow(QString(), m_spectralHint);
 
-    QObject::connect(btnBox, &QDialogButtonBox::accepted, this, &QDialog::accept);
-    QObject::connect(btnBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
-    QObject::connect(resetBtn, &QPushButton::clicked, this, &NoiseRegionDialog::resetToFullExtent);
+    // ── METHODOLOGY footer ───────────────────────────────────────────────
+    // Combines two pieces of static methodology context into a single muted
+    // line so users know how the noise is computed (MAD, blanks excluded)
+    // without having to open the docs.
+    auto *divider = new QFrame(this);
+    divider->setFrameShape(QFrame::HLine);
+    divider->setStyleSheet(QStringLiteral("color: %1;").arg(tBorder));
+    root->addWidget(divider);
 
-    // ── Layout ────────────────────────────────────────────────────────────
-    auto *root = new QVBoxLayout(this);
-    root->addWidget(new QLabel(u"Choose the region used to estimate noise.\n"
-                               u"Defaults to the full cube extent."_s));
-    root->addWidget(spatialGroup);
-    root->addWidget(spectralGroup);
-    root->addWidget(btnBox);
+    auto *methodLabel = new QLabel(
+            u"σ = 1.4826 · MAD per channel (robust 1σ for Gaussian noise) · "
+            u"zero / NaN-blanked pixels excluded automatically when they "
+            u"dominate the selection."_s, this);
+    methodLabel->setStyleSheet(ToolDialogStyle::helperCss());
+    methodLabel->setWordWrap(true);
+    root->addWidget(methodLabel);
+
+    // ── BUTTONS: Reset (left) + Close (secondary) + Estimate (primary
+    // brand-blue). VisivoTheme buttons match every other tool dialog. ────
+    auto *btnRow = new QHBoxLayout();
+    auto *resetBtn = VisivoTheme::makeSecondaryButton(u"Reset to Full Extent"_s, this);
+    btnRow->addWidget(resetBtn);
+    btnRow->addStretch();
+    auto *closeBtn = VisivoTheme::makeSecondaryButton(u"Close"_s, this);
+    m_okBtn        = VisivoTheme::makePrimaryButton(u"Estimate"_s, this);
+    m_okBtn->setDefault(true);
+    btnRow->addWidget(closeBtn);
+    btnRow->addWidget(m_okBtn);
+    root->addLayout(btnRow);
+
+    QObject::connect(m_okBtn,   &QPushButton::clicked, this, &QDialog::accept);
+    QObject::connect(closeBtn,  &QPushButton::clicked, this, &QDialog::reject);
+    QObject::connect(resetBtn,  &QPushButton::clicked, this, &NoiseRegionDialog::resetToFullExtent);
 
     // Wire live validation + live preview emission. All six spinboxes (4
     // spatial + 2 spectral) notify the cube viewer via regionPreviewChanged
@@ -103,10 +163,47 @@ void NoiseRegionDialog::emitRegion()
 
 void NoiseRegionDialog::validate()
 {
-    const bool ok = m_x0Spin->value()    <= m_x1Spin->value()
-                 && m_y0Spin->value()    <= m_y1Spin->value()
-                 && m_chStartSpin->value() <= m_chEndSpin->value();
-    m_okBtn->setEnabled(ok);
+    const int x0 = m_x0Spin->value(), x1 = m_x1Spin->value();
+    const int y0 = m_y0Spin->value(), y1 = m_y1Spin->value();
+    const int c0 = m_chStartSpin->value(), c1 = m_chEndSpin->value();
+    const bool xOk = (x0 <= x1), yOk = (y0 <= y1), cOk = (c0 <= c1);
+    m_okBtn->setEnabled(xOk && yOk && cOk);
+
+    // Spatial hint: pixel count + "ratio of footprint" + range warning.
+    if (m_spatialHint) {
+        if (!xOk || !yOk) {
+            m_spatialHint->setText(u"⚠ start must be ≤ end on both axes."_s);
+        } else {
+            const qint64 wPx = qint64(x1) - x0 + 1;
+            const qint64 hPx = qint64(y1) - y0 + 1;
+            const qint64 nPx = wPx * hPx;
+            const qint64 totalPx = qint64(std::max(1, m_width))
+                                  * qint64(std::max(1, m_height));
+            const int pct = totalPx > 0
+                            ? static_cast<int>((100 * nPx) / totalPx) : 0;
+            m_spatialHint->setText(
+                    u"%1 × %2 pixels (%3 total, %4% of the cube footprint). "
+                    u"Pick an off-source area inside the data footprint — "
+                    u"avoid blanked borders or the result is mostly zero."_s
+                            .arg(wPx).arg(hPx)
+                            .arg(QLocale::system().toString(nPx)).arg(pct));
+        }
+    }
+
+    // Spectral hint: channel count + line-free vs full-range guidance.
+    if (m_spectralHint) {
+        if (!cOk) {
+            m_spectralHint->setText(u"⚠ start must be ≤ end."_s);
+        } else {
+            const int n = c1 - c0 + 1;
+            const int total = std::max(1, m_depth);
+            m_spectralHint->setText(
+                    u"%1 of %2 channels selected. Restrict to line-free "
+                    u"channels for a clean σ; leave full range for a per-"
+                    u"channel σ across the whole bandpass."_s
+                            .arg(n).arg(total));
+        }
+    }
 }
 
 void NoiseRegionDialog::resetToFullExtent()
