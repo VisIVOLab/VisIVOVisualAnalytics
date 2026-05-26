@@ -2506,6 +2506,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         actOpenInVR = new QAction(u"Open in VR"_s, ui->menuTools);
         const bool compiled = CubeVRController::isCompiledIn();
         actOpenInVR->setEnabled(compiled);
+        // Checkable so the linked QToolButton (sidebar) visually latches when
+        // a VR session is active. Toggling acts as open/close.
+        actOpenInVR->setCheckable(true);
         if (!compiled) {
             actOpenInVR->setToolTip(u"This build was compiled without VR support. "
                                     u"Rebuild with -DVISIVO_ENABLE_VR=ON (requires VTK "
@@ -2514,21 +2517,43 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             actOpenInVR->setToolTip(u"Open the current cube in your VR headset. "
                                     u"Requires a running OpenXR runtime (SteamVR / "
                                     u"Oculus / WMR) and a connected HMD. The desktop "
-                                    u"volume, LUT and threshold stay synchronised."_s);
+                                    u"volume, LUT and threshold stay synchronised. "
+                                    u"Click again to close the VR session."_s);
         }
-        QObject::connect(actOpenInVR, &QAction::triggered, this, [this]() {
+        QObject::connect(actOpenInVR, &QAction::triggered, this, [this, actOpenInVR]() {
+            // Toggle. If we already have a live VR session, the user clicking
+            // the (now-checked) button means "stop". Otherwise it's "start".
+            if (m_vrController && m_vrController->isActive()) {
+                m_vrController->close();
+                // sessionEnded() will fire and the lambda below resets the
+                // action's checked state — nothing to do here.
+                return;
+            }
             auto *cubeRen = ui->vtkCube->renderWindow()
                     ? ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer()
                     : nullptr;
             if (!cubeRen || !this->volume) {
+                actOpenInVR->setChecked(false);
                 QMessageBox::warning(this, u"Open in VR"_s,
                                      u"The cube is not ready yet — wait for the "
                                      u"preview to load and try again."_s);
                 return;
             }
-            CubeVRController vr(this);
-            if (!vr.open(cubeRen, this->volume)) {
-                QMessageBox::warning(this, u"Open in VR"_s, vr.lastError());
+            if (!m_vrController) {
+                m_vrController = new CubeVRController(this);
+                // Reflect session-end (whether from desktop close or from
+                // inside the headset) back onto the action's checked state,
+                // so the sidebar button un-latches in both cases.
+                QObject::connect(m_vrController.data(), &CubeVRController::sessionEnded,
+                                 actOpenInVR, [actOpenInVR]() {
+                                     actOpenInVR->setChecked(false);
+                                 });
+            }
+            if (!m_vrController->open(cubeRen, this->volume)) {
+                actOpenInVR->setChecked(false);
+                QMessageBox::warning(this, u"Open in VR"_s, m_vrController->lastError());
+            } else {
+                actOpenInVR->setChecked(true);
             }
         });
         // Insert into EXPLORATION group — i.e. right after Extract Spectrum,

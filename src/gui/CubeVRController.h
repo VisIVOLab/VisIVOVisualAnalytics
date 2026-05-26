@@ -54,12 +54,31 @@ public:
     /// runtime found"). The host can keep changing the volume mapper's LUT /
     /// opacity TF after a successful open — those changes will be visible
     /// in the headset on the next frame.
+    ///
+    /// **Non-blocking.** Returns as soon as the OpenXR session has been
+    /// created; subsequent frames are driven by an internal QTimer pumping
+    /// ``vtkOpenXRRenderWindowInteractor::DoOneEvent`` on the Qt event loop,
+    /// so the desktop UI stays interactive. Listen on ``sessionStarted()`` /
+    /// ``sessionEnded()`` for state changes (the latter also fires when the
+    /// user exits VR from inside the headset via the OpenXR system menu).
     bool open(vtkRenderer *desktopRenderer, vtkVolume *cubeVolume);
 
     /// Close any active VR session. Safe to call repeatedly.
     void close();
 
+    /// True while an OpenXR session is running. Toggles to true after a
+    /// successful ``open()`` and back to false on ``close()`` or when the
+    /// session ends from inside the headset.
+    bool isActive() const;
+
     QString lastError() const { return m_lastError; }
+
+signals:
+    /// Emitted right after ``open()`` successfully started a VR session.
+    void sessionStarted();
+    /// Emitted when the VR session ends, whether triggered from the desktop
+    /// via ``close()`` or from inside the headset.
+    void sessionEnded();
 
 private:
     QString m_lastError;

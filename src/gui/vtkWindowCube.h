@@ -71,6 +71,8 @@ class vtkTexture;
 class vtkTrivialProducer;
 class vtkVolume;
 
+class CubeVRController;
+
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class vtkWindowCube;
@@ -310,6 +312,11 @@ private:
     QPointer<QAction> actionShowControlsSidebar;
     // Owns all sidebar widget pointers and the four page-build methods.
     std::unique_ptr<CubeUiAssembler> m_uiAssembler;
+
+    /// Lives across "Open in VR" clicks so the action can act as a toggle:
+    /// first click opens, second click (while still in the headset) closes.
+    /// Persists between sessions so we can detect ``isActive()`` cheaply.
+    QPointer<CubeVRController> m_vrController;
     void setupSidebar();
 
     // Layout B-style top toolbar: path-pill + tag chips + Find/Command/Export.

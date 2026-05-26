@@ -367,6 +367,36 @@ if (VISIVO_ENABLE_VR)
         endif ()
         unset(_visivo_vtk_prefix)
         unset(_visivo_xr_actions_dir)
+
+        # Optional: 3D controller model rendering. VTK does NOT bundle the glTF
+        # models — there's an upstream archive at
+        # https://www.paraview.org/files/data/OpenXRControllerModels-0.1.tgz
+        # (Valve Index + HTC Vive only). For Meta Quest / Oculus Touch the
+        # Kitware blog post "Using VTK with the Meta Quest" describes
+        # converting SteamVR's Quest models to glTF in ParaView.
+        #
+        # Whichever route, the user points VISIVO_OPENXR_CONTROLLER_MODELS_DIR
+        # at the directory containing `openxr_controllermodels.json`. The JSON
+        # maps each OpenXR interaction profile (e.g.
+        # /interaction_profiles/oculus/touch_controller) to glTF asset paths,
+        # which VTK then renders attached to the controller poses. Empty means
+        # "no controller models" — the controllers still track and trigger
+        # actions, they're just invisible. See README/docs for the layout.
+        set(VISIVO_OPENXR_CONTROLLER_MODELS_DIR "" CACHE PATH
+            "Directory containing openxr_controllermodels.json and glTF controller models. \
+Leave empty to skip controller-model rendering.")
+        if (VISIVO_OPENXR_CONTROLLER_MODELS_DIR)
+            if (EXISTS "${VISIVO_OPENXR_CONTROLLER_MODELS_DIR}/openxr_controllermodels.json")
+                message(STATUS "VisIVO: OpenXR controller models at ${VISIVO_OPENXR_CONTROLLER_MODELS_DIR}")
+                target_compile_definitions(${PROJECT_NAME} PRIVATE
+                    VISIVO_OPENXR_CONTROLLER_MODELS_DIR="${VISIVO_OPENXR_CONTROLLER_MODELS_DIR}")
+            else ()
+                message(WARNING
+                    "VisIVO: VISIVO_OPENXR_CONTROLLER_MODELS_DIR is set to "
+                    "'${VISIVO_OPENXR_CONTROLLER_MODELS_DIR}' but no openxr_controllermodels.json "
+                    "was found there. Controllers will be invisible in VR.")
+            endif ()
+        endif ()
     else ()
         message(WARNING
             "VISIVO_ENABLE_VR=ON but VTK::RenderingOpenXR is not available in this "
