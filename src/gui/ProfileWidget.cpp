@@ -408,6 +408,22 @@ void ProfileWidget::refreshSpectrumHeader()
 {
     if (!m_specHeader) return;
 
+    // Region mode: no Live/Pinned concept (the spectrum is a one-shot mean
+    // computed over a fixed region) and no "click to pin" hint. Show the
+    // region description instead.
+    if (this->usageMode == UsageMode::RegionStatic) {
+        if (m_specStatusLabel) m_specStatusLabel->hide();
+        QString text = m_regionMetaLine.isEmpty() ? u"Region spectrum"_s : m_regionMetaLine;
+        if (!m_regionExtraLine.isEmpty()) {
+            text += u"\n"_s + m_regionExtraLine;
+        }
+        m_specMetaLabel->setText(text);
+        return;
+    }
+
+    // ── Probe-live (pixel) mode ────────────────────────────────────────────
+    if (m_specStatusLabel) m_specStatusLabel->show();
+
     // Status badge — coloured pill: 🟢 Live | 🔒 Pinned
     if (m_frozen) {
         m_specStatusLabel->setText(u"\U0001F512 Pinned"_s);
@@ -435,6 +451,23 @@ void ProfileWidget::refreshSpectrumHeader()
         text += u"\nHover the slice for a live preview; click a pixel to pin its spectrum."_s;
     }
     m_specMetaLabel->setText(text);
+}
+
+void ProfileWidget::setRegionContext(const QString &shapeLabel,
+                                     int validPixels, int totalPixels,
+                                     const QString &extraInfo)
+{
+    if (m_dialogInProgress) return;
+    QStringList parts;
+    if (!shapeLabel.isEmpty()) parts << shapeLabel + u" region"_s;
+    if (totalPixels > 0) {
+        parts << u"%1 / %2 valid pixels"_s.arg(validPixels).arg(totalPixels);
+    } else if (validPixels > 0) {
+        parts << u"%1 valid pixels"_s.arg(validPixels);
+    }
+    m_regionMetaLine  = parts.join(u"  ·  "_s);
+    m_regionExtraLine = extraInfo;
+    refreshSpectrumHeader();
 }
 
 void ProfileWidget::refreshSpectrumStats(const QVector<double> &spectralKey,
@@ -516,6 +549,7 @@ void ProfileWidget::setSpectrumContext(const QString &fileLabel,
 void ProfileWidget::setSpectrumFrozen(bool frozen)
 {
     if (m_dialogInProgress) return;   // suppress badge mutations while saving
+    if (this->usageMode == UsageMode::RegionStatic) return; // no Live/Pinned in region mode
     if (m_frozen == frozen) return;
     m_frozen = frozen;
     refreshSpectrumHeader();

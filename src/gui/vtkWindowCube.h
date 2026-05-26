@@ -40,6 +40,7 @@ class QLabel;
 class LUTCustomizerDialog;
 class ProfileWidget;
 class PvDiagramWidget;
+class ToolResultDialog;
 class ChannelOverlay;
 class QTableView;
 class vtkAxisActor2D;
@@ -296,6 +297,10 @@ private:
     // filter on resize. See ChannelOverlay.h.
     QPointer<ChannelOverlay> channelOverlay;
     QPointer<PvDiagramWidget> pvDiagramWidget;
+    // Active Region Analysis result dialog. Tracked so the 2D region overlay
+    // can persist for as long as the user is still inspecting the analysis
+    // — see maybeClearRegionAfterDisplay().
+    QPointer<ToolResultDialog> m_regionResultDialog;
     QPointer<QLabel> cubeOpenStateLabel;
     QPointer<QLabel> hoverReadoutLabel;
     QPointer<QLabel> momentProvenanceLabel;
@@ -492,6 +497,9 @@ private:
     void clearRegion();
     void clearPv();
     void analyzeCurrentRegion();
+    /// Clear the 2D region overlay once both result-dialog and spectrum plot
+    /// have been closed. Wired to QObject::destroyed of both widgets.
+    void maybeClearRegionAfterDisplay();
     bool finalizePolygonRegion();
     void extractCurrentPvDiagram();
     void loadCatalogueOverlay();

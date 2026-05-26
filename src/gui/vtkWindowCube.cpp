@@ -4763,7 +4763,15 @@ void vtkWindowCube::setRegionMode(RegionMode mode, bool active)
         if (this->regionMode == mode) {
             this->regionMode = RegionMode::None;
             this->regionDragging = false;
-            this->clearRegion();
+            // Keep the overlay visible while the result dialog and / or
+            // spectrum plot for this region are still open — analogous to
+            // how the PV overlay survives until pvDiagramWidget closes.
+            // maybeClearRegionAfterDisplay() will wipe it once both close.
+            const bool keepingForDisplay =
+                    this->m_regionResultDialog || this->probePlotWidget;
+            if (!keepingForDisplay) {
+                this->clearRegion();
+            }
             this->setInteractorStyleImage();
             ui->vtkImage->setCursor(this->probeModeActive ? Qt::CrossCursor : Qt::ArrowCursor);
             if (ui->vtkImage->renderWindow()) {
@@ -5413,7 +5421,8 @@ void vtkWindowCube::analyzeCurrentRegion()
         if (haveSpectrum) {
             const QString plotTitle =
                     u"Mean per channel — %1 region"_s.arg(shapeLabel);
-            if (!this->probePlotWidget) {
+            const bool freshWidget = !this->probePlotWidget;
+            if (freshWidget) {
                 this->probePlotWidget = new ProfileWidget(this);
                 this->probePlotWidget->setUsageMode(
                         ProfileWidget::UsageMode::RegionStatic, plotTitle);
@@ -5424,11 +5433,36 @@ void vtkWindowCube::analyzeCurrentRegion()
                 this->probePlotWidget->setUsageMode(
                         ProfileWidget::UsageMode::RegionStatic, plotTitle);
             }
+            // Header: describe the region (no Live badge, no pixel hint).
+            // Keep the slice/cube scope wording in sync with the result
+            // dialog so users don't get conflicting context from the two
+            // views of the same computation.
+            const QString scopeLine = this->viewingSlice()
+                    ? u"2D stats: current slice  ·  spectrum: full cube"_s
+                    : u"2D stats: current moment map  ·  spectrum: full cube"_s;
+            this->probePlotWidget->setRegionContext(
+                    shapeLabel, stats.validCount, stats.totalCount, scopeLine);
             // Show a single Mean-per-channel series.
             // Sum is intentionally omitted: its scale (N × pixel_value) is
             // incompatible with Mean on a shared Y axis and causes misleading spikes.
             this->probePlotWidget->updateSpectrumPlot(
                     spectral, meanValues, plotTitle, /*live=*/false);
+            // Region overlay must persist until the spectrum window closes,
+            // not just until the next mouse-release. Hook a one-shot cleanup
+            // that fires when the user closes the plot. See refreshRegionOverlay
+            // for the "keep visible while widget exists" branch.
+            // QPointer is NOT auto-nulled before destroyed() fires (the guard
+            // clear runs later in ~QObject), so the lambda explicitly nulls
+            // it BEFORE calling maybeClearRegionAfterDisplay — otherwise
+            // the maybeClear check would still see probePlotWidget non-null
+            // and never wipe the overlay.
+            if (freshWidget) {
+                QObject::connect(this->probePlotWidget, &QObject::destroyed, this,
+                                 [this]() {
+                                     this->probePlotWidget = nullptr;
+                                     this->maybeClearRegionAfterDisplay();
+                                 });
+            }
         }
     }
 
@@ -5463,7 +5497,33 @@ void vtkWindowCube::analyzeCurrentRegion()
             { u"Spectral profile"_s, u"Mean per channel across all cube channels (see plot window)"_s },
         });
     }
+    // Track the dialog so the region overlay stays visible on the 2D image
+    // for as long as either the result dialog or the spectrum plot is open.
+    // Closing the LAST one triggers maybeClearRegionAfterDisplay() which
+    // wipes the overlay (and resets regionMode if still pending).
+    // Manual null-before-call: see the matching block on probePlotWidget.
+    this->m_regionResultDialog = dlg;
+    QObject::connect(dlg, &QObject::destroyed, this,
+                     [this]() {
+                         this->m_regionResultDialog = nullptr;
+                         this->maybeClearRegionAfterDisplay();
+                     });
     dlg->show();
+}
+
+void vtkWindowCube::maybeClearRegionAfterDisplay()
+{
+    // Called from the destroyed() signals of the region result dialog and
+    // the region spectrum plot. Both can be open simultaneously; only when
+    // the last one is gone do we wipe the 2D overlay. QPointer auto-nulls
+    // on destruction so the checks below are race-free.
+    if (this->m_regionResultDialog) return;
+    if (this->probePlotWidget) return;
+    if (this->regionMode != RegionMode::None) return;  // user re-armed a tool
+    this->clearRegion();
+    if (ui->vtkImage && ui->vtkImage->renderWindow()) {
+        ui->vtkImage->renderWindow()->Render();
+    }
 }
 
 bool vtkWindowCube::finalizePolygonRegion()
@@ -6418,6 +6478,13 @@ void vtkWindowCube::updateProbePlot()
                              if (actExtract && actExtract->isChecked()) {
                                  actExtract->setChecked(false);
                              }
+                             // The same probePlotWidget is reused for Region
+                             // Analysis. If it was originally created by the
+                             // probe path and later switched to RegionStatic
+                             // mode, this is the only destroyed handler that
+                             // gets installed — so it also has to release the
+                             // 2D region overlay when both viewers close.
+                             this->maybeClearRegionAfterDisplay();
                          });
     } else {
         this->probePlotWidget->setUsageMode(ProfileWidget::UsageMode::ProbeLive,

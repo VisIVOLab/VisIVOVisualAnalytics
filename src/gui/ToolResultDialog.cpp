@@ -114,26 +114,32 @@ void ToolResultDialog::showEvent(QShowEvent *event)
     if (m_anchored) return;            // only on first show
     if (!parentWidget()) return;       // free-floating fallback if parentless
 
-    // Anchor as a side-sheet on the right edge of the top-level parent. The
-    // sheet keeps a fixed comfortable width but its HEIGHT is set from the
-    // dialog's own content (Noise Estimation has eight scalar rows; PV info
-    // has ~five — a full-window-height empty box looks broken). We cap to
-    // the parent's height so a huge analysis dump still doesn't overflow.
+    // Anchor as a side-sheet on the right edge of the top-level parent. Both
+    // WIDTH and HEIGHT are driven by the content — narrow tools (PV info)
+    // stay compact, dense ones (Region Analysis: 8 stat rows + a note)
+    // get the room they need without forcing the user to scroll inside the
+    // sheet for what is fundamentally a short fixed-size report.
     QWidget *root = parentWidget()->window();
     if (!root) return;
     const QRect parentGeo = root->geometry();
-    const int width  = qBound(360, parentGeo.width() / 4, 460);
 
     // Force the layout to compute the preferred size now that all sections
     // have been added (addSection() runs BEFORE show()). adjustSize() polls
-    // sizeHint() and resizes the dialog to it; we then use the final height
-    // — but never larger than the parent window.
+    // sizeHint() and resizes the dialog to it.
     adjustSize();
-    const int naturalH = sizeHint().height();
-    // Bound the height: at least a sensible minimum so the header isn't
-    // squashed, and never bigger than the parent. The scroll area inside
-    // takes over if the content really exceeds the cap.
-    const int height = qBound(200, naturalH, parentGeo.height());
+    const QSize natural = sizeHint();
+    // Width: take the content's preferred width, clamped to a sensible
+    // legibility range. Old cap of 460 was too tight for monospace value
+    // columns ("Mean = 0.014592503") and forced wrapping that made the
+    // sheet look cramped. 620 is comfortable on a 1080p+ screen without
+    // dominating the viewer.
+    const int parentQuarter = parentGeo.width() / 4;
+    const int width = qBound(420,
+                             qMax(natural.width(), parentQuarter),
+                             qMax(540, qMin(parentGeo.width() / 3, 720)));
+    // Height: also content-driven. Cap at parent height — the inner
+    // QScrollArea takes over if the content genuinely doesn't fit.
+    const int height = qBound(220, natural.height(), parentGeo.height());
 
     int x = parentGeo.right() - width + 1;
     int y = parentGeo.top();

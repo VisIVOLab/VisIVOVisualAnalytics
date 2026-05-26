@@ -73,6 +73,15 @@ public:
     /// from its own probeFrozen state; the widget does NOT auto-toggle.
     void setSpectrumFrozen(bool frozen);
 
+    /// Region-mode header replacement. Call after setUsageMode(RegionStatic):
+    /// hides the Live/Pinned badge and the pixel/hover hint, and shows a
+    /// region description instead (e.g. "Circle · 195 / 195 valid pixels").
+    /// The optional @p extraInfo line is appended below (e.g. "computed over
+    /// the current 2D slice / all cube channels").
+    void setRegionContext(const QString &shapeLabel,
+                          int validPixels, int totalPixels,
+                          const QString &extraInfo = QString());
+
     /// Mark a channel as the "current" one (the slice the cube viewer is
     /// displaying). Drawn as a vertical reference line on the spectrum.
     /// Pass spectralValueAtChannel = NaN to clear the marker.
@@ -151,6 +160,11 @@ private:
     int     m_pixelY{ 0 };
     QString m_wcsLabel;
     bool    m_frozen{ false };
+    // Region-mode header text. Populated by setRegionContext(); used by
+    // refreshSpectrumHeader() when usageMode == RegionStatic so the meta
+    // row describes the region instead of a pixel.
+    QString m_regionMetaLine;
+    QString m_regionExtraLine;
 
     void plotProfile(double x, double y, bool live);
     void plotSpectrum(double x, double y, bool live);
