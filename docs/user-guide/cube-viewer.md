@@ -14,7 +14,7 @@ The window is split into two synchronised dock areas plus a side panel:
 |------|---------------|
 | **3-D view** | Volume / isosurface rendering of the whole cube, with an orientation marker and the *cutting plane* indicator. |
 | **2-D view** | The currently selected slice along the spectral axis (or a moment map, see below). |
-| **Sidebar** | Tabs for *3-D View Settings*, *2-D View Settings*, *Tools*, *Cube Extras*, *Info / Stats*. |
+| **Sidebar** | Tabs for *3-D View Settings*, *2-D View Settings*, *Tools*, *Info / Stats*. |
 | **Toolbar (top)** | Dataset path pill, tag chips (resolution, mode), and the **Find / Command / Export** buttons. |
 
 The bottom **status bar** carries three live indicators: the **data state**
@@ -43,9 +43,9 @@ cutting-plane indicator in the 3-D view updates in real time.
 ```{tip}
 The cutting plane is **textured with the live slice contents** — what you
 see on the plane is exactly what is shown in the 2-D dock. Its opacity is
-adjustable from *View → Cutting Plane Opacity* (or the *Cube Extras*
-sidebar): lower opacity to see the volume behind, higher opacity to
-emphasise the slice.
+adjustable from *View → Cutting Plane Opacity* (or the **CUTTING PLANE**
+section of the *3-D View Settings* sidebar): lower opacity to see the
+volume behind, higher opacity to emphasise the slice.
 ```
 
 ### Slice animation (movie mode)
@@ -54,8 +54,9 @@ Auto-advance the slice axis as a movie — useful for spotting coherent
 structures across velocity channels:
 
 - **Play / Pause** — *View → Play Slice Animation* (or <kbd>Space</kbd>),
-  or the *Cube Extras* sidebar button.
-- **Speed** — 2, 5, 10, 15, 30 frames/s.
+  or the **SLICE ANIMATION** section in the *2-D View Settings* sidebar.
+- **Speed** — preset only: 2, 5, 10, 15, 30 fps (picked from the dropdown
+  to stay in sync with *View → Animation Speed*).
 - **Mode** — *Loop*, *Bounce* (back and forth), or *Stop at End*.
 
 ## 3-D rendering modes
@@ -147,10 +148,10 @@ line of sight, drawn in a *Spectral Profile* window.
 4. **Click again** → unpins, live mode resumes.
 
 You can also pick a spectrum directly from the **3-D view**: enable
-*View → Pick Spectrum on Plane Click* (or the *Cube Extras* sidebar
-checkbox). Clicking on the textured cutting plane extracts the spectral
-profile at that (RA, Dec) position and raises the *Spectral Profile*
-window automatically.
+*View → Pick Spectrum on Plane Click* (or the **3D INTERACTION** toggle
+button in the *3-D View Settings* sidebar). Clicking on the textured
+cutting plane extracts the spectral profile at that (RA, Dec) position
+and raises the *Spectral Profile* window automatically.
 
 **What the Spectral Profile window shows:**
 
@@ -196,6 +197,17 @@ export is the bridge to downstream analysis tools (Gauss-fit, line
 identification, comparison with synthetic spectra) — keep the
 provenance preamble in the file and your future self will know exactly
 which pixel of which cube that spectrum came from.
+
+```{note}
+The same window is reused as the **Region Spectral Profile** when you
+draw a Box / Circle / Polygon / Annulus region (see
+[Regions, PV, noise](region-pv-noise)). In that mode the Live / Pinned
+status badge is hidden (the spectrum is a one-shot mean over the region,
+not a live probe) and the header shows the region descriptor instead of
+the pixel hint — e.g. *"Circle region · 195 / 195 valid pixels · 2D
+stats: current slice · spectrum: full cube"*. Plot, stats bar, channel
+marker and CSV export behave identically.
+```
 
 ### Open in VR
 

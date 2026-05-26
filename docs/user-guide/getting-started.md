@@ -100,6 +100,25 @@ in the application and start typing — *"open"*, *"diagnostics"*,
 *"settings"*, *"hips"* — to jump to actions and recent datasets without
 hunting through menus. It works from inside the viewer windows too.
 
+Searchable groups:
+
+- **File** — Open Remote Dataset, Open 3D Catalogue, Open VBT, HiPS
+  Viewer, VLKB Inventory.
+- **Recent datasets** — last six datasets opened in this session
+  (refreshed each time the palette is opened).
+- **Application** — Open Settings (⌘,), About, Quit VisIVO Visual
+  Analytics (⌘Q).
+- **View** — Open Diagnostics Window.
+- **Science** — Line-Width Map, Baseline Subtraction, Spectral
+  Stacking, Source Finding (SoFiA-2). These mirror the **Science**
+  menu and respect its enabled state (open a dataset first — running
+  one with no cube loaded silently no-ops, matching the menu).
+- **SAMP** — Connect to / Disconnect from Hub, Send Current FITS
+  Dataset, Send Current Catalogue. Mirrors the **SAMP** menu.
+
+Try search terms like *"stack"*, *"samp"*, *"quit"* or *"sofia"* to
+jump straight to the action.
+
 ## Diagnostics
 
 Every backend round-trip, OIDC step, moment compute, SAMP event, and WCS

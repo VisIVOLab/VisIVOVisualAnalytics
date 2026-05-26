@@ -30,6 +30,39 @@ Pick a shape from *Tools → Regions* in the viewer:
 While drawing, the live preview is rendered in red on the slice. Once
 released, the region becomes selectable; right-click to remove it.
 
+```{note}
+Only **one** region shape can be active at a time — the four region
+actions (Box / Circle / Polygon / Annulus) are an exclusive group in
+both the menu and the sidebar (`ExclusiveOptional`: at most one
+checked, or none). Clicking the currently-active shape again unchecks
+it and disarms region drawing entirely. The region overlay drawn on
+the 2-D view **persists until you close BOTH the Region Analysis
+result dialog and the Region Spectral Profile window** — closing only
+one keeps the overlay alive (the result dialog might still be on
+screen while you inspect the spectrum, or vice versa). Closing the
+last one wipes it.
+```
+
+### Region Spectral Profile (per-channel mean over the region)
+
+Releasing the region triggers two things at once:
+
+1. A **Region Analysis** result dialog appears on the right edge of the
+   cube viewer (width and height derived from the content, no scrolling
+   for the standard 8-row report).
+2. A **Region Spectral Profile** window opens — the same
+   [*Spectral Profile*](cube-viewer#extract-spectrum-probe-a-single-pixel)
+   widget as the pixel probe, but in **region mode**: the Live / Pinned
+   status badge is hidden (the spectrum is one-shot, not live), and the
+   header reads e.g. *"Circle region · 195 / 195 valid pixels · 2D
+   stats: current slice · spectrum: full cube"* in place of the pixel
+   hint.
+
+The plot itself is **mean per channel over the region** across **all
+cube channels** (not just the current slice). The stats bar
+(`N / Min / Max / Mean / RMS / ∫`), channel marker, theme, and CSV
+export all work identically to pixel-probe mode.
+
 ### Statistics shown
 
 For each region the *Region Info* card shows:

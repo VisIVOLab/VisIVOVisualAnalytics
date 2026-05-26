@@ -268,17 +268,22 @@ child windows do not need to link against `MainWindow` to trigger it.
 
 In addition to the volume / isosurface / slice / moment / PV / noise pipelines,
 the cube viewer exposes a set of configurable interaction extras driven from
-the *View* menu and mirrored in the sidebar's *Cube Extras* page. All toggles
-use `QAction` as the single source of truth; menu and sidebar widgets sync
-bidirectionally via signal-blocker guarded `connect` pairs.
+the *View* menu and mirrored in the sidebar. The dedicated "Cube Extras" tab
+was removed; its widgets were redistributed into the *3-D View Settings* and
+*2-D View Settings* pages where they semantically belong. All toggles still
+use a checkable `QAction` as the single source of truth — sidebar buttons
+bind to it via `QToolButton::setDefaultAction()`, which gives Qt bidirectional
+state sync for free (no manual `connect` pairs needed for the boolean toggles).
 
 | Feature | QAction / group | Menu | Sidebar widget |
 |---------|-----------------|------|----------------|
-| Cutting plane visibility | `actionShowCuttingPlane` | View → Show Cutting Plane | "Show cutting plane" checkbox |
-| Cutting plane opacity (0–100%) | `cuttingPlaneOpacityGroup` (25 / 50 / 75 / 100 / 0%) | View → Cutting Plane Opacity → … | continuous slider |
-| 3D WCS axes (vtkCubeAxesActor) | `actionShow3dWcsAxes` | View → Show 3D WCS Axes | "Show 3D WCS axes" checkbox |
-| Slice animation | `actionPlaySlices` + `animationFpsGroup` + `animationModeGroup` | View → Play Slices / Animation Speed / Animation Mode | "▶ Play" button + FPS spin + Mode combo |
-| 3D pick on plane click | `actionPickSpectrum3d` | View → Pick Spectrum on Plane Click | "Pick spectrum on plane click" checkbox |
+| Cutting plane visibility | `actionShowCuttingPlane` | View → Show Cutting Plane | *3-D View Settings* → **CUTTING PLANE** → "Show cutting plane" toggle button (full-width, `setDefaultAction`) |
+| Cutting plane opacity (0–100%) | `cuttingPlaneOpacityGroup` (25 / 50 / 75 / 100 / 0% presets) | View → Cutting Plane Opacity → … | *3-D View Settings* → **CUTTING PLANE** → continuous slider with read-only QLineEdit value below (matches RENDERING THRESHOLD layout) |
+| 3D WCS axes (`vtkCubeAxesActor`) | `actionShow3dWcsAxes` | View → Show 3D WCS Axes | *3-D View Settings* → **3D REFERENCE** → "Show 3D WCS axes" toggle button |
+| Slice animation | `actionPlaySlices` + `animationFpsGroup` + `animationModeGroup` | View → Play Slices / Animation Speed / Animation Mode | *2-D View Settings* → **SLICE ANIMATION** → "▶ Play" button + FPS combo (preset 2 / 5 / 10 / 15 / 30, **no free-form entry**) + Mode combo (Loop / Bounce / Stop at End) |
+| 3D pick on plane click | `actionPickSpectrum3d` | View → Pick Spectrum on Plane Click | *3-D View Settings* → **3D INTERACTION** → "Pick spectrum on plane click" toggle button |
+| Slice contours overlay | `ui->checkContours` (canonical state holder, hidden) | — | *2-D View Settings* → **CONTOURS** → "Show Contours" toggle button (drives the hidden checkbox; existing `checkStateChanged` handler stays untouched) + Level / Lower / Upper line edits |
+| 2-D view mode | menu actions `actionSlice` / `actionMomentMap` | View → Slice / Moment Map | *2-D View Settings* → inline `SegmentedToggle` ("Slice | Moment Map") at the top of the page, same widget family as RENDERING MODE / VOLUME RENDERING |
 
 Implementation notes:
 
@@ -343,9 +348,10 @@ To enable end-to-end on Windows / Linux:
 
 ### QAction creation ordering
 
-QActions referenced by the sidebar's *Cube Extras* page must be created
-*before* `setupSidebar()` is called — otherwise the sidebar dereferences
-null pointers and the window segfaults. In the constructor:
+QActions referenced by the sidebar's redistributed *Extras* sections
+(Cutting Plane / 3D Reference / 3D Interaction / Slice Animation) must be
+created *before* `setupSidebar()` is called — otherwise the sidebar
+dereferences null pointers and the window segfaults. In the constructor:
 
 ```
 ui->setupUi(this);
