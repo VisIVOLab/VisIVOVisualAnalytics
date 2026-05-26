@@ -58,6 +58,13 @@ public:
     QWidget *buildToolsPage();
     QWidget *buildInfoStatsPage(const InfoStatsInput &info);
 
+    // ── Shared sidebar styling ────────────────────────────────────────────────
+    // QSS snippets used for every section header/card on every sidebar page,
+    // exposed so vtkWindowCube (or any future consumer) can build extra
+    // sections inside the same pages without diverging from the look.
+    static QString sidebarHdrStyle();
+    static QString sidebarCardStyle();
+
     // ── Late wiring (call after QActions are created in the constructor) ──────
     void wireToolActions(QAction *estimateNoise,
                          QAction *extractSpectrum,
@@ -157,7 +164,7 @@ public:
     QWidget    *colorMapCard()      const { return m_colorMapCard; }
     QToolButton *lutEdit3dButton()  const { return m_btnLutEdit3D; }
     // 2D View Settings
-    QComboBox  *combo2dMode()          const { return m_combo2dMode; }
+    SegmentedToggle *combo2dMode()     const { return m_combo2dMode; }
     QComboBox  *sliceLutCombo()        const { return m_comboSliceLut; }
     QComboBox  *momentLutCombo()       const { return m_comboMomentLut; }
     QWidget    *sliceControlsCard()    const { return m_sliceControlsCard; }
@@ -188,7 +195,7 @@ private:
     QWidget              *m_surfaceColorCard{ nullptr };
     QWidget              *m_colorMapCard{ nullptr };
     // ── 2D View Settings widgets ──────────────────────────────────────────────
-    QComboBox            *m_combo2dMode{ nullptr };
+    SegmentedToggle      *m_combo2dMode{ nullptr };
     QWidget              *m_sliceControlsCard{ nullptr };
     QWidget              *m_sliceLutCard{ nullptr };
     QWidget              *m_sliceContoursCard{ nullptr };

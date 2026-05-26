@@ -95,6 +95,7 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QImage>
+#include <QLineEdit>
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -2955,208 +2956,255 @@ void vtkWindowCube::setupSidebar()
     this->m_activeMomentLutName = m_uiAssembler->momentLutCombo()
                                           ? m_uiAssembler->momentLutCombo()->currentText() : QString();
 
-    // ── Page "Cube Extras": mirrors View-menu options as sidebar widgets ─────
-    // Bidirectional sync with the underlying QAction objects so menu and
-    // sidebar are always one source of truth (the action).
-    QWidget *pageExtras = new QWidget;
-    {
-        auto *vbox = new QVBoxLayout(pageExtras);
-        vbox->setContentsMargins(8, 8, 8, 8);
-        vbox->setSpacing(10);
+    // ── Extras → distributed across 3D View / 2D View settings ───────────────
+    // What used to live in a separate "Cube Extras" tab is now redistributed
+    // where it semantically belongs: 3D-scoped affordances (cutting-plane
+    // visibility, 3D WCS axes, click-to-pick spectrum on the plane) go into
+    // the 3D View Settings tab; the slice animator goes into 2D View Settings.
+    // Visual style matches the rest of the sidebar via CubeUiAssembler's
+    // shared header / card QSS. All widgets remain *mirrors* of the existing
+    // QAction objects (menu + sidebar share one source of truth).
+    const auto buildSection = [](const QString &title, QWidget **outCardOpt)
+            -> std::pair<QLabel*, QVBoxLayout*> {
+        auto *hdr = new QLabel(title);
+        hdr->setStyleSheet(CubeUiAssembler::sidebarHdrStyle());
+        auto *card = new QFrame();
+        card->setStyleSheet(CubeUiAssembler::sidebarCardStyle());
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+        if (outCardOpt) *outCardOpt = card;
+        return { hdr, cl };
+    };
+    // Append a section (header label + card frame) to a page, keeping the
+    // trailing addStretch() at the very bottom so layouts don't collapse.
+    const auto appendToPage = [](QWidget *page, QLabel *hdr, QWidget *card) {
+        auto *root = qobject_cast<QVBoxLayout *>(page->layout());
+        if (!root) return;
+        QLayoutItem *trailingStretch = root->takeAt(root->count() - 1);
+        root->addWidget(hdr);
+        root->addWidget(card);
+        if (trailingStretch) root->addItem(trailingStretch);
+    };
 
-        // Cutting plane group
-        auto *planeBox = new QGroupBox(u"Cutting Plane"_s, pageExtras);
-        auto *planeLay = new QVBoxLayout(planeBox);
-        planeLay->setSpacing(6);
-        auto *planeShowCb = new QCheckBox(u"Show cutting plane"_s, planeBox);
+    // ─── Section: Cutting Plane (→ 3D View Settings) ────────────────────────
+    // Visual layout mirrors RENDERING THRESHOLD: a full-width slider on its
+    // own row, with a read-only QLineEdit beneath showing the current value.
+    // Avoids the cramped [label · slider · pct] inline triad that diverged
+    // from every other slider in the sidebar.
+    QCheckBox *planeShowCb = nullptr;
+    QSlider   *opacitySlider = nullptr;
+    QLineEdit *opacityVal = nullptr;
+    {
+        QWidget *card = nullptr;
+        auto [hdr, cl] = buildSection(u"CUTTING PLANE"_s, &card);
+        planeShowCb = new QCheckBox(u"Show cutting plane"_s, card);
         planeShowCb->setChecked(this->actionShowCuttingPlane->isChecked());
-        planeLay->addWidget(planeShowCb);
-        auto *opacityRow = new QHBoxLayout;
-        opacityRow->addWidget(new QLabel(u"Opacity"_s, planeBox));
-        auto *opacitySlider = new QSlider(Qt::Horizontal, planeBox);
+        cl->addWidget(planeShowCb);
+
+        opacitySlider = new QSlider(Qt::Horizontal, card);
         opacitySlider->setRange(0, 100);
-        opacitySlider->setValue(50);   // match setupCubeRenderer's plane opacity
+        opacitySlider->setValue(50);
         opacitySlider->setSingleStep(5);
         opacitySlider->setPageStep(25);
-        opacityRow->addWidget(opacitySlider, /*stretch=*/1);
-        auto *opacityVal = new QLabel(u"50%"_s, planeBox);
-        opacityVal->setMinimumWidth(36);
-        opacityRow->addWidget(opacityVal);
-        planeLay->addLayout(opacityRow);
-        vbox->addWidget(planeBox);
+        opacitySlider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        opacitySlider->setToolTip(u"Cutting plane opacity (0–100%)."_s);
+        cl->addWidget(opacitySlider);
 
-        // 3D reference axes group
-        auto *axesBox = new QGroupBox(u"3D Reference"_s, pageExtras);
-        auto *axesLay = new QVBoxLayout(axesBox);
-        auto *axesCb = new QCheckBox(u"Show 3D WCS axes"_s, axesBox);
+        opacityVal = new QLineEdit(u"50 %"_s, card);
+        opacityVal->setReadOnly(true);
+        opacityVal->setFocusPolicy(Qt::NoFocus);
+        opacityVal->setAlignment(Qt::AlignCenter);
+        opacityVal->setToolTip(u"Current cutting plane opacity."_s);
+        cl->addWidget(opacityVal);
+        appendToPage(page3dSettings, hdr, card);
+    }
+
+    // ─── Section: 3D Reference (→ 3D View Settings) ─────────────────────────
+    QCheckBox *axesCb = nullptr;
+    {
+        QWidget *card = nullptr;
+        auto [hdr, cl] = buildSection(u"3D REFERENCE"_s, &card);
+        axesCb = new QCheckBox(u"Show 3D WCS axes"_s, card);
         axesCb->setChecked(this->actionShow3dWcsAxes->isChecked());
-        axesLay->addWidget(axesCb);
-        vbox->addWidget(axesBox);
+        cl->addWidget(axesCb);
+        appendToPage(page3dSettings, hdr, card);
+    }
 
-        // Animation group
-        auto *animBox = new QGroupBox(u"Slice Animation"_s, pageExtras);
-        auto *animLay = new QVBoxLayout(animBox);
-        animLay->setSpacing(6);
-        auto *playBtn = new QPushButton(u"▶  Play"_s, animBox);   // ▶ Play
+    // ─── Section: 3D Interaction (→ 3D View Settings) ───────────────────────
+    QCheckBox *pickCb = nullptr;
+    {
+        QWidget *card = nullptr;
+        auto [hdr, cl] = buildSection(u"3D INTERACTION"_s, &card);
+        pickCb = new QCheckBox(u"Pick spectrum on plane click"_s, card);
+        pickCb->setChecked(this->actionPickSpectrum3d->isChecked());
+        pickCb->setToolTip(
+                u"Click the cutting plane in the 3D view to extract the spectral profile at "
+                u"that (RA, DEC) position into the probe plot."_s);
+        cl->addWidget(pickCb);
+        appendToPage(page3dSettings, hdr, card);
+    }
+
+    // ─── Section: Slice Animation (→ 2D View Settings) ──────────────────────
+    QPushButton *playBtn = nullptr;
+    QComboBox   *fpsCombo = nullptr;
+    QComboBox   *modeCombo = nullptr;
+    {
+        QWidget *card = nullptr;
+        auto [hdr, cl] = buildSection(u"SLICE ANIMATION"_s, &card);
+        playBtn = new QPushButton(u"▶  Play"_s, card);
         playBtn->setCheckable(true);
         playBtn->setChecked(this->actionPlaySlices->isChecked());
-        animLay->addWidget(playBtn);
+        cl->addWidget(playBtn);
         auto *fpsRow = new QHBoxLayout;
-        fpsRow->addWidget(new QLabel(u"Speed"_s, animBox));
-        auto *fpsSpin = new QSpinBox(animBox);
-        fpsSpin->setRange(1, 60);
-        fpsSpin->setSuffix(u" fps"_s);
-        fpsSpin->setValue(this->animationFps);
-        fpsRow->addWidget(fpsSpin);
-        fpsRow->addStretch(1);
-        animLay->addLayout(fpsRow);
+        fpsRow->setSpacing(6);
+        fpsRow->addWidget(new QLabel(u"Speed"_s, card));
+        // Predefined fps values only — matches the View › Animation Speed
+        // menu radios and prevents the user typing a weird value the menu
+        // can't reflect. Editable=false ensures no free-form entry.
+        fpsCombo = new QComboBox(card);
+        for (int fps : { 2, 5, 10, 15, 30 }) {
+            fpsCombo->addItem(u"%1 fps"_s.arg(fps), fps);
+        }
+        const int initFpsIdx = fpsCombo->findData(this->animationFps);
+        fpsCombo->setCurrentIndex(initFpsIdx >= 0 ? initFpsIdx : fpsCombo->findData(5));
+        fpsRow->addWidget(fpsCombo, /*stretch=*/1);
+        cl->addLayout(fpsRow);
         auto *modeRow = new QHBoxLayout;
-        modeRow->addWidget(new QLabel(u"Mode"_s, animBox));
-        auto *modeCombo = new QComboBox(animBox);
+        modeRow->setSpacing(6);
+        modeRow->addWidget(new QLabel(u"Mode"_s, card));
+        modeCombo = new QComboBox(card);
         modeCombo->addItem(u"Loop"_s,        static_cast<int>(AnimationMode::Loop));
         modeCombo->addItem(u"Bounce"_s,      static_cast<int>(AnimationMode::Bounce));
         modeCombo->addItem(u"Stop at End"_s, static_cast<int>(AnimationMode::Once));
         modeCombo->setCurrentIndex(modeCombo->findData(static_cast<int>(this->animationMode)));
         modeRow->addWidget(modeCombo, /*stretch=*/1);
-        animLay->addLayout(modeRow);
-        vbox->addWidget(animBox);
-
-        // Interaction group
-        auto *interactBox = new QGroupBox(u"3D Interaction"_s, pageExtras);
-        auto *interactLay = new QVBoxLayout(interactBox);
-        auto *pickCb = new QCheckBox(u"Pick spectrum on plane click"_s, interactBox);
-        pickCb->setChecked(this->actionPickSpectrum3d->isChecked());
-        pickCb->setToolTip(
-                u"Click the cutting plane in the 3D view to extract the spectral profile at "
-                u"that (RA, DEC) position into the probe plot."_s);
-        interactLay->addWidget(pickCb);
-        vbox->addWidget(interactBox);
-
-        vbox->addStretch(1);
-
-        // ── Bidirectional sync wiring (action ↔ widget). The actions remain
-        //    the single source of truth — both menu and sidebar update them.
-        const auto syncCheck = [](QAction *act, QCheckBox *cb) {
-            QObject::connect(act, &QAction::toggled, cb, [cb](bool v) {
-                if (cb->isChecked() == v) return;
-                const QSignalBlocker block(cb);
-                cb->setChecked(v);
-            });
-            QObject::connect(cb, &QCheckBox::toggled, act, [act](bool v) {
-                if (act->isChecked() == v) return;
-                act->setChecked(v);  // routes through the existing toggled() handler
-            });
-        };
-        syncCheck(this->actionShowCuttingPlane, planeShowCb);
-        syncCheck(this->actionShow3dWcsAxes,    axesCb);
-        syncCheck(this->actionPickSpectrum3d,   pickCb);
-
-        // Play button ↔ actionPlaySlices, and label flips ▶/⏸
-        const auto refreshPlayLabel = [playBtn](bool playing) {
-            playBtn->setText(playing ? u"⏸  Pause"_s : u"▶  Play"_s);
-        };
-        refreshPlayLabel(playBtn->isChecked());
-        QObject::connect(this->actionPlaySlices, &QAction::toggled, playBtn,
-                         [playBtn, refreshPlayLabel](bool v) {
-                             if (playBtn->isChecked() != v) {
-                                 const QSignalBlocker block(playBtn);
-                                 playBtn->setChecked(v);
-                             }
-                             refreshPlayLabel(v);
-                         });
-        QObject::connect(playBtn, &QPushButton::toggled, this->actionPlaySlices,
-                         [this](bool v) {
-                             if (this->actionPlaySlices->isChecked() != v) {
-                                 this->actionPlaySlices->setChecked(v);
-                             }
-                         });
-
-        // Opacity slider ↔ cuttingPlaneOpacityGroup. The menu group exposes
-        // 25/50/75/100/0 presets; the slider gives free-form control and we
-        // sync the closest preset action when the user drags it.
-        QObject::connect(opacitySlider, &QSlider::valueChanged, this,
-                         [this, opacityVal](int pct) {
-                             opacityVal->setText(u"%1%"_s.arg(pct));
-                             this->setCuttingPlaneOpacity(pct / 100.0);
-                             if (this->cuttingPlaneOpacityGroup) {
-                                 // Reflect to the menu radio that matches (if any).
-                                 for (auto *a : this->cuttingPlaneOpacityGroup->actions()) {
-                                     if (a->data().toInt() == pct) {
-                                         const QSignalBlocker block(a);
-                                         a->setChecked(true);
-                                         break;
-                                     }
-                                 }
-                             }
-                         });
-        QObject::connect(this->cuttingPlaneOpacityGroup, &QActionGroup::triggered, opacitySlider,
-                         [opacitySlider](QAction *a) {
-                             const int pct = a->data().toInt();
-                             if (opacitySlider->value() != pct) {
-                                 const QSignalBlocker block(opacitySlider);
-                                 opacitySlider->setValue(pct);
-                             }
-                         });
-
-        // FPS spin ↔ animationFpsGroup (menu radios). Spin is continuous;
-        // we set the matching radio when it lands on a preset, else clear.
-        QObject::connect(fpsSpin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int v) {
-            this->animationFps = std::max(1, v);
-            if (this->sliceAnimationTimer.isActive()) {
-                this->sliceAnimationTimer.start(std::max(1, 1000 / this->animationFps));
-            }
-            if (this->animationFpsGroup) {
-                for (auto *a : this->animationFpsGroup->actions()) {
-                    if (a->data().toInt() == v) {
-                        const QSignalBlocker block(a);
-                        a->setChecked(true);
-                        return;
-                    }
-                }
-            }
-        });
-        QObject::connect(this->animationFpsGroup, &QActionGroup::triggered, fpsSpin,
-                         [fpsSpin](QAction *a) {
-                             const int v = a->data().toInt();
-                             if (fpsSpin->value() != v) {
-                                 const QSignalBlocker block(fpsSpin);
-                                 fpsSpin->setValue(v);
-                             }
-                         });
-
-        // Mode combo ↔ animationModeGroup
-        QObject::connect(modeCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
-                         [this, modeCombo](int) {
-                             const auto m = static_cast<AnimationMode>(
-                                     modeCombo->currentData().toInt());
-                             this->animationMode = m;
-                             this->animationDirection = +1;
-                             if (this->animationModeGroup) {
-                                 for (auto *a : this->animationModeGroup->actions()) {
-                                     if (a->data().toInt() == static_cast<int>(m)) {
-                                         const QSignalBlocker block(a);
-                                         a->setChecked(true);
-                                         break;
-                                     }
-                                 }
-                             }
-                         });
-        QObject::connect(this->animationModeGroup, &QActionGroup::triggered, modeCombo,
-                         [modeCombo](QAction *a) {
-                             const int v = a->data().toInt();
-                             const int idx = modeCombo->findData(v);
-                             if (idx >= 0 && modeCombo->currentIndex() != idx) {
-                                 const QSignalBlocker block(modeCombo);
-                                 modeCombo->setCurrentIndex(idx);
-                             }
-                         });
+        cl->addLayout(modeRow);
+        appendToPage(page2dSettings, hdr, card);
     }
+
+    // ── Bidirectional sync wiring (action ↔ widget). The actions remain
+    //    the single source of truth — both menu and sidebar update them.
+    const auto syncCheck = [](QAction *act, QCheckBox *cb) {
+        QObject::connect(act, &QAction::toggled, cb, [cb](bool v) {
+            if (cb->isChecked() == v) return;
+            const QSignalBlocker block(cb);
+            cb->setChecked(v);
+        });
+        QObject::connect(cb, &QCheckBox::toggled, act, [act](bool v) {
+            if (act->isChecked() == v) return;
+            act->setChecked(v);  // routes through the existing toggled() handler
+        });
+    };
+    syncCheck(this->actionShowCuttingPlane, planeShowCb);
+    syncCheck(this->actionShow3dWcsAxes,    axesCb);
+    syncCheck(this->actionPickSpectrum3d,   pickCb);
+
+    // Play button ↔ actionPlaySlices, and label flips ▶/⏸
+    const auto refreshPlayLabel = [playBtn](bool playing) {
+        playBtn->setText(playing ? u"⏸  Pause"_s : u"▶  Play"_s);
+    };
+    refreshPlayLabel(playBtn->isChecked());
+    QObject::connect(this->actionPlaySlices, &QAction::toggled, playBtn,
+                     [playBtn, refreshPlayLabel](bool v) {
+                         if (playBtn->isChecked() != v) {
+                             const QSignalBlocker block(playBtn);
+                             playBtn->setChecked(v);
+                         }
+                         refreshPlayLabel(v);
+                     });
+    QObject::connect(playBtn, &QPushButton::toggled, this->actionPlaySlices,
+                     [this](bool v) {
+                         if (this->actionPlaySlices->isChecked() != v) {
+                             this->actionPlaySlices->setChecked(v);
+                         }
+                     });
+
+    // Opacity slider ↔ cuttingPlaneOpacityGroup.
+    QObject::connect(opacitySlider, &QSlider::valueChanged, this,
+                     [this, opacityVal](int pct) {
+                         opacityVal->setText(u"%1 %"_s.arg(pct));
+                         this->setCuttingPlaneOpacity(pct / 100.0);
+                         if (this->cuttingPlaneOpacityGroup) {
+                             for (auto *a : this->cuttingPlaneOpacityGroup->actions()) {
+                                 if (a->data().toInt() == pct) {
+                                     const QSignalBlocker block(a);
+                                     a->setChecked(true);
+                                     break;
+                                 }
+                             }
+                         }
+                     });
+    QObject::connect(this->cuttingPlaneOpacityGroup, &QActionGroup::triggered, opacitySlider,
+                     [opacitySlider](QAction *a) {
+                         const int pct = a->data().toInt();
+                         if (opacitySlider->value() != pct) {
+                             const QSignalBlocker block(opacitySlider);
+                             opacitySlider->setValue(pct);
+                         }
+                     });
+
+    // FPS combo ↔ animationFpsGroup. Only preset values are exposed; the
+    // combo's currentData carries the fps int — no free-form entry possible.
+    QObject::connect(fpsCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                     [this, fpsCombo](int) {
+                         const int v = fpsCombo->currentData().toInt();
+                         this->animationFps = std::max(1, v);
+                         if (this->sliceAnimationTimer.isActive()) {
+                             this->sliceAnimationTimer.start(
+                                     std::max(1, 1000 / this->animationFps));
+                         }
+                         if (this->animationFpsGroup) {
+                             for (auto *a : this->animationFpsGroup->actions()) {
+                                 if (a->data().toInt() == v) {
+                                     const QSignalBlocker block(a);
+                                     a->setChecked(true);
+                                     return;
+                                 }
+                             }
+                         }
+                     });
+    QObject::connect(this->animationFpsGroup, &QActionGroup::triggered, fpsCombo,
+                     [fpsCombo](QAction *a) {
+                         const int v = a->data().toInt();
+                         const int idx = fpsCombo->findData(v);
+                         if (idx >= 0 && fpsCombo->currentIndex() != idx) {
+                             const QSignalBlocker block(fpsCombo);
+                             fpsCombo->setCurrentIndex(idx);
+                         }
+                     });
+
+    // Mode combo ↔ animationModeGroup
+    QObject::connect(modeCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                     [this, modeCombo](int) {
+                         const auto m = static_cast<AnimationMode>(
+                                 modeCombo->currentData().toInt());
+                         this->animationMode = m;
+                         this->animationDirection = +1;
+                         if (this->animationModeGroup) {
+                             for (auto *a : this->animationModeGroup->actions()) {
+                                 if (a->data().toInt() == static_cast<int>(m)) {
+                                     const QSignalBlocker block(a);
+                                     a->setChecked(true);
+                                     break;
+                                 }
+                             }
+                         }
+                     });
+    QObject::connect(this->animationModeGroup, &QActionGroup::triggered, modeCombo,
+                     [modeCombo](QAction *a) {
+                         const int v = a->data().toInt();
+                         const int idx = modeCombo->findData(v);
+                         if (idx >= 0 && modeCombo->currentIndex() != idx) {
+                             const QSignalBlocker block(modeCombo);
+                             modeCombo->setCurrentIndex(idx);
+                         }
+                     });
 
     this->m_sidebar = new SidebarPanel(220, this);
     this->m_sidebar->addPage(u":/icons/rail_3d.svg"_s,    u"3D View Settings"_s, page3dSettings);
     this->m_sidebar->addPage(u":/icons/rail_slice.svg"_s, u"2D View Settings"_s, page2dSettings);
     this->m_sidebar->addPage(u":/icons/rail_filter.svg"_s, u"Tools"_s,           pageTools);
-    this->m_sidebar->addPage(u":/icons/rail_layers.svg"_s, u"Cube Extras"_s,     pageExtras);
     this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s, u"Inspector"_s,        pageInfoStats);
     this->m_sidebar->finalize(0);
     mainLayout->insertWidget(0, this->m_sidebar);
@@ -3209,8 +3257,8 @@ void vtkWindowCube::setupSidebar()
         this->applyColorMapByName(name);
     });
 
-    // ── Bidirectional sync: 2D mode combo ↔ actionSlice / actionMomentMap ────
-    QObject::connect(m_uiAssembler->combo2dMode(), &QComboBox::currentIndexChanged,
+    // ── Bidirectional sync: 2D mode toggle ↔ actionSlice / actionMomentMap ───
+    QObject::connect(m_uiAssembler->combo2dMode(), &SegmentedToggle::currentIndexChanged,
                      this, [this](int idx) {
         const bool wantSlice = (idx == 0);
         if (wantSlice == ui->actionSlice->isChecked())

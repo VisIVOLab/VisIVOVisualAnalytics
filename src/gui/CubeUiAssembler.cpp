@@ -32,7 +32,7 @@ using namespace Qt::Literals::StringLiterals;
 // Returning fresh QStrings keeps the logic theme-aware on every call.
 // ─────────────────────────────────────────────────────────────────────────────
 
-static QString kSidebarHdrStyle()
+QString CubeUiAssembler::sidebarHdrStyle()
 {
     return QStringLiteral(
                    "QLabel {"
@@ -45,7 +45,7 @@ static QString kSidebarHdrStyle()
             .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
 }
 
-static QString kSidebarCardStyle()
+QString CubeUiAssembler::sidebarCardStyle()
 {
     // Idle card tint: subtle white-on-dark or black-on-light overlay so the
     // card is distinguishable from the surrounding panel without dominating.
@@ -60,6 +60,11 @@ static QString kSidebarCardStyle()
                    "}")
             .arg(tint);
 }
+
+// Thin wrappers preserved for the existing in-file call sites so the rest of
+// this file keeps reading naturally without `CubeUiAssembler::` prefixes.
+static QString kSidebarHdrStyle()  { return CubeUiAssembler::sidebarHdrStyle();  }
+static QString kSidebarCardStyle() { return CubeUiAssembler::sidebarCardStyle(); }
 
 static QString kInfoHdrStyle()
 {
@@ -406,57 +411,31 @@ QWidget *CubeUiAssembler::build2dViewPage()
 
     const bool initiallySlice = m_ui->actionSlice->isChecked();
 
-    // ── Section 1: 2D Mode ────────────────────────────────────────────────────
+    // ── Section 1: View mode (inline segmented toggle) ────────────────────────
+    // Same widget family as the 3D RENDERING MODE (Isosurface | Volume) and
+    // VOLUME RENDERING (Composite | MIP | MinIP) selectors — keeps the
+    // sidebar's mode-selection affordances visually consistent. No extra
+    // "2D MODE" header / card: the tab itself communicates the context.
     {
-        auto *hdr = new QLabel(u"2D MODE"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle());
-        root->addWidget(hdr);
-
-        auto *card = new QFrame();
-        card->setStyleSheet(kSidebarCardStyle());
-        auto *cl = new QVBoxLayout(card);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(0);
-
-        m_combo2dMode = new QComboBox();
-        m_combo2dMode->addItem(u"Slice"_s);
-        m_combo2dMode->addItem(u"Moment Map"_s);
-        m_combo2dMode->setItemData(0, u"Display a 2D slice through the cube."_s, Qt::ToolTipRole);
-        m_combo2dMode->setItemData(1, u"Display the computed moment map of the cube."_s, Qt::ToolTipRole);
+        m_combo2dMode = new SegmentedToggle();
+        m_combo2dMode->addItem(u"Slice"_s,      u"Display a 2D slice through the cube."_s);
+        m_combo2dMode->addItem(u"Moment Map"_s, u"Display the computed moment map of the cube."_s);
         m_combo2dMode->setToolTip(u"Select the 2D display mode."_s);
         m_combo2dMode->setCurrentIndex(initiallySlice ? 0 : 1);
-        cl->addWidget(m_combo2dMode);
-        root->addWidget(card);
+        m_combo2dMode->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        root->addWidget(m_combo2dMode);
     }
 
-    // ── Section 2: Slice Controls (Slice mode only) ───────────────────────────
-    {
-        auto *sliceCard = new QFrame();
-        sliceCard->setStyleSheet(kSidebarCardStyle());
-        auto *cl = new QVBoxLayout(sliceCard);
-        cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(6);
-
-        auto *hdr = new QLabel(u"CUTTING PLANE"_s);
-        hdr->setStyleSheet(kSidebarHdrStyle());
-        cl->addWidget(hdr);
-
-        m_ui->sliderSlice->setParent(sliceCard);
-        m_ui->sliderSlice->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        cl->addWidget(m_ui->sliderSlice);
-
-        auto *row = new QHBoxLayout();
-        row->setSpacing(6);
-        m_ui->spinSlice->setParent(sliceCard);
-        row->addWidget(m_ui->spinSlice);
-        m_ui->lineSpectral->setParent(sliceCard);
-        row->addWidget(m_ui->lineSpectral, 1);
-        cl->addLayout(row);
-
-        sliceCard->setVisible(initiallySlice);
-        m_sliceControlsCard = sliceCard;
-        root->addWidget(sliceCard);
-    }
+    // ── Cutting-plane controls (Slice mode) live in the channel scrubber
+    // below the 3D view (see ChannelOverlay). The sliderSlice / spinSlice /
+    // lineSpectral widgets from the .ui form are kept hidden as the
+    // canonical signal source — every consumer in vtkWindowCube reads /
+    // writes them, and ChannelOverlay mirrors spinSlice bidirectionally.
+    // No sidebar duplicate.
+    m_ui->sliderSlice->setVisible(false);
+    m_ui->spinSlice->setVisible(false);
+    m_ui->lineSpectral->setVisible(false);
+    m_sliceControlsCard = nullptr;
 
     // ── Section 3: Slice Color Map (Slice mode only) ──────────────────────────
     {
