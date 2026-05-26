@@ -2750,6 +2750,13 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     ui->lineUpperBound->setValidator(new QDoubleValidator(ui->lineUpperBound));
     QObject::connect(ui->checkContours, &QCheckBox::checkStateChanged, this,
                      &vtkWindowCube::updateContoursVisibility);
+    // The sidebar's "Show Contours" toggle button drives the canonical
+    // checkbox; the existing checkStateChanged handler above continues to
+    // own the visibility update logic.
+    if (m_uiAssembler && m_uiAssembler->contoursButton()) {
+        QObject::connect(m_uiAssembler->contoursButton(), &QToolButton::toggled,
+                         ui->checkContours, &QCheckBox::setChecked);
+    }
     QObject::connect(ui->lineLevel, &QLineEdit::editingFinished, this,
                      &vtkWindowCube::updateContours);
     QObject::connect(ui->lineLowerBound, &QLineEdit::editingFinished, this,
@@ -2988,19 +2995,20 @@ void vtkWindowCube::setupSidebar()
     };
 
     // ─── Section: Cutting Plane (→ 3D View Settings) ────────────────────────
-    // Visual layout mirrors RENDERING THRESHOLD: a full-width slider on its
-    // own row, with a read-only QLineEdit beneath showing the current value.
-    // Avoids the cramped [label · slider · pct] inline triad that diverged
-    // from every other slider in the sidebar.
-    QCheckBox *planeShowCb = nullptr;
+    // The "Show cutting plane" toggle is a full-width QToolButton bound to
+    // its QAction via setDefaultAction() — same visual treatment as Show
+    // WCS Axes / Show Contours (selectable button instead of a checkbox).
+    // The opacity row mirrors RENDERING THRESHOLD: full-width slider with
+    // a read-only QLineEdit beneath showing the current percentage.
     QSlider   *opacitySlider = nullptr;
     QLineEdit *opacityVal = nullptr;
     {
         QWidget *card = nullptr;
         auto [hdr, cl] = buildSection(u"CUTTING PLANE"_s, &card);
-        planeShowCb = new QCheckBox(u"Show cutting plane"_s, card);
-        planeShowCb->setChecked(this->actionShowCuttingPlane->isChecked());
-        cl->addWidget(planeShowCb);
+        auto *planeShowBtn = CubeUiAssembler::makeSidebarButton(u"Show cutting plane"_s);
+        planeShowBtn->setEnabled(true);
+        planeShowBtn->setDefaultAction(this->actionShowCuttingPlane);
+        cl->addWidget(planeShowBtn);
 
         opacitySlider = new QSlider(Qt::Horizontal, card);
         opacitySlider->setRange(0, 100);
@@ -3021,27 +3029,27 @@ void vtkWindowCube::setupSidebar()
     }
 
     // ─── Section: 3D Reference (→ 3D View Settings) ─────────────────────────
-    QCheckBox *axesCb = nullptr;
     {
         QWidget *card = nullptr;
         auto [hdr, cl] = buildSection(u"3D REFERENCE"_s, &card);
-        axesCb = new QCheckBox(u"Show 3D WCS axes"_s, card);
-        axesCb->setChecked(this->actionShow3dWcsAxes->isChecked());
-        cl->addWidget(axesCb);
+        auto *axesBtn = CubeUiAssembler::makeSidebarButton(u"Show 3D WCS axes"_s);
+        axesBtn->setEnabled(true);
+        axesBtn->setDefaultAction(this->actionShow3dWcsAxes);
+        cl->addWidget(axesBtn);
         appendToPage(page3dSettings, hdr, card);
     }
 
     // ─── Section: 3D Interaction (→ 3D View Settings) ───────────────────────
-    QCheckBox *pickCb = nullptr;
     {
         QWidget *card = nullptr;
         auto [hdr, cl] = buildSection(u"3D INTERACTION"_s, &card);
-        pickCb = new QCheckBox(u"Pick spectrum on plane click"_s, card);
-        pickCb->setChecked(this->actionPickSpectrum3d->isChecked());
-        pickCb->setToolTip(
+        auto *pickBtn = CubeUiAssembler::makeSidebarButton(u"Pick spectrum on plane click"_s);
+        pickBtn->setEnabled(true);
+        pickBtn->setDefaultAction(this->actionPickSpectrum3d);
+        pickBtn->setToolTip(
                 u"Click the cutting plane in the 3D view to extract the spectral profile at "
                 u"that (RA, DEC) position into the probe plot."_s);
-        cl->addWidget(pickCb);
+        cl->addWidget(pickBtn);
         appendToPage(page3dSettings, hdr, card);
     }
 
@@ -3083,22 +3091,10 @@ void vtkWindowCube::setupSidebar()
         appendToPage(page2dSettings, hdr, card);
     }
 
-    // ── Bidirectional sync wiring (action ↔ widget). The actions remain
-    //    the single source of truth — both menu and sidebar update them.
-    const auto syncCheck = [](QAction *act, QCheckBox *cb) {
-        QObject::connect(act, &QAction::toggled, cb, [cb](bool v) {
-            if (cb->isChecked() == v) return;
-            const QSignalBlocker block(cb);
-            cb->setChecked(v);
-        });
-        QObject::connect(cb, &QCheckBox::toggled, act, [act](bool v) {
-            if (act->isChecked() == v) return;
-            act->setChecked(v);  // routes through the existing toggled() handler
-        });
-    };
-    syncCheck(this->actionShowCuttingPlane, planeShowCb);
-    syncCheck(this->actionShow3dWcsAxes,    axesCb);
-    syncCheck(this->actionPickSpectrum3d,   pickCb);
+    // The three checkable toggles (Show cutting plane, Show 3D WCS axes,
+    // Pick spectrum on plane click) are bound to their QAction via
+    // QToolButton::setDefaultAction() in the section blocks above — Qt
+    // takes care of bidirectional state sync, no manual wiring needed.
 
     // Play button ↔ actionPlaySlices, and label flips ▶/⏸
     const auto refreshPlayLabel = [playBtn](bool playing) {

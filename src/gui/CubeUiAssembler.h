@@ -64,6 +64,12 @@ public:
     // sections inside the same pages without diverging from the look.
     static QString sidebarHdrStyle();
     static QString sidebarCardStyle();
+    /// Build a full-width QToolButton in the canonical sidebar style
+    /// (text-only, Expanding size policy, disabled placeholder). Callers
+    /// typically follow up with setDefaultAction() to bind a checkable
+    /// QAction — that re-enables the button and gives it the action's
+    /// checked-state visuals identical to Show WCS Axes / Show Contours.
+    static QToolButton *makeSidebarButton(const QString &label);
 
     // ── Late wiring (call after QActions are created in the constructor) ──────
     void wireToolActions(QAction *estimateNoise,
@@ -175,6 +181,7 @@ public:
     QLabel     *momentInfoLabel()      const { return m_momentInfoLabel; }
     QToolButton *lutEditSliceButton()  const { return m_btnLutEditSlice; }
     QToolButton *lutEditMomentButton() const { return m_btnLutEditMoment; }
+    QToolButton *contoursButton()      const { return m_btnContours; }
     // Info / Stats
     QLabel    *infoDsLoadState()   const { return m_infoDsLoadState; }
     QLabel    *infoWcsBadge()      const { return m_infoWcsBadge; }
@@ -224,6 +231,7 @@ private:
     QToolButton          *m_btnLutEdit3D{ nullptr };
     // ── 2D View Settings page buttons ─────────────────────────────────────────
     QToolButton          *m_btnWcsAxes{ nullptr };
+    QToolButton          *m_btnContours{ nullptr };
     QToolButton          *m_btnLutEditSlice{ nullptr };
     QToolButton          *m_btnLutEditMoment{ nullptr };
     // ── Info / Stats labels ───────────────────────────────────────────────────

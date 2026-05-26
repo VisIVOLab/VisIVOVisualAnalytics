@@ -491,6 +491,10 @@ void MainWindow::rebuildCommandPalette()
                 {u"ⓘ"_s, u"About VisIVO Visual Analytics"_s,
                  u"Version, credits"_s, QString(), u"Application"_s,
                  [this]() { this->openAboutDialog(); }});
+        this->m_commandPalette->addAction(
+                {u"⏻"_s, u"Quit VisIVO Visual Analytics"_s,
+                 u"Close the application"_s, u"⌘Q"_s, u"Application"_s,
+                 [this]() { this->close(); }});
 
         // ── View ────────────────────────────────────────────────────────────
         // Diagnostics is in MainWindow's View menu but easy to miss; expose it
@@ -500,6 +504,65 @@ void MainWindow::rebuildCommandPalette()
                  u"View · backend / SAMP / scientific log feed"_s, QString(),
                  u"View"_s,
                  [this]() { this->openDiagnosticsWindow(); }});
+
+        // ── Science ─────────────────────────────────────────────────────────
+        // Each entry calls QAction::trigger(), which respects the action's
+        // enabled state (disabled actions silently no-op when no dataset is
+        // open). The menubar's Science menu shows the actual enabled state.
+        this->m_commandPalette->addAction(
+                {u"∿"_s, u"Line-Width Map…"_s,
+                 u"Science · FWHM / equivalent-width per pixel"_s,
+                 QString(), u"Science"_s, [this]() {
+                     if (this->m_actLinewidth) this->m_actLinewidth->trigger();
+                 }});
+        this->m_commandPalette->addAction(
+                {u"⌇"_s, u"Baseline Subtraction…"_s,
+                 u"Science · polynomial or median spectral baseline"_s,
+                 QString(), u"Science"_s, [this]() {
+                     if (this->m_actBaseline) this->m_actBaseline->trigger();
+                 }});
+        this->m_commandPalette->addAction(
+                {u"⌥"_s, u"Spectral Stacking…"_s,
+                 u"Science · stack multiple session cubes into 1-D spectrum"_s,
+                 QString(), u"Science"_s, [this]() {
+                     if (this->m_actStack) this->m_actStack->trigger();
+                 }});
+        this->m_commandPalette->addAction(
+                {u"⌖"_s, u"Source Finding (SoFiA-2)…"_s,
+                 u"Science · run SoFiA-2 on the current dataset"_s,
+                 QString(), u"Science"_s, [this]() {
+                     if (this->m_actSourceFind) this->m_actSourceFind->trigger();
+                 }});
+
+        // ── SAMP ────────────────────────────────────────────────────────────
+        // Cross-application messaging hub. Actions delegate to the QAction
+        // toggled in buildSampMenu(); the menu mirror surfaces hub state.
+        this->m_commandPalette->addAction(
+                {u"⇄"_s, u"SAMP: Connect to Hub"_s,
+                 u"SAMP · join the running hub"_s,
+                 QString(), u"SAMP"_s, [this]() {
+                     if (this->m_actSampConnect) this->m_actSampConnect->trigger();
+                 }});
+        this->m_commandPalette->addAction(
+                {u"⇎"_s, u"SAMP: Disconnect from Hub"_s,
+                 u"SAMP · leave the hub"_s,
+                 QString(), u"SAMP"_s, [this]() {
+                     if (this->m_actSampDisconnect) this->m_actSampDisconnect->trigger();
+                 }});
+        this->m_commandPalette->addAction(
+                {u"↗"_s, u"SAMP: Send Current FITS Dataset"_s,
+                 u"SAMP · broadcast current cube/image to peers"_s,
+                 QString(), u"SAMP"_s, [this]() {
+                     if (this->m_actSampSendCurrentFits)
+                         this->m_actSampSendCurrentFits->trigger();
+                 }});
+        this->m_commandPalette->addAction(
+                {u"↗"_s, u"SAMP: Send Current Catalogue"_s,
+                 u"SAMP · broadcast current catalogue to peers"_s,
+                 QString(), u"SAMP"_s, [this]() {
+                     if (this->m_actSampSendCurrentCatalogue)
+                         this->m_actSampSendCurrentCatalogue->trigger();
+                 }});
 
         s_staticAdded = true;
     }

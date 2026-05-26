@@ -87,6 +87,11 @@ static QToolButton *makeSidebarToolButton(const QString &label)
     return btn;
 }
 
+QToolButton *CubeUiAssembler::makeSidebarButton(const QString &label)
+{
+    return makeSidebarToolButton(label);
+}
+
 static const QString kInfoCardStyle =
         u"QFrame {"
         u"  background: rgba(255,255,255,0.04);"
@@ -474,9 +479,37 @@ QWidget *CubeUiAssembler::build2dViewPage()
     }
 
     // ── Section 4: Contours (Slice mode only) ─────────────────────────────────
+    // Promote the "enable contours" toggle into a full-width selectable
+    // button, visually matching the "Show WCS Axes" toggle further down.
+    // The .ui's QCheckBox `checkContours` is detached from its grid (so the
+    // Level / Lower / Upper fields can use the full row width) and kept
+    // alive as the canonical state holder — vtkWindowCube wires the new
+    // button's toggled() signal into it so every existing handler (visibility
+    // logic at line ~8301) continues to read ui->checkContours->isChecked().
     {
         auto *hdr = new QLabel(u"CONTOURS"_s);
         hdr->setStyleSheet(kSidebarHdrStyle());
+
+        m_btnContours = makeSidebarToolButton(u"Show Contours"_s);
+        m_btnContours->setCheckable(true);
+        m_btnContours->setEnabled(true);                   // override placeholder
+        m_btnContours->setChecked(m_ui->checkContours->isChecked());
+
+        // Wrap the button in its own card so it has the same visible border /
+        // hover affordance as the "Show WCS Axes" toggle below — without the
+        // card the QToolButton renders flush against the panel background
+        // and reads as a label instead of a button.
+        auto *btnCard = new QFrame();
+        btnCard->setStyleSheet(kSidebarCardStyle());
+        auto *btnLay = new QVBoxLayout(btnCard);
+        btnLay->setContentsMargins(8, 6, 8, 6);
+        btnLay->setSpacing(4);
+        btnLay->addWidget(m_btnContours);
+
+        // Detach the original QCheckBox from gridContours so the column
+        // collapses and the field row uses the full available width.
+        m_ui->checkContours->setParent(nullptr);
+        m_ui->checkContours->setVisible(false);
 
         m_ui->frameContours->setStyleSheet(kSidebarCardStyle());
         m_ui->frameContours->setParent(page);
@@ -486,6 +519,7 @@ QWidget *CubeUiAssembler::build2dViewPage()
         ccl->setContentsMargins(0, 0, 0, 0);
         ccl->setSpacing(4);
         ccl->addWidget(hdr);
+        ccl->addWidget(btnCard);
         ccl->addWidget(m_ui->frameContours);
 
         contoursCard->setVisible(initiallySlice);
