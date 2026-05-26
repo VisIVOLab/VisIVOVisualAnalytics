@@ -254,3 +254,38 @@ void TestBackendClient::parseNoise_missingRegion_defaultsToZero()
     QCOMPARE(r.y0, 0);
     QCOMPARE(r.y1, 0);
 }
+
+void TestBackendClient::parseNoise_blankFractionParsed()
+{
+    // blank_fraction is the fraction of the selected region that was treated
+    // as "blank" (zero or NaN) by the zero-as-blank heuristic. The frontend
+    // surfaces this in the noise dialog so the user knows how much of their
+    // region was actually used.
+    const auto obj = fromLiteral(R"({
+        "valid": true, "error": "",
+        "channel_start": 0, "channel_end": 0, "num_channels": 1,
+        "mad": [0.0], "sigma": [0.0],
+        "region": {"x0": 0, "x1": 7, "y0": 0, "y1": 7},
+        "blank_fraction": 0.42
+    })");
+
+    const auto r = BackendClient::parseNoiseResultObject(obj);
+    QVERIFY(r.valid);
+    QVERIFY(qAbs(r.blankFraction - 0.42) < 1e-9);
+}
+
+void TestBackendClient::parseNoise_blankFractionMissing_defaultsToZero()
+{
+    // Older backends (pre-blank-fraction patch) don't ship the field at all;
+    // the parser must treat that as 0.0 rather than NaN / -1 so the UI
+    // doesn't render a stale or invalid percentage.
+    const auto obj = fromLiteral(R"({
+        "valid": true, "error": "",
+        "channel_start": 0, "channel_end": 0, "num_channels": 1,
+        "mad": [0.0], "sigma": [0.0],
+        "region": {"x0": 0, "x1": 7, "y0": 0, "y1": 7}
+    })");
+
+    const auto r = BackendClient::parseNoiseResultObject(obj);
+    QCOMPARE(r.blankFraction, 0.0);
+}

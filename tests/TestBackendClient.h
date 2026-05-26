@@ -29,4 +29,6 @@ private slots:
     void parseNoise_emptyArrays();
     void parseNoise_errorResponse();
     void parseNoise_missingRegion_defaultsToZero();
+    void parseNoise_blankFractionParsed();
+    void parseNoise_blankFractionMissing_defaultsToZero();
 };
