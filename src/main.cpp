@@ -21,6 +21,19 @@
 #include <vtkOutputWindow.h>
 #include <vtkWindow.h>
 
+// On hybrid-graphics Windows laptops (NVIDIA Optimus / AMD PowerXpress), the
+// driver decides which GPU runs the app by *inspecting these exported symbols
+// from the .exe itself*. They must live in the main executable's exports table
+// — exporting them from a DLL has no effect. Without this hint, VisIVO falls
+// onto the Intel iGPU while the Oculus / SteamVR compositor binds to the
+// discrete GPU, and xrCreateSession fails with XR_ERROR_GRAPHICS_DEVICE_INVALID.
+#ifdef _WIN32
+extern "C" {
+    __declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001;
+    __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
+#endif
+
 namespace {
 // VTK's default "output window" on Windows is vtkWin32OutputWindow, a modal
 // popup that overrides DisplayText() so SetDisplayMode(...) on the global

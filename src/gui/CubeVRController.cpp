@@ -104,17 +104,22 @@ bool CubeVRController::open(vtkRenderer *desktopRenderer, vtkVolume *cubeVolume)
     // vtkOpenXRRenderWindow::Initialize() does NOT clear `Initialized` when
     // the OpenXR session creation fails (no HMD, runtime missing, form-factor
     // unavailable, etc.) — the OpenGL half is independent and reports success.
-    // The canonical signal is vtkOpenXRManager::IsSessionRunning(), which only
-    // flips true after BeginSession() succeeds. If it's still false we MUST
-    // bail before constructing the interactor: interactor->Initialize() calls
-    // renderWindow->Initialize() a second time, which trips the loader's
-    // single-XrInstance rule (XR_ERROR_LIMIT_REACHED) and any subsequent
-    // Render() then blocks against a null XrSession.
+    // After Initialize() the XrSession handle is non-null iff CreateSession()
+    // succeeded, so it's a reliable "did init reach a usable state" signal.
+    // (Note: IsSessionRunning() is NOT usable here — BeginSession() is only
+    // called later, by the interactor in response to the XR_SESSION_STATE_READY
+    // event, so it's still false on the happy path at this point.)
+    //
+    // If the session wasn't created we MUST bail before constructing the
+    // interactor: interactor->Initialize() calls renderWindow->Initialize()
+    // a second time, which trips the loader's single-XrInstance rule
+    // (XR_ERROR_LIMIT_REACHED) and any subsequent Render() then blocks
+    // against a null XrSession.
     //
     // Finalize() is also required even on the failure path: a partially-built
     // XrInstance is left behind by the failed Initialize(), and only Finalize()
     // releases it so the *next* open() attempt isn't poisoned.
-    if (!vtkOpenXRManager::GetInstance().IsSessionRunning()) {
+    if (vtkOpenXRManager::GetInstance().GetSession() == XR_NULL_HANDLE) {
         m_lastError = u"Could not start an OpenXR session. Make sure an HMD is "
                       u"connected and the OpenXR runtime (SteamVR / Oculus / "
                       u"WMR) is running, then try again."_s;
@@ -137,6 +142,17 @@ bool CubeVRController::open(vtkRenderer *desktopRenderer, vtkVolume *cubeVolume)
 
     d->interactor = vtkSmartPointer<vtkOpenXRRenderWindowInteractor>::New();
     d->interactor->SetRenderWindow(d->renderWindow);
+    // VTK's default ActionManifestDirectory is the empty string, so it looks
+    // for vtk_openxr_actions.json in the process's CWD — which is wherever the
+    // user launched us from, not where VTK installed the manifest. Without the
+    // manifest the interactor logs "Failed to load actions" and never calls
+    // BeginSession(), so the HMD stays blank and Render() fails with
+    // XR_ERROR_SESSION_NOT_RUNNING. The path is resolved at configure time by
+    // CMake (see VISIVO_VTK_OPENXR_ACTIONS_DIR). The trailing slash matters:
+    // the interactor concatenates directory + filename without a separator.
+#ifdef VISIVO_VTK_OPENXR_ACTIONS_DIR
+    d->interactor->SetActionManifestDirectory(VISIVO_VTK_OPENXR_ACTIONS_DIR);
+#endif
     d->interactor->Initialize();
 
     d->vrRenderer->ResetCamera();

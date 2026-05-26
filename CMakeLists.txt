@@ -341,6 +341,32 @@ if (VISIVO_ENABLE_VR)
         message(STATUS "VisIVO: VR support ENABLED (VTK::RenderingOpenXR found)")
         target_compile_definitions(${PROJECT_NAME} PRIVATE VISIVO_HAS_VR=1)
         target_link_libraries(${PROJECT_NAME} PRIVATE VTK::RenderingOpenXR)
+
+        # vtkOpenXRRenderWindowInteractor reads a JSON action manifest at startup
+        # (controller bindings — without it BeginSession is never called and the
+        # HMD shows nothing). VTK ships these files at `<prefix>/share/xr_actions/`,
+        # but the interactor defaults to looking in the *current working directory*.
+        # Resolve the install path at configure time and pass it as a compile def
+        # so the runtime knows where to point ActionManifestDirectory.
+        #
+        # VTK_DIR points to `<prefix>/lib/cmake/vtk-X.Y/`, so the prefix is three
+        # levels up. Trailing slash is mandatory — VTK concatenates the directory
+        # and filename without a separator.
+        get_filename_component(_visivo_vtk_prefix "${VTK_DIR}/../../.." ABSOLUTE)
+        set(_visivo_xr_actions_dir "${_visivo_vtk_prefix}/share/xr_actions/")
+        if (EXISTS "${_visivo_xr_actions_dir}vtk_openxr_actions.json")
+            message(STATUS "VisIVO: OpenXR action manifest at ${_visivo_xr_actions_dir}")
+            target_compile_definitions(${PROJECT_NAME} PRIVATE
+                VISIVO_VTK_OPENXR_ACTIONS_DIR="${_visivo_xr_actions_dir}")
+        else ()
+            message(WARNING
+                "VisIVO: vtk_openxr_actions.json not found at ${_visivo_xr_actions_dir} — "
+                "VR controller bindings will fail to load at runtime, leaving the headset "
+                "blank. Reinstall VTK with the share/xr_actions/ directory or set the path "
+                "manually.")
+        endif ()
+        unset(_visivo_vtk_prefix)
+        unset(_visivo_xr_actions_dir)
     else ()
         message(WARNING
             "VISIVO_ENABLE_VR=ON but VTK::RenderingOpenXR is not available in this "
