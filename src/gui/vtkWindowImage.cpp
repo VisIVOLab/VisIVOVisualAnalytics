@@ -16,6 +16,7 @@
 #include "ProfileWidget.h"
 #include "RemoteFileBrowserDialog.h"
 #include "SidebarPanel.h"
+#include "theme/SegmentedToggle.h"
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
 #include "ToolResultDialog.h"
@@ -39,6 +40,9 @@
 #include <vtkPoints.h>
 #include <vtkCellArray.h>
 #include <vtkPolyData.h>
+#include "vtkFITSReader.h"
+#include <vtkContourFilter.h>
+#include <vtkFlyingEdges2D.h>
 #include <vtkPolyDataMapper.h>
 #include <vtkProperty.h>
 #include <vtkProperty2D.h>
@@ -64,11 +68,15 @@
 #include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QDoubleValidator>
 #include <QFormLayout>
+#include <QSpinBox>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QMetaObject>
@@ -1298,6 +1306,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     this->layers = new LayerListModel(createPlaceholderRemoteLayerResult(this->filepath), this);
 
     this->setupRenderer();
+    this->setupContourPipeline();
     this->applyInitialAutoscale(this->layers->getImageData(this->layers->getMasterIndex()),
                                 this->layers->getLookupTable(this->layers->getMasterIndex()),
                                 "initial master");
@@ -1354,7 +1363,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     this->actionPolygonRegion->setCheckable(true);
     this->actionAnnulusRegion->setCheckable(true);
     auto *regionGroup = new QActionGroup(this);
-    regionGroup->setExclusive(false);
+    regionGroup->setExclusionPolicy(QActionGroup::ExclusionPolicy::ExclusiveOptional);
     regionGroup->addAction(this->actionBoxRegion);
     regionGroup->addAction(this->actionCircleRegion);
     regionGroup->addAction(this->actionPolygonRegion);
@@ -1388,6 +1397,68 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     QObject::connect(this->actionClearCatalogueOverlay, &QAction::triggered, this,
                      &vtkWindowImage::clearCatalogueOverlay);
     this->ensureCatalogueDock();
+
+    // FITS export → Workspace
+    ui->menuTools->addSeparator();
+    auto *actExportFits = ui->menuTools->addAction(u"Export to Workspace as FITS…"_s);
+    actExportFits->setToolTip(
+            u"Copy this dataset's FITS file into the Workspace Exports "
+            u"directory for later download / re-open."_s);
+    QObject::connect(actExportFits, &QAction::triggered, this, [this]() {
+        bool ok = false;
+        const QString basename = QInputDialog::getText(
+                this, u"Export to Workspace"_s,
+                u"Save in Workspace Exports as:"_s,
+                QLineEdit::Normal,
+                QFileInfo(this->filepath).fileName(), &ok);
+        if (!ok || basename.trimmed().isEmpty()) return;
+        const QString url   = this->remoteBackendUrl;
+        const QString token = this->remoteBackendToken;
+        const QString dsId  = this->remoteDatasetId;
+        const QString bn    = basename.trimmed();
+        this->statusBar()->showMessage(u"Exporting to workspace…"_s, 0);
+        QPointer<vtkWindowImage> self(this);
+        auto *watcher = new QFutureWatcher<QPair<bool,QString>>(this);
+        QObject::connect(watcher, &QFutureWatcher<QPair<bool,QString>>::finished,
+                         this, [self, watcher]() {
+                             const auto r = watcher->result();
+                             watcher->deleteLater();
+                             if (!self) return;
+                             self->statusBar()->clearMessage();
+                             if (r.first) {
+                                 QMessageBox::information(self, u"Export"_s,
+                                         u"Saved to Workspace Exports:\n%1"_s.arg(r.second));
+                             } else {
+                                 QMessageBox::warning(self, u"Export"_s,
+                                         u"Export failed:\n%1"_s.arg(r.second));
+                             }
+                         });
+        watcher->setFuture(QtConcurrent::run([url, token, dsId, bn]() -> QPair<bool,QString> {
+            BackendClient c(url, token);
+            auto r = c.copyDatasetToWorkspace(dsId, bn);
+            if (!r.valid) return { false, r.error };
+            return { true, r.deletedFilename };
+        }));
+    });
+
+    // Contour overlay — same approach as the cube viewer: toggle + Level/Lower/Upper
+    ui->menuTools->addSeparator();
+    m_actToggleContours = ui->menuTools->addAction(u"Show Contours"_s);
+    m_actToggleContours->setCheckable(true);
+    m_actToggleContours->setChecked(false);
+    QObject::connect(m_actToggleContours, &QAction::toggled, this,
+                     &vtkWindowImage::setContoursVisible);
+
+    auto *actExtContour = ui->menuTools->addAction(u"Load Contour from FITS…"_s);
+    actExtContour->setToolTip(
+            u"Overlay iso-contours from an external FITS file (e.g. a moment "
+            u"map exported from a cube viewer)."_s);
+    QObject::connect(actExtContour, &QAction::triggered, this,
+                     &vtkWindowImage::addExternalContours);
+
+    auto *actClearContour = ui->menuTools->addAction(u"Clear All Contours"_s);
+    QObject::connect(actClearContour, &QAction::triggered, this,
+                     &vtkWindowImage::clearAllContours);
 
     // Setup Menu View
     this->actionShowWcsAxes = new QAction(u"Show WCS Axes"_s, this);
@@ -3322,6 +3393,9 @@ void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result)
         this->refreshProbeOverlay();
     }
     this->m_loadingActor->VisibilityOff();
+    // Reconnect the contour filter to the new real image data (the initial
+    // call at construction time ran on a placeholder with no pixels).
+    this->setupContourPipeline();
     this->updateDataStatePanel();
     this->updateSanityPanel();
     this->updateLUTCustomizer();
@@ -4190,6 +4264,218 @@ void vtkWindowImage::setupViewerToolbar()
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
 
+// ── Contour overlay — same pipeline as vtkWindowCube ────────────────────────
+// vtkFlyingEdges2D connected to the master layer image data. GenerateValues
+// produces N evenly-spaced levels between lower and upper, matching the
+// cube viewer's Level / Lower / Upper UI pattern. The actor is permanently
+// in the renderer; visibility is toggled via the "Show Contours" button.
+
+void vtkWindowImage::setupContourPipeline()
+{
+    auto *imageData = this->layers
+            ? this->layers->getImageData(this->layers->getMasterIndex())
+            : nullptr;
+    if (!imageData) return;
+
+    double range[2];
+    imageData->GetScalarRange(range);
+    m_contourLower = range[0];
+    m_contourUpper = range[1];
+
+    const bool firstTime = !m_contourFilter;
+    if (firstTime) {
+        m_contourFilter = vtkSmartPointer<vtkFlyingEdges2D>::New();
+        m_contourActor  = vtkSmartPointer<vtkActor>::New();
+    }
+
+    m_contourFilter->SetInputData(imageData);
+    m_contourFilter->GenerateValues(m_contourLevel, m_contourLower, m_contourUpper);
+    m_contourFilter->Update();
+
+    if (firstTime) {
+        vtkNew<vtkPolyDataMapper> mapper;
+        mapper->SetInputConnection(m_contourFilter->GetOutputPort());
+        mapper->SetScalarRange(m_contourLower, m_contourUpper);
+        m_contourActor->SetMapper(mapper);
+        m_contourActor->VisibilityOff();
+
+        auto *ren = ui->vtk->renderWindow()
+                    ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
+                    : nullptr;
+        if (ren) ren->AddViewProp(m_contourActor);
+    } else if (m_contourActor->GetMapper()) {
+        static_cast<vtkPolyDataMapper *>(m_contourActor->GetMapper())
+                ->SetScalarRange(m_contourLower, m_contourUpper);
+    }
+
+    // Sync the sidebar line edits so the user sees the actual range from
+    // the real image data, not the stale defaults from construction time.
+    if (m_contourLowerEdit) {
+        const QSignalBlocker b(m_contourLowerEdit);
+        m_contourLowerEdit->setText(QString::number(m_contourLower, 'g', 6));
+    }
+    if (m_contourUpperEdit) {
+        const QSignalBlocker b(m_contourUpperEdit);
+        m_contourUpperEdit->setText(QString::number(m_contourUpper, 'g', 6));
+    }
+
+    m_contourActor->SetVisibility(m_contoursVisible);
+}
+
+void vtkWindowImage::updateContours()
+{
+    if (!m_contourFilter) return;
+    // Guard: lower must be < upper for GenerateValues to produce valid levels.
+    if (m_contourLower >= m_contourUpper) return;
+    m_contourFilter->GenerateValues(m_contourLevel, m_contourLower, m_contourUpper);
+    m_contourFilter->Modified();
+    m_contourFilter->Update();
+    if (m_contourActor && m_contourActor->GetMapper()) {
+        static_cast<vtkPolyDataMapper *>(m_contourActor->GetMapper())
+                ->SetScalarRange(m_contourLower, m_contourUpper);
+    }
+    if (ui->vtk->renderWindow())
+        ui->vtk->renderWindow()->Render();
+}
+
+void vtkWindowImage::setContoursVisible(bool vis)
+{
+    m_contoursVisible = vis;
+    m_contourActor->SetVisibility(vis);
+    if (ui->vtk->renderWindow())
+        ui->vtk->renderWindow()->Render();
+}
+
+void vtkWindowImage::addExternalContours()
+{
+    auto *ren = ui->vtk->renderWindow()
+                ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
+                : nullptr;
+    if (!ren) return;
+
+    const QString path = QFileDialog::getOpenFileName(
+            this, u"Load Contour FITS"_s, QString(),
+            u"FITS files (*.fits *.fit);;All files (*)"_s);
+    if (path.isEmpty()) return;
+
+    bool ok = false;
+    const QString levelsStr = QInputDialog::getText(
+            this, u"Contour Levels"_s,
+            u"Enter contour levels (comma-separated):"_s,
+            QLineEdit::Normal,
+            u"0.1, 0.5, 1.0, 2.0, 5.0"_s, &ok);
+    if (!ok || levelsStr.trimmed().isEmpty()) return;
+
+    QVector<double> levels;
+    for (const auto &s : levelsStr.split(u','))  {
+        bool lok = false;
+        const double v = s.trimmed().toDouble(&lok);
+        if (lok && std::isfinite(v)) levels.append(v);
+    }
+    if (levels.isEmpty()) return;
+
+    vtkNew<vtkFITSReader> reader;
+    reader->SetFileName(path.toStdString().c_str());
+    reader->Update();
+    auto *extData = reader->GetOutput();
+    if (!extData || extData->GetNumberOfPoints() == 0) {
+        QMessageBox::warning(this, u"Contour"_s,
+                u"Could not read FITS data from:\n%1"_s.arg(path));
+        return;
+    }
+
+    vtkNew<vtkContourFilter> contour;
+    contour->SetInputData(extData);
+    contour->SetNumberOfContours(levels.size());
+    for (int i = 0; i < levels.size(); ++i)
+        contour->SetValue(i, levels[i]);
+    contour->Update();
+
+    vtkNew<vtkPolyDataMapper> mapper;
+    mapper->SetInputConnection(contour->GetOutputPort());
+    mapper->ScalarVisibilityOff();
+
+    auto actor = vtkSmartPointer<vtkActor>::New();
+    actor->SetMapper(mapper);
+    actor->GetProperty()->SetColor(1.0, 0.4, 0.2);
+    actor->GetProperty()->SetLineWidth(1.5);
+    actor->VisibilityOn();
+
+    ren->AddActor(actor);
+    m_externalContourLayers.append({ QFileInfo(path).fileName(), actor });
+    ui->vtk->renderWindow()->Render();
+}
+
+void vtkWindowImage::clearAllContours()
+{
+    auto *ren = ui->vtk->renderWindow()
+                ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
+                : nullptr;
+    for (auto &layer : m_externalContourLayers) {
+        if (ren && layer.actor) ren->RemoveActor(layer.actor);
+    }
+    m_externalContourLayers.clear();
+    setContoursVisible(false);
+    if (ren && ui->vtk->renderWindow())
+        ui->vtk->renderWindow()->Render();
+}
+
+// ── Beam ellipse indicator ───────────────────────────────────────────────────
+
+void vtkWindowImage::setBeamInfo(double majorDeg, double minorDeg, double paDeg)
+{
+    if (!std::isfinite(majorDeg) || !std::isfinite(minorDeg)
+        || majorDeg <= 0.0 || minorDeg <= 0.0) {
+        if (m_beamActor) m_beamActor->VisibilityOff();
+        return;
+    }
+    const double cdelt = std::abs(this->remoteDatasetCdelt[0]);
+    if (cdelt <= 0.0) return;
+    const double majPx = majorDeg / cdelt;
+    const double minPx = minorDeg / cdelt;
+    const int nSides = 64;
+    const double paRad = paDeg * M_PI / 180.0;
+
+    vtkNew<vtkPoints> points;
+    points->SetNumberOfPoints(nSides);
+    vtkNew<vtkCellArray> poly;
+    poly->InsertNextCell(nSides);
+    for (int i = 0; i < nSides; ++i) {
+        const double theta = 2.0 * M_PI * i / nSides;
+        const double lx = (minPx / 2.0) * std::cos(theta);
+        const double ly = (majPx / 2.0) * std::sin(theta);
+        const double rx = lx * std::cos(paRad) - ly * std::sin(paRad);
+        const double ry = lx * std::sin(paRad) + ly * std::cos(paRad);
+        points->SetPoint(i, rx, ry, 0.0);
+        poly->InsertCellPoint(i);
+    }
+    vtkNew<vtkPolyData> ellipseData;
+    ellipseData->SetPoints(points);
+    ellipseData->SetPolys(poly);
+    vtkNew<vtkPolyDataMapper> mapper;
+    mapper->SetInputData(ellipseData);
+
+    if (!m_beamActor) m_beamActor = vtkSmartPointer<vtkActor>::New();
+    m_beamActor->SetMapper(mapper);
+    m_beamActor->GetProperty()->SetColor(1.0, 1.0, 1.0);
+    m_beamActor->GetProperty()->SetOpacity(0.6);
+    m_beamActor->GetProperty()->EdgeVisibilityOn();
+    m_beamActor->GetProperty()->SetEdgeColor(1.0, 1.0, 1.0);
+    m_beamActor->SetPosition(majPx / 2.0 + 5.0, majPx / 2.0 + 5.0, 0.0);
+    m_beamActor->VisibilityOn();
+
+    auto *ren = ui->vtk->renderWindow()
+                        ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
+                        : nullptr;
+    if (ren && !ren->HasViewProp(m_beamActor)) {
+        ren->AddActor(m_beamActor);
+    }
+    if (ui->vtk->renderWindow())
+        ui->vtk->renderWindow()->Render();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 void vtkWindowImage::setupSidebar()
 {
     // Remove the UI-file sidebar container and replace it with SidebarPanel.
@@ -4278,13 +4564,66 @@ void vtkWindowImage::setupSidebar()
         toolsLayout->addWidget(card);
     }
 
-    // Card: WCS Display (axes + format + frame)
+    // Card: Contours (same Level / Lower / Upper as the cube viewer)
     {
         auto *card = new QFrame(pageTools);
         card->setStyleSheet(cardStyle);
         auto *cl = new QVBoxLayout(card);
         cl->setContentsMargins(8, 8, 8, 8);
-        cl->setSpacing(4);
+        cl->setSpacing(6);
+
+        auto *cardHdr = new QLabel(u"Contours"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actToggleContours, card));
+
+        auto *formLayout = new QFormLayout();
+        formLayout->setHorizontalSpacing(8);
+        formLayout->setVerticalSpacing(4);
+
+        m_contourLevelSpin = new QSpinBox(card);
+        m_contourLevelSpin->setRange(1, 100);
+        m_contourLevelSpin->setValue(m_contourLevel);
+        formLayout->addRow(u"Level"_s, m_contourLevelSpin);
+
+        m_contourLowerEdit = new QLineEdit(QString::number(m_contourLower, 'g', 6), card);
+        m_contourLowerEdit->setValidator(new QDoubleValidator(card));
+        formLayout->addRow(u"Lower"_s, m_contourLowerEdit);
+
+        m_contourUpperEdit = new QLineEdit(QString::number(m_contourUpper, 'g', 6), card);
+        m_contourUpperEdit->setValidator(new QDoubleValidator(card));
+        formLayout->addRow(u"Upper"_s, m_contourUpperEdit);
+        QSpinBox  *levelSpin = m_contourLevelSpin;
+        QLineEdit *lowerEdit = m_contourLowerEdit;
+        QLineEdit *upperEdit = m_contourUpperEdit;
+
+        cl->addLayout(formLayout);
+        toolsLayout->addWidget(card);
+
+        QObject::connect(levelSpin, qOverload<int>(&QSpinBox::valueChanged), this,
+                         [this](int v) { m_contourLevel = v; updateContours(); });
+        QObject::connect(lowerEdit, &QLineEdit::editingFinished, this,
+                         [this, lowerEdit]() {
+                             m_contourLower = lowerEdit->text().toDouble();
+                             updateContours();
+                         });
+        QObject::connect(upperEdit, &QLineEdit::editingFinished, this,
+                         [this, upperEdit]() {
+                             m_contourUpper = upperEdit->text().toDouble();
+                             updateContours();
+                         });
+    }
+
+    // Card: WCS Display — toggle button for axes + SegmentedToggle for
+    // format (Sexagesimal / Decimal) and frame (Galactic / FK5 / Ecliptic),
+    // consistent with the cube viewer's mode selectors.
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
 
         auto *cardHdr = new QLabel(u"WCS Display"_s, card);
         cardHdr->setStyleSheet(subHdrStyle);
@@ -4296,18 +4635,45 @@ void vtkWindowImage::setupSidebar()
                 QStringLiteral("QLabel { color: %1; font-size: 9px; margin-top: 4px; }")
                         .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
 
+        // Coordinate format: Sexagesimal | Decimal
         auto *fmtHdr = new QLabel(u"Coordinate format"_s, card);
         fmtHdr->setStyleSheet(secStyle);
         cl->addWidget(fmtHdr);
-        cl->addWidget(makeToolBtn(this->actionWcsSexagesimal, card));
-        cl->addWidget(makeToolBtn(this->actionWcsDecimal,     card));
+        auto *fmtToggle = new SegmentedToggle(card);
+        fmtToggle->addItem(u"Sexagesimal"_s, u"HMS / DMS"_s);
+        fmtToggle->addItem(u"Decimal"_s,     u"Decimal degrees"_s);
+        fmtToggle->setCurrentIndex(
+                this->actionWcsDecimal->isChecked() ? 1 : 0);
+        cl->addWidget(fmtToggle);
+        QObject::connect(fmtToggle, &SegmentedToggle::currentIndexChanged, this,
+                         [this](int idx) {
+                             if (idx == 0 && !this->actionWcsSexagesimal->isChecked())
+                                 this->actionWcsSexagesimal->trigger();
+                             else if (idx == 1 && !this->actionWcsDecimal->isChecked())
+                                 this->actionWcsDecimal->trigger();
+                         });
 
+        // Coordinate frame: Galactic | FK5 | Ecliptic
         auto *frameHdr = new QLabel(u"Coordinate frame"_s, card);
         frameHdr->setStyleSheet(secStyle);
         cl->addWidget(frameHdr);
-        cl->addWidget(makeToolBtn(ui->actionGalactic, card));
-        cl->addWidget(makeToolBtn(ui->actionFK5,      card));
-        cl->addWidget(makeToolBtn(ui->actionEcliptic, card));
+        auto *frameToggle = new SegmentedToggle(card);
+        frameToggle->addItem(u"Galactic"_s, u"Galactic l, b"_s);
+        frameToggle->addItem(u"FK5"_s,      u"RA, Dec (J2000)"_s);
+        frameToggle->addItem(u"Ecliptic"_s, u"Ecliptic λ, β"_s);
+        if (ui->actionGalactic->isChecked())       frameToggle->setCurrentIndex(0);
+        else if (ui->actionFK5->isChecked())       frameToggle->setCurrentIndex(1);
+        else if (ui->actionEcliptic->isChecked())  frameToggle->setCurrentIndex(2);
+        cl->addWidget(frameToggle);
+        QObject::connect(frameToggle, &SegmentedToggle::currentIndexChanged, this,
+                         [this](int idx) {
+                             QAction *targets[] = { ui->actionGalactic,
+                                                    ui->actionFK5,
+                                                    ui->actionEcliptic };
+                             if (idx >= 0 && idx < 3 && !targets[idx]->isChecked())
+                                 targets[idx]->trigger();
+                         });
+
         toolsLayout->addWidget(card);
     }
 

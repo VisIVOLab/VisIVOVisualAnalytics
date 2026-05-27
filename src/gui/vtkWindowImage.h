@@ -36,6 +36,9 @@ class SidebarPanel;
 class vtkActor;
 class vtkAxisActor2D;
 class vtkCoordinate;
+class QLineEdit;
+class QSpinBox;
+class vtkFlyingEdges2D;
 class vtkImageStack;
 class vtkLegendScaleActorWCS;
 class vtkLookupTable;
@@ -73,6 +76,10 @@ public:
                    const QString &remoteBackendToken = QString(), QWidget *parent = nullptr);
     ~vtkWindowImage();
     void closeEvent(QCloseEvent *event) override;
+
+    /// Beam indicator — same contract as vtkWindowCube::setBeamInfo().
+    /// Pass NaN major to hide. Call after construction.
+    void setBeamInfo(double majorDeg, double minorDeg, double paDeg);
 
     // ── VLKB layer support ────────────────────────────────────────────────────
     /// Asynchronously open @p backendPath on the backend and add its image data
@@ -208,6 +215,33 @@ private:
     vtkNew<vtkCoordinate> coordinate;
     bool showWcsAxes{ true };
     bool probeModeActive{ false };
+    vtkSmartPointer<vtkActor> m_beamActor;
+
+    // Contour overlay — same pipeline as the cube viewer: vtkFlyingEdges2D
+    // connected to the master layer, with Level/Lower/Upper controls in the
+    // sidebar's CONTOURS section. Also supports external FITS overlays.
+    QPointer<QAction> m_actToggleContours;
+    vtkSmartPointer<vtkFlyingEdges2D> m_contourFilter;
+    vtkSmartPointer<vtkActor>         m_contourActor;
+    bool                     m_contoursVisible{ false };
+    int                      m_contourLevel{ 15 };
+    double                   m_contourLower{ 0.0 };
+    double                   m_contourUpper{ 1.0 };
+    void setupContourPipeline();
+    void updateContours();
+    void setContoursVisible(bool vis);
+    QPointer<QLineEdit> m_contourLowerEdit;
+    QPointer<QLineEdit> m_contourUpperEdit;
+    QPointer<QSpinBox>  m_contourLevelSpin;
+
+    // External FITS contour layers
+    struct ExternalContourLayer {
+        QString label;
+        vtkSmartPointer<vtkActor> actor;
+    };
+    QVector<ExternalContourLayer> m_externalContourLayers;
+    void addExternalContours();
+    void clearAllContours();
     RegionMode regionMode{ RegionMode::None };
     bool useSexagesimalWcsFormat{ false };
     bool wcsFormatExplicitlyChosen{ false };

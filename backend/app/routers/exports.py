@@ -118,6 +118,62 @@ async def exports_download(
     )
 
 
+class ExportsCopyRequest(BaseModel):
+    """Copy an opened dataset FITS file into the Workspace Exports."""
+
+    dataset_id: str
+    output_basename: str = ""
+
+
+class ExportsCopyResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    workspace_filename: str = ""
+    output_path: str = ""
+
+
+@router.post("/v1/exports/copy_dataset",
+             response_model=ExportsCopyResponse, tags=["exports"])
+async def exports_copy_dataset(
+    request: ExportsCopyRequest,
+    _: None = _auth,
+) -> ExportsCopyResponse:
+    """Copy the source FITS file of an opened dataset into the Workspace
+    Exports directory (useful for 2-D images that don't have a dedicated
+    crop/moment export path)."""
+    import shutil
+
+    from ..sessions import REGISTRY
+    # Find the dataset path across all sessions.
+    src_path = None
+    for session in REGISTRY.values():
+        entry = session.datasets.get(request.dataset_id)
+        if entry:
+            src_path = entry.get("path")
+            break
+    if not src_path:
+        return ExportsCopyResponse(valid=False,
+                                   error=f"Dataset '{request.dataset_id}' not found.")
+
+    src = Path(src_path)
+    if not src.exists():
+        return ExportsCopyResponse(valid=False,
+                                   error=f"Source file not found: {src}")
+    try:
+        basename = request.output_basename.strip() or src.name
+        from ..dependencies import make_workspace_path
+        dest = make_workspace_path(basename)
+        shutil.copy2(str(src), str(dest))
+        logger.info("[exports] copied dataset %s → %s", src, dest)
+    except Exception as exc:
+        return ExportsCopyResponse(valid=False, error=str(exc))
+    return ExportsCopyResponse(
+        valid=True,
+        workspace_filename=dest.name,
+        output_path=str(dest),
+    )
+
+
 @router.delete("/v1/exports/{filename}",
                response_model=ExportsDeleteResponse, tags=["exports"])
 async def exports_delete(

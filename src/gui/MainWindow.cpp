@@ -943,11 +943,14 @@ void MainWindow::doOpenDataPath(const QString &path)
                            .arg(opened.degenerateAxesSummary.isEmpty()
                                         ? QStringLiteral("no collapsed axes")
                                         : opened.degenerateAxesSummary);
-        win = new vtkWindowImage(path, client.baseUrl(), opened.datasetId,
+        auto *imgWin = new vtkWindowImage(path, client.baseUrl(), opened.datasetId,
                                  opened.ctype, opened.cunit, opened.crval, opened.crpix,
                                  opened.cdelt, opened.degenerateAxesSummary,
                                  opened.wcsStatus, opened.wcsWarningMessage,
                                  client.sessionId(), client.token(), this);
+        imgWin->setBeamInfo(opened.beamMajorDeg, opened.beamMinorDeg,
+                            opened.beamPaDeg);
+        win = imgWin;
     } else if (opened.kind == u"cube"_s) {
         qDebug().noquote()
                 << QStringLiteral("[fits] active_axes=%1 -> opening as cube | %2")

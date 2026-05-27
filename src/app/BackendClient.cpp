@@ -1334,6 +1334,28 @@ BackendSaveMomentFitsResult BackendClient::saveMomentFits(
 
 // ── Workspace Exports management ───────────────────────────────────────────
 
+BackendWorkspaceDeleteResult BackendClient::copyDatasetToWorkspace(
+        const QString &datasetId, const QString &basename)
+{
+    BackendWorkspaceDeleteResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"),      datasetId },
+            { QStringLiteral("output_basename"), basename } });
+    const QByteArray raw =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/exports/copy_dataset")),
+                        body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+    result.valid           = obj.value(QStringLiteral("valid")).toBool();
+    result.error           = obj.value(QStringLiteral("error")).toString();
+    result.deletedFilename = obj.value(QStringLiteral("workspace_filename")).toString();
+    return result;
+}
+
 BackendWorkspaceExportsList BackendClient::listExports()
 {
     BackendWorkspaceExportsList result;

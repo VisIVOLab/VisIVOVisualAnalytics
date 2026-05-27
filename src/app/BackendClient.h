@@ -1065,6 +1065,10 @@ public:
                                                 const QString &outputBasename = {});
 
     // ── Workspace Exports management ──────────────────────────────────────────
+    /** POST /v1/exports/copy_dataset — copy a dataset's FITS file into
+     *  the Workspace Exports dir. Useful for 2-D images. */
+    BackendWorkspaceDeleteResult copyDatasetToWorkspace(const QString &datasetId,
+                                                         const QString &basename);
     /** GET /v1/exports/list — enumerate the workspace contents, newest first. */
     BackendWorkspaceExportsList listExports();
     /** DELETE /v1/exports/{filename} — remove a workspace artefact. */
