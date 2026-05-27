@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 
 using namespace Qt::StringLiterals;
@@ -221,12 +222,28 @@ void ChannelMapsWindow::populateGrid(const BackendCubeSubvolumeResult &vol)
 
     m_cells.clear();
     m_cells.reserve(nPanels);
+    m_slices.clear();
+    m_slices.reserve(nPanels);
+    m_sharedMin = sharedMin;
+    m_sharedMax = sharedMax;
 
     for (int idx = 0; idx < nPanels; ++idx) {
         const int zOff = zOffsets[idx];
         const int absChannel = m_config.channelStart + zOff;
         const int floatOffset = zOff * w * h;
         if (floatOffset + w * h > totalFloats) break;
+
+        // Store raw data for the PNG export path.
+        {
+            ChannelSlice slice;
+            slice.channel = absChannel;
+            slice.width   = w;
+            slice.height  = h;
+            slice.data.resize(w * h);
+            std::memcpy(slice.data.data(), raw + floatOffset,
+                        w * h * sizeof(float));
+            m_slices.append(std::move(slice));
+        }
 
         const int row = idx / cols;
         const int col = idx % cols;
@@ -397,10 +414,15 @@ void ChannelMapsWindow::showEnlargedCell(int cellIdx, int absChannel,
 }
 
 // ── Mosaic PNG export ──────────────────────────────────────────────────────
+// Bypass QCustomPlot's toPixmap entirely — its internal layout at the
+// export size doesn't match the on-screen layout, causing truncated "CH"
+// labels and shifted images. Instead we paint each channel directly from
+// the stored raw float data + the VTK lookup table, and draw the labels
+// with QPainter. Result is pixel-perfect and identical on every platform.
 
 void ChannelMapsWindow::saveMosaicPng()
 {
-    if (m_cells.isEmpty()) {
+    if (m_slices.isEmpty()) {
         QMessageBox::information(this, u"Save mosaic"_s,
                 u"No panels to export — generate the channel maps first."_s);
         return;
@@ -417,21 +439,39 @@ void ChannelMapsWindow::saveMosaicPng()
             u"PNG image (*.png);;All files (*)"_s);
     if (path.isEmpty()) return;
 
+    // Build a 256-entry color table from the VTK LUT once.
+    vtkNew<vtkLookupTable> lut;
+    lut->SetNumberOfTableValues(256);
+    ColorMaps::SetColorMap(lut, m_config.lutName.toStdString());
+    lut->Build();
+    QVector<QRgb> colorTable(256);
+    for (int i = 0; i < 256; ++i) {
+        const double *rgba = lut->GetTableValue(i);
+        colorTable[i] = qRgb(
+                std::clamp(int(rgba[0] * 255. + .5), 0, 255),
+                std::clamp(int(rgba[1] * 255. + .5), 0, 255),
+                std::clamp(int(rgba[2] * 255. + .5), 0, 255));
+    }
+
     const int cols    = std::max(1, m_config.columns);
-    const int nPanels = m_cells.size();
+    const int nPanels = m_slices.size();
     const int nRows   = static_cast<int>(
             std::ceil(static_cast<double>(nPanels) / cols));
-    // Generous per-cell size so the "CH N" title text and axis labels
-    // render at readable resolution (the old 256×220 was too small for
-    // the QCPTextElement to lay out the channel number).
-    const int cellW   = 400;
-    const int cellH   = 340;
-    const int headerH = 48;
-    const qreal dpr   = 2.0;   // retina-quality export
-    const QSize mosaicSize(cols * cellW, nRows * cellH + headerH);
 
-    QImage mosaic(mosaicSize * dpr, QImage::Format_ARGB32);
-    mosaic.setDevicePixelRatio(dpr);
+    // Full source resolution per cell with 2× DPR for retina-quality
+    // exports. For a 512×512 cube with 64 panels (8 cols) this produces
+    // an ~8200×8700 physical-pixel image — large but publication-grade.
+    const int scale   = 2;
+    const int imgW    = m_slices[0].width;
+    const int imgH    = m_slices[0].height;
+    const int pad     = 4  * scale;
+    const int labelH  = 20 * scale;
+    const int cellW   = imgW * scale + pad;
+    const int cellH   = imgH * scale + labelH + pad;
+    const int headerH = 30 * scale;
+
+    const QSize mosaicSize(cols * cellW, nRows * cellH + headerH);
+    QImage mosaic(mosaicSize, QImage::Format_ARGB32);
     mosaic.fill(QColor(QString::fromLatin1(VisivoTheme::kBackground())));
 
     QPainter painter(&mosaic);
@@ -440,30 +480,66 @@ void ChannelMapsWindow::saveMosaicPng()
     // Title bar
     painter.setPen(QColor(QString::fromLatin1(VisivoTheme::kOnSurface())));
     QFont hdrFont;
-    hdrFont.setPixelSize(18);
+    hdrFont.setPixelSize(14 * scale);
     hdrFont.setWeight(QFont::DemiBold);
     painter.setFont(hdrFont);
-    painter.drawText(QRect(12, 0, mosaicSize.width() - 24, headerH),
+    painter.drawText(QRect(8 * scale, 0, mosaicSize.width() - 16 * scale, headerH),
                      Qt::AlignVCenter | Qt::AlignLeft,
                      u"Channel Maps  ·  %1  ·  CH %2–%3  stride %4"_s
                      .arg(QFileInfo(m_filepath).fileName())
                      .arg(m_config.channelStart).arg(m_config.channelEnd)
                      .arg(m_config.stride));
 
+    // Cell label font
+    QFont cellFont;
+    cellFont.setPixelSize(11 * scale);
+    cellFont.setWeight(QFont::DemiBold);
+    painter.setFont(cellFont);
+
+    const double range = m_sharedMax - m_sharedMin;
+    const double invRange = (range > 0.) ? 255.0 / range : 0.;
+
     for (int i = 0; i < nPanels; ++i) {
         const int r = i / cols;
         const int c = i % cols;
-        // Force the cell to lay out at the export size before rendering
-        // so QCPTextElement ("CH 28") and axis ticks get proper space.
-        // Without this, toPixmap uses the cell's on-screen size for text
-        // metrics, which may be much smaller than the export resolution.
-        auto *cell = m_cells[i];
-        const QSize oldSize = cell->size();
-        cell->resize(cellW, cellH);
-        cell->replot(QCustomPlot::rpImmediateRefresh);
-        const QPixmap pix = cell->toPixmap(cellW, cellH, dpr);
-        cell->resize(oldSize);
-        painter.drawPixmap(c * cellW, headerH + r * cellH, pix);
+        const auto &slice = m_slices[i];
+
+        const int cellX = c * cellW;
+        const int cellY = headerH + r * cellH;
+
+        // Label: "CH N" centred above the image
+        painter.setPen(QColor(QString::fromLatin1(VisivoTheme::kOnSurface())));
+        painter.drawText(QRect(cellX, cellY, cellW, labelH),
+                         Qt::AlignCenter,
+                         u"CH %1"_s.arg(slice.channel));
+
+        // Rasterise at full source resolution × scale factor.
+        // Source data is row-major [y][x] with origin at bottom-left
+        // (FITS convention); QImage row 0 is top, so we flip Y.
+        const int outW = imgW * scale;
+        const int outH = imgH * scale;
+        QImage cellImg(outW, outH, QImage::Format_RGB32);
+        const float *src = slice.data.constData();
+        const int srcW = slice.width;
+        const int srcH = slice.height;
+        for (int py = 0; py < outH; ++py) {
+            const int srcY = py * srcH / outH;
+            const int flippedY = srcH - 1 - srcY;
+            auto *scanline = reinterpret_cast<QRgb *>(cellImg.scanLine(py));
+            for (int px = 0; px < outW; ++px) {
+                const int srcX = px * srcW / outW;
+                const float v = src[flippedY * srcW + srcX];
+                int idx;
+                if (!std::isfinite(v) || range <= 0.) {
+                    idx = 0;
+                } else {
+                    idx = std::clamp(int((v - m_sharedMin) * invRange + .5),
+                                     0, 255);
+                }
+                scanline[px] = colorTable[idx];
+            }
+        }
+        painter.drawImage(cellX + pad / 2, cellY + labelH + pad / 2, cellImg);
     }
     painter.end();
 

@@ -427,6 +427,41 @@ updates within frames of the operation instead of on the next 4s tick.
 
 ---
 
+## Channel Maps (`ChannelMapsWindow`)
+
+Displays an N × M grid of 2-D channel slices with a shared colour scale,
+rendered with **QCustomPlot** (`QCPColorMap`) instead of VTK to avoid the
+macOS OpenGL context limit (~16 simultaneous contexts — a 64-cell grid
+would crash). Each cell is a lightweight raster widget.
+
+| Component | File | Role |
+|-----------|------|------|
+| Config dialog | `ChannelMapsDialog.{h,cpp}` | Start/End/Stride/Columns/LUT picker (gradient preview icons via `CubeUiAssembler::buildLutPreview`) |
+| Mosaic window | `ChannelMapsWindow.{h,cpp}` | Non-modal `QMainWindow` with a `QScrollArea` → `QGridLayout` of QCPColorMap cells |
+| LUT mapping | `lutToGradient()` (local to `ChannelMapsWindow.cpp`) | Samples a `vtkLookupTable` at 256 points → `QCPColorGradient` with matching colour stops |
+
+**Data flow**: one `BackendClient::requestSubvolume(did, 0, W-1, 0, H-1, z0, z1)`
+call (extended with `range_min/max`, `spectral_axis_type/unit`, `bunit`)
+fetches the full z-slab. Client-side slicing extracts each stride-selected
+plane and populates the `QCPColorMap::data()` cells. The shared data
+range (`rangeMin..rangeMax` from the subvolume response) is applied to
+every colour map so the LUT is directly comparable across panels.
+
+**Double-click → enlarged view**: opens a `QDialog` with a single
+full-size `QCPColorMap` + `QCPColorScale` (colour bar). The gradient is
+passed by value from the mosaic (not copied from the source cell, because
+`QCPColorMap::setColorScale()` resets the gradient to the scale's
+default — the gradient must be set *after* the colour-scale link).
+Drag + zoom are enabled for detail inspection.
+
+**PNG export**: iterates over cells, `resize()` + `replot()` each to
+the export geometry (400 × 340 @ 2× DPR) before `toPixmap()` so
+`QCPTextElement` title labels ("CH 28") lay out at the export width
+rather than the on-screen widget size. Composited into a single `QImage`
+with a file-name + range title bar.
+
+---
+
 ## Catalogue 3D viewer (`vtkWindowCatalogue3D`)
 
 Renders a remote CSV catalogue as a 3-D point cloud in Cartesian (RA/Dec/distance) space.

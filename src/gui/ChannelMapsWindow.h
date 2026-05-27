@@ -54,4 +54,15 @@ private:
     QPointer<QScrollArea> m_scroll;
     QPointer<QLabel>      m_statusLabel;
     QVector<QCustomPlot*> m_cells;
+
+    // Raw per-channel data stored for reliable PNG export (bypasses
+    // QCustomPlot's toPixmap which has layout issues at non-widget sizes).
+    struct ChannelSlice {
+        int channel;      // absolute channel index
+        int width, height;
+        QVector<float> data; // row-major, size = width * height
+    };
+    QVector<ChannelSlice> m_slices;
+    double m_sharedMin{ 0. };
+    double m_sharedMax{ 1. };
 };

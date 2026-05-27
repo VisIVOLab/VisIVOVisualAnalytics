@@ -160,7 +160,7 @@ void PvDiagramWidget::savePng()
     const QString path = dlg.selectedFiles().value(0);
     if (path.isEmpty())
         return;
-    this->plot->savePng(path);
+    this->plot->savePng(path, 0, 0, 2.0, 95, 300);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

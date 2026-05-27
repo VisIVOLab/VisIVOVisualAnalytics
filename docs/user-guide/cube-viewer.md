@@ -270,19 +270,24 @@ lobes, expanding shells, velocity gradients, and cloud morphology.
 
 **How to use it:**
 
-1. **Tools → Channel Maps…** in the cube viewer.
+1. **Tools → Channel Maps…** in the cube viewer (also available in the
+   *Tools* sidebar under ANALYSIS).
 2. Set the **start** and **end** channel, the **stride** (skip every
    N-th channel), the number of **columns** in the grid (default 8),
-   and the **colour map**.
-3. Click **Generate**. A single `requestSubvolume` call fetches the
-   entire z-range from the backend; panels are sliced and coloured
-   client-side.
-4. Each panel is a lightweight `QCPColorMap` (QCustomPlot) — no OpenGL
-   context per cell, so 64+ panels work on every platform.
-5. The header shows the channel range, stride and LUT; each cell shows
-   **CH N** (the 0-indexed channel index).
-6. **Save mosaic as PNG…** composites all panels into one image with a
-   title bar and saves it at the user-chosen path.
+   and the **colour map** (with gradient preview in the dropdown).
+3. Click **Generate**. The backend fetches the entire z-range in one
+   shot; the mosaic window renders all panels within a few seconds even
+   for 64+ channels.
+4. The header shows the channel range, stride and LUT; each cell shows
+   **CH N** (the 0-indexed channel index). Axis ticks appear only on
+   edge panels (bottom row = X, left column = Y) to keep the grid
+   clean.
+5. **Double-click** any panel to open it in a standalone resizable
+   window with the full colour bar, axes, and drag + zoom. Useful for
+   inspecting a single channel in detail without leaving the mosaic
+   context.
+6. **Save mosaic as PNG…** composites all panels (retina-quality) into
+   one image with a title bar and saves it at the user-chosen path.
 
 ```{tip}
 Start with a small stride and wide range to identify the interesting

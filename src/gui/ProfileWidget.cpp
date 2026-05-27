@@ -878,7 +878,7 @@ void ProfileWidget::savePlot1Png()
             { u"PNG image (*.png)"_s, u"All files (*)"_s });
     if (!alive) return;
     if (!path.isEmpty())
-        ui->plot1->savePng(path);
+        ui->plot1->savePng(path, 0, 0, 2.0, 95, 300);
 }
 
 void ProfileWidget::savePlot2Png()
@@ -892,7 +892,7 @@ void ProfileWidget::savePlot2Png()
             { u"PNG image (*.png)"_s, u"All files (*)"_s });
     if (!alive) return;
     if (!path.isEmpty())
-        ui->plot2->savePng(path);
+        ui->plot2->savePng(path, 0, 0, 2.0, 95, 300);
 }
 
 void ProfileWidget::showAndRaiseFirstTime()
