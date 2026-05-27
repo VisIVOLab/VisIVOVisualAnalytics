@@ -539,6 +539,41 @@ struct BackendBaselineResult
     QString method;          ///< "polynomial" or "median"
 };
 
+// ── Sub-cube extraction (crop ROI → new FITS dataset) ─────────────────────────
+
+struct BackendSaveSubregionResult
+{
+    bool valid{ false };
+    QString error;
+    /// ID of the newly registered dataset on the backend session — open it
+    /// directly with the dataset_id-aware open flow.
+    QString newDatasetId;
+    /// On-disk path of the saved FITS (temp directory on the backend host).
+    QString outputPath;
+    int width { 0 };
+    int height{ 0 };
+    int depth { 0 };
+    double rangeMin{ 0. };
+    double rangeMax{ 0. };
+};
+
+// ── Moment map → standalone FITS export ──────────────────────────────────────
+
+struct BackendSaveMomentFitsResult
+{
+    bool valid{ false };
+    QString error;
+    /// On-disk path of the 2-D moment FITS (temp directory on backend host).
+    /// Not registered as a session dataset (it's a 2-D image, not a cube).
+    QString outputPath;
+    int width { 0 };
+    int height{ 0 };
+    double rangeMin{ 0. };
+    double rangeMax{ 0. };
+    QString bunit;        ///< Moment unit copied into BUNIT
+    QString momentUnit;   ///< Same value as bunit, kept for symmetry with /moment
+};
+
 // ── S-04: Spectral stacking ───────────────────────────────────────────────────
 
 struct BackendStackResult
@@ -957,6 +992,38 @@ public:
                                           int polyOrder,
                                           const QString &method = QStringLiteral("polynomial"),
                                           const QVector<QPair<int,int>> &lineFreeRanges = {});
+
+    // ── Sub-cube extraction (crop ROI → new FITS dataset) ─────────────────────
+    /** POST /v1/cube/save_subregion — write a cropped FITS sub-cube and
+     *  register it as a new dataset in the current session. WCS is preserved
+     *  (CRPIX shifted) so coordinates of any pixel in the cropped cube match
+     *  the same physical position in the source.
+     *  Inclusive 0-indexed bounds. */
+    BackendSaveSubregionResult saveCubeSubregion(const QString &datasetId,
+                                                  int x0, int x1,
+                                                  int y0, int y1,
+                                                  int z0, int z1);
+
+    // ── Moment map → standalone FITS export ───────────────────────────────────
+    /** POST /v1/products/moment_fits — compute the requested moment and
+     *  persist it as a 2-D FITS file (celestial WCS + BUNIT). Returns the
+     *  on-disk path (NOT registered as a session dataset — re-open via the
+     *  Data Hub or share the file). */
+    BackendSaveMomentFitsResult saveMomentFits(const QString &datasetId,
+                                                int order,
+                                                int channelStart, int channelEnd,
+                                                bool maskEnabled,
+                                                double thresholdValue);
+
+    // ── File download (export artefacts only) ─────────────────────────────────
+    /** GET /v1/files/download?path=… — stream a FITS export artefact back
+     *  and write it to @p localPath. Backend rejects paths outside the
+     *  VisIVO export temp directories with HTTP 403. Returns true on
+     *  success; on failure @p error is populated. Synchronous (callers
+     *  typically run it inside a QtConcurrent task). */
+    bool downloadExportFile(const QString &remotePath,
+                            const QString &localPath,
+                            QString &error);
 
     // ── S-04: Spectral stacking ───────────────────────────────────────────────
     /** POST /v1/spectral/stack/binary — stack N cubes into a 1-D spectrum.

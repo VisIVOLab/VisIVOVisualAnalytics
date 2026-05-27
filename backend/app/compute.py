@@ -21,6 +21,7 @@ import concurrent.futures as _cf
 import logging
 import os as _os
 import zlib
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -286,6 +287,95 @@ def worker_cube_subvolume(
         "depth": int(sub.shape[0]),
         "scalar_type": "float32",
         "data_base64": _b64f32(sub),
+    }
+
+
+# ── Worker: save a cube sub-region as a new FITS file ────────────────────────
+
+
+def worker_cube_save_subregion(
+    src_path: str,
+    output_path: str,
+    x0: int, x1: int,
+    y0: int, y1: int,
+    z0: int, z1: int,
+) -> dict[str, Any]:
+    """Crop the source cube to ``[z0..z1, y0..y1, x0..x1]`` (all inclusive,
+    0-indexed) and write the result as a standalone FITS file at
+    ``output_path``.
+
+    The output preserves the source WCS, only shifting the reference pixels
+    (``CRPIX1/2/3``) to account for the new origin so coordinates of any
+    pixel in the cropped cube match the same physical position in the
+    source. ``BUNIT`` and the spectral keywords (``CTYPE3``, ``CUNIT3``,
+    ``CRVAL3``, ``CDELT3``) are kept verbatim.
+
+    Returns a dict with the cropped cube's dimensions and value range plus
+    the output path, ready to be registered as a new session dataset.
+    """
+    from astropy.io import fits as _fits  # noqa: PLC0415 (lazy)
+
+    dataset = ScientificFitsDataset(src_path)
+    hdul, raw = dataset.open_memmap()
+    try:
+        data = dataset.squeeze_to_3d(raw)
+        if data.ndim != 3:
+            raise ValueError("Sub-region export requires a 3D cube dataset.")
+        depth, height, width = data.shape
+        x0c, x1c = max(0, int(x0)), min(int(x1), width - 1)
+        y0c, y1c = max(0, int(y0)), min(int(y1), height - 1)
+        z0c, z1c = max(0, int(z0)), min(int(z1), depth - 1)
+        if x0c > x1c or y0c > y1c or z0c > z1c:
+            raise ValueError(
+                f"Invalid sub-region: x=({x0c}..{x1c}), y=({y0c}..{y1c}), "
+                f"z=({z0c}..{z1c})."
+            )
+        sub = np.asarray(data[z0c:z1c + 1, y0c:y1c + 1, x0c:x1c + 1],
+                         dtype=np.float32)
+        # Header is cloned from the source PRIMARY so we keep BUNIT, OBJECT,
+        # HISTORY and every WCS keyword by default. NAXIS / CRPIX get the
+        # crop-aware updates below.
+        header = hdul[0].header.copy()
+    finally:
+        hdul.close()
+
+    new_depth, new_height, new_width = sub.shape
+    header["NAXIS"]  = 3
+    header["NAXIS1"] = int(new_width)
+    header["NAXIS2"] = int(new_height)
+    header["NAXIS3"] = int(new_depth)
+    # CRPIX is FITS 1-indexed; cropping at numpy index x0 means the old pixel
+    # x0 becomes the new pixel 0 → CRPIX1' = CRPIX1 - x0 (and analogously for
+    # the other two axes). The crop preserves orientation, scale and rotation.
+    for axis_num, offset in ((1, x0c), (2, y0c), (3, z0c)):
+        key = f"CRPIX{axis_num}"
+        if key in header:
+            header[key] = float(header[key]) - float(offset)
+
+    # Provenance trail — astropy splits long HISTORY lines automatically.
+    header.add_history(
+        f"VisIVO sub-cube extraction from {Path(src_path).name}: "
+        f"x={x0c}..{x1c} y={y0c}..{y1c} z={z0c}..{z1c} (0-indexed, inclusive)"
+    )
+
+    logger.info(
+        "[save_subregion] writing FITS  src=%s  out=%s  shape=%s  "
+        "crop=(x=%s..%s, y=%s..%s, z=%s..%s)",
+        src_path, output_path, sub.shape,
+        x0c, x1c, y0c, y1c, z0c, z1c,
+    )
+    primary_hdu = _fits.PrimaryHDU(data=sub, header=header)
+    _fits.HDUList([primary_hdu]).writeto(output_path, overwrite=True)
+    logger.info("[save_subregion] FITS written successfully")
+
+    range_min, range_max = _finite_range(sub)
+    return {
+        "width": int(new_width),
+        "height": int(new_height),
+        "depth": int(new_depth),
+        "range_min": float(range_min),
+        "range_max": float(range_max),
+        "output_path": output_path,
     }
 
 
@@ -727,6 +817,95 @@ def worker_moment(
         "bunit": bunit,
         "moment_threads_used": _n_moment_threads(),
         "data_base64": _b64f32(image),
+    }
+
+
+def worker_moment_save_fits(
+    src_path: str,
+    output_path: str,
+    order: int,
+    channel_start: int,
+    channel_end: int,
+    mask_enabled: bool,
+    threshold_value: float,
+) -> dict[str, Any]:
+    """Compute a moment map and persist it as a standalone 2-D FITS file at
+    ``output_path``.
+
+    Reuses :func:`worker_moment` for the actual computation so the science
+    behaviour stays single-sourced (same masking, same units, same channel
+    clamping rules). The wrapper additionally:
+
+      * extracts the **celestial** WCS from the source cube and writes a
+        valid 2-D header (spectral axis dropped),
+      * sets ``BUNIT`` to the derived moment unit (e.g. ``K m/s`` for M0
+        of a K cube in velocity, ``m/s`` for M1, ``(m/s)^2`` for M2…),
+      * adds HISTORY cards recording the source file, order, channel
+        range, and masking parameters so the artefact is self-documenting.
+    """
+    from astropy.io import fits as _fits  # noqa: PLC0415
+    from astropy.wcs import WCS as _WCS   # noqa: PLC0415
+
+    # Decode the array data once via the canonical moment worker.
+    payload = worker_moment(
+        src_path, int(order), int(channel_start), int(channel_end),
+        bool(mask_enabled), float(threshold_value),
+    )
+    # The base64 round-trip is unnecessary for the FITS path but keeps a
+    # single source of truth — the cost is one float32 array decode, dwarfed
+    # by the moment compute itself.
+    image_bytes = base64.b64decode(payload["data_base64"])
+    image = np.frombuffer(image_bytes, dtype=np.float32).reshape(
+        int(payload["height"]), int(payload["width"]),
+    ).copy()  # detach from the read-only buffer before writing
+
+    # Build a 2-D header from the source WCS — celestial() projects away the
+    # spectral / Stokes axes and gives us a clean (RA, Dec) or (l, b) header.
+    with _fits.open(src_path, memmap=True, mode="readonly") as hdul:
+        src_header = hdul[0].header.copy()
+    try:
+        wcs2d = _WCS(src_header, relax=True).celestial
+        out_header = wcs2d.to_header()
+    except Exception as exc:
+        logger.warning(
+            "[moment_save_fits] WCS extraction failed for %s (%s) — "
+            "writing array with no celestial WCS.",
+            src_path, exc,
+        )
+        out_header = _fits.Header()
+
+    out_header["NAXIS"]  = 2
+    out_header["NAXIS1"] = int(image.shape[1])
+    out_header["NAXIS2"] = int(image.shape[0])
+    moment_unit = str(payload.get("moment_unit") or "")
+    if moment_unit:
+        out_header["BUNIT"] = moment_unit
+    out_header["OBJECT"] = src_header.get("OBJECT", out_header.get("OBJECT", ""))
+    out_header.add_history(
+        f"VisIVO moment-{int(order)} map from {Path(src_path).name}: "
+        f"channels {int(channel_start)}..{int(channel_end)} "
+        f"mask={'on' if mask_enabled else 'off'} "
+        f"threshold={float(threshold_value):.6g}"
+    )
+
+    logger.info(
+        "[moment_save_fits] writing FITS  src=%s  out=%s  order=%s  "
+        "channels=%s..%s  shape=%s  bunit=%s",
+        src_path, output_path, order, channel_start, channel_end,
+        image.shape, moment_unit or "-",
+    )
+    out_hdu = _fits.PrimaryHDU(data=image, header=out_header)
+    out_hdu.writeto(output_path, overwrite=True)
+    logger.info("[moment_save_fits] FITS written successfully")
+
+    return {
+        "width":       int(image.shape[1]),
+        "height":      int(image.shape[0]),
+        "range_min":   float(payload["range_min"]),
+        "range_max":   float(payload["range_max"]),
+        "bunit":       moment_unit,
+        "moment_unit": moment_unit,
+        "output_path": output_path,
     }
 
 

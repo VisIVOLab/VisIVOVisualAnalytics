@@ -387,6 +387,9 @@ private:
     QPointer<QAction> actionAnnulusRegion;
     QPointer<QAction> actionExtractPvDiagram;
     QPointer<QAction> actionEstimateNoise;
+    /// "Export Moment Map as FITS…" — enabled only once a moment is on
+    /// screen (the controller pushes the first result). Stays enabled.
+    QPointer<QAction> m_actExportMomentFits;
     QPointer<QAction> actionLoadCatalogueOverlay;
     QPointer<QAction> actionShowCatalogueOverlay;
     QPointer<QAction> actionShowCatalogueLabels;
@@ -500,6 +503,15 @@ private:
     /// Clear the 2D region overlay once both result-dialog and spectrum plot
     /// have been closed. Wired to QObject::destroyed of both widgets.
     void maybeClearRegionAfterDisplay();
+    /// Tools → "Export Sub-Cube as FITS…". Opens a small dialog asking for
+    /// X / Y / Z bounds (pre-filled from the current region if drawn, else
+    /// full extent), then posts to /v1/cube/save_subregion. Async — uses
+    /// QtConcurrent to keep the UI responsive while the backend writes.
+    void exportSubCubeAsFits();
+    /// Tools → "Export Moment Map as FITS…". Re-runs the moment with the
+    /// last accepted config and persists it as a 2-D FITS via
+    /// /v1/products/moment_fits. Async, same pattern as above.
+    void exportMomentMapAsFits();
     bool finalizePolygonRegion();
     void extractCurrentPvDiagram();
     void loadCatalogueOverlay();

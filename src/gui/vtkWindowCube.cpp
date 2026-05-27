@@ -109,6 +109,7 @@
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFileDialog>
+#include <QStandardPaths>
 #include <QFormLayout>
 #include <QHeaderView>
 #include <QInputDialog>
@@ -2155,6 +2156,13 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
                 // Transition card to Ready and update info label with provenance.
                 this->setMomentCardState(MomentCardState::Ready);
+                // A moment is now visible — make "Export Moment Map as FITS…"
+                // selectable from the Tools menu. The action stays enabled
+                // for the rest of the window's life (the user can re-export
+                // the same moment, or recompute and re-export).
+                if (this->m_actExportMomentFits) {
+                    this->m_actExportMomentFits->setEnabled(true);
+                }
 
                 // Diagnostics — success.
                 DiagnosticsManager::instance()->publish(
@@ -2584,6 +2592,28 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->actionExtractPvDiagram->setCheckable(true);
     QObject::connect(this->actionExtractPvDiagram, &QAction::toggled, this,
                      &vtkWindowCube::setPvModeActive);
+
+    // ANALYSIS: persist-to-FITS exports (sub-cube crop + moment map). These
+    // round-trip the heavy work through the backend exactly like the rest
+    // of the ANALYSIS group, so the UI thread stays responsive while the
+    // FITS is being written.
+    auto *actExportSubCube = ui->menuTools->addAction(u"Export Sub-Cube as FITS…"_s);
+    actExportSubCube->setToolTip(
+            u"Crop the current cube to a spatial+spectral ROI and persist "
+            u"it as a standalone FITS file (WCS preserved)."_s);
+    QObject::connect(actExportSubCube, &QAction::triggered,
+                     this, &vtkWindowCube::exportSubCubeAsFits);
+
+    m_actExportMomentFits = ui->menuTools->addAction(u"Export Moment Map as FITS…"_s);
+    m_actExportMomentFits->setToolTip(
+            u"Persist the moment map currently displayed in the 2-D view "
+            u"as a standalone 2-D FITS file (celestial WCS + BUNIT)."_s);
+    // Disabled until a moment has actually been computed (otherwise we'd
+    // have nothing to export). updateMomentExportEnabled() flips this on
+    // when momentController publishes its first result.
+    m_actExportMomentFits->setEnabled(false);
+    QObject::connect(m_actExportMomentFits, &QAction::triggered,
+                     this, &vtkWindowCube::exportMomentMapAsFits);
 
     // REGIONS group
     ui->menuTools->addSeparator();
@@ -5568,6 +5598,303 @@ void vtkWindowCube::maybeClearRegionAfterDisplay()
     if (ui->vtkImage && ui->vtkImage->renderWindow()) {
         ui->vtkImage->renderWindow()->Render();
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FITS exports (sub-cube crop + moment map)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Both flows are non-blocking: the synchronous BackendClient call runs in a
+// QtConcurrent::run task, with a QFutureWatcher posting back to the UI
+// thread. A QPointer<vtkWindowCube> guards the result handler so the user
+// can close the cube window while the FITS is being written without the
+// callback dereferencing a dead this.
+
+namespace {
+// Build a small modal dialog asking for X/Y/Z bounds for sub-cube export.
+// Defaults to the full extent of the cube; pre-fills with the region
+// bounds if one is currently drawn on the slice. Returns true if the
+// user accepted; bounds are written into the inclusive 0-indexed *out
+// arguments.
+bool runSubCubeBoundsDialog(QWidget *parent,
+                            int fullWidth, int fullHeight, int fullDepth,
+                            int defaultX0, int defaultX1,
+                            int defaultY0, int defaultY1,
+                            int defaultZ0, int defaultZ1,
+                            int &outX0, int &outX1,
+                            int &outY0, int &outY1,
+                            int &outZ0, int &outZ1)
+{
+    using namespace Qt::StringLiterals;
+    QDialog dlg(parent);
+    dlg.setWindowTitle(u"Export Sub-Cube as FITS"_s);
+    dlg.setModal(true);
+
+    auto *root = new QVBoxLayout(&dlg);
+    root->setContentsMargins(16, 14, 16, 14);
+    root->setSpacing(10);
+
+    auto *hint = new QLabel(
+            u"Crop the current cube to a spatial + spectral ROI and save it "
+            u"as a standalone FITS file. WCS is preserved (CRPIX shifted) "
+            u"so coordinates of every pixel match the source."_s,
+            &dlg);
+    hint->setWordWrap(true);
+    root->addWidget(hint);
+
+    auto *form = new QFormLayout();
+    form->setHorizontalSpacing(12);
+    form->setVerticalSpacing(6);
+
+    auto makeSpin = [&dlg](int lo, int hi, int val) {
+        auto *sb = new QSpinBox(&dlg);
+        sb->setRange(lo, hi);
+        sb->setValue(std::clamp(val, lo, hi));
+        sb->setAlignment(Qt::AlignRight);
+        return sb;
+    };
+    const int xMax = std::max(0, fullWidth  - 1);
+    const int yMax = std::max(0, fullHeight - 1);
+    const int zMax = std::max(0, fullDepth  - 1);
+    auto *spX0 = makeSpin(0, xMax, defaultX0);
+    auto *spX1 = makeSpin(0, xMax, defaultX1);
+    auto *spY0 = makeSpin(0, yMax, defaultY0);
+    auto *spY1 = makeSpin(0, yMax, defaultY1);
+    auto *spZ0 = makeSpin(0, zMax, defaultZ0);
+    auto *spZ1 = makeSpin(0, zMax, defaultZ1);
+    auto makeRow = [&dlg](QSpinBox *lo, QSpinBox *hi) {
+        auto *w = new QWidget(&dlg);
+        auto *h = new QHBoxLayout(w);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(8);
+        h->addWidget(lo, 1);
+        h->addWidget(new QLabel(u"→"_s, w));
+        h->addWidget(hi, 1);
+        return w;
+    };
+    form->addRow(u"X (columns)"_s,  makeRow(spX0, spX1));
+    form->addRow(u"Y (rows)"_s,     makeRow(spY0, spY1));
+    form->addRow(u"Z (channels)"_s, makeRow(spZ0, spZ1));
+    root->addLayout(form);
+
+    auto *btnBox = new QDialogButtonBox(
+            QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    btnBox->button(QDialogButtonBox::Ok)->setText(u"Export"_s);
+    root->addWidget(btnBox);
+    QObject::connect(btnBox, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(btnBox, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    if (dlg.exec() != QDialog::Accepted) return false;
+    // Normalise so the user can type the values in any order.
+    outX0 = std::min(spX0->value(), spX1->value());
+    outX1 = std::max(spX0->value(), spX1->value());
+    outY0 = std::min(spY0->value(), spY1->value());
+    outY1 = std::max(spY0->value(), spY1->value());
+    outZ0 = std::min(spZ0->value(), spZ1->value());
+    outZ1 = std::max(spZ0->value(), spZ1->value());
+    return true;
+}
+} // namespace
+
+void vtkWindowCube::exportSubCubeAsFits()
+{
+    // Pre-fill bounds from a drawn region if available. We can only do this
+    // for axis-aligned shapes (Box) trivially; for Circle / Annulus /
+    // Polygon use the AABB of the geometry (regionBounds2D — same helper
+    // used by analyzeCurrentRegion). Always fall back to the full extent.
+    int defX0 = 0, defX1 = std::max(0, this->remoteDatasetWidth  - 1);
+    int defY0 = 0, defY1 = std::max(0, this->remoteDatasetHeight - 1);
+    int defZ0 = 0, defZ1 = std::max(0, this->remoteDatasetDepth  - 1);
+    if (this->regionValid && this->regionMode != RegionMode::None) {
+        const auto bounds = regionBounds2D(
+                this->regionMode,
+                this->regionAnchorVoxel, this->regionCurrentVoxel,
+                this->regionPolygonVertices);
+        defX0 = std::clamp(bounds[0], 0, defX1);
+        defX1 = std::clamp(bounds[1], defX0, std::max(0, this->remoteDatasetWidth  - 1));
+        defY0 = std::clamp(bounds[2], 0, defY1);
+        defY1 = std::clamp(bounds[3], defY0, std::max(0, this->remoteDatasetHeight - 1));
+    }
+
+    int x0 = 0, x1 = 0, y0 = 0, y1 = 0, z0 = 0, z1 = 0;
+    if (!runSubCubeBoundsDialog(this,
+                                this->remoteDatasetWidth,
+                                this->remoteDatasetHeight,
+                                this->remoteDatasetDepth,
+                                defX0, defX1, defY0, defY1, defZ0, defZ1,
+                                x0, x1, y0, y1, z0, z1)) {
+        return;
+    }
+
+    // Native Save As — defer the heavy backend call until the user has
+    // picked a destination. Default basename includes the crop range so
+    // multiple exports of the same cube don't collide.
+    const QFileInfo srcInfo(this->filepath);
+    const QString suggested =
+            u"%1_subcube_x%2-%3_y%4-%5_z%6-%7.fits"_s
+            .arg(srcInfo.completeBaseName())
+            .arg(x0).arg(x1).arg(y0).arg(y1).arg(z0).arg(z1);
+    const QString defaultDir =
+            QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    const QString localPath = QFileDialog::getSaveFileName(
+            this, u"Save sub-cube as FITS"_s,
+            QDir(defaultDir.isEmpty() ? QDir::homePath() : defaultDir).filePath(suggested),
+            u"FITS files (*.fits *.fit);;All files (*)"_s);
+    if (localPath.isEmpty()) return;   // user cancelled
+
+    const QString url       = this->remoteBackendUrl;
+    const QString token     = this->remoteBackendToken;
+    const QString sessionId = this->remoteSessionId;
+    const QString datasetId = this->remoteDatasetId;
+
+    this->statusBar()->showMessage(u"Exporting sub-cube as FITS…"_s, 0);
+
+    // The QtConcurrent task does the compute (saveCubeSubregion writes the
+    // FITS to a backend temp path), then downloads the resulting file into
+    // the user-chosen localPath in a single shot. SubCubeExportResult
+    // bundles the backend response with the download error so we can
+    // distinguish the two failure modes in the success/error toast.
+    struct SubCubeExportResult {
+        BackendSaveSubregionResult backend;
+        QString downloadError;   // empty on success, populated on download failure
+    };
+    auto *watcher = new QFutureWatcher<SubCubeExportResult>(this);
+    QPointer<vtkWindowCube> self(this);
+    QObject::connect(watcher, &QFutureWatcher<SubCubeExportResult>::finished, this,
+                     [self, watcher, localPath]() {
+                         const auto r = watcher->result();
+                         watcher->deleteLater();
+                         if (!self) return;
+                         self->statusBar()->clearMessage();
+                         if (!r.backend.valid) {
+                             QMessageBox::warning(self, u"Export Sub-Cube"_s,
+                                     u"Sub-cube export failed:\n\n%1"_s.arg(r.backend.error));
+                             return;
+                         }
+                         if (!r.downloadError.isEmpty()) {
+                             QMessageBox::warning(self, u"Export Sub-Cube"_s,
+                                     u"Sub-cube was written on the backend at\n\n"
+                                     u"%1\n\nbut downloading it to '%2' failed:\n\n%3"_s
+                                     .arg(r.backend.outputPath, localPath, r.downloadError));
+                             return;
+                         }
+                         const QString msg =
+                                 u"Sub-cube saved.\n\n"
+                                 u"Path: %1\n"
+                                 u"Shape: %2 × %3 × %4 (W × H × channels)\n"
+                                 u"Backend dataset id: %5"_s
+                                 .arg(localPath)
+                                 .arg(r.backend.width).arg(r.backend.height).arg(r.backend.depth)
+                                 .arg(r.backend.newDatasetId);
+                         QMessageBox::information(self, u"Export Sub-Cube"_s, msg);
+                     });
+    watcher->setFuture(QtConcurrent::run(
+            [url, token, sessionId, datasetId, x0, x1, y0, y1, z0, z1, localPath]() {
+                BackendClient c(url, token);
+                c.setSessionId(sessionId);
+                SubCubeExportResult out;
+                out.backend = c.saveCubeSubregion(datasetId, x0, x1, y0, y1, z0, z1);
+                if (out.backend.valid) {
+                    c.downloadExportFile(out.backend.outputPath, localPath,
+                                         out.downloadError);
+                }
+                return out;
+            }));
+}
+
+void vtkWindowCube::exportMomentMapAsFits()
+{
+    if (!this->momentController) return;
+    const auto cfg = this->momentController->lastAcceptedConfig();
+    // The action is only enabled once a moment has been computed, so a
+    // zero-extent config here would be a bug. Defensive guard anyway.
+    if (cfg.channelEnd <= cfg.channelStart) {
+        QMessageBox::warning(this, u"Export Moment as FITS"_s,
+                u"No moment has been computed yet — open Tools → Compute "
+                u"Moment first, then retry the export."_s);
+        return;
+    }
+
+    // Native Save As — defer the heavy backend call until the user has
+    // picked a destination. Default basename: "<src>_m{order}.fits".
+    const QFileInfo srcInfo(this->filepath);
+    const QString suggested =
+            u"%1_m%2.fits"_s.arg(srcInfo.completeBaseName()).arg(cfg.order);
+    const QString defaultDir =
+            QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    const QString localPath = QFileDialog::getSaveFileName(
+            this, u"Save moment map as FITS"_s,
+            QDir(defaultDir.isEmpty() ? QDir::homePath() : defaultDir).filePath(suggested),
+            u"FITS files (*.fits *.fit);;All files (*)"_s);
+    if (localPath.isEmpty()) return;   // user cancelled
+
+    const QString url       = this->remoteBackendUrl;
+    const QString token     = this->remoteBackendToken;
+    const QString sessionId = this->remoteSessionId;
+    const QString datasetId = this->remoteDatasetId;
+    const int order             = cfg.order;
+    const int chStart           = cfg.channelStart;
+    const int chEnd             = cfg.channelEnd;
+    const bool maskEnabled      = cfg.maskEnabled;
+    const double thresholdValue = cfg.thresholdValue;
+
+    this->statusBar()->showMessage(
+            u"Exporting moment-%1 map as FITS…"_s.arg(order), 0);
+
+    // Bundle backend response + download error so we can distinguish
+    // "compute failed" from "compute ok but the local write failed".
+    struct MomentExportResult {
+        BackendSaveMomentFitsResult backend;
+        QString downloadError;
+    };
+    auto *watcher = new QFutureWatcher<MomentExportResult>(this);
+    QPointer<vtkWindowCube> self(this);
+    QObject::connect(watcher, &QFutureWatcher<MomentExportResult>::finished, this,
+                     [self, watcher, order, localPath]() {
+                         const auto r = watcher->result();
+                         watcher->deleteLater();
+                         if (!self) return;
+                         self->statusBar()->clearMessage();
+                         if (!r.backend.valid) {
+                             QMessageBox::warning(self,
+                                     u"Export Moment as FITS"_s,
+                                     u"Moment FITS export failed:\n\n%1"_s.arg(r.backend.error));
+                             return;
+                         }
+                         if (!r.downloadError.isEmpty()) {
+                             QMessageBox::warning(self,
+                                     u"Export Moment as FITS"_s,
+                                     u"Moment FITS was written on the backend at\n\n"
+                                     u"%1\n\nbut downloading it to '%2' failed:\n\n%3"_s
+                                     .arg(r.backend.outputPath, localPath, r.downloadError));
+                             return;
+                         }
+                         QString msg =
+                                 u"Moment-%1 map saved.\n\n"
+                                 u"Path: %2\n"
+                                 u"Shape: %3 × %4 (W × H)"_s
+                                 .arg(order).arg(localPath)
+                                 .arg(r.backend.width).arg(r.backend.height);
+                         if (!r.backend.bunit.isEmpty()) {
+                             msg += u"\nBUNIT: %1"_s.arg(r.backend.bunit);
+                         }
+                         QMessageBox::information(self,
+                                 u"Export Moment as FITS"_s, msg);
+                     });
+    watcher->setFuture(QtConcurrent::run(
+            [url, token, sessionId, datasetId, order, chStart, chEnd,
+             maskEnabled, thresholdValue, localPath]() {
+                BackendClient c(url, token);
+                c.setSessionId(sessionId);
+                MomentExportResult out;
+                out.backend = c.saveMomentFits(datasetId, order, chStart, chEnd,
+                                               maskEnabled, thresholdValue);
+                if (out.backend.valid) {
+                    c.downloadExportFile(out.backend.outputPath, localPath,
+                                         out.downloadError);
+                }
+                return out;
+            }));
 }
 
 bool vtkWindowCube::finalizePolygonRegion()

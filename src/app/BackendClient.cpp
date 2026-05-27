@@ -1265,6 +1265,105 @@ BackendBaselineResult BackendClient::requestBaseline(const QString &datasetId,
     return result;
 }
 
+// ── Sub-cube extraction (crop ROI → new FITS dataset) ───────────────────────
+
+BackendSaveSubregionResult BackendClient::saveCubeSubregion(
+        const QString &datasetId,
+        int x0, int x1, int y0, int y1, int z0, int z1)
+{
+    BackendSaveSubregionResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("x0"), x0 }, { QStringLiteral("x1"), x1 },
+            { QStringLiteral("y0"), y0 }, { QStringLiteral("y1"), y1 },
+            { QStringLiteral("z0"), z0 }, { QStringLiteral("z1"), z1 } });
+    const QByteArray raw =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/save_subregion")),
+                        body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+    result.valid        = obj.value(QStringLiteral("valid")).toBool();
+    result.error        = obj.value(QStringLiteral("error")).toString();
+    result.newDatasetId = obj.value(QStringLiteral("new_dataset_id")).toString();
+    result.outputPath   = obj.value(QStringLiteral("output_path")).toString();
+    result.width        = obj.value(QStringLiteral("width")).toInt();
+    result.height       = obj.value(QStringLiteral("height")).toInt();
+    result.depth        = obj.value(QStringLiteral("depth")).toInt();
+    result.rangeMin     = obj.value(QStringLiteral("range_min")).toDouble();
+    result.rangeMax     = obj.value(QStringLiteral("range_max")).toDouble();
+    return result;
+}
+
+// ── Moment map → standalone FITS export ─────────────────────────────────────
+
+BackendSaveMomentFitsResult BackendClient::saveMomentFits(
+        const QString &datasetId,
+        int order,
+        int channelStart, int channelEnd,
+        bool maskEnabled,
+        double thresholdValue)
+{
+    BackendSaveMomentFitsResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"),       datasetId },
+            { QStringLiteral("moment_order"),     order },
+            { QStringLiteral("channel_start"),    channelStart },
+            { QStringLiteral("channel_end"),      channelEnd },
+            { QStringLiteral("mask_enabled"),     maskEnabled },
+            { QStringLiteral("threshold_value"),  thresholdValue } });
+    const QByteArray raw =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/moment_fits")),
+                        body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+    result.valid       = obj.value(QStringLiteral("valid")).toBool();
+    result.error       = obj.value(QStringLiteral("error")).toString();
+    result.outputPath  = obj.value(QStringLiteral("output_path")).toString();
+    result.width       = obj.value(QStringLiteral("width")).toInt();
+    result.height      = obj.value(QStringLiteral("height")).toInt();
+    result.rangeMin    = obj.value(QStringLiteral("range_min")).toDouble();
+    result.rangeMax    = obj.value(QStringLiteral("range_max")).toDouble();
+    result.bunit       = obj.value(QStringLiteral("bunit")).toString();
+    result.momentUnit  = obj.value(QStringLiteral("moment_unit")).toString();
+    return result;
+}
+
+// ── File download (export artefacts only) ───────────────────────────────────
+
+bool BackendClient::downloadExportFile(const QString &remotePath,
+                                       const QString &localPath,
+                                       QString &error)
+{
+    QUrl url(m_baseUrl + QStringLiteral("/v1/files/download"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("path"), remotePath);
+    url.setQuery(q);
+    const QByteArray payload = performGet(url, error);
+    if (!error.isEmpty()) return false;
+    QFile out(localPath);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        error = QStringLiteral("Could not open '%1' for writing: %2")
+                .arg(localPath, out.errorString());
+        return false;
+    }
+    const qint64 written = out.write(payload);
+    out.close();
+    if (written != static_cast<qint64>(payload.size())) {
+        error = QStringLiteral("Short write to '%1' (%2 / %3 bytes)")
+                .arg(localPath).arg(written).arg(payload.size());
+        return false;
+    }
+    return true;
+}
+
 // ── S-04: Spectral stacking ───────────────────────────────────────────────────
 
 BackendStackResult BackendClient::fetchStackBinary(const QStringList &datasetIds,

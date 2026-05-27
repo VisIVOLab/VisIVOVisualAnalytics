@@ -4,6 +4,7 @@ from typing import Any
 import uuid
 import logging
 import os
+import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
 import base64
@@ -40,6 +41,78 @@ async def moment_product(
     except Exception as exc:
         return MomentProductResponse(valid=False, error=str(exc))
     return MomentProductResponse(valid=True, error="", **result)
+
+
+# ── Persist a moment map to a standalone 2-D FITS file ─────────────────────
+# Same input parameters as /v1/products/moment so the client can mirror the
+# moment it is currently visualising. The output FITS is NOT registered as
+# a session dataset (it's a 2-D image, not a cube) — the client receives
+# the on-disk path and may re-open it via the Data Hub or share it.
+
+class MomentSaveFitsRequest(BaseModel):
+    dataset_id: str
+    moment_order: int
+    channel_start: int = 0
+    channel_end: int = 0
+    mask_enabled: bool = False
+    threshold_value: float = 0.0
+
+
+class MomentSaveFitsResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    output_path: str = ""
+    width: int = 0
+    height: int = 0
+    range_min: float = 0.0
+    range_max: float = 0.0
+    bunit: str = ""
+    moment_unit: str = ""
+
+
+@router.post("/v1/products/moment_fits",
+             response_model=MomentSaveFitsResponse, tags=["products"])
+async def moment_save_fits(
+    request: MomentSaveFitsRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> MomentSaveFitsResponse:
+    """Compute the requested moment and write it to a standalone 2-D FITS
+    file (celestial WCS + ``BUNIT`` derived from the cube)."""
+    from ..compute import worker_moment_save_fits  # noqa: PLC0415
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "cube":
+            raise HTTPException(422, "Moment FITS export requires a spectral cube dataset.")
+
+        tmp_dir = Path(tempfile.gettempdir()) / "visivo_moment_fits"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        output_path = str(
+            tmp_dir / f"{uuid.uuid4().hex}_m{int(request.moment_order)}.fits"
+        )
+
+        result = await _run_heavy_with_limit(
+            session,
+            worker_moment_save_fits,
+            entry["path"],
+            output_path,
+            int(request.moment_order),
+            int(request.channel_start),
+            int(request.channel_end),
+            bool(request.mask_enabled),
+            float(request.threshold_value),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("[moment_fits] failed dataset_id=%s error=%s",
+                       request.dataset_id, exc)
+        return MomentSaveFitsResponse(valid=False, error=str(exc))
+    return MomentSaveFitsResponse(valid=True, **{
+        k: result[k] for k in
+        ("output_path", "width", "height", "range_min", "range_max",
+         "bunit", "moment_unit")
+    })
 
 @router.post("/v1/products/isosurface", response_model=IsosurfaceProductResponse, tags=["products"])
 async def isosurface_product(

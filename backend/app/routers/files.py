@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Any
+import tempfile
 import uuid
 import logging
 import os
@@ -61,6 +63,55 @@ async def list_files(
         ))
 
     return FilesListResponse(valid=True, error="", current_path=str(directory), entries=entries)
+
+# ── Export-area allowed temp prefixes ────────────────────────────────────────
+# /v1/files/download is restricted to artefacts produced by VisIVO's own
+# export workers (sub-cube crop, moment-FITS persistence). The path passed
+# in must live under one of these prefixes, otherwise the request is
+# rejected with 403 — a defensive check against path-traversal and against
+# the endpoint accidentally becoming a generic FS read.
+_DOWNLOAD_ALLOWED_PREFIXES = (
+    Path(tempfile.gettempdir()) / "visivo_subregion",
+    Path(tempfile.gettempdir()) / "visivo_moment_fits",
+    Path(tempfile.gettempdir()) / "visivo_baseline",   # produced by S-03 too
+)
+
+
+@router.get("/v1/files/download", tags=["files"])
+async def download_export(
+    path: str = Query(..., description="Absolute path of the export artefact to download"),
+    _: None = _auth,
+) -> FileResponse:
+    """Stream a FITS export artefact back to the client so the user can
+    write it anywhere on their local filesystem.
+
+    Only files under VisIVO's own export temp directories are accepted —
+    the endpoint is NOT a generic backend filesystem reader.
+    """
+    try:
+        candidate = Path(path).resolve(strict=False)
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid path: {exc}")
+    # Resolve allowed prefixes the same way (handles /private/var symlinks
+    # on macOS where /tmp is actually /private/tmp). One match is enough.
+    allowed = any(
+        str(candidate).startswith(str(prefix.resolve(strict=False)) + os.sep)
+        or str(candidate) == str(prefix.resolve(strict=False))
+        for prefix in _DOWNLOAD_ALLOWED_PREFIXES
+    )
+    if not allowed:
+        raise HTTPException(
+            403,
+            f"Path '{path}' is outside the allowed export directories.",
+        )
+    if not candidate.exists() or not candidate.is_file():
+        raise HTTPException(404, f"File not found: {candidate}")
+    return FileResponse(
+        path=str(candidate),
+        media_type="application/fits",
+        filename=candidate.name,
+    )
+
 
 @router.post("/v1/files/header", response_model=FileHeaderResponse, tags=["files"])
 async def file_header(request: FileHeaderRequest, _: None = _auth) -> FileHeaderResponse:

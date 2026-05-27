@@ -320,6 +320,81 @@ class TestWorkerNoiseEstimate:
             worker_noise_estimate(str(freq_cube_path), 10, 5, 0, 3, 0, 15)  # x0 > x1
 
 
+class TestWorkerCubeSaveSubregion:
+    """Sub-cube extraction: shape, WCS shift, header provenance."""
+
+    def test_subregion_shape(self, freq_cube_path, tmp_path):
+        from app.compute import worker_cube_save_subregion
+        from astropy.io import fits
+        out = tmp_path / "sub.fits"
+        result = worker_cube_save_subregion(
+            str(freq_cube_path), str(out), 2, 9, 3, 11, 5, 20,
+        )
+        assert result["width"]  == 9 - 2 + 1
+        assert result["height"] == 11 - 3 + 1
+        assert result["depth"]  == 20 - 5 + 1
+        assert out.exists()
+        with fits.open(str(out)) as hdul:
+            assert hdul[0].data.shape == (16, 9, 8)
+
+    def test_subregion_wcs_crpix_shifted(self, freq_cube_path, tmp_path):
+        """CRPIX must be shifted so the same physical pixel keeps the same
+        sky / spectral coordinate after cropping."""
+        from app.compute import worker_cube_save_subregion
+        from astropy.io import fits
+        out = tmp_path / "shifted.fits"
+        worker_cube_save_subregion(
+            str(freq_cube_path), str(out), 4, 13, 4, 13, 8, 23,
+        )
+        with fits.open(str(freq_cube_path)) as src_hdul:
+            src_h = src_hdul[0].header
+        with fits.open(str(out)) as dst_hdul:
+            dst_h = dst_hdul[0].header
+        # crop offsets: x0=4, y0=4, z0=8 → CRPIX shifts by exactly those
+        assert dst_h["CRPIX1"] == src_h["CRPIX1"] - 4
+        assert dst_h["CRPIX2"] == src_h["CRPIX2"] - 4
+        assert dst_h["CRPIX3"] == src_h["CRPIX3"] - 8
+
+    def test_subregion_invalid_range_raises(self, freq_cube_path, tmp_path):
+        from app.compute import worker_cube_save_subregion
+        with pytest.raises(ValueError):
+            worker_cube_save_subregion(
+                str(freq_cube_path), str(tmp_path / "bad.fits"),
+                10, 5, 0, 3, 0, 15,                   # x0 > x1
+            )
+
+
+class TestWorkerMomentSaveFits:
+    """Moment FITS persistence: 2-D output with celestial WCS + BUNIT."""
+
+    def test_moment0_fits_shape_and_axes(self, freq_cube_path, tmp_path):
+        from app.compute import worker_moment_save_fits
+        from astropy.io import fits
+        out = tmp_path / "m0.fits"
+        result = worker_moment_save_fits(
+            str(freq_cube_path), str(out), 0, 0, 31, False, 0.0,
+        )
+        assert result["width"]  > 0
+        assert result["height"] > 0
+        with fits.open(str(out)) as hdul:
+            assert hdul[0].data.ndim == 2
+            assert hdul[0].header["NAXIS"] == 2
+
+    def test_moment0_fits_bunit_present(self, freq_cube_path, tmp_path):
+        """M0 in a cube with a BUNIT must carry a BUNIT in the output."""
+        from app.compute import worker_moment_save_fits
+        from astropy.io import fits
+        out = tmp_path / "m0_bunit.fits"
+        result = worker_moment_save_fits(
+            str(freq_cube_path), str(out), 0, 0, 31, False, 0.0,
+        )
+        # moment_unit may be empty if the source cube has no BUNIT; for the
+        # freq_cube fixture it is populated.
+        if result["moment_unit"]:
+            with fits.open(str(out)) as hdul:
+                assert hdul[0].header.get("BUNIT", "") == result["moment_unit"]
+
+
 class TestWorkerPvArcsec:
     """Verify that worker_pv returns physical arcsecond positions."""
 
