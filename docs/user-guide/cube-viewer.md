@@ -285,6 +285,43 @@ These are all explained on a dedicated page:
 - Baseline-subtracted cubes are also registered as a new `dataset_id` you
   can open in a fresh cube viewer; see [Spectral tools](spectral-tools).
 
+### FITS exports → Workspace
+
+Two entries under **Tools** persist derived FITS artefacts into a backend
+*Workspace Exports* directory (default ``~/.visivo/exports/``, override
+with the ``VISIVO_EXPORTS_DIR`` environment variable):
+
+- **Tools → Export Sub-Cube as FITS…** — crop the current cube to a
+  spatial+spectral ROI and save it as a standalone FITS. The bounds
+  dialog defaults to the AABB of the currently-drawn region (if any),
+  otherwise to the full cube extent. WCS is preserved: ``CRPIX1/2/3`` is
+  shifted so every pixel in the cropped FITS keeps its original sky /
+  spectral coordinates. The sub-cube is also registered as a new dataset
+  in the active session, so you can immediately open it in a new cube
+  viewer.
+- **Tools → Export Moment Map as FITS…** — persist the moment currently
+  on screen as a 2-D FITS (celestial WCS, ``BUNIT`` derived from the
+  cube). Disabled until a moment has been computed.
+
+Both flows ask only for a **basename** (e.g. ``m31_m0.fits``). The
+backend stores the file in the Workspace Exports dir and auto-suffixes
+collisions (``cube.fits`` → ``cube_1.fits`` → …). The completion dialog
+shows the chosen filename and on-disk path.
+
+Once in the workspace, artefacts are listed in the **Workspace Exports**
+panel of the Data Hub. Per-entry actions:
+
+- **Open** — register the FITS as a new session dataset and open the
+  matching viewer (cube viewer for cubes, image viewer for 2-D maps).
+- **Download…** — native Save As dialog → streams the bytes from the
+  backend (over HTTP, so it works the same when the backend lives on a
+  remote host) and writes to the chosen local path.
+- **Delete** — removes the FITS from the workspace (confirmation
+  prompt; irreversible).
+
+The panel auto-refreshes every few seconds, so new exports from any
+cube viewer appear without manual action.
+
 ## Performance notes
 
 - The first full-resolution swap can take a few hundred ms because of the

@@ -289,3 +289,139 @@ void TestBackendClient::parseNoise_blankFractionMissing_defaultsToZero()
     const auto r = BackendClient::parseNoiseResultObject(obj);
     QCOMPARE(r.blankFraction, 0.0);
 }
+
+// ── Workspace Exports parsers ───────────────────────────────────────────────
+
+void TestBackendClient::parseSaveSubregion_happyPath()
+{
+    const auto obj = fromLiteral(R"({
+        "valid": true, "error": "",
+        "new_dataset_id": "ds_abc123",
+        "output_path": "/home/visivo/.visivo/exports/m31_subcube_x0-9_y0-9_z0-9.fits",
+        "workspace_filename": "m31_subcube_x0-9_y0-9_z0-9.fits",
+        "width": 10, "height": 10, "depth": 10,
+        "range_min": -0.5, "range_max": 12.75
+    })");
+    const auto r = BackendClient::parseSaveSubregionObject(obj);
+    QVERIFY(r.valid);
+    QCOMPARE(r.newDatasetId, QStringLiteral("ds_abc123"));
+    QCOMPARE(r.workspaceFilename,
+             QStringLiteral("m31_subcube_x0-9_y0-9_z0-9.fits"));
+    QCOMPARE(r.width,  10);
+    QCOMPARE(r.height, 10);
+    QCOMPARE(r.depth,  10);
+    QVERIFY(qAbs(r.rangeMin - (-0.5))  < 1e-12);
+    QVERIFY(qAbs(r.rangeMax - 12.75)   < 1e-12);
+}
+
+void TestBackendClient::parseSaveSubregion_errorResponse()
+{
+    const auto obj = fromLiteral(R"({"valid": false, "error": "ROI out of bounds"})");
+    const auto r = BackendClient::parseSaveSubregionObject(obj);
+    QVERIFY(!r.valid);
+    QCOMPARE(r.error, QStringLiteral("ROI out of bounds"));
+    QVERIFY(r.workspaceFilename.isEmpty());
+    QCOMPARE(r.width, 0);
+}
+
+void TestBackendClient::parseSaveMomentFits_happyPath()
+{
+    const auto obj = fromLiteral(R"({
+        "valid": true, "error": "",
+        "output_path": "/home/visivo/.visivo/exports/m31_m0.fits",
+        "workspace_filename": "m31_m0.fits",
+        "width": 512, "height": 512,
+        "range_min": 0.0, "range_max": 4.2,
+        "bunit": "K m/s", "moment_unit": "K m/s"
+    })");
+    const auto r = BackendClient::parseSaveMomentFitsObject(obj);
+    QVERIFY(r.valid);
+    QCOMPARE(r.workspaceFilename, QStringLiteral("m31_m0.fits"));
+    QCOMPARE(r.width,  512);
+    QCOMPARE(r.height, 512);
+    QCOMPARE(r.bunit,      QStringLiteral("K m/s"));
+    QCOMPARE(r.momentUnit, QStringLiteral("K m/s"));
+}
+
+void TestBackendClient::parseSaveMomentFits_missingBunit_defaultsToEmpty()
+{
+    // Source cube with no BUNIT → backend returns empty bunit/moment_unit.
+    const auto obj = fromLiteral(R"({
+        "valid": true, "error": "",
+        "output_path": "/tmp/x.fits", "workspace_filename": "x.fits",
+        "width": 16, "height": 16,
+        "range_min": 0.0, "range_max": 1.0
+    })");
+    const auto r = BackendClient::parseSaveMomentFitsObject(obj);
+    QVERIFY(r.valid);
+    QVERIFY(r.bunit.isEmpty());
+    QVERIFY(r.momentUnit.isEmpty());
+}
+
+void TestBackendClient::parseExportsList_happyPath()
+{
+    const auto obj = fromLiteral(R"({
+        "valid": true, "error": "",
+        "workspace_dir": "/home/visivo/.visivo/exports",
+        "entries": [
+            {"filename": "newer.fits", "size": 2048,
+             "modified_time": "2026-05-27T12:00:00+00:00",
+             "absolute_path": "/home/visivo/.visivo/exports/newer.fits"},
+            {"filename": "older.fits", "size": 1024,
+             "modified_time": "2026-05-26T08:30:00+00:00",
+             "absolute_path": "/home/visivo/.visivo/exports/older.fits"}
+        ]
+    })");
+    const auto r = BackendClient::parseExportsListObject(obj);
+    QVERIFY(r.valid);
+    QCOMPARE(r.workspaceDir,
+             QStringLiteral("/home/visivo/.visivo/exports"));
+    QCOMPARE(r.entries.size(), 2);
+    QCOMPARE(r.entries[0].filename, QStringLiteral("newer.fits"));
+    QCOMPARE(r.entries[0].size, qint64(2048));
+    QCOMPARE(r.entries[1].filename, QStringLiteral("older.fits"));
+    QCOMPARE(r.entries[1].size, qint64(1024));
+}
+
+void TestBackendClient::parseExportsList_empty()
+{
+    const auto obj = fromLiteral(R"({
+        "valid": true, "error": "",
+        "workspace_dir": "/home/visivo/.visivo/exports",
+        "entries": []
+    })");
+    const auto r = BackendClient::parseExportsListObject(obj);
+    QVERIFY(r.valid);
+    QVERIFY(r.entries.isEmpty());
+}
+
+void TestBackendClient::parseExportsList_errorResponse()
+{
+    const auto obj = fromLiteral(R"({"valid": false, "error": "Permission denied"})");
+    const auto r = BackendClient::parseExportsListObject(obj);
+    QVERIFY(!r.valid);
+    QCOMPARE(r.error, QStringLiteral("Permission denied"));
+    QVERIFY(r.entries.isEmpty());
+}
+
+void TestBackendClient::parseExportsDelete_happyPath()
+{
+    const auto obj = fromLiteral(R"({
+        "valid": true, "error": "", "deleted_filename": "old.fits"
+    })");
+    const auto r = BackendClient::parseExportsDeleteObject(obj);
+    QVERIFY(r.valid);
+    QCOMPARE(r.deletedFilename, QStringLiteral("old.fits"));
+}
+
+void TestBackendClient::parseExportsDelete_missingFile()
+{
+    // Idempotent delete: missing file → valid=false, error populated, no throw.
+    const auto obj = fromLiteral(R"({
+        "valid": false, "error": "File not found: x.fits"
+    })");
+    const auto r = BackendClient::parseExportsDeleteObject(obj);
+    QVERIFY(!r.valid);
+    QVERIFY(r.error.contains(QStringLiteral("not found")));
+    QVERIFY(r.deletedFilename.isEmpty());
+}

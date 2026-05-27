@@ -963,6 +963,13 @@ void MainWindow::doOpenDataPath(const QString &path)
                                           opened.wcsStatus, opened.wcsWarningMessage,
                                           client.sessionId(), client.token(), this);
         cubeWin->setDarkPlots(this->settings->getPlotTheme() == 0);
+        // Live refresh: when this cube viewer pushes a new FITS into the
+        // Workspace Exports, the Data Hub panel updates within frames of
+        // the operation instead of on the next backend health tick.
+        if (this->dataHub) {
+            QObject::connect(cubeWin, &vtkWindowCube::workspaceExportsChanged,
+                             this->dataHub, &DataHubWidget::refreshWorkspaceExports);
+        }
         win = cubeWin;
     } else {
         QMessageBox::information(

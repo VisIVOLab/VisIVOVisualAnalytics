@@ -31,4 +31,15 @@ private slots:
     void parseNoise_missingRegion_defaultsToZero();
     void parseNoise_blankFractionParsed();
     void parseNoise_blankFractionMissing_defaultsToZero();
+
+    // ── Workspace Exports parsers ─────────────────────────────────────────────
+    void parseSaveSubregion_happyPath();
+    void parseSaveSubregion_errorResponse();
+    void parseSaveMomentFits_happyPath();
+    void parseSaveMomentFits_missingBunit_defaultsToEmpty();
+    void parseExportsList_happyPath();
+    void parseExportsList_empty();
+    void parseExportsList_errorResponse();
+    void parseExportsDelete_happyPath();
+    void parseExportsDelete_missingFile();
 };

@@ -5763,6 +5763,7 @@ void vtkWindowCube::exportSubCubeAsFits()
                                      u"Sub-cube export failed:\n\n%1"_s.arg(r.error));
                              return;
                          }
+                         emit self->workspaceExportsChanged();
                          const QString msg =
                                  u"Sub-cube saved to the Workspace Exports.\n\n"
                                  u"Filename: %1\n"
@@ -5838,6 +5839,7 @@ void vtkWindowCube::exportMomentMapAsFits()
                                      u"Moment FITS export failed:\n\n%1"_s.arg(r.error));
                              return;
                          }
+                         emit self->workspaceExportsChanged();
                          QString msg =
                                  u"Moment-%1 map saved to the Workspace Exports.\n\n"
                                  u"Filename: %2\n"

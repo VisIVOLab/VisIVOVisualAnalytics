@@ -118,8 +118,9 @@ The client talks to it exclusively through `BackendClient` (REST/HTTP, bearer-to
 | `datasets` | `POST /v1/datasets/open` | open FITS/dataset, returns `datasetId` + WCS metadata |
 | `catalogue` | `POST /v1/catalogue/open`, `/subset`, `/query` | CSV catalogue; paginated query via `limit`/`offset` |
 | `vbt` | `POST /v1/vbt/open`, `/subset`, `/query` | VBT point table; paginated query |
-| `cube` | `POST /v1/cube/preview`, `/slice`, `/subvolume`, `/pv`, `/noise` | cube data slices, PV diagram, noise stats |
-| `products` | `POST /v1/products/moment`, `/isosurface` | synchronous moment/isosurface computation |
+| `cube` | `POST /v1/cube/preview`, `/slice`, `/subvolume`, `/pv`, `/noise`, `/save_subregion` | cube data slices, PV diagram, noise stats; `save_subregion` writes a cropped FITS into the Workspace Exports dir |
+| `products` | `POST /v1/products/moment`, `/isosurface`, `/moment_fits` | synchronous moment / isosurface computation; `moment_fits` persists a 2-D moment FITS into the Workspace Exports dir |
+| `exports` | `GET /v1/exports/list`, `GET /v1/exports/download?filename=…`, `DELETE /v1/exports/{filename}` | Workspace Exports lifecycle: enumerate, stream-download, remove. All operations are path-traversal-safe; absolute paths and `..` segments are refused with HTTP 400 |
 | `tasks` | `POST /v1/tasks/moment`, `/pv`; `GET`/`DELETE /v1/tasks/{id}` | async task queue; client polls for completion |
 | `image` | `POST /v1/image/full`, `/preview` | 2-D image export/preview |
 | `cosmology` | `POST /v1/cosmology/distance`, `/distance/batch` | redshift → comoving distance (astropy) |
@@ -363,6 +364,66 @@ cuttingPlaneOpacityGroup = new QActionGroup(this); …
 setupSidebar();
 // 3. Later: attach tooltips, populate menus, connect signal handlers
 ```
+
+---
+
+## Workspace Exports (persistent FITS artefacts)
+
+Cube viewer "Export … as FITS" actions deposit their products in a
+**persistent workspace directory** on the backend host, not in temp.
+Files survive across sessions and are browsable / re-openable from the
+client without the user having to remember a path.
+
+**Config & layout**
+
+- Directory: ``$VISIVO_EXPORTS_DIR`` env var, default
+  ``~/.visivo/exports/``. Created on backend startup
+  (``app.dependencies._EXPORTS_DIR``).
+- Flat namespace — no per-session subdirs. Filename collisions are
+  resolved by ``make_workspace_path()`` with a numeric suffix:
+  ``cube.fits`` → ``cube_1.fits`` → ``cube_2.fits`` → …
+- Empty / dot-only / traversal-prefixed basenames fall back to
+  ``export.fits`` so the workspace can never be escaped.
+
+**Backend producers**
+
+| Endpoint | Writer | Produces |
+|----------|--------|----------|
+| `POST /v1/cube/save_subregion`    | `worker_cube_save_subregion` | Cropped 3-D FITS (WCS preserved, CRPIX shifted). Also registered as a new session dataset so the client can immediately open it without re-uploading. |
+| `POST /v1/products/moment_fits`   | `worker_moment_save_fits`    | 2-D moment FITS (celestial WCS + BUNIT). Not registered as a session dataset (it's an image, not a cube). |
+
+Both accept an optional `output_basename`; empty defaults to a
+synthesised name (e.g. ``<src>_subcube_x..y..z..fits``,
+``<src>_m{order}.fits``).
+
+**Lifecycle endpoints**
+
+| Endpoint | Behaviour |
+|----------|-----------|
+| `GET    /v1/exports/list`     | Enumerate every regular file in the workspace, sorted newest-first. Returns `filename`, `size`, `modified_time` (ISO-8601 UTC), `absolute_path`. |
+| `GET    /v1/exports/download?filename=…` | Stream the artefact back as `application/fits` for local Save As. |
+| `DELETE /v1/exports/{filename}` | Remove the artefact. Idempotent: returns `valid=false` on a missing file rather than 404. |
+
+Every lifecycle endpoint resolves the filename via
+`resolve_workspace_path()`, which refuses any path containing a separator
+or `..` segment.
+
+**Client surface (`DataHubWidget`)**
+
+The Data Hub's *Workspace Exports* panel (`buildWorkspaceExportsPanel()`)
+lists the workspace with per-row buttons:
+
+- **Open** — emits `openWorkspaceExportRequested(absolutePath)` which
+  MainWindow forwards to `doOpenDataPath()` (the same flow used for
+  every other dataset open).
+- **Download…** — `QFileDialog::getSaveFileName` + `BackendClient::downloadExport`
+  running in `QtConcurrent`.
+- **Delete** — confirm + `BackendClient::deleteExport` + refresh.
+
+The panel auto-refreshes on every backend health tick
+(`DataHubWidget::refreshStatus()`); cube viewers also emit
+`workspaceExportsChanged()` after a successful export so the panel
+updates within frames of the operation instead of on the next 4s tick.
 
 ---
 

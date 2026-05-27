@@ -22,6 +22,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFutureWatcher>
+#include <QInputDialog>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPixmap>
@@ -1154,6 +1155,66 @@ QFrame *DataHubWidget::buildWorkspaceExportsPanel()
     header->addWidget(m_exportsCountLabel);
     header->addStretch(1);
 
+    auto *cleanupBtn = new QPushButton(u"Clean up older than…"_s, card);
+    cleanupBtn->setCursor(Qt::PointingHandCursor);
+    cleanupBtn->setToolTip(
+            u"Delete every workspace export whose mtime is older than the "
+            u"chosen number of days. Useful to keep the workspace size in "
+            u"check after a long analysis session."_s);
+    QObject::connect(cleanupBtn, &QPushButton::clicked, this,
+                     [this]() {
+                         if (this->backendUrl.isEmpty()) return;
+                         bool ok = false;
+                         const int days = QInputDialog::getInt(
+                                 this, u"Clean up Workspace Exports"_s,
+                                 u"Delete exports older than (days):"_s,
+                                 /*default*/ 7, /*min*/ 1, /*max*/ 3650,
+                                 /*step*/ 1, &ok);
+                         if (!ok) return;
+
+                         // Re-list synchronously off the UI thread so the
+                         // cleanup is always based on a fresh snapshot
+                         // (avoids racing against the 4-s auto-refresh).
+                         const QString url = this->backendUrl;
+                         const QString tok = this->backendToken;
+                         QPointer<DataHubWidget> guard(this);
+                         auto *watcher = new QFutureWatcher<int>(this);
+                         QObject::connect(watcher, &QFutureWatcher<int>::finished,
+                                          this, [guard, watcher, days]() {
+                                              const int deleted = watcher->result();
+                                              watcher->deleteLater();
+                                              if (!guard) return;
+                                              QMessageBox::information(
+                                                      guard, u"Workspace cleanup"_s,
+                                                      u"Removed %1 export%2 older than %3 day%4."_s
+                                                              .arg(deleted)
+                                                              .arg(deleted == 1 ? "" : "s")
+                                                              .arg(days)
+                                                              .arg(days  == 1 ? "" : "s"));
+                                              guard->refreshWorkspaceExports();
+                                          });
+                         watcher->setFuture(QtConcurrent::run([url, tok, days]() {
+                             BackendClient c(url, tok);
+                             const auto listing = c.listExports();
+                             if (!listing.valid) return 0;
+                             const QDateTime threshold =
+                                     QDateTime::currentDateTimeUtc()
+                                             .addDays(-days);
+                             int deleted = 0;
+                             for (const auto &e : listing.entries) {
+                                 const QDateTime t = QDateTime::fromString(
+                                         e.modifiedTime, Qt::ISODate);
+                                 if (!t.isValid()) continue;
+                                 if (t < threshold) {
+                                     const auto r = c.deleteExport(e.filename);
+                                     if (r.valid) ++deleted;
+                                 }
+                             }
+                             return deleted;
+                         }));
+                     });
+    header->addWidget(cleanupBtn);
+
     auto *refreshBtn = new QPushButton(u"Refresh"_s, card);
     refreshBtn->setCursor(Qt::PointingHandCursor);
     QObject::connect(refreshBtn, &QPushButton::clicked, this,
@@ -1240,10 +1301,19 @@ void DataHubWidget::refreshWorkspaceExports()
                              return;
                          }
 
-                         self->m_exportsCountLabel->setText(
-                                 listing.entries.isEmpty()
-                                 ? QString()
-                                 : u"(%1)"_s.arg(listing.entries.size()));
+                         if (listing.entries.isEmpty()) {
+                             self->m_exportsCountLabel->setText(QString());
+                         } else {
+                             // Count + total disk usage so the user knows when
+                             // the workspace is starting to fill up.
+                             qint64 totalBytes = 0;
+                             for (const auto &e : listing.entries)
+                                 totalBytes += e.size;
+                             self->m_exportsCountLabel->setText(
+                                     u"(%1 · %2)"_s
+                                             .arg(listing.entries.size())
+                                             .arg(formatExportSize(totalBytes)));
+                         }
 
                          if (listing.entries.isEmpty()) {
                              if (self->m_exportsEmptyLabel) {

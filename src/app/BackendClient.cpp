@@ -1287,18 +1287,7 @@ BackendSaveSubregionResult BackendClient::saveCubeSubregion(
         result.error = error;
         return result;
     }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid             = obj.value(QStringLiteral("valid")).toBool();
-    result.error             = obj.value(QStringLiteral("error")).toString();
-    result.newDatasetId      = obj.value(QStringLiteral("new_dataset_id")).toString();
-    result.outputPath        = obj.value(QStringLiteral("output_path")).toString();
-    result.workspaceFilename = obj.value(QStringLiteral("workspace_filename")).toString();
-    result.width             = obj.value(QStringLiteral("width")).toInt();
-    result.height            = obj.value(QStringLiteral("height")).toInt();
-    result.depth             = obj.value(QStringLiteral("depth")).toInt();
-    result.rangeMin          = obj.value(QStringLiteral("range_min")).toDouble();
-    result.rangeMax          = obj.value(QStringLiteral("range_max")).toDouble();
-    return result;
+    return parseSaveSubregionObject(QJsonDocument::fromJson(raw).object());
 }
 
 // ── Moment map → Workspace Exports ─────────────────────────────────────────
@@ -1328,18 +1317,7 @@ BackendSaveMomentFitsResult BackendClient::saveMomentFits(
         result.error = error;
         return result;
     }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid             = obj.value(QStringLiteral("valid")).toBool();
-    result.error             = obj.value(QStringLiteral("error")).toString();
-    result.outputPath        = obj.value(QStringLiteral("output_path")).toString();
-    result.workspaceFilename = obj.value(QStringLiteral("workspace_filename")).toString();
-    result.width             = obj.value(QStringLiteral("width")).toInt();
-    result.height            = obj.value(QStringLiteral("height")).toInt();
-    result.rangeMin          = obj.value(QStringLiteral("range_min")).toDouble();
-    result.rangeMax          = obj.value(QStringLiteral("range_max")).toDouble();
-    result.bunit             = obj.value(QStringLiteral("bunit")).toString();
-    result.momentUnit        = obj.value(QStringLiteral("moment_unit")).toString();
-    return result;
+    return parseSaveMomentFitsObject(QJsonDocument::fromJson(raw).object());
 }
 
 // ── Workspace Exports management ───────────────────────────────────────────
@@ -1354,22 +1332,7 @@ BackendWorkspaceExportsList BackendClient::listExports()
         result.error = error;
         return result;
     }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid        = obj.value(QStringLiteral("valid")).toBool();
-    result.error        = obj.value(QStringLiteral("error")).toString();
-    result.workspaceDir = obj.value(QStringLiteral("workspace_dir")).toString();
-    const QJsonArray arr = obj.value(QStringLiteral("entries")).toArray();
-    result.entries.reserve(arr.size());
-    for (const auto &v : arr) {
-        const QJsonObject e = v.toObject();
-        BackendWorkspaceExportEntry entry;
-        entry.filename     = e.value(QStringLiteral("filename")).toString();
-        entry.size         = e.value(QStringLiteral("size")).toVariant().toLongLong();
-        entry.modifiedTime = e.value(QStringLiteral("modified_time")).toString();
-        entry.absolutePath = e.value(QStringLiteral("absolute_path")).toString();
-        result.entries.append(entry);
-    }
-    return result;
+    return parseExportsListObject(QJsonDocument::fromJson(raw).object());
 }
 
 BackendWorkspaceDeleteResult BackendClient::deleteExport(const QString &filename)
@@ -1396,11 +1359,7 @@ BackendWorkspaceDeleteResult BackendClient::deleteExport(const QString &filename
     }
     const QByteArray raw = reply->readAll();
     reply->deleteLater();
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid           = obj.value(QStringLiteral("valid")).toBool();
-    result.error           = obj.value(QStringLiteral("error")).toString();
-    result.deletedFilename = obj.value(QStringLiteral("deleted_filename")).toString();
-    return result;
+    return parseExportsDeleteObject(QJsonDocument::fromJson(raw).object());
 }
 
 bool BackendClient::downloadExport(const QString &filename,
@@ -1804,6 +1763,69 @@ BackendCubeNoiseResult BackendClient::parseNoiseResultObject(const QJsonObject &
     result.y0 = region.value(QStringLiteral("y0")).toInt();
     result.y1 = region.value(QStringLiteral("y1")).toInt();
     result.blankFraction = object.value(QStringLiteral("blank_fraction")).toDouble(0.0);
+    return result;
+}
+
+// ── Workspace Exports: JSON-only parsers (unit-testable without HTTP) ──────
+
+BackendSaveSubregionResult BackendClient::parseSaveSubregionObject(const QJsonObject &obj)
+{
+    BackendSaveSubregionResult result;
+    result.valid             = obj.value(QStringLiteral("valid")).toBool(false);
+    result.error             = obj.value(QStringLiteral("error")).toString();
+    result.newDatasetId      = obj.value(QStringLiteral("new_dataset_id")).toString();
+    result.outputPath        = obj.value(QStringLiteral("output_path")).toString();
+    result.workspaceFilename = obj.value(QStringLiteral("workspace_filename")).toString();
+    result.width             = obj.value(QStringLiteral("width")).toInt();
+    result.height            = obj.value(QStringLiteral("height")).toInt();
+    result.depth             = obj.value(QStringLiteral("depth")).toInt();
+    result.rangeMin          = obj.value(QStringLiteral("range_min")).toDouble();
+    result.rangeMax          = obj.value(QStringLiteral("range_max")).toDouble();
+    return result;
+}
+
+BackendSaveMomentFitsResult BackendClient::parseSaveMomentFitsObject(const QJsonObject &obj)
+{
+    BackendSaveMomentFitsResult result;
+    result.valid             = obj.value(QStringLiteral("valid")).toBool(false);
+    result.error             = obj.value(QStringLiteral("error")).toString();
+    result.outputPath        = obj.value(QStringLiteral("output_path")).toString();
+    result.workspaceFilename = obj.value(QStringLiteral("workspace_filename")).toString();
+    result.width             = obj.value(QStringLiteral("width")).toInt();
+    result.height            = obj.value(QStringLiteral("height")).toInt();
+    result.rangeMin          = obj.value(QStringLiteral("range_min")).toDouble();
+    result.rangeMax          = obj.value(QStringLiteral("range_max")).toDouble();
+    result.bunit             = obj.value(QStringLiteral("bunit")).toString();
+    result.momentUnit        = obj.value(QStringLiteral("moment_unit")).toString();
+    return result;
+}
+
+BackendWorkspaceExportsList BackendClient::parseExportsListObject(const QJsonObject &obj)
+{
+    BackendWorkspaceExportsList result;
+    result.valid        = obj.value(QStringLiteral("valid")).toBool(false);
+    result.error        = obj.value(QStringLiteral("error")).toString();
+    result.workspaceDir = obj.value(QStringLiteral("workspace_dir")).toString();
+    const QJsonArray arr = obj.value(QStringLiteral("entries")).toArray();
+    result.entries.reserve(arr.size());
+    for (const auto &v : arr) {
+        const QJsonObject e = v.toObject();
+        BackendWorkspaceExportEntry entry;
+        entry.filename     = e.value(QStringLiteral("filename")).toString();
+        entry.size         = e.value(QStringLiteral("size")).toVariant().toLongLong();
+        entry.modifiedTime = e.value(QStringLiteral("modified_time")).toString();
+        entry.absolutePath = e.value(QStringLiteral("absolute_path")).toString();
+        result.entries.append(entry);
+    }
+    return result;
+}
+
+BackendWorkspaceDeleteResult BackendClient::parseExportsDeleteObject(const QJsonObject &obj)
+{
+    BackendWorkspaceDeleteResult result;
+    result.valid           = obj.value(QStringLiteral("valid")).toBool(false);
+    result.error           = obj.value(QStringLiteral("error")).toString();
+    result.deletedFilename = obj.value(QStringLiteral("deleted_filename")).toString();
     return result;
 }
 

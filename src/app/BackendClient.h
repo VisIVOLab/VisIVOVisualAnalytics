@@ -987,6 +987,14 @@ public:
     static BackendCubePvResult    parsePvResultObject(const QJsonObject &object);
     static BackendCubeNoiseResult parseNoiseResultObject(const QJsonObject &object);
 
+    /// JSON-only parsers for the Workspace Exports lifecycle, factored out
+    /// so they can be unit-tested without a live HTTP server (mirrors the
+    /// pattern used by parseNoiseResultObject above).
+    static BackendSaveSubregionResult       parseSaveSubregionObject(const QJsonObject &object);
+    static BackendSaveMomentFitsResult      parseSaveMomentFitsObject(const QJsonObject &object);
+    static BackendWorkspaceExportsList      parseExportsListObject(const QJsonObject &object);
+    static BackendWorkspaceDeleteResult     parseExportsDeleteObject(const QJsonObject &object);
+
     // ── Binary transport (avoids base64 overhead for large arrays) ───────────
     BinaryArrayResult fetchMomentBinary(const QString &datasetId,
                                         int order,

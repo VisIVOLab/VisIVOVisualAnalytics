@@ -194,6 +194,12 @@ private slots:
 signals:
     void catalogueSourceSelectionChanged(int index);
 
+    /// Emitted right after a successful Tools → Export … as FITS so any
+    /// open Data Hub can refresh its Workspace Exports panel immediately
+    /// (without waiting for the 4-second background poll). Carries no
+    /// payload — listeners just re-issue a /v1/exports/list call.
+    void workspaceExportsChanged();
+
 public:
     enum class RemoteCubeDisplayState
     {

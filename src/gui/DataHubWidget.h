@@ -43,6 +43,11 @@ public:
 public slots:
     // Synchronous health-check → updates status badge + system-insights panel.
     void refreshStatus();
+    /// Re-fetch the Workspace Exports list from the backend asynchronously
+    /// and rebuild the panel rows. Public so cube viewers can request an
+    /// immediate refresh after pushing a new export, bypassing the 4-s
+    /// background poll.
+    void refreshWorkspaceExports();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -84,9 +89,8 @@ private:
     QFrame *buildQuickActionsList();      // compact vertical list (replaces 4-card grid)
     QFrame *buildLast5JobsPanel();        // recent-tasks feed extracted from old insights
     QFrame *buildWorkspaceExportsPanel(); // persistent FITS exports from cube viewers
-    /// Re-fetch the workspace exports list from the backend asynchronously
-    /// and rebuild the panel rows. Idempotent; safe to call frequently.
-    void refreshWorkspaceExports();
+    // refreshWorkspaceExports() is now a public slot (see above) so external
+    // signals (vtkWindowCube::workspaceExportsChanged) can hit it directly.
 
     // Creates a single interactive action card (icon symbol + title + desc).
     // Installs an event filter so the frame emits the given signal on click.
