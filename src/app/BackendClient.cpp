@@ -676,12 +676,17 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
         return result;
     }
     const QJsonObject object = QJsonDocument::fromJson(payload).object();
-    result.valid = object.value(QStringLiteral("valid")).toBool(false);
-    result.error = object.value(QStringLiteral("error")).toString();
-    result.width = object.value(QStringLiteral("width")).toInt();
-    result.height = object.value(QStringLiteral("height")).toInt();
-    result.depth = object.value(QStringLiteral("depth")).toInt();
-    result.scalarType = object.value(QStringLiteral("scalar_type")).toString();
+    result.valid             = object.value(QStringLiteral("valid")).toBool(false);
+    result.error             = object.value(QStringLiteral("error")).toString();
+    result.width             = object.value(QStringLiteral("width")).toInt();
+    result.height            = object.value(QStringLiteral("height")).toInt();
+    result.depth             = object.value(QStringLiteral("depth")).toInt();
+    result.scalarType        = object.value(QStringLiteral("scalar_type")).toString();
+    result.rangeMin          = object.value(QStringLiteral("range_min")).toDouble();
+    result.rangeMax          = object.value(QStringLiteral("range_max")).toDouble();
+    result.spectralAxisType  = object.value(QStringLiteral("spectral_axis_type")).toString();
+    result.spectralAxisUnit  = object.value(QStringLiteral("spectral_axis_unit")).toString();
+    result.bunit             = object.value(QStringLiteral("bunit")).toString();
     result.data = decodePayload(object, QStringLiteral("data_base64"),
                                 QStringLiteral("compression"), result.error);
     if (!result.error.isEmpty()) {

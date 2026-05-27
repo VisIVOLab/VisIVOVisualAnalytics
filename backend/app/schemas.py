@@ -140,6 +140,11 @@ class CubeSubvolumeResponse(BaseModel):
     height: int = 0
     depth: int = 0
     scalar_type: str = ""
+    range_min: float = 0.0
+    range_max: float = 0.0
+    spectral_axis_type: str = ""
+    spectral_axis_unit: str = ""
+    bunit: str = ""
     data_base64: str = ""
 
 

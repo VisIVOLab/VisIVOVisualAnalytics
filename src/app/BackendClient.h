@@ -233,6 +233,11 @@ struct BackendCubeSubvolumeResult
     int height{ 0 };
     int depth{ 0 };
     QString scalarType;
+    double rangeMin{ 0. };
+    double rangeMax{ 0. };
+    QString spectralAxisType;
+    QString spectralAxisUnit;
+    QString bunit;
     QByteArray data;
 };
 

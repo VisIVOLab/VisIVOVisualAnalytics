@@ -108,6 +108,9 @@
 #include <QDoubleValidator>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
+#include "ChannelMapsDialog.h"
+#include "ChannelMapsWindow.h"
+
 #include <QFileDialog>
 #include <QStandardPaths>
 #include <QFormLayout>
@@ -2593,6 +2596,31 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(this->actionExtractPvDiagram, &QAction::toggled, this,
                      &vtkWindowCube::setPvModeActive);
 
+    // ANALYSIS: Channel Maps mosaic (N × M grid of consecutive slice panels).
+    this->m_actChannelMaps = ui->menuTools->addAction(u"Channel Maps…"_s);
+    QAction *actChannelMaps = this->m_actChannelMaps;
+    actChannelMaps->setToolTip(
+            u"Display a mosaic of N consecutive channel slices with the same "
+            u"color scale — useful for identifying coherent structures across "
+            u"the spectral axis."_s);
+    QObject::connect(actChannelMaps, &QAction::triggered, this, [this]() {
+        ChannelMapsDialog dlg(this->remoteDatasetDepth,
+                              ui->spinSlice->value() - 1,
+                              this->m_activeSliceLutName, this);
+        if (dlg.exec() != QDialog::Accepted) return;
+        const auto cfg = dlg.config();
+        if (cfg.channelStart > cfg.channelEnd) return;
+        auto *win = new ChannelMapsWindow(
+                cfg,
+                this->remoteBackendUrl, this->remoteBackendToken,
+                this->remoteSessionId, this->remoteDatasetId,
+                this->remoteDatasetWidth, this->remoteDatasetHeight,
+                this->remoteDatasetDepth,
+                this->filepath, this);
+        win->show();
+        win->raise();
+    });
+
     // ANALYSIS: persist-to-FITS exports (sub-cube crop + moment map). These
     // round-trip the heavy work through the backend exactly like the rest
     // of the ANALYSIS group, so the UI thread stays responsive while the
@@ -2663,7 +2691,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                        this->actionBoxRegion,
                                        this->actionCircleRegion,
                                        this->actionPolygonRegion,
-                                       this->actionAnnulusRegion);
+                                       this->actionAnnulusRegion,
+                                       this->m_actChannelMaps);
     }
 
     this->updateBackendDerivedActionsAvailability();

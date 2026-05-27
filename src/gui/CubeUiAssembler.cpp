@@ -201,7 +201,7 @@ CubeUiAssembler::~CubeUiAssembler() = default;
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Moved from class scope: only used in this translation unit.
-static QPixmap buildLutPreview(const QString &name, int w, int h)
+QPixmap CubeUiAssembler::buildLutPreview(const QString &name, int w, int h)
 {
     vtkNew<vtkLookupTable> lut;
     lut->SetTableRange(0., 1.);
@@ -222,6 +222,8 @@ static QPixmap buildLutPreview(const QString &name, int w, int h)
     }
     return QPixmap::fromImage(img);
 }
+
+// Internal call sites now use CubeUiAssembler::buildLutPreview() directly.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // buildThresholdPage  (was vtkWindowCube::setupThresholdPage)
@@ -655,12 +657,14 @@ QWidget *CubeUiAssembler::buildToolsPage()
         m_btnBaselineSub   = makeSidebarToolButton(u"Baseline Subtraction\u2026"_s);
         m_btnStackCubes    = makeSidebarToolButton(u"Stack Spectral Cubes\u2026"_s);
         m_btnPvDiagram     = makeSidebarToolButton(u"PV Diagram"_s);
+        m_btnChannelMaps   = makeSidebarToolButton(u"Channel Maps\u2026"_s);
         cl->addWidget(m_btnEstimateNoise);
         cl->addWidget(m_btnMomentMap);
         cl->addWidget(m_btnLineWidth);
         cl->addWidget(m_btnBaselineSub);
         cl->addWidget(m_btnStackCubes);
         cl->addWidget(m_btnPvDiagram);
+        cl->addWidget(m_btnChannelMaps);
     }
 
     // REGIONS group: drawing tools -- pick a shape, compute statistics +
@@ -939,7 +943,8 @@ void CubeUiAssembler::wireToolActions(QAction *estimateNoise,
                                       QAction *boxRegion,
                                       QAction *circleRegion,
                                       QAction *polygonRegion,
-                                      QAction *annulusRegion)
+                                      QAction *annulusRegion,
+                                      QAction *channelMaps)
 {
     // setDefaultAction() links button text, tooltip, enabled state, and
     // checkability to the action — keeps the sidebar and menu in sync.
@@ -968,6 +973,8 @@ void CubeUiAssembler::wireToolActions(QAction *estimateNoise,
         m_btnPvDiagram->setToolTip(
                 u"Draw a path in the 2D view to extract a position-velocity diagram."_s);
     }
+    if (m_btnChannelMaps && channelMaps)
+        m_btnChannelMaps->setDefaultAction(channelMaps);
 
     // ── REGIONS buttons ──────────────────────────────────────────────────────
     if (m_btnBoxRegion && boxRegion) {

@@ -276,16 +276,34 @@ def worker_cube_subvolume(
         z0, z1 = max(0, z0), min(z1, depth - 1)
         if x0 > x1 or y0 > y1 or z0 > z1:
             raise ValueError("Invalid subvolume ROI.")
-        # Materialise only the requested sub-region.
         sub = np.asarray(data[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1], dtype=np.float32)
     finally:
         hdul.close()
+
+    range_min, range_max = _finite_range(sub)
+
+    # Spectral metadata for each channel in the sub-volume — used by
+    # Channel Maps to label each panel with velocity / frequency.
+    try:
+        spectral = dataset.spectral_axis_metadata(z0, z1)
+        spectral_coords = list(spectral.get("coordinates", []))
+        spectral_axis_type = str(spectral.get("axis_type", ""))
+        spectral_axis_unit = str(spectral.get("axis_unit", ""))
+    except Exception:
+        spectral_coords = []
+        spectral_axis_type = ""
+        spectral_axis_unit = ""
 
     return {
         "width": int(sub.shape[2]),
         "height": int(sub.shape[1]),
         "depth": int(sub.shape[0]),
         "scalar_type": "float32",
+        "range_min": float(range_min),
+        "range_max": float(range_max),
+        "spectral_axis_type": spectral_axis_type,
+        "spectral_axis_unit": spectral_axis_unit,
+        "bunit": dataset.bunit or "",
         "data_base64": _b64f32(sub),
     }
 

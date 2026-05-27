@@ -396,6 +396,7 @@ private:
     /// "Export Moment Map as FITS…" — enabled only once a moment is on
     /// screen (the controller pushes the first result). Stays enabled.
     QPointer<QAction> m_actExportMomentFits;
+    QPointer<QAction> m_actChannelMaps;
     QPointer<QAction> actionLoadCatalogueOverlay;
     QPointer<QAction> actionShowCatalogueOverlay;
     QPointer<QAction> actionShowCatalogueLabels;

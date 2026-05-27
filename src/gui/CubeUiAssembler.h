@@ -4,6 +4,7 @@
 // the Qt parent-child hierarchy: every widget is created as a child of a page
 // owned by Ui::vtkWindowCube, which is destroyed together with CubeUiAssembler.
 // Forward declarations keep this header free of heavyweight Qt widget includes.
+#include <QPixmap>
 #include <QString>
 
 class QAction;
@@ -64,6 +65,10 @@ public:
     // sections inside the same pages without diverging from the look.
     static QString sidebarHdrStyle();
     static QString sidebarCardStyle();
+    /// Build a small gradient-ramp pixmap for a named VTK LUT, used as
+    /// the icon in color-map combo boxes across the app.
+    static QPixmap buildLutPreview(const QString &lutName, int w = 48, int h = 12);
+
     /// Build a full-width QToolButton in the canonical sidebar style
     /// (text-only, Expanding size policy, disabled placeholder). Callers
     /// typically follow up with setDefaultAction() to bind a checkable
@@ -85,7 +90,8 @@ public:
                          QAction *boxRegion,       ///< actionBoxRegion
                          QAction *circleRegion,    ///< actionCircleRegion
                          QAction *polygonRegion,   ///< actionPolygonRegion
-                         QAction *annulusRegion);  ///< actionAnnulusRegion
+                         QAction *annulusRegion,   ///< actionAnnulusRegion
+                         QAction *channelMaps = nullptr); ///< Tools → Channel Maps
 
     // ── Bidirectional sync helpers ────────────────────────────────────────────
     void sync2dModeSidebar(bool sliceActive);
@@ -220,6 +226,7 @@ private:
     QToolButton          *m_btnLineWidth{ nullptr };
     QToolButton          *m_btnBaselineSub{ nullptr };
     QToolButton          *m_btnStackCubes{ nullptr };
+    QToolButton          *m_btnChannelMaps{ nullptr };
     QToolButton          *m_btnPvDiagram{ nullptr };
     // ── Tools page buttons (REGIONS) ──────────────────────────────────────────
     QToolButton          *m_btnBoxRegion{ nullptr };

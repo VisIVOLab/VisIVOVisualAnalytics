@@ -171,6 +171,10 @@ set(PROJECT_SOURCES
         src/gui/MainWindow.h
         src/gui/ProfileWidget.cpp
         src/gui/ProfileWidget.h
+        src/gui/ChannelMapsDialog.cpp
+        src/gui/ChannelMapsDialog.h
+        src/gui/ChannelMapsWindow.cpp
+        src/gui/ChannelMapsWindow.h
         src/gui/PvDiagramWidget.cpp
         src/gui/PvDiagramWidget.h
         src/gui/SettingsDialog.cpp
@@ -305,6 +309,7 @@ qt_add_resources(${PROJECT_NAME} rail_icons
         resources/icons/rail_filter.svg
         resources/icons/rail_metadata.svg
         resources/icons/chevron_down.svg
+        resources/icons/chevron_up.svg
 )
 
 add_subdirectory(src/libwcs)

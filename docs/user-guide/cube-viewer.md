@@ -107,7 +107,8 @@ heavier compute, in this order:
   - Cheap, interactive — look at one spectrum, immerse in the cube.
 * - **ANALYSIS**
   - Estimate Noise, Compute Moment, Line-width Map, Baseline Subtraction,
-    Stack Spectral Cubes, Extract PV Diagram
+    Stack Spectral Cubes, Extract PV Diagram, **Channel Maps**,
+    Export Sub-Cube as FITS, Export Moment Map as FITS
   - Compute-on-cube tools that produce a derived map / cube / spectrum.
     All run on the backend with the heavy-task throttle, so the viewer
     stays interactive.
@@ -259,6 +260,37 @@ slice scrolling or even rotating the desktop volume tends to hide. Useful
 for spotting where lines from different velocity ranges connect spatially
 — typical use cases are outflow lobes, expanding bubbles, and filament
 networks where the eye benefits from real parallax.
+
+### Channel Maps (velocity mosaic)
+
+A standard radio-astronomy display: an N × M grid of 2-D channel slices,
+all rendered with the same colour map and data range, so coherent
+structures across the spectral axis jump out at a glance — outflow
+lobes, expanding shells, velocity gradients, and cloud morphology.
+
+**How to use it:**
+
+1. **Tools → Channel Maps…** in the cube viewer.
+2. Set the **start** and **end** channel, the **stride** (skip every
+   N-th channel), the number of **columns** in the grid (default 8),
+   and the **colour map**.
+3. Click **Generate**. A single `requestSubvolume` call fetches the
+   entire z-range from the backend; panels are sliced and coloured
+   client-side.
+4. Each panel is a lightweight `QCPColorMap` (QCustomPlot) — no OpenGL
+   context per cell, so 64+ panels work on every platform.
+5. The header shows the channel range, stride and LUT; each cell shows
+   **CH N** (the 0-indexed channel index).
+6. **Save mosaic as PNG…** composites all panels into one image with a
+   title bar and saves it at the user-chosen path.
+
+```{tip}
+Start with a small stride and wide range to identify the interesting
+velocity window, then narrow the range and set stride=1 for a
+publication-ready mosaic. The colour scale is shared across all panels
+(auto-ranged from the finite min/max of the entire sub-volume), so
+faint emission and strong peaks are directly comparable.
+```
 
 ## Regions, PV diagrams, noise
 
