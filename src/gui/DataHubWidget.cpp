@@ -1088,6 +1088,46 @@ void DataHubWidget::refreshRecentDatasets()
         timeLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         hbox->addWidget(timeLbl, 0, Qt::AlignVCenter);
 
+        // "Remove from recents" button. The button is opaque to mouse events,
+        // so clicking it does NOT bubble up to the row's CardClickFilter and
+        // does not trigger a reopen. Only the entry is removed — the actual
+        // dataset on the backend / disk is untouched (we don't own it).
+        auto *removeBtn = new QPushButton(u"✕"_s, row);
+        removeBtn->setCursor(Qt::PointingHandCursor);
+        removeBtn->setToolTip(u"Remove from Recent Datasets (does not delete the file)."_s);
+        removeBtn->setFixedSize(22, 22);
+        removeBtn->setFocusPolicy(Qt::NoFocus);
+        removeBtn->setStyleSheet(QStringLiteral(
+                "QPushButton {"
+                " border: 1px solid transparent; border-radius: 11px;"
+                " background: transparent; color: %1;"
+                " font-size: 12px; padding: 0; margin: 0;"
+                "}"
+                "QPushButton:hover {"
+                " background: rgba(232,80,80,0.18);"
+                " border-color: rgba(232,80,80,0.55);"
+                " color: #E85050;"
+                "}")
+                .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        const QString dsId          = ds.id;
+        const QString dsDisplayName = ds.displayName;
+        QPointer<DataHubWidget> guard(this);
+        QObject::connect(removeBtn, &QPushButton::clicked, this,
+                         [guard, dsId, dsDisplayName]() {
+                             if (!guard || !guard->recentMgr) return;
+                             const auto reply = QMessageBox::question(
+                                     guard, u"Remove from Recent Datasets"_s,
+                                     u"Remove '%1' from the Recent Datasets list?\n\n"
+                                     u"The actual dataset on the backend is not deleted."_s
+                                             .arg(dsDisplayName));
+                             if (reply != QMessageBox::Yes) return;
+                             guard->recentMgr->remove(dsId);
+                             // changed() signal triggers refreshRecentDatasets
+                             // automatically, so the row disappears without
+                             // an explicit refresh call here.
+                         });
+        hbox->addWidget(removeBtn, 0, Qt::AlignVCenter);
+
         // Click → emit reopenDatasetRequested.
         RecentDataset dsCopy = ds; // capture by value
         auto *filter = new CardClickFilter(
