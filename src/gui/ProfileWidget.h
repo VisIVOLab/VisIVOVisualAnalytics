@@ -11,6 +11,8 @@
 #include <memory>
 
 class QCPItemLine;
+class QCPItemText;
+class QComboBox;
 class QFrame;
 class QLabel;
 class QPushButton;
@@ -160,6 +162,25 @@ private:
     int     m_pixelY{ 0 };
     QString m_wcsLabel;
     bool    m_frozen{ false };
+
+    // Spectral smoothing — applied client-side for display only (the raw
+    // data is kept in m_lastSpectrum* for CSV export). The combo is built
+    // lazily in buildSpectrumHeader().
+    QComboBox *m_smoothCombo{ nullptr };
+    void applySmoothAndReplot();
+
+    // Line identification overlay — vertical annotated lines at known
+    // spectral frequencies loaded from a user CSV (rest_freq, label).
+    struct SpectralLine {
+        double frequency;   // in the same unit as the X axis
+        QString label;
+    };
+    QVector<SpectralLine> m_lineIds;
+    QVector<QCPItemLine*> m_lineIdMarkers;
+    QVector<QCPItemText*> m_lineIdLabels;
+    void loadLineIdFile();
+    void drawLineIdOverlay();
+    void clearLineIdOverlay();
     // Region-mode header text. Populated by setRegionContext(); used by
     // refreshSpectrumHeader() when usageMode == RegionStatic so the meta
     // row describes the region instead of a pixel.

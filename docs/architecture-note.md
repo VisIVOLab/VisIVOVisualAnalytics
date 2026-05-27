@@ -314,6 +314,72 @@ Implementation notes:
   bounds; `applyCubeOpenResult()` refreshes the actor whenever the cube
   bounds change (preview → full-res, ROI switch).
 
+### Beam indicator ellipse (2-D slice view)
+
+The beam indicator is a filled ellipse rendered in the bottom-left corner
+of the 2-D slice renderer. It visualises the synthesised beam reported by
+the FITS header keywords `BMAJ`, `BMIN`, and `BPA`.
+
+Implementation notes:
+
+- **Backend**: `geometry_metadata()` in `backend/app/fits_dataset.py` reads
+  `BMAJ`, `BMIN`, and `BPA` from the primary header and returns them (in
+  degrees) as `beam_major`, `beam_minor`, `beam_pa`. The
+  `OpenDatasetResponse` schema (`backend/app/schemas.py`) carries them as
+  optional floats; the client receives them via `BackendOpenDatasetResult`
+  fields `beamMajorDeg`, `beamMinorDeg`, `beamPaDeg`.
+- **Frontend**: `vtkWindowCube::setBeamInfo()` builds an ellipse from
+  parametric points (cos/sin sampled at ~64 steps), converts angular sizes
+  to pixels via `|CDELT1|`, and creates a filled `vtkActor2D` with white
+  colour and semi-transparent opacity. The actor is added to the 2-D slice
+  renderer at a fixed position in the bottom-left corner (viewport-relative
+  coordinates).
+- If `BMAJ` or `BMIN` are absent (i.e. the optional fields are unset), the
+  ellipse actor is not created or is set invisible — no fallback drawing
+  occurs.
+
+### Spectral smoothing (ProfileWidget)
+
+The `ProfileWidget` spectrum header exposes a **Smooth:** `QComboBox` that
+applies a 1-D convolution kernel to the displayed profile.
+
+Implementation notes:
+
+- Kernels available: None, Hanning `[0.25, 0.5, 0.25]`, Boxcar 3/5/7,
+  Gaussian σ=1, Gaussian σ=2. The kernel array is applied via a
+  `convolve1D` helper function.
+- The convolution is **NaN-safe**: NaN samples are excluded from the
+  weighted sum and the normalisation factor is adjusted to compensate, so
+  NaN values do not propagate into neighbouring channels.
+- The stats bar (N, Min, Max, Mean, RMS, ∫) is recomputed on the
+  **smoothed** data vector, giving the user immediate quantitative feedback
+  on the effect of the kernel.
+- Smoothing is active during **live probe hover**: every
+  `updateProbePlot()` call re-applies the selected kernel before plotting,
+  so changing kernels while hovering is responsive.
+- CSV export always writes the **raw** (unsmoothed) data to preserve
+  scientific provenance.
+
+### Line identification overlay (ProfileWidget)
+
+**Load Lines…** and **Clear Lines** buttons in the `ProfileWidget` header
+allow the user to overlay expected spectral-line positions.
+
+Implementation notes:
+
+- The CSV parser accepts comma- or tab-separated files with two columns
+  (`frequency`, `label`). Lines beginning with `#` are skipped as
+  comments. No header row is required.
+- Each loaded line is rendered as a `QCPItemLine` (vertical, dashed, amber
+  pen) spanning the full Y range of the plot. The label is rendered as a
+  `QCPItemText` positioned at the line's X coordinate with a viewport-ratio
+  Y coordinate (fixed fraction of the plot height, e.g. 0.85) so that
+  labels stay readable regardless of zoom level. Labels are rotated 90°.
+- **Clear Lines** removes all `QCPItemLine` + `QCPItemText` items that
+  belong to the line-ID overlay set and replots.
+- No unit conversion is performed: frequencies in the file must match the
+  plot's current X-axis unit.
+
 ### Optional: VR (OpenXR) offload
 
 The cube viewer can hand off the current `vtkVolume` (with its live LUT /

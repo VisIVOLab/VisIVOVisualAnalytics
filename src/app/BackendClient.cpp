@@ -449,6 +449,13 @@ BackendOpenDatasetResult BackendClient::openDataset(const QString &path)
             result.wcsRefSkyValid   = true;
         }
     }
+    // Beam (BMAJ/BMIN in degrees, BPA in degrees E of N). Absent → NaN.
+    const QJsonValue bmaj = object.value(QStringLiteral("beam_major"));
+    const QJsonValue bmin = object.value(QStringLiteral("beam_minor"));
+    const QJsonValue bpa  = object.value(QStringLiteral("beam_pa"));
+    if (!bmaj.isNull()) result.beamMajorDeg = bmaj.toDouble();
+    if (!bmin.isNull()) result.beamMinorDeg = bmin.toDouble();
+    if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
     return result;
 }
 

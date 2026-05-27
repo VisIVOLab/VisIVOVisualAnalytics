@@ -141,6 +141,11 @@ struct BackendOpenDatasetResult
     std::array<double, 2> wcsRefSky00{ 0.0, 0.0 };
     std::array<double, 2> wcsRefSky0100{ 0.0, 0.0 };
     bool wcsRefSkyValid{ false };
+    /// Synthesised beam (from BMAJ/BMIN/BPA FITS keywords). Values are in
+    /// degrees (major/minor) and degrees E of N (PA). NaN means absent.
+    double beamMajorDeg{ std::numeric_limits<double>::quiet_NaN() };
+    double beamMinorDeg{ std::numeric_limits<double>::quiet_NaN() };
+    double beamPaDeg{ 0.0 };
 };
 
 struct BackendFileHeaderResult

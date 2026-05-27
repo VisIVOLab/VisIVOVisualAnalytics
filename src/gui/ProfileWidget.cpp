@@ -8,6 +8,7 @@
 
 #include <QApplication>
 #include <QColor>
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
@@ -374,6 +375,65 @@ void ProfileWidget::buildSpectrumHeader()
     // refresh helper skips it (cheaper than null-checking everywhere).
     m_specPinBtn = nullptr;
 
+    // Row 3: smoothing + line ID controls on a single compact row.
+    // Keeps the header height minimal while giving access to both features.
+    auto *toolRow = new QHBoxLayout();
+    toolRow->setContentsMargins(0, 2, 0, 0);
+    toolRow->setSpacing(8);
+
+    // Smoothing combo — label embedded as first item so it reads naturally
+    // as "Smooth: [Hanning ▼]". No maxWidth: let the dropdown size itself
+    // from its longest item so nothing is clipped.
+    auto *smoothLabel = new QLabel(u"Smooth:"_s);
+    smoothLabel->setStyleSheet(
+            u"font-size: 11px; color: %1; background: transparent;"_s
+                    .arg(tKey()));
+    toolRow->addWidget(smoothLabel);
+    m_smoothCombo = new QComboBox();
+    m_smoothCombo->addItem(u"None"_s,        0);
+    m_smoothCombo->addItem(u"Hanning"_s,     1);
+    m_smoothCombo->addItem(u"Boxcar 3"_s,    3);
+    m_smoothCombo->addItem(u"Boxcar 5"_s,    5);
+    m_smoothCombo->addItem(u"Boxcar 7"_s,    7);
+    m_smoothCombo->addItem(u"Gaussian σ=1"_s, 10);
+    m_smoothCombo->addItem(u"Gaussian σ=2"_s, 20);
+    m_smoothCombo->setToolTip(
+            u"Apply a spectral smoothing kernel for display only.\n"
+            u"CSV export always saves the raw (unsmoothed) data."_s);
+    m_smoothCombo->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    toolRow->addWidget(m_smoothCombo);
+
+    // Separator + Line ID buttons — small pill-style, matching the header
+    // chrome so they don't look like out-of-place default buttons.
+    const QString pillCss = QStringLiteral(
+            "QPushButton { padding: 3px 10px; font-size: 10px;"
+            " border: 1px solid %1; border-radius: 4px;"
+            " background: transparent; color: %2; }"
+            "QPushButton:hover { background: %3; }")
+            .arg(tBorder(), tValue(),
+                 QString::fromLatin1(VisivoTheme::kSurfaceContainerHigh()));
+    toolRow->addStretch(1);
+    auto *loadLinesBtn = new QPushButton(u"Load Lines…"_s);
+    loadLinesBtn->setStyleSheet(pillCss);
+    loadLinesBtn->setCursor(Qt::PointingHandCursor);
+    loadLinesBtn->setToolTip(
+            u"Load a CSV file of spectral lines (columns: frequency, label).\n"
+            u"Draws vertical annotated markers on the plot at each frequency.\n"
+            u"Frequencies must be in the same unit as the X axis."_s);
+    auto *clearLinesBtn = new QPushButton(u"Clear Lines"_s);
+    clearLinesBtn->setStyleSheet(pillCss);
+    clearLinesBtn->setCursor(Qt::PointingHandCursor);
+    toolRow->addWidget(loadLinesBtn);
+    toolRow->addWidget(clearLinesBtn);
+    col->addLayout(toolRow);
+
+    QObject::connect(m_smoothCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                     this, [this](int) { this->applySmoothAndReplot(); });
+    QObject::connect(loadLinesBtn,  &QPushButton::clicked,
+                     this, &ProfileWidget::loadLineIdFile);
+    QObject::connect(clearLinesBtn, &QPushButton::clicked,
+                     this, &ProfileWidget::clearLineIdOverlay);
+
     // Insert the header at the very top of the widget's outer layout.
     auto *vLayout = qobject_cast<QVBoxLayout *>(this->layout());
     vLayout->insertWidget(0, m_specHeader);
@@ -451,6 +511,79 @@ void ProfileWidget::refreshSpectrumHeader()
         text += u"\nHover the slice for a live preview; click a pixel to pin its spectrum."_s;
     }
     m_specMetaLabel->setText(text);
+}
+
+// ── Spectral smoothing (display only) ────────────────────────────────────────
+// Applies a 1-D convolution kernel to m_lastSpectrumValues and replots.
+// The raw data is not modified; CSV export always saves the original.
+
+namespace {
+QVector<double> convolve1D(const QVector<double> &data,
+                           const QVector<double> &kernel)
+{
+    const int n = data.size();
+    const int k = kernel.size();
+    const int half = k / 2;
+    QVector<double> out(n);
+    for (int i = 0; i < n; ++i) {
+        double sum = 0.0;
+        double wsum = 0.0;
+        for (int j = 0; j < k; ++j) {
+            const int idx = i + j - half;
+            if (idx >= 0 && idx < n && std::isfinite(data[idx])) {
+                sum  += kernel[j] * data[idx];
+                wsum += kernel[j];
+            }
+        }
+        out[i] = (wsum > 0.0) ? sum / wsum : data[i];
+    }
+    return out;
+}
+
+QVector<double> gaussianKernel(double sigma)
+{
+    const int half = static_cast<int>(std::ceil(3.0 * sigma));
+    const int size = 2 * half + 1;
+    QVector<double> k(size);
+    for (int i = 0; i < size; ++i) {
+        const double x = i - half;
+        k[i] = std::exp(-0.5 * x * x / (sigma * sigma));
+    }
+    return k;
+}
+} // namespace
+
+void ProfileWidget::applySmoothAndReplot()
+{
+    if (m_dialogInProgress) return;
+    if (m_lastSpectrumKey.isEmpty() || m_lastSpectrumValues.isEmpty()) return;
+    if (!m_smoothCombo) return;
+
+    const int mode = m_smoothCombo->currentData().toInt();
+    QVector<double> smoothed = m_lastSpectrumValues;
+
+    if (mode == 1) {
+        // Hanning (3-tap)
+        smoothed = convolve1D(m_lastSpectrumValues, { 0.25, 0.5, 0.25 });
+    } else if (mode >= 3 && mode < 10) {
+        // Boxcar of width N
+        const int w = mode;
+        QVector<double> k(w, 1.0);
+        smoothed = convolve1D(m_lastSpectrumValues, k);
+    } else if (mode == 10) {
+        smoothed = convolve1D(m_lastSpectrumValues, gaussianKernel(1.0));
+    } else if (mode == 20) {
+        smoothed = convolve1D(m_lastSpectrumValues, gaussianKernel(2.0));
+    }
+
+    // Replot with smoothed data; keep the original in m_lastSpectrum* for
+    // the next smooth-change and for CSV export.
+    if (ui->plot1->graphCount() > 0) {
+        ui->plot1->graph(0)->setData(m_lastSpectrumKey, smoothed);
+        ui->plot1->rescaleAxes();
+        ui->plot1->replot();
+    }
+    refreshSpectrumStats(m_lastSpectrumKey, smoothed);
 }
 
 void ProfileWidget::setRegionContext(const QString &shapeLabel,
@@ -650,8 +783,14 @@ void ProfileWidget::plotSpectrum(double x, double y, bool live)
     m_lastSpectrumKey    = key;     // cached for CSV export
     m_lastSpectrumValues = values;
     refreshSpectrumHeader();
-    refreshSpectrumStats(key, values);
-    ui->plot1->replot();
+    // If a smoothing kernel is active, apply it to the display; otherwise
+    // show raw data. Stats are computed on the (possibly smoothed) data.
+    if (m_smoothCombo && m_smoothCombo->currentData().toInt() != 0) {
+        applySmoothAndReplot();
+    } else {
+        refreshSpectrumStats(key, values);
+        ui->plot1->replot();
+    }
 
     showAndRaiseFirstTime();
 }
@@ -668,10 +807,6 @@ void ProfileWidget::updateSpectrumPlot(const QVector<double> &key, const QVector
     }
     ui->plot1->legend->setVisible(false);
 
-    // The freeze state is now owned by the cube viewer (or by the Pin
-    // button); the `live` parameter is no longer used to flip a checkbox
-    // here, but we keep it in the API so callers don't break. If the
-    // caller is sending data, by definition the widget is not pinned.
     Q_UNUSED(live);
 
     ui->plot1->graph()->setPen(QPen(QColor(0, 170, 255), 1.5));
@@ -683,8 +818,12 @@ void ProfileWidget::updateSpectrumPlot(const QVector<double> &key, const QVector
     m_lastSpectrumKey    = key;     // cached for CSV export
     m_lastSpectrumValues = values;
     refreshSpectrumHeader();
-    refreshSpectrumStats(key, values);
-    ui->plot1->replot();
+    if (m_smoothCombo && m_smoothCombo->currentData().toInt() != 0) {
+        applySmoothAndReplot();
+    } else {
+        refreshSpectrumStats(key, values);
+        ui->plot1->replot();
+    }
     showAndRaiseFirstTime();
 }
 
@@ -1035,4 +1174,96 @@ void ProfileWidget::saveSpectrumCsv()
           << u"\n"_s;
     }
     // _focusGuard restores spectrum-window focus on scope exit.
+}
+
+// ── Line identification overlay ──────────────────────────────────────────────
+
+void ProfileWidget::loadLineIdFile()
+{
+    const QString path = QFileDialog::getOpenFileName(
+            this, u"Load spectral line list"_s, QString(),
+            u"CSV files (*.csv *.txt);;All files (*)"_s);
+    if (path.isEmpty()) return;
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, u"Load Lines"_s,
+                u"Could not open:\n%1"_s.arg(path));
+        return;
+    }
+
+    clearLineIdOverlay();
+
+    QTextStream in(&file);
+    while (!in.atEnd()) {
+        const QString line = in.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(u'#')) continue;
+        // Expected format: frequency,label (or frequency<tab>label)
+        const QStringList parts = line.contains(u',')
+                ? line.split(u',') : line.split(u'\t');
+        if (parts.size() < 2) continue;
+        bool ok = false;
+        const double freq = parts[0].trimmed().toDouble(&ok);
+        if (!ok || !std::isfinite(freq)) continue;
+        m_lineIds.append({ freq, parts[1].trimmed() });
+    }
+
+    if (m_lineIds.isEmpty()) {
+        QMessageBox::information(this, u"Load Lines"_s,
+                u"No valid lines found in the file.\n\n"
+                u"Expected format: frequency,label (one per line).\n"
+                u"Lines starting with # are ignored."_s);
+        return;
+    }
+
+    drawLineIdOverlay();
+    if (ui->plot1) ui->plot1->replot();
+}
+
+void ProfileWidget::drawLineIdOverlay()
+{
+    if (!ui->plot1 || m_lineIds.isEmpty()) return;
+
+    const QColor lineColor(u"#E8A840"_s);   // warm amber, distinct from data
+    const QColor textColor(u"#F0C060"_s);
+
+    for (const auto &sl : m_lineIds) {
+        // Vertical line spanning the full Y range
+        auto *marker = new QCPItemLine(ui->plot1);
+        marker->setPen(QPen(lineColor, 1.0, Qt::DashLine));
+        marker->start->setTypeX(QCPItemPosition::ptPlotCoords);
+        marker->start->setTypeY(QCPItemPosition::ptViewportRatio);
+        marker->start->setCoords(sl.frequency, 0.0);
+        marker->end->setTypeX(QCPItemPosition::ptPlotCoords);
+        marker->end->setTypeY(QCPItemPosition::ptViewportRatio);
+        marker->end->setCoords(sl.frequency, 1.0);
+        m_lineIdMarkers.append(marker);
+
+        // Label above the line
+        auto *text = new QCPItemText(ui->plot1);
+        text->setPositionAlignment(Qt::AlignBottom | Qt::AlignHCenter);
+        text->position->setTypeX(QCPItemPosition::ptPlotCoords);
+        text->position->setTypeY(QCPItemPosition::ptViewportRatio);
+        text->position->setCoords(sl.frequency, 0.02);
+        text->setText(sl.label);
+        text->setColor(textColor);
+        QFont f;
+        f.setPixelSize(9);
+        text->setFont(f);
+        text->setRotation(-90);
+        m_lineIdLabels.append(text);
+    }
+}
+
+void ProfileWidget::clearLineIdOverlay()
+{
+    if (ui->plot1) {
+        for (auto *m : m_lineIdMarkers) ui->plot1->removeItem(m);
+        for (auto *t : m_lineIdLabels)  ui->plot1->removeItem(t);
+        if (!m_lineIdMarkers.isEmpty() || !m_lineIdLabels.isEmpty())
+            ui->plot1->replot();
+    }
+    m_lineIdMarkers.clear();
+    m_lineIdLabels.clear();
+    m_lineIds.clear();
 }

@@ -67,4 +67,7 @@ async def open_dataset(
         crval=geometry["crval"],
         crpix=geometry["crpix"],
         cdelt=geometry["cdelt"],
+        beam_major=geometry.get("beam_major"),
+        beam_minor=geometry.get("beam_minor"),
+        beam_pa=geometry.get("beam_pa"),
     )

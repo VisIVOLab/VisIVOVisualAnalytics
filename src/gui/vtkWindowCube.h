@@ -153,6 +153,10 @@ public:
     /// Set whether plots (PV Diagram, spectra) should use a dark background.
     /// Called once by MainWindow after construction based on Settings::getPlotTheme().
     void setDarkPlots(bool dark) { m_darkPlots = dark; }
+    /// Provide beam metadata (BMAJ/BMIN in degrees, BPA in degrees E of N).
+    /// Call after construction; the beam ellipse is drawn in the 2D slice
+    /// renderer's bottom-left corner. Pass NaN major to hide the indicator.
+    void setBeamInfo(double majorDeg, double minorDeg, double paDeg);
 
 private slots:
     void resetCameraFront();
@@ -397,6 +401,14 @@ private:
     /// screen (the controller pushes the first result). Stays enabled.
     QPointer<QAction> m_actExportMomentFits;
     QPointer<QAction> m_actChannelMaps;
+
+    // Beam ellipse overlay (synthesised beam indicator in the 2D slice view).
+    // Set via setBeamInfo() after construction; drawn as a filled ellipse in
+    // the bottom-left corner of the slice renderer.
+    double m_beamMajorDeg{ std::numeric_limits<double>::quiet_NaN() };
+    double m_beamMinorDeg{ std::numeric_limits<double>::quiet_NaN() };
+    double m_beamPaDeg{ 0.0 };
+    vtkSmartPointer<vtkActor> m_beamActor;
     QPointer<QAction> actionLoadCatalogueOverlay;
     QPointer<QAction> actionShowCatalogueOverlay;
     QPointer<QAction> actionShowCatalogueLabels;

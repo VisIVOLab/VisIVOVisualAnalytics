@@ -5265,6 +5265,87 @@ void vtkWindowCube::clearNoiseRegionPreview()
     }
 }
 
+// ── Beam ellipse indicator ───────────────────────────────────────────────────
+
+void vtkWindowCube::setBeamInfo(double majorDeg, double minorDeg, double paDeg)
+{
+    m_beamMajorDeg = majorDeg;
+    m_beamMinorDeg = minorDeg;
+    m_beamPaDeg    = paDeg;
+
+    if (!std::isfinite(majorDeg) || !std::isfinite(minorDeg)
+        || majorDeg <= 0.0 || minorDeg <= 0.0) {
+        if (m_beamActor) m_beamActor->VisibilityOff();
+        return;
+    }
+
+    // Convert beam size from degrees to pixels using CDELT1 (deg/pixel).
+    // BMAJ/BMIN are the FULL width at half max; the ellipse is drawn at that
+    // diameter (not semi-axis).
+    const double cdelt = std::abs(this->remoteDatasetCdelt[0]);
+    if (cdelt <= 0.0) return;
+    const double majPx = majorDeg / cdelt;
+    const double minPx = minorDeg / cdelt;
+
+    // Build an ellipse from parametric points. 64 sides is smooth enough
+    // at any zoom level.
+    const int nSides = 64;
+    const double paRad = paDeg * M_PI / 180.0;
+
+    vtkNew<vtkPoints> points;
+    points->SetNumberOfPoints(nSides);
+    vtkNew<vtkCellArray> poly;
+    poly->InsertNextCell(nSides);
+    for (int i = 0; i < nSides; ++i) {
+        const double theta = 2.0 * M_PI * i / nSides;
+        // Ellipse in local frame (semi-axes = half FWHM)
+        const double lx = (minPx / 2.0) * std::cos(theta);
+        const double ly = (majPx / 2.0) * std::sin(theta);
+        // Rotate by PA (north through east = CCW in image coords)
+        const double rx = lx * std::cos(paRad) - ly * std::sin(paRad);
+        const double ry = lx * std::sin(paRad) + ly * std::cos(paRad);
+        points->SetPoint(i, rx, ry, 0.0);
+        poly->InsertCellPoint(i);
+    }
+
+    vtkNew<vtkPolyData> ellipseData;
+    ellipseData->SetPoints(points);
+    ellipseData->SetPolys(poly);
+
+    vtkNew<vtkPolyDataMapper> mapper;
+    mapper->SetInputData(ellipseData);
+
+    if (!m_beamActor) {
+        m_beamActor = vtkSmartPointer<vtkActor>::New();
+    }
+    m_beamActor->SetMapper(mapper);
+    m_beamActor->GetProperty()->SetColor(1.0, 1.0, 1.0);
+    m_beamActor->GetProperty()->SetOpacity(0.6);
+    m_beamActor->GetProperty()->SetRepresentationToSurface();
+    m_beamActor->GetProperty()->EdgeVisibilityOn();
+    m_beamActor->GetProperty()->SetEdgeColor(1.0, 1.0, 1.0);
+
+    // Position: bottom-left corner of the slice image, offset by the beam
+    // radius so the ellipse sits just inside the data area.
+    const double offsetX = majPx / 2.0 + 5.0;
+    const double offsetY = majPx / 2.0 + 5.0;
+    m_beamActor->SetPosition(offsetX, offsetY, 0.0);
+    m_beamActor->VisibilityOn();
+
+    // Add to the 2D slice renderer if not already added.
+    auto *ren = ui->vtkImage->renderWindow()
+                        ? ui->vtkImage->renderWindow()->GetRenderers()->GetFirstRenderer()
+                        : nullptr;
+    if (ren && !ren->HasViewProp(m_beamActor)) {
+        ren->AddActor(m_beamActor);
+    }
+    if (ui->vtkImage->renderWindow()) {
+        ui->vtkImage->renderWindow()->Render();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 void vtkWindowCube::clearRegion()
 {
     this->regionValid = false;

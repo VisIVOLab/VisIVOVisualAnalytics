@@ -5,6 +5,14 @@ Astronomy and tooling vocabulary mixed; see also the cited pages for
 deeper explanations.
 
 ```{glossary}
+Beam (synthesised beam)
+  The angular resolution element of a radio interferometer, described by
+  the FITS header keywords `BMAJ` (major axis), `BMIN` (minor axis), and
+  `BPA` (position angle), all in degrees. VisIVO draws a filled
+  semi-transparent ellipse in the bottom-left corner of the 2-D slice
+  view when these keywords are present. See
+  [Cube viewer — Beam indicator](cube-viewer#beam-indicator).
+
 BUNIT
   FITS header keyword carrying the brightness / pixel-value unit (e.g.
   `Jy/beam`, `K`, `counts`). All region statistics and moment maps
@@ -62,6 +70,12 @@ Isosurface
   threshold. Useful to highlight dense clumps, jets, shells. Extracted
   server-side with `vtkFlyingEdges3D`.
 
+Line identification (spectral-line overlay)
+  Overlay of expected spectral-line positions on the spectrum plot.
+  Loaded from a two-column CSV file (`frequency,label`); lines are drawn
+  as vertical dashed amber markers with rotated labels. See
+  [Cube viewer — Line identification overlay](cube-viewer#line-identification-overlay).
+
 LRU cache
   *Least Recently Used* — eviction policy of the backend's
   `PRODUCT_CACHE`. Compute results (moments, isosurfaces, line-width
@@ -111,6 +125,13 @@ SNR
   *Signal-to-Noise Ratio*. Computed per pixel as `peak / σ` (with σ from
   MAD). VisIVO uses an SNR cutoff to skip background pixels in the
   line-width Gauss fit.
+
+Spectral smoothing
+  Display-only 1-D convolution applied to the spectrum plot in the
+  *Spectral Profile* window. Available kernels: Hanning, Boxcar (3/5/7
+  channels), Gaussian (σ=1/2 channels). The smoothing is NaN-safe and
+  affects the stats bar but not CSV export. See
+  [Cube viewer — Spectral smoothing](cube-viewer#spectral-smoothing).
 
 Spectral axis
   Third FITS axis carrying frequency / velocity / wavelength information.

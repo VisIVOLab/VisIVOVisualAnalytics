@@ -282,6 +282,9 @@ class ScientificFitsDataset:
             # Computed via astropy WCS pixel_to_world, bypassing CDELT limitations.
             "wcs_ref_sky_00":   self._wcs_ref_pixel_sky(0.0,   0.0),
             "wcs_ref_sky_0100": self._wcs_ref_pixel_sky(0.0, 100.0),
+            "beam_major": self.beam.major,
+            "beam_minor": self.beam.minor,
+            "beam_pa": self.beam.pa,
         }
 
     def cube_numpy_spectral_fits_axis(self) -> int:

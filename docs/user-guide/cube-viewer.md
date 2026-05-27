@@ -187,6 +187,51 @@ and raises the *Spectral Profile* window automatically.
     documenting and parses straight into pandas / astropy / TOPCAT.
 ```
 
+#### Spectral smoothing
+
+The **Smooth:** combo box in the spectrum header lets you apply a 1-D
+convolution kernel to the displayed profile without altering the
+underlying data. Available kernels:
+
+- **None** — raw spectrum (default).
+- **Hanning** — three-point [0.25, 0.5, 0.25] smoothing; good for
+  suppressing Gibbs ringing.
+- **Boxcar 3 / 5 / 7** — simple running average over 3, 5, or 7
+  channels.
+- **Gaussian σ=1 / σ=2** — Gaussian convolution with standard deviation
+  1 or 2 channels.
+
+The kernel is **NaN-safe**: channels flagged as NaN are excluded from
+the convolution so they don't propagate into neighbouring values. The
+stats bar (Min, Max, Mean, RMS, ∫) is recomputed on the smoothed data.
+Smoothing is also active during **live probe hover**, so you can compare
+kernels in real time as you move across the slice.
+
+```{note}
+Smoothing is **display-only**. *Save spectrum as CSV…* always exports
+the raw (unsmoothed) data so downstream analysis tools receive the
+original channel values.
+```
+
+#### Line identification overlay
+
+The **Load Lines…** button in the spectrum header lets you overlay
+expected spectral-line positions on the plot:
+
+1. Click **Load Lines…** and select a CSV (or tab-separated) text file
+   with two columns: `frequency,label` (e.g. `115.271,CO(1-0)`). Lines
+   starting with `#` are ignored.
+2. Each entry is drawn as a **vertical dashed amber line** at the given
+   frequency, with a **rotated label** alongside it.
+3. Click **Clear Lines** to remove all markers.
+
+```{note}
+Frequencies in the file must be in the **same unit as the plot's X
+axis**. If the spectrum is displayed in velocity, convert your rest
+frequencies to velocity first (or switch the cube's spectral axis to
+frequency). No automatic unit conversion is performed.
+```
+
 **Why it matters scientifically:** moment maps and region statistics
 average away the per-channel detail. The single-pixel spectrum is what
 you need to identify line shape (Gaussian vs multi-peak vs absorption),
@@ -312,6 +357,26 @@ These are all explained on a dedicated page:
   spatial reference when rotating the camera.
 - *Tools → Load Catalogue Overlay* lets you overlay sources from a CSV /
   VOTable on the slice; see [Catalogues](catalogues-hips).
+
+### Beam indicator
+
+When the FITS header contains `BMAJ` and `BMIN` (and optionally `BPA`),
+the 2-D slice view draws a **filled white semi-transparent ellipse** in
+the bottom-left corner representing the synthesised beam. The ellipse is
+sized in pixels using the angular beam axes (`BMAJ`, `BMIN` in degrees)
+divided by `|CDELT1|`, so it scales correctly with the image pixel scale.
+`BPA` (beam position angle, degrees) controls the orientation.
+
+If `BMAJ` or `BMIN` are absent from the header (e.g. single-dish data
+without a restoring beam), the ellipse is hidden automatically — no
+action needed.
+
+```{tip}
+The beam indicator helps you judge whether spatial structures in the
+slice are resolved. Any feature whose angular size is comparable to the
+beam ellipse is only marginally resolved — treat its morphology with
+caution.
+```
 
 ## Saving and exporting
 

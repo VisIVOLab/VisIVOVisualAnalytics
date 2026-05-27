@@ -62,6 +62,9 @@ class OpenDatasetResponse(BaseModel):
     crval: list[float] = [0.0, 0.0, 0.0]
     crpix: list[float] = [1.0, 1.0, 1.0]
     cdelt: list[float] = [1.0, 1.0, 1.0]
+    beam_major: float | None = None
+    beam_minor: float | None = None
+    beam_pa: float | None = None
 
 
 class MomentProductRequest(BaseModel):
