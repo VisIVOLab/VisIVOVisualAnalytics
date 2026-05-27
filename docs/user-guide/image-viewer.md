@@ -45,10 +45,19 @@ disk.
 
 - **Show WCS Axes** in the *View* menu paints ticks along the image axes
   according to its WCS metadata.
-- **WCS Format** toggle: sexagesimal (HMS / DMS) or decimal degrees.
-- Frame switch (when applicable): J2000 / FK5, Galactic (l, b), or Ecliptic.
-  Conversions go through `wcscon()` from libwcs. The current frame label is
-  shown in the bottom status bar.
+- **Coordinate format** — a **Sexagesimal | Decimal** segmented toggle in
+  the sidebar's *Tools → WCS Display* card.
+- **Coordinate frame** — a **Galactic | FK5 | Ecliptic** segmented toggle
+  in the same card. Conversions go through `wcscon()` from libwcs. The
+  current frame label is shown in the bottom status bar.
+
+### Beam indicator
+
+When the FITS header contains `BMAJ` and `BMIN` (and optionally `BPA`),
+a filled semi-transparent white ellipse is drawn in the bottom-left
+corner of the image. The ellipse is sized in pixels using the angular
+beam axes divided by `|CDELT1|`, and rotated by `BPA`. If the beam
+keywords are absent the indicator is hidden automatically.
 
 If the WCS metadata is partial or invalid the backend sanitises it and the
 **WCS** badge in the status bar turns yellow with a tooltip listing what
@@ -56,13 +65,15 @@ was changed.
 
 ## Color map & contrast
 
-The *Display* sidebar exposes:
+The *Layer Settings* sidebar exposes:
 
-- **Color map** combo (Inferno, Viridis, Magma, Plasma, Cividis, …).
-- **Range** — fixed (min/max), percentile (e.g. 1–99 %), or full data
-  range. Click the range button after each LUT change to recompute.
-- **Brightness / contrast** sliders for fine tuning without changing the
-  underlying data.
+- **Color map** combo (Inferno, Viridis, Magma, Plasma, Cividis, …) with
+  gradient preview icons.
+- **Scale** — a **Linear | Log** segmented toggle (same pill-style
+  control used throughout the cube viewer). Log scale compresses the
+  dynamic range and is useful for images spanning several orders of
+  magnitude (e.g. Hα narrowband, X-ray mosaics).
+- **Layer opacity** slider for blending when multiple layers are stacked.
 
 For more precise control open the *2-D LUT editor* (`Advanced…` button) —
 a non-modal QCustomPlot editor where you can drag the transfer-function
@@ -81,6 +92,36 @@ viewer's 2-D dock:
 
 The detailed semantics are documented in
 [Regions, PV, noise](region-pv-noise).
+
+## Contour overlay
+
+Iso-contour lines can be drawn on top of the image from two sources:
+
+- **Self contours** — computed from the image's own pixel values.
+  Toggle **Show Contours** in the *Tools* sidebar (or *Tools* menu),
+  then adjust **Level** (number of contour lines), **Lower** and
+  **Upper** (value range). The pipeline uses `vtkFlyingEdges2D`, the
+  same filter as the cube viewer's slice contours.
+- **External FITS contours** — *Tools → Load Contour from FITS…*
+  lets you overlay contours from a different FITS file (e.g. a radio
+  moment-0 map on an optical image). Contour levels are entered
+  manually. Multiple external layers can be stacked.
+- **Clear All Contours** removes every contour layer.
+
+```{tip}
+The cube viewer's *Tools → Export Moment Map as FITS…* writes the
+moment into the Workspace Exports directory. You can then load that
+FITS here as an external contour overlay — the most common radio +
+optical comparison workflow.
+```
+
+## Saving and exporting
+
+- **Export** in the top-right toolbar saves a PNG of the current view.
+- **Tools → Export to Workspace as FITS…** copies the dataset's FITS
+  file into the persistent Workspace Exports directory. From there you
+  can download it to your computer, re-open it in VisIVO, or delete it
+  — all via the **Workspace Exports** panel in the Data Hub.
 
 ## Catalogue overlay
 

@@ -1518,12 +1518,30 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     QObject::connect(ui->btnLutEdit, &QPushButton::clicked, this,
                      &vtkWindowImage::showLUTCustomizer);
 
-    // Scale Radio Buttons
-    auto group = new QButtonGroup(this);
-    group->addButton(ui->radioLinear);
-    group->addButton(ui->radioLog);
-    QObject::connect(group, &QButtonGroup::buttonClicked, this,
-                     &vtkWindowImage::changeCurrentColorScale);
+    // Scale: SegmentedToggle replaces the old radio buttons for visual
+    // consistency with the cube viewer's mode selectors.
+    ui->radioLinear->hide();
+    ui->radioLog->hide();
+    auto *scaleToggle = new SegmentedToggle(ui->frameLayerControls);
+    scaleToggle->addItem(u"Linear"_s, u"Linear colour scale"_s);
+    scaleToggle->addItem(u"Log"_s,    u"Logarithmic colour scale"_s);
+    scaleToggle->setCurrentIndex(ui->radioLog->isChecked() ? 1 : 0);
+    // Insert right where the radios were (after the LUT combo row).
+    if (auto *fl = qobject_cast<QVBoxLayout *>(ui->frameLayerControls->layout())) {
+        const int radioIdx = fl->indexOf(ui->radioLinear);
+        if (radioIdx >= 0)
+            fl->insertWidget(radioIdx, scaleToggle);
+        else
+            fl->addWidget(scaleToggle);
+    }
+    QObject::connect(scaleToggle, &SegmentedToggle::currentIndexChanged, this,
+                     [this](int idx) {
+                         const QSignalBlocker bL(ui->radioLinear);
+                         const QSignalBlocker bG(ui->radioLog);
+                         ui->radioLinear->setChecked(idx == 0);
+                         ui->radioLog->setChecked(idx == 1);
+                         this->changeCurrentColorScale();
+                     });
 
     // Layer Opacity — label + tooltip
     ui->sliderOpacity->setToolTip(u"Layer opacity (0 = transparent, 100 = opaque)"_s);

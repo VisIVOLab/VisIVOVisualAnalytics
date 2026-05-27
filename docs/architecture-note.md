@@ -528,6 +528,21 @@ with a file-name + range title bar.
 
 ---
 
+## Image viewer (`vtkWindowImage`) — recent additions
+
+Several features were ported from (or inspired by) the cube viewer:
+
+| Feature | Implementation | Notes |
+|---------|---------------|-------|
+| **Beam indicator** | `setBeamInfo()` — same parametric ellipse as the cube viewer, added to the 2-D renderer. `BMAJ`/`BMIN` come from `OpenDatasetResponse` (wired in `MainWindow`). | Hidden when beam keywords are absent. |
+| **Region ExclusiveOptional** | `QActionGroup::ExclusionPolicy::ExclusiveOptional` on the four region-shape actions. | Same fix as the cube viewer — prevents multiple shapes checked simultaneously. |
+| **WCS SegmentedToggle** | Coordinate format (`Sexagesimal \| Decimal`) and coordinate frame (`Galactic \| FK5 \| Ecliptic`) replaced from individual `QToolButton`s to `SegmentedToggle` pills. | Toggle writes into the original `QAction`s via `trigger()` for backward compat. |
+| **Linear / Log scale** | Old `QRadioButton` pair replaced with a `SegmentedToggle` (`Linear \| Log`). The hidden radios remain the canonical state holder; the toggle syncs into them. | Same pattern as cutting-plane Show Contours in the cube sidebar. |
+| **Contour overlay** | `vtkFlyingEdges2D` pipeline (same as the cube's slice contours) connected to the master layer. Level / Lower / Upper controls in the sidebar. External FITS contours via `vtkContourFilter` + `vtkFITSReader`. | `setupContourPipeline()` is re-called in `applyRemoteMasterLayer()` so it connects to the real image data, not the placeholder. |
+| **FITS export → Workspace** | `POST /v1/exports/copy_dataset` copies the source FITS into the Workspace Exports dir. `BackendClient::copyDatasetToWorkspace()` on the client side. | Simpler than the cube's crop/moment flow — just a file copy with collision-safe basename. |
+
+---
+
 ## Catalogue 3D viewer (`vtkWindowCatalogue3D`)
 
 Renders a remote CSV catalogue as a 3-D point cloud in Cartesian (RA/Dec/distance) space.
