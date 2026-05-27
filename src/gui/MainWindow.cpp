@@ -53,6 +53,8 @@
 
 #include "app/DiagnosticsManager.h"
 
+#include <vtkImageData.h>
+
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -975,6 +977,17 @@ void MainWindow::doOpenDataPath(const QString &path)
             QObject::connect(cubeWin, &vtkWindowCube::workspaceExportsChanged,
                              this->dataHub, &DataHubWidget::refreshWorkspaceExports);
         }
+        // Cube → Image contour relay: when the cube viewer emits
+        // contourDataReady, find the first open image viewer and forward.
+        QObject::connect(cubeWin, &vtkWindowCube::contourDataReady,
+                         this, [](const QString &label, vtkImageData *data) {
+            for (QWidget *w : QApplication::topLevelWidgets()) {
+                if (auto *img = qobject_cast<vtkWindowImage *>(w)) {
+                    img->overlayExternalContourData(label, data);
+                    return;
+                }
+            }
+        });
         win = cubeWin;
     } else {
         QMessageBox::information(

@@ -116,6 +116,8 @@ public:
      */
     void setLayerDisplayName(int row, const QString &name);
 
+    vtkImageSlice *getLayerActor(int index) const;
+
     // Basic functionality:
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
 

@@ -2643,6 +2643,24 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(m_actExportMomentFits, &QAction::triggered,
                      this, &vtkWindowCube::exportMomentMapAsFits);
 
+    // Send current slice / moment to an open image viewer as contour overlay
+    auto *actSendContour = ui->menuTools->addAction(u"Send Slice to Image Viewer…"_s);
+    actSendContour->setToolTip(
+            u"Overlay the current 2-D slice as contours on any open image viewer."_s);
+    QObject::connect(actSendContour, &QAction::triggered, this, [this]() {
+        auto *output = this->remoteSliceDisplaySource
+                ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
+                : nullptr;
+        if (!output || output->GetNumberOfPoints() == 0) {
+            statusBar()->showMessage(u"No 2-D slice data available."_s, 2000);
+            return;
+        }
+        const int ch = ui->sliderSlice->value();
+        const QString label = QStringLiteral("Slice CH %1 from %2")
+                .arg(ch).arg(QFileInfo(this->filepath).fileName());
+        emit contourDataReady(label, output);
+    });
+
     // REGIONS group
     ui->menuTools->addSeparator();
     this->actionBoxRegion     = ui->menuTools->addAction(u"Box Region Analysis"_s);

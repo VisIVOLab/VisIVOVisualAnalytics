@@ -81,6 +81,11 @@ public:
     /// Pass NaN major to hide. Call after construction.
     void setBeamInfo(double majorDeg, double minorDeg, double paDeg);
 
+    /// Overlay contours from external 2-D data (e.g. a cube viewer's
+    /// moment map or current slice). The data is not WCS-reprojected —
+    /// it is assumed to share the same pixel grid.
+    void overlayExternalContourData(const QString &label, vtkImageData *data);
+
     // ── VLKB layer support ────────────────────────────────────────────────────
     /// Asynchronously open @p backendPath on the backend and add its image data
     /// as a new layer in this viewer.  The layer is labelled @p displayName
@@ -127,6 +132,13 @@ public:
         Circle,
         Polygon,
         Annulus,
+    };
+
+    enum class MeasurementMode
+    {
+        None,
+        Ruler,
+        Angle,
     };
 
 private:
@@ -389,6 +401,66 @@ private:
     QString formatRemoteOverlayCoordinate(int axis, double value) const;
     QString remoteOverlayAxisTitle(int axis) const;
     QString formatDegreeCoordinate(double value) const;
+
+    // ── Measurement tools (Ruler / Angle) ────────────────────────────────────
+    MeasurementMode m_measMode{ MeasurementMode::None };
+    std::vector<std::array<int, 2>> m_measPoints;
+    vtkNew<vtkLineSource> m_measLine1;
+    vtkNew<vtkLineSource> m_measLine2;
+    vtkNew<vtkActor> m_measLineActor1;
+    vtkNew<vtkActor> m_measLineActor2;
+    vtkSmartPointer<vtkTextActor> m_measLabelActor;
+    QPointer<QAction> m_actRuler;
+    QPointer<QAction> m_actAngle;
+    QPointer<QAction> m_actClearMeas;
+    void setMeasurementMode(MeasurementMode mode);
+    void addMeasurementPoint(int voxelX, int voxelY);
+    void refreshMeasurementOverlay();
+    void clearMeasurement();
+    double angularSeparationDeg(double vx1, double vy1, double vx2, double vy2) const;
+
+    // ── Histogram panel ──────────────────────────────────────────────────────
+    QPointer<QWidget> m_histogramWindow;
+    void showHistogramPanel();
+
+    // ── Annotations ──────────────────────────────────────────────────────────
+    struct Annotation {
+        enum Type { Text, Arrow };
+        Type type{ Text };
+        QString text;
+        double worldX{ 0 };
+        double worldY{ 0 };
+        double arrowEndX{ 0 };
+        double arrowEndY{ 0 };
+    };
+    enum class AnnotPlaceMode { None, Text, ArrowTip, ArrowLabel };
+    AnnotPlaceMode m_annotPlaceMode{ AnnotPlaceMode::None };
+    QString m_pendingAnnotText;
+    double m_pendingArrowTipX{ 0 };
+    double m_pendingArrowTipY{ 0 };
+    vtkNew<vtkPolyData> m_annotPreviewData;
+    vtkNew<vtkActor> m_annotPreviewActor;
+    void updateAnnotationPreview(double worldX, double worldY);
+    std::vector<Annotation> m_annotations;
+    std::vector<vtkSmartPointer<vtkTextActor>> m_annotTextActors;
+    std::vector<vtkSmartPointer<vtkActor>> m_annotArrowActors;
+    void addTextAnnotation();
+    void addArrowAnnotation();
+    void placeAnnotationAt(double worldX, double worldY);
+    void cancelAnnotationPlacement();
+    void clearAnnotations();
+    void refreshAnnotationOverlay();
+    void saveAnnotationsJson();
+    void loadAnnotationsJson();
+    QString annotationsJsonPath() const;
+
+    // ── Blink / Compare ──────────────────────────────────────────────────────
+    QTimer m_blinkTimer;
+    bool m_blinkState{ false };
+    int m_blinkIntervalMs{ 250 };
+    QPointer<QAction> m_actBlink;
+    void toggleBlink(bool active);
+    void blinkTick();
 };
 
 #endif

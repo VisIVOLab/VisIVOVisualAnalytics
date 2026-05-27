@@ -15,6 +15,7 @@
 #include "LayerListModel.h"
 #include "ProfileWidget.h"
 #include "RemoteFileBrowserDialog.h"
+#include "qcustomplot.h"
 #include "SidebarPanel.h"
 #include "theme/SegmentedToggle.h"
 #include "app/ThumbnailCache.h"
@@ -30,6 +31,7 @@
 #include <vtkCoordinate.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkImageData.h>
+#include <vtkImageSlice.h>
 #include <vtkImageStack.h>
 #include <vtkInteractorStyleImage.h>
 #include <vtkInteractorStyleUser.h>
@@ -66,6 +68,7 @@
 #include <QPixmap>
 #include <QDockWidget>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QDoubleValidator>
@@ -75,6 +78,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QItemSelectionModel>
@@ -84,6 +88,7 @@
 #include <QSignalBlocker>
 #include <QPlainTextEdit>
 #include <QDialog>
+#include <QSlider>
 #include <QStringList>
 #include <QToolBar>
 #include <QToolButton>
@@ -1122,6 +1127,47 @@ static ImageLayerLoadResult fetchVlkbAdditionalLayer(const QString &backendUrl,
 }
 #endif  // dead code block end
 
+void buildArrowGeometry(vtkPoints *points, vtkCellArray *lines,
+                        double x1, double y1, double x2, double y2)
+{
+    points->Reset();
+    lines->Reset();
+
+    // Shaft: from label pos (x1,y1) to tip (x2,y2)
+    points->InsertNextPoint(x1, y1, 0.0); // 0
+    points->InsertNextPoint(x2, y2, 0.0); // 1
+    lines->InsertNextCell(2);
+    lines->InsertCellPoint(0);
+    lines->InsertCellPoint(1);
+
+    // Arrowhead at (x2, y2) — fixed size, never larger than 30% of shaft
+    const double dx = x2 - x1;
+    const double dy = y2 - y1;
+    const double len = std::sqrt(dx * dx + dy * dy);
+    if (len > 1e-6) {
+        constexpr double fixedHeadLen = 8.0;
+        const double headLen = std::min(fixedHeadLen, len * 0.3);
+        const double ndx = dx / len;
+        const double ndy = dy / len;
+        const double px = -ndy;
+        const double py = ndx;
+        const double headWidth = headLen * 0.4;
+        const double bx = x2 - ndx * headLen;
+        const double by = y2 - ndy * headLen;
+
+        points->InsertNextPoint(bx + px * headWidth, by + py * headWidth, 0.0); // 2
+        points->InsertNextPoint(bx - px * headWidth, by - py * headWidth, 0.0); // 3
+
+        lines->InsertNextCell(2);
+        lines->InsertCellPoint(1);
+        lines->InsertCellPoint(2);
+
+        lines->InsertNextCell(2);
+        lines->InsertCellPoint(1);
+        lines->InsertCellPoint(3);
+    }
+}
+
 QString formatImageBoundsSummary(vtkImageData *imageData)
 {
     if (!imageData) {
@@ -1460,6 +1506,44 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     QObject::connect(actClearContour, &QAction::triggered, this,
                      &vtkWindowImage::clearAllContours);
 
+    // ── Measurement tools ─────────────────────────────────────────────────
+    ui->menuTools->addSeparator();
+    m_actRuler = ui->menuTools->addAction(u"Ruler (Distance)"_s);
+    m_actRuler->setCheckable(true);
+    m_actAngle = ui->menuTools->addAction(u"Angle (3 Points)"_s);
+    m_actAngle->setCheckable(true);
+    m_actClearMeas = ui->menuTools->addAction(u"Clear Measurement"_s);
+
+    auto *measGroup = new QActionGroup(this);
+    measGroup->setExclusionPolicy(QActionGroup::ExclusionPolicy::ExclusiveOptional);
+    measGroup->addAction(m_actRuler);
+    measGroup->addAction(m_actAngle);
+    QObject::connect(m_actRuler, &QAction::toggled, this,
+                     [this](bool c) { setMeasurementMode(c ? MeasurementMode::Ruler : MeasurementMode::None); });
+    QObject::connect(m_actAngle, &QAction::toggled, this,
+                     [this](bool c) { setMeasurementMode(c ? MeasurementMode::Angle : MeasurementMode::None); });
+    QObject::connect(m_actClearMeas, &QAction::triggered, this,
+                     &vtkWindowImage::clearMeasurement);
+
+    // ── Histogram ─────────────────────────────────────────────────────────
+    ui->menuTools->addSeparator();
+    auto *actHistogram = ui->menuTools->addAction(u"Pixel Histogram…"_s);
+    QObject::connect(actHistogram, &QAction::triggered, this,
+                     &vtkWindowImage::showHistogramPanel);
+
+    // ── Annotations ──────────────────────────────────────────────────────
+    ui->menuTools->addSeparator();
+    auto *actAddText = ui->menuTools->addAction(u"Add Text Annotation…"_s);
+    auto *actAddArrow = ui->menuTools->addAction(u"Add Arrow Annotation…"_s);
+    auto *actClearAnnot = ui->menuTools->addAction(u"Clear Annotations"_s);
+    auto *actSaveAnnot = ui->menuTools->addAction(u"Save Annotations"_s);
+    auto *actLoadAnnot = ui->menuTools->addAction(u"Load Annotations"_s);
+    QObject::connect(actAddText, &QAction::triggered, this, &vtkWindowImage::addTextAnnotation);
+    QObject::connect(actAddArrow, &QAction::triggered, this, &vtkWindowImage::addArrowAnnotation);
+    QObject::connect(actClearAnnot, &QAction::triggered, this, &vtkWindowImage::clearAnnotations);
+    QObject::connect(actSaveAnnot, &QAction::triggered, this, &vtkWindowImage::saveAnnotationsJson);
+    QObject::connect(actLoadAnnot, &QAction::triggered, this, &vtkWindowImage::loadAnnotationsJson);
+
     // Setup Menu View
     this->actionShowWcsAxes = new QAction(u"Show WCS Axes"_s, this);
     this->actionShowWcsAxes->setCheckable(true);
@@ -1475,6 +1559,16 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
         this->setWcsOverlayVisible(checked);
         this->requestWcsOverlayRender();
     });
+
+    // ── Blink / Compare ─────────────────────────────────────────────────
+    ui->menuView->addSeparator();
+    m_actBlink = new QAction(u"Blink Layers"_s, this);
+    m_actBlink->setCheckable(true);
+    m_actBlink->setToolTip(u"Rapidly alternate between layers 0 and 1."_s);
+    ui->menuView->addAction(m_actBlink);
+    QObject::connect(m_actBlink, &QAction::toggled, this, &vtkWindowImage::toggleBlink);
+    m_blinkTimer.setInterval(m_blinkIntervalMs);
+    QObject::connect(&m_blinkTimer, &QTimer::timeout, this, &vtkWindowImage::blinkTick);
 
     // ── Diagnostics + Command palette (replicated across windows) ─────────
     ui->menuView->addSeparator();
@@ -1729,6 +1823,42 @@ void vtkWindowImage::setupRenderer()
     this->probeVerticalActor->GetProperty()->SetLineWidth(1.5);
     this->probeVerticalActor->VisibilityOff();
     ren->AddActor(this->probeVerticalActor);
+    // ── Measurement actors ─────────────────────────────────────────────────
+    {
+        const auto configureMeasActor = [&ren](vtkLineSource *line, vtkActor *actor) {
+            vtkNew<vtkPolyDataMapper> mapper;
+            mapper->SetInputConnection(line->GetOutputPort());
+            actor->SetMapper(mapper);
+            actor->GetProperty()->SetColor(1.0, 0.65, 0.0);
+            actor->GetProperty()->SetLineWidth(2.0);
+            actor->GetProperty()->SetLineStipplePattern(0xF0F0);
+            actor->VisibilityOff();
+            ren->AddActor(actor);
+        };
+        configureMeasActor(this->m_measLine1, this->m_measLineActor1);
+        configureMeasActor(this->m_measLine2, this->m_measLineActor2);
+
+        this->m_measLabelActor = vtkSmartPointer<vtkTextActor>::New();
+        this->m_measLabelActor->GetTextProperty()->SetColor(1.0, 0.85, 0.1);
+        this->m_measLabelActor->GetTextProperty()->SetFontSize(14);
+        this->m_measLabelActor->GetTextProperty()->SetBold(true);
+        this->m_measLabelActor->GetTextProperty()->SetShadow(true);
+        this->m_measLabelActor->VisibilityOff();
+        ren->AddViewProp(this->m_measLabelActor);
+    }
+
+    // ── Annotation placement preview actor ────────────────────────────────
+    {
+        vtkNew<vtkPolyDataMapper> mapper;
+        mapper->SetInputData(this->m_annotPreviewData);
+        this->m_annotPreviewActor->SetMapper(mapper);
+        this->m_annotPreviewActor->GetProperty()->SetColor(1.0, 1.0, 0.3);
+        this->m_annotPreviewActor->GetProperty()->SetLineWidth(2.0);
+        this->m_annotPreviewActor->GetProperty()->SetOpacity(0.7);
+        this->m_annotPreviewActor->VisibilityOff();
+        ren->AddActor(this->m_annotPreviewActor);
+    }
+
     vtkRenderer *renderer = ren;
     const auto configureRegionLineActor = [renderer](vtkLineSource *line, vtkActor *actor) {
         vtkNew<vtkPolyDataMapper> mapper;
@@ -1898,6 +2028,19 @@ void vtkWindowImage::mouseCallback()
             ui->vtk->renderWindow()->Render();
         }
     }
+
+    // Live arrow preview while placing an annotation
+    if (this->m_annotPlaceMode == AnnotPlaceMode::ArrowLabel) {
+        auto *ren = ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer();
+        if (ren) {
+            this->coordinate->SetValue(position[0], position[1]);
+            const double *wc = this->coordinate->GetComputedWorldValue(ren);
+            if (wc) {
+                this->updateAnnotationPreview(wc[0], wc[1]);
+                ui->vtk->renderWindow()->Render();
+            }
+        }
+    }
 }
 
 void vtkWindowImage::beginImageInteraction()
@@ -1931,6 +2074,42 @@ void vtkWindowImage::toggleProbeFreeze()
 
     const int *position = ui->vtk->renderWindow()->GetInteractor()->GetEventPosition();
     if (!position) {
+        return;
+    }
+
+    // ── Annotation placement click ────────────────────────────────────────
+    if (this->m_annotPlaceMode != AnnotPlaceMode::None) {
+        auto *annotRen = ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer();
+        if (annotRen) {
+            this->coordinate->SetValue(position[0], position[1]);
+            const double *wc = this->coordinate->GetComputedWorldValue(annotRen);
+            if (wc) {
+                this->placeAnnotationAt(wc[0], wc[1]);
+                ui->vtk->renderWindow()->Render();
+            }
+        }
+        return;
+    }
+
+    // ── Measurement mode click ──────────────────────────────────────────
+    if (this->m_measMode != MeasurementMode::None) {
+        auto *measRenderer = ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer();
+        auto *measImage = this->layers
+                ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
+        if (measRenderer && measImage) {
+            this->coordinate->SetValue(position[0], position[1]);
+            const double *wc = this->coordinate->GetComputedWorldValue(measRenderer);
+            if (wc) {
+                int ext[6]; double ori[3]; double sp[3];
+                measImage->GetExtent(ext);
+                measImage->GetOrigin(ori);
+                measImage->GetSpacing(sp);
+                const int vx = std::lround(ext[0] + (wc[0] - ori[0]) / sp[0]);
+                const int vy = std::lround(ext[2] + (wc[1] - ori[1]) / sp[1]);
+                if (vx >= ext[0] && vx <= ext[1] && vy >= ext[2] && vy <= ext[3])
+                    this->addMeasurementPoint(vx, vy);
+            }
+        }
         return;
     }
 
@@ -1992,6 +2171,11 @@ void vtkWindowImage::toggleProbeFreeze()
 
 void vtkWindowImage::finishRegionInteraction()
 {
+    if (this->m_annotPlaceMode != AnnotPlaceMode::None) {
+        this->cancelAnnotationPlacement();
+        return;
+    }
+
     if (this->isBusy() || this->regionMode == RegionMode::None || !this->regionDragging) {
         return;
     }
@@ -4424,6 +4608,41 @@ void vtkWindowImage::addExternalContours()
     ui->vtk->renderWindow()->Render();
 }
 
+void vtkWindowImage::overlayExternalContourData(const QString &label, vtkImageData *data)
+{
+    if (!data || data->GetNumberOfPoints() == 0) return;
+    auto *ren = ui->vtk->renderWindow()
+                ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer() : nullptr;
+    if (!ren) return;
+
+    double range[2];
+    data->GetScalarRange(range);
+    if (range[1] <= range[0]) return;
+
+    constexpr int nLevels = 8;
+    vtkNew<vtkFlyingEdges2D> contour;
+    contour->SetInputData(data);
+    contour->GenerateValues(nLevels, range[0] + (range[1] - range[0]) * 0.1,
+                            range[0] + (range[1] - range[0]) * 0.9);
+    contour->Update();
+
+    vtkNew<vtkPolyDataMapper> mapper;
+    mapper->SetInputConnection(contour->GetOutputPort());
+    mapper->ScalarVisibilityOff();
+
+    auto actor = vtkSmartPointer<vtkActor>::New();
+    actor->SetMapper(mapper);
+    actor->GetProperty()->SetColor(0.2, 1.0, 0.4);
+    actor->GetProperty()->SetLineWidth(1.5);
+    actor->VisibilityOn();
+
+    ren->AddActor(actor);
+    m_externalContourLayers.append({ label, actor });
+    statusBar()->showMessage(
+            QStringLiteral("Contour overlay from cube: %1").arg(label), 3000);
+    ui->vtk->renderWindow()->Render();
+}
+
 void vtkWindowImage::clearAllContours()
 {
     auto *ren = ui->vtk->renderWindow()
@@ -4582,6 +4801,24 @@ void vtkWindowImage::setupSidebar()
         toolsLayout->addWidget(card);
     }
 
+    // Card: Measurement Tools (Ruler / Angle)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Measurement"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actRuler,     card));
+        cl->addWidget(makeToolBtn(m_actAngle,     card));
+        cl->addWidget(makeToolBtn(m_actClearMeas, card));
+        toolsLayout->addWidget(card);
+    }
+
     // Card: Contours (same Level / Lower / Upper as the cube viewer)
     {
         auto *card = new QFrame(pageTools);
@@ -4690,6 +4927,122 @@ void vtkWindowImage::setupSidebar()
                                                     ui->actionEcliptic };
                              if (idx >= 0 && idx < 3 && !targets[idx]->isChecked())
                                  targets[idx]->trigger();
+                         });
+
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Histogram
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Histogram"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        auto *btn = new QToolButton(card);
+        btn->setText(u"Pixel Histogram…"_s);
+        btn->setStyleSheet(toolBtnStyle);
+        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btn, &QToolButton::clicked, this, &vtkWindowImage::showHistogramPanel);
+        cl->addWidget(btn);
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Annotations
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Annotations"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        auto *btnText = new QToolButton(card);
+        btnText->setText(u"Add Text…"_s);
+        btnText->setStyleSheet(toolBtnStyle);
+        btnText->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnText->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnText, &QToolButton::clicked, this, &vtkWindowImage::addTextAnnotation);
+        cl->addWidget(btnText);
+
+        auto *btnArrow = new QToolButton(card);
+        btnArrow->setText(u"Add Arrow…"_s);
+        btnArrow->setStyleSheet(toolBtnStyle);
+        btnArrow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnArrow->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnArrow, &QToolButton::clicked, this, &vtkWindowImage::addArrowAnnotation);
+        cl->addWidget(btnArrow);
+
+        auto *btnClear = new QToolButton(card);
+        btnClear->setText(u"Clear All"_s);
+        btnClear->setStyleSheet(toolBtnStyle);
+        btnClear->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnClear->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnClear, &QToolButton::clicked, this, &vtkWindowImage::clearAnnotations);
+        cl->addWidget(btnClear);
+
+        auto *rowIO = new QHBoxLayout;
+        rowIO->setSpacing(4);
+        auto *btnSave = new QToolButton(card);
+        btnSave->setText(u"Save"_s);
+        btnSave->setStyleSheet(toolBtnStyle);
+        btnSave->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnSave->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnSave, &QToolButton::clicked, this, &vtkWindowImage::saveAnnotationsJson);
+        rowIO->addWidget(btnSave);
+
+        auto *btnLoad = new QToolButton(card);
+        btnLoad->setText(u"Load"_s);
+        btnLoad->setStyleSheet(toolBtnStyle);
+        btnLoad->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnLoad->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnLoad, &QToolButton::clicked, this, &vtkWindowImage::loadAnnotationsJson);
+        rowIO->addWidget(btnLoad);
+
+        cl->addLayout(rowIO);
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Blink / Compare
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Blink / Compare"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actBlink, card));
+
+        auto *speedLbl = new QLabel(u"Speed"_s, card);
+        speedLbl->setStyleSheet(
+                QStringLiteral("QLabel { color: %1; font-size: 9px; "
+                               "font-weight: 600; margin-top: 2px; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        cl->addWidget(speedLbl);
+
+        auto *speedSlider = new QSlider(Qt::Horizontal, card);
+        speedSlider->setRange(50, 1000);
+        speedSlider->setValue(m_blinkIntervalMs);
+        speedSlider->setToolTip(u"Blink interval in ms (50–1000)"_s);
+        cl->addWidget(speedSlider);
+        QObject::connect(speedSlider, &QSlider::valueChanged, this,
+                         [this](int val) {
+                             m_blinkIntervalMs = val;
+                             if (m_blinkTimer.isActive())
+                                 m_blinkTimer.setInterval(val);
                          });
 
         toolsLayout->addWidget(card);
@@ -4861,6 +5214,619 @@ void vtkWindowImage::setupSidebar()
     this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
             u"Controls Sidebar"_s, this);
     ui->menuView->addAction(this->actionShowControlsSidebar);
+}
+
+// ── Measurement tools (Ruler / Angle) ────────────────────────────────────────
+
+void vtkWindowImage::setMeasurementMode(MeasurementMode mode)
+{
+    if (m_measMode == mode) return;
+
+    if (this->probeModeActive && ui->actionProfile->isChecked())
+        ui->actionProfile->setChecked(false);
+    if (this->regionMode != RegionMode::None) {
+        QAction *actions[] = { actionBoxRegion, actionCircleRegion,
+                               actionPolygonRegion, actionAnnulusRegion };
+        for (auto *a : actions) {
+            if (a && a->isChecked()) a->setChecked(false);
+        }
+    }
+
+    m_measMode = mode;
+    clearMeasurement();
+    if (mode == MeasurementMode::None) {
+        setInteractorStyleImage();
+        ui->vtk->setCursor(Qt::ArrowCursor);
+    } else {
+        setInteractorStyleRegion();
+        ui->vtk->setCursor(Qt::CrossCursor);
+    }
+}
+
+void vtkWindowImage::addMeasurementPoint(int voxelX, int voxelY)
+{
+    m_measPoints.push_back({ voxelX, voxelY });
+
+    const int needed = (m_measMode == MeasurementMode::Ruler) ? 2 : 3;
+    if (static_cast<int>(m_measPoints.size()) >= needed) {
+        refreshMeasurementOverlay();
+    } else {
+        if (m_measLabelActor) {
+            const QString hint = (m_measMode == MeasurementMode::Ruler)
+                    ? u"Click second point…"_s
+                    : QStringLiteral("Click point %1 of 3…").arg(m_measPoints.size() + 1);
+            m_measLabelActor->SetInput(hint.toStdString().c_str());
+            m_measLabelActor->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
+            m_measLabelActor->SetPosition(0.5, 0.96);
+            m_measLabelActor->VisibilityOn();
+        }
+    }
+    if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
+}
+
+void vtkWindowImage::refreshMeasurementOverlay()
+{
+    if (m_measMode == MeasurementMode::Ruler && m_measPoints.size() >= 2) {
+        const auto &a = m_measPoints[0];
+        const auto &b = m_measPoints[1];
+        m_measLine1->SetPoint1(a[0], a[1], 0.0);
+        m_measLine1->SetPoint2(b[0], b[1], 0.0);
+        m_measLineActor1->VisibilityOn();
+        m_measLineActor2->VisibilityOff();
+
+        const double dx = b[0] - a[0];
+        const double dy = b[1] - a[1];
+        const double pixDist = std::sqrt(dx * dx + dy * dy);
+        QString label = QStringLiteral("%1 px").arg(pixDist, 0, 'f', 1);
+
+        const double angDeg = angularSeparationDeg(a[0], a[1], b[0], b[1]);
+        if (angDeg >= 0.0) {
+            const double arcsec = angDeg * 3600.0;
+            if (arcsec < 60.0)
+                label += QStringLiteral("  (%1\")").arg(arcsec, 0, 'f', 2);
+            else if (arcsec < 3600.0)
+                label += QStringLiteral("  (%1')").arg(arcsec / 60.0, 0, 'f', 2);
+            else
+                label += QStringLiteral("  (%1°)").arg(angDeg, 0, 'f', 4);
+        }
+
+        if (m_measLabelActor) {
+            m_measLabelActor->SetInput(label.toStdString().c_str());
+            m_measLabelActor->GetPositionCoordinate()->SetCoordinateSystemToWorld();
+            m_measLabelActor->SetPosition((a[0] + b[0]) / 2.0 + 3.0,
+                                           (a[1] + b[1]) / 2.0 + 3.0);
+            m_measLabelActor->VisibilityOn();
+        }
+    } else if (m_measMode == MeasurementMode::Angle && m_measPoints.size() >= 3) {
+        const auto &a = m_measPoints[0];
+        const auto &b = m_measPoints[1];
+        const auto &c = m_measPoints[2];
+        m_measLine1->SetPoint1(a[0], a[1], 0.0);
+        m_measLine1->SetPoint2(b[0], b[1], 0.0);
+        m_measLine2->SetPoint1(b[0], b[1], 0.0);
+        m_measLine2->SetPoint2(c[0], c[1], 0.0);
+        m_measLineActor1->VisibilityOn();
+        m_measLineActor2->VisibilityOn();
+
+        const double bax = a[0] - b[0], bay = a[1] - b[1];
+        const double bcx = c[0] - b[0], bcy = c[1] - b[1];
+        const double dot = bax * bcx + bay * bcy;
+        const double magBA = std::sqrt(bax * bax + bay * bay);
+        const double magBC = std::sqrt(bcx * bcx + bcy * bcy);
+        double angleDeg = 0.0;
+        if (magBA > 0.0 && magBC > 0.0)
+            angleDeg = std::acos(std::clamp(dot / (magBA * magBC), -1.0, 1.0)) * 180.0 / M_PI;
+
+        const QString label = QStringLiteral("%1°").arg(angleDeg, 0, 'f', 2);
+        if (m_measLabelActor) {
+            m_measLabelActor->SetInput(label.toStdString().c_str());
+            m_measLabelActor->GetPositionCoordinate()->SetCoordinateSystemToWorld();
+            m_measLabelActor->SetPosition(b[0] + 5.0, b[1] + 5.0);
+            m_measLabelActor->VisibilityOn();
+        }
+    }
+}
+
+void vtkWindowImage::clearMeasurement()
+{
+    m_measPoints.clear();
+    m_measLineActor1->VisibilityOff();
+    m_measLineActor2->VisibilityOff();
+    if (m_measLabelActor) m_measLabelActor->VisibilityOff();
+    if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
+}
+
+double vtkWindowImage::angularSeparationDeg(double vx1, double vy1, double vx2, double vy2) const
+{
+    if (!remoteHasCelestialAxes()) return -1.0;
+    bool ok1 = false, ok2 = false, ok3 = false, ok4 = false;
+    const double lon1 = remoteVoxelToWcs(0, vx1, &ok1);
+    const double lat1 = remoteVoxelToWcs(1, vy1, &ok2);
+    const double lon2 = remoteVoxelToWcs(0, vx2, &ok3);
+    const double lat2 = remoteVoxelToWcs(1, vy2, &ok4);
+    if (!ok1 || !ok2 || !ok3 || !ok4) return -1.0;
+
+    const double deg2rad = M_PI / 180.0;
+    const double dlon = (lon2 - lon1) * deg2rad;
+    const double la1 = lat1 * deg2rad;
+    const double la2 = lat2 * deg2rad;
+    const double a = std::sin(dlon / 2.0);
+    const double b = std::sin((la2 - la1) / 2.0);
+    const double h = b * b + std::cos(la1) * std::cos(la2) * a * a;
+    return 2.0 * std::asin(std::sqrt(std::clamp(h, 0.0, 1.0))) * 180.0 / M_PI;
+}
+
+// ── Histogram panel ──────────────────────────────────────────────────────────
+
+void vtkWindowImage::showHistogramPanel()
+{
+    if (m_histogramWindow) {
+        m_histogramWindow->raise();
+        m_histogramWindow->activateWindow();
+        return;
+    }
+
+    auto *imageData = this->layers
+            ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
+    if (!imageData) return;
+
+    int extent[6];
+    imageData->GetExtent(extent);
+    const int width = extent[1] - extent[0] + 1;
+    const int height = extent[3] - extent[2] + 1;
+    if (width <= 0 || height <= 0) return;
+
+    std::vector<double> values;
+    const qint64 pixels = static_cast<qint64>(width) * height;
+    const int stride = std::max(1, static_cast<int>(std::sqrt(static_cast<double>(pixels) / 500000.0)));
+    values.reserve(static_cast<std::size_t>(pixels / std::max(1, stride * stride)));
+    for (int y = extent[2]; y <= extent[3]; y += stride) {
+        for (int x = extent[0]; x <= extent[1]; x += stride) {
+            const double v = imageData->GetScalarComponentAsDouble(x, y, 0, 0);
+            if (std::isfinite(v)) values.push_back(v);
+        }
+    }
+    if (values.empty()) return;
+
+    std::sort(values.begin(), values.end());
+    const double vmin = values.front();
+    const double vmax = values.back();
+    if (vmax <= vmin) return;
+
+    constexpr int nBins = 256;
+    const double binWidth = (vmax - vmin) / nBins;
+    QVector<double> binCenters(nBins), counts(nBins, 0.0);
+    for (int i = 0; i < nBins; ++i)
+        binCenters[i] = vmin + (i + 0.5) * binWidth;
+    for (const double v : values) {
+        int bin = static_cast<int>((v - vmin) / binWidth);
+        if (bin >= nBins) bin = nBins - 1;
+        counts[bin] += 1.0;
+    }
+
+    auto *win = new QWidget(nullptr, Qt::Window);
+    win->setAttribute(Qt::WA_DeleteOnClose);
+    win->setWindowTitle(u"Pixel Histogram"_s);
+    win->resize(600, 360);
+    auto *layout = new QVBoxLayout(win);
+    layout->setContentsMargins(4, 4, 4, 4);
+
+    auto *plot = new QCustomPlot(win);
+    layout->addWidget(plot);
+
+    auto *bars = new QCPBars(plot->xAxis, plot->yAxis);
+    bars->setWidth(binWidth * 0.92);
+    bars->setData(binCenters, counts);
+    bars->setPen(QPen(QColor(70, 130, 180)));
+    bars->setBrush(QColor(70, 130, 180, 120));
+
+    plot->xAxis->setLabel(u"Pixel Value"_s);
+    plot->yAxis->setLabel(u"Count"_s);
+    plot->xAxis->setRange(vmin, vmax);
+    plot->yAxis->setRange(0, *std::max_element(counts.begin(), counts.end()) * 1.05);
+
+    auto *lut = this->layers->getLookupTable(this->layers->getMasterIndex());
+    const double *lutRange = lut ? lut->GetTableRange() : nullptr;
+    const double clipLow  = lutRange ? lutRange[0] : vmin;
+    const double clipHigh = lutRange ? lutRange[1] : vmax;
+
+    auto *lowLine = new QCPItemLine(plot);
+    lowLine->setPen(QPen(QColor(220, 50, 50), 2, Qt::DashLine));
+    lowLine->start->setType(QCPItemPosition::ptPlotCoords);
+    lowLine->end->setType(QCPItemPosition::ptPlotCoords);
+    lowLine->start->setCoords(clipLow, 0);
+    lowLine->end->setCoords(clipLow, *std::max_element(counts.begin(), counts.end()) * 1.05);
+
+    auto *highLine = new QCPItemLine(plot);
+    highLine->setPen(QPen(QColor(50, 180, 50), 2, Qt::DashLine));
+    highLine->start->setType(QCPItemPosition::ptPlotCoords);
+    highLine->end->setType(QCPItemPosition::ptPlotCoords);
+    highLine->start->setCoords(clipHigh, 0);
+    highLine->end->setCoords(clipHigh, *std::max_element(counts.begin(), counts.end()) * 1.05);
+
+    auto *lowLabel = new QCPItemText(plot);
+    lowLabel->setPositionAlignment(Qt::AlignBottom | Qt::AlignHCenter);
+    lowLabel->position->setType(QCPItemPosition::ptPlotCoords);
+    lowLabel->position->setCoords(clipLow, *std::max_element(counts.begin(), counts.end()) * 1.02);
+    lowLabel->setText(QStringLiteral("Low: %1").arg(clipLow, 0, 'g', 5));
+    lowLabel->setColor(QColor(220, 50, 50));
+
+    auto *highLabel = new QCPItemText(plot);
+    highLabel->setPositionAlignment(Qt::AlignBottom | Qt::AlignHCenter);
+    highLabel->position->setType(QCPItemPosition::ptPlotCoords);
+    highLabel->position->setCoords(clipHigh, *std::max_element(counts.begin(), counts.end()) * 1.02);
+    highLabel->setText(QStringLiteral("High: %1").arg(clipHigh, 0, 'g', 5));
+    highLabel->setColor(QColor(50, 180, 50));
+
+    QPointer<vtkWindowImage> self(this);
+    QPointer<QCPItemLine> lowLinePtr(lowLine);
+    QPointer<QCPItemLine> highLinePtr(highLine);
+    QPointer<QCPItemText> lowLabelPtr(lowLabel);
+    QPointer<QCPItemText> highLabelPtr(highLabel);
+
+    bool *draggingLow = new bool(false);
+    bool *draggingHigh = new bool(false);
+    const double maxCount = *std::max_element(counts.begin(), counts.end()) * 1.05;
+
+    QObject::connect(plot, &QCustomPlot::mousePress, win,
+                     [plot, lowLinePtr, highLinePtr, draggingLow, draggingHigh](QMouseEvent *event) {
+        const double x = plot->xAxis->pixelToCoord(event->pos().x());
+        if (lowLinePtr && std::abs(x - lowLinePtr->start->coords().x()) < (plot->xAxis->range().size() * 0.015))
+            *draggingLow = true;
+        else if (highLinePtr && std::abs(x - highLinePtr->start->coords().x()) < (plot->xAxis->range().size() * 0.015))
+            *draggingHigh = true;
+    });
+
+    QObject::connect(plot, &QCustomPlot::mouseMove, win,
+                     [plot, lowLinePtr, highLinePtr, lowLabelPtr, highLabelPtr,
+                      draggingLow, draggingHigh, maxCount](QMouseEvent *event) {
+        if (!*draggingLow && !*draggingHigh) return;
+        const double x = plot->xAxis->pixelToCoord(event->pos().x());
+        if (*draggingLow && lowLinePtr) {
+            lowLinePtr->start->setCoords(x, 0);
+            lowLinePtr->end->setCoords(x, maxCount);
+            if (lowLabelPtr) {
+                lowLabelPtr->position->setCoords(x, maxCount * 0.98);
+                lowLabelPtr->setText(QStringLiteral("Low: %1").arg(x, 0, 'g', 5));
+            }
+            plot->replot();
+        } else if (*draggingHigh && highLinePtr) {
+            highLinePtr->start->setCoords(x, 0);
+            highLinePtr->end->setCoords(x, maxCount);
+            if (highLabelPtr) {
+                highLabelPtr->position->setCoords(x, maxCount * 0.98);
+                highLabelPtr->setText(QStringLiteral("High: %1").arg(x, 0, 'g', 5));
+            }
+            plot->replot();
+        }
+    });
+
+    QObject::connect(plot, &QCustomPlot::mouseRelease, win,
+                     [self, lowLinePtr, highLinePtr, draggingLow, draggingHigh](QMouseEvent *) {
+        if (*draggingLow || *draggingHigh) {
+            if (self && lowLinePtr && highLinePtr) {
+                double lo = lowLinePtr->start->coords().x();
+                double hi = highLinePtr->start->coords().x();
+                if (lo > hi) std::swap(lo, hi);
+                if (hi > lo) {
+                    auto *lut2 = self->layers->getLookupTable(self->layers->getMasterIndex());
+                    if (lut2) {
+                        lut2->SetTableRange(lo, hi);
+                        lut2->Build();
+                        self->markDisplayStateAdjusted("histogram drag");
+                        self->vtkRender();
+                    }
+                }
+            }
+        }
+        *draggingLow = false;
+        *draggingHigh = false;
+    });
+
+    QObject::connect(win, &QObject::destroyed, win, [draggingLow, draggingHigh]() {
+        delete draggingLow;
+        delete draggingHigh;
+    });
+
+    plot->replot();
+    m_histogramWindow = win;
+    win->show();
+}
+
+// ── Annotations ──────────────────────────────────────────────────────────────
+
+void vtkWindowImage::addTextAnnotation()
+{
+    bool ok = false;
+    const QString text = QInputDialog::getText(
+            this, u"Add Text Annotation"_s, u"Text:"_s, QLineEdit::Normal, QString(), &ok);
+    if (!ok || text.trimmed().isEmpty()) return;
+
+    m_pendingAnnotText = text.trimmed();
+    m_annotPlaceMode = AnnotPlaceMode::Text;
+    ui->vtk->setCursor(Qt::CrossCursor);
+    statusBar()->showMessage(u"Click on the image to place the text annotation."_s, 0);
+}
+
+void vtkWindowImage::addArrowAnnotation()
+{
+    bool ok = false;
+    const QString text = QInputDialog::getText(
+            this, u"Add Arrow Annotation"_s, u"Label (optional):"_s,
+            QLineEdit::Normal, QString(), &ok);
+    if (!ok) return;
+
+    m_pendingAnnotText = text.trimmed();
+    m_annotPlaceMode = AnnotPlaceMode::ArrowTip;
+    ui->vtk->setCursor(Qt::CrossCursor);
+    statusBar()->showMessage(u"Click on the image to place the arrow tip."_s, 0);
+}
+
+void vtkWindowImage::placeAnnotationAt(double worldX, double worldY)
+{
+    switch (m_annotPlaceMode) {
+    case AnnotPlaceMode::Text: {
+        Annotation ann;
+        ann.type = Annotation::Text;
+        ann.text = m_pendingAnnotText;
+        ann.worldX = worldX;
+        ann.worldY = worldY;
+        m_annotations.push_back(ann);
+        cancelAnnotationPlacement();
+        refreshAnnotationOverlay();
+        break;
+    }
+    case AnnotPlaceMode::ArrowTip:
+        m_pendingArrowTipX = worldX;
+        m_pendingArrowTipY = worldY;
+        m_annotPlaceMode = AnnotPlaceMode::ArrowLabel;
+        updateAnnotationPreview(worldX, worldY);
+        statusBar()->showMessage(u"Move mouse to see the arrow, click to place the label."_s, 0);
+        break;
+    case AnnotPlaceMode::ArrowLabel: {
+        Annotation ann;
+        ann.type = Annotation::Arrow;
+        ann.text = m_pendingAnnotText;
+        ann.worldX = worldX;
+        ann.worldY = worldY;
+        ann.arrowEndX = m_pendingArrowTipX;
+        ann.arrowEndY = m_pendingArrowTipY;
+        m_annotations.push_back(ann);
+        cancelAnnotationPlacement();
+        refreshAnnotationOverlay();
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+void vtkWindowImage::updateAnnotationPreview(double worldX, double worldY)
+{
+    if (m_annotPlaceMode != AnnotPlaceMode::ArrowLabel) {
+        m_annotPreviewActor->VisibilityOff();
+        return;
+    }
+
+    vtkNew<vtkPoints> pts;
+    vtkNew<vtkCellArray> cells;
+    buildArrowGeometry(pts, cells, worldX, worldY, m_pendingArrowTipX, m_pendingArrowTipY);
+    m_annotPreviewData->SetPoints(pts);
+    m_annotPreviewData->SetLines(cells);
+    m_annotPreviewData->Modified();
+    m_annotPreviewActor->VisibilityOn();
+}
+
+void vtkWindowImage::cancelAnnotationPlacement()
+{
+    m_annotPlaceMode = AnnotPlaceMode::None;
+    m_pendingAnnotText.clear();
+    m_annotPreviewActor->VisibilityOff();
+    const bool needsCross = this->probeModeActive
+            || this->regionMode != RegionMode::None
+            || this->m_measMode != MeasurementMode::None;
+    ui->vtk->setCursor(needsCross ? Qt::CrossCursor : Qt::ArrowCursor);
+    statusBar()->clearMessage();
+    if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
+}
+
+void vtkWindowImage::clearAnnotations()
+{
+    auto *ren = ui->vtk->renderWindow()
+                ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer() : nullptr;
+    if (ren) {
+        for (auto &a : m_annotTextActors) if (a) ren->RemoveViewProp(a);
+        for (auto &a : m_annotArrowActors) if (a) ren->RemoveActor(a);
+    }
+    m_annotations.clear();
+    m_annotTextActors.clear();
+    m_annotArrowActors.clear();
+    if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
+}
+
+void vtkWindowImage::refreshAnnotationOverlay()
+{
+    auto *ren = ui->vtk->renderWindow()
+                ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer() : nullptr;
+    if (!ren) return;
+
+    for (auto &a : m_annotTextActors) if (a) ren->RemoveViewProp(a);
+    for (auto &a : m_annotArrowActors) if (a) ren->RemoveActor(a);
+    m_annotTextActors.clear();
+    m_annotArrowActors.clear();
+
+    for (const auto &ann : m_annotations) {
+        auto textActor = vtkSmartPointer<vtkTextActor>::New();
+        textActor->SetInput(ann.text.toStdString().c_str());
+        textActor->GetTextProperty()->SetColor(1.0, 1.0, 0.3);
+        textActor->GetTextProperty()->SetFontSize(14);
+        textActor->GetTextProperty()->SetBold(true);
+        textActor->GetTextProperty()->SetShadow(true);
+        textActor->GetPositionCoordinate()->SetCoordinateSystemToWorld();
+        textActor->SetPosition(ann.worldX, ann.worldY);
+        ren->AddViewProp(textActor);
+        m_annotTextActors.push_back(textActor);
+
+        if (ann.type == Annotation::Arrow) {
+            vtkNew<vtkPoints> pts;
+            vtkNew<vtkCellArray> cells;
+            buildArrowGeometry(pts, cells,
+                               ann.worldX, ann.worldY,
+                               ann.arrowEndX, ann.arrowEndY);
+            vtkNew<vtkPolyData> arrowData;
+            arrowData->SetPoints(pts);
+            arrowData->SetLines(cells);
+            vtkNew<vtkPolyDataMapper> mapper;
+            mapper->SetInputData(arrowData);
+            auto arrowActor = vtkSmartPointer<vtkActor>::New();
+            arrowActor->SetMapper(mapper);
+            arrowActor->GetProperty()->SetColor(1.0, 1.0, 0.3);
+            arrowActor->GetProperty()->SetLineWidth(2.0);
+            ren->AddActor(arrowActor);
+            m_annotArrowActors.push_back(arrowActor);
+        } else {
+            m_annotArrowActors.push_back(nullptr);
+        }
+    }
+
+    ui->vtk->renderWindow()->Render();
+}
+
+void vtkWindowImage::saveAnnotationsJson()
+{
+    if (m_annotations.empty()) {
+        statusBar()->showMessage(u"No annotations to save."_s, 2000);
+        return;
+    }
+
+    const QString defaultPath = annotationsJsonPath();
+    const QString path = QFileDialog::getSaveFileName(
+            this, u"Save Annotations"_s,
+            defaultPath.isEmpty() ? QDir::homePath() : defaultPath,
+            u"JSON files (*.json);;All files (*)"_s);
+    if (path.isEmpty()) return;
+
+    QJsonArray arr;
+    for (const auto &ann : m_annotations) {
+        QJsonObject obj;
+        obj[u"type"_s] = (ann.type == Annotation::Arrow) ? u"arrow"_s : u"text"_s;
+        obj[u"text"_s] = ann.text;
+        obj[u"x"_s] = ann.worldX;
+        obj[u"y"_s] = ann.worldY;
+        if (ann.type == Annotation::Arrow) {
+            obj[u"arrowEndX"_s] = ann.arrowEndX;
+            obj[u"arrowEndY"_s] = ann.arrowEndY;
+        }
+        arr.append(obj);
+    }
+
+    QFile file(path);
+    if (file.open(QIODevice::WriteOnly)) {
+        file.write(QJsonDocument(arr).toJson(QJsonDocument::Indented));
+        statusBar()->showMessage(
+                QStringLiteral("Saved %1 annotations to %2")
+                        .arg(m_annotations.size())
+                        .arg(QFileInfo(path).fileName()),
+                3000);
+    } else {
+        QMessageBox::warning(this, u"Save Annotations"_s,
+                u"Could not write to:\n%1"_s.arg(path));
+    }
+}
+
+void vtkWindowImage::loadAnnotationsJson()
+{
+    const QString defaultDir = filepath.isEmpty()
+            ? QDir::homePath()
+            : QFileInfo(filepath).absolutePath();
+    const QString path = QFileDialog::getOpenFileName(
+            this, u"Load Annotations"_s, defaultDir,
+            u"JSON files (*.json);;All files (*)"_s);
+    if (path.isEmpty()) return;
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, u"Load Annotations"_s,
+                u"Could not read:\n%1"_s.arg(path));
+        return;
+    }
+
+    const QJsonArray arr = QJsonDocument::fromJson(file.readAll()).array();
+    if (arr.isEmpty()) {
+        statusBar()->showMessage(u"No annotations found in file."_s, 2000);
+        return;
+    }
+
+    clearAnnotations();
+    for (const auto &val : arr) {
+        const QJsonObject obj = val.toObject();
+        Annotation ann;
+        ann.type = obj[u"type"_s].toString() == u"arrow"_s ? Annotation::Arrow : Annotation::Text;
+        ann.text = obj[u"text"_s].toString();
+        ann.worldX = obj[u"x"_s].toDouble();
+        ann.worldY = obj[u"y"_s].toDouble();
+        ann.arrowEndX = obj[u"arrowEndX"_s].toDouble();
+        ann.arrowEndY = obj[u"arrowEndY"_s].toDouble();
+        m_annotations.push_back(ann);
+    }
+    refreshAnnotationOverlay();
+    statusBar()->showMessage(
+            QStringLiteral("Loaded %1 annotations from %2")
+                    .arg(m_annotations.size())
+                    .arg(QFileInfo(path).fileName()),
+                3000);
+}
+
+QString vtkWindowImage::annotationsJsonPath() const
+{
+    if (filepath.isEmpty()) return {};
+    return filepath + u".annotations.json"_s;
+}
+
+// ── Blink / Compare ──────────────────────────────────────────────────────────
+
+void vtkWindowImage::toggleBlink(bool active)
+{
+    if (!this->layers || this->layers->rowCount() < 2) {
+        if (active) {
+            statusBar()->showMessage(u"Blink requires at least two layers."_s, 2000);
+            if (m_actBlink) m_actBlink->setChecked(false);
+        }
+        return;
+    }
+
+    if (active) {
+        m_blinkState = false;
+        m_blinkTimer.start(m_blinkIntervalMs);
+    } else {
+        m_blinkTimer.stop();
+        for (int i = 0; i < this->layers->rowCount(); ++i) {
+            auto *actor = this->layers->getLayerActor(i);
+            if (actor) actor->SetVisibility(true);
+        }
+        vtkRender();
+    }
+}
+
+void vtkWindowImage::blinkTick()
+{
+    if (!this->layers || this->layers->rowCount() < 2) {
+        m_blinkTimer.stop();
+        return;
+    }
+
+    m_blinkState = !m_blinkState;
+    for (int i = 0; i < this->layers->rowCount(); ++i) {
+        auto *actor = this->layers->getLayerActor(i);
+        if (!actor) continue;
+        if (i == 0)
+            actor->SetVisibility(!m_blinkState);
+        else if (i == 1)
+            actor->SetVisibility(m_blinkState);
+        else
+            actor->SetVisibility(false);
+    }
+    vtkRender();
 }
 
 // ── VLKB layer support ────────────────────────────────────────────────────────

@@ -404,6 +404,11 @@ with the ``VISIVO_EXPORTS_DIR`` environment variable):
 - **Tools → Export Moment Map as FITS…** — persist the moment currently
   on screen as a 2-D FITS (celestial WCS, ``BUNIT`` derived from the
   cube). Disabled until a moment has been computed.
+- **Tools → Send Slice to Image Viewer…** — send the current 2-D slice
+  to the first open image viewer as a contour overlay. No FITS
+  round-trip required — the data travels in memory via the
+  ``contourDataReady`` signal. Useful for quick radio + optical
+  comparisons without persisting intermediate files.
 
 Both flows ask only for a **basename** (e.g. ``m31_m0.fits``). The
 backend stores the file in the Workspace Exports dir and auto-suffixes

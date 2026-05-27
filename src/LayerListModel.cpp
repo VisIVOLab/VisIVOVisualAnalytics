@@ -165,6 +165,11 @@ QVariant LayerListModel::data(const QModelIndex &index, int role) const
     }
 }
 
+vtkImageSlice *LayerListModel::getLayerActor(int index) const
+{
+    return this->layerSet->layerActor(index);
+}
+
 void LayerListModel::setLayerDisplayName(int row, const QString &name)
 {
     if (row < 0 || row >= this->rowCount())

@@ -204,6 +204,12 @@ signals:
     /// payload — listeners just re-issue a /v1/exports/list call.
     void workspaceExportsChanged();
 
+    /// Emitted when the cube viewer produces a 2-D product (moment map or
+    /// current slice) that an open image viewer can overlay as contours.
+    /// @p label  Human-readable name (e.g. "Moment 0", "Slice CH 42").
+    /// @p data   The 2-D vtkImageData (caller retains ownership).
+    void contourDataReady(const QString &label, vtkImageData *data);
+
 public:
     enum class RemoteCubeDisplayState
     {

@@ -13,6 +13,12 @@ Beam (synthesised beam)
   view when these keywords are present. See
   [Cube viewer — Beam indicator](cube-viewer#beam-indicator).
 
+Blink / Compare
+  Rapid alternation of visibility between layers 0 and 1 in the image
+  viewer, controlled by a configurable timer (50–1000 ms). Standard
+  technique for detecting transients, proper motion, or artefact
+  differences. See [Image viewer — Blink / Compare](image-viewer#blink-compare).
+
 BUNIT
   FITS header keyword carrying the brightness / pixel-value unit (e.g.
   `Jy/beam`, `K`, `counts`). All region statistics and moment maps
@@ -90,6 +96,12 @@ MAD
   *Median Absolute Deviation* — robust estimator of dispersion.
   Multiplied by 1.4826 it gives a robust 1σ estimate for Gaussian data,
   insensitive to outliers. Used in noise estimation and region stats.
+
+Measurement tools (Ruler / Angle)
+  Interactive distance and angle measurement on the image viewer. Ruler
+  shows pixel and angular distance (Haversine); Angle shows the angle
+  at the middle vertex of three clicked points. See
+  [Image viewer — Measurement tools](image-viewer#measurement-tools).
 
 Moment (M0, M1, M2, …)
   Statistical summary of a spectral line projected on the spatial axes.

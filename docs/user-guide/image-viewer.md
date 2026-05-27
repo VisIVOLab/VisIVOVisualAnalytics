@@ -108,12 +108,74 @@ Iso-contour lines can be drawn on top of the image from two sources:
   manually. Multiple external layers can be stacked.
 - **Clear All Contours** removes every contour layer.
 
+- **Cube → Image direct** — if a cube viewer is open, use
+  *Tools → Send Slice to Image Viewer…* in the cube window. The
+  current 2-D slice is sent to the first open image viewer as a
+  contour overlay without requiring a FITS export round-trip.
+
 ```{tip}
 The cube viewer's *Tools → Export Moment Map as FITS…* writes the
 moment into the Workspace Exports directory. You can then load that
 FITS here as an external contour overlay — the most common radio +
 optical comparison workflow.
 ```
+
+## Measurement tools
+
+Two interactive measurement modes are available in the *Tools* sidebar
+**Measurement** card (or *Tools* menu):
+
+- **Ruler (Distance)** — click two points on the image. A dashed
+  orange line is drawn between them and the distance is displayed in
+  pixels and, when WCS metadata is available, in arcseconds (or
+  arcminutes / degrees for large separations). The angular distance
+  uses the Haversine formula on the WCS sky coordinates.
+- **Angle (3 Points)** — click three points A, B, C. Lines A–B and
+  B–C are drawn and the angle at vertex B is displayed in degrees.
+- **Clear Measurement** removes the current measurement overlay.
+
+Only one measurement mode can be active at a time (ExclusiveOptional
+group). Activating a measurement mode deactivates any active probe or
+region tool.
+
+## Pixel histogram
+
+*Tools → Pixel Histogram…* (or the **Histogram** card in the sidebar)
+opens a floating QCustomPlot window showing the pixel-value distribution
+of the master layer as a 256-bin bar chart.
+
+Two draggable vertical cursors mark the current LUT clip range
+(red = low, green = high). Dragging either cursor updates the LUT
+range live, so you can interactively clip the display without opening
+the advanced LUT editor.
+
+## Annotations
+
+Text and arrow annotations can be placed interactively on the image:
+
+- **Add Text…** — a dialog asks for the text, then the cursor changes
+  to a crosshair. Click anywhere on the image to place the label.
+- **Add Arrow…** — a dialog asks for an optional label, then the
+  cursor changes to a crosshair. **First click** sets the arrow tip;
+  **second click** sets the label position. A line connects the two.
+- Right-click cancels placement without adding the annotation.
+- **Clear All** removes every annotation.
+- **Save / Load** — annotations are persisted to a JSON sidecar file
+  (`<fits-path>.annotations.json`) next to the dataset. Reloading the
+  same dataset and clicking **Load** restores them.
+
+Annotation text is rendered as bold yellow `vtkTextActor` labels;
+arrows use `vtkLineSource` with matching colour.
+
+## Blink / Compare
+
+When two or more layers are loaded, the **Blink Layers** toggle
+(*View* menu or sidebar **Blink / Compare** card) rapidly alternates
+the visibility of layers 0 and 1 at a configurable speed
+(50 – 1000 ms, adjustable via the sidebar slider).
+
+This is a standard technique for detecting transient sources, proper
+motion, or artefact differences between two epochs or bands.
 
 ## Saving and exporting
 
