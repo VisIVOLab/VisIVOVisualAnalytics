@@ -1265,11 +1265,12 @@ BackendBaselineResult BackendClient::requestBaseline(const QString &datasetId,
     return result;
 }
 
-// ── Sub-cube extraction (crop ROI → new FITS dataset) ───────────────────────
+// ── Sub-cube extraction (crop ROI → Workspace Exports) ─────────────────────
 
 BackendSaveSubregionResult BackendClient::saveCubeSubregion(
         const QString &datasetId,
-        int x0, int x1, int y0, int y1, int z0, int z1)
+        int x0, int x1, int y0, int y1, int z0, int z1,
+        const QString &outputBasename)
 {
     BackendSaveSubregionResult result;
     QString error;
@@ -1277,7 +1278,8 @@ BackendSaveSubregionResult BackendClient::saveCubeSubregion(
             { QStringLiteral("dataset_id"), datasetId },
             { QStringLiteral("x0"), x0 }, { QStringLiteral("x1"), x1 },
             { QStringLiteral("y0"), y0 }, { QStringLiteral("y1"), y1 },
-            { QStringLiteral("z0"), z0 }, { QStringLiteral("z1"), z1 } });
+            { QStringLiteral("z0"), z0 }, { QStringLiteral("z1"), z1 },
+            { QStringLiteral("output_basename"), outputBasename } });
     const QByteArray raw =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/save_subregion")),
                         body, error);
@@ -1286,26 +1288,28 @@ BackendSaveSubregionResult BackendClient::saveCubeSubregion(
         return result;
     }
     const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid        = obj.value(QStringLiteral("valid")).toBool();
-    result.error        = obj.value(QStringLiteral("error")).toString();
-    result.newDatasetId = obj.value(QStringLiteral("new_dataset_id")).toString();
-    result.outputPath   = obj.value(QStringLiteral("output_path")).toString();
-    result.width        = obj.value(QStringLiteral("width")).toInt();
-    result.height       = obj.value(QStringLiteral("height")).toInt();
-    result.depth        = obj.value(QStringLiteral("depth")).toInt();
-    result.rangeMin     = obj.value(QStringLiteral("range_min")).toDouble();
-    result.rangeMax     = obj.value(QStringLiteral("range_max")).toDouble();
+    result.valid             = obj.value(QStringLiteral("valid")).toBool();
+    result.error             = obj.value(QStringLiteral("error")).toString();
+    result.newDatasetId      = obj.value(QStringLiteral("new_dataset_id")).toString();
+    result.outputPath        = obj.value(QStringLiteral("output_path")).toString();
+    result.workspaceFilename = obj.value(QStringLiteral("workspace_filename")).toString();
+    result.width             = obj.value(QStringLiteral("width")).toInt();
+    result.height            = obj.value(QStringLiteral("height")).toInt();
+    result.depth             = obj.value(QStringLiteral("depth")).toInt();
+    result.rangeMin          = obj.value(QStringLiteral("range_min")).toDouble();
+    result.rangeMax          = obj.value(QStringLiteral("range_max")).toDouble();
     return result;
 }
 
-// ── Moment map → standalone FITS export ─────────────────────────────────────
+// ── Moment map → Workspace Exports ─────────────────────────────────────────
 
 BackendSaveMomentFitsResult BackendClient::saveMomentFits(
         const QString &datasetId,
         int order,
         int channelStart, int channelEnd,
         bool maskEnabled,
-        double thresholdValue)
+        double thresholdValue,
+        const QString &outputBasename)
 {
     BackendSaveMomentFitsResult result;
     QString error;
@@ -1315,7 +1319,8 @@ BackendSaveMomentFitsResult BackendClient::saveMomentFits(
             { QStringLiteral("channel_start"),    channelStart },
             { QStringLiteral("channel_end"),      channelEnd },
             { QStringLiteral("mask_enabled"),     maskEnabled },
-            { QStringLiteral("threshold_value"),  thresholdValue } });
+            { QStringLiteral("threshold_value"),  thresholdValue },
+            { QStringLiteral("output_basename"),  outputBasename } });
     const QByteArray raw =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/moment_fits")),
                         body, error);
@@ -1324,27 +1329,87 @@ BackendSaveMomentFitsResult BackendClient::saveMomentFits(
         return result;
     }
     const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid       = obj.value(QStringLiteral("valid")).toBool();
-    result.error       = obj.value(QStringLiteral("error")).toString();
-    result.outputPath  = obj.value(QStringLiteral("output_path")).toString();
-    result.width       = obj.value(QStringLiteral("width")).toInt();
-    result.height      = obj.value(QStringLiteral("height")).toInt();
-    result.rangeMin    = obj.value(QStringLiteral("range_min")).toDouble();
-    result.rangeMax    = obj.value(QStringLiteral("range_max")).toDouble();
-    result.bunit       = obj.value(QStringLiteral("bunit")).toString();
-    result.momentUnit  = obj.value(QStringLiteral("moment_unit")).toString();
+    result.valid             = obj.value(QStringLiteral("valid")).toBool();
+    result.error             = obj.value(QStringLiteral("error")).toString();
+    result.outputPath        = obj.value(QStringLiteral("output_path")).toString();
+    result.workspaceFilename = obj.value(QStringLiteral("workspace_filename")).toString();
+    result.width             = obj.value(QStringLiteral("width")).toInt();
+    result.height            = obj.value(QStringLiteral("height")).toInt();
+    result.rangeMin          = obj.value(QStringLiteral("range_min")).toDouble();
+    result.rangeMax          = obj.value(QStringLiteral("range_max")).toDouble();
+    result.bunit             = obj.value(QStringLiteral("bunit")).toString();
+    result.momentUnit        = obj.value(QStringLiteral("moment_unit")).toString();
     return result;
 }
 
-// ── File download (export artefacts only) ───────────────────────────────────
+// ── Workspace Exports management ───────────────────────────────────────────
 
-bool BackendClient::downloadExportFile(const QString &remotePath,
-                                       const QString &localPath,
-                                       QString &error)
+BackendWorkspaceExportsList BackendClient::listExports()
 {
-    QUrl url(m_baseUrl + QStringLiteral("/v1/files/download"));
+    BackendWorkspaceExportsList result;
+    QString error;
+    const QByteArray raw = performGet(
+            QUrl(m_baseUrl + QStringLiteral("/v1/exports/list")), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+    result.valid        = obj.value(QStringLiteral("valid")).toBool();
+    result.error        = obj.value(QStringLiteral("error")).toString();
+    result.workspaceDir = obj.value(QStringLiteral("workspace_dir")).toString();
+    const QJsonArray arr = obj.value(QStringLiteral("entries")).toArray();
+    result.entries.reserve(arr.size());
+    for (const auto &v : arr) {
+        const QJsonObject e = v.toObject();
+        BackendWorkspaceExportEntry entry;
+        entry.filename     = e.value(QStringLiteral("filename")).toString();
+        entry.size         = e.value(QStringLiteral("size")).toVariant().toLongLong();
+        entry.modifiedTime = e.value(QStringLiteral("modified_time")).toString();
+        entry.absolutePath = e.value(QStringLiteral("absolute_path")).toString();
+        result.entries.append(entry);
+    }
+    return result;
+}
+
+BackendWorkspaceDeleteResult BackendClient::deleteExport(const QString &filename)
+{
+    BackendWorkspaceDeleteResult result;
+    QString error;
+    // Filename is path-segment-escaped to keep slashes out of the URL — the
+    // backend rejects multi-segment filenames anyway, but pre-escaping
+    // avoids accidentally hitting a different route.
+    const QString safeSeg = QString::fromUtf8(
+            QUrl::toPercentEncoding(filename, "", "/"));
+    QNetworkRequest req(QUrl(m_baseUrl
+                             + QStringLiteral("/v1/exports/") + safeSeg));
+    req.setRawHeader("X-Visivo-Token", m_token.toUtf8());
+    auto *nam = getThreadLocalNam();
+    auto *reply = nam->sendCustomRequest(req, "DELETE");
+    QEventLoop loop;
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    if (reply->error() != QNetworkReply::NoError) {
+        result.error = reply->errorString();
+        reply->deleteLater();
+        return result;
+    }
+    const QByteArray raw = reply->readAll();
+    reply->deleteLater();
+    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+    result.valid           = obj.value(QStringLiteral("valid")).toBool();
+    result.error           = obj.value(QStringLiteral("error")).toString();
+    result.deletedFilename = obj.value(QStringLiteral("deleted_filename")).toString();
+    return result;
+}
+
+bool BackendClient::downloadExport(const QString &filename,
+                                   const QString &localPath,
+                                   QString &error)
+{
+    QUrl url(m_baseUrl + QStringLiteral("/v1/exports/download"));
     QUrlQuery q;
-    q.addQueryItem(QStringLiteral("path"), remotePath);
+    q.addQueryItem(QStringLiteral("filename"), filename);
     url.setQuery(q);
     const QByteArray payload = performGet(url, error);
     if (!error.isEmpty()) return false;

@@ -19,10 +19,16 @@
 #include <QScrollArea>
 #include <QSizePolicy>
 #include <QVBoxLayout>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QFutureWatcher>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPixmap>
+#include <QStandardPaths>
 #include <QSvgRenderer>
 #include <QTimer>
+#include <QtConcurrentRun>
 
 #include <cmath>
 
@@ -359,6 +365,13 @@ void DataHubWidget::buildUi()
 
         vbox->addLayout(row, 1);
     }
+
+    // ── 4b. Workspace Exports (persistent FITS artefacts) ────────────────────
+    // Full-width panel below the main row: shows everything currently in
+    // the backend's Workspace Exports dir with per-row buttons (open in
+    // VisIVO, download to local FS, delete). Refresh happens on first
+    // show + on demand via the panel's own refresh button.
+    vbox->addWidget(buildWorkspaceExportsPanel());
 
     // ── 5. Credits line (small, right-aligned) ───────────────────────────────
     {
@@ -1086,6 +1099,304 @@ void DataHubWidget::refreshRecentDatasets()
     }
 }
 
+// ── Workspace Exports panel ─────────────────────────────────────────────────
+//
+// Lifecycle:
+//   * buildWorkspaceExportsPanel() — built once in buildUi(), creates the
+//     card + a refresh button + an empty item list. Schedules a first
+//     refresh on the next event-loop tick so the panel is populated by
+//     the time the user looks at it.
+//   * refreshWorkspaceExports() — async list() call to the backend; on
+//     completion, clears and rebuilds the item rows. Re-called from
+//     refreshStatus() so the panel stays current as cube viewers push
+//     new artefacts in.
+//
+// Per-row buttons:
+//   * "Open in VisIVO" — emits openWorkspaceExportRequested(absolutePath)
+//   * "Download…"      — native Save As + downloadExport() in a worker
+//   * "Delete"         — confirm + deleteExport() + refresh
+
+namespace {
+QString formatExportSize(qint64 bytes)
+{
+    if (bytes < 1024)         return QStringLiteral("%1 B").arg(bytes);
+    if (bytes < 1024 * 1024)  return QStringLiteral("%1 KB").arg(bytes / 1024);
+    if (bytes < qint64(1024) * 1024 * 1024)
+        return QStringLiteral("%1 MB").arg(bytes / (1024 * 1024));
+    return QStringLiteral("%1 GB").arg(bytes / (qint64(1024) * 1024 * 1024));
+}
+
+QString formatExportTime(const QString &iso8601)
+{
+    const QDateTime t = QDateTime::fromString(iso8601, Qt::ISODate);
+    if (!t.isValid()) return iso8601;
+    return t.toLocalTime().toString(u"yyyy-MM-dd hh:mm"_s);
+}
+} // namespace
+
+QFrame *DataHubWidget::buildWorkspaceExportsPanel()
+{
+    auto *card = VisivoTheme::makeCard(this);
+    m_exportsCard = card;
+
+    auto *vbox = new QVBoxLayout(card);
+    vbox->setContentsMargins(20, 16, 20, 16);
+    vbox->setSpacing(10);
+
+    auto *header = new QHBoxLayout;
+    header->addWidget(VisivoTheme::makeSectionLabel(
+            u"Workspace Exports"_s, card));
+    m_exportsCountLabel = new QLabel(QString(), card);
+    m_exportsCountLabel->setStyleSheet(
+            QStringLiteral("color: %1; font-size: 11px; "
+                           "background: transparent;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    header->addWidget(m_exportsCountLabel);
+    header->addStretch(1);
+
+    auto *refreshBtn = new QPushButton(u"Refresh"_s, card);
+    refreshBtn->setCursor(Qt::PointingHandCursor);
+    QObject::connect(refreshBtn, &QPushButton::clicked, this,
+                     &DataHubWidget::refreshWorkspaceExports);
+    header->addWidget(refreshBtn);
+    vbox->addLayout(header);
+
+    auto *scroll = new QScrollArea(card);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setStyleSheet(u"QScrollArea { background: transparent; border: none; }"_s);
+
+    auto *itemContainer = new QWidget(scroll);
+    itemContainer->setStyleSheet(u"background: transparent;"_s);
+    m_exportsItemsLayout = new QVBoxLayout(itemContainer);
+    m_exportsItemsLayout->setContentsMargins(0, 0, 0, 0);
+    m_exportsItemsLayout->setSpacing(6);
+
+    m_exportsEmptyLabel = new QLabel(
+            u"No exports yet. Use *Tools → Export Sub-Cube / Moment as FITS…* "
+            u"from a cube viewer to populate this list."_s,
+            itemContainer);
+    m_exportsEmptyLabel->setWordWrap(true);
+    m_exportsEmptyLabel->setStyleSheet(
+            QStringLiteral("color: %1; font-size: 11px; "
+                           "background: transparent;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    m_exportsItemsLayout->addWidget(m_exportsEmptyLabel);
+    m_exportsItemsLayout->addStretch(1);
+
+    scroll->setWidget(itemContainer);
+    scroll->setMinimumHeight(140);
+    vbox->addWidget(scroll, 1);
+
+    // First refresh deferred to next tick so the backend URL is already set
+    // by MainWindow's wiring.
+    QTimer::singleShot(0, this, &DataHubWidget::refreshWorkspaceExports);
+
+    return card;
+}
+
+void DataHubWidget::refreshWorkspaceExports()
+{
+    if (!m_exportsItemsLayout) return;
+    if (this->backendUrl.isEmpty()) return;   // nothing to call yet
+
+    const QString url = this->backendUrl;
+    const QString tok = this->backendToken;
+
+    auto *watcher = new QFutureWatcher<BackendWorkspaceExportsList>(this);
+    QPointer<DataHubWidget> self(this);
+    QObject::connect(watcher, &QFutureWatcher<BackendWorkspaceExportsList>::finished, this,
+                     [self, watcher]() {
+                         const auto listing = watcher->result();
+                         watcher->deleteLater();
+                         if (!self) return;
+
+                         // Wipe every old row (keep stretch + empty label).
+                         QVBoxLayout *lay = self->m_exportsItemsLayout;
+                         if (!lay) return;
+                         while (lay->count() > 0) {
+                             QLayoutItem *li = lay->takeAt(0);
+                             if (auto *w = li->widget()) {
+                                 if (w == self->m_exportsEmptyLabel) {
+                                     w->hide();
+                                     // Re-attach later so we can show it
+                                     // when the list comes back empty.
+                                 } else {
+                                     w->deleteLater();
+                                 }
+                             }
+                             delete li;
+                         }
+
+                         if (!listing.valid) {
+                             self->m_exportsCountLabel->setText(
+                                     u"(failed: %1)"_s.arg(listing.error));
+                             if (self->m_exportsEmptyLabel) {
+                                 self->m_exportsEmptyLabel->show();
+                                 lay->addWidget(self->m_exportsEmptyLabel);
+                             }
+                             lay->addStretch(1);
+                             return;
+                         }
+
+                         self->m_exportsCountLabel->setText(
+                                 listing.entries.isEmpty()
+                                 ? QString()
+                                 : u"(%1)"_s.arg(listing.entries.size()));
+
+                         if (listing.entries.isEmpty()) {
+                             if (self->m_exportsEmptyLabel) {
+                                 self->m_exportsEmptyLabel->show();
+                                 lay->addWidget(self->m_exportsEmptyLabel);
+                             }
+                             lay->addStretch(1);
+                             return;
+                         }
+
+                         for (const auto &entry : listing.entries) {
+                             auto *row = new QFrame();
+                             row->setStyleSheet(QStringLiteral(
+                                     "QFrame {"
+                                     "  background: %1;"
+                                     "  border: 1px solid %2;"
+                                     "  border-radius: 6px;"
+                                     "}")
+                                     .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerLow()),
+                                          QLatin1StringView(VisivoTheme::kOutline())));
+                             auto *h = new QHBoxLayout(row);
+                             h->setContentsMargins(10, 6, 10, 6);
+                             h->setSpacing(10);
+
+                             auto *name = new QLabel(entry.filename, row);
+                             name->setStyleSheet(
+                                     QStringLiteral("color: %1; font-weight: 600; "
+                                                    "background: transparent; border: none;")
+                                             .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
+                             name->setTextInteractionFlags(Qt::TextSelectableByMouse);
+                             h->addWidget(name, 1);
+
+                             auto *meta = new QLabel(
+                                     u"%1 · %2"_s
+                                     .arg(formatExportSize(entry.size),
+                                          formatExportTime(entry.modifiedTime)),
+                                     row);
+                             meta->setStyleSheet(
+                                     QStringLiteral("color: %1; font-size: 10px; "
+                                                    "background: transparent; border: none;")
+                                             .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+                             h->addWidget(meta);
+
+                             auto *openBtn     = new QPushButton(u"Open"_s, row);
+                             auto *downloadBtn = new QPushButton(u"Download…"_s, row);
+                             auto *deleteBtn   = new QPushButton(u"Delete"_s, row);
+                             for (auto *b : { openBtn, downloadBtn, deleteBtn }) {
+                                 b->setCursor(Qt::PointingHandCursor);
+                                 b->setStyleSheet(QStringLiteral(
+                                         "QPushButton {"
+                                         " padding: 4px 10px; font-size: 11px;"
+                                         " border: 1px solid %1; border-radius: 4px;"
+                                         " background: transparent; color: %2;"
+                                         "}"
+                                         "QPushButton:hover { background: %3; }")
+                                         .arg(QLatin1StringView(VisivoTheme::kOutline()),
+                                              QLatin1StringView(VisivoTheme::kOnSurface()),
+                                              QLatin1StringView(VisivoTheme::kSurfaceContainerHigh())));
+                                 h->addWidget(b);
+                             }
+
+                             const QString abs = entry.absolutePath;
+                             const QString fn  = entry.filename;
+                             QObject::connect(openBtn, &QPushButton::clicked, self.data(),
+                                              [self, abs]() {
+                                                  if (!self) return;
+                                                  emit self->openWorkspaceExportRequested(abs);
+                                              });
+                             QObject::connect(downloadBtn, &QPushButton::clicked, self.data(),
+                                              [self, fn]() {
+                                                  if (!self) return;
+                                                  const QString defaultDir =
+                                                          QStandardPaths::writableLocation(
+                                                                  QStandardPaths::DocumentsLocation);
+                                                  const QString suggested =
+                                                          QDir(defaultDir.isEmpty()
+                                                               ? QDir::homePath() : defaultDir)
+                                                                  .filePath(fn);
+                                                  const QString localPath = QFileDialog::getSaveFileName(
+                                                          self, u"Download Workspace Export"_s,
+                                                          suggested,
+                                                          u"FITS files (*.fits *.fit);;All files (*)"_s);
+                                                  if (localPath.isEmpty()) return;
+                                                  const QString url2 = self->backendUrl;
+                                                  const QString tok2 = self->backendToken;
+                                                  QPointer<DataHubWidget> guard(self);
+                                                  auto *dlWatcher = new QFutureWatcher<QString>(self);
+                                                  QObject::connect(
+                                                          dlWatcher, &QFutureWatcher<QString>::finished, self.data(),
+                                                          [guard, dlWatcher, localPath]() {
+                                                              const QString err = dlWatcher->result();
+                                                              dlWatcher->deleteLater();
+                                                              if (!guard) return;
+                                                              if (err.isEmpty()) {
+                                                                  QMessageBox::information(
+                                                                          guard, u"Download"_s,
+                                                                          u"Saved to:\n%1"_s.arg(localPath));
+                                                              } else {
+                                                                  QMessageBox::warning(
+                                                                          guard, u"Download"_s,
+                                                                          u"Download failed:\n%1"_s.arg(err));
+                                                              }
+                                                          });
+                                                  dlWatcher->setFuture(QtConcurrent::run(
+                                                          [url2, tok2, fn, localPath]() {
+                                                              BackendClient c(url2, tok2);
+                                                              QString err;
+                                                              c.downloadExport(fn, localPath, err);
+                                                              return err;
+                                                          }));
+                                              });
+                             QObject::connect(deleteBtn, &QPushButton::clicked, self.data(),
+                                              [self, fn]() {
+                                                  if (!self) return;
+                                                  const auto reply = QMessageBox::question(
+                                                          self, u"Delete export"_s,
+                                                          u"Remove '%1' from the Workspace Exports?\n"
+                                                          u"This cannot be undone."_s.arg(fn));
+                                                  if (reply != QMessageBox::Yes) return;
+                                                  const QString url2 = self->backendUrl;
+                                                  const QString tok2 = self->backendToken;
+                                                  QPointer<DataHubWidget> guard(self);
+                                                  auto *delWatcher = new QFutureWatcher<BackendWorkspaceDeleteResult>(self);
+                                                  QObject::connect(
+                                                          delWatcher, &QFutureWatcher<BackendWorkspaceDeleteResult>::finished,
+                                                          self.data(), [guard, delWatcher]() {
+                                                              const auto r = delWatcher->result();
+                                                              delWatcher->deleteLater();
+                                                              if (!guard) return;
+                                                              if (!r.valid) {
+                                                                  QMessageBox::warning(
+                                                                          guard, u"Delete export"_s,
+                                                                          u"Could not delete:\n%1"_s.arg(r.error));
+                                                              }
+                                                              guard->refreshWorkspaceExports();
+                                                          });
+                                                  delWatcher->setFuture(QtConcurrent::run(
+                                                          [url2, tok2, fn]() {
+                                                              BackendClient c(url2, tok2);
+                                                              return c.deleteExport(fn);
+                                                          }));
+                                              });
+
+                             lay->addWidget(row);
+                         }
+                         lay->addStretch(1);
+                     });
+    watcher->setFuture(QtConcurrent::run([url, tok]() {
+        BackendClient c(url, tok);
+        return c.listExports();
+    }));
+}
+
 // ── buildSystemInsightsPanel ──────────────────────────────────────────────────
 
 QFrame *DataHubWidget::buildSystemInsightsPanel()
@@ -1308,6 +1619,11 @@ void DataHubWidget::refreshStatus()
         // We're in the `health.ok` branch — every value is authoritative.
         // Populate the live activity readouts from the new health snapshot.
         this->updateSystemInsights(health);
+
+        // Same cadence keeps the Workspace Exports list in sync — new
+        // artefacts pushed by cube viewers (Tools → Export …) appear
+        // here without the user having to click Refresh.
+        this->refreshWorkspaceExports();
 
         // Bottom status bar: counts that aren't already in the top toolbar
         // (dataset count + currently-running tasks + sanity).

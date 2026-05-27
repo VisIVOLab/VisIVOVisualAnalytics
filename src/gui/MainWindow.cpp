@@ -165,6 +165,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     this->dataHub->setRecentDatasetsManager(this->recentMgr);
     QObject::connect(this->dataHub, &DataHubWidget::reopenDatasetRequested,
                      this, &MainWindow::reopenDataset);
+    // Workspace Exports: "Open in VisIVO" routes through the standard
+    // open-by-path flow so the artefact is registered as a session
+    // dataset and lands in a cube / image viewer just like any other
+    // dataset.
+    QObject::connect(this->dataHub, &DataHubWidget::openWorkspaceExportRequested,
+                     this, &MainWindow::doOpenDataPath);
 
     // Detach the .ui-defined central widget (the VLKB sky panel) but DO NOT
     // add it to the tab strip on startup. VLKB now opens on demand only —

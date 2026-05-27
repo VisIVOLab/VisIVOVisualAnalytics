@@ -5726,79 +5726,62 @@ void vtkWindowCube::exportSubCubeAsFits()
         return;
     }
 
-    // Native Save As — defer the heavy backend call until the user has
-    // picked a destination. Default basename includes the crop range so
-    // multiple exports of the same cube don't collide.
+    // Ask for the basename to save under in the **Workspace Exports**.
+    // Empty input → backend synthesises a name from source + crop range.
+    // The artefact stays on the backend; the user can browse / download /
+    // delete it later from the DataHub "Workspace Exports" panel.
     const QFileInfo srcInfo(this->filepath);
-    const QString suggested =
+    const QString defaultName =
             u"%1_subcube_x%2-%3_y%4-%5_z%6-%7.fits"_s
             .arg(srcInfo.completeBaseName())
             .arg(x0).arg(x1).arg(y0).arg(y1).arg(z0).arg(z1);
-    const QString defaultDir =
-            QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
-    const QString localPath = QFileDialog::getSaveFileName(
-            this, u"Save sub-cube as FITS"_s,
-            QDir(defaultDir.isEmpty() ? QDir::homePath() : defaultDir).filePath(suggested),
-            u"FITS files (*.fits *.fit);;All files (*)"_s);
-    if (localPath.isEmpty()) return;   // user cancelled
+    bool ok = false;
+    const QString basename = QInputDialog::getText(
+            this, u"Export Sub-Cube as FITS"_s,
+            u"Save in Workspace Exports as (.fits will be appended if missing;\n"
+            u"existing names get a _1, _2 suffix):"_s,
+            QLineEdit::Normal, defaultName, &ok);
+    if (!ok) return;   // user cancelled
 
     const QString url       = this->remoteBackendUrl;
     const QString token     = this->remoteBackendToken;
     const QString sessionId = this->remoteSessionId;
     const QString datasetId = this->remoteDatasetId;
 
-    this->statusBar()->showMessage(u"Exporting sub-cube as FITS…"_s, 0);
+    this->statusBar()->showMessage(u"Exporting sub-cube to workspace…"_s, 0);
 
-    // The QtConcurrent task does the compute (saveCubeSubregion writes the
-    // FITS to a backend temp path), then downloads the resulting file into
-    // the user-chosen localPath in a single shot. SubCubeExportResult
-    // bundles the backend response with the download error so we can
-    // distinguish the two failure modes in the success/error toast.
-    struct SubCubeExportResult {
-        BackendSaveSubregionResult backend;
-        QString downloadError;   // empty on success, populated on download failure
-    };
-    auto *watcher = new QFutureWatcher<SubCubeExportResult>(this);
+    auto *watcher = new QFutureWatcher<BackendSaveSubregionResult>(this);
     QPointer<vtkWindowCube> self(this);
-    QObject::connect(watcher, &QFutureWatcher<SubCubeExportResult>::finished, this,
-                     [self, watcher, localPath]() {
+    QObject::connect(watcher, &QFutureWatcher<BackendSaveSubregionResult>::finished, this,
+                     [self, watcher]() {
                          const auto r = watcher->result();
                          watcher->deleteLater();
                          if (!self) return;
                          self->statusBar()->clearMessage();
-                         if (!r.backend.valid) {
+                         if (!r.valid) {
                              QMessageBox::warning(self, u"Export Sub-Cube"_s,
-                                     u"Sub-cube export failed:\n\n%1"_s.arg(r.backend.error));
-                             return;
-                         }
-                         if (!r.downloadError.isEmpty()) {
-                             QMessageBox::warning(self, u"Export Sub-Cube"_s,
-                                     u"Sub-cube was written on the backend at\n\n"
-                                     u"%1\n\nbut downloading it to '%2' failed:\n\n%3"_s
-                                     .arg(r.backend.outputPath, localPath, r.downloadError));
+                                     u"Sub-cube export failed:\n\n%1"_s.arg(r.error));
                              return;
                          }
                          const QString msg =
-                                 u"Sub-cube saved.\n\n"
-                                 u"Path: %1\n"
-                                 u"Shape: %2 × %3 × %4 (W × H × channels)\n"
-                                 u"Backend dataset id: %5"_s
-                                 .arg(localPath)
-                                 .arg(r.backend.width).arg(r.backend.height).arg(r.backend.depth)
-                                 .arg(r.backend.newDatasetId);
+                                 u"Sub-cube saved to the Workspace Exports.\n\n"
+                                 u"Filename: %1\n"
+                                 u"Path: %2\n"
+                                 u"Shape: %3 × %4 × %5 (W × H × channels)\n\n"
+                                 u"Browse / download / delete from the\n"
+                                 u"Workspace Exports panel in the Data Hub.\n"
+                                 u"This sub-cube is also available in the current\n"
+                                 u"session as dataset '%6'."_s
+                                 .arg(r.workspaceFilename, r.outputPath)
+                                 .arg(r.width).arg(r.height).arg(r.depth)
+                                 .arg(r.newDatasetId);
                          QMessageBox::information(self, u"Export Sub-Cube"_s, msg);
                      });
     watcher->setFuture(QtConcurrent::run(
-            [url, token, sessionId, datasetId, x0, x1, y0, y1, z0, z1, localPath]() {
+            [url, token, sessionId, datasetId, x0, x1, y0, y1, z0, z1, basename]() {
                 BackendClient c(url, token);
                 c.setSessionId(sessionId);
-                SubCubeExportResult out;
-                out.backend = c.saveCubeSubregion(datasetId, x0, x1, y0, y1, z0, z1);
-                if (out.backend.valid) {
-                    c.downloadExportFile(out.backend.outputPath, localPath,
-                                         out.downloadError);
-                }
-                return out;
+                return c.saveCubeSubregion(datasetId, x0, x1, y0, y1, z0, z1, basename);
             }));
 }
 
@@ -5815,18 +5798,18 @@ void vtkWindowCube::exportMomentMapAsFits()
         return;
     }
 
-    // Native Save As — defer the heavy backend call until the user has
-    // picked a destination. Default basename: "<src>_m{order}.fits".
+    // Ask for the basename to save under in the Workspace Exports. Empty
+    // input → backend synthesises a name from source + order.
     const QFileInfo srcInfo(this->filepath);
-    const QString suggested =
+    const QString defaultName =
             u"%1_m%2.fits"_s.arg(srcInfo.completeBaseName()).arg(cfg.order);
-    const QString defaultDir =
-            QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
-    const QString localPath = QFileDialog::getSaveFileName(
-            this, u"Save moment map as FITS"_s,
-            QDir(defaultDir.isEmpty() ? QDir::homePath() : defaultDir).filePath(suggested),
-            u"FITS files (*.fits *.fit);;All files (*)"_s);
-    if (localPath.isEmpty()) return;   // user cancelled
+    bool ok = false;
+    const QString basename = QInputDialog::getText(
+            this, u"Export Moment as FITS"_s,
+            u"Save in Workspace Exports as (.fits will be appended if missing;\n"
+            u"existing names get a _1, _2 suffix):"_s,
+            QLineEdit::Normal, defaultName, &ok);
+    if (!ok) return;
 
     const QString url       = this->remoteBackendUrl;
     const QString token     = this->remoteBackendToken;
@@ -5839,61 +5822,44 @@ void vtkWindowCube::exportMomentMapAsFits()
     const double thresholdValue = cfg.thresholdValue;
 
     this->statusBar()->showMessage(
-            u"Exporting moment-%1 map as FITS…"_s.arg(order), 0);
+            u"Exporting moment-%1 map to workspace…"_s.arg(order), 0);
 
-    // Bundle backend response + download error so we can distinguish
-    // "compute failed" from "compute ok but the local write failed".
-    struct MomentExportResult {
-        BackendSaveMomentFitsResult backend;
-        QString downloadError;
-    };
-    auto *watcher = new QFutureWatcher<MomentExportResult>(this);
+    auto *watcher = new QFutureWatcher<BackendSaveMomentFitsResult>(this);
     QPointer<vtkWindowCube> self(this);
-    QObject::connect(watcher, &QFutureWatcher<MomentExportResult>::finished, this,
-                     [self, watcher, order, localPath]() {
+    QObject::connect(watcher, &QFutureWatcher<BackendSaveMomentFitsResult>::finished, this,
+                     [self, watcher, order]() {
                          const auto r = watcher->result();
                          watcher->deleteLater();
                          if (!self) return;
                          self->statusBar()->clearMessage();
-                         if (!r.backend.valid) {
+                         if (!r.valid) {
                              QMessageBox::warning(self,
                                      u"Export Moment as FITS"_s,
-                                     u"Moment FITS export failed:\n\n%1"_s.arg(r.backend.error));
-                             return;
-                         }
-                         if (!r.downloadError.isEmpty()) {
-                             QMessageBox::warning(self,
-                                     u"Export Moment as FITS"_s,
-                                     u"Moment FITS was written on the backend at\n\n"
-                                     u"%1\n\nbut downloading it to '%2' failed:\n\n%3"_s
-                                     .arg(r.backend.outputPath, localPath, r.downloadError));
+                                     u"Moment FITS export failed:\n\n%1"_s.arg(r.error));
                              return;
                          }
                          QString msg =
-                                 u"Moment-%1 map saved.\n\n"
-                                 u"Path: %2\n"
-                                 u"Shape: %3 × %4 (W × H)"_s
-                                 .arg(order).arg(localPath)
-                                 .arg(r.backend.width).arg(r.backend.height);
-                         if (!r.backend.bunit.isEmpty()) {
-                             msg += u"\nBUNIT: %1"_s.arg(r.backend.bunit);
+                                 u"Moment-%1 map saved to the Workspace Exports.\n\n"
+                                 u"Filename: %2\n"
+                                 u"Path: %3\n"
+                                 u"Shape: %4 × %5 (W × H)"_s
+                                 .arg(order).arg(r.workspaceFilename, r.outputPath)
+                                 .arg(r.width).arg(r.height);
+                         if (!r.bunit.isEmpty()) {
+                             msg += u"\nBUNIT: %1"_s.arg(r.bunit);
                          }
+                         msg += u"\n\nBrowse / download / delete from the\n"
+                                u"Workspace Exports panel in the Data Hub."_s;
                          QMessageBox::information(self,
                                  u"Export Moment as FITS"_s, msg);
                      });
     watcher->setFuture(QtConcurrent::run(
             [url, token, sessionId, datasetId, order, chStart, chEnd,
-             maskEnabled, thresholdValue, localPath]() {
+             maskEnabled, thresholdValue, basename]() {
                 BackendClient c(url, token);
                 c.setSessionId(sessionId);
-                MomentExportResult out;
-                out.backend = c.saveMomentFits(datasetId, order, chStart, chEnd,
-                                               maskEnabled, thresholdValue);
-                if (out.backend.valid) {
-                    c.downloadExportFile(out.backend.outputPath, localPath,
-                                         out.downloadError);
-                }
-                return out;
+                return c.saveMomentFits(datasetId, order, chStart, chEnd,
+                                        maskEnabled, thresholdValue, basename);
             }));
 }
 

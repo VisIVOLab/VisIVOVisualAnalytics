@@ -4,7 +4,6 @@ from typing import Any
 import uuid
 import logging
 import os
-import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
 import base64
@@ -56,12 +55,16 @@ class MomentSaveFitsRequest(BaseModel):
     channel_end: int = 0
     mask_enabled: bool = False
     threshold_value: float = 0.0
+    # Workspace Exports filename (basename only). Empty → synthesised
+    # from source name + moment order.
+    output_basename: str = ""
 
 
 class MomentSaveFitsResponse(BaseModel):
     valid: bool
     error: str = ""
     output_path: str = ""
+    workspace_filename: str = ""
     width: int = 0
     height: int = 0
     range_min: float = 0.0
@@ -77,19 +80,19 @@ async def moment_save_fits(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> MomentSaveFitsResponse:
-    """Compute the requested moment and write it to a standalone 2-D FITS
-    file (celestial WCS + ``BUNIT`` derived from the cube)."""
+    """Compute the requested moment and persist it in the **Workspace
+    Exports** dir as a 2-D FITS file (celestial WCS + ``BUNIT`` derived
+    from the cube). Collisions are resolved with a numeric suffix."""
     from ..compute import worker_moment_save_fits  # noqa: PLC0415
     try:
         entry = _require_dataset(session, request.dataset_id)
         if entry["kind"] != "cube":
             raise HTTPException(422, "Moment FITS export requires a spectral cube dataset.")
 
-        tmp_dir = Path(tempfile.gettempdir()) / "visivo_moment_fits"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        output_path = str(
-            tmp_dir / f"{uuid.uuid4().hex}_m{int(request.moment_order)}.fits"
-        )
+        src_stem = Path(entry["path"]).stem
+        default_basename = f"{src_stem}_m{int(request.moment_order)}.fits"
+        basename = request.output_basename.strip() or default_basename
+        output_path = str(make_workspace_path(basename))
 
         result = await _run_heavy_with_limit(
             session,
@@ -108,11 +111,12 @@ async def moment_save_fits(
         logger.warning("[moment_fits] failed dataset_id=%s error=%s",
                        request.dataset_id, exc)
         return MomentSaveFitsResponse(valid=False, error=str(exc))
-    return MomentSaveFitsResponse(valid=True, **{
-        k: result[k] for k in
-        ("output_path", "width", "height", "range_min", "range_max",
-         "bunit", "moment_unit")
-    })
+    workspace_filename = Path(result["output_path"]).name
+    return MomentSaveFitsResponse(
+        valid=True, workspace_filename=workspace_filename,
+        **{k: result[k] for k in
+           ("output_path", "width", "height", "range_min", "range_max",
+            "bunit", "moment_unit")})
 
 @router.post("/v1/products/isosurface", response_model=IsosurfaceProductResponse, tags=["products"])
 async def isosurface_product(

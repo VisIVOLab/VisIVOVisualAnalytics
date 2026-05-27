@@ -4,7 +4,6 @@ from typing import Any
 import uuid
 import logging
 import os
-import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
 import base64
@@ -122,6 +121,9 @@ class CubeSaveSubregionRequest(BaseModel):
     y1: int
     z0: int
     z1: int
+    # Persistent Workspace Exports filename (basename only — no slashes).
+    # If empty, a default is synthesised from source name + crop range.
+    output_basename: str = ""
 
 
 class CubeSaveSubregionResponse(BaseModel):
@@ -129,6 +131,7 @@ class CubeSaveSubregionResponse(BaseModel):
     error: str = ""
     new_dataset_id: str = ""
     output_path: str = ""
+    workspace_filename: str = ""
     width: int = 0
     height: int = 0
     depth: int = 0
@@ -143,17 +146,27 @@ async def cube_save_subregion(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> CubeSaveSubregionResponse:
-    """Crop the source cube to ``[z0..z1, y0..y1, x0..x1]`` and persist the
-    result as a standalone FITS file (WCS preserved, CRPIX shifted)."""
+    """Crop the source cube to ``[z0..z1, y0..y1, x0..x1]`` and persist it
+    in the **Workspace Exports** dir (default ``~/.visivo/exports/``).
+
+    Filename collisions are resolved by suffixing ``_1``, ``_2``, … so the
+    user never silently overwrites a previous export."""
     from ..compute import worker_cube_save_subregion  # noqa: PLC0415
     try:
         entry = _require_dataset(session, request.dataset_id)
         if entry["kind"] != "cube":
             raise HTTPException(422, "Sub-cube export requires a spectral cube dataset.")
 
-        tmp_dir = Path(tempfile.gettempdir()) / "visivo_subregion"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        output_path = str(tmp_dir / f"{uuid.uuid4().hex}_subcube.fits")
+        # Default basename: <src_stem>_subcube_x<a>-<b>_y<a>-<b>_z<a>-<b>.fits
+        # — encodes the crop in the filename so the user can tell apart
+        # exports from the same parent cube at a glance.
+        src_stem = Path(entry["path"]).stem
+        default_basename = (
+            f"{src_stem}_subcube_x{request.x0}-{request.x1}"
+            f"_y{request.y0}-{request.y1}_z{request.z0}-{request.z1}.fits"
+        )
+        basename = request.output_basename.strip() or default_basename
+        output_path = str(make_workspace_path(basename))
 
         result = await _run_with_limit(
             session,
@@ -177,6 +190,7 @@ async def cube_save_subregion(
         "height": result["height"],
         "depth":  result["depth"],
     }
+    workspace_filename = Path(result["output_path"]).name
     logger.info(
         "[save_subregion] registered new dataset  new_id=%s  path=%s  "
         "shape=(d=%s, h=%s, w=%s)",
@@ -184,10 +198,10 @@ async def cube_save_subregion(
         result["depth"], result["height"], result["width"],
     )
     return CubeSaveSubregionResponse(
-        valid=True, new_dataset_id=new_id, **{
-            k: result[k] for k in
-            ("output_path", "width", "height", "depth", "range_min", "range_max")
-        })
+        valid=True, new_dataset_id=new_id,
+        workspace_filename=workspace_filename,
+        **{k: result[k] for k in
+           ("output_path", "width", "height", "depth", "range_min", "range_max")})
 
 
 @router.post("/v1/cube/pv", response_model=CubePvResponse, tags=["cube"])

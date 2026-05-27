@@ -66,6 +66,10 @@ signals:
     // MainWindow handles this by reopening the dataset using the stored path.
     void reopenDatasetRequested(const RecentDataset &dataset);
 
+    // Emitted when the user clicks "Open in VisIVO" in the Workspace
+    // Exports panel; the host opens @p absolutePath as a new dataset.
+    void openWorkspaceExportRequested(const QString &absolutePath);
+
 private:
     // ── Builder helpers ───────────────────────────────────────────────────────
     void buildUi();
@@ -79,6 +83,10 @@ private:
     QFrame *buildSearchBar();             // global ⌘K search bar at top
     QFrame *buildQuickActionsList();      // compact vertical list (replaces 4-card grid)
     QFrame *buildLast5JobsPanel();        // recent-tasks feed extracted from old insights
+    QFrame *buildWorkspaceExportsPanel(); // persistent FITS exports from cube viewers
+    /// Re-fetch the workspace exports list from the backend asynchronously
+    /// and rebuild the panel rows. Idempotent; safe to call frequently.
+    void refreshWorkspaceExports();
 
     // Creates a single interactive action card (icon symbol + title + desc).
     // Installs an event filter so the frame emits the given signal on click.
@@ -123,6 +131,12 @@ QFrame *makeActionCard(const QString &iconKind, const QString &title,
     // Recent datasets — manager pointer (not owned), layout for dynamic items.
     RecentDatasetsManager *recentMgr{ nullptr };
     QPointer<QVBoxLayout>  recentItemsLayout;
+
+    // Workspace Exports — populated by refreshWorkspaceExports().
+    QPointer<QFrame>      m_exportsCard;
+    QPointer<QVBoxLayout> m_exportsItemsLayout;
+    QPointer<QLabel>      m_exportsCountLabel;
+    QPointer<QLabel>      m_exportsEmptyLabel;
 };
 
 #endif // DataHubWidget_h

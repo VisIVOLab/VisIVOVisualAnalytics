@@ -69,6 +69,76 @@ _HIPS_CACHE_CLEANUP_INTERVAL_SECONDS: int = int(
     os.environ.get("VISIVO_HIPS_CACHE_CLEANUP_INTERVAL", "60")
 )
 
+# ── Workspace Exports directory ────────────────────────────────────────────────
+# Persistent landing zone for FITS artefacts produced by VisIVO's "export"
+# workers (sub-cube crops, moment-map FITS). Unlike tempdir outputs, files
+# here survive across sessions and are browsable / re-openable from the
+# client's Workspace Exports panel. Files are flat-namespaced; basename
+# collisions are resolved by `make_workspace_path()` with a numeric suffix.
+_EXPORTS_DIR = _Path(
+    os.environ.get(
+        "VISIVO_EXPORTS_DIR",
+        str(_Path.home() / ".visivo" / "exports"),
+    )
+)
+_EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def get_exports_dir() -> _Path:
+    """Return the (created) workspace exports directory."""
+    return _EXPORTS_DIR
+
+
+def make_workspace_path(basename: str) -> _Path:
+    """Resolve a user-provided basename into a safe workspace path,
+    auto-suffixing on collision (``cube.fits`` → ``cube_1.fits`` → …).
+
+    The basename is sanitised: any directory separators are stripped so
+    callers cannot break out of the workspace; an empty / dot-only name
+    falls back to ``export.fits``.
+    """
+    raw = (basename or "").strip()
+    # Collapse path traversal: take only the final component, strip leading
+    # dots (no hidden files), and refuse the empty string.
+    safe = _Path(raw).name.lstrip(".")
+    if not safe:
+        safe = "export.fits"
+    # If no extension, default to .fits (the only artefact type for now).
+    if "." not in safe:
+        safe = safe + ".fits"
+    candidate = _EXPORTS_DIR / safe
+    if not candidate.exists():
+        return candidate
+    stem = candidate.stem
+    suffix = candidate.suffix
+    for n in range(1, 10000):
+        alt = _EXPORTS_DIR / f"{stem}_{n}{suffix}"
+        if not alt.exists():
+            return alt
+    # Pathological: 10k+ collisions on the same basename. Caller likely has a
+    # bug; fail loud rather than overwrite.
+    raise RuntimeError(
+        f"Too many basename collisions for '{safe}' in {_EXPORTS_DIR}"
+    )
+
+
+def resolve_workspace_path(filename: str) -> _Path:
+    """Resolve a workspace-relative filename to its absolute path,
+    refusing any input that tries to escape ``_EXPORTS_DIR``.
+
+    Raises ``ValueError`` on traversal attempts; the file does NOT need
+    to exist (callers can use the returned path to check existence or
+    construct new files).
+    """
+    raw = (filename or "").strip()
+    if not raw:
+        raise ValueError("Empty filename.")
+    safe = _Path(raw).name
+    if safe != raw or safe in (".", ".."):
+        raise ValueError(f"Invalid workspace filename: {filename!r}")
+    return _EXPORTS_DIR / safe
+
+
 _HEALPY_AVAILABLE = False
 try:
     import healpy as _hp  # type: ignore
@@ -92,6 +162,8 @@ __all__ = [
     "_COSMOLOGY_MODELS",
     "_HIPS_CACHE_DIR", "_HIPS_CACHE_MAX_BYTES", "_HIPS_CACHE_TTL_SECONDS",
     "_HIPS_CACHE_CLEANUP_INTERVAL_SECONDS",
+    "_EXPORTS_DIR", "get_exports_dir", "make_workspace_path",
+    "resolve_workspace_path",
     "_HEALPY_AVAILABLE",
     "_RA_CANDIDATES", "_DEC_CANDIDATES",
     "_default_worker_count", "_pool_initializer", "_error",
