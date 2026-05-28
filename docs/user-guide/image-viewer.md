@@ -157,15 +157,18 @@ Text and arrow annotations can be placed interactively on the image:
   to a crosshair. Click anywhere on the image to place the label.
 - **Add Arrow…** — a dialog asks for an optional label, then the
   cursor changes to a crosshair. **First click** sets the arrow tip;
-  **second click** sets the label position. A line connects the two.
+  a live preview follows the mouse showing the shaft and arrowhead.
+  **Second click** sets the label position.
 - Right-click cancels placement without adding the annotation.
 - **Clear All** removes every annotation.
-- **Save / Load** — annotations are persisted to a JSON sidecar file
-  (`<fits-path>.annotations.json`) next to the dataset. Reloading the
-  same dataset and clicking **Load** restores them.
+- **Save** — opens a native Save dialog (default name
+  `<fits-name>.annotations.json`) so you can choose any location.
+- **Load** — opens a native Open dialog to pick an annotation JSON
+  file.
 
 Annotation text is rendered as bold yellow `vtkTextActor` labels;
-arrows use `vtkLineSource` with matching colour.
+arrows have a fixed-size arrowhead (8 px, capped at 30 % of the shaft
+for very short arrows) so the indicator stays readable at any zoom.
 
 ## Blink / Compare
 
