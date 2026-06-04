@@ -456,6 +456,7 @@ client without the user having to remember a path.
 | Endpoint | Writer | Produces |
 |----------|--------|----------|
 | `POST /v1/cube/save_subregion`    | `worker_cube_save_subregion` | Cropped 3-D FITS (WCS preserved, CRPIX shifted). Also registered as a new session dataset so the client can immediately open it without re-uploading. |
+| `POST /v1/cube/save_channel_2d`   | `worker_cube_save_channel_2d` | A **single channel** of a cube written as a standalone 2-D FITS (NAXIS=2, spectral axis dropped via `WCS.celestial`). Header retains `BUNIT`, `OBJECT`, telescope keys and adds `SPECVAL`/`SPECTYPE`/`SPECUNIT` recording the source channel's spectral coordinate so downstream client tools (Stokes / spectral index / Faraday RM) can prompt the user with the right frequency. Result is registered as a new `image` dataset. |
 | `POST /v1/products/moment_fits`   | `worker_moment_save_fits`    | 2-D moment FITS (celestial WCS + BUNIT). Not registered as a session dataset (it's an image, not a cube). |
 
 Both accept an optional `output_basename`; empty defaults to a

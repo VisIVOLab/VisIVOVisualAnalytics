@@ -1302,6 +1302,29 @@ BackendSaveSubregionResult BackendClient::saveCubeSubregion(
     return parseSaveSubregionObject(QJsonDocument::fromJson(raw).object());
 }
 
+// ── Cube channel → 2-D FITS export ─────────────────────────────────────────
+
+BackendSaveChannel2dResult BackendClient::saveCubeChannelAs2dFits(
+        const QString &datasetId,
+        int channel,
+        const QString &outputBasename)
+{
+    BackendSaveChannel2dResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"),      datasetId },
+            { QStringLiteral("channel"),         channel },
+            { QStringLiteral("output_basename"), outputBasename } });
+    const QByteArray raw =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/save_channel_2d")),
+                        body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    return parseSaveChannel2dObject(QJsonDocument::fromJson(raw).object());
+}
+
 // ── Moment map → Workspace Exports ─────────────────────────────────────────
 
 BackendSaveMomentFitsResult BackendClient::saveMomentFits(
@@ -1813,6 +1836,22 @@ BackendSaveSubregionResult BackendClient::parseSaveSubregionObject(const QJsonOb
     result.width             = obj.value(QStringLiteral("width")).toInt();
     result.height            = obj.value(QStringLiteral("height")).toInt();
     result.depth             = obj.value(QStringLiteral("depth")).toInt();
+    result.rangeMin          = obj.value(QStringLiteral("range_min")).toDouble();
+    result.rangeMax          = obj.value(QStringLiteral("range_max")).toDouble();
+    return result;
+}
+
+BackendSaveChannel2dResult BackendClient::parseSaveChannel2dObject(const QJsonObject &obj)
+{
+    BackendSaveChannel2dResult result;
+    result.valid             = obj.value(QStringLiteral("valid")).toBool(false);
+    result.error             = obj.value(QStringLiteral("error")).toString();
+    result.newDatasetId      = obj.value(QStringLiteral("new_dataset_id")).toString();
+    result.outputPath        = obj.value(QStringLiteral("output_path")).toString();
+    result.workspaceFilename = obj.value(QStringLiteral("workspace_filename")).toString();
+    result.width             = obj.value(QStringLiteral("width")).toInt();
+    result.height            = obj.value(QStringLiteral("height")).toInt();
+    result.channel           = obj.value(QStringLiteral("channel")).toInt();
     result.rangeMin          = obj.value(QStringLiteral("range_min")).toDouble();
     result.rangeMax          = obj.value(QStringLiteral("range_max")).toDouble();
     return result;

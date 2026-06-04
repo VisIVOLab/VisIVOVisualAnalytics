@@ -108,7 +108,8 @@ heavier compute, in this order:
 * - **ANALYSIS**
   - Estimate Noise, Compute Moment, Line-width Map, Baseline Subtraction,
     Stack Spectral Cubes, Extract PV Diagram, **Channel Maps**,
-    Export Sub-Cube as FITS, Export Moment Map as FITS
+    Export Sub-Cube as FITS, Export Current Channel as 2-D FITS,
+    Export Moment Map as FITS
   - Compute-on-cube tools that produce a derived map / cube / spectrum.
     All run on the backend with the heavy-task throttle, so the viewer
     stays interactive.
@@ -401,6 +402,16 @@ with the ``VISIVO_EXPORTS_DIR`` environment variable):
   spectral coordinates. The sub-cube is also registered as a new dataset
   in the active session, so you can immediately open it in a new cube
   viewer.
+- **Tools → Export Current Channel as 2-D FITS…** — save the channel
+  that is currently displayed on the slice slider as a **standalone
+  2-D FITS image** (``NAXIS=2`` — the spectral axis is dropped, not
+  kept as a degenerate dimension). Used by the Stokes / spectral
+  index / Faraday-RM workflows in the image viewer: it gives you a
+  single-frequency 2-D map per click. Header keeps ``BUNIT``,
+  ``OBJECT``, the celestial WCS (axes 1 + 2) plus ``SPECVAL`` /
+  ``SPECTYPE`` / ``SPECUNIT`` recording the spectral coordinate of the
+  exported channel, so you can later look up the frequency / velocity
+  for the spectral-index and RM dialogs.
 - **Tools → Export Moment Map as FITS…** — persist the moment currently
   on screen as a 2-D FITS (celestial WCS, ``BUNIT`` derived from the
   cube). Disabled until a moment has been computed.

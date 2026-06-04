@@ -570,6 +570,25 @@ struct BackendSaveSubregionResult
     double rangeMax{ 0. };
 };
 
+// ── Single-channel 2-D FITS export from a cube ───────────────────────────────
+
+struct BackendSaveChannel2dResult
+{
+    bool valid{ false };
+    QString error;
+    /// ID of the newly registered 2-D image dataset on the backend session.
+    QString newDatasetId;
+    /// On-disk path of the saved 2-D FITS in the Workspace Exports dir.
+    QString outputPath;
+    /// Basename of the artefact within the Workspace Exports dir.
+    QString workspaceFilename;
+    int width{ 0 };
+    int height{ 0 };
+    int channel{ 0 };
+    double rangeMin{ 0. };
+    double rangeMax{ 0. };
+};
+
 // ── Moment map → standalone FITS export ──────────────────────────────────────
 
 struct BackendSaveMomentFitsResult
@@ -1001,6 +1020,7 @@ public:
     /// so they can be unit-tested without a live HTTP server (mirrors the
     /// pattern used by parseNoiseResultObject above).
     static BackendSaveSubregionResult       parseSaveSubregionObject(const QJsonObject &object);
+    static BackendSaveChannel2dResult       parseSaveChannel2dObject(const QJsonObject &object);
     static BackendSaveMomentFitsResult      parseSaveMomentFitsObject(const QJsonObject &object);
     static BackendWorkspaceExportsList      parseExportsListObject(const QJsonObject &object);
     static BackendWorkspaceDeleteResult     parseExportsDeleteObject(const QJsonObject &object);
@@ -1051,6 +1071,16 @@ public:
                                                   int y0, int y1,
                                                   int z0, int z1,
                                                   const QString &outputBasename = {});
+
+    /** POST /v1/cube/save_channel_2d — extract a single channel of the cube
+     *  and write it as a **standalone 2-D FITS image** (NAXIS=2, no
+     *  degenerate spectral axis). The result is registered as a new ``image``
+     *  dataset on the backend session and lands in the Workspace Exports dir.
+     *  Used by the Stokes / spectral-index / Faraday-RM workflows when you
+     *  need several single-frequency 2-D maps from one or more cubes. */
+    BackendSaveChannel2dResult saveCubeChannelAs2dFits(const QString &datasetId,
+                                                        int channel,
+                                                        const QString &outputBasename = {});
 
     // ── Moment map → Workspace Exports ────────────────────────────────────────
     /** POST /v1/products/moment_fits — compute the requested moment and

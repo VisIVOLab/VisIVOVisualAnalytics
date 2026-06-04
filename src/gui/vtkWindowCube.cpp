@@ -2632,6 +2632,15 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(actExportSubCube, &QAction::triggered,
                      this, &vtkWindowCube::exportSubCubeAsFits);
 
+    auto *actExportChannel2d = ui->menuTools->addAction(
+            u"Export Current Channel as 2-D FITS…"_s);
+    actExportChannel2d->setToolTip(
+            u"Save the currently displayed channel as a true 2-D FITS image "
+            u"(no degenerate spectral axis). Use this to extract Q/U/I/V at a "
+            u"single frequency for the Stokes / spectral-index workflows."_s);
+    QObject::connect(actExportChannel2d, &QAction::triggered,
+                     this, &vtkWindowCube::exportCurrentChannelAs2dFits);
+
     m_actExportMomentFits = ui->menuTools->addAction(u"Export Moment Map as FITS…"_s);
     m_actExportMomentFits->setToolTip(
             u"Persist the moment map currently displayed in the 2-D view "
@@ -5911,6 +5920,74 @@ void vtkWindowCube::exportSubCubeAsFits()
                 BackendClient c(url, token);
                 c.setSessionId(sessionId);
                 return c.saveCubeSubregion(datasetId, x0, x1, y0, y1, z0, z1, basename);
+            }));
+}
+
+void vtkWindowCube::exportCurrentChannelAs2dFits()
+{
+    if (this->remoteDatasetDepth <= 0) {
+        QMessageBox::warning(this, u"Export Channel"_s,
+                u"This dataset has no spectral axis to extract a channel from."_s);
+        return;
+    }
+
+    const int channel = std::clamp(ui->sliderSlice->value() - 1,
+                                   0, this->remoteDatasetDepth - 1);
+
+    const QFileInfo srcInfo(this->filepath);
+    const QString defaultName =
+            u"%1_ch%2.fits"_s.arg(srcInfo.completeBaseName())
+                              .arg(channel, 4, 10, QChar(u'0'));
+
+    bool ok = false;
+    const QString basename = QInputDialog::getText(
+            this, u"Export Current Channel as 2-D FITS"_s,
+            u"Save in Workspace Exports as (.fits is appended if missing;\n"
+            u"existing names get a _1, _2 suffix):"_s,
+            QLineEdit::Normal, defaultName, &ok);
+    if (!ok) return;
+
+    const QString url       = this->remoteBackendUrl;
+    const QString token     = this->remoteBackendToken;
+    const QString sessionId = this->remoteSessionId;
+    const QString datasetId = this->remoteDatasetId;
+
+    this->statusBar()->showMessage(
+            QStringLiteral("Exporting channel %1 to workspace…").arg(channel), 0);
+
+    auto *watcher = new QFutureWatcher<BackendSaveChannel2dResult>(this);
+    QPointer<vtkWindowCube> self(this);
+    QObject::connect(watcher, &QFutureWatcher<BackendSaveChannel2dResult>::finished, this,
+                     [self, watcher]() {
+                         const auto r = watcher->result();
+                         watcher->deleteLater();
+                         if (!self) return;
+                         self->statusBar()->clearMessage();
+                         if (!r.valid) {
+                             QMessageBox::warning(self, u"Export Channel"_s,
+                                     u"Channel export failed:\n\n%1"_s.arg(r.error));
+                             return;
+                         }
+                         emit self->workspaceExportsChanged();
+                         const QString msg =
+                                 u"Channel saved to the Workspace Exports as 2-D FITS.\n\n"
+                                 u"Filename: %1\n"
+                                 u"Path: %2\n"
+                                 u"Shape: %3 × %4 (W × H)\n"
+                                 u"Channel: %5\n\n"
+                                 u"Browse / download / delete from the\n"
+                                 u"Workspace Exports panel in the Data Hub.\n"
+                                 u"Open the file in the image viewer to use it in the\n"
+                                 u"Stokes / spectral-index / Faraday-RM workflows."_s
+                                 .arg(r.workspaceFilename, r.outputPath)
+                                 .arg(r.width).arg(r.height).arg(r.channel);
+                         QMessageBox::information(self, u"Export Channel"_s, msg);
+                     });
+    watcher->setFuture(QtConcurrent::run(
+            [url, token, sessionId, datasetId, channel, basename]() {
+                BackendClient c(url, token);
+                c.setSessionId(sessionId);
+                return c.saveCubeChannelAs2dFits(datasetId, channel, basename);
             }));
 }
 

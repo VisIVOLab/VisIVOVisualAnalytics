@@ -397,6 +397,109 @@ def worker_cube_save_subregion(
     }
 
 
+def worker_cube_save_channel_2d(
+    src_path: str,
+    output_path: str,
+    channel: int,
+) -> dict[str, Any]:
+    """Extract a single spectral channel from a 3-D cube and write it as a
+    **standalone 2-D FITS image** at ``output_path``.
+
+    Unlike :func:`worker_cube_save_subregion` with a 1-channel z-range — which
+    keeps the spectral axis degenerate — this writer drops the spectral axis
+    entirely, so the output is `NAXIS=2` and opens directly in the image
+    viewer. Designed for the Stokes-analysis workflow where the user needs
+    several single-frequency 2-D maps (Q, U, I, V at one channel each).
+
+    The output header inherits ``BUNIT``, ``OBJECT``, the **celestial** WCS
+    of the source cube (axes 1 and 2 only) and a HISTORY card recording the
+    source file and the channel that was extracted.
+    """
+    from astropy.io import fits as _fits  # noqa: PLC0415
+    from astropy.wcs import WCS as _WCS   # noqa: PLC0415
+
+    dataset = ScientificFitsDataset(src_path)
+    hdul, raw = dataset.open_memmap()
+    try:
+        data = dataset.squeeze_to_3d(raw)
+        if data.ndim != 3:
+            raise ValueError("Channel extraction requires a 3-D cube dataset.")
+        depth, height, width = data.shape
+        ch = int(channel)
+        if ch < 0 or ch >= depth:
+            raise ValueError(
+                f"Channel {ch} is out of range (cube has {depth} channels)."
+            )
+        plane = np.asarray(data[ch, :, :], dtype=np.float32).copy()
+        src_header = hdul[0].header.copy()
+    finally:
+        hdul.close()
+
+    # Build a clean 2-D header from the source WCS by projecting away the
+    # spectral / Stokes axes. This is the same trick used by
+    # worker_moment_save_fits — it gives us a valid (RA, Dec) / (l, b) WCS
+    # with no degenerate axis.
+    try:
+        wcs2d = _WCS(src_header, relax=True).celestial
+        out_header = wcs2d.to_header()
+    except Exception as exc:
+        logger.warning(
+            "[save_channel_2d] WCS extraction failed for %s (%s) — "
+            "writing array with no celestial WCS.", src_path, exc,
+        )
+        out_header = _fits.Header()
+
+    out_header["NAXIS"]  = 2
+    out_header["NAXIS1"] = int(plane.shape[1])
+    out_header["NAXIS2"] = int(plane.shape[0])
+    for key in ("BUNIT", "OBJECT", "TELESCOP", "INSTRUME"):
+        if key in src_header:
+            out_header[key] = src_header[key]
+
+    # Record the source channel's spectral coordinate (e.g. central frequency)
+    # so the user knows what frequency this 2-D map represents — vital for
+    # the Stokes / spectral-index / Faraday-RM workflows in the image viewer.
+    if "CRVAL3" in src_header and "CRPIX3" in src_header and "CDELT3" in src_header:
+        try:
+            spec_value = (
+                float(src_header["CRVAL3"])
+                + (float(ch + 1) - float(src_header["CRPIX3"]))
+                * float(src_header["CDELT3"])
+            )
+            out_header["SPECVAL"] = (spec_value, "Spectral coord of channel")
+            for key in ("CTYPE3", "CUNIT3"):
+                if key in src_header:
+                    out_header["SPECTYPE" if key == "CTYPE3" else "SPECUNIT"] = (
+                        src_header[key],
+                        "Spectral axis type/unit of source cube",
+                    )
+        except Exception:
+            pass
+
+    out_header.add_history(
+        f"VisIVO 2-D channel export from {Path(src_path).name}: "
+        f"channel {ch} (0-indexed)"
+    )
+
+    logger.info(
+        "[save_channel_2d] writing FITS  src=%s  out=%s  channel=%s  shape=%s",
+        src_path, output_path, ch, plane.shape,
+    )
+    primary_hdu = _fits.PrimaryHDU(data=plane, header=out_header)
+    _fits.HDUList([primary_hdu]).writeto(output_path, overwrite=True)
+    logger.info("[save_channel_2d] FITS written successfully")
+
+    range_min, range_max = _finite_range(plane)
+    return {
+        "width":  int(plane.shape[1]),
+        "height": int(plane.shape[0]),
+        "channel": ch,
+        "range_min": float(range_min),
+        "range_max": float(range_max),
+        "output_path": output_path,
+    }
+
+
 # ── Worker: moment map ────────────────────────────────────────────────────────
 
 

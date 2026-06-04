@@ -204,6 +204,87 @@ async def cube_save_subregion(
            ("output_path", "width", "height", "depth", "range_min", "range_max")})
 
 
+# ── Single-channel 2-D FITS export ───────────────────────────────────────────
+
+class CubeSaveChannel2dRequest(BaseModel):
+    dataset_id: str
+    channel: int  # 0-indexed
+    output_basename: str = ""
+
+
+class CubeSaveChannel2dResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    new_dataset_id: str = ""
+    output_path: str = ""
+    workspace_filename: str = ""
+    width: int = 0
+    height: int = 0
+    channel: int = 0
+    range_min: float = 0.0
+    range_max: float = 0.0
+
+
+@router.post("/v1/cube/save_channel_2d",
+             response_model=CubeSaveChannel2dResponse, tags=["cube"])
+async def cube_save_channel_2d(
+    request: CubeSaveChannel2dRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> CubeSaveChannel2dResponse:
+    """Extract a single channel of a cube as a **standalone 2-D FITS image**.
+
+    Unlike ``/v1/cube/save_subregion`` with a 1-channel z-range — which writes
+    a degenerate 3-D cube (NAXIS=3 with depth=1) — this endpoint writes a
+    proper 2-D file (NAXIS=2) so the image viewer opens it directly without
+    the spectral axis stub. Used by the Stokes / spectral-index workflow:
+    extract single-channel Q, U, I, V at the same frequency, then compute
+    the derived maps client-side."""
+    from ..compute import worker_cube_save_channel_2d  # noqa: PLC0415
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "cube":
+            raise HTTPException(422, "Channel export requires a spectral cube dataset.")
+
+        src_stem = Path(entry["path"]).stem
+        default_basename = f"{src_stem}_ch{request.channel:04d}.fits"
+        basename = request.output_basename.strip() or default_basename
+        output_path = str(make_workspace_path(basename))
+
+        result = await _run_with_limit(
+            session,
+            worker_cube_save_channel_2d,
+            entry["path"],
+            output_path,
+            request.channel,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return CubeSaveChannel2dResponse(valid=False, error=str(exc))
+
+    new_id = f"ds_{uuid.uuid4().hex[:12]}"
+    session.datasets[new_id] = {
+        "path":   result["output_path"],
+        "kind":   "image",
+        "width":  result["width"],
+        "height": result["height"],
+        "depth":  1,
+    }
+    workspace_filename = Path(result["output_path"]).name
+    logger.info(
+        "[save_channel_2d] registered new dataset  new_id=%s  path=%s  "
+        "shape=(h=%s, w=%s)  channel=%s",
+        new_id, result["output_path"],
+        result["height"], result["width"], result["channel"],
+    )
+    return CubeSaveChannel2dResponse(
+        valid=True, new_dataset_id=new_id,
+        workspace_filename=workspace_filename,
+        **{k: result[k] for k in
+           ("output_path", "width", "height", "channel", "range_min", "range_max")})
+
+
 @router.post("/v1/cube/pv", response_model=CubePvResponse, tags=["cube"])
 async def cube_pv(
     request: CubePvRequest,

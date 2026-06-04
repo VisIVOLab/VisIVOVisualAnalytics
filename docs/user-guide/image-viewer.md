@@ -330,18 +330,39 @@ viewer.
 
 For the MeerKAT 1.3 GHz Milky Way Bulge survey (Cotton et al. 2025)
 the Q/U files are **multi-channel subband cubes**, not single images.
-To use the 2-D Stokes workflow:
+To use the 2-D Stokes workflow you must first extract 2-D maps from
+the cubes. Two shortcuts are available depending on what you need:
 
-1. Open each Stokes cube in the cube viewer.
-2. Extract Stokes I, Q, U, V moment-0 maps with
-   *Tools → Export Moment Map as FITS…* — single broadband collapse
-   gives you 4 maps for P, PA, P/I.
-3. For **spectral index**, extract moment-0 maps from two distinct
-   channel ranges (low subband vs. high subband).
-4. For **Faraday RM**, extract moment-0 maps from three or more
-   channel ranges, in both Q and U cubes (so you get N pairs).
-5. Open the resulting 2-D maps in the image viewer and use the
-   Stokes Analysis card.
+#### Single-frequency 2-D maps — for P, PA, P/I, P_deb
+
+Use *Tools → Export Current Channel as 2-D FITS…* in the cube viewer
+on the **same channel** for I, Q, U (and V if you want). The export
+produces a true 2-D FITS (NAXIS=2) — no degenerate spectral axis —
+ready to be loaded as a layer here. Recommended path for polarimetry
+at one specific frequency.
+
+#### Broadband 2-D maps — for the highest-SNR P/PA/P/I
+
+Use *Tools → Export Moment Map as FITS…* with a moment-0 over **all
+channels** for each Stokes cube. The result averages out frequency
+detail but maximises SNR — best for visualisation overlays and
+contour comparisons.
+
+#### Multi-frequency 2-D maps — for spectral index and Faraday RM
+
+- **Spectral index (α)**: extract 2 moment-0 maps from two distinct
+  channel ranges of the Stokes I cube (e.g. the low and high halves
+  of the subband sequence). The header ``SPECVAL`` value of each
+  exported map tells you the spectral coordinate to enter in the
+  spectral-index dialog.
+- **Faraday RM**: extract 3+ moment-0 maps from three or more channel
+  ranges, in both the Q and U cubes (so you get N pairs at N
+  frequencies). Enter the frequency triplets in the RM dialog.
+
+Once the 2-D maps are in the workspace, open them here, click
+**Load Stokes Q/U/V Companions…** for the polarimetry products, or
+use the spectral-index / Faraday-RM dialogs directly for the
+multi-frequency analyses.
 
 ## Saving and exporting
 

@@ -533,6 +533,12 @@ private:
     /// full extent), then posts to /v1/cube/save_subregion. Async — uses
     /// QtConcurrent to keep the UI responsive while the backend writes.
     void exportSubCubeAsFits();
+    /// Tools → "Export Current Channel as 2-D FITS…". Writes the currently
+    /// displayed channel as a true 2-D FITS image (NAXIS=2, no degenerate
+    /// spectral axis) — the canonical input for the Stokes / spectral-index
+    /// / Faraday-RM workflows in the image viewer. Async via
+    /// /v1/cube/save_channel_2d.
+    void exportCurrentChannelAs2dFits();
     /// Tools → "Export Moment Map as FITS…". Re-runs the moment with the
     /// last accepted config and persists it as a 2-D FITS via
     /// /v1/products/moment_fits. Async, same pattern as above.

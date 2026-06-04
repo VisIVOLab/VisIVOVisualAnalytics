@@ -151,6 +151,17 @@ Spectral axis
   active axis kind, unit, and trustworthiness in the cube viewer status
   bar.
 
+SPECVAL (SPECTYPE, SPECUNIT)
+  Non-standard FITS keywords written by VisIVO when *Tools → Export
+  Current Channel as 2-D FITS…* extracts a single channel of a spectral
+  cube. Since the output drops the spectral axis (NAXIS=2), VisIVO
+  preserves the channel's spectral coordinate as a scalar:
+  `SPECVAL` stores the value (e.g. `1.284e+09` for 1.284 GHz),
+  `SPECTYPE` mirrors the source cube's `CTYPE3` (e.g. `FREQ`,
+  `VRAD`), and `SPECUNIT` mirrors `CUNIT3` (e.g. `Hz`, `km/s`). The
+  Stokes / spectral-index / Faraday-RM dialogs in the image viewer use
+  these to prompt the user with the right frequency at recall time.
+
 VBT
   *VisIVO Binary Table* — efficient column-oriented binary format used
   by some VisIVO datasets for million-row point clouds.
