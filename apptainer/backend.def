@@ -77,13 +77,20 @@ From: python:3.12-slim
     echo "[backend.def] Source root resolved to: $SRC_DIR"
 
     # ─── Architecture-aware install ───────────────────────────────────────
-    # On ppc64le (IBM Power9 / Power10 testbed nodes) some scientific
-    # packages would compile from source via pip — slow (~30 min). The
-    # backend itself does NOT depend on VTK (that's a desktop / vtkpython
-    # concern), so we keep VTK out of the dependency closure. For ppc64le
-    # we install everything else from requirements.txt; pip will use any
-    # pre-built ppc64le wheel on PyPI and compile only the leftovers.
-    pip install --no-cache-dir -r "$REQS"
+    # The desktop client needs VTK Python bindings; the backend uses VTK
+    # only inside one function (worker_isosurface) which is guarded by a
+    # lazy import. Since VTK has no ppc64le wheel on PyPI and building it
+    # from source would take ~1h, we filter it out of the requirements
+    # list for the apptainer build. The /v1/cube/isosurface endpoint will
+    # then surface a clear "VTK not installed" error if called; every
+    # other endpoint (image, cube, moments, dynspec, region stats, etc.)
+    # works without VTK because the heavy lifting happens via
+    # vtkFlyingEdges3D only for isosurfacing.
+    REQS_FILTERED=/tmp/requirements-no-vtk.txt
+    grep -v '^vtk' "$REQS" > "$REQS_FILTERED"
+    echo "[backend.def] Installing from filtered requirements:"
+    cat "$REQS_FILTERED"
+    pip install --no-cache-dir -r "$REQS_FILTERED"
 
     # ── Copy application source ───────────────────────────────────────────────
     mkdir -p /app
@@ -195,5 +202,13 @@ print(f'[test] Sessions module OK.')
 import numpy, scipy, astropy, healpy
 print(f'[test] numpy {numpy.__version__}, scipy {scipy.__version__}, '
       f'astropy {astropy.__version__}, healpy {healpy.__version__}')
+# VTK is optional on this build (no ppc64le wheel) — the isosurface
+# endpoint is the only consumer and surfaces a clear error if called.
+try:
+    import vtk
+    print(f'[test] vtk {vtk.vtkVersion.GetVTKVersion()} available')
+except ImportError:
+    print('[test] vtk not installed — isosurface endpoint disabled, '
+          'every other endpoint works normally.')
 print('[test] All checks passed.')
 "
