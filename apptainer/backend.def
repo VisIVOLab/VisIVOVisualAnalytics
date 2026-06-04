@@ -116,7 +116,23 @@ From: python:3.12-slim
     grep -v '^vtk' "$REQS" > "$REQS_FILTERED"
     echo "[backend.def] Installing from filtered requirements:"
     cat "$REQS_FILTERED"
-    pip install --no-cache-dir -r "$REQS_FILTERED"
+
+    # llvmlite is strict 1:1 with the LLVM major version:
+    #   llvmlite 0.46 ↔ LLVM 19   (matches Debian trixie default)
+    #   llvmlite 0.47 ↔ LLVM 20   (would require apt.llvm.org repo)
+    # On ppc64le there are no pre-built wheels for any llvmlite version,
+    # so the wheel is always built from the system LLVM dev headers.
+    # Pin llvmlite to 0.46.* so pip picks a numba release that matches —
+    # the requirements.txt only asks for `numba>=0.59.0`, so the slight
+    # downgrade (likely numba 0.63 or 0.64) is harmless.
+    CONSTRAINTS=/srv/constraints-ppc64le.txt
+    cat > "$CONSTRAINTS" <<EOF
+llvmlite==0.46.*
+EOF
+    echo "[backend.def] ppc64le pip constraints:"
+    cat "$CONSTRAINTS"
+
+    pip install --no-cache-dir -c "$CONSTRAINTS" -r "$REQS_FILTERED"
 
     # ─── Optional: dask[distributed] for cross-node parallelism ───────────
     # Always installed — Power9 SRC testbed scenarios use it to spread
