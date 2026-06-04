@@ -94,39 +94,78 @@ From: python:3.12-slim
 
 %setup
     # %setup runs on the HOST (not inside the container being built) with
-    # ${PWD} == the directory where ``apptainer build`` was launched, and
-    # has direct access to the in-progress container rootfs via
-    # ${APPTAINER_ROOTFS} (or ${SINGULARITY_ROOTFS} on older versions).
+    # direct access to the host filesystem via ${PWD} and to the
+    # in-progress container rootfs via ${APPTAINER_ROOTFS} (or
+    # ${SINGULARITY_ROOTFS} on older versions).
     #
     # Using %setup instead of %files avoids the path-resolution problems
-    # we've seen with Apptainer 1.x not finding relative sources in the
-    # %files block when the cp is invoked from inside the build sandbox.
+    # we've seen with Apptainer 1.x not finding relative sources from
+    # the %files block when the cp is invoked from inside the build
+    # sandbox.
     #
-    # RUN FROM REPO ROOT: ``cd VisIVO-next``, then
+    # Sources are resolved in this order:
+    #   1. $VISIVO_BACKEND_SRC env var (highest priority — set this
+    #      to an absolute path before ``apptainer build`` if the
+    #      auto-detection below ever fails)
+    #   2. ${PWD}/backend  (build launched from repo root — recommended)
+    #   3. ${PWD}/../backend (build launched from apptainer/ subdir)
+    #
+    # Recommended invocation:
+    #   cd VisIVO-next                 # repo root
     #   apptainer build --fakeroot backend.sif apptainer/backend.def
-    set -e
-    ROOTFS="${APPTAINER_ROOTFS:-${SINGULARITY_ROOTFS}}"
+    #
+    # If %setup isn't honored (some Apptainer security profiles disallow
+    # host-side scripts), the fallback is to pre-stage manually:
+    #   sudo cp -r backend /tmp/visivo_backend_src
+    # and set VISIVO_BACKEND_SRC=/tmp/visivo_backend_src.
+    set -ex
+    ROOTFS="${APPTAINER_ROOTFS:-${SINGULARITY_ROOTFS:-}}"
     if [ -z "$ROOTFS" ]; then
-        echo "ERROR: neither APPTAINER_ROOTFS nor SINGULARITY_ROOTFS is set"
+        echo "########## ERROR ##########"
+        echo "Neither APPTAINER_ROOTFS nor SINGULARITY_ROOTFS is set."
+        echo "Your Apptainer version may have disabled %setup; try:"
+        echo "  apptainer build --fakeroot --no-mount tmp backend.sif apptainer/backend.def"
+        echo "or downgrade to a release that supports host-side %setup."
+        echo "###########################"
         exit 1
     fi
-    SRC="${PWD}/backend"
-    if [ ! -d "$SRC" ]; then
-        # Fallback: if launched from apptainer/, look at ../backend
-        SRC="${PWD}/../backend"
+    SRC="${VISIVO_BACKEND_SRC:-}"
+    if [ -z "$SRC" ] || [ ! -d "$SRC" ]; then
+        if [ -d "${PWD}/backend" ]; then
+            SRC="${PWD}/backend"
+        elif [ -d "${PWD}/../backend" ]; then
+            SRC="${PWD}/../backend"
+        else
+            echo "########## ERROR ##########"
+            echo "backend/ source directory not found."
+            echo "Tried (in order):"
+            echo "  \$VISIVO_BACKEND_SRC = '${VISIVO_BACKEND_SRC:-(unset)}'"
+            echo "  ${PWD}/backend"
+            echo "  ${PWD}/../backend"
+            echo ""
+            echo "Fix: cd to the repo root before running apptainer build,"
+            echo "or export VISIVO_BACKEND_SRC=/absolute/path/to/backend."
+            echo "###########################"
+            exit 1
+        fi
     fi
-    if [ ! -d "$SRC" ]; then
-        echo "ERROR: backend directory not found"
-        echo "Expected one of:"
-        echo "  ${PWD}/backend"
-        echo "  ${PWD}/../backend"
-        exit 1
-    fi
-    echo "[%setup] Staging backend source from $SRC"
+    echo "[%setup] PWD=${PWD}"
+    echo "[%setup] Staging backend source from: $SRC"
+    echo "[%setup] Target rootfs: $ROOTFS"
     mkdir -p "$ROOTFS/tmp/backend_src"
     cp -r "$SRC"/. "$ROOTFS/tmp/backend_src/"
-    echo "[%setup] Staged files:"
+    echo "[%setup] Top-level files staged:"
     ls -la "$ROOTFS/tmp/backend_src/" | head -20
+    if [ ! -f "$ROOTFS/tmp/backend_src/requirements.txt" ]; then
+        echo "########## ERROR ##########"
+        echo "requirements.txt NOT FOUND after copy. cp may have failed silently."
+        echo "Source was: $SRC"
+        echo "Source listing:"
+        ls -la "$SRC" | head -20
+        echo "###########################"
+        exit 1
+    fi
+    echo "[%setup] OK — requirements.txt present, %post can proceed."
 
 %runscript
     #!/bin/bash
