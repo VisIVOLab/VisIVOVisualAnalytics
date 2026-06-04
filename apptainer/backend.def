@@ -66,26 +66,36 @@ From: python:3.12-slim
         && rm -rf /var/lib/apt/lists/*
 
     # llvmlite is pinned to 0.43.* below (the last release that supports
-    # LLVM 15, which is what we just installed via llvm-15-dev). Force
-    # llvm-config to point at the v15 binary so llvmlite's setup.py and
-    # CMakeLists.txt both find the right LLVM headers — even if a higher
-    # llvm-config-NN binary happens to be on PATH.
-    if [ -x /usr/bin/llvm-config-15 ]; then
+    # LLVM 15, which is what we just installed via llvm-15-dev). The
+    # Debian -dev package installs the binary at
+    #   /usr/lib/llvm-15/bin/llvm-config
+    # but the more familiar /usr/bin/llvm-config-15 symlink only ships
+    # with the separate ``llvm-15`` runtime package. To avoid an extra
+    # dependency, we symlink directly from the -dev install location to
+    # the standard /usr/bin/llvm-config name that llvmlite's setup.py
+    # searches for.
+    if [ -x /usr/lib/llvm-15/bin/llvm-config ]; then
+        ln -sf /usr/lib/llvm-15/bin/llvm-config /usr/bin/llvm-config
+        echo "[backend.def] /usr/bin/llvm-config → /usr/lib/llvm-15/bin/llvm-config"
+    elif [ -x /usr/bin/llvm-config-15 ]; then
         ln -sf /usr/bin/llvm-config-15 /usr/bin/llvm-config
         echo "[backend.def] /usr/bin/llvm-config → llvm-config-15"
     elif command -v llvm-config >/dev/null 2>&1; then
-        echo "[backend.def] WARN: llvm-config-15 missing, using existing $(which llvm-config)"
+        echo "[backend.def] WARN: using existing $(which llvm-config)"
     else
-        LLVMC=$(ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1 || true)
+        LLVMC=$(ls /usr/bin/llvm-config-* /usr/lib/llvm-*/bin/llvm-config 2>/dev/null | sort -V | tail -1 || true)
         if [ -n "$LLVMC" ]; then
             ln -sf "$LLVMC" /usr/bin/llvm-config
             echo "[backend.def] Symlinked $LLVMC → /usr/bin/llvm-config"
         else
-            echo "[backend.def] WARN: no llvm-config-* found in /usr/bin"
+            echo "[backend.def] ERROR: no llvm-config found anywhere — aborting"
+            exit 1
         fi
     fi
     export LLVM_CONFIG=/usr/bin/llvm-config
-    llvm-config --version || echo "[backend.def] WARN: llvm-config still not callable"
+    echo "[backend.def] llvm-config reports:"
+    llvm-config --version
+    llvm-config --prefix
 
     # ── Python deps ──────────────────────────────────────────────────────────
     pip install --no-cache-dir --upgrade pip
