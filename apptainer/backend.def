@@ -58,6 +58,24 @@ From: python:3.12-slim
     # ── Python deps ──────────────────────────────────────────────────────────
     pip install --no-cache-dir --upgrade pip
 
+    # ─── Locate the requirements file ─────────────────────────────────────
+    # Apptainer's %files block normally places ``backend`` into
+    # ``/tmp/backend_src``, but the exact resulting layout depends on
+    # how the source was specified (with or without trailing slash) and
+    # whether the destination existed beforehand. Be defensive: find the
+    # ``requirements.txt`` wherever Apptainer ended up putting it, then
+    # use its parent directory as the source root.
+    REQS=$(find /tmp/backend_src -name requirements.txt -print -quit 2>/dev/null)
+    if [ -z "$REQS" ]; then
+        echo "ERROR: requirements.txt not found anywhere under /tmp/backend_src"
+        echo "Listing /tmp/backend_src contents (depth 3):"
+        ls -la /tmp/backend_src/ || true
+        find /tmp/backend_src -maxdepth 3 -type f | head -40 || true
+        exit 1
+    fi
+    SRC_DIR=$(dirname "$REQS")
+    echo "[backend.def] Source root resolved to: $SRC_DIR"
+
     # ─── Architecture-aware install ───────────────────────────────────────
     # On ppc64le (IBM Power9 / Power10 testbed nodes) some scientific
     # packages would compile from source via pip — slow (~30 min). The
@@ -65,11 +83,11 @@ From: python:3.12-slim
     # concern), so we keep VTK out of the dependency closure. For ppc64le
     # we install everything else from requirements.txt; pip will use any
     # pre-built ppc64le wheel on PyPI and compile only the leftovers.
-    pip install --no-cache-dir -r /tmp/backend_src/requirements.txt
+    pip install --no-cache-dir -r "$REQS"
 
     # ── Copy application source ───────────────────────────────────────────────
     mkdir -p /app
-    cp -r /tmp/backend_src/* /app/
+    cp -r "$SRC_DIR"/* /app/
 
     # ── Sanity check ─────────────────────────────────────────────────────────
     python -c "import fastapi, astropy, numpy; print('Import OK')"
