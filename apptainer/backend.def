@@ -92,16 +92,41 @@ From: python:3.12-slim
     # ── Sanity check ─────────────────────────────────────────────────────────
     python -c "import fastapi, astropy, numpy; print('Import OK')"
 
-%files
-    # Copy the backend source into the build context.
-    # Apptainer resolves source paths relative to the **current working
-    # directory** at build time, NOT relative to the .def file location.
-    # Run the build from the repo root so that ``backend`` resolves to
-    # ``<repo>/backend``:
+%setup
+    # %setup runs on the HOST (not inside the container being built) with
+    # ${PWD} == the directory where ``apptainer build`` was launched, and
+    # has direct access to the in-progress container rootfs via
+    # ${APPTAINER_ROOTFS} (or ${SINGULARITY_ROOTFS} on older versions).
     #
-    #   cd VisIVO-next                                # repo root
+    # Using %setup instead of %files avoids the path-resolution problems
+    # we've seen with Apptainer 1.x not finding relative sources in the
+    # %files block when the cp is invoked from inside the build sandbox.
+    #
+    # RUN FROM REPO ROOT: ``cd VisIVO-next``, then
     #   apptainer build --fakeroot backend.sif apptainer/backend.def
-    backend /tmp/backend_src
+    set -e
+    ROOTFS="${APPTAINER_ROOTFS:-${SINGULARITY_ROOTFS}}"
+    if [ -z "$ROOTFS" ]; then
+        echo "ERROR: neither APPTAINER_ROOTFS nor SINGULARITY_ROOTFS is set"
+        exit 1
+    fi
+    SRC="${PWD}/backend"
+    if [ ! -d "$SRC" ]; then
+        # Fallback: if launched from apptainer/, look at ../backend
+        SRC="${PWD}/../backend"
+    fi
+    if [ ! -d "$SRC" ]; then
+        echo "ERROR: backend directory not found"
+        echo "Expected one of:"
+        echo "  ${PWD}/backend"
+        echo "  ${PWD}/../backend"
+        exit 1
+    fi
+    echo "[%setup] Staging backend source from $SRC"
+    mkdir -p "$ROOTFS/tmp/backend_src"
+    cp -r "$SRC"/. "$ROOTFS/tmp/backend_src/"
+    echo "[%setup] Staged files:"
+    ls -la "$ROOTFS/tmp/backend_src/" | head -20
 
 %runscript
     #!/bin/bash
