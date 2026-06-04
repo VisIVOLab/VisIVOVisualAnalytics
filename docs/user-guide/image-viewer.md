@@ -180,6 +180,169 @@ the visibility of layers 0 and 1 at a configurable speed
 This is a standard technique for detecting transient sources, proper
 motion, or artefact differences between two epochs or bands.
 
+## Stokes / Radio polarimetry analysis
+
+For continuum radio data with full polarimetry (Stokes I, Q, U, V), the
+image viewer has a dedicated **Stokes Analysis** workflow card in the
+*Tools* sidebar (also available under *Tools* menu):
+
+### Loading a Stokes set
+
+1. Open your Stokes I file as usual — it becomes the master layer and
+   is tagged automatically as Stokes I.
+2. Click **Load Stokes Q/U/V Companions…**. The viewer searches the
+   same directory of the I file for matching filenames using common
+   patterns:
+   - `*StokesI*` → replaces with `Q`, `U`, `V`
+   - `*_I.fits` / `*_I_PB.fits` → replaces the role tag
+   - Also tries `.fits.gz` variants for ASKAP / MeerKAT compressed
+     releases
+3. Files found are loaded as additional layers, tagged with their
+   Stokes role. Missing roles trigger a file dialog so you can locate
+   them manually.
+
+### Derived maps
+
+Once Q and U are loaded, three derived quantities can be computed
+client-side from the in-memory `vtkImageData` (no backend trip):
+
+| Action | Formula | LUT |
+|---|---|---|
+| **Compute Pol. Intensity (P)** | `P = √(Q² + U²)` | Inferno |
+| **Compute Pol. Angle (PA)** | `PA = ½ · atan2(U, Q)` (degrees, −90…+90) | Spectrum (good for cyclic data) |
+| **Compute Frac. Pol. (P/I)** | `P / I` (clamped to [0, 1]) | Viridis |
+
+Each computation appends a new layer to the layer list. From there you
+can:
+- Apply contours, change LUT, export to Workspace as FITS
+- Use the region tools — region stats automatically include per-layer
+  values for all loaded Stokes layers (see below)
+- Use them as base for polarization vector overlay parameters
+
+### Polarization vector overlay
+
+Toggle **Show Polarization Vectors** (or the menu action of the same
+name) to draw short line segments at every Nth pixel, oriented along
+PA and with length proportional to P. Parameters in the sidebar:
+
+- **Vector grid step (px)** — sampling step on the image grid
+  (default 12). Smaller = denser overlay; larger = clearer view.
+- **SNR threshold (σ_MAD multiples)** — vectors are drawn only where
+  P exceeds N × robust σ of the P distribution (default 3.0). Higher
+  values filter out noise-only pixels.
+- **Vector length scale** — global scale factor (10 % to 300 %) so
+  you can adapt the visual density of the field to the colour image
+  underneath.
+
+Convention used: PA is measured **from north through east**. The
+overlay assumes the standard FITS pixel orientation (CDELT1 < 0, north
+up), so `dx = −len·sin(PA)`, `dy = +len·cos(PA)`. For rotated WCS the
+vector orientation may need correction — check against your reduction
+pipeline.
+
+### Region statistics: radio-aware fields
+
+When the FITS header has BMAJ/BMIN and at least one Stokes layer is
+loaded, a region analysis dialog gains two extra sections:
+
+- **Radio (beam-aware)** — beam major × minor in arcsec, beam area in
+  pixels (Ω_beam = π · BMAJ · BMIN / (4 · ln 2) in pixel units), the
+  **integrated flux in Jy** (`sum / Ω_beam`), and the peak SNR in σ_MAD
+  units.
+- **Stokes (per-layer)** — for each loaded Stokes role (I, Q, U, V,
+  P, PA, P/I) the region is re-analysed and the relevant scalar is
+  shown: integrated Jy for flux-density maps, mean degrees for PA,
+  mean percentage for P/I.
+
+The standard **Statistics** section now also reports σ_MAD —
+`1.4826 × MAD(values − median)` — which is much more reliable than
+std-dev when the region contains bright sources.
+
+### NaN handling
+
+The master layer's LUT is configured with `NanColor = (0, 0, 0, 0)` so
+mosaic edges and blanked pixels render **transparent** instead of
+white. This matches radio-imaging convention and makes contour
+overlays / multi-layer compositions readable.
+
+### Advanced derived products
+
+Three more advanced quantities are supported (all client-side, all
+appearing as ordinary layers):
+
+#### Debiased polarization intensity
+
+**Compute Debiased P** estimates the per-channel noise σ as the
+average of MAD-σ of the Q and U layers, then computes
+`P_debiased = √(max(0, Q² + U² − σ²))`. The result has any pixel where
+`Q² + U² < σ²` clamped to zero, which suppresses the positive bias of
+naive `√(Q² + U²)` near the noise floor. The new layer is labelled
+`P_deb (σ=…)` so the σ used is visible in the layer list.
+
+For rigorous work the noise map per pixel should be used; the
+MAD-σ estimate is a uniform field-average and is meant as a quick
+approximation.
+
+#### Spectral index (α)
+
+**Compute Spectral Index…** opens a dialog where you pick two layers
+and enter their reference frequencies in GHz. The per-pixel formula is
+
+```
+α = log(S_B / S_A) / log(ν_B / ν_A)
+```
+
+Pixels where either flux is ≤ 0 are skipped (logarithm undefined).
+The result is shown with the Spectrum LUT clamped to [−2.5, +1.5] —
+the typical range covering synchrotron-dominant (α ≈ −0.7) and
+thermal/free-free (α ≈ +2) regimes.
+
+**Requirement:** both layers must share the same pixel grid (same
+extent). Typical workflow: open two FITS mosaics at different
+frequencies, or two Stokes I moment-0 maps extracted from the same
+sub-cube spectral range.
+
+#### Faraday rotation measure (RM)
+
+**Compute Faraday RM…** opens a table dialog where you add ≥ 3
+`(Stokes Q layer, Stokes U layer, ν GHz)` triplets. For each pixel
+the tool:
+
+1. Computes `PA_i = ½·atan2(U_i, Q_i)` at every frequency
+2. Computes `λ_i² = (c/ν_i)²`
+3. Linearly fits `PA = PA₀ + RM · λ²` → the slope is RM (rad m⁻²)
+
+The result is added as a layer with the Spectrum LUT clamped to
+[−500, +500] rad m⁻² for visibility.
+
+```{warning}
+**No PA unwrapping** is performed. The naive linear fit is only
+correct in the low-RM regime where `|RM · Δλ²| < π/2` between
+consecutive frequencies. For aggressive RM use the upcoming
+backend-side RM-synthesis tool (not yet available).
+```
+
+The user typically obtains the 3+ Q/U pairs by extracting moment-0
+maps from sub-band channel ranges of a single Q/U cube in the cube
+viewer.
+
+### Workflow note for the MeerKAT Milky-Way Bulge survey
+
+For the MeerKAT 1.3 GHz Milky Way Bulge survey (Cotton et al. 2025)
+the Q/U files are **multi-channel subband cubes**, not single images.
+To use the 2-D Stokes workflow:
+
+1. Open each Stokes cube in the cube viewer.
+2. Extract Stokes I, Q, U, V moment-0 maps with
+   *Tools → Export Moment Map as FITS…* — single broadband collapse
+   gives you 4 maps for P, PA, P/I.
+3. For **spectral index**, extract moment-0 maps from two distinct
+   channel ranges (low subband vs. high subband).
+4. For **Faraday RM**, extract moment-0 maps from three or more
+   channel ranges, in both Q and U cubes (so you get N pairs).
+5. Open the resulting 2-D maps in the image viewer and use the
+   Stokes Analysis card.
+
 ## Saving and exporting
 
 - **Export** in the top-right toolbar saves a PNG of the current view.

@@ -10,6 +10,7 @@
 #include <QCloseEvent>
 #include <QElapsedTimer>
 #include <QFutureWatcher>
+#include <QHash>
 #include <QMainWindow>
 #include <QPointer>
 #include <QStringList>
@@ -461,6 +462,62 @@ private:
     QPointer<QAction> m_actBlink;
     void toggleBlink(bool active);
     void blinkTick();
+
+    // ── Stokes / Radio polarimetry analysis ──────────────────────────────────
+public:
+    enum class StokesRole {
+        None, I, Q, U, V,
+        DerivedP,     ///< Linear pol intensity √(Q²+U²)
+        DerivedPA,    ///< Linear pol angle ½·atan2(U,Q) in degrees
+        DerivedFrac,  ///< Fractional pol P/I
+        DerivedPdb,   ///< Bias-corrected P  √(max(0, P²−σ²))
+        DerivedAlpha, ///< Spectral index   α = log(S₂/S₁) / log(ν₂/ν₁)
+        DerivedRM,    ///< Faraday rotation measure (rad m⁻²)
+    };
+
+private:
+    QHash<int, StokesRole> m_stokesRoles;  ///< layer index → Stokes role
+    double m_beamMajorDeg{ std::numeric_limits<double>::quiet_NaN() };
+    double m_beamMinorDeg{ std::numeric_limits<double>::quiet_NaN() };
+    double m_beamPaDeg{ std::numeric_limits<double>::quiet_NaN() };
+
+    // Polarization vector overlay
+    vtkNew<vtkPoints> m_polVecPoints;
+    vtkNew<vtkCellArray> m_polVecCells;
+    vtkNew<vtkPolyData> m_polVecData;
+    vtkNew<vtkActor> m_polVecActor;
+    bool m_polVecsVisible{ false };
+    int m_polVecGridStep{ 12 };
+    double m_polVecScale{ 1.0 };
+    double m_polVecSnrMin{ 3.0 };
+
+    QPointer<QAction> m_actLoadStokesCompanions;
+    QPointer<QAction> m_actComputeStokesP;
+    QPointer<QAction> m_actComputeStokesPA;
+    QPointer<QAction> m_actComputeStokesFrac;
+    QPointer<QAction> m_actComputeStokesPdebiased;
+    QPointer<QAction> m_actComputeSpectralIndex;
+    QPointer<QAction> m_actComputeFaradayRM;
+    QPointer<QAction> m_actTogglePolVecs;
+
+    void detectAndLoadStokesCompanions();
+    QString findStokesCompanionPath(const QString &iPath, const QString &role) const;
+    int findLayerByStokesRole(StokesRole role) const;
+    void computeStokesP();
+    void computeStokesPA();
+    void computeStokesFractional();
+    void computeStokesPdebiased();
+    void computeSpectralIndex();
+    void computeFaradayRM();
+    void addDerivedLayer(vtkSmartPointer<vtkImageData> data,
+                         const QString &name, StokesRole role,
+                         const QString &colorMap,
+                         double rangeMin, double rangeMax);
+    void rebuildPolarizationVectors();
+    void setPolVectorsVisible(bool vis);
+    double beamAreaPixels() const;
+    bool hasBeamInfo() const;
+    QString stokesRoleLabel(StokesRole r) const;
 };
 
 #endif
