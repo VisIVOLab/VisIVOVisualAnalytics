@@ -10,8 +10,9 @@ From: python:3.12-slim
     Apptainer/Singularity image for the VisIVO backend (FastAPI + astropy + VTK).
 
     ── Quick start ──────────────────────────────────────────────────────────────
-    # Build
-    apptainer build backend.sif apptainer/backend.def
+    # Build (RUN FROM REPO ROOT — paths in %files are relative to cwd)
+    cd VisIVO-next
+    apptainer build --fakeroot backend.sif apptainer/backend.def
 
     # Run (token auto-generated and printed to stdout)
     apptainer run --bind /path/to/data:/data backend.sif
@@ -75,8 +76,14 @@ From: python:3.12-slim
 
 %files
     # Copy the backend source into the build context.
-    # Apptainer resolves paths relative to the definition file directory.
-    ../backend /tmp/backend_src
+    # Apptainer resolves source paths relative to the **current working
+    # directory** at build time, NOT relative to the .def file location.
+    # Run the build from the repo root so that ``backend`` resolves to
+    # ``<repo>/backend``:
+    #
+    #   cd VisIVO-next                                # repo root
+    #   apptainer build --fakeroot backend.sif apptainer/backend.def
+    backend /tmp/backend_src
 
 %runscript
     #!/bin/bash
