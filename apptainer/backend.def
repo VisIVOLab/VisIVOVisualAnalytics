@@ -54,7 +54,7 @@ From: python:3.12-slim
         autoconf \
         libtool \
         cmake \
-        llvm-dev \
+        llvm-15-dev \
         libffi-dev \
         libssl-dev \
         libhdf5-dev \
@@ -65,11 +65,17 @@ From: python:3.12-slim
         pkg-config \
         && rm -rf /var/lib/apt/lists/*
 
-    # llvmlite needs to find llvm-config; the binary is installed as
-    # /usr/bin/llvm-config-<N> on Debian. Expose it under the canonical
-    # name so llvmlite's setup.py finds it without version-specific
-    # tweaking. (No-op if a versioned symlink already exists.)
-    if ! command -v llvm-config >/dev/null 2>&1; then
+    # llvmlite is pinned to 0.43.* below (the last release that supports
+    # LLVM 15, which is what we just installed via llvm-15-dev). Force
+    # llvm-config to point at the v15 binary so llvmlite's setup.py and
+    # CMakeLists.txt both find the right LLVM headers — even if a higher
+    # llvm-config-NN binary happens to be on PATH.
+    if [ -x /usr/bin/llvm-config-15 ]; then
+        ln -sf /usr/bin/llvm-config-15 /usr/bin/llvm-config
+        echo "[backend.def] /usr/bin/llvm-config → llvm-config-15"
+    elif command -v llvm-config >/dev/null 2>&1; then
+        echo "[backend.def] WARN: llvm-config-15 missing, using existing $(which llvm-config)"
+    else
         LLVMC=$(ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1 || true)
         if [ -n "$LLVMC" ]; then
             ln -sf "$LLVMC" /usr/bin/llvm-config
