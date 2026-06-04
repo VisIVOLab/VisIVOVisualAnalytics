@@ -38,23 +38,33 @@ From: python:3.12-slim
     set -e
 
     # ── System deps ──────────────────────────────────────────────────────────
+    # Build-time toolchain for any scientific package that ships only an
+    # sdist for ppc64le (numba, healpy, photutils' C extensions). On x86_64
+    # most wheels are pre-built so these are unused; on ppc64le they save
+    # the build from failing on missing compilers.
     apt-get update -qq
     apt-get install -y --no-install-recommends \
         gcc \
+        g++ \
+        gfortran \
+        cmake \
         libffi-dev \
         libssl-dev \
+        libhdf5-dev \
+        pkg-config \
         && rm -rf /var/lib/apt/lists/*
 
     # ── Python deps ──────────────────────────────────────────────────────────
     pip install --no-cache-dir --upgrade pip
 
-    # Install backend requirements from the embedded copy (see %files).
-    pip install --no-cache-dir \
-        "fastapi>=0.115" \
-        "uvicorn[standard]>=0.30" \
-        "astropy>=6.1" \
-        "numpy>=2.0" \
-        "vtk>=9.4"
+    # ─── Architecture-aware install ───────────────────────────────────────
+    # On ppc64le (IBM Power9 / Power10 testbed nodes) some scientific
+    # packages would compile from source via pip — slow (~30 min). The
+    # backend itself does NOT depend on VTK (that's a desktop / vtkpython
+    # concern), so we keep VTK out of the dependency closure. For ppc64le
+    # we install everything else from requirements.txt; pip will use any
+    # pre-built ppc64le wheel on PyPI and compile only the leftovers.
+    pip install --no-cache-dir -r /tmp/backend_src/requirements.txt
 
     # ── Copy application source ───────────────────────────────────────────────
     mkdir -p /app
@@ -85,11 +95,16 @@ From: python:3.12-slim
 
 %test
     python -c "
-import sys
+import sys, platform
 sys.path.insert(0, '/app')
 from app.auth import TOKEN
 from app.sessions import REGISTRY
+print(f'[test] Architecture: {platform.machine()}')
 print(f'[test] Auth module OK. Token length: {len(TOKEN)}')
 print(f'[test] Sessions module OK.')
+# Smoke test the scientific stack
+import numpy, scipy, astropy, healpy
+print(f'[test] numpy {numpy.__version__}, scipy {scipy.__version__}, '
+      f'astropy {astropy.__version__}, healpy {healpy.__version__}')
 print('[test] All checks passed.')
 "
