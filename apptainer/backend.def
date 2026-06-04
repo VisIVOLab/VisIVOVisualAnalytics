@@ -45,9 +45,14 @@ From: python:3.12-slim
     # they save the build from failing on missing compilers / BLAS / HDF5.
     apt-get update -qq
     apt-get install -y --no-install-recommends \
+        build-essential \
         gcc \
         g++ \
         gfortran \
+        make \
+        automake \
+        autoconf \
+        libtool \
         cmake \
         libffi-dev \
         libssl-dev \
