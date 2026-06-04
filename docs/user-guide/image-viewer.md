@@ -5,6 +5,14 @@ maps, mosaics, moment maps exported from a cube, and any other 2-D product
 the backend exposes. It opens automatically when you open a FITS file the
 backend classifies as `image`.
 
+It also handles **dynamic-spectrum / beamformed** datasets — FITS files
+with `CTYPE` = `TIME` + `FREQ` (or HDF5 LOFAR BFData files). The viewer
+auto-detects them, relabels the axes as *Time* / *Frequency*, hides the
+celestial-WCS tools (catalogue overlay, beam, Stokes polarimetry, frame
+switch), and surfaces a placeholder **Time-Series Tools** card in the
+sidebar for future specialist tools (pulse profile, dedispersion, RFI
+flagging). See *Dynamic spectrum / beamformed mode* below.
+
 ## Layout
 
 Single 2-D dock with the image and a side panel for:
@@ -363,6 +371,126 @@ Once the 2-D maps are in the workspace, open them here, click
 **Load Stokes Q/U/V Companions…** for the polarimetry products, or
 use the spectral-index / Faraday-RM dialogs directly for the
 multi-frequency analyses.
+
+## Dynamic spectrum / beamformed mode
+
+### Supported inputs
+
+| Format | Detection rule |
+|---|---|
+| **FITS 2-D dynamic spectrum** | `CTYPE1` / `CTYPE2` contain at least one **time-like** axis (`TIME`, `MJD`, `UTC`) and one **frequency-like** axis (`FREQ`, `FREQUENCY`, `WAVE`, `AWAV`). |
+| **HDF5 / LOFAR BFData** | File extension `.h5`, `.hdf5`, `.hdf` or `.bfdata`. The backend walks the `SUB_ARRAY_POINTING_xxx / BEAM_yyy / STOKES_z` hierarchy and picks the first 2-D plane. Generic fall-back: pick the largest 2-D float dataset in the file. |
+
+For HDF5 inputs the backend transparently converts the chosen 2-D plane
+to a **sidecar FITS file** named `<source>.dynspec.fits` next to the
+source, then the standard FITS pipeline takes over. The conversion is
+cached: subsequent opens of the same HDF5 file re-use the sidecar as
+long as it is newer than the source.
+
+Sampling metadata is extracted on a best-effort basis from common
+attribute names (`TSAMP`, `DT_S`, `CADENCE_S` for time; `FREQ_START_HZ`,
+`FCH1`, `FREQ_LOW_HZ` for frequency; `DELTA_FREQ_HZ`, `FOFF`,
+`CHANNEL_BW_HZ` for the channel width). Missing values default to
+**1.0** so the file still opens — you can edit the sidecar header
+manually afterwards if needed.
+
+### What changes when dynamic-spectrum mode is on
+
+- **Axis labels** are forced to *Time* / *Frequency* with the FITS
+  `CUNIT` appended (e.g. *Time (s)* / *Frequency (Hz)*).
+- **Status-bar sanity panel** shows a stable *Dynamic Spectrum* badge
+  instead of running the celestial-WCS checks (which would always
+  complain about missing RA / Dec).
+- **Beam indicator** is hidden (no synthesised beam concept).
+- **Catalogue overlay**, **WCS Display** (Galactic / FK5 / Ecliptic
+  frame & sexagesimal / decimal format), and **Stokes Analysis** cards
+  are hidden in the sidebar; the corresponding menu actions are also
+  disabled.
+- A **Time-Series Tools** card appears in the sidebar with a
+  placeholder describing what tools will arrive in a follow-up
+  (dedispersion, pulse profile, RFI flagging).
+
+### What still works
+
+- LUT, log scale, opacity, contrast — all colour-mapping tools work
+  exactly as for image files.
+- **Pixel Histogram** — useful for setting clip ranges or identifying
+  bands of strong RFI.
+- **Region statistics** — box / circle / polygon / annulus stats on a
+  region of the waterfall (mean, median, σ_MAD). The beam-aware
+  integrated-flux section is suppressed because no beam is available.
+- **Measurement tools** — ruler / angle on the time × frequency plane.
+- **Annotations** — text and arrow overlays for labelling features.
+- **Blink / Compare** — alternate between layers (e.g. RFI-flagged vs
+  raw) when multiple are loaded.
+
+### Time-Series Tools card
+
+Three analysis tools live in the **Time-Series Tools** sidebar card
+(only visible in dynspec mode). All three run on the backend and
+return either a workspace file or in-memory data.
+
+#### Incoherent dedispersion
+
+Set **Dedispersion (DM, pc cm⁻³)** to the desired dispersion measure
+and click **Compute Dedispersion**. The backend computes
+`Δt(ν) = K · DM · (1/ν² − 1/ν_ref²)` per channel
+(`K = 4148.808 MHz²·pc⁻¹·cm³·s`) and shifts each channel by the
+nearest sample. The output is a 2-D FITS file in the Workspace Exports
+named like `<source>_DM<value>.fits`. Open it as a new viewer or as a
+layer to see the dispersion-corrected waterfall — pulses should appear
+as **vertical** features in the time axis instead of the characteristic
+diagonal sweep of the original data.
+
+Reference frequency is the top of the band by default; the resulting
+header carries `DM` and `DMREFMHZ` cards for provenance.
+
+#### Pulse profile (phase folding)
+
+Set **Pulse profile (period, s)** to the trial period in **seconds**
+and click **Compute Pulse Profile**. If you already typed a DM in the
+dedispersion field above, the same DM is applied in-memory before
+folding (no extra file is written). The backend folds the
+frequency-averaged time series into 64 phase bins and returns the
+profile array.
+
+A floating QCustomPlot window opens with:
+- The folded profile (intensity vs phase, with a translucent band fill)
+- A header line showing period, DM, σ_MAD, peak SNR
+- Phase range 0…1 (one full pulse cycle)
+
+A meaningful pulse stands out as a narrow peak well above the off-peak
+noise level. **Peak SNR > 5** is the usual detection threshold.
+
+#### RFI mask (σ-clipping)
+
+Set **RFI mask (σ-clip, σ-MAD multiple)** to the threshold (default
+**5**) and click **Compute RFI Mask**. The backend flags every pixel
+whose deviation from its channel's robust median exceeds `N × 1.4826 ×
+MAD`, ignoring NaN samples. The output is a uint8 FITS (`0=good`,
+`1=flagged`) in the Workspace Exports, named like
+`<source>_rfimask_channel_5.0sigma.fits`.
+
+The status message reports the **flagged fraction** of pixels. Open
+the mask as a layer over the source dynspec to see which frequency
+bands / time intervals were caught.
+
+You can chain operations:
+
+1. Compute the RFI mask first.
+2. Apply the mask (out of scope today — soon: paint masked pixels as
+   transparent).
+3. Run dedispersion on the cleaner data.
+4. Fold for the pulse profile.
+
+### Supported PSRFITS
+
+The backend also recognises **PSRFITS** files (multi-HDU FITS with a
+`SUBINT` binary-table extension). On open they are converted to a 2-D
+sidecar dynspec (Stokes I; phase-averaged when the source is folded
+PSRFITS) so the viewer treats them like any other dynamic spectrum.
+Per-channel central frequencies come from the `DAT_FREQ` column when
+available, otherwise from `OBSFREQ` / `OBSBW`.
 
 ## Saving and exporting
 

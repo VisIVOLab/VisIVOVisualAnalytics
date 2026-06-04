@@ -30,6 +30,7 @@ class CatalogueTableModel;
 class QAction;
 class QCheckBox;
 class QDockWidget;
+class QFrame;
 class QLabel;
 class ToolResultDialog;
 class QTableView;
@@ -81,6 +82,20 @@ public:
     /// Beam indicator — same contract as vtkWindowCube::setBeamInfo().
     /// Pass NaN major to hide. Call after construction.
     void setBeamInfo(double majorDeg, double minorDeg, double paDeg);
+
+    /// Switch the viewer to dynamic-spectrum / beamformed mode. Disables
+    /// celestial-WCS specific tools (catalogue overlay, polarization vectors,
+    /// Stokes analysis, beam indicator, frame switch), relabels the axes as
+    /// "Time / Frequency", and re-routes the sanity panel to skip the
+    /// celestial-WCS checks. Idempotent.
+    void setDynamicSpectrumMode(bool enabled);
+
+private slots:
+    void runDynspecDedispersion();
+    void runDynspecPulseProfile();
+    void runDynspecRfiMask();
+
+public:
 
     /// Overlay contours from external 2-D data (e.g. a cube viewer's
     /// moment map or current slice). The data is not WCS-reprojected —
@@ -158,6 +173,16 @@ private:
     const QString remoteWcsStatus;
     const QString remoteWcsWarningMessage;
     bool wcsDiagnosticPublished{ false };
+    /// When true, the dataset is a dynamic spectrum / beamformed product
+    /// (time vs. frequency). Celestial-WCS specific tools and overlays are
+    /// hidden; axis labels become "Time" / "Frequency".
+    bool m_dynamicSpectrumMode{ false };
+    /// Sidebar cards that only make sense for celestial datasets — hidden
+    /// when the viewer is switched to dynamic-spectrum mode.
+    QVector<QPointer<QFrame>> m_dynspecHiddenCards;
+    /// Sidebar card with time-series specific tools — only visible in
+    /// dynamic-spectrum mode.
+    QPointer<QFrame> m_dynspecToolsCard;
     bool remoteDisplayingPreview{ false };
     std::array<int, 2> remoteFullImageDims{ 0, 0 };
     bool transitioningToFull{ false };

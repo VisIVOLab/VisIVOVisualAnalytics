@@ -33,6 +33,7 @@ from .routers import (
     spectral,
     diagnostics,
     exports,
+    dynspec,
 )
 from .diagnostics_buffer import install_logging_handler
 
@@ -85,6 +86,7 @@ app.include_router(resolve.router, dependencies=[_auth])
 app.include_router(spectral.router, dependencies=[_auth])
 app.include_router(diagnostics.router, dependencies=[_auth])
 app.include_router(exports.router, dependencies=[_auth])
+app.include_router(dynspec.router, dependencies=[_auth])
 # SAMP: /v1/samp/files/{token} is public (no auth) for VO tool access;
 # all other /v1/samp/* routes use per-route auth declared in the router itself.
 app.include_router(samp.router)

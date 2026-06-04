@@ -1325,6 +1325,115 @@ BackendSaveChannel2dResult BackendClient::saveCubeChannelAs2dFits(
     return parseSaveChannel2dObject(QJsonDocument::fromJson(raw).object());
 }
 
+// ── Dynamic-spectrum analysis ──────────────────────────────────────────────
+
+BackendDynspecDedisperseResult BackendClient::dedisperseDynspec(
+        const QString &datasetId,
+        double dmPcCm3,
+        double refFreqMhz,
+        const QString &outputBasename)
+{
+    BackendDynspecDedisperseResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"),      datasetId },
+            { QStringLiteral("dm_pc_cm3"),       dmPcCm3 },
+            { QStringLiteral("ref_freq_mhz"),    refFreqMhz },
+            { QStringLiteral("output_basename"), outputBasename } });
+    const QByteArray raw =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/dynspec/dedisperse")),
+                        body, error);
+    if (!error.isEmpty()) { result.error = error; return result; }
+    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+    result.valid             = obj.value(QStringLiteral("valid")).toBool(false);
+    result.error             = obj.value(QStringLiteral("error")).toString();
+    result.newDatasetId      = obj.value(QStringLiteral("new_dataset_id")).toString();
+    result.outputPath        = obj.value(QStringLiteral("output_path")).toString();
+    result.workspaceFilename = obj.value(QStringLiteral("workspace_filename")).toString();
+    result.width             = obj.value(QStringLiteral("width")).toInt();
+    result.height            = obj.value(QStringLiteral("height")).toInt();
+    result.rangeMin          = obj.value(QStringLiteral("range_min")).toDouble();
+    result.rangeMax          = obj.value(QStringLiteral("range_max")).toDouble();
+    result.dmPcCm3           = obj.value(QStringLiteral("dm_pc_cm3")).toDouble();
+    result.refFreqMhz        = obj.value(QStringLiteral("ref_freq_mhz")).toDouble();
+    result.maxShiftSamples   = obj.value(QStringLiteral("max_shift_samples")).toInt();
+    return result;
+}
+
+BackendDynspecPulseProfileResult BackendClient::pulseProfile(
+        const QString &datasetId,
+        double periodS,
+        int nBins,
+        double dmPcCm3,
+        double freqStartMhz,
+        double freqEndMhz)
+{
+    BackendDynspecPulseProfileResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"),     datasetId },
+            { QStringLiteral("period_s"),       periodS },
+            { QStringLiteral("n_bins"),         nBins },
+            { QStringLiteral("dm_pc_cm3"),      dmPcCm3 },
+            { QStringLiteral("freq_start_mhz"), freqStartMhz },
+            { QStringLiteral("freq_end_mhz"),   freqEndMhz } });
+    const QByteArray raw =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/dynspec/pulse_profile")),
+                        body, error);
+    if (!error.isEmpty()) { result.error = error; return result; }
+    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+    result.valid    = obj.value(QStringLiteral("valid")).toBool(false);
+    result.error    = obj.value(QStringLiteral("error")).toString();
+    const QJsonArray phaseArr = obj.value(QStringLiteral("phase")).toArray();
+    const QJsonArray profArr  = obj.value(QStringLiteral("profile")).toArray();
+    const QJsonArray cntArr   = obj.value(QStringLiteral("counts")).toArray();
+    result.phase.reserve(phaseArr.size());
+    result.profile.reserve(profArr.size());
+    result.counts.reserve(cntArr.size());
+    for (const auto &v : phaseArr) result.phase.append(v.toDouble());
+    for (const auto &v : profArr)  result.profile.append(v.toDouble());
+    for (const auto &v : cntArr)   result.counts.append(v.toInt());
+    result.peak      = obj.value(QStringLiteral("peak")).toDouble();
+    result.sigmaMad  = obj.value(QStringLiteral("sigma_mad")).toDouble();
+    result.snrPeak   = obj.value(QStringLiteral("snr_peak")).toDouble();
+    result.periodS   = obj.value(QStringLiteral("period_s")).toDouble();
+    result.dmPcCm3   = obj.value(QStringLiteral("dm_pc_cm3")).toDouble();
+    result.nBins     = obj.value(QStringLiteral("n_bins")).toInt();
+    result.nSamples  = obj.value(QStringLiteral("n_samples")).toInt();
+    return result;
+}
+
+BackendDynspecRfiMaskResult BackendClient::rfiMask(
+        const QString &datasetId,
+        double nSigma,
+        const QString &axis,
+        const QString &outputBasename)
+{
+    BackendDynspecRfiMaskResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"),      datasetId },
+            { QStringLiteral("n_sigma"),         nSigma },
+            { QStringLiteral("axis"),            axis },
+            { QStringLiteral("output_basename"), outputBasename } });
+    const QByteArray raw =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/dynspec/rfi_mask")),
+                        body, error);
+    if (!error.isEmpty()) { result.error = error; return result; }
+    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+    result.valid             = obj.value(QStringLiteral("valid")).toBool(false);
+    result.error             = obj.value(QStringLiteral("error")).toString();
+    result.newDatasetId      = obj.value(QStringLiteral("new_dataset_id")).toString();
+    result.outputPath        = obj.value(QStringLiteral("output_path")).toString();
+    result.workspaceFilename = obj.value(QStringLiteral("workspace_filename")).toString();
+    result.width             = obj.value(QStringLiteral("width")).toInt();
+    result.height            = obj.value(QStringLiteral("height")).toInt();
+    result.flaggedFraction   = obj.value(QStringLiteral("flagged_fraction")).toDouble();
+    result.nSigma            = obj.value(QStringLiteral("n_sigma")).toDouble();
+    result.axis              = obj.value(QStringLiteral("axis")).toString();
+    return result;
+}
+
 // ── Moment map → Workspace Exports ─────────────────────────────────────────
 
 BackendSaveMomentFitsResult BackendClient::saveMomentFits(

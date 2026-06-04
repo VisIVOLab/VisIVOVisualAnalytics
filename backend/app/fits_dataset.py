@@ -224,6 +224,32 @@ class ScientificFitsDataset:
             logger.warning("[fits] effective_cdelt failed for path=%s: %s", self.path, exc)
             return None
 
+    def is_dynamic_spectrum(self) -> bool:
+        """Detect whether the FITS file is a dynamic-spectrum / beamformed
+        product, i.e. its axes encode (time, frequency) rather than
+        (sky_x, sky_y[, spectral]).
+
+        Recognised CTYPE tokens:
+            - TIME-like:  TIME, TIME-OBS, MJD, UTC, T (PSRFITS uses TIME)
+            - FREQ-like:  FREQ, FREQUENCY, VRAD, VOPT, WAVE, AWAV
+        Beamformed data is matched when the *active* axes contain at least
+        one time-like and one frequency-like CTYPE. A pure spectral cube
+        (RA, Dec, FREQ) is NOT matched because it has celestial axes too.
+        """
+        time_tokens = ("TIME", "MJD", "UTC")
+        freq_tokens = ("FREQ", "FREQUEN", "WAVE", "AWAV")
+        time_axes: list[int] = []
+        freq_axes: list[int] = []
+        for axis in self.active_axes:
+            ctype = str(self.header.get(f"CTYPE{axis}", "")).strip().upper()
+            if not ctype:
+                continue
+            if ctype.startswith(time_tokens):
+                time_axes.append(axis)
+            elif ctype.startswith(freq_tokens):
+                freq_axes.append(axis)
+        return bool(time_axes) and bool(freq_axes)
+
     def geometry_metadata(self) -> dict[str, Any]:
         spacing = [self._axis_float("CDELT1", 1.0), self._axis_float("CDELT2", 1.0), self._axis_float("CDELT3", 1.0)]
         origin = [
@@ -243,6 +269,13 @@ class ScientificFitsDataset:
             height = squeezed[1] if len(squeezed) > 1 else 1
             depth = 1
             kind = "image"
+
+        # Promote to dynamic-spectrum / beamformed kind when the CTYPE
+        # signature is (time, frequency). The client routes 'dynspec' to the
+        # image viewer with axis labels and tools adapted for waterfall plots
+        # (no beam, no celestial WCS, no catalogue overlay).
+        if self.is_dynamic_spectrum():
+            kind = "dynspec"
         spectral_axis_type = ""
         spectral_axis_unit = ""
         if kind == "cube" and len(self.active_axes) >= 3:

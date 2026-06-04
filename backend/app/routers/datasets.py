@@ -31,15 +31,22 @@ async def open_dataset(
     session: Session = Depends(get_session),
 ) -> OpenDatasetResponse:
     path = _normalize_path(request.path)
-    if not _is_fits(path):
-        return OpenDatasetResponse(valid=False, error="FITS file not found.")
+    if not _is_supported_dataset(path):
+        return OpenDatasetResponse(
+            valid=False,
+            error="Unsupported file type. Expected FITS (.fits, .fit) or "
+                  "HDF5 (.h5, .hdf5, .bfdata).")
     try:
         kind, geometry = _fits_metadata(path)
     except Exception as exc:
         return OpenDatasetResponse(valid=False, error=str(exc))
 
     dataset_id = f"ds_{uuid.uuid4().hex[:12]}"
-    session.datasets[dataset_id] = {"path": str(path), "kind": kind, **geometry}
+    # For HDF5 inputs, geometry["resolved_path"] points at the sidecar FITS
+    # produced by _fits_metadata; pixel-data readers downstream operate on
+    # FITS, so we register the resolved path with the session.
+    registered_path = str(geometry.get("resolved_path") or path)
+    session.datasets[dataset_id] = {"path": registered_path, "kind": kind, **geometry}
     logger.info(
         "[open] session=%s dataset_id=%s kind=%s path=%s",
         session.session_id, dataset_id, kind, path,

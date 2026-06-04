@@ -570,6 +570,54 @@ struct BackendSaveSubregionResult
     double rangeMax{ 0. };
 };
 
+// ── Dynamic-spectrum / beamformed analysis ───────────────────────────────────
+
+struct BackendDynspecDedisperseResult
+{
+    bool valid{ false };
+    QString error;
+    QString newDatasetId;
+    QString outputPath;
+    QString workspaceFilename;
+    int width{ 0 };
+    int height{ 0 };
+    double rangeMin{ 0. };
+    double rangeMax{ 0. };
+    double dmPcCm3{ 0. };
+    double refFreqMhz{ 0. };
+    int maxShiftSamples{ 0 };
+};
+
+struct BackendDynspecPulseProfileResult
+{
+    bool valid{ false };
+    QString error;
+    QVector<double> phase;     ///< Centre of each phase bin (0…1)
+    QVector<double> profile;   ///< Mean intensity per phase bin
+    QVector<int>    counts;    ///< Sample count per bin (NaN bins have count=0)
+    double peak{ 0. };
+    double sigmaMad{ 0. };
+    double snrPeak{ 0. };
+    double periodS{ 0. };
+    double dmPcCm3{ 0. };
+    int nBins{ 0 };
+    int nSamples{ 0 };
+};
+
+struct BackendDynspecRfiMaskResult
+{
+    bool valid{ false };
+    QString error;
+    QString newDatasetId;
+    QString outputPath;
+    QString workspaceFilename;
+    int width{ 0 };
+    int height{ 0 };
+    double flaggedFraction{ 0. };
+    double nSigma{ 0. };
+    QString axis;  ///< 'channel' or 'time'
+};
+
 // ── Single-channel 2-D FITS export from a cube ───────────────────────────────
 
 struct BackendSaveChannel2dResult
@@ -1081,6 +1129,38 @@ public:
     BackendSaveChannel2dResult saveCubeChannelAs2dFits(const QString &datasetId,
                                                         int channel,
                                                         const QString &outputBasename = {});
+
+    // ── Dynamic-spectrum analysis ────────────────────────────────────────────
+    /** POST /v1/dynspec/dedisperse — incoherent dedispersion at the given
+     *  DM (pc cm⁻³); writes a new 2-D dynspec FITS to the workspace and
+     *  registers it as a new session dataset. ``refFreqMhz=0`` lets the
+     *  backend pick the top of the band. */
+    BackendDynspecDedisperseResult dedisperseDynspec(const QString &datasetId,
+                                                      double dmPcCm3,
+                                                      double refFreqMhz = 0.0,
+                                                      const QString &outputBasename = {});
+
+    /** POST /v1/dynspec/pulse_profile — fold the frequency-averaged time
+     *  series at @p periodS and return the phase profile as in-memory
+     *  arrays (no file written). ``dmPcCm3>0`` triggers in-memory
+     *  dedispersion before folding. Frequency band selection via
+     *  ``freqStartMhz/freqEndMhz`` (set 0 for the full band). */
+    BackendDynspecPulseProfileResult pulseProfile(const QString &datasetId,
+                                                   double periodS,
+                                                   int nBins = 64,
+                                                   double dmPcCm3 = 0.0,
+                                                   double freqStartMhz = 0.0,
+                                                   double freqEndMhz = 0.0);
+
+    /** POST /v1/dynspec/rfi_mask — generate a σ-clipped RFI mask. ``axis``
+     *  is either ``"channel"`` (clip across time, per channel) or
+     *  ``"time"`` (clip across frequency, per time sample). Result is a
+     *  uint8 FITS in the workspace registered as a new ``dynspec``
+     *  dataset that can be opened as a layer over the source. */
+    BackendDynspecRfiMaskResult rfiMask(const QString &datasetId,
+                                         double nSigma = 5.0,
+                                         const QString &axis = QStringLiteral("channel"),
+                                         const QString &outputBasename = {});
 
     // ── Moment map → Workspace Exports ────────────────────────────────────────
     /** POST /v1/products/moment_fits — compute the requested moment and

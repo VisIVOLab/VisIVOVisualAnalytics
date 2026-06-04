@@ -168,7 +168,7 @@ __all__ = [
     "_RA_CANDIDATES", "_DEC_CANDIDATES",
     "_default_worker_count", "_pool_initializer", "_error",
     "_apply_tabular_query",
-    "_normalize_path", "_parse_vbt_header", "_is_fits",
+    "_normalize_path", "_parse_vbt_header", "_is_fits", "_is_supported_dataset",
     "_normalize_catalogue_field", "_catalogue_field_type",
     "_catalogue_metadata_from_dataframe", "_catalogue_csv_metadata",
     "_catalogue_load_dataframe", "_catalogue_metadata",
@@ -366,6 +366,14 @@ def _parse_vbt_header(head_path: Path) -> dict:
 
 def _is_fits(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() in _FITS_SUFFIXES
+
+
+def _is_supported_dataset(path: Path) -> bool:
+    """Accept FITS and HDF5 beamformed / dynamic-spectrum files."""
+    from .hdf5_dynspec import is_hdf5_path  # noqa: PLC0415 (lazy h5py import)
+    return path.is_file() and (
+            path.suffix.lower() in _FITS_SUFFIXES
+            or is_hdf5_path(path))
 
 
 def _normalize_catalogue_field(raw: str) -> str:
@@ -655,6 +663,41 @@ def _require_cube_path(session: Session, dataset_id: str) -> str:
 
 
 def _fits_metadata(path: Path) -> tuple[str, dict[str, Any]]:
+    """Return (kind, geometry) for a FITS or HDF5 dataset.
+
+    For HDF5 inputs (LOFAR BFData or any file with a 2-D float dataset) we
+    transparently convert the first dynamic-spectrum plane to a sidecar
+    FITS next to the source and reflect ``path`` to point at the sidecar
+    so the rest of the pipeline (preview / full image readers, region
+    stats, …) reuses the standard FITS code path.
+    """
+    from .hdf5_dynspec import (  # noqa: PLC0415 (lazy h5py import)
+        convert_hdf5_to_sidecar_fits, is_hdf5_path,
+    )
+    from .psrfits import (  # noqa: PLC0415
+        convert_psrfits_to_sidecar_fits, is_psrfits,
+    )
+    if is_hdf5_path(path):
+        sidecar = convert_hdf5_to_sidecar_fits(path)
+        dataset = ScientificFitsDataset(sidecar)
+        geometry = dataset.geometry_metadata()
+        # Force kind to 'dynspec' even if the sidecar header somehow looked
+        # like a normal 2-D image — the source file is beamformed by
+        # construction.
+        geometry["kind"] = "dynspec"
+        # Reflect the sidecar path so downstream readers see a real FITS.
+        geometry["resolved_path"] = str(sidecar)
+        return "dynspec", geometry
+    # PSRFITS: multi-HDU FITS with a SUBINT binary-table extension. We
+    # convert to a 2-D dynspec sidecar (Stokes I, phase-averaged for folded
+    # data) so the rest of the pipeline treats it like an HDF5 / FITS dynspec.
+    if is_psrfits(path):
+        sidecar = convert_psrfits_to_sidecar_fits(path)
+        dataset = ScientificFitsDataset(sidecar)
+        geometry = dataset.geometry_metadata()
+        geometry["kind"] = "dynspec"
+        geometry["resolved_path"] = str(sidecar)
+        return "dynspec", geometry
     dataset = ScientificFitsDataset(path)
     geometry = dataset.geometry_metadata()
     return str(geometry["kind"]), geometry

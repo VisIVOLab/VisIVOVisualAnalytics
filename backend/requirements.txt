@@ -12,6 +12,7 @@ photutils>=1.10.0
 reproject>=0.13
 astroquery>=0.4.7
 scikit-image>=0.22
+h5py>=3.10            # LOFAR / generic beamformed HDF5 dynamic-spectrum reader
 
 # -- Optional: GPU Acceleration (NVIDIA) --
 # To enable GPU acceleration for CPU-bound tasks (Moment Maps, etc.),

@@ -938,10 +938,13 @@ void MainWindow::doOpenDataPath(const QString &path)
     }
 
     QWidget *win = nullptr;
-    if (opened.kind == u"image"_s) {
+    if (opened.kind == u"image"_s || opened.kind == u"dynspec"_s) {
+        const bool isDynspec = opened.kind == u"dynspec"_s;
         qDebug().noquote()
-                << QStringLiteral("[fits] active_axes=%1 -> opening as 2D image | %2")
+                << QStringLiteral("[fits] active_axes=%1 -> opening as %2 | %3")
                            .arg(opened.activeAxes)
+                           .arg(isDynspec ? QStringLiteral("dynamic spectrum")
+                                          : QStringLiteral("2D image"))
                            .arg(opened.degenerateAxesSummary.isEmpty()
                                         ? QStringLiteral("no collapsed axes")
                                         : opened.degenerateAxesSummary);
@@ -950,8 +953,11 @@ void MainWindow::doOpenDataPath(const QString &path)
                                  opened.cdelt, opened.degenerateAxesSummary,
                                  opened.wcsStatus, opened.wcsWarningMessage,
                                  client.sessionId(), client.token(), this);
-        imgWin->setBeamInfo(opened.beamMajorDeg, opened.beamMinorDeg,
-                            opened.beamPaDeg);
+        if (!isDynspec) {
+            imgWin->setBeamInfo(opened.beamMajorDeg, opened.beamMinorDeg,
+                                opened.beamPaDeg);
+        }
+        imgWin->setDynamicSpectrumMode(isDynspec);
         win = imgWin;
     } else if (opened.kind == u"cube"_s) {
         qDebug().noquote()
