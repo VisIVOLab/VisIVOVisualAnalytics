@@ -54,7 +54,6 @@ From: python:3.12-slim
         autoconf \
         libtool \
         cmake \
-        llvm-15-dev \
         libffi-dev \
         libssl-dev \
         libhdf5-dev \
@@ -64,38 +63,6 @@ From: python:3.12-slim
         libcfitsio-dev \
         pkg-config \
         && rm -rf /var/lib/apt/lists/*
-
-    # llvmlite is pinned to 0.43.* below (the last release that supports
-    # LLVM 15, which is what we just installed via llvm-15-dev). The
-    # Debian -dev package installs the binary at
-    #   /usr/lib/llvm-15/bin/llvm-config
-    # but the more familiar /usr/bin/llvm-config-15 symlink only ships
-    # with the separate ``llvm-15`` runtime package. To avoid an extra
-    # dependency, we symlink directly from the -dev install location to
-    # the standard /usr/bin/llvm-config name that llvmlite's setup.py
-    # searches for.
-    if [ -x /usr/lib/llvm-15/bin/llvm-config ]; then
-        ln -sf /usr/lib/llvm-15/bin/llvm-config /usr/bin/llvm-config
-        echo "[backend.def] /usr/bin/llvm-config → /usr/lib/llvm-15/bin/llvm-config"
-    elif [ -x /usr/bin/llvm-config-15 ]; then
-        ln -sf /usr/bin/llvm-config-15 /usr/bin/llvm-config
-        echo "[backend.def] /usr/bin/llvm-config → llvm-config-15"
-    elif command -v llvm-config >/dev/null 2>&1; then
-        echo "[backend.def] WARN: using existing $(which llvm-config)"
-    else
-        LLVMC=$(ls /usr/bin/llvm-config-* /usr/lib/llvm-*/bin/llvm-config 2>/dev/null | sort -V | tail -1 || true)
-        if [ -n "$LLVMC" ]; then
-            ln -sf "$LLVMC" /usr/bin/llvm-config
-            echo "[backend.def] Symlinked $LLVMC → /usr/bin/llvm-config"
-        else
-            echo "[backend.def] ERROR: no llvm-config found anywhere — aborting"
-            exit 1
-        fi
-    fi
-    export LLVM_CONFIG=/usr/bin/llvm-config
-    echo "[backend.def] llvm-config reports:"
-    llvm-config --version
-    llvm-config --prefix
 
     # ── Python deps ──────────────────────────────────────────────────────────
     pip install --no-cache-dir --upgrade pip
@@ -119,66 +86,34 @@ From: python:3.12-slim
     echo "[backend.def] Source root resolved to: $SRC_DIR"
 
     # ─── Architecture-aware install ───────────────────────────────────────
-    # The desktop client needs VTK Python bindings; the backend uses VTK
-    # only inside one function (worker_isosurface) which is guarded by a
-    # lazy import. Since VTK has no ppc64le wheel on PyPI and building it
-    # from source would take ~1h, we filter it out of the requirements
-    # list for the apptainer build. The /v1/cube/isosurface endpoint will
-    # then surface a clear "VTK not installed" error if called; every
-    # other endpoint (image, cube, moments, dynspec, region stats, etc.)
-    # works without VTK because the heavy lifting happens via
-    # vtkFlyingEdges3D only for isosurfacing.
-    REQS_FILTERED=/srv/requirements-no-vtk.txt
-    grep -v '^vtk' "$REQS" > "$REQS_FILTERED"
+    # Two packages in requirements.txt have no usable installation path
+    # on ppc64le from PyPI and we strip them here:
+    #
+    #   * vtk      — no ppc64le wheel; building from source would take
+    #                ~1 h. The backend uses VTK only inside
+    #                worker_isosurface() with a lazy import, so the
+    #                /v1/cube/isosurface endpoint surfaces a clear "VTK
+    #                not installed" error; every other endpoint works.
+    #
+    #   * numba / llvmlite — llvmlite is strict 1:1 with LLVM major and
+    #                Debian trixie ships LLVM 19, but no llvmlite release
+    #                supports 19 (0.42-0.44 want 14-17, 0.45+ wants 20).
+    #                Backend code in app/compute.py already wraps numba
+    #                imports in try/except: when missing, @njit becomes a
+    #                no-op and prange becomes range, so moment kernels
+    #                run in pure Python (slower but correct). With
+    #                ENABLE_CUPY=1 below, those kernels are bypassed
+    #                entirely in favor of the GPU path.
+    #
+    # If a Power9 deployment needs the JIT-compiled numpy path
+    # specifically, build the backend-conda.def variant instead — it
+    # uses conda-forge which has prebuilt llvmlite/numba for ppc64le.
+    REQS_FILTERED=/srv/requirements-ppc64le.txt
+    grep -vE '^(vtk|numba|llvmlite)' "$REQS" > "$REQS_FILTERED"
     echo "[backend.def] Installing from filtered requirements:"
     cat "$REQS_FILTERED"
 
-    # ─── llvmlite ppc64le handling ────────────────────────────────────────
-    # Two layered problems on ppc64le:
-    #
-    # 1. No prebuilt wheel — llvmlite must compile against the system
-    #    LLVM dev headers. The version is strict 1:1 with LLVM major,
-    #    and the project jumped LLVM 18-19 entirely:
-    #      llvmlite 0.42 ↔ LLVM 14
-    #      llvmlite 0.43 ↔ LLVM 15  ← what we use (llvm-15-dev installed)
-    #      llvmlite 0.44 ↔ LLVM 17
-    #      llvmlite 0.45+ ↔ LLVM 20 (no llvmlite supports LLVM 19, the
-    #                                 Debian trixie default)
-    #    To use a more recent llvmlite, we'd need to install LLVM 20
-    #    from apt.llvm.org (which doesn't ship ppc64le builds) or build
-    #    it from source (~1 h). Pinning to 0.43/LLVM 15 is the
-    #    pragmatic stable combo.
-    #
-    # 2. llvmlite's older build code uses ``setuptools.Distribution.spawn(
-    #    dry_run=…)`` which setuptools 70+ removed, so the wheel build
-    #    crashes with ``TypeError: spawn() got an unexpected keyword
-    #    argument 'dry_run'`` if pip's normal PEP-517 build isolation
-    #    fetches a fresh setuptools≥70.
-    #
-    # Workaround: pre-install setuptools<70 system-wide, then build
-    # llvmlite alone with ``--no-build-isolation`` so it reuses our
-    # pinned setuptools instead of fetching the latest one. Every other
-    # package keeps normal build isolation (which is what they want).
-    pip install --no-cache-dir "setuptools<70" "wheel" "cython"
-
-    # Build llvmlite 0.43 against system LLVM 15, reusing the older
-    # setuptools we just installed.
-    pip install --no-cache-dir --no-build-isolation "llvmlite==0.43.*"
-
-    # Now install the full requirements set. pip sees llvmlite already
-    # satisfied at 0.43 and skips it. The constraint file additionally
-    # protects against any transitive dep trying to pull a newer
-    # llvmlite (which would fail again on LLVM mismatch) — and pins
-    # numba to a release compatible with llvmlite 0.43 (numba 0.60.x).
-    CONSTRAINTS=/srv/constraints-ppc64le.txt
-    cat > "$CONSTRAINTS" <<EOF
-llvmlite==0.43.*
-numba==0.60.*
-EOF
-    echo "[backend.def] ppc64le pip constraints:"
-    cat "$CONSTRAINTS"
-
-    pip install --no-cache-dir -c "$CONSTRAINTS" -r "$REQS_FILTERED"
+    pip install --no-cache-dir -r "$REQS_FILTERED"
 
     # ─── Optional: dask[distributed] for cross-node parallelism ───────────
     # Always installed — Power9 SRC testbed scenarios use it to spread
