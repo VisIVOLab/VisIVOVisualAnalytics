@@ -40,9 +40,9 @@ From: python:3.12-slim
 
     # ── System deps ──────────────────────────────────────────────────────────
     # Build-time toolchain for any scientific package that ships only an
-    # sdist for ppc64le (numba, healpy, photutils' C extensions). On x86_64
-    # most wheels are pre-built so these are unused; on ppc64le they save
-    # the build from failing on missing compilers.
+    # sdist for ppc64le (numba, healpy, photutils' C extensions, scipy).
+    # On x86_64 most wheels are pre-built so these are unused; on ppc64le
+    # they save the build from failing on missing compilers / BLAS / HDF5.
     apt-get update -qq
     apt-get install -y --no-install-recommends \
         gcc \
@@ -52,6 +52,10 @@ From: python:3.12-slim
         libffi-dev \
         libssl-dev \
         libhdf5-dev \
+        libopenblas-dev \
+        liblapack-dev \
+        libfftw3-dev \
+        libcfitsio-dev \
         pkg-config \
         && rm -rf /var/lib/apt/lists/*
 
