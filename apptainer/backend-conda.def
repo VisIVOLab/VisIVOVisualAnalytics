@@ -28,6 +28,12 @@ From: condaforge/mambaforge:latest
     cd VisIVO-next
     apptainer build --fakeroot backend.sif apptainer/backend-conda.def
 
+    # Default uses ``conda install --no-lock`` (libmamba solver, no
+    # lockfile contention — safest on Power9 shared filesystems).
+    # For maximum speed on a single-host build, switch to mamba:
+    CONDA_INSTALLER=mamba apptainer build --fakeroot backend.sif \
+        apptainer/backend-conda.def
+
     # Build with NVIDIA GPU support (cupy)
     ENABLE_CUPY=1 apptainer build --fakeroot backend.sif apptainer/backend-conda.def
 
@@ -57,9 +63,36 @@ From: condaforge/mambaforge:latest
 %post
     set -e
 
-    # ── Source the conda activate hook so 'mamba install' works ────────────
+    # ── Source the conda activate hook ─────────────────────────────────────
     . /opt/conda/etc/profile.d/conda.sh
     conda activate base
+
+    # ── Solver selection ───────────────────────────────────────────────────
+    # On some Power9 testbeds mamba's internal lock contends with the
+    # shared filesystem and stalls. ``conda install --no-lock`` (a
+    # libmamba-solver flag) bypasses the transactional database lock and
+    # is the known-good pattern in that environment.
+    #
+    # Default to ``conda --no-lock`` for portability; override to mamba
+    # for maximum speed on a single-host build:
+    #     CONDA_INSTALLER=mamba apptainer build ...
+    #
+    # The two commands are otherwise interchangeable — mamba and
+    # conda-libmamba use the same underlying solver code (libsolv).
+    CONDA_INSTALLER="${CONDA_INSTALLER:-conda}"
+    case "$CONDA_INSTALLER" in
+        mamba)
+            INSTALL_CMD="mamba install -y"
+            ;;
+        conda)
+            INSTALL_CMD="conda install -y --no-lock"
+            ;;
+        *)
+            echo "ERROR: CONDA_INSTALLER must be 'mamba' or 'conda', got '$CONDA_INSTALLER'"
+            exit 1
+            ;;
+    esac
+    echo "[backend-conda.def] Using installer: $INSTALL_CMD"
 
     # ── Locate the requirements file (same logic as the slim variant) ──────
     REQS=$(find /srv/backend_src -name requirements.txt -print -quit 2>/dev/null)
@@ -85,9 +118,10 @@ From: condaforge/mambaforge:latest
     #                            via pip post-step)
     #   dask[array]           → dask  (extras handled separately)
     #
-    # Versions left unpinned — let mamba pick conda-forge's latest known-good
-    # binary set, which is internally consistent (no LLVM/numpy ABI clashes).
-    mamba install -y -n base -c conda-forge \
+    # Versions left unpinned — let the solver pick conda-forge's latest
+    # known-good binary set, which is internally consistent (no
+    # LLVM/numpy ABI clashes).
+    $INSTALL_CMD -n base -c conda-forge \
         python=3.12 \
         fastapi \
         uvicorn-standard \
@@ -118,13 +152,13 @@ From: condaforge/mambaforge:latest
     # container so cupy can talk to the GPU.
     if [ "${ENABLE_CUPY:-0}" = "1" ]; then
         echo "[backend-conda.def] ENABLE_CUPY=1 → installing cupy from conda-forge"
-        mamba install -y -n base -c conda-forge cupy
+        $INSTALL_CMD -n base -c conda-forge cupy
     else
         echo "[backend-conda.def] ENABLE_CUPY not set → skipping GPU acceleration"
     fi
 
-    # ── Cleanup conda caches to shrink the final image ─────────────────────
-    mamba clean --all --yes
+    # ── Cleanup caches to shrink the final image ──────────────────────────
+    conda clean --all --yes
 
     # ── Copy application source ────────────────────────────────────────────
     mkdir -p /app
