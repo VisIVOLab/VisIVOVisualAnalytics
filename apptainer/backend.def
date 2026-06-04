@@ -54,6 +54,7 @@ From: python:3.12-slim
         autoconf \
         libtool \
         cmake \
+        llvm-dev \
         libffi-dev \
         libssl-dev \
         libhdf5-dev \
@@ -63,6 +64,22 @@ From: python:3.12-slim
         libcfitsio-dev \
         pkg-config \
         && rm -rf /var/lib/apt/lists/*
+
+    # llvmlite needs to find llvm-config; the binary is installed as
+    # /usr/bin/llvm-config-<N> on Debian. Expose it under the canonical
+    # name so llvmlite's setup.py finds it without version-specific
+    # tweaking. (No-op if a versioned symlink already exists.)
+    if ! command -v llvm-config >/dev/null 2>&1; then
+        LLVMC=$(ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1 || true)
+        if [ -n "$LLVMC" ]; then
+            ln -sf "$LLVMC" /usr/bin/llvm-config
+            echo "[backend.def] Symlinked $LLVMC → /usr/bin/llvm-config"
+        else
+            echo "[backend.def] WARN: no llvm-config-* found in /usr/bin"
+        fi
+    fi
+    export LLVM_CONFIG=/usr/bin/llvm-config
+    llvm-config --version || echo "[backend.def] WARN: llvm-config still not callable"
 
     # ── Python deps ──────────────────────────────────────────────────────────
     pip install --no-cache-dir --upgrade pip
