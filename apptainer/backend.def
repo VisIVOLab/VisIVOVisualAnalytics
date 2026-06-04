@@ -60,17 +60,17 @@ From: python:3.12-slim
 
     # ─── Locate the requirements file ─────────────────────────────────────
     # Apptainer's %files block normally places ``backend`` into
-    # ``/tmp/backend_src``, but the exact resulting layout depends on
+    # ``/srv/backend_src``, but the exact resulting layout depends on
     # how the source was specified (with or without trailing slash) and
     # whether the destination existed beforehand. Be defensive: find the
     # ``requirements.txt`` wherever Apptainer ended up putting it, then
     # use its parent directory as the source root.
-    REQS=$(find /tmp/backend_src -name requirements.txt -print -quit 2>/dev/null)
+    REQS=$(find /srv/backend_src -name requirements.txt -print -quit 2>/dev/null)
     if [ -z "$REQS" ]; then
-        echo "ERROR: requirements.txt not found anywhere under /tmp/backend_src"
-        echo "Listing /tmp/backend_src contents (depth 3):"
-        ls -la /tmp/backend_src/ || true
-        find /tmp/backend_src -maxdepth 3 -type f | head -40 || true
+        echo "ERROR: requirements.txt not found anywhere under /srv/backend_src"
+        echo "Listing /srv/backend_src contents (depth 3):"
+        ls -la /srv/backend_src/ || true
+        find /srv/backend_src -maxdepth 3 -type f | head -40 || true
         exit 1
     fi
     SRC_DIR=$(dirname "$REQS")
@@ -152,11 +152,11 @@ From: python:3.12-slim
     echo "[%setup] PWD=${PWD}"
     echo "[%setup] Staging backend source from: $SRC"
     echo "[%setup] Target rootfs: $ROOTFS"
-    mkdir -p "$ROOTFS/tmp/backend_src"
-    cp -r "$SRC"/. "$ROOTFS/tmp/backend_src/"
+    mkdir -p "$ROOTFS/srv/backend_src"
+    cp -r "$SRC"/. "$ROOTFS/srv/backend_src/"
     echo "[%setup] Top-level files staged:"
-    ls -la "$ROOTFS/tmp/backend_src/" | head -20
-    if [ ! -f "$ROOTFS/tmp/backend_src/requirements.txt" ]; then
+    ls -la "$ROOTFS/srv/backend_src/" | head -20
+    if [ ! -f "$ROOTFS/srv/backend_src/requirements.txt" ]; then
         echo "########## ERROR ##########"
         echo "requirements.txt NOT FOUND after copy. cp may have failed silently."
         echo "Source was: $SRC"
