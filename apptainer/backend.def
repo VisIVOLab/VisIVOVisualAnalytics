@@ -117,14 +117,34 @@ From: python:3.12-slim
     echo "[backend.def] Installing from filtered requirements:"
     cat "$REQS_FILTERED"
 
-    # llvmlite is strict 1:1 with the LLVM major version:
-    #   llvmlite 0.46 ↔ LLVM 19   (matches Debian trixie default)
-    #   llvmlite 0.47 ↔ LLVM 20   (would require apt.llvm.org repo)
-    # On ppc64le there are no pre-built wheels for any llvmlite version,
-    # so the wheel is always built from the system LLVM dev headers.
-    # Pin llvmlite to 0.46.* so pip picks a numba release that matches —
-    # the requirements.txt only asks for `numba>=0.59.0`, so the slight
-    # downgrade (likely numba 0.63 or 0.64) is harmless.
+    # ─── llvmlite ppc64le handling ────────────────────────────────────────
+    # Two layered problems on ppc64le:
+    #
+    # 1. No prebuilt wheel — llvmlite must compile against the system
+    #    LLVM dev headers. The version is strict 1:1 with LLVM major:
+    #      llvmlite 0.46 ↔ LLVM 19   (Debian trixie default — what we have)
+    #      llvmlite 0.47 ↔ LLVM 20   (would need apt.llvm.org repo)
+    #
+    # 2. llvmlite 0.46's build code uses ``setuptools.Distribution.spawn(
+    #    dry_run=…)`` which setuptools 70+ removed, so the wheel build
+    #    crashes with ``TypeError: spawn() got an unexpected keyword
+    #    argument 'dry_run'`` if pip's normal PEP-517 build isolation
+    #    fetches a fresh setuptools≥70.
+    #
+    # Workaround: pre-install setuptools<70 system-wide, then build
+    # llvmlite alone with ``--no-build-isolation`` so it reuses our
+    # pinned setuptools instead of fetching the latest one. Every other
+    # package keeps normal build isolation (which is what they want).
+    pip install --no-cache-dir "setuptools<70" "wheel" "cython"
+
+    # Build llvmlite 0.46 against system LLVM 19, reusing the older
+    # setuptools we just installed.
+    pip install --no-cache-dir --no-build-isolation "llvmlite==0.46.*"
+
+    # Now install the full requirements set. pip sees llvmlite already
+    # satisfied at 0.46 and skips it. The constraint file additionally
+    # protects against any transitive dep trying to pull a newer
+    # llvmlite (which would fail again on LLVM mismatch).
     CONSTRAINTS=/srv/constraints-ppc64le.txt
     cat > "$CONSTRAINTS" <<EOF
 llvmlite==0.46.*
