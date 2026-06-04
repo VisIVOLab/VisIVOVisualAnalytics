@@ -354,6 +354,95 @@ BackendFileHeaderResult BackendClient::fileHeader(const QString &path) const
     return result;
 }
 
+namespace {
+
+/// Shared parser for the OpenDatasetResponse JSON shape produced by both
+/// /v1/datasets/open and /v1/datasets/open_url. Factored out so the two
+/// endpoints don't drift apart.
+static BackendOpenDatasetResult parseOpenDatasetObject(const QJsonObject &object,
+                                                        QString &outSessionId)
+{
+    BackendOpenDatasetResult result;
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.datasetId = object.value(QStringLiteral("dataset_id")).toString();
+    result.sessionId = object.value(QStringLiteral("session_id")).toString();
+    outSessionId = result.sessionId;
+    result.kind = object.value(QStringLiteral("kind")).toString();
+    result.activeAxes = object.value(QStringLiteral("active_axes")).toInt();
+    result.width = object.value(QStringLiteral("width")).toInt();
+    result.height = object.value(QStringLiteral("height")).toInt();
+    result.depth = object.value(QStringLiteral("depth")).toInt();
+    result.degenerateAxesSummary =
+            object.value(QStringLiteral("degenerate_axes_summary")).toString();
+    result.wcsStatus = object.value(QStringLiteral("wcs_status")).toString(QStringLiteral("ok"));
+    result.wcsWarningMessage = object.value(QStringLiteral("wcs_warning_message")).toString();
+    const QJsonArray wcsSanitizedAxes = object.value(QStringLiteral("wcs_sanitized_axes")).toArray();
+    result.wcsSanitizedAxes.clear();
+    result.wcsSanitizedAxes.reserve(wcsSanitizedAxes.size());
+    for (const QJsonValue &value : wcsSanitizedAxes) {
+        result.wcsSanitizedAxes.push_back(value.toInt());
+    }
+    result.spectralAxisType = object.value(QStringLiteral("spectral_axis_type")).toString();
+    result.spectralAxisUnit = object.value(QStringLiteral("spectral_axis_unit")).toString();
+
+    const QJsonArray spacing = object.value(QStringLiteral("spacing")).toArray();
+    const QJsonArray origin = object.value(QStringLiteral("origin")).toArray();
+    const QJsonArray ctype = object.value(QStringLiteral("ctype")).toArray();
+    const QJsonArray cunit = object.value(QStringLiteral("cunit")).toArray();
+    const QJsonArray crval = object.value(QStringLiteral("crval")).toArray();
+    const QJsonArray crpix = object.value(QStringLiteral("crpix")).toArray();
+    const QJsonArray cdelt = object.value(QStringLiteral("cdelt")).toArray();
+    for (int i = 0; i < 3; ++i) {
+        if (i < spacing.size())
+            result.spacing[static_cast<std::size_t>(i)] = spacing.at(i).toDouble(1.0);
+        if (i < origin.size())
+            result.origin[static_cast<std::size_t>(i)] = origin.at(i).toDouble(0.0);
+        if (i < ctype.size())
+            result.ctype[static_cast<std::size_t>(i)] = ctype.at(i).toString();
+        if (i < cunit.size())
+            result.cunit[static_cast<std::size_t>(i)] = cunit.at(i).toString();
+        if (i < crval.size())
+            result.crval[static_cast<std::size_t>(i)] = crval.at(i).toDouble(0.0);
+        if (i < crpix.size())
+            result.crpix[static_cast<std::size_t>(i)] = crpix.at(i).toDouble(1.0);
+        if (i < cdelt.size())
+            result.cdelt[static_cast<std::size_t>(i)] = cdelt.at(i).toDouble(1.0);
+    }
+    result.pixelScaleArcsec =
+            object.value(QStringLiteral("pixel_scale_arcsec")).toDouble(0.0);
+    const QJsonValue effCdelt = object.value(QStringLiteral("effective_cdelt"));
+    if (effCdelt.isArray()) {
+        const QJsonArray ea = effCdelt.toArray();
+        if (ea.size() >= 2) {
+            result.effectiveCdelt[0] = ea.at(0).toDouble(1.0);
+            result.effectiveCdelt[1] = ea.at(1).toDouble(1.0);
+            result.effectiveCdelt[2] = ea.size() >= 3 ? ea.at(2).toDouble(1.0) : 1.0;
+            result.effectiveCdeltValid = true;
+        }
+    }
+    const QJsonValue ref00 = object.value(QStringLiteral("wcs_ref_sky_00"));
+    if (ref00.isArray() && ref00.toArray().size() >= 2) {
+        result.wcsRefSky00[0] = ref00.toArray().at(0).toDouble();
+        result.wcsRefSky00[1] = ref00.toArray().at(1).toDouble();
+        result.wcsRefSkyValid = true;
+    }
+    const QJsonValue ref0100 = object.value(QStringLiteral("wcs_ref_sky_0100"));
+    if (ref0100.isArray() && ref0100.toArray().size() >= 2) {
+        result.wcsRefSky0100[0] = ref0100.toArray().at(0).toDouble();
+        result.wcsRefSky0100[1] = ref0100.toArray().at(1).toDouble();
+    }
+    const QJsonValue bmaj = object.value(QStringLiteral("beam_major"));
+    const QJsonValue bmin = object.value(QStringLiteral("beam_minor"));
+    const QJsonValue bpa  = object.value(QStringLiteral("beam_pa"));
+    if (!bmaj.isNull()) result.beamMajorDeg = bmaj.toDouble();
+    if (!bmin.isNull()) result.beamMinorDeg = bmin.toDouble();
+    if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
+    return result;
+}
+
+} // namespace
+
 BackendOpenDatasetResult BackendClient::openDataset(const QString &path)
 {
     BackendOpenDatasetResult result;
@@ -366,6 +455,46 @@ BackendOpenDatasetResult BackendClient::openDataset(const QString &path)
         return result;
     }
     const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    QString sessionId;
+    result = parseOpenDatasetObject(object, sessionId);
+
+    // R3: Persist the session_id so subsequent requests use the same session.
+    if (result.valid && !sessionId.isEmpty()) {
+        m_sessionId = sessionId;
+    }
+    return result;
+}
+
+BackendOpenDatasetResult BackendClient::openDatasetFromUrl(
+        const QString &url,
+        const QString &obsId,
+        const QString &remoteBearerToken)
+{
+    BackendOpenDatasetResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("url"), url },
+            { QStringLiteral("obs_id"), obsId },
+            { QStringLiteral("bearer_token"), remoteBearerToken } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/datasets/open_url")),
+                        body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    QString sessionId;
+    result = parseOpenDatasetObject(object, sessionId);
+    if (result.valid && !sessionId.isEmpty()) {
+        m_sessionId = sessionId;
+    }
+    return result;
+}
+
+#if 0  // ── legacy inline parsing replaced by parseOpenDatasetObject ─────────
+{
+    BackendOpenDatasetResult result;
     result.valid = object.value(QStringLiteral("valid")).toBool(false);
     result.error = object.value(QStringLiteral("error")).toString();
     result.datasetId = object.value(QStringLiteral("dataset_id")).toString();
@@ -458,6 +587,7 @@ BackendOpenDatasetResult BackendClient::openDataset(const QString &path)
     if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
     return result;
 }
+#endif  // ── end legacy inline parsing block ─────────────────────────────
 
 BackendCatalogueInfo BackendClient::openCatalogue(const QString &path, const QString &format)
 {

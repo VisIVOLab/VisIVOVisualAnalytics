@@ -27,6 +27,7 @@
 #include "vtkWindowVbt.h"
 #include "vtkWindowVbtVolume.h"
 #include "VLKBInventoryTree.h"
+#include "SkavaSearchPanel.h"
 #include "vlkb/VlkbQueryService.h"
 
 #include <QButtonGroup>
@@ -173,6 +174,24 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // dataset.
     QObject::connect(this->dataHub, &DataHubWidget::openWorkspaceExportRequested,
                      this, &MainWindow::doOpenDataPath);
+
+    // ── SKAVA Discovery tab ───────────────────────────────────────────
+    // Persistent tab next to Data Hub. The panel handles its own state
+    // (filters, results, provenance) and emits openDatasetUrlRequested
+    // when the user picks a result — we forward to the VisIVO backend.
+    {
+        BackendClient client(this->settings->getBackendUrl(),
+                              this->settings->getBackendToken());
+        Q_UNUSED(client);
+        auto *skava = new SkavaSearchPanel(this->settings,
+                                            this->m_sampBackendClient.get(),
+                                            tabs);
+        tabs->addTab(skava, u"SKAVA"_s);
+        QObject::connect(skava, &SkavaSearchPanel::openDatasetUrlRequested,
+                         this, [this](const QString &url, const QString &obsId) {
+            this->doOpenDataFromUrl(url, obsId);
+        });
+    }
 
     // Detach the .ui-defined central widget (the VLKB sky panel) but DO NOT
     // add it to the tab strip on startup. VLKB now opens on demand only —
@@ -913,6 +932,40 @@ void MainWindow::openData()
     doOpenDataPath(path);
 }
 
+void MainWindow::doOpenDataFromUrl(const QString &url, const QString &obsId)
+{
+    if (url.trimmed().isEmpty()) {
+        QMessageBox::warning(this, u"SKAVA"_s,
+                u"No access URL was returned by SKAVA for this dataset."_s);
+        return;
+    }
+    BackendClient client(this->settings->getBackendUrl(),
+                          this->settings->getBackendToken());
+    const auto health = client.health();
+    if (!health.ok) {
+        QMessageBox::critical(this, u"Backend unavailable"_s,
+                u"Cannot download the SKAVA dataset: the VisIVO backend is "
+                u"not reachable.\n\nError: %1"_s.arg(
+                        health.error.isEmpty() ? u"No response"_s : health.error));
+        return;
+    }
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const auto opened = client.openDatasetFromUrl(url, obsId);
+    QApplication::restoreOverrideCursor();
+    if (!opened.valid) {
+        QMessageBox::critical(this, u"Open from SKAVA"_s,
+                u"Could not open the dataset:\n\n%1"_s.arg(
+                        opened.error.isEmpty() ? u"unknown error"_s : opened.error));
+        return;
+    }
+    // The viewer wants a displayable path — for SKAVA-originated opens we
+    // use the obs_id so the window title, Recent Datasets entry, SAMP
+    // metadata etc. carry meaningful labels. The actual data is pulled
+    // by the viewer via opened.datasetId (already session-registered).
+    const QString displayPath = obsId.isEmpty() ? url : obsId;
+    openViewerFromOpenedDataset(displayPath, opened, client);
+}
+
 void MainWindow::doOpenDataPath(const QString &path)
 {
     BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
@@ -936,7 +989,13 @@ void MainWindow::doOpenDataPath(const QString &path)
                                                : opened.error));
         return;
     }
+    openViewerFromOpenedDataset(path, opened, client);
+}
 
+void MainWindow::openViewerFromOpenedDataset(const QString &path,
+                                              const BackendOpenDatasetResult &opened,
+                                              const BackendClient &client)
+{
     QWidget *win = nullptr;
     if (opened.kind == u"image"_s || opened.kind == u"dynspec"_s) {
         const bool isDynspec = opened.kind == u"dynspec"_s;

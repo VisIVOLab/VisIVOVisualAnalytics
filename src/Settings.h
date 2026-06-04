@@ -130,6 +130,32 @@ public:
    */
     void setBackendToken(const QString &token);
 
+    // ── SKAVA discovery service ───────────────────────────────────────────────
+
+    /**
+   * @return The SKAVA discovery service base URL
+   * (e.g. "http://localhost:8000"). Empty when not configured.
+   */
+    QString getSkavaUrl() const;
+
+    /**
+   * Persist the SKAVA discovery base URL.
+   * @param url base URL without trailing slash
+   */
+    void setSkavaUrl(const QString &url);
+
+    /**
+   * @return The bearer token used to authenticate against SKAVA
+   * (SKAVA_ACCESS_TOKENS). Empty when SKAVA does not require auth.
+   */
+    QString getSkavaToken() const;
+
+    /**
+   * Persist the SKAVA bearer token.
+   * @param token Bearer token string
+   */
+    void setSkavaToken(const QString &token);
+
 public slots:
     /**
    * Reload settings from file
@@ -165,6 +191,10 @@ private:
     // Backend settings (R1, R8)
     static const std::pair<QString, QVariant> BackendUrl;
     static const std::pair<QString, QVariant> BackendToken;
+
+    // SKAVA discovery service
+    static const std::pair<QString, QVariant> SkavaUrl;
+    static const std::pair<QString, QVariant> SkavaToken;
 
     // Plot theme
     static const std::pair<QString, QVariant> PlotTheme;

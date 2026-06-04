@@ -986,6 +986,18 @@ public:
      * so all subsequent calls carry the correct X-Visivo-Session header.
      */
     BackendOpenDatasetResult openDataset(const QString &path);
+
+    /** POST /v1/datasets/open_url — download a FITS / HDF5 from an HTTP(S)
+     *  URL, cache it under the backend's exports/skava_cache directory and
+     *  open it as a session dataset. Used by the SKAVA discovery flow:
+     *  the desktop resolves the access URL via SKAVA's DataLink, then hands
+     *  it to this endpoint. ``obsId`` is optional and ends up as a hint in
+     *  the cache filename. ``remoteBearerToken`` is forwarded as a
+     *  ``Authorization`` header on the download, for storage nodes that
+     *  require authentication. */
+    BackendOpenDatasetResult openDatasetFromUrl(const QString &url,
+                                                  const QString &obsId = {},
+                                                  const QString &remoteBearerToken = {});
     BackendCatalogueInfo openCatalogue(const QString &path, const QString &format = QStringLiteral("csv"));
     BackendSampSendResult sendFitsToSamp(const QString &path,
                                          const QString &filename = QString()) const;

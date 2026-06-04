@@ -151,6 +151,10 @@ set(PROJECT_SOURCES
         src/gui/VLKBInventoryTree.h
         src/vlkb/VlkbQueryService.cpp
         src/vlkb/VlkbQueryService.h
+        src/skava/SkavaClient.cpp
+        src/skava/SkavaClient.h
+        src/gui/SkavaSearchPanel.cpp
+        src/gui/SkavaSearchPanel.h
         src/gui/theme/VisivoTheme.cpp
         src/gui/theme/VisivoTheme.h
         src/gui/theme/SegmentedToggle.cpp

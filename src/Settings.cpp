@@ -209,3 +209,33 @@ void Settings::setBackendToken(const QString &token)
 {
     this->settings->setValue(Settings::BackendToken.first, token);
 }
+
+//----------------------------------------------------------------------------
+// SKAVA discovery service
+//----------------------------------------------------------------------------
+const std::pair<QString, QVariant> Settings::SkavaUrl = {
+    u"Skava/url"_s, u"http://localhost:8000"_s
+};
+const std::pair<QString, QVariant> Settings::SkavaToken = { u"Skava/token"_s, u""_s };
+
+QString Settings::getSkavaUrl() const
+{
+    const QString url = this->settings->value(Settings::SkavaUrl.first).toString();
+    return url.isEmpty() ? Settings::SkavaUrl.second.toString() : url;
+}
+
+void Settings::setSkavaUrl(const QString &url)
+{
+    this->settings->setValue(Settings::SkavaUrl.first, url);
+}
+
+QString Settings::getSkavaToken() const
+{
+    return this->settings->value(Settings::SkavaToken.first,
+                                  Settings::SkavaToken.second).toString();
+}
+
+void Settings::setSkavaToken(const QString &token)
+{
+    this->settings->setValue(Settings::SkavaToken.first, token);
+}

@@ -72,6 +72,19 @@ private:
     // Path-based open helpers (skip the file browser dialog, used for reopen).
     void doOpenDataPath(const QString &path);
     void doOpenCataloguePath(const QString &path);
+    /// Resolve a remote URL → download via VisIVO backend → open. Used by
+    /// the SKAVA Discovery tab after a DataLink lookup. ``obsId`` is the
+    /// SKAVA-side identifier, used as a filename hint in the cache and as
+    /// the display name for the Recent Datasets panel.
+    void doOpenDataFromUrl(const QString &url, const QString &obsId);
+    /// Shared viewer-creation logic used by both ``doOpenDataPath`` (local
+    /// path open) and ``doOpenDataFromUrl`` (SKAVA HTTP open). ``path`` is
+    /// the *display* identifier — window title, Recent Datasets entry,
+    /// SAMP metadata — and may be a SKAVA obs_id rather than a real file
+    /// path when the dataset came in through ``openDatasetFromUrl``.
+    void openViewerFromOpenedDataset(const QString &path,
+                                       const struct BackendOpenDatasetResult &opened,
+                                       const class BackendClient &client);
     void doOpenVbtPath(const QString &path);
 
     /// Open a VLKB 2D cutout (backend path) in a new vtkWindowImage, label its
