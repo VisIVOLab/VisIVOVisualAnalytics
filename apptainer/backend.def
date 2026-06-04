@@ -122,10 +122,12 @@ From: python:3.12-slim
     #
     # 1. No prebuilt wheel — llvmlite must compile against the system
     #    LLVM dev headers. The version is strict 1:1 with LLVM major:
-    #      llvmlite 0.46 ↔ LLVM 19   (Debian trixie default — what we have)
-    #      llvmlite 0.47 ↔ LLVM 20   (would need apt.llvm.org repo)
+    #      llvmlite 0.44 ↔ LLVM 17
+    #      llvmlite 0.45 ↔ LLVM 18-19   (Debian trixie default — what we have)
+    #      llvmlite 0.46 ↔ LLVM 20      (would need apt.llvm.org repo)
+    #      llvmlite 0.47 ↔ LLVM 20
     #
-    # 2. llvmlite 0.46's build code uses ``setuptools.Distribution.spawn(
+    # 2. llvmlite's older build code uses ``setuptools.Distribution.spawn(
     #    dry_run=…)`` which setuptools 70+ removed, so the wheel build
     #    crashes with ``TypeError: spawn() got an unexpected keyword
     #    argument 'dry_run'`` if pip's normal PEP-517 build isolation
@@ -139,7 +141,7 @@ From: python:3.12-slim
 
     # Build llvmlite 0.46 against system LLVM 19, reusing the older
     # setuptools we just installed.
-    pip install --no-cache-dir --no-build-isolation "llvmlite==0.46.*"
+    pip install --no-cache-dir --no-build-isolation "llvmlite==0.45.*"
 
     # Now install the full requirements set. pip sees llvmlite already
     # satisfied at 0.46 and skips it. The constraint file additionally
@@ -147,7 +149,7 @@ From: python:3.12-slim
     # llvmlite (which would fail again on LLVM mismatch).
     CONSTRAINTS=/srv/constraints-ppc64le.txt
     cat > "$CONSTRAINTS" <<EOF
-llvmlite==0.46.*
+llvmlite==0.45.*
 EOF
     echo "[backend.def] ppc64le pip constraints:"
     cat "$CONSTRAINTS"
