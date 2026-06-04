@@ -109,7 +109,7 @@ heavier compute, in this order:
   - Estimate Noise, Compute Moment, Line-width Map, Baseline Subtraction,
     Stack Spectral Cubes, Extract PV Diagram, **Channel Maps**,
     Export Sub-Cube as FITS, Export Current Channel as 2-D FITS,
-    Export Moment Map as FITS
+    Export Moment Map as FITS, Pixel Histogram (current slice)
   - Compute-on-cube tools that produce a derived map / cube / spectrum.
     All run on the backend with the heavy-task throttle, so the viewer
     stays interactive.
@@ -347,6 +347,36 @@ faint emission and strong peaks are directly comparable.
 
 These are all explained on a dedicated page:
 [Regions, PV diagrams, noise](region-pv-noise).
+
+## Pixel histogram (current slice)
+
+*Tools → Pixel Histogram (current slice)…* opens a floating
+QCustomPlot window with a 256-bin distribution of the **currently
+displayed channel** of the cube. Two draggable cursors (red = low,
+green = high) live-clip the slice LUT range:
+
+- Drag a cursor and release — the slice LUT updates immediately so
+  you can see the effect on the 2-D view without leaving the
+  histogram window.
+- The window title shows the channel number and the value range is
+  reported in the header line.
+- Re-open the menu entry on a different channel to rebuild the
+  histogram against the new slice.
+
+The tool is especially useful for **multi-plane FITS cubes** where
+each "channel" is a different derived map rather than a frequency or
+velocity slice — for example the planes of an MFImage RM cube (peak
+polarized intensity, rotation measure, RM error, polarization
+fraction, polarization angle at λ²=0). The shape of each plane's
+distribution is enough to identify what it represents:
+
+| Distribution shape | Likely product |
+|---|---|
+| Symmetric Gaussian centred near 0, ± hundreds | Rotation measure (rad/m²) |
+| Symmetric around 0, ±90 | Polarization angle at λ²=0 |
+| Positive-only, exponential-ish, large range | Peak polarized intensity |
+| Positive-only, narrow, small range | Error map (e.g. RM error) |
+| Bounded [0, 1] | Fractional polarization |
 
 ## WCS axes and overlays
 

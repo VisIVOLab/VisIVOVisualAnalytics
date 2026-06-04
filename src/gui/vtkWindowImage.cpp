@@ -387,23 +387,41 @@ double computeBlankFraction(vtkImageData *imageData)
     }
     int extent[6];
     imageData->GetExtent(extent);
-    const qsizetype total = static_cast<qsizetype>(extent[1] - extent[0] + 1)
-            * static_cast<qsizetype>(extent[3] - extent[2] + 1)
-            * static_cast<qsizetype>(std::max(1, extent[5] - extent[4] + 1));
+    const qsizetype width  = extent[1] - extent[0] + 1;
+    const qsizetype height = extent[3] - extent[2] + 1;
+    const qsizetype depth  = std::max<qsizetype>(1, extent[5] - extent[4] + 1);
+    const qsizetype total  = width * height * depth;
     if (total <= 0) {
         return 0.0;
     }
+
+    // For huge images (e.g. 7500×7500 = 56 M pixels) a full scan with the
+    // virtual GetScalarComponentAsDouble takes seconds and freezes the UI on
+    // the preview→full swap. The blank fraction is only used to flag heavily
+    // blanked images (≥ 20 %), so a stride-sampled estimate is more than
+    // accurate enough — we target ~250 k samples regardless of image size.
+    constexpr qsizetype targetSamples = 250'000;
+    const qsizetype perPlane = std::max<qsizetype>(1, width * height);
+    const int stride = std::max(1, static_cast<int>(
+            std::ceil(std::sqrt(static_cast<double>(perPlane)
+                                / std::max<double>(1.0, targetSamples)))));
+
     qsizetype blanked = 0;
+    qsizetype sampled = 0;
     for (int z = extent[4]; z <= extent[5]; ++z) {
-        for (int y = extent[2]; y <= extent[3]; ++y) {
-            for (int x = extent[0]; x <= extent[1]; ++x) {
+        for (int y = extent[2]; y <= extent[3]; y += stride) {
+            for (int x = extent[0]; x <= extent[1]; x += stride) {
+                ++sampled;
                 if (!std::isfinite(imageData->GetScalarComponentAsDouble(x, y, z, 0))) {
                     ++blanked;
                 }
             }
         }
     }
-    return static_cast<double>(blanked) / static_cast<double>(total);
+    if (sampled <= 0) {
+        return 0.0;
+    }
+    return static_cast<double>(blanked) / static_cast<double>(sampled);
 }
 
 bool axisHasAnyMetadata(const QString &ctype, const QString &cunit, double crval, double crpix, double cdelt)
@@ -1474,11 +1492,11 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
 
     // FITS export → Workspace
     ui->menuTools->addSeparator();
-    auto *actExportFits = ui->menuTools->addAction(u"Export to Workspace as FITS…"_s);
-    actExportFits->setToolTip(
+    m_actExportToWorkspace = ui->menuTools->addAction(u"Export to Workspace as FITS…"_s);
+    m_actExportToWorkspace->setToolTip(
             u"Copy this dataset's FITS file into the Workspace Exports "
             u"directory for later download / re-open."_s);
-    QObject::connect(actExportFits, &QAction::triggered, this, [this]() {
+    QObject::connect(m_actExportToWorkspace, &QAction::triggered, this, [this]() {
         bool ok = false;
         const QString basename = QInputDialog::getText(
                 this, u"Export to Workspace"_s,
@@ -1523,15 +1541,15 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     QObject::connect(m_actToggleContours, &QAction::toggled, this,
                      &vtkWindowImage::setContoursVisible);
 
-    auto *actExtContour = ui->menuTools->addAction(u"Load Contour from FITS…"_s);
-    actExtContour->setToolTip(
+    m_actLoadExternalContour = ui->menuTools->addAction(u"Load Contour from FITS…"_s);
+    m_actLoadExternalContour->setToolTip(
             u"Overlay iso-contours from an external FITS file (e.g. a moment "
             u"map exported from a cube viewer)."_s);
-    QObject::connect(actExtContour, &QAction::triggered, this,
+    QObject::connect(m_actLoadExternalContour, &QAction::triggered, this,
                      &vtkWindowImage::addExternalContours);
 
-    auto *actClearContour = ui->menuTools->addAction(u"Clear All Contours"_s);
-    QObject::connect(actClearContour, &QAction::triggered, this,
+    m_actClearAllContours = ui->menuTools->addAction(u"Clear All Contours"_s);
+    QObject::connect(m_actClearAllContours, &QAction::triggered, this,
                      &vtkWindowImage::clearAllContours);
 
     // ── Measurement tools ─────────────────────────────────────────────────
@@ -3758,16 +3776,53 @@ void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result)
         this->refreshProbeOverlay();
     }
     this->m_loadingActor->VisibilityOff();
-    // Reconnect the contour filter to the new real image data (the initial
-    // call at construction time ran on a placeholder with no pixels).
-    this->setupContourPipeline();
-    this->updateDataStatePanel();
-    this->updateSanityPanel();
-    this->updateLUTCustomizer();
-    if (renderWindow) {
-        renderWindow->Render();
-    }
-    this->requestWcsOverlayRender();
+
+    // ── Defer heavy work by one event-loop tick ─────────────────────────
+    // The synchronous parts above (data swap, NaN-color, autoscale on a
+    // strided sample) are cheap. The expensive parts are:
+    //   - setupContourPipeline() — calls vtkImageData::GetScalarRange() over
+    //     the full image (O(N) on tens of millions of pixels)
+    //   - updateLUTCustomizer() — re-inits the LUT editor with the new data
+    //   - renderWindow->Render() — GPU texture upload of the full-res image
+    //   - requestWcsOverlayRender() — recomputes the WCS axis ticks
+    // For a 7500×7500 image the GPU upload alone can take 200–500 ms and
+    // freezes the UI thread the same way the cube viewer's volume upload
+    // used to. Mirror the cube viewer fix (applyCubeOpenResult): pump
+    // pending paint / status events first, then let the upload happen.
+    QPointer<vtkWindowImage> self(this);
+    QTimer::singleShot(50, this, [self]() {
+        if (!self) return;
+        QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+
+        QElapsedTimer renderTimer;
+        renderTimer.start();
+        // Reconnect the contour filter to the new real image data (the
+        // initial call at construction time ran on a placeholder with no
+        // pixels). Rebuilt only when contours are already visible — in the
+        // common case (contours off during preview→full swap) we just mark
+        // the pipeline dirty so setContoursVisible(true) rebuilds lazily.
+        // This avoids a 10–20 s vtkFlyingEdges2D pass on multi-megapixel
+        // images while the user never even asked for contours.
+        if (self->m_contoursVisible) {
+            self->setupContourPipeline();
+        } else {
+            self->m_contourPipelineDirty = true;
+        }
+        self->updateLUTCustomizer();
+        if (self->ui && self->ui->vtk && self->ui->vtk->renderWindow()) {
+            self->ui->vtk->renderWindow()->Render();
+        }
+        self->requestWcsOverlayRender();
+        // Status-bar panels — computeBlankFraction is now stride-sampled
+        // (~250k samples), so updateSanityPanel is cheap even on huge
+        // images, but we still keep it here so the GPU upload above gets
+        // first priority.
+        self->updateDataStatePanel();
+        self->updateSanityPanel();
+        qDebug().noquote()
+                << QStringLiteral("[perf][image] deferred apply (GPU upload): %1 ms")
+                           .arg(renderTimer.elapsed());
+    });
     qDebug().noquote()
             << QStringLiteral("[remote-image] applied mode=%1 display=%2x%3 full=%4x%5")
                        .arg(result.isPreview ? QStringLiteral("preview") : QStringLiteral("full"))
@@ -4685,6 +4740,7 @@ void vtkWindowImage::setupContourPipeline()
     }
 
     m_contourActor->SetVisibility(m_contoursVisible);
+    m_contourPipelineDirty = false;
 }
 
 void vtkWindowImage::updateContours()
@@ -4705,8 +4761,18 @@ void vtkWindowImage::updateContours()
 
 void vtkWindowImage::setContoursVisible(bool vis)
 {
+    // Lazy pipeline rebuild: applyRemoteMasterLayer skips setupContourPipeline
+    // on the preview→full swap when contours are invisible, so we have to
+    // wire the filter to the current master image data the first time the
+    // user actually turns contours on. setupContourPipeline clears the dirty
+    // flag, so subsequent toggles are cheap (just SetVisibility + Render).
+    if (vis && m_contourPipelineDirty) {
+        setupContourPipeline();
+    }
     m_contoursVisible = vis;
-    m_contourActor->SetVisibility(vis);
+    if (m_contourActor) {
+        m_contourActor->SetVisibility(vis);
+    }
     if (ui->vtk->renderWindow())
         ui->vtk->renderWindow()->Render();
 }
@@ -5034,6 +5100,26 @@ void vtkWindowImage::setupSidebar()
                              m_contourUpper = upperEdit->text().toDouble();
                              updateContours();
                          });
+
+        // External contour overlay actions (mirror the Tools menu)
+        cl->addWidget(makeToolBtn(m_actLoadExternalContour, card));
+        cl->addWidget(makeToolBtn(m_actClearAllContours,    card));
+    }
+
+    // Card: I/O — Export to Workspace (mirror the Tools menu)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"I/O"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actExportToWorkspace, card));
+        toolsLayout->addWidget(card);
     }
 
     // Card: WCS Display — toggle button for axes + SegmentedToggle for

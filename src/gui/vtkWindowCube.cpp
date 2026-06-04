@@ -1,6 +1,7 @@
 #include "vtkWindowCube.h"
 #include "ui_vtkWindowCube.h"
 
+#include "qcustomplot.h"
 #include "ColorMaps.h"
 #include "ChannelOverlay.h"
 #include "CubeUiAssembler.h"
@@ -2625,21 +2626,30 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // round-trip the heavy work through the backend exactly like the rest
     // of the ANALYSIS group, so the UI thread stays responsive while the
     // FITS is being written.
-    auto *actExportSubCube = ui->menuTools->addAction(u"Export Sub-Cube as FITS…"_s);
-    actExportSubCube->setToolTip(
+    m_actExportSubCube = ui->menuTools->addAction(u"Export Sub-Cube as FITS…"_s);
+    m_actExportSubCube->setToolTip(
             u"Crop the current cube to a spatial+spectral ROI and persist "
             u"it as a standalone FITS file (WCS preserved)."_s);
-    QObject::connect(actExportSubCube, &QAction::triggered,
+    QObject::connect(m_actExportSubCube, &QAction::triggered,
                      this, &vtkWindowCube::exportSubCubeAsFits);
 
-    auto *actExportChannel2d = ui->menuTools->addAction(
+    m_actExportChannel2d = ui->menuTools->addAction(
             u"Export Current Channel as 2-D FITS…"_s);
-    actExportChannel2d->setToolTip(
+    m_actExportChannel2d->setToolTip(
             u"Save the currently displayed channel as a true 2-D FITS image "
             u"(no degenerate spectral axis). Use this to extract Q/U/I/V at a "
             u"single frequency for the Stokes / spectral-index workflows."_s);
-    QObject::connect(actExportChannel2d, &QAction::triggered,
+    QObject::connect(m_actExportChannel2d, &QAction::triggered,
                      this, &vtkWindowCube::exportCurrentChannelAs2dFits);
+
+    m_actSliceHistogram = ui->menuTools->addAction(u"Pixel Histogram (current slice)…"_s);
+    m_actSliceHistogram->setToolTip(
+            u"Open a floating histogram of the current 2-D slice with two "
+            u"draggable cursors (red = low, green = high) that live-clip the "
+            u"LUT range. Useful for identifying multi-plane products such as "
+            u"the planes of MFImage RM cubes."_s);
+    QObject::connect(m_actSliceHistogram, &QAction::triggered,
+                     this, &vtkWindowCube::showSliceHistogramPanel);
 
     m_actExportMomentFits = ui->menuTools->addAction(u"Export Moment Map as FITS…"_s);
     m_actExportMomentFits->setToolTip(
@@ -2653,10 +2663,10 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                      this, &vtkWindowCube::exportMomentMapAsFits);
 
     // Send current slice / moment to an open image viewer as contour overlay
-    auto *actSendContour = ui->menuTools->addAction(u"Send Slice to Image Viewer…"_s);
-    actSendContour->setToolTip(
+    m_actSendSliceToImage = ui->menuTools->addAction(u"Send Slice to Image Viewer…"_s);
+    m_actSendSliceToImage->setToolTip(
             u"Overlay the current 2-D slice as contours on any open image viewer."_s);
-    QObject::connect(actSendContour, &QAction::triggered, this, [this]() {
+    QObject::connect(m_actSendSliceToImage, &QAction::triggered, this, [this]() {
         auto *output = this->remoteSliceDisplaySource
                 ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
                 : nullptr;
@@ -3029,6 +3039,46 @@ void vtkWindowCube::setupSidebar()
     QWidget *page3dSettings = m_uiAssembler->buildThresholdPage();
     QWidget *page2dSettings = m_uiAssembler->build2dViewPage();
     QWidget *pageTools      = m_uiAssembler->buildToolsPage();
+
+    // ── Append "Export & Inspection" card to the Tools page so every menu
+    // action that has no representation in the assembler-built cards is
+    // also accessible from the sidebar (keeps menu ↔ sidebar coherent).
+    if (auto *toolsLayout = qobject_cast<QVBoxLayout *>(pageTools->layout())) {
+        const QString cardStyle   = VisivoTheme::sidebarCardStyleSheet();
+        const QString subHdrStyle = VisivoTheme::sidebarSubHeaderStyleSheet();
+        const QString toolBtnStyle = VisivoTheme::sidebarToolButtonStyleSheet();
+        const auto makeBtn = [&toolBtnStyle](QAction *act, QWidget *parent) {
+            auto *b = new QToolButton(parent);
+            b->setDefaultAction(act);
+            b->setStyleSheet(toolBtnStyle);
+            b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            b->setToolButtonStyle(Qt::ToolButtonTextOnly);
+            return b;
+        };
+
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *hdr = new QLabel(u"Export & Inspection"_s, card);
+        hdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(hdr);
+
+        if (m_actExportSubCube)     cl->addWidget(makeBtn(m_actExportSubCube,     card));
+        if (m_actExportChannel2d)   cl->addWidget(makeBtn(m_actExportChannel2d,   card));
+        if (m_actExportMomentFits)  cl->addWidget(makeBtn(m_actExportMomentFits,  card));
+        if (m_actSliceHistogram)    cl->addWidget(makeBtn(m_actSliceHistogram,    card));
+        if (m_actSendSliceToImage)  cl->addWidget(makeBtn(m_actSendSliceToImage,  card));
+
+        // Insert before any trailing stretch the assembler may have added.
+        int insertIdx = toolsLayout->count();
+        for (int i = toolsLayout->count() - 1; i >= 0; --i) {
+            if (toolsLayout->itemAt(i)->spacerItem()) { insertIdx = i; break; }
+        }
+        toolsLayout->insertWidget(insertIdx, card);
+    }
 
     CubeUiAssembler::InfoStatsInput infoIn;
     infoIn.filepath         = this->filepath;
@@ -5989,6 +6039,207 @@ void vtkWindowCube::exportCurrentChannelAs2dFits()
                 c.setSessionId(sessionId);
                 return c.saveCubeChannelAs2dFits(datasetId, channel, basename);
             }));
+}
+
+// ── Pixel histogram of the current 2-D slice ───────────────────────────────
+//
+// Floating window with a 256-bin QCustomPlot bar chart of the current slice
+// values; two draggable cursors (red = low, green = high) live-clip the slice
+// LUT range. Used to identify multi-plane products such as the planes of an
+// MFImage RM cube where each "channel" is a different derived map.
+void vtkWindowCube::showSliceHistogramPanel()
+{
+    if (m_histogramWindow) {
+        m_histogramWindow->raise();
+        m_histogramWindow->activateWindow();
+        return;
+    }
+
+    auto *imageData = vtkImageData::SafeDownCast(
+            this->remoteSliceDisplaySource
+                    ? this->remoteSliceDisplaySource->GetOutputDataObject(0) : nullptr);
+    if (!imageData || imageData->GetNumberOfPoints() == 0) {
+        QMessageBox::information(this, u"Pixel Histogram"_s,
+                u"No 2-D slice data is available yet."_s);
+        return;
+    }
+
+    int extent[6];
+    imageData->GetExtent(extent);
+    const int width  = extent[1] - extent[0] + 1;
+    const int height = extent[3] - extent[2] + 1;
+    if (width <= 0 || height <= 0) return;
+
+    std::vector<double> values;
+    const qint64 pixels = static_cast<qint64>(width) * height;
+    const int stride = std::max(
+            1, static_cast<int>(std::sqrt(static_cast<double>(pixels) / 500000.0)));
+    values.reserve(static_cast<std::size_t>(pixels / std::max(1, stride * stride)));
+    for (int y = extent[2]; y <= extent[3]; y += stride) {
+        for (int x = extent[0]; x <= extent[1]; x += stride) {
+            const double v = imageData->GetScalarComponentAsDouble(x, y, 0, 0);
+            if (std::isfinite(v)) values.push_back(v);
+        }
+    }
+    if (values.empty()) {
+        QMessageBox::information(this, u"Pixel Histogram"_s,
+                u"This slice has no finite pixels."_s);
+        return;
+    }
+
+    std::sort(values.begin(), values.end());
+    const double vmin = values.front();
+    const double vmax = values.back();
+    if (vmax <= vmin) {
+        QMessageBox::information(this, u"Pixel Histogram"_s,
+                u"All pixels in this slice are the same value."_s);
+        return;
+    }
+
+    constexpr int nBins = 256;
+    const double binWidth = (vmax - vmin) / nBins;
+    QVector<double> binCenters(nBins), counts(nBins, 0.0);
+    for (int i = 0; i < nBins; ++i) binCenters[i] = vmin + (i + 0.5) * binWidth;
+    for (const double v : values) {
+        int bin = static_cast<int>((v - vmin) / binWidth);
+        if (bin >= nBins) bin = nBins - 1;
+        counts[bin] += 1.0;
+    }
+
+    auto *win = new QWidget(nullptr, Qt::Window);
+    win->setAttribute(Qt::WA_DeleteOnClose);
+    win->setWindowTitle(QStringLiteral("Pixel Histogram — CH %1").arg(
+            ui->sliderSlice->value()));
+    win->resize(620, 380);
+    auto *layout = new QVBoxLayout(win);
+    layout->setContentsMargins(4, 4, 4, 4);
+
+    auto *info = new QLabel(QStringLiteral(
+            "Slice %1 of %2  ·  range %3 — %4  ·  %5 valid pixels  ·  drag cursors to clip LUT")
+                    .arg(ui->sliderSlice->value())
+                    .arg(this->remoteDatasetDepth)
+                    .arg(vmin, 0, 'g', 6)
+                    .arg(vmax, 0, 'g', 6)
+                    .arg(values.size()), win);
+    layout->addWidget(info);
+
+    auto *plot = new QCustomPlot(win);
+    layout->addWidget(plot);
+
+    auto *bars = new QCPBars(plot->xAxis, plot->yAxis);
+    bars->setWidth(binWidth * 0.92);
+    bars->setData(binCenters, counts);
+    bars->setPen(QPen(QColor(70, 130, 180)));
+    bars->setBrush(QColor(70, 130, 180, 120));
+
+    plot->xAxis->setLabel(u"Pixel Value"_s);
+    plot->yAxis->setLabel(u"Count"_s);
+    plot->xAxis->setRange(vmin, vmax);
+    const double maxCount = *std::max_element(counts.begin(), counts.end()) * 1.05;
+    plot->yAxis->setRange(0, maxCount);
+
+    const double *lutRange = this->lutSlice ? this->lutSlice->GetTableRange() : nullptr;
+    const double clipLow  = lutRange ? lutRange[0] : vmin;
+    const double clipHigh = lutRange ? lutRange[1] : vmax;
+
+    auto *lowLine = new QCPItemLine(plot);
+    lowLine->setPen(QPen(QColor(220, 50, 50), 2, Qt::DashLine));
+    lowLine->start->setType(QCPItemPosition::ptPlotCoords);
+    lowLine->end->setType(QCPItemPosition::ptPlotCoords);
+    lowLine->start->setCoords(clipLow, 0);
+    lowLine->end->setCoords(clipLow, maxCount);
+
+    auto *highLine = new QCPItemLine(plot);
+    highLine->setPen(QPen(QColor(50, 180, 50), 2, Qt::DashLine));
+    highLine->start->setType(QCPItemPosition::ptPlotCoords);
+    highLine->end->setType(QCPItemPosition::ptPlotCoords);
+    highLine->start->setCoords(clipHigh, 0);
+    highLine->end->setCoords(clipHigh, maxCount);
+
+    auto *lowLabel = new QCPItemText(plot);
+    lowLabel->setPositionAlignment(Qt::AlignBottom | Qt::AlignHCenter);
+    lowLabel->position->setType(QCPItemPosition::ptPlotCoords);
+    lowLabel->position->setCoords(clipLow, maxCount * 0.98);
+    lowLabel->setText(QStringLiteral("Low: %1").arg(clipLow, 0, 'g', 5));
+    lowLabel->setColor(QColor(220, 50, 50));
+
+    auto *highLabel = new QCPItemText(plot);
+    highLabel->setPositionAlignment(Qt::AlignBottom | Qt::AlignHCenter);
+    highLabel->position->setType(QCPItemPosition::ptPlotCoords);
+    highLabel->position->setCoords(clipHigh, maxCount * 0.98);
+    highLabel->setText(QStringLiteral("High: %1").arg(clipHigh, 0, 'g', 5));
+    highLabel->setColor(QColor(50, 180, 50));
+
+    QPointer<vtkWindowCube> self(this);
+    QPointer<QCPItemLine> lowLinePtr(lowLine);
+    QPointer<QCPItemLine> highLinePtr(highLine);
+    QPointer<QCPItemText> lowLabelPtr(lowLabel);
+    QPointer<QCPItemText> highLabelPtr(highLabel);
+
+    bool *draggingLow  = new bool(false);
+    bool *draggingHigh = new bool(false);
+
+    QObject::connect(plot, &QCustomPlot::mousePress, win,
+                     [plot, lowLinePtr, highLinePtr, draggingLow, draggingHigh](QMouseEvent *event) {
+        const double x = plot->xAxis->pixelToCoord(event->pos().x());
+        if (lowLinePtr && std::abs(x - lowLinePtr->start->coords().x())
+                < (plot->xAxis->range().size() * 0.015))
+            *draggingLow = true;
+        else if (highLinePtr && std::abs(x - highLinePtr->start->coords().x())
+                < (plot->xAxis->range().size() * 0.015))
+            *draggingHigh = true;
+    });
+
+    QObject::connect(plot, &QCustomPlot::mouseMove, win,
+                     [plot, lowLinePtr, highLinePtr, lowLabelPtr, highLabelPtr,
+                      draggingLow, draggingHigh, maxCount](QMouseEvent *event) {
+        if (!*draggingLow && !*draggingHigh) return;
+        const double x = plot->xAxis->pixelToCoord(event->pos().x());
+        if (*draggingLow && lowLinePtr) {
+            lowLinePtr->start->setCoords(x, 0);
+            lowLinePtr->end->setCoords(x, maxCount);
+            if (lowLabelPtr) {
+                lowLabelPtr->position->setCoords(x, maxCount * 0.98);
+                lowLabelPtr->setText(QStringLiteral("Low: %1").arg(x, 0, 'g', 5));
+            }
+            plot->replot();
+        } else if (*draggingHigh && highLinePtr) {
+            highLinePtr->start->setCoords(x, 0);
+            highLinePtr->end->setCoords(x, maxCount);
+            if (highLabelPtr) {
+                highLabelPtr->position->setCoords(x, maxCount * 0.98);
+                highLabelPtr->setText(QStringLiteral("High: %1").arg(x, 0, 'g', 5));
+            }
+            plot->replot();
+        }
+    });
+
+    QObject::connect(plot, &QCustomPlot::mouseRelease, win,
+                     [self, lowLinePtr, highLinePtr, draggingLow, draggingHigh](QMouseEvent *) {
+        if (*draggingLow || *draggingHigh) {
+            if (self && lowLinePtr && highLinePtr) {
+                double lo = lowLinePtr->start->coords().x();
+                double hi = highLinePtr->start->coords().x();
+                if (lo > hi) std::swap(lo, hi);
+                if (hi > lo && self->lutSlice) {
+                    self->lutSlice->SetTableRange(lo, hi);
+                    self->lutSlice->Build();
+                    if (self->sliceWin) self->sliceWin->Render();
+                }
+            }
+        }
+        *draggingLow = false;
+        *draggingHigh = false;
+    });
+
+    QObject::connect(win, &QObject::destroyed, win, [draggingLow, draggingHigh]() {
+        delete draggingLow;
+        delete draggingHigh;
+    });
+
+    plot->replot();
+    m_histogramWindow = win;
+    win->show();
 }
 
 void vtkWindowCube::exportMomentMapAsFits()

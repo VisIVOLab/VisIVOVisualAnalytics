@@ -406,6 +406,10 @@ private:
     /// "Export Moment Map as FITS…" — enabled only once a moment is on
     /// screen (the controller pushes the first result). Stays enabled.
     QPointer<QAction> m_actExportMomentFits;
+    QPointer<QAction> m_actExportSubCube;
+    QPointer<QAction> m_actExportChannel2d;
+    QPointer<QAction> m_actSliceHistogram;
+    QPointer<QAction> m_actSendSliceToImage;
     QPointer<QAction> m_actChannelMaps;
 
     // Beam ellipse overlay (synthesised beam indicator in the 2D slice view).
@@ -539,6 +543,13 @@ private:
     /// / Faraday-RM workflows in the image viewer. Async via
     /// /v1/cube/save_channel_2d.
     void exportCurrentChannelAs2dFits();
+    /// Tools → "Pixel Histogram…". Opens a floating QCustomPlot window with
+    /// a 256-bin histogram of the **current 2-D slice** pixel values. Two
+    /// draggable cursors (red = low, green = high) live-clip the slice LUT
+    /// range. Re-opening on a different channel rebuilds against the new
+    /// slice data — useful for identifying multi-plane RM products (peak
+    /// pol intensity vs RM vs frac pol) at a glance.
+    void showSliceHistogramPanel();
     /// Tools → "Export Moment Map as FITS…". Re-runs the moment with the
     /// last accepted config and persists it as a 2-D FITS via
     /// /v1/products/moment_fits. Async, same pattern as above.
@@ -671,6 +682,9 @@ private:
     void requestWcsOverlayRender();
     void updateMomentProvenancePanel();
     void updateSanityPanel();
+
+    // Histogram window (singleton, lives until the user closes it)
+    QPointer<QWidget> m_histogramWindow;
 
     // Slice
     vtkNew<vtkImageMapToColors> sliceColors;

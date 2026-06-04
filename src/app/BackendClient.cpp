@@ -1424,9 +1424,15 @@ bool BackendClient::downloadExport(const QString &filename,
                                    QString &error)
 {
     QUrl url(m_baseUrl + QStringLiteral("/v1/exports/download"));
-    QUrlQuery q;
-    q.addQueryItem(QStringLiteral("filename"), filename);
-    url.setQuery(q);
+    // Manually percent-encode the filename instead of using QUrlQuery: Qt's
+    // QUrlQuery leaves '+' raw because RFC 3986 considers it a sub-delim, but
+    // FastAPI / Starlette decode query strings using the
+    // application/x-www-form-urlencoded convention where '+' means a space.
+    // That collision broke filenames like "G000.0+8.5_RM_ch0001.fits" (the
+    // server received "G000.0 8.5_…" and returned 404). Force '+' (and any
+    // other reserved chars) to be percent-encoded so the filename round-trips.
+    const QByteArray encodedFilename = QUrl::toPercentEncoding(filename);
+    url.setQuery(QStringLiteral("filename=") + QString::fromUtf8(encodedFilename));
     const QByteArray payload = performGet(url, error);
     if (!error.isEmpty()) return false;
     QFile out(localPath);

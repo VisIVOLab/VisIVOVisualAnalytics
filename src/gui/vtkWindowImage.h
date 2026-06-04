@@ -234,9 +234,18 @@ private:
     // connected to the master layer, with Level/Lower/Upper controls in the
     // sidebar's CONTOURS section. Also supports external FITS overlays.
     QPointer<QAction> m_actToggleContours;
+    QPointer<QAction> m_actLoadExternalContour;
+    QPointer<QAction> m_actClearAllContours;
+    QPointer<QAction> m_actExportToWorkspace;
     vtkSmartPointer<vtkFlyingEdges2D> m_contourFilter;
     vtkSmartPointer<vtkActor>         m_contourActor;
     bool                     m_contoursVisible{ false };
+    /// True when the contour filter still points at stale data (placeholder
+    /// or a previous master image). `setupContourPipeline()` clears it.
+    /// Used so we can defer the expensive vtkFlyingEdges2D rebuild until the
+    /// user actually asks for contours, instead of paying its 10–20 s cost
+    /// on every preview→full swap of a large image.
+    bool                     m_contourPipelineDirty{ true };
     int                      m_contourLevel{ 15 };
     double                   m_contourLower{ 0.0 };
     double                   m_contourUpper{ 1.0 };
