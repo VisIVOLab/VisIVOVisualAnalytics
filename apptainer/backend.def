@@ -90,11 +90,35 @@ From: python:3.12-slim
     # other endpoint (image, cube, moments, dynspec, region stats, etc.)
     # works without VTK because the heavy lifting happens via
     # vtkFlyingEdges3D only for isosurfacing.
-    REQS_FILTERED=/tmp/requirements-no-vtk.txt
+    REQS_FILTERED=/srv/requirements-no-vtk.txt
     grep -v '^vtk' "$REQS" > "$REQS_FILTERED"
     echo "[backend.def] Installing from filtered requirements:"
     cat "$REQS_FILTERED"
     pip install --no-cache-dir -r "$REQS_FILTERED"
+
+    # ─── Optional: dask[distributed] for cross-node parallelism ───────────
+    # Always installed — Power9 SRC testbed scenarios use it to spread
+    # heavy compute across N nodes via VISIVO_DASK_SCHEDULER. Pure Python,
+    # zero cost when unused.
+    pip install --no-cache-dir "dask[distributed]>=2024.1.0"
+
+    # ─── Optional: cupy (NVIDIA GPU) ──────────────────────────────────────
+    # Set ENABLE_CUPY=1 in the build environment to install cupy. Power9
+    # + V100/A100 via NVLink is the flagship use case and gives 10-50×
+    # speedups for moment maps / channel maps on multi-GB cubes. cupy has
+    # no wheel on PyPI for ppc64le, but conda-forge does — we use the
+    # pre-built ppc64le wheel from rapids.ai's nightly index. Requires
+    # CUDA runtime libraries on the host (the container links against
+    # libcudart at runtime via --nv flag of apptainer).
+    if [ "${ENABLE_CUPY:-0}" = "1" ]; then
+        echo "[backend.def] ENABLE_CUPY=1 → installing cupy-cuda12x for ppc64le"
+        pip install --no-cache-dir \
+            --extra-index-url https://pypi.anaconda.org/rapidsai-wheels-nightly/simple \
+            cupy-cuda12x || \
+        echo "[backend.def] WARN: cupy install failed — GPU acceleration disabled"
+    else
+        echo "[backend.def] ENABLE_CUPY not set → skipping GPU acceleration"
+    fi
 
     # ── Copy application source ───────────────────────────────────────────────
     mkdir -p /app
