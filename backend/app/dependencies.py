@@ -31,7 +31,28 @@ from .schemas import *
 logger = logging.getLogger('visivo.backend')
 
 _WORKERS = int(os.environ.get('VISIVO_WORKERS', '4'))
-_POOL = ProcessPoolExecutor(max_workers=_WORKERS)
+# Use 'spawn' instead of the default 'fork' so worker processes start
+# with a fresh Python interpreter rather than inheriting the parent's
+# state. This is REQUIRED when the workers use CuPy / CUDA: CUDA
+# contexts cannot cross a fork boundary, and child processes inherit
+# a half-initialised state that surfaces as
+# ``cudaErrorInitializationError`` on first cupy call. The cost is
+# slightly higher worker-startup latency (~50 ms each, once); since
+# the pool is process-lifetime, this is amortised away.
+#
+# The behaviour can be forced with VISIVO_MP_START_METHOD=fork
+# (e.g. on CUDA-less builds where the fork penalty isn't worth it).
+import multiprocessing as _mp
+_MP_METHOD = os.environ.get('VISIVO_MP_START_METHOD', 'spawn')
+try:
+    _MP_CONTEXT = _mp.get_context(_MP_METHOD)
+except ValueError:
+    logger.warning(
+        "VISIVO_MP_START_METHOD=%r not available; falling back to default fork",
+        _MP_METHOD,
+    )
+    _MP_CONTEXT = _mp.get_context()
+_POOL = ProcessPoolExecutor(max_workers=_WORKERS, mp_context=_MP_CONTEXT)
 _DASK_CLIENT = None
 _DASK_SCHEDULER = os.environ.get('VISIVO_DASK_SCHEDULER', '')
 _VTK_AVAILABLE = False

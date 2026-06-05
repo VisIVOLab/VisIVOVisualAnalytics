@@ -52,11 +52,13 @@ PARTITION="${VISIVO_PARTITION:-gpu}"
 TIME="${VISIVO_TIME:-08:00:00}"
 MEM="${VISIVO_MEM:-64G}"
 CPUS="${VISIVO_CPUS:-8}"
+WORKERS="${VISIVO_WORKERS:-}"  # default empty → matches CPUS
 GRES="${VISIVO_GRES:-gpu:1}"
 PORT="${VISIVO_PORT:-8000}"
 BIND_PATH="${VISIVO_BIND:-$HOME}"
 DATA_ROOT="${VISIVO_DATA_ROOT:-}"
 SIF="${VISIVO_SIF:-$(dirname "$0")/../apptainer/backend.sif}"
+BACKEND_SRC="${VISIVO_BACKEND_SRC_OVERRIDE:-}"
 TOKEN="${VISIVO_TOKEN:-}"
 LOG_DIR="${VISIVO_LOG_DIR:-$HOME/.visivo_logs}"
 POLL_MAX=60   # max poll attempts × 5 s = 5 min
@@ -69,6 +71,7 @@ while [[ $# -gt 0 ]]; do
         --time)      TIME="$2";      shift 2 ;;
         --mem)       MEM="$2";       shift 2 ;;
         --cpus)      CPUS="$2";      shift 2 ;;
+        --workers)   WORKERS="$2";   shift 2 ;;
         --gres)      GRES="$2";      shift 2 ;;
         --port)      PORT="$2";      shift 2 ;;
         --bind)      BIND_PATH="$2"; shift 2 ;;
@@ -87,6 +90,14 @@ done
 # Drop --nv when no GPU is being requested.
 if [[ -z "$GRES" || "$GRES" == "0" ]]; then
     USE_GPU=false
+fi
+
+# Backend's ProcessPoolExecutor size. Decoupled from --cpus so an
+# operator can allocate a whole node (--cpus 128) but keep the
+# concurrent CUDA-init footprint small (--workers 4). When unset,
+# default to CPUS for backward compat.
+if [[ -z "$WORKERS" ]]; then
+    WORKERS="$CPUS"
 fi
 
 # ── Generate token if not provided ───────────────────────────────────────────
@@ -159,7 +170,12 @@ echo "[visivo] Data root: ${DATA_ROOT:-(not jailed)}"
 
 # Env vars consumed inside the container.
 export APPTAINERENV_VISIVO_TOKEN="${TOKEN}"
-export APPTAINERENV_VISIVO_WORKERS="${CPUS}"
+# Decoupled from --cpus: the backend's ProcessPoolExecutor is sized by
+# --workers, while --cpus is the SLURM allocation (which Numba's
+# parallel kernels exploit via OpenMP threads inside ONE worker).
+# 128 simultaneously-init-CUDA workers is what triggers
+# cudaErrorInitializationError on a single V100.
+export APPTAINERENV_VISIVO_WORKERS="${WORKERS}"
 export APPTAINERENV_PORT="${PORT}"
 export APPTAINERENV_VISIVO_HOST="0.0.0.0"
 ${DATA_ROOT_ENV}
@@ -174,7 +190,8 @@ SLURM_EOF
 echo "[visivo] Submitting SLURM job..."
 echo "[visivo]   partition: ${PARTITION}"
 echo "[visivo]   gres:      ${GRES:-(none)}"
-echo "[visivo]   cpus:      ${CPUS}"
+echo "[visivo]   cpus:      ${CPUS}     (SLURM allocation)"
+echo "[visivo]   workers:   ${WORKERS}  (backend ProcessPoolExecutor)"
 echo "[visivo]   mem:       ${MEM}"
 echo "[visivo]   time:      ${TIME}"
 echo "[visivo]   sif:       ${SIF}"
