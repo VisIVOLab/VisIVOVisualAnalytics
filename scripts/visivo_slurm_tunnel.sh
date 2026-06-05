@@ -43,6 +43,19 @@ while [[ $# -gt 0 ]]; do
             grep '^#' "$0" | sed 's/^# \{0,2\}//'
             exit 0
             ;;
+        # Reject empty positional args explicitly. They survive bash's
+        # quoting locally but collapse to nothing inside ``ssh "$@"``,
+        # which then shifts subsequent flags' values into wrong slots
+        # ("Unknown option: <next-value>"). Catching the empty string
+        # here surfaces the real problem (probably an unset env var)
+        # with an actionable message instead of a misleading one.
+        "")
+            echo "[visivo] ERROR: empty argument detected. Did you forget to set" >&2
+            echo "         an env var like \$VISIVO_POWER9_TOKEN? Run" >&2
+            echo "             echo \"len: \${#VISIVO_POWER9_TOKEN}\"" >&2
+            echo "         and ensure it prints a non-zero length." >&2
+            exit 2
+            ;;
         # Pass everything else through to the remote launch script.
         *) REMOTE_OPTS+=("$1"); shift ;;
     esac
