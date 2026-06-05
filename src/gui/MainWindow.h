@@ -19,11 +19,13 @@ class HiPSWindow;
 class SampClient;
 class SampMessageHandler;
 class QAction;
+class QLabel;
 class QMenu;
 class QTabWidget;
 class Settings;
 class VLKBInventoryTree;
 class vtkWindowImage;
+struct BackendNode;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -77,6 +79,14 @@ private:
     /// SKAVA-side identifier, used as a filename hint in the cache and as
     /// the display name for the Recent Datasets panel.
     void doOpenDataFromUrl(const QString &url, const QString &obsId);
+    /// Backend-aware open driven by a full SKAVA DataLink response. When
+    /// SKAVA advertises a ``visivo-backend`` service descriptor that
+    /// matches a registered backend, route the open through that backend
+    /// (compute next to data, no download). When no descriptor matches,
+    /// fall back to ``doOpenDataFromUrl`` (download via local backend).
+    /// See docs/distributed-backend-design.md §4.2.
+    void doOpenSkavaDataset(const QString &obsId,
+                              const struct SkavaDatalinkResponse &datalink);
     /// Shared viewer-creation logic used by both ``doOpenDataPath`` (local
     /// path open) and ``doOpenDataFromUrl`` (SKAVA HTTP open). ``path`` is
     /// the *display* identifier — window title, Recent Datasets entry,
@@ -159,6 +169,15 @@ private:
     QString           m_sampCurrentCatalogueFormat;
 
     void openDiagnosticsWindow();
+
+    // ── "Served by" backend badge ─────────────────────────────────────────
+    // Permanent widget in the status bar showing which backend is currently
+    // active. Updated by ``setActiveBackendBadge()`` whenever a dataset
+    // open routes through a remote SRC backend (``Backend: <name>`` in
+    // accent colour) or falls back to the local backend (``Backend:
+    // Local`` in muted colour).
+    QPointer<QLabel> m_backendBadge;
+    void setActiveBackendBadge(const BackendNode &node);
 
 
 };

@@ -231,6 +231,11 @@ SkavaSearchPanel::SkavaSearchPanel(Settings *settings,
                             resp.error.isEmpty() ? u"unknown error"_s : resp.error));
             return;
         }
+        // Backend-aware: emit the rich signal first so MainWindow can
+        // pick a registered backend from the visivo-backend descriptors;
+        // legacy signal is retained for any consumer that only wants the
+        // URL. Both connect to the same effective flow inside MainWindow.
+        emit openSkavaDatasetRequested(resp.dataset.obsId, resp);
         emit openDatasetUrlRequested(resp.primaryAccessUrl, resp.dataset.obsId);
     });
 

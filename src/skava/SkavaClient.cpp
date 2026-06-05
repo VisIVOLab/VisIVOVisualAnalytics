@@ -305,6 +305,28 @@ SkavaDatalinkResponse SkavaClient::parseDatalinkResponse(const QJsonObject &obj)
         r.replicas.append(parseReplica(repVal.toObject()));
     }
     r.dataset = parseDatasetMetadata(obj.value(u"dataset"_s).toObject());
+    // ── Service descriptors → extract visivo-backend entries ───────────
+    // These tell the desktop "compute next to data" is available: the
+    // SRC node hosts a VisIVO backend that can open this dataset
+    // directly without a download. Unknown service_type values are
+    // ignored — the schema is intentionally extensible per
+    // docs/access_datalink.md.
+    for (const auto &sdVal : obj.value(u"service_descriptors"_s).toArray()) {
+        const QJsonObject sdObj = sdVal.toObject();
+        const QString type = sdObj.value(u"service_type"_s).toString();
+        if (type != "visivo-backend"_L1) continue;
+        if (!sdObj.value(u"enabled"_s).toBool(true)) continue;
+        SkavaVisivoBackendDescriptor desc;
+        desc.endpoint     = sdObj.value(u"endpoint"_s).toString();
+        desc.nodeCode     = sdObj.value(u"node_code"_s).toString();
+        desc.requiresAuth = sdObj.value(u"requires_auth"_s).toBool(false);
+        for (const auto &k : sdObj.value(u"supports_kinds"_s).toArray()) {
+            desc.supportedKinds.append(k.toString());
+        }
+        if (!desc.endpoint.isEmpty()) {
+            r.visivoBackends.append(desc);
+        }
+    }
     // Fall back to legacy compatibility fields if structured ones are missing.
     if (r.primaryAccessUrl.isEmpty()) {
         r.primaryAccessUrl = getStringField(obj, u"access_url"_s);

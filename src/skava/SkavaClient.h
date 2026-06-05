@@ -92,6 +92,18 @@ struct SkavaDiscoveryResponse
     int                           returned{ 0 };
 };
 
+/// Descriptor for a VisIVO backend co-located with a dataset at an SRC
+/// node. Returned by SKAVA inside ``service_descriptors[]`` under
+/// ``service_type == "visivo-backend"``. See
+/// docs/distributed-backend-design.md §5.2.
+struct SkavaVisivoBackendDescriptor
+{
+    QString endpoint;       ///< Base URL of the VisIVO backend at the SRC
+    QString nodeCode;       ///< SKAVA Node.code, cross-references the registry
+    bool    requiresAuth{ false };
+    QStringList supportedKinds;  ///< e.g. ["image", "cube", "dynspec"]
+};
+
 struct SkavaDatalinkResponse
 {
     bool                  valid{ false };
@@ -104,6 +116,12 @@ struct SkavaDatalinkResponse
     QString               bestNode;
     SkavaDatasetMetadata  dataset;
     QVector<SkavaReplica> replicas;
+    /// VisIVO backends advertised in ``service_descriptors[]``. When
+    /// non-empty the desktop should route the open through a registered
+    /// backend matching one of these descriptors (compute next to data);
+    /// when empty the desktop falls back to download via the local
+    /// backend's ``/v1/datasets/open_url``.
+    QVector<SkavaVisivoBackendDescriptor> visivoBackends;
 };
 
 // ── Search filter ───────────────────────────────────────────────────────────

@@ -183,6 +183,8 @@ set(PROJECT_SOURCES
         src/gui/PvDiagramWidget.h
         src/gui/SettingsDialog.cpp
         src/gui/SettingsDialog.h
+        src/gui/BackendsSettingsWidget.cpp
+        src/gui/BackendsSettingsWidget.h
         src/gui/HiPSViewportWidget.cpp
         src/gui/HiPSViewportWidget.h
         src/gui/HiPSWindow.cpp

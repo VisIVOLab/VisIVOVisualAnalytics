@@ -4,6 +4,7 @@
 #include "AboutDialog.h"
 #include "AuthWrapper.h"
 #include "app/BackendClient.h"
+#include "app/BackendClientFactory.h"
 #include "app/SampClient.h"
 #include "app/SampMessageHandler.h"
 #include "app/RecentDatasetsManager.h"
@@ -23,11 +24,16 @@
 #include "vtkWindowCatalogue3D.h"
 #include "vtkWindowCube.h"
 #include "vtkWindowImage.h"
+
+#include <QLabel>
+#include <QStatusBar>
 #include "HiPSWindow.h"
 #include "vtkWindowVbt.h"
 #include "vtkWindowVbtVolume.h"
 #include "VLKBInventoryTree.h"
 #include "SkavaSearchPanel.h"
+#include "../skava/SkavaClient.h"
+#include "../Settings.h"
 #include "vlkb/VlkbQueryService.h"
 
 #include <QButtonGroup>
@@ -138,6 +144,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 
     // Create core objects
     this->settings = new Settings(workDir, this);
+    // Wire the backend-client factory to Settings so it can resolve the
+    // multi-backend registry. After this point any code may call
+    // BackendClientFactory::instance()->get(id) without further setup.
+    BackendClientFactory::instance()->setSettings(this->settings);
     this->auth = new AuthWrapper(this);
     this->m_sampBackendClient = std::make_unique<BackendClient>(
             this->settings->getBackendUrl(), this->settings->getBackendToken());
@@ -177,20 +187,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
 
     // ── SKAVA Discovery tab ───────────────────────────────────────────
     // Persistent tab next to Data Hub. The panel handles its own state
-    // (filters, results, provenance) and emits openDatasetUrlRequested
-    // when the user picks a result — we forward to the VisIVO backend.
+    // (filters, results, provenance) and emits two signals on Open:
+    //   - openSkavaDatasetRequested → backend-aware routing via
+    //     doOpenSkavaDataset() which checks visivo-backend service
+    //     descriptors against the registry (compute next to data)
+    //   - openDatasetUrlRequested → legacy download-via-local fallback
+    // We connect only the rich signal so we do not open twice.
     {
-        BackendClient client(this->settings->getBackendUrl(),
-                              this->settings->getBackendToken());
-        Q_UNUSED(client);
         auto *skava = new SkavaSearchPanel(this->settings,
                                             this->m_sampBackendClient.get(),
                                             tabs);
         tabs->addTab(skava, u"SKAVA"_s);
-        QObject::connect(skava, &SkavaSearchPanel::openDatasetUrlRequested,
-                         this, [this](const QString &url, const QString &obsId) {
-            this->doOpenDataFromUrl(url, obsId);
-        });
+        QObject::connect(skava, &SkavaSearchPanel::openSkavaDatasetRequested,
+                         this, &MainWindow::doOpenSkavaDataset);
     }
 
     // Detach the .ui-defined central widget (the VLKB sky panel) but DO NOT
@@ -376,8 +385,38 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
                      this, &MainWindow::pollBackendDiagnosticsOnce);
     m_backendDiagPollTimer.start();
 
+    // ── Active-backend badge in the status bar ──────────────────────────────
+    // Persistent indicator on the right side of the status bar showing
+    // which backend is currently serving compute (local vs. one of the
+    // registered remote SRCs). Updated by ``setActiveBackendBadge()``
+    // every time a dataset open routes through a specific backend.
+    this->m_backendBadge = new QLabel(this);
+    this->m_backendBadge->setContentsMargins(8, 0, 8, 0);
+    this->m_backendBadge->setToolTip(
+            u"Backend currently serving compute. Click Settings → Remote "
+            u"Backends to register additional SRC nodes."_s);
+    this->statusBar()->addPermanentWidget(this->m_backendBadge);
+    this->setActiveBackendBadge(this->settings->getLocalBackend());
+
     this->setMinimumSize(1200, 840);
     this->resize(1280, 840);
+}
+
+void MainWindow::setActiveBackendBadge(const BackendNode &node)
+{
+    if (!this->m_backendBadge) {
+        return;
+    }
+    const QString name = node.name.isEmpty() ? node.id : node.name;
+    const QString labelText = node.isLocal
+            ? u"Backend: Local"_s
+            : u"Backend: %1"_s.arg(name);
+    // Accent colour for remote backends so the user can tell at a glance
+    // that compute is happening off-host; muted for the default local
+    // path so it does not draw attention.
+    const QString colour = node.isLocal ? u"#888"_s : u"#2c7be5"_s;
+    this->m_backendBadge->setText(
+            u"<span style='color:%1'><b>%2</b></span>"_s.arg(colour, labelText));
 }
 
 void MainWindow::pollBackendDiagnosticsOnce()
@@ -932,6 +971,88 @@ void MainWindow::openData()
     doOpenDataPath(path);
 }
 
+namespace {
+
+/// Try to resolve a SKAVA visivo-backend service descriptor against the
+/// desktop's known-backends registry.
+///
+/// Resolution order:
+///   1. exact URL match between descriptor.endpoint and a registered
+///      BackendNode.url (after trimming trailing slashes)
+///   2. matching SKAVA node_code against BackendNode.srcCode
+///   3. empty (caller falls back to download via local backend)
+BackendNode pickBackendForSkavaDataset(
+        Settings *settings,
+        const SkavaDatalinkResponse &datalink)
+{
+    if (!settings || datalink.visivoBackends.isEmpty()) {
+        return {};
+    }
+    const auto registry = settings->getBackendNodes();
+    const auto trim = [](QString s) {
+        while (s.endsWith(u'/')) s.chop(1);
+        return s;
+    };
+    for (const auto &desc : datalink.visivoBackends) {
+        const QString descUrl = trim(desc.endpoint);
+        // (1) exact URL match
+        for (const auto &node : registry) {
+            if (trim(node.url) == descUrl && !descUrl.isEmpty()) {
+                return node;
+            }
+        }
+        // (2) node_code match
+        if (!desc.nodeCode.isEmpty()) {
+            for (const auto &node : registry) {
+                if (node.srcCode == desc.nodeCode) {
+                    return node;
+                }
+            }
+        }
+    }
+    return {};
+}
+
+}  // namespace
+
+void MainWindow::doOpenSkavaDataset(const QString &obsId,
+                                      const SkavaDatalinkResponse &datalink)
+{
+    // Backend-aware routing per docs/distributed-backend-design.md §4.2.
+    const BackendNode chosen = pickBackendForSkavaDataset(this->settings, datalink);
+    if (!chosen.id.isEmpty() && !chosen.isLocal) {
+        // ── Compute-next-to-data path: remote backend already owns the
+        // file, open via its standard /v1/datasets/open with no download.
+        this->setActiveBackendBadge(chosen);
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        BackendClient client(chosen.url, chosen.token);
+        // The "path" we send is implementation-specific to the remote
+        // backend. For the moment we forward the obs_id; production SRCs
+        // will likely map obs_id → filesystem path via a SKAVA-side
+        // resolver. The remote backend can also choose to interpret it
+        // as a URL by fetching its own local copy.
+        const auto opened = client.openDataset(obsId);
+        QApplication::restoreOverrideCursor();
+        if (!opened.valid) {
+            qWarning().noquote() << QStringLiteral(
+                    "[skava] remote backend %1 refused open: %2 — falling back to local download")
+                    .arg(chosen.id, opened.error);
+            // Revert the badge: the remote refused, so the imminent
+            // download/open below is served by the local backend.
+            this->setActiveBackendBadge(this->settings->getLocalBackend());
+            // Fall through to the local-download path so the user still
+            // gets the dataset rather than a hard failure.
+        } else {
+            const QString displayPath = obsId.isEmpty()
+                    ? datalink.primaryAccessUrl : obsId;
+            openViewerFromOpenedDataset(displayPath, opened, client);
+            return;
+        }
+    }
+    // ── Fallback: download via local backend cache → open ──────────────
+    doOpenDataFromUrl(datalink.primaryAccessUrl, obsId);
+}
+
 void MainWindow::doOpenDataFromUrl(const QString &url, const QString &obsId)
 {
     if (url.trimmed().isEmpty()) {
@@ -939,6 +1060,7 @@ void MainWindow::doOpenDataFromUrl(const QString &url, const QString &obsId)
                 u"No access URL was returned by SKAVA for this dataset."_s);
         return;
     }
+    this->setActiveBackendBadge(this->settings->getLocalBackend());
     BackendClient client(this->settings->getBackendUrl(),
                           this->settings->getBackendToken());
     const auto health = client.health();
@@ -968,6 +1090,7 @@ void MainWindow::doOpenDataFromUrl(const QString &url, const QString &obsId)
 
 void MainWindow::doOpenDataPath(const QString &path)
 {
+    this->setActiveBackendBadge(this->settings->getLocalBackend());
     BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
     const auto health = client.health();
     if (!health.ok) {

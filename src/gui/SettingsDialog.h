@@ -5,6 +5,7 @@
 #include <QPointer>
 
 class AuthWrapper;
+class BackendsSettingsWidget;
 class Settings;
 
 enum class AuthService;
@@ -37,6 +38,7 @@ private:
     Ui::SettingsDialog *ui;
     QPointer<Settings> settings;
     QPointer<AuthWrapper> auth;
+    BackendsSettingsWidget *backendsWidget{ nullptr };
 
     void setVLKBAuthStatus();
 };

@@ -2,8 +2,10 @@
 #include "ui_SettingsDialog.h"
 
 #include "AuthWrapper.h"
+#include "BackendsSettingsWidget.h"
 #include "Settings.h"
 
+#include <QBoxLayout>
 #include <QClipboard>
 #include <QFileDialog>
 #include <QGuiApplication>
@@ -65,6 +67,19 @@ SettingsDialog::SettingsDialog(Settings *settings, AuthWrapper *auth, QWidget *p
     QObject::connect(ui->btnVLKBAuth, &QPushButton::clicked, this,
                      &SettingsDialog::VLKBAuthTriggered);
 
+    // Remote backends (distributed-backend pattern — one node per SRC).
+    // Inject the widget into the dialog's vertical layout just above the
+    // buttonBox so it appears at the bottom alongside the other groups.
+    this->backendsWidget = new BackendsSettingsWidget(this->settings, this);
+    if (auto *box = qobject_cast<QBoxLayout *>(this->layout())) {
+        const int buttonBoxIndex = box->indexOf(ui->buttonBox);
+        if (buttonBoxIndex >= 0) {
+            box->insertWidget(buttonBoxIndex, this->backendsWidget);
+        } else {
+            box->addWidget(this->backendsWidget);
+        }
+    }
+
     // Restore defaults
     QObject::connect(ui->buttonBox, &QDialogButtonBox::clicked, this,
                      [this](QAbstractButton *button) {
@@ -97,6 +112,9 @@ void SettingsDialog::accept()
     this->settings->setSearchOnImportFlag(ui->checkVLKBSearch->isChecked());
     this->settings->setBackendUrl(ui->lineBackendUrl->text().trimmed());
     this->settings->setBackendToken(ui->lineBackendToken->text().trimmed());
+    if (this->backendsWidget) {
+        this->backendsWidget->saveTo(this->settings);
+    }
     QDialog::accept();
 }
 

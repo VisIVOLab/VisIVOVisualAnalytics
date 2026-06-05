@@ -52,10 +52,17 @@ public:
     ~SkavaSearchPanel() override;
 
 signals:
-    /// Emitted when the user has clicked **Open** on a result and SKAVA
-    /// resolved the canonical access URL. The MainWindow handler should
-    /// hand both fields to BackendClient::openDatasetFromUrl().
+    /// Legacy: emitted when only the access URL is needed. Still wired so
+    /// callers that just want a download path keep working.
     void openDatasetUrlRequested(const QString &accessUrl, const QString &obsId);
+
+    /// Emitted when the user has clicked **Open** and SKAVA resolved the
+    /// full DataLink envelope. MainWindow uses this to make a
+    /// backend-aware routing decision (compute next to data when a
+    /// visivo-backend service descriptor matches a registered backend;
+    /// otherwise fall back to download via the local backend).
+    void openSkavaDatasetRequested(const QString &obsId,
+                                    const SkavaDatalinkResponse &datalink);
 
 private slots:
     void runSearch();

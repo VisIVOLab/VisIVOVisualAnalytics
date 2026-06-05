@@ -3,6 +3,9 @@
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcess>
 #include <QSettings>
 
@@ -238,4 +241,169 @@ QString Settings::getSkavaToken() const
 void Settings::setSkavaToken(const QString &token)
 {
     this->settings->setValue(Settings::SkavaToken.first, token);
+}
+
+//----------------------------------------------------------------------------
+// Multi-backend registry (distributed VisIVO backend)
+//----------------------------------------------------------------------------
+const std::pair<QString, QVariant> Settings::BackendNodes =
+        { u"Backends/nodes"_s, u"[]"_s };
+const std::pair<QString, QVariant> Settings::DefaultBackendId =
+        { u"Backends/default"_s, u"local"_s };
+
+namespace {
+
+QJsonObject backendNodeToJson(const BackendNode &n)
+{
+    return QJsonObject{
+        { u"id"_s,         n.id },
+        { u"name"_s,       n.name },
+        { u"url"_s,        n.url },
+        { u"token"_s,      n.token },
+        { u"src_code"_s,   n.srcCode },
+        { u"is_local"_s,   n.isLocal },
+        { u"is_builtin"_s, n.isBuiltin },
+    };
+}
+
+BackendNode backendNodeFromJson(const QJsonObject &obj)
+{
+    BackendNode n;
+    n.id        = obj.value(u"id"_s).toString();
+    n.name      = obj.value(u"name"_s).toString();
+    n.url       = obj.value(u"url"_s).toString();
+    n.token     = obj.value(u"token"_s).toString();
+    n.srcCode   = obj.value(u"src_code"_s).toString();
+    n.isLocal   = obj.value(u"is_local"_s).toBool(false);
+    n.isBuiltin = obj.value(u"is_builtin"_s).toBool(false);
+    return n;
+}
+
+}  // namespace
+
+BackendNode Settings::buildLocalBackend() const
+{
+    BackendNode n;
+    n.id = u"local"_s;
+    n.name = u"Local"_s;
+    n.url = this->getBackendUrl();
+    n.token = this->getBackendToken();
+    n.srcCode = QString();
+    n.isLocal = true;
+    n.isBuiltin = true;
+    return n;
+}
+
+QList<BackendNode> Settings::getBackendNodes() const
+{
+    const QString raw = this->settings->value(Settings::BackendNodes.first,
+                                                Settings::BackendNodes.second).toString();
+    const QJsonArray arr = QJsonDocument::fromJson(raw.toUtf8()).array();
+    QList<BackendNode> out;
+    out.reserve(arr.size());
+    bool hasLocal = false;
+    for (const auto &val : arr) {
+        BackendNode n = backendNodeFromJson(val.toObject());
+        if (n.id == "local"_L1) {
+            hasLocal = true;
+            // Override with current local backend values so the
+            // user-editable Backend/url+token always wins.
+            n = buildLocalBackend();
+        }
+        if (!n.id.isEmpty()) {
+            out.append(n);
+        }
+    }
+    // Always present the local backend, even on a fresh install.
+    if (!hasLocal) {
+        out.prepend(buildLocalBackend());
+    }
+    return out;
+}
+
+void Settings::setBackendNodes(const QList<BackendNode> &nodes)
+{
+    QJsonArray arr;
+    bool sawLocal = false;
+    for (const auto &n : nodes) {
+        if (n.id == "local"_L1) sawLocal = true;
+        arr.append(backendNodeToJson(n));
+    }
+    if (!sawLocal) {
+        arr.prepend(backendNodeToJson(buildLocalBackend()));
+    }
+    this->settings->setValue(
+            Settings::BackendNodes.first,
+            QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
+}
+
+BackendNode Settings::getBackendNode(const QString &id) const
+{
+    for (const auto &n : getBackendNodes()) {
+        if (n.id == id) return n;
+    }
+    return {};
+}
+
+BackendNode Settings::getLocalBackend() const
+{
+    return buildLocalBackend();
+}
+
+QString Settings::getDefaultBackendId() const
+{
+    return this->settings->value(Settings::DefaultBackendId.first,
+                                  Settings::DefaultBackendId.second).toString();
+}
+
+void Settings::setDefaultBackendId(const QString &id)
+{
+    this->settings->setValue(Settings::DefaultBackendId.first,
+                              id.isEmpty() ? u"local"_s : id);
+}
+
+void Settings::upsertBackendNode(const BackendNode &node)
+{
+    if (node.id.isEmpty()) {
+        qWarning() << "Settings::upsertBackendNode refused: id is empty";
+        return;
+    }
+    auto all = getBackendNodes();
+    bool replaced = false;
+    for (auto &existing : all) {
+        if (existing.id == node.id) {
+            // Preserve isLocal/isBuiltin protections on the local entry —
+            // user can edit URL / token / name but not the flags.
+            if (existing.id == "local"_L1) {
+                BackendNode updated = node;
+                updated.isLocal = true;
+                updated.isBuiltin = true;
+                this->setBackendUrl(updated.url);
+                this->setBackendToken(updated.token);
+                existing = updated;
+            } else {
+                existing = node;
+            }
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced) {
+        all.append(node);
+    }
+    setBackendNodes(all);
+}
+
+void Settings::removeBackendNode(const QString &id)
+{
+    if (id == "local"_L1) {
+        qWarning() << "Settings::removeBackendNode refused: 'local' is protected";
+        return;
+    }
+    auto all = getBackendNodes();
+    all.removeIf([&id](const BackendNode &n) { return n.id == id; });
+    setBackendNodes(all);
+    if (getDefaultBackendId() == id) {
+        setDefaultBackendId(u"local"_s);
+    }
 }

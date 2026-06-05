@@ -1,11 +1,36 @@
 #ifndef Settings_h
 #define Settings_h
 
+#include <QList>
 #include <QObject>
 #include <QPointer>
+#include <QString>
 #include <QVariant>
 
 class QSettings;
+
+/// One entry in the desktop's known-backends registry.
+///
+/// In the distributed-backend architecture (see
+/// docs/distributed-backend-design.md), each SKA Regional Centre or
+/// data centre runs a VisIVO backend co-located with its dataset
+/// filesystem. The desktop holds a list of all such backends; SKAVA's
+/// DataLink response tells it which backend serves a given dataset.
+///
+/// The ``id == "local"`` entry is auto-managed by Settings and is the
+/// default fallback whenever SKAVA does not declare a remote backend
+/// for a dataset (preserving the legacy single-backend behaviour).
+struct BackendNode
+{
+    QString id;       ///< Stable identifier, e.g. "local", "src-it-inaf"
+    QString name;     ///< Human-readable name shown in UI
+    QString url;      ///< Base URL (no trailing slash)
+    QString token;    ///< Bearer token; empty for unauthenticated backends
+    QString srcCode;  ///< Optional SKAVA Node code (matches the
+                       ///< visivo-backend service descriptor's node_code)
+    bool    isLocal{ false };    ///< True for the built-in local backend
+    bool    isBuiltin{ false };  ///< Auto-managed entry; cannot be deleted
+};
 
 /**
  * Application-level Settings class
@@ -156,6 +181,35 @@ public:
    */
     void setSkavaToken(const QString &token);
 
+    // ── Multi-backend registry (distributed VisIVO backend) ──────────────────
+    //
+    // See docs/distributed-backend-design.md. The desktop holds a list of
+    // known VisIVO backends keyed by ``id``. The ``"local"`` entry is
+    // auto-managed and always present — it backs the legacy single-backend
+    // getBackendUrl() / getBackendToken() accessors. Additional entries are
+    // user-supplied (or, in the future, harvested via SKAVA's
+    // visivo-backend service descriptors).
+
+    /// All registered backends, including the auto-managed ``local`` entry.
+    QList<BackendNode> getBackendNodes() const;
+    /// Replace the entire registry. The ``local`` entry is preserved /
+    /// reinserted if the caller omits it.
+    void setBackendNodes(const QList<BackendNode> &nodes);
+    /// Lookup by ``id``. Returns an entry with empty fields when missing.
+    BackendNode getBackendNode(const QString &id) const;
+    /// Convenience for the auto-managed ``local`` entry. Always returns a
+    /// usable BackendNode (URL falls back to getBackendUrl() if storage is
+    /// blank, e.g. on first launch).
+    BackendNode getLocalBackend() const;
+    /// Identifier of the backend the desktop uses when no SKAVA hint
+    /// applies. Defaults to ``"local"``.
+    QString getDefaultBackendId() const;
+    void    setDefaultBackendId(const QString &id);
+    /// Insert if absent (matched by ``id``); replace if present.
+    void upsertBackendNode(const BackendNode &node);
+    /// Remove an entry. The ``local`` entry cannot be removed.
+    void removeBackendNode(const QString &id);
+
 public slots:
     /**
    * Reload settings from file
@@ -195,6 +249,14 @@ private:
     // SKAVA discovery service
     static const std::pair<QString, QVariant> SkavaUrl;
     static const std::pair<QString, QVariant> SkavaToken;
+
+    // Multi-backend registry (Backends/nodes is a JSON array of objects,
+    // Backends/default is the chosen default backend id).
+    static const std::pair<QString, QVariant> BackendNodes;
+    static const std::pair<QString, QVariant> DefaultBackendId;
+    /// Build the canonical ``local`` BackendNode from the legacy
+    /// Backend/url + Backend/token settings. Always returns a usable entry.
+    BackendNode buildLocalBackend() const;
 
     // Plot theme
     static const std::pair<QString, QVariant> PlotTheme;
