@@ -206,7 +206,7 @@ echo "[visivo] Waiting for backend to become ready (polling every 5 s)..."
 READY=false
 for attempt in $(seq 1 "$POLL_MAX"); do
     if ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
-           "$NODE" "curl -sf -H 'Authorization: Bearer ${TOKEN}' http://localhost:${PORT}/v1/health" \
+           "$NODE" "curl -sf -H 'X-Visivo-Token: ${TOKEN}' http://localhost:${PORT}/v1/health" \
            >/dev/null 2>&1; then
         READY=true
         break

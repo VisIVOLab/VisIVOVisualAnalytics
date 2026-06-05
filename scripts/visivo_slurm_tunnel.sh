@@ -93,7 +93,11 @@ echo "[visivo] Submitting backend job on ${SSH_USER}@${FRONTEND}…"
 REMOTE_CMD=(bash 'VisIVO-next/scripts/launch_backend_slurm.sh' "${REMOTE_OPTS[@]}")
 
 # Stream the launcher's stdout to our terminal AND capture it for parsing.
-TMP="$(mktemp /tmp/visivo_slurm_XXXXXX.out)"
+# macOS BSD mktemp wants ``XXXXXX`` at the END of the template; a
+# trailing suffix (``.out``) confuses it and surfaces as a misleading
+# ``File exists`` error. Drop the suffix entirely — the file is local
+# and ephemeral, no extension needed.
+TMP="$(mktemp /tmp/visivo_slurm_XXXXXX)"
 ssh "${SSH_USER}@${FRONTEND}" "${REMOTE_CMD[@]}" 2>&1 | tee "$TMP"
 
 JOB_ID="$(grep -oE 'Job ID: [0-9]+' "$TMP" | head -1 | awk '{print $3}')"
