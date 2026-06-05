@@ -1,44 +1,66 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────────────
 # launch_backend_slurm.sh
-# R6: Launch the VisIVO backend on an HPC compute node via SLURM and print
-#     the SSH port-forwarding command the user needs to run locally.
+# Submit the VisIVO backend to a SLURM compute node, wait for it to become
+# ready, and print the SSH tunnel command the operator runs on the laptop.
+#
+# Designed for the INAF Power9 SRC testbed where ``pleiadi-gpu.oact.inaf.it``
+# is the frontend (login node) of a SLURM cluster. The frontend should not
+# run long-lived services; this script puts the backend on a real compute
+# node instead, optionally with GPU allocation.
 #
 # Usage:
 #   bash scripts/launch_backend_slurm.sh [options]
 #
-# Options (environment variables or flags):
-#   --partition  PARTITION  SLURM partition   (default: $VISIVO_PARTITION or "compute")
-#   --time       HH:MM:SS   Wall-clock limit  (default: $VISIVO_TIME or "04:00:00")
-#   --mem        MB         Memory per node   (default: $VISIVO_MEM or "32G")
-#   --cpus       N          CPUs per task     (default: $VISIVO_CPUS or 8)
-#   --port       PORT       Backend TCP port  (default: $VISIVO_PORT or 8000)
-#   --bind       PATH       Host path to bind into the container (default: $HOME)
-#   --sif        PATH       Apptainer .sif image (default: apptainer/backend.sif)
+# Options (or env vars):
+#   --partition  PARTITION  SLURM partition           (default: $VISIVO_PARTITION or "gpu")
+#   --time       HH:MM:SS   Wall-clock limit          (default: $VISIVO_TIME or "08:00:00")
+#   --mem        MB         Memory per node           (default: $VISIVO_MEM or "64G")
+#   --cpus       N          CPUs per task             (default: $VISIVO_CPUS or 8)
+#   --gres       GRES       GPU request, e.g. gpu:1   (default: $VISIVO_GRES or "gpu:1")
+#                           Pass empty to disable.
+#   --port       PORT       Backend TCP port          (default: $VISIVO_PORT or 8000)
+#   --bind       PATH       Generic host path to bind (default: $HOME)
+#   --data-root  PATH       Data dir bound at /data + sets VISIVO_DATA_ROOT
+#                           (default: $VISIVO_DATA_ROOT or unset)
+#                           STRONGLY recommended for production.
+#   --sif        PATH       Apptainer .sif image      (default: apptainer/backend.sif)
 #   --token      TOKEN      Auth token (auto-generated if absent)
-#   --help                  Print this help
+#   --no-gpu                Shorthand for --gres ""; also drops --nv at runtime.
+#   --help                  Print this help.
 #
-# Example:
-#   bash scripts/launch_backend_slurm.sh --partition gpu --cpus 16 --mem 64G
+# Examples:
+#   # Power9 testbed: 1 GPU, jail under /data
+#   bash scripts/launch_backend_slurm.sh \
+#       --partition gpu --gres gpu:1 --data-root /data \
+#       --sif ~/VisIVO-next/backend-gpu.sif
 #
-# The script:
-#   1. Submits a SLURM batch job that starts the Apptainer container.
-#   2. Polls /health every 5 s until the backend is reachable (max 5 min).
-#   3. Prints the SSH tunnel command for the user to run on their laptop.
+#   # CPU-only smoke test
+#   bash scripts/launch_backend_slurm.sh --no-gpu --partition normal
+#
+# What it does:
+#   1. Submits a SLURM batch job that starts the Apptainer container with
+#      --nv (when --gres includes gpu) and the path jail set.
+#   2. Polls squeue every 2 s until the compute node is assigned.
+#   3. Polls /v1/health via SSH to the compute node until the backend is up.
+#   4. Prints the SSH tunnel command for the laptop + the auth token.
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
-PARTITION="${VISIVO_PARTITION:-compute}"
-TIME="${VISIVO_TIME:-04:00:00}"
-MEM="${VISIVO_MEM:-32G}"
+PARTITION="${VISIVO_PARTITION:-gpu}"
+TIME="${VISIVO_TIME:-08:00:00}"
+MEM="${VISIVO_MEM:-64G}"
 CPUS="${VISIVO_CPUS:-8}"
+GRES="${VISIVO_GRES:-gpu:1}"
 PORT="${VISIVO_PORT:-8000}"
 BIND_PATH="${VISIVO_BIND:-$HOME}"
+DATA_ROOT="${VISIVO_DATA_ROOT:-}"
 SIF="${VISIVO_SIF:-$(dirname "$0")/../apptainer/backend.sif}"
 TOKEN="${VISIVO_TOKEN:-}"
 LOG_DIR="${VISIVO_LOG_DIR:-$HOME/.visivo_logs}"
 POLL_MAX=60   # max poll attempts × 5 s = 5 min
+USE_GPU=true
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -47,10 +69,13 @@ while [[ $# -gt 0 ]]; do
         --time)      TIME="$2";      shift 2 ;;
         --mem)       MEM="$2";       shift 2 ;;
         --cpus)      CPUS="$2";      shift 2 ;;
+        --gres)      GRES="$2";      shift 2 ;;
         --port)      PORT="$2";      shift 2 ;;
         --bind)      BIND_PATH="$2"; shift 2 ;;
+        --data-root) DATA_ROOT="$2"; shift 2 ;;
         --sif)       SIF="$2";       shift 2 ;;
         --token)     TOKEN="$2";     shift 2 ;;
+        --no-gpu)    USE_GPU=false; GRES=""; shift ;;
         --help|-h)
             grep '^#' "$0" | sed 's/^# \{0,2\}//'
             exit 0
@@ -58,6 +83,11 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
+
+# Drop --nv when no GPU is being requested.
+if [[ -z "$GRES" || "$GRES" == "0" ]]; then
+    USE_GPU=false
+fi
 
 # ── Generate token if not provided ───────────────────────────────────────────
 if [[ -z "$TOKEN" ]]; then
@@ -72,8 +102,8 @@ echo "[visivo] Token saved to $TOKEN_FILE"
 # ── Verify the Apptainer image exists ────────────────────────────────────────
 if [[ ! -f "$SIF" ]]; then
     echo "[visivo] ERROR: Apptainer image not found: $SIF"
-    echo "[visivo] Build it first:"
-    echo "         apptainer build $SIF apptainer/backend.def"
+    echo "[visivo] Build it first, e.g.:"
+    echo "         apptainer build $SIF apptainer/backend-conda.def"
     exit 1
 fi
 
@@ -81,34 +111,70 @@ fi
 mkdir -p "$LOG_DIR"
 SLURM_LOG="$LOG_DIR/visivo_backend_%j.log"
 
-# ── Write the SLURM job script ────────────────────────────────────────────────
-JOB_SCRIPT="$(mktemp /tmp/visivo_slurm_XXXXXX.sh)"
-cat > "$JOB_SCRIPT" <<SLURM_EOF
+# ── Build the SBATCH header ───────────────────────────────────────────────────
+SBATCH_HEADER=$(cat <<EOF
 #!/bin/bash
 #SBATCH --job-name=visivo_backend
 #SBATCH --partition=${PARTITION}
 #SBATCH --time=${TIME}
 #SBATCH --mem=${MEM}
 #SBATCH --cpus-per-task=${CPUS}
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
 #SBATCH --output=${SLURM_LOG}
 #SBATCH --error=${SLURM_LOG}
+EOF
+)
+
+if [[ -n "$GRES" ]]; then
+    SBATCH_HEADER+=$'\n'"#SBATCH --gres=${GRES}"
+fi
+
+# ── Build the data-bind + env var fragments ──────────────────────────────────
+DATA_BIND_FLAG=""
+DATA_ROOT_ENV=""
+if [[ -n "$DATA_ROOT" ]]; then
+    DATA_BIND_FLAG="--bind ${DATA_ROOT}:/data"
+    DATA_ROOT_ENV="export APPTAINERENV_VISIVO_DATA_ROOT=/data"
+fi
+
+NV_FLAG=""
+if [[ "$USE_GPU" == "true" ]]; then
+    NV_FLAG="--nv"
+fi
+
+# ── Write the SLURM job script ────────────────────────────────────────────────
+JOB_SCRIPT="$(mktemp /tmp/visivo_slurm_XXXXXX.sh)"
+cat > "$JOB_SCRIPT" <<SLURM_EOF
+${SBATCH_HEADER}
 
 echo "[visivo] Job started on \$(hostname) at \$(date)"
 echo "[visivo] Port: ${PORT}"
+echo "[visivo] GPU:  ${GRES:-disabled}"
+echo "[visivo] Data root: ${DATA_ROOT:-(not jailed)}"
 
-# Export token so the backend picks it up.
-export VISIVO_TOKEN="${TOKEN}"
-export VISIVO_WORKERS="${CPUS}"
+# Env vars consumed inside the container.
+export APPTAINERENV_VISIVO_TOKEN="${TOKEN}"
+export APPTAINERENV_VISIVO_WORKERS="${CPUS}"
+export APPTAINERENV_PORT="${PORT}"
+export APPTAINERENV_VISIVO_HOST="0.0.0.0"
+${DATA_ROOT_ENV}
 
-apptainer run \\
+apptainer run ${NV_FLAG} \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\
-    "${SIF}" \\
-    --host 0.0.0.0 \\
-    --port "${PORT}"
+    ${DATA_BIND_FLAG} \\
+    "${SIF}"
 SLURM_EOF
 
 # ── Submit the job ────────────────────────────────────────────────────────────
 echo "[visivo] Submitting SLURM job..."
+echo "[visivo]   partition: ${PARTITION}"
+echo "[visivo]   gres:      ${GRES:-(none)}"
+echo "[visivo]   cpus:      ${CPUS}"
+echo "[visivo]   mem:       ${MEM}"
+echo "[visivo]   time:      ${TIME}"
+echo "[visivo]   sif:       ${SIF}"
+
 JOB_ID="$(sbatch --parsable "$JOB_SCRIPT")"
 rm -f "$JOB_SCRIPT"
 echo "[visivo] Job ID: $JOB_ID"
@@ -131,12 +197,12 @@ fi
 
 echo "[visivo] Compute node: $NODE"
 
-# ── Poll the health endpoint ──────────────────────────────────────────────────
+# ── Poll the health endpoint via SSH to the compute node ──────────────────────
 echo "[visivo] Waiting for backend to become ready (polling every 5 s)..."
 READY=false
 for attempt in $(seq 1 "$POLL_MAX"); do
     if ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
-           "$NODE" "curl -sf -H 'X-Visivo-Token: ${TOKEN}' http://localhost:${PORT}/v1/health" \
+           "$NODE" "curl -sf -H 'Authorization: Bearer ${TOKEN}' http://localhost:${PORT}/v1/health" \
            >/dev/null 2>&1; then
         READY=true
         break
@@ -151,22 +217,38 @@ if [[ "$READY" != "true" ]]; then
     exit 1
 fi
 
-echo ""
-echo "══════════════════════════════════════════════════════════════════════"
-echo "  VisIVO backend is READY"
-echo "══════════════════════════════════════════════════════════════════════"
-echo ""
-echo "  Run this SSH tunnel command ON YOUR LAPTOP:"
-echo ""
-echo "    ssh -N -L ${PORT}:${NODE}:${PORT} $(hostname -f)"
-echo ""
-echo "  Then set in the VisIVO Qt client:"
-echo "    Backend URL : http://localhost:${PORT}"
-echo "    Auth token  : $(cat "$TOKEN_FILE")"
-echo ""
-echo "  Or set the environment variable before launching the client:"
-echo "    export VISIVO_TOKEN=$(cat "$TOKEN_FILE")"
-echo ""
-echo "  Job log: $LOG_DIR/visivo_backend_${JOB_ID}.log"
-echo "  Cancel:  scancel $JOB_ID"
-echo "══════════════════════════════════════════════════════════════════════"
+FRONTEND="$(hostname -f)"
+
+cat <<EOF
+
+══════════════════════════════════════════════════════════════════════
+  VisIVO backend is READY
+══════════════════════════════════════════════════════════════════════
+  Job ID:        ${JOB_ID}
+  Compute node:  ${NODE}
+  Port:          ${PORT}
+  Frontend:      ${FRONTEND}
+  GPU:           ${GRES:-disabled}
+  Data root:     ${DATA_ROOT:-(not jailed)}
+══════════════════════════════════════════════════════════════════════
+
+  Run this SSH tunnel command ON YOUR LAPTOP:
+
+      ssh -N -L ${PORT}:${NODE}:${PORT} \${USER}@${FRONTEND}
+
+  Then in the VisIVO desktop client:
+
+      Settings → Remote Backends → Add:
+          ID:       src-power9-slurm
+          URL:      http://localhost:${PORT}
+          Token:    $(cat "$TOKEN_FILE")
+          SRC code: POWER9
+
+  Job log:
+      ssh ${FRONTEND} tail -f ${LOG_DIR}/visivo_backend_${JOB_ID}.log
+
+  Cancel the job:
+      ssh ${FRONTEND} scancel ${JOB_ID}
+
+══════════════════════════════════════════════════════════════════════
+EOF

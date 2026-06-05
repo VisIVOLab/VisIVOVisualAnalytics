@@ -50,7 +50,27 @@ From: condaforge/mambaforge:latest
     PORT=9000 apptainer run backend.sif
 
     ── HPC / SLURM ──────────────────────────────────────────────────────
-    Same scripts/launch_backend_slurm.sh as the slim variant.
+    To run inside a SLURM cluster (e.g. the Power9 testbed where the
+    login node is pleiadi-gpu.oact.inaf.it and you should NOT keep a
+    long-lived backend on the frontend), use the SLURM submission
+    helper:
+
+        # On the frontend, after building backend-gpu.sif on the cluster:
+        bash scripts/launch_backend_slurm.sh \\
+            --partition gpu --gres gpu:1 \\
+            --data-root /data \\
+            --sif ~/VisIVO-next/backend-gpu.sif
+
+    Or, drive it remotely from your laptop in a single command:
+
+        # On your Mac/Linux desktop:
+        bash scripts/visivo_slurm_tunnel.sh \\
+            --frontend pleiadi-gpu.oact.inaf.it --user fvitello \\
+            --partition gpu --gres gpu:1 --data-root /data \\
+            --sif ~/VisIVO-next/backend-gpu.sif
+
+    The latter submits the job, opens the SSH tunnel, and prints the
+    Remote Backend settings ready to paste into VisIVO desktop.
 
 %environment
     export LC_ALL=C.UTF-8
