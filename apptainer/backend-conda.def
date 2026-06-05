@@ -149,14 +149,28 @@ From: condaforge/mambaforge:latest
         numba \
         llvmlite
 
-    echo "[backend-conda.def] Stage 4/4 — Web framework + analysis extras"
+    # Stage 4 is split into sub-stages because astroquery pulls a huge
+    # chain (keyring/cryptography/requests/bs4/html5lib/...) that on
+    # ppc64le with the conda solver can take 25+ min and 5+ GB RAM if
+    # combined with photutils/scikit-image's own dep tree. Splitting
+    # keeps each solve fast and memory-bounded.
+    echo "[backend-conda.def] Stage 4a — Web framework"
     $INSTALL_CMD -n base -c conda-forge \
         fastapi \
-        uvicorn-standard \
+        uvicorn-standard
+
+    echo "[backend-conda.def] Stage 4b — Astronomy analysis"
+    $INSTALL_CMD -n base -c conda-forge \
         photutils \
         reproject \
-        astroquery \
-        scikit-image \
+        scikit-image
+
+    echo "[backend-conda.def] Stage 4c — Astroquery (heavy dep tree)"
+    $INSTALL_CMD -n base -c conda-forge \
+        astroquery
+
+    echo "[backend-conda.def] Stage 4d — Distributed compute"
+    $INSTALL_CMD -n base -c conda-forge \
         dask \
         distributed
 
