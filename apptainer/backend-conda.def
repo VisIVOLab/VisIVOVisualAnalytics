@@ -121,6 +121,9 @@ From: condaforge/mambaforge:latest
     # Versions left unpinned — let the solver pick conda-forge's latest
     # known-good binary set, which is internally consistent (no
     # LLVM/numpy ABI clashes).
+    # healpy<1.18 imports ``from scipy.integrate import trapz`` which
+    # scipy 1.14+ removed (renamed to ``trapezoid``). Pin healpy to
+    # >=1.18 so the solver picks a build that uses the new name.
     $INSTALL_CMD -n base -c conda-forge \
         python=3.12 \
         fastapi \
@@ -129,7 +132,7 @@ From: condaforge/mambaforge:latest
         numpy \
         scipy \
         pandas \
-        healpy \
+        "healpy>=1.18" \
         numba \
         llvmlite \
         photutils \
