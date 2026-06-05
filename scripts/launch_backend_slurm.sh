@@ -131,11 +131,15 @@ if [[ -n "$GRES" ]]; then
 fi
 
 # ── Build the data-bind + env var fragments ──────────────────────────────────
+# Same-path bind: the container sees the host path verbatim. Makes the
+# access_url in SKAVA describe a real on-disk location (rather than a
+# container-translated one), so consumers outside the backend can also
+# use it (publisher, direct download, sibling tools).
 DATA_BIND_FLAG=""
 DATA_ROOT_ENV=""
 if [[ -n "$DATA_ROOT" ]]; then
-    DATA_BIND_FLAG="--bind ${DATA_ROOT}:/data"
-    DATA_ROOT_ENV="export APPTAINERENV_VISIVO_DATA_ROOT=/data"
+    DATA_BIND_FLAG="--bind ${DATA_ROOT}:${DATA_ROOT}"
+    DATA_ROOT_ENV="export APPTAINERENV_VISIVO_DATA_ROOT=${DATA_ROOT}"
 fi
 
 NV_FLAG=""
