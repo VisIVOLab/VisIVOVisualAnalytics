@@ -52,7 +52,83 @@ except ValueError:
         _MP_METHOD,
     )
     _MP_CONTEXT = _mp.get_context()
-_POOL = ProcessPoolExecutor(max_workers=_WORKERS, mp_context=_MP_CONTEXT)
+
+# ── GPU round-robin assignment ────────────────────────────────────────────────
+# When several CUDA-capable GPUs are visible (e.g. SLURM allocates the whole
+# node with --gres gpu:4), we pin each worker to a single device via
+# CUDA_VISIBLE_DEVICES BEFORE the worker imports cupy. Otherwise cupy would
+# default to device 0 for every worker and 3 GPUs would sit idle.
+#
+# Detection order:
+#   1. CUDA_VISIBLE_DEVICES inherited from the job environment (the
+#      respect-SLURM path). Gives us the list of physical IDs allocated to
+#      this process.
+#   2. Fallback: ask nvidia-smi -L for the host's GPU list (useful when the
+#      backend is run outside SLURM).
+#   3. None: the pool runs CPU-only; no pinning happens.
+#
+# Opt out with VISIVO_GPU_ROUND_ROBIN=0 (e.g. when debugging a single GPU
+# from multiple workers, or when the user explicitly wants device-0 default).
+def _detect_visible_gpus() -> list[str]:
+    raw = os.environ.get('CUDA_VISIBLE_DEVICES', '')
+    parsed = [g.strip() for g in raw.split(',') if g.strip()]
+    if parsed:
+        return parsed
+    try:
+        import subprocess  # noqa: PLC0415
+        out = subprocess.check_output(
+            ['nvidia-smi', '-L'], text=True, timeout=5,
+        )
+        return [str(i) for i, line in enumerate(out.splitlines())
+                if line.strip().startswith('GPU')]
+    except Exception:
+        return []
+
+
+_GPU_ROUND_ROBIN = os.environ.get('VISIVO_GPU_ROUND_ROBIN', '1') == '1'
+_VISIBLE_GPUS = _detect_visible_gpus() if _GPU_ROUND_ROBIN else []
+_GPU_COUNTER = _MP_CONTEXT.Value('i', 0) if _VISIBLE_GPUS else None
+if _VISIBLE_GPUS:
+    logger.info(
+        "[startup] GPU round-robin enabled: %d worker(s) over GPU(s) %s",
+        _WORKERS, ','.join(_VISIBLE_GPUS),
+    )
+
+
+def _worker_init(counter, visible_gpus) -> None:  # pragma: no cover
+    """Run once at worker startup. Pin CUDA device + silence VTK noise.
+
+    Pinning happens BEFORE cupy is imported (compute.py is lazy-loaded
+    per-task), so each worker sees exactly one GPU and ``cupy.zeros(1)``
+    binds to it. With 4 workers and 4 visible GPUs the assignment is
+    1:1; with N workers and K<N GPUs it's round-robin (N/K workers per
+    GPU).
+    """
+    import logging as _l
+    import os as _os
+    _l.getLogger("vtkmodules").setLevel(_l.ERROR)
+    if counter is None or not visible_gpus:
+        return
+    with counter.get_lock():
+        idx = counter.value
+        counter.value += 1
+    pinned = visible_gpus[idx % len(visible_gpus)]
+    _os.environ['CUDA_VISIBLE_DEVICES'] = pinned
+    # Print rather than log: logging.basicConfig may not have run in
+    # the spawn worker yet. Goes to the SLURM job log.
+    print(  # noqa: T201
+        f"[VisIVO/worker] pid={_os.getpid()} pinned to GPU {pinned} "
+        f"(slot {idx} of {len(visible_gpus)})",
+        flush=True,
+    )
+
+
+_POOL = ProcessPoolExecutor(
+    max_workers=_WORKERS,
+    mp_context=_MP_CONTEXT,
+    initializer=_worker_init,
+    initargs=(_GPU_COUNTER, _VISIBLE_GPUS),
+)
 _DASK_CLIENT = None
 _DASK_SCHEDULER = os.environ.get('VISIVO_DASK_SCHEDULER', '')
 _VTK_AVAILABLE = False
@@ -215,10 +291,16 @@ def _default_worker_count() -> int:
     return max(1, min(os.cpu_count() or 4, 4))
 
 
-def _pool_initializer() -> None:  # pragma: no cover
-    """Silence VTK startup noise in worker processes."""
-    import logging as _l
-    _l.getLogger("vtkmodules").setLevel(_l.ERROR)
+def _pool_initializer(*_legacy_args) -> None:  # pragma: no cover
+    """Backward-compat shim.
+
+    The real worker initializer is :func:`_worker_init` defined above the
+    ``_POOL`` construction in this module. This stub is retained because the
+    star-import allow-list (``__all__``) exports the name; renaming it would
+    silently drop references in routers that ``from ..dependencies import *``.
+    Calling it directly is a no-op.
+    """
+    return None
 
 
 def _error(detail: str, status_code: int = 400, error: str = "BadRequest") -> JSONResponse:
