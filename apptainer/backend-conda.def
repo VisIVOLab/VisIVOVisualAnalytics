@@ -104,48 +104,61 @@ From: condaforge/mambaforge:latest
     SRC_DIR=$(dirname "$REQS")
     echo "[backend-conda.def] Source root resolved to: $SRC_DIR"
 
-    # ── Scientific stack from conda-forge ───────────────────────────────────
+    # ── Scientific stack from conda-forge — STAGED install ─────────────────
     # Why not pip? conda-forge has pre-built binary packages for every
     # architecture it supports (incl. ppc64le), so we skip every
     # ~from-source build that bites us on the slim variant: vtk, numba,
     # llvmlite, scipy's OpenBLAS link, healpy + libsharp, h5py + HDF5.
     #
-    # The package list mirrors requirements.txt one-to-one. Some pkgs
-    # have slightly different names on conda-forge:
+    # Why staged? Conda's libsolv segfaults on ppc64le when the
+    # solver graph gets too large (observed: ~22 top-level packages
+    # crashes during "Solving environment"). Splitting the install
+    # into 4 smaller groups keeps each solve under that threshold —
+    # once stage N is solved, those packages and all their transitive
+    # deps are pinned for stage N+1, so the next solve sees a much
+    # smaller search space.
+    #
+    # Some pkgs have slightly different names on conda-forge:
     #   pip name              → conda name
     #   ─────────────────────────────────────
-    #   uvicorn[standard]     → uvicorn-standard (or "uvicorn[standard]"
-    #                            via pip post-step)
-    #   dask[array]           → dask  (extras handled separately)
+    #   uvicorn[standard]     → uvicorn-standard
+    #   dask[array]           → dask + distributed
     #
-    # Versions left unpinned — let the solver pick conda-forge's latest
-    # known-good binary set, which is internally consistent (no
-    # LLVM/numpy ABI clashes).
     # healpy<1.18 imports ``from scipy.integrate import trapz`` which
-    # scipy 1.14+ removed (renamed to ``trapezoid``). Pin healpy to
-    # >=1.18 so the solver picks a build that uses the new name.
+    # scipy 1.14+ removed (renamed to ``trapezoid``). Pin >=1.18.
+
+    echo "[backend-conda.def] Stage 1/4 — foundation (python, numpy, scipy, astropy, pandas, healpy)"
     $INSTALL_CMD -n base -c conda-forge \
         python=3.12 \
-        fastapi \
-        uvicorn-standard \
-        astropy \
         numpy \
         scipy \
+        astropy \
         pandas \
         "healpy>=1.18" \
+        pyerfa \
+        pillow \
+        pip
+
+    echo "[backend-conda.def] Stage 2/4 — VTK + HDF5 (rendering / I/O)"
+    $INSTALL_CMD -n base -c conda-forge \
+        vtk \
+        h5py
+
+    echo "[backend-conda.def] Stage 3/4 — Numba JIT"
+    $INSTALL_CMD -n base -c conda-forge \
         numba \
-        llvmlite \
+        llvmlite
+
+    echo "[backend-conda.def] Stage 4/4 — Web framework + analysis extras"
+    $INSTALL_CMD -n base -c conda-forge \
+        fastapi \
+        uvicorn-standard \
         photutils \
         reproject \
         astroquery \
         scikit-image \
-        h5py \
-        vtk \
         dask \
-        distributed \
-        pyerfa \
-        pillow \
-        pip
+        distributed
 
     # ── Optional: cupy (NVIDIA GPU) ────────────────────────────────────────
     # Set ENABLE_CUPY=1 in the build environment. Unlike the slim variant
