@@ -1022,16 +1022,14 @@ void MainWindow::doOpenSkavaDataset(const QString &obsId,
     const BackendNode chosen = pickBackendForSkavaDataset(this->settings, datalink);
     if (!chosen.id.isEmpty() && !chosen.isLocal) {
         // ── Compute-next-to-data path: remote backend already owns the
-        // file, open via its standard /v1/datasets/open with no download.
+        // file. We pass it the obs_id + the access URL the desktop
+        // already retrieved from SKAVA — the backend opens the file
+        // directly from its own filesystem, no file transfer, no
+        // backend→SKAVA query needed.
         this->setActiveBackendBadge(chosen);
         QApplication::setOverrideCursor(Qt::WaitCursor);
         BackendClient client(chosen.url, chosen.token);
-        // The "path" we send is implementation-specific to the remote
-        // backend. For the moment we forward the obs_id; production SRCs
-        // will likely map obs_id → filesystem path via a SKAVA-side
-        // resolver. The remote backend can also choose to interpret it
-        // as a URL by fetching its own local copy.
-        const auto opened = client.openDataset(obsId);
+        const auto opened = client.openSkavaDataset(obsId, datalink.primaryAccessUrl);
         QApplication::restoreOverrideCursor();
         if (!opened.valid) {
             qWarning().noquote() << QStringLiteral(

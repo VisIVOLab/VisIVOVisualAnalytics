@@ -492,6 +492,30 @@ BackendOpenDatasetResult BackendClient::openDatasetFromUrl(
     return result;
 }
 
+BackendOpenDatasetResult BackendClient::openSkavaDataset(const QString &obsId,
+                                                            const QString &accessUrl)
+{
+    BackendOpenDatasetResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("obs_id"), obsId },
+            { QStringLiteral("access_url"), accessUrl } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/datasets/open_skava")),
+                        body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    QString sessionId;
+    result = parseOpenDatasetObject(object, sessionId);
+    if (result.valid && !sessionId.isEmpty()) {
+        m_sessionId = sessionId;
+    }
+    return result;
+}
+
 #if 0  // ── legacy inline parsing replaced by parseOpenDatasetObject ─────────
 {
     BackendOpenDatasetResult result;

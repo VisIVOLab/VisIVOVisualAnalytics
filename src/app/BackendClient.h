@@ -998,6 +998,25 @@ public:
     BackendOpenDatasetResult openDatasetFromUrl(const QString &url,
                                                   const QString &obsId = {},
                                                   const QString &remoteBearerToken = {});
+
+    /** POST /v1/datasets/open_skava — open a dataset whose access URL the
+     *  desktop got from SKAVA. Compute-next-to-data, no file transfer.
+     *
+     *  The desktop client has already done the discovery round-trip
+     *  with SKAVA and knows the access URL (typically ``file://path``
+     *  pointing at the backend's own filesystem). It hands BOTH the
+     *  obs_id (for logging / session bookkeeping) AND the access URL to
+     *  the backend, saving the backend a redundant query back to SKAVA.
+     *
+     *  Backend prerequisites:
+     *  - access_url scheme must be ``file://``
+     *  - if ``VISIVO_DATA_ROOT`` is set, the resolved path must live
+     *    inside that root (jail)
+     *
+     *  Used by ``MainWindow::doOpenSkavaDataset`` when the routing has
+     *  matched a remote backend. */
+    BackendOpenDatasetResult openSkavaDataset(const QString &obsId,
+                                                const QString &accessUrl);
     BackendCatalogueInfo openCatalogue(const QString &path, const QString &format = QStringLiteral("csv"));
     BackendSampSendResult sendFitsToSamp(const QString &path,
                                          const QString &filename = QString()) const;

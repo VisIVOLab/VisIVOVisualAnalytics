@@ -66,6 +66,16 @@ From: condaforge/mambaforge:latest
     # Session idle-timeout in seconds (default 30 min)
     export VISIVO_SESSION_TTL=${VISIVO_SESSION_TTL:-1800}
 
+    # ─── Compute-next-to-data path jail ────────────────────────────────
+    # When set, the /v1/datasets/open_skava endpoint refuses to open
+    # files outside this directory tree. The desktop client supplies
+    # the file:// URL it got from SKAVA; this jail is the second line
+    # of defence against client-side path traversal.
+    #
+    # Example:
+    #   APPTAINERENV_VISIVO_DATA_ROOT=/data \\
+    #       apptainer run --bind /data:/data backend.sif
+
 %post
     set -e
 

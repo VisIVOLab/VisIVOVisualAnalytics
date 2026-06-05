@@ -17,6 +17,10 @@ from ..sessions import Session, get_session, REGISTRY
 from ..tasks import TASKS
 from ..product_cache import PRODUCT_CACHE
 from ..fits_dataset import ScientificFitsDataset
+from ..skava_client import (
+    SkavaResolveError,
+    access_url_to_local_path,
+)
 import asyncio
 
 router = APIRouter(tags=['datasets'])
@@ -207,5 +211,92 @@ async def open_dataset_from_url(
     logger.info(
         "[open_url] session=%s dataset_id=%s kind=%s cache=%s",
         session.session_id, dataset_id, kind, cached_path,
+    )
+    return _build_open_response(dataset_id, session.session_id, kind, geometry)
+
+
+# ── Open from SKAVA discovery (compute-next-to-data) ───────────────────────
+
+
+class OpenSkavaDatasetRequest(BaseModel):
+    """Open a dataset identified by a SKAVA obs_id.
+
+    The desktop client has already queried SKAVA to find this dataset's
+    access URL — it passes both fields straight to us, saving the
+    backend a redundant round-trip back to SKAVA. obs_id stays in the
+    payload for session-side bookkeeping and log correlation, but the
+    actual file lookup uses access_url only.
+
+    This is the "compute next to data" entry point: no file transfer
+    happens at any layer. The file is opened in place from the
+    backend's own filesystem, on the assumption that the backend was
+    deployed co-located with its data on the SRC node.
+
+    Path safety: when ``VISIVO_DATA_ROOT`` is set on the backend, the
+    file:// access URL must resolve inside that root. The backend
+    rejects anything outside.
+    """
+
+    obs_id: str
+    access_url: str   # the file:// URL the client received from SKAVA
+
+
+@router.post("/v1/datasets/open_skava",
+             response_model=OpenDatasetResponse, tags=["datasets"])
+async def open_dataset_from_skava(
+    request: OpenSkavaDatasetRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> OpenDatasetResponse:
+    """Open a dataset whose access URL the client got from SKAVA.
+
+    Pipeline:
+      1. Parse the supplied ``access_url`` — must be ``file://``.
+      2. Apply the ``VISIVO_DATA_ROOT`` path jail if configured.
+      3. Delegate to the same metadata extraction (`_fits_metadata`) used
+         by /v1/datasets/open, so HDF5 / PSRFITS sidecar conversion and
+         the dynspec classifier kick in automatically.
+
+    Returns the same OpenDatasetResponse as the local-path open, so
+    every downstream endpoint (moments, channel, region, dynspec, …)
+    works without modification.
+
+    Configuration (all optional):
+      ``VISIVO_DATA_ROOT`` — restrict opens to a single directory subtree.
+    """
+    obs_id = (request.obs_id or "").strip()
+    if not obs_id:
+        return OpenDatasetResponse(
+            valid=False, error="obs_id is required.")
+
+    try:
+        path = access_url_to_local_path(request.access_url)
+    except SkavaResolveError as exc:
+        return OpenDatasetResponse(valid=False, error=str(exc))
+
+    path = _normalize_path(path)
+    if not _is_supported_dataset(path):
+        return OpenDatasetResponse(
+            valid=False,
+            error=f"Resolved file {path!r} is not a supported dataset type "
+                   "(expected FITS / HDF5).")
+
+    try:
+        kind, geometry = _fits_metadata(path)
+    except Exception as exc:
+        return OpenDatasetResponse(
+            valid=False,
+            error=f"Failed to open resolved file {path!r}: {exc}")
+
+    dataset_id = f"ds_{uuid.uuid4().hex[:12]}"
+    registered_path = str(geometry.get("resolved_path") or path)
+    session.datasets[dataset_id] = {
+        "path": registered_path, "kind": kind, **geometry,
+        "obs_id": obs_id,
+        "skava_access_url": request.access_url,
+    }
+    logger.info(
+        "[open_skava] session=%s dataset_id=%s kind=%s obs_id=%s path=%s",
+        session.session_id, dataset_id, kind, obs_id, path,
     )
     return _build_open_response(dataset_id, session.session_id, kind, geometry)
