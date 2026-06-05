@@ -218,19 +218,25 @@ rm -f "$JOB_SCRIPT"
 echo "[visivo] Job ID: $JOB_ID"
 
 echo "[visivo] Waiting for compute node assignment..."
-NODE=""
+NODELIST=""
 for _ in $(seq 1 30); do
-    NODE="$(squeue -j "$JOB_ID" -h -o '%N' 2>/dev/null | head -1 | cut -d, -f1)"
-    if [[ -n "$NODE" && "$NODE" != "None" ]]; then break; fi
+    NODELIST="$(squeue -j "$JOB_ID" -h -o '%N' 2>/dev/null | head -1)"
+    if [[ -n "$NODELIST" && "$NODELIST" != "None" ]]; then break; fi
     sleep 2
 done
-if [[ -z "$NODE" || "$NODE" == "None" ]]; then
+if [[ -z "$NODELIST" || "$NODELIST" == "None" ]]; then
     echo "[visivo] ERROR: could not get a compute node" >&2
     exit 1
 fi
-# The squeue %N for multi-node returns the first allocated node, which
-# is also where the backend runs.
-FIRST_NODE="${NODE%%,*}"
+# squeue's %N format is SLURM's compact hostlist syntax (e.g.
+# ``r33c1s[01-02]``), which is NOT a valid hostname. Expand it with
+# scontrol show hostname so we can ssh into the first node directly.
+# Fallback to NODELIST verbatim if scontrol fails — then NODELIST is
+# already a single hostname (single-node allocation).
+FIRST_NODE="$(scontrol show hostname "$NODELIST" 2>/dev/null | head -1)"
+if [[ -z "$FIRST_NODE" ]]; then
+    FIRST_NODE="${NODELIST%%,*}"
+fi
 echo "[visivo] Backend host (first node): $FIRST_NODE"
 
 echo "[visivo] Polling /v1/health..."
