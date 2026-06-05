@@ -1055,6 +1055,14 @@ void DataHubWidget::refreshRecentDatasets()
         textCol->setContentsMargins(0, 0, 0, 0);
         textCol->setSpacing(2);
 
+        // Filename row — name on the left, optional origin badge ("SKAVA")
+        // on the right. The badge is shown for datasets opened via the
+        // discovery + visivo-backend routing, so the operator can
+        // distinguish them from plain local-path opens at a glance.
+        auto *nameRowLayout = new QHBoxLayout;
+        nameRowLayout->setContentsMargins(0, 0, 0, 0);
+        nameRowLayout->setSpacing(6);
+
         auto *nameLbl = new QLabel(ds.displayName, row);
         {
             QFont f(QStringLiteral("Lato"));
@@ -1066,8 +1074,29 @@ void DataHubWidget::refreshRecentDatasets()
                 QStringLiteral("color: %1; background: transparent; border: none;")
                         .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
         nameLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
-        nameLbl->setToolTip(ds.id); // full path on hover
-        textCol->addWidget(nameLbl);
+        nameLbl->setToolTip(ds.source == u"skava"_s && !ds.obsId.isEmpty()
+                ? u"SKAVA obs_id: %1"_s.arg(ds.obsId) : ds.id);
+        nameRowLayout->addWidget(nameLbl);
+
+        if (ds.source == u"skava"_s) {
+            auto *skavaBadge = new QLabel(u"SKAVA"_s, row);
+            QFont bf(QStringLiteral("Lato"));
+            bf.setPixelSize(9);
+            bf.setWeight(QFont::Bold);
+            bf.setLetterSpacing(QFont::AbsoluteSpacing, 0.4);
+            skavaBadge->setFont(bf);
+            skavaBadge->setStyleSheet(
+                    QStringLiteral(
+                        "color: white; background: #2c7be5; border-radius: 3px; "
+                        "padding: 1px 5px; margin: 0;"));
+            skavaBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
+            skavaBadge->setToolTip(
+                    u"Opened via SKAVA discovery routing — reopen will "
+                    u"re-query SKAVA and route to the current backend."_s);
+            nameRowLayout->addWidget(skavaBadge, 0, Qt::AlignVCenter);
+        }
+        nameRowLayout->addStretch();
+        textCol->addLayout(nameRowLayout);
 
         auto *metaLbl = new QLabel(
                 QStringLiteral("%1 · %2").arg(ti.label, ds.source), row);

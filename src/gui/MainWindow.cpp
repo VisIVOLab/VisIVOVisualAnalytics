@@ -877,6 +877,29 @@ void MainWindow::openHiPS()
 
 void MainWindow::reopenDataset(const RecentDataset &dataset)
 {
+    // ── SKAVA-origin entries route through discovery on reopen ──
+    // Re-querying SKAVA (rather than reusing the stale local path) lets
+    // the operator's file move across nodes, or the visivo-backend at a
+    // node be replaced, without breaking the Recent Datasets entry.
+    if (dataset.source == u"skava"_s && !dataset.obsId.isEmpty()) {
+        SkavaClient skava(this->settings->getSkavaUrl(),
+                           this->settings->getSkavaToken(), this);
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        const auto datalink = skava.getDatalink(dataset.obsId);
+        QApplication::restoreOverrideCursor();
+        if (!datalink.valid) {
+            QMessageBox::warning(
+                    this, u"Reopen from SKAVA"_s,
+                    u"Could not reopen '%1':\n\nSKAVA query failed: %2"_s
+                            .arg(dataset.displayName,
+                                  datalink.error.isEmpty()
+                                          ? u"unknown error"_s : datalink.error));
+            return;
+        }
+        doOpenSkavaDataset(dataset.obsId, datalink);
+        return;
+    }
+
     if (dataset.type == u"cube"_s || dataset.type == u"image"_s) {
         doOpenDataPath(dataset.id);
     } else if (dataset.type == u"catalogue"_s) {
@@ -1020,12 +1043,35 @@ void MainWindow::doOpenSkavaDataset(const QString &obsId,
 {
     // Backend-aware routing per docs/distributed-backend-design.md §4.2.
     const BackendNode chosen = pickBackendForSkavaDataset(this->settings, datalink);
-    if (!chosen.id.isEmpty() && !chosen.isLocal) {
-        // ── Compute-next-to-data path: remote backend already owns the
-        // file. We pass it the obs_id + the access URL the desktop
-        // already retrieved from SKAVA — the backend opens the file
-        // directly from its own filesystem, no file transfer, no
-        // backend→SKAVA query needed.
+    // ── Routing decision ────────────────────────────────────────────
+    // pickBackendForSkavaDataset returns:
+    //   * a remote BackendNode → compute-next-to-data via that node
+    //   * the local BackendNode → still use compute-next-to-data, just
+    //     against the local backend (no special-case needed — the
+    //     desktop's "local" backend supports /v1/datasets/open_skava
+    //     same as any remote one)
+    //   * nothing → no SKAVA visivo-backend descriptor matched; we
+    //     fall through to the download-via-local path below, which
+    //     handles HTTP-served archives.
+    // Strip ``file://`` from the access URL so downstream viewer code can
+    // both call backend endpoints that expect a real path (fileHeader,
+    // moment exports, etc.) and render a friendly window title via
+    // QFileInfo(path).fileName(). Returns an empty string when the URL
+    // isn't a file:// one — callers fall back to obs_id in that case.
+    auto pathFromFileUrl = [](const QString &url) -> QString {
+        if (!url.startsWith(QStringLiteral("file://"))) {
+            return QString();
+        }
+        QString tail = url.mid(7);  // strip "file://"
+        // Allow file://localhost/path → /path
+        if (tail.startsWith(QStringLiteral("localhost/"))) {
+            tail = tail.mid(9);  // strip "localhost"
+        }
+        return QUrl::fromPercentEncoding(tail.toUtf8());
+    };
+    const QString fsPath = pathFromFileUrl(datalink.primaryAccessUrl);
+
+    if (!chosen.id.isEmpty()) {
         this->setActiveBackendBadge(chosen);
         QApplication::setOverrideCursor(Qt::WaitCursor);
         BackendClient client(chosen.url, chosen.token);
@@ -1041,9 +1087,26 @@ void MainWindow::doOpenSkavaDataset(const QString &obsId,
             // Fall through to the local-download path so the user still
             // gets the dataset rather than a hard failure.
         } else {
-            const QString displayPath = obsId.isEmpty()
-                    ? datalink.primaryAccessUrl : obsId;
+            // Prefer the real filesystem path so window title shows the
+            // FITS basename and "View FITS header" works without round-
+            // tripping the backend through an obs_id string.
+            const QString displayPath = !fsPath.isEmpty()
+                    ? fsPath
+                    : (obsId.isEmpty() ? datalink.primaryAccessUrl : obsId);
             openViewerFromOpenedDataset(displayPath, opened, client);
+            // Re-record the just-opened dataset as a SKAVA entry: the
+            // generic ``openViewerFromOpenedDataset`` recorded it under
+            // its path with source=remote, but we want source=skava so
+            // the DataHub badge fires and the next reopen routes through
+            // the discovery flow instead of a dead local path.
+            if (this->recentMgr) {
+                this->recentMgr->remove(displayPath);
+                const QString name = !fsPath.isEmpty()
+                        ? QFileInfo(fsPath).fileName() : displayPath;
+                this->recentMgr->record(
+                        QStringLiteral("skava:") + obsId,
+                        name, opened.kind, u"skava"_s, obsId);
+            }
             return;
         }
     }
