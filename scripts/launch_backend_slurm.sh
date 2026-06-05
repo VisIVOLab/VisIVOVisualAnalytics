@@ -25,6 +25,10 @@
 #                           (default: $VISIVO_DATA_ROOT or unset)
 #                           STRONGLY recommended for production.
 #   --sif        PATH       Apptainer .sif image      (default: apptainer/backend.sif)
+#   --backend-src PATH      Host path to a backend/app source tree to bind over
+#                           /app/app inside the container. Lets you iterate on
+#                           Python code without rebuilding the .sif.
+#                           (default: $VISIVO_BACKEND_SRC_OVERRIDE or unset)
 #   --token      TOKEN      Auth token (auto-generated if absent)
 #   --no-gpu                Shorthand for --gres ""; also drops --nv at runtime.
 #   --help                  Print this help.
@@ -77,6 +81,7 @@ while [[ $# -gt 0 ]]; do
         --bind)      BIND_PATH="$2"; shift 2 ;;
         --data-root) DATA_ROOT="$2"; shift 2 ;;
         --sif)       SIF="$2";       shift 2 ;;
+        --backend-src) BACKEND_SRC="$2"; shift 2 ;;
         --token)     TOKEN="$2";     shift 2 ;;
         --no-gpu)    USE_GPU=false; GRES=""; shift ;;
         --help|-h)
@@ -158,6 +163,20 @@ if [[ "$USE_GPU" == "true" ]]; then
     NV_FLAG="--nv"
 fi
 
+# Optional: bind a host backend/app dir over /app/app inside the
+# container, so an operator can iterate on the Python code without
+# rebuilding the .sif. The typical use is testing the CUDA-after-fork
+# fix and similar runtime-only patches.
+SRC_BIND_FLAG=""
+if [[ -n "$BACKEND_SRC" ]]; then
+    if [[ ! -d "$BACKEND_SRC" ]]; then
+        echo "[visivo] ERROR: --backend-src directory not found: $BACKEND_SRC"
+        exit 1
+    fi
+    SRC_BIND_FLAG="--bind ${BACKEND_SRC}:/app/app"
+    echo "[visivo] Overlaying /app/app with host source: $BACKEND_SRC"
+fi
+
 # ── Write the SLURM job script ────────────────────────────────────────────────
 JOB_SCRIPT="$(mktemp /tmp/visivo_slurm_XXXXXX.sh)"
 cat > "$JOB_SCRIPT" <<SLURM_EOF
@@ -183,6 +202,7 @@ ${DATA_ROOT_ENV}
 apptainer run ${NV_FLAG} \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\
     ${DATA_BIND_FLAG} \\
+    ${SRC_BIND_FLAG} \\
     "${SIF}"
 SLURM_EOF
 

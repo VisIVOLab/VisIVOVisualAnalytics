@@ -12,6 +12,7 @@ if the caller omits or supplies the wrong `X-Visivo-Token` header.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import secrets
@@ -45,18 +46,26 @@ def _resolve_token() -> str:
         return env_token
 
     generated = secrets.token_urlsafe(32)
+    written = False
     try:
         _TOKEN_FILE.write_text(generated + "\n")
         _TOKEN_FILE.chmod(0o600)
+        written = True
     except OSError as exc:
-        # Print rather than log: logging.basicConfig may not have run yet.
-        print(f"\n[VisIVO] WARNING: could not write {_TOKEN_FILE}: {exc}\n")  # noqa: T201
+        # EROFS (read-only fs) and EACCES (permission denied) are the
+        # expected outcome inside an Apptainer image: there's no
+        # writable HOME and operators pass the token via VISIVO_TOKEN
+        # anyway. Keep silent in those cases.
+        if exc.errno not in (errno.EROFS, errno.EACCES):
+            print(f"\n[VisIVO] WARNING: could not write {_TOKEN_FILE}: {exc}\n")  # noqa: T201
 
-    print(  # noqa: T201 – intentional: operators need to see the token at startup
+    msg = (
         f"\n[VisIVO] Backend token: {generated}\n"
         f"[VisIVO] Or set: export VISIVO_TOKEN={generated}\n"
-        f"[VisIVO] Token written to {_TOKEN_FILE} (mode 600).\n"
     )
+    if written:
+        msg += f"[VisIVO] Token written to {_TOKEN_FILE} (mode 600).\n"
+    print(msg)  # noqa: T201 – intentional: operators need to see the token at startup
     return generated
 
 
