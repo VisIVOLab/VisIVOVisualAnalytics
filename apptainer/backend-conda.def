@@ -30,9 +30,12 @@ From: condaforge/mambaforge:latest
 
     # Default uses ``conda install --no-lock`` (libmamba solver, no
     # lockfile contention — safest on Power9 shared filesystems).
-    # For maximum speed on a single-host build, switch to mamba:
-    CONDA_INSTALLER=mamba apptainer build --fakeroot backend.sif \
-        apptainer/backend-conda.def
+    # For maximum speed on a single-host build, switch to mamba. Note
+    # the APPTAINERENV_ prefix: Apptainer scrubs unprefixed env vars
+    # in the %post section, so a plain ``CONDA_INSTALLER=mamba``
+    # would be ignored.
+    APPTAINERENV_CONDA_INSTALLER=mamba \
+        apptainer build --fakeroot backend.sif apptainer/backend-conda.def
 
     # Build with NVIDIA GPU support (cupy)
     ENABLE_CUPY=1 apptainer build --fakeroot backend.sif apptainer/backend-conda.def
@@ -74,11 +77,16 @@ From: condaforge/mambaforge:latest
     # is the known-good pattern in that environment.
     #
     # Default to ``conda --no-lock`` for portability; override to mamba
-    # for maximum speed on a single-host build:
-    #     CONDA_INSTALLER=mamba apptainer build ...
+    # for maximum speed on a single-host build. Apptainer scrubs the
+    # host environment in %post, so the variable MUST use the
+    # APPTAINERENV_ prefix to propagate through:
+    #     APPTAINERENV_CONDA_INSTALLER=mamba apptainer build ...
+    # (Plain ``CONDA_INSTALLER=mamba apptainer build`` is silently
+    # ignored — Apptainer never passes the unprefixed variable in.)
     #
-    # The two commands are otherwise interchangeable — mamba and
-    # conda-libmamba use the same underlying solver code (libsolv).
+    # The two installers are otherwise interchangeable, but on ppc64le
+    # mamba native is dramatically faster: stages that take 20+ min
+    # with ``conda install --no-lock`` complete in ~30s with mamba.
     CONDA_INSTALLER="${CONDA_INSTALLER:-conda}"
     case "$CONDA_INSTALLER" in
         mamba)
@@ -124,17 +132,21 @@ From: condaforge/mambaforge:latest
     #   uvicorn[standard]     → uvicorn-standard
     #   dask[array]           → dask + distributed
     #
-    # healpy<1.18 imports ``from scipy.integrate import trapz`` which
-    # scipy 1.14+ removed (renamed to ``trapezoid``). Pin >=1.18.
+    # healpy <1.19 imports ``from scipy.integrate import trapz`` which
+    # scipy 1.14+ removed (renamed to ``trapezoid``). On conda-forge
+    # ppc64le the healpy >=1.19 binary isn't always available, so
+    # pinning healpy alone is unreliable. Pin scipy<1.14 instead —
+    # keeps ``trapz`` available for any healpy version the solver
+    # picks, and stays well within ``scipy>=1.10`` from requirements.txt.
 
-    echo "[backend-conda.def] Stage 1/4 — foundation (python, numpy, scipy, astropy, pandas, healpy)"
+    echo "[backend-conda.def] Stage 1/4 — foundation (python, numpy, scipy<1.14, astropy, pandas, healpy)"
     $INSTALL_CMD -n base -c conda-forge \
         python=3.12 \
         numpy \
-        scipy \
+        "scipy<1.14" \
         astropy \
         pandas \
-        "healpy>=1.18" \
+        healpy \
         pyerfa \
         pillow \
         pip
