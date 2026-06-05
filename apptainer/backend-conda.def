@@ -58,8 +58,11 @@ From: condaforge/mambaforge:latest
     # Ensure the conda environment's binaries take precedence — mambaforge
     # puts python, uvicorn, etc. under /opt/conda/bin.
     export PATH=/opt/conda/bin:${PATH}
-    # Worker processes for CPU-bound FITS/VTK operations (default: nproc)
-    export VISIVO_WORKERS=${VISIVO_WORKERS:-0}
+    # Worker processes for CPU-bound FITS/VTK operations. We deliberately
+    # do NOT export a default here — the backend's ``app/dependencies.py``
+    # uses ``int(os.environ.get('VISIVO_WORKERS', '4'))`` and would
+    # crash on ``ProcessPoolExecutor(max_workers=0)`` if we set 0 here.
+    # Users can still override at runtime with VISIVO_WORKERS=<N>.
     # Session idle-timeout in seconds (default 30 min)
     export VISIVO_SESSION_TTL=${VISIVO_SESSION_TTL:-1800}
 
