@@ -1051,6 +1051,8 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
         };
 
         // Fire all slabs concurrently.
+        QElapsedTimer subvolTimer;
+        subvolTimer.start();
         QList<QFuture<SlabResult>> futures;
         futures.reserve(slabRanges.size());
         for (const auto &range : slabRanges) {
@@ -1074,6 +1076,7 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
             slabs.append(sr);
         }
 
+        const qint64 fetchElapsedMs = subvolTimer.elapsed();
         if (!anyFailed && !slabs.isEmpty()) {
             // Stitch the float32 buffers in Z order. Width/height match
             // across slabs by construction.
@@ -1083,11 +1086,21 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
                 totalBytes += s.data.size();
                 totalZ += s.depth;
             }
+            QElapsedTimer stitchTimer;
+            stitchTimer.start();
             QByteArray stitched;
             stitched.reserve(int(totalBytes));
             for (const auto &s : slabs) {
                 stitched.append(s.data);
             }
+            const qint64 stitchElapsedMs = stitchTimer.elapsed();
+            qDebug().noquote() << QStringLiteral(
+                "[subvolume-client-timing] N=%1 totalMB=%2 "
+                "fetch_all=%3ms stitch=%4ms")
+                    .arg(slabs.size())
+                    .arg(double(totalBytes) / 1e6, 0, 'f', 1)
+                    .arg(fetchElapsedMs)
+                    .arg(stitchElapsedMs);
             double globalMin = std::numeric_limits<double>::infinity();
             double globalMax = -std::numeric_limits<double>::infinity();
             for (const auto &s : slabs) {
@@ -2304,7 +2317,8 @@ std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) cons
     // side (chunked dask reads, binary streaming) — this timeout is a
     // safety net, not the optimisation.
     if (path.endsWith(QStringLiteral("/cube/preview"))
-        || path.endsWith(QStringLiteral("/cube/subvolume"))) {
+        || path.endsWith(QStringLiteral("/cube/subvolume"))
+        || path.endsWith(QStringLiteral("/cube/subvolume_bin"))) {
         return std::chrono::milliseconds(600000); // 10 min
     }
     return std::chrono::milliseconds(120000);

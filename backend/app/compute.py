@@ -240,6 +240,8 @@ def worker_cube_slice(path: str, z_index: int) -> dict[str, Any]:
     With memmap=True astropy reads only the bytes for the requested plane
     from disk – O(width * height * 4 bytes) I/O regardless of cube depth.
     """
+    import time as _time
+    t0 = _time.perf_counter()
     dataset = ScientificFitsDataset(path)
     hdul, raw = dataset.open_memmap()
     try:
@@ -250,11 +252,22 @@ def worker_cube_slice(path: str, z_index: int) -> dict[str, Any]:
             raise ValueError(f"Slice index {z_index} out of range [0, {data.shape[0] - 1}].")
         # Materialise ONLY this plane – memmap ensures disk read is minimal.
         plane = np.asarray(data[z_index, :, :], dtype=np.float32)
+        t_read = _time.perf_counter()
     finally:
         hdul.close()
 
     range_min, range_max = _finite_range(plane)
     compression, data_b64 = _b64f32_compressed(plane)
+    t_encode = _time.perf_counter()
+    print(
+        "[slice-timing] z={} shape=({},{}) raw_kB={:.0f} wire_kB={:.0f} "
+        "stages_s: read={:.3f} encode={:.3f} total={:.3f}".format(
+            z_index, int(plane.shape[0]), int(plane.shape[1]),
+            plane.nbytes / 1024.0, len(data_b64) / 1024.0,
+            t_read - t0, t_encode - t_read, t_encode - t0,
+        ),
+        flush=True,
+    )
     return {
         "width": int(plane.shape[1]),
         "height": int(plane.shape[0]),
