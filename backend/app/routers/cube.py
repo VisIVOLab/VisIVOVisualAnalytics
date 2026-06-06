@@ -122,8 +122,16 @@ async def cube_subvolume_bin(
     from ..compute import worker_cube_subvolume_raw
     try:
         path = _require_cube_path(session, request.dataset_id)
-        result = await _run_with_limit(
-            session,
+        # Bypass the per-session task-slot limit (VISIVO_MAX_CONCURRENT_TASKS,
+        # default 3). The binary endpoint is designed to be called as a
+        # burst of N parallel POSTs by the desktop client for client-side
+        # transport parallelism (4 slabs of one logical ROI in flight at
+        # once). Counting each slab against the per-session quota would
+        # cause the 4th POST to receive HTTP 429, the client to fall back
+        # to the slow legacy JSON path, and the parallelism win to be
+        # lost. The slab reads are I/O-bound on BeeGFS, not compute-heavy,
+        # so unbounded concurrency here is safe.
+        result = await _run(
             worker_cube_subvolume_raw,
             path,
             request.x0, request.x1,
