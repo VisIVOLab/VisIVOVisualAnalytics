@@ -146,7 +146,19 @@ public:
                   const QString &remoteWcsStatus = QStringLiteral("ok"),
                   const QString &remoteWcsWarningMessage = QString(),
                   const QString &remoteSessionId = QString(),
-                  const QString &remoteBackendToken = QString(), QWidget *parent = nullptr);
+                  const QString &remoteBackendToken = QString(),
+                  // Size-aware loading policy from the backend's OpenDataset
+                  // response. ``"auto_full"`` keeps legacy behaviour
+                  // (preview → auto requestHighResCube). ``"preview_only"``
+                  // stops at preview and surfaces explicit user actions
+                  // ("Load full resolution", "Crop full resolution") via
+                  // the View menu / status-bar buttons. Default is
+                  // "auto_full" so any pre-existing call site (and any
+                  // backend older than the fields) stays unchanged.
+                  const QString &recommendedLoadMode = QStringLiteral("auto_full"),
+                  qint64 fileSizeBytes = 0,
+                  qint64 fullResThresholdBytes = qint64(4) << 30,
+                  QWidget *parent = nullptr);
     ~vtkWindowCube() override;
     void closeEvent(QCloseEvent *event) override;
 
@@ -491,6 +503,15 @@ private:
     std::array<int, 2> pvCurrentVoxel{ -1, -1 };
     std::vector<std::array<int, 2>> pvPolylineVertices;
     RemoteCubeDisplayState remoteCubeDisplayState{ RemoteCubeDisplayState::Preview };
+    // Pattern B: backend-driven size-aware loading policy.
+    // ``preview_only`` suppresses the auto requestHighResCube() call that
+    // fires after the preview lands; the user must explicitly opt into
+    // a full-resolution load (or ROI crop) via the View menu actions
+    // populated by setupLoadModeUi(). ``auto_full`` is the legacy path.
+    QString recommendedLoadMode{ QStringLiteral("auto_full") };
+    qint64 datasetFileSizeBytes{ 0 };
+    qint64 datasetFullResThresholdBytes{ qint64(4) << 30 };
+    bool userForcedFullResolution{ false };
     static constexpr int remoteLoadingStateDelayMs = 250;
     static constexpr int remoteSliceDebounceDelayMs = 100;
     bool remoteIsosurfaceRequestInFlight{ false };

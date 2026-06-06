@@ -1498,7 +1498,11 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              const QString &remoteWcsStatus,
                              const QString &remoteWcsWarningMessage,
                              const QString &remoteSessionId,
-                             const QString &remoteBackendToken, QWidget *parent)
+                             const QString &remoteBackendToken,
+                             const QString &recommendedLoadMode,
+                             qint64 fileSizeBytes,
+                             qint64 fullResThresholdBytes,
+                             QWidget *parent)
     : QMainWindow(parent),
       ui(new Ui::vtkWindowCube),
       filepath(filepath),
@@ -1521,6 +1525,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
       remoteSpectralAxisUnit(remoteSpectralAxisUnit),
       remoteWcsStatus(remoteWcsStatus),
       remoteWcsWarningMessage(remoteWcsWarningMessage),
+      recommendedLoadMode(recommendedLoadMode),
+      datasetFileSizeBytes(fileSizeBytes),
+      datasetFullResThresholdBytes(fullResThresholdBytes),
       lutCustomizer(nullptr),
       profileWidget(nullptr),
       level(15)
@@ -1690,6 +1697,42 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     ui->menuView->addAction(this->actionShow3dWcsAxes);
     QObject::connect(this->actionShow3dWcsAxes, &QAction::toggled, this,
                      [this](bool checked) { this->apply3dWcsAxesVisibility(checked); });
+
+    // ── Pattern B: size-aware loading policy actions ────────────────────
+    // Shown for every cube, but only meaningful when the backend
+    // signalled ``preview_only`` (large cubes). For small cubes both
+    // actions stay available — operator can re-trigger a full-res reload
+    // after parameter changes or call up the crop dialog manually.
+    {
+        ui->menuView->addSeparator();
+        auto *loadFullAction =
+                ui->menuView->addAction(u"Load Full Resolution"_s);
+        loadFullAction->setToolTip(
+                u"Fetch the entire cube at full resolution from the backend. "
+                u"For very large cubes this can be slow and memory-intensive; "
+                u"prefer Crop Full Resolution when only a region is needed."_s);
+        QObject::connect(loadFullAction, &QAction::triggered, this, [this]() {
+            this->userForcedFullResolution = true;
+            this->statusBar()->showMessage(
+                    u"Loading full-resolution cube from backend…"_s, 4000);
+            if (!this->requestHighResCube()) {
+                this->setRemoteCubeDisplayState(
+                        this->usingHighResCube
+                                ? RemoteCubeDisplayState::FullResolution
+                                : RemoteCubeDisplayState::Preview);
+                this->clearPersistentStatusMessage();
+            }
+        });
+
+        auto *cropFullAction =
+                ui->menuView->addAction(u"Crop Full Resolution…"_s);
+        cropFullAction->setToolTip(
+                u"Open the sub-cube extraction dialog to fetch only an X/Y/Z "
+                u"region at full resolution. Recommended over Load Full "
+                u"Resolution for cubes above the backend's size threshold."_s);
+        QObject::connect(cropFullAction, &QAction::triggered, this,
+                         [this]() { this->exportSubCubeAsFits(); });
+    }
 
     // ── Slice animation (play/pause + FPS + mode) ────────────────────────
     ui->menuView->addSeparator();
@@ -2020,6 +2063,33 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
                          this->setRemoteCubeDisplayState(RemoteCubeDisplayState::Preview);
                          qDebug().noquote() << QStringLiteral("[remote-plane] preview valid");
+                         // Pattern B: skip the automatic full-resolution
+                         // fetch when the backend recommended preview-only
+                         // (i.e. dataset >= the size threshold). The user
+                         // can still trigger it explicitly via the View
+                         // menu / status-bar actions; that path sets
+                         // userForcedFullResolution=true and re-enters
+                         // requestHighResCube() unconditionally.
+                         const bool shouldAutoLoad =
+                                 this->userForcedFullResolution
+                                 || this->recommendedLoadMode
+                                            != QLatin1String("preview_only");
+                         if (!shouldAutoLoad) {
+                             this->clearPersistentStatusMessage();
+                             const double sizeGiB =
+                                     double(this->datasetFileSizeBytes)
+                                     / double(qint64(1) << 30);
+                             const double thresholdGiB =
+                                     double(this->datasetFullResThresholdBytes)
+                                     / double(qint64(1) << 30);
+                             this->statusBar()->showMessage(
+                                     u"Preview-only mode: cube is %1 GB (threshold %2 GB). "
+                                     u"Use View → Load Full Resolution or Crop Region for full-res data."_s
+                                             .arg(sizeGiB, 0, 'f', 2)
+                                             .arg(thresholdGiB, 0, 'f', 1),
+                                     10000);
+                             return;
+                         }
                          if (!this->requestHighResCube()) {
                              this->setRemoteCubeDisplayState(this->usingHighResCube
                                                                      ? RemoteCubeDisplayState::FullResolution

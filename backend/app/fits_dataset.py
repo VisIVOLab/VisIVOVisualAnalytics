@@ -250,6 +250,20 @@ class ScientificFitsDataset:
                 freq_axes.append(axis)
         return bool(time_axes) and bool(freq_axes)
 
+    def _full_res_threshold_bytes(self) -> int:
+        """Default 4 GiB; override with VISIVO_FULL_RES_THRESHOLD_BYTES.
+
+        At/above this size the client is told to default to preview-only
+        and let the user opt explicitly into full-resolution download
+        (or ROI crop). For cubes well below this threshold the legacy
+        auto-full-load path is preserved unchanged.
+        """
+        import os as _os
+        return int(_os.environ.get(
+            "VISIVO_FULL_RES_THRESHOLD_BYTES",
+            str(4 * 1024 ** 3),
+        ))
+
     def geometry_metadata(self) -> dict[str, Any]:
         spacing = [self._axis_float("CDELT1", 1.0), self._axis_float("CDELT2", 1.0), self._axis_float("CDELT3", 1.0)]
         origin = [
@@ -318,6 +332,22 @@ class ScientificFitsDataset:
             "beam_major": self.beam.major,
             "beam_minor": self.beam.minor,
             "beam_pa": self.beam.pa,
+            # File-size aware loading policy (added for Pattern B / SDC2).
+            # Client reads ``recommended_load_mode`` to decide whether to
+            # auto-fetch full-resolution data or stay in preview-only mode
+            # and ask the user explicitly. Threshold is configurable via
+            # the env var; the default 4 GiB is empirically the size above
+            # which a 16 GB-RAM laptop starts thrashing on VTK volume
+            # rendering of an HI cube.
+            "file_size_bytes": int(self.path.stat().st_size)
+                if self.path and self.path.exists() else 0,
+            "full_res_threshold_bytes": self._full_res_threshold_bytes(),
+            "recommended_load_mode": (
+                "preview_only"
+                if (self.path and self.path.exists()
+                    and self.path.stat().st_size >= self._full_res_threshold_bytes())
+                else "auto_full"
+            ),
         }
 
     def cube_numpy_spectral_fits_axis(self) -> int:

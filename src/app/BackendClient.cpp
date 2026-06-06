@@ -438,6 +438,25 @@ static BackendOpenDatasetResult parseOpenDatasetObject(const QJsonObject &object
     if (!bmaj.isNull()) result.beamMajorDeg = bmaj.toDouble();
     if (!bmin.isNull()) result.beamMinorDeg = bmin.toDouble();
     if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
+
+    // Size-aware loading policy (Pattern B). Defaults preserve legacy
+    // auto-full behaviour for backends that don't return these fields.
+    const QJsonValue fileSize = object.value(QStringLiteral("file_size_bytes"));
+    if (!fileSize.isUndefined() && !fileSize.isNull()) {
+        result.fileSizeBytes = static_cast<qint64>(fileSize.toDouble(0.0));
+    }
+    const QJsonValue thresh = object.value(QStringLiteral("full_res_threshold_bytes"));
+    if (!thresh.isUndefined() && !thresh.isNull()) {
+        result.fullResThresholdBytes =
+                static_cast<qint64>(thresh.toDouble(double(qint64(4) << 30)));
+    }
+    const QJsonValue mode = object.value(QStringLiteral("recommended_load_mode"));
+    if (mode.isString()) {
+        const QString s = mode.toString();
+        if (s == QLatin1String("preview_only") || s == QLatin1String("auto_full")) {
+            result.recommendedLoadMode = s;
+        }
+    }
     return result;
 }
 
@@ -609,6 +628,25 @@ BackendOpenDatasetResult BackendClient::openSkavaDataset(const QString &obsId,
     if (!bmaj.isNull()) result.beamMajorDeg = bmaj.toDouble();
     if (!bmin.isNull()) result.beamMinorDeg = bmin.toDouble();
     if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
+
+    // Size-aware loading policy (Pattern B). Defaults preserve legacy
+    // auto-full behaviour for backends that don't return these fields.
+    const QJsonValue fileSize = object.value(QStringLiteral("file_size_bytes"));
+    if (!fileSize.isUndefined() && !fileSize.isNull()) {
+        result.fileSizeBytes = static_cast<qint64>(fileSize.toDouble(0.0));
+    }
+    const QJsonValue thresh = object.value(QStringLiteral("full_res_threshold_bytes"));
+    if (!thresh.isUndefined() && !thresh.isNull()) {
+        result.fullResThresholdBytes =
+                static_cast<qint64>(thresh.toDouble(double(qint64(4) << 30)));
+    }
+    const QJsonValue mode = object.value(QStringLiteral("recommended_load_mode"));
+    if (mode.isString()) {
+        const QString s = mode.toString();
+        if (s == QLatin1String("preview_only") || s == QLatin1String("auto_full")) {
+            result.recommendedLoadMode = s;
+        }
+    }
     return result;
 }
 #endif  // ── end legacy inline parsing block ─────────────────────────────

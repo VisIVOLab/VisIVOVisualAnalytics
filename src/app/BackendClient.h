@@ -146,6 +146,17 @@ struct BackendOpenDatasetResult
     double beamMajorDeg{ std::numeric_limits<double>::quiet_NaN() };
     double beamMinorDeg{ std::numeric_limits<double>::quiet_NaN() };
     double beamPaDeg{ 0.0 };
+    /// Size-aware loading policy (added for Pattern B).
+    /// ``recommendedLoadMode`` is "auto_full" when the cube fits the
+    /// laptop's RAM/VTK budget comfortably, or "preview_only" when the
+    /// client should default to the downsampled preview and let the user
+    /// opt into full-resolution or a ROI crop explicitly. Threshold is
+    /// controlled by the backend (VISIVO_FULL_RES_THRESHOLD_BYTES env,
+    /// default 4 GiB). For datasets older than this field (legacy
+    /// backend) it defaults to "auto_full" so behaviour is unchanged.
+    qint64 fileSizeBytes{ 0 };
+    qint64 fullResThresholdBytes{ qint64(4) << 30 };
+    QString recommendedLoadMode{ QStringLiteral("auto_full") };
 };
 
 struct BackendFileHeaderResult

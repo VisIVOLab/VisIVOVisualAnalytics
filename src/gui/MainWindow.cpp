@@ -1215,7 +1215,15 @@ void MainWindow::openViewerFromOpenedDataset(const QString &path,
                                           opened.crpix, opened.cdelt, opened.degenerateAxesSummary,
                                           opened.spectralAxisType, opened.spectralAxisUnit,
                                           opened.wcsStatus, opened.wcsWarningMessage,
-                                          client.sessionId(), client.token(), this);
+                                          client.sessionId(), client.token(),
+                                          // Pattern B: propagate the backend's
+                                          // size-aware loading policy so the
+                                          // viewer can skip the auto full-res
+                                          // fetch for cubes above the threshold.
+                                          opened.recommendedLoadMode,
+                                          opened.fileSizeBytes,
+                                          opened.fullResThresholdBytes,
+                                          this);
         cubeWin->setDarkPlots(this->settings->getPlotTheme() == 0);
         cubeWin->setBeamInfo(opened.beamMajorDeg, opened.beamMinorDeg,
                              opened.beamPaDeg);
