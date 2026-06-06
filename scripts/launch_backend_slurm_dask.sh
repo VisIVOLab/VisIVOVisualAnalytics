@@ -192,6 +192,7 @@ apptainer exec \\
     --env PYTHONPATH=/app \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\
     ${DATA_BIND_FLAG} \\
+    ${SRC_BIND_FLAG} \\
     "${SIF}" \\
     dask scheduler \\
         --host 0.0.0.0 \\
@@ -227,6 +228,7 @@ apptainer exec \\
     --env PYTHONPATH=/app \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\
     ${DATA_BIND_FLAG} \\
+    ${SRC_BIND_FLAG} \\
     "${SIF}" \\
     dask worker "\$SCHED_URL" \\
         --nworkers ${WORKERS} \\
@@ -249,6 +251,7 @@ for node in "\${NODELIST[@]:1}"; do
             --env PYTHONPATH=/app \\
             --bind '${BIND_PATH}:${BIND_PATH}' \\
             ${DATA_BIND_FLAG} \\
+            ${SRC_BIND_FLAG} \\
             '${SIF}' \\
             dask worker '\$SCHED_URL' \\
                 --nworkers ${WORKERS} \\
@@ -266,6 +269,7 @@ echo "[visivo] Starting backend on \$SCHED_NODE:${PORT} (with Dask scheduler at 
 apptainer run ${NV_FLAG} \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\
     ${DATA_BIND_FLAG} \\
+    ${SRC_BIND_FLAG} \\
     --env VISIVO_TOKEN="${TOKEN}" \\
     --env VISIVO_WORKERS=4 \\
     --env VISIVO_HOST=0.0.0.0 \\

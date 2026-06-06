@@ -112,6 +112,13 @@ class CubePreviewResponse(BaseModel):
     scalar_type: str = ""
     range_min: float = 0.0
     range_max: float = 0.0
+    # Empty string = uncompressed raw float32 (legacy default).
+    # "qt-zlib"  = zlib bytes with 4-byte big-endian length prefix
+    #              (Qt's qUncompress convention). Required for the
+    #              compressed preview path; without it pydantic drops
+    #              the field, the client falls back to "uncompressed",
+    #              decodes zlib bytes as raw float32 → grey slice.
+    compression: str = ""
     data_base64: str = ""
 
 
@@ -155,6 +162,10 @@ class CubeSubvolumeResponse(BaseModel):
     spectral_axis_type: str = ""
     spectral_axis_unit: str = ""
     bunit: str = ""
+    # Same compression negotiation as CubePreviewResponse — see comment
+    # there. Required for the compressed-subvolume path; absent → silent
+    # zlib-as-float32 corruption client-side.
+    compression: str = ""
     data_base64: str = ""
 
 
