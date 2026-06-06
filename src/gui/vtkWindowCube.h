@@ -513,7 +513,17 @@ private:
     qint64 datasetFullResThresholdBytes{ qint64(4) << 30 };
     bool userForcedFullResolution{ false };
     static constexpr int remoteLoadingStateDelayMs = 250;
-    static constexpr int remoteSliceDebounceDelayMs = 100;
+    // Slider drag fires QSlider::valueChanged on every pixel of motion.
+    // With a 100 ms debounce, even the tiniest pauses during a normal
+    // mouse drag (very common — human hand isn't perfectly steady)
+    // each emit a slice POST. Empirically a 1-second drag triggers
+    // 8-12 slice requests, all wasted except the last; the queue then
+    // takes ~10 s to clear through the SSH tunnel (~2 MB/slice on the
+    // wire), so the user perceives a multi-second lag.
+    //
+    // 300 ms is the human-noticed-pause threshold for direct-manipulation
+    // UIs: a deliberate pause feels long, normal hand jitter does not.
+    static constexpr int remoteSliceDebounceDelayMs = 300;
     bool remoteIsosurfaceRequestInFlight{ false };
     double inFlightRemoteIsosurfaceThreshold{ std::numeric_limits<double>::quiet_NaN() };
 

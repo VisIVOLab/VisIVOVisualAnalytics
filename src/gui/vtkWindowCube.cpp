@@ -8143,9 +8143,29 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
 
 void vtkWindowCube::updateSlice()
 {
+    // Debounce ALL slice-change paths (slider drag, spinbox arrows,
+    // mouse wheel on slider, ChannelOverlay scrubber) through the same
+    // 300 ms timer. Previously this method called requestRemoteSlice
+    // immediately on every spinSlice valueChanged, bypassing the debounce
+    // entirely — a mouse-wheel scroll over 50 channels generated 50
+    // separate POSTs, saturating the SSH tunnel for ~5-10 s of pure
+    // wasted bandwidth before the user's intended slice arrived.
+    //
+    // For paths that should be IMMEDIATE (typed value, animation tick,
+    // programmatic) callers can still bypass the debounce by stopping
+    // the timer and calling requestRemoteSlice() directly — see the
+    // existing animation handlers.
     const int slice = ui->spinSlice->value() - 1;
-    this->remoteSliceDebounceTimer.stop();
-    this->requestRemoteSlice(slice);
+    // Apply the visual cutting-plane feedback synchronously so the
+    // user sees the new slice position move during the debounce window
+    // — only the network fetch is delayed.
+    this->updateRemoteSliceDragFeedback(slice);
+    if (this->tryApplyCachedRemoteSlice(slice)) {
+        this->remoteSliceDebounceTimer.stop();
+        return;
+    }
+    this->pendingRemoteSliceIndex = slice;
+    this->remoteSliceDebounceTimer.start(remoteSliceDebounceDelayMs);
 }
 
 void vtkWindowCube::requestRemoteSlice(int sliceIndex)
