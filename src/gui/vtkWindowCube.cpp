@@ -8172,6 +8172,10 @@ void vtkWindowCube::requestRemoteSlice(int sliceIndex)
 {
     sliceIndex = this->clampRemoteSliceIndex(sliceIndex);
     this->currentRequestedRemoteSliceIndex = sliceIndex;
+    // Mark this as a USER-initiated request so its resulting
+    // applyRemoteSliceResult is allowed to spawn ±1 prefetches.
+    // Prefetched results themselves leave this flag false → no cascade.
+    this->prefetchAllowedForNextResult = true;
     if (this->tryApplyCachedRemoteSlice(sliceIndex)) {
         return;
     }
@@ -8233,7 +8237,17 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
         this->updateProbeReadout(result.imageData);
     }
     this->sliceWin->Render();
-    this->prefetchNeighborRemoteSlices(result.index);
+    // Prefetch ±1 neighbour slices only when this slice was the user's
+    // explicit request, NOT when it was itself a prefetched neighbour.
+    // Otherwise every prefetched slice triggers its own prefetches, the
+    // wavefront expands ±2, ±3, ±4 …, and the SSH tunnel fills with
+    // tens of stale slice POSTs the user never asked for. The flag is
+    // set by requestRemoteSlice() before the fetch starts and reset
+    // here once the result lands.
+    if (this->prefetchAllowedForNextResult) {
+        this->prefetchAllowedForNextResult = false;
+        this->prefetchNeighborRemoteSlices(result.index);
+    }
 }
 
 void vtkWindowCube::updateRemoteSliceDragFeedback(int sliceIndex)

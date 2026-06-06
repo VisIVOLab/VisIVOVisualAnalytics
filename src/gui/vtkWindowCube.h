@@ -512,6 +512,11 @@ private:
     qint64 datasetFileSizeBytes{ 0 };
     qint64 datasetFullResThresholdBytes{ qint64(4) << 30 };
     bool userForcedFullResolution{ false };
+    // True for exactly ONE upcoming applyRemoteSliceResult, set by
+    // requestRemoteSlice() when the user explicitly asked for this
+    // slice. Prevents cascading prefetch chains (each prefetched
+    // slice triggering its own ±1 prefetches → wavefront expansion).
+    bool prefetchAllowedForNextResult{ false };
     static constexpr int remoteLoadingStateDelayMs = 250;
     // Slider drag fires QSlider::valueChanged on every pixel of motion.
     // With a 100 ms debounce, even the tiniest pauses during a normal
