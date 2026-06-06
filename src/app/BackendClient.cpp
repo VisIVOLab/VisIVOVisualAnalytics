@@ -19,6 +19,9 @@
 #include <QDebug>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QtConcurrent/QtConcurrent>
+#include <QFuture>
+#include <QFutureSynchronizer>
 #include <QUrl>
 #include <QUrlQuery>
 
@@ -919,65 +922,205 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
                                           { QStringLiteral("z1"), z1 } });
     const QByteArray bodyBytes = body.toJson(QJsonDocument::Compact);
 
-    // ── 1) Try the binary endpoint first ───────────────────────────────
+    // ── 1) Binary endpoint with parallel Z-slab fetches ────────────────
     // /v1/cube/subvolume_bin returns raw little-endian float32 with
-    // metadata in X-Visivo-* headers. Eliminates base64 (saves ~30 s on
-    // a 1.6 GB SDC2 subcube) and zlib (which was actively HARMFUL on
-    // noise data — high entropy → no compression but ~50 s of CPU).
+    // metadata in X-Visivo-* headers. To saturate the SSH tunnel we
+    // split the Z range into N=4 slabs and fire 4 POSTs concurrently
+    // through 4 distinct thread-local QNetworkAccessManagers — each
+    // POST is its own TCP stream multiplexed over the tunnel, so
+    // throughput stacks roughly linearly until the tunnel's outer TCP
+    // saturates.
     //
     // Fallback to the JSON endpoint on:
-    //   - 404 (older backend without the binary route)
+    //   - 404 on any slab (older backend without the binary route)
     //   - any transport error  — keep the legacy path as a safety net.
     {
+        struct SlabResult {
+            bool ok{ false };
+            int status{ 0 };
+            int width{ 0 }, height{ 0 }, depth{ 0 };
+            double rangeMin{ 0.0 }, rangeMax{ 0.0 };
+            QString scalarType, spectralAxisType, spectralAxisUnit, bunit;
+            QByteArray data;
+            QString error;
+        };
+
         const QUrl binUrl(m_baseUrl + QStringLiteral("/v1/cube/subvolume_bin"));
-        QNetworkAccessManager *nam = getThreadLocalNam();
-        QNetworkRequest req = buildRequest(binUrl);
-        if (!this->m_token.isEmpty()) {
-            req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), this->m_token.toUtf8());
+        const int timeoutMs =
+                static_cast<int>(this->requestTimeoutFor(binUrl).count());
+        const QString token = this->m_token;
+        const QString sessionId = this->m_sessionId;
+        const QString baseUrl = m_baseUrl;
+
+        // Split [z0, z1] in N slabs. Sub-Z-axis chunks are concatenated
+        // back along the spectral axis. We use 4 by default — empirically
+        // saturates the SSH tunnel without thrashing it; raise via env
+        // ``VISIVO_SUBVOLUME_PARALLEL`` for hosts with more headroom.
+        int nSlabs = 4;
+        if (const QByteArray ev = qgetenv("VISIVO_SUBVOLUME_PARALLEL"); !ev.isEmpty()) {
+            const int n = ev.toInt();
+            if (n >= 1 && n <= 16) nSlabs = n;
         }
-        int status = 0;
-        QMap<QByteArray, QByteArray> headers;
-        QString binError;
-        const QByteArray binBody =
-                performBinaryPost(nam, req, bodyBytes,
-                                  static_cast<int>(this->requestTimeoutFor(binUrl).count()),
-                                  status, headers, binError);
-        if (status == 200 && binError.isEmpty()) {
+        const int zSize = z1 - z0 + 1;
+        if (zSize < nSlabs) {
+            // Tiny Z range — fall through to single fetch by setting nSlabs=1.
+            nSlabs = qMax(1, zSize);
+        }
+
+        // Build slab ranges along Z. Distribute remainder so all slabs
+        // differ by at most one channel.
+        QList<QPair<int, int>> slabRanges;
+        slabRanges.reserve(nSlabs);
+        const int baseSize = zSize / nSlabs;
+        const int remainder = zSize % nSlabs;
+        int cur = z0;
+        for (int i = 0; i < nSlabs; ++i) {
+            const int sz = baseSize + (i < remainder ? 1 : 0);
+            slabRanges.append({ cur, cur + sz - 1 });
+            cur += sz;
+        }
+
+        // Worker lambda: fetch a single slab through its own thread-local
+        // QNAM. Captures by value the small POD-ish state it needs so the
+        // lambda is safely runnable from a worker thread.
+        auto fetchSlab = [baseUrl, token, sessionId, timeoutMs, datasetId,
+                          x0, x1, y0, y1](int sz0, int sz1) -> SlabResult {
+            SlabResult r;
+            const QJsonDocument body(QJsonObject{
+                    { QStringLiteral("dataset_id"), datasetId },
+                    { QStringLiteral("x0"), x0 }, { QStringLiteral("x1"), x1 },
+                    { QStringLiteral("y0"), y0 }, { QStringLiteral("y1"), y1 },
+                    { QStringLiteral("z0"), sz0 }, { QStringLiteral("z1"), sz1 } });
+            const QByteArray bytes = body.toJson(QJsonDocument::Compact);
+
+            // Inline buildRequest() — we can't call the member from a
+            // worker thread without capturing ``this``, and capturing
+            // ``this`` would tie the worker's lifetime to the
+            // BackendClient instance for no benefit (the synchronous
+            // QFuture::waitForFinished() guarantees the instance
+            // outlives every dispatched thread).
+            QNetworkAccessManager *nam = getThreadLocalNam();
+            const QUrl url(baseUrl + QStringLiteral("/v1/cube/subvolume_bin"));
+            QNetworkRequest req(url);
+            req.setHeader(QNetworkRequest::ContentTypeHeader,
+                          QStringLiteral("application/json"));
+            if (!token.isEmpty()) {
+                req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), token.toUtf8());
+            }
+            if (!sessionId.isEmpty()) {
+                req.setRawHeader(QByteArrayLiteral("X-Visivo-Session"), sessionId.toUtf8());
+            }
+            QMap<QByteArray, QByteArray> headers;
+            QString err;
+            const QByteArray slabBody =
+                    performBinaryPost(nam, req, bytes, timeoutMs, r.status, headers, err);
+            if (r.status != 200) {
+                r.error = err.isEmpty()
+                                ? QStringLiteral("HTTP %1 on subvolume_bin").arg(r.status)
+                                : err;
+                return r;
+            }
             const auto hget = [&](const char *name) -> QByteArray {
                 return headers.value(QByteArray(name).toLower());
             };
+            r.width  = hget("X-Visivo-Width").toInt();
+            r.height = hget("X-Visivo-Height").toInt();
+            r.depth  = hget("X-Visivo-Depth").toInt();
+            r.scalarType        = QString::fromUtf8(hget("X-Visivo-Scalar-Type"));
+            r.rangeMin          = hget("X-Visivo-Range-Min").toDouble();
+            r.rangeMax          = hget("X-Visivo-Range-Max").toDouble();
+            r.spectralAxisType  = QString::fromUtf8(hget("X-Visivo-Spectral-Axis-Type"));
+            r.spectralAxisUnit  = QString::fromUtf8(hget("X-Visivo-Spectral-Axis-Unit"));
+            r.bunit             = QString::fromUtf8(hget("X-Visivo-Bunit"));
+            const qint64 expected =
+                    qint64(r.width) * qint64(r.height) * qint64(r.depth)
+                    * qint64(sizeof(float));
+            if (r.width <= 0 || r.height <= 0 || r.depth <= 0
+                || expected != slabBody.size()) {
+                r.error = QStringLiteral(
+                                  "subvolume_bin slab size mismatch: got %1, expected %2 "
+                                  "(w=%3 h=%4 d=%5)")
+                                  .arg(slabBody.size())
+                                  .arg(expected)
+                                  .arg(r.width).arg(r.height).arg(r.depth);
+                return r;
+            }
+            r.data = slabBody;
+            r.ok = true;
+            return r;
+        };
+
+        // Fire all slabs concurrently.
+        QList<QFuture<SlabResult>> futures;
+        futures.reserve(slabRanges.size());
+        for (const auto &range : slabRanges) {
+            futures.append(QtConcurrent::run(fetchSlab, range.first, range.second));
+        }
+
+        // Collect, in submission order so the Z concatenation is stable.
+        QList<SlabResult> slabs;
+        slabs.reserve(futures.size());
+        bool anyFailed = false;
+        QString firstError;
+        for (auto &f : futures) {
+            f.waitForFinished();
+            const SlabResult sr = f.result();
+            if (!sr.ok && !anyFailed) {
+                firstError = sr.error;
+            }
+            if (!sr.ok) {
+                anyFailed = true;
+            }
+            slabs.append(sr);
+        }
+
+        if (!anyFailed && !slabs.isEmpty()) {
+            // Stitch the float32 buffers in Z order. Width/height match
+            // across slabs by construction.
+            qint64 totalBytes = 0;
+            int totalZ = 0;
+            for (const auto &s : slabs) {
+                totalBytes += s.data.size();
+                totalZ += s.depth;
+            }
+            QByteArray stitched;
+            stitched.reserve(int(totalBytes));
+            for (const auto &s : slabs) {
+                stitched.append(s.data);
+            }
+            double globalMin = std::numeric_limits<double>::infinity();
+            double globalMax = -std::numeric_limits<double>::infinity();
+            for (const auto &s : slabs) {
+                if (std::isfinite(s.rangeMin) && s.rangeMin < globalMin)
+                    globalMin = s.rangeMin;
+                if (std::isfinite(s.rangeMax) && s.rangeMax > globalMax)
+                    globalMax = s.rangeMax;
+            }
+            if (!std::isfinite(globalMin)) globalMin = 0.0;
+            if (!std::isfinite(globalMax)) globalMax = 0.0;
             result.valid             = true;
             result.error             = QString();
-            result.width             = hget("X-Visivo-Width").toInt();
-            result.height            = hget("X-Visivo-Height").toInt();
-            result.depth             = hget("X-Visivo-Depth").toInt();
-            result.scalarType        = QString::fromUtf8(hget("X-Visivo-Scalar-Type"));
-            result.rangeMin          = hget("X-Visivo-Range-Min").toDouble();
-            result.rangeMax          = hget("X-Visivo-Range-Max").toDouble();
-            result.spectralAxisType  = QString::fromUtf8(hget("X-Visivo-Spectral-Axis-Type"));
-            result.spectralAxisUnit  = QString::fromUtf8(hget("X-Visivo-Spectral-Axis-Unit"));
-            result.bunit             = QString::fromUtf8(hget("X-Visivo-Bunit"));
-            result.data              = binBody;
-            const qint64 expected =
-                    qint64(result.width) * qint64(result.height) * qint64(result.depth)
-                    * qint64(sizeof(float));
-            if (result.width > 0 && result.height > 0 && result.depth > 0
-                && expected == binBody.size()) {
-                return result;
-            }
-            // Size mismatch — log + fall through to JSON path (safer).
-            qWarning().noquote()
-                    << QStringLiteral("subvolume_bin size mismatch: got %1, expected %2 "
-                                      "(w=%3 h=%4 d=%5). Falling back to JSON.")
-                               .arg(binBody.size())
-                               .arg(expected)
-                               .arg(result.width)
-                               .arg(result.height)
-                               .arg(result.depth);
-            // Reset before fallback so the caller sees JSON result, not partial bin one.
-            result = BackendCubeSubvolumeResult{};
+            result.width             = slabs[0].width;
+            result.height            = slabs[0].height;
+            result.depth             = totalZ;
+            result.scalarType        = slabs[0].scalarType;
+            result.rangeMin          = globalMin;
+            result.rangeMax          = globalMax;
+            result.spectralAxisType  = slabs[0].spectralAxisType;
+            result.spectralAxisUnit  = slabs[0].spectralAxisUnit;
+            result.bunit             = slabs[0].bunit;
+            result.data              = stitched;
+            return result;
         }
-        // status==404 → fallback. status>=400 (other) → also try JSON.
+
+        if (!firstError.isEmpty()) {
+            qWarning().noquote()
+                    << QStringLiteral("subvolume_bin parallel fetch failed: %1. "
+                                      "Falling back to JSON endpoint.")
+                               .arg(firstError);
+        }
+        // Reset partial state before fallback.
+        result = BackendCubeSubvolumeResult{};
     }
 
     // ── 2) JSON fallback (legacy path) ─────────────────────────────────
