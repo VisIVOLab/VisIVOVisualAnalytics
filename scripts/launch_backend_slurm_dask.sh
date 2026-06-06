@@ -144,36 +144,39 @@ SCHED_URL="tcp://\${SCHED_NODE}:${SCHED_PORT}"
 echo "[dask] Scheduler host: \$SCHED_NODE"
 echo "[dask] Scheduler URL:  \$SCHED_URL"
 
-# ─── Concurrent srun steps inside the same job ─────────────────────────
-# SLURM ≥ 22 requires --overlap on every srun step that wants to share
-# resources with another running step in the same job. Without it the
-# second srun blocks indefinitely waiting for step slots — that's why
-# job 856 hung at "Registering Worker plugin shuffle": the readiness
-# check srun could never get a slot while the scheduler srun was holding
-# node 0.
+# ─── Launch strategy: NO srun for sub-steps ────────────────────────────
+# We tried ``srun --overlap`` for scheduler/workers/backend running in
+# parallel inside the same job and SLURM ≥22 silently queued the second
+# and third srun, never allocating new step slots — even with --overlap.
+# (Symptoms: ``squeue -s -j NNN`` shows only the .0 step + .batch step,
+# and the parallel sruns sit forever.)
 #
-# We also stop using ``srun ... python3 -c "Client(...)"`` for the
-# readiness check (which itself contends for an srun step). A plain
-# bash /dev/tcp probe runs locally in the batch shell with zero
-# scheduling overhead.
+# Pattern that works everywhere (used by dask-jobqueue, dask-mpi):
+#   1. scheduler in background on the local node (= the batch script's
+#      node, which is the first allocated node). apptainer exec, no srun.
+#   2. local worker on the same node, also via apptainer exec in
+#      background.
+#   3. remote workers on the OTHER allocated nodes via ssh + nohup. ssh
+#      between compute nodes is allowed within the job's allocation.
+#   4. backend in the FOREGROUND on the local node. This keeps the
+#      batch script (and the SLURM job) alive — the moment it exits,
+#      SLURM cleans up everything, including the ssh-spawned remote
+#      workers.
 
-# ─── 1. Dask scheduler on node 0 (background) ───────────────────────────
-srun --overlap --nodes=1 --ntasks=1 --nodelist=\$SCHED_NODE \\
-    apptainer exec \\
+# ─── 1. Dask scheduler on the local (first) node, background ────────────
+apptainer exec \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\
     ${DATA_BIND_FLAG} \\
     "${SIF}" \\
     dask scheduler \\
         --host 0.0.0.0 \\
         --port ${SCHED_PORT} \\
-        --dashboard-address :${DASHBOARD_PORT} &
+        --dashboard-address :${DASHBOARD_PORT} \\
+        > "\$HOME/.visivo_logs/dask_scheduler_\${SLURM_JOB_ID}.log" 2>&1 &
 SCHED_PID=\$!
 echo "[dask] Scheduler PID on \$SCHED_NODE: \$SCHED_PID"
 
 # ─── 2. Wait for the scheduler to accept connections ────────────────────
-# Use bash's built-in /dev/tcp pseudodevice — no extra srun step
-# required. We probe from the batch shell, which runs on node 0 where
-# the scheduler lives, so 'localhost' is correct.
 echo "[dask] Waiting for scheduler to be ready..."
 for attempt in \$(seq 1 60); do
     if (exec 3<>/dev/tcp/localhost/${SCHED_PORT}) 2>/dev/null; then
@@ -184,9 +187,8 @@ for attempt in \$(seq 1 60); do
     sleep 1
 done
 
-# ─── 3. Dask workers on every node (each node hosts ${WORKERS} workers) ─
-srun --overlap --nodes=\$SLURM_NNODES --ntasks-per-node=1 \\
-    apptainer exec \\
+# ─── 3a. Local dask workers (same node as scheduler), background ────────
+apptainer exec \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\
     ${DATA_BIND_FLAG} \\
     "${SIF}" \\
@@ -194,17 +196,37 @@ srun --overlap --nodes=\$SLURM_NNODES --ntasks-per-node=1 \\
         --nworkers ${WORKERS} \\
         --nthreads 1 \\
         --memory-limit auto \\
-        --local-directory /tmp &
-WORKER_PID=\$!
-echo "[dask] Workers PID (across all nodes): \$WORKER_PID"
+        --local-directory /tmp \\
+        > "\$HOME/.visivo_logs/dask_worker_\${SCHED_NODE}_\${SLURM_JOB_ID}.log" 2>&1 &
+LOCAL_WORKER_PID=\$!
+echo "[dask] Local workers on \$SCHED_NODE: PID \$LOCAL_WORKER_PID"
 
-# Give workers a few seconds to register.
+# ─── 3b. Remote dask workers on other nodes, via ssh + nohup ───────────
+# ssh between compute nodes inside the same SLURM allocation is allowed
+# by default; nohup detaches from our shell so the command keeps running
+# when the ssh exits.
+REMOTE_WORKER_PIDS=""
+for node in "\${NODELIST[@]:1}"; do
+    echo "[dask] Spawning workers on \$node via ssh..."
+    ssh -n -o StrictHostKeyChecking=no -o BatchMode=yes "\$node" \\
+        "nohup apptainer exec \\
+            --bind '${BIND_PATH}:${BIND_PATH}' \\
+            ${DATA_BIND_FLAG} \\
+            '${SIF}' \\
+            dask worker '\$SCHED_URL' \\
+                --nworkers ${WORKERS} \\
+                --nthreads 1 \\
+                --memory-limit auto \\
+                --local-directory /tmp \\
+                > \$HOME/.visivo_logs/dask_worker_\${node}_\${SLURM_JOB_ID}.log 2>&1 &"
+done
+
+# Give all workers a few seconds to register with the scheduler.
 sleep 10
 
-# ─── 4. Backend on node 0 (foreground; keeps the SLURM job alive) ──────
+# ─── 4. Backend on the local node, FOREGROUND (keeps the SLURM job alive)
 echo "[visivo] Starting backend on \$SCHED_NODE:${PORT} (with Dask scheduler at \$SCHED_URL)"
-srun --overlap --nodes=1 --ntasks=1 --nodelist=\$SCHED_NODE \\
-    apptainer run ${NV_FLAG} \\
+apptainer run ${NV_FLAG} \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\
     ${DATA_BIND_FLAG} \\
     --env VISIVO_TOKEN="${TOKEN}" \\
@@ -215,8 +237,10 @@ srun --overlap --nodes=1 --ntasks=1 --nodelist=\$SCHED_NODE \\
     ${DATA_ROOT_ENV} \\
     "${SIF}"
 
-# When backend exits, tear down scheduler + workers.
-kill \$WORKER_PID \$SCHED_PID 2>/dev/null || true
+# When the backend exits, tear down local scheduler + local workers.
+# Remote workers (ssh+nohup'd onto other nodes) are killed by SLURM
+# when the job allocation ends — no explicit cleanup needed for them.
+kill \$LOCAL_WORKER_PID \$SCHED_PID 2>/dev/null || true
 wait
 SLURM_EOF
 
