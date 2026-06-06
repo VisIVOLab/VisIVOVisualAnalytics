@@ -753,6 +753,7 @@ def _moment_map_dask(
     mask_threshold: float,
     mask_enabled: bool,
     chunk_z: int = 64,
+    dist_client: Any = None,
 ) -> dict[str, Any]:
     """Out-of-core moment computation via Dask arrays.
 
@@ -841,9 +842,20 @@ def _moment_map_dask(
     else:
         raise ValueError(f"Unsupported moment order for Dask path: {order}.")
 
-    image = da_result.compute(
-        scheduler="threads", num_workers=_n_moment_threads()
-    ).astype(np.float32)
+    # Distributed cluster path: dispatch the graph to all dask workers
+    # across all nodes. Each worker mmaps its own slab from the FITS file
+    # on the shared filesystem and computes a partial reduction; the
+    # final aggregation happens on the scheduler. On SKA-scale cubes the
+    # speedup is roughly linear in worker count until BeeGFS sequential
+    # throughput saturates.
+    if dist_client is not None:
+        image = dist_client.compute(da_result, sync=True).astype(np.float32)
+    else:
+        # Local fallback: in-process thread pool. Fine for small cubes
+        # and when no Dask cluster is configured.
+        image = da_result.compute(
+            scheduler="threads", num_workers=_n_moment_threads()
+        ).astype(np.float32)
 
     if not np.isfinite(image).any():
         raise ValueError("No valid voxels found for the selected moment parameters (dask path).")

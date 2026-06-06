@@ -567,6 +567,45 @@ async def _get_dask_client():
     return _DASK_CLIENT if _DASK_CLIENT else None
 
 
+# ── Sync Dask client for dask.array distributed compute ──────────────────────
+# The async client above is convenient for ``await client.submit(fn).result()``
+# task-level dispatch (one whole worker_moment per worker). For the
+# **chunked** path — ``dask.array.from_array(memmap).compute()`` — we need
+# a SYNCHRONOUS Client because the call originates from a thread spun up
+# by ``loop.run_in_executor`` and must block until the distributed graph
+# completes. We keep a second connection because mixing async and sync
+# client APIs on the same instance is fragile and the cost of a second
+# scheduler connection is negligible.
+_DASK_SYNC_CLIENT = None
+
+
+def _get_dask_client_sync():
+    """Lazy-init a sync ``distributed.Client`` for chunked dask.array work.
+
+    Returns ``None`` if Dask is unavailable / not configured / failed.
+    Safe to call from any thread; the first call initialises the connection.
+    """
+    global _DASK_SYNC_CLIENT
+    if _DASK_SYNC_CLIENT is None and _DASK_SCHEDULER:
+        try:
+            from dask.distributed import Client
+            _DASK_SYNC_CLIENT = Client(_DASK_SCHEDULER)
+            logger.info(
+                "Connected sync Dask client at %s for distributed dask.array work",
+                _DASK_SCHEDULER,
+            )
+        except ImportError:
+            _DASK_SYNC_CLIENT = False
+        except Exception as e:
+            logger.warning(
+                "Failed to create sync Dask client at %s: %s. "
+                "Chunked moment will fall back to in-process threads.",
+                _DASK_SCHEDULER, e,
+            )
+            _DASK_SYNC_CLIENT = False
+    return _DASK_SYNC_CLIENT if _DASK_SYNC_CLIENT else None
+
+
 async def _run(fn, *args) -> Any:
     """Run a CPU-bound function via Dask (if configured) or local ProcessPoolExecutor.
 
@@ -663,7 +702,7 @@ async def _run_heavy_with_limit(session: Session, fn, *args) -> Any:
 
 
 async def _moment_product_payload(entry: dict[str, Any], request: MomentProductRequest) -> tuple[dict[str, Any], bool]:
-    from .compute import worker_moment
+    from .compute import _moment_map_dask, worker_moment
 
     dataset = ScientificFitsDataset(entry["path"])
     cache_params = {
@@ -678,16 +717,36 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
     if cached is not None:
         return dict(cached.payload), True
 
-    # Heavy task — throttled so other interactive requests stay responsive.
-    result = await _run_heavy(
-        worker_moment,
-        dataset.path,
-        request.moment_order,
-        request.channel_start,
-        request.channel_end,
-        request.mask_enabled,
-        request.threshold_value,
-    )
+    # When a Dask cluster is configured, fan the work out across all
+    # workers via the chunked dask.array path. Each worker reads only
+    # its slab from the shared filesystem; the scheduler aggregates.
+    # Otherwise fall back to the single-task ProcessPoolExecutor path.
+    sync_client = _get_dask_client_sync()
+    if sync_client is not None and request.moment_order in {0, 1, 2, 3, 4, 5, 6, 8, 10}:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            _moment_map_dask,
+            dataset.path,
+            request.moment_order,
+            request.channel_start,
+            request.channel_end,
+            request.threshold_value,
+            request.mask_enabled,
+            64,           # chunk_z
+            sync_client,  # dist_client → distributed cluster
+        )
+    else:
+        # Heavy task — throttled so other interactive requests stay responsive.
+        result = await _run_heavy(
+            worker_moment,
+            dataset.path,
+            request.moment_order,
+            request.channel_start,
+            request.channel_end,
+            request.mask_enabled,
+            request.threshold_value,
+        )
     PRODUCT_CACHE.put(
         key=cache_key,
         operation="moment",
