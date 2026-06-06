@@ -144,8 +144,21 @@ SCHED_URL="tcp://\${SCHED_NODE}:${SCHED_PORT}"
 echo "[dask] Scheduler host: \$SCHED_NODE"
 echo "[dask] Scheduler URL:  \$SCHED_URL"
 
+# ─── Concurrent srun steps inside the same job ─────────────────────────
+# SLURM ≥ 22 requires --overlap on every srun step that wants to share
+# resources with another running step in the same job. Without it the
+# second srun blocks indefinitely waiting for step slots — that's why
+# job 856 hung at "Registering Worker plugin shuffle": the readiness
+# check srun could never get a slot while the scheduler srun was holding
+# node 0.
+#
+# We also stop using ``srun ... python3 -c "Client(...)"`` for the
+# readiness check (which itself contends for an srun step). A plain
+# bash /dev/tcp probe runs locally in the batch shell with zero
+# scheduling overhead.
+
 # ─── 1. Dask scheduler on node 0 (background) ───────────────────────────
-srun --nodes=1 --ntasks=1 --nodelist=\$SCHED_NODE \\
+srun --overlap --nodes=1 --ntasks=1 --nodelist=\$SCHED_NODE \\
     apptainer exec \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\
     ${DATA_BIND_FLAG} \\
@@ -158,20 +171,21 @@ SCHED_PID=\$!
 echo "[dask] Scheduler PID on \$SCHED_NODE: \$SCHED_PID"
 
 # ─── 2. Wait for the scheduler to accept connections ────────────────────
+# Use bash's built-in /dev/tcp pseudodevice — no extra srun step
+# required. We probe from the batch shell, which runs on node 0 where
+# the scheduler lives, so 'localhost' is correct.
 echo "[dask] Waiting for scheduler to be ready..."
-for attempt in \$(seq 1 30); do
-    if srun --nodes=1 --ntasks=1 --nodelist=\$SCHED_NODE \\
-            apptainer exec "${SIF}" \\
-            python3 -c "from dask.distributed import Client; Client('\$SCHED_URL', timeout=3); print('ok')" 2>/dev/null \\
-            | grep -q ok; then
+for attempt in \$(seq 1 60); do
+    if (exec 3<>/dev/tcp/localhost/${SCHED_PORT}) 2>/dev/null; then
+        exec 3<&- 3>&-
         echo "[dask] Scheduler ready after \$attempt attempt(s)."
         break
     fi
-    sleep 2
+    sleep 1
 done
 
 # ─── 3. Dask workers on every node (each node hosts ${WORKERS} workers) ─
-srun --nodes=\$SLURM_NNODES --ntasks-per-node=1 \\
+srun --overlap --nodes=\$SLURM_NNODES --ntasks-per-node=1 \\
     apptainer exec \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\
     ${DATA_BIND_FLAG} \\
@@ -189,7 +203,7 @@ sleep 10
 
 # ─── 4. Backend on node 0 (foreground; keeps the SLURM job alive) ──────
 echo "[visivo] Starting backend on \$SCHED_NODE:${PORT} (with Dask scheduler at \$SCHED_URL)"
-srun --nodes=1 --ntasks=1 --nodelist=\$SCHED_NODE \\
+srun --overlap --nodes=1 --ntasks=1 --nodelist=\$SCHED_NODE \\
     apptainer run ${NV_FLAG} \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\
     ${DATA_BIND_FLAG} \\
