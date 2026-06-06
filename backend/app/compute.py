@@ -390,17 +390,26 @@ def worker_cube_subvolume(
 
     raw_bytes = int(sub.nbytes)
     final_bytes = int(len(data_b64))
-    # Single log line, parseable later for offline analysis. Tag is
-    # ``[subvolume-timing]`` so we can grep it from the backend log.
-    logger.info(
-        "[subvolume-timing] roi=(%d..%d,%d..%d,%d..%d) "
-        "shape=(%d,%d,%d) raw=%.1fMB on_wire=%.1fMB "
-        "stages_s: open=%.2f read=%.2f range=%.2f encode=%.2f total=%.2f",
-        x0, x1, y0, y1, z0, z1,
-        int(sub.shape[0]), int(sub.shape[1]), int(sub.shape[2]),
-        raw_bytes / 1e6, final_bytes / 1e6,
-        t_open - t0, t_read - t_open, t_range - t_read, t_encode - t_range,
-        t_encode - t0,
+    # Use ``print(flush=True)`` instead of ``logger.info`` because:
+    #   1. When Dask dispatches this function, it runs in a dask worker
+    #      process whose root logger is NOT configured at INFO. Calls
+    #      to ``logger.info(...)`` are silently dropped.
+    #   2. ``print`` lands on the worker's stdout, which dask redirects
+    #      to the per-node worker log we already write to disk
+    #      (``~/.visivo_logs/dask_worker_<host>_<jobid>.log``).
+    # So this line is reliably grep-able regardless of where the
+    # function actually runs (backend process or distributed worker).
+    print(
+        "[subvolume-timing] roi=({},{},{},{},{},{}) "
+        "shape=({},{},{}) raw={:.1f}MB on_wire={:.1f}MB "
+        "stages_s: open={:.2f} read={:.2f} range={:.2f} encode={:.2f} total={:.2f}".format(
+            x0, x1, y0, y1, z0, z1,
+            int(sub.shape[0]), int(sub.shape[1]), int(sub.shape[2]),
+            raw_bytes / 1e6, final_bytes / 1e6,
+            t_open - t0, t_read - t_open, t_range - t_read, t_encode - t_range,
+            t_encode - t0,
+        ),
+        flush=True,
     )
     return {
         "width": int(sub.shape[2]),
