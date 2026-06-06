@@ -855,12 +855,61 @@ BackendCubeSliceResult BackendClient::requestSlice(const QString &datasetId, con
     return result;
 }
 
+// Synchronous POST that captures status code + response headers + raw body.
+// Mirrors performPost's token retry but exposes more of the reply because
+// the binary subvolume endpoint puts metadata in X-Visivo-* response
+// headers instead of a JSON envelope.
+// Returns the body; ``statusOut`` is the HTTP status code (0 on transport
+// error), ``headersOut`` is a snapshot of the response headers (lowercased
+// names → raw values), ``error`` is set on transport/timeout failures.
+static QByteArray performBinaryPost(QNetworkAccessManager *nam,
+                                    const QNetworkRequest &reqTemplate,
+                                    const QByteArray &bodyBytes,
+                                    int timeoutMs,
+                                    int &statusOut,
+                                    QMap<QByteArray, QByteArray> &headersOut,
+                                    QString &error)
+{
+    statusOut = 0;
+    headersOut.clear();
+    QNetworkRequest request = reqTemplate;
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+    QEventLoop loop;
+    QNetworkReply *reply = nam->post(request, bodyBytes);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    QTimer timeoutTimer;
+    timeoutTimer.setSingleShot(true);
+    bool timedOut = false;
+    QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, [&]() {
+        timedOut = true;
+        reply->abort();
+        loop.quit();
+    });
+    timeoutTimer.start(timeoutMs);
+    loop.exec();
+    timeoutTimer.stop();
+
+    const QByteArray body = reply->readAll();
+    statusOut = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    for (const auto &header : reply->rawHeaderPairs()) {
+        headersOut.insert(header.first.toLower(), header.second);
+    }
+    if (timedOut) {
+        error = QStringLiteral("Backend binary request timed out after %1 ms").arg(timeoutMs);
+    } else if (reply->error() != QNetworkReply::NoError && statusOut < 400) {
+        error = reply->errorString();
+    }
+    reply->deleteLater();
+    return body;
+}
+
+
 BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datasetId, int x0,
                                                            int x1, int y0, int y1, int z0,
                                                            int z1) const
 {
     BackendCubeSubvolumeResult result;
-    QString error;
     const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
                                           { QStringLiteral("x0"), x0 },
                                           { QStringLiteral("x1"), x1 },
@@ -868,6 +917,71 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
                                           { QStringLiteral("y1"), y1 },
                                           { QStringLiteral("z0"), z0 },
                                           { QStringLiteral("z1"), z1 } });
+    const QByteArray bodyBytes = body.toJson(QJsonDocument::Compact);
+
+    // ── 1) Try the binary endpoint first ───────────────────────────────
+    // /v1/cube/subvolume_bin returns raw little-endian float32 with
+    // metadata in X-Visivo-* headers. Eliminates base64 (saves ~30 s on
+    // a 1.6 GB SDC2 subcube) and zlib (which was actively HARMFUL on
+    // noise data — high entropy → no compression but ~50 s of CPU).
+    //
+    // Fallback to the JSON endpoint on:
+    //   - 404 (older backend without the binary route)
+    //   - any transport error  — keep the legacy path as a safety net.
+    {
+        const QUrl binUrl(m_baseUrl + QStringLiteral("/v1/cube/subvolume_bin"));
+        QNetworkAccessManager *nam = getThreadLocalNam();
+        QNetworkRequest req = buildRequest(binUrl);
+        if (!this->m_token.isEmpty()) {
+            req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), this->m_token.toUtf8());
+        }
+        int status = 0;
+        QMap<QByteArray, QByteArray> headers;
+        QString binError;
+        const QByteArray binBody =
+                performBinaryPost(nam, req, bodyBytes,
+                                  static_cast<int>(this->requestTimeoutFor(binUrl).count()),
+                                  status, headers, binError);
+        if (status == 200 && binError.isEmpty()) {
+            const auto hget = [&](const char *name) -> QByteArray {
+                return headers.value(QByteArray(name).toLower());
+            };
+            result.valid             = true;
+            result.error             = QString();
+            result.width             = hget("X-Visivo-Width").toInt();
+            result.height            = hget("X-Visivo-Height").toInt();
+            result.depth             = hget("X-Visivo-Depth").toInt();
+            result.scalarType        = QString::fromUtf8(hget("X-Visivo-Scalar-Type"));
+            result.rangeMin          = hget("X-Visivo-Range-Min").toDouble();
+            result.rangeMax          = hget("X-Visivo-Range-Max").toDouble();
+            result.spectralAxisType  = QString::fromUtf8(hget("X-Visivo-Spectral-Axis-Type"));
+            result.spectralAxisUnit  = QString::fromUtf8(hget("X-Visivo-Spectral-Axis-Unit"));
+            result.bunit             = QString::fromUtf8(hget("X-Visivo-Bunit"));
+            result.data              = binBody;
+            const qint64 expected =
+                    qint64(result.width) * qint64(result.height) * qint64(result.depth)
+                    * qint64(sizeof(float));
+            if (result.width > 0 && result.height > 0 && result.depth > 0
+                && expected == binBody.size()) {
+                return result;
+            }
+            // Size mismatch — log + fall through to JSON path (safer).
+            qWarning().noquote()
+                    << QStringLiteral("subvolume_bin size mismatch: got %1, expected %2 "
+                                      "(w=%3 h=%4 d=%5). Falling back to JSON.")
+                               .arg(binBody.size())
+                               .arg(expected)
+                               .arg(result.width)
+                               .arg(result.height)
+                               .arg(result.depth);
+            // Reset before fallback so the caller sees JSON result, not partial bin one.
+            result = BackendCubeSubvolumeResult{};
+        }
+        // status==404 → fallback. status>=400 (other) → also try JSON.
+    }
+
+    // ── 2) JSON fallback (legacy path) ─────────────────────────────────
+    QString error;
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/subvolume")), body, error);
     if (!error.isEmpty()) {
