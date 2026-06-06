@@ -2038,6 +2038,18 @@ std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) cons
     if (path.endsWith(QStringLiteral("/vlkb/fetch_cutout"))) {
         return std::chrono::milliseconds(300000); // FITS downloads can be large
     }
+    // Cube preview + subvolume can transfer multi-GB float32 payloads on
+    // SKA-scale datasets (10+ GB cubes, ROI crops up to a few GB). Even
+    // with backend-side zlib compression a 1.5 GB subvolume through an
+    // SSH tunnel can take 60-90 s steady-state. Bump these endpoints to
+    // 10 min so the operator doesn't see a spurious timeout while the
+    // tunnel is still streaming. Real performance work happens server-
+    // side (chunked dask reads, binary streaming) — this timeout is a
+    // safety net, not the optimisation.
+    if (path.endsWith(QStringLiteral("/cube/preview"))
+        || path.endsWith(QStringLiteral("/cube/subvolume"))) {
+        return std::chrono::milliseconds(600000); // 10 min
+    }
     return std::chrono::milliseconds(120000);
 }
 
