@@ -197,6 +197,14 @@ done
 # ─── 3a. Local dask workers (same node as scheduler), background ────────
 # Same PYTHONPATH=/app rationale as the scheduler: workers must be able
 # to import ``app.compute`` to execute the deserialised task graph.
+#
+# --memory-limit 0 disables Dask's own memory accounting. Without it,
+# ``--memory-limit auto`` reads psutil.virtual_memory() FROM INSIDE the
+# Apptainer container, which on this cluster returns ~10 GiB (some
+# cgroup limit invisible to SLURM's --mem flag). Divided by 4 workers,
+# each worker thinks it has only 2.43 GiB and the nanny kills it the
+# moment we mmap a 10 GB cube. We have 250 GB of real RAM per node,
+# so leaving memory pressure handling to the OS is fine.
 apptainer exec \\
     --env PYTHONPATH=/app \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\
@@ -205,7 +213,7 @@ apptainer exec \\
     dask worker "\$SCHED_URL" \\
         --nworkers ${WORKERS} \\
         --nthreads 1 \\
-        --memory-limit auto \\
+        --memory-limit 0 \\
         --local-directory /tmp \\
         > "\$HOME/.visivo_logs/dask_worker_\${SCHED_NODE}_\${SLURM_JOB_ID}.log" 2>&1 &
 LOCAL_WORKER_PID=\$!
@@ -227,7 +235,7 @@ for node in "\${NODELIST[@]:1}"; do
             dask worker '\$SCHED_URL' \\
                 --nworkers ${WORKERS} \\
                 --nthreads 1 \\
-                --memory-limit auto \\
+                --memory-limit 0 \\
                 --local-directory /tmp \\
                 > \$HOME/.visivo_logs/dask_worker_\${node}_\${SLURM_JOB_ID}.log 2>&1 &"
 done
