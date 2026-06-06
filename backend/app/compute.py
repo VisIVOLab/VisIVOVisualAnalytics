@@ -158,9 +158,17 @@ def _moment2_numba(
 # ── Encoding helpers ──────────────────────────────────────────────────────────
 
 
-def _qt_zlib_compress(raw: bytes) -> bytes:
-    """Prepend the uncompressed length as a 4-byte big-endian uint (Qt convention)."""
-    return len(raw).to_bytes(4, byteorder="big", signed=False) + zlib.compress(raw)
+def _qt_zlib_compress(raw: bytes, level: int = 6) -> bytes:
+    """Prepend the uncompressed length as a 4-byte big-endian uint (Qt convention).
+
+    ``level`` controls zlib's speed/ratio trade-off:
+      * 6 (default) — ~50 MB/s compress, ~60-70% ratio. Fine for small
+        payloads (slices, moment maps).
+      * 1 — ~150-200 MB/s compress, ~40-50% ratio. Use for multi-GB
+        payloads (subvolume, preview) where the per-MB compression time
+        dominates the bandwidth saved at higher levels.
+    """
+    return len(raw).to_bytes(4, byteorder="big", signed=False) + zlib.compress(raw, level)
 
 
 def _b64f32(array: np.ndarray) -> str:
@@ -171,14 +179,14 @@ def _b64i32(array: np.ndarray) -> str:
     return base64.b64encode(np.ascontiguousarray(array, dtype=np.int32).tobytes()).decode("ascii")
 
 
-def _b64f32_compressed(array: np.ndarray) -> tuple[str, str]:
+def _b64f32_compressed(array: np.ndarray, level: int = 6) -> tuple[str, str]:
     raw = np.ascontiguousarray(array, dtype=np.float32).tobytes()
-    return "qt-zlib", base64.b64encode(_qt_zlib_compress(raw)).decode("ascii")
+    return "qt-zlib", base64.b64encode(_qt_zlib_compress(raw, level)).decode("ascii")
 
 
-def _b64i32_compressed(array: np.ndarray) -> tuple[str, str]:
+def _b64i32_compressed(array: np.ndarray, level: int = 6) -> tuple[str, str]:
     raw = np.ascontiguousarray(array, dtype=np.int32).tobytes()
-    return "qt-zlib", base64.b64encode(_qt_zlib_compress(raw)).decode("ascii")
+    return "qt-zlib", base64.b64encode(_qt_zlib_compress(raw, level)).decode("ascii")
 
 
 def _finite_range(array: np.ndarray) -> tuple[float, float]:
@@ -294,6 +302,11 @@ def worker_cube_subvolume(
         spectral_axis_type = ""
         spectral_axis_unit = ""
 
+    # Compress the float32 voxel buffer with zlib level 1: on multi-GB
+    # subvolumes (10 GB cube, full-cube ROI) this turns a 25-40 s
+    # base64-over-SSH transfer into ~5-10 s, well under the client's
+    # 120 s HTTP timeout. Compression ratio ~40-50 % on HI noise data.
+    compression, data_b64 = _b64f32_compressed(sub, level=1)
     return {
         "width": int(sub.shape[2]),
         "height": int(sub.shape[1]),
@@ -304,7 +317,8 @@ def worker_cube_subvolume(
         "spectral_axis_type": spectral_axis_type,
         "spectral_axis_unit": spectral_axis_unit,
         "bunit": dataset.bunit or "",
-        "data_base64": _b64f32(sub),
+        "compression": compression,
+        "data_base64": data_b64,
     }
 
 
@@ -1448,6 +1462,11 @@ def worker_cube_preview(path: str, downsample: int) -> dict[str, Any]:
         hdul.close()
 
     range_min, range_max = _finite_range(preview)
+    # zlib level 1 — same speed-vs-ratio rationale as worker_cube_subvolume.
+    # For a 10 GB cube + downsample 4 the preview is ~170 MB; compression
+    # brings it to ~70-90 MB on the wire and shaves seconds off the tunnel
+    # transit on slow links.
+    compression, data_b64 = _b64f32_compressed(preview, level=1)
     return {
         "width": int(preview.shape[2]),
         "height": int(preview.shape[1]),
@@ -1455,7 +1474,8 @@ def worker_cube_preview(path: str, downsample: int) -> dict[str, Any]:
         "scalar_type": "float32",
         "range_min": range_min,
         "range_max": range_max,
-        "data_base64": _b64f32(preview),
+        "compression": compression,
+        "data_base64": data_b64,
     }
 
 
