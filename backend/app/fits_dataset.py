@@ -250,6 +250,21 @@ class ScientificFitsDataset:
                 freq_axes.append(axis)
         return bool(time_axes) and bool(freq_axes)
 
+    def _file_size_bytes_safe(self) -> int:
+        """Return the dataset file size in bytes, or 0 if unreadable.
+
+        ``self.path`` is a string; we use ``os.path.getsize`` rather than
+        a Path method to avoid AttributeError on non-Path inputs and to
+        keep the call cheap. Errors (file missing, race with deletion)
+        degrade to 0 — the recommended_load_mode falls back to
+        ``auto_full`` in that case, matching legacy behaviour.
+        """
+        import os as _os
+        try:
+            return int(_os.path.getsize(self.path))
+        except (OSError, TypeError):
+            return 0
+
     def _full_res_threshold_bytes(self) -> int:
         """Default 4 GiB; override with VISIVO_FULL_RES_THRESHOLD_BYTES.
 
@@ -336,16 +351,17 @@ class ScientificFitsDataset:
             # Client reads ``recommended_load_mode`` to decide whether to
             # auto-fetch full-resolution data or stay in preview-only mode
             # and ask the user explicitly. Threshold is configurable via
-            # the env var; the default 4 GiB is empirically the size above
-            # which a 16 GB-RAM laptop starts thrashing on VTK volume
-            # rendering of an HI cube.
-            "file_size_bytes": int(self.path.stat().st_size)
-                if self.path and self.path.exists() else 0,
+            # VISIVO_FULL_RES_THRESHOLD_BYTES; the default 4 GiB is
+            # empirically the size above which a 16 GB-RAM laptop starts
+            # thrashing on VTK volume rendering of an HI cube.
+            #
+            # NOTE: ``self.path`` is a string (``str(Path(path))``), not a
+            # Path. We use ``os.path.getsize`` to avoid an AttributeError.
+            "file_size_bytes": self._file_size_bytes_safe(),
             "full_res_threshold_bytes": self._full_res_threshold_bytes(),
             "recommended_load_mode": (
                 "preview_only"
-                if (self.path and self.path.exists()
-                    and self.path.stat().st_size >= self._full_res_threshold_bytes())
+                if self._file_size_bytes_safe() >= self._full_res_threshold_bytes()
                 else "auto_full"
             ),
         }

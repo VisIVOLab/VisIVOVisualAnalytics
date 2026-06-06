@@ -50,6 +50,7 @@ PORT="${VISIVO_PORT:-8000}"
 BIND_PATH="${VISIVO_BIND:-$HOME}"
 DATA_ROOT="${VISIVO_DATA_ROOT:-}"
 SIF="${VISIVO_SIF:-$(dirname "$0")/../apptainer/backend.sif}"
+BACKEND_SRC="${VISIVO_BACKEND_SRC_OVERRIDE:-}"
 TOKEN="${VISIVO_TOKEN:-}"
 LOG_DIR="${VISIVO_LOG_DIR:-$HOME/.visivo_logs}"
 USE_GPU=true
@@ -68,6 +69,7 @@ while [[ $# -gt 0 ]]; do
         --bind)      BIND_PATH="$2"; shift 2 ;;
         --data-root) DATA_ROOT="$2"; shift 2 ;;
         --sif)       SIF="$2";       shift 2 ;;
+        --backend-src) BACKEND_SRC="$2"; shift 2 ;;
         --token)     TOKEN="$2";     shift 2 ;;
         --no-gpu)    USE_GPU=false; GRES=""; shift ;;
         --help|-h)
@@ -122,6 +124,22 @@ fi
 
 NV_FLAG=""
 if [[ "$USE_GPU" == "true" ]]; then NV_FLAG="--nv"; fi
+
+# Optional: bind a host backend/app dir over /app/app inside the
+# container, so the operator can iterate on the Python code without
+# rebuilding the .sif. Applied to every apptainer invocation in the
+# job (scheduler exec, local worker exec, ssh-spawned remote worker
+# exec, and the backend run). The ssh-spawned workers receive the
+# bind via the same shell-expanded ${SRC_BIND_FLAG}.
+SRC_BIND_FLAG=""
+if [[ -n "$BACKEND_SRC" ]]; then
+    if [[ ! -d "$BACKEND_SRC" ]]; then
+        echo "[visivo] ERROR: --backend-src directory not found: $BACKEND_SRC" >&2
+        exit 1
+    fi
+    SRC_BIND_FLAG="--bind ${BACKEND_SRC}:/app/app"
+    echo "[visivo] Overlaying /app/app with host source: $BACKEND_SRC"
+fi
 
 # Dask scheduler / workers Dashboard port (informational). Pick a value
 # unlikely to collide with system services.
