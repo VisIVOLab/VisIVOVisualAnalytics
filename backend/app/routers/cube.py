@@ -76,7 +76,12 @@ async def cube_slice(
         path = _require_cube_path(session, request.dataset_id)
         if request.axis.lower() != "z":
             raise HTTPException(422, "Only axis='z' is currently supported.")
-        result = await _run_with_limit(session, worker_cube_slice, path, request.index)
+        # Channel scrubbing must feel instantaneous (<200 ms). Bypass both
+        # Dask (overhead ~100-500 ms + queueing behind in-flight slabs/
+        # moments) AND the per-session task slot limit (which would 429
+        # rapid scroll bursts). Slice work is a 1.7 MB single-plane read
+        # — runs comfortably in the local ProcessPoolExecutor.
+        result = await _run_interactive(worker_cube_slice, path, request.index)
     except HTTPException:
         raise
     except Exception as exc:

@@ -269,7 +269,7 @@ __all__ = [
     "_normalize_catalogue_field", "_catalogue_field_type",
     "_catalogue_metadata_from_dataframe", "_catalogue_csv_metadata",
     "_catalogue_load_dataframe", "_catalogue_metadata",
-    "_get_dask_client", "_run", "_run_with_limit",
+    "_get_dask_client", "_run", "_run_interactive", "_run_with_limit",
     "_run_heavy", "_run_heavy_with_limit",
     "_moment_product_payload", "_pv_product_payload",
     "_require_dataset", "_require_cube_path", "_fits_metadata",
@@ -621,6 +621,25 @@ async def _run(fn, *args) -> Any:
     else:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(_POOL, fn, *args)
+
+
+async def _run_interactive(fn, *args) -> Any:
+    """Run a small, latency-sensitive task **always** in the local pool.
+
+    Unlike :func:`_run`, this never routes through Dask. Reason: Dask
+    submit/return overhead for tiny tasks (~100-500 ms baseline) plus
+    queueing behind in-flight bulk jobs (subvolume slabs, moment chunks)
+    can balloon a 200 ms slice fetch to 20 s+ of perceived latency on
+    a busy cluster.
+
+    Use this for **interactive** endpoints where the operator's mental
+    model is "as fast as a local read":
+      * /v1/cube/slice — channel scrubbing
+      * /v1/image/preview — single-channel display
+      * (potentially) probe, ROI stats during cursor drag
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_POOL, fn, *args)
 
 
 # ── Heavy-task throttle ──────────────────────────────────────────────────────
