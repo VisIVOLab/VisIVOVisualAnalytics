@@ -274,22 +274,26 @@ def worker_cube_subvolume_raw(
 ) -> dict[str, Any]:
     """Binary-streaming variant of :func:`worker_cube_subvolume`.
 
-    Returns the same metadata BUT the voxel buffer is a raw
-    ``bytes`` value (``raw_bytes``) — already zlib-compressed with
-    the 4-byte Qt-convention length prefix — instead of a base64
-    string in JSON. The endpoint that wraps this worker streams
-    ``raw_bytes`` directly as the HTTP body with metadata in
-    response headers.
+    Returns the metadata as usual BUT the voxel buffer is a raw
+    little-endian float32 ``bytes`` value (``raw_bytes``) — NO base64
+    wrapping, NO compression. The wrapping route streams this body
+    directly with metadata in response headers.
 
-    Saves vs. ``worker_cube_subvolume``:
-      * No base64 encoding (-33% bandwidth, -25% CPU on multi-GB).
-      * No JSON wrapping (-20-30% CPU on encode + parse).
-      * Stream-able by FastAPI / starlette without ever fully
-        materialising the response body in str form.
+    Why NO compression: empirically zlib level 1 on HI cube noise
+    achieved ~5% compression (1655 MB → 2055 MB after base64) while
+    spending ~50 s of single-CPU time. The encoding pipeline became
+    the bottleneck (81 s of the 82 s end-to-end). On noise-dominated
+    float32 data zlib effectively cannot save bandwidth, only spend
+    it. Skipping compression and base64 together turns a ~80 s
+    pipeline into ~5-10 s of pure memcpy + transport.
 
-    Net wall-clock on a 1.2 GB SDC2 subcube through the Power9 SSH
-    tunnel: ~15-20 s end-to-end vs. the 60-120 s JSON+base64 path.
+    Why NOT use Dask: the data path is read-once, no compute. The
+    monolithic ProcessPoolExecutor task is simpler and avoids the
+    pickle-the-1.6-GB-result-across-cluster overhead.
     """
+    import time as _time
+    t0 = _time.perf_counter()
+
     dataset = ScientificFitsDataset(path)
     hdul, raw = dataset.open_memmap()
     try:
@@ -303,6 +307,7 @@ def worker_cube_subvolume_raw(
         if x0 > x1 or y0 > y1 or z0 > z1:
             raise ValueError("Invalid subvolume ROI.")
         sub = np.asarray(data[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1], dtype=np.float32)
+        t_read = _time.perf_counter()
     finally:
         hdul.close()
 
@@ -315,10 +320,21 @@ def worker_cube_subvolume_raw(
         spectral_axis_type = ""
         spectral_axis_unit = ""
 
-    # Raw float32 → qt-zlib (level 1 for speed on multi-GB).
-    raw_bytes = _qt_zlib_compress(
-        np.ascontiguousarray(sub, dtype=np.float32).tobytes(),
-        level=1,
+    # Raw little-endian float32 bytes — what numpy stores natively
+    # on x86 / ppc64le. No base64, no compression. The wrapping route
+    # streams this as ``application/octet-stream``.
+    raw_bytes = np.ascontiguousarray(sub, dtype=np.float32).tobytes()
+    t_bytes = _time.perf_counter()
+    print(
+        "[subvolume-bin-timing] roi=({},{},{},{},{},{}) "
+        "shape=({},{},{}) raw={:.1f}MB "
+        "stages_s: read={:.2f} tobytes={:.2f} total={:.2f}".format(
+            x0, x1, y0, y1, z0, z1,
+            int(sub.shape[0]), int(sub.shape[1]), int(sub.shape[2]),
+            len(raw_bytes) / 1e6,
+            t_read - t0, t_bytes - t_read, t_bytes - t0,
+        ),
+        flush=True,
     )
     return {
         "width": int(sub.shape[2]),
@@ -330,7 +346,6 @@ def worker_cube_subvolume_raw(
         "spectral_axis_type": spectral_axis_type,
         "spectral_axis_unit": spectral_axis_unit,
         "bunit": dataset.bunit or "",
-        "compression": "qt-zlib",
         "raw_bytes": raw_bytes,
     }
 
@@ -381,11 +396,15 @@ def worker_cube_subvolume(
         spectral_axis_type = ""
         spectral_axis_unit = ""
 
-    # Compress the float32 voxel buffer with zlib level 1: on multi-GB
-    # subvolumes (10 GB cube, full-cube ROI) this turns a 25-40 s
-    # base64-over-SSH transfer into ~5-10 s, well under the client's
-    # 120 s HTTP timeout. Compression ratio ~40-50 % on HI noise data.
-    compression, data_b64 = _b64f32_compressed(sub, level=1)
+    # Empirical finding: zlib (level 1) on float32 HI-cube noise data
+    # achieves ~5 % compression (1655 MB → 2055 MB after base64) while
+    # spending ~50 s of single-CPU time on a 1.6 GB subcube. Noise is
+    # high-entropy; zlib finds no patterns and just adds overhead.
+    # We skip compression entirely on this endpoint and pay only the
+    # base64 cost (~25-30 s on 1.6 GB). For real speedup the operator
+    # should adopt /v1/cube/subvolume_bin which skips base64 too.
+    data_b64 = _b64f32(sub)
+    compression = ""
     t_encode = _time.perf_counter()
 
     raw_bytes = int(sub.nbytes)

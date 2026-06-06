@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 from typing import Any
 import uuid
@@ -105,6 +105,59 @@ async def cube_subvolume(
     except Exception as exc:
         return CubeSubvolumeResponse(valid=False, error=str(exc))
     return CubeSubvolumeResponse(valid=True, error="", **result)
+
+
+# ── Binary-streaming variant ──────────────────────────────────────────────
+# Same semantics as /v1/cube/subvolume but the voxel buffer is streamed as
+# raw little-endian float32 bytes (Content-Type: application/octet-stream),
+# with metadata in custom X-Visivo-* response headers. Eliminates the
+# base64 + zlib encoding pipeline that empirically dominates wall-time on
+# multi-GB payloads (~80 s on a 1.6 GB SDC2 subcube vs ~5-10 s here).
+@router.post("/v1/cube/subvolume_bin", tags=["cube"])
+async def cube_subvolume_bin(
+    request: CubeSubvolumeRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    from ..compute import worker_cube_subvolume_raw
+    try:
+        path = _require_cube_path(session, request.dataset_id)
+        result = await _run_with_limit(
+            session,
+            worker_cube_subvolume_raw,
+            path,
+            request.x0, request.x1,
+            request.y0, request.y1,
+            request.z0, request.z1,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return Response(
+            content=str(exc).encode("utf-8"),
+            media_type="text/plain",
+            status_code=500,
+        )
+
+    raw_bytes: bytes = result["raw_bytes"]
+    headers = {
+        "X-Visivo-Width": str(result["width"]),
+        "X-Visivo-Height": str(result["height"]),
+        "X-Visivo-Depth": str(result["depth"]),
+        "X-Visivo-Scalar-Type": str(result["scalar_type"]),
+        "X-Visivo-Range-Min": repr(float(result["range_min"])),
+        "X-Visivo-Range-Max": repr(float(result["range_max"])),
+        "X-Visivo-Spectral-Axis-Type": str(result.get("spectral_axis_type", "")),
+        "X-Visivo-Spectral-Axis-Unit": str(result.get("spectral_axis_unit", "")),
+        "X-Visivo-Bunit": str(result.get("bunit", "")),
+        "X-Visivo-Byte-Order": "little",
+        "Content-Length": str(len(raw_bytes)),
+    }
+    return Response(
+        content=raw_bytes,
+        media_type="application/octet-stream",
+        headers=headers,
+    )
 
 # ── Sub-cube extraction (crop ROI → new FITS dataset) ───────────────────────
 # Inputs are inclusive 0-indexed pixel/channel ranges (same convention as
