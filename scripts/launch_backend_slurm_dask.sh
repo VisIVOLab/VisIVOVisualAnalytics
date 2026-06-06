@@ -164,7 +164,14 @@ echo "[dask] Scheduler URL:  \$SCHED_URL"
 #      workers.
 
 # ─── 1. Dask scheduler on the local (first) node, background ────────────
+# PYTHONPATH=/app is REQUIRED so the scheduler can deserialise task graphs
+# submitted by the backend (which reference ``app.compute.worker_*``).
+# Without it, the scheduler raises ``ModuleNotFoundError: No module named
+# 'app'`` on every client.submit() and tasks fail silently with no
+# results — symptomatic of "task graph deserialisation" errors in the
+# scheduler log.
 apptainer exec \\
+    --env PYTHONPATH=/app \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\
     ${DATA_BIND_FLAG} \\
     "${SIF}" \\
@@ -188,7 +195,10 @@ for attempt in \$(seq 1 60); do
 done
 
 # ─── 3a. Local dask workers (same node as scheduler), background ────────
+# Same PYTHONPATH=/app rationale as the scheduler: workers must be able
+# to import ``app.compute`` to execute the deserialised task graph.
 apptainer exec \\
+    --env PYTHONPATH=/app \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\
     ${DATA_BIND_FLAG} \\
     "${SIF}" \\
@@ -210,6 +220,7 @@ for node in "\${NODELIST[@]:1}"; do
     echo "[dask] Spawning workers on \$node via ssh..."
     ssh -n -o StrictHostKeyChecking=no -o BatchMode=yes "\$node" \\
         "nohup apptainer exec \\
+            --env PYTHONPATH=/app \\
             --bind '${BIND_PATH}:${BIND_PATH}' \\
             ${DATA_BIND_FLAG} \\
             '${SIF}' \\
