@@ -252,29 +252,36 @@ def build_volume_pipeline(image_data, vmin: float, vmax: float):
 
 
 def install_render_watchdog(timeout_s: int = 30) -> None:
-    """Abort with a stack trace if Render() doesn't return in time.
+    """Kill the process from a separate thread if Render() doesn't return.
 
-    vtkEGLRenderWindow can hang indefinitely on this cluster when the
-    driver's EGL context creation conflicts with libglvnd's vendor
-    selection. Without a watchdog the spike just hangs and gives us
-    zero signal — with one, SIGALRM fires after ``timeout_s`` and the
-    Python traceback shows EXACTLY which line is stuck (almost always
-    a libvtkRenderingOpenGL2 → libEGL_nvidia symbol).
+    SIGALRM doesn't get through while VTK is in a long C call (Python
+    holds the signal until the next opcode, which never runs). A daemon
+    thread that just sleeps + os._exit bypasses the GIL entirely — the
+    kill always lands.
     """
-    import signal
-    import traceback as _tb
+    import os as _os
+    import threading
+    import time as _time
 
-    def _handler(signum, frame):
-        print(f"\n[spike] FATAL: render watchdog fired after {timeout_s}s. "
-              f"Current stack trace:", flush=True)
-        _tb.print_stack(frame)
-        # Bail out hard — the C-level EGL call is not interruptible from
-        # Python so a regular raise would just sit there.
-        import os as _os
+    def _killer():
+        _time.sleep(timeout_s)
+        print(
+            f"\n[spike] FATAL: render watchdog fired after {timeout_s}s — "
+            f"Render() is hung inside C code. Killing the process.\n"
+            f"        Recommended next steps:\n"
+            f"          1. Open a second SSH to the SAME compute node,\n"
+            f"             then  pgrep -af spike_egl_volume.py\n"
+            f"             gdb -p <PID> -batch -ex 'thread apply all bt' | head -80\n"
+            f"          2. The top stack frame names the libEGL_nvidia /\n"
+            f"             libvtkRenderingOpenGL2 function that is stuck —\n"
+            f"             eglChooseConfig / eglCreateContext / eglMakeCurrent\n"
+            f"             are the usual suspects.",
+            flush=True,
+        )
         _os._exit(3)
 
-    signal.signal(signal.SIGALRM, _handler)
-    signal.alarm(timeout_s)
+    t = threading.Thread(target=_killer, daemon=True, name="spike-watchdog")
+    t.start()
 
 
 def save_png(window, output_path: str) -> None:
