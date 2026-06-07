@@ -70,21 +70,43 @@ echo
 
 # Pre-flight ldconfig probe — same as run_spike.sh, gives us
 # "before" / "after" comparison.
-echo "[spike-egl] Pre-flight inside container (with explicit NV binds)"
-apptainer exec --nv "${NV_BINDS[@]}" "$SIF" bash -c '
+echo "[spike-egl] Pre-flight inside container (with explicit NV binds + LD_LIBRARY_PATH)"
+apptainer exec --nv "${NV_BINDS[@]}" \
+    --env LD_LIBRARY_PATH=/usr/lib64 \
+    "$SIF" bash -c '
+    # Probe both filesystem presence and ldconfig visibility.
+    echo "  /usr/lib64/libEGL_nvidia.so.0 file: $(test -e /usr/lib64/libEGL_nvidia.so.0 && echo yes || echo no)"
     echo "  ldconfig: libEGL_nvidia     → $(ldconfig -p | grep -c libEGL_nvidia.so 2>/dev/null || echo 0) entries"
-    echo "  ldconfig: libEGL            → $(ldconfig -p | grep -c "libEGL\.so" 2>/dev/null || echo 0) entries"
     echo "  ldconfig: libGLX_nvidia     → $(ldconfig -p | grep -c libGLX_nvidia.so 2>/dev/null || echo 0) entries"
+    # The real test: can python dlopen libEGL_nvidia.so.0? libglvnd
+    # does this internally when the EGL window is created; if it
+    # fails, EGLs Render() hangs forever (no fallback path).
+    python3 -c "
+import ctypes, sys
+try:
+    ctypes.CDLL(\"libEGL_nvidia.so.0\")
+    print(\"  dlopen libEGL_nvidia.so.0: OK\")
+except OSError as e:
+    print(f\"  dlopen libEGL_nvidia.so.0: FAILED — {e}\")
+    sys.exit(0)
+"
     echo "  vendor JSON visible         : $([ -f /usr/share/glvnd/egl_vendor.d/10_nvidia.json ] && echo yes || echo no)"
 '
 echo
 
 echo "[spike-egl] Running EGL volume-render spike..."
+# CRITICAL: bind targets are /usr/lib64/* (RHEL convention) but the
+# container is Debian, which searches /usr/lib/powerpc64le-linux-gnu
+# instead. ldconfig inside the container does NOT find the bound
+# libs → libglvnd can't dlopen them → EGL Render() hangs forever.
+# Explicit LD_LIBRARY_PATH overrides the cache and forces dlopen to
+# look in /usr/lib64 first.
 apptainer exec --nv \
     "${NV_BINDS[@]}" \
     --bind "$DATA_ROOT:$DATA_ROOT" \
     --bind "$(dirname "$SPIKE"):$(dirname "$SPIKE")" \
     --env PYTHONPATH=/app \
+    --env LD_LIBRARY_PATH=/usr/lib64 \
     --env __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json \
     "$SIF" \
     python3 "$SPIKE" "$FITS" "$OUT"
