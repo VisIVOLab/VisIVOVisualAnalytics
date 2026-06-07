@@ -471,16 +471,32 @@ print(f'[test] Architecture: {platform.machine()}')
 print(f'[test] Python: {sys.version.split()[0]}')
 print(f'[test] Auth module OK. Token length: {len(TOKEN)}')
 
-# EGL-specific probes — what differs from the X11 build.
+# EGL-specific probes — what differs from the X11 build. In VTK 9.3
+# vtkEGLRenderWindow lives inside vtkRenderingOpenGL2 (conditional on
+# the VTK_OPENGL_HAS_EGL build flag), NOT in a separate vtkRenderingEGL
+# submodule. We probe both paths for forward+backward compatibility.
 import vtk
 print(f'[test] vtk {vtk.VTK_VERSION}')
-from vtkmodules.vtkRenderingEGL import vtkEGLRenderWindow
-print('[test] vtkRenderingEGL.vtkEGLRenderWindow importable → ✓')
+
+EGL_class = None
+for path in ('vtkmodules.vtkRenderingOpenGL2', 'vtkmodules.vtkRenderingEGL'):
+    try:
+        mod = __import__(path, fromlist=['vtkEGLRenderWindow'])
+        EGL_class = getattr(mod, 'vtkEGLRenderWindow', None)
+        if EGL_class is not None:
+            print(f'[test] vtkEGLRenderWindow imported from {path} → ✓')
+            break
+    except ImportError as e:
+        print(f'[test] {path} not importable: {e}')
+
+if EGL_class is None:
+    print('[test] FATAL: vtkEGLRenderWindow not in any expected module')
+    sys.exit(1)
 
 # Try to instantiate (but do NOT call Render — at build time we have
 # no GPU; --nv runtime supplies it). The constructor's call to
 # eglGetDisplay can succeed with EGL_NO_DISPLAY in a CI/build env.
-win = vtkEGLRenderWindow()
+win = EGL_class()
 win.SetOffScreenRendering(1)
 print(f'[test] Created vtkEGLRenderWindow offscreen instance: {type(win).__name__}')
 
