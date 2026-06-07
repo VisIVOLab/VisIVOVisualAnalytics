@@ -37,6 +37,11 @@ class SidebarPanel;
 class CatalogueTableModel;
 class QDockWidget;
 class QLabel;
+class QNetworkAccessManager;
+class QNetworkReply;
+class QStackedWidget;
+class QToolButton;
+class RemoteRenderWidget;
 class LUTCustomizerDialog;
 class ProfileWidget;
 class PvDiagramWidget;
@@ -169,6 +174,15 @@ public:
     /// Call after construction; the beam ellipse is drawn in the 2D slice
     /// renderer's bottom-left corner. Pass NaN major to hide the indicator.
     void setBeamInfo(double majorDeg, double minorDeg, double paDeg);
+
+    // ── Server-side rendering (SSR, Phase 2) ──────────────────────────────────
+    // The 3D viewport can either run locally (the existing
+    // QVTKOpenGLNativeWidget pipeline) or be served by an EGL-equipped
+    // backend over a WebSocket. The choice is exposed in the View →
+    // Rendering submenu (Auto / Local / Remote) and surfaced to the user
+    // via a dismissible banner above the 3D view + a status-bar badge
+    // showing the current mode and (when remote) the live FPS.
+    enum class RenderMode { Auto, Local, Remote };
 
 private slots:
     void resetCameraFront();
@@ -909,6 +923,42 @@ private:
     bool showWcsAxes{ true };
     void applyMomentMapResult(const MomentMapApplyResult &result);
     bool isBusy() const;
+
+    // ── Server-side rendering plumbing ────────────────────────────────────────
+    // The 3D viewport widget is wrapped in a QStackedWidget with two pages:
+    //   page 0 → ui->vtkCube                (Local — existing pipeline)
+    //   page 1 → m_remoteRenderContainer    (Remote — banner + RemoteRenderWidget)
+    // We swap the visible page on mode change; nothing else in the cube viewer
+    // (slice fetch, moment compute, region tools, …) changes — slices and
+    // products keep flowing over the existing REST endpoints, only the 3D
+    // pixels switch transport.
+    QStackedWidget       *m_renderStack{ nullptr };
+    QWidget              *m_remoteRenderContainer{ nullptr };
+    RemoteRenderWidget   *m_remoteRenderWidget{ nullptr };
+    QLabel               *m_remoteRenderBannerLabel{ nullptr };
+    QToolButton          *m_remoteRenderBannerClose{ nullptr };
+    QLabel               *m_renderModeBadge{ nullptr };  // status-bar pill
+    QLabel               *m_renderFpsBadge{ nullptr };   // status-bar FPS
+    QAction              *m_actionRenderAuto{ nullptr };
+    QAction              *m_actionRenderLocal{ nullptr };
+    QAction              *m_actionRenderRemote{ nullptr };
+    RenderMode            m_renderMode{ RenderMode::Auto };
+    RenderMode            m_effectiveRenderMode{ RenderMode::Local };
+    QString               m_renderSessionId;  // valid only while in Remote mode
+    QNetworkAccessManager *m_renderNam{ nullptr };
+    // True once we have either confirmed that the backend can do SSR or
+    // confirmed that it cannot — used to suppress repeat probes.
+    bool                  m_renderBackendProbed{ false };
+    bool                  m_renderBackendSupportsSsr{ false };
+
+    void setupRenderModeUi();
+    void applyRenderMode(RenderMode requested, bool fromUserAction);
+    void requestRemoteRenderSession();
+    void releaseRemoteRenderSession();
+    void onRemoteRenderConnectionStateChanged(const QString &state);
+    void onRemoteRenderFpsChanged(double fps);
+    void updateRenderModeBadges();
+
     void setRemoteCubeDisplayState(RemoteCubeDisplayState state);
     void showPersistentStatusMessage(const QString &text, int minDurationMs = 400);
     void clearPersistentStatusMessage();

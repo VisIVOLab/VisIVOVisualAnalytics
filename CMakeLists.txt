@@ -452,6 +452,24 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
         MACOSX_BUNDLE TRUE
 )
 
+# ── Standalone tool: SSR/RemoteRenderWidget test harness ────────────────────
+# Talks to a backend over WebSocket, no full VisIVO UI involved. Built
+# as a separate executable so it can be iterated quickly while the
+# main app is also under development. Not bundled into the .dmg.
+qt_add_executable(test_remote_render
+        tools/test_remote_render.cpp
+        src/gui/RemoteRenderWidget.cpp
+        src/gui/RemoteRenderWidget.h
+)
+target_link_libraries(test_remote_render PRIVATE
+        Qt::Widgets
+        Qt::Network
+        Qt::WebSockets
+)
+set_target_properties(test_remote_render PROPERTIES
+        MACOSX_BUNDLE FALSE   # plain command-line binary
+)
+
 install(TARGETS ${PROJECT_NAME}
         BUNDLE DESTINATION .
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

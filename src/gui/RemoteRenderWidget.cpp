@@ -14,7 +14,13 @@
 using namespace std::chrono_literals;
 
 namespace {
-constexpr double kRotateSensitivity = 0.5;   // degrees per drag pixel
+// VTK's vtkInteractorStyleTrackballCamera converts ~1° per drag pixel
+// at default sensitivity and then scales by the renderer's
+// MotionFactor (default 10) divided by the window height/width — a
+// sensible empirical match for a 1024 px wide window is ~0.15 °/px.
+// The previous 0.5 felt "stuck on a fast-spin axis" against the local
+// VTK widget's feel.
+constexpr double kRotateSensitivity = 0.15;
 constexpr double kPanSensitivity    = 1.0;
 constexpr double kZoomPerNotch      = 1.1;
 } // namespace

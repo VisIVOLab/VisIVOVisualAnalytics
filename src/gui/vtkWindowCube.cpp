@@ -22,6 +22,7 @@
 #include "ProfileWidget.h"
 #include "PvController.h"
 #include "PvDiagramWidget.h"
+#include "RemoteRenderWidget.h"
 #include "SidebarPanel.h"
 #include "app/BackendClient.h"
 #include "app/DiagnosticsManager.h"
@@ -123,6 +124,13 @@
 #include <QMetaObject>
 #include <QMenu>
 #include <QMessageBox>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QStackedWidget>
+#include <QTimer>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -1604,6 +1612,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     ui->menuView->addAction(this->actionResetLayout);
     QObject::connect(this->actionResetLayout, &QAction::triggered,
                      this, &vtkWindowCube::resetWorkspaceLayout);
+
+    // ── View → Rendering submenu (SSR mode toggle) ────────────────────────────
+    this->setupRenderModeUi();
 
     // ── Volume Rendering submenu ──────────────────────────────────────────
     ui->menuView->addSeparator();
@@ -3905,7 +3916,59 @@ void vtkWindowCube::setupWorkspaceDocks()
     // ── 3D View dock ─────────────────────────────────────────────────────────
     auto *dockCube = new QDockWidget(u"3D View"_s, this);
     dockCube->setObjectName(u"dockCubeView"_s);
-    dockCube->setWidget(ui->vtkCube);          // reparents vtkCube into the dock
+
+    // The dock wraps a QStackedWidget so the user can flip between the
+    // local QVTKOpenGLNativeWidget pipeline and a server-rendered JPEG
+    // stream. ui->vtkCube becomes page 0 (Local); page 1 (Remote) is
+    // a container with a dismissible banner above the RemoteRenderWidget.
+    this->m_renderStack = new QStackedWidget(dockCube);
+    this->m_renderStack->addWidget(ui->vtkCube);   // page 0 — Local
+
+    this->m_remoteRenderContainer = new QWidget(this->m_renderStack);
+    auto *remoteLayout = new QVBoxLayout(this->m_remoteRenderContainer);
+    remoteLayout->setContentsMargins(0, 0, 0, 0);
+    remoteLayout->setSpacing(0);
+
+    // Banner: amber strip with a label + close button. The close ("×")
+    // sends the user back to Local rendering; we do NOT delete the
+    // session — switching back to Remote later reuses it without paying
+    // the EGL warm-up cost again.
+    auto *banner = new QFrame(this->m_remoteRenderContainer);
+    banner->setObjectName(u"remoteRenderBanner"_s);
+    banner->setStyleSheet(
+            u"QFrame#remoteRenderBanner {"
+            u"  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            u"      stop:0 rgba(245, 158, 11, 0.22),"
+            u"      stop:1 rgba(217, 119, 6, 0.16));"
+            u"  border-bottom: 1px solid rgba(217, 119, 6, 0.40);"
+            u"}"
+            u"QFrame#remoteRenderBanner QLabel { color: #f3f4f6; padding: 4px 8px; }"
+            u"QFrame#remoteRenderBanner QToolButton {"
+            u"  border: none; color: #f3f4f6; padding: 0 8px; font-weight: 600;"
+            u"}"
+            u"QFrame#remoteRenderBanner QToolButton:hover {"
+            u"  background: rgba(255, 255, 255, 0.10); border-radius: 3px;"
+            u"}"_s);
+    auto *bannerLayout = new QHBoxLayout(banner);
+    bannerLayout->setContentsMargins(8, 2, 4, 2);
+    bannerLayout->setSpacing(8);
+    this->m_remoteRenderBannerLabel = new QLabel(
+            u"Remote rendering (GPU on backend) — click ✕ to switch to Local"_s,
+            banner);
+    bannerLayout->addWidget(this->m_remoteRenderBannerLabel, 1);
+    this->m_remoteRenderBannerClose = new QToolButton(banner);
+    this->m_remoteRenderBannerClose->setText(u"✕"_s);
+    this->m_remoteRenderBannerClose->setToolTip(u"Switch to Local rendering"_s);
+    bannerLayout->addWidget(this->m_remoteRenderBannerClose);
+    remoteLayout->addWidget(banner);
+
+    this->m_remoteRenderWidget = new RemoteRenderWidget(this->m_remoteRenderContainer);
+    remoteLayout->addWidget(this->m_remoteRenderWidget, 1);
+
+    this->m_renderStack->addWidget(this->m_remoteRenderContainer);  // page 1 — Remote
+    this->m_renderStack->setCurrentIndex(0);
+
+    dockCube->setWidget(this->m_renderStack);  // dock owns the stack now
     dockCube->setAllowedAreas(Qt::AllDockWidgetAreas);
     dockCube->setFeatures(QDockWidget::DockWidgetMovable
                           | QDockWidget::DockWidgetFloatable
@@ -3955,12 +4018,299 @@ void vtkWindowCube::resetWorkspaceLayout()
                       { avail / 2, avail / 2 }, Qt::Horizontal);
 }
 
+// ── Server-side rendering: mode wiring ──────────────────────────────────────
+//
+// Three render modes are exposed:
+//
+//   Auto    — try Remote when the backend looks SSR-capable AND the dataset
+//             was opened in ``preview_only`` mode (which signals it is too
+//             big for a comfortable local full-resolution load). Falls back
+//             to Local silently on any failure.
+//   Local   — never use the remote renderer (current behaviour, what the
+//             user gets before this change rolled out).
+//   Remote  — force the remote renderer; surfaces an error banner if the
+//             backend can't provide it.
+//
+// All three live under View → Rendering. A status-bar pill shows the
+// effective mode + the live FPS reported by RemoteRenderWidget. Slice
+// viewers, moment maps, region tools etc. continue to use the existing
+// REST endpoints in either mode.
+
+void vtkWindowCube::setupRenderModeUi()
+{
+    // Status-bar pill — created here so updateRenderModeBadges() can rely
+    // on it existing immediately even before the first mode switch.
+    this->m_renderModeBadge = new QLabel(u"Render: LOCAL"_s, this);
+    this->m_renderModeBadge->setStyleSheet(
+            u"QLabel {"
+            u"  padding: 1px 8px; margin-right: 6px;"
+            u"  border-radius: 9px;"
+            u"  background: rgba(120, 120, 120, 0.18);"
+            u"  color: palette(window-text);"
+            u"  font-size: 10px; font-weight: 600;"
+            u"  text-transform: uppercase; letter-spacing: 0.04em;"
+            u"}"_s);
+    this->statusBar()->addPermanentWidget(this->m_renderModeBadge);
+
+    this->m_renderFpsBadge = new QLabel(QString(), this);
+    this->m_renderFpsBadge->setStyleSheet(
+            u"QLabel { padding: 1px 6px; color: palette(window-text); }"_s);
+    this->m_renderFpsBadge->hide();   // only visible while in Remote mode
+    this->statusBar()->addPermanentWidget(this->m_renderFpsBadge);
+
+    // View → Rendering submenu.
+    auto *renderMenu = ui->menuView->addMenu(u"Rendering"_s);
+    auto *renderGroup = new QActionGroup(this);
+    renderGroup->setExclusive(true);
+
+    this->m_actionRenderAuto = renderMenu->addAction(u"Auto"_s);
+    this->m_actionRenderAuto->setCheckable(true);
+    this->m_actionRenderAuto->setChecked(true);
+    this->m_actionRenderAuto->setToolTip(
+            u"Pick Local or Remote based on dataset size and backend support"_s);
+    renderGroup->addAction(this->m_actionRenderAuto);
+
+    this->m_actionRenderLocal = renderMenu->addAction(u"Local (CPU/GPU on this machine)"_s);
+    this->m_actionRenderLocal->setCheckable(true);
+    renderGroup->addAction(this->m_actionRenderLocal);
+
+    this->m_actionRenderRemote = renderMenu->addAction(u"Remote (GPU on backend)"_s);
+    this->m_actionRenderRemote->setCheckable(true);
+    this->m_actionRenderRemote->setToolTip(
+            u"Stream JPEG frames from an EGL-equipped backend over WebSocket"_s);
+    renderGroup->addAction(this->m_actionRenderRemote);
+
+    QObject::connect(this->m_actionRenderAuto, &QAction::triggered, this,
+                     [this]() { this->applyRenderMode(RenderMode::Auto, true); });
+    QObject::connect(this->m_actionRenderLocal, &QAction::triggered, this,
+                     [this]() { this->applyRenderMode(RenderMode::Local, true); });
+    QObject::connect(this->m_actionRenderRemote, &QAction::triggered, this,
+                     [this]() { this->applyRenderMode(RenderMode::Remote, true); });
+
+    // Banner close ("✕") → drop back to Local without tearing the session.
+    if (this->m_remoteRenderBannerClose) {
+        QObject::connect(this->m_remoteRenderBannerClose, &QToolButton::clicked, this, [this]() {
+            this->applyRenderMode(RenderMode::Local, true);
+        });
+    }
+
+    // RemoteRenderWidget → status-bar wiring. Safe to connect now even
+    // before any session exists; the widget just stays silent.
+    if (this->m_remoteRenderWidget) {
+        QObject::connect(this->m_remoteRenderWidget,
+                         &RemoteRenderWidget::framesPerSecondChanged,
+                         this, &vtkWindowCube::onRemoteRenderFpsChanged);
+        QObject::connect(this->m_remoteRenderWidget,
+                         &RemoteRenderWidget::connectionStateChanged,
+                         this, &vtkWindowCube::onRemoteRenderConnectionStateChanged);
+    }
+
+    // Auto-trigger: if the dataset arrived in ``preview_only`` mode there's
+    // a strong hint it's too big for a local full-resolution load, so try
+    // Remote on a single-shot timer (gives the rest of the constructor a
+    // moment to finish wiring before the first network call goes out).
+    if (this->recommendedLoadMode == QLatin1String("preview_only")
+        && !this->remoteBackendUrl.isEmpty()) {
+        QTimer::singleShot(150, this, [this]() {
+            // Re-check at fire time in case the user already manually
+            // pinned Local from the menu in the intervening 150 ms.
+            if (this->m_renderMode == RenderMode::Auto
+                && this->m_effectiveRenderMode == RenderMode::Local) {
+                this->applyRenderMode(RenderMode::Auto, false);
+            }
+        });
+    }
+
+    this->updateRenderModeBadges();
+}
+
+void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
+{
+    this->m_renderMode = requested;
+    // Sync the menu's check state in case this is a programmatic switch
+    // (banner close, Auto fallback) rather than a user click.
+    if (this->m_actionRenderAuto)   this->m_actionRenderAuto->setChecked(requested == RenderMode::Auto);
+    if (this->m_actionRenderLocal)  this->m_actionRenderLocal->setChecked(requested == RenderMode::Local);
+    if (this->m_actionRenderRemote) this->m_actionRenderRemote->setChecked(requested == RenderMode::Remote);
+
+    const bool wantRemote = (requested == RenderMode::Remote)
+            || (requested == RenderMode::Auto
+                && this->recommendedLoadMode == QLatin1String("preview_only")
+                && !this->remoteBackendUrl.isEmpty());
+
+    if (wantRemote) {
+        if (this->m_renderSessionId.isEmpty()) {
+            // Will flip to page 1 in the reply handler once the session
+            // is created; until then we keep showing Local so the user
+            // sees the preview the existing pipeline already rendered.
+            this->requestRemoteRenderSession();
+        } else if (this->m_renderStack) {
+            this->m_renderStack->setCurrentIndex(1);
+            this->m_effectiveRenderMode = RenderMode::Remote;
+        }
+    } else {
+        if (this->m_renderStack) {
+            this->m_renderStack->setCurrentIndex(0);
+        }
+        this->m_effectiveRenderMode = RenderMode::Local;
+        // For explicit Local clicks, disconnect the WebSocket so we stop
+        // burning frames behind a hidden page. We KEEP the session alive
+        // on the backend so a flip back to Remote is instant — the TTL
+        // evicter in RenderManager (300 s idle) will reap it eventually.
+        if (this->m_remoteRenderWidget && fromUserAction
+            && requested == RenderMode::Local) {
+            this->m_remoteRenderWidget->disconnectFromSession();
+        }
+    }
+
+    this->updateRenderModeBadges();
+}
+
+void vtkWindowCube::requestRemoteRenderSession()
+{
+    if (!this->m_renderNam) {
+        this->m_renderNam = new QNetworkAccessManager(this);
+    }
+    if (this->remoteBackendUrl.isEmpty() || this->remoteDatasetId.isEmpty()) {
+        qWarning() << "[remote-render] cannot create session: backendUrl or datasetId empty";
+        this->applyRenderMode(RenderMode::Local, false);
+        return;
+    }
+
+    QUrl url(this->remoteBackendUrl);
+    url.setPath(u"/v1/render/create_session"_s);
+    QNetworkRequest req(url);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
+    if (!this->remoteBackendToken.isEmpty()) {
+        req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"),
+                         this->remoteBackendToken.toUtf8());
+    }
+    QJsonObject body;
+    body[u"dataset_id"_s] = this->remoteDatasetId;
+    const QByteArray payload = QJsonDocument(body).toJson(QJsonDocument::Compact);
+
+    qDebug().noquote() << "[remote-render] POST" << url.toString();
+    QNetworkReply *reply = this->m_renderNam->post(req, payload);
+    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        this->m_renderBackendProbed = true;
+        if (reply->error() != QNetworkReply::NoError) {
+            const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            qWarning().noquote()
+                    << "[remote-render] create_session failed:" << reply->errorString()
+                    << "(HTTP" << code << ")";
+            this->m_renderBackendSupportsSsr = false;
+            // Stay on Local (current page) and tell the user why.
+            if (this->statusBar()) {
+                this->statusBar()->showMessage(
+                        u"Remote rendering unavailable on this backend — staying local"_s,
+                        5000);
+            }
+            this->m_effectiveRenderMode = RenderMode::Local;
+            this->updateRenderModeBadges();
+            return;
+        }
+        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        const QString sid = doc.object().value(u"session_id"_s).toString();
+        if (sid.isEmpty()) {
+            qWarning() << "[remote-render] create_session returned no session_id";
+            return;
+        }
+        this->m_renderSessionId = sid;
+        this->m_renderBackendSupportsSsr = true;
+        qDebug().noquote() << "[remote-render] session created:" << sid;
+
+        if (this->m_remoteRenderWidget) {
+            this->m_remoteRenderWidget->connectToSession(
+                    this->remoteBackendUrl, sid, this->remoteBackendToken);
+        }
+        if (this->m_renderStack) {
+            this->m_renderStack->setCurrentIndex(1);
+        }
+        this->m_effectiveRenderMode = RenderMode::Remote;
+        this->updateRenderModeBadges();
+    });
+}
+
+void vtkWindowCube::releaseRemoteRenderSession()
+{
+    if (this->m_remoteRenderWidget) {
+        this->m_remoteRenderWidget->disconnectFromSession();
+    }
+    if (this->m_renderSessionId.isEmpty()) {
+        return;
+    }
+    if (!this->m_renderNam) {
+        this->m_renderNam = new QNetworkAccessManager(this);
+    }
+    QUrl url(this->remoteBackendUrl);
+    url.setPath(u"/v1/render/"_s + this->m_renderSessionId);
+    QNetworkRequest req(url);
+    if (!this->remoteBackendToken.isEmpty()) {
+        req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"),
+                         this->remoteBackendToken.toUtf8());
+    }
+    qDebug().noquote() << "[remote-render] DELETE" << url.toString();
+    QNetworkReply *reply = this->m_renderNam->deleteResource(req);
+    QObject::connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);
+    this->m_renderSessionId.clear();
+}
+
+void vtkWindowCube::onRemoteRenderConnectionStateChanged(const QString &state)
+{
+    if (this->m_remoteRenderBannerLabel) {
+        if (state == QLatin1String("Live")) {
+            this->m_remoteRenderBannerLabel->setText(
+                    u"Remote rendering (GPU on backend) — click ✕ to switch to Local"_s);
+        } else {
+            this->m_remoteRenderBannerLabel->setText(
+                    u"Remote rendering — " + state);
+        }
+    }
+}
+
+void vtkWindowCube::onRemoteRenderFpsChanged(double fps)
+{
+    if (this->m_renderFpsBadge) {
+        this->m_renderFpsBadge->setText(QStringLiteral("%1 FPS").arg(fps, 0, 'f', 1));
+    }
+}
+
+void vtkWindowCube::updateRenderModeBadges()
+{
+    if (!this->m_renderModeBadge) return;
+    const bool remote = (this->m_effectiveRenderMode == RenderMode::Remote);
+    this->m_renderModeBadge->setText(remote
+                                             ? u"Render: REMOTE"_s
+                                             : u"Render: LOCAL"_s);
+    this->m_renderModeBadge->setStyleSheet(
+            QStringLiteral(
+                    "QLabel {"
+                    "  padding: 1px 8px; margin-right: 6px;"
+                    "  border-radius: 9px;"
+                    "  background: rgba(%1, 0.22);"
+                    "  color: palette(window-text);"
+                    "  font-size: 10px; font-weight: 600;"
+                    "  text-transform: uppercase; letter-spacing: 0.04em;"
+                    "}")
+                    .arg(remote ? u"245, 158, 11"_s : u"120, 120, 120"_s));
+    if (this->m_renderFpsBadge) {
+        this->m_renderFpsBadge->setVisible(remote);
+    }
+}
+
 void vtkWindowCube::closeEvent(QCloseEvent *event)
 {
     // Stop any background timers / observers we own before tearing down the
     // VTK widgets, so we don't try to update destroyed objects on the way out.
     this->sliceAnimationTimer.stop();
     this->remove3dPickObserver();
+
+    // Tear down the remote render session BEFORE the rest of the cleanup;
+    // fire-and-forget so the close isn't blocked on a slow backend. We
+    // pass through Local first so the widget disconnects cleanly even if
+    // the DELETE never makes it.
+    this->releaseRemoteRenderSession();
 
     // Capture a thumbnail of the last view BEFORE the cube renderer is torn
     // down — the Data Hub's recents list shows it next to this dataset.
