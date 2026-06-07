@@ -137,16 +137,44 @@ def load_fits_as_image_data(fits_path: str):
     import vtk
     from vtk.util.numpy_support import numpy_to_vtk
 
+    # Read at most this many voxels into the spike's RAM-resident
+    # vtkImageData. SDC2-sized cubes (10+ GB) blow up the laptop-side
+    # comparison but more importantly OOM the spike's single-process
+    # python — VTK doesn't know about backend chunked rendering yet.
+    # The cap picks the CENTRE crop of an oversized cube so the spike
+    # still shows representative emission, not just edge noise.
+    MAX_BYTES = int(os.environ.get("VISIVO_SPIKE_MAX_BYTES", str(2 * 1024 ** 3)))
+
     print(f"[spike] Opening {fits_path}...", flush=True)
     with _fits.open(fits_path, memmap=True) as hdul:
-        cube = hdul[0].data  # type: ignore[attr-defined]
-        # Astropy axis order is (z, y, x); VTK expects (z, y, x) flat with
-        # x varying fastest. squeeze trailing 1-dims.
-        cube = np.asarray(cube, dtype=np.float32)
-        while cube.ndim > 3:
-            cube = cube[0]
-        if cube.ndim != 3:
-            raise ValueError(f"Expected 3D cube, got shape {cube.shape}")
+        full_cube = hdul[0].data  # type: ignore[attr-defined]
+        # Astropy axis order is (z, y, x); squeeze trailing 1-dims.
+        while full_cube.ndim > 3:
+            full_cube = full_cube[0]
+        if full_cube.ndim != 3:
+            raise ValueError(f"Expected 3D cube, got shape {full_cube.shape}")
+        cube_bytes = int(full_cube.size) * 4
+        if cube_bytes > MAX_BYTES:
+            # Take the centre crop along each axis, keeping the volume
+            # under MAX_BYTES. We use cube-root scaling so all 3 axes
+            # shrink proportionally.
+            scale = (MAX_BYTES / cube_bytes) ** (1 / 3)
+            nz_full, ny_full, nx_full = full_cube.shape
+            nz_new = max(1, int(nz_full * scale))
+            ny_new = max(1, int(ny_full * scale))
+            nx_new = max(1, int(nx_full * scale))
+            z0 = (nz_full - nz_new) // 2
+            y0 = (ny_full - ny_new) // 2
+            x0 = (nx_full - nx_new) // 2
+            print(f"[spike] Centre-cropping cube from {full_cube.shape} → "
+                  f"({nz_new},{ny_new},{nx_new}) to stay under "
+                  f"{MAX_BYTES / 1e9:.1f} GB", flush=True)
+            cube = np.asarray(
+                full_cube[z0:z0 + nz_new, y0:y0 + ny_new, x0:x0 + nx_new],
+                dtype=np.float32,
+            )
+        else:
+            cube = np.asarray(full_cube, dtype=np.float32)
         print(f"[spike] Cube shape: {cube.shape}, dtype {cube.dtype}, "
               f"size {cube.nbytes / 1e9:.2f} GB", flush=True)
 
