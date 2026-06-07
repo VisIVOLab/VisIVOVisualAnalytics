@@ -97,7 +97,19 @@ app.include_router(samp.router)
 # returns ``server_side_rendering_available=False``.
 try:
     from .routers import render as render_routes  # noqa: PLC0415
-    app.include_router(render_routes.router, dependencies=[_auth])
+    # NB: do NOT pass ``dependencies=[_auth]`` here. The render router
+    # exposes a WebSocket endpoint (``/v1/render/{session_id}/ws``) and
+    # FastAPI ``APIKeyHeader`` security objects need an HTTP ``Request``
+    # to evaluate — they raise
+    #   TypeError: APIKeyHeader.__call__() missing 1 required positional
+    #              argument: 'request'
+    # on a WebSocket connection. Auth is enforced per-route:
+    #   * HTTP routes carry ``_: None = _auth`` in their signature
+    #     (see routers/render.py).
+    #   * The WS handler validates the token from ``?token=`` (or the
+    #     X-Visivo-Token header when a proxy forwards it) and closes
+    #     with policy code 1008 on mismatch.
+    app.include_router(render_routes.router)
 
     @app.on_event("shutdown")
     async def _stop_render_manager():

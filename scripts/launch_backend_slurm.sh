@@ -177,6 +177,41 @@ if [[ -n "$BACKEND_SRC" ]]; then
     echo "[visivo] Overlaying /app/app with host source: $BACKEND_SRC"
 fi
 
+# ── EGL / server-side rendering support ─────────────────────────────────────
+# When the backend uses ``backend-egl.sif`` and a client opens a
+# RenderSession, VTK does ``vtkEGLRenderWindow.Render()`` which on
+# this Power9 cluster needs:
+#   * the NVIDIA runtime libs (libcuda, libnvidia-tls, libnvidia-ml,
+#     ...) bound from ``/usr/lib64`` of the host — Apptainer ``--nv``
+#     misses several on ppc64le
+#   * ``LD_LIBRARY_PATH=/usr/lib64`` so libglvnd resolves them
+#   * ``XDG_CACHE_HOME`` / ``XDG_CONFIG_HOME`` redirected to a
+#     local /tmp tree, because Freetype/fontconfig take a POSIX file
+#     lock on ``~/.cache/fontconfig`` and on a NFS-mounted $HOME the
+#     lockd never replies → the first Render() hangs forever
+# We add the binds defensively even when the cluster isn't ppc64le —
+# they're harmless on x86 (the host libs simply aren't there).
+NV_RUNTIME_BINDS=""
+for lib in \
+    libEGL_nvidia.so.0 libGLX_nvidia.so.0 libEGL.so.1 \
+    libnvidia-glcore.so.* libnvidia-glsi.so.* libnvidia-egl-wayland.so.* \
+    libcuda.so.1 libcuda.so.* \
+    libnvidia-tls.so.* libnvidia-rtcore.so.* \
+    libnvidia-allocator.so.* libnvidia-cfg.so.* libnvidia-ml.so.* \
+    libnvidia-encode.so.* libnvidia-opencl.so.* \
+    libnvidia-ptxjitcompiler.so.* libnvidia-nvvm.so.* \
+    libnvidia-fatbinaryloader.so.* libnvidia-compiler.so.* ; do
+    for f in /usr/lib64/${lib} /usr/lib/powerpc64le-linux-gnu/${lib} ; do
+        if [[ -e "$f" ]]; then
+            NV_RUNTIME_BINDS="${NV_RUNTIME_BINDS} --bind ${f}:${f}"
+        fi
+    done
+done
+GLVND_JSON="/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+if [[ -f "$GLVND_JSON" ]]; then
+    NV_RUNTIME_BINDS="${NV_RUNTIME_BINDS} --bind ${GLVND_JSON}:${GLVND_JSON}"
+fi
+
 # ── Write the SLURM job script ────────────────────────────────────────────────
 JOB_SCRIPT="$(mktemp /tmp/visivo_slurm_XXXXXX.sh)"
 cat > "$JOB_SCRIPT" <<SLURM_EOF
@@ -189,19 +224,27 @@ echo "[visivo] Data root: ${DATA_ROOT:-(not jailed)}"
 
 # Env vars consumed inside the container.
 export APPTAINERENV_VISIVO_TOKEN="${TOKEN}"
-# Decoupled from --cpus: the backend's ProcessPoolExecutor is sized by
-# --workers, while --cpus is the SLURM allocation (which Numba's
-# parallel kernels exploit via OpenMP threads inside ONE worker).
-# 128 simultaneously-init-CUDA workers is what triggers
-# cudaErrorInitializationError on a single V100.
 export APPTAINERENV_VISIVO_WORKERS="${WORKERS}"
 export APPTAINERENV_PORT="${PORT}"
 export APPTAINERENV_VISIVO_HOST="0.0.0.0"
+# EGL / SSR env (see comment on NV_RUNTIME_BINDS above).
+export APPTAINERENV_LD_LIBRARY_PATH=/usr/lib64
+export APPTAINERENV_XDG_CACHE_HOME=/tmp/visivo-cache
+export APPTAINERENV_XDG_CONFIG_HOME=/tmp/visivo-config
+export APPTAINERENV_XDG_DATA_HOME=/tmp/visivo-data
+export APPTAINERENV_MPLCONFIGDIR=/tmp/visivo-mpl
+export APPTAINERENV___EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
+export APPTAINERENV___GLX_VENDOR_LIBRARY_NAME=nvidia
+# Pre-create the local-tmp dirs the env vars point at, so fontconfig
+# and matplotlib don't fail on first-access mkdir under a read-only
+# filesystem mount.
+mkdir -p /tmp/visivo-cache /tmp/visivo-config /tmp/visivo-data /tmp/visivo-mpl
 ${DATA_ROOT_ENV}
 
 apptainer run ${NV_FLAG} \\
     --bind "${BIND_PATH}:${BIND_PATH}" \\
     ${DATA_BIND_FLAG} \\
+    ${NV_RUNTIME_BINDS} \\
     ${SRC_BIND_FLAG} \\
     "${SIF}"
 SLURM_EOF

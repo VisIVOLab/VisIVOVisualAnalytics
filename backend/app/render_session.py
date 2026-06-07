@@ -270,28 +270,34 @@ class RenderSession:
         self._image_data = img
 
         # ── 3. Transfer functions — HI-friendly defaults ────────────
-        # Opacity: zero up to ``noise_floor + N×sigma`` of the data,
-        # ramps up to ``opacity_scale`` at the bright end. Picks the
-        # 50th percentile as the noise floor and (max - 50th) / 4 as
-        # one "sigma" to avoid a full pass over the cube.
+        # HI cubes are dominated by Gaussian noise around zero with a
+        # few percent of voxels carrying the actual emission. We need
+        # opacity=0 throughout the noise distribution and rapidly
+        # rising opacity past it. Using percentile thresholds:
+        #   p95 ≈ tail of the noise Gaussian (≈ 1.65σ above zero)
+        #   p99.5 ≈ 2.5σ — clearly above noise, faint emission
+        #   p99.95 = peak signal
+        # The first ~99.5% of the cube renders transparent → no orange
+        # mush, only the bright sources show.
         finite = cube[finite_mask] if not finite_mask.all() else cube
-        p50 = float(np.percentile(finite, 50))
-        p99 = float(np.percentile(finite, 99))
-        noise_floor = p50
-        bright = p99
+        noise_p   = float(np.percentile(finite, 95.0))
+        faint     = float(np.percentile(finite, 99.5))
+        bright    = float(np.percentile(finite, 99.95))
         self._opacity_tf = vtk.vtkPiecewiseFunction()
         self._opacity_tf.AddPoint(vmin, 0.0)
-        self._opacity_tf.AddPoint(noise_floor, 0.0)
-        self._opacity_tf.AddPoint(0.5 * (noise_floor + bright), self.view.opacity_scale * 0.5)
+        self._opacity_tf.AddPoint(noise_p, 0.0)
+        self._opacity_tf.AddPoint(faint, self.view.opacity_scale * 0.3)
         self._opacity_tf.AddPoint(bright, self.view.opacity_scale)
         self._opacity_tf.AddPoint(vmax, self.view.opacity_scale)
 
-        # Colour: dark blue → red → yellow (Inferno-ish) by default.
+        # Colour: dark plum → orange → white-hot (Inferno-ish).
+        # Saturated colour only on the emission, neutral on the noise
+        # band — so even a hint of opacity in the noise reads as muted.
         self._color_tf = vtk.vtkColorTransferFunction()
-        self._color_tf.AddRGBPoint(vmin, 0.05, 0.05, 0.10)
-        self._color_tf.AddRGBPoint(noise_floor, 0.05, 0.05, 0.10)
-        self._color_tf.AddRGBPoint(0.5 * (noise_floor + bright), 0.7, 0.4, 0.2)
-        self._color_tf.AddRGBPoint(bright, 1.0, 1.0, 0.9)
+        self._color_tf.AddRGBPoint(vmin, 0.02, 0.02, 0.05)
+        self._color_tf.AddRGBPoint(noise_p, 0.10, 0.05, 0.15)
+        self._color_tf.AddRGBPoint(faint, 0.6, 0.25, 0.15)
+        self._color_tf.AddRGBPoint(bright, 1.0, 0.85, 0.4)
         self._color_tf.AddRGBPoint(vmax, 1.0, 1.0, 1.0)
 
         prop = vtk.vtkVolumeProperty()
@@ -313,6 +319,13 @@ class RenderSession:
         self._volume = vtk.vtkVolume()
         self._volume.SetMapper(self._volume_mapper)
         self._volume.SetProperty(prop)
+
+        # Suppress VTK's per-frame stderr complaints — on the GLES
+        # build, vtkOpenGLRenderWindow::ReadPixels logs a cosmetic
+        # "Failed to read pixels in <6408,5121>: 1282" every frame
+        # even though the data IS readable. The flood of stderr
+        # writes hits BeeGFS and slows the render thread.
+        vtk.vtkObject.GlobalWarningDisplayOff()
 
         # ── 5. Renderer + EGL offscreen window ──────────────────────
         self._renderer = vtk.vtkRenderer()
