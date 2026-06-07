@@ -14,13 +14,14 @@
 using namespace std::chrono_literals;
 
 namespace {
-// VTK's vtkInteractorStyleTrackballCamera converts ~1° per drag pixel
-// at default sensitivity and then scales by the renderer's
-// MotionFactor (default 10) divided by the window height/width — a
-// sensible empirical match for a 1024 px wide window is ~0.15 °/px.
-// The previous 0.5 felt "stuck on a fast-spin axis" against the local
-// VTK widget's feel.
-constexpr double kRotateSensitivity = 0.15;
+// VTK's vtkInteractorStyleTrackballCamera uses delta_azimuth =
+// -20 / window_width * MotionFactor (default MotionFactor = 10) per
+// drag pixel, applied INCREMENTALLY to the current camera. For a
+// typical 1000-pixel viewport that's ~0.2°/px. With the server now
+// running the same incremental model (see render_session.py
+// `_apply_command_on_thread` → `cam.Azimuth(delta)`), this constant
+// gives a one-to-one match with the local VTK widget feel.
+constexpr double kRotateSensitivity = 0.2;
 constexpr double kPanSensitivity    = 1.0;
 constexpr double kZoomPerNotch      = 1.1;
 } // namespace
@@ -109,6 +110,20 @@ void RemoteRenderWidget::setJpegQuality(int q)
         cmd[QStringLiteral("quality")] = m_jpegQuality;
         sendCommand(QJsonDocument(cmd).toJson(QJsonDocument::Compact));
     }
+}
+
+void RemoteRenderWidget::sendStateCommand(const QVariantMap &command)
+{
+    if (!m_ws || m_ws->state() != QAbstractSocket::ConnectedState) {
+        return;
+    }
+    const QJsonObject obj = QJsonObject::fromVariantMap(command);
+    sendCommand(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+    // Mutating state without re-rendering would leave the user staring
+    // at a stale frame, so always nudge the server for a fresh one.
+    // requestFrame() is throttled (one in-flight at a time) so this is
+    // safe to call after every command.
+    requestFrame();
 }
 
 // ── WebSocket callbacks ─────────────────────────────────────────────────────

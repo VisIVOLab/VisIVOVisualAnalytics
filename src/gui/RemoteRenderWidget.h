@@ -4,6 +4,7 @@
 #include <QPointer>
 #include <QString>
 #include <QUrl>
+#include <QVariantMap>
 #include <QWidget>
 #include <chrono>
 
@@ -55,6 +56,15 @@ public:
     /// command). 0..100; sensible default 85 — the backend's default
     /// JPEG quality.
     void setJpegQuality(int q);
+
+    /// Send an arbitrary state-mutation command to the server (LUT
+    /// changes, threshold, blend mode, cutting plane visibility, …)
+    /// and ask for a fresh frame so the user sees the effect.
+    /// No-op if not currently connected — the next reconnect should
+    /// re-push the desired state from vtkWindowCube's stored values.
+    /// The map is JSON-serialised as ``{ "type": <type>, ... }``;
+    /// callers must include the ``type`` key themselves.
+    Q_INVOKABLE void sendStateCommand(const QVariantMap &command);
 
     /// True once the WebSocket has connected AND the first JPEG frame
     /// has been received and drawn. Used by the cube viewer to gate

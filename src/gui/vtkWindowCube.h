@@ -958,6 +958,15 @@ private:
     void onRemoteRenderConnectionStateChanged(const QString &state);
     void onRemoteRenderFpsChanged(double fps);
     void updateRenderModeBadges();
+    /// Push every visible piece of local volume-render state to the
+    /// backend in one go — LUT, threshold, blend mode, cutting plane.
+    /// Called once on Remote-mode entry (when the WS turns Live) so a
+    /// fresh session is bootstrapped to the same look the user already
+    /// sees locally. Cheap (5 JSON commands).
+    void pushRenderStateToRemote();
+    /// Send a single state-mutation to the remote renderer. No-op
+    /// unless we're in Remote mode AND the widget is Live.
+    void sendRemoteRenderStateCommand(const QVariantMap &command);
 
     void setRemoteCubeDisplayState(RemoteCubeDisplayState state);
     void showPersistentStatusMessage(const QString &text, int minDurationMs = 400);

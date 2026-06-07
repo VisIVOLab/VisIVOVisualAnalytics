@@ -129,6 +129,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QResizeEvent>
 #include <QStackedWidget>
 #include <QTimer>
 #include <QScrollBar>
@@ -1680,6 +1681,11 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         if (ui->vtkCube->renderWindow()) {
             ui->vtkCube->renderWindow()->Render();
         }
+        // Mirror to remote renderer.
+        QVariantMap cmd;
+        cmd[u"type"_s]    = u"set_cutting_plane"_s;
+        cmd[u"visible"_s] = checked;
+        this->sendRemoteRenderStateCommand(cmd);
     });
     {
         auto *opacityMenu = ui->menuView->addMenu(u"Cutting Plane Opacity"_s);
@@ -3602,6 +3608,13 @@ void vtkWindowCube::applyColorMapByName(const QString &name)
     if (ui->vtkCube->renderWindow()) {
         ui->vtkCube->renderWindow()->Render();
     }
+
+    // Mirror to the remote renderer when SSR is active so the volume
+    // colours stay in sync with the user's pick.
+    QVariantMap cmd;
+    cmd[u"type"_s] = u"set_lut"_s;
+    cmd[u"name"_s] = name;
+    this->sendRemoteRenderStateCommand(cmd);
 }
 
 void vtkWindowCube::applyVolumeBlendMode(int idx)
@@ -3623,6 +3636,11 @@ void vtkWindowCube::applyVolumeBlendMode(int idx)
     if (ui->vtkCube->renderWindow()) {
         ui->vtkCube->renderWindow()->Render();
     }
+    // Mirror blend mode to the remote renderer.
+    QVariantMap cmd;
+    cmd[u"type"_s] = u"set_blend_mode"_s;
+    cmd[u"mode"_s] = (idx == 1 || idx == 2) ? idx : 0;
+    this->sendRemoteRenderStateCommand(cmd);
 }
 
 void vtkWindowCube::updateVolumeModeVisibility(bool volumeActive)
@@ -4147,6 +4165,15 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
         } else if (this->m_renderStack) {
             this->m_renderStack->setCurrentIndex(1);
             this->m_effectiveRenderMode = RenderMode::Remote;
+            // The session is still warm on the backend (held by
+            // RenderManager's TTL); if the WebSocket was torn down on
+            // the previous Local switch, re-open it. Hands the user a
+            // live image again without paying for EGL warm-up.
+            if (this->m_remoteRenderWidget && !this->m_remoteRenderWidget->isLive()) {
+                this->m_remoteRenderWidget->connectToSession(
+                        this->remoteBackendUrl, this->m_renderSessionId,
+                        this->remoteBackendToken);
+            }
         }
     } else {
         if (this->m_renderStack) {
@@ -4160,6 +4187,32 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
         if (this->m_remoteRenderWidget && fromUserAction
             && requested == RenderMode::Local) {
             this->m_remoteRenderWidget->disconnectFromSession();
+        }
+    }
+
+    // Move the floating channel scrubber to whichever 3-D widget is now
+    // visible. Without this it stays parented to ui->vtkCube (the
+    // Local-mode QVTKOpenGLNativeWidget), which is hidden inside the
+    // stack while we're in Remote mode — and the user loses access to
+    // the cutting-plane channel slider.
+    if (this->channelOverlay) {
+        QWidget *target = (this->m_effectiveRenderMode == RenderMode::Remote)
+                ? static_cast<QWidget *>(this->m_remoteRenderWidget)
+                : static_cast<QWidget *>(ui->vtkCube);
+        QWidget *current = this->channelOverlay->parentWidget();
+        if (target && target != current) {
+            if (current) {
+                current->removeEventFilter(this->channelOverlay);
+            }
+            this->channelOverlay->setParent(target);
+            target->installEventFilter(this->channelOverlay);
+            this->channelOverlay->show();
+            // Force a synthetic resize on the new parent so the overlay
+            // re-positions to the bottom-edge of the visible widget. We
+            // can't call repositionOverParent() directly — it's private
+            // — but a resize event triggers exactly that codepath.
+            QResizeEvent ev(target->size(), target->size());
+            QApplication::sendEvent(target, &ev);
         }
     }
 
@@ -4267,12 +4320,98 @@ void vtkWindowCube::onRemoteRenderConnectionStateChanged(const QString &state)
                     u"Remote rendering — " + state);
         }
     }
+    // When the WebSocket turns Live (first frame received), the server
+    // is up but still running on its initial defaults. Push the user's
+    // current state — LUT, threshold, blend, cutting plane — so the
+    // very next frame reflects what they see locally.
+    if (state == QLatin1String("Live")) {
+        this->pushRenderStateToRemote();
+    }
 }
 
 void vtkWindowCube::onRemoteRenderFpsChanged(double fps)
 {
     if (this->m_renderFpsBadge) {
         this->m_renderFpsBadge->setText(QStringLiteral("%1 FPS").arg(fps, 0, 'f', 1));
+    }
+}
+
+void vtkWindowCube::sendRemoteRenderStateCommand(const QVariantMap &command)
+{
+    const QString type = command.value(u"type"_s).toString();
+    const bool widgetExists = (this->m_remoteRenderWidget != nullptr);
+    const bool isLive = widgetExists && this->m_remoteRenderWidget->isLive();
+    const bool inRemote = (this->m_effectiveRenderMode == RenderMode::Remote);
+    if (!widgetExists || !isLive || !inRemote) {
+        qDebug().noquote() << QStringLiteral(
+                "[remote-render] DROP %1 — widget=%2 live=%3 mode=%4")
+                                      .arg(type)
+                                      .arg(widgetExists)
+                                      .arg(isLive)
+                                      .arg(inRemote ? u"Remote"_s : u"Local"_s);
+        return;
+    }
+    qDebug().noquote() << QStringLiteral("[remote-render] SEND %1: %2")
+                                  .arg(type, QString::fromUtf8(
+                                          QJsonDocument(QJsonObject::fromVariantMap(command))
+                                                  .toJson(QJsonDocument::Compact)));
+    this->m_remoteRenderWidget->sendStateCommand(command);
+}
+
+void vtkWindowCube::pushRenderStateToRemote()
+{
+    if (!this->m_remoteRenderWidget || !this->m_remoteRenderWidget->isLive()) {
+        return;
+    }
+    // Volume LUT — same name the user picked from the sidebar combo.
+    if (!this->m_activeColorMapName.isEmpty()) {
+        QVariantMap m;
+        m[u"type"_s] = u"set_lut"_s;
+        m[u"name"_s] = this->m_activeColorMapName;
+        this->m_remoteRenderWidget->sendStateCommand(m);
+    }
+    // Slice LUT.
+    if (!this->m_activeSliceLutName.isEmpty()) {
+        QVariantMap m;
+        m[u"type"_s] = u"set_slice_lut"_s;
+        m[u"name"_s] = this->m_activeSliceLutName;
+        this->m_remoteRenderWidget->sendStateCommand(m);
+    }
+    // Threshold — drives the opacity ramp.
+    if (this->m_initialThresholdApplied) {
+        QVariantMap m;
+        m[u"type"_s]  = u"set_threshold"_s;
+        m[u"value"_s] = static_cast<double>(this->lowerBound);
+        this->m_remoteRenderWidget->sendStateCommand(m);
+    }
+    // Blend mode (0=Composite, 1=MIP, 2=MinIP) — read from the menu.
+    int blend = 0;
+    if (this->m_actionMIP   && this->m_actionMIP->isChecked())   blend = 1;
+    if (this->m_actionMinIP && this->m_actionMinIP->isChecked()) blend = 2;
+    {
+        QVariantMap m;
+        m[u"type"_s] = u"set_blend_mode"_s;
+        m[u"mode"_s] = blend;
+        this->m_remoteRenderWidget->sendStateCommand(m);
+    }
+    // Cutting plane visibility — read from the menu toggle.
+    if (this->actionShowCuttingPlane) {
+        QVariantMap m;
+        m[u"type"_s]    = u"set_cutting_plane"_s;
+        m[u"visible"_s] = this->actionShowCuttingPlane->isChecked();
+        // Slice index for the cutting plane = current slider value.
+        m[u"slice_index"_s] = ui->sliderSlice ? ui->sliderSlice->value() : 0;
+        this->m_remoteRenderWidget->sendStateCommand(m);
+    }
+    // Cube render mode (Volume vs Isosurface) — read from the menu
+    // action. ``ui->actionIsosurface`` is checkable; the two are
+    // mutually exclusive via cubeGroup.
+    {
+        QVariantMap m;
+        m[u"type"_s] = u"set_cube_render_mode"_s;
+        const bool iso = ui->actionIsosurface && ui->actionIsosurface->isChecked();
+        m[u"mode"_s] = iso ? u"isosurface"_s : u"volume"_s;
+        this->m_remoteRenderWidget->sendStateCommand(m);
     }
 }
 
@@ -7781,6 +7920,15 @@ bool vtkWindowCube::viewingSlice() const
 
 void vtkWindowCube::applyThresholdToPipeline(double threshold)
 {
+    // Mirror the new threshold to the remote renderer first so the
+    // network call is on its way while the local VTK pipeline updates.
+    {
+        QVariantMap cmd;
+        cmd[u"type"_s]  = u"set_threshold"_s;
+        cmd[u"value"_s] = threshold;
+        this->sendRemoteRenderStateCommand(cmd);
+    }
+
     // Isosurface isovalue
     this->isosurfaceFilter->SetValue(0, threshold);
 
@@ -8215,6 +8363,16 @@ bool vtkWindowCube::requestHighResCube()
 
 void vtkWindowCube::updateRemoteCuttingPlane(int sliceIndex)
 {
+    // Mirror the slice index to the SSR backend so the textured plane
+    // in the remote scene shows the same channel. Cheap; throttled
+    // automatically by RemoteRenderWidget's in-flight gate.
+    {
+        QVariantMap cmd;
+        cmd[u"type"_s]        = u"set_cutting_plane"_s;
+        cmd[u"slice_index"_s] = this->clampRemoteSliceIndex(sliceIndex);
+        this->sendRemoteRenderStateCommand(cmd);
+    }
+
     auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
     if (!cubeImage) {
         qDebug().noquote() << QStringLiteral("[remote-plane] preview valid=0");
@@ -10563,6 +10721,12 @@ void vtkWindowCube::setCubeRenderModeLocally(bool isosurfaceMode)
             renderer->AddViewProp(this->volume);
         }
     }
+
+    // Mirror to the remote renderer.
+    QVariantMap cmd;
+    cmd[u"type"_s] = u"set_cube_render_mode"_s;
+    cmd[u"mode"_s] = isosurfaceMode ? u"isosurface"_s : u"volume"_s;
+    this->sendRemoteRenderStateCommand(cmd);
 }
 
 void vtkWindowCube::applyIsosurfaceResult(const AsyncIsosurfaceResult &result)
