@@ -1,0 +1,296 @@
+Bootstrap: docker
+From: condaforge/mambaforge:latest
+
+%labels
+    Maintainer VisIVOLab <visivo@inaf.it>
+    Version    1.0.0-conda-egl
+    Description VisIVO Backend (conda-forge + custom VTK-EGL) — server-side rendering on ppc64le / x86_64
+
+%help
+    Variant of ``backend-conda.def`` that builds VTK 9.3.1 from source
+    with EGL support instead of using the conda-forge Qt/X11 VTK
+    binary. Enables hardware-accelerated OFFSCREEN volume rendering
+    via NVIDIA EGL on any node where:
+
+      * the NVIDIA driver provides ``libEGL_nvidia.so.0``
+        (550.x or newer — the 545+ EGL stack is stable on ppc64le)
+      * Apptainer's ``--nv`` flag exposes the driver libs (or the
+        runner explicitly ``--bind``s them — on some ppc64le
+        installs ``--nv`` is incomplete; see ``run_spike_egl.sh``)
+
+    Everything else (scientific stack, FastAPI, cupy, FastAPI router,
+    SLURM scripts) is identical to ``backend-conda.def``. The image
+    is ~800 MB larger because the VTK build artefacts live under
+    /opt/conda/include + /opt/conda/lib/cmake.
+
+    ── Build ────────────────────────────────────────────────────────────
+    # From the repo root, fakeroot build
+    apptainer build --fakeroot backend-egl.sif apptainer/backend-conda-egl.def
+
+    # With cupy + EGL (full GPU stack)
+    ENABLE_CUPY=1 \\
+        apptainer build --fakeroot backend-egl.sif apptainer/backend-conda-egl.def
+
+    Build time on ppc64le V100 (16 cores): ~70-90 min (vs 20-30 min
+    for the conda-only variant). The VTK build dominates; rest is
+    identical to backend-conda.def.
+
+    ── Run ──────────────────────────────────────────────────────────────
+    # Smoke-test EGL rendering on a GPU node
+    bash apptainer/run_spike_egl.sh /mnt/beegfs/.../cube.fits /tmp/out.png
+
+    # Run the backend (normal — same flags as backend-conda.def)
+    apptainer run --nv --bind /data:/data backend-egl.sif
+
+    ── What's different from backend-conda.def ─────────────────────────
+    * Stage 2 installs ``vtk-base`` and build deps (cmake, ninja,
+      libegl-cos7-ppc64le, libglvnd, mesa-libglu-cos7-ppc64le)
+      INSTEAD of the full ``vtk`` package.
+    * NEW Stage 2.5: clones VTK 9.3.1 source from gitlab.kitware.com,
+      configures with ``-DVTK_USE_X=OFF -DVTK_OPENGL_HAS_EGL=ON
+      -DVTK_DEFAULT_RENDER_WINDOW_HEADLESS=ON``, builds, installs to
+      /opt/conda.
+    * %test additionally verifies ``vtkRenderingEGL`` importable and
+      probes ``vtkEGLRenderWindow`` creation.
+
+    Set ``SKIP_VTK_BUILD=1`` in the build environment to abort if the
+    VTK source build fails — useful when iterating on the scientific
+    stack only.
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    export PATH=/opt/conda/bin:${PATH}
+    export VISIVO_SESSION_TTL=${VISIVO_SESSION_TTL:-1800}
+
+    # VTK install paths — make sure our custom-built libs win over any
+    # leftover system VTK that might be on a host's LD_LIBRARY_PATH.
+    export LD_LIBRARY_PATH=/opt/conda/lib:${LD_LIBRARY_PATH:-}
+
+    # Force VTK to pick the EGL render window factory at runtime.
+    # Mesa's offscreen path also looks at this var; setting it forces
+    # the EGL-native code path even when X11 deps are present.
+    export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
+
+%post
+    set -e
+
+    . /opt/conda/etc/profile.d/conda.sh
+    conda activate base
+
+    CONDA_INSTALLER="${CONDA_INSTALLER:-conda}"
+    case "$CONDA_INSTALLER" in
+        mamba) INSTALL_CMD="mamba install -y" ;;
+        conda) INSTALL_CMD="conda install -y --no-lock" ;;
+        *) echo "ERROR: CONDA_INSTALLER must be 'mamba' or 'conda'"; exit 1 ;;
+    esac
+    echo "[backend-conda-egl.def] Using installer: $INSTALL_CMD"
+
+    REQS=$(find /srv/backend_src -name requirements.txt -print -quit 2>/dev/null)
+    if [ -z "$REQS" ]; then
+        echo "ERROR: requirements.txt not found under /srv/backend_src"
+        exit 1
+    fi
+    SRC_DIR=$(dirname "$REQS")
+
+    # ── Stage 1 — same as backend-conda.def ────────────────────────────
+    echo "[backend-conda-egl.def] Stage 1/5 — foundation"
+    $INSTALL_CMD -n base -c conda-forge \
+        python=3.12 \
+        numpy \
+        "scipy<1.14" \
+        astropy \
+        pandas \
+        healpy \
+        pyerfa \
+        pillow \
+        pip
+
+    # ── Stage 2 — VTK BUILD DEPS instead of conda-forge vtk ───────────
+    echo "[backend-conda-egl.def] Stage 2/5 — VTK build deps + HDF5"
+    # We install vtk-base ONLY to pull the transitive C++ deps (proj,
+    # netcdf-cxx4, etc.) without bringing in the qt/X11 stuff. Then we
+    # uninstall it before building our own VTK so the binding files
+    # don't shadow ours.
+    $INSTALL_CMD -n base -c conda-forge \
+        h5py \
+        cmake \
+        ninja \
+        git \
+        pkg-config \
+        libglvnd-glx-cos7-ppc64le \
+        libglvnd-egl-cos7-ppc64le \
+        mesa-libegl-cos7-ppc64le \
+        libegl-cos7-ppc64le \
+        libgl-cos7-ppc64le \
+        || (
+            # Fallback to generic libegl from non-cos7 channel — for
+            # x86_64 builds and non-Red-Hat ppc64le distros.
+            echo "[backend-conda-egl.def] cos7-ppc64le mesa not in channel; "\
+                 "trying generic libegl"
+            $INSTALL_CMD -n base -c conda-forge \
+                h5py cmake ninja git pkg-config \
+                libegl mesa-libegl libglvnd
+        )
+
+    # ── Stage 3 — Numba JIT (unchanged from backend-conda.def) ────────
+    echo "[backend-conda-egl.def] Stage 3/5 — Numba JIT"
+    $INSTALL_CMD -n base -c conda-forge numba llvmlite
+
+    # ── Stage 4 — Web framework + science add-ons ────────────────────
+    echo "[backend-conda-egl.def] Stage 4a — Web framework"
+    $INSTALL_CMD -n base -c conda-forge fastapi uvicorn-standard
+    echo "[backend-conda-egl.def] Stage 4b — Astronomy analysis"
+    $INSTALL_CMD -n base -c conda-forge photutils reproject scikit-image
+    echo "[backend-conda-egl.def] Stage 4c — Astroquery"
+    $INSTALL_CMD -n base -c conda-forge astroquery
+    echo "[backend-conda-egl.def] Stage 4d — Distributed compute"
+    $INSTALL_CMD -n base -c conda-forge dask distributed
+
+    # Optional cupy.
+    if [ "${ENABLE_CUPY:-0}" = "1" ]; then
+        echo "[backend-conda-egl.def] ENABLE_CUPY=1 → installing cupy"
+        $INSTALL_CMD -n base -c conda-forge cupy
+    fi
+
+    # ── Stage 5 — BUILD VTK 9.3.1 FROM SOURCE WITH EGL ────────────────
+    # This is the only stage that differs structurally from
+    # backend-conda.def. It clones VTK, configures with EGL/headless
+    # flags, builds, installs into /opt/conda.
+    VTK_TAG="${VTK_TAG:-v9.3.1}"
+    echo "[backend-conda-egl.def] Stage 5/5 — Building VTK $VTK_TAG from source"
+    cd /tmp
+    git clone --depth 1 --branch "$VTK_TAG" \
+        https://gitlab.kitware.com/vtk/vtk.git vtk-src
+    mkdir -p vtk-build
+    cd vtk-build
+
+    # NOTE on flags:
+    #   * VTK_USE_X=OFF                  → drop all X11 deps. Mandatory
+    #                                       for headless EGL builds.
+    #   * VTK_OPENGL_HAS_EGL=ON          → enable EGL in vtkOpenGLRenderer.
+    #   * VTK_DEFAULT_RENDER_WINDOW_HEADLESS=ON → make EGL the default
+    #                                       window backend at runtime.
+    #   * VTK_WRAP_PYTHON=ON             → build the vtkmodules python
+    #                                       bindings the backend imports.
+    #   * BUILD_SHARED_LIBS=ON           → match conda-forge convention;
+    #                                       smaller .sif than static.
+    #   * VTK_GROUP_ENABLE_*=YES         → enable the standard groups we
+    #                                       need (rendering, charts,
+    #                                       volume, slicing, IO).
+    #   * VTK_OPENGL_USE_GLES=OFF        → desktop OpenGL, not GLES.
+    cmake -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/opt/conda \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DBUILD_SHARED_LIBS=ON \
+        -DBUILD_TESTING=OFF \
+        -DBUILD_EXAMPLES=OFF \
+        -DVTK_USE_X=OFF \
+        -DVTK_USE_COCOA=OFF \
+        -DVTK_OPENGL_HAS_EGL=ON \
+        -DVTK_OPENGL_HAS_OSMESA=OFF \
+        -DVTK_OPENGL_USE_GLES=OFF \
+        -DVTK_DEFAULT_RENDER_WINDOW_HEADLESS=ON \
+        -DVTK_WRAP_PYTHON=ON \
+        -DVTK_PYTHON_VERSION=3 \
+        -DPython3_EXECUTABLE=/opt/conda/bin/python \
+        -DVTK_GROUP_ENABLE_StandAlone=YES \
+        -DVTK_GROUP_ENABLE_Rendering=YES \
+        -DVTK_GROUP_ENABLE_Imaging=YES \
+        -DVTK_GROUP_ENABLE_MPI=DONT_WANT \
+        -DVTK_GROUP_ENABLE_Qt=DONT_WANT \
+        -DVTK_GROUP_ENABLE_Views=YES \
+        -DVTK_GROUP_ENABLE_Web=DONT_WANT \
+        -DVTK_MODULE_ENABLE_VTK_RenderingVolume=YES \
+        -DVTK_MODULE_ENABLE_VTK_RenderingVolumeOpenGL2=YES \
+        -DVTK_MODULE_ENABLE_VTK_RenderingOpenGL2=YES \
+        -DVTK_MODULE_ENABLE_VTK_RenderingEGL=YES \
+        ../vtk-src
+
+    # Build with all available cores. On Power9 V100 nodes (16 cores
+    # per node) the build takes ~50-70 min; on x86_64 EPYC, ~30-40.
+    ninja -j "$(nproc)"
+    ninja install
+
+    # Clean up source + build dir to keep the SIF small (~600 MB savings).
+    cd /
+    rm -rf /tmp/vtk-src /tmp/vtk-build
+
+    # Cleanup conda caches.
+    conda clean --all --yes
+
+    # ── Copy application source (same as backend-conda.def) ──────────
+    mkdir -p /app
+    cp -r "$SRC_DIR"/* /app/
+
+    # ── Sanity check ─────────────────────────────────────────────────
+    python -c "
+import sys
+print(f'[sanity] python {sys.version}')
+import vtk
+print(f'[sanity] vtk {vtk.VTK_VERSION}')
+# The reason we built from source: this import must succeed.
+from vtkmodules.vtkRenderingEGL import vtkEGLRenderWindow
+print('[sanity] vtkRenderingEGL importable → EGL build OK')
+import numpy, scipy, astropy, healpy, numba
+print(f'[sanity] numpy {numpy.__version__}, scipy {scipy.__version__}, '
+      f'astropy {astropy.__version__}, healpy {healpy.__version__}, '
+      f'numba {numba.__version__}')
+print('[sanity] Full conda+EGL VTK stack verified.')
+"
+
+%setup
+    set -ex
+    SRC_HOST="${PWD}/backend"
+    SRC_TGT="${APPTAINER_ROOTFS}/srv/backend_src"
+    if [ ! -d "$SRC_HOST" ]; then
+        echo "ERROR: ${SRC_HOST} not found. Run build from repo root."
+        exit 1
+    fi
+    mkdir -p "$SRC_TGT"
+    cp -r "$SRC_HOST"/. "$SRC_TGT/"
+
+%runscript
+    #!/bin/bash
+    HOST="${VISIVO_HOST:-0.0.0.0}"
+    PORT="${PORT:-8000}"
+    WORKERS="${VISIVO_WORKERS:-$(nproc)}"
+    echo "[VisIVO/conda-egl] Starting backend on ${HOST}:${PORT} "\
+         "with ${WORKERS} worker(s); VTK headless EGL backend."
+    exec uvicorn app.main:app \
+        --host "${HOST}" \
+        --port "${PORT}" \
+        --workers 1 \
+        --log-level info \
+        --app-dir /app
+
+%test
+    python -c "
+import sys, platform
+sys.path.insert(0, '/app')
+from app.auth import TOKEN
+from app.sessions import REGISTRY
+print(f'[test] Architecture: {platform.machine()}')
+print(f'[test] Python: {sys.version.split()[0]}')
+print(f'[test] Auth module OK. Token length: {len(TOKEN)}')
+
+# EGL-specific probes — what differs from the X11 build.
+import vtk
+print(f'[test] vtk {vtk.VTK_VERSION}')
+from vtkmodules.vtkRenderingEGL import vtkEGLRenderWindow
+print('[test] vtkRenderingEGL.vtkEGLRenderWindow importable → ✓')
+
+# Try to instantiate (but do NOT call Render — at build time we have
+# no GPU; --nv runtime supplies it). The constructor's call to
+# eglGetDisplay can succeed with EGL_NO_DISPLAY in a CI/build env.
+win = vtkEGLRenderWindow()
+win.SetOffScreenRendering(1)
+print(f'[test] Created vtkEGLRenderWindow offscreen instance: {type(win).__name__}')
+
+import numpy, scipy, astropy, healpy, numba
+print(f'[test] scientific stack OK: numpy={numpy.__version__} '
+      f'scipy={scipy.__version__} astropy={astropy.__version__} '
+      f'healpy={healpy.__version__} numba={numba.__version__}')
+print('[test] Full EGL-enabled VTK + conda stack verified.')
+"
