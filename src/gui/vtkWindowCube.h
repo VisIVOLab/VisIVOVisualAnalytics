@@ -517,6 +517,18 @@ private:
     // slice. Prevents cascading prefetch chains (each prefetched
     // slice triggering its own ±1 prefetches → wavefront expansion).
     bool prefetchAllowedForNextResult{ false };
+    // Smart prefetch: instead of firing ±1 immediately on every
+    // user-initiated slice apply, schedule it for ``idlePrefetchDelayMs``
+    // later and CANCEL the timer whenever another slice request
+    // arrives. End result:
+    //   • Rapid scroll through many channels → zero prefetch (each
+    //     new request cancels the prior schedule before it fires)
+    //   • A real "stop" (user found their channel) → ±1 prefetch
+    //     500 ms later, ready for fine-tuning ± a channel
+    // Net win: no tunnel-saturation during scrubbing, neighbour
+    // caching kicks in once the user actually settles.
+    QTimer idlePrefetchTimer;
+    static constexpr int idlePrefetchDelayMs = 500;
     static constexpr int remoteLoadingStateDelayMs = 250;
     // Slider drag fires QSlider::valueChanged on every pixel of motion.
     // With a 100 ms debounce, even the tiniest pauses during a normal

@@ -1883,6 +1883,14 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(&this->remoteSliceDebounceTimer, &QTimer::timeout, this, [this]() {
         this->requestRemoteSlice(this->pendingRemoteSliceIndex);
     });
+    // Idle-triggered neighbour prefetch — fires `idlePrefetchDelayMs`
+    // after the LAST applyRemoteSliceResult that was allowed to schedule
+    // a prefetch (user-initiated). Re-armed on every user request so
+    // a scroll burst suppresses it cleanly.
+    this->idlePrefetchTimer.setSingleShot(true);
+    QObject::connect(&this->idlePrefetchTimer, &QTimer::timeout, this, [this]() {
+        this->prefetchNeighborRemoteSlices(this->currentRequestedRemoteSliceIndex);
+    });
     this->remoteFullResolutionStateTimer.setSingleShot(true);
     QObject::connect(&this->remoteFullResolutionStateTimer, &QTimer::timeout, this, [this]() {
         if (this->remoteCubeDisplayState != RemoteCubeDisplayState::LoadingFullResolution
@@ -8176,6 +8184,10 @@ void vtkWindowCube::requestRemoteSlice(int sliceIndex)
     // applyRemoteSliceResult is allowed to spawn ±1 prefetches.
     // Prefetched results themselves leave this flag false → no cascade.
     this->prefetchAllowedForNextResult = true;
+    // Cancel any pending idle prefetch — the user just acted, so a
+    // previously-scheduled prefetch is no longer interesting. The
+    // applyRemoteSliceResult for THIS request will re-arm the timer.
+    this->idlePrefetchTimer.stop();
     if (this->tryApplyCachedRemoteSlice(sliceIndex)) {
         return;
     }
@@ -8237,16 +8249,15 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
         this->updateProbeReadout(result.imageData);
     }
     this->sliceWin->Render();
-    // Prefetch ±1 neighbour slices only when this slice was the user's
-    // explicit request, NOT when it was itself a prefetched neighbour.
-    // Otherwise every prefetched slice triggers its own prefetches, the
-    // wavefront expands ±2, ±3, ±4 …, and the SSH tunnel fills with
-    // tens of stale slice POSTs the user never asked for. The flag is
-    // set by requestRemoteSlice() before the fetch starts and reset
-    // here once the result lands.
+    // Smart prefetch: schedule ±1 neighbour fetch ``idlePrefetchDelayMs``
+    // from now, only when this slice was the user's explicit request
+    // (prefetchAllowedForNextResult) — not a prefetched neighbour itself
+    // (no cascade). A new requestRemoteSlice() will CANCEL this timer
+    // (see requestRemoteSlice), so rapid scroll produces zero prefetches
+    // and the SSH tunnel stays clear for the user-visible slice.
     if (this->prefetchAllowedForNextResult) {
         this->prefetchAllowedForNextResult = false;
-        this->prefetchNeighborRemoteSlices(result.index);
+        this->idlePrefetchTimer.start(idlePrefetchDelayMs);
     }
 }
 
