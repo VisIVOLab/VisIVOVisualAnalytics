@@ -168,6 +168,10 @@ From: condaforge/mambaforge:latest
     VTK_TAG="${VTK_TAG:-v9.3.1}"
     echo "[backend-conda-egl.def] Stage 5/5 — Building VTK $VTK_TAG from source"
     cd /tmp
+    # Clear any leftover from a previous failed build attempt — Apptainer
+    # preserves /tmp across rebuilds of the same SIF when the build
+    # failed mid-%post.
+    rm -rf /tmp/vtk-src /tmp/vtk-build
     git clone --depth 1 --branch "$VTK_TAG" \
         https://gitlab.kitware.com/vtk/vtk.git vtk-src
     mkdir -p vtk-build
