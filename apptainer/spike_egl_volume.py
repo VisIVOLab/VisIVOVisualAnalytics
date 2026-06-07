@@ -210,7 +210,16 @@ def build_volume_pipeline(image_data, vmin: float, vmax: float):
     # (GPURayCast on EGL/CUDA, RayCast or Texture3D fallback otherwise).
     mapper = vtk.vtkSmartVolumeMapper()
     mapper.SetInputData(image_data)
-    mapper.SetRequestedRenderModeToGPU()  # explicit GPU when possible
+    # First-frame mode override — set ``VISIVO_SPIKE_FORCE_CPU=1`` to
+    # force the CPU ray-cast mapper. Useful for verifying the EGL
+    # pipeline lights up at all when the GPU mapper hangs (which can
+    # happen with GLES-only builds on some NVIDIA driver versions).
+    if os.environ.get("VISIVO_SPIKE_FORCE_CPU", "0") == "1":
+        print("[spike] VISIVO_SPIKE_FORCE_CPU=1 → forcing RayCastRenderMode (CPU)",
+              flush=True)
+        mapper.SetRequestedRenderModeToRayCast()
+    else:
+        mapper.SetRequestedRenderModeToGPU()  # explicit GPU when possible
 
     # Linear opacity ramp on the data range, peaks above the noise floor.
     opacity_tf = vtk.vtkPiecewiseFunction()
