@@ -73,24 +73,53 @@ echo
 echo "[spike-egl] Pre-flight inside container (with explicit NV binds + LD_LIBRARY_PATH)"
 apptainer exec --nv "${NV_BINDS[@]}" \
     --env LD_LIBRARY_PATH=/usr/lib64 \
+    --env __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json \
+    --env __GLX_VENDOR_LIBRARY_NAME=nvidia \
     "$SIF" bash -c '
-    # Probe both filesystem presence and ldconfig visibility.
     echo "  /usr/lib64/libEGL_nvidia.so.0 file: $(test -e /usr/lib64/libEGL_nvidia.so.0 && echo yes || echo no)"
+    echo "  CUDA_VISIBLE_DEVICES envvar: ${CUDA_VISIBLE_DEVICES:-(unset)}"
     echo "  ldconfig: libEGL_nvidia     → $(ldconfig -p | grep -c libEGL_nvidia.so 2>/dev/null || echo 0) entries"
     echo "  ldconfig: libGLX_nvidia     → $(ldconfig -p | grep -c libGLX_nvidia.so 2>/dev/null || echo 0) entries"
-    # The real test: can python dlopen libEGL_nvidia.so.0? libglvnd
-    # does this internally when the EGL window is created; if it
-    # fails, EGLs Render() hangs forever (no fallback path).
     python3 -c "
-import ctypes, sys
+import ctypes
 try:
     ctypes.CDLL(\"libEGL_nvidia.so.0\")
     print(\"  dlopen libEGL_nvidia.so.0: OK\")
 except OSError as e:
     print(f\"  dlopen libEGL_nvidia.so.0: FAILED — {e}\")
-    sys.exit(0)
 "
     echo "  vendor JSON visible         : $([ -f /usr/share/glvnd/egl_vendor.d/10_nvidia.json ] && echo yes || echo no)"
+    echo
+    echo "  Bare EGL initialisation probe (skips VTK entirely)..."
+    timeout 10 python3 << "EOF" || echo "  EGL_init: TIMED OUT after 10s — hangs at one of the eglXxx calls below"
+import ctypes, ctypes.util
+egl = ctypes.CDLL("libEGL.so.1")
+
+# eglGetDisplay(EGL_DEFAULT_DISPLAY) → EGLDisplay (a pointer/int)
+egl.eglGetDisplay.argtypes = [ctypes.c_void_p]
+egl.eglGetDisplay.restype = ctypes.c_void_p
+disp = egl.eglGetDisplay(0)
+print(f"  eglGetDisplay(EGL_DEFAULT_DISPLAY): handle=0x{disp or 0:x}")
+if not disp:
+    print("  EGL_init: FAILED — eglGetDisplay returned EGL_NO_DISPLAY")
+    raise SystemExit(0)
+
+# eglInitialize(disp, &major, &minor) → EGLBoolean
+egl.eglInitialize.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
+egl.eglInitialize.restype = ctypes.c_int
+maj, mn = ctypes.c_int(), ctypes.c_int()
+ok = egl.eglInitialize(disp, ctypes.byref(maj), ctypes.byref(mn))
+print(f"  eglInitialize: ok={ok}, version={maj.value}.{mn.value}")
+if ok:
+    # Query the vendor string. If we are talking to NVIDIA EGL this
+    # returns "NVIDIA"; mesa returns "Mesa Project".
+    EGL_VENDOR = 0x3053
+    egl.eglQueryString.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    egl.eglQueryString.restype = ctypes.c_char_p
+    vendor = egl.eglQueryString(disp, EGL_VENDOR)
+    print(f"  EGL vendor: {vendor.decode() if vendor else None}")
+    print("  EGL_init: SUCCESS")
+EOF
 '
 echo
 
@@ -107,7 +136,9 @@ apptainer exec --nv \
     --bind "$(dirname "$SPIKE"):$(dirname "$SPIKE")" \
     --env PYTHONPATH=/app \
     --env LD_LIBRARY_PATH=/usr/lib64 \
+    --env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}" \
     --env __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json \
+    --env __GLX_VENDOR_LIBRARY_NAME=nvidia \
     "$SIF" \
     python3 "$SPIKE" "$FITS" "$OUT"
 
