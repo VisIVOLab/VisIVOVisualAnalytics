@@ -28,6 +28,21 @@ router = APIRouter(tags=['datasets'])
 logger = logging.getLogger('visivo.backend')
 _auth = Depends(verify_token)
 
+def _probe_server_side_rendering() -> bool:
+    """Lazy probe for the SSR capability flag on the open dataset response.
+
+    Wrapped because ``app.render_session`` imports VTK + Pillow at
+    module-load time, which we don't want on CPU-only / Web-only
+    backends. ``ImportError`` here means the backend was built without
+    EGL — perfectly normal, just means no SSR.
+    """
+    try:
+        from ..render_session import server_side_rendering_available
+        return bool(server_side_rendering_available())
+    except ImportError:
+        return False
+
+
 def _build_open_response(dataset_id: str, session_id: str, kind: str,
                           geometry: dict[str, Any]) -> OpenDatasetResponse:
     """Shared response-builder for /open and /open_url so the OpenDatasetResponse
@@ -65,6 +80,11 @@ def _build_open_response(dataset_id: str, session_id: str, kind: str,
         recommended_load_mode=str(
             geometry.get("recommended_load_mode", "auto_full")
         ),
+        # Backend-wide capability flag — the same for every dataset the
+        # backend serves (depends on the SIF build, not on the cube).
+        # Imported lazily so a backend without the EGL build doesn't
+        # have to install the render module.
+        server_side_rendering_available=_probe_server_side_rendering(),
     )
 
 

@@ -90,3 +90,25 @@ app.include_router(dynspec.router, dependencies=[_auth])
 # SAMP: /v1/samp/files/{token} is public (no auth) for VO tool access;
 # all other /v1/samp/* routes use per-route auth declared in the router itself.
 app.include_router(samp.router)
+
+# Server-side rendering — Phase 1+2. Imported lazily so a backend
+# without the EGL build can still serve the rest of the API; on import
+# failure the router simply doesn't mount and the dataset open response
+# returns ``server_side_rendering_available=False``.
+try:
+    from .routers import render as render_routes  # noqa: PLC0415
+    app.include_router(render_routes.router, dependencies=[_auth])
+
+    @app.on_event("shutdown")
+    async def _stop_render_manager():
+        # Release all open EGL contexts cleanly on uvicorn shutdown.
+        # Without this the EGL display handle is leaked and the next
+        # backend start may fail to acquire it on the same GPU.
+        from .render_manager import get_render_manager
+        await get_render_manager().stop()
+except ImportError as _ssr_import_err:
+    logging.getLogger("visivo.backend").info(
+        "[startup] Server-side rendering router not mounted: %s "
+        "(this is normal on backends built without EGL).",
+        _ssr_import_err,
+    )

@@ -72,6 +72,12 @@ class OpenDatasetResponse(BaseModel):
     file_size_bytes: int = 0
     full_res_threshold_bytes: int = 4 * 1024 ** 3
     recommended_load_mode: str = "auto_full"  # "auto_full" | "preview_only"
+    # True iff this backend can host server-side rendering for the
+    # opened cube (EGL build + GPU detected). Backend-agnostic: any
+    # client connecting to any backend (SKAVA-discovered, manually
+    # added Remote Backend, localhost) reads this single flag to
+    # decide whether to offer the "Use remote rendering" mode.
+    server_side_rendering_available: bool = False
 
 
 class MomentProductRequest(BaseModel):
