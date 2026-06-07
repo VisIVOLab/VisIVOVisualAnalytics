@@ -261,58 +261,81 @@ From: condaforge/mambaforge:latest
     # default search paths. We export EGL_LIBDIR / EGL_LIB /
     # EGL_INCLUDE_DIR in Stage 2a from gcc -print-multiarch; reuse
     # them here.
+    # CRITICAL: every -D needs an EXPLICIT :TYPE annotation. Without it
+    # cmake stores the value as "UNINITIALIZED" in CMakeCache.txt and
+    # VTK's option()/cmake_dependent_option() calls never see the
+    # override. The previous attempt failed exactly here — CMake said
+    # "Manually-specified variables were not used by the project".
     cmake -G Ninja \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX=/opt/conda \
-        -DCMAKE_INSTALL_LIBDIR=lib \
-        -DBUILD_SHARED_LIBS=ON \
-        -DBUILD_TESTING=OFF \
-        -DBUILD_EXAMPLES=OFF \
-        -DVTK_USE_X=OFF \
-        -DVTK_USE_COCOA=OFF \
-        -DVTK_OPENGL_HAS_EGL=ON \
-        -DVTK_OPENGL_HAS_OSMESA=OFF \
-        -DVTK_OPENGL_USE_GLES=OFF \
-        -DVTK_DEFAULT_RENDER_WINDOW_HEADLESS=ON \
-        -DOPENGL_egl_LIBRARY="$EGL_LIB" \
-        -DOPENGL_EGL_INCLUDE_DIR="$EGL_INCLUDE_DIR" \
-        -DEGL_INCLUDE_DIR="$EGL_INCLUDE_DIR" \
-        -DEGL_LIBRARY="$EGL_LIB" \
-        -DVTK_WRAP_PYTHON=ON \
-        -DVTK_PYTHON_VERSION=3 \
-        -DPython3_EXECUTABLE=/opt/conda/bin/python \
-        -DVTK_GROUP_ENABLE_StandAlone=YES \
-        -DVTK_GROUP_ENABLE_Rendering=YES \
-        -DVTK_GROUP_ENABLE_Imaging=YES \
-        -DVTK_GROUP_ENABLE_MPI=DONT_WANT \
-        -DVTK_GROUP_ENABLE_Qt=DONT_WANT \
-        -DVTK_GROUP_ENABLE_Views=YES \
-        -DVTK_GROUP_ENABLE_Web=DONT_WANT \
-        -DVTK_MODULE_ENABLE_VTK_RenderingVolume=YES \
-        -DVTK_MODULE_ENABLE_VTK_RenderingVolumeOpenGL2=YES \
-        -DVTK_MODULE_ENABLE_VTK_RenderingOpenGL2=YES \
-        -DVTK_MODULE_ENABLE_VTK_RenderingEGL=YES \
+        -DCMAKE_BUILD_TYPE:STRING=Release \
+        -DCMAKE_INSTALL_PREFIX:PATH=/opt/conda \
+        -DCMAKE_INSTALL_LIBDIR:STRING=lib \
+        -DBUILD_SHARED_LIBS:BOOL=ON \
+        -DBUILD_TESTING:BOOL=OFF \
+        -DBUILD_EXAMPLES:BOOL=OFF \
+        -DVTK_USE_X:BOOL=OFF \
+        -DVTK_USE_COCOA:BOOL=OFF \
+        -DVTK_OPENGL_HAS_EGL:BOOL=ON \
+        -DVTK_OPENGL_HAS_OSMESA:BOOL=OFF \
+        -DVTK_OPENGL_USE_GLES:BOOL=OFF \
+        -DVTK_DEFAULT_RENDER_WINDOW_HEADLESS:BOOL=ON \
+        -DOPENGL_egl_LIBRARY:FILEPATH="$EGL_LIB" \
+        -DOPENGL_EGL_INCLUDE_DIR:PATH="$EGL_INCLUDE_DIR" \
+        -DEGL_INCLUDE_DIR:PATH="$EGL_INCLUDE_DIR" \
+        -DEGL_LIBRARY:FILEPATH="$EGL_LIB" \
+        -DVTK_WRAP_PYTHON:BOOL=ON \
+        -DVTK_PYTHON_VERSION:STRING=3 \
+        -DPython3_EXECUTABLE:FILEPATH=/opt/conda/bin/python \
+        -DVTK_GROUP_ENABLE_StandAlone:STRING=YES \
+        -DVTK_GROUP_ENABLE_Rendering:STRING=YES \
+        -DVTK_GROUP_ENABLE_Imaging:STRING=YES \
+        -DVTK_GROUP_ENABLE_MPI:STRING=DONT_WANT \
+        -DVTK_GROUP_ENABLE_Qt:STRING=DONT_WANT \
+        -DVTK_GROUP_ENABLE_Views:STRING=YES \
+        -DVTK_GROUP_ENABLE_Web:STRING=DONT_WANT \
+        -DVTK_MODULE_ENABLE_VTK_RenderingVolume:STRING=YES \
+        -DVTK_MODULE_ENABLE_VTK_RenderingVolumeOpenGL2:STRING=YES \
+        -DVTK_MODULE_ENABLE_VTK_RenderingOpenGL2:STRING=YES \
+        -DVTK_MODULE_ENABLE_VTK_RenderingEGL:STRING=YES \
         ../vtk-src 2>&1 | tee /tmp/vtk-cmake.log
 
-    # HARD CHECK — the previous build silently dropped the EGL module
-    # (cmake configure "succeeded", VTK built without it, %test
-    # failed). We probe CMakeCache.txt directly for the canonical
-    # var that VTK sets on a successful EGL detection.
+    # HARD CHECK — confirm:
+    #   (1) the EGL_LIBRARY / EGL_INCLUDE_DIR vars are stored as the
+    #       correct types (FILEPATH / PATH) so VTK actually used them
+    #   (2) the RenderingEGL module is registered in the build graph
     echo "==================================================================="
     echo "[backend-conda-egl.def] Post-configure EGL detection check:"
     grep -E "^EGL_(LIBRARY|INCLUDE_DIR):" CMakeCache.txt || echo "  EGL_* vars NOT in CMakeCache.txt — bad sign"
     grep -E "VTK_MODULE_ENABLE_VTK_RenderingEGL" CMakeCache.txt || echo "  VTK_MODULE_ENABLE_VTK_RenderingEGL NOT in cache"
     grep -E "VTK_OPENGL_HAS_EGL" CMakeCache.txt || true
+
+    # Did VTK actually build the RenderingEGL module? It generates a
+    # build directory under build.ninja which mentions it if scanned.
+    echo "[backend-conda-egl.def] RenderingEGL targets in ninja graph:"
+    grep -iE "RenderingEGL|vtkRenderingEGL" build.ninja 2>/dev/null \
+        | grep -E "library|build" | head -5 \
+        || echo "  none — module was NOT registered for the build"
+
+    # Also dump what cmake said about EGL / RenderingEGL during configure.
+    echo "[backend-conda-egl.def] cmake configure log excerpt (egl|RenderingEGL):"
+    grep -iE "RenderingEGL|EGL::EGL|Found EGL|find_package.*EGL" /tmp/vtk-cmake.log \
+        | head -20 || true
     echo "==================================================================="
-    # Fail FAST so we don't waste 50 min building a VTK without the
-    # module we need.
+
+    # Hard fail if (1) the EGL paths are wrong type, or (2) the
+    # RenderingEGL module is missing from the build graph. Either way
+    # the resulting VTK will not have vtkmodules.vtkRenderingEGL.
     if ! grep -qE "^EGL_LIBRARY:FILEPATH=.+libEGL" CMakeCache.txt 2>/dev/null; then
-        echo "[backend-conda-egl.def] FATAL: EGL_LIBRARY is empty or unset in CMakeCache.txt."
-        echo "[backend-conda-egl.def] cmake configure log excerpt (egl|opengl):"
-        grep -iE "egl|opengl|find_package|RenderingEGL" /tmp/vtk-cmake.log | head -40 || true
+        echo "[backend-conda-egl.def] FATAL: EGL_LIBRARY not stored as FILEPATH in cache."
         exit 1
     fi
-    echo "[backend-conda-egl.def] EGL detection OK — proceeding to build."
+    if ! grep -qiE "RenderingEGL" build.ninja 2>/dev/null; then
+        echo "[backend-conda-egl.def] FATAL: RenderingEGL not in the build graph."
+        echo "[backend-conda-egl.def] Showing all VTK rendering modules that ARE in the graph:"
+        grep -oE "vtkRendering[A-Za-z0-9_]+" build.ninja 2>/dev/null | sort -u | head -20
+        exit 1
+    fi
+    echo "[backend-conda-egl.def] EGL detection + RenderingEGL module OK — proceeding to build."
 
     # Build with all available cores. On Power9 V100 nodes (16 cores
     # per node) the build takes ~50-70 min; on x86_64 EPYC, ~30-40.
