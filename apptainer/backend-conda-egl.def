@@ -137,15 +137,11 @@ From: condaforge/mambaforge:latest
 
     # Sanity probe — VTK's find_package(EGL) reads the same files we
     # check here. If any are missing, the cmake configure step below
-    # silently disables ``VTK_MODULE_ENABLE_VTK_RenderingEGL`` and the
-    # build "succeeds" without the EGL module — exactly the failure
-    # mode we hit in the first attempt.
+    # silently disables ``VTK_MODULE_ENABLE_VTK_RenderingEGL``.
     EGL_ARCH="$(gcc -print-multiarch 2>/dev/null || echo)"
     echo "[backend-conda-egl.def] gcc reports multiarch: ${EGL_ARCH:-<unknown>}"
     EGL_LIBDIR="/usr/lib/${EGL_ARCH}"
     if [ -z "$EGL_ARCH" ] || [ ! -d "$EGL_LIBDIR" ]; then
-        # Fall back to /usr/lib64 (RHEL/Rocky inside container) or
-        # /usr/lib if the multiarch dir is missing.
         for cand in /usr/lib64 /usr/lib; do
             if [ -e "$cand/libEGL.so" ] || [ -e "$cand/libEGL.so.1" ]; then
                 EGL_LIBDIR="$cand"
@@ -154,14 +150,11 @@ From: condaforge/mambaforge:latest
         done
     fi
     echo "[backend-conda-egl.def] EGL libdir: $EGL_LIBDIR"
-    for f in egl.h gl.h; do
-        if [ ! -f "/usr/include/EGL/$f" ] && [ ! -f "/usr/include/GL/$f" ]; then
-            echo "[backend-conda-egl.def] WARN: missing header $f under /usr/include/{EGL,GL}/"
-        fi
-    done
+    ls -la "$EGL_LIBDIR"/libEGL* "$EGL_LIBDIR"/libGL* 2>/dev/null || true
+
     # The libegl1 package ships libEGL.so.1; the *-dev package ships
-    # the libEGL.so unversioned symlink. If only .1 is present, VTK's
-    # cmake fails to link — create the symlink defensively.
+    # the libEGL.so unversioned symlink. If only .1 is present, the
+    # cmake configure can fail to link — create the symlink defensively.
     if [ ! -e "$EGL_LIBDIR/libEGL.so" ] && [ -e "$EGL_LIBDIR/libEGL.so.1" ]; then
         echo "[backend-conda-egl.def] Adding missing libEGL.so symlink in $EGL_LIBDIR"
         ln -sf libEGL.so.1 "$EGL_LIBDIR/libEGL.so"
@@ -169,14 +162,41 @@ From: condaforge/mambaforge:latest
     if [ ! -e "$EGL_LIBDIR/libGL.so" ] && [ -e "$EGL_LIBDIR/libGL.so.1" ]; then
         ln -sf libGL.so.1 "$EGL_LIBDIR/libGL.so"
     fi
+
+    # Headers — egl.h MUST be under /usr/include/EGL/ for VTK to find
+    # it. ``apt install libegl-dev`` puts it there but the package
+    # check is non-fatal so we re-verify.
+    if [ ! -f "/usr/include/EGL/egl.h" ]; then
+        echo "[backend-conda-egl.def] FATAL: /usr/include/EGL/egl.h missing after apt install"
+        echo "[backend-conda-egl.def] Contents of /usr/include/EGL/:"
+        ls -la /usr/include/EGL/ 2>/dev/null || echo "  (directory missing)"
+        exit 1
+    fi
+    if [ ! -f "/usr/include/KHR/khrplatform.h" ]; then
+        echo "[backend-conda-egl.def] WARN: /usr/include/KHR/khrplatform.h missing — egl.h transitively requires it"
+        apt-get update && apt-get install -y --no-install-recommends libegl1-mesa-dev khronos-headers-egl 2>/dev/null || true
+    fi
+
     # Export the path for the cmake invocation below.
     export EGL_LIBDIR
     export EGL_LIB="$EGL_LIBDIR/libEGL.so"
     export EGL_INCLUDE_DIR="/usr/include"
+    # Make these paths CMake-discoverable globally — VTK's
+    # ``find_package(EGL)`` calls into ``CMake/FindEGL.cmake`` which
+    # respects CMAKE_PREFIX_PATH / CMAKE_LIBRARY_PATH /
+    # CMAKE_INCLUDE_PATH. Setting them belt-and-braces alongside the
+    # explicit -DEGL_LIBRARY=... below.
+    export CMAKE_PREFIX_PATH="/usr:${CMAKE_PREFIX_PATH:-}"
+    export CMAKE_LIBRARY_PATH="$EGL_LIBDIR:${CMAKE_LIBRARY_PATH:-}"
+    export CMAKE_INCLUDE_PATH="$EGL_INCLUDE_DIR:${CMAKE_INCLUDE_PATH:-}"
+
     echo "[backend-conda-egl.def] EGL paths used for cmake:"
     echo "                       EGL_LIB=$EGL_LIB"
     echo "                       EGL_INCLUDE_DIR=$EGL_INCLUDE_DIR"
+    echo "                       CMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH"
     ls -la "$EGL_LIB" || (echo "FATAL: $EGL_LIB still missing"; exit 1)
+    ls -la "$EGL_INCLUDE_DIR/EGL/egl.h" \
+        || (echo "FATAL: egl.h still missing"; exit 1)
 
     echo "[backend-conda-egl.def] Stage 2b/5 — Python toolchain + HDF5 via conda"
     $INSTALL_CMD -n base -c conda-forge \
@@ -274,19 +294,25 @@ From: condaforge/mambaforge:latest
         -DVTK_MODULE_ENABLE_VTK_RenderingEGL=YES \
         ../vtk-src 2>&1 | tee /tmp/vtk-cmake.log
 
-    # Hard fail if the EGL module didn't get enabled by the configure
-    # step. Print the relevant log lines so the operator sees why.
-    if ! grep -qE "Module: +VTK::RenderingEGL" /tmp/vtk-cmake.log 2>/dev/null \
-        && ! grep -qE "Enable.*VTK_MODULE_ENABLE_VTK_RenderingEGL.*YES" /tmp/vtk-cmake.log 2>/dev/null; then
-        echo "==================================================================="
-        echo "[backend-conda-egl.def] WARN: cannot confirm RenderingEGL was enabled."
-        echo "Below: every line of /tmp/vtk-cmake.log that mentions EGL or OpenGL."
-        echo "==================================================================="
-        grep -iE "egl|opengl|find_package" /tmp/vtk-cmake.log || true
-        echo "==================================================================="
-        echo "Proceeding anyway — the %test step below will catch the real failure."
-        echo "==================================================================="
+    # HARD CHECK — the previous build silently dropped the EGL module
+    # (cmake configure "succeeded", VTK built without it, %test
+    # failed). We probe CMakeCache.txt directly for the canonical
+    # var that VTK sets on a successful EGL detection.
+    echo "==================================================================="
+    echo "[backend-conda-egl.def] Post-configure EGL detection check:"
+    grep -E "^EGL_(LIBRARY|INCLUDE_DIR):" CMakeCache.txt || echo "  EGL_* vars NOT in CMakeCache.txt — bad sign"
+    grep -E "VTK_MODULE_ENABLE_VTK_RenderingEGL" CMakeCache.txt || echo "  VTK_MODULE_ENABLE_VTK_RenderingEGL NOT in cache"
+    grep -E "VTK_OPENGL_HAS_EGL" CMakeCache.txt || true
+    echo "==================================================================="
+    # Fail FAST so we don't waste 50 min building a VTK without the
+    # module we need.
+    if ! grep -qE "^EGL_LIBRARY:FILEPATH=.+libEGL" CMakeCache.txt 2>/dev/null; then
+        echo "[backend-conda-egl.def] FATAL: EGL_LIBRARY is empty or unset in CMakeCache.txt."
+        echo "[backend-conda-egl.def] cmake configure log excerpt (egl|opengl):"
+        grep -iE "egl|opengl|find_package|RenderingEGL" /tmp/vtk-cmake.log | head -40 || true
+        exit 1
     fi
+    echo "[backend-conda-egl.def] EGL detection OK — proceeding to build."
 
     # Build with all available cores. On Power9 V100 nodes (16 cores
     # per node) the build takes ~50-70 min; on x86_64 EPYC, ~30-40.
