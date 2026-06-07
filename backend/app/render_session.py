@@ -53,20 +53,27 @@ _EGL_AVAILABLE: bool | None = None
 def server_side_rendering_available() -> bool:
     """Return True iff this backend can actually run a RenderSession.
 
-    Cached because the probe imports a non-trivial module and tries to
-    open an EGL display, which is wasted work past the first call.
-    Re-probe by setting ``_EGL_AVAILABLE = None`` (e.g. in tests).
+    Cached because the probe imports a non-trivial module, which is
+    wasted work past the first call. Re-probe by setting
+    ``_EGL_AVAILABLE = None`` (e.g. in tests).
+
+    In VTK 9.3 ``vtkEGLRenderWindow`` lives inside
+    ``vtkRenderingOpenGL2``; in VTK 9.0/9.1 it was in a standalone
+    ``vtkRenderingEGL`` submodule. We probe both for forward+backward
+    compatibility across the deployed range.
     """
     global _EGL_AVAILABLE
     if _EGL_AVAILABLE is not None:
         return _EGL_AVAILABLE
-    try:
-        # The build we point at must include vtkRenderingEGL — see
-        # apptainer/backend-conda-egl.def for the cmake flags.
-        from vtkmodules.vtkRenderingEGL import vtkEGLRenderWindow  # noqa: F401
-        _EGL_AVAILABLE = True
-    except ImportError:
-        _EGL_AVAILABLE = False
+    _EGL_AVAILABLE = False
+    for path in ("vtkmodules.vtkRenderingOpenGL2", "vtkmodules.vtkRenderingEGL"):
+        try:
+            mod = __import__(path, fromlist=["vtkEGLRenderWindow"])
+            if getattr(mod, "vtkEGLRenderWindow", None) is not None:
+                _EGL_AVAILABLE = True
+                break
+        except ImportError:
+            continue
     return _EGL_AVAILABLE
 
 

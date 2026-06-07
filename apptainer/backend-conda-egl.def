@@ -296,7 +296,21 @@ From: condaforge/mambaforge:latest
         -DVTK_MODULE_ENABLE_VTK_RenderingVolume:STRING=YES \
         -DVTK_MODULE_ENABLE_VTK_RenderingVolumeOpenGL2:STRING=YES \
         -DVTK_MODULE_ENABLE_VTK_RenderingOpenGL2:STRING=YES \
+        -DVTK_MODULE_ENABLE_VTK_RenderingLICOpenGL2:STRING=NO \
+        -DVTK_MODULE_ENABLE_VTK_RenderingCellGrid:STRING=NO \
+        -DVTK_MODULE_ENABLE_VTK_FiltersCellGrid:STRING=NO \
+        -DVTK_MODULE_ENABLE_VTK_IOCellGrid:STRING=NO \
         ../vtk-src 2>&1 | tee /tmp/vtk-cmake.log
+
+    # NOTE: with VTK_OPENGL_USE_GLES=ON several VTK modules that hard-
+    # code Desktop-GL constants fail to compile (vtkLineIntegralConvolution2D
+    # uses vtkTextureObject::ClampToBorder; vtkDGOpenGLRenderer uses
+    # GL_TEXTURE_CUBE_MAP_SEAMLESS). Both are surface-rendering /
+    # vector-flow extras that the VisIVO backend does not use — its
+    # rendering surface is volume + slice. Disabling them here keeps
+    # the build clean. If a future backend feature needs LIC or
+    # cell-grid rendering, switch to the GLES-compatible upstream
+    # branch (or wait for VTK 9.4 which fixes the GLES paths).
 
     # NOTE: VTK 9.3 does NOT have a separate vtkRenderingEGL module.
     # The ``vtkEGLRenderWindow`` class lives inside vtkRenderingOpenGL2
@@ -337,9 +351,24 @@ From: condaforge/mambaforge:latest
     fi
     echo "[backend-conda-egl.def] EGL paths + vtkEGLRenderWindow OK — proceeding to build."
 
-    # Build with all available cores. On Power9 V100 nodes (16 cores
-    # per node) the build takes ~50-70 min; on x86_64 EPYC, ~30-40.
-    ninja -j "$(nproc)"
+    # Build with bounded parallelism. nproc on Power9 can report 128
+    # (SMT4 × 32 cores) but each g++ instance for a heavy VTK template
+    # peaks at ~1 GB RSS — 128 in parallel can OOM-kill cc1plus mid-
+    # compile (silent failure with "ninja: build stopped" and no obvious
+    # error line). Cap at min(nproc, mem_gb/2) so we leave RAM headroom.
+    NPROC="$(nproc)"
+    MEM_GB="$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo)"
+    BUILD_J="${NPROC}"
+    SAFE_J="$(( MEM_GB / 2 ))"
+    [ "$SAFE_J" -lt 1 ] && SAFE_J=1
+    if [ "$BUILD_J" -gt "$SAFE_J" ]; then
+        echo "[backend-conda-egl.def] Capping ninja parallelism: nproc=$NPROC, " \
+             "mem=${MEM_GB}GB, using -j$SAFE_J for safety."
+        BUILD_J="$SAFE_J"
+    else
+        echo "[backend-conda-egl.def] ninja -j$BUILD_J (nproc=$NPROC, mem=${MEM_GB}GB)"
+    fi
+    ninja -j "$BUILD_J"
     ninja install
 
     # Clean up source + build dir to keep the SIF small (~600 MB savings).

@@ -41,7 +41,13 @@ from pathlib import Path
 
 
 def probe_backends() -> dict:
-    """Try importing each VTK render-window backend, report what's available."""
+    """Try importing each VTK render-window backend, report what's available.
+
+    In VTK 9.3 ``vtkEGLRenderWindow`` lives inside ``vtkRenderingOpenGL2``
+    (conditional on the ``VTK_OPENGL_HAS_EGL`` build flag), NOT in a
+    separate ``vtkRenderingEGL`` submodule like in VTK 9.0/9.1. We
+    probe both for forward+backward compat across the deployed range.
+    """
     backends = {}
 
     try:
@@ -58,12 +64,18 @@ def probe_backends() -> dict:
     except ImportError as e:
         backends["OSMesa"] = f"missing: {e}"
 
-    try:
-        # EGL — hardware GPU offscreen. The one we actually want.
-        from vtkmodules.vtkRenderingEGL import vtkEGLRenderWindow  # noqa: F401
-        backends["EGL"] = "available (hardware GPU)"
-    except ImportError as e:
-        backends["EGL"] = f"missing: {e}"
+    # EGL — try VTK 9.3 path first (vtkEGLRenderWindow inside
+    # vtkRenderingOpenGL2), then the legacy 9.0/9.1 path.
+    backends["EGL"] = "not probed"
+    for path in ("vtkmodules.vtkRenderingOpenGL2", "vtkmodules.vtkRenderingEGL"):
+        try:
+            mod = __import__(path, fromlist=["vtkEGLRenderWindow"])
+            cls = getattr(mod, "vtkEGLRenderWindow", None)
+            if cls is not None:
+                backends["EGL"] = f"available via {path} (hardware GPU)"
+                break
+        except ImportError as e:
+            backends["EGL"] = f"missing: {e}"
 
     return backends
 
@@ -74,19 +86,25 @@ def make_offscreen_render_window():
     Preference: EGL (GPU) > OSMesa (CPU) > OpenGL2 (only if DISPLAY is set).
     Returns (window, backend_name). Raises RuntimeError if nothing works.
     """
-    # EGL — best case.
-    try:
-        from vtkmodules.vtkRenderingEGL import vtkEGLRenderWindow
-        win = vtkEGLRenderWindow()
-        win.SetSize(1024, 1024)
-        win.SetOffScreenRendering(1)
-        # Force EGL device 0 — first GPU. Pinning to a specific device
-        # would be done via CUDA_VISIBLE_DEVICES on the parent process.
-        return win, "EGL"
-    except ImportError:
-        pass
-    except Exception as e:
-        print(f"[spike] EGL init failed: {e}", file=sys.stderr)
+    # EGL — best case. Try VTK 9.3 path (inside vtkRenderingOpenGL2)
+    # first, then the legacy 9.0/9.1 standalone path.
+    for path in ("vtkmodules.vtkRenderingOpenGL2", "vtkmodules.vtkRenderingEGL"):
+        try:
+            mod = __import__(path, fromlist=["vtkEGLRenderWindow"])
+            EGLRenderWindow = getattr(mod, "vtkEGLRenderWindow", None)
+            if EGLRenderWindow is None:
+                continue
+            win = EGLRenderWindow()
+            win.SetSize(1024, 1024)
+            win.SetOffScreenRendering(1)
+            # Force EGL device 0 — first GPU. Pinning to a specific
+            # device is done via CUDA_VISIBLE_DEVICES on the parent.
+            return win, f"EGL (via {path.rsplit('.', 1)[-1]})"
+        except ImportError:
+            continue
+        except Exception as e:
+            print(f"[spike] EGL init via {path} failed: {e}", file=sys.stderr)
+            continue
 
     # OSMesa — software fallback.
     try:
