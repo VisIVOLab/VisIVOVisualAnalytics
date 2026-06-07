@@ -242,6 +242,32 @@ def build_volume_pipeline(image_data, vmin: float, vmax: float):
     return volume, renderer, mapper
 
 
+def install_render_watchdog(timeout_s: int = 30) -> None:
+    """Abort with a stack trace if Render() doesn't return in time.
+
+    vtkEGLRenderWindow can hang indefinitely on this cluster when the
+    driver's EGL context creation conflicts with libglvnd's vendor
+    selection. Without a watchdog the spike just hangs and gives us
+    zero signal — with one, SIGALRM fires after ``timeout_s`` and the
+    Python traceback shows EXACTLY which line is stuck (almost always
+    a libvtkRenderingOpenGL2 → libEGL_nvidia symbol).
+    """
+    import signal
+    import traceback as _tb
+
+    def _handler(signum, frame):
+        print(f"\n[spike] FATAL: render watchdog fired after {timeout_s}s. "
+              f"Current stack trace:", flush=True)
+        _tb.print_stack(frame)
+        # Bail out hard — the C-level EGL call is not interruptible from
+        # Python so a regular raise would just sit there.
+        import os as _os
+        _os._exit(3)
+
+    signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(timeout_s)
+
+
 def save_png(window, output_path: str) -> None:
     import vtk
 
@@ -293,6 +319,21 @@ def main() -> int:
     t_pipe_1 = time.perf_counter()
     print(f"[spike] Pipeline build: {t_pipe_1 - t_pipe_0:.2f} s")
 
+    # Pin the EGL render window to a specific device. vtkEGLRenderWindow
+    # uses EGL_EXT_device_query to enumerate GPUs; without a SetDeviceIndex
+    # call, on some driver versions it loops forever during device
+    # selection. Set device 0 by default; override via VISIVO_EGL_DEVICE.
+    if backend.startswith("EGL"):
+        device_idx = int(os.environ.get("VISIVO_EGL_DEVICE", "0"))
+        if hasattr(window, "SetDeviceIndex"):
+            print(f"[spike] Pinning EGL window to device index {device_idx}", flush=True)
+            window.SetDeviceIndex(device_idx)
+        else:
+            print("[spike] WARN: SetDeviceIndex not available on this window", flush=True)
+        # Report how many devices VTK sees, useful for multi-GPU debug.
+        if hasattr(window, "GetNumberOfDevices"):
+            print(f"[spike] EGL window reports {window.GetNumberOfDevices()} device(s)", flush=True)
+
     # Frame the volume.
     renderer.ResetCamera()
     cam = renderer.GetActiveCamera()
@@ -300,9 +341,17 @@ def main() -> int:
     cam.Elevation(20)
     cam.Zoom(1.1)
 
+    print("[spike] Installing 30s render watchdog (kicks in if Render() hangs)...",
+          flush=True)
+    install_render_watchdog(30)
+    print("[spike] Calling window.Render() — first frame...", flush=True)
     t_render_0 = time.perf_counter()
     window.Render()
     t_render_1 = time.perf_counter()
+    # Disable the watchdog once Render() returns — subsequent frames
+    # are expected to be fast.
+    import signal as _signal
+    _signal.alarm(0)
     print(f"[spike] First render: {t_render_1 - t_render_0:.3f} s")
 
     # Report which mapper SmartVolumeMapper actually picked.
