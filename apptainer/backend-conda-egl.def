@@ -119,9 +119,10 @@ From: condaforge/mambaforge:latest
     # At runtime, ``--nv`` (or our explicit binds in run_spike_egl.sh)
     # overrides these stub .so with the actual NVIDIA driver libs from
     # the host. The build only needs the headers + ABI to link against.
-    echo "[backend-conda-egl.def] Stage 2a/5 — System EGL/GL dev headers (apt)"
+    echo "[backend-conda-egl.def] Stage 2a/5 — System EGL/GL dev headers + compilers (apt)"
     apt-get update
     apt-get install -y --no-install-recommends \
+        build-essential \
         libegl-dev \
         libgl-dev \
         libglvnd-dev \
