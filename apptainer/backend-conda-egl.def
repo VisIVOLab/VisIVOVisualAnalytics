@@ -277,7 +277,7 @@ From: condaforge/mambaforge:latest
         -DVTK_USE_COCOA:BOOL=OFF \
         -DVTK_OPENGL_HAS_EGL:BOOL=ON \
         -DVTK_OPENGL_HAS_OSMESA:BOOL=OFF \
-        -DVTK_OPENGL_USE_GLES:BOOL=OFF \
+        -DVTK_OPENGL_USE_GLES:BOOL=ON \
         -DVTK_DEFAULT_RENDER_WINDOW_HEADLESS:BOOL=ON \
         -DOPENGL_egl_LIBRARY:FILEPATH="$EGL_LIB" \
         -DOPENGL_EGL_INCLUDE_DIR:PATH="$EGL_INCLUDE_DIR" \
@@ -296,46 +296,46 @@ From: condaforge/mambaforge:latest
         -DVTK_MODULE_ENABLE_VTK_RenderingVolume:STRING=YES \
         -DVTK_MODULE_ENABLE_VTK_RenderingVolumeOpenGL2:STRING=YES \
         -DVTK_MODULE_ENABLE_VTK_RenderingOpenGL2:STRING=YES \
-        -DVTK_MODULE_ENABLE_VTK_RenderingEGL:STRING=YES \
         ../vtk-src 2>&1 | tee /tmp/vtk-cmake.log
 
-    # HARD CHECK — confirm:
-    #   (1) the EGL_LIBRARY / EGL_INCLUDE_DIR vars are stored as the
-    #       correct types (FILEPATH / PATH) so VTK actually used them
-    #   (2) the RenderingEGL module is registered in the build graph
+    # NOTE: VTK 9.3 does NOT have a separate vtkRenderingEGL module.
+    # The ``vtkEGLRenderWindow`` class lives inside vtkRenderingOpenGL2
+    # and is conditionally compiled when ``VTK_OPENGL_HAS_EGL=ON``.
+    # That's why the previous attempt's
+    # ``-DVTK_MODULE_ENABLE_VTK_RenderingEGL=YES`` was ignored and CMake
+    # warned "Manually-specified variables were not used" — there's
+    # nothing called that. Removing the flag is the fix.
+
+    # HARD CHECK — confirm EGL_LIBRARY/EGL_INCLUDE_DIR are stored as
+    # the right types AND that vtkEGLRenderWindow.cxx is in the build
+    # graph (it's INSIDE the vtkRenderingOpenGL2 module, not a separate
+    # module — VTK 9.3 quirk).
     echo "==================================================================="
     echo "[backend-conda-egl.def] Post-configure EGL detection check:"
-    grep -E "^EGL_(LIBRARY|INCLUDE_DIR):" CMakeCache.txt || echo "  EGL_* vars NOT in CMakeCache.txt — bad sign"
-    grep -E "VTK_MODULE_ENABLE_VTK_RenderingEGL" CMakeCache.txt || echo "  VTK_MODULE_ENABLE_VTK_RenderingEGL NOT in cache"
+    grep -E "^EGL_(LIBRARY|INCLUDE_DIR):" CMakeCache.txt \
+        || echo "  EGL_* vars NOT in CMakeCache.txt — bad sign"
     grep -E "VTK_OPENGL_HAS_EGL" CMakeCache.txt || true
 
-    # Did VTK actually build the RenderingEGL module? It generates a
-    # build directory under build.ninja which mentions it if scanned.
-    echo "[backend-conda-egl.def] RenderingEGL targets in ninja graph:"
-    grep -iE "RenderingEGL|vtkRenderingEGL" build.ninja 2>/dev/null \
-        | grep -E "library|build" | head -5 \
-        || echo "  none — module was NOT registered for the build"
+    echo "[backend-conda-egl.def] EGLRenderWindow source files in ninja graph:"
+    grep -iE "vtkEGLRenderWindow" build.ninja 2>/dev/null \
+        | head -5 \
+        || echo "  none — EGL window source NOT compiled"
 
-    # Also dump what cmake said about EGL / RenderingEGL during configure.
-    echo "[backend-conda-egl.def] cmake configure log excerpt (egl|RenderingEGL):"
-    grep -iE "RenderingEGL|EGL::EGL|Found EGL|find_package.*EGL" /tmp/vtk-cmake.log \
-        | head -20 || true
+    echo "[backend-conda-egl.def] cmake configure log excerpt (egl):"
+    grep -iE "EGL|Found .*EGL|find_package.*EGL" /tmp/vtk-cmake.log \
+        | grep -v "Warning\|^[+-]" | head -20 || true
     echo "==================================================================="
 
-    # Hard fail if (1) the EGL paths are wrong type, or (2) the
-    # RenderingEGL module is missing from the build graph. Either way
-    # the resulting VTK will not have vtkmodules.vtkRenderingEGL.
     if ! grep -qE "^EGL_LIBRARY:FILEPATH=.+libEGL" CMakeCache.txt 2>/dev/null; then
         echo "[backend-conda-egl.def] FATAL: EGL_LIBRARY not stored as FILEPATH in cache."
         exit 1
     fi
-    if ! grep -qiE "RenderingEGL" build.ninja 2>/dev/null; then
-        echo "[backend-conda-egl.def] FATAL: RenderingEGL not in the build graph."
-        echo "[backend-conda-egl.def] Showing all VTK rendering modules that ARE in the graph:"
-        grep -oE "vtkRendering[A-Za-z0-9_]+" build.ninja 2>/dev/null | sort -u | head -20
+    if ! grep -qiE "vtkEGLRenderWindow" build.ninja 2>/dev/null; then
+        echo "[backend-conda-egl.def] FATAL: vtkEGLRenderWindow.cxx not in build graph."
+        echo "[backend-conda-egl.def] VTK_OPENGL_HAS_EGL was probably overridden."
         exit 1
     fi
-    echo "[backend-conda-egl.def] EGL detection + RenderingEGL module OK — proceeding to build."
+    echo "[backend-conda-egl.def] EGL paths + vtkEGLRenderWindow OK — proceeding to build."
 
     # Build with all available cores. On Power9 V100 nodes (16 cores
     # per node) the build takes ~50-70 min; on x86_64 EPYC, ~30-40.
@@ -354,14 +354,52 @@ From: condaforge/mambaforge:latest
     cp -r "$SRC_DIR"/* /app/
 
     # ── Sanity check ─────────────────────────────────────────────────
+    # NOTE on import path: in VTK 9.3 vtkEGLRenderWindow lives inside
+    # the vtkRenderingOpenGL2 module (it's a sibling class of the
+    # X11/Cocoa render windows in the same module, conditional on the
+    # VTK_OPENGL_HAS_EGL flag at build time). There is NO separate
+    # vtkmodules.vtkRenderingEGL submodule. We probe both — VTK 9.0/9.1
+    # had it under vtkRenderingEGL, so the dual-import keeps the same
+    # check working across the version range we deploy on.
     python -c "
 import sys
 print(f'[sanity] python {sys.version}')
 import vtk
 print(f'[sanity] vtk {vtk.VTK_VERSION}')
-# The reason we built from source: this import must succeed.
-from vtkmodules.vtkRenderingEGL import vtkEGLRenderWindow
-print('[sanity] vtkRenderingEGL importable → EGL build OK')
+
+# Locate vtkEGLRenderWindow — try the 9.3 location first, then the
+# legacy 9.0/9.1 fallback.
+EGL_class = None
+for path in (
+    'vtkmodules.vtkRenderingOpenGL2',
+    'vtkmodules.vtkRenderingEGL',
+):
+    try:
+        mod = __import__(path, fromlist=['vtkEGLRenderWindow'])
+        EGL_class = getattr(mod, 'vtkEGLRenderWindow', None)
+        if EGL_class is not None:
+            print(f'[sanity] vtkEGLRenderWindow found in {path}')
+            break
+    except ImportError as e:
+        print(f'[sanity] {path} not importable: {e}')
+
+if EGL_class is None:
+    print('[sanity] FATAL: vtkEGLRenderWindow not available in any module')
+    sys.exit(1)
+
+# Verify libvtkRenderingOpenGL2 actually links against libEGL — if it
+# doesn't, the EGL class is present but won't work at runtime.
+import subprocess
+out = subprocess.check_output(
+    ['ldd', '/opt/conda/lib/libvtkRenderingOpenGL2-9.3.so'], text=True,
+)
+if 'libEGL' in out:
+    print('[sanity] libvtkRenderingOpenGL2 links to libEGL → ✓')
+else:
+    print('[sanity] WARN: libvtkRenderingOpenGL2 does NOT link to libEGL')
+    print('[sanity] ldd output:')
+    print(out)
+
 import numpy, scipy, astropy, healpy, numba
 print(f'[sanity] numpy {numpy.__version__}, scipy {scipy.__version__}, '
       f'astropy {astropy.__version__}, healpy {healpy.__version__}, '
