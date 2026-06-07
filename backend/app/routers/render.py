@@ -47,7 +47,6 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
-from sqlalchemy.orm import Session  # noqa: F401  (kept for future per-session ACL)
 
 from ..auth import verify_token
 from ..render_manager import get_render_manager
