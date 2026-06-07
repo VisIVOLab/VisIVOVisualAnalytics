@@ -106,32 +106,39 @@ From: condaforge/mambaforge:latest
         pillow \
         pip
 
-    # ── Stage 2 — VTK BUILD DEPS instead of conda-forge vtk ───────────
-    echo "[backend-conda-egl.def] Stage 2/5 — VTK build deps + HDF5"
-    # We install vtk-base ONLY to pull the transitive C++ deps (proj,
-    # netcdf-cxx4, etc.) without bringing in the qt/X11 stuff. Then we
-    # uninstall it before building our own VTK so the binding files
-    # don't shadow ours.
+    # ── Stage 2 — VTK BUILD DEPS ──────────────────────────────────────
+    # Mesa / EGL dev libs are NOT in conda-forge for ppc64le (and only
+    # partially on x86_64). The condaforge/mambaforge base image is
+    # Debian-based, so install the system EGL/GL development packages
+    # via apt — they provide:
+    #
+    #   /usr/include/EGL/egl.h, eglext.h, …
+    #   /usr/include/GL/gl.h, glext.h
+    #   /usr/lib/<arch>/libEGL.so, libGL.so       (build-time stubs)
+    #
+    # At runtime, ``--nv`` (or our explicit binds in run_spike_egl.sh)
+    # overrides these stub .so with the actual NVIDIA driver libs from
+    # the host. The build only needs the headers + ABI to link against.
+    echo "[backend-conda-egl.def] Stage 2a/5 — System EGL/GL dev headers (apt)"
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        libegl-dev \
+        libgl-dev \
+        libglvnd-dev \
+        libgles-dev \
+        mesa-common-dev \
+        libx11-dev \
+        libxext-dev \
+        libxt-dev
+    rm -rf /var/lib/apt/lists/*
+
+    echo "[backend-conda-egl.def] Stage 2b/5 — Python toolchain + HDF5 via conda"
     $INSTALL_CMD -n base -c conda-forge \
         h5py \
         cmake \
         ninja \
         git \
-        pkg-config \
-        libglvnd-glx-cos7-ppc64le \
-        libglvnd-egl-cos7-ppc64le \
-        mesa-libegl-cos7-ppc64le \
-        libegl-cos7-ppc64le \
-        libgl-cos7-ppc64le \
-        || (
-            # Fallback to generic libegl from non-cos7 channel — for
-            # x86_64 builds and non-Red-Hat ppc64le distros.
-            echo "[backend-conda-egl.def] cos7-ppc64le mesa not in channel; "\
-                 "trying generic libegl"
-            $INSTALL_CMD -n base -c conda-forge \
-                h5py cmake ninja git pkg-config \
-                libegl mesa-libegl libglvnd
-        )
+        pkg-config
 
     # ── Stage 3 — Numba JIT (unchanged from backend-conda.def) ────────
     echo "[backend-conda-egl.def] Stage 3/5 — Numba JIT"
