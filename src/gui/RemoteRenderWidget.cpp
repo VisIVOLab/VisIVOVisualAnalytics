@@ -132,7 +132,16 @@ void RemoteRenderWidget::onWebSocketConnected()
 {
     m_status = QStringLiteral("Connected, awaiting first frame…");
     emit connectionStateChanged(m_status);
-    // Ask for an initial frame so the user sees the volume immediately.
+    // Tell the server our REAL render size (physical pixels) BEFORE we
+    // ask for the first frame — otherwise the bootstrap frame arrives
+    // at the SessionViewState default (1024×768) and gets upscaled,
+    // looking blurry until the next resize event.
+    const qreal dpr = devicePixelRatioF();
+    QJsonObject sz;
+    sz[QStringLiteral("type")]   = QStringLiteral("resize");
+    sz[QStringLiteral("width")]  = qRound(width()  * dpr);
+    sz[QStringLiteral("height")] = qRound(height() * dpr);
+    sendCommand(QJsonDocument(sz).toJson(QJsonDocument::Compact));
     requestFrame();
     update();
 }
@@ -189,12 +198,18 @@ void RemoteRenderWidget::paintEvent(QPaintEvent * /*event*/)
     painter.fillRect(rect(), Qt::black);
 
     if (!m_currentFrame.isNull()) {
-        // Stretch the JPEG to widget size with smooth scaling.
-        const QImage scaled = m_currentFrame.scaled(
-                size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
-        const int x = (width()  - scaled.width())  / 2;
-        const int y = (height() - scaled.height()) / 2;
-        painter.drawImage(QPoint(x, y), scaled);
+        // The JPEG arrives at PHYSICAL pixel resolution (see resizeEvent
+        // — we asked for width*DPR pixels). Tagging the QImage with the
+        // same devicePixelRatio lets QPainter paint it 1:1 against the
+        // physical framebuffer — no scaling, no blur. Painting straight
+        // into ``rect()`` then lands every pixel at its native target.
+        QImage frame = m_currentFrame;
+        frame.setDevicePixelRatio(devicePixelRatioF());
+        // Centre the (logical) frame in the widget, preserving aspect.
+        const QSize logicalSize = frame.size() / frame.devicePixelRatio();
+        const int x = (width()  - logicalSize.width())  / 2;
+        const int y = (height() - logicalSize.height()) / 2;
+        painter.drawImage(QPoint(x, y), frame);
     }
 
     if (!m_live) {
@@ -276,13 +291,18 @@ void RemoteRenderWidget::wheelEvent(QWheelEvent *event)
 void RemoteRenderWidget::resizeEvent(QResizeEvent *event)
 {
     // Send a resize command so the server renders at the new aspect /
-    // resolution. Throttled implicitly because Qt only fires one
-    // resizeEvent per geometry change.
+    // resolution. We send PHYSICAL pixel dimensions (logical × DPR) so
+    // the server renders at the native display resolution — on a 2×
+    // Retina display, width()=1024 logical means we want a 2048-wide
+    // frame back. Without this scale-up the JPEG arrives at 1024 and
+    // gets up-sampled to 2048 by Qt → blurry compared to the local
+    // QVTKOpenGLNativeWidget which always paints at native DPI.
     if (m_live) {
+        const qreal dpr = devicePixelRatioF();
         QJsonObject cmd;
         cmd[QStringLiteral("type")]   = QStringLiteral("resize");
-        cmd[QStringLiteral("width")]  = width();
-        cmd[QStringLiteral("height")] = height();
+        cmd[QStringLiteral("width")]  = qRound(width()  * dpr);
+        cmd[QStringLiteral("height")] = qRound(height() * dpr);
         sendCommand(QJsonDocument(cmd).toJson(QJsonDocument::Compact));
         requestFrame();
     }

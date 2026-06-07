@@ -4360,31 +4360,41 @@ void vtkWindowCube::sendRemoteRenderStateCommand(const QVariantMap &command)
 
 void vtkWindowCube::pushRenderStateToRemote()
 {
-    if (!this->m_remoteRenderWidget || !this->m_remoteRenderWidget->isLive()) {
-        return;
-    }
-    // Volume LUT — same name the user picked from the sidebar combo.
+    qDebug().noquote() << QStringLiteral(
+            "[remote-render] BOOTSTRAP state push — widget=%1 live=%2 mode=%3 LUT=%4 threshold=%5")
+                                  .arg(this->m_remoteRenderWidget != nullptr)
+                                  .arg(this->m_remoteRenderWidget
+                                               && this->m_remoteRenderWidget->isLive())
+                                  .arg(this->m_effectiveRenderMode == RenderMode::Remote
+                                               ? u"Remote"_s : u"Local"_s)
+                                  .arg(this->m_activeColorMapName.isEmpty()
+                                               ? u"<empty>"_s : this->m_activeColorMapName)
+                                  .arg(this->m_initialThresholdApplied
+                                               ? QString::number(this->lowerBound)
+                                               : u"<not-applied>"_s);
+
+    // Route every bootstrap command through sendRemoteRenderStateCommand so
+    // each one is logged with the same SEND/DROP envelope as user-driven
+    // changes. Easier to spot which value the server is actually being
+    // told to use when something looks wrong.
     if (!this->m_activeColorMapName.isEmpty()) {
         QVariantMap m;
         m[u"type"_s] = u"set_lut"_s;
         m[u"name"_s] = this->m_activeColorMapName;
-        this->m_remoteRenderWidget->sendStateCommand(m);
+        this->sendRemoteRenderStateCommand(m);
     }
-    // Slice LUT.
     if (!this->m_activeSliceLutName.isEmpty()) {
         QVariantMap m;
         m[u"type"_s] = u"set_slice_lut"_s;
         m[u"name"_s] = this->m_activeSliceLutName;
-        this->m_remoteRenderWidget->sendStateCommand(m);
+        this->sendRemoteRenderStateCommand(m);
     }
-    // Threshold — drives the opacity ramp.
     if (this->m_initialThresholdApplied) {
         QVariantMap m;
         m[u"type"_s]  = u"set_threshold"_s;
         m[u"value"_s] = static_cast<double>(this->lowerBound);
-        this->m_remoteRenderWidget->sendStateCommand(m);
+        this->sendRemoteRenderStateCommand(m);
     }
-    // Blend mode (0=Composite, 1=MIP, 2=MinIP) — read from the menu.
     int blend = 0;
     if (this->m_actionMIP   && this->m_actionMIP->isChecked())   blend = 1;
     if (this->m_actionMinIP && this->m_actionMinIP->isChecked()) blend = 2;
@@ -4392,26 +4402,21 @@ void vtkWindowCube::pushRenderStateToRemote()
         QVariantMap m;
         m[u"type"_s] = u"set_blend_mode"_s;
         m[u"mode"_s] = blend;
-        this->m_remoteRenderWidget->sendStateCommand(m);
+        this->sendRemoteRenderStateCommand(m);
     }
-    // Cutting plane visibility — read from the menu toggle.
     if (this->actionShowCuttingPlane) {
         QVariantMap m;
         m[u"type"_s]    = u"set_cutting_plane"_s;
         m[u"visible"_s] = this->actionShowCuttingPlane->isChecked();
-        // Slice index for the cutting plane = current slider value.
         m[u"slice_index"_s] = ui->sliderSlice ? ui->sliderSlice->value() : 0;
-        this->m_remoteRenderWidget->sendStateCommand(m);
+        this->sendRemoteRenderStateCommand(m);
     }
-    // Cube render mode (Volume vs Isosurface) — read from the menu
-    // action. ``ui->actionIsosurface`` is checkable; the two are
-    // mutually exclusive via cubeGroup.
     {
         QVariantMap m;
         m[u"type"_s] = u"set_cube_render_mode"_s;
         const bool iso = ui->actionIsosurface && ui->actionIsosurface->isChecked();
         m[u"mode"_s] = iso ? u"isosurface"_s : u"volume"_s;
-        this->m_remoteRenderWidget->sendStateCommand(m);
+        this->sendRemoteRenderStateCommand(m);
     }
 }
 

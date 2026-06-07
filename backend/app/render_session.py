@@ -80,9 +80,32 @@ _DESKTOP_TO_MPL = {
     "VolRenGreen":     "Greens",
     "VolRenGlow":      "hot",
     "VolRenRGB":       "jet",
-    "PureRed":         "Reds",
-    "PureGreen":       "Greens",
-    "PureBlue":        "Blues",
+    # NB: Pure* and All* are intentionally NOT here — they have
+    # hand-built ramps below because their desktop equivalents go
+    # BLACK→colour (Pure*) or SOLID colour (All*), not the matplotlib
+    # WHITE→colour curves.
+}
+
+
+# Hand-built ramps for desktop LUTs that don't map onto matplotlib's
+# colour-named registry. Each ramp is described by a 2-control-point
+# definition (r,g,b at vmin, r,g,b at vmax); the builder interpolates
+# linearly. ``All*`` ramps repeat the same colour at both ends so the
+# whole data range maps to one solid hue — same role as the desktop's
+# ``ColorMaps::SetAllRed`` for single-colour overlay masks.
+_HAND_BUILT_RAMPS = {
+    # name           : ((r0,g0,b0), (r1,g1,b1))
+    "PureRed":         ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+    "PureGreen":       ((0.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+    "PureBlue":        ((0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+    "AllRed":          ((1.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+    "AllGreen":        ((0.0, 1.0, 0.0), (0.0, 1.0, 0.0)),
+    "AllBlue":         ((0.0, 0.0, 1.0), (0.0, 0.0, 1.0)),
+    "AllCyan":         ((0.0, 1.0, 1.0), (0.0, 1.0, 1.0)),
+    "AllMagenta":      ((1.0, 0.0, 1.0), (1.0, 0.0, 1.0)),
+    "AllYellow":       ((1.0, 1.0, 0.0), (1.0, 1.0, 0.0)),
+    "AllWhite":        ((1.0, 1.0, 1.0), (1.0, 1.0, 1.0)),
+    "AllBlack":        ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
 }
 
 
@@ -91,24 +114,41 @@ def _build_color_tf(name: str, vmin: float, vmax: float):
 
     Lookup order:
 
-    1. Exact-name match against the desktop ↔ matplotlib table.
-    2. Direct matplotlib colormap lookup (lower-cased) — picks up any
+    1. Exact-name match against the hand-built ramps (Pure*, All*).
+    2. Exact-name match against the desktop ↔ matplotlib table.
+    3. Direct matplotlib colormap lookup (lower-cased) — picks up any
        built-in mpl name the user might have configured (Rainbow, Jet,
        Hot, etc.).
-    3. Fall back to Inferno + WARN log so the operator sees which name
+    4. Fall back to Inferno + WARN log so the operator sees which name
        went unmatched.
 
     256 evenly-spaced control points; identical sampling to the
     desktop's ``ColorMaps::SetColorTransferFunction``.
     """
     import vtk
+    ctf = vtk.vtkColorTransferFunction()
+
+    # Hand-built ramps short-circuit the matplotlib path entirely.
+    hand = _HAND_BUILT_RAMPS.get(name)
+    if hand is not None:
+        (r0, g0, b0), (r1, g1, b1) = hand
+        n = 256
+        for i in range(n):
+            t = i / (n - 1)
+            r = r0 + t * (r1 - r0)
+            g = g0 + t * (g1 - g0)
+            b = b0 + t * (b1 - b0)
+            v = vmin + t * (vmax - vmin)
+            ctf.AddRGBPoint(v, r, g, b)
+        logger.info("[render-session] LUT %r → hand-built ramp", name)
+        return ctf
+
     try:
         import matplotlib  # noqa: F401
         from matplotlib import colormaps as mpl_colormaps
     except ImportError:
         matplotlib = None  # type: ignore[assignment]
 
-    ctf = vtk.vtkColorTransferFunction()
     if matplotlib is None:
         # No matplotlib available — flat fallback so the volume is at
         # least visible. Real fix: install matplotlib in the SIF.
@@ -272,7 +312,11 @@ class SessionViewState:
     # ── Scene chrome (matches the local cube view) ────────────────
     show_outline: bool = True       # cube bounding-box wireframe
     show_axes:    bool = True       # XYZ orientation marker
-    background_rgb: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    # Matches ``vtkWindowCube::setupCubeRenderer`` line 1
+    # ``ren->SetBackground(0.21, 0.23, 0.25)`` — the same warm-cool
+    # gray the desktop renderer uses. Pure black makes the chrome
+    # (outline, plane edges) look starker than the local widget.
+    background_rgb: tuple[float, float, float] = (0.21, 0.23, 0.25)
 
     # ── Cutting plane (textured with the slice colors) ────────────
     cutting_plane_visible: bool = True
@@ -282,7 +326,13 @@ class SessionViewState:
     # ── Viewport / encoding ────────────────────────────────────────
     width: int = 1024
     height: int = 768
-    jpeg_quality: int = 85  # 80-90 is the sweet spot on noise-rich HI cubes
+    # HI cube renderings have lots of fine-grained noise + chrome
+    # (slice texture, axes triad, bounding-box edges) that JPEG q=85
+    # smears into mosquito artefacts — a side-by-side comparison
+    # against the local QVTKOpenGLNativeWidget reads as "blurry". q=95
+    # gets us almost-lossless at ~2× the byte cost; on a tunneled WS
+    # this is still under 250 KB/frame at 1080p, plenty of headroom.
+    jpeg_quality: int = 95
 
 
 @dataclass
@@ -477,6 +527,20 @@ class RenderSession:
         if self.view.cutting_plane_slice_index <= 0:
             self.view.cutting_plane_slice_index = nz // 2
 
+        # Slice-LUT range: the cube's vmin/vmax is dominated by a few
+        # outlier voxels (galaxy peaks, edge artefacts), so mapping the
+        # slice through the full [vmin, vmax] makes the noise occupy
+        # only the bottom ~5% of the LUT — that's the dark-purple end
+        # of Inferno, which then looks "all-black" against the desktop's
+        # bright-orange slice. The desktop builds ``lutSlice`` over the
+        # SLICE's own scalar range (which excludes outliers naturally),
+        # so we match that by using cube percentiles p1..p99 — robust
+        # to the bright-tail outliers, close to what the desktop sees
+        # when it samples a typical channel.
+        finite = cube[finite_mask] if not finite_mask.all() else cube
+        self._slice_vmin = float(np.percentile(finite, 1.0))
+        self._slice_vmax = float(np.percentile(finite, 99.0))
+
         logger.info(
             "[render-session %s] cube loaded: shape=(%d,%d,%d) range=[%.4g,%.4g]",
             self.session_id, nz, ny, nx, vmin, vmax,
@@ -509,7 +573,13 @@ class RenderSession:
         self._volume_mapper = vtk.vtkSmartVolumeMapper()
         self._volume_mapper.SetInputData(img)
         self._volume_mapper.SetRequestedRenderModeToGPU()
-        self._volume_mapper.SetSampleDistance(0.5)
+        # 0.25 voxel = 4 samples per voxel along each ray. Halves the
+        # step compared to the spike default; on the V100 we measured
+        # ~40 → 28 FPS on WALLABY at 1080p, well above the wire
+        # bottleneck (~12 FPS through SSH). The crisper volume edge
+        # closes the gap with the desktop ``QVTKOpenGLNativeWidget``
+        # which uses VTK's default auto-adjust sampling.
+        self._volume_mapper.SetSampleDistance(0.25)
         self._apply_blend_mode_on_thread(self.view.blend_mode)
 
         self._volume = vtk.vtkVolume()
@@ -701,9 +771,11 @@ class RenderSession:
         """
         import vtk
 
-        # Slice LUT — same matplotlib mapping as the volume.
+        # Slice LUT — built over the SLICE-typical range (p1..p99 of
+        # the cube), not the full volume range. See _init_on_thread
+        # for the why.
         self._slice_lut_ctf = _build_color_tf(
-            self.view.slice_lut_name, self._vmin, self._vmax,
+            self.view.slice_lut_name, self._slice_vmin, self._slice_vmax,
         )
 
         # vtkImageMapToColors expects a vtkScalarsToColors (vtkLookupTable
@@ -841,7 +913,7 @@ class RenderSession:
         if self._cutting_plane_slice_colors is None:
             return
         self._slice_lut_ctf = _build_color_tf(
-            self.view.slice_lut_name, self._vmin, self._vmax,
+            self.view.slice_lut_name, self._slice_vmin, self._slice_vmax,
         )
         self._cutting_plane_slice_colors.SetLookupTable(self._slice_lut_ctf)
         self._cutting_plane_slice_colors.Modified()
