@@ -19,6 +19,7 @@ set(qt_components
         NetworkAuth
         PrintSupport
         WebEngineWidgets
+        WebSockets
         Xml
 )
 foreach (module IN LISTS qt_components)
@@ -155,6 +156,8 @@ set(PROJECT_SOURCES
         src/skava/SkavaClient.h
         src/gui/SkavaSearchPanel.cpp
         src/gui/SkavaSearchPanel.h
+        src/gui/RemoteRenderWidget.cpp
+        src/gui/RemoteRenderWidget.h
         src/gui/theme/VisivoTheme.cpp
         src/gui/theme/VisivoTheme.h
         src/gui/theme/SegmentedToggle.cpp

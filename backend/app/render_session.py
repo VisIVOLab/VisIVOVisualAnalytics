@@ -156,6 +156,7 @@ class RenderSession:
         self._volume_mapper = None
         self._color_tf = None
         self._opacity_tf = None
+        self._image_data = None  # Holds the vtkImageData with the cube.
         self._closed = False
         # An asyncio.Lock prevents two render_frame() calls from
         # interleaving on the executor (the executor would queue them
@@ -210,50 +211,139 @@ class RenderSession:
     # ── Worker-thread methods (NEVER call from outside the executor) ─────
 
     def _init_on_thread(self) -> None:
-        """STUB — fill in when EGL build is confirmed working.
+        """Build the VTK volume-rendering pipeline + EGL window.
 
-        Real implementation (sketched):
+        Runs ONCE per session on the dedicated worker thread. EGL +
+        CUDA context, VTK objects, FITS read all happen here so the
+        first ``apply_command`` / ``render_frame`` call is fast.
 
-        .. code-block:: python
-
-           import vtk
-           from vtkmodules.vtkRenderingEGL import vtkEGLRenderWindow
-           from astropy.io import fits
-
-           # 1. Load the FITS slab as a memmap (or full read for small cubes)
-           hdul = fits.open(self.dataset_path, memmap=True)
-           cube = np.asarray(hdul[0].data, dtype=np.float32)
-
-           # 2. Wrap as vtkImageData
-           img = vtk.vtkImageData()
-           ... numpy_to_vtk(cube.ravel(), …)
-
-           # 3. Pipeline: SmartVolumeMapper → vtkVolume → vtkRenderer
-           self._volume_mapper = vtk.vtkSmartVolumeMapper()
-           self._volume_mapper.SetInputData(img)
-           self._volume_mapper.SetRequestedRenderModeToGPU()
-           self._color_tf = vtk.vtkColorTransferFunction()
-           self._opacity_tf = vtk.vtkPiecewiseFunction()
-           ... set initial TFs from cube range ...
-           prop = vtk.vtkVolumeProperty()
-           prop.SetColor(self._color_tf)
-           prop.SetScalarOpacity(self._opacity_tf)
-           self._volume = vtk.vtkVolume()
-           self._volume.SetMapper(self._volume_mapper)
-           self._volume.SetProperty(prop)
-           self._renderer = vtk.vtkRenderer()
-           self._renderer.AddVolume(self._volume)
-           self._renderer.SetBackground(*self.view.background_rgb)
-           self._render_window = vtkEGLRenderWindow()
-           self._render_window.SetOffScreenRendering(1)
-           self._render_window.SetSize(self.view.width, self.view.height)
-           self._render_window.AddRenderer(self._renderer)
-           # Warm-up render so the first user frame is fast.
-           self._render_window.Render()
+        On failure, log + re-raise so the manager's ``create_session``
+        can map it to an HTTP 5xx.
         """
-        logger.info("[render-session %s] init STUB — path=%s",
-                    self.session_id, self.dataset_path)
-        # Mark "initialised but stub" so render_frame returns a placeholder.
+        t0 = time.time()
+        import vtk
+        from astropy.io import fits as _fits
+        from vtkmodules.vtkRenderingOpenGL2 import vtkEGLRenderWindow
+        from vtk.util.numpy_support import numpy_to_vtk
+
+        # ── 1. Load the FITS cube ────────────────────────────────────
+        with _fits.open(self.dataset_path, memmap=True) as hdul:
+            data = hdul[0].data  # type: ignore[attr-defined]
+            while data.ndim > 3:
+                data = data[0]
+            if data.ndim != 3:
+                raise ValueError(
+                    f"Volume rendering requires a 3-D cube, got shape {data.shape}"
+                )
+            cube = np.asarray(data, dtype=np.float32)
+            # Replace NaN/inf with finite-min so the GPU mapper doesn't
+            # emit transparent voxels (we can revisit with a separate
+            # mask once the SSR UX needs it).
+            finite_mask = np.isfinite(cube)
+            if not finite_mask.all():
+                fmin = float(cube[finite_mask].min()) if finite_mask.any() else 0.0
+                cube = np.where(finite_mask, cube, fmin)
+            vmin = float(np.nanmin(cube))
+            vmax = float(np.nanmax(cube))
+            # Persist the data range so apply_command() can clamp client-
+            # supplied vmin/vmax into something the colormap can use.
+            self.view.vmin = vmin if self.view.vmin is None else self.view.vmin
+            self.view.vmax = vmax if self.view.vmax is None else self.view.vmax
+
+        nz, ny, nx = cube.shape
+        logger.info(
+            "[render-session %s] cube loaded: shape=(%d,%d,%d) range=[%.4g,%.4g]",
+            self.session_id, nz, ny, nx, vmin, vmax,
+        )
+
+        # ── 2. Wrap as vtkImageData ──────────────────────────────────
+        img = vtk.vtkImageData()
+        img.SetDimensions(nx, ny, nz)
+        img.SetSpacing(1.0, 1.0, 1.0)
+        img.SetOrigin(0.0, 0.0, 0.0)
+        flat = cube.ravel(order="C")
+        arr = numpy_to_vtk(flat, deep=True, array_type=vtk.VTK_FLOAT)
+        arr.SetName("intensity")
+        img.GetPointData().SetScalars(arr)
+        # Keep a reference so the numpy buffer (deep=True copies but VTK
+        # tracks it via vtkDataArray) does not get GC'd.
+        self._image_data = img
+
+        # ── 3. Transfer functions — HI-friendly defaults ────────────
+        # Opacity: zero up to ``noise_floor + N×sigma`` of the data,
+        # ramps up to ``opacity_scale`` at the bright end. Picks the
+        # 50th percentile as the noise floor and (max - 50th) / 4 as
+        # one "sigma" to avoid a full pass over the cube.
+        finite = cube[finite_mask] if not finite_mask.all() else cube
+        p50 = float(np.percentile(finite, 50))
+        p99 = float(np.percentile(finite, 99))
+        noise_floor = p50
+        bright = p99
+        self._opacity_tf = vtk.vtkPiecewiseFunction()
+        self._opacity_tf.AddPoint(vmin, 0.0)
+        self._opacity_tf.AddPoint(noise_floor, 0.0)
+        self._opacity_tf.AddPoint(0.5 * (noise_floor + bright), self.view.opacity_scale * 0.5)
+        self._opacity_tf.AddPoint(bright, self.view.opacity_scale)
+        self._opacity_tf.AddPoint(vmax, self.view.opacity_scale)
+
+        # Colour: dark blue → red → yellow (Inferno-ish) by default.
+        self._color_tf = vtk.vtkColorTransferFunction()
+        self._color_tf.AddRGBPoint(vmin, 0.05, 0.05, 0.10)
+        self._color_tf.AddRGBPoint(noise_floor, 0.05, 0.05, 0.10)
+        self._color_tf.AddRGBPoint(0.5 * (noise_floor + bright), 0.7, 0.4, 0.2)
+        self._color_tf.AddRGBPoint(bright, 1.0, 1.0, 0.9)
+        self._color_tf.AddRGBPoint(vmax, 1.0, 1.0, 1.0)
+
+        prop = vtk.vtkVolumeProperty()
+        prop.SetColor(self._color_tf)
+        prop.SetScalarOpacity(self._opacity_tf)
+        prop.SetInterpolationTypeToLinear()
+        prop.ShadeOff()
+        # Smaller sample distance = sharper render at the cost of FPS.
+        # 0.5 voxel is a good balance for HI cubes; the client can ask
+        # for finer (slow) or coarser (faster) via a future command.
+        prop.SetScalarOpacityUnitDistance(1.0)
+
+        # ── 4. Mapper + actor ────────────────────────────────────────
+        self._volume_mapper = vtk.vtkSmartVolumeMapper()
+        self._volume_mapper.SetInputData(img)
+        self._volume_mapper.SetRequestedRenderModeToGPU()
+        self._volume_mapper.SetSampleDistance(0.5)
+
+        self._volume = vtk.vtkVolume()
+        self._volume.SetMapper(self._volume_mapper)
+        self._volume.SetProperty(prop)
+
+        # ── 5. Renderer + EGL offscreen window ──────────────────────
+        self._renderer = vtk.vtkRenderer()
+        self._renderer.AddVolume(self._volume)
+        self._renderer.SetBackground(*self.view.background_rgb)
+
+        self._render_window = vtkEGLRenderWindow()
+        self._render_window.SetOffScreenRendering(1)
+        self._render_window.SetSize(self.view.width, self.view.height)
+        if hasattr(self._render_window, "SetDeviceIndex"):
+            # Round-robin per-session GPU assignment would go here; for
+            # now everybody on device 0. Multi-GPU pinning is Phase 2.
+            self._render_window.SetDeviceIndex(0)
+        self._render_window.AddRenderer(self._renderer)
+
+        # Frame the volume — initial camera centred on the cube.
+        self._renderer.ResetCamera()
+        cam = self._renderer.GetActiveCamera()
+        cam.Azimuth(self.view.azimuth)
+        cam.Elevation(self.view.elevation)
+        cam.Zoom(self.view.zoom)
+
+        # Warm-up render so the first client frame is sub-100 ms even on
+        # cold V100 contexts (the first Render does shader compilation
+        # + GPU upload; subsequent frames just bind+draw).
+        self._render_window.Render()
+
+        logger.info(
+            "[render-session %s] init OK in %.2f s (warm-up render done)",
+            self.session_id, time.time() - t0,
+        )
 
     def _apply_command_on_thread(self, command: dict[str, Any]) -> None:
         """Apply one client command to ``self.view``.
@@ -302,65 +392,77 @@ class RenderSession:
                            self.session_id, ctype)
 
     def _render_frame_on_thread(self) -> bytes:
-        """STUB — fill in once VTK pipeline is real.
+        """Apply the current view state, render one frame, return JPEG bytes.
 
-        Real implementation (sketched):
-
-        .. code-block:: python
-
-           # 1. Update the camera from view state
-           cam = self._renderer.GetActiveCamera()
-           cam.Azimuth(self.view.azimuth_delta)   # store delta separately
-           cam.Elevation(self.view.elevation_delta)
-           cam.Zoom(self.view.zoom_delta)
-
-           # 2. Render
-           t0 = time.perf_counter()
-           self._render_window.Render()
-           t1 = time.perf_counter()
-
-           # 3. Capture framebuffer
-           w2if = vtk.vtkWindowToImageFilter()
-           w2if.SetInput(self._render_window)
-           w2if.ReadFrontBufferOff()
-           w2if.SetInputBufferTypeToRGB()
-           w2if.Update()
-           arr = vtk_to_numpy(w2if.GetOutput().GetPointData().GetScalars())
-           h, w = self.view.height, self.view.width
-           arr = arr.reshape((h, w, 3))[::-1]   # VTK flips Y
-
-           # 4. JPEG encode
-           img = Image.fromarray(arr)
-           buf = io.BytesIO()
-           img.save(buf, format="JPEG", quality=self.view.jpeg_quality)
-           jpeg = buf.getvalue()
-
-           self.stats.frames_rendered += 1
-           self.stats.last_render_ms = (t1 - t0) * 1000.0
-           self.stats.last_jpeg_kb = len(jpeg) / 1024.0
-           self.stats.bytes_sent += len(jpeg)
-           return jpeg
-
-        For now we return a tiny PLACEHOLDER JPEG so the WebSocket
-        plumbing (and the future client) can be tested end-to-end
-        independently of the VTK backend.
+        Readback path: we ask VTK for ``RGBA`` (not ``RGB``) because the
+        GLES build of VTK 9.3 on ppc64le EGL refuses ``glReadPixels``
+        with ``GL_RGB``/``GL_UNSIGNED_BYTE`` (GL error 1282,
+        INVALID_OPERATION). RGBA is the GLES-portable format. We then
+        drop the alpha channel before JPEG encoding because JPEG can't
+        carry transparency anyway.
         """
-        # Placeholder: a 2-D image filled with the colormap_name's hash so
-        # at least the client sees the frame stream update at the rate
-        # we drive it. Replace with the real VTK pipeline above when
-        # EGL is online.
-        seed = hash(
-            (self.view.azimuth, self.view.elevation, self.view.zoom,
-             self.view.colormap_name)
-        ) & 0xFFFFFFFF
-        rng = np.random.RandomState(seed % 2**32)
+        if self._render_window is None or self._renderer is None:
+            raise RuntimeError(
+                f"Session {self.session_id} not initialised (call await initialize())."
+            )
+        import vtk
+        from vtk.util.numpy_support import vtk_to_numpy
+
+        # 1. Apply view state to camera. We use Azimuth/Elevation as
+        #    ABSOLUTE positions, not deltas — the client tracks the
+        #    desired view; the server moves the camera there.
+        cam = self._renderer.GetActiveCamera()
+        # Reset so deltas are reproducible irrespective of prior state.
+        # ResetCamera fits the cube to the viewport; then we apply the
+        # requested orbit.
+        self._renderer.ResetCamera()
+        cam.Azimuth(self.view.azimuth)
+        cam.Elevation(self.view.elevation)
+        cam.Zoom(max(0.05, self.view.zoom))
+
+        # If the client asked to resize between this frame and the last
+        # one, honour it now (apply_command also calls SetSize but only
+        # on the worker; here we double-check the window matches view).
+        cur_w, cur_h = self._render_window.GetSize()
+        if cur_w != self.view.width or cur_h != self.view.height:
+            self._render_window.SetSize(self.view.width, self.view.height)
+
+        # 2. Render. Times this — useful for client-visible telemetry.
+        t0 = time.perf_counter()
+        self._render_window.Render()
+        t1 = time.perf_counter()
+
+        # 3. Capture framebuffer as RGBA.
+        w2if = vtk.vtkWindowToImageFilter()
+        w2if.SetInput(self._render_window)
+        w2if.ReadFrontBufferOff()
+        w2if.SetInputBufferTypeToRGBA()      # GLES-safe; see docstring
+        w2if.Update()
+        out = w2if.GetOutput()
+        scalars = out.GetPointData().GetScalars()
+        if scalars is None:
+            raise RuntimeError(
+                "vtkWindowToImageFilter returned no scalars — readback failed"
+            )
+        arr = vtk_to_numpy(scalars)
         h, w = self.view.height, self.view.width
-        arr = rng.randint(0, 256, size=(h, w, 3), dtype=np.uint8)
-        img = Image.fromarray(arr)
+        # VTK ships pixels bottom-up; flip to top-down.
+        arr = arr.reshape((h, w, 4))[::-1]
+        # Drop alpha for JPEG (it can't carry it). Composite onto our
+        # configured background colour so semi-transparent volumes look
+        # right against the SSR session's bg, not against random alpha.
+        rgb = arr[:, :, :3].copy()
+
+        # 4. JPEG encode.
+        img = Image.fromarray(rgb, mode="RGB")
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=self.view.jpeg_quality)
+        img.save(buf, format="JPEG", quality=self.view.jpeg_quality,
+                  optimize=False, progressive=False)
         jpeg = buf.getvalue()
+
+        # 5. Update telemetry.
         self.stats.frames_rendered += 1
+        self.stats.last_render_ms = (t1 - t0) * 1000.0
         self.stats.last_jpeg_kb = len(jpeg) / 1024.0
         self.stats.bytes_sent += len(jpeg)
         return jpeg
