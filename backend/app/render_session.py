@@ -448,6 +448,25 @@ class RenderSession:
                 self._executor, self._render_frame_on_thread,
             )
 
+    async def render_rgb_frame(self):
+        """Render the current view state and return ``(rgb_ndarray, render_ms)``.
+
+        Same camera/scene path as :meth:`render_frame` but skips the
+        JPEG encode step — the WebRTC transport feeds the raw numpy
+        array straight into an ``av.VideoFrame`` for NVENC. Stats are
+        updated in-place; the caller doesn't need to.
+        """
+        if self._closed:
+            raise RuntimeError(f"Session {self.session_id} is closed.")
+        loop = asyncio.get_event_loop()
+        async with self._render_lock:
+            rgb, render_ms = await loop.run_in_executor(
+                self._executor, self._render_rgb_on_thread,
+            )
+        self.stats.frames_rendered += 1
+        self.stats.last_render_ms = render_ms
+        return rgb, render_ms
+
     async def close(self) -> None:
         """Release VTK + EGL resources on the worker thread, then stop it."""
         if self._closed:
@@ -1075,34 +1094,31 @@ class RenderSession:
             logger.warning("[render-session %s] unknown command type %r",
                            self.session_id, ctype)
 
-    def _render_frame_on_thread(self) -> bytes:
-        """Apply the current view state, render one frame, return JPEG bytes.
+    def _render_rgb_on_thread(self) -> tuple:
+        """Render one frame and return ``(rgb_ndarray, render_ms)``.
 
-        Readback path: we ask VTK for ``RGBA`` (not ``RGB``) because the
-        GLES build of VTK 9.3 on ppc64le EGL refuses ``glReadPixels``
-        with ``GL_RGB``/``GL_UNSIGNED_BYTE`` (GL error 1282,
-        INVALID_OPERATION). RGBA is the GLES-portable format. We then
-        drop the alpha channel before JPEG encoding because JPEG can't
-        carry transparency anyway.
+        Shared sub-step of both JPEG and WebRTC transports. The JPEG
+        path (``_render_frame_on_thread``) calls this, then encodes
+        the numpy array via PIL. The WebRTC path (``webrtc_session``)
+        calls this directly and pushes the array into an
+        ``av.VideoFrame`` for the NVENC encoder — no PIL round-trip,
+        no JPEG layer.
+
+        Readback uses ``RGBA`` (not ``RGB``) because the GLES build of
+        VTK 9.3 on ppc64le EGL refuses ``glReadPixels`` with
+        ``GL_RGB``/``GL_UNSIGNED_BYTE`` (GL error 1282 INVALID_OPERATION).
+        We drop the alpha channel after readback. Returned array is
+        contiguous ``uint8`` shape ``(height, width, 3)`` and is safe
+        to pass to ``av.VideoFrame.from_ndarray`` directly.
         """
         if self._render_window is None or self._renderer is None:
             raise RuntimeError(
                 f"Session {self.session_id} not initialised (call await initialize())."
             )
+        import numpy as np_local
         import vtk
         from vtk.util.numpy_support import vtk_to_numpy
 
-        # The camera is owned and mutated by ``_apply_command_on_thread``
-        # (rotate / zoom / pan call cam.Azimuth/Elevation/Zoom/Move
-        # directly). Render frames just take a snapshot — NO reset,
-        # NO re-application of absolute angles. This matches the
-        # desktop ``vtkInteractorStyleTrackballCamera``: rotations are
-        # incremental against the current camera state, not against a
-        # default fit. Without this rule a single command like
-        # ``set_threshold`` (which arrives in between a drag and the
-        # next request_frame) would silently "snap" the camera back to
-        # ResetCamera+azimuth and look like the cube rotated on its
-        # own.
         cam = self._renderer.GetActiveCamera()
 
         # Sync the corner-axes camera so the orientation triad rotates
@@ -1154,21 +1170,25 @@ class RenderSession:
         h, w = self.view.height, self.view.width
         # VTK ships pixels bottom-up; flip to top-down.
         arr = arr.reshape((h, w, 4))[::-1]
-        # Drop alpha for JPEG (it can't carry it). Composite onto our
-        # configured background colour so semi-transparent volumes look
-        # right against the SSR session's bg, not against random alpha.
-        rgb = arr[:, :, :3].copy()
+        # Drop alpha. WebRTC's NVENC encoder reads RGB directly;
+        # JPEG also can't carry transparency.
+        rgb = np_local.ascontiguousarray(arr[:, :, :3])
+        return rgb, (t1 - t0) * 1000.0
 
-        # 4. JPEG encode.
+    def _render_frame_on_thread(self) -> bytes:
+        """Render one frame and return JPEG bytes. Legacy WS transport path."""
+        rgb, render_ms = self._render_rgb_on_thread()
+
+        # JPEG encode.
         img = Image.fromarray(rgb, mode="RGB")
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=self.view.jpeg_quality,
                   optimize=False, progressive=False)
         jpeg = buf.getvalue()
 
-        # 5. Update telemetry.
+        # Telemetry.
         self.stats.frames_rendered += 1
-        self.stats.last_render_ms = (t1 - t0) * 1000.0
+        self.stats.last_render_ms = render_ms
         self.stats.last_jpeg_kb = len(jpeg) / 1024.0
         self.stats.bytes_sent += len(jpeg)
         return jpeg

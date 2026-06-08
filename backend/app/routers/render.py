@@ -129,7 +129,63 @@ async def close_session(session_id: str, _: None = _auth) -> dict[str, Any]:
 @router.get("/diagnostics")
 async def diagnostics(_: None = _auth) -> dict[str, Any]:
     """Snapshot of active render sessions — for ops dashboards + tests."""
-    return await get_render_manager().snapshot()
+    snap = await get_render_manager().snapshot()
+    # Surface which transports this backend can serve so the client
+    # picks the best path: ``jpeg-ws`` is always on; ``h265-webrtc``
+    # only when the optional Stage 6 H.265 build was applied.
+    try:
+        from ..webrtc_session import webrtc_available
+        transports = ["jpeg-ws"]
+        if webrtc_available():
+            transports.append("h265-webrtc")
+    except ImportError:
+        transports = ["jpeg-ws"]
+    snap["transports"] = transports
+    return snap
+
+
+# ── WebRTC: SDP offer/answer signalling ─────────────────────────────────────
+
+
+class _SdpExchange(BaseModel):
+    sdp: str
+    type: str
+
+
+@router.post("/{session_id}/sdp/offer", response_model=_SdpExchange)
+async def webrtc_offer(
+    session_id: str,
+    offer: _SdpExchange,
+    _: None = _auth,
+) -> _SdpExchange:
+    """Establish a WebRTC peer connection for a render session.
+
+    The client posts its SDP offer; we attach a video track that pulls
+    RGB frames from the existing :class:`RenderSession` (no JPEG
+    round-trip), NVENC-encode them, and return the SDP answer. Camera
+    commands flow back over an ``RTCDataChannel`` the client opens
+    before posting the offer — same JSON protocol as the WebSocket
+    transport so the desktop client can share serialization code.
+
+    Each call creates a fresh PeerConnection. A session can host
+    multiple PCs (e.g. a desktop client + a tablet looking at the same
+    cube); the underlying RenderSession serialises them with its
+    existing render lock.
+    """
+    try:
+        from ..webrtc_session import WebRTCSession, webrtc_available
+    except ImportError:
+        raise HTTPException(503, "WebRTC transport not built in this backend.")
+    if not webrtc_available():
+        raise HTTPException(503, "WebRTC transport disabled (no NVENC).")
+
+    sess = await get_render_manager().get_session(session_id)
+    if sess is None:
+        raise HTTPException(404, "Unknown render session_id.")
+
+    webrtc = WebRTCSession(sess)
+    answer = await webrtc.create_answer(offer.sdp, offer.type)
+    return _SdpExchange(**answer)
 
 
 # ── WebSocket: command / frame channel ───────────────────────────────────────
