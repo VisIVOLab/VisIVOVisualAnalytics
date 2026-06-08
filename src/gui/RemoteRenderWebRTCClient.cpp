@@ -208,17 +208,26 @@ void RemoteRenderWebRTCClient::setupPeerConnection()
         // Server → client commands aren't part of the protocol yet.
     });
 
-    // Generate the offer. setLocalDescription() is synchronous — the
-    // local description is ready immediately afterwards (modulo
-    // candidates, which will arrive via onLocalCandidate above).
+    // Generate the offer. setLocalDescription() kicks off ICE
+    // gathering on a worker thread; the description string is
+    // assembled there. Reading it SYNCHRONOUSLY right after the call
+    // returns an empty optional intermittently (race with the worker).
+    //
+    // The fix: defer the read to the next Qt event-loop turn — that
+    // gives libdatachannel time to populate the description, and (a
+    // bonus) the onLocalCandidate callbacks fire in-between, so the
+    // initial offer carries whatever host candidates were ready
+    // instantly. Subsequent candidates trickle via postIceCandidate.
     m_pc->setLocalDescription();
-    if (auto desc = m_pc->localDescription()) {
-        const QString sdp  = QString::fromStdString(std::string(*desc));
-        const QString type = QString::fromStdString(desc->typeString());
-        onLocalDescriptionReady(sdp, type);
-    } else {
-        setStatus(u"Error: setLocalDescription returned no descriptor"_qs);
-    }
+    QMetaObject::invokeMethod(this, [this]() {
+        if (auto desc = m_pc->localDescription()) {
+            const QString sdp  = QString::fromStdString(std::string(*desc));
+            const QString type = QString::fromStdString(desc->typeString());
+            onLocalDescriptionReady(sdp, type);
+        } else {
+            setStatus(u"Error: setLocalDescription returned no descriptor"_qs);
+        }
+    }, Qt::QueuedConnection);
 }
 
 
@@ -307,6 +316,10 @@ void RemoteRenderWebRTCClient::onLocalDescriptionReady(const QString &sdp,
 
 void RemoteRenderWebRTCClient::postSdpOffer(const QString &offerSdp)
 {
+    qDebug().noquote() << QStringLiteral(
+            "[webrtc] postSdpOffer entering — base=%1 session=%2 sdp=%3 bytes")
+            .arg(m_baseUrl).arg(m_sessionId).arg(offerSdp.size());
+
     QUrl url(m_baseUrl);
     url.setPath(QStringLiteral("/v1/render/%1/sdp/offer").arg(m_sessionId));
 
@@ -358,6 +371,14 @@ void RemoteRenderWebRTCClient::postIceCandidate(const QString &candidate,
     if (m_baseUrl.isEmpty() || m_sessionId.isEmpty()) {
         return;
     }
+    // Backend creates the WebRTCSession only when it processes
+    // /sdp/offer (which takes ~5 s for ICE+DTLS setup). Posting
+    // candidates before then races and 404s, so we buffer until
+    // handleSdpAnswer flushes us.
+    if (!m_answerReceived) {
+        m_iceBacklog.append({candidate, mid});
+        return;
+    }
     QUrl url(m_baseUrl);
     url.setPath(QStringLiteral("/v1/render/%1/sdp/ice").arg(m_sessionId));
 
@@ -401,6 +422,23 @@ void RemoteRenderWebRTCClient::handleSdpAnswer(const QByteArray &responseBody)
     } catch (const std::exception &e) {
         setStatus(QStringLiteral("Error: setRemoteDescription %1")
                           .arg(QString::fromUtf8(e.what())));
+        return;
+    }
+
+    // Server has now created its PeerConnection and accepted the
+    // offer. It's safe to push any candidates we buffered during
+    // negotiation. Replay them in arrival order so the server reads
+    // them as a coherent stream.
+    m_answerReceived = true;
+    if (!m_iceBacklog.isEmpty()) {
+        qDebug().noquote() << QStringLiteral(
+                "[webrtc] flushing %1 buffered ICE candidate(s) to backend")
+                .arg(m_iceBacklog.size());
+        const auto backlog = std::move(m_iceBacklog);
+        m_iceBacklog.clear();
+        for (const auto &kv : backlog) {
+            postIceCandidate(kv.first, kv.second);
+        }
     }
 }
 

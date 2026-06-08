@@ -2,8 +2,10 @@
 
 #include <QImage>
 #include <QObject>
+#include <QPair>
 #include <QString>
 #include <QVariantMap>
+#include <QVector>
 #include <chrono>
 #include <memory>
 
@@ -136,6 +138,15 @@ private:
     QString  m_token;
     bool     m_live{ false };
     QString  m_status{ "Idle" };
+
+    // Trickle-ICE candidate buffer. libdatachannel starts emitting
+    // candidates as soon as setLocalDescription() runs — typically
+    // BEFORE we've even posted the offer, let alone received the
+    // answer. The backend, however, can only addIceCandidate() after
+    // setRemoteDescription(). We buffer locally and flush after the
+    // server has acknowledged our offer (handleSdpAnswer).
+    bool     m_answerReceived{ false };
+    QVector<QPair<QString, QString>> m_iceBacklog;   // (candidate, mid)
 
     QNetworkAccessManager *m_nam{ nullptr };
 
