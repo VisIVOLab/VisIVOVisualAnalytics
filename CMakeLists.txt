@@ -98,6 +98,155 @@ if (cfitsio_include_dirs)
     )
 endif ()
 
+# ── Phase 3 SSR transport: H.265 / WebRTC via libdatachannel ────────────────
+#
+# When VISIVO_ENABLE_WEBRTC is ON (default), build the
+# ``RemoteRenderWidget`` with the WebRTC transport in addition to the
+# legacy JPEG-over-WebSocket path. Requires:
+#
+#   * libdatachannel  — WebRTC peer connection + DataChannel (C++17,
+#                       MIT, ~150 KB). On Linux: ``apt install
+#                       libdatachannel-dev``. On macOS: ``brew install
+#                       libdatachannel``. On Windows: vcpkg port
+#                       ``datachannel``.
+#   * FFmpeg dev libs — libavcodec + libavutil + libswscale for the
+#                       H.264 decode path. Same provenance pattern as
+#                       libdatachannel above (system / brew / vcpkg).
+#
+# Both find_package paths are gated by the option so a developer who
+# only needs the JPEG transport (e.g. a Windows lab without FFmpeg
+# headers) can disable the feature at configure time without touching
+# the source.
+option(VISIVO_ENABLE_WEBRTC
+    "Enable H.265 WebRTC transport in RemoteRenderWidget (requires libdatachannel + FFmpeg)"
+    ON)
+if (VISIVO_ENABLE_WEBRTC)
+    # Apple Silicon Homebrew installs to /opt/homebrew, which CMake
+    # does NOT search by default. Add brew's prefix to the search path
+    # so find_package sees the formula's CMake configs (libdatachannel,
+    # plus its OpenSSL/SRTP/usrsctp deps the config transitively links).
+    # Mirror the same treatment for legacy Intel /usr/local. Linux/CI
+    # and vcpkg are unaffected — they already register their prefixes.
+    if (APPLE)
+        foreach (_brew_prefix /opt/homebrew /usr/local)
+            if (EXISTS "${_brew_prefix}/lib/cmake")
+                list(APPEND CMAKE_PREFIX_PATH "${_brew_prefix}")
+            endif ()
+        endforeach ()
+        message(STATUS "CMAKE_PREFIX_PATH augmented for brew lookup: "
+                "${CMAKE_PREFIX_PATH}")
+    endif ()
+
+    # libdatachannel is NOT in Homebrew core and only some vcpkg
+    # ports ship it. To keep developer setup zero-friction across
+    # macOS/Windows/Linux we ALWAYS try find_package first (catches
+    # the rare case it's pre-installed) and fall back to FetchContent
+    # — CMake clones the repo and builds it as part of our configure
+    # step. First configure is ~5-10 min slower; subsequent ones use
+    # the FetchContent cache.
+    # OpenSSL hint — libdatachannel's DTLS-SRTP needs real OpenSSL.
+    # macOS system OpenSSL is actually LibreSSL with a reduced API
+    # which fails libdatachannel's compile. Point find_package(OpenSSL)
+    # at brew's openssl@3 install if present.
+    if (APPLE AND NOT OPENSSL_ROOT_DIR)
+        foreach (_ssl_root
+                "/opt/homebrew/opt/openssl@3"
+                "/usr/local/opt/openssl@3"
+        )
+            if (EXISTS "${_ssl_root}/include/openssl/ssl.h")
+                set(OPENSSL_ROOT_DIR "${_ssl_root}")
+                message(STATUS "OpenSSL hint: OPENSSL_ROOT_DIR=${_ssl_root}")
+                break ()
+            endif ()
+        endforeach ()
+        if (NOT OPENSSL_ROOT_DIR)
+            message(WARNING
+                "VISIVO_ENABLE_WEBRTC=ON on macOS but no OpenSSL found "
+                "at /opt/homebrew/opt/openssl@3 or /usr/local/opt/openssl@3. "
+                "Install with: brew install openssl@3. "
+                "WebRTC build will likely fail until that's resolved.")
+        endif ()
+    endif ()
+
+    find_package(LibDataChannel CONFIG QUIET)
+    if (TARGET LibDataChannel::LibDataChannel)
+        set(_visivo_webrtc_lib LibDataChannel::LibDataChannel)
+        message(STATUS "Using libdatachannel from CMAKE_PREFIX_PATH "
+                "(target: LibDataChannel::LibDataChannel)")
+    else ()
+        message(STATUS "libdatachannel not installed system-wide — "
+                "fetching from upstream via FetchContent")
+        include(FetchContent)
+        # Trim libdatachannel's own build: we only need the C++ core
+        # for our peer connection / track / data channel use; their
+        # tests, examples, GnuTLS adapter, etc. add ~3 min and are
+        # useless for a library consumer.
+        set(NO_TESTS    ON CACHE BOOL "")
+        set(NO_EXAMPLES ON CACHE BOOL "")
+        set(NO_MEDIA    OFF CACHE BOOL "")    # we DO need media (RTP) for the H.264 track
+        set(NO_WEBSOCKET ON CACHE BOOL "")    # we already have QWebSocket for the JPEG path
+        set(USE_GNUTLS  OFF CACHE BOOL "")    # OpenSSL is universal across our platforms
+        set(USE_NICE    OFF CACHE BOOL "")    # libnice is a Linux-only ICE library; not needed
+        # Force ALL deps to come from libdatachannel's bundled
+        # submodules (plog, libjuice, libsrtp, usrsctp). On the
+        # initial attempt PREFER_SYSTEM_LIB=ON made libdatachannel
+        # call find_package(plog) which fails on macOS — plog isn't
+        # in Homebrew. The submodules are already in the libdatachannel
+        # repo we just cloned, so bundling them is the path of least
+        # resistance.
+        set(USE_SYSTEM_PLOG     OFF CACHE BOOL "" FORCE)
+        set(USE_SYSTEM_JUICE    OFF CACHE BOOL "" FORCE)
+        set(USE_SYSTEM_SRTP     OFF CACHE BOOL "" FORCE)
+        set(USE_SYSTEM_USRSCTP  OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(libdatachannel
+            GIT_REPOSITORY https://github.com/paullouisageneau/libdatachannel.git
+            GIT_TAG        v0.21.2     # last release tested 2025-12, stable WebRTC support
+            # NB: NO GIT_SHALLOW here. Shallow clones don't pull
+            # submodules cleanly across CMake/git versions; the
+            # full clone is ~80 MB extra but guarantees deps/* are
+            # populated.
+            GIT_SUBMODULES_RECURSE TRUE
+        )
+        FetchContent_MakeAvailable(libdatachannel)
+        if (TARGET LibDataChannel::LibDataChannel)
+            set(_visivo_webrtc_lib LibDataChannel::LibDataChannel)
+        elseif (TARGET datachannel)
+            set(_visivo_webrtc_lib datachannel)
+        endif ()
+        if (_visivo_webrtc_lib)
+            message(STATUS "Using libdatachannel from FetchContent "
+                    "(target: ${_visivo_webrtc_lib})")
+        else ()
+            message(WARNING "FetchContent of libdatachannel ran but no "
+                    "expected target was created — check upstream layout.")
+        endif ()
+    endif ()
+
+    # FFmpeg via pkg-config — the most portable path across Linux/macOS
+    # and vcpkg+Windows (vcpkg ships ``.pc`` files in its install root).
+    find_package(PkgConfig QUIET)
+    if (PkgConfig_FOUND)
+        pkg_check_modules(VISIVO_FFMPEG IMPORTED_TARGET
+                libavcodec libavutil libswscale)
+    endif ()
+
+    if (_visivo_webrtc_lib AND VISIVO_FFMPEG_FOUND)
+        message(STATUS "Using FFmpeg via pkg-config: "
+                "libavcodec ${VISIVO_FFMPEG_libavcodec_VERSION}, "
+                "libswscale ${VISIVO_FFMPEG_libswscale_VERSION}")
+        set(VISIVO_HAS_WEBRTC ON)
+    else ()
+        message(WARNING "VISIVO_ENABLE_WEBRTC=ON but dependencies missing: "
+                "LibDataChannel=${_visivo_webrtc_lib}, "
+                "FFmpeg=${VISIVO_FFMPEG_FOUND}. "
+                "Building WITHOUT the WebRTC transport.")
+        set(VISIVO_HAS_WEBRTC OFF)
+    endif ()
+else ()
+    set(VISIVO_HAS_WEBRTC OFF)
+    message(STATUS "VISIVO_ENABLE_WEBRTC=OFF — WebRTC transport not built.")
+endif ()
+
 qt_standard_project_setup()
 set(CMAKE_AUTOUIC OFF)
 
@@ -434,6 +583,24 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         QCustomPlot
 )
 
+if (VISIVO_HAS_WEBRTC)
+    # Compile-time toggle picked up by RemoteRenderWidget to gate the
+    # WebRTC code paths. Other VisIVO modules don't need to know about
+    # the transport; everything is encapsulated in RemoteRenderWidget.
+    target_compile_definitions(${PROJECT_NAME} PRIVATE VISIVO_HAS_WEBRTC=1)
+    # The WebRTC client (libdatachannel + FFmpeg includes) only compiles
+    # when those libs are present, so we add it to the target ONLY in
+    # this branch. ``target_sources`` lets us add files post-creation.
+    target_sources(${PROJECT_NAME} PRIVATE
+            src/gui/RemoteRenderWebRTCClient.cpp
+            src/gui/RemoteRenderWebRTCClient.h
+    )
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+            ${_visivo_webrtc_lib}
+            PkgConfig::VISIVO_FFMPEG
+    )
+endif ()
+
 if (APPLE)
     target_link_options(${PROJECT_NAME} PRIVATE
             "LINKER:-no_warn_duplicate_libraries"
@@ -466,6 +633,21 @@ target_link_libraries(test_remote_render PRIVATE
         Qt::Network
         Qt::WebSockets
 )
+if (VISIVO_HAS_WEBRTC)
+    # Same gate as the main app — the test harness uses the WebRTC
+    # path too, so it must see the libdatachannel + FFmpeg symbols
+    # AND link the RemoteRenderWebRTCClient TU (its symbols are
+    # referenced from RemoteRenderWidget.cpp under VISIVO_HAS_WEBRTC).
+    target_compile_definitions(test_remote_render PRIVATE VISIVO_HAS_WEBRTC=1)
+    target_sources(test_remote_render PRIVATE
+            src/gui/RemoteRenderWebRTCClient.cpp
+            src/gui/RemoteRenderWebRTCClient.h
+    )
+    target_link_libraries(test_remote_render PRIVATE
+            ${_visivo_webrtc_lib}
+            PkgConfig::VISIVO_FFMPEG
+    )
+endif ()
 set_target_properties(test_remote_render PROPERTIES
         MACOSX_BUNDLE FALSE   # plain command-line binary
 )
@@ -481,6 +663,52 @@ qt_generate_deploy_app_script(
 )
 
 install(SCRIPT ${deploy_script})
+
+# ── macOS: bundle libdatachannel + FFmpeg into the .app ─────────────────────
+#
+# ``macdeployqt`` (invoked by qt_generate_deploy_app_script above)
+# only bundles Qt frameworks; non-Qt dynamic libraries that the binary
+# is linked against — libdatachannel, libavcodec, libavutil,
+# libswscale, plus their transitives (OpenSSL, libsrtp, usrsctp) —
+# need an explicit deploy step. Without it the .app links to the
+# developer's Homebrew install at /opt/homebrew/lib/, which fails the
+# moment another user double-clicks the .dmg without that exact brew
+# layout.
+#
+# We use BundleUtilities — CMake's stock macro for bundling .dylibs +
+# fixing install names — which walks the binary's load commands,
+# copies every external dylib into ``Contents/Frameworks/``, and
+# rewrites the load paths to ``@executable_path/../Frameworks/...``.
+# Robust across Apple Silicon + Intel and across brew install
+# locations.
+if (APPLE AND VISIVO_HAS_WEBRTC)
+    # Brew install prefixes we tell BundleUtilities to look in when
+    # resolving dependencies that aren't in the rpath. Covers both
+    # the AppleSilicon (/opt/homebrew) and Intel (/usr/local) layouts.
+    set(_visivo_macos_dirs
+            "/opt/homebrew/lib"
+            "/opt/homebrew/opt/libdatachannel/lib"
+            "/opt/homebrew/opt/ffmpeg/lib"
+            "/opt/homebrew/opt/openssl@3/lib"
+            "/opt/homebrew/opt/libsrtp/lib"
+            "/usr/local/lib"
+            "/usr/local/opt/libdatachannel/lib"
+            "/usr/local/opt/ffmpeg/lib"
+    )
+    install(CODE "
+        include(BundleUtilities)
+        set(BU_CHMOD_BUNDLE_ITEMS ON)
+        fixup_bundle(
+            \"\${CMAKE_INSTALL_PREFIX}/${PROJECT_NAME}.app\"
+            \"\"
+            \"${_visivo_macos_dirs}\"
+        )
+    " COMPONENT Runtime)
+    message(STATUS
+        "Mac bundling: fixup_bundle will copy libdatachannel + FFmpeg dylibs "
+        "into ${PROJECT_NAME}.app/Contents/Frameworks/ at install time."
+    )
+endif ()
 
 # ── Windows runtime DLL deployment ───────────────────────────────────────────
 #

@@ -950,11 +950,21 @@ private:
     // confirmed that it cannot — used to suppress repeat probes.
     bool                  m_renderBackendProbed{ false };
     bool                  m_renderBackendSupportsSsr{ false };
+    // Phase-3 transport choice for the remote render widget. Populated
+    // from /v1/render/diagnostics::transports the first time we enter
+    // Remote mode. ``true`` means the backend exposes the H.264-WebRTC
+    // path AND the client was built with VISIVO_HAS_WEBRTC.
+    bool                  m_remoteBackendSupportsWebRTC{ false };
 
     void setupRenderModeUi();
     void applyRenderMode(RenderMode requested, bool fromUserAction);
     void requestRemoteRenderSession();
     void releaseRemoteRenderSession();
+    /// Connect the RemoteRenderWidget against the given session,
+    /// picking the best transport advertised by the backend. The
+    /// diagnostics probe is cached: subsequent calls reuse the
+    /// previously-discovered ``m_remoteBackendSupportsWebRTC`` flag.
+    void connectRemoteRenderWidgetWithTransport(const QString &sessionId);
     void onRemoteRenderConnectionStateChanged(const QString &state);
     void onRemoteRenderFpsChanged(double fps);
     void updateRenderModeBadges();

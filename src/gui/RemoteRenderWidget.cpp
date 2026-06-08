@@ -48,12 +48,67 @@ RemoteRenderWidget::~RemoteRenderWidget()
 
 // ── Connection lifecycle ────────────────────────────────────────────────────
 
+#ifdef VISIVO_HAS_WEBRTC
+#include "RemoteRenderWebRTCClient.h"
+#endif
+
 void RemoteRenderWidget::connectToSession(const QString &baseUrl,
                                           const QString &sessionId,
                                           const QString &token)
 {
     disconnectFromSession();
 
+#ifdef VISIVO_HAS_WEBRTC
+    // ── H.264-over-WebRTC branch ─────────────────────────────────
+    if (m_transport == Transport::H265WebRTC) {
+        m_webrtc = new RemoteRenderWebRTCClient(this);
+        // The widget's frame buffer is shared between transports — the
+        // paint event doesn't care if the QImage came from JPEG decode
+        // or H.264 decode. We just copy on the signal.
+        connect(m_webrtc, &RemoteRenderWebRTCClient::frameReady,
+                this, [this](const QImage &img) {
+            m_currentFrame = img;
+            if (!m_live) {
+                m_live = true;
+            }
+            update();
+        });
+        connect(m_webrtc, &RemoteRenderWebRTCClient::framesPerSecondChanged,
+                this, &RemoteRenderWidget::framesPerSecondChanged);
+        connect(m_webrtc, &RemoteRenderWebRTCClient::connectionStateChanged,
+                this, [this](const QString &state) {
+            m_status = state;
+            emit connectionStateChanged(state);
+            update();
+            // On Live transition, push an initial ``resize`` so the
+            // backend renders at our PHYSICAL pixel count instead of
+            // the SessionViewState default (1024×768). On a Retina
+            // display that means the frame arrives at native pixel
+            // density and we paint it 1:1 — no upscaling blur.
+            if (state == QLatin1String("Live") && m_webrtc) {
+                const qreal dpr = devicePixelRatioF();
+                const int physW = qRound(width()  * dpr);
+                const int physH = qRound(height() * dpr);
+                QVariantMap sz;
+                sz[QStringLiteral("type")]   = QStringLiteral("resize");
+                sz[QStringLiteral("width")]  = physW;
+                sz[QStringLiteral("height")] = physH;
+                qDebug().noquote() << QStringLiteral(
+                        "[webrtc] sending initial resize: "
+                        "%1×%2 logical -> %3×%4 physical (dpr=%5)")
+                        .arg(width()).arg(height()).arg(physW).arg(physH).arg(dpr);
+                m_webrtc->sendStateCommand(sz);
+            }
+        });
+        m_status = QStringLiteral("Connecting…");
+        emit connectionStateChanged(m_status);
+        update();
+        m_webrtc->connectToSession(baseUrl, sessionId, token);
+        return;
+    }
+#endif
+
+    // ── JPEG-over-WebSocket branch (legacy / always-available) ───
     // Build ws://host:port/v1/render/<id>/ws?token=...
     QUrl wsUrl(baseUrl);
     const QString scheme = (wsUrl.scheme() == QLatin1String("https"))
@@ -95,6 +150,13 @@ void RemoteRenderWidget::disconnectFromSession()
         m_ws->deleteLater();
         m_ws = nullptr;
     }
+#ifdef VISIVO_HAS_WEBRTC
+    if (m_webrtc) {
+        m_webrtc->disconnectFromSession();
+        m_webrtc->deleteLater();
+        m_webrtc = nullptr;
+    }
+#endif
     m_live = false;
     m_frameInFlight = false;
     m_status = QStringLiteral("Disconnected");
@@ -114,6 +176,16 @@ void RemoteRenderWidget::setJpegQuality(int q)
 
 void RemoteRenderWidget::sendStateCommand(const QVariantMap &command)
 {
+#ifdef VISIVO_HAS_WEBRTC
+    // WebRTC path: forward to the DataChannel client. The WebRTC
+    // transport pushes frames continuously at server-paced FPS, so we
+    // don't issue a request_frame after the command — the next frame
+    // in the stream will already reflect the new state.
+    if (m_transport == Transport::H265WebRTC && m_webrtc) {
+        m_webrtc->sendStateCommand(command);
+        return;
+    }
+#endif
     if (!m_ws || m_ws->state() != QAbstractSocket::ConnectedState) {
         return;
     }
@@ -313,6 +385,18 @@ void RemoteRenderWidget::resizeEvent(QResizeEvent *event)
 
 void RemoteRenderWidget::sendCommand(const QByteArray &jsonBytes)
 {
+#ifdef VISIVO_HAS_WEBRTC
+    // WebRTC dispatch: mouse drag / wheel / resize event handlers call
+    // sendCommand() directly with a serialised JSON byte array. Under
+    // the WebRTC transport we re-parse the JSON back into a
+    // QVariantMap (cheap — payloads are tiny) and forward through
+    // the data channel. Same JSON shape, different transport.
+    if (m_transport == Transport::H265WebRTC && m_webrtc) {
+        const QJsonDocument doc = QJsonDocument::fromJson(jsonBytes);
+        m_webrtc->sendStateCommand(doc.object().toVariantMap());
+        return;
+    }
+#endif
     if (!m_ws || m_ws->state() != QAbstractSocket::ConnectedState) {
         return;
     }
@@ -321,6 +405,16 @@ void RemoteRenderWidget::sendCommand(const QByteArray &jsonBytes)
 
 void RemoteRenderWidget::requestFrame()
 {
+#ifdef VISIVO_HAS_WEBRTC
+    // Under WebRTC the server pushes frames continuously at a fixed
+    // FPS — the request_frame poke that the JPEG path uses is not
+    // needed and would be silently ignored by the server. No-op here
+    // keeps the rest of the call-site code (mouse, wheel, resize) the
+    // same across transports.
+    if (m_transport == Transport::H265WebRTC) {
+        return;
+    }
+#endif
     if (!m_ws || m_ws->state() != QAbstractSocket::ConnectedState) {
         return;
     }

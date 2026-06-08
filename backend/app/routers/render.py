@@ -183,9 +183,31 @@ async def webrtc_offer(
     if sess is None:
         raise HTTPException(404, "Unknown render session_id.")
 
-    webrtc = WebRTCSession(sess)
-    answer = await webrtc.create_answer(offer.sdp, offer.type)
+    logger.info(
+        "[webrtc] /sdp/offer received for session %s (offer type=%s, %d chars)",
+        session_id, offer.type, len(offer.sdp or ""),
+    )
+    try:
+        webrtc = WebRTCSession(sess)
+        answer = await webrtc.create_answer(offer.sdp, offer.type)
+    except Exception as e:
+        # Surface the actual reason to the client — without this the
+        # caller sees a bare 500 and has to dig through the backend
+        # logs to learn what went wrong. The HTTPException detail is
+        # not sensitive: it's the same string that ends up in the log.
+        import traceback
+        tb = traceback.format_exc()
+        logger.error("[webrtc] /sdp/offer failed for %s: %s\n%s",
+                     session_id, e, tb)
+        raise HTTPException(
+            500,
+            f"WebRTC negotiation failed: {type(e).__name__}: {e}",
+        )
     return _SdpExchange(**answer)
+
+
+# Module logger — set up beside the router for the log line above.
+logger = logging.getLogger("visivo.render")
 
 
 # ── WebSocket: command / frame channel ───────────────────────────────────────

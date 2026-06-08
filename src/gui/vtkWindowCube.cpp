@@ -4193,9 +4193,7 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
             // the previous Local switch, re-open it. Hands the user a
             // live image again without paying for EGL warm-up.
             if (this->m_remoteRenderWidget && !this->m_remoteRenderWidget->isLive()) {
-                this->m_remoteRenderWidget->connectToSession(
-                        this->remoteBackendUrl, this->m_renderSessionId,
-                        this->remoteBackendToken);
+                this->connectRemoteRenderWidgetWithTransport(this->m_renderSessionId);
             }
         }
     } else {
@@ -4253,6 +4251,47 @@ void vtkWindowCube::requestRemoteRenderSession()
         return;
     }
 
+    // Probe /v1/render/diagnostics::transports first so we know which
+    // transport to set on the widget before connectToSession fires.
+    // Result is cached on m_remoteBackendSupportsWebRTC and reused on
+    // subsequent Local↔Remote flips within the same backend session.
+    {
+        QUrl diagUrl(this->remoteBackendUrl);
+        diagUrl.setPath(u"/v1/render/diagnostics"_s);
+        QNetworkRequest diagReq(diagUrl);
+        if (!this->remoteBackendToken.isEmpty()) {
+            diagReq.setRawHeader(QByteArrayLiteral("X-Visivo-Token"),
+                                 this->remoteBackendToken.toUtf8());
+        }
+        QNetworkReply *diagReply = this->m_renderNam->get(diagReq);
+        QObject::connect(diagReply, &QNetworkReply::finished, this,
+                         [this, diagReply]() {
+            diagReply->deleteLater();
+            if (diagReply->error() != QNetworkReply::NoError) {
+                qDebug().noquote() << "[remote-render] diagnostics probe failed; "
+                                       "assuming JPEG-WS only";
+                this->m_remoteBackendSupportsWebRTC = false;
+                return;
+            }
+            const QJsonDocument doc = QJsonDocument::fromJson(diagReply->readAll());
+            const QJsonArray transports = doc.object().value(u"transports"_s).toArray();
+            bool haveWebRtc = false;
+            for (const auto &t : transports) {
+                if (t.toString() == QLatin1String("h265-webrtc")) {
+                    haveWebRtc = true;
+                    break;
+                }
+            }
+            this->m_remoteBackendSupportsWebRTC = haveWebRtc;
+            QStringList tlist;
+            for (const auto &t : transports) tlist << t.toString();
+            qDebug().noquote() << QStringLiteral(
+                    "[remote-render] backend transports: [%1] (h265-webrtc=%2)")
+                    .arg(tlist.join(u", "_s))
+                    .arg(haveWebRtc ? u"yes"_s : u"no"_s);
+        });
+    }
+
     QUrl url(this->remoteBackendUrl);
     url.setPath(u"/v1/render/create_session"_s);
     QNetworkRequest req(url);
@@ -4297,8 +4336,7 @@ void vtkWindowCube::requestRemoteRenderSession()
         qDebug().noquote() << "[remote-render] session created:" << sid;
 
         if (this->m_remoteRenderWidget) {
-            this->m_remoteRenderWidget->connectToSession(
-                    this->remoteBackendUrl, sid, this->remoteBackendToken);
+            this->connectRemoteRenderWidgetWithTransport(sid);
         }
         if (this->m_renderStack) {
             this->m_renderStack->setCurrentIndex(1);
@@ -4306,6 +4344,31 @@ void vtkWindowCube::requestRemoteRenderSession()
         this->m_effectiveRenderMode = RenderMode::Remote;
         this->updateRenderModeBadges();
     });
+}
+
+void vtkWindowCube::connectRemoteRenderWidgetWithTransport(const QString &sessionId)
+{
+    // Pick the best transport based on backend capability. The
+    // policy ("H.265 always when available") was set during the Phase
+    // 3 architecture sign-off — see project_h265_backend_e2e.md. If
+    // the build wasn't compiled with VISIVO_HAS_WEBRTC, the widget's
+    // ``setTransport`` is a no-op so we just fall through to JPEG.
+#ifdef VISIVO_HAS_WEBRTC
+    if (this->m_remoteBackendSupportsWebRTC) {
+        this->m_remoteRenderWidget->setTransport(
+                RemoteRenderWidget::Transport::H265WebRTC);
+        qDebug().noquote()
+                << "[remote-render] transport: H.264 WebRTC (h265-webrtc capable)";
+    } else
+#endif
+    {
+        this->m_remoteRenderWidget->setTransport(
+                RemoteRenderWidget::Transport::JpegWS);
+        qDebug().noquote()
+                << "[remote-render] transport: JPEG WebSocket (legacy / fallback)";
+    }
+    this->m_remoteRenderWidget->connectToSession(
+            this->remoteBackendUrl, sessionId, this->remoteBackendToken);
 }
 
 void vtkWindowCube::releaseRemoteRenderSession()
@@ -4398,7 +4461,15 @@ void vtkWindowCube::resendThresholdToRemote()
     if (!this->m_initialThresholdApplied) return;
     QVariantMap m;
     m[u"type"_s]  = u"set_threshold"_s;
-    m[u"value"_s] = static_cast<double>(this->lowerBound);
+    // Read from the line-edit, NOT from this->lowerBound — the latter
+    // is the LOWER EDGE of the cube's visible range (cubeRange[0] +
+    // 3 % span, set once in applyCubeOpenResult and never modified).
+    // The actual threshold the user is looking at lives in
+    // ui->lineThreshold (kept in sync by applyThreshold). Reading
+    // lowerBound here used to push a negative dummy on bootstrap,
+    // forcing the user to click "Enter" on the threshold field to
+    // resync the backend.
+    m[u"value"_s] = ui->lineThreshold->text().toDouble();
     this->sendRemoteRenderStateCommand(m);
 }
 
@@ -4458,7 +4529,10 @@ void vtkWindowCube::pushRenderStateToRemote()
     if (this->m_initialThresholdApplied) {
         QVariantMap m;
         m[u"type"_s]  = u"set_threshold"_s;
-        m[u"value"_s] = static_cast<double>(this->lowerBound);
+        // See resendThresholdToRemote() for why lineThreshold is the
+        // right source — lowerBound is the cube's lower edge, not the
+        // user's current threshold.
+        m[u"value"_s] = ui->lineThreshold->text().toDouble();
         this->sendRemoteRenderStateCommand(m);
     }
     int blend = 0;

@@ -151,7 +151,12 @@ class VtkFrameTrack(MediaStreamTrack):
     """
     kind = "video"
 
-    def __init__(self, render_session: RenderSession, fps: float = 30.0):
+    def __init__(self, render_session: RenderSession, fps: float = 60.0):
+        # 60 FPS upper bound — V100 NVENC + tunnel can sustain it
+        # comfortably for a 1080p cube (encode ~3 ms, network ~5 ms).
+        # The actual delivered rate is capped by either the encoder
+        # backlog or whichever pipeline stage is slowest; this is
+        # just the pacing ceiling.
         super().__init__()
         self._session = render_session
         self._fps = fps

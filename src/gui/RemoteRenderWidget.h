@@ -14,6 +14,7 @@ class QWheelEvent;
 class QResizeEvent;
 class QWebSocket;
 class QLabel;
+class RemoteRenderWebRTCClient;
 
 /**
  * @brief Client-side widget that displays JPEG frames streamed from the
@@ -38,12 +39,38 @@ class QLabel;
 class RemoteRenderWidget : public QWidget {
     Q_OBJECT
 public:
+    /// Transport selector. Affects how the widget receives frames AND
+    /// sends camera commands:
+    ///
+    ///   * ``JpegWS``       — existing WebSocket + JPEG path. Always
+    ///                        available. Used when the backend has no
+    ///                        H.265/NVENC stack or as a fallback.
+    ///   * ``H265WebRTC``   — H.264 over WebRTC via libdatachannel.
+    ///                        Requires VISIVO_HAS_WEBRTC at build time
+    ///                        and ``h265-webrtc`` advertised on
+    ///                        ``/v1/render/diagnostics::transports``.
+    ///   * ``Auto``         — try H265WebRTC if VISIVO_HAS_WEBRTC AND
+    ///                        the diagnostics probe (done elsewhere)
+    ///                        confirmed availability; otherwise JpegWS.
+    ///                        The caller controls the auto policy by
+    ///                        explicitly calling ``setTransport`` with
+    ///                        the resolved choice before connect.
+    enum class Transport { Auto, JpegWS, H265WebRTC };
+
     explicit RemoteRenderWidget(QWidget *parent = nullptr);
     ~RemoteRenderWidget() override;
 
-    /// Open the WebSocket. Call after :c:`POST /v1/render/create_session`
-    /// returns a session_id. ``baseUrl`` is the same URL the operator
-    /// configured in Settings → Remote Backends, e.g. ``http://localhost:8000``.
+    /// Set the transport BEFORE calling :c:`connectToSession`. After
+    /// connect, switching transports requires disconnect/reconnect.
+    void setTransport(Transport t) { m_transport = t; }
+    Transport transport() const { return m_transport; }
+
+    /// Open a session channel. The branch — JPEG-WS vs H.264-WebRTC
+    /// — is chosen by the current :c:`transport` setting at the time
+    /// of this call. Both branches share the same paint pipeline so
+    /// the widget code outside this class doesn't care which is live.
+    /// ``baseUrl`` is the same URL the operator configured in Settings
+    /// → Remote Backends, e.g. ``http://localhost:8000``.
     void connectToSession(const QString &baseUrl,
                           const QString &sessionId,
                           const QString &token);
@@ -96,10 +123,20 @@ private slots:
     void onBinaryMessageReceived(const QByteArray &bytes);
 
 private:
+    // JPEG/WS path (existing).
     void sendCommand(const QByteArray &jsonBytes);
     void requestFrame();
 
+    // Transport selection.
+    Transport m_transport{ Transport::JpegWS };
+
     QPointer<QWebSocket> m_ws;
+    // WebRTC client — owned by this widget when m_transport ==
+    // H265WebRTC. nullptr otherwise (and ``RemoteRenderWebRTCClient``
+    // header is only included in builds with VISIVO_HAS_WEBRTC, but
+    // the forward declaration keeps this header self-contained).
+    RemoteRenderWebRTCClient *m_webrtc{ nullptr };
+
     QImage m_currentFrame;
     QString m_status{ QStringLiteral("Idle") };
     bool m_live{ false };

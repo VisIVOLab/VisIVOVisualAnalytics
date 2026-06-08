@@ -47,7 +47,8 @@ int main(int argc, char *argv[]) {
     QCommandLineParser parser;
     parser.setApplicationDescription(
             QStringLiteral("Standalone test harness for VisIVO's "
-                           "server-side render WebSocket channel."));
+                           "server-side render transports (JPEG-WS and "
+                           "H.264 WebRTC)."));
     parser.addPositionalArgument(
             QStringLiteral("baseUrl"),
             QStringLiteral("Backend URL, e.g. http://localhost:8010"));
@@ -58,6 +59,11 @@ int main(int argc, char *argv[]) {
             QStringLiteral("sessionId"),
             QStringLiteral("Active render session_id "
                            "(create via POST /v1/render/create_session)"));
+    QCommandLineOption transportOpt(
+            QStringList() << QStringLiteral("t") << QStringLiteral("transport"),
+            QStringLiteral("Transport: 'jpeg' (WS, default) or 'webrtc' (H.264)."),
+            QStringLiteral("transport"), QStringLiteral("jpeg"));
+    parser.addOption(transportOpt);
     parser.addHelpOption();
     parser.process(app);
 
@@ -69,12 +75,28 @@ int main(int argc, char *argv[]) {
     const QString baseUrl   = args.at(0);
     const QString token     = args.at(1);
     const QString sessionId = args.at(2);
+    const QString transport = parser.value(transportOpt).toLower();
 
     QMainWindow window;
-    window.setWindowTitle(QStringLiteral("VisIVO — Remote Render Test"));
+    window.setWindowTitle(QStringLiteral("VisIVO — Remote Render Test (%1)")
+                                  .arg(transport));
     window.resize(1024, 768);
 
     auto *widget = new RemoteRenderWidget(&window);
+    if (transport == QStringLiteral("webrtc")
+        || transport == QStringLiteral("h265")
+        || transport == QStringLiteral("h264")) {
+#ifdef VISIVO_HAS_WEBRTC
+        widget->setTransport(RemoteRenderWidget::Transport::H265WebRTC);
+        qInfo() << "[test] Transport: H.264 over WebRTC";
+#else
+        qFatal("Built without VISIVO_HAS_WEBRTC — recompile with "
+               "-DVISIVO_ENABLE_WEBRTC=ON.");
+#endif
+    } else {
+        widget->setTransport(RemoteRenderWidget::Transport::JpegWS);
+        qInfo() << "[test] Transport: JPEG over WebSocket";
+    }
     window.setCentralWidget(widget);
 
     // Live status bar: connection state on the left, FPS on the right.
