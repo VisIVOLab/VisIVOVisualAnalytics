@@ -152,6 +152,20 @@ class _SdpExchange(BaseModel):
     type: str
 
 
+class _IceCandidate(BaseModel):
+    """One trickled ICE candidate from the client.
+
+    Mirrors the JS WebRTC ``RTCIceCandidateInit`` payload so any
+    web/desktop client can post it verbatim. Either of the two
+    identification fields (``sdpMid`` or ``sdpMLineIndex``) is enough
+    for aiortc to wire the candidate up to the right media section;
+    we forward both when the client has them.
+    """
+    candidate: str
+    sdpMid: str | None = None
+    sdpMLineIndex: int | None = None
+
+
 @router.post("/{session_id}/sdp/offer", response_model=_SdpExchange)
 async def webrtc_offer(
     session_id: str,
@@ -204,6 +218,49 @@ async def webrtc_offer(
             f"WebRTC negotiation failed: {type(e).__name__}: {e}",
         )
     return _SdpExchange(**answer)
+
+
+# ── WebRTC: trickle ICE ─────────────────────────────────────────────────────
+
+
+@router.post("/{session_id}/sdp/ice")
+async def webrtc_ice(
+    session_id: str,
+    cand: _IceCandidate,
+    _: None = _auth,
+) -> dict[str, Any]:
+    """Accept a trickled ICE candidate from the client.
+
+    The client posts its local candidates as they're gathered, rather
+    than waiting for the gathering phase to finish before sending the
+    SDP offer. Cuts first-frame latency from ~30 s (wait for STUN
+    timeout) down to ~2 s (host candidates connect immediately, srflx
+    are added as background information).
+
+    The PeerConnection is looked up by ``session_id``; if the
+    matching :class:`WebRTCSession` instance has been garbage-collected
+    (e.g. the offer was rejected) we 410-Gone the candidate rather
+    than wait indefinitely.
+    """
+    try:
+        from ..webrtc_session import get_active_webrtc_session
+    except ImportError:
+        raise HTTPException(503, "WebRTC transport not built in this backend.")
+
+    webrtc = get_active_webrtc_session(session_id)
+    if webrtc is None:
+        raise HTTPException(410, "No active WebRTC PeerConnection for this session.")
+
+    try:
+        await webrtc.add_ice_candidate(
+            candidate=cand.candidate,
+            sdp_mid=cand.sdpMid,
+            sdp_mline_index=cand.sdpMLineIndex,
+        )
+    except Exception as e:
+        logger.warning("[webrtc] /sdp/ice failed for %s: %s", session_id, e)
+        raise HTTPException(400, f"Bad ICE candidate: {type(e).__name__}: {e}")
+    return {"added": True}
 
 
 # Module logger — set up beside the router for the log line above.

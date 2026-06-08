@@ -7,6 +7,7 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QResizeEvent>
+#include <QTimer>
 #include <QUrlQuery>
 #include <QWebSocket>
 #include <QWheelEvent>
@@ -82,22 +83,32 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
             update();
             // On Live transition, push an initial ``resize`` so the
             // backend renders at our PHYSICAL pixel count instead of
-            // the SessionViewState default (1024×768). On a Retina
-            // display that means the frame arrives at native pixel
-            // density and we paint it 1:1 — no upscaling blur.
+            // the SessionViewState default (1024×768). Fire TWICE
+            // with a delay so the second one catches up to the dock's
+            // deferred layout: ``setupWorkspaceDocks`` queues a
+            // ``resizeDocks`` call on the next event-loop turn, so the
+            // widget's width() returned right at Live transition can
+            // still be the smaller pre-layout value. Re-firing 250 ms
+            // later lets that settle.
             if (state == QLatin1String("Live") && m_webrtc) {
-                const qreal dpr = devicePixelRatioF();
-                const int physW = qRound(width()  * dpr);
-                const int physH = qRound(height() * dpr);
-                QVariantMap sz;
-                sz[QStringLiteral("type")]   = QStringLiteral("resize");
-                sz[QStringLiteral("width")]  = physW;
-                sz[QStringLiteral("height")] = physH;
-                qDebug().noquote() << QStringLiteral(
-                        "[webrtc] sending initial resize: "
-                        "%1×%2 logical -> %3×%4 physical (dpr=%5)")
-                        .arg(width()).arg(height()).arg(physW).arg(physH).arg(dpr);
-                m_webrtc->sendStateCommand(sz);
+                auto sendResize = [this]() {
+                    if (!m_webrtc) return;
+                    const qreal dpr = devicePixelRatioF();
+                    const int physW = qRound(width()  * dpr);
+                    const int physH = qRound(height() * dpr);
+                    QVariantMap sz;
+                    sz[QStringLiteral("type")]   = QStringLiteral("resize");
+                    sz[QStringLiteral("width")]  = physW;
+                    sz[QStringLiteral("height")] = physH;
+                    qDebug().noquote() << QStringLiteral(
+                            "[webrtc] sending resize: %1×%2 logical -> "
+                            "%3×%4 physical (dpr=%5)")
+                            .arg(width()).arg(height()).arg(physW)
+                            .arg(physH).arg(dpr);
+                    m_webrtc->sendStateCommand(sz);
+                };
+                sendResize();   // immediate
+                QTimer::singleShot(250, this, sendResize);   // post-layout
             }
         });
         m_status = QStringLiteral("Connecting…");
@@ -270,18 +281,22 @@ void RemoteRenderWidget::paintEvent(QPaintEvent * /*event*/)
     painter.fillRect(rect(), Qt::black);
 
     if (!m_currentFrame.isNull()) {
-        // The JPEG arrives at PHYSICAL pixel resolution (see resizeEvent
-        // — we asked for width*DPR pixels). Tagging the QImage with the
-        // same devicePixelRatio lets QPainter paint it 1:1 against the
-        // physical framebuffer — no scaling, no blur. Painting straight
-        // into ``rect()`` then lands every pixel at its native target.
-        QImage frame = m_currentFrame;
-        frame.setDevicePixelRatio(devicePixelRatioF());
-        // Centre the (logical) frame in the widget, preserving aspect.
-        const QSize logicalSize = frame.size() / frame.devicePixelRatio();
-        const int x = (width()  - logicalSize.width())  / 2;
-        const int y = (height() - logicalSize.height()) / 2;
-        painter.drawImage(QPoint(x, y), frame);
+        // We may receive frames at the backend's default render size
+        // (1024×768) before our resize-on-Live event has propagated.
+        // Scale-to-fit ensures the frame ALWAYS fills the widget
+        // area with the correct aspect ratio — at worst the backend
+        // catches up to our resize on the next frame and we drop the
+        // up-scaling cost. ``Qt::SmoothTransformation`` is bilinear;
+        // good enough at the typical 30-60 FPS render cadence.
+        //
+        // When the backend already renders at our physical pixel
+        // count (post-resize, Retina display), this becomes a no-op
+        // 1:1 paint with no upscale blur.
+        const QImage scaled = m_currentFrame.scaled(
+                size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        const int x = (width()  - scaled.width())  / 2;
+        const int y = (height() - scaled.height()) / 2;
+        painter.drawImage(QPoint(x, y), scaled);
     }
 
     if (!m_live) {

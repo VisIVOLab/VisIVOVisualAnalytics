@@ -146,19 +146,19 @@ void RemoteRenderWebRTCClient::setupPeerConnection()
         }, Qt::QueuedConnection);
     });
 
-    // The aiortc server sends SDP only when our offer arrives, so we
-    // wait until the local description is fully assembled (after ICE
-    // gathering completes) before POSTing.
-    m_pc->onGatheringStateChange([this](rtc::PeerConnection::GatheringState state) {
-        if (state == rtc::PeerConnection::GatheringState::Complete) {
-            if (auto desc = m_pc->localDescription()) {
-                const QString sdp  = QString::fromStdString(std::string(*desc));
-                const QString type = QString::fromStdString(desc->typeString());
-                QMetaObject::invokeMethod(this, [this, sdp, type]() {
-                    onLocalDescriptionReady(sdp, type);
-                }, Qt::QueuedConnection);
-            }
-        }
+    // Trickle ICE: post the offer as soon as the local description
+    // is ready (which is synchronous after setLocalDescription()),
+    // NOT after all candidates have been gathered. Each candidate
+    // gathered subsequently is posted to ``/sdp/ice`` so the server
+    // can hook it up incrementally. This drops first-frame latency
+    // from ~30 s (wait for STUN to time out) to ~2 s (host candidates
+    // connect immediately, srflx arrives later as info-only).
+    m_pc->onLocalCandidate([this](rtc::Candidate candidate) {
+        const QString candStr = QString::fromStdString(std::string(candidate));
+        const QString mid     = QString::fromStdString(candidate.mid());
+        QMetaObject::invokeMethod(this, [this, candStr, mid]() {
+            postIceCandidate(candStr, mid);
+        }, Qt::QueuedConnection);
     });
 
     // Order matters in libdatachannel 0.21.x: add the video track
@@ -208,9 +208,17 @@ void RemoteRenderWebRTCClient::setupPeerConnection()
         // Server → client commands aren't part of the protocol yet.
     });
 
-    // Generate the offer. Must be the LAST step — after the track,
-    // codec, depacketizer, onFrame, and data channel are configured.
+    // Generate the offer. setLocalDescription() is synchronous — the
+    // local description is ready immediately afterwards (modulo
+    // candidates, which will arrive via onLocalCandidate above).
     m_pc->setLocalDescription();
+    if (auto desc = m_pc->localDescription()) {
+        const QString sdp  = QString::fromStdString(std::string(*desc));
+        const QString type = QString::fromStdString(desc->typeString());
+        onLocalDescriptionReady(sdp, type);
+    } else {
+        setStatus(u"Error: setLocalDescription returned no descriptor"_qs);
+    }
 }
 
 
@@ -341,6 +349,36 @@ void RemoteRenderWebRTCClient::postSdpOffer(const QString &offerSdp)
             return;
         }
         handleSdpAnswer(reply->readAll());
+    });
+}
+
+void RemoteRenderWebRTCClient::postIceCandidate(const QString &candidate,
+                                                  const QString &mid)
+{
+    if (m_baseUrl.isEmpty() || m_sessionId.isEmpty()) {
+        return;
+    }
+    QUrl url(m_baseUrl);
+    url.setPath(QStringLiteral("/v1/render/%1/sdp/ice").arg(m_sessionId));
+
+    QNetworkRequest req(url);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_qs);
+    req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), m_token.toUtf8());
+
+    QJsonObject body;
+    body[u"candidate"_qs] = candidate;
+    if (!mid.isEmpty()) body[u"sdpMid"_qs] = mid;
+    const QByteArray payload = QJsonDocument(body).toJson(QJsonDocument::Compact);
+
+    QNetworkReply *reply = m_nam->post(req, payload);
+    QObject::connect(reply, &QNetworkReply::finished, this, [reply, candidate]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning().noquote() << QStringLiteral(
+                    "[webrtc] /sdp/ice failed (HTTP %1) for candidate %2")
+                    .arg(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt())
+                    .arg(candidate.left(60));
+        }
     });
 }
 

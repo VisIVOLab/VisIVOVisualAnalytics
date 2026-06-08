@@ -26,8 +26,16 @@ From: backend-egl.sif
         apptainer/backend-egl-h265-overlay.def
 
     ── Verify ───────────────────────────────────────────────────────────
-    apptainer exec --nv backend-egl-h265.sif \
-        /opt/conda/bin/python apptainer/spike_h265_feasibility.py
+    # Smoke-check NVENC + aiortc are in place. Same checks the build's
+    # 6f stage runs; re-running them post-deploy is useful when the
+    # driver / kernel module changes underneath the container.
+    apptainer exec --nv backend-egl-h265.sif python -c '
+import av, aiortc
+codecs = av.codec.codecs_available
+print(f"PyAV {av.__version__}, aiortc {aiortc.__version__}")
+print(f"hevc_nvenc: {\"hevc_nvenc\" in codecs}")
+print(f"h264_nvenc: {\"h264_nvenc\" in codecs}")
+'
 
 %post
     set -e

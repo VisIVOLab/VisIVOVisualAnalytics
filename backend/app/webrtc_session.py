@@ -59,6 +59,23 @@ from .render_session import RenderSession
 logger = logging.getLogger("visivo.render.webrtc")
 
 
+# ── Trickle-ICE session registry ──────────────────────────────────────────────
+#
+# A session's WebRTCSession is created by the /sdp/offer endpoint and
+# kept alive by the PeerConnection's reference to its tracks; once the
+# PC closes, our @on('connectionstatechange') handler removes it from
+# the map. Holding the reference here also lets the /sdp/ice endpoint
+# look up the right PC to push trickled candidates onto.
+
+_active_sessions: dict[str, "WebRTCSession"] = {}
+
+
+def get_active_webrtc_session(session_id: str) -> "WebRTCSession | None":
+    """Look up the WebRTCSession created by the last /sdp/offer for
+    ``session_id``. Returns ``None`` once the PC has closed."""
+    return _active_sessions.get(session_id)
+
+
 # ── NVENC patch (applied once at import) ─────────────────────────────────────
 
 
@@ -206,6 +223,9 @@ class WebRTCSession:
 
         pc = RTCPeerConnection()
         self._pc = pc
+        # Register ourselves so /sdp/ice can find this PC by
+        # session_id when the client trickle-posts candidates.
+        _active_sessions[self._render.session_id] = self
 
         @pc.on("connectionstatechange")
         async def _on_state() -> None:
@@ -262,7 +282,41 @@ class WebRTCSession:
             return
         await self._render.apply_command(cmd)
 
+    async def add_ice_candidate(
+        self,
+        candidate: str,
+        sdp_mid: str | None = None,
+        sdp_mline_index: int | None = None,
+    ) -> None:
+        """Push a trickled ICE candidate onto our PeerConnection.
+
+        aiortc's ``addIceCandidate`` takes a parsed
+        ``aiortc.RTCIceCandidate`` object, not the raw ``a=candidate:…``
+        string the client posts. We parse it here. Out-of-spec
+        candidate strings raise — those bubble up to the router and
+        become 400s.
+        """
+        if self._pc is None:
+            raise RuntimeError("PeerConnection is closed.")
+        from aiortc import RTCIceCandidate
+        from aiortc.sdp import candidate_from_sdp  # private but stable since 0.9
+
+        # ``candidate`` may arrive with the leading "candidate:" prefix
+        # (RFC 5245 style) or without (libdatachannel emits the bare
+        # value). Normalise.
+        bare = candidate
+        if bare.startswith("candidate:"):
+            bare = bare[len("candidate:") :]
+
+        ice = candidate_from_sdp(bare)
+        ice.sdpMid = sdp_mid
+        ice.sdpMLineIndex = sdp_mline_index
+        await self._pc.addIceCandidate(ice)
+
     async def close(self) -> None:
+        # Drop ourselves from the global registry first so /sdp/ice
+        # stops accepting candidates for this PC.
+        _active_sessions.pop(self._render.session_id, None)
         if self._pc is not None:
             try:
                 await self._pc.close()

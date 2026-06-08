@@ -111,6 +111,10 @@ private:
     // ── REST signalling ──────────────────────────────────────────
     void postSdpOffer(const QString &offerSdp);
     void handleSdpAnswer(const QByteArray &responseBody);
+    /// Trickle-ICE: send one local candidate to the server as soon
+    /// as libdatachannel emits it. Cuts first-frame latency by
+    /// avoiding the wait for the full STUN-gathering timeout.
+    void postIceCandidate(const QString &candidate, const QString &mid);
 
     // ── Peer connection lifecycle ────────────────────────────────
     void setupPeerConnection();

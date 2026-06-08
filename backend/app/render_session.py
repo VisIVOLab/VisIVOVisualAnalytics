@@ -324,8 +324,13 @@ class SessionViewState:
     cutting_plane_slice_index: int = 0     # in [0, nz)
 
     # ── Viewport / encoding ────────────────────────────────────────
-    width: int = 1024
-    height: int = 768
+    # 1920×1080 default keeps the first frames at near-Retina quality
+    # even on desktop docks of ~1500 px wide — the client resize-on-Live
+    # command catches up within a frame or two, but downscale-from-FHD
+    # always looks better than upscale-from-XGA. NVENC encodes 1080p
+    # in ~5 ms on a V100, well inside the 30-60 FPS budget.
+    width: int = 1920
+    height: int = 1080
     # HI cube renderings have lots of fine-grained noise + chrome
     # (slice texture, axes triad, bounding-box edges) that JPEG q=85
     # smears into mosquito artefacts — a side-by-side comparison

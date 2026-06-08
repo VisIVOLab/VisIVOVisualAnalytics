@@ -682,17 +682,46 @@ install(SCRIPT ${deploy_script})
 # Robust across Apple Silicon + Intel and across brew install
 # locations.
 if (APPLE AND VISIVO_HAS_WEBRTC)
-    # Brew install prefixes we tell BundleUtilities to look in when
-    # resolving dependencies that aren't in the rpath. Covers both
-    # the AppleSilicon (/opt/homebrew) and Intel (/usr/local) layouts.
+    # Search dirs for fixup_bundle. We need three groups:
+    #
+    #   1. Qt's library prefix — without this, frameworks like
+    #      ``@rpath/QtConcurrent.framework/...`` (Qt's own self-
+    #      references) don't resolve and fixup_bundle aborts mid-run.
+    #   2. libdatachannel's FetchContent BUILD dir — we don't install
+    #      it system-wide, the .dylib lives in build/_deps/.
+    #   3. Homebrew prefixes for FFmpeg and OpenSSL on both Apple
+    #      Silicon (/opt/homebrew) and Intel (/usr/local) layouts.
+    #
+    # Order matters: search Qt + libdatachannel first so the right
+    # build artifacts win over any older system-installed copies.
+    get_target_property(_qt_core_loc Qt::Core LOCATION)
+    get_filename_component(_qt_lib_dir "${_qt_core_loc}" DIRECTORY)
+    # QtCore is a framework; LOCATION points inside the .framework, so
+    # we strip back to the lib/ dir that holds Qt*.framework siblings.
+    get_filename_component(_qt_lib_dir "${_qt_lib_dir}" DIRECTORY)
+    get_filename_component(_qt_lib_dir "${_qt_lib_dir}" DIRECTORY)
+    get_filename_component(_qt_lib_dir "${_qt_lib_dir}" DIRECTORY)
+
+    # VTK lib dir — derived from one of the imported VTK targets the
+    # same way. Some VTK 9.x packages put libs under ``lib`` directly,
+    # others under ``lib64`` / ``Frameworks``; LOCATION is the most
+    # portable handle.
+    set(_vtk_lib_dir "")
+    if (TARGET VTK::CommonCore)
+        get_target_property(_vtk_loc VTK::CommonCore LOCATION)
+        if (_vtk_loc)
+            get_filename_component(_vtk_lib_dir "${_vtk_loc}" DIRECTORY)
+        endif ()
+    endif ()
+
     set(_visivo_macos_dirs
+            "${_qt_lib_dir}"
+            "${_vtk_lib_dir}"
+            "${CMAKE_BINARY_DIR}/_deps/libdatachannel-build"
             "/opt/homebrew/lib"
-            "/opt/homebrew/opt/libdatachannel/lib"
             "/opt/homebrew/opt/ffmpeg/lib"
             "/opt/homebrew/opt/openssl@3/lib"
-            "/opt/homebrew/opt/libsrtp/lib"
             "/usr/local/lib"
-            "/usr/local/opt/libdatachannel/lib"
             "/usr/local/opt/ffmpeg/lib"
     )
     install(CODE "
@@ -705,8 +734,7 @@ if (APPLE AND VISIVO_HAS_WEBRTC)
         )
     " COMPONENT Runtime)
     message(STATUS
-        "Mac bundling: fixup_bundle will copy libdatachannel + FFmpeg dylibs "
-        "into ${PROJECT_NAME}.app/Contents/Frameworks/ at install time."
+        "Mac bundling: fixup_bundle search dirs = ${_visivo_macos_dirs}"
     )
 endif ()
 
