@@ -570,16 +570,18 @@ class RenderSession:
         self._volume_property = prop
 
         # ── 4. Mapper + actor ────────────────────────────────────────
-        self._volume_mapper = vtk.vtkSmartVolumeMapper()
+        # Match the desktop's ``setupCubeRenderer`` mapper exactly:
+        # vtkGPUVolumeRayCastMapper (NOT vtkSmartVolumeMapper — the
+        # smart variant picks an internal renderer that's close but
+        # not byte-identical), plus AutoAdjustSampleDistances and
+        # UseJittering. The jittering is what gives the local volume
+        # its "denser, more luminous" feel: it dithers the sample
+        # positions per pixel so opacity accumulates more uniformly
+        # along the ray, no banding, no per-voxel undersampling.
+        self._volume_mapper = vtk.vtkGPUVolumeRayCastMapper()
         self._volume_mapper.SetInputData(img)
-        self._volume_mapper.SetRequestedRenderModeToGPU()
-        # 0.25 voxel = 4 samples per voxel along each ray. Halves the
-        # step compared to the spike default; on the V100 we measured
-        # ~40 → 28 FPS on WALLABY at 1080p, well above the wire
-        # bottleneck (~12 FPS through SSH). The crisper volume edge
-        # closes the gap with the desktop ``QVTKOpenGLNativeWidget``
-        # which uses VTK's default auto-adjust sampling.
-        self._volume_mapper.SetSampleDistance(0.25)
+        self._volume_mapper.SetAutoAdjustSampleDistances(1)
+        self._volume_mapper.SetUseJittering(1)
         self._apply_blend_mode_on_thread(self.view.blend_mode)
 
         self._volume = vtk.vtkVolume()

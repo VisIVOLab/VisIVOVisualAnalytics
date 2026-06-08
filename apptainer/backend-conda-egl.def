@@ -375,6 +375,136 @@ From: condaforge/mambaforge:latest
     cd /
     rm -rf /tmp/vtk-src /tmp/vtk-build
 
+    # ── Stage 6 — FFmpeg + NVENC + PyAV + aiortc (optional, gated) ──
+    # Enables Phase 3 of SSR: WebRTC video stream with hardware-encoded
+    # H.265/H.264 instead of per-frame JPEG. Default OFF so existing
+    # SSR (JPEG transport) builds stay identical in size + behaviour.
+    #
+    # To opt in:
+    #     ENABLE_H265=1 apptainer build --fakeroot backend-egl.sif \
+    #                                    apptainer/backend-conda-egl.def
+    #
+    # Adds ~700 MB to the SIF (custom FFmpeg in /opt/conda + PyAV
+    # compiled against it + aiortc + crypto deps) and ~25 min build
+    # time on a 16-core Power9.
+    if [ "${ENABLE_H265:-0}" = "1" ]; then
+        echo "[backend-conda-egl.def] Stage 6/6 — H.265 / NVENC / PyAV / aiortc"
+
+        # 6a. Build dependencies. nasm/yasm are x86-only; on ppc64le
+        # FFmpeg uses the GNU assembler that comes with binutils — no
+        # separate assembler install needed. libx264-dev provides the
+        # software H.264 fallback path for backends without an NVENC
+        # GPU; the encoder selection is runtime so both are linked in.
+        apt-get update
+        apt-get install -y --no-install-recommends \
+            libx264-dev \
+            libssl-dev
+        rm -rf /var/lib/apt/lists/*
+
+        # 6b. nv-codec-headers — FFmpeg's wrapper for the NVENC SDK.
+        # They are pure C headers (no asm, no NVIDIA binaries), so the
+        # arch doesn't matter; we always pin to a tag that matches the
+        # NVIDIA driver series deployed on the cluster (12.x ↔ driver
+        # 525+). NVENC runtime requires libnvidia-encode.so at run time
+        # which apptainer --nv (or our explicit binds) provides from
+        # the host.
+        echo "[backend-conda-egl.def] Stage 6b — nv-codec-headers"
+        cd /tmp
+        git clone --depth 1 --branch n12.1.14.0 \
+            https://github.com/FFmpeg/nv-codec-headers.git
+        cd nv-codec-headers
+        make PREFIX=/usr/local install
+        cd /
+        rm -rf /tmp/nv-codec-headers
+
+        # 6c. FFmpeg from source — required because:
+        #   * Debian ppc64le's FFmpeg apt package is build WITHOUT
+        #     --enable-nvenc (Debian's NonFree policy)
+        #   * conda-forge's FFmpeg, when it has a ppc64le build at all,
+        #     omits NVENC for the same licensing reason
+        # We build the minimum we need (h264 + hevc encode, NVENC, x264
+        # software fallback, shared libs for PyAV linkage).
+        echo "[backend-conda-egl.def] Stage 6c — FFmpeg from source (NVENC + libx264)"
+        FFMPEG_TAG="${FFMPEG_TAG:-n6.1.1}"
+        cd /tmp
+        git clone --depth 1 --branch "$FFMPEG_TAG" \
+            https://git.ffmpeg.org/ffmpeg.git ffmpeg-src
+        cd ffmpeg-src
+        PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
+        ./configure \
+            --prefix=/opt/conda \
+            --enable-shared \
+            --disable-static \
+            --enable-nonfree \
+            --enable-gpl \
+            --enable-libx264 \
+            --enable-nvenc \
+            --extra-cflags=-I/usr/local/include \
+            --extra-ldflags=-L/usr/local/lib \
+            --disable-doc \
+            --disable-ffplay \
+            --disable-debug \
+            2>&1 | tail -40
+        # Sanity-check NVENC actually got enabled — without this, the
+        # build silently falls back to libx264-only and we don't notice
+        # until the spike fails at runtime.
+        if ! grep -qE "Enabled encoders.*(hevc_nvenc|h264_nvenc)" config.log \
+            && ! grep -qE "hevc_nvenc|h264_nvenc" ffbuild/config.mak; then
+            echo "[backend-conda-egl.def] FATAL: NVENC not enabled by ffmpeg configure."
+            echo "[backend-conda-egl.def] Inspect /tmp/ffmpeg-src/config.log for the reason."
+            tail -50 ffbuild/config.log 2>/dev/null || true
+            exit 1
+        fi
+        NPROC_FF="$(nproc)"
+        MEM_GB_FF="$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo)"
+        SAFE_J_FF=$(( MEM_GB_FF / 2 ))
+        [ "$SAFE_J_FF" -lt 1 ] && SAFE_J_FF=1
+        [ "$SAFE_J_FF" -gt "$NPROC_FF" ] && SAFE_J_FF="$NPROC_FF"
+        echo "[backend-conda-egl.def] FFmpeg make -j$SAFE_J_FF"
+        make -j "$SAFE_J_FF" 2>&1 | tail -20
+        make install
+        cd /
+        rm -rf /tmp/ffmpeg-src
+        # FFmpeg installs its .pc files under /opt/conda/lib/pkgconfig.
+        # PyAV's setup.py reads PKG_CONFIG_PATH at install time, so we
+        # need it exported when pip runs below.
+        export PKG_CONFIG_PATH="/opt/conda/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+        export LD_LIBRARY_PATH="/opt/conda/lib:${LD_LIBRARY_PATH:-}"
+
+        # 6d. PyAV compiled against our FFmpeg.
+        echo "[backend-conda-egl.def] Stage 6d — PyAV (compile against /opt/conda ffmpeg)"
+        # ``--no-binary av`` forces compile-from-source even when a
+        # wheel exists (it doesn't for ppc64le, but be explicit).
+        pip install --no-cache-dir --no-binary av av
+
+        # 6e. aiortc — WebRTC peer connection + signalling.
+        # Brings in cryptography, aioice, av-dependent pieces. Pure
+        # Python except cryptography which has wheels for ppc64le.
+        echo "[backend-conda-egl.def] Stage 6e — aiortc"
+        pip install --no-cache-dir aiortc
+
+        # 6f. Smoke test — confirm the encoder pipeline is live in
+        # the built image. We can't do an actual encode here (no GPU
+        # at build time) but we verify the imports + codec registration.
+        echo "[backend-conda-egl.def] Stage 6f — H.265 smoke test"
+        python -c "
+import av, aiortc, ssl
+print(f'[h265-smoke] PyAV {av.__version__}, aiortc {aiortc.__version__}')
+codecs = av.codec.codecs_available
+print(f'[h265-smoke] hevc_nvenc available: {\"hevc_nvenc\" in codecs}')
+print(f'[h265-smoke] h264_nvenc available: {\"h264_nvenc\" in codecs}')
+print(f'[h265-smoke] libx264 available:   {\"libx264\" in codecs}')
+assert 'hevc_nvenc' in codecs or 'h264_nvenc' in codecs, (
+    'NVENC encoders missing from PyAV registry — FFmpeg was built '
+    'without --enable-nvenc despite the configure step claiming OK. '
+    'Check /tmp/ffmpeg-src/ffbuild/config.log next time.'
+)
+print('[h265-smoke] OK — Phase 3 transport ready.')
+"
+    else
+        echo "[backend-conda-egl.def] Stage 6 SKIPPED (ENABLE_H265 != 1)"
+    fi
+
     # Cleanup conda caches.
     conda clean --all --yes
 

@@ -3610,7 +3610,10 @@ void vtkWindowCube::applyColorMapByName(const QString &name)
     }
 
     // Mirror to the remote renderer when SSR is active so the volume
-    // colours stay in sync with the user's pick.
+    // colours stay in sync with the user's pick. Re-push threshold
+    // first so the rebuilt opacity TF uses the latest slider value
+    // (same defensive pattern as applyVolumeBlendMode).
+    this->resendThresholdToRemote();
     QVariantMap cmd;
     cmd[u"type"_s] = u"set_lut"_s;
     cmd[u"name"_s] = name;
@@ -3636,7 +3639,11 @@ void vtkWindowCube::applyVolumeBlendMode(int idx)
     if (ui->vtkCube->renderWindow()) {
         ui->vtkCube->renderWindow()->Render();
     }
-    // Mirror blend mode to the remote renderer.
+    // Mirror blend mode to the remote renderer — push threshold first
+    // so MIP/MinIP renders against the user's current slider value,
+    // not whatever the backend was last told (which can lag behind
+    // when the user hasn't touched the threshold since session open).
+    this->resendThresholdToRemote();
     QVariantMap cmd;
     cmd[u"type"_s] = u"set_blend_mode"_s;
     cmd[u"mode"_s] = (idx == 1 || idx == 2) ? idx : 0;
@@ -4010,6 +4017,22 @@ void vtkWindowCube::setupWorkspaceDocks()
 
     this->dockCubeView  = dockCube;
     this->dockSliceView = dockSlice;
+
+    // Before the QStackedWidget swap, splitDockWidget gave 50/50 by default
+    // because both dock contents (ui->vtkCube, ui->vtkImage) reported the
+    // same sizeHint. The stacked widget now wraps ui->vtkCube and contributes
+    // a wider preferred size that biases the split heavily towards the 3D
+    // view (~95/5 in the wild). Force the split with resizeDocks deferred to
+    // the event loop so the dock area has already been laid out — calling it
+    // immediately is a no-op because the dock widths are still zero at this
+    // point in the constructor.
+    QTimer::singleShot(0, this, [this]() {
+        if (!this->dockCubeView || !this->dockSliceView) return;
+        const int sidebarW = this->m_sidebar ? this->m_sidebar->width() : 48;
+        const int avail = std::max(400, this->width() - sidebarW);
+        this->resizeDocks({ this->dockCubeView, this->dockSliceView },
+                          { avail / 2, avail / 2 }, Qt::Horizontal);
+    });
 }
 
 void vtkWindowCube::resetWorkspaceLayout()
@@ -4326,6 +4349,32 @@ void vtkWindowCube::onRemoteRenderConnectionStateChanged(const QString &state)
     // very next frame reflects what they see locally.
     if (state == QLatin1String("Live")) {
         this->pushRenderStateToRemote();
+
+        // First-time Remote entry race: the Auto-trigger calls
+        // applyRenderMode at +150 ms, but the channel scrubber overlay
+        // is created LATER (in applyCubeOpenResult, when the preview
+        // lands). On that first switch the reparenting in
+        // applyRenderMode runs against a null channelOverlay and does
+        // nothing — so the user sees no slider on the remote view
+        // until they manually flip Local→Remote again. Retry the
+        // reparenting here: by the time the WS is Live, the cube
+        // preview has long since finished, channelOverlay exists, and
+        // we're already on the Remote stack page.
+        if (this->channelOverlay
+            && this->m_effectiveRenderMode == RenderMode::Remote
+            && this->m_remoteRenderWidget
+            && this->channelOverlay->parentWidget() != this->m_remoteRenderWidget) {
+            QWidget *oldParent = this->channelOverlay->parentWidget();
+            if (oldParent) {
+                oldParent->removeEventFilter(this->channelOverlay);
+            }
+            this->channelOverlay->setParent(this->m_remoteRenderWidget);
+            this->m_remoteRenderWidget->installEventFilter(this->channelOverlay);
+            this->channelOverlay->show();
+            QResizeEvent ev(this->m_remoteRenderWidget->size(),
+                            this->m_remoteRenderWidget->size());
+            QApplication::sendEvent(this->m_remoteRenderWidget, &ev);
+        }
     }
 }
 
@@ -4334,6 +4383,23 @@ void vtkWindowCube::onRemoteRenderFpsChanged(double fps)
     if (this->m_renderFpsBadge) {
         this->m_renderFpsBadge->setText(QStringLiteral("%1 FPS").arg(fps, 0, 'f', 1));
     }
+}
+
+void vtkWindowCube::resendThresholdToRemote()
+{
+    // Idempotent re-push of the slider's CURRENT value. Cheap on the
+    // server (just rebuilds the opacity TF + flags a render). Used as
+    // a defensive companion to other stateful commands so MIP/MinIP
+    // switches, LUT changes, etc. always render with the threshold
+    // the user is actually looking at on the local slider — bypasses
+    // any race where the backend's TF could be stale (e.g. the
+    // bootstrap state push happened before applyCubeOpenResult set
+    // m_initialThresholdApplied=true).
+    if (!this->m_initialThresholdApplied) return;
+    QVariantMap m;
+    m[u"type"_s]  = u"set_threshold"_s;
+    m[u"value"_s] = static_cast<double>(this->lowerBound);
+    this->sendRemoteRenderStateCommand(m);
 }
 
 void vtkWindowCube::sendRemoteRenderStateCommand(const QVariantMap &command)

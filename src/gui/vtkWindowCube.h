@@ -967,6 +967,12 @@ private:
     /// Send a single state-mutation to the remote renderer. No-op
     /// unless we're in Remote mode AND the widget is Live.
     void sendRemoteRenderStateCommand(const QVariantMap &command);
+    /// Helper: re-push the current threshold (lowerBound) to the
+    /// remote renderer if it has been initialised. Used to fix race
+    /// conditions where a stateful command (blend mode, LUT) arrives
+    /// before the backend has caught up to the user's slider value —
+    /// the call is cheap and idempotent server-side.
+    void resendThresholdToRemote();
 
     void setRemoteCubeDisplayState(RemoteCubeDisplayState state);
     void showPersistentStatusMessage(const QString &text, int minDurationMs = 400);
