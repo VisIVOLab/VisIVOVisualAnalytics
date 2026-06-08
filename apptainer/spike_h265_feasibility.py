@@ -97,12 +97,16 @@ def _encode_one_frame(av, codec_name: str) -> bool:
         # ``CodecContext.create`` is the lower-level API that survives
         # without a containing output stream — ideal for a smoke test.
         from av.codec.context import CodecContext  # type: ignore
+        from fractions import Fraction
         ctx = CodecContext.create(codec_name, "w")
         ctx.width = width
         ctx.height = height
         ctx.pix_fmt = "yuv420p"          # NVENC's native input space
         ctx.bit_rate = 4_000_000
-        ctx.time_base = (1, 30)
+        # PyAV 12.x requires ``Fraction``/``av.Rational`` here, not the
+        # legacy (num, den) tuple — the validator raises
+        # "argument should be a string or a Rational instance".
+        ctx.time_base = Fraction(1, 30)
         # Reasonable low-latency defaults — matches what aiortc would
         # request for a real-time WebRTC session.
         try:

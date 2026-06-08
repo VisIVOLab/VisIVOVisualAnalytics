@@ -1,0 +1,238 @@
+Bootstrap: localimage
+From: backend-egl.sif
+
+%labels
+    Maintainer VisIVOLab <visivo@inaf.it>
+    Version    1.0.0-conda-egl+h265
+    Description VisIVO Backend (EGL) + Phase-3 H.265 / NVENC / PyAV / aiortc
+
+%help
+    Overlay-build that takes the existing ``backend-egl.sif`` as its
+    base layer and adds JUST the H.265 / NVENC stack on top:
+
+      * nv-codec-headers       (FFmpeg's wrapper for the NVENC SDK)
+      * libx264-dev + libssl-dev (software encode fallback + WebRTC TLS)
+      * FFmpeg from source     (--enable-nvenc --enable-libx264, /opt/conda)
+      * PyAV compiled          against /opt/conda FFmpeg
+      * aiortc                 (WebRTC peer + ICE/STUN/DTLS)
+
+    Avoids the ~90-minute VTK source rebuild because the base SIF
+    already has it. Total build time ~25 min on a 16-core Power9.
+
+    ── Build ────────────────────────────────────────────────────────────
+    # Requires backend-egl.sif in the same dir.
+    apptainer build --fakeroot \
+        backend-egl-h265.sif \
+        apptainer/backend-egl-h265-overlay.def
+
+    ── Verify ───────────────────────────────────────────────────────────
+    apptainer exec --nv backend-egl-h265.sif \
+        /opt/conda/bin/python apptainer/spike_h265_feasibility.py
+
+%post
+    set -e
+
+    echo "[h265-overlay] Stage 6 — H.265 / NVENC / PyAV / aiortc"
+    . /opt/conda/etc/profile.d/conda.sh
+    conda activate base
+
+    # 6a. System deps. The set covers every cffi/cython extension that
+    # the H.265/WebRTC stack compiles from source:
+    #
+    #   libx264-dev   — FFmpeg ``--enable-libx264`` (software fallback)
+    #   libssl-dev    — TLS for aiortc's DTLS-SRTP handshake
+    #   libsrtp2-dev  — pylibsrtp cffi build (SRTP keying)
+    #   libopus-dev   — aiortc.codecs._opus cffi build (audio)
+    #   libvpx-dev    — aiortc.codecs._vpx cffi build (VP8/VP9 video,
+    #                   used as the WebRTC fallback when NVENC isn't
+    #                   available on the remote peer's GPU)
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        libx264-dev \
+        libssl-dev \
+        libsrtp2-dev \
+        libopus-dev \
+        libvpx-dev \
+        git \
+        ca-certificates \
+        dpkg-dev
+    rm -rf /var/lib/apt/lists/*
+
+    # Locate the .pc files apt just dropped — on Debian multiarch
+    # systems these live under /usr/lib/<arch>/pkgconfig, NOT the
+    # default /usr/lib/pkgconfig that pkg-config probes when
+    # PKG_CONFIG_PATH overrides the search list. We add the multiarch
+    # dir explicitly so the FFmpeg configure step actually finds
+    # libx264.
+    MULTIARCH="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
+    echo "[h265-overlay] dpkg multiarch: $MULTIARCH"
+    X264_PC_DIR="/usr/lib/${MULTIARCH}/pkgconfig"
+    if [ ! -f "${X264_PC_DIR}/x264.pc" ]; then
+        echo "[h265-overlay] WARN: x264.pc not at expected $X264_PC_DIR"
+        echo "[h265-overlay] Searching the whole filesystem…"
+        X264_PC=$(find / -name x264.pc 2>/dev/null | head -1)
+        if [ -z "$X264_PC" ]; then
+            echo "[h265-overlay] FATAL: x264.pc not found anywhere — libx264-dev install failed"
+            dpkg -l | grep -i x264 || true
+            exit 1
+        fi
+        X264_PC_DIR="$(dirname "$X264_PC")"
+        echo "[h265-overlay] Found x264.pc at: $X264_PC_DIR"
+    fi
+    export X264_PC_DIR
+
+    # 6b. nv-codec-headers. Pure C headers — no asm, no NVIDIA binaries
+    # at build time. NVENC runtime libs (libnvidia-encode.so) come from
+    # the host driver via --nv at run time.
+    echo "[h265-overlay] 6b — nv-codec-headers"
+    cd /tmp
+    rm -rf nv-codec-headers
+    git clone --depth 1 --branch n12.1.14.0 \
+        https://github.com/FFmpeg/nv-codec-headers.git
+    cd nv-codec-headers
+    make PREFIX=/usr/local install
+    cd /
+    rm -rf /tmp/nv-codec-headers
+
+    # 6c. FFmpeg from source — Debian's ffmpeg apt package is built
+    # without --enable-nvenc (Debian Nonfree policy), and conda-forge's
+    # ppc64le ffmpeg omits NVENC for the same reason. We build the
+    # minimum we need: H.264 + HEVC encode, NVENC, libx264 software
+    # fallback, shared libs for PyAV linkage.
+    echo "[h265-overlay] 6c — FFmpeg from source (NVENC + libx264)"
+    FFMPEG_TAG="${FFMPEG_TAG:-n6.1.1}"
+    cd /tmp
+    rm -rf ffmpeg-src
+    git clone --depth 1 --branch "$FFMPEG_TAG" \
+        https://git.ffmpeg.org/ffmpeg.git ffmpeg-src
+    cd ffmpeg-src
+    # PKG_CONFIG_PATH covers BOTH our nv-codec-headers install (in
+    # /usr/local/lib/pkgconfig) AND the multiarch x264 install (in
+    # /usr/lib/<arch>/pkgconfig, located by 6a's probe). Without the
+    # multiarch dir the previous build failed at "x264 not found by
+    # pkg-config" even though libx264-dev was installed.
+    PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:${X264_PC_DIR}:${PKG_CONFIG_PATH:-}" \
+    ./configure \
+        --prefix=/opt/conda \
+        --enable-shared \
+        --disable-static \
+        --enable-nonfree \
+        --enable-gpl \
+        --enable-libx264 \
+        --enable-nvenc \
+        --extra-cflags=-I/usr/local/include \
+        --extra-ldflags=-L/usr/local/lib \
+        --disable-doc \
+        --disable-ffplay \
+        --disable-debug \
+        2>&1 | tail -40
+
+    # ── Diagnostics: dump WHAT configure saw for nvenc ────────────
+    # If something goes wrong with ffnvcodec, FFmpeg silently disables
+    # nvenc instead of failing. Inspect explicitly so the user gets a
+    # clear error message instead of a deceptively-successful build
+    # that's missing the GPU encoder.
+    echo "[h265-overlay] nvenc diagnostics:"
+    echo "--- pkg-config probe ---"
+    PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:${X264_PC_DIR}" \
+        pkg-config --modversion ffnvcodec \
+        && echo "ffnvcodec.pc found" \
+        || echo "ffnvcodec.pc MISSING from pkg-config path"
+    echo "--- ffnvcodec.pc content ---"
+    head -10 /usr/local/lib/pkgconfig/ffnvcodec.pc 2>/dev/null \
+        || echo "(file missing)"
+    echo "--- nvenc lines in config.mak (case-insensitive) ---"
+    grep -iE "nvenc|ffnvcodec" ffbuild/config.mak | head -10 || echo "(none)"
+    echo "--- nvenc lines in config.log (last 200 of nvenc-context) ---"
+    grep -A1 -B1 -iE "nvenc|ffnvcodec" ffbuild/config.log | tail -80 || true
+    echo "--- end diagnostics ---"
+
+    # Sanity-check NVENC actually got enabled. config.mak uses
+    # UPPERCASE for ``CONFIG_HEVC_NVENC_ENCODER=yes``, so this grep is
+    # case-insensitive. ``-i`` was the missing piece in the previous
+    # build — the case-sensitive grep failed even when nvenc WAS in the
+    # config.
+    if ! grep -qiE "config_(hevc|h264)_nvenc_encoder=yes" ffbuild/config.mak; then
+        echo "[h265-overlay] FATAL: NVENC encoders not enabled by ffmpeg configure."
+        echo "[h265-overlay] See diagnostics above for the reason."
+        echo "[h265-overlay] Last 60 lines of ffbuild/config.log:"
+        tail -60 ffbuild/config.log 2>/dev/null || true
+        exit 1
+    fi
+    echo "[h265-overlay] NVENC encoders verified in config.mak — building."
+
+    NPROC_FF="$(nproc)"
+    MEM_GB_FF="$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo)"
+    SAFE_J_FF=$(( MEM_GB_FF / 2 ))
+    [ "$SAFE_J_FF" -lt 1 ] && SAFE_J_FF=1
+    [ "$SAFE_J_FF" -gt "$NPROC_FF" ] && SAFE_J_FF="$NPROC_FF"
+    echo "[h265-overlay] FFmpeg make -j$SAFE_J_FF"
+    make -j "$SAFE_J_FF" 2>&1 | tail -20
+    make install
+    cd /
+    rm -rf /tmp/ffmpeg-src
+
+    # FFmpeg installs its .pc files under /opt/conda/lib/pkgconfig.
+    # PyAV's setup.py reads PKG_CONFIG_PATH to find them.
+    export PKG_CONFIG_PATH="/opt/conda/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+    export LD_LIBRARY_PATH="/opt/conda/lib:${LD_LIBRARY_PATH:-}"
+
+    # 6d. PyAV compiled against our FFmpeg.
+    # The PyAV pin history we worked through:
+    #   * av (latest 15.x) → expects FFmpeg 7+ (AVERROR_HTTP_TOO_MANY_REQUESTS)
+    #   * av<14            → still pulls 13.x which also expects FFmpeg 7+
+    #   * av<13            → pulls 12.3.0 (Apr 22, 2024), released AFTER
+    #                        FFmpeg 7.0 (Apr 5, 2024) → references
+    #                        AV_HWDEVICE_TYPE_D3D12VA (FFmpeg 7.0+)
+    #   * av<12.3          → pulls 12.2.0 (Mar 14, 2024), pre-FFmpeg 7
+    #                        → compiles cleanly against FFmpeg 6.x
+    # The breakpoint is *exactly* PyAV 12.3 vs 12.2 because that's when
+    # the project pulled in the v7 hwaccel/error enum additions.
+    echo "[h265-overlay] 6d — PyAV (compile, pinned to <12.3 for FFmpeg 6.1 compat)"
+    pip install --no-cache-dir --no-binary av 'av<12.3'
+
+    # 6e. aiortc (WebRTC peer + ICE/STUN/DTLS, depends on cryptography).
+    # aiortc 1.10+ requires ``av >= 14`` (which itself requires FFmpeg 7),
+    # so pip happily downgrades our just-installed av 12.2.0 and rebuilds
+    # av 16.x from source — which then fails against FFmpeg 6.1.1.
+    # Pin to ``< 1.10`` so we get 1.9.0 (Apr 2024), which is the last
+    # release that supports av in the 12.x series.
+    echo "[h265-overlay] 6e — aiortc (pinned to <1.10 for av 12.x compat)"
+    pip install --no-cache-dir 'aiortc<1.10'
+
+    # 6f. Smoke test — confirm encoder pipeline at build time. We can't
+    # do an actual encode here (no GPU at build time) but we verify the
+    # imports + codec registration.
+    echo "[h265-overlay] 6f — H.265 smoke test"
+    python -c "
+import av, aiortc
+print(f'[h265-smoke] PyAV {av.__version__}, aiortc {aiortc.__version__}')
+codecs = av.codec.codecs_available
+print(f'[h265-smoke] hevc_nvenc available: {\"hevc_nvenc\" in codecs}')
+print(f'[h265-smoke] h264_nvenc available: {\"h264_nvenc\" in codecs}')
+print(f'[h265-smoke] libx264 available:   {\"libx264\" in codecs}')
+assert 'hevc_nvenc' in codecs or 'h264_nvenc' in codecs, (
+    'NVENC encoders missing from PyAV registry — FFmpeg was built '
+    'without --enable-nvenc despite the configure step claiming OK.'
+)
+print('[h265-smoke] OK — Phase 3 transport ready.')
+"
+
+    # Cleanup conda caches.
+    conda clean --all --yes
+
+%test
+    python -c "
+import av, aiortc, vtk
+codecs = av.codec.codecs_available
+have_nvenc = 'hevc_nvenc' in codecs or 'h264_nvenc' in codecs
+have_x264  = 'libx264' in codecs
+print(f'[test] PyAV {av.__version__}')
+print(f'[test] aiortc {aiortc.__version__}')
+print(f'[test] vtk {vtk.VTK_VERSION}')
+print(f'[test] NVENC encoders: {have_nvenc} (hevc_nvenc={\"hevc_nvenc\" in codecs}, h264_nvenc={\"h264_nvenc\" in codecs})')
+print(f'[test] libx264 encoder: {have_x264}')
+assert have_nvenc, 'NVENC missing — overlay build is broken'
+assert have_x264, 'libx264 missing — overlay build is broken'
+print('[test] Phase 3 H.265 + NVENC + WebRTC stack verified.')
+"

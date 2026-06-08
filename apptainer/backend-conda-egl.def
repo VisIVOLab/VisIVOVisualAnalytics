@@ -75,6 +75,17 @@ From: condaforge/mambaforge:latest
 %post
     set -e
 
+    # Debug: surface the build-time env variables so we can confirm the
+    # caller's intent reached the %post sandbox (apptainer build does
+    # NOT propagate the host shell's env unless the APPTAINERENV_
+    # prefix is used, or --env is passed on the command line).
+    echo "[backend-conda-egl.def] env probe:"
+    echo "  ENABLE_H265=${ENABLE_H265:-<unset>}"
+    echo "  ENABLE_CUPY=${ENABLE_CUPY:-<unset>}"
+    echo "  CONDA_INSTALLER=${CONDA_INSTALLER:-<unset>}"
+    echo "  VTK_TAG=${VTK_TAG:-<unset>}"
+    echo "  FFMPEG_TAG=${FFMPEG_TAG:-<unset>}"
+
     . /opt/conda/etc/profile.d/conda.sh
     conda activate base
 
@@ -387,6 +398,10 @@ From: condaforge/mambaforge:latest
     # Adds ~700 MB to the SIF (custom FFmpeg in /opt/conda + PyAV
     # compiled against it + aiortc + crypto deps) and ~25 min build
     # time on a 16-core Power9.
+    # NB: env-var propagation into the build %post varies by apptainer
+    # version. The reliable invocation is
+    #     APPTAINERENV_ENABLE_H265=1 apptainer build --fakeroot ...
+    # If that doesn't work, edit the default below from ``0`` to ``1``.
     if [ "${ENABLE_H265:-0}" = "1" ]; then
         echo "[backend-conda-egl.def] Stage 6/6 — H.265 / NVENC / PyAV / aiortc"
 
