@@ -2,6 +2,7 @@
 
 #include <QImage>
 #include <QPointer>
+#include <QSize>
 #include <QString>
 #include <QUrl>
 #include <QVariantMap>
@@ -140,6 +141,10 @@ private:
     QImage m_currentFrame;
     QString m_status{ QStringLiteral("Idle") };
     bool m_live{ false };
+    // Last viewport size we POSTed via the WebRTC "resize" command. We
+    // dedupe the double-fire (immediate + 250 ms deferred) against this
+    // so a no-op size doesn't restart the NVENC encoder server-side.
+    QSize m_lastResizeSent;
 
     // Mouse drag tracking for rotation.
     bool m_dragActive{ false };

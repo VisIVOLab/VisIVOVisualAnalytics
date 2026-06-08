@@ -100,26 +100,134 @@ def _install_nvenc_encoder() -> bool:
                     "WebRTC transport disabled.", e)
         return False
 
+    # Lift aiortc's internal rate cap. Default is MAX_BITRATE = 3_000_000
+    # (≈ 3 Mbps), set for a "video-call over consumer broadband" target.
+    # For scientific visualisation over a campus link / SSH tunnel the
+    # bottleneck isn't bandwidth — it's V100 NVENC headroom, which is
+    # nowhere near saturated at 15 Mbps for 1080p. Without this bump,
+    # raising the client's SDP b=AS to 15000 had no effect because
+    # aiortc's BWE clamped requested bitrate back down to 3 Mbps before
+    # handing it to the encoder.
+    for const_name, target in (
+        ("MAX_BITRATE", 20_000_000),
+        ("DEFAULT_BITRATE", 12_000_000),
+        ("MIN_BITRATE", 2_000_000),
+    ):
+        if hasattr(h264_mod, const_name):
+            try:
+                setattr(h264_mod, const_name, target)
+            except Exception as e:
+                logger.warning("[webrtc] could not raise %s: %s",
+                               const_name, e)
+
     original_create = h264_mod.create_encoder_context
 
+    class _NvencCodecProxy:
+        """Forwards every codec attribute except ``bit_rate``, which is
+        clamped to the last-known-good value.
+
+        Why: certain NVENC rate-control modes zero the internal C-level
+        ``bit_rate`` field on the AVCodecContext (in particular CQ mode,
+        but we've seen it intermittently in VBR too). PyAV's property
+        getter maps ``0`` to ``None`` (see PyAV source —
+        ``self.ptr.bit_rate or None``). aiortc's H264Encoder then runs
+        ``abs(self.target_bitrate - self.codec.bit_rate)`` for its rate
+        adaptation and crashes with ``TypeError: unsupported operand
+        type(s) for -: 'int' and 'NoneType'``. The proxy traps reads of
+        ``bit_rate`` and returns the integer we last wrote, so aiortc's
+        arithmetic always sees a real number even when NVENC hides its
+        internal rate from us.
+        """
+        def __init__(self, codec, initial_bitrate):
+            # Bypass our own ``__setattr__`` for the two state fields —
+            # otherwise the assignments would recurse trying to delegate
+            # them to the wrapped codec.
+            object.__setattr__(self, "_codec", codec)
+            object.__setattr__(self, "_bitrate_shadow", int(initial_bitrate))
+
+        def __getattr__(self, name):
+            # __getattr__ runs only when normal lookup misses; our
+            # ``bit_rate`` property below shadows the wrapped codec's.
+            return getattr(self._codec, name)
+
+        def __setattr__(self, name, value):
+            if name == "bit_rate":
+                if value is not None and int(value) > 0:
+                    object.__setattr__(self, "_bitrate_shadow", int(value))
+                try:
+                    self._codec.bit_rate = value
+                except Exception:
+                    pass
+                return
+            setattr(self._codec, name, value)
+
+        @property
+        def bit_rate(self):
+            inner = self._codec.bit_rate
+            if inner is None or inner <= 0:
+                return self._bitrate_shadow
+            return int(inner)
+
     def create_encoder_context_nvenc(codec_name, width, height, bitrate):
+        # Round to the next 100 kbps to give NVENC a stable target —
+        # aiortc passes in BWE-driven values that jitter by tens of
+        # bps and NVENC dislikes that on CBR.
+        bitrate = max(bitrate, 12_000_000)
         try:
             codec = av.CodecContext.create("h264_nvenc", "w")
             codec.width = width
             codec.height = height
             codec.pix_fmt = "yuv420p"
-            codec.framerate = Fraction(30, 1)
+            codec.framerate = Fraction(60, 1)
             codec.time_base = Fraction(1, 90000)
             codec.bit_rate = bitrate
-            codec.gop_size = 30
+            # 2 s GOP @ 60 FPS — long enough that I-frames don't dominate
+            # the bitrate budget and crush quality between them, short
+            # enough that a dropped frame recovers within ~2 s instead
+            # of stalling for the whole sequence. Game streamers use
+            # 1-4 s GOPs; we sit in the middle.
+            codec.gop_size = 120
             try:
+                # ``p4`` ≈ medium-quality NVENC preset (p1=fastest /
+                # ugliest, p7=slowest / prettiest). On V100 at 1080p60
+                # p4 encodes well below 16 ms per frame, leaving room
+                # for VTK render + RTP packetisation in the same budget.
+                # ``tune=ull`` keeps look-ahead disabled (mandatory for
+                # interactive latency) but no longer pegs preset to p1.
+                # ``rc=vbr`` with explicit ``b`` + ``maxrate`` lets
+                # NVENC overshoot for hard-to-encode bursts (e.g. a
+                # fly-through revealing new detail) up to 1.5x the
+                # target. DO NOT use ``cq``: in quality-targeted CQ
+                # mode NVENC zeroes ``bit_rate`` internally, PyAV
+                # surfaces that as ``None``, and aiortc's BWE then
+                # crashes on ``target_bitrate - None``.
+                # ``spatial_aq`` + ``aq_strength`` adapt quantisation
+                # per region, which is exactly what makes nebula
+                # gradients look clean instead of blocky.
+                maxrate = int(bitrate * 1.5)
                 codec.options = {
-                    "preset": "p1", "tune": "ll", "rc": "cbr", "delay": "0",
+                    "preset": "p4",
+                    "tune": "ull",
+                    "rc": "vbr",
+                    "b": str(bitrate),
+                    "maxrate": str(maxrate),
+                    "bufsize": str(bitrate),
+                    "spatial_aq": "1",
+                    "aq_strength": "8",
+                    "rc-lookahead": "0",
+                    "b_ref_mode": "disabled",
+                    "delay": "0",
+                    "zerolatency": "1",
                 }
             except Exception:
                 pass
             codec.open(strict=False)
-            return codec, False
+            logger.info(
+                "[webrtc] NVENC encoder open: %dx%d @ %.1f Mbps (preset=p4, "
+                "tune=ull, vbr, gop=%d)", width, height,
+                bitrate / 1_000_000, codec.gop_size,
+            )
+            return _NvencCodecProxy(codec, bitrate), False
         except Exception as e:
             logger.warning(
                 "[webrtc] NVENC encoder build failed (%s); falling back "

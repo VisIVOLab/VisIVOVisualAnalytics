@@ -170,7 +170,14 @@ void RemoteRenderWebRTCClient::setupPeerConnection()
     rtc::Description::Video media("video", rtc::Description::Direction::RecvOnly);
     media.addH264Codec(96);     // libdatachannel's DEFAULT_H264_VIDEO_PROFILE
                                 // is already the canonical aiortc fmtp set
-    media.setBitrate(3000);     // 3 Mbps soft ceiling
+    // 15 Mbps soft ceiling — matches what game-streaming services
+    // (GeForce Now, Steam Link, PS Remote Play) advertise for 1080p
+    // sessions. The aiortc rate controller will track its own bandwidth
+    // estimate underneath, but the SDP ``b=AS:`` line we send here is
+    // the upper bound it's allowed to use. The old 3 Mbps cap is what
+    // was making the cube look sgranato — at 1080p that's roughly the
+    // bitrate budget of a YouTube 480p stream.
+    media.setBitrate(15000);
     m_videoTrack = m_pc->addTrack(media);
     if (!m_videoTrack) {
         setStatus(u"Error: addTrack returned null"_qs);

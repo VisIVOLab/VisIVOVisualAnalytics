@@ -1071,6 +1071,20 @@ class RenderSession:
             if "slice_index" in command:
                 idx = int(command["slice_index"])
                 self.view.cutting_plane_slice_index = idx
+                # Diagnostic: log the requested vs realised slice index
+                # along with whether the plane infrastructure is ready.
+                # The bootstrap can race the cube load — if cube_np /
+                # slice_img is still None the update silently no-ops and
+                # the user sees the build-time default (nz//2, center)
+                # frozen on screen. The log makes that race visible.
+                ready = (self._cube_np is not None
+                         and self._cutting_plane_slice_img is not None)
+                logger.info(
+                    "[render-session %s] set_cutting_plane slice_index=%d "
+                    "(infra ready=%s, current=%d)",
+                    self.session_id, idx, ready,
+                    self._cutting_plane_slice_index,
+                )
                 self._update_cutting_plane_slice_on_thread(idx)
 
         # ── Chrome toggles ───────────────────────────────────────────

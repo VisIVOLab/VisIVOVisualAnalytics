@@ -79,6 +79,17 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
         connect(m_webrtc, &RemoteRenderWebRTCClient::connectionStateChanged,
                 this, [this](const QString &state) {
             m_status = state;
+            // Flip ``m_live`` here, BEFORE emitting connectionStateChanged.
+            // vtkWindowCube hooks the same signal and runs the bootstrap
+            // (LUT / threshold / blend / cutting-plane) when it sees
+            // "Live". That bootstrap calls sendStateCommand, which guards
+            // on isLive(). If we waited for the first frameReady to flip
+            // m_live, every bootstrap SEND would race-drop and the user
+            // would see a galaxy at the wrong threshold / wrong LUT /
+            // wrong cutting plane until they wiggled the controls.
+            if (state == QLatin1String("Live")) {
+                m_live = true;
+            }
             emit connectionStateChanged(state);
             update();
             // On Live transition, push an initial ``resize`` so the
@@ -91,11 +102,27 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
             // still be the smaller pre-layout value. Re-firing 250 ms
             // later lets that settle.
             if (state == QLatin1String("Live") && m_webrtc) {
+                // Track the last size we sent so the 250 ms-delayed
+                // re-fire below is a no-op when the dock layout didn't
+                // actually change the viewport. Without this guard we
+                // send a SECOND resize with the same dimensions, which
+                // aiortc treats as a frame-size change and rebuilds
+                // the NVENC encoder context — that costs ~300 ms +
+                // forces a fresh IDR, killing first-second FPS for
+                // nothing.
                 auto sendResize = [this]() {
                     if (!m_webrtc) return;
                     const qreal dpr = devicePixelRatioF();
                     const int physW = qRound(width()  * dpr);
                     const int physH = qRound(height() * dpr);
+                    if (physW == m_lastResizeSent.width()
+                            && physH == m_lastResizeSent.height()) {
+                        qDebug().noquote() << QStringLiteral(
+                                "[webrtc] skipping resize: %1×%2 == last sent")
+                                .arg(physW).arg(physH);
+                        return;
+                    }
+                    m_lastResizeSent = QSize(physW, physH);
                     QVariantMap sz;
                     sz[QStringLiteral("type")]   = QStringLiteral("resize");
                     sz[QStringLiteral("width")]  = physW;
