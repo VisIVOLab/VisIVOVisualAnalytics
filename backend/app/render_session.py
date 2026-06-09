@@ -802,67 +802,52 @@ class RenderSession:
         self._iso_filter.Modified()
 
     def _apply_interactive_mode_on_thread(self, interactive: bool) -> None:
-        """Toggle the LOD between full-quality and a fast wireframe.
+        """Toggle the LOD between full-quality and a fast outline.
 
         Full quality (interactive=False):
             volume mapper OR isosurface mesh (per cube_render_mode) +
             cutting plane (if visible) + outline + axes.
 
-        Wireframe (interactive=True):
-            outline box (forced visible, brighter colour for readability)
-            +  isosurface mesh as WIREFRAME — the actual data structure
-            at the current threshold, drawn as edges only. This costs
-            roughly the GPU pass needed to rasterize the iso mesh as
-            lines (one ms ballpark on V100 for the WALLABY cube). Volume
-            and cutting plane are hidden because they're the expensive
-            parts of the full-quality frame.
+        Interactive (interactive=True):
+            ONLY the bounding-box outline + axes. Everything that
+            depends on cube data (volume, iso mesh, cutting plane) is
+            hidden. VTK's ``Render()`` then drops to ~1 ms on V100
+            (just 12 line segments + the axes triad) which leaves the
+            full 16 ms budget for readback + encode = 60 FPS reachable.
 
-        Why the iso-wireframe and not just the box: a bare cube box
-        gives no clue about WHERE the emission is — the user can't see
-        which part they're rotating into view. The iso mesh outlines
-        the actual data structure so spatial reasoning during the drag
-        is preserved. The mesh is already built (``_build_isosurface_on_thread``
-        runs at session init) and tracks ``threshold`` via
-        ``_rebuild_isosurface_value_on_thread`` whenever the user
-        changes it. Switching its actor to wireframe representation is
-        a single SetRepresentationToWireframe() call.
+        Earlier we tried rendering the iso mesh in wireframe
+        representation during LOD — visually nice (silhouette of the
+        emission), but for the WALLABY cube the iso at p99 threshold
+        is hundreds of thousands of triangles; drawing all those
+        edges in wireframe was almost as expensive as drawing them
+        solid (~7 ms vs ~10 ms — only marginal saving). For a true
+        "galaxy wireframe" we'd need to vtkDecimatePro the iso first;
+        that's a Phase 4 task.
         """
         if interactive:
             if self._volume is not None:
                 self._volume.SetVisibility(0)
+            if self._iso_actor is not None:
+                self._iso_actor.SetVisibility(0)
             if self._cutting_plane_actor is not None:
                 self._cutting_plane_actor.SetVisibility(0)
             # Force the bounding-box outline visible and bump its
             # contrast — the default 0.85 grey on the dark VTK
-            # background is easy to miss while the data layer is gone.
+            # background is easy to miss when it's the only thing on
+            # screen.
             if self._outline_actor is not None:
                 self._outline_actor.SetVisibility(1)
                 prop = self._outline_actor.GetProperty()
                 prop.SetColor(1.0, 1.0, 1.0)
                 prop.SetLineWidth(2.0)
-            # Iso mesh in wireframe — silhouette of the data at the
-            # current threshold.
-            if self._iso_actor is not None:
-                prop = self._iso_actor.GetProperty()
-                prop.SetRepresentationToWireframe()
-                prop.SetLineWidth(1.0)
-                # Disable lighting on the wireframe so it stays the
-                # LUT colour instead of attenuating to black on grazing
-                # camera angles.
-                prop.LightingOff()
-                self._iso_actor.SetVisibility(1)
         else:
-            # Restore outline cosmetics + iso representation, then
-            # apply the normal visibility per cube_render_mode.
+            # Restore outline cosmetics, then apply the normal
+            # visibility per cube_render_mode + cutting_plane_visible.
             if self._outline_actor is not None:
                 self._outline_actor.SetVisibility(1 if self.view.show_outline else 0)
                 prop = self._outline_actor.GetProperty()
                 prop.SetColor(0.85, 0.85, 0.85)
                 prop.SetLineWidth(1.5)
-            if self._iso_actor is not None:
-                prop = self._iso_actor.GetProperty()
-                prop.SetRepresentationToSurface()
-                prop.LightingOn()
             is_iso = (self.view.cube_render_mode == "isosurface")
             if self._volume is not None:
                 self._volume.SetVisibility(0 if is_iso else 1)
@@ -1311,35 +1296,39 @@ class RenderSession:
         arr = vtk_to_numpy(scalars)
         t3 = time.perf_counter()
         h, w = self.view.height, self.view.width
-        # IMPORTANT: we DON'T flip Y on the server side anymore. The
-        # ``arr.reshape((h,w,4))[::-1]`` we used to do here forced
-        # numpy into its generic strided iterator (negative stride on
-        # axis 0 + sliced last axis = no memcpy-per-row), which cost
-        # ~20 ms per frame at 1080p — the single largest item in the
-        # per-frame breakdown. Sending pixels bottom-up and asking the
-        # Qt client to mirror via QImage::mirrored(false, true) drops
-        # that cost to roughly 5 ms (well-vectorised inside Qt).
-        # Net: ~15 ms saved per frame at virtually zero extra client
-        # CPU on a Mac with Retina paint.
-        # For the JPEG fallback transport we still flip here because
-        # PIL's JPEG encoder doesn't have a cheap vertical-mirror
-        # option — see _render_frame_on_thread which calls flipud
-        # explicitly.
-        arr_2d = arr.reshape((h, w, 4))
-        rgb = np_local.ascontiguousarray(arr_2d[:, :, :3])
+        # NO Y FLIP, NO ALPHA DROP. Two pieces of folklore that used
+        # to live here, both expensive:
+        #
+        #   1. ``arr.reshape((h,w,4))[::-1]`` — flipping with a
+        #      negative stride on axis 0 forces numpy out of its
+        #      memcpy-per-row path. The QImage::mirrored() call in
+        #      the Qt client does the same job in SIMD. Saved ~15 ms.
+        #
+        #   2. ``ascontiguousarray(... [:, :, :3])`` — dropping the
+        #      alpha channel forces numpy to read 4 bytes and write 3
+        #      per pixel: no memcpy, generic strided iterator. PyAV's
+        #      ``VideoFrame.from_ndarray(rgba, format="rgba")``
+        #      accepts a 4-channel array directly and NVENC ignores
+        #      the alpha during RGB→YUV conversion. Saves ~15-20 ms.
+        #
+        # Net: the WebRTC frame-prep step drops from ~26 ms to
+        # essentially zero (just a no-copy view).
+        # JPEG path still flips + drops alpha explicitly because PIL's
+        # JPEG encoder needs RGB.
+        rgba = arr.reshape((h, w, 4))
         t4 = time.perf_counter()
 
         # Per-step timing breakdown — once a second to keep log noise
-        # tolerable. Reveals whether the 30+ ms we see at the
-        # ``render_total`` level lives in the GPU readback
+        # tolerable. Reveals whether the per-frame ``render_total``
+        # we see at the track layer lives in the GPU readback
         # (``w2if.Update``), the numpy bridge (``vtk_to_numpy``), or
-        # the contiguous RGB copy.
+        # the reshape view (now near-zero).
         self._render_step_counter = getattr(self, "_render_step_counter", 0) + 1
         if self._render_step_counter % 60 == 0:
             logger.info(
                 "[render-session %s] frame steps: vtk_render=%.1fms "
                 "readback(w2if)=%.1fms vtk_to_numpy=%.1fms "
-                "reshape+rgb_copy=%.1fms total=%.1fms",
+                "rgba_view=%.1fms total=%.1fms",
                 self.session_id,
                 (t1 - t0) * 1000.0,
                 (t2 - t1) * 1000.0,
@@ -1347,19 +1336,26 @@ class RenderSession:
                 (t4 - t3) * 1000.0,
                 (t4 - t0) * 1000.0,
             )
-        return rgb, (t1 - t0) * 1000.0
+        return rgba, (t1 - t0) * 1000.0
 
     def _render_frame_on_thread(self) -> bytes:
-        """Render one frame and return JPEG bytes. Legacy WS transport path."""
-        rgb, render_ms = self._render_rgb_on_thread()
+        """Render one frame and return JPEG bytes. Legacy WS transport path.
 
-        # JPEG path needs the vertical flip server-side — PIL doesn't
-        # do cheap pixel mirroring on the encoder side, and the legacy
-        # ws-jpeg client paints the QImage directly without a Qt
-        # transform. We absorb the ~15 ms cost here (only for the
-        # legacy transport).
+        ``_render_rgb_on_thread`` now returns an RGBA bottom-up buffer
+        (the WebRTC path consumes it as-is). For JPEG we still need RGB
+        top-down, so flip + drop alpha here. Costs ~15-20 ms on the
+        legacy path, but that path is fallback-only and has never been
+        targeted for 60 FPS — JPEG-over-WS struggles to clear 20 FPS
+        anyway because of the encoder cost.
+        """
         import numpy as _np
-        rgb = _np.ascontiguousarray(rgb[::-1])
+        rgba, render_ms = self._render_rgb_on_thread()
+
+        # JPEG path needs the vertical flip + alpha drop server-side
+        # — PIL doesn't do cheap pixel mirroring on the encoder side,
+        # and the legacy ws-jpeg client paints the QImage directly
+        # without a Qt transform.
+        rgb = _np.ascontiguousarray(rgba[::-1, :, :3])
         # JPEG encode.
         img = Image.fromarray(rgb, mode="RGB")
         buf = io.BytesIO()

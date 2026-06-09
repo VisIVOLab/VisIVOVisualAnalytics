@@ -301,11 +301,18 @@ class VtkFrameTrack(MediaStreamTrack):
             await asyncio.sleep(delta)
 
         render_start = time.perf_counter()
-        rgb, render_ms = await self._session.render_rgb_frame()
+        rgba, render_ms = await self._session.render_rgb_frame()
         render_total_ms = (time.perf_counter() - render_start) * 1000.0
-        h, w, _ = rgb.shape
+        h, w, _ = rgba.shape
         wrap_start = time.perf_counter()
-        frame = VideoFrame.from_ndarray(rgb, format="rgb24")
+        # ``rgba`` is the raw VTK readback: shape (h, w, 4), bottom-up.
+        # PyAV's ``rgba`` pixel format accepts it directly — NVENC
+        # ignores the alpha during RGB→YUV. This saves the ~18 ms
+        # alpha-drop copy that used to live in render_rgb_frame.
+        # Bottom-up doesn't matter to the H.264 stream as long as the
+        # client mirrors on paint, which it does via
+        # QImage::mirrored(false, true).
+        frame = VideoFrame.from_ndarray(rgba, format="rgba")
         frame.pts = self._counter
         frame.time_base = Fraction(1, int(self._fps))
         wrap_ms = (time.perf_counter() - wrap_start) * 1000.0

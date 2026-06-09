@@ -127,6 +127,12 @@ private slots:
     /// dragging the window edge for 250 ms; sends a single resize
     /// command to the backend at the final size.
     void flushPendingResize();
+    /// Fired by ``m_dragSendTimer`` to coalesce mouseMove deltas into
+    /// one rotate/pan command per ~16 ms (60 Hz). Without this the
+    /// data channel saw 70-100 commands/s on a fast Retina trackpad,
+    /// which stacked apply_command calls in the executor and stole
+    /// time from render_rgb_frame.
+    void flushPendingDrag();
 
 private:
     // JPEG/WS path (existing).
@@ -159,6 +165,15 @@ private:
     // 250 ms of wheel inactivity.
     bool    m_zoomLodActive{ false };
     QTimer *m_zoomLodIdleTimer{ nullptr };
+
+    // Drag throttling: accumulate camera deltas and ship one batched
+    // rotate/pan command per 16 ms tick instead of one per mouseMove.
+    QTimer *m_dragSendTimer{ nullptr };
+    double  m_pendingAzimuthDelta{ 0.0 };
+    double  m_pendingElevationDelta{ 0.0 };
+    double  m_pendingPanDx{ 0.0 };
+    double  m_pendingPanDy{ 0.0 };
+    bool    m_pendingPanButton{ false };
 
     // Mouse drag tracking for rotation.
     bool m_dragActive{ false };

@@ -386,16 +386,50 @@ void RemoteRenderWidget::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
-    QJsonObject cmd;
-    if (event->buttons() & Qt::LeftButton) {
-        cmd[QStringLiteral("type")]         = QStringLiteral("rotate");
-        cmd[QStringLiteral("d_azimuth")]    = -dx * kRotateSensitivity;
-        cmd[QStringLiteral("d_elevation")]  =  dy * kRotateSensitivity;
-    } else {  // Middle button → pan
-        cmd[QStringLiteral("type")] = QStringLiteral("pan");
-        cmd[QStringLiteral("dx")]   = dx * kPanSensitivity;
-        cmd[QStringLiteral("dy")]   = dy * kPanSensitivity;
+    // Throttle to 60 Hz max. Qt fires mouseMoveEvent at the platform's
+    // pointer poll rate — on a Retina trackpad that's often 120 Hz, and
+    // a fast drag can hit 70-100 events/s. Sending each one as its own
+    // ``rotate`` command floods the data channel and stacks tiny camera
+    // updates ahead of the renderer, which has no benefit visually
+    // (we already pace frames at 60 FPS) and just adds executor
+    // contention with render_rgb_frame. Coalesce deltas into a
+    // pending buffer and send at most once per ~16 ms.
+    m_pendingAzimuthDelta   += -dx * kRotateSensitivity;
+    m_pendingElevationDelta +=  dy * kRotateSensitivity;
+    m_pendingPanDx          += dx * kPanSensitivity;
+    m_pendingPanDy          += dy * kPanSensitivity;
+    m_pendingPanButton       = bool(event->buttons() & Qt::MiddleButton);
+
+    if (!m_dragSendTimer) {
+        m_dragSendTimer = new QTimer(this);
+        m_dragSendTimer->setSingleShot(true);
+        connect(m_dragSendTimer, &QTimer::timeout, this,
+                &RemoteRenderWidget::flushPendingDrag);
     }
+    if (!m_dragSendTimer->isActive()) {
+        m_dragSendTimer->start(16);   // ~60 Hz
+    }
+}
+
+void RemoteRenderWidget::flushPendingDrag()
+{
+    if (!m_live) return;
+    QJsonObject cmd;
+    if (m_pendingPanButton) {
+        if (m_pendingPanDx == 0.0 && m_pendingPanDy == 0.0) return;
+        cmd[QStringLiteral("type")] = QStringLiteral("pan");
+        cmd[QStringLiteral("dx")]   = m_pendingPanDx;
+        cmd[QStringLiteral("dy")]   = m_pendingPanDy;
+    } else {
+        if (m_pendingAzimuthDelta == 0.0 && m_pendingElevationDelta == 0.0) return;
+        cmd[QStringLiteral("type")]        = QStringLiteral("rotate");
+        cmd[QStringLiteral("d_azimuth")]   = m_pendingAzimuthDelta;
+        cmd[QStringLiteral("d_elevation")] = m_pendingElevationDelta;
+    }
+    m_pendingAzimuthDelta   = 0.0;
+    m_pendingElevationDelta = 0.0;
+    m_pendingPanDx          = 0.0;
+    m_pendingPanDy          = 0.0;
     sendCommand(QJsonDocument(cmd).toJson(QJsonDocument::Compact));
     requestFrame();
 }
@@ -404,6 +438,13 @@ void RemoteRenderWidget::mouseReleaseEvent(QMouseEvent *event)
 {
     const bool wasDragging = m_dragActive;
     m_dragActive = false;
+    // Make sure any in-flight deltas reach the backend before the
+    // wireframe LOD is turned off, so the final still-frame
+    // orientation matches what the user let go on.
+    if (wasDragging && m_dragSendTimer && m_dragSendTimer->isActive()) {
+        m_dragSendTimer->stop();
+        flushPendingDrag();
+    }
     // Interactive LOD off — backend re-enables volume + cutting plane
     // and emits an IDR so the very first still frame is clean.
     if (wasDragging && m_live) {
