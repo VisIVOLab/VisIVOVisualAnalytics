@@ -44,6 +44,23 @@ RemoteRenderWidget::RemoteRenderWidget(QWidget *parent)
 
 RemoteRenderWidget::~RemoteRenderWidget()
 {
+    // CRITICAL — block signals BEFORE tearing down.
+    //
+    // ``disconnectFromSession`` emits ``connectionStateChanged("Disconnected")``
+    // as it cleans up the transports. ``vtkWindowCube``'s slot for
+    // that signal writes to a ``QLabel*`` it owns. When the cube
+    // window is closing, ``~vtkWindowCube``'s ``~QWidget`` step
+    // recursively deletes its children — the QLabel goes first
+    // (it lives directly under the dock), then later the QStackedWidget
+    // → RemoteRenderWidget chain reaches us. By the time WE run our
+    // destructor, the parent slot's QLabel pointer is a dangling
+    // reference. Emitting the signal from here is a use-after-free
+    // straight into ``QLabel::setText``.
+    //
+    // ``blockSignals(true)`` prevents the emit from triggering any
+    // connected slot, which is exactly what we want during teardown:
+    // the parent is going away too, it doesn't need the notification.
+    blockSignals(true);
     disconnectFromSession();
 }
 
@@ -462,13 +479,23 @@ void RemoteRenderWidget::wheelEvent(QWheelEvent *event)
         event->ignore();
         return;
     }
-    const int notches = event->angleDelta().y() / 120;
-    if (notches == 0) {
+    // ANALOG zoom — proportional to the FRACTIONAL angle delta, not
+    // to integer notches. The previous integer-notch logic discarded
+    // every Mac trackpad event with ``|deltaY| < 120`` (almost all
+    // of them — a slow two-finger pan delivers deltas of 3-30 per
+    // event), then "ate" big bursts as a single ``factor = 1.1``
+    // step. The user perceived that as chunky 10 % zoom jumps even
+    // though LOD was active underneath. Treating the delta as a
+    // continuous quantity makes one notch (delta=120) still equal
+    // ``kZoomPerNotch`` exactly, while small trackpad bursts compose
+    // as tiny multiplicative factors that the user feels as smooth
+    // continuous zoom. Identical mathematically for the discrete
+    // wheel; smooth for the trackpad.
+    const double deltaY = static_cast<double>(event->angleDelta().y());
+    if (deltaY == 0.0) {
         return;
     }
-    const double factor = (notches > 0)
-                                  ? std::pow(kZoomPerNotch, notches)
-                                  : std::pow(1.0 / kZoomPerNotch, -notches);
+    const double factor = std::pow(kZoomPerNotch, deltaY / 120.0);
 
     // Wheel-zoom LOD — make zoom feel as fluid as a drag (60+ FPS
     // wireframe during the gesture, full-quality IDR at rest).
@@ -482,8 +509,7 @@ void RemoteRenderWidget::wheelEvent(QWheelEvent *event)
     // but with a 1 s grace window — long enough that the natural
     // pauses between bursts (which we measured at 300-700 ms) don't
     // flip LOD off and trigger an NVENC encoder rebuild.
-    // Lazy-create the idle timer once so every branch below can use
-    // it without re-checking.
+    // Lazy-create the LOD-exit timer once.
     if (!m_zoomLodIdleTimer) {
         m_zoomLodIdleTimer = new QTimer(this);
         m_zoomLodIdleTimer->setSingleShot(true);
@@ -497,53 +523,26 @@ void RemoteRenderWidget::wheelEvent(QWheelEvent *event)
         });
     }
 
-    const Qt::ScrollPhase phase = event->phase();
-    if (phase == Qt::ScrollBegin) {
-        // Trackpad: explicit gesture start. Enter LOD and arm a
-        // safety net timer with a long timeout in case ScrollEnd
-        // never arrives (Qt sometimes drops it on rapid gesture
-        // changes).
-        if (!m_zoomLodActive) {
-            m_zoomLodActive = true;
-            QJsonObject lodOn;
-            lodOn[QStringLiteral("type")]  = QStringLiteral("set_interactive");
-            lodOn[QStringLiteral("value")] = true;
-            sendCommand(QJsonDocument(lodOn).toJson(QJsonDocument::Compact));
-        }
-        if (m_zoomLodIdleTimer) m_zoomLodIdleTimer->stop();
-    } else if (phase == Qt::ScrollEnd || phase == Qt::ScrollMomentum) {
-        // Trackpad: explicit gesture end (ScrollEnd) or the kinetic
-        // tail (ScrollMomentum). We exit LOD on ScrollEnd; on
-        // ScrollMomentum we re-arm the inactivity timer with a short
-        // delay since the momentum events stop arriving when the
-        // animation finishes.
-        if (phase == Qt::ScrollEnd) {
-            if (m_zoomLodActive) {
-                m_zoomLodActive = false;
-                QJsonObject lodOff;
-                lodOff[QStringLiteral("type")]  = QStringLiteral("set_interactive");
-                lodOff[QStringLiteral("value")] = false;
-                sendCommand(QJsonDocument(lodOff).toJson(QJsonDocument::Compact));
-            }
-            if (m_zoomLodIdleTimer) m_zoomLodIdleTimer->stop();
-        } else if (m_zoomLodIdleTimer) {
-            m_zoomLodIdleTimer->start(300);
-        }
-    } else {
-        // NoScrollPhase — traditional notched mouse or older OS. Use
-        // an inactivity timer with a 1 s window. Anything shorter
-        // flaps LOD on/off between bursts; anything much longer would
-        // keep the cube wireframed for a noticeable beat after the
-        // user stopped scrolling.
-        if (!m_zoomLodActive) {
-            m_zoomLodActive = true;
-            QJsonObject lodOn;
-            lodOn[QStringLiteral("type")]  = QStringLiteral("set_interactive");
-            lodOn[QStringLiteral("value")] = true;
-            sendCommand(QJsonDocument(lodOn).toJson(QJsonDocument::Compact));
-        }
-        m_zoomLodIdleTimer->start(1000);
+    // Simplified policy — every wheel event extends the LOD session,
+    // regardless of phase. The previous version tried to act on
+    // ScrollBegin/ScrollEnd directly, which sounded right but failed
+    // on Mac trackpads: a continuous-looking two-finger pan actually
+    // arrives as MANY back-to-back ScrollBegin/ScrollUpdate/ScrollEnd
+    // bursts with 300-700 ms gaps. Honouring ScrollEnd immediately
+    // flapped LOD off every burst (each flap = ~300 ms NVENC rebuild)
+    // and the user felt the resulting stutter. With a single 500 ms
+    // inactivity timer on top, those gaps look like a single LOD
+    // session: any wheel event in <500 ms re-arms the timer, LOD
+    // exits only after sustained inactivity. Identical UX whether
+    // the input device is a trackpad or a notched mouse.
+    if (!m_zoomLodActive) {
+        m_zoomLodActive = true;
+        QJsonObject lodOn;
+        lodOn[QStringLiteral("type")]  = QStringLiteral("set_interactive");
+        lodOn[QStringLiteral("value")] = true;
+        sendCommand(QJsonDocument(lodOn).toJson(QJsonDocument::Compact));
     }
+    m_zoomLodIdleTimer->start(500);
 
     QJsonObject cmd;
     cmd[QStringLiteral("type")]   = QStringLiteral("zoom");

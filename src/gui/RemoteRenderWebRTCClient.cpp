@@ -257,10 +257,19 @@ void RemoteRenderWebRTCClient::setupPeerConnection()
 
     m_videoTrack->onFrame([self](rtc::binary frame, rtc::FrameInfo /*info*/) {
         if (!self) return;
+        // Refuse to even ENQUEUE if teardown is in progress. The
+        // inner lambda would still check m_closing on the main
+        // thread, but skipping the queue cuts off the race window
+        // entirely — fewer events in flight means fewer chances of
+        // ``feedDecoder`` running on a half-freed AVCodecContext if
+        // the destructor and the event loop happen to interleave in
+        // a way Qt's posted-event cleanup doesn't fully cover.
+        if (self->m_closing.load(std::memory_order_acquire)) return;
         QByteArray bytes(reinterpret_cast<const char *>(frame.data()),
                          static_cast<int>(frame.size()));
         QMetaObject::invokeMethod(self.data(), [self, bytes]() {
             if (!self) return;
+            if (self->m_closing.load(std::memory_order_acquire)) return;
             self->onFrameBytes(bytes);
         }, Qt::QueuedConnection);
     });
@@ -620,10 +629,34 @@ void RemoteRenderWebRTCClient::openDecoder()
 
 void RemoteRenderWebRTCClient::closeDecoder()
 {
-    if (m_sws) {
-        sws_freeContext(m_sws);
-        m_sws = nullptr;
-        m_swsWidth = m_swsHeight = 0;
+    // Drain the decoder BEFORE freeing anything. FFmpeg with
+    // FF_THREAD_FRAME | FF_THREAD_SLICE spawns worker threads
+    // internally; if we call ``avcodec_free_context`` while those
+    // workers are still chewing on a buffered packet (which is the
+    // exact thing the H.264 PPS errors we logged represent — a
+    // malformed reference being chased down by a worker), one of the
+    // workers can touch a half-freed AVCodecContext field as it
+    // unwinds. ``send_packet(NULL)`` signals end-of-stream;
+    // ``receive_frame`` in a loop drains every buffered output and,
+    // crucially, waits for the worker threads to settle.
+    if (m_codecCtx && m_frame) {
+        try {
+            avcodec_send_packet(m_codecCtx, nullptr);
+            while (avcodec_receive_frame(m_codecCtx, m_frame) >= 0) {
+                av_frame_unref(m_frame);
+            }
+        } catch (...) {
+            // Decoder may already be in an unrecoverable state if
+            // the PPS errors corrupted things — swallow and proceed
+            // to free.
+        }
+    }
+    // Free in REVERSE order of dependency: the codec context owns
+    // pointers into its packet/frame allocators internally, so the
+    // codec must be torn down first.
+    if (m_codecCtx) {
+        avcodec_free_context(&m_codecCtx);
+        m_codecCtx = nullptr;
     }
     if (m_frame) {
         av_frame_free(&m_frame);
@@ -633,9 +666,10 @@ void RemoteRenderWebRTCClient::closeDecoder()
         av_packet_free(&m_pkt);
         m_pkt = nullptr;
     }
-    if (m_codecCtx) {
-        avcodec_free_context(&m_codecCtx);
-        m_codecCtx = nullptr;
+    if (m_sws) {
+        sws_freeContext(m_sws);
+        m_sws = nullptr;
+        m_swsWidth = m_swsHeight = 0;
     }
 }
 
