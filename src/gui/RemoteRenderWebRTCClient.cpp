@@ -71,6 +71,41 @@ void RemoteRenderWebRTCClient::connectToSession(const QString &baseUrl,
 
 void RemoteRenderWebRTCClient::disconnectFromSession()
 {
+    // CRITICAL — clear libdatachannel callbacks BEFORE close().
+    //
+    // Each ``m_pc->on…`` / ``m_commandsChannel->on…`` handler is a
+    // ``std::function`` that captures ``this``. libdatachannel runs
+    // them on its own threads (ICE worker, SCTP worker, etc.). If a
+    // callback fires WHILE we're tearing down — e.g. an ICE candidate
+    // arrives at the same moment the cube window is being closed —
+    // it will run a QMetaObject::invokeMethod(this, …) queued
+    // dispatch on a half-destroyed QObject and segfault.
+    //
+    // ``rtc::PeerConnection::close()`` blocks until ICE/DTLS are torn
+    // down BUT the std::function members are only released when the
+    // ``shared_ptr<PeerConnection>`` itself is destroyed. By replacing
+    // them with empty stubs now, any in-flight callback resolves to a
+    // no-op before close() returns. Same logic for the data channel.
+    if (m_pc) {
+        try { m_pc->onLocalDescription(nullptr); } catch (...) {}
+        try { m_pc->onLocalCandidate(nullptr); } catch (...) {}
+        try { m_pc->onStateChange(nullptr); } catch (...) {}
+        try { m_pc->onGatheringStateChange(nullptr); } catch (...) {}
+        try { m_pc->onTrack(nullptr); } catch (...) {}
+        try { m_pc->onDataChannel(nullptr); } catch (...) {}
+    }
+    if (m_commandsChannel) {
+        try { m_commandsChannel->onOpen(nullptr); } catch (...) {}
+        try { m_commandsChannel->onClosed(nullptr); } catch (...) {}
+        try { m_commandsChannel->onMessage(nullptr); } catch (...) {}
+        try { m_commandsChannel->onError(nullptr); } catch (...) {}
+    }
+    if (m_videoTrack) {
+        try { m_videoTrack->onFrame(nullptr); } catch (...) {}
+        try { m_videoTrack->onOpen(nullptr); } catch (...) {}
+        try { m_videoTrack->onClosed(nullptr); } catch (...) {}
+    }
+
     // Order matters: data channel first, then peer connection. Calling
     // close on a peer connection cleans up the channels in flight but
     // the explicit close gives us cleaner shutdown logs.
@@ -89,6 +124,9 @@ void RemoteRenderWebRTCClient::disconnectFromSession()
     closeDecoder();
 
     m_live = false;
+    m_answerReceived = false;
+    m_iceBacklog.clear();
+    m_pendingCommands.clear();
     setStatus(u"Disconnected"_qs);
 }
 
@@ -209,6 +247,29 @@ void RemoteRenderWebRTCClient::setupPeerConnection()
             qDebug().noquote() << QStringLiteral(
                     "[webrtc] commands channel open (session=%1)")
                     .arg(m_sessionId);
+            // Flush any commands the caller posted before the channel
+            // finished negotiating. Order is preserved (FIFO), so the
+            // bootstrap sequence (set_lut → set_threshold →
+            // set_cutting_plane → ...) reaches the backend exactly as
+            // emitted by vtkWindowCube::pushRenderStateToRemote.
+            if (!m_pendingCommands.isEmpty() && m_commandsChannel
+                    && m_commandsChannel->isOpen()) {
+                qDebug().noquote() << QStringLiteral(
+                        "[webrtc] flushing %1 queued command(s) to backend")
+                        .arg(m_pendingCommands.size());
+                const auto queue = std::move(m_pendingCommands);
+                m_pendingCommands.clear();
+                for (const QByteArray &bytes : queue) {
+                    try {
+                        m_commandsChannel->send(std::string(
+                                bytes.constData(), bytes.size()));
+                    } catch (const std::exception &e) {
+                        qWarning().noquote() << QStringLiteral(
+                                "[webrtc] flush send failed: %1")
+                                .arg(QString::fromUtf8(e.what()));
+                    }
+                }
+            }
         }, Qt::QueuedConnection);
     });
     m_commandsChannel->onMessage([](rtc::message_variant /*data*/) {
@@ -457,14 +518,32 @@ void RemoteRenderWebRTCClient::handleSdpAnswer(const QByteArray &responseBody)
 
 void RemoteRenderWebRTCClient::sendStateCommand(const QVariantMap &command)
 {
-    if (!m_commandsChannel || !m_commandsChannel->isOpen()) {
-        // Silently drop — the caller (vtkWindowCube) re-pushes state
-        // when the channel opens via the connectionStateChanged
-        // "Live" transition.
-        return;
-    }
     const QJsonObject obj = QJsonObject::fromVariantMap(command);
     const QByteArray bytes = QJsonDocument(obj).toJson(QJsonDocument::Compact);
+
+    // The bootstrap (vtkWindowCube::pushRenderStateToRemote) fires on
+    // the "Live" transition, which we emit when the PC reaches
+    // ``Connected``. SCTP datachannel negotiation finishes ~100-300 ms
+    // AFTER the PeerConnection is "connected" though, so the very first
+    // bootstrap SENDs typically arrive at sendStateCommand BEFORE the
+    // ``commands`` channel has actually opened. libdatachannel silently
+    // drops ``send`` on a not-yet-open channel — that's how the cube
+    // ended up rendering with all defaults except slice_index (the only
+    // bootstrap value that differs from the backend default of
+    // ``nz//2``, leaving the cutting plane stuck at the cube centre).
+    //
+    // Fix: queue commands posted while the channel is opening. The
+    // queue flushes in ``onOpen`` below in FIFO order, so the bootstrap
+    // sequence is preserved.
+    if (!m_commandsChannel || !m_commandsChannel->isOpen()) {
+        m_pendingCommands.append(bytes);
+        qDebug().noquote() << QStringLiteral(
+                "[webrtc] queued command (channel not open yet, "
+                "queue size=%1): %2")
+                .arg(m_pendingCommands.size())
+                .arg(QString::fromUtf8(bytes));
+        return;
+    }
     try {
         m_commandsChannel->send(std::string(bytes.constData(), bytes.size()));
     } catch (const std::exception &e) {

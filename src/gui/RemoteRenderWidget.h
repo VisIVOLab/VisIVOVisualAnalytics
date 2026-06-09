@@ -13,6 +13,7 @@ class QPaintEvent;
 class QMouseEvent;
 class QWheelEvent;
 class QResizeEvent;
+class QTimer;
 class QWebSocket;
 class QLabel;
 class RemoteRenderWebRTCClient;
@@ -122,6 +123,10 @@ private slots:
     void onWebSocketDisconnected();
     void onTextMessageReceived(const QString &message);
     void onBinaryMessageReceived(const QByteArray &bytes);
+    /// Fired by ``m_resizeDebounceTimer`` once the user has stopped
+    /// dragging the window edge for 250 ms; sends a single resize
+    /// command to the backend at the final size.
+    void flushPendingResize();
 
 private:
     // JPEG/WS path (existing).
@@ -145,6 +150,15 @@ private:
     // dedupe the double-fire (immediate + 250 ms deferred) against this
     // so a no-op size doesn't restart the NVENC encoder server-side.
     QSize m_lastResizeSent;
+    // Coalesces bursts of ``resizeEvent`` from an interactive drag
+    // into a single send 250 ms after the user lets go of the handle.
+    // Saves the backend ~300 ms per spurious NVENC re-open.
+    QTimer *m_resizeDebounceTimer{ nullptr };
+    // Wheel-zoom LOD: there's no press/release pair to bracket a
+    // scroll gesture, so we open with the first notch and close on
+    // 250 ms of wheel inactivity.
+    bool    m_zoomLodActive{ false };
+    QTimer *m_zoomLodIdleTimer{ nullptr };
 
     // Mouse drag tracking for rotation.
     bool m_dragActive{ false };

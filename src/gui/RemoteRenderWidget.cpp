@@ -338,10 +338,26 @@ void RemoteRenderWidget::paintEvent(QPaintEvent * /*event*/)
 
 void RemoteRenderWidget::mousePressEvent(QMouseEvent *event)
 {
+    qDebug().noquote() << QStringLiteral(
+            "[remote-render] mousePressEvent button=%1 live=%2 transport=%3")
+            .arg(int(event->button())).arg(m_live ? 1 : 0)
+            .arg(int(m_transport));
     if (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton) {
         m_dragActive = true;
         m_lastMouseX = event->position().x();
         m_lastMouseY = event->position().y();
+        // Interactive LOD: tell the backend to drop the volume + cutting
+        // plane and render only the bounding-box wireframe while we drag.
+        // VTK volume render is the dominant frame cost (~30 ms at 1080p
+        // on V100); wireframe is sub-millisecond. The encoder + RTP send
+        // budget is plenty for 60 FPS, so the rotation feels instant.
+        // ``mouseReleaseEvent`` re-enables full quality with an IDR.
+        if (m_live) {
+            QJsonObject cmd;
+            cmd[QStringLiteral("type")]  = QStringLiteral("set_interactive");
+            cmd[QStringLiteral("value")] = true;
+            sendCommand(QJsonDocument(cmd).toJson(QJsonDocument::Compact));
+        }
     }
     event->accept();
 }
@@ -377,7 +393,16 @@ void RemoteRenderWidget::mouseMoveEvent(QMouseEvent *event)
 
 void RemoteRenderWidget::mouseReleaseEvent(QMouseEvent *event)
 {
+    const bool wasDragging = m_dragActive;
     m_dragActive = false;
+    // Interactive LOD off — backend re-enables volume + cutting plane
+    // and emits an IDR so the very first still frame is clean.
+    if (wasDragging && m_live) {
+        QJsonObject cmd;
+        cmd[QStringLiteral("type")]  = QStringLiteral("set_interactive");
+        cmd[QStringLiteral("value")] = false;
+        sendCommand(QJsonDocument(cmd).toJson(QJsonDocument::Compact));
+    }
     event->accept();
 }
 
@@ -394,6 +419,33 @@ void RemoteRenderWidget::wheelEvent(QWheelEvent *event)
     const double factor = (notches > 0)
                                   ? std::pow(kZoomPerNotch, notches)
                                   : std::pow(1.0 / kZoomPerNotch, -notches);
+
+    // Wheel-zoom LOD: there's no press/release pair to bracket a
+    // wheel gesture, so we drive it on an inactivity timer. First
+    // notch flips the backend into wireframe; every subsequent notch
+    // restarts the timer; 250 ms of idle wheel = restore full quality
+    // with an IDR. Same UX as Paraview / VTK's default interactor.
+    if (!m_zoomLodActive) {
+        m_zoomLodActive = true;
+        QJsonObject lodOn;
+        lodOn[QStringLiteral("type")]  = QStringLiteral("set_interactive");
+        lodOn[QStringLiteral("value")] = true;
+        sendCommand(QJsonDocument(lodOn).toJson(QJsonDocument::Compact));
+    }
+    if (!m_zoomLodIdleTimer) {
+        m_zoomLodIdleTimer = new QTimer(this);
+        m_zoomLodIdleTimer->setSingleShot(true);
+        connect(m_zoomLodIdleTimer, &QTimer::timeout, this, [this]() {
+            if (!m_zoomLodActive || !m_live) return;
+            m_zoomLodActive = false;
+            QJsonObject lodOff;
+            lodOff[QStringLiteral("type")]  = QStringLiteral("set_interactive");
+            lodOff[QStringLiteral("value")] = false;
+            sendCommand(QJsonDocument(lodOff).toJson(QJsonDocument::Compact));
+        });
+    }
+    m_zoomLodIdleTimer->start(250);
+
     QJsonObject cmd;
     cmd[QStringLiteral("type")]   = QStringLiteral("zoom");
     cmd[QStringLiteral("factor")] = factor;
@@ -411,16 +463,44 @@ void RemoteRenderWidget::resizeEvent(QResizeEvent *event)
     // frame back. Without this scale-up the JPEG arrives at 1024 and
     // gets up-sampled to 2048 by Qt → blurry compared to the local
     // QVTKOpenGLNativeWidget which always paints at native DPI.
+    //
+    // Debounce: during an interactive drag-resize Qt fires
+    // ``resizeEvent`` for EVERY pixel of movement. Sending each one to
+    // the backend triggers aiortc to rebuild the NVENC encoder context
+    // (~300 ms each) because the frame size of the next ``VideoFrame``
+    // differs from the codec's. We saw bursts of 8 NVENC re-opens
+    // during a single drag, which is what caused the FPS to collapse
+    // to single digits while resizing. Delay sending until the user
+    // stops dragging for 250 ms.
     if (m_live) {
-        const qreal dpr = devicePixelRatioF();
-        QJsonObject cmd;
-        cmd[QStringLiteral("type")]   = QStringLiteral("resize");
-        cmd[QStringLiteral("width")]  = qRound(width()  * dpr);
-        cmd[QStringLiteral("height")] = qRound(height() * dpr);
-        sendCommand(QJsonDocument(cmd).toJson(QJsonDocument::Compact));
-        requestFrame();
+        if (!m_resizeDebounceTimer) {
+            m_resizeDebounceTimer = new QTimer(this);
+            m_resizeDebounceTimer->setSingleShot(true);
+            connect(m_resizeDebounceTimer, &QTimer::timeout,
+                    this, &RemoteRenderWidget::flushPendingResize);
+        }
+        m_resizeDebounceTimer->start(250);
     }
     QWidget::resizeEvent(event);
+}
+
+void RemoteRenderWidget::flushPendingResize()
+{
+    if (!m_live) return;
+    const qreal dpr = devicePixelRatioF();
+    const int physW = qRound(width()  * dpr);
+    const int physH = qRound(height() * dpr);
+    if (m_lastResizeSent.width() == physW
+            && m_lastResizeSent.height() == physH) {
+        return;
+    }
+    m_lastResizeSent = QSize(physW, physH);
+    QJsonObject cmd;
+    cmd[QStringLiteral("type")]   = QStringLiteral("resize");
+    cmd[QStringLiteral("width")]  = physW;
+    cmd[QStringLiteral("height")] = physH;
+    sendCommand(QJsonDocument(cmd).toJson(QJsonDocument::Compact));
+    requestFrame();
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

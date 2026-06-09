@@ -323,6 +323,14 @@ class SessionViewState:
     cutting_plane_opacity: float = 0.5
     cutting_plane_slice_index: int = 0     # in [0, nz)
 
+    # ── Interactive LOD ─────────────────────────────────────────────
+    # When True (client sends ``set_interactive`` on mouse press), the
+    # volume + cutting-plane + isosurface actors are hidden so only the
+    # cheap bounding-box wireframe renders. Goes back to False on mouse
+    # release. Lets us sustain 60 FPS during rotations without giving
+    # up the full-quality still frame at rest.
+    interactive: bool = False
+
     # ── Viewport / encoding ────────────────────────────────────────
     # 1920×1080 default keeps the first frames at near-Retina quality
     # even on desktop docks of ~1500 px wide — the client resize-on-Live
@@ -414,6 +422,13 @@ class RenderSession:
         self._slice_lut_ctf = None         # vtkColorTransferFunction for slice
         self._cutting_plane_slice_index = -1   # invalidates first update
         self._closed = False
+        # Scene-change IDR request. Set by apply_command for state
+        # mutations that drastically change the rendered image (LUT,
+        # blend mode, cutting plane position); consumed by the WebRTC
+        # track's ``recv()`` to mark the next encoded frame as an
+        # I-frame, sparing the client decoder from referencing across
+        # an incompatible previous frame.
+        self._idr_request_pending = False
         # An asyncio.Lock prevents two render_frame() calls from
         # interleaving on the executor (the executor would queue them
         # anyway, but the lock makes the API more honest at the
@@ -427,6 +442,23 @@ class RenderSession:
         """Run the VTK pipeline setup on the worker thread."""
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(self._executor, self._init_on_thread)
+
+    def request_idr(self) -> None:
+        """Mark the next encoded video frame as an I-frame (IDR).
+
+        Idempotent: multiple calls before the next ``recv()`` collapse
+        to one IDR. Called from ``_apply_command_on_thread`` whenever a
+        state mutation makes the scene incompatible with motion
+        prediction from the previous frame.
+        """
+        self._idr_request_pending = True
+
+    def consume_idr_flag(self) -> bool:
+        """Atomic test-and-clear used by the WebRTC track."""
+        if self._idr_request_pending:
+            self._idr_request_pending = False
+            return True
+        return False
 
     async def apply_command(self, command: dict[str, Any]) -> None:
         """Mutate :attr:`view` from a JSON command. Cheap; no render.
@@ -769,6 +801,77 @@ class RenderSession:
         self._iso_filter.SetValue(0, self.view.threshold or self._vmin)
         self._iso_filter.Modified()
 
+    def _apply_interactive_mode_on_thread(self, interactive: bool) -> None:
+        """Toggle the LOD between full-quality and a fast wireframe.
+
+        Full quality (interactive=False):
+            volume mapper OR isosurface mesh (per cube_render_mode) +
+            cutting plane (if visible) + outline + axes.
+
+        Wireframe (interactive=True):
+            outline box (forced visible, brighter colour for readability)
+            +  isosurface mesh as WIREFRAME — the actual data structure
+            at the current threshold, drawn as edges only. This costs
+            roughly the GPU pass needed to rasterize the iso mesh as
+            lines (one ms ballpark on V100 for the WALLABY cube). Volume
+            and cutting plane are hidden because they're the expensive
+            parts of the full-quality frame.
+
+        Why the iso-wireframe and not just the box: a bare cube box
+        gives no clue about WHERE the emission is — the user can't see
+        which part they're rotating into view. The iso mesh outlines
+        the actual data structure so spatial reasoning during the drag
+        is preserved. The mesh is already built (``_build_isosurface_on_thread``
+        runs at session init) and tracks ``threshold`` via
+        ``_rebuild_isosurface_value_on_thread`` whenever the user
+        changes it. Switching its actor to wireframe representation is
+        a single SetRepresentationToWireframe() call.
+        """
+        if interactive:
+            if self._volume is not None:
+                self._volume.SetVisibility(0)
+            if self._cutting_plane_actor is not None:
+                self._cutting_plane_actor.SetVisibility(0)
+            # Force the bounding-box outline visible and bump its
+            # contrast — the default 0.85 grey on the dark VTK
+            # background is easy to miss while the data layer is gone.
+            if self._outline_actor is not None:
+                self._outline_actor.SetVisibility(1)
+                prop = self._outline_actor.GetProperty()
+                prop.SetColor(1.0, 1.0, 1.0)
+                prop.SetLineWidth(2.0)
+            # Iso mesh in wireframe — silhouette of the data at the
+            # current threshold.
+            if self._iso_actor is not None:
+                prop = self._iso_actor.GetProperty()
+                prop.SetRepresentationToWireframe()
+                prop.SetLineWidth(1.0)
+                # Disable lighting on the wireframe so it stays the
+                # LUT colour instead of attenuating to black on grazing
+                # camera angles.
+                prop.LightingOff()
+                self._iso_actor.SetVisibility(1)
+        else:
+            # Restore outline cosmetics + iso representation, then
+            # apply the normal visibility per cube_render_mode.
+            if self._outline_actor is not None:
+                self._outline_actor.SetVisibility(1 if self.view.show_outline else 0)
+                prop = self._outline_actor.GetProperty()
+                prop.SetColor(0.85, 0.85, 0.85)
+                prop.SetLineWidth(1.5)
+            if self._iso_actor is not None:
+                prop = self._iso_actor.GetProperty()
+                prop.SetRepresentationToSurface()
+                prop.LightingOn()
+            is_iso = (self.view.cube_render_mode == "isosurface")
+            if self._volume is not None:
+                self._volume.SetVisibility(0 if is_iso else 1)
+            if self._iso_actor is not None:
+                self._iso_actor.SetVisibility(1 if is_iso else 0)
+            if self._cutting_plane_actor is not None:
+                self._cutting_plane_actor.SetVisibility(
+                    1 if self.view.cutting_plane_visible else 0)
+
     def _apply_cube_render_mode_on_thread(self, mode: str) -> None:
         """Toggle between volume and isosurface actors atomically."""
         is_iso = (mode == "isosurface")
@@ -1035,21 +1138,35 @@ class RenderSession:
         elif ctype in ("set_lut", "colormap"):
             self.view.volume_lut_name = str(command.get("name", self.view.volume_lut_name))
             self._rebuild_volume_tfs_on_thread()
+            self.request_idr()
         elif ctype == "set_slice_lut":
             self.view.slice_lut_name = str(command.get("name", self.view.slice_lut_name))
             self._rebuild_slice_lut_on_thread()
+            self.request_idr()
         elif ctype == "set_threshold":
             self.view.threshold = float(command.get("value", self.view.threshold or self._vmin))
             self._rebuild_volume_tfs_on_thread()
+            self.request_idr()
         elif ctype == "set_blend_mode":
             self.view.blend_mode = int(command.get("mode", 0))
             self._apply_blend_mode_on_thread(self.view.blend_mode)
+            self.request_idr()
         elif ctype == "set_cube_render_mode":
             mode = str(command.get("mode", "volume")).lower()
             if mode not in ("volume", "isosurface"):
                 mode = "volume"
             self.view.cube_render_mode = mode
             self._apply_cube_render_mode_on_thread(mode)
+            self.request_idr()
+        elif ctype == "set_interactive":
+            new_state = bool(command.get("value", False))
+            if new_state != self.view.interactive:
+                self.view.interactive = new_state
+                self._apply_interactive_mode_on_thread(new_state)
+                # IDR on BOTH transitions: entering wireframe mode the
+                # decoder needs a clean ref, and leaving it the full-quality
+                # frame is visually a totally different image.
+                self.request_idr()
         elif ctype == "opacity":
             # Legacy spike command — no-op for new clients; honoured
             # only if they really push it.
@@ -1086,6 +1203,7 @@ class RenderSession:
                     self._cutting_plane_slice_index,
                 )
                 self._update_cutting_plane_slice_on_thread(idx)
+            self.request_idr()
 
         # ── Chrome toggles ───────────────────────────────────────────
         elif ctype == "set_show_outline":
@@ -1179,6 +1297,7 @@ class RenderSession:
         w2if.ReadFrontBufferOff()
         w2if.SetInputBufferTypeToRGBA()      # GLES-safe; see docstring
         w2if.Update()
+        t2 = time.perf_counter()
         out = w2if.GetOutput()
         scalars = out.GetPointData().GetScalars()
         if scalars is None:
@@ -1186,12 +1305,33 @@ class RenderSession:
                 "vtkWindowToImageFilter returned no scalars — readback failed"
             )
         arr = vtk_to_numpy(scalars)
+        t3 = time.perf_counter()
         h, w = self.view.height, self.view.width
         # VTK ships pixels bottom-up; flip to top-down.
         arr = arr.reshape((h, w, 4))[::-1]
         # Drop alpha. WebRTC's NVENC encoder reads RGB directly;
         # JPEG also can't carry transparency.
         rgb = np_local.ascontiguousarray(arr[:, :, :3])
+        t4 = time.perf_counter()
+
+        # Per-step timing breakdown — once a second to keep log noise
+        # tolerable. Reveals whether the 30+ ms we see at the
+        # ``render_total`` level lives in the GPU readback
+        # (``w2if.Update``), the numpy bridge (``vtk_to_numpy``), or
+        # the contiguous RGB copy.
+        self._render_step_counter = getattr(self, "_render_step_counter", 0) + 1
+        if self._render_step_counter % 60 == 0:
+            logger.info(
+                "[render-session %s] frame steps: vtk_render=%.1fms "
+                "readback(w2if)=%.1fms vtk_to_numpy=%.1fms "
+                "reshape+rgb_copy=%.1fms total=%.1fms",
+                self.session_id,
+                (t1 - t0) * 1000.0,
+                (t2 - t1) * 1000.0,
+                (t3 - t2) * 1000.0,
+                (t4 - t3) * 1000.0,
+                (t4 - t0) * 1000.0,
+            )
         return rgb, (t1 - t0) * 1000.0
 
     def _render_frame_on_thread(self) -> bytes:

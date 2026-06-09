@@ -295,14 +295,49 @@ class VtkFrameTrack(MediaStreamTrack):
         # Target FPS pacing.
         target_t = self._start_wall + self._counter / self._fps
         delta = target_t - time.perf_counter()
+        slept_ms = 0.0
         if delta > 0:
+            slept_ms = delta * 1000.0
             await asyncio.sleep(delta)
 
-        rgb, _render_ms = await self._session.render_rgb_frame()
+        render_start = time.perf_counter()
+        rgb, render_ms = await self._session.render_rgb_frame()
+        render_total_ms = (time.perf_counter() - render_start) * 1000.0
         h, w, _ = rgb.shape
+        wrap_start = time.perf_counter()
         frame = VideoFrame.from_ndarray(rgb, format="rgb24")
         frame.pts = self._counter
         frame.time_base = Fraction(1, int(self._fps))
+        wrap_ms = (time.perf_counter() - wrap_start) * 1000.0
+
+        # Print one diagnostic line per second. ``render_ms`` is
+        # the VTK render+readback alone; ``render_total_ms`` adds the
+        # executor hop and the GIL-released wait. ``wrap_ms`` is the
+        # numpy → av.VideoFrame copy. Encode is downstream of recv()
+        # and isn't reachable from here; aiortc owns it.
+        if self._counter % int(max(1, self._fps)) == 0:
+            logger.info(
+                "[webrtc-track] frame=%d %dx%d vtk_render=%.1fms "
+                "render_total=%.1fms videoframe_wrap=%.1fms paced_sleep=%.1fms",
+                self._counter, w, h, render_ms,
+                render_total_ms, wrap_ms, slept_ms,
+            )
+
+        # Scene-change IDR injection. After certain apply_commands
+        # (set_lut, set_blend_mode, set_cutting_plane) the rendered
+        # content changes drastically — the next P-frame can't
+        # reference enough of the previous frame and the client
+        # decoder spits ``concealing N DC/AC/MV errors``. Marking the
+        # frame as an I-frame tells NVENC to emit a full IDR, costing
+        # a few extra kilobits but eliminating the corruption.
+        # ``gop_size=120`` at 60 FPS = a fresh IDR every 2 s without
+        # this hint, which is far too long for an interactive viewer
+        # where the user toggles state frequently.
+        if self._session.consume_idr_flag():
+            try:
+                frame.pict_type = "I"
+            except Exception:
+                pass
         self._counter += 1
         return frame
 

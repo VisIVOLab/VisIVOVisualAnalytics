@@ -148,6 +148,15 @@ private:
     bool     m_answerReceived{ false };
     QVector<QPair<QString, QString>> m_iceBacklog;   // (candidate, mid)
 
+    // Pre-open data-channel command queue. PC ``Connected`` → "Live"
+    // fires up to ~300 ms before SCTP datachannel negotiation finishes,
+    // and vtkWindowCube's bootstrap state push reacts to "Live". Any
+    // ``sendStateCommand`` call that arrives in that window goes here,
+    // and the ``commands`` channel's ``onOpen`` flushes the queue in
+    // FIFO order. Without this the bootstrap was silently lost and the
+    // backend kept rendering with its build-time defaults.
+    QVector<QByteArray> m_pendingCommands;
+
     QNetworkAccessManager *m_nam{ nullptr };
 
     // libdatachannel handles (shared_ptr — its API requires it).
