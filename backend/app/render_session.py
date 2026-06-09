@@ -413,6 +413,18 @@ class RenderSession:
         self._iso_filter = None           # vtkFlyingEdges3D
         self._iso_mapper = None           # vtkPolyDataMapper
         self._iso_actor  = None           # vtkActor
+        # Low-res "galaxy wireframe" pipeline for interactive LOD.
+        # Cube is shrunk 4x before FlyingEdges3D so the mesh has
+        # roughly 1/64 of the triangles of the full-res iso — renders
+        # in <1 ms even for a complex emission. Shown only during
+        # set_interactive=True.
+        self._iso_lod_shrink = None       # vtkImageShrink3D
+        self._iso_lod_filter = None       # vtkFlyingEdges3D on shrunk
+        self._iso_lod_mapper = None
+        self._iso_lod_actor  = None
+        # Render-window size remembered across an LOD cycle so we can
+        # restore it on release. None when not in interactive mode.
+        self._lod_prev_size = None
         # Cutting plane infrastructure — see _build_cutting_plane().
         self._cutting_plane_source = None  # vtkPlaneSource
         self._cutting_plane_actor = None   # vtkActor
@@ -665,6 +677,11 @@ class RenderSession:
         # — built hidden; ``set_cube_render_mode`` toggles between the
         # volume actor and this one.
         self._build_isosurface_on_thread()
+        # Low-res "galaxy wireframe" iso for interactive LOD. Built
+        # from a 4x-downsampled volume so it renders in <1 ms while
+        # still showing the rough shape of the emission as the user
+        # rotates. Shown only during set_interactive=True.
+        self._build_iso_lod_on_thread()
         # Cutting plane is the heaviest piece: it needs a slice LUT,
         # an image-to-colours pipeline, a texture, and an actor.
         self._build_cutting_plane_on_thread()
@@ -795,34 +812,117 @@ class RenderSession:
                     1 if self.view.cube_render_mode == "volume" else 0)
 
     def _rebuild_isosurface_value_on_thread(self) -> None:
-        """Push the current threshold into the isosurface extractor."""
-        if self._iso_filter is None:
+        """Push the current threshold into BOTH the full and LOD iso filters."""
+        if self._iso_filter is not None:
+            self._iso_filter.SetValue(0, self.view.threshold or self._vmin)
+            self._iso_filter.Modified()
+        if self._iso_lod_filter is not None:
+            self._iso_lod_filter.SetValue(0, self.view.threshold or self._vmin)
+            self._iso_lod_filter.Modified()
+
+    def _build_iso_lod_on_thread(self) -> None:
+        """Build a low-poly isosurface for the interactive LOD path.
+
+        Pipeline:
+        ::
+
+            vtkImageData (full-res cube)
+                ↓ vtkImageShrink3D (4× per axis = 1/64 voxels)
+            vtkImageData (downsampled)
+                ↓ vtkFlyingEdges3D
+            vtkPolyData (sparse iso mesh)
+                ↓ vtkPolyDataMapper (lighting off, wireframe representation)
+            vtkActor (hidden by default)
+
+        Why a downsampled volume instead of decimating the full iso:
+        ``vtkDecimatePro`` runs on the polygons AFTER iso extraction;
+        on a several-hundred-thousand-triangle mesh it's slow at
+        threshold-change time (we'd block apply_command for ~200 ms
+        each ``set_threshold``). Shrinking the source volume first
+        means FlyingEdges3D produces a sparse mesh directly — sub-ms
+        on a 27×70×49 grid.
+
+        The mesh shows the rough silhouette of the emission, which is
+        exactly what the user asked for ("wireframe della galassia"):
+        rotation feels responsive AND keeps spatial reasoning intact.
+        On release the full-quality volume comes back, IDR'd to a
+        clean keyframe.
+        """
+        if self._image_data is None:
             return
-        self._iso_filter.SetValue(0, self.view.threshold or self._vmin)
-        self._iso_filter.Modified()
+        import vtk
+        shrink = vtk.vtkImageShrink3D()
+        shrink.SetInputData(self._image_data)
+        shrink.SetShrinkFactors(4, 4, 4)
+        shrink.AveragingOn()  # average voxels (vs nearest) — preserves
+                              # the iso shape when the threshold sits
+                              # near the noise tail of the cube
+        flying = vtk.vtkFlyingEdges3D()
+        flying.SetInputConnection(shrink.GetOutputPort())
+        flying.SetNumberOfContours(1)
+        flying.SetValue(0, self.view.threshold or self._vmin)
+        flying.ComputeNormalsOff()    # not needed for wireframe
+        flying.ComputeGradientsOff()
+        flying.ComputeScalarsOff()
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputConnection(flying.GetOutputPort())
+        mapper.ScalarVisibilityOff()
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        prop = actor.GetProperty()
+        # Wireframe-only, lighting off — the wireframe should look the
+        # same colour regardless of camera angle so the user can
+        # always see it against the dark background.
+        prop.SetRepresentationToWireframe()
+        prop.SetColor(1.0, 0.6, 0.2)   # Inferno-ish orange, contrasts
+                                        # well with both light and dark
+                                        # backgrounds
+        prop.LightingOff()
+        prop.SetLineWidth(1.0)
+        actor.SetVisibility(0)
+        self._iso_lod_shrink = shrink
+        self._iso_lod_filter = flying
+        self._iso_lod_mapper = mapper
+        self._iso_lod_actor  = actor
+        self._renderer.AddActor(actor)
 
     def _apply_interactive_mode_on_thread(self, interactive: bool) -> None:
-        """Toggle the LOD between full-quality and a fast outline.
+        """Toggle the LOD between full-quality and a fast wireframe.
 
         Full quality (interactive=False):
             volume mapper OR isosurface mesh (per cube_render_mode) +
-            cutting plane (if visible) + outline + axes.
+            cutting plane (if visible) + outline + axes triad.
+            Render window at the client's requested size (e.g. 1586×1244
+            on a Retina dock).
 
-        Interactive (interactive=True):
-            ONLY the bounding-box outline + axes. Everything that
-            depends on cube data (volume, iso mesh, cutting plane) is
-            hidden. VTK's ``Render()`` then drops to ~1 ms on V100
-            (just 12 line segments + the axes triad) which leaves the
-            full 16 ms budget for readback + encode = 60 FPS reachable.
+        Interactive (interactive=True), three combined tricks:
 
-        Earlier we tried rendering the iso mesh in wireframe
-        representation during LOD — visually nice (silhouette of the
-        emission), but for the WALLABY cube the iso at p99 threshold
-        is hundreds of thousands of triangles; drawing all those
-        edges in wireframe was almost as expensive as drawing them
-        solid (~7 ms vs ~10 ms — only marginal saving). For a true
-        "galaxy wireframe" we'd need to vtkDecimatePro the iso first;
-        that's a Phase 4 task.
+          1. Show only the bounding-box outline (forced bright/thick)
+             plus a LOW-POLY iso wireframe of the emission ("galaxy
+             wireframe"). Everything else — volume, full iso, cutting
+             plane, axes triad — is hidden. VTK ``Render()`` drops to
+             ~2 ms instead of ~10 ms.
+
+          2. Halve the render window dimensions. Every downstream
+             cost is proportional to pixels: readback at 1586×1244
+             takes ~10 ms; halved (793×622) it takes ~3 ms. NVENC
+             encode on the smaller frame is similarly cheaper, and
+             the H.264 stream over the SSH tunnel is smaller. The
+             Qt client paints with ``QImage::scaled(...,
+             SmoothTransformation)`` so the upscale is automatic.
+             The downside is a brief blurry frame at release before
+             the full-res IDR lands; in practice the eye doesn't
+             notice during the rotation itself.
+
+          3. Hide the axes triad. The corner viewport renderer is
+             cheap individually but its extra Render() pass + its
+             scalar-bar text take a few ms that we can spend on
+             frames-per-second instead.
+
+        Combined the LOD frame budget at WALLABY scale is roughly
+        ~6 ms total = 60+ FPS sustained, vs ~22 ms at full quality.
+        Release triggers an IDR so the client sees the full-quality
+        still frame at the right orientation immediately.
         """
         if interactive:
             if self._volume is not None:
@@ -831,23 +931,50 @@ class RenderSession:
                 self._iso_actor.SetVisibility(0)
             if self._cutting_plane_actor is not None:
                 self._cutting_plane_actor.SetVisibility(0)
-            # Force the bounding-box outline visible and bump its
-            # contrast — the default 0.85 grey on the dark VTK
-            # background is easy to miss when it's the only thing on
-            # screen.
+            # Bright outline so the cube box reads against the dark
+            # background while it's almost the only thing on screen.
             if self._outline_actor is not None:
                 self._outline_actor.SetVisibility(1)
                 prop = self._outline_actor.GetProperty()
                 prop.SetColor(1.0, 1.0, 1.0)
                 prop.SetLineWidth(2.0)
+            # Galaxy wireframe (low-poly iso) — gives spatial context
+            # without the cost of the full iso mesh.
+            if self._iso_lod_actor is not None:
+                self._iso_lod_actor.SetVisibility(1)
+            # Hide axes triad to save the extra renderer pass.
+            if self._axes_renderer is not None:
+                self._axes_renderer.SetDraw(0)
+            # Halve render-window dimensions — 4× fewer pixels means
+            # 4× faster readback + encode. Cache the previous size so
+            # we can restore it on release.
+            if self._render_window is not None:
+                cur_w, cur_h = self._render_window.GetSize()
+                self._lod_prev_size = (cur_w, cur_h)
+                lod_w = max(64, cur_w // 2)
+                lod_h = max(64, cur_h // 2)
+                self._render_window.SetSize(lod_w, lod_h)
+                self.view.width = lod_w
+                self.view.height = lod_h
         else:
-            # Restore outline cosmetics, then apply the normal
-            # visibility per cube_render_mode + cutting_plane_visible.
+            # Restore outline cosmetics, hide LOD iso, restore axes,
+            # restore render-window size, then apply normal visibility
+            # per cube_render_mode + cutting_plane_visible.
             if self._outline_actor is not None:
                 self._outline_actor.SetVisibility(1 if self.view.show_outline else 0)
                 prop = self._outline_actor.GetProperty()
                 prop.SetColor(0.85, 0.85, 0.85)
                 prop.SetLineWidth(1.5)
+            if self._iso_lod_actor is not None:
+                self._iso_lod_actor.SetVisibility(0)
+            if self._axes_renderer is not None:
+                self._axes_renderer.SetDraw(1 if self.view.show_axes else 0)
+            if self._render_window is not None and self._lod_prev_size is not None:
+                w, h = self._lod_prev_size
+                self._render_window.SetSize(w, h)
+                self.view.width = w
+                self.view.height = h
+                self._lod_prev_size = None
             is_iso = (self.view.cube_render_mode == "isosurface")
             if self._volume is not None:
                 self._volume.SetVisibility(0 if is_iso else 1)
@@ -1208,9 +1335,16 @@ class RenderSession:
         elif ctype == "resize":
             w = max(64,  min(4096, int(command.get("width",  self.view.width))))
             h = max(64,  min(4096, int(command.get("height", self.view.height))))
-            self.view.width, self.view.height = w, h
-            if self._render_window is not None:
-                self._render_window.SetSize(w, h)
+            if self.view.interactive and self._lod_prev_size is not None:
+                # We're in half-res LOD mode. Store the new full-res
+                # target so the LOD-exit restore picks it up; don't
+                # actually resize the render window now (the user is
+                # still dragging, doesn't need the extra resolution).
+                self._lod_prev_size = (w, h)
+            else:
+                self.view.width, self.view.height = w, h
+                if self._render_window is not None:
+                    self._render_window.SetSize(w, h)
         elif ctype == "jpeg_quality":
             self.view.jpeg_quality = max(1, min(100, int(command.get("quality", 85))))
 
