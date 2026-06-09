@@ -6,6 +6,7 @@
 #include <QString>
 #include <QVariantMap>
 #include <QVector>
+#include <atomic>
 #include <chrono>
 #include <memory>
 
@@ -138,6 +139,17 @@ private:
     QString  m_token;
     bool     m_live{ false };
     QString  m_status{ "Idle" };
+    // True while ``disconnectFromSession`` is running (or has run).
+    // Any FFmpeg / data-channel callback that observes this flag
+    // bails out instead of touching state. The QPointer guards on
+    // libdatachannel callbacks already handle most of the lifetime
+    // races, but stale RTP packets arriving DURING the teardown
+    // window (between session DELETE and PC close) can still feed
+    // ``feedDecoder``, which would happily re-``avcodec_open2`` a
+    // codec context the destructor is about to free. Atomic because
+    // libdatachannel callbacks run on a worker thread; the decoder
+    // ops run on Qt main after a QueuedConnection hop.
+    std::atomic<bool> m_closing{ false };
 
     // Trickle-ICE candidate buffer. libdatachannel starts emitting
     // candidates as soon as setLocalDescription() runs — typically

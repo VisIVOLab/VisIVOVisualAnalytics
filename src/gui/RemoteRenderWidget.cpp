@@ -470,18 +470,20 @@ void RemoteRenderWidget::wheelEvent(QWheelEvent *event)
                                   ? std::pow(kZoomPerNotch, notches)
                                   : std::pow(1.0 / kZoomPerNotch, -notches);
 
-    // Wheel-zoom LOD: there's no press/release pair to bracket a
-    // wheel gesture, so we drive it on an inactivity timer. First
-    // notch flips the backend into wireframe; every subsequent notch
-    // restarts the timer; 250 ms of idle wheel = restore full quality
-    // with an IDR. Same UX as Paraview / VTK's default interactor.
-    if (!m_zoomLodActive) {
-        m_zoomLodActive = true;
-        QJsonObject lodOn;
-        lodOn[QStringLiteral("type")]  = QStringLiteral("set_interactive");
-        lodOn[QStringLiteral("value")] = true;
-        sendCommand(QJsonDocument(lodOn).toJson(QJsonDocument::Compact));
-    }
+    // Wheel-zoom LOD — make zoom feel as fluid as a drag (60+ FPS
+    // wireframe during the gesture, full-quality IDR at rest).
+    //
+    // The hard part is detecting "gesture start" and "gesture end"
+    // for a wheel. macOS trackpads give us that for free via
+    // ``QWheelEvent::phase()`` — ScrollBegin/ScrollEnd brackets the
+    // entire two-finger pan. For a traditional notched mouse there's
+    // no phase info; every notch is a NoScrollPhase event with no
+    // explicit "release". We then fall back to an inactivity timer
+    // but with a 1 s grace window — long enough that the natural
+    // pauses between bursts (which we measured at 300-700 ms) don't
+    // flip LOD off and trigger an NVENC encoder rebuild.
+    // Lazy-create the idle timer once so every branch below can use
+    // it without re-checking.
     if (!m_zoomLodIdleTimer) {
         m_zoomLodIdleTimer = new QTimer(this);
         m_zoomLodIdleTimer->setSingleShot(true);
@@ -494,7 +496,54 @@ void RemoteRenderWidget::wheelEvent(QWheelEvent *event)
             sendCommand(QJsonDocument(lodOff).toJson(QJsonDocument::Compact));
         });
     }
-    m_zoomLodIdleTimer->start(250);
+
+    const Qt::ScrollPhase phase = event->phase();
+    if (phase == Qt::ScrollBegin) {
+        // Trackpad: explicit gesture start. Enter LOD and arm a
+        // safety net timer with a long timeout in case ScrollEnd
+        // never arrives (Qt sometimes drops it on rapid gesture
+        // changes).
+        if (!m_zoomLodActive) {
+            m_zoomLodActive = true;
+            QJsonObject lodOn;
+            lodOn[QStringLiteral("type")]  = QStringLiteral("set_interactive");
+            lodOn[QStringLiteral("value")] = true;
+            sendCommand(QJsonDocument(lodOn).toJson(QJsonDocument::Compact));
+        }
+        if (m_zoomLodIdleTimer) m_zoomLodIdleTimer->stop();
+    } else if (phase == Qt::ScrollEnd || phase == Qt::ScrollMomentum) {
+        // Trackpad: explicit gesture end (ScrollEnd) or the kinetic
+        // tail (ScrollMomentum). We exit LOD on ScrollEnd; on
+        // ScrollMomentum we re-arm the inactivity timer with a short
+        // delay since the momentum events stop arriving when the
+        // animation finishes.
+        if (phase == Qt::ScrollEnd) {
+            if (m_zoomLodActive) {
+                m_zoomLodActive = false;
+                QJsonObject lodOff;
+                lodOff[QStringLiteral("type")]  = QStringLiteral("set_interactive");
+                lodOff[QStringLiteral("value")] = false;
+                sendCommand(QJsonDocument(lodOff).toJson(QJsonDocument::Compact));
+            }
+            if (m_zoomLodIdleTimer) m_zoomLodIdleTimer->stop();
+        } else if (m_zoomLodIdleTimer) {
+            m_zoomLodIdleTimer->start(300);
+        }
+    } else {
+        // NoScrollPhase — traditional notched mouse or older OS. Use
+        // an inactivity timer with a 1 s window. Anything shorter
+        // flaps LOD on/off between bursts; anything much longer would
+        // keep the cube wireframed for a noticeable beat after the
+        // user stopped scrolling.
+        if (!m_zoomLodActive) {
+            m_zoomLodActive = true;
+            QJsonObject lodOn;
+            lodOn[QStringLiteral("type")]  = QStringLiteral("set_interactive");
+            lodOn[QStringLiteral("value")] = true;
+            sendCommand(QJsonDocument(lodOn).toJson(QJsonDocument::Compact));
+        }
+        m_zoomLodIdleTimer->start(1000);
+    }
 
     QJsonObject cmd;
     cmd[QStringLiteral("type")]   = QStringLiteral("zoom");

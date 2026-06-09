@@ -61,6 +61,10 @@ void RemoteRenderWebRTCClient::connectToSession(const QString &baseUrl,
                                                  const QString &token)
 {
     disconnectFromSession();
+    // Re-arm. ``disconnectFromSession`` raised m_closing to silence
+    // any in-flight callbacks; clear it now so a fresh session can
+    // actually do work.
+    m_closing.store(false, std::memory_order_release);
 
     m_baseUrl   = baseUrl;
     m_sessionId = sessionId;
@@ -72,6 +76,12 @@ void RemoteRenderWebRTCClient::connectToSession(const QString &baseUrl,
 
 void RemoteRenderWebRTCClient::disconnectFromSession()
 {
+    // Flag everything as torn down BEFORE we start the actual
+    // teardown. Any callback that races past the QPointer check
+    // observes m_closing and bails out without touching the decoder
+    // / data channel state.
+    m_closing.store(true, std::memory_order_release);
+
     // CRITICAL — clear libdatachannel callbacks BEFORE close().
     //
     // Each ``m_pc->on…`` / ``m_commandsChannel->on…`` handler is a
@@ -631,6 +641,11 @@ void RemoteRenderWebRTCClient::closeDecoder()
 
 void RemoteRenderWebRTCClient::feedDecoder(const QByteArray &nal)
 {
+    // Don't re-open the codec context on a teardown-time stale packet
+    // — that's the exact path that segfaulted on window close (a
+    // late RTP frame referencing a PPS the decoder has already torn
+    // down, fed into a half-freed AVCodecContext).
+    if (m_closing.load(std::memory_order_acquire)) return;
     if (!m_codecCtx) openDecoder();
     if (!m_codecCtx || !m_pkt) return;
     av_packet_unref(m_pkt);
@@ -687,6 +702,12 @@ QImage RemoteRenderWebRTCClient::drainDecoder()
 
 void RemoteRenderWebRTCClient::onFrameBytes(const QByteArray &nalUnits)
 {
+    // Race-window guard: a queued onFrameBytes can fire AFTER
+    // disconnectFromSession set m_closing but BEFORE QObject's event
+    // flush in ~QObject. Returning here keeps us out of the decoder
+    // and the frameReady emit (which would touch a half-destructed
+    // widget).
+    if (m_closing.load(std::memory_order_acquire)) return;
     feedDecoder(nalUnits);
     QImage img = drainDecoder();
     while (!img.isNull()) {
