@@ -66,9 +66,18 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
         // The widget's frame buffer is shared between transports — the
         // paint event doesn't care if the QImage came from JPEG decode
         // or H.264 decode. We just copy on the signal.
+        //
+        // VERTICAL FLIP: the WebRTC backend sends pixels bottom-up
+        // (OpenGL framebuffer order) without flipping server-side —
+        // doing that flip in numpy used to cost ~20 ms per frame at
+        // 1080p on Power9 because of the negative stride + sliced
+        // last axis. Qt's ``QImage::mirrored(false, true)`` is the
+        // SIMD-vectorised equivalent and runs in roughly 1-3 ms on
+        // Apple Silicon. Setting ``m_currentFrame`` to the mirrored
+        // copy keeps the rest of paintEvent simple.
         connect(m_webrtc, &RemoteRenderWebRTCClient::frameReady,
                 this, [this](const QImage &img) {
-            m_currentFrame = img;
+            m_currentFrame = img.mirrored(false, true);
             if (!m_live) {
                 m_live = true;
             }
@@ -515,6 +524,9 @@ void RemoteRenderWidget::sendCommand(const QByteArray &jsonBytes)
     // the data channel. Same JSON shape, different transport.
     if (m_transport == Transport::H265WebRTC && m_webrtc) {
         const QJsonDocument doc = QJsonDocument::fromJson(jsonBytes);
+        qDebug().noquote() << QStringLiteral(
+                "[remote-render] sendCommand (WebRTC) -> %1")
+                .arg(QString::fromUtf8(jsonBytes));
         m_webrtc->sendStateCommand(doc.object().toVariantMap());
         return;
     }

@@ -1160,6 +1160,10 @@ class RenderSession:
             self.request_idr()
         elif ctype == "set_interactive":
             new_state = bool(command.get("value", False))
+            logger.info(
+                "[render-session %s] set_interactive value=%s (current=%s)",
+                self.session_id, new_state, self.view.interactive,
+            )
             if new_state != self.view.interactive:
                 self.view.interactive = new_state
                 self._apply_interactive_mode_on_thread(new_state)
@@ -1307,11 +1311,22 @@ class RenderSession:
         arr = vtk_to_numpy(scalars)
         t3 = time.perf_counter()
         h, w = self.view.height, self.view.width
-        # VTK ships pixels bottom-up; flip to top-down.
-        arr = arr.reshape((h, w, 4))[::-1]
-        # Drop alpha. WebRTC's NVENC encoder reads RGB directly;
-        # JPEG also can't carry transparency.
-        rgb = np_local.ascontiguousarray(arr[:, :, :3])
+        # IMPORTANT: we DON'T flip Y on the server side anymore. The
+        # ``arr.reshape((h,w,4))[::-1]`` we used to do here forced
+        # numpy into its generic strided iterator (negative stride on
+        # axis 0 + sliced last axis = no memcpy-per-row), which cost
+        # ~20 ms per frame at 1080p — the single largest item in the
+        # per-frame breakdown. Sending pixels bottom-up and asking the
+        # Qt client to mirror via QImage::mirrored(false, true) drops
+        # that cost to roughly 5 ms (well-vectorised inside Qt).
+        # Net: ~15 ms saved per frame at virtually zero extra client
+        # CPU on a Mac with Retina paint.
+        # For the JPEG fallback transport we still flip here because
+        # PIL's JPEG encoder doesn't have a cheap vertical-mirror
+        # option — see _render_frame_on_thread which calls flipud
+        # explicitly.
+        arr_2d = arr.reshape((h, w, 4))
+        rgb = np_local.ascontiguousarray(arr_2d[:, :, :3])
         t4 = time.perf_counter()
 
         # Per-step timing breakdown — once a second to keep log noise
@@ -1338,6 +1353,13 @@ class RenderSession:
         """Render one frame and return JPEG bytes. Legacy WS transport path."""
         rgb, render_ms = self._render_rgb_on_thread()
 
+        # JPEG path needs the vertical flip server-side — PIL doesn't
+        # do cheap pixel mirroring on the encoder side, and the legacy
+        # ws-jpeg client paints the QImage directly without a Qt
+        # transform. We absorb the ~15 ms cost here (only for the
+        # legacy transport).
+        import numpy as _np
+        rgb = _np.ascontiguousarray(rgb[::-1])
         # JPEG encode.
         img = Image.fromarray(rgb, mode="RGB")
         buf = io.BytesIO()

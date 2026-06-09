@@ -6,6 +6,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPointer>
 #include <QUrl>
 #include <QtEndian>
 
@@ -161,24 +162,35 @@ void RemoteRenderWebRTCClient::setupPeerConnection()
         return;
     }
 
+    // Lifetime safety: libdatachannel runs callbacks on its OWN
+    // threads. If ``this`` is destroyed (cube window closing) while
+    // a callback is mid-flight, the queued ``invokeMethod`` lands on
+    // freed memory. ``QPointer`` auto-nulls when the QObject dies
+    // (atomic on Qt 6), so the inner check ``if (!self) return;``
+    // turns a use-after-free into a clean drop. We capture ``self``
+    // by value in every callback below.
+    QPointer<RemoteRenderWebRTCClient> self(this);
+
     // ICE / connection state — surface to the UI for the status badge.
-    m_pc->onStateChange([this](rtc::PeerConnection::State state) {
+    m_pc->onStateChange([self](rtc::PeerConnection::State state) {
+        if (!self) return;
         // Marshal back to the Qt event loop. libdatachannel callbacks
         // fire on their own threads.
-        QMetaObject::invokeMethod(this, [this, state]() {
+        QMetaObject::invokeMethod(self.data(), [self, state]() {
+            if (!self) return;
             switch (state) {
                 case rtc::PeerConnection::State::New:
                 case rtc::PeerConnection::State::Connecting:
-                    setStatus(u"Connecting"_qs);
+                    self->setStatus(u"Connecting"_qs);
                     break;
                 case rtc::PeerConnection::State::Connected:
-                    setStatus(u"Live"_qs);
+                    self->setStatus(u"Live"_qs);
                     break;
                 case rtc::PeerConnection::State::Disconnected:
                 case rtc::PeerConnection::State::Failed:
                 case rtc::PeerConnection::State::Closed:
-                    setStatus(u"Disconnected"_qs);
-                    m_live = false;
+                    self->setStatus(u"Disconnected"_qs);
+                    self->m_live = false;
                     break;
             }
         }, Qt::QueuedConnection);
@@ -191,11 +203,13 @@ void RemoteRenderWebRTCClient::setupPeerConnection()
     // can hook it up incrementally. This drops first-frame latency
     // from ~30 s (wait for STUN to time out) to ~2 s (host candidates
     // connect immediately, srflx arrives later as info-only).
-    m_pc->onLocalCandidate([this](rtc::Candidate candidate) {
+    m_pc->onLocalCandidate([self](rtc::Candidate candidate) {
+        if (!self) return;
         const QString candStr = QString::fromStdString(std::string(candidate));
         const QString mid     = QString::fromStdString(candidate.mid());
-        QMetaObject::invokeMethod(this, [this, candStr, mid]() {
-            postIceCandidate(candStr, mid);
+        QMetaObject::invokeMethod(self.data(), [self, candStr, mid]() {
+            if (!self) return;
+            self->postIceCandidate(candStr, mid);
         }, Qt::QueuedConnection);
     });
 
@@ -231,37 +245,41 @@ void RemoteRenderWebRTCClient::setupPeerConnection()
     depacketizer->addToChain(rtcpReceiver);
     m_videoTrack->setMediaHandler(depacketizer);
 
-    m_videoTrack->onFrame([this](rtc::binary frame, rtc::FrameInfo /*info*/) {
+    m_videoTrack->onFrame([self](rtc::binary frame, rtc::FrameInfo /*info*/) {
+        if (!self) return;
         QByteArray bytes(reinterpret_cast<const char *>(frame.data()),
                          static_cast<int>(frame.size()));
-        QMetaObject::invokeMethod(this, [this, bytes]() {
-            onFrameBytes(bytes);
+        QMetaObject::invokeMethod(self.data(), [self, bytes]() {
+            if (!self) return;
+            self->onFrameBytes(bytes);
         }, Qt::QueuedConnection);
     });
 
     // DataChannel "commands" — added AFTER the video track so the
     // SDP contains both BUNDLE entries (0 = video, 1 = data).
     m_commandsChannel = m_pc->createDataChannel("commands");
-    m_commandsChannel->onOpen([this]() {
-        QMetaObject::invokeMethod(this, [this]() {
+    m_commandsChannel->onOpen([self]() {
+        if (!self) return;
+        QMetaObject::invokeMethod(self.data(), [self]() {
+            if (!self) return;
             qDebug().noquote() << QStringLiteral(
                     "[webrtc] commands channel open (session=%1)")
-                    .arg(m_sessionId);
+                    .arg(self->m_sessionId);
             // Flush any commands the caller posted before the channel
             // finished negotiating. Order is preserved (FIFO), so the
             // bootstrap sequence (set_lut → set_threshold →
             // set_cutting_plane → ...) reaches the backend exactly as
             // emitted by vtkWindowCube::pushRenderStateToRemote.
-            if (!m_pendingCommands.isEmpty() && m_commandsChannel
-                    && m_commandsChannel->isOpen()) {
+            if (!self->m_pendingCommands.isEmpty() && self->m_commandsChannel
+                    && self->m_commandsChannel->isOpen()) {
                 qDebug().noquote() << QStringLiteral(
                         "[webrtc] flushing %1 queued command(s) to backend")
-                        .arg(m_pendingCommands.size());
-                const auto queue = std::move(m_pendingCommands);
-                m_pendingCommands.clear();
+                        .arg(self->m_pendingCommands.size());
+                const auto queue = std::move(self->m_pendingCommands);
+                self->m_pendingCommands.clear();
                 for (const QByteArray &bytes : queue) {
                     try {
-                        m_commandsChannel->send(std::string(
+                        self->m_commandsChannel->send(std::string(
                                 bytes.constData(), bytes.size()));
                     } catch (const std::exception &e) {
                         qWarning().noquote() << QStringLiteral(
