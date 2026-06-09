@@ -449,6 +449,15 @@ class RenderSession:
         # landed.
         self._chunks_loaded = 0
         self._chunks_total  = 0
+        # Throttle ``vtkImageData.Modified()`` calls. Each Modified()
+        # forces the volume mapper to re-upload the FULL texture on
+        # the next render — on a 10 GB cube that's a multi-second
+        # GPU stall. If we called it after every chunk arrival the
+        # render thread would freeze every few seconds. Once every
+        # ~3 s is plenty for visible progress without choking the
+        # executor.
+        self._last_modified_wall = 0.0
+        self._pending_modified = False
         # Volume hidden while the cube is still mostly empty (chunked
         # path only). Without this guard the user sees an opaque
         # solid-coloured rectangle for the first ~30 s — that's the
@@ -1545,12 +1554,21 @@ class RenderSession:
                     "[render-session %s] cube reader error: %s",
                     self.session_id, ev.get("message"))
         if any_chunk and self._image_data is not None:
-            # Tell VTK the underlying buffer changed. On the next
-            # render the volume mapper will re-upload the texture
-            # (or its tiles, depending on internal heuristics).
-            self._image_data.Modified()
-            if self._vtk_intensity_array is not None:
-                self._vtk_intensity_array.Modified()
+            # Throttle ``Modified()`` to once every ~3 s. Each call
+            # forces a 10 GB GPU texture re-upload on the next render,
+            # which stalls the executor for several seconds — long
+            # enough to time out the client's /v1/health probe (5 s).
+            # The user sees progress less granularly but the backend
+            # stays responsive to commands and the WebRTC stream
+            # doesn't freeze.
+            self._pending_modified = True
+            now = time.time()
+            if now - self._last_modified_wall >= 3.0:
+                self._image_data.Modified()
+                if self._vtk_intensity_array is not None:
+                    self._vtk_intensity_array.Modified()
+                self._last_modified_wall = now
+                self._pending_modified = False
             # Reveal threshold: 25 % of chunks loaded AND running
             # vmin/vmax are well-separated (real data range exists,
             # not just zeros). The 25 % threshold keeps the initial
@@ -1560,33 +1578,51 @@ class RenderSession:
                 and self._chunks_total > 0
                 and self._chunks_loaded * 4 >= self._chunks_total
                 and self._vmax > self._vmin + 1e-9):
-                # Rebuild transfer functions with the running vmin/vmax
-                # so the partial volume renders with reasonable colour
-                # mapping (initial TFs were built with placeholder
-                # 0..1 range which would map the noise band to an
-                # ugly mid-LUT solid colour).
-                # Default the threshold to p99 of what's loaded so far
-                # — same heuristic the legacy path uses on the full
-                # cube. As more chunks land we don't re-trigger this
-                # to avoid churn; ``complete`` does the final accurate
-                # rebuild.
-                if self.view.threshold is None:
-                    # Heuristic: threshold at 70% of the running max.
-                    # Avoids np.percentile on the cube (slow for
-                    # multi-GB float32 arrays). The user can
-                    # fine-tune with the desktop's threshold slider;
-                    # this is just a sane first frame.
-                    self.view.threshold = self._vmin + 0.7 * (
-                        self._vmax - self._vmin)
+                # Stride-sample the loaded portion of the cube to get
+                # a fast, reasonably-accurate p99 — this matches the
+                # legacy path's threshold semantic. HI noise cubes
+                # have p99 ≈ vmax/30 (most voxels are noise around
+                # zero), so heuristics like ``vmin + 0.7*span`` would
+                # set the threshold above all the data and make the
+                # cube render as transparent / invisible.
+                if self.view.threshold is None and self._cube_np is not None:
+                    # Sample stride: target ~5M voxels in the sample
+                    # regardless of cube size (sub-100 ms percentile).
+                    stride = max(1, int(
+                        (self._cube_np.size / 5_000_000) ** (1.0 / 3.0)))
+                    sample = self._cube_np[::stride, ::stride, ::stride]
+                    if sample.size:
+                        # Mask out the still-zero (unloaded) regions
+                        # to avoid skewing p99 toward 0. Loaded chunks
+                        # have real data including negatives; only the
+                        # unloaded z-slabs are EXACTLY zero.
+                        nonzero = sample[sample != 0.0]
+                        if nonzero.size > 1000:
+                            self.view.threshold = float(
+                                np.percentile(nonzero, 99.0))
+                        else:
+                            self.view.threshold = self._vmin + 0.05 * (
+                                self._vmax - self._vmin)
+                    else:
+                        self.view.threshold = self._vmin
                 self._rebuild_volume_tfs_on_thread()
+                # Force a Modified() at reveal regardless of throttle
+                # — the user expects to SEE the volume the moment we
+                # toggle visibility.
+                self._image_data.Modified()
+                if self._vtk_intensity_array is not None:
+                    self._vtk_intensity_array.Modified()
+                self._last_modified_wall = time.time()
+                self._pending_modified = False
                 if self._volume is not None:
                     self._volume.SetVisibility(1)
                 self._volume_revealed = True
                 logger.info(
                     "[render-session %s] volume revealed at %d/%d chunks "
-                    "vmin=%.4g vmax=%.4g",
+                    "vmin=%.4g vmax=%.4g threshold=%.4g",
                     self.session_id, self._chunks_loaded,
                     self._chunks_total, self._vmin, self._vmax,
+                    self.view.threshold or 0.0,
                 )
                 self.request_idr()
         if complete:
@@ -1610,6 +1646,14 @@ class RenderSession:
                     self.session_id, stride, sample.size,
                     self.view.threshold, self._slice_vmin, self._slice_vmax,
                 )
+            # Final Modified() so the last chunk is on the GPU before
+            # the next render — overrides the throttle below.
+            if self._image_data is not None:
+                self._image_data.Modified()
+                if self._vtk_intensity_array is not None:
+                    self._vtk_intensity_array.Modified()
+                self._last_modified_wall = time.time()
+                self._pending_modified = False
             self._rebuild_volume_tfs_on_thread()
             self._rebuild_slice_lut_on_thread()
             self.request_idr()
