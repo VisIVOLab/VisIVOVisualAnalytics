@@ -74,6 +74,13 @@ public:
    */
     void setPlotTheme(int theme);
 
+    // Cube-open pipeline tuning (Phase 3.6) — see Settings.cpp for the
+    // QSettings keys + default values.
+    int  getPreviewTargetMb() const;
+    void setPreviewTargetMb(int mb);
+    int  getLocalFullThresholdMb() const;
+    void setLocalFullThresholdMb(int mb);
+
     /**
    * @return Python absolute path
    */
@@ -260,6 +267,23 @@ private:
 
     // Plot theme
     static const std::pair<QString, QVariant> PlotTheme;
+
+    // Cube-open pipeline tuning (Phase 3.6).
+    //
+    // PreviewTargetMb:
+    //   Target size in MB for the always-downloaded 3D preview. The
+    //   client computes the downsample factor from this — small cubes
+    //   come down at factor 1 (full data), big ones at higher factors.
+    //   Lower on slow connections.
+    //
+    // LocalFullThresholdMb:
+    //   Cube full-resolution size in MB at which the client stops
+    //   auto-loading the full data locally and switches to remote
+    //   WebRTC rendering. Above this the preview cube is kept as the
+    //   instant placeholder and full quality comes from the V100
+    //   stream. User can still override via the View menu.
+    static const std::pair<QString, QVariant> PreviewTargetMb;
+    static const std::pair<QString, QVariant> LocalFullThresholdMb;
 };
 
 #endif

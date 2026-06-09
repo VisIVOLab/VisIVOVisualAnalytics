@@ -36,7 +36,9 @@ class QMenu;
 class SidebarPanel;
 class CatalogueTableModel;
 class QDockWidget;
+class QFrame;
 class QLabel;
+class QPushButton;
 class QNetworkAccessManager;
 class QNetworkReply;
 class QStackedWidget;
@@ -937,6 +939,34 @@ private:
     RemoteRenderWidget   *m_remoteRenderWidget{ nullptr };
     QLabel               *m_remoteRenderBannerLabel{ nullptr };
     QToolButton          *m_remoteRenderBannerClose{ nullptr };
+    // Soft "Remote rendering recommended" banner shown on the Local
+    // page when the cube exceeds LocalFullThresholdMb. Visibility is
+    // toggled by ``updateLocalRecommendRemoteBanner``; the banner
+    // never auto-switches, the user decides whether to take the
+    // recommendation via its embedded "Switch to Remote" button.
+    QFrame               *m_localRecommendRemoteBanner{ nullptr };
+    QLabel               *m_localRecommendRemoteLabel{ nullptr };
+    // Switch button is held as a member so it can be disabled while
+    // the remote negotiation is in flight — prevents the rage-click
+    // sequence we used to handle via just the m_remoteSwitchInProgress
+    // flag (the flag was correct but invisible; users couldn't tell
+    // the click had registered and kept clicking).
+    QPushButton          *m_localRecommendRemoteSwitchBtn{ nullptr };
+    // Reentrancy guard for ``applyRenderMode(Remote)``. The user can
+    // rapid-click the "Switch to Remote" button during the 3-5 s
+    // WebRTC negotiation; without this flag each click would issue
+    // another /v1/render/create_session request (or worse, a duplicate
+    // RemoteRenderWebRTCClient::connectToSession) and the pile-up
+    // would crash inside libdatachannel on teardown of the orphans.
+    bool                  m_remoteSwitchInProgress{ false };
+    // Wall-clock when the user clicked "Switch to Remote". Drives the
+    // progressive status message tier below (3-5 s → "Connecting",
+    // 30 s+ → "Allocating on backend GPU", 1 min+ → "Large cube,
+    // loading may take several minutes…"). Without this the banner
+    // sits on a static "Connecting…" for minutes on a 22 GB cube
+    // and the user can't tell whether the click registered.
+    QElapsedTimer         m_remoteSwitchElapsed;
+    QTimer               *m_remoteSwitchProgressTimer{ nullptr };
     QLabel               *m_renderModeBadge{ nullptr };  // status-bar pill
     QLabel               *m_renderFpsBadge{ nullptr };   // status-bar FPS
     QAction              *m_actionRenderAuto{ nullptr };

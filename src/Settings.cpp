@@ -1,5 +1,7 @@
 #include "Settings.h"
 
+#include <algorithm>
+
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
@@ -200,6 +202,39 @@ int Settings::getPlotTheme() const
 void Settings::setPlotTheme(int theme)
 {
     this->settings->setValue(Settings::PlotTheme.first, theme);
+}
+
+//----------------------------------------------------------------------------
+// Cube pipeline tuning (Phase 3.6)
+//----------------------------------------------------------------------------
+const std::pair<QString, QVariant> Settings::PreviewTargetMb       = { u"Cube/preview_target_mb"_s,       100 };
+const std::pair<QString, QVariant> Settings::LocalFullThresholdMb  = { u"Cube/local_full_threshold_mb"_s, 256 };
+
+int Settings::getPreviewTargetMb() const
+{
+    // Clamp to a sane range — values <5 MB would render an unusable
+    // preview, >1024 would defeat the purpose. The QSettings store
+    // can hold anything; we just refuse silly values at read time.
+    const int v = this->settings->value(Settings::PreviewTargetMb.first,
+                                         Settings::PreviewTargetMb.second).toInt();
+    return std::clamp(v, 5, 1024);
+}
+
+void Settings::setPreviewTargetMb(int mb)
+{
+    this->settings->setValue(Settings::PreviewTargetMb.first, std::clamp(mb, 5, 1024));
+}
+
+int Settings::getLocalFullThresholdMb() const
+{
+    const int v = this->settings->value(Settings::LocalFullThresholdMb.first,
+                                         Settings::LocalFullThresholdMb.second).toInt();
+    return std::clamp(v, 16, 16384);
+}
+
+void Settings::setLocalFullThresholdMb(int mb)
+{
+    this->settings->setValue(Settings::LocalFullThresholdMb.first, std::clamp(mb, 16, 16384));
 }
 
 QString Settings::getBackendToken() const

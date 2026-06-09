@@ -434,6 +434,32 @@ class RenderSession:
         self._slice_lut_ctf = None         # vtkColorTransferFunction for slice
         self._cutting_plane_slice_index = -1   # invalidates first update
         self._closed = False
+        # Phase 4 Path 1 — background FITS reader. ``None`` on the
+        # legacy synchronous path (small cubes < 256 MB); a CubeReader
+        # instance for large cubes that fill in progressively.
+        self._cube_reader = None
+        # vtkFloatArray kept alive while ``_image_data`` is alive.
+        # Necessary when ``numpy_to_vtk(deep=False)`` shares the shared
+        # memory buffer — without this reference Python would reclaim
+        # the array and VTK would dereference freed memory.
+        self._vtk_intensity_array = None
+        self._cube_flat_view = None
+        # Counters surfaced in ``frame steps:`` log for the chunked
+        # path so we can see at a glance how much of the cube has
+        # landed.
+        self._chunks_loaded = 0
+        self._chunks_total  = 0
+        # Volume hidden while the cube is still mostly empty (chunked
+        # path only). Without this guard the user sees an opaque
+        # solid-coloured rectangle for the first ~30 s — that's the
+        # volume mapper colouring a sea of all-zero voxels with a
+        # placeholder LUT, which looks like "the data is broken".
+        # Revealed by ``_poll_cube_chunks`` once at least 25 % of the
+        # z-slabs have landed AND the transfer functions have been
+        # rebuilt with real vmin/vmax. Outline + axes stay visible
+        # the whole time so the user always sees the cube's spatial
+        # extent.
+        self._volume_revealed = True   # default for legacy path
         # Scene-change IDR request. Set by apply_command for state
         # mutations that drastically change the rendered image (LUT,
         # blend mode, cutting plane position); consumed by the WebRTC
@@ -553,8 +579,14 @@ class RenderSession:
         from astropy.io import fits as _fits
         from vtkmodules.vtkRenderingOpenGL2 import vtkEGLRenderWindow
         from vtk.util.numpy_support import numpy_to_vtk
+        from .cube_reader import CubeReader
 
-        # ── 1. Load the FITS cube ────────────────────────────────────
+        # ── 1. Peek the FITS for cube shape WITHOUT loading data ─────
+        # Phase 4 Path 1: the FITS read happens in a separate worker
+        # process via CubeReader so this executor thread isn't blocked
+        # for 2-3 minutes on a 22 GB cube. Here we just open the header
+        # to discover (nz, ny, nx) so we can pre-allocate the shared
+        # memory buffer that backs vtkImageData.
         with _fits.open(self.dataset_path, memmap=True) as hdul:
             data = hdul[0].data  # type: ignore[attr-defined]
             while data.ndim > 3:
@@ -563,21 +595,83 @@ class RenderSession:
                 raise ValueError(
                     f"Volume rendering requires a 3-D cube, got shape {data.shape}"
                 )
-            cube = np.asarray(data, dtype=np.float32)
-            # Replace NaN/inf with finite-min so the GPU mapper doesn't
-            # emit transparent voxels (we can revisit with a separate
-            # mask once the SSR UX needs it).
-            finite_mask = np.isfinite(cube)
-            if not finite_mask.all():
-                fmin = float(cube[finite_mask].min()) if finite_mask.any() else 0.0
-                cube = np.where(finite_mask, cube, fmin)
-            vmin = float(np.nanmin(cube))
-            vmax = float(np.nanmax(cube))
+            disk_shape = data.shape   # (nz, ny, nx)
+            nz, ny, nx = disk_shape
+            cube_size_bytes = int(np.prod(disk_shape)) * 4   # float32
 
-        nz, ny, nx = cube.shape
+        # Threshold for the chunked path: cubes above this size load
+        # progressively via CubeReader; smaller ones go through the
+        # legacy synchronous path which is simpler and adds no extra
+        # process. 256 MB (~256³ voxels) is the same threshold the
+        # client uses for local-vs-remote rendering.
+        chunked_threshold = 256 * 1024 * 1024
+        use_chunked = cube_size_bytes > chunked_threshold
+
+        # ── 2. Allocate the cube buffer + start reader if chunked ─────
+        if use_chunked:
+            # Pick a chunk schedule. For a 109-deep cube that's
+            # max(1, 109//32) = 3 → ~36 chunks; for a 6668-deep cube
+            # that's 208 → ~32 chunks. The render side calls
+            # Modified() after every chunk, which costs O(cube_size)
+            # in GPU re-upload; keeping the count low (~32) limits
+            # the upload churn to once every ~3 % of the cube.
+            self._cube_reader = CubeReader(
+                self.dataset_path, shape=disk_shape,
+            )
+            cube = self._cube_reader.cube   # numpy view into shared mem
+            self._chunks_total = len(self._cube_reader.chunks)
+            # Hide volume until enough chunks are in (revealed by
+            # ``_poll_cube_chunks``). Outline + axes stay visible so
+            # the user has spatial context.
+            self._volume_revealed = False
+            self._cube_reader.start()
+            logger.info(
+                "[render-session %s] using chunked reader for %.2f GB cube "
+                "(%d chunks scheduled)",
+                self.session_id, cube_size_bytes / (1024**3),
+                len(self._cube_reader.chunks),
+            )
+            # We don't know the real vmin/vmax yet — the reader posts
+            # running estimates on the queue. Start with placeholders;
+            # the per-frame chunk poll updates these and rebuilds the
+            # transfer functions as more data arrives.
+            vmin, vmax = 0.0, 1.0
+            finite_mask = np.ones(disk_shape, dtype=bool)  # placeholder
+            # Reader chunks have already had NaN replaced by 0; no
+            # second pass needed here.
+        else:
+            # Legacy synchronous path — fast for small cubes (under
+            # 256 MB), keeps the previous behaviour byte-identical so
+            # WALLABY-class datasets don't regress.
+            self._cube_reader = None
+            with _fits.open(self.dataset_path, memmap=True) as hdul:
+                data = hdul[0].data
+                while data.ndim > 3:
+                    data = data[0]
+                cube = np.asarray(data, dtype=np.float32)
+                finite_mask = np.isfinite(cube)
+                if not finite_mask.all():
+                    fmin = float(cube[finite_mask].min()) if finite_mask.any() else 0.0
+                    cube = np.where(finite_mask, cube, fmin)
+                vmin = float(np.nanmin(cube))
+                vmax = float(np.nanmax(cube))
+
         self._cube_np = cube
         self._nx, self._ny, self._nz = nx, ny, nz
         self._vmin, self._vmax = vmin, vmax
+        # On the chunked path, the percentile-based threshold and
+        # slice LUT range are deferred to ``_poll_cube_chunks`` once
+        # data has actually landed. Sorting 2.5 billion zero-filled
+        # voxels (a 10 GB cube on the chunked path) takes minutes and
+        # would defeat the whole point of the background reader.
+        if use_chunked:
+            # Use placeholders matching the legacy code's branches —
+            # ``_poll_cube_chunks`` overrides on the ``complete`` event
+            # with real p1/p99 from the actual data.
+            if self.view.threshold is None:
+                self.view.threshold = 0.0
+            self._slice_vmin = 0.0
+            self._slice_vmax = 1.0
         self.view.vmin = vmin if self.view.vmin is None else self.view.vmin
         self.view.vmax = vmax if self.view.vmax is None else self.view.vmax
         # Default threshold = 99th percentile. HI cubes have ~99 % of
@@ -587,27 +681,35 @@ class RenderSession:
         # Without this default the initial render before the client
         # pushes its slider value looks like a solid noise block —
         # vmin + 3 % span lets the noise voxels render fully opaque.
-        if self.view.threshold is None:
+        # Percentile-based threshold + slice LUT range are ONLY
+        # computed on the legacy synchronous path. The chunked path
+        # already set placeholders above and defers the real values
+        # to ``_poll_cube_chunks``'s ``complete`` handler — running
+        # ``np.percentile`` on a 10 GB zero-filled buffer takes
+        # minutes and blocks the whole executor thread, defeating
+        # the point of the background reader.
+        if not use_chunked:
+            if self.view.threshold is None:
+                finite = cube[finite_mask] if not finite_mask.all() else cube
+                self.view.threshold = float(np.percentile(finite, 99.0))
+            # Slice-LUT range: the cube's vmin/vmax is dominated by a
+            # few outlier voxels (galaxy peaks, edge artefacts), so
+            # mapping the slice through the full [vmin, vmax] makes
+            # the noise occupy only the bottom ~5% of the LUT —
+            # that's the dark-purple end of Inferno, which then looks
+            # "all-black" against the desktop's bright-orange slice.
+            # The desktop builds ``lutSlice`` over the SLICE's own
+            # scalar range (which excludes outliers naturally), so we
+            # match that by using cube percentiles p1..p99 — robust
+            # to the bright-tail outliers, close to what the desktop
+            # sees when it samples a typical channel.
             finite = cube[finite_mask] if not finite_mask.all() else cube
-            self.view.threshold = float(np.percentile(finite, 99.0))
+            self._slice_vmin = float(np.percentile(finite, 1.0))
+            self._slice_vmax = float(np.percentile(finite, 99.0))
         # Cutting plane defaults to the middle channel — matches the
-        # local viewer's initial state.
+        # local viewer's initial state. Cheap on either path.
         if self.view.cutting_plane_slice_index <= 0:
             self.view.cutting_plane_slice_index = nz // 2
-
-        # Slice-LUT range: the cube's vmin/vmax is dominated by a few
-        # outlier voxels (galaxy peaks, edge artefacts), so mapping the
-        # slice through the full [vmin, vmax] makes the noise occupy
-        # only the bottom ~5% of the LUT — that's the dark-purple end
-        # of Inferno, which then looks "all-black" against the desktop's
-        # bright-orange slice. The desktop builds ``lutSlice`` over the
-        # SLICE's own scalar range (which excludes outliers naturally),
-        # so we match that by using cube percentiles p1..p99 — robust
-        # to the bright-tail outliers, close to what the desktop sees
-        # when it samples a typical channel.
-        finite = cube[finite_mask] if not finite_mask.all() else cube
-        self._slice_vmin = float(np.percentile(finite, 1.0))
-        self._slice_vmax = float(np.percentile(finite, 99.0))
 
         logger.info(
             "[render-session %s] cube loaded: shape=(%d,%d,%d) range=[%.4g,%.4g]",
@@ -620,8 +722,25 @@ class RenderSession:
         img.SetSpacing(1.0, 1.0, 1.0)
         img.SetOrigin(0.0, 0.0, 0.0)
         flat = cube.ravel(order="C")
-        arr = numpy_to_vtk(flat, deep=True, array_type=vtk.VTK_FLOAT)
+        # Chunked path uses ``deep=False`` so the vtkFloatArray points
+        # AT the shared-memory buffer the reader process is writing
+        # into — zero-copy. Legacy path keeps the original ``deep=True``
+        # so the cube can be released after this scope (CubeReader owns
+        # the cube buffer in the chunked path; lifetime is bound to the
+        # CubeReader).
+        if use_chunked:
+            arr = numpy_to_vtk(flat, deep=False, array_type=vtk.VTK_FLOAT)
+        else:
+            arr = numpy_to_vtk(flat, deep=True, array_type=vtk.VTK_FLOAT)
         arr.SetName("intensity")
+        # Keep ``arr`` alive while ``self._image_data`` is alive. With
+        # ``deep=False`` the underlying buffer is owned by ``cube`` /
+        # ``CubeReader.shm``; ``arr`` only holds a weak reference and
+        # would be reclaimed when this scope ends.
+        self._vtk_intensity_array = arr
+        # Same for the flat view — keep a reference so numpy doesn't
+        # garbage-collect it out from under VTK.
+        self._cube_flat_view = flat
         img.GetPointData().SetScalars(arr)
         self._image_data = img
 
@@ -655,6 +774,14 @@ class RenderSession:
         self._volume = vtk.vtkVolume()
         self._volume.SetMapper(self._volume_mapper)
         self._volume.SetProperty(prop)
+        # Chunked path starts with the volume hidden — the outline +
+        # axes are visible immediately so the user has spatial context,
+        # but the volume only appears after enough chunks have landed
+        # (revealed in ``_poll_cube_chunks``). Without this guard the
+        # opaque solid-coloured block of all-zero voxels with a
+        # placeholder LUT looks like a broken render.
+        if not self._volume_revealed:
+            self._volume.SetVisibility(0)
 
         # Suppress VTK's per-frame stderr complaints — on the GLES
         # build, vtkOpenGLRenderWindow::ReadPixels logs a cosmetic
@@ -1354,6 +1481,139 @@ class RenderSession:
             logger.warning("[render-session %s] unknown command type %r",
                            self.session_id, ctype)
 
+    def _poll_cube_chunks(self) -> None:
+        """Drain reader-process progress events; update VTK accordingly.
+
+        Called at the top of every render pass when the chunked load
+        path is in use (``self._cube_reader is not None``). Cheap
+        when nothing new has landed.
+
+        Effects per ``chunk`` event:
+          * vmin/vmax tracking (running min/max across chunks)
+          * ``vtkImageData.Modified()`` so the next ``Render()``
+            re-uploads the volume texture (VTK observes the change
+            via its modification-time machinery)
+          * Counters for the per-second timing log
+
+        On ``complete``:
+          * Rebuild transfer functions with the final vmin/vmax
+            (initial chunks may have been rendered with placeholder
+            colour mapping)
+          * Force an IDR so the H.264 stream cuts cleanly to the
+            full-quality cube
+        """
+        if self._cube_reader is None:
+            return
+        events = self._cube_reader.poll_progress()
+        if not events:
+            return
+        any_chunk = False
+        complete = False
+        for ev in events:
+            kind = ev.get("event")
+            if kind == "chunk":
+                any_chunk = True
+                self._chunks_loaded += 1
+                v_lo = ev.get("vmin", float("inf"))
+                v_hi = ev.get("vmax", float("-inf"))
+                # Track the running global min/max so transfer
+                # functions can be rebuilt with progressively-better
+                # estimates. We DON'T rebuild every chunk (expensive
+                # vtkPiecewiseFunction reconstruction); the per-second
+                # log line shows when we cross significant boundaries
+                # and ``complete`` handles the final accurate pass.
+                if v_lo < self._vmin or self._chunks_loaded == 1:
+                    self._vmin = float(v_lo)
+                if v_hi > self._vmax or self._chunks_loaded == 1:
+                    self._vmax = float(v_hi)
+            elif kind == "complete":
+                complete = True
+                self._vmin = float(ev.get("vmin", self._vmin))
+                self._vmax = float(ev.get("vmax", self._vmax))
+                logger.info(
+                    "[render-session %s] cube load complete vmin=%.4g vmax=%.4g "
+                    "(loaded %d/%d chunks)",
+                    self.session_id, self._vmin, self._vmax,
+                    self._chunks_loaded, self._chunks_total,
+                )
+            elif kind == "start":
+                logger.info(
+                    "[render-session %s] cube reader started, shape=%s",
+                    self.session_id, ev.get("shape"))
+            elif kind == "error":
+                logger.warning(
+                    "[render-session %s] cube reader error: %s",
+                    self.session_id, ev.get("message"))
+        if any_chunk and self._image_data is not None:
+            # Tell VTK the underlying buffer changed. On the next
+            # render the volume mapper will re-upload the texture
+            # (or its tiles, depending on internal heuristics).
+            self._image_data.Modified()
+            if self._vtk_intensity_array is not None:
+                self._vtk_intensity_array.Modified()
+            # Reveal threshold: 25 % of chunks loaded AND running
+            # vmin/vmax are well-separated (real data range exists,
+            # not just zeros). The 25 % threshold keeps the initial
+            # blank-cube illusion short on huge cubes while avoiding
+            # a "single tile of cube floating in space" early render.
+            if (not self._volume_revealed
+                and self._chunks_total > 0
+                and self._chunks_loaded * 4 >= self._chunks_total
+                and self._vmax > self._vmin + 1e-9):
+                # Rebuild transfer functions with the running vmin/vmax
+                # so the partial volume renders with reasonable colour
+                # mapping (initial TFs were built with placeholder
+                # 0..1 range which would map the noise band to an
+                # ugly mid-LUT solid colour).
+                # Default the threshold to p99 of what's loaded so far
+                # — same heuristic the legacy path uses on the full
+                # cube. As more chunks land we don't re-trigger this
+                # to avoid churn; ``complete`` does the final accurate
+                # rebuild.
+                if self.view.threshold is None:
+                    # Heuristic: threshold at 70% of the running max.
+                    # Avoids np.percentile on the cube (slow for
+                    # multi-GB float32 arrays). The user can
+                    # fine-tune with the desktop's threshold slider;
+                    # this is just a sane first frame.
+                    self.view.threshold = self._vmin + 0.7 * (
+                        self._vmax - self._vmin)
+                self._rebuild_volume_tfs_on_thread()
+                if self._volume is not None:
+                    self._volume.SetVisibility(1)
+                self._volume_revealed = True
+                logger.info(
+                    "[render-session %s] volume revealed at %d/%d chunks "
+                    "vmin=%.4g vmax=%.4g",
+                    self.session_id, self._chunks_loaded,
+                    self._chunks_total, self._vmin, self._vmax,
+                )
+                self.request_idr()
+        if complete:
+            # Rebuild transfer functions + threshold with the final
+            # accurate min/max — placeholder LUT during loading
+            # rendered with bad scalar range, this is the cutover.
+            # Sampling with a stride keeps np.percentile fast on
+            # multi-GB cubes (a 10 GB cube with stride 8 → ~20 MB
+            # sample, p99 in <100 ms instead of minutes).
+            if self._cube_np is not None:
+                stride = max(1, int((self._cube_np.size / 5_000_000) ** (1.0 / 3.0)))
+                sample = self._cube_np[::stride, ::stride, ::stride]
+                if self.view.threshold is None or self.view.threshold == 0.0:
+                    self.view.threshold = float(np.percentile(sample, 99.0))
+                self._slice_vmin = float(np.percentile(sample, 1.0))
+                self._slice_vmax = float(np.percentile(sample, 99.0))
+                logger.info(
+                    "[render-session %s] cube complete percentiles "
+                    "(stride=%d sample=%d): threshold=%.4g slice_vmin=%.4g "
+                    "slice_vmax=%.4g",
+                    self.session_id, stride, sample.size,
+                    self.view.threshold, self._slice_vmin, self._slice_vmax,
+                )
+            self._rebuild_volume_tfs_on_thread()
+            self._rebuild_slice_lut_on_thread()
+            self.request_idr()
+
     def _render_rgb_on_thread(self) -> tuple:
         """Render one frame and return ``(rgb_ndarray, render_ms)``.
 
@@ -1378,6 +1638,13 @@ class RenderSession:
         import numpy as np_local
         import vtk
         from vtk.util.numpy_support import vtk_to_numpy
+
+        # Phase 4 Path 1: drain any new cube chunks from the background
+        # reader BEFORE rendering this frame. Each completed chunk has
+        # already been written into the shared-memory buffer the
+        # vtkImageData points to; here we just call Modified() so VTK
+        # re-uploads the relevant slabs to VRAM on the next draw.
+        self._poll_cube_chunks()
 
         cam = self._renderer.GetActiveCamera()
 
@@ -1523,6 +1790,24 @@ class RenderSession:
                         self.session_id, e,
                     )
                 self._render_window = None
+            # Order matters: VTK objects that may hold references into
+            # the shared-memory buffer (vtkImageData, vtkFloatArray)
+            # must be released BEFORE the CubeReader tears down its
+            # SharedMemory segment — otherwise we'd be reading from
+            # freed pages on the way out.
+            self._vtk_intensity_array = None
+            self._cube_flat_view = None
+            self._image_data = None
+            self._cube_np = None
+            if self._cube_reader is not None:
+                try:
+                    self._cube_reader.close()
+                except Exception as e:
+                    logger.warning(
+                        "[render-session %s] CubeReader close raised: %s",
+                        self.session_id, e,
+                    )
+                self._cube_reader = None
         except Exception:
             logger.exception(
                 "[render-session %s] close raised — leaking is the lesser evil",
