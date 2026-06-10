@@ -1585,7 +1585,14 @@ class RenderSession:
                 # zero), so heuristics like ``vmin + 0.7*span`` would
                 # set the threshold above all the data and make the
                 # cube render as transparent / invisible.
-                if self.view.threshold is None and self._cube_np is not None:
+                # Override the placeholder threshold (0.0) from init.
+                # If the user already set a real threshold via the
+                # slider during loading, ``threshold != 0.0`` and we
+                # respect their pick. Otherwise compute the proper
+                # p99 from a stride sample of the loaded data.
+                if (self._cube_np is not None
+                    and (self.view.threshold is None
+                         or self.view.threshold == 0.0)):
                     # Sample stride: target ~5M voxels in the sample
                     # regardless of cube size (sub-100 ms percentile).
                     stride = max(1, int(
