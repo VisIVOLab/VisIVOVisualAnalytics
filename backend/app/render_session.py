@@ -458,6 +458,22 @@ class RenderSession:
         # executor.
         self._last_modified_wall = 0.0
         self._pending_modified = False
+        # Dirty-flag rendering. ``True`` means the scene state changed
+        # since the last render; ``False`` means a re-render would
+        # produce the SAME pixels as the cached frame. With this in
+        # place, a static view sends the previous frame's bytes
+        # (encoded as P-frames with no delta = ~zero bandwidth) and
+        # SKIPS the 70 ms VTK render + readback entirely on a 22 GB
+        # cube. Effect: while the user looks at a still frame the
+        # stream runs at the pacing FPS (60) with ~0 ms server CPU.
+        # Set ``True`` initially so the first frame renders.
+        self._scene_dirty = True
+        # Cached RGBA buffer + render-ms from the last successful
+        # render. Returned by ``render_rgb_frame`` when the scene is
+        # not dirty. Owned by RenderSession; do NOT mutate from the
+        # WebRTC track.
+        self._last_rgba_view = None
+        self._last_render_ms = 0.0
         # Volume hidden while the cube is still mostly empty (chunked
         # path only). Without this guard the user sees an opaque
         # solid-coloured rectangle for the first ~30 s — that's the
@@ -490,6 +506,18 @@ class RenderSession:
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(self._executor, self._init_on_thread)
 
+    def mark_dirty(self) -> None:
+        """Mark the scene as needing a fresh render. Cheap; called from
+        every code path that mutates camera, view state, cube data, or
+        UI options. The next ``render_rgb_frame`` will actually run
+        VTK; subsequent calls reuse the cached RGBA until ``mark_dirty``
+        fires again.
+        """
+        self._scene_dirty = True
+
+    def is_dirty(self) -> bool:
+        return self._scene_dirty
+
     def request_idr(self) -> None:
         """Mark the next encoded video frame as an I-frame (IDR).
 
@@ -521,6 +549,11 @@ class RenderSession:
         await loop.run_in_executor(
             self._executor, self._apply_command_on_thread, command,
         )
+        # Every command mutates view state — flag the scene dirty so
+        # the next frame is actually rendered. Without this the
+        # client would see a stale image until the next non-command
+        # cause of dirtying (chunk arrival, etc.).
+        self.mark_dirty()
 
     async def render_frame(self) -> bytes:
         """Render the current view state to a JPEG and return the bytes."""
@@ -539,14 +572,41 @@ class RenderSession:
         JPEG encode step — the WebRTC transport feeds the raw numpy
         array straight into an ``av.VideoFrame`` for NVENC. Stats are
         updated in-place; the caller doesn't need to.
+
+        DIRTY-FLAG SHORT-CIRCUIT: if the scene hasn't changed since the
+        last render, return the cached RGBA buffer immediately —
+        skipping VTK render + GPU readback entirely (typically a
+        70 ms saving on a 22 GB cube at 1080p). NVENC will encode the
+        identical frame as a near-zero-byte P-frame, so the WebRTC
+        stream keeps flowing at the pacing FPS without any actual
+        compute work. The user sees ~infinite FPS on static views
+        and the cube goes from "14 FPS sluggish" to "instant" the
+        moment they stop interacting.
         """
         if self._closed:
             raise RuntimeError(f"Session {self.session_id} is closed.")
+        # Always check the chunk reader on the executor thread (it
+        # touches _image_data so it MUST run inside the render lock).
+        # If a chunk arrived, the poll calls Modified() and marks the
+        # scene dirty — which then forces a fresh VTK render below.
         loop = asyncio.get_event_loop()
         async with self._render_lock:
+            if not self._scene_dirty and self._last_rgba_view is not None:
+                # Skip VTK entirely. Re-poll chunks just to drain
+                # progress events (and dirty if new data arrived).
+                await loop.run_in_executor(
+                    self._executor, self._poll_cube_chunks,
+                )
+                if not self._scene_dirty:
+                    self.stats.frames_rendered += 1
+                    return self._last_rgba_view, self._last_render_ms
+            # Dirty (or first frame) — actually render.
             rgb, render_ms = await loop.run_in_executor(
                 self._executor, self._render_rgb_on_thread,
             )
+            self._scene_dirty = False
+            self._last_rgba_view = rgb
+            self._last_render_ms = render_ms
         self.stats.frames_rendered += 1
         self.stats.last_render_ms = render_ms
         return rgb, render_ms
@@ -1569,6 +1629,8 @@ class RenderSession:
                     self._vtk_intensity_array.Modified()
                 self._last_modified_wall = now
                 self._pending_modified = False
+                # Force a re-render so the user sees the new slab.
+                self._scene_dirty = True
             # Reveal threshold: 25 % of chunks loaded AND running
             # vmin/vmax are well-separated (real data range exists,
             # not just zeros). The 25 % threshold keeps the initial
@@ -1632,6 +1694,7 @@ class RenderSession:
                     self.view.threshold or 0.0,
                 )
                 self.request_idr()
+                self._scene_dirty = True
         if complete:
             # Rebuild transfer functions + threshold with the final
             # accurate min/max — placeholder LUT during loading
@@ -1661,6 +1724,7 @@ class RenderSession:
                     self._vtk_intensity_array.Modified()
                 self._last_modified_wall = time.time()
                 self._pending_modified = False
+            self._scene_dirty = True
             self._rebuild_volume_tfs_on_thread()
             self._rebuild_slice_lut_on_thread()
             self.request_idr()
