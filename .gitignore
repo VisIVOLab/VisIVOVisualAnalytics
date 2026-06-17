@@ -362,3 +362,4 @@ VisIVOVisualAnalytics.dmg
 /docs/_build
 /docs/context-chat.md
 /.qt
+/backend/.venv
