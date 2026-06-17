@@ -87,6 +87,13 @@ private:
     /// See docs/distributed-backend-design.md §4.2.
     void doOpenSkavaDataset(const QString &obsId,
                               const struct SkavaDatalinkResponse &datalink);
+    /// SKAVA "SODA subset": prompt for a POS/BAND region, run the cutout on
+    /// the dataset's co-located VisIVO backend (compute next to data) and
+    /// open the resulting FITS in place. Falls back with a clear message when
+    /// the dataset has no co-located backend / non-file replica. Kept distinct
+    /// from the VLKB-specific cutout flow in ``queryVlkb``.
+    void doSkavaSodaSubset(const QString &obsId,
+                             const struct SkavaDatalinkResponse &datalink);
     /// Shared viewer-creation logic used by both ``doOpenDataPath`` (local
     /// path open) and ``doOpenDataFromUrl`` (SKAVA HTTP open). ``path`` is
     /// the *display* identifier — window title, Recent Datasets entry,

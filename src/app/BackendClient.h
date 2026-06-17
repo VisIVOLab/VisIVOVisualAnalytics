@@ -520,6 +520,19 @@ struct BackendVlkbFetchResult
     QString path;
 };
 
+/// Result of POST /v1/datasets/cutout with ``save_to_workspace=true``: a
+/// SKAVA SODA subset computed on the node and saved into the backend's
+/// Workspace Exports directory.
+struct BackendSodaCutoutResult
+{
+    bool valid{ false };
+    QString error;
+    /// Absolute path on the *backend* filesystem of the saved cutout FITS.
+    QString path;
+    /// Comma-separated list of subsets that took effect, e.g. "pos,band".
+    QString applied;
+};
+
 // ── S-02: Line-width maps ─────────────────────────────────────────────────────
 
 struct BackendLinewidthResult
@@ -1084,6 +1097,24 @@ public:
      *  Returns the backend-local path of the saved FITS file on success. */
     BackendVlkbFetchResult vlkbFetchCutout(const QString &sodaUrl,
                                             const QString &vlkbBearer = {}) const;
+
+    /** POST /v1/datasets/cutout – SKAVA SODA subset computed next to the data.
+     *  The backend opens the node-local ``file://`` dataset in place, applies
+     *  the POS/BAND subset, writes the result into its Workspace Exports dir
+     *  (``save_to_workspace=true``) and returns the backend-side path. The
+     *  desktop then opens that path in place — the cutout never transits the
+     *  client. Distinct from ``vlkbFetchCutout`` (VLKB-specific SODA URL fetch),
+     *  which is intentionally kept alongside this one.
+     *  @param obsId      SKAVA obs_id (bookkeeping / filename hint).
+     *  @param accessUrl  The ``file://`` access URL resolved from DataLink.
+     *  @param pos        SODA POS, e.g. ``CIRCLE ra dec radius`` (deg); empty to omit.
+     *  @param band       SODA BAND ``"min max"`` in metres; empty to omit.
+     *  @param time       SODA TIME ``"min max"`` in MJD; empty to omit. */
+    BackendSodaCutoutResult sodaCutout(const QString &obsId,
+                                        const QString &accessUrl,
+                                        const QString &pos = {},
+                                        const QString &band = {},
+                                        const QString &time = {}) const;
 
     BackendImageResult requestImagePreview(const QString &datasetId, int maxLongestSide) const;
     BackendImageResult requestImage(const QString &datasetId) const;

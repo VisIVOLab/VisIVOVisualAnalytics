@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Any
+import io
 import uuid
 import logging
 import os
@@ -327,3 +329,115 @@ async def open_dataset_from_skava(
         session.session_id, dataset_id, kind, obs_id, path,
     )
     return _build_open_response(dataset_id, session.session_id, kind, geometry)
+
+
+# ── SODA cutout (compute-next-to-data, byte-level subset) ──────────────────
+
+
+class CutoutRequest(BaseModel):
+    """Server-side SODA cutout request.
+
+    Mirrors ``open_skava``: the caller (a desktop client, or SKAVA acting
+    as a SODA service on the client's behalf) supplies the obs_id and the
+    ``file://`` access_url it already resolved via SKAVA's DataLink. The
+    backend opens the file in place and returns only the subset — no full
+    file transfer at any layer.
+
+    SODA parameters:
+      * ``pos``  — ``CIRCLE <ra> <dec> <radius>`` / ``RANGE ...`` (deg)
+      * ``band`` — ``<min> <max>`` in metres (wavelength)
+      * ``time`` — accepted for symmetry; not yet a sliceable axis
+    """
+
+    obs_id: str
+    access_url: str
+    pos: str | None = None
+    band: str | None = None
+    time: str | None = None
+    responseformat: str = "application/fits"
+    # When true, the cutout is written into the backend's Workspace Exports
+    # directory and the response is JSON ``{valid, path, …}`` pointing at the
+    # backend-side file — the desktop then opens it in place (compute next to
+    # data, same pattern as the VLKB cutout). When false (default), the FITS
+    # is streamed back in the response body (used by SKAVA's /soda/execute).
+    save_to_workspace: bool = False
+
+
+@router.post("/v1/datasets/cutout", tags=["datasets"])
+async def cutout_dataset(
+    request: CutoutRequest,
+    _: None = _auth,
+):
+    """Produce a FITS cutout of a node-local dataset.
+
+    This is the byte-level half of "compute next to data": SKAVA's
+    ``/soda/execute`` delegates here so the spatial/spectral subset is
+    computed on the SRC node that already holds the file, and only the
+    (small) cutout transits the network. The VisIVO desktop's "SODA subset"
+    action calls it with ``save_to_workspace=true`` to keep the cutout on the
+    backend and open it in place.
+
+    Path safety reuses the ``open_skava`` resolver — ``file://`` only,
+    confined to ``VISIVO_DATA_ROOT`` when set.
+    """
+    from ..soda_cutout import CutoutError, make_cutout  # noqa: PLC0415
+
+    obs_id = (request.obs_id or "").strip()
+    if not obs_id:
+        raise HTTPException(status_code=400, detail="obs_id is required.")
+
+    try:
+        path = access_url_to_local_path(request.access_url)
+    except SkavaResolveError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    path = _normalize_path(path)
+    if not _is_supported_dataset(path):
+        raise HTTPException(
+            status_code=415,
+            detail=f"Resolved file {str(path)!r} is not a supported FITS dataset.")
+
+    try:
+        result = await asyncio.to_thread(
+            make_cutout,
+            str(path),
+            pos=request.pos,
+            band=request.band,
+            time=request.time,
+            filename_hint=obs_id or "dataset",
+        )
+    except CutoutError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    applied = ",".join(k for k, v in result.applied.items() if v is True)
+    logger.info(
+        "[cutout] obs_id=%s path=%s applied=%s bytes=%d save_to_workspace=%s",
+        obs_id, path, result.applied, len(result.fits_bytes), request.save_to_workspace,
+    )
+
+    if request.save_to_workspace:
+        # Persist on the backend and return a path the desktop can open in
+        # place. A uuid suffix avoids collisions between concurrent subsets
+        # of the same dataset.
+        out_dir = get_exports_dir() / "soda_cutouts"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        safe_obs = "".join(c if c.isalnum() or c in "-_." else "_" for c in obs_id)
+        out_path = out_dir / f"{safe_obs}_{uuid.uuid4().hex[:8]}_cutout.fits"
+        out_path.write_bytes(result.fits_bytes)
+        return {
+            "valid": True,
+            "error": "",
+            "obs_id": obs_id,
+            "path": str(out_path),
+            "applied": applied,
+        }
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{result.filename}"',
+        "X-Soda-Applied": applied,
+    }
+    return StreamingResponse(
+        io.BytesIO(result.fits_bytes),
+        media_type="application/fits",
+        headers=headers,
+    )

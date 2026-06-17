@@ -45,10 +45,15 @@
 #include <QFileDialog>
 #include <QApplication>
 #include <QCoreApplication>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
 #include <QFutureWatcher>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QMenu>
 #include <QMenuBar>
+#include <QPushButton>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QWebChannel>
@@ -57,6 +62,8 @@
 #include <QPainter>
 #include <QUrl>
 #include <QtConcurrent>
+
+#include <cmath>
 
 #include "app/DiagnosticsManager.h"
 
@@ -200,6 +207,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         tabs->addTab(skava, u"SKAVA"_s);
         QObject::connect(skava, &SkavaSearchPanel::openSkavaDatasetRequested,
                          this, &MainWindow::doOpenSkavaDataset);
+        QObject::connect(skava, &SkavaSearchPanel::sodaSubsetRequested,
+                         this, &MainWindow::doSkavaSodaSubset);
     }
 
     // Detach the .ui-defined central widget (the VLKB sky panel) but DO NOT
@@ -1112,6 +1121,139 @@ void MainWindow::doOpenSkavaDataset(const QString &obsId,
     }
     // ── Fallback: download via local backend cache → open ──────────────
     doOpenDataFromUrl(datalink.primaryAccessUrl, obsId);
+}
+
+void MainWindow::doSkavaSodaSubset(const QString &obsId,
+                                     const SkavaDatalinkResponse &datalink)
+{
+    // The cutout must run where the data lives: pick the same co-located
+    // backend that would open the dataset. A SODA subset only makes sense
+    // when that backend exists AND serves a file:// replica it can open in
+    // place — otherwise there is nothing to compute next to.
+    const BackendNode chosen = pickBackendForSkavaDataset(this->settings, datalink);
+    const bool isFileUrl =
+            datalink.primaryAccessUrl.startsWith(QStringLiteral("file://"));
+    if (chosen.id.isEmpty() || !isFileUrl) {
+        QMessageBox::information(
+                this, u"SODA subset unavailable"_s,
+                u"This dataset has no co-located VisIVO backend serving a "
+                u"file:// replica, so a server-side SODA cutout cannot run.\n\n"
+                u"Use “Open selected in VisIVO” to download and open the full "
+                u"dataset instead."_s);
+        return;
+    }
+
+    // ── Region dialog (POS + BAND), prefilled from the dataset metadata ──
+    const SkavaDatasetMetadata &m = datalink.dataset;
+    QDialog dlg(this);
+    dlg.setWindowTitle(u"SODA subset — %1"_s.arg(obsId));
+    auto *form = new QFormLayout(&dlg);
+    auto mkEdit = [&](double value, const QString &placeholder) {
+        auto *e = new QLineEdit(&dlg);
+        e->setPlaceholderText(placeholder);
+        e->setValidator(new QDoubleValidator(&dlg));
+        if (std::isfinite(value)) e->setText(QString::number(value, 'g', 10));
+        return e;
+    };
+    auto *raEdit   = mkEdit(m.sRa,  u"RA (deg)"_s);
+    auto *decEdit  = mkEdit(m.sDec, u"Dec (deg)"_s);
+    auto *radEdit  = mkEdit(std::isfinite(m.sFov) ? m.sFov * 0.5 : 0.1,
+                            u"radius (deg)"_s);
+    auto *bMinEdit = mkEdit(m.emMin, u"min (m)"_s);
+    auto *bMaxEdit = mkEdit(m.emMax, u"max (m)"_s);
+    form->addRow(u"POS — RA (deg)"_s, raEdit);
+    form->addRow(u"Dec (deg)"_s, decEdit);
+    form->addRow(u"Radius (deg)"_s, radEdit);
+    form->addRow(u"BAND — min (m)"_s, bMinEdit);
+    form->addRow(u"BAND — max (m)"_s, bMaxEdit);
+    auto *hint = new QLabel(
+            u"Leave all POS fields or both BAND fields blank to omit that "
+            u"axis. At least one of POS / BAND is required. The cutout runs on "
+            u"node %1."_s.arg(chosen.name.isEmpty() ? chosen.id : chosen.name),
+            &dlg);
+    hint->setWordWrap(true);
+    form->addRow(hint);
+    auto *buttons = new QDialogButtonBox(
+            QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    buttons->button(QDialogButtonBox::Ok)->setText(u"Run cutout"_s);
+    form->addRow(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    // ── Build the SODA POS / BAND strings ────────────────────────────────
+    auto readNum = [](QLineEdit *e, double &out) {
+        const QString t = e->text().trimmed();
+        if (t.isEmpty()) return false;
+        bool ok = false;
+        out = t.toDouble(&ok);
+        return ok;
+    };
+    double ra = 0, dec = 0, rad = 0, bMin = 0, bMax = 0;
+    QString pos, band;
+    if (readNum(raEdit, ra) && readNum(decEdit, dec) && readNum(radEdit, rad)) {
+        pos = u"CIRCLE %1 %2 %3"_s.arg(QString::number(ra, 'g', 10),
+                                        QString::number(dec, 'g', 10),
+                                        QString::number(rad, 'g', 10));
+    }
+    if (readNum(bMinEdit, bMin) && readNum(bMaxEdit, bMax)) {
+        band = u"%1 %2"_s.arg(QString::number(std::min(bMin, bMax), 'g', 10),
+                               QString::number(std::max(bMin, bMax), 'g', 10));
+    }
+    if (pos.isEmpty() && band.isEmpty()) {
+        QMessageBox::information(
+                this, u"SODA subset"_s,
+                u"Provide a POS (RA/Dec/radius) and/or a BAND (min/max) to "
+                u"subset."_s);
+        return;
+    }
+
+    // ── Run the cutout on the chosen backend, then open it in place ──────
+    this->setActiveBackendBadge(chosen);
+    const QString accessUrl = datalink.primaryAccessUrl;
+    const QString url = chosen.url;
+    const QString token = chosen.token;
+
+    auto *watcher = new QFutureWatcher<BackendSodaCutoutResult>(this);
+    QObject::connect(
+            watcher, &QFutureWatcher<BackendSodaCutoutResult>::finished, this,
+            [this, watcher, url, token, obsId]() {
+                QApplication::restoreOverrideCursor();
+                watcher->deleteLater();
+                const auto res = watcher->result();
+                if (!res.valid) {
+                    QMessageBox::critical(
+                            this, u"SODA subset failed"_s,
+                            res.error.isEmpty() ? u"The backend returned no detail."_s
+                                                : res.error);
+                    return;
+                }
+                // The cutout lives on the backend filesystem — open it there,
+                // never downloading it to the desktop (compute next to data).
+                BackendClient client(url, token);
+                const auto opened = client.openDataset(res.path);
+                if (!opened.valid) {
+                    QMessageBox::critical(
+                            this, u"Could not open SODA cutout"_s,
+                            opened.error.isEmpty()
+                                    ? u"Backend returned no error detail."_s
+                                    : opened.error);
+                    return;
+                }
+                openViewerFromOpenedDataset(res.path, opened, client);
+                if (this->recentMgr) {
+                    this->recentMgr->record(res.path,
+                                            u"%1 [SODA cutout]"_s.arg(obsId),
+                                            opened.kind);
+                }
+            });
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    watcher->setFuture(QtConcurrent::run(
+            [url, token, obsId, accessUrl, pos, band]() {
+                BackendClient bc(url, token);
+                return bc.sodaCutout(obsId, accessUrl, pos, band, QString());
+            }));
 }
 
 void MainWindow::doOpenDataFromUrl(const QString &url, const QString &obsId)

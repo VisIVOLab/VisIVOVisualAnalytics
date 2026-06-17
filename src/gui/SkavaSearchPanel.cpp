@@ -219,16 +219,28 @@ SkavaSearchPanel::SkavaSearchPanel(Settings *settings,
                         .arg(resp.returned).arg(resp.total)
                         .arg(resp.limit).arg(resp.offset));
         m_openBtn->setEnabled(false);
+        if (m_subsetBtn) m_subsetBtn->setEnabled(false);
     });
 
     QObject::connect(m_datalinkWatcher, &QFutureWatcher<SkavaDatalinkResponse>::finished,
                      this, [this]() {
         setBusy(false);
+        // Capture + clear the intent up front so a failed resolution can't
+        // leave a stale subset flag that hijacks the next Open.
+        const bool wantSubset = m_pendingSubset;
+        m_pendingSubset = false;
         const auto resp = m_datalinkWatcher->result();
         if (!resp.valid) {
             QMessageBox::warning(this, u"SKAVA DataLink"_s,
                     u"Access resolution failed:\n\n%1"_s.arg(
                             resp.error.isEmpty() ? u"unknown error"_s : resp.error));
+            return;
+        }
+        // The same DataLink resolution feeds two actions. When the user
+        // clicked "SODA subset", route to the subset flow; otherwise do the
+        // normal open.
+        if (wantSubset) {
+            emit sodaSubsetRequested(resp.dataset.obsId, resp);
             return;
         }
         // Backend-aware: emit the rich signal first so MainWindow can
@@ -246,6 +258,8 @@ SkavaSearchPanel::SkavaSearchPanel(Settings *settings,
                      this, &SkavaSearchPanel::runSearch);
     QObject::connect(m_openBtn, &QPushButton::clicked,
                      this, &SkavaSearchPanel::openSelected);
+    QObject::connect(m_subsetBtn, &QPushButton::clicked,
+                     this, &SkavaSearchPanel::requestSubset);
     QObject::connect(m_copyCitationBtn, &QPushButton::clicked,
                      this, &SkavaSearchPanel::copyToClipboard);
     QObject::connect(m_urlEdit, &QLineEdit::editingFinished, this, [this]() {
@@ -368,9 +382,15 @@ void SkavaSearchPanel::buildUi()
         m_searchBtn->setDefault(true);
         m_openBtn   = new QPushButton(u"Open selected in VisIVO"_s, this);
         m_openBtn->setEnabled(false);
+        m_subsetBtn = new QPushButton(u"SODA subset…"_s, this);
+        m_subsetBtn->setEnabled(false);
+        m_subsetBtn->setToolTip(
+                u"Compute a spatial/spectral cutout on the dataset's co-located "
+                u"VisIVO backend (compute next to data) and open the result."_s);
         m_statusLabel = new QLabel(this);
         bar->addWidget(m_searchBtn);
         bar->addWidget(m_openBtn);
+        bar->addWidget(m_subsetBtn);
         bar->addStretch(1);
         bar->addWidget(m_statusLabel);
         root->addLayout(bar);
@@ -434,9 +454,11 @@ void SkavaSearchPanel::reloadClientFromFields()
 void SkavaSearchPanel::setBusy(bool busy, const QString &message)
 {
     m_searchBtn->setEnabled(!busy);
-    m_openBtn->setEnabled(!busy
-                          && m_resultsTable->currentIndex().isValid()
-                          && m_resultsTable->currentIndex().row() >= 0);
+    const bool hasSelection = !busy
+                              && m_resultsTable->currentIndex().isValid()
+                              && m_resultsTable->currentIndex().row() >= 0;
+    m_openBtn->setEnabled(hasSelection);
+    if (m_subsetBtn) m_subsetBtn->setEnabled(hasSelection);
     if (busy) {
         m_statusLabel->setText(message.isEmpty() ? u"Working…"_s : message);
     }
@@ -513,6 +535,7 @@ void SkavaSearchPanel::onResultSelectionChanged()
     const auto &all = m_resultsModel->results();
     if (row < 0 || row >= all.size()) {
         m_openBtn->setEnabled(false);
+        if (m_subsetBtn) m_subsetBtn->setEnabled(false);
         m_provenanceTitle->setText(u"—"_s);
         m_provenanceDoi->setText(u"—"_s);
         m_provenancePid->setText(u"—"_s);
@@ -523,6 +546,7 @@ void SkavaSearchPanel::onResultSelectionChanged()
     }
     const auto &meta = all[row].metadata;
     m_openBtn->setEnabled(true);
+    if (m_subsetBtn) m_subsetBtn->setEnabled(true);
     m_provenanceTitle->setText(
             meta.obsTitle.isEmpty() ? u"—"_s : meta.obsTitle);
     if (!meta.doi.isEmpty()) {
@@ -549,6 +573,25 @@ void SkavaSearchPanel::openSelected()
     if (obsId.isEmpty()) return;
 
     setBusy(true, u"Resolving access URL…"_s);
+    SkavaClient *client = m_skavaClient;
+    m_datalinkWatcher->setFuture(QtConcurrent::run([client, obsId]() {
+        return client->getDatalink(obsId);
+    }));
+}
+
+void SkavaSearchPanel::requestSubset()
+{
+    reloadClientFromFields();
+    const int row = m_resultsTable->currentIndex().row();
+    const auto &all = m_resultsModel->results();
+    if (row < 0 || row >= all.size()) return;
+    const QString obsId = all[row].metadata.obsId;
+    if (obsId.isEmpty()) return;
+
+    // Reuse the shared DataLink resolution; the watcher routes to
+    // sodaSubsetRequested instead of the open signals because of this flag.
+    m_pendingSubset = true;
+    setBusy(true, u"Resolving access for SODA subset…"_s);
     SkavaClient *client = m_skavaClient;
     m_datalinkWatcher->setFuture(QtConcurrent::run([client, obsId]() {
         return client->getDatalink(obsId);

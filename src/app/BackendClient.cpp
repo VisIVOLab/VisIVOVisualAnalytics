@@ -2936,6 +2936,40 @@ BackendVlkbFetchResult BackendClient::vlkbFetchCutout(const QString &sodaUrl,
     return result;
 }
 
+BackendSodaCutoutResult BackendClient::sodaCutout(const QString &obsId,
+                                                    const QString &accessUrl,
+                                                    const QString &pos,
+                                                    const QString &band,
+                                                    const QString &time) const
+{
+    BackendSodaCutoutResult result;
+    QJsonObject bodyObj{
+        { QStringLiteral("obs_id"),            obsId },
+        { QStringLiteral("access_url"),        accessUrl },
+        // Keep the cutout on the backend and open it in place — the desktop
+        // never downloads the result (compute next to data).
+        { QStringLiteral("save_to_workspace"), true },
+    };
+    if (!pos.isEmpty())  bodyObj[QStringLiteral("pos")]  = pos;
+    if (!band.isEmpty()) bodyObj[QStringLiteral("band")] = band;
+    if (!time.isEmpty()) bodyObj[QStringLiteral("time")] = time;
+
+    QString error;
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/datasets/cutout")),
+                        QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    result.valid   = obj.value(QStringLiteral("valid")).toBool();
+    result.error   = obj.value(QStringLiteral("error")).toString();
+    result.path    = obj.value(QStringLiteral("path")).toString();
+    result.applied = obj.value(QStringLiteral("applied")).toString();
+    return result;
+}
+
 // ── A-01: Aperture photometry ─────────────────────────────────────────────────
 
 BackendAperturePhotometryResult BackendClient::requestAperturePhotometry(

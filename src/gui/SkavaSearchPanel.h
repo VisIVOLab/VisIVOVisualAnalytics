@@ -64,10 +64,19 @@ signals:
     void openSkavaDatasetRequested(const QString &obsId,
                                     const SkavaDatalinkResponse &datalink);
 
+    /// Emitted when the user clicked **SODA subset** and SKAVA resolved the
+    /// DataLink envelope. MainWindow prompts for the POS/BAND region and runs
+    /// the cutout on the dataset's co-located VisIVO backend (compute next to
+    /// data), then opens the result in place. Distinct from the VLKB cutout
+    /// flow, which is kept separately.
+    void sodaSubsetRequested(const QString &obsId,
+                              const SkavaDatalinkResponse &datalink);
+
 private slots:
     void runSearch();
     void onResultSelectionChanged();
     void openSelected();
+    void requestSubset();
     void copyToClipboard();
 
 private:
@@ -102,6 +111,7 @@ private:
     // Actions
     QPushButton *m_searchBtn{ nullptr };
     QPushButton *m_openBtn{ nullptr };
+    QPushButton *m_subsetBtn{ nullptr };
     QLabel      *m_statusLabel{ nullptr };
 
     // Results
@@ -123,6 +133,11 @@ private:
     /// ``setBusy(false)`` — used to keep the override-cursor stack
     /// balanced so a stuck WaitCursor never survives a request.
     bool m_cursorOverrideActive{ false };
+
+    /// Set by ``requestSubset()`` so the shared DataLink watcher knows to
+    /// emit ``sodaSubsetRequested`` instead of the open signals when the
+    /// resolution completes. Reset on every datalink completion.
+    bool m_pendingSubset{ false };
 };
 
 #endif  // SkavaSearchPanel_h
