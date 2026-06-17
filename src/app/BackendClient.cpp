@@ -2970,6 +2970,104 @@ BackendSodaCutoutResult BackendClient::sodaCutout(const QString &obsId,
     return result;
 }
 
+// ── Advanced 2-D products (UC 3.2 / 3.3 / 1.3 / 4.2) ───────────────────────────
+
+static BackendProductFitsResult parseProductFits(const QByteArray &payload,
+                                                   const QString &error)
+{
+    BackendProductFitsResult r;
+    if (!error.isEmpty()) { r.error = error; return r; }
+    const QJsonObject o = QJsonDocument::fromJson(payload).object();
+    r.valid             = o.value(QStringLiteral("valid")).toBool();
+    r.error             = o.value(QStringLiteral("error")).toString();
+    r.outputPath        = o.value(QStringLiteral("output_path")).toString();
+    r.workspaceFilename = o.value(QStringLiteral("workspace_filename")).toString();
+    r.width             = o.value(QStringLiteral("width")).toInt();
+    r.height            = o.value(QStringLiteral("height")).toInt();
+    r.rangeMin          = o.value(QStringLiteral("range_min")).toDouble();
+    r.rangeMax          = o.value(QStringLiteral("range_max")).toDouble();
+    return r;
+}
+
+BackendProductFitsResult BackendClient::mapMath(const QString &datasetId, const QString &op,
+                                                  const QString &datasetIdB,
+                                                  double freqA, double freqB) const
+{
+    QJsonObject body{
+        { QStringLiteral("dataset_id"), datasetId },
+        { QStringLiteral("op"),         op },
+    };
+    if (!datasetIdB.isEmpty()) body[QStringLiteral("dataset_id_b")] = datasetIdB;
+    if (freqA > 0.0)           body[QStringLiteral("freq_a")] = freqA;
+    if (freqB > 0.0)           body[QStringLiteral("freq_b")] = freqB;
+    QString error;
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/map_math")),
+                        QJsonDocument(body), error);
+    return parseProductFits(payload, error);
+}
+
+BackendProductFitsResult BackendClient::mosaic(const QStringList &datasetIds,
+                                                 const QString &weightMode) const
+{
+    QJsonArray ids;
+    for (const QString &id : datasetIds) ids.append(id);
+    QJsonObject body{
+        { QStringLiteral("dataset_ids"), ids },
+        { QStringLiteral("weight_mode"), weightMode },
+    };
+    QString error;
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/mosaic")),
+                        QJsonDocument(body), error);
+    return parseProductFits(payload, error);
+}
+
+BackendPublicationFigureResult BackendClient::publicationFigure(
+        const QString &datasetId, const QString &stretch, const QString &title,
+        bool addGrid, bool addColorbar, const QString &cmap, int dpi) const
+{
+    QJsonObject body{
+        { QStringLiteral("dataset_id"),   datasetId },
+        { QStringLiteral("stretch"),      stretch },
+        { QStringLiteral("title"),        title },
+        { QStringLiteral("add_grid"),     addGrid },
+        { QStringLiteral("add_colorbar"), addColorbar },
+        { QStringLiteral("cmap"),         cmap },
+        { QStringLiteral("dpi"),          dpi },
+    };
+    QString error;
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/publication_figure")),
+                        QJsonDocument(body), error);
+    BackendPublicationFigureResult r;
+    if (!error.isEmpty()) { r.error = error; return r; }
+    const QJsonObject o = QJsonDocument::fromJson(payload).object();
+    r.valid      = o.value(QStringLiteral("valid")).toBool();
+    r.error      = o.value(QStringLiteral("error")).toString();
+    r.outputPath = o.value(QStringLiteral("output_path")).toString();
+    r.width      = o.value(QStringLiteral("width")).toInt();
+    r.height     = o.value(QStringLiteral("height")).toInt();
+    r.hasWcs     = o.value(QStringLiteral("has_wcs")).toBool();
+    return r;
+}
+
+BackendImageQualityResult BackendClient::imageQuality(const QString &datasetId) const
+{
+    QJsonObject body{ { QStringLiteral("dataset_id"), datasetId } };
+    QString error;
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/image_quality")),
+                        QJsonDocument(body), error);
+    BackendImageQualityResult r;
+    if (!error.isEmpty()) { r.error = error; return r; }
+    const QJsonObject o = QJsonDocument::fromJson(payload).object();
+    r.valid   = o.value(QStringLiteral("valid")).toBool();
+    r.error   = o.value(QStringLiteral("error")).toString();
+    r.metrics = o.value(QStringLiteral("metrics")).toObject().toVariantMap();
+    return r;
+}
+
 // ── A-01: Aperture photometry ─────────────────────────────────────────────────
 
 BackendAperturePhotometryResult BackendClient::requestAperturePhotometry(

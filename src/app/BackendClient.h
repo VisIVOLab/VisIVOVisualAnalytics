@@ -533,6 +533,40 @@ struct BackendSodaCutoutResult
     QString applied;
 };
 
+/// Result of the advanced 2-D product endpoints that write a FITS into the
+/// backend Workspace Exports (UC 3.2 pixel math, UC 3.3 mosaic).
+struct BackendProductFitsResult
+{
+    bool valid{ false };
+    QString error;
+    QString outputPath;           ///< Backend-side path of the produced FITS
+    QString workspaceFilename;    ///< Basename within Workspace Exports
+    int width{ 0 };
+    int height{ 0 };
+    double rangeMin{ 0.0 };
+    double rangeMax{ 0.0 };
+};
+
+/// Result of POST /v1/products/publication_figure (UC 1.3).
+struct BackendPublicationFigureResult
+{
+    bool valid{ false };
+    QString error;
+    QString outputPath;           ///< Backend-side path of the rendered PNG/PDF/SVG
+    int width{ 0 };
+    int height{ 0 };
+    bool hasWcs{ false };
+};
+
+/// Result of POST /v1/products/image_quality (UC 4.2). ``metrics`` carries the
+/// raw metric map (blanked_fraction, dynamic_range, striping_metric, flags, …).
+struct BackendImageQualityResult
+{
+    bool valid{ false };
+    QString error;
+    QVariantMap metrics;
+};
+
 // ── S-02: Line-width maps ─────────────────────────────────────────────────────
 
 struct BackendLinewidthResult
@@ -1115,6 +1149,29 @@ public:
                                         const QString &pos = {},
                                         const QString &band = {},
                                         const QString &time = {}) const;
+
+    /** POST /v1/products/map_math — pixel-wise math on one/two 2-D maps
+     *  (UC 3.2). ``op`` ∈ {add,subtract,multiply,divide,ratio,log10,abs,
+     *  square,spectral_index}. Binary ops need ``datasetIdB``;
+     *  ``spectral_index`` also needs ``freqA``/``freqB`` (Hz). */
+    BackendProductFitsResult mapMath(const QString &datasetId, const QString &op,
+                                     const QString &datasetIdB = {},
+                                     double freqA = 0.0, double freqB = 0.0) const;
+
+    /** POST /v1/products/mosaic — noise-weighted reproject + co-add of 2-D
+     *  images (UC 3.3). ``weightMode`` ∈ {"noise","uniform"}. */
+    BackendProductFitsResult mosaic(const QStringList &datasetIds,
+                                    const QString &weightMode = QStringLiteral("noise")) const;
+
+    /** POST /v1/products/publication_figure — WCS-gridded, colorbar-labelled
+     *  figure (UC 1.3). ``stretch`` ∈ {linear,log,sqrt,asinh,power}. */
+    BackendPublicationFigureResult publicationFigure(
+            const QString &datasetId, const QString &stretch, const QString &title,
+            bool addGrid, bool addColorbar,
+            const QString &cmap = QStringLiteral("inferno"), int dpi = 200) const;
+
+    /** POST /v1/products/image_quality — quality/artifact metrics (UC 4.2). */
+    BackendImageQualityResult imageQuality(const QString &datasetId) const;
 
     BackendImageResult requestImagePreview(const QString &datasetId, int maxLongestSide) const;
     BackendImageResult requestImage(const QString &datasetId) const;

@@ -94,6 +94,15 @@ private:
     /// from the VLKB-specific cutout flow in ``queryVlkb``.
     void doSkavaSodaSubset(const QString &obsId,
                              const struct SkavaDatalinkResponse &datalink);
+    /// Open a backend-side FITS produced by an advanced product (map math,
+    /// mosaic) in the viewer, using the science backend that computed it.
+    void openBackendProductFits(const QString &backendUrl, const QString &backendToken,
+                                  const QString &path, const QString &displayName);
+    /// Action handlers for the advanced 2-D product use cases.
+    void runPublicationFigure();   ///< UC 1.3
+    void runImageQuality();        ///< UC 4.2
+    void runPixelMath();           ///< UC 3.2
+    void runMosaic();              ///< UC 3.3
     /// Shared viewer-creation logic used by both ``doOpenDataPath`` (local
     /// path open) and ``doOpenDataFromUrl`` (SKAVA HTTP open). ``path`` is
     /// the *display* identifier — window title, Recent Datasets entry,
@@ -164,6 +173,10 @@ private:
     QPointer<QAction> m_actBaseline;
     QPointer<QAction> m_actStack;
     QPointer<QAction> m_actSourceFind;
+    QPointer<QAction> m_actPubFigure;     ///< UC 1.3 publication figure
+    QPointer<QAction> m_actImageQuality;  ///< UC 4.2 image quality / artifacts
+    QPointer<QAction> m_actPixelMath;     ///< UC 3.2 pixel math / spectral index
+    QPointer<QAction> m_actMosaic;        ///< UC 3.3 noise-weighted mosaic
     QPointer<QMenu>   m_sampMenu;
     QPointer<QAction> m_actSampConnect;
     QPointer<QAction> m_actSampDisconnect;
