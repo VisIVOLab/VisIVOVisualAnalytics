@@ -763,6 +763,20 @@ struct BackendSourceFindResult
     QString error;
     int nSources{ 0 };
     QVector<BackendSourceFindSource> sources;
+    /// Backend-side path of the SoFiA binary mask cube, when written. The
+    /// desktop opens this as a 3D isosurface overlay on the HI cube.
+    QString maskPath;
+};
+
+/// One channel of a spectrum extracted node-side (pixel probe or aperture).
+struct BackendSpectrumResult
+{
+    bool valid{ false };
+    QString error;
+    QVector<double> spectralAxis;   ///< world values along the spectral axis
+    QVector<double> values;         ///< flux per channel (NaN where blanked)
+    QString spectralUnit;           ///< e.g. "Hz", "m", "pix"
+    QString spectralType;           ///< CTYPE3, e.g. "FREQ", "VRAD"
 };
 
 // ── A-01: Aperture photometry ─────────────────────────────────────────────────
@@ -1337,6 +1351,18 @@ public:
      *  Returns 503 if sofia2 is not on PATH (check result.error). */
     BackendSourceFindResult runSourceFind(const QString &datasetId,
                                            const QVariantMap &sofiaParams = {});
+
+    /** POST /v1/spectral/probe — spectrum at a single pixel, computed on the
+     *  node. Lets the profiler work on multi-GB remote cubes without pulling
+     *  the whole cube to the client. */
+    BackendSpectrumResult spectralProbe(const QString &datasetId,
+                                         double x, double y) const;
+
+    /** POST /v1/spectral/aperture — mean spectrum over a circular aperture
+     *  (radius in pixels), computed on the node. */
+    BackendSpectrumResult spectralAperture(const QString &datasetId,
+                                            double x, double y,
+                                            double radiusPixels = 3.0) const;
 
     // ── Binary frame parsing ──────────────────────────────────────────────────
     /** Parse one Visivo binary frame starting at \c offset into \c payload.

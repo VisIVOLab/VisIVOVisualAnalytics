@@ -28,6 +28,12 @@ public:
                      const QString &datasetId,
                      QWidget *parent = nullptr);
 
+signals:
+    /// Emitted when the user asks to open the SoFiA-2 binary mask cube. The
+    /// path is on the backend filesystem; MainWindow opens it in the 3D cube
+    /// viewer (mask → 3D isosurface inspection of the detections).
+    void openMaskCubeRequested(const QString &maskPath);
+
 private slots:
     void onRun();
 
@@ -50,5 +56,7 @@ private:
 
     // ── Buttons ─────────────────────────────────────────────────────────────
     QPushButton             *m_runBtn{ nullptr };
+    QPushButton             *m_openMaskBtn{ nullptr };   ///< "Open mask in 3D"
+    QString                  m_maskPath;                 ///< backend mask-cube path
     QPointer<QProgressDialog> m_progress;
 };

@@ -574,3 +574,95 @@ async def spectral_stack_binary(
         content=_array_to_binary(rows, cols, arr),
         media_type="application/octet-stream",
     )
+
+
+# ── S-05: SoFiA-2 source finding ───────────────────────────────────────────────
+
+class SourceFindRequest(BaseModel):
+    dataset_id: str = ""
+    sofia_params: dict = {}
+
+
+@router.post("/v1/sourcefind/{dataset_id}", tags=["spectral"])
+async def sourcefind(
+    dataset_id: str,
+    request: SourceFindRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+):
+    """Run SoFiA-2 on a node-local cube. Returns the detection catalogue and the
+    path to the binary mask cube (for the desktop's 3D isosurface overlay)."""
+    import shutil as _shutil  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    entry = _require_dataset(session, dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "Source finding requires a spectral cube dataset.")
+    from ..compute import resolve_sofia_bin, worker_sofia  # noqa: PLC0415
+    if not resolve_sofia_bin():
+        raise HTTPException(
+            503,
+            "SoFiA-2 not found on the server PATH (looked for 'sofia2' and "
+            "'sofia'; set VISIVO_SOFIA_BIN to override).")
+
+    out_dir = tempfile.mkdtemp(prefix="sofia_")
+    try:
+        return await asyncio.to_thread(
+            worker_sofia, entry["path"], out_dir, request.sofia_params)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("[sourcefind] failed dataset_id=%s error=%s", dataset_id, exc)
+        return {"valid": False, "error": str(exc), "n_sources": 0, "sources": []}
+
+
+# ── Spectral probe / aperture (interactive profiler on remote/large cubes) ─────
+
+class SpectralProbeRequest(BaseModel):
+    dataset_id: str
+    x: float
+    y: float
+
+
+class SpectralApertureRequest(BaseModel):
+    dataset_id: str
+    x: float
+    y: float
+    radius: float = 3.0
+
+
+@router.post("/v1/spectral/probe", tags=["spectral"])
+async def spectral_probe(
+    request: SpectralProbeRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+):
+    """Extract the spectrum at a single pixel — computed on the node so the
+    profiler scales to multi-GB remote cubes."""
+    entry = _require_dataset(session, request.dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "Spectral probe requires a spectral cube dataset.")
+    from ..compute import worker_spectral_probe  # noqa: PLC0415
+    try:
+        return await asyncio.to_thread(
+            worker_spectral_probe, entry["path"], request.x, request.y)
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/v1/spectral/aperture", tags=["spectral"])
+async def spectral_aperture(
+    request: SpectralApertureRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+):
+    """Mean spectrum over a circular aperture (radius in pixels), node-side."""
+    entry = _require_dataset(session, request.dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "Spectral aperture requires a spectral cube dataset.")
+    from ..compute import worker_spectral_aperture  # noqa: PLC0415
+    try:
+        return await asyncio.to_thread(
+            worker_spectral_aperture, entry["path"], request.x, request.y, request.radius)
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc

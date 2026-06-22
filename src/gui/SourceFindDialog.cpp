@@ -94,13 +94,23 @@ SourceFindDialog::SourceFindDialog(BackendClient *client,
     auto *btnRow = new QHBoxLayout();
     btnRow->addStretch();
     auto *closeBtn = VisivoTheme::makeSecondaryButton(u"Close"_s, this);
+    m_openMaskBtn  = VisivoTheme::makeSecondaryButton(u"Open mask in 3D"_s, this);
+    m_openMaskBtn->setEnabled(false);
+    m_openMaskBtn->setToolTip(
+            u"Open the SoFiA-2 binary mask cube in the 3D viewer to inspect "
+            u"the detections in 3D. Run SoFiA-2 first."_s);
     m_runBtn       = VisivoTheme::makePrimaryButton(u"Run SoFiA-2"_s, this);
     btnRow->addWidget(closeBtn);
+    btnRow->addWidget(m_openMaskBtn);
     btnRow->addWidget(m_runBtn);
     mainLayout->addLayout(btnRow);
 
     connect(m_runBtn,  &QPushButton::clicked, this, &SourceFindDialog::onRun);
     connect(closeBtn,  &QPushButton::clicked, this, &QDialog::reject);
+    connect(m_openMaskBtn, &QPushButton::clicked, this, [this]() {
+        if (!m_maskPath.isEmpty())
+            emit openMaskCubeRequested(m_maskPath);
+    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -162,6 +172,11 @@ void SourceFindDialog::onRun()
             }
             return;
         }
+
+        // Offer the 3D mask overlay when SoFiA wrote a mask cube.
+        self->m_maskPath = result.maskPath;
+        if (self->m_openMaskBtn)
+            self->m_openMaskBtn->setEnabled(!result.maskPath.isEmpty());
 
         if (result.nSources == 0) {
             QMessageBox::information(self, u"Source Finding"_s,

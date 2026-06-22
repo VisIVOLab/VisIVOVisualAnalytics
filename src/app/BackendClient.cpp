@@ -2086,6 +2086,7 @@ BackendSourceFindResult BackendClient::runSourceFind(const QString &datasetId,
     result.valid    = obj.value(QStringLiteral("valid")).toBool();
     result.error    = obj.value(QStringLiteral("error")).toString();
     result.nSources = obj.value(QStringLiteral("n_sources")).toInt();
+    result.maskPath = obj.value(QStringLiteral("mask_path")).toString();
     const QJsonArray sources = obj.value(QStringLiteral("sources")).toArray();
     for (const QJsonValue &v : sources) {
         BackendSourceFindSource src;
@@ -2095,6 +2096,54 @@ BackendSourceFindResult BackendClient::runSourceFind(const QString &datasetId,
         result.sources.append(src);
     }
     return result;
+}
+
+static BackendSpectrumResult parseSpectrum(const QByteArray &raw, const QString &error)
+{
+    BackendSpectrumResult r;
+    if (!error.isEmpty()) { r.error = error; return r; }
+    const QJsonObject o = QJsonDocument::fromJson(raw).object();
+    r.valid        = o.value(QStringLiteral("valid")).toBool();
+    r.error        = o.value(QStringLiteral("error")).toString();
+    r.spectralUnit = o.value(QStringLiteral("spectral_unit")).toString();
+    r.spectralType = o.value(QStringLiteral("spectral_type")).toString();
+    for (const QJsonValue &v : o.value(QStringLiteral("spectral_axis")).toArray())
+        r.spectralAxis.append(v.toDouble());
+    for (const QJsonValue &v : o.value(QStringLiteral("values")).toArray())
+        r.values.append(v.isNull() ? std::numeric_limits<double>::quiet_NaN() : v.toDouble());
+    return r;
+}
+
+BackendSpectrumResult BackendClient::spectralProbe(const QString &datasetId,
+                                                     double x, double y) const
+{
+    QJsonObject body{
+        { QStringLiteral("dataset_id"), datasetId },
+        { QStringLiteral("x"), x },
+        { QStringLiteral("y"), y },
+    };
+    QString error;
+    const QByteArray raw =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/spectral/probe")),
+                        QJsonDocument(body), error);
+    return parseSpectrum(raw, error);
+}
+
+BackendSpectrumResult BackendClient::spectralAperture(const QString &datasetId,
+                                                        double x, double y,
+                                                        double radiusPixels) const
+{
+    QJsonObject body{
+        { QStringLiteral("dataset_id"), datasetId },
+        { QStringLiteral("x"), x },
+        { QStringLiteral("y"), y },
+        { QStringLiteral("radius"), radiusPixels },
+    };
+    QString error;
+    const QByteArray raw =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/spectral/aperture")),
+                        QJsonDocument(body), error);
+    return parseSpectrum(raw, error);
 }
 
 BackendTaskCreateResult BackendClient::createMomentTask(const QString &datasetId, int order,

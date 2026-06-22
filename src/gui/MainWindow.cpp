@@ -820,6 +820,14 @@ void MainWindow::buildScienceMenu()
         auto *client = new BackendClient(m_sciBackendUrl, m_sciToken);
         auto *dlg = new SourceFindDialog(client, m_sciDatasetId, this);
         QObject::connect(dlg, &QObject::destroyed, this, [client]() { delete client; });
+        // Open the SoFiA-2 mask cube in the 3D viewer (mask → 3D inspection of
+        // the detections) on the same node backend that ran the source finder.
+        const QString url = m_sciBackendUrl, token = m_sciToken;
+        QObject::connect(dlg, &SourceFindDialog::openMaskCubeRequested, this,
+                         [this, url, token](const QString &maskPath) {
+                             this->openBackendProductFits(url, token, maskPath,
+                                                          u"SoFiA mask cube"_s);
+                         });
         dlg->setAttribute(Qt::WA_DeleteOnClose);
         // Non-modal — consistent with the other tool dialogs.
         dlg->show();

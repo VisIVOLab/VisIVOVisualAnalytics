@@ -20,6 +20,9 @@ import base64
 import concurrent.futures as _cf
 import logging
 import os as _os
+import shutil
+import subprocess
+import warnings
 import zlib
 from pathlib import Path
 from typing import Any
@@ -3110,3 +3113,181 @@ def worker_skeleton(
         "data_base64": _b64f32(skel_f32),
         "endpoints": endpoints,
     }
+
+
+# ── S-05: SoFiA-2 source finding (radio HI) ────────────────────────────────────
+# Runs SoFiA-2 on a node-local cube and returns the detection catalogue plus the
+# path to the binary mask cube (when SoFiA writes one) — the mask cube is what
+# the desktop renders as a 3D isosurface overlay on the HI cube.
+
+def _sofia_value(v: Any) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return str(v)
+
+
+def _parse_votable_rows(path: Path) -> list[dict[str, Any]]:
+    """Parse a VOTable catalogue into a list of flat {column: value} dicts."""
+    import xml.etree.ElementTree as ET  # noqa: PLC0415
+
+    def _local(tag: str) -> str:
+        return tag.split("}")[-1]
+
+    def _coerce(s: str | None):
+        if s is None:
+            return None
+        t = s.strip()
+        try:
+            return int(t)
+        except ValueError:
+            pass
+        try:
+            return float(t)
+        except ValueError:
+            return t
+
+    root = ET.parse(path).getroot()
+    fields = [el.get("name") for el in root.iter() if _local(el.tag) == "FIELD"]
+    rows: list[dict[str, Any]] = []
+    for tr in (el for el in root.iter() if _local(el.tag) == "TR"):
+        tds = [td.text for td in list(tr) if _local(td.tag) == "TD"]
+        rows.append({name: _coerce(val) for name, val in zip(fields, tds)})
+    return rows
+
+
+def resolve_sofia_bin() -> str | None:
+    """Locate the SoFiA-2 executable.
+
+    SoFiA-2's own ``compile.sh`` installs the binary as ``sofia``, while many
+    deployments rename/symlink it to ``sofia2`` — so accept either, and allow
+    an explicit override via ``VISIVO_SOFIA_BIN`` (e.g. when it lives outside
+    PATH inside a bundled Apptainer image).
+    """
+    override = (_os.environ.get("VISIVO_SOFIA_BIN") or "").strip()
+    if override:
+        return override
+    for name in ("sofia2", "sofia"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def worker_sofia(cube_path: str, out_dir: str, sofia_params: dict[str, Any] | None) -> dict[str, Any]:
+    """Run SoFiA-2 on ``cube_path``, writing outputs into ``out_dir``.
+
+    Returns the catalogue (flat rows), the source count, and the mask-cube path
+    (empty when SoFiA did not write a mask). Raises on non-zero SoFiA exit.
+    """
+    sofia_bin = resolve_sofia_bin() or "sofia2"
+    par_lines = [
+        f"input.data = {cube_path}",
+        f"output.directory = {out_dir}",
+        "output.filename = sofia_out",
+        "output.writeCatXML = true",
+        "output.writeMask = true",
+        "output.overwrite = true",
+    ]
+    for key, val in (sofia_params or {}).items():
+        par_lines.append(f"{key} = {_sofia_value(val)}")
+    par_path = Path(out_dir) / "sofia.par"
+    par_path.write_text("\n".join(par_lines) + "\n")
+
+    proc = subprocess.run(
+        [sofia_bin, str(par_path)], capture_output=True, text=True,
+    )
+    if getattr(proc, "returncode", 1) != 0:
+        raise RuntimeError(
+            f"SoFiA-2 failed (exit {proc.returncode}): "
+            f"{(getattr(proc, 'stderr', '') or '')[:500]}")
+
+    cat_path = Path(out_dir) / "sofia_out_cat.xml"
+    sources = _parse_votable_rows(cat_path) if cat_path.exists() else []
+    mask_path = Path(out_dir) / "sofia_out_mask.fits"
+    return {
+        "valid": True,
+        "error": "",
+        "n_sources": len(sources),
+        "sources": sources,
+        "mask_path": str(mask_path) if mask_path.exists() else "",
+        "catalog_path": str(cat_path) if cat_path.exists() else "",
+    }
+
+
+# ── Spectral probe / aperture (interactive profiler at SKA scale) ───────────────
+# Extract a spectrum at a pixel (or over a circular aperture) directly on the
+# node, so the desktop profiler works on multi-GB remote cubes without pulling
+# the whole cube to the client.
+
+def _cube_and_spectral_axis(path: str):
+    """Return (cube[spec,y,x] float view, hdul, spectral_axis_values, unit, ctype).
+
+    Assumes NAXIS3 is the spectral axis (numpy axis 0 after squeeze) — the
+    standard radio-cube layout.
+    """
+    from astropy.wcs import WCS  # noqa: PLC0415
+    import astropy.units as u    # noqa: PLC0415
+
+    dataset = ScientificFitsDataset(path)
+    hdul, raw = dataset.open_memmap()
+    cube = np.squeeze(np.asarray(raw))
+    if cube.ndim != 3:
+        hdul.close()
+        raise ValueError("Spectral probe requires a 3-D cube.")
+    nspec = cube.shape[0]
+    try:
+        wcs = WCS(dataset.header)
+        if wcs.has_spectral and wcs.spectral.naxis == 1:
+            world = u.Quantity(wcs.spectral.pixel_to_world(np.arange(nspec)))
+            axis_vals = [float(v) for v in np.asarray(world.value)]
+            unit = str(world.unit)
+            ctype = str(wcs.spectral.wcs.ctype[0] or "").strip()
+        else:
+            axis_vals, unit, ctype = list(range(nspec)), "pix", "CHANNEL"
+    except Exception:  # noqa: BLE001 — WCS may be absent/odd
+        axis_vals, unit, ctype = list(range(nspec)), "pix", "CHANNEL"
+    return cube, hdul, axis_vals, unit, ctype
+
+
+def _json_safe(values) -> list:
+    return [None if not np.isfinite(v) else float(v) for v in values]
+
+
+def worker_spectral_probe(path: str, x: float, y: float) -> dict[str, Any]:
+    cube, hdul, axis_vals, unit, ctype = _cube_and_spectral_axis(path)
+    try:
+        xi, yi = int(round(x)), int(round(y))
+        ny, nx = cube.shape[1], cube.shape[2]
+        if not (0 <= yi < ny and 0 <= xi < nx):
+            raise ValueError(f"pixel ({xi},{yi}) out of range ({nx}x{ny})")
+        values = np.asarray(cube[:, yi, xi], dtype=float)
+        return {
+            "valid": True, "error": "", "x": xi, "y": yi,
+            "spectral_axis": axis_vals, "spectral_unit": unit, "spectral_type": ctype,
+            "values": _json_safe(values),
+        }
+    finally:
+        hdul.close()
+
+
+def worker_spectral_aperture(path: str, x: float, y: float, radius: float) -> dict[str, Any]:
+    cube, hdul, axis_vals, unit, ctype = _cube_and_spectral_axis(path)
+    try:
+        ny, nx = cube.shape[1], cube.shape[2]
+        yy, xx = np.ogrid[:ny, :nx]
+        mask = (xx - x) ** 2 + (yy - y) ** 2 <= float(radius) ** 2
+        npix = int(mask.sum())
+        if npix == 0:
+            raise ValueError("aperture covers no pixels")
+        region = cube[:, mask]  # (nspec, npix)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            values = np.nanmean(region, axis=1)
+        return {
+            "valid": True, "error": "", "x": float(x), "y": float(y),
+            "radius": float(radius), "n_pix": npix,
+            "spectral_axis": axis_vals, "spectral_unit": unit, "spectral_type": ctype,
+            "values": _json_safe(values),
+        }
+    finally:
+        hdul.close()

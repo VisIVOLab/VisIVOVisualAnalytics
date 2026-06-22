@@ -210,6 +210,18 @@ From: condaforge/mambaforge:latest
         reproject \
         scikit-image
 
+    echo "[backend-conda.def] Stage 4b-bis — Source finding (SoFiA-2)"
+    # conda-forge ships SoFiA-2 (feedstock 'sofia-2'); the binary is installed
+    # as 'sofia'. The backend's resolve_sofia_bin() accepts 'sofia' or 'sofia2',
+    # but we add a 'sofia2' alias too for tools/scripts that expect that name.
+    # If the conda package is ever unavailable on a target arch, fall back to a
+    # source build:  git clone https://github.com/SoFiA-Admin/SoFiA-2 && \
+    #                cd SoFiA-2 && ./compile.sh -fopenmp && cp sofia /opt/conda/bin/
+    $INSTALL_CMD -n base -c conda-forge sofia-2
+    if [ -x /opt/conda/bin/sofia ] && [ ! -e /opt/conda/bin/sofia2 ]; then
+        ln -s /opt/conda/bin/sofia /opt/conda/bin/sofia2
+    fi
+
     echo "[backend-conda.def] Stage 4c — Astroquery (heavy dep tree)"
     $INSTALL_CMD -n base -c conda-forge \
         astroquery
