@@ -8,6 +8,7 @@ import math as _math
 import os
 import struct
 import threading
+import time
 import urllib.error as _urllib_error
 import urllib.request as _urllib_request
 import uuid
@@ -165,6 +166,93 @@ _HIPS_CACHE_TTL_SECONDS: int = int(
 _HIPS_CACHE_CLEANUP_INTERVAL_SECONDS: int = int(
     os.environ.get("VISIVO_HIPS_CACHE_CLEANUP_INTERVAL", "60")
 )
+# Timestamp of the last cleanup run — throttles _maybe_cleanup_hips_cache.
+_last_hips_cache_cleanup_ts: float = 0.0
+
+
+def _iter_hips_cache_files():
+    """Yield regular files under the HiPS cache dir, recursively.
+
+    Skips directories and symlinks; tolerant of files vanishing mid-walk.
+    """
+    root = _HIPS_CACHE_DIR
+    if not root.exists():
+        return
+    for path in root.rglob("*"):
+        try:
+            if path.is_file() and not path.is_symlink():
+                yield path
+        except OSError:
+            continue
+
+
+def _purge_expired_hips_cache(now: float | None = None) -> int:
+    """Delete cache files older than the TTL. Returns the number removed.
+
+    Tolerant of concurrent deletion (a file vanishing between listing and
+    stat/unlink is simply skipped, not an error)."""
+    if now is None:
+        now = time.time()
+    ttl = _HIPS_CACHE_TTL_SECONDS
+    removed = 0
+    for path in list(_iter_hips_cache_files()):
+        try:
+            if now - path.stat().st_mtime > ttl:
+                path.unlink()
+                removed += 1
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
+    return removed
+
+
+def _enforce_hips_cache_size_limit() -> int:
+    """Evict least-recently-used files until the cache is under the byte limit.
+
+    LRU is approximated by mtime (refreshed on access via os.utime upstream).
+    Returns the number of files removed."""
+    entries: list[tuple[float, int, "_Path"]] = []
+    total = 0
+    for path in list(_iter_hips_cache_files()):
+        try:
+            st = path.stat()
+        except (FileNotFoundError, OSError):
+            continue
+        entries.append((st.st_mtime, st.st_size, path))
+        total += st.st_size
+
+    limit = _HIPS_CACHE_MAX_BYTES
+    if total <= limit:
+        return 0
+
+    entries.sort(key=lambda e: e[0])  # oldest mtime first (evict first)
+    removed = 0
+    for _mtime, size, path in entries:
+        if total <= limit:
+            break
+        try:
+            path.unlink()
+            total -= size
+            removed += 1
+        except FileNotFoundError:
+            total -= size
+        except OSError:
+            continue
+    return removed
+
+
+def _maybe_cleanup_hips_cache() -> None:
+    """Run TTL purge + size enforcement, throttled to once per interval.
+
+    Safe to call on every cache write — it is a cheap no-op between runs."""
+    global _last_hips_cache_cleanup_ts
+    now = time.time()
+    if now - _last_hips_cache_cleanup_ts < _HIPS_CACHE_CLEANUP_INTERVAL_SECONDS:
+        return
+    _last_hips_cache_cleanup_ts = now
+    _purge_expired_hips_cache(now=now)
+    _enforce_hips_cache_size_limit()
 
 # ── Workspace Exports directory ────────────────────────────────────────────────
 # Persistent landing zone for FITS artefacts produced by VisIVO's "export"
@@ -258,7 +346,9 @@ __all__ = [
     "_FITS_SUFFIXES",
     "_COSMOLOGY_MODELS",
     "_HIPS_CACHE_DIR", "_HIPS_CACHE_MAX_BYTES", "_HIPS_CACHE_TTL_SECONDS",
-    "_HIPS_CACHE_CLEANUP_INTERVAL_SECONDS",
+    "_HIPS_CACHE_CLEANUP_INTERVAL_SECONDS", "_last_hips_cache_cleanup_ts",
+    "_iter_hips_cache_files", "_purge_expired_hips_cache",
+    "_enforce_hips_cache_size_limit", "_maybe_cleanup_hips_cache",
     "_EXPORTS_DIR", "get_exports_dir", "make_workspace_path",
     "resolve_workspace_path",
     "_HEALPY_AVAILABLE",
@@ -1017,20 +1107,39 @@ def _get_tiles_for_fov(
     return result
 
 
-def _resolve_target_sync(name: str) -> dict:
+def _normalize_target_name(name: str) -> str:
+    """Case- and whitespace-insensitive key so 'M31', 'm31' and '  M31  '
+    (and 'NGC 224' vs '  ngc  224 ') share one cache entry."""
+    return " ".join((name or "").split()).lower()
+
+
+@functools.lru_cache(maxsize=128)
+def _resolve_target_cached(norm_name: str) -> dict:
+    """Actual Sesame resolution, LRU-cached by normalized name. Failures are
+    cached too (so a bad/timed-out lookup is not retried on every call). The
+    same dict object is returned on a cache hit."""
     try:
         from astropy.coordinates import SkyCoord  # type: ignore
-        coord = SkyCoord.from_name(name)
+        coord = SkyCoord.from_name(norm_name)
         return {
             "valid": True, "error": "",
             "ra_deg": float(coord.ra.deg), "dec_deg": float(coord.dec.deg),
-            "resolved_name": name, "source": "sesame",
+            "resolved_name": norm_name, "source": "sesame",
         }
     except Exception as exc:
         return {
             "valid": False, "error": str(exc),
             "ra_deg": 0.0, "dec_deg": 0.0, "resolved_name": "", "source": "",
         }
+
+
+def _resolve_target_sync(name: str) -> dict:
+    return _resolve_target_cached(_normalize_target_name(name))
+
+
+def clear_resolver_cache() -> None:
+    """Invalidate all cached name→coordinate resolutions."""
+    _resolve_target_cached.cache_clear()
 
 
 @functools.lru_cache(maxsize=32)

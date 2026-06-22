@@ -134,6 +134,7 @@ async def hips_allsky(
 
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_bytes(data)
+        _maybe_cleanup_hips_cache()  # throttled TTL purge + size eviction
 
     mt = ("image/jpeg" if fmt in ("jpeg", "jpg")
           else "image/fits" if fmt == "fits"
@@ -179,6 +180,7 @@ async def hips_tile(
 
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_bytes(data)
+        _maybe_cleanup_hips_cache()  # throttled TTL purge + size eviction
 
     mt = ("image/jpeg" if fmt in ("jpeg", "jpg")
           else "image/fits" if fmt == "fits"

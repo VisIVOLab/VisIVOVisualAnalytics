@@ -19,14 +19,6 @@ Run with:
 
 from __future__ import annotations
 
-import pytest as _skip
-_skip.skip(
-    "OBSOLETE / POSSIBLE REGRESSION: the HiPS disk-cache eviction policy "
-    "(_purge_expired/_enforce_size_limit/_maybe_cleanup) was removed; the cache "
-    "is now unbounded on disk. Decide: restore eviction or delete this test. "
-    "See ROADMAP retrospective.",
-    allow_module_level=True,
-)
 
 import os
 import time
@@ -39,23 +31,23 @@ import pytest
 
 def _patch_cache_dir(monkeypatch, tmp_path: Path):
     """Redirect _HIPS_CACHE_DIR to a temp directory."""
-    import app.main as m
+    import app.dependencies as m
     monkeypatch.setattr(m, "_HIPS_CACHE_DIR", tmp_path)
 
 
 def _patch_limits(monkeypatch, *, max_bytes: int, ttl_seconds: int):
-    import app.main as m
+    import app.dependencies as m
     monkeypatch.setattr(m, "_HIPS_CACHE_MAX_BYTES", max_bytes)
     monkeypatch.setattr(m, "_HIPS_CACHE_TTL_SECONDS", ttl_seconds)
 
 
 def _patch_cleanup_interval(monkeypatch, seconds: int):
-    import app.main as m
+    import app.dependencies as m
     monkeypatch.setattr(m, "_HIPS_CACHE_CLEANUP_INTERVAL_SECONDS", seconds)
 
 
 def _reset_cleanup_ts(monkeypatch):
-    import app.main as m
+    import app.dependencies as m
     monkeypatch.setattr(m, "_last_hips_cache_cleanup_ts", 0.0)
 
 
@@ -76,22 +68,22 @@ def _age(path: Path) -> float:
 # ── Lazy imports ──────────────────────────────────────────────────────────────
 
 def _purge():
-    from app.main import _purge_expired_hips_cache
+    from app.dependencies import _purge_expired_hips_cache
     return _purge_expired_hips_cache
 
 
 def _enforce():
-    from app.main import _enforce_hips_cache_size_limit
+    from app.dependencies import _enforce_hips_cache_size_limit
     return _enforce_hips_cache_size_limit
 
 
 def _maybe():
-    from app.main import _maybe_cleanup_hips_cache
+    from app.dependencies import _maybe_cleanup_hips_cache
     return _maybe_cleanup_hips_cache
 
 
 def _iter():
-    from app.main import _iter_hips_cache_files
+    from app.dependencies import _iter_hips_cache_files
     return _iter_hips_cache_files
 
 
@@ -330,7 +322,7 @@ def test_maybe_cleanup_runs_when_ts_is_zero(monkeypatch, tmp_path):
 
 def test_maybe_cleanup_skipped_within_interval(monkeypatch, tmp_path):
     """Second call within the throttle interval must not remove files."""
-    import app.main as m
+    import app.dependencies as m
 
     _patch_cache_dir(monkeypatch, tmp_path)
     _patch_limits(monkeypatch, max_bytes=10 ** 9, ttl_seconds=1)
@@ -346,7 +338,7 @@ def test_maybe_cleanup_skipped_within_interval(monkeypatch, tmp_path):
 
 
 def test_maybe_cleanup_runs_after_interval_elapsed(monkeypatch, tmp_path):
-    import app.main as m
+    import app.dependencies as m
 
     _patch_cache_dir(monkeypatch, tmp_path)
     _patch_limits(monkeypatch, max_bytes=10 ** 9, ttl_seconds=1)

@@ -412,11 +412,13 @@ class CosmologyDistanceRequest(BaseModel):
 class CosmologyDistanceResponse(BaseModel):
     valid: bool
     error: str
-    z: float = 0.0
+    # None (JSON null) when no real value was computed (e.g. valid=False).
+    # 0.0 is a VALID redshift/distance, so it must NOT double as a sentinel.
+    z: float | None = None
     model: str = ""
-    comoving_Mpc: float = 0.0
-    luminosity_Mpc: float = 0.0
-    proper_motion_kpc_per_arcsec: float = 0.0
+    comoving_Mpc: float | None = None
+    luminosity_Mpc: float | None = None
+    proper_motion_kpc_per_arcsec: float | None = None
 
 
 class CosmologyBatchRequest(BaseModel):
@@ -428,7 +430,8 @@ class CosmologyBatchResponse(BaseModel):
     valid: bool
     error: str
     model: str = ""
-    distances_Mpc: list[float] = []
+    # None entries mark invalid/uncomputable redshifts (valid z=0.0 stays 0.0).
+    distances_Mpc: list[float | None] = []
 
 
 class HiPSOpenRequest(BaseModel):
