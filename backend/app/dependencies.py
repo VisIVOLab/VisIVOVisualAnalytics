@@ -363,6 +363,7 @@ __all__ = [
     "_run_heavy", "_run_heavy_with_limit",
     "_moment_product_payload", "_pv_product_payload",
     "_require_dataset", "_require_cube_path", "_fits_metadata", "record_history",
+    "assert_safe_fetch_url",
     "_progress_ticker",
     "_load_cosmology_models",
     "_hips_fetch_sync", "_hips_fetch", "_parse_hips_properties",
@@ -911,6 +912,62 @@ async def _pv_product_payload(entry: dict[str, Any], request: CubePvRequest) -> 
         provenance_metadata=dataset.provenance_context(),
     )
     return result, False
+
+
+def assert_safe_fetch_url(
+    raw_url: str,
+    *,
+    allowlist_env: str,
+    block_private: bool = True,
+) -> None:
+    """Validate a client-supplied URL before the server fetches it (anti-SSRF).
+
+    Always requires an http/https scheme and a host. Then, in order:
+      * If ``$allowlist_env`` is set (comma-separated hosts), only those hosts
+        are allowed; everything else is rejected.
+      * Else if ``block_private`` is True, any address that resolves to a
+        private / loopback / link-local / reserved / multicast / unspecified
+        target is rejected (the SSRF guard).
+      * Else (no allowlist, ``block_private`` False) the URL is accepted — used
+        where internal/private fetch targets are legitimate (e.g. the SKAVA
+        data-mesh, where federated nodes may sit on private networks), so
+        hardening stays opt-in and can't break those deployments.
+
+    Raises ``ValueError`` with a client-safe message when the URL is unsafe.
+    """
+    import ipaddress  # noqa: PLC0415
+    import socket  # noqa: PLC0415
+    from urllib.parse import urlparse  # noqa: PLC0415
+
+    parsed = urlparse((raw_url or "").strip())
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("Only http:// or https:// URLs are allowed.")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("URL has no host component.")
+
+    allow_raw = os.environ.get(allowlist_env, "").strip()
+    if allow_raw:
+        allowed = {h.strip().lower() for h in allow_raw.split(",") if h.strip()}
+        if host.lower() not in allowed:
+            raise ValueError(f"Host '{host}' is not in {allowlist_env}.")
+        return
+    if not block_private:
+        return
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise ValueError(f"Cannot resolve host '{host}': {exc}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            raise ValueError(
+                f"Refusing to fetch from non-public address {ip} (SSRF guard). "
+                f"Set {allowlist_env} to trust a specific host."
+            )
 
 
 def record_history(

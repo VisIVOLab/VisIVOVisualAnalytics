@@ -155,10 +155,19 @@ async def open_dataset_from_url(
     import hashlib  # noqa: PLC0415
 
     raw_url = (request.url or "").strip()
-    if not (raw_url.startswith("http://") or raw_url.startswith("https://")):
-        return OpenDatasetResponse(
-            valid=False,
-            error="open_url requires an http:// or https:// URL.")
+    # Anti-SSRF validation. Unlike VLKB, open_url legitimately reaches federated
+    # SKAVA data-mesh nodes that may sit on private networks, so private-address
+    # blocking is OPT-IN (VISIVO_OPENURL_BLOCK_PRIVATE=1) to avoid breaking those
+    # deployments; an optional VISIVO_OPENURL_ALLOWED_HOSTS allowlist can pin
+    # trusted hosts. With neither set, behaviour is unchanged (http/https only).
+    try:
+        assert_safe_fetch_url(
+            raw_url,
+            allowlist_env="VISIVO_OPENURL_ALLOWED_HOSTS",
+            block_private=os.environ.get("VISIVO_OPENURL_BLOCK_PRIVATE", "").lower() in ("1", "true", "yes"),
+        )
+    except ValueError as exc:
+        return OpenDatasetResponse(valid=False, error=str(exc))
 
     # Cache layout: <exports>/skava_cache/<sha256>.<ext>
     cache_dir = get_exports_dir() / "skava_cache"
