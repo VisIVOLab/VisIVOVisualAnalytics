@@ -35,6 +35,11 @@ from .routers import (
     exports,
     dynspec,
     astrometry,
+    polarisation,
+    binary_products,
+    photometry,
+    analysis,
+    reproducibility,
 )
 from .diagnostics_buffer import install_logging_handler
 
@@ -89,6 +94,11 @@ app.include_router(diagnostics.router, dependencies=[_auth])
 app.include_router(exports.router, dependencies=[_auth])
 app.include_router(dynspec.router, dependencies=[_auth])
 app.include_router(astrometry.router, dependencies=[_auth])
+app.include_router(polarisation.router, dependencies=[_auth])
+app.include_router(binary_products.router, dependencies=[_auth])
+app.include_router(photometry.router, dependencies=[_auth])
+app.include_router(analysis.router, dependencies=[_auth])
+app.include_router(reproducibility.router, dependencies=[_auth])
 # SAMP: /v1/samp/files/{token} is public (no auth) for VO tool access;
 # all other /v1/samp/* routes use per-route auth declared in the router itself.
 app.include_router(samp.router)

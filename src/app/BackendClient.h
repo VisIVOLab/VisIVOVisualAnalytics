@@ -942,15 +942,7 @@ struct BackendSkeletonResult
     QByteArray data;              ///< float32 LE 0/255 mask from binary endpoint
 };
 
-// ── R-01: CARTA script export ─────────────────────────────────────────────────
-
-struct BackendCartaExportResult
-{
-    bool valid{ false };
-    QString error;
-    QString script;               ///< Python script content
-    int nDatasets{ 0 };
-};
+// ── R-01: CARTA script export — RETIRED (feature removed). ────────────────────
 
 // ── R-02: PROV-JSON provenance ────────────────────────────────────────────────
 
@@ -1450,11 +1442,7 @@ public:
             double *threshold = nullptr,
             const QString &mode = QStringLiteral("skeleton"));
 
-    // ── R-01: CARTA script export ─────────────────────────────────────────────
-    /** POST /v1/reproducibility/carta_script
-     *  @param datasetIds  Empty list = all session datasets. */
-    BackendCartaExportResult requestCartaExport(
-            const QStringList &datasetIds = {});
+    // ── R-01: CARTA script export — RETIRED (feature removed). ────────────────
 
     // ── R-02: PROV-JSON provenance ────────────────────────────────────────────
     /** GET /v1/reproducibility/provenance */

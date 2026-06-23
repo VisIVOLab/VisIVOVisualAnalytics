@@ -134,7 +134,7 @@ async def cancel_task(task_id: str, _: None = _auth) -> dict:
         raise HTTPException(status_code=404, detail=f"Unknown task_id '{task_id}'.")
     if task.status not in ("pending", "running"):
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
+            status_code=409,
             detail=f"Task '{task_id}' is already in terminal state '{task.status}'.",
         )
     cancelled = TASKS.cancel(task_id)

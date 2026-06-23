@@ -763,8 +763,18 @@ def _moment_map_from_array(
             spectral_delta_gpu = xp.asarray(spectral_delta_np, dtype=xp.float64)
             safe_gpu = xp.asarray(safe_np, dtype=xp.float32)
             res = xp.nansum(safe_gpu * spectral_delta_gpu[:, None, None], axis=0, dtype=xp.float32)
-            return _as_numpy(res)
-        return _chunked_m0(subset_np, valid_mask, spectral_delta_np, n_threads)
+            m0 = _as_numpy(res)
+        else:
+            m0 = _chunked_m0(subset_np, valid_mask, spectral_delta_np, n_threads)
+        # A pixel with no valid voxel (all channels NaN or masked out) has an
+        # *undefined* integrated intensity, not zero: nansum would otherwise
+        # report 0 and silently turn a blank line of sight into a real value.
+        # Blank those pixels (matches M1/M2 and CARTA), which also lets the
+        # worker-level "no valid voxels" guard fire when the whole map is empty.
+        no_valid = ~valid_mask.any(axis=0)
+        if no_valid.any():
+            m0[no_valid] = np.nan
+        return m0
 
     if order == 1:
         # Use Numba JIT path for large cubes (amortises JIT compilation cost).

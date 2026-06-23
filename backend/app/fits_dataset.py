@@ -366,9 +366,24 @@ class ScientificFitsDataset:
             ),
         }
 
+    # FITS CTYPE prefixes that denote a spectral axis (frequency, velocity,
+    # wavelength, energy, …) per FITS WCS Paper III.
+    _SPECTRAL_CTYPE_PREFIXES = (
+        "FREQ", "ENER", "WAVN", "VRAD", "WAVE", "VOPT", "ZOPT",
+        "AWAV", "VELO", "BETA", "FELO",
+    )
+
     def cube_numpy_spectral_fits_axis(self) -> int:
         if len(self.active_axes) < 3:
             raise ValueError("Scientific cube helpers require at least three active FITS axes.")
+        # Prefer the axis whose CTYPE actually names a spectral coordinate, so
+        # transposed cubes (spectral not in the conventional 3rd slot) are
+        # handled correctly. Fall back to the last active axis — the usual
+        # position — when no CTYPE matches, preserving prior behaviour.
+        for axis in self.active_axes:
+            ctype = str(self.header.get(f"CTYPE{axis}", "")).strip().upper()
+            if ctype.startswith(self._SPECTRAL_CTYPE_PREFIXES):
+                return axis
         return self.active_axes[-1]
 
     def _linear_axis_coordinates(self, fits_axis: int, start: int, end: int) -> np.ndarray:
@@ -461,12 +476,35 @@ class ScientificFitsDataset:
             )
             coordinates = self._linear_axis_coordinates(spectral_fits_axis, channel_start, channel_end)
 
-        axis_type = axis_types[spectral_world_index] if spectral_world_index < len(axis_types) else ""
+        # The IVOA physical type (e.g. "em.freq", "spect.dopplerVeloc.radio").
+        # Kept as a separate field; ``axis_type`` itself stays the FITS CTYPE so
+        # the value is consistent with the WCS-degraded code paths above and
+        # with what the desktop client / moment metadata consumers expect.
+        axis_physical_type = axis_types[spectral_world_index] if spectral_world_index < len(axis_types) else ""
+
+        # astropy normalises world units to SI (e.g. a "km/s" header axis comes
+        # back as "m.s**-1", with pixel_to_world_values in m/s). Radio data is
+        # authored and displayed in the header unit (km/s), so keep the header
+        # CUNIT and convert the WCS coordinates *into* it — otherwise axis_unit
+        # and the coordinate scale would disagree by 1000× and moment M1/M2
+        # would be reported in the wrong unit. FREQ cubes (header already Hz)
+        # are unaffected: source and target unit match, so nothing is rescaled.
+        world_unit = ""
         if hasattr(self.wcs, "world_axis_units") and spectral_world_index < len(self.wcs.world_axis_units):
-            axis_unit = self.wcs.world_axis_units[spectral_world_index] or axis_unit
+            world_unit = self.wcs.world_axis_units[spectral_world_index] or ""
+        if world_unit and axis_unit and world_unit != axis_unit:
+            try:
+                import astropy.units as u
+                coordinates = (coordinates * u.Unit(world_unit)).to(u.Unit(axis_unit)).value
+            except Exception:
+                # Header CUNIT not convertible to the WCS unit — trust the WCS.
+                axis_unit = world_unit
+        elif not axis_unit:
+            axis_unit = world_unit
         return {
             "coordinates": coordinates,
-            "axis_type": axis_type or axis_label,
+            "axis_type": axis_label,
+            "axis_physical_type": axis_physical_type,
             "axis_unit": axis_unit,
             "axis_label": axis_label,
             "fits_axis": spectral_fits_axis,

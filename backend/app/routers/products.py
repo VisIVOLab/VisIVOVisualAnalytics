@@ -30,15 +30,40 @@ async def moment_product(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> MomentProductResponse:
+    entry = _require_dataset(session, request.dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "This endpoint requires a spectral cube dataset.")
+    # Per-session backpressure: a moment map is a heavy task, so it consumes a
+    # concurrency slot and 429s when the session is already at capacity. This
+    # mirrors the spectral linewidth endpoint and lets the desktop client fall
+    # back gracefully instead of piling unbounded work on the worker pool.
+    if not session.try_acquire_task_slot():
+        raise HTTPException(
+            status_code=429,
+            detail="Too many concurrent compute tasks for this session.",
+        )
     try:
-        entry = _require_dataset(session, request.dataset_id)
-        if entry["kind"] != "cube":
-            raise HTTPException(422, "This endpoint requires a spectral cube dataset.")
         result, _ = await _moment_product_payload(entry, request)
     except HTTPException:
         raise
     except Exception as exc:
         return MomentProductResponse(valid=False, error=str(exc))
+    finally:
+        session.release_task_slot()
+    # Auto-record into the session provenance history (R-01/R-02).
+    record_history(
+        session,
+        operation="moment",
+        endpoint="/v1/products/moment",
+        dataset_id=request.dataset_id,
+        params={
+            "moment_order": request.moment_order,
+            "channel_start": request.channel_start,
+            "channel_end": request.channel_end,
+            "mask_enabled": request.mask_enabled,
+            "threshold_value": request.threshold_value,
+        },
+    )
     return MomentProductResponse(valid=True, error="", **result)
 
 

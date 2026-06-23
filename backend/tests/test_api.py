@@ -851,12 +851,18 @@ async def test_cancel_completed_task_returns_409(client: AsyncClient, opened_cub
     assert create_resp.status_code == 200
     task_id = create_resp.json()["task_id"]
 
-    # Wait for completion
-    for _ in range(30):
+    # Wait for completion. The first moment task in a test run pays the
+    # ProcessPoolExecutor cold-start cost (fork + import numpy/astropy in the
+    # subprocess), which can exceed a couple of seconds — poll generously so the
+    # task reliably reaches its terminal state before we assert on the 409.
+    status = ""
+    for _ in range(150):
         s = await client.get(f"/v1/tasks/{task_id}", headers=opened_cube["headers"])
-        if s.json()["status"] == "completed":
+        status = s.json()["status"]
+        if status in ("completed", "failed", "cancelled"):
             break
         await asyncio.sleep(0.1)
+    assert status == "completed", f"Task did not complete in time (status={status})"
 
     del_resp = await client.delete(f"/v1/tasks/{task_id}", headers=opened_cube["headers"])
     assert del_resp.status_code == 409

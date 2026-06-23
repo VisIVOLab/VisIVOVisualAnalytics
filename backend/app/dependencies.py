@@ -362,7 +362,7 @@ __all__ = [
     "_get_dask_client", "_run", "_run_interactive", "_run_with_limit",
     "_run_heavy", "_run_heavy_with_limit",
     "_moment_product_payload", "_pv_product_payload",
-    "_require_dataset", "_require_cube_path", "_fits_metadata",
+    "_require_dataset", "_require_cube_path", "_fits_metadata", "record_history",
     "_progress_ticker",
     "_load_cosmology_models",
     "_hips_fetch_sync", "_hips_fetch", "_parse_hips_properties",
@@ -911,6 +911,36 @@ async def _pv_product_payload(entry: dict[str, Any], request: CubePvRequest) -> 
         provenance_metadata=dataset.provenance_context(),
     )
     return result, False
+
+
+def record_history(
+    session: Session,
+    *,
+    operation: str = "",
+    dataset_id: str = "",
+    params: dict[str, Any] | None = None,
+    result_dataset_id: str = "",
+    endpoint: str = "",
+    timestamp: str = "",
+) -> None:
+    """Append one provenance entry to the session history (append-only).
+
+    Compute endpoints call this to auto-record what they did, so the PROV-JSON
+    graph and the snapshot list reflect real work. A missing timestamp is
+    filled with the current UTC ISO-8601 time. Never raises — provenance must
+    never break the actual compute path.
+    """
+    try:
+        session.history.append({
+            "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
+            "operation": operation,
+            "endpoint": endpoint,
+            "dataset_id": dataset_id,
+            "result_dataset_id": result_dataset_id,
+            "params": params or {},
+        })
+    except Exception:  # noqa: BLE001 - provenance is best-effort
+        logger.debug("[history] failed to record entry op=%s", operation, exc_info=True)
 
 
 def _require_dataset(session: Session, dataset_id: str) -> dict[str, Any]:

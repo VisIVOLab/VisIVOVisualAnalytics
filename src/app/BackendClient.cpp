@@ -3528,28 +3528,7 @@ BackendSkeletonResult BackendClient::requestSkeleton(
     return result;
 }
 
-// ── R-01: CARTA script export ──────────────────────────────────────────────────
-
-BackendCartaExportResult BackendClient::requestCartaExport(const QStringList &datasetIds)
-{
-    BackendCartaExportResult result;
-    QString error;
-    QJsonArray idsArr;
-    for (const QString &id : datasetIds) idsArr.append(id);
-    const QJsonDocument body(QJsonObject{
-        { QStringLiteral("dataset_ids"), idsArr },
-    });
-    const QByteArray raw =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/reproducibility/carta_script")),
-                        body, error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
-    result.valid      = obj.value(QStringLiteral("valid")).toBool();
-    result.error      = obj.value(QStringLiteral("error")).toString();
-    result.script     = obj.value(QStringLiteral("script")).toString();
-    result.nDatasets  = obj.value(QStringLiteral("n_datasets")).toInt();
-    return result;
-}
+// ── R-01: CARTA script export — RETIRED (feature removed; no backend route). ──
 
 // ── R-02: PROV-JSON provenance ─────────────────────────────────────────────────
 

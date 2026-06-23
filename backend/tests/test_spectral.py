@@ -228,8 +228,10 @@ class TestLinewidthWorker:
         self.sigma_chan = 3.0
         _write_gaussian_cube(path, nz=32, ny=4, nx=4, sigma_chan=self.sigma_chan)
         self.cube_path = path
-        # astropy converts CDELT3=1.0 km/s to SI (m/s) → 1000 m/s per channel
-        self.expected_fwhm = 2.3548 * self.sigma_chan * 1000.0  # m/s
+        # Spectral metadata is reported in the header-native unit (km/s here),
+        # with WCS coordinates converted into it. With CDELT3=1.0 km/s the
+        # per-channel step is 1 km/s, so FWHM = 2.3548 * sigma_chan km/s.
+        self.expected_fwhm = 2.3548 * self.sigma_chan  # km/s
 
     def test_fwhm_accuracy(self):
         """FWHM recovered by Gaussian fit should match the injected σ within 10 %."""

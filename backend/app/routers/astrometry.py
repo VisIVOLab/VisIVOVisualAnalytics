@@ -6,16 +6,25 @@ compute (``app.compute.worker_crossmatch``) was never removed.
 """
 import asyncio
 import logging
+import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from pydantic import BaseModel
 
 from ..auth import verify_token
-from ..dependencies import _require_dataset
+from ..dependencies import _require_dataset, make_workspace_path
 from ..sessions import Session, get_session
 
 router = APIRouter(tags=["astrometry"])
 logger = logging.getLogger("visivo.backend")
 _auth = Depends(verify_token)
+
+
+class ReprojectRequest(BaseModel):
+    target_wcs: dict
+    target_shape: list[int]
+    order: int = 1
 
 
 @router.get("/v1/astrometry/crossmatch/{dataset_id}", tags=["astrometry"])
@@ -55,3 +64,43 @@ async def crossmatch(
     except Exception as exc:  # noqa: BLE001
         logger.warning("[crossmatch] failed dataset_id=%s error=%s", dataset_id, exc)
         raise HTTPException(500, str(exc)) from exc
+
+
+@router.post("/v1/astrometry/reproject/{dataset_id}", tags=["astrometry"])
+async def reproject(
+    dataset_id: str,
+    request: ReprojectRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+):
+    """Reproject an image plane onto a target WCS/grid, registering the result.
+
+    Writes a new FITS to the session workspace and registers it as a new
+    dataset; returns ``{valid, new_dataset_id, width, height, range_min,
+    range_max, output_path, order}``. A missing ``reproject`` package → 503.
+    """
+    from ..compute import worker_reproject  # noqa: PLC0415
+
+    entry = _require_dataset(session, dataset_id)
+    output_path = str(make_workspace_path(f"{uuid.uuid4().hex[:12]}_reproject.fits"))
+    try:
+        result = await asyncio.to_thread(
+            worker_reproject, entry["path"], output_path,
+            request.target_wcs, request.target_shape, request.order)
+    except ImportError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[reproject] failed dataset_id=%s error=%s", dataset_id, exc)
+        raise HTTPException(500, str(exc)) from exc
+
+    new_id = f"ds_{uuid.uuid4().hex[:12]}"
+    session.datasets[new_id] = {
+        "path":   result["output_path"],
+        "kind":   "image",
+        "width":  result["width"],
+        "height": result["height"],
+    }
+    logger.info("[reproject] registered new dataset new_id=%s path=%s", new_id, result["output_path"])
+    return {"valid": True, "error": "", "new_dataset_id": new_id, **result}
