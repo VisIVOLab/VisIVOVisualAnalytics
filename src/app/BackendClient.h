@@ -2,6 +2,7 @@
 #define BackendClient_h
 
 #include <QByteArray>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
 #include <QNetworkRequest>
@@ -971,6 +972,56 @@ struct BackendSnapshotListResult
     QVector<BackendSnapshotEntry> history;
 };
 
+// ── Region interchange (CRTF / DS9) ───────────────────────────────────────────
+
+struct BackendRegionParseResult
+{
+    bool valid{ false };
+    QString error;
+    QString format;               ///< detected/used format: "crtf" | "ds9"
+    /// Canonical region dicts as returned by the backend (shape/frame/center/…).
+    /// Kept as raw JSON so the viewer can map them onto its overlay model.
+    QJsonArray regions;
+};
+
+struct BackendRegionExportResult
+{
+    bool valid{ false };
+    QString error;
+    QString text;                 ///< serialized CRTF / DS9 region file content
+};
+
+struct BackendRegionStatsResult
+{
+    bool valid{ false };
+    QString error;
+    int validCount{ 0 };
+    int blankedCount{ 0 };
+    double mean{ 0.0 };
+    double rms{ 0.0 };
+    double sum{ 0.0 };
+    double minValue{ 0.0 };
+    double maxValue{ 0.0 };
+    double median{ 0.0 };
+    double madSigma{ 0.0 };
+    bool hasFlux{ false };
+    double fluxJy{ 0.0 };         ///< valid only when hasFlux (Jy/beam + beam)
+    QString bunit;
+};
+
+struct BackendLineFitResult
+{
+    bool valid{ false };
+    QString error;
+    double peak{ 0.0 };
+    double center{ 0.0 };
+    double sigma{ 0.0 };
+    double fwhm{ 0.0 };
+    double integratedFlux{ 0.0 };
+    double continuum{ 0.0 };
+    double rms{ 0.0 };
+};
+
 class QJsonDocument;
 class QJsonObject;
 class QUrl;
@@ -1155,6 +1206,37 @@ public:
                                         const QString &pos = {},
                                         const QString &band = {},
                                         const QString &time = {}) const;
+
+    // ── Region interchange (CRTF / DS9) ───────────────────────────────────────
+    /** POST /v1/regions/parse — parse CRTF/DS9 text into canonical regions.
+     *  @param text     region file content.
+     *  @param format   "auto" | "crtf" | "ds9".
+     *  @param datasetId / toFrame  optional WCS reframe ("image" or a world
+     *                   frame); both required together to convert. */
+    BackendRegionParseResult parseRegions(const QString &text,
+                                          const QString &format = QStringLiteral("auto"),
+                                          const QString &datasetId = {},
+                                          const QString &toFrame = {}) const;
+
+    /** POST /v1/regions/export — serialize canonical regions to CRTF/DS9 text.
+     *  @param regions  canonical region dicts (as returned by parseRegions).
+     *  @param format   "crtf" | "ds9". */
+    BackendRegionExportResult exportRegions(const QJsonArray &regions,
+                                            const QString &format,
+                                            const QString &datasetId = {},
+                                            const QString &toFrame = {}) const;
+
+    /** POST /v1/regions/stats/{dataset_id} — pixel statistics inside a region.
+     *  @param region   canonical region dict (image or world frame).
+     *  @param channel  cube channel (<0 → backend default 0). */
+    BackendRegionStatsResult regionStats(const QString &datasetId,
+                                         const QJsonObject &region,
+                                         int channel = -1) const;
+
+    /** POST /v1/spectral/linefit — Gaussian fit of an extracted 1-D spectrum. */
+    BackendLineFitResult fitSpectralLine(const QVector<double> &values,
+                                         const QVector<double> &axis,
+                                         bool withBaseline = true) const;
 
     /** POST /v1/products/map_math — pixel-wise math on one/two 2-D maps
      *  (UC 3.2). ``op`` ∈ {add,subtract,multiply,divide,ratio,log10,abs,

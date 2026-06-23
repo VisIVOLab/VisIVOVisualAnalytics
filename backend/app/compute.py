@@ -2393,6 +2393,126 @@ def worker_gauss_fit_2d(
     }
 
 
+# ── Region statistics (2D ROI mean/rms/sum/flux) ─────────────────────────────
+
+
+def _region_mask(region: dict[str, Any], shape: tuple[int, int]) -> np.ndarray:
+    """Build a boolean mask (ny, nx) for a canonical *image-frame* region.
+
+    Pixel coordinates are 0-based (numpy convention). Sizes/radii are in pixels.
+    ``angle_deg`` rotates ellipse/box counter-clockwise.
+    """
+    ny, nx = shape
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    s = region["shape"]
+    if s == "polygon":
+        pts = region["points"]
+        inside = np.zeros((ny, nx), dtype=bool)
+        j = len(pts) - 1
+        for i in range(len(pts)):
+            xi, yi = pts[i]
+            xj, yj = pts[j]
+            cond = ((yi > yy) != (yj > yy)) & (
+                xx < (xj - xi) * (yy - yi) / (yj - yi + 1e-30) + xi)
+            inside ^= cond
+            j = i
+        return inside
+    cx, cy = region["center"]
+    dx, dy = xx - cx, yy - cy
+    if s == "circle":
+        r = float(region["radius"])
+        return dx * dx + dy * dy <= r * r
+    if s == "annulus":
+        r1, r2 = region["radii"]
+        d2 = dx * dx + dy * dy
+        return (d2 <= r2 * r2) & (d2 > r1 * r1)
+    if s == "point":
+        mask = np.zeros((ny, nx), dtype=bool)
+        ix, iy = int(round(cx)), int(round(cy))
+        if 0 <= iy < ny and 0 <= ix < nx:
+            mask[iy, ix] = True
+        return mask
+    ang = np.radians(region.get("angle_deg", 0.0) or 0.0)
+    cos, sin = np.cos(ang), np.sin(ang)
+    xr = dx * cos + dy * sin
+    yr = -dx * sin + dy * cos
+    if s == "ellipse":
+        a, b = region["semi_axes"]
+        return (xr / a) ** 2 + (yr / b) ** 2 <= 1.0
+    if s == "box":
+        w, h = region["size"]
+        return (np.abs(xr) <= w / 2.0) & (np.abs(yr) <= h / 2.0)
+    raise ValueError(f"Unsupported region shape '{s}'.")
+
+
+def worker_region_stats(
+    path: str,
+    region: dict[str, Any],
+    channel: int | None = None,
+) -> dict[str, Any]:
+    """Pixel statistics inside a 2-D region (image-frame, 0-based pixels).
+
+    Returns counts and mean/rms/sum/min/max/median/mad_sigma over the finite
+    pixels in the region, plus ``flux_jy`` when the data is Jy/beam and a beam
+    is defined (integrated intensity = sum / beam-area-in-pixels).
+    """
+    if region.get("frame", "image") != "image":
+        raise ValueError(
+            "Region must be in image (pixel) frame; convert with to_frame='image' first.")
+    dataset = ScientificFitsDataset(path)
+    hdul, raw = dataset.open_memmap()
+    try:
+        if raw.ndim == 2:
+            image = np.asarray(raw, dtype=np.float64)
+        elif raw.ndim == 3:
+            ch = 0 if channel is None else max(0, min(int(channel), raw.shape[0] - 1))
+            image = np.asarray(raw[ch], dtype=np.float64)
+        elif raw.ndim == 4:
+            ch = 0 if channel is None else max(0, min(int(channel), raw.shape[1] - 1))
+            image = np.asarray(raw[0, ch], dtype=np.float64)
+        else:
+            raise ValueError(f"Unsupported FITS dimensionality: {raw.ndim}")
+    finally:
+        hdul.close()
+
+    mask = _region_mask(region, image.shape)
+    total = int(mask.sum())
+    sel = image[mask]
+    finite = sel[np.isfinite(sel)]
+    if finite.size == 0:
+        raise ValueError("No valid (finite) pixels inside the region.")
+
+    median = float(np.median(finite))
+    mad = float(np.median(np.abs(finite - median)))
+    result: dict[str, Any] = {
+        "shape": region["shape"],
+        "total_count": total,
+        "valid_count": int(finite.size),
+        "blanked_count": int(total - finite.size),
+        "min": float(np.min(finite)),
+        "max": float(np.max(finite)),
+        "mean": float(np.mean(finite)),
+        "rms": float(np.std(finite)),
+        "sum": float(np.sum(finite)),
+        "median": median,
+        "mad_sigma": 1.4826 * mad,
+        "bunit": dataset.bunit,
+        "flux_jy": None,
+        "channel": (0 if channel is None else int(channel)),
+    }
+
+    # Integrated flux for Jy/beam data when the beam is known.
+    bmaj, bmin = dataset.beam.major, dataset.beam.minor
+    pix_arcsec = dataset.spatial_pixel_scale_arcsec()
+    if ("jy/beam" in dataset.bunit.lower() and bmaj and bmin and pix_arcsec > 0):
+        pix_deg = pix_arcsec / 3600.0
+        beam_area_px = (np.pi / (4.0 * np.log(2.0))) * (bmaj * bmin) / (pix_deg * pix_deg)
+        if beam_area_px > 0:
+            result["flux_jy"] = float(np.sum(finite) / beam_area_px)
+            result["beam_area_pix"] = float(beam_area_px)
+    return result
+
+
 # ── A-03: WCS reprojection ────────────────────────────────────────────────────
 
 
@@ -3301,3 +3421,69 @@ def worker_spectral_aperture(path: str, x: float, y: float, radius: float) -> di
         }
     finally:
         hdul.close()
+
+
+def worker_line_fit(
+    values: list[float],
+    axis: list[float],
+    with_baseline: bool = True,
+) -> dict[str, Any]:
+    """Fit a single Gaussian (+ optional linear baseline) to a 1-D spectrum.
+
+    Returns the fitted peak, line centre, σ and FWHM (in the supplied axis
+    units), the integrated line flux (amp·σ·√(2π)), the baseline coefficients,
+    the continuum level under the line, an equivalent width when a continuum is
+    present, and the residual RMS. Works for emission (positive amp) and
+    absorption (negative amp) lines.
+    """
+    try:
+        from scipy.optimize import curve_fit  # noqa: PLC0415
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError("scipy is required for spectral line fitting.") from exc
+
+    x = np.asarray(axis, dtype=np.float64)
+    y = np.asarray(values, dtype=np.float64)
+    good = np.isfinite(x) & np.isfinite(y)
+    x, y = x[good], y[good]
+    if x.size < 4:
+        raise ValueError("Need at least 4 finite samples to fit a Gaussian line.")
+
+    base0 = float(np.median(y))
+    resid0 = y - base0
+    i_peak = int(np.argmax(np.abs(resid0)))
+    amp0 = float(resid0[i_peak])
+    mu0 = float(x[i_peak])
+    span = float(x.max() - x.min()) or 1.0
+    sigma0 = span / 6.0
+
+    def model(xx, amp, mu, sigma, a, b):
+        baseline = (a + b * xx) if with_baseline else 0.0
+        return baseline + amp * np.exp(-((xx - mu) ** 2) / (2.0 * sigma * sigma))
+
+    p0 = [amp0, mu0, sigma0, base0, 0.0]
+    try:
+        popt, _ = curve_fit(model, x, y, p0=p0, maxfev=20000)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"Gaussian line fit did not converge: {exc}") from exc
+
+    amp, mu, sigma, a, b = (float(v) for v in popt)
+    sigma = abs(sigma)
+    fwhm = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma
+    integrated = amp * sigma * np.sqrt(2.0 * np.pi)
+    continuum = (a + b * mu) if with_baseline else 0.0
+    ew = float(integrated / continuum) if (with_baseline and continuum) else None
+    resid = y - model(x, *popt)
+    rms = float(np.std(resid))
+
+    return {
+        "peak": amp,
+        "center": mu,
+        "sigma": sigma,
+        "fwhm": float(fwhm),
+        "integrated_flux": float(integrated),
+        "continuum": float(continuum),
+        "equivalent_width": ew,
+        "baseline": [a, b],
+        "rms": rms,
+        "n_points": int(x.size),
+    }

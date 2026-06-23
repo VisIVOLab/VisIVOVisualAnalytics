@@ -2985,6 +2985,116 @@ BackendVlkbFetchResult BackendClient::vlkbFetchCutout(const QString &sodaUrl,
     return result;
 }
 
+// ── Region interchange (CRTF / DS9) ───────────────────────────────────────────
+
+BackendRegionParseResult BackendClient::parseRegions(const QString &text,
+                                                     const QString &format,
+                                                     const QString &datasetId,
+                                                     const QString &toFrame) const
+{
+    BackendRegionParseResult result;
+    QJsonObject bodyObj{
+        { QStringLiteral("text"), text },
+        { QStringLiteral("format"), format },
+    };
+    if (!datasetId.isEmpty()) bodyObj[QStringLiteral("dataset_id")] = datasetId;
+    if (!toFrame.isEmpty())   bodyObj[QStringLiteral("to_frame")]   = toFrame;
+    QString error;
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/regions/parse")), QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) { result.error = error; return result; }
+    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    result.valid   = obj.value(QStringLiteral("valid")).toBool();
+    result.error   = obj.value(QStringLiteral("error")).toString();
+    result.format  = obj.value(QStringLiteral("format")).toString();
+    result.regions = obj.value(QStringLiteral("regions")).toArray();
+    return result;
+}
+
+BackendRegionExportResult BackendClient::exportRegions(const QJsonArray &regions,
+                                                       const QString &format,
+                                                       const QString &datasetId,
+                                                       const QString &toFrame) const
+{
+    BackendRegionExportResult result;
+    QJsonObject bodyObj{
+        { QStringLiteral("regions"), regions },
+        { QStringLiteral("format"), format },
+    };
+    if (!datasetId.isEmpty()) bodyObj[QStringLiteral("dataset_id")] = datasetId;
+    if (!toFrame.isEmpty())   bodyObj[QStringLiteral("to_frame")]   = toFrame;
+    QString error;
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/regions/export")), QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) { result.error = error; return result; }
+    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    result.valid = obj.value(QStringLiteral("valid")).toBool();
+    result.error = obj.value(QStringLiteral("error")).toString();
+    result.text  = obj.value(QStringLiteral("text")).toString();
+    return result;
+}
+
+BackendRegionStatsResult BackendClient::regionStats(const QString &datasetId,
+                                                    const QJsonObject &region,
+                                                    int channel) const
+{
+    BackendRegionStatsResult result;
+    QJsonObject bodyObj{{ QStringLiteral("region"), region }};
+    if (channel >= 0) bodyObj[QStringLiteral("channel")] = channel;
+    QString error;
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/regions/stats/") + datasetId),
+            QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) { result.error = error; return result; }
+    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    result.valid        = obj.value(QStringLiteral("valid")).toBool();
+    result.error        = obj.value(QStringLiteral("error")).toString();
+    result.validCount   = obj.value(QStringLiteral("valid_count")).toInt();
+    result.blankedCount = obj.value(QStringLiteral("blanked_count")).toInt();
+    result.mean         = obj.value(QStringLiteral("mean")).toDouble();
+    result.rms          = obj.value(QStringLiteral("rms")).toDouble();
+    result.sum          = obj.value(QStringLiteral("sum")).toDouble();
+    result.minValue     = obj.value(QStringLiteral("min")).toDouble();
+    result.maxValue     = obj.value(QStringLiteral("max")).toDouble();
+    result.median       = obj.value(QStringLiteral("median")).toDouble();
+    result.madSigma     = obj.value(QStringLiteral("mad_sigma")).toDouble();
+    result.bunit        = obj.value(QStringLiteral("bunit")).toString();
+    const QJsonValue flux = obj.value(QStringLiteral("flux_jy"));
+    result.hasFlux      = !flux.isNull() && !flux.isUndefined();
+    result.fluxJy       = flux.toDouble();
+    return result;
+}
+
+BackendLineFitResult BackendClient::fitSpectralLine(const QVector<double> &values,
+                                                    const QVector<double> &axis,
+                                                    bool withBaseline) const
+{
+    BackendLineFitResult result;
+    QJsonArray valArr, axArr;
+    for (double v : values) valArr.append(v);
+    for (double a : axis)   axArr.append(a);
+    const QJsonObject bodyObj{
+        { QStringLiteral("values"), valArr },
+        { QStringLiteral("axis"), axArr },
+        { QStringLiteral("with_baseline"), withBaseline },
+    };
+    QString error;
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/spectral/linefit")), QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) { result.error = error; return result; }
+    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    result.valid          = obj.value(QStringLiteral("valid")).toBool();
+    result.error          = obj.value(QStringLiteral("error")).toString();
+    result.peak           = obj.value(QStringLiteral("peak")).toDouble();
+    result.center         = obj.value(QStringLiteral("center")).toDouble();
+    result.sigma          = obj.value(QStringLiteral("sigma")).toDouble();
+    result.fwhm           = obj.value(QStringLiteral("fwhm")).toDouble();
+    result.integratedFlux = obj.value(QStringLiteral("integrated_flux")).toDouble();
+    result.continuum      = obj.value(QStringLiteral("continuum")).toDouble();
+    result.rms            = obj.value(QStringLiteral("rms")).toDouble();
+    return result;
+}
+
 BackendSodaCutoutResult BackendClient::sodaCutout(const QString &obsId,
                                                     const QString &accessUrl,
                                                     const QString &pos,

@@ -666,3 +666,32 @@ async def spectral_aperture(
             worker_spectral_aperture, entry["path"], request.x, request.y, request.radius)
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+class LineFitRequest(BaseModel):
+    values: list[float]
+    axis: list[float]
+    with_baseline: bool = True
+
+
+@router.post("/v1/spectral/linefit", tags=["spectral"])
+async def spectral_linefit(request: LineFitRequest, _: None = _auth):
+    """Fit a Gaussian (+ optional linear baseline) to an extracted 1-D spectrum.
+
+    Stateless: the caller supplies the spectrum ``values`` and ``axis`` (e.g.
+    from the spectral profiler), so the same fit serves cube probes, aperture
+    spectra, or any externally-extracted profile. Returns peak/center/σ/FWHM in
+    the axis units, integrated flux, baseline, continuum, equivalent width and
+    residual RMS.
+    """
+    if len(request.values) != len(request.axis):
+        raise HTTPException(422, "values and axis must have the same length.")
+    from ..compute import worker_line_fit  # noqa: PLC0415
+    try:
+        result = await asyncio.to_thread(
+            worker_line_fit, request.values, request.axis, request.with_baseline)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, str(exc)) from exc
+    return {"valid": True, "error": "", **result}
