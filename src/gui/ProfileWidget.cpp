@@ -27,6 +27,10 @@
 #include <QTextStream>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QtConcurrentRun>
+#include <QFutureWatcher>
+
+#include "app/BackendClient.h"
 
 #include <algorithm>
 #include <cmath>
@@ -222,6 +226,7 @@ void ProfileWidget::setupImagePlots(const QString &xLabel, const QString &yLabel
     this->applyUsageModeUi();
     ui->plot1->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     ui->plot2->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    this->clearFitOverlay();   // drop fit refs before clearGraphs() frees them
     ui->plot1->clearGraphs();
     ui->plot2->clearGraphs();
     ui->plot1->addGraph();
@@ -300,6 +305,7 @@ void ProfileWidget::setupSpectrumPlot(const QString &xLabel, const QString &yLab
     this->buildSpectrumHeader();
 
     ui->plot1->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    this->clearFitOverlay();   // drop fit refs before clearGraphs() frees them
     ui->plot1->clearGraphs();
     ui->plot1->addGraph();
     ui->plot1->legend->setVisible(false);
@@ -423,8 +429,17 @@ void ProfileWidget::buildSpectrumHeader()
     auto *clearLinesBtn = new QPushButton(u"Clear Lines"_s);
     clearLinesBtn->setStyleSheet(pillCss);
     clearLinesBtn->setCursor(Qt::PointingHandCursor);
+    m_btnFit = new QPushButton(u"Fit Gaussian"_s);
+    m_btnFit->setStyleSheet(pillCss);
+    m_btnFit->setCursor(Qt::PointingHandCursor);
+    m_btnFit->setToolTip(
+            u"Fit a single Gaussian (+ linear baseline) to the current spectrum\n"
+            u"via the backend; overlays the fitted curve and reports peak, centre,\n"
+            u"FWHM and integrated flux in the axis units. Enabled once connected."_s);
+    m_btnFit->setEnabled(!m_backendUrl.isEmpty());
     toolRow->addWidget(loadLinesBtn);
     toolRow->addWidget(clearLinesBtn);
+    toolRow->addWidget(m_btnFit);
     col->addLayout(toolRow);
 
     QObject::connect(m_smoothCombo, qOverload<int>(&QComboBox::currentIndexChanged),
@@ -433,6 +448,8 @@ void ProfileWidget::buildSpectrumHeader()
                      this, &ProfileWidget::loadLineIdFile);
     QObject::connect(clearLinesBtn, &QPushButton::clicked,
                      this, &ProfileWidget::clearLineIdOverlay);
+    QObject::connect(m_btnFit,      &QPushButton::clicked,
+                     this, &ProfileWidget::requestLineFit);
 
     // Insert the header at the very top of the widget's outer layout.
     auto *vLayout = qobject_cast<QVBoxLayout *>(this->layout());
@@ -714,6 +731,117 @@ void ProfileWidget::setSpectrumCurrentChannel(double spectralValueAtChannel)
     ui->plot1->replot();
 }
 
+// ── Gaussian line fit (backend /v1/spectral/linefit) ─────────────────────────
+
+void ProfileWidget::setBackend(const QString &url, const QString &token)
+{
+    m_backendUrl = url;
+    m_backendToken = token;
+    if (m_btnFit && !m_fitInProgress) m_btnFit->setEnabled(!url.isEmpty());
+}
+
+void ProfileWidget::clearFitOverlay()
+{
+    if (!ui->plot1) return;
+    if (m_fitGraph) { ui->plot1->removeGraph(m_fitGraph); m_fitGraph = nullptr; }
+    if (m_fitLabel) { ui->plot1->removeItem(m_fitLabel);  m_fitLabel = nullptr; }
+}
+
+void ProfileWidget::requestLineFit()
+{
+    if (m_backendUrl.isEmpty()) {
+        QMessageBox::information(this, u"Line Fit"_s, u"Not connected to a backend."_s);
+        return;
+    }
+    // Keep only finite (key,value) pairs: region spectra contain NaN channels,
+    // and Qt serialises non-finite doubles to JSON null, which the backend
+    // cannot fit. Filtering here guarantees a clean, equal-length payload.
+    QVector<double> key, values;
+    const int n = std::min(m_lastSpectrumKey.size(), m_lastSpectrumValues.size());
+    key.reserve(n);
+    values.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        const double k = m_lastSpectrumKey.at(i), v = m_lastSpectrumValues.at(i);
+        if (std::isfinite(k) && std::isfinite(v)) { key.append(k); values.append(v); }
+    }
+    if (key.size() < 4) {
+        QMessageBox::information(this, u"Line Fit"_s,
+                u"Need at least 4 finite spectral channels to fit a Gaussian."_s);
+        return;
+    }
+    const QString url = m_backendUrl, token = m_backendToken;
+    const int gen = m_spectrumGeneration;
+    m_fitInProgress = true;
+    if (m_btnFit) m_btnFit->setEnabled(false);
+    QPointer<ProfileWidget> self(this);
+    auto *watcher = new QFutureWatcher<BackendLineFitResult>(this);
+    QObject::connect(watcher, &QFutureWatcher<BackendLineFitResult>::finished, this, [self, watcher, gen]() {
+        const BackendLineFitResult fit = watcher->result();
+        watcher->deleteLater();
+        if (!self) return;
+        self->m_fitInProgress = false;
+        if (self->m_btnFit) self->m_btnFit->setEnabled(!self->m_backendUrl.isEmpty());
+        if (self->m_spectrumGeneration != gen) return;  // spectrum changed → stale fit
+        if (!fit.valid) {
+            QMessageBox::warning(self, u"Line Fit"_s, u"Fit failed:\n%1"_s.arg(fit.error));
+            return;
+        }
+        self->overlayLineFit(fit);
+    });
+    watcher->setFuture(QtConcurrent::run([url, token, key, values]() -> BackendLineFitResult {
+        BackendClient c(url, token);
+        return c.fitSpectralLine(values, key, /*withBaseline=*/true);
+    }));
+}
+
+void ProfileWidget::overlayLineFit(const BackendLineFitResult &fit)
+{
+    if (!ui->plot1 || m_lastSpectrumKey.isEmpty()) return;
+    this->clearFitOverlay();
+
+    // Sample the fitted model (linear baseline + Gaussian) across the spectrum.
+    double xmin = std::numeric_limits<double>::infinity();
+    double xmax = -std::numeric_limits<double>::infinity();
+    for (double k : m_lastSpectrumKey) {
+        if (!std::isfinite(k)) continue;
+        xmin = std::min(xmin, k);
+        xmax = std::max(xmax, k);
+    }
+    if (!std::isfinite(xmin) || !std::isfinite(xmax) || xmax <= xmin) return;
+    const int n = 300;
+    double sig = std::abs(fit.sigma);
+    if (!std::isfinite(sig) || sig < 1e-12) sig = (xmax > xmin) ? (xmax - xmin) / 100.0 : 1.0;
+    QVector<double> fx(n), fy(n);
+    for (int i = 0; i < n; ++i) {
+        const double x = xmin + (xmax - xmin) * static_cast<double>(i) / (n - 1);
+        const double g = fit.peak * std::exp(-((x - fit.center) * (x - fit.center)) / (2.0 * sig * sig));
+        fx[i] = x;
+        fy[i] = fit.baselineIntercept + fit.baselineSlope * x + g;
+    }
+    m_fitGraph = ui->plot1->addGraph();
+    m_fitGraph->setPen(QPen(QColor(255, 140, 0), 1.6, Qt::DashLine));
+    m_fitGraph->setData(fx, fy);
+    m_fitGraph->removeFromLegend();
+
+    const QString summary =
+            u"Gaussian fit · peak %1 · centre %2 · FWHM %3 · ∫ %4 · rms %5"_s
+                    .arg(fit.peak, 0, 'g', 4).arg(fit.center, 0, 'g', 6)
+                    .arg(fit.fwhm, 0, 'g', 4).arg(fit.integratedFlux, 0, 'g', 4)
+                    .arg(fit.rms, 0, 'g', 3);
+    if (m_specStatsLabel) m_specStatsLabel->setText(summary);
+
+    m_fitLabel = new QCPItemText(ui->plot1);
+    m_fitLabel->setPositionAlignment(Qt::AlignTop | Qt::AlignRight);
+    m_fitLabel->position->setType(QCPItemPosition::ptAxisRectRatio);
+    m_fitLabel->position->setCoords(0.98, 0.04);
+    m_fitLabel->setColor(QColor(255, 140, 0));
+    m_fitLabel->setTextAlignment(Qt::AlignRight);
+    m_fitLabel->setText(u"FWHM %1\ncentre %2"_s
+                                .arg(fit.fwhm, 0, 'g', 4).arg(fit.center, 0, 'g', 6));
+
+    ui->plot1->replot();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 void ProfileWidget::plotProfile(double x, double y, bool live)
@@ -757,6 +885,8 @@ void ProfileWidget::plotSpectrum(double x, double y, bool live)
 {
     Q_UNUSED(live);
     if (m_dialogInProgress) return;   // suppress live updates while saving
+    this->clearFitOverlay();          // a new spectrum invalidates any prior fit
+    ++this->m_spectrumGeneration;
     const long pixX = std::lround(x);
     const long pixY = std::lround(y);
 
@@ -799,6 +929,8 @@ void ProfileWidget::updateSpectrumPlot(const QVector<double> &key, const QVector
                                        const QString &title, bool live)
 {
     if (m_dialogInProgress) return;   // suppress live updates while saving
+    this->clearFitOverlay();          // a new spectrum invalidates any prior fit
+    ++this->m_spectrumGeneration;
     if (ui->plot1->graphCount() == 0) {
         ui->plot1->addGraph();
     }
@@ -835,6 +967,11 @@ void ProfileWidget::updateSpectrumPlotSeries(const QVector<double> &key,
                                              const QString &title, bool live)
 {
     if (m_dialogInProgress) return;   // suppress live updates while saving
+    this->clearFitOverlay();          // a new spectrum invalidates any prior fit
+    ++this->m_spectrumGeneration;
+    // Cache the primary series so a Gaussian fit uses it (not stale data).
+    m_lastSpectrumKey = key;
+    m_lastSpectrumValues = primaryValues;
     while (ui->plot1->graphCount() < 2) {
         ui->plot1->addGraph();
     }

@@ -10,6 +10,7 @@
 
 #include <memory>
 
+class QCPGraph;
 class QCPItemLine;
 class QCPItemText;
 class QComboBox;
@@ -19,6 +20,7 @@ class QPushButton;
 class QToolButton;
 class vtkImageData;
 class vtkInteractorStyleProfile;
+struct BackendLineFitResult;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -89,6 +91,11 @@ public:
     /// Pass spectralValueAtChannel = NaN to clear the marker.
     void setSpectrumCurrentChannel(double spectralValueAtChannel);
 
+    /// Give the widget the backend coordinates so the "Fit Gaussian" button can
+    /// call POST /v1/spectral/linefit on the current spectrum. Without this the
+    /// fit button stays disabled.
+    void setBackend(const QString &url, const QString &token);
+
 signals:
     /// Emitted when the user toggles the Pin button in the header. The cube
     /// viewer connects this to its probeFrozen state so the spectrum freezes
@@ -102,6 +109,8 @@ private slots:
     /// two columns. Only meaningful in spectrum-mode — the button is
     /// hidden in image-profile mode.
     void saveSpectrumCsv();
+    /// Fit a Gaussian to the current spectrum via the backend and overlay it.
+    void requestLineFit();
 
 private:
     Ui::ProfileWidget *ui;
@@ -145,6 +154,20 @@ private:
     QVector<double> m_lastSpectrumValues;
     QString         m_lastSpectrumXLabel;
     QString         m_lastSpectrumYLabel;
+
+    // ── Gaussian line fit (backend /v1/spectral/linefit) ────────────────────
+    QString      m_backendUrl;
+    QString      m_backendToken;
+    QPushButton *m_btnFit   { nullptr };
+    QCPGraph    *m_fitGraph { nullptr };   ///< overlaid fitted-curve graph
+    QCPItemText *m_fitLabel { nullptr };   ///< on-plot fit parameter annotation
+    bool         m_fitInProgress { false };
+    // Bumped every time the displayed spectrum changes; a fit reply whose
+    // captured generation no longer matches is stale and is discarded (the
+    // live probe may have moved on while the backend was computing).
+    int          m_spectrumGeneration { 0 };
+    void overlayLineFit(const BackendLineFitResult &fit);
+    void clearFitOverlay();
 
     // ── Spectrum-mode header chrome ─────────────────────────────────────────
     // Created lazily when setupSpectrumPlot() runs so image-mode users don't

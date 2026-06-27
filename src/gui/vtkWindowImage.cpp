@@ -1533,6 +1533,17 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
         }));
     });
 
+    // Region export — save the active drawn ROI for CASA/CARTA/ds9. Loading
+    // region files (incl. CRTF) goes through Load Catalogue Overlay (one loader).
+    ui->menuTools->addSeparator();
+    m_actExportRegions = ui->menuTools->addAction(u"Export Region (CRTF/DS9)…"_s);
+    m_actExportRegions->setToolTip(
+            u"Save the active *drawn* region (Box/Circle/Polygon/Annulus) as a "
+            u"CASA CRTF or DS9 region file. To *load* regions (incl. CRTF) use "
+            u"Tools ▸ Load Catalogue Overlay."_s);
+    QObject::connect(m_actExportRegions, &QAction::triggered, this,
+                     [this]() { this->exportRegionsToFile(); });
+
     // Contour overlay — same approach as the cube viewer: toggle + Level/Lower/Upper
     ui->menuTools->addSeparator();
     m_actToggleContours = ui->menuTools->addAction(u"Show Contours"_s);
@@ -2646,6 +2657,109 @@ void vtkWindowImage::clearRegion()
     this->regionPolygonFillActor->VisibilityOff();
 }
 
+// ── Region interchange (CRTF / DS9) ───────────────────────────────────────────
+
+QJsonObject vtkWindowImage::currentRegionToJson() const
+{
+    // Canonical image-frame region in 1-based pixel coordinates (the FITS /
+    // ds9 / CRTF convention). The viewer stores 0-based voxels, so +1 here.
+    QJsonObject r;
+    r[u"frame"_s] = u"image"_s;
+    r[u"unit"_s]  = u"pix"_s;
+    const auto px = [](int v) { return double(v) + 1.0; };
+    switch (this->regionMode) {
+    case RegionMode::Box: {
+        const double ax = px(regionAnchorVoxel[0]), ay = px(regionAnchorVoxel[1]);
+        const double bx = px(regionCurrentVoxel[0]), by = px(regionCurrentVoxel[1]);
+        r[u"shape"_s] = u"box"_s;
+        r[u"center"_s] = QJsonArray{ (ax + bx) / 2.0, (ay + by) / 2.0 };
+        r[u"size"_s]   = QJsonArray{ std::abs(bx - ax), std::abs(by - ay) };
+        r[u"angle_deg"_s] = 0.0;
+        break;
+    }
+    case RegionMode::Circle: {
+        const double dx = regionCurrentVoxel[0] - regionAnchorVoxel[0];
+        const double dy = regionCurrentVoxel[1] - regionAnchorVoxel[1];
+        r[u"shape"_s] = u"circle"_s;
+        r[u"center"_s] = QJsonArray{ px(regionAnchorVoxel[0]), px(regionAnchorVoxel[1]) };
+        r[u"radius"_s] = std::sqrt(dx * dx + dy * dy);
+        break;
+    }
+    case RegionMode::Annulus: {
+        const double dx = regionCurrentVoxel[0] - regionAnchorVoxel[0];
+        const double dy = regionCurrentVoxel[1] - regionAnchorVoxel[1];
+        r[u"shape"_s] = u"annulus"_s;
+        r[u"center"_s] = QJsonArray{ px(regionAnchorVoxel[0]), px(regionAnchorVoxel[1]) };
+        r[u"radii"_s]  = QJsonArray{ regionAnnulusInnerRadius, std::sqrt(dx * dx + dy * dy) };
+        break;
+    }
+    case RegionMode::Polygon: {
+        r[u"shape"_s] = u"polygon"_s;
+        QJsonArray pts;
+        for (const auto &v : regionPolygonVertices)
+            pts.append(QJsonArray{ px(v[0]), px(v[1]) });
+        r[u"points"_s] = pts;
+        break;
+    }
+    default:
+        break;
+    }
+    return r;
+}
+
+void vtkWindowImage::exportRegionsToFile()
+{
+    if (this->regionMode == RegionMode::None || !this->regionValid) {
+        QMessageBox::information(this, u"Export Region"_s,
+                u"Draw a region first (Tools ▸ Box/Circle/Polygon/Annulus)."_s);
+        return;
+    }
+    const QStringList choices{
+        u"DS9 — sky (FK5)"_s, u"DS9 — pixel"_s,
+        u"CASA CRTF — sky (FK5)"_s, u"CASA CRTF — pixel"_s };
+    bool ok = false;
+    const QString choice = QInputDialog::getItem(
+            this, u"Export Region"_s, u"Format and coordinate frame:"_s, choices, 0, false, &ok);
+    if (!ok) return;
+    const bool isCrtf = choice.startsWith(u"CASA"_s);
+    const QString format  = isCrtf ? u"crtf"_s : u"ds9"_s;
+    const QString toFrame = choice.contains(u"sky"_s) ? u"fk5"_s : QString();
+    const QString filter  = isCrtf ? u"CRTF region (*.crtf)"_s : u"DS9 region (*.reg)"_s;
+    const QString suffix  = isCrtf ? u".crtf"_s : u".reg"_s;
+    QString path = QFileDialog::getSaveFileName(this, u"Export Region File"_s,
+            QFileInfo(this->filepath).baseName() + suffix, filter);
+    if (path.isEmpty()) return;
+    if (!path.endsWith(suffix)) path += suffix;
+
+    QJsonArray arr{ this->currentRegionToJson() };
+    const QString url = this->remoteBackendUrl, token = this->remoteBackendToken, dsId = this->remoteDatasetId;
+    this->statusBar()->showMessage(u"Serializing region…"_s, 0);
+    QPointer<vtkWindowImage> self(this);
+    auto *watcher = new QFutureWatcher<BackendRegionExportResult>(this);
+    QObject::connect(watcher, &QFutureWatcher<BackendRegionExportResult>::finished, this, [self, watcher, path]() {
+        const BackendRegionExportResult r = watcher->result();
+        watcher->deleteLater();
+        if (!self) return;
+        self->statusBar()->clearMessage();
+        if (!r.valid) {
+            QMessageBox::warning(self, u"Export Region"_s, u"Export failed:\n%1"_s.arg(r.error));
+            return;
+        }
+        QFile out(path);
+        if (!out.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            QMessageBox::warning(self, u"Export Region"_s, u"Cannot write file:\n%1"_s.arg(path));
+            return;
+        }
+        out.write(r.text.toUtf8());
+        out.close();
+        QMessageBox::information(self, u"Export Region"_s, u"Saved region to:\n%1"_s.arg(path));
+    });
+    watcher->setFuture(QtConcurrent::run([url, token, arr, format, dsId, toFrame]() -> BackendRegionExportResult {
+        BackendClient c(url, token);
+        return c.exportRegions(arr, format, toFrame.isEmpty() ? QString() : dsId, toFrame);
+    }));
+}
+
 void vtkWindowImage::analyzeCurrentRegion()
 {
     if (this->regionMode == RegionMode::None || !this->regionValid || !this->layers) {
@@ -2826,16 +2940,81 @@ bool vtkWindowImage::finalizePolygonRegion()
     return true;
 }
 
+namespace {
+// Convert canonical region dicts (from the backend CRTF/DS9 parser) into
+// catalogue-overlay entries, so Load Catalogue Overlay is the single loader for
+// region files — including CASA CRTF, which CatalogueOverlayUtils cannot parse.
+// Image-frame pixel values are kept as-is (matching the DS9 path); ellipse and
+// circle become drawable ellipses, other shapes fall back to a centre marker.
+CatalogueOverlayParseResult catalogueResultFromRegions(const QJsonArray &regions)
+{
+    CatalogueOverlayParseResult res;
+    res.valid = true;
+    res.frameLabel = QStringLiteral("CRTF");
+    res.sourceLabel = QStringLiteral("CRTF regions");
+    for (const QJsonValue &rv : regions) {
+        const QJsonObject r = rv.toObject();
+        const QJsonArray c = r.value(u"center"_s).toArray();
+        if (c.size() < 2) continue;
+        CatalogueOverlayEntry e;
+        const bool image = r.value(u"frame"_s).toString() == u"image"_s;
+        e.frame = image ? CatalogueOverlayEntry::Frame::Image : CatalogueOverlayEntry::Frame::Sky;
+        if (image) { e.pixelX = c.at(0).toDouble(); e.pixelY = c.at(1).toDouble(); }
+        else       { e.raDeg = c.at(0).toDouble(); e.decDeg = c.at(1).toDouble(); }
+        const QString shape = r.value(u"shape"_s).toString();
+        if (shape == u"ellipse"_s) {
+            const QJsonArray a = r.value(u"semi_axes"_s).toArray();
+            e.shape = CatalogueOverlayEntry::Shape::Ellipse;
+            e.radiusX = a.at(0).toDouble();
+            e.radiusY = a.at(1).toDouble();
+            e.angleDeg = r.value(u"angle_deg"_s).toDouble();
+        } else if (shape == u"circle"_s) {
+            e.shape = CatalogueOverlayEntry::Shape::Ellipse;
+            e.radiusX = e.radiusY = r.value(u"radius"_s).toDouble();
+        } else {
+            e.shape = CatalogueOverlayEntry::Shape::Marker;
+        }
+        e.label = r.value(u"props"_s).toObject().value(u"text"_s).toString();
+        res.entries.push_back(e);
+    }
+    return res;
+}
+} // namespace
+
 void vtkWindowImage::loadCatalogueOverlay()
 {
     const QString path = QFileDialog::getOpenFileName(
             this, u"Load Catalogue Overlay"_s, QString(),
-            u"Catalogue files (*.reg *.csv);;DS9 region (*.reg);;CSV (*.csv)"_s);
+            u"Catalogue / region files (*.reg *.crtf *.csv);;DS9 region (*.reg);;"
+            u"CASA CRTF (*.crtf);;CSV (*.csv)"_s);
     if (path.isEmpty()) {
         return;
     }
 
-    const CatalogueOverlayParseResult parsed = CatalogueOverlayUtils::parseFile(path);
+    // DS9 (.reg) and CSV are parsed locally; CASA CRTF is parsed by the backend
+    // (the only place with a CRTF parser) and converted to catalogue entries.
+    CatalogueOverlayParseResult parsed;
+    if (path.endsWith(u".crtf"_s, Qt::CaseInsensitive)) {
+        QFile crtfFile(path);
+        if (!crtfFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QMessageBox::warning(this, u"Catalogue Overlay"_s, u"Cannot open file:\n%1"_s.arg(path));
+            return;
+        }
+        const QString text = QString::fromUtf8(crtfFile.readAll());
+        crtfFile.close();
+        this->statusBar()->showMessage(u"Parsing CRTF…"_s, 0);
+        BackendClient c(this->remoteBackendUrl, this->remoteBackendToken);
+        const BackendRegionParseResult rr = c.parseRegions(text, u"crtf"_s, QString(), QString());
+        this->statusBar()->clearMessage();
+        if (!rr.valid) {
+            QMessageBox::warning(this, u"Catalogue Overlay"_s,
+                                 u"CRTF parse failed:\n%1"_s.arg(rr.error));
+            return;
+        }
+        parsed = catalogueResultFromRegions(rr.regions);
+    } else {
+        parsed = CatalogueOverlayUtils::parseFile(path);
+    }
     if (!parsed.valid) {
         QMessageBox::warning(this, u"Catalogue Overlay"_s, parsed.errorMessage);
         return;

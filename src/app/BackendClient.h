@@ -1020,6 +1020,8 @@ struct BackendLineFitResult
     double integratedFlux{ 0.0 };
     double continuum{ 0.0 };
     double rms{ 0.0 };
+    double baselineIntercept{ 0.0 };  ///< baseline a in (a + b·x)
+    double baselineSlope{ 0.0 };      ///< baseline b in (a + b·x)
 };
 
 class QJsonDocument;

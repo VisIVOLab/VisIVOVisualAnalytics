@@ -3092,6 +3092,11 @@ BackendLineFitResult BackendClient::fitSpectralLine(const QVector<double> &value
     result.integratedFlux = obj.value(QStringLiteral("integrated_flux")).toDouble();
     result.continuum      = obj.value(QStringLiteral("continuum")).toDouble();
     result.rms            = obj.value(QStringLiteral("rms")).toDouble();
+    const QJsonArray baseline = obj.value(QStringLiteral("baseline")).toArray();
+    if (baseline.size() >= 2) {
+        result.baselineIntercept = baseline.at(0).toDouble();
+        result.baselineSlope     = baseline.at(1).toDouble();
+    }
     return result;
 }
 

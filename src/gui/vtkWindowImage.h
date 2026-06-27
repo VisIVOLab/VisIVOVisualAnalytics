@@ -28,6 +28,8 @@ class LUTCustomizerDialog;
 class ProfileWidget;
 class CatalogueTableModel;
 class QAction;
+class QJsonObject;
+class QJsonArray;
 class QCheckBox;
 class QDockWidget;
 class QFrame;
@@ -262,6 +264,7 @@ private:
     QPointer<QAction> m_actLoadExternalContour;
     QPointer<QAction> m_actClearAllContours;
     QPointer<QAction> m_actExportToWorkspace;
+    QPointer<QAction> m_actExportRegions;
     vtkSmartPointer<vtkFlyingEdges2D> m_contourFilter;
     vtkSmartPointer<vtkActor>         m_contourActor;
     bool                     m_contoursVisible{ false };
@@ -389,6 +392,10 @@ private:
     void refreshRegionOverlay();
     void clearRegion();
     void analyzeCurrentRegion();
+    // Region export (CRTF / DS9) — save the active drawn ROI. Loading region
+    // files (incl. CRTF) is handled by loadCatalogueOverlay (single loader).
+    QJsonObject currentRegionToJson() const;            ///< active drawn ROI → canonical dict (1-based px)
+    void exportRegionsToFile();
     bool finalizePolygonRegion();
     void updateLargeImageMode(vtkImageData *imageData, const char *context);
     void loadCatalogueOverlay();

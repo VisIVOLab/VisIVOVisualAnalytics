@@ -6781,6 +6781,7 @@ void vtkWindowCube::analyzeCurrentRegion()
             const bool freshWidget = !this->probePlotWidget;
             if (freshWidget) {
                 this->probePlotWidget = new ProfileWidget(this);
+                this->probePlotWidget->setBackend(this->remoteBackendUrl, this->remoteBackendToken);
                 this->probePlotWidget->setUsageMode(
                         ProfileWidget::UsageMode::RegionStatic, plotTitle);
                 this->probePlotWidget->setupSpectrumPlot(
@@ -8343,6 +8344,7 @@ void vtkWindowCube::updateProbePlot()
 
     if (!this->probePlotWidget) {
         this->probePlotWidget = new ProfileWidget(this);
+        this->probePlotWidget->setBackend(this->remoteBackendUrl, this->remoteBackendToken);
         const QString xLabel = this->spectralAxisTitle();
         const QString yLabel = u"Intensity"_s;
         this->probePlotWidget->setUsageMode(ProfileWidget::UsageMode::ProbeLive,
