@@ -22,6 +22,11 @@ struct VisibleImageBounds2D
     double ymax{ 0. };
 };
 
+// Distance between two integer pixel coordinates, and the click tolerance used
+// to decide a polygon ROI has been closed. Shared by the probe + region code.
+inline constexpr double polygonClosureTolerance = 3.0;
+double distance2d(const std::array<int, 2> &a, const std::array<int, 2> &b);
+
 bool validBounds(const double bounds[6]);
 bool displayPointToWorld(vtkRenderer *renderer, double x, double y, double z, double world[3]);
 bool intersectLineWithBounds(const double p0[3], const double p1[3], const double bounds[6],

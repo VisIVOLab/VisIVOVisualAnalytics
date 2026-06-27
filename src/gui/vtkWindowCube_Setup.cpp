@@ -1,7 +1,5 @@
 #include "vtkWindowCube.h"
 #include "ui_vtkWindowCube.h"
-#include "CubeViewportGeometry.h"
-#include "CubeStatsUtil.h"
 
 #include "qcustomplot.h"
 #include "ColorMaps.h"
@@ -153,8 +151,6 @@
 #include <sstream>
 
 using namespace Qt::StringLiterals;
-using namespace CubeGeom;
-using namespace CubeStats;
 
 // ── Setup: toolbar, sidebar, docks, renderers, camera presets ────────────────
 // Extracted verbatim from vtkWindowCube.cpp. One-time UI/renderer construction

@@ -158,7 +158,6 @@ using namespace CubeStats;
 
 namespace {
 constexpr double pi = 3.14159265358979323846;
-constexpr double polygonClosureTolerance = 3.0;
 const QString kMomentBackendTooltip =
         QStringLiteral("Moment computation requires a backend-visible dataset. Use File → Open Remote or copy the dataset to the backend host.");
 const QString kPvBackendTooltip =
@@ -188,12 +187,6 @@ struct SanityReport
 };
 
 
-double distance2d(const std::array<int, 2> &a, const std::array<int, 2> &b)
-{
-    const double dx = static_cast<double>(a[0] - b[0]);
-    const double dy = static_cast<double>(a[1] - b[1]);
-    return std::sqrt(dx * dx + dy * dy);
-}
 
 
 double computeBlankFraction(vtkImageData *imageData)

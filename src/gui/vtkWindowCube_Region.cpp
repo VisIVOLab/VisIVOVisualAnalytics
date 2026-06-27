@@ -159,11 +159,11 @@ using namespace CubeStats;
 // ── Region (ROI) interaction + statistics ────────────────────────────────────
 // Extracted verbatim from vtkWindowCube.cpp. ROI drawing (box/circle/polygon/
 // annulus), overlay rendering, and pixel statistics over the drawn region.
-// distance2d / polygonClosureTolerance / regionBounds2D are duplicated here;
-// the main TU keeps its own copies (used by export + probe code that stay).
+// distance2d / polygonClosureTolerance come from CubeGeom (shared util).
+// regionBounds2D is still duplicated here — the main TU keeps its own copy for
+// exportSubCubeAsFits (it depends on the vtkWindowCube::RegionMode enum).
 
 namespace {
-constexpr double polygonClosureTolerance = 3.0;
 
 struct RegionStatistics
 {
@@ -178,39 +178,10 @@ struct RegionStatistics
     bool valid{ false };
 };
 
-double distance2d(const std::array<int, 2> &a, const std::array<int, 2> &b);
-void buildAnnulusFill(vtkPoints *points, vtkCellArray *cells, vtkPolyData *polyData,
-                      const std::array<int, 2> &center, double innerRadius, double outerRadius,
-                      int sides = 96);
-bool pointInBox(const std::array<int, 2> &anchor, const std::array<int, 2> &current, int x, int y);
-bool pointInCircle(const std::array<int, 2> &anchor, const std::array<int, 2> &current, int x, int y);
-bool pointInPolygon(const std::vector<std::array<int, 2>> &vertices, int x, int y);
-bool pointInAnnulus(const std::array<int, 2> &center, const std::array<int, 2> &outerPoint,
-                    double innerRadius, int x, int y);
-std::array<int, 4> regionBounds2D(vtkWindowCube::RegionMode mode, const std::array<int, 2> &anchor,
-                                  const std::array<int, 2> &current,
-                                  const std::vector<std::array<int, 2>> &polygonVertices);
-bool pointInRegion(vtkWindowCube::RegionMode mode, const std::array<int, 2> &anchor,
-                   const std::array<int, 2> &current,
-                   const std::vector<std::array<int, 2>> &polygonVertices, double annulusInnerRadius,
-                   int x, int y);
-QString regionModeLabel(vtkWindowCube::RegionMode mode);
-RegionStatistics computeRegionStatistics2D(vtkImageData *imageData, vtkWindowCube::RegionMode mode,
-                                           const std::array<int, 2> &anchor,
-                                           const std::array<int, 2> &current,
-                                           const std::vector<std::array<int, 2>> &polygonVertices,
-                                           double annulusInnerRadius);
-
-double distance2d(const std::array<int, 2> &a, const std::array<int, 2> &b)
-{
-    const double dx = static_cast<double>(a[0] - b[0]);
-    const double dy = static_cast<double>(a[1] - b[1]);
-    return std::sqrt(dx * dx + dy * dy);
-}
 
 void buildAnnulusFill(vtkPoints *points, vtkCellArray *cells, vtkPolyData *polyData,
                       const std::array<int, 2> &center, double innerRadius, double outerRadius,
-                      int sides)  // default declared in the forward declaration above
+                      int sides = 96)
 {
     points->Reset();
     cells->Reset();

@@ -13,6 +13,13 @@
 
 namespace CubeGeom {
 
+double distance2d(const std::array<int, 2> &a, const std::array<int, 2> &b)
+{
+    const double dx = static_cast<double>(a[0] - b[0]);
+    const double dy = static_cast<double>(a[1] - b[1]);
+    return std::sqrt(dx * dx + dy * dy);
+}
+
 bool validBounds(const double bounds[6])
 {
     return std::isfinite(bounds[0]) && std::isfinite(bounds[1]) && std::isfinite(bounds[2])

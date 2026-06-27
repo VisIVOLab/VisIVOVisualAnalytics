@@ -159,19 +159,7 @@ using namespace CubeStats;
 // ── Spectral probe / cursor profile ──────────────────────────────────────────
 // Extracted verbatim from vtkWindowCube.cpp. Cursor-driven spectral probe:
 // pick a voxel, read out value/coords, and plot the spectrum at that pixel.
-// distance2d + polygonClosureTolerance are duplicated here (trivial; the main
-// TU keeps its own copies, shared with the region code that stays there).
-
-namespace {
-constexpr double polygonClosureTolerance = 3.0;
-
-double distance2d(const std::array<int, 2> &a, const std::array<int, 2> &b)
-{
-    const double dx = static_cast<double>(a[0] - b[0]);
-    const double dy = static_cast<double>(a[1] - b[1]);
-    return std::sqrt(dx * dx + dy * dy);
-}
-}  // namespace
+// distance2d / polygonClosureTolerance come from CubeGeom (shared util).
 
 void vtkWindowCube::mouseCallback()
 {
