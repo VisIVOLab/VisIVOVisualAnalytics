@@ -370,6 +370,10 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCatalogue3D.h
         src/gui/vtkWindowCube.cpp
         src/gui/vtkWindowCube.h
+        src/gui/vtkWindowCube_Catalogue.cpp
+        src/gui/vtkWindowCube_RemoteRender.cpp
+        src/gui/CubeViewportGeometry.cpp
+        src/gui/CubeViewportGeometry.h
         src/gui/vtkWindowImage.cpp
         src/gui/vtkWindowImage.h
         src/gui/vtkWindowVbt.cpp
