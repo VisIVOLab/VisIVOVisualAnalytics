@@ -383,6 +383,7 @@ set(PROJECT_SOURCES
         src/gui/CubeStatsUtil.h
         src/gui/vtkWindowImage.cpp
         src/gui/vtkWindowImage.h
+        src/gui/vtkWindowImage_Catalogue.cpp
         src/gui/vtkWindowVbt.cpp
         src/gui/vtkWindowVbt.h
         src/gui/vtkWindowVbtVolume.cpp
