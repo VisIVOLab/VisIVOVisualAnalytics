@@ -374,6 +374,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_RemoteRender.cpp
         src/gui/vtkWindowCube_Wcs.cpp
         src/gui/vtkWindowCube_RemoteSlice.cpp
+        src/gui/vtkWindowCube_Probe.cpp
         src/gui/CubeViewportGeometry.cpp
         src/gui/CubeViewportGeometry.h
         src/gui/CubeStatsUtil.cpp
