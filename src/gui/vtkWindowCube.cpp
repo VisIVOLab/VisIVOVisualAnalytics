@@ -1,6 +1,7 @@
 #include "vtkWindowCube.h"
 #include "ui_vtkWindowCube.h"
 #include "CubeViewportGeometry.h"
+#include "CubeStatsUtil.h"
 
 #include "qcustomplot.h"
 #include "ColorMaps.h"
@@ -153,6 +154,7 @@
 
 using namespace Qt::StringLiterals;
 using namespace CubeGeom;
+using namespace CubeStats;
 
 namespace {
 constexpr double pi = 3.14159265358979323846;
@@ -795,40 +797,6 @@ SanitizedCubeFullStats sanitizeAndStatsCubeInPlace(vtkImageData *image)
 
 
 
-void refitParallelSliceCamera(vtkRenderer *renderer, vtkImageData *sliceImage, vtkRenderWindow *win)
-{
-    if (!renderer || !sliceImage || !win) {
-        return;
-    }
-
-    double bounds[6];
-    sliceImage->GetBounds(bounds);
-    if (!validBounds(bounds)) {
-        return;
-    }
-
-    auto *camera = renderer->GetActiveCamera();
-    double position[3];
-    double focalPoint[3];
-    camera->GetPosition(position);
-    camera->GetFocalPoint(focalPoint);
-
-    const double center[3] = { 0.5 * (bounds[0] + bounds[1]), 0.5 * (bounds[2] + bounds[3]),
-                               0.5 * (bounds[4] + bounds[5]) };
-    const double offset[3] = { position[0] - focalPoint[0], position[1] - focalPoint[1],
-                               position[2] - focalPoint[2] };
-
-    camera->SetFocalPoint(center);
-    camera->SetPosition(center[0] + offset[0], center[1] + offset[1], center[2] + offset[2]);
-
-    const int *size = win->GetSize();
-    const double aspect = (size && size[1] > 0) ? static_cast<double>(size[0]) / size[1] : 1.0;
-    const double width = std::max(1e-6, bounds[1] - bounds[0]);
-    const double height = std::max(1e-6, bounds[3] - bounds[2]);
-    constexpr double margin = 1.1;
-    camera->SetParallelScale(
-            margin * std::max(height * 0.5, width * 0.5 / std::max(1.0, aspect)));
-}
 
 void refitCubeCamera(vtkRenderer *renderer, vtkImageData *cubeImage)
 {
@@ -924,22 +892,6 @@ vtkSmartPointer<vtkImageData> decodeRemoteVolume(const QByteArray &data, int wid
     return image;
 }
 
-vtkSmartPointer<vtkImageData> decodeRemoteSlice(const QByteArray &data, int width, int height)
-{
-    const qsizetype expectedBytes =
-            static_cast<qsizetype>(width) * height * static_cast<qsizetype>(sizeof(float));
-    if (width <= 0 || height <= 0 || data.size() != expectedBytes) {
-        return nullptr;
-    }
-
-    vtkSmartPointer<vtkImageData> image = vtkSmartPointer<vtkImageData>::New();
-    image->SetExtent(0, width - 1, 0, height - 1, 0, 0);
-    image->SetOrigin(0., 0., 0.);
-    image->SetSpacing(1., 1., 1.);
-    image->AllocateScalars(VTK_FLOAT, 1);
-    std::memcpy(image->GetScalarPointer(), data.constData(), static_cast<std::size_t>(expectedBytes));
-    return image;
-}
 
 vtkSmartPointer<vtkPolyData> decodeRemoteIsosurface(const QByteArray &pointsData,
                                                     const QByteArray &polysData, int numPoints,
@@ -982,42 +934,6 @@ vtkSmartPointer<vtkPolyData> decodeRemoteIsosurface(const QByteArray &pointsData
     mesh->BuildCells();
     mesh->BuildLinks();
     return mesh;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Image statistics helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Compute finite-pixel mean and RMS from any vtkImageData scalar array.
-// Outputs are set to quiet_NaN when the image is null or has no finite pixels.
-static void computeImageStats(vtkImageData *img, double &meanOut, double &rmsOut)
-{
-    constexpr double qnan = std::numeric_limits<double>::quiet_NaN();
-    meanOut = qnan;
-    rmsOut  = qnan;
-    if (!img) return;
-    vtkDataArray *scalars = img->GetPointData()->GetScalars();
-    if (!scalars) return;
-    const vtkIdType n = scalars->GetNumberOfTuples();
-    double sum = 0.0, sumSq = 0.0;
-    vtkIdType count = 0;
-    for (vtkIdType i = 0; i < n; ++i) {
-        const double v = scalars->GetComponent(i, 0);
-        if (!std::isfinite(v)) continue;
-        sum   += v;
-        sumSq += v * v;
-        ++count;
-    }
-    if (count == 0) return;
-    meanOut = sum / static_cast<double>(count);
-    rmsOut  = std::sqrt(sumSq / static_cast<double>(count));
-}
-
-// Format a scalar statistic value for display.
-// Uses 6 significant digits in compact notation; returns "—" for non-finite values.
-static QString fmtStat(double v)
-{
-    return std::isfinite(v) ? QString::number(v, 'g', 6) : u"\u2014"_s;
 }
 
 // Pick a downsample factor that brings the preview voxel count into the
@@ -1085,37 +1001,6 @@ RemoteCubePreviewResult fetchRemotePreview(const QString &backendUrl, const QStr
     return result;
 }
 
-RemoteCubeSliceResult fetchRemoteSlice(const QString &backendUrl, const QString &datasetId,
-                                       int index, const QString &sessionId,
-                                       const QString &backendToken)
-{
-    RemoteCubeSliceResult result;
-    result.index = index;
-
-    BackendClient client(backendUrl, backendToken);
-    client.setSessionId(sessionId);
-    const auto response = client.requestSlice(datasetId, QStringLiteral("z"), index);
-    if (!response.valid) {
-        result.errorMessage = response.error.isEmpty() ? u"Remote slice request failed."_s
-                                                       : response.error;
-        return result;
-    }
-
-    if (response.scalarType != u"float32"_s) {
-        result.errorMessage = u"Unsupported remote slice scalar type."_s;
-        return result;
-    }
-
-    result.imageData = decodeRemoteSlice(response.data, response.width, response.height);
-    if (!result.imageData) {
-        result.errorMessage = u"Invalid remote slice payload."_s;
-        return result;
-    }
-
-    result.valid = true;
-    result.imageRange = { response.rangeMin, response.rangeMax };
-    return result;
-}
 
 RemoteCubeSubvolumeResult fetchRemoteSubvolume(const QString &backendUrl, const QString &datasetId,
                                                const std::array<int, 6> &roi, const QString &sessionId,
@@ -7831,117 +7716,11 @@ void vtkWindowCube::updateSlice()
     this->remoteSliceDebounceTimer.start(remoteSliceDebounceDelayMs);
 }
 
-void vtkWindowCube::requestRemoteSlice(int sliceIndex)
-{
-    sliceIndex = this->clampRemoteSliceIndex(sliceIndex);
-    this->currentRequestedRemoteSliceIndex = sliceIndex;
-    // Mark this as a USER-initiated request so its resulting
-    // applyRemoteSliceResult is allowed to spawn ±1 prefetches.
-    // Prefetched results themselves leave this flag false → no cascade.
-    this->prefetchAllowedForNextResult = true;
-    // Cancel any pending idle prefetch — the user just acted, so a
-    // previously-scheduled prefetch is no longer interesting. The
-    // applyRemoteSliceResult for THIS request will re-arm the timer.
-    this->idlePrefetchTimer.stop();
-    if (this->tryApplyCachedRemoteSlice(sliceIndex)) {
-        return;
-    }
 
-    const QString key = this->remoteSliceCacheKey(sliceIndex);
-    if (this->remoteSliceFetchesInFlight.contains(key)) {
-        this->statusBar()->showMessage(u"Loading remote slice..."_s);
-        return;
-    }
 
-    const int requestId = ++this->currentRemoteSliceRequestId;
-    ++this->activeRemoteSliceRequests;
-    this->statusBar()->showMessage(u"Loading remote slice..."_s);
-    this->startRemoteSliceFetch(sliceIndex, false, requestId);
-}
 
-void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
-{
-    // Hide 2D loading placeholder on first real slice tile.
-    this->m_slice2dLoadingActor->VisibilityOff();
 
-    this->cacheRemoteSliceResult(result);
-    this->remoteSliceDisplaySource->SetOutput(result.imageData);
-    this->remoteSliceDisplaySource->Modified();
-    auto *img = vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0));
-    if (img) {
-        this->sliceColors->SetInputData(img);
-    } else {
-        qWarning() << "[vtk] Expected vtkImageData for remote slice colors but got null";
-        return;
-    }
-    this->lutSlice->SetTableRange(result.imageRange[0], result.imageRange[1]);
 
-    const QSignalBlocker blockSlider(ui->sliderSlice);
-    const QSignalBlocker blockSpin(ui->spinSlice);
-    ui->sliderSlice->setValue(result.index + 1);
-    ui->spinSlice->setValue(result.index + 1);
-    ui->lineSpectral->setText(this->formatSpectralAxisValue(result.index));
-    this->refreshSpectralAxisUi();
-    this->updateRemoteCuttingPlane(result.index);
-    ui->vtkCube->renderWindow()->Render();
-    qDebug().noquote() << QStringLiteral("[remote-plane] render triggered");
-
-    if (this->viewingSlice()) {
-        ui->lineImgMin->setText(fmtStat(result.imageRange[0]));
-        ui->lineImgMax->setText(fmtStat(result.imageRange[1]));
-        double mean, rms;
-        computeImageStats(result.imageData, mean, rms);
-        ui->lineImgMean->setText(fmtStat(mean));
-        ui->lineImgRms->setText(fmtStat(rms));
-        this->updateLUTCustomizer();
-    }
-
-    auto *sliceRenderer = this->sliceWin->GetRenderers()->GetFirstRenderer();
-    refitParallelSliceCamera(sliceRenderer, result.imageData, this->sliceWin);
-    sliceRenderer->ResetCameraClippingRange();
-    if (this->probeModeActive && this->probeValid) {
-        this->refreshProbeOverlay();
-        this->updateProbeReadout(result.imageData);
-    }
-    this->sliceWin->Render();
-    // Smart prefetch: schedule ±1 neighbour fetch ``idlePrefetchDelayMs``
-    // from now, only when this slice was the user's explicit request
-    // (prefetchAllowedForNextResult) — not a prefetched neighbour itself
-    // (no cascade). A new requestRemoteSlice() will CANCEL this timer
-    // (see requestRemoteSlice), so rapid scroll produces zero prefetches
-    // and the SSH tunnel stays clear for the user-visible slice.
-    if (this->prefetchAllowedForNextResult) {
-        this->prefetchAllowedForNextResult = false;
-        this->idlePrefetchTimer.start(idlePrefetchDelayMs);
-    }
-}
-
-void vtkWindowCube::updateRemoteSliceDragFeedback(int sliceIndex)
-{
-    const int clampedSlice = this->clampRemoteSliceIndex(sliceIndex);
-    this->currentRequestedRemoteSliceIndex = clampedSlice;
-    ui->lineSpectral->setText(this->formatSpectralAxisValue(clampedSlice));
-    this->updateRemoteCuttingPlane(clampedSlice);
-    ui->vtkCube->renderWindow()->Render();
-}
-
-int vtkWindowCube::remoteSliceCount() const
-{
-    return std::max(1, this->remoteDatasetDepth);
-}
-
-int vtkWindowCube::clampRemoteSliceIndex(int sliceIndex) const
-{
-    return std::clamp(sliceIndex, 0, this->remoteSliceCount() - 1);
-}
-
-double vtkWindowCube::remoteSliceCoordinate(int sliceIndex) const
-{
-    const int clampedSlice = this->clampRemoteSliceIndex(sliceIndex);
-    bool ok = false;
-    const double axisValue = this->spectralAxisValue(static_cast<double>(clampedSlice), &ok);
-    return ok ? axisValue : static_cast<double>(clampedSlice);
-}
 
 
 
@@ -8137,124 +7916,11 @@ void vtkWindowCube::set2dWcsOverlayVisible(bool visible)
 
 
 
-QString vtkWindowCube::remoteSliceCacheKey(int sliceIndex) const
-{
-    return QStringLiteral("%1|z|%2")
-            .arg(this->remoteDatasetId)
-            .arg(this->clampRemoteSliceIndex(sliceIndex));
-}
 
-void vtkWindowCube::touchRemoteSliceCacheKey(const QString &key)
-{
-    this->remoteSliceCacheLru.removeAll(key);
-    this->remoteSliceCacheLru.append(key);
-}
 
-void vtkWindowCube::cacheRemoteSliceResult(const RemoteCubeSliceResult &result)
-{
-    if (!result.valid || !result.imageData) {
-        return;
-    }
 
-    const QString key = this->remoteSliceCacheKey(result.index);
-    this->remoteSliceCache.insert(key, result);
-    this->touchRemoteSliceCacheKey(key);
-    while (this->remoteSliceCacheLru.size() > remoteSliceCacheCapacity) {
-        const QString evictedKey = this->remoteSliceCacheLru.takeFirst();
-        this->remoteSliceCache.remove(evictedKey);
-    }
-}
 
-bool vtkWindowCube::tryApplyCachedRemoteSlice(int sliceIndex)
-{
-    const QString key = this->remoteSliceCacheKey(sliceIndex);
-    const auto it = this->remoteSliceCache.constFind(key);
-    if (it == this->remoteSliceCache.cend()) {
-        return false;
-    }
 
-    this->touchRemoteSliceCacheKey(key);
-    this->applyRemoteSliceResult(it.value());
-    this->clearPersistentStatusMessage();
-    return true;
-}
-
-void vtkWindowCube::startRemoteSliceFetch(int sliceIndex, bool isPrefetch, int requestId)
-{
-    sliceIndex = this->clampRemoteSliceIndex(sliceIndex);
-    const QString key = this->remoteSliceCacheKey(sliceIndex);
-    if (this->remoteSliceFetchesInFlight.contains(key)) {
-        return;
-    }
-
-    this->remoteSliceFetchesInFlight.insert(key);
-    auto *watcher = new QFutureWatcher<RemoteCubeSliceResult>(this);
-    watcher->setProperty("requestId", requestId);
-    watcher->setProperty("sliceKey", key);
-    watcher->setProperty("isPrefetch", isPrefetch);
-    QObject::connect(watcher, &QFutureWatcher<RemoteCubeSliceResult>::finished, this,
-                     [this, watcher]() {
-                         const auto result = watcher->result();
-                         const int requestId = watcher->property("requestId").toInt();
-                         const QString key = watcher->property("sliceKey").toString();
-                         const bool isPrefetch = watcher->property("isPrefetch").toBool();
-                         this->remoteSliceFetchesInFlight.remove(key);
-                         if (!isPrefetch) {
-                             --this->activeRemoteSliceRequests;
-                         }
-                         watcher->deleteLater();
-
-                         if (!result.valid || !result.imageData) {
-                             if (!isPrefetch && requestId == this->currentRemoteSliceRequestId) {
-                                 this->persistentStatusActive = false;
-                                 this->statusMessageClearTimer.stop();
-                                 this->statusBar()->showMessage(result.errorMessage.isEmpty()
-                                                                        ? u"Could not load remote slice."_s
-                                                                        : result.errorMessage);
-                             }
-                             return;
-                         }
-
-                         this->cacheRemoteSliceResult(result);
-
-                         const bool requestedSliceMatches = this->clampRemoteSliceIndex(result.index)
-                                 == this->currentRequestedRemoteSliceIndex;
-                         if (!isPrefetch && requestId != this->currentRemoteSliceRequestId) {
-                             if (this->activeRemoteSliceRequests == 0) {
-                                 this->clearPersistentStatusMessage();
-                             }
-                             return;
-                         }
-
-                         if (requestedSliceMatches) {
-                             this->applyRemoteSliceResult(result);
-                             if (!isPrefetch && this->activeRemoteSliceRequests == 0) {
-                                 this->clearPersistentStatusMessage();
-                             }
-                         } else if (!isPrefetch && this->activeRemoteSliceRequests == 0) {
-                             this->clearPersistentStatusMessage();
-                         }
-                     });
-    watcher->setFuture(QtConcurrent::run(&fetchRemoteSlice, this->remoteBackendUrl,
-                                         this->remoteDatasetId, sliceIndex, this->remoteSessionId,
-                                         this->remoteBackendToken));
-}
-
-void vtkWindowCube::prefetchNeighborRemoteSlices(int sliceIndex)
-{
-    for (const int neighbor : { sliceIndex - 1, sliceIndex + 1 }) {
-        if (neighbor < 0 || neighbor >= this->remoteSliceCount()) {
-            continue;
-        }
-
-        const QString key = this->remoteSliceCacheKey(neighbor);
-        if (this->remoteSliceCache.contains(key) || this->remoteSliceFetchesInFlight.contains(key)) {
-            continue;
-        }
-
-        this->startRemoteSliceFetch(neighbor, true);
-    }
-}
 
 void vtkWindowCube::updateContoursVisibility()
 {
