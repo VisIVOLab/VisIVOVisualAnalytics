@@ -360,6 +360,7 @@ VisIVOVisualAnalytics.dmg
 /backend/app/routers/__pycache__
 /backend/app/routers/__pycache__
 /backend/app/compute/__pycache__
+/backend/app/render_session/__pycache__
 /docs/_build
 /docs/context-chat.md
 /.qt
