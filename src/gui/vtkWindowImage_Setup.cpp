@@ -137,6 +137,13 @@ void vtkWindowImage::showLUTCustomizer()
         this->lutCustomizer = new LUTCustomizerDialog(this);
         QObject::connect(this->lutCustomizer, &LUTCustomizerDialog::lutUpdated, this,
                          [this]() {
+                             // Persist the chosen stretch on the active layer so it
+                             // survives reloads / colormap swaps.
+                             const int idx = this->currentLayerIndex();
+                             if (this->layers && idx >= 0 && this->lutCustomizer) {
+                                 this->layers->setScaleMode(idx, this->lutCustomizer->scaleMode(),
+                                                            this->lutCustomizer->scaleGamma());
+                             }
                              this->markDisplayStateAdjusted("lut editor");
                              this->showCurrentLayerSettings();
                          });
@@ -151,12 +158,14 @@ void vtkWindowImage::showLUTCustomizer()
     QPointer<LUTCustomizerDialog> dialog = this->lutCustomizer;
     auto *dataset = this->layers->getImageData(index);
     auto *lut = this->layers->getLookupTable(index);
-    QTimer::singleShot(0, this, [this, dialog, dataset, lut]() {
+    const LutScale::Mode mode = this->layers->scaleMode(index);
+    const double gamma = this->layers->scaleGamma(index);
+    QTimer::singleShot(0, this, [this, dialog, dataset, lut, mode, gamma]() {
         if (!dialog || this->suspendLutEditorUpdates || !dataset || !lut) {
             return;
         }
         qDebug().noquote() << QStringLiteral("[lut] deferred init started");
-        dialog->init(dataset, lut);
+        dialog->init(dataset, lut, mode, gamma);
     });
 }
 
@@ -165,7 +174,9 @@ void vtkWindowImage::updateLUTCustomizer()
     if (this->lutCustomizer && !this->suspendLutEditorUpdates) {
         const int index = this->currentLayerIndex();
         this->lutCustomizer->init(this->layers->getImageData(index),
-                                  this->layers->getLookupTable(index));
+                                  this->layers->getLookupTable(index),
+                                  this->layers->scaleMode(index),
+                                  this->layers->scaleGamma(index));
     }
 }
 

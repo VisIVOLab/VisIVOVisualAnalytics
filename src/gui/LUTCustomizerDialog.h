@@ -5,9 +5,13 @@
 
 #include <QDialog>
 
+#include "LutScale.h"
+
 class QAbstractButton;
 class QCPAbstractItem;
 class QCPItemStraightLine;
+class QDoubleSpinBox;
+class QLabel;
 class vtkImageData;
 class vtkLookupTable;
 
@@ -26,6 +30,12 @@ public:
     ~LUTCustomizerDialog() override;
 
     void init(vtkImageData *dataset, vtkLookupTable *lut);
+    // Variant that seeds the colour-scale mode + gamma from the owning layer so
+    // the dialog reopens showing the stretch currently applied.
+    void init(vtkImageData *dataset, vtkLookupTable *lut, LutScale::Mode mode, double gamma);
+
+    LutScale::Mode scaleMode() const { return m_scaleMode; }
+    double scaleGamma() const { return m_gamma; }
 
 signals:
     void lutUpdated();
@@ -42,16 +52,21 @@ private slots:
     void updateLut();
     void buttonClicked(QAbstractButton *btn);
     void changeAxisScaling(bool logarithmic);
+    void changeScaleMode(int index);
 
 private:
     Ui::LUTCustomizerDialog *ui;
     QCPItemStraightLine *refLineMin;
     QCPItemStraightLine *refLineMax;
     QCPItemStraightLine *selectedLine;
+    QDoubleSpinBox *gammaSpin = nullptr;
+    QLabel *gammaLabel = nullptr;
 
     vtkSmartPointer<vtkImageData> dataset;
     vtkSmartPointer<vtkLookupTable> lut;
     double datasetRange[2];
+    LutScale::Mode m_scaleMode = LutScale::Mode::Linear;
+    double m_gamma = 2.0;
 
     void setupPlot();
     void plotHistogram();

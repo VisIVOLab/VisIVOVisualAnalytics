@@ -11,6 +11,8 @@ add_library(visivo_shared_vtk STATIC
         ${PROJECT_SOURCE_DIR}/src/app/BackendClientFactory.h
         ${PROJECT_SOURCE_DIR}/src/vtk/ColorMaps.cpp
         ${PROJECT_SOURCE_DIR}/src/vtk/ColorMaps.h
+        ${PROJECT_SOURCE_DIR}/src/vtk/LutScale.cpp
+        ${PROJECT_SOURCE_DIR}/src/vtk/LutScale.h
         ${PROJECT_SOURCE_DIR}/src/vtk/CubeOpenPreviewTask.cpp
         ${PROJECT_SOURCE_DIR}/src/vtk/CubeOpenPreviewTask.h
         ${PROJECT_SOURCE_DIR}/src/vtk/ImageLayer.cpp

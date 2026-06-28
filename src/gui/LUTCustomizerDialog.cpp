@@ -15,12 +15,15 @@
 #include <vtkTable.h>
 
 #include <QDoubleValidator>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QDebug>
+#include <QGridLayout>
 #include <QIcon>
 #include <QImage>
 #include <QLabel>
 #include <QPixmap>
+#include <QSignalBlocker>
 #include <QSize>
 #include <QVBoxLayout>
 
@@ -123,16 +126,37 @@ LUTCustomizerDialog::LUTCustomizerDialog(QWidget *parent)
     });
     ui->comboLut->setCurrentText(QString::fromStdString(ColorMaps::DefaultColorMap));
 
-    // Axis scaling — segmented Linear / Log control (replaces the previous
-    // QComboBox in the .ui; the SegmentedToggle exposes the same API).
-    ui->comboScale->addItem(
-            u"Linear"_s,
-            u"Linear mapping of scalar value → colour."_s);
-    ui->comboScale->addItem(
-            u"Log"_s,
-            u"Logarithmic mapping (range minimum must be strictly positive)."_s);
+    // Colour-scale stretch — segmented Linear / Log / Sqrt / Square / Power
+    // control (the SegmentedToggle exposes a QComboBox-flavoured API). The
+    // mode list + tool-tips come from the shared LutScale helper so every
+    // viewer stays consistent.
+    {
+        const auto labels = LutScale::modeLabels();
+        const auto tips = LutScale::modeToolTips();
+        for (std::size_t i = 0; i < labels.size(); ++i) {
+            ui->comboScale->addItem(QString::fromLatin1(labels[i]),
+                                    QString::fromLatin1(tips[i]));
+        }
+    }
     QObject::connect(ui->comboScale, &SegmentedToggle::currentIndexChanged, this,
-                     &LUTCustomizerDialog::changeAxisScaling);
+                     &LUTCustomizerDialog::changeScaleMode);
+
+    // Power exponent (γ) — only relevant when the Power mode is selected.
+    this->gammaSpin = new QDoubleSpinBox(this);
+    this->gammaSpin->setRange(0.1, 10.0);
+    this->gammaSpin->setSingleStep(0.1);
+    this->gammaSpin->setDecimals(2);
+    this->gammaSpin->setValue(this->m_gamma);
+    this->gammaSpin->setToolTip(u"Exponent γ for the Power stretch (t^γ)."_s);
+    this->gammaLabel = new QLabel(u"Power γ"_s, this);
+    if (auto *grid = qobject_cast<QGridLayout *>(ui->groupLut->layout())) {
+        grid->addWidget(this->gammaLabel, 4, 0);
+        grid->addWidget(this->gammaSpin, 4, 1, 1, 2);
+    }
+    this->gammaLabel->setVisible(false);
+    this->gammaSpin->setVisible(false);
+    QObject::connect(this->gammaSpin, &QDoubleSpinBox::valueChanged, this,
+                     [this](double v) { this->m_gamma = v; });
 
     // Apply button
     QObject::connect(ui->buttonBox, &QDialogButtonBox::clicked, this,
@@ -299,9 +323,25 @@ void LUTCustomizerDialog::plotHistogram()
     this->refLineMax->point1->setCoords(lutRange[1], 0);
     this->refLineMax->point2->setCoords(lutRange[1], 1);
 
-    this->changeAxisScaling(this->lut->UsingLogScale());
+    this->changeAxisScaling(this->m_scaleMode == LutScale::Mode::Log);
     qDebug().noquote()
             << QStringLiteral("[lut] histogram update completed ms=%1").arg(timer.elapsed());
+}
+
+void LUTCustomizerDialog::changeScaleMode(int index)
+{
+    this->m_scaleMode = static_cast<LutScale::Mode>(std::clamp(index, 0, 4));
+    const bool power = (this->m_scaleMode == LutScale::Mode::Power);
+    if (this->gammaLabel) {
+        this->gammaLabel->setVisible(power);
+    }
+    if (this->gammaSpin) {
+        this->gammaSpin->setVisible(power);
+    }
+    // The histogram x-axis only switches to logarithmic for the Log mode; the
+    // Sqrt/Square/Power stretches keep a linear value axis (the non-linearity
+    // lives in the colour mapping, not the data positions).
+    this->changeAxisScaling(this->m_scaleMode == LutScale::Mode::Log);
 }
 
 void LUTCustomizerDialog::changeAxisScaling(bool logarithmic)
@@ -331,6 +371,16 @@ void LUTCustomizerDialog::changeAxisScaling(bool logarithmic)
 
 void LUTCustomizerDialog::init(vtkImageData *dataset, vtkLookupTable *lut)
 {
+    // Back-compat entry point: infer Linear/Log from the table's native scale
+    // (callers that track Sqrt/Square/Power use the mode-aware overload below).
+    const LutScale::Mode mode =
+            (lut && lut->UsingLogScale()) ? LutScale::Mode::Log : LutScale::Mode::Linear;
+    this->init(dataset, lut, mode, this->m_gamma);
+}
+
+void LUTCustomizerDialog::init(vtkImageData *dataset, vtkLookupTable *lut,
+                               LutScale::Mode mode, double gamma)
+{
     if (!dataset || !lut) {
         return;
     }
@@ -338,11 +388,20 @@ void LUTCustomizerDialog::init(vtkImageData *dataset, vtkLookupTable *lut)
     this->dataset->GetScalarRange(this->datasetRange);
 
     this->lut = lut;
+    this->m_scaleMode = mode;
+    this->m_gamma = gamma;
     const double *lutRange = this->lut->GetTableRange();
     ui->lineMin->setText(QString::number(lutRange[0]));
     ui->lineMax->setText(QString::number(lutRange[1]));
     ui->comboLut->setCurrentText(QString::fromStdString(this->lut->GetObjectName()));
-    ui->comboScale->setCurrentIndex(this->lut->UsingLogScale());
+    if (this->gammaSpin) {
+        const QSignalBlocker blocker(this->gammaSpin);
+        this->gammaSpin->setValue(gamma);
+    }
+    ui->comboScale->setCurrentIndex(static_cast<int>(mode));
+    // Ensure gamma-row visibility + plot axis match even if the combo did not
+    // emit (e.g. when the index was already at `mode`).
+    this->changeScaleMode(static_cast<int>(mode));
 
     this->plotHistogram();
 }
@@ -417,25 +476,29 @@ void LUTCustomizerDialog::updateLut()
     if (!this->lut) {
         return;
     }
-    ColorMaps::SetColorMap(this->lut, ui->comboLut->currentText().toStdString());
     double minValue = ui->lineMin->text().toDouble();
     double maxValue = ui->lineMax->text().toDouble();
     if (!std::isfinite(minValue) || !std::isfinite(maxValue) || minValue >= maxValue) {
         return;
     }
-    if (ui->comboScale->currentIndex() == 1) {
+    this->m_scaleMode = static_cast<LutScale::Mode>(std::clamp(ui->comboScale->currentIndex(), 0, 4));
+    this->m_gamma = this->gammaSpin ? this->gammaSpin->value() : this->m_gamma;
+
+    if (this->m_scaleMode == LutScale::Mode::Log) {
+        // Dataset-aware positive floor (more accurate than a generic epsilon)
+        // so the log range starts at the smallest real positive sample.
         const double positiveFloor = sampledPositiveFloor(this->dataset);
         if (positiveFloor <= 0.0) {
             return;
         }
         maxValue = std::max(maxValue, positiveFloor);
         minValue = std::max(minValue, positiveFloor);
-        this->lut->SetScaleToLog10();
-    } else {
-        this->lut->SetScaleToLinear();
     }
-    this->lut->SetTableRange(minValue, maxValue);
-    this->lut->Build();
+
+    // build() forces a fresh linear colormap fill before stretching, so repeated
+    // Apply clicks (or a mode change without a colormap change) never compound.
+    LutScale::build(this->lut, ui->comboLut->currentText().toStdString(), this->m_scaleMode,
+                    minValue, maxValue, this->m_gamma);
     emit this->lutUpdated();
 }
 

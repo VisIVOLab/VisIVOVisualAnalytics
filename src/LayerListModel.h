@@ -8,6 +8,8 @@
 #include <memory>
 #include <string>
 
+#include "LutScale.h"
+
 struct ImageLayerLoadResult;
 
 class ImageLayerSet;
@@ -96,6 +98,26 @@ public:
    * @param flag
    */
     void setLogScale(int index, bool flag);
+
+    /**
+   * @param index
+   * @return the colour-scale stretch applied to this layer's LUT
+   */
+    LutScale::Mode scaleMode(int index) const;
+
+    /**
+   * @param index
+   * @return the Power-stretch exponent (γ) tracked for this layer
+   */
+    double scaleGamma(int index) const;
+
+    /**
+   * Apply a colour-scale stretch (Linear/Log/Sqrt/Square/Power) to a layer.
+   * @param index
+   * @param mode stretch mode
+   * @param gamma exponent for the Power mode (ignored otherwise)
+   */
+    void setScaleMode(int index, LutScale::Mode mode, double gamma);
 
     /**
    * @param index

@@ -1,6 +1,7 @@
 #include "vtkWindowCatalogue3D.h"
 #include "ui_vtkWindowCatalogue3D.h"
 
+#include "LutScale.h"
 #include "app/DiagnosticsManager.h"
 #include "DiagnosticsWindow.h"
 #include "Catalogue3DTableModel.h"
@@ -44,6 +45,7 @@
 #include <QKeySequence>
 #include <QMetaObject>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QDebug>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -562,6 +564,16 @@ void vtkWindowCatalogue3D::updateColorMapping()
         return;
     }
 
+    // Gamma only applies to the continuous Power stretch; keep the spinbox state
+    // correct regardless of which branch (incl. the morphology early-return) runs.
+    const LutScale::Mode colorScale = this->comboColorScale
+            ? static_cast<LutScale::Mode>(std::clamp(this->comboColorScale->currentIndex(), 0, 4))
+            : LutScale::Mode::Linear;
+    const double colorGamma = this->spinColorGamma ? this->spinColorGamma->value() : 2.0;
+    if (this->spinColorGamma) {
+        this->spinColorGamma->setEnabled(colorScale == LutScale::Mode::Power);
+    }
+
     if (this->mapColorKey == QStringLiteral("builtin:morphology")) {
         for (vtkIdType i = 0; i < static_cast<vtkIdType>(this->entries.size()); ++i) {
             const auto &entry = this->entries[static_cast<std::size_t>(i)];
@@ -609,14 +621,19 @@ void vtkWindowCatalogue3D::updateColorMapping()
 
     this->morphScalars->Modified();
     this->sourcesPolyData->GetPointData()->SetScalars(this->morphScalars);
-    this->valueLut->SetTableRange(minValue, maxValue);
-    this->valueLut->Build();
+    // Apply the chosen colour-scale stretch to the HSV value ramp. applyGenerated
+    // uses ForceBuild(), so it stays idempotent across repeated mapping updates.
+    LutScale::applyGenerated(this->valueLut, colorScale, minValue, maxValue, colorGamma);
+    // Drive the mappers from the LUT's (possibly Log-floored) range — otherwise a
+    // raw minValue<=0 would override the positive floor at render time.
+    double mapperRange[2];
+    this->valueLut->GetTableRange(mapperRange);
     this->glyphMapper->SetLookupTable(this->valueLut);
-    this->glyphMapper->SetScalarRange(minValue, maxValue);
+    this->glyphMapper->SetScalarRange(mapperRange[0], mapperRange[1]);
     this->pointsMapper->SetLookupTable(this->valueLut);
-    this->pointsMapper->SetScalarRange(minValue, maxValue);
+    this->pointsMapper->SetScalarRange(mapperRange[0], mapperRange[1]);
     qInfo() << "[catalogue3d] color mapping:" << this->mapColorKey
-            << "range:" << minValue << maxValue;
+            << "range:" << mapperRange[0] << mapperRange[1];
 }
 
 void vtkWindowCatalogue3D::updateGlyphPipeline()

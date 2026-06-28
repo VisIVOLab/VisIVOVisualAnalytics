@@ -39,6 +39,7 @@ class vtkAppendPolyData;
 class QAction;
 class QCheckBox;
 class QComboBox;
+class QDoubleSpinBox;
 class QListWidget;
 class QPushButton;
 class QLabel;
@@ -257,6 +258,8 @@ private:
     QPointer<QComboBox> comboMapZ;
     QPointer<QComboBox> comboMapSize;
     QPointer<QComboBox> comboMapColor;
+    QPointer<QComboBox> comboColorScale;       // Linear / Log / Sqrt / Square / Power
+    QPointer<QDoubleSpinBox> spinColorGamma;   // exponent for the Power mode
     QPointer<QComboBox> comboGeometry;
     QPointer<QComboBox> comboSizeMode;
     QPointer<QComboBox> comboFrame;

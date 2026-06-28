@@ -118,6 +118,30 @@ void ImageLayerSet::setLogScale(int index, bool flag)
     this->layers[index]->setLogScale(flag);
 }
 
+LutScale::Mode ImageLayerSet::scaleMode(int index) const
+{
+    if (!this->isValidIndex(index)) {
+        return LutScale::Mode::Linear;
+    }
+    return this->layers[index]->scaleMode();
+}
+
+double ImageLayerSet::scaleGamma(int index) const
+{
+    if (!this->isValidIndex(index)) {
+        return 2.0;
+    }
+    return this->layers[index]->scaleGamma();
+}
+
+void ImageLayerSet::setScaleMode(int index, LutScale::Mode mode, double gamma)
+{
+    if (!this->isValidIndex(index)) {
+        return;
+    }
+    this->layers[index]->setScaleMode(mode, gamma);
+}
+
 std::string ImageLayerSet::colorMapName(int index) const
 {
     if (!this->isValidIndex(index)) {

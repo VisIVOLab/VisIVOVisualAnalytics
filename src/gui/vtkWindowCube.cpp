@@ -2552,9 +2552,10 @@ void vtkWindowCube::applyVolumeLutToPipeline(const QString &name)
 
     // Keep lutVolume member in sync — it is the authoritative LUT for the 3D
     // LUT customizer dialog and must always reflect the current volume state.
-    this->lutVolume->SetTableRange(cubeRange[0], cubeRange[1]);
-    ColorMaps::SetColorMap(this->lutVolume, stdName);
-    this->lutVolume->Build();
+    // build() fills the colormap AND re-applies the tracked stretch so swapping
+    // the volume colormap keeps a Sqrt/Square/Power selection.
+    LutScale::build(this->lutVolume, stdName, this->m_volumeScaleMode, cubeRange[0], cubeRange[1],
+                    this->m_volumeScaleGamma);
     ColorMaps::SetColorTransferFunction(this->lutVolume, this->volumeColorTransferFunction);
     this->volumeColorTransferFunction->SetObjectName(stdName);
     // NOTE: does NOT call Render() — caller decides when to render.
@@ -2722,7 +2723,10 @@ void vtkWindowCube::applySliceLutByName(const QString &name)
     const std::string stdName = name.toStdString();
 
     // Update only the slice LUT — does not touch the 3D volume or moment LUT.
-    ColorMaps::SetColorMap(this->lutSlice, stdName);
+    // build() preserves a Sqrt/Square/Power stretch across the colormap swap.
+    const double *r = this->lutSlice->GetTableRange();
+    LutScale::build(this->lutSlice, stdName, this->m_sliceScaleMode, r[0], r[1],
+                    this->m_sliceScaleGamma);
     this->lutSlice->Modified();
 
     if (ui->vtkImage->renderWindow() && this->viewingSlice()) {
@@ -2739,7 +2743,10 @@ void vtkWindowCube::applyMomentLutByName(const QString &name)
     const std::string stdName = name.toStdString();
 
     // Update only the moment LUT — does not touch the slice LUT or 3D volume.
-    ColorMaps::SetColorMap(this->lutMoment, stdName);
+    // build() preserves a Sqrt/Square/Power stretch across the colormap swap.
+    const double *r = this->lutMoment->GetTableRange();
+    LutScale::build(this->lutMoment, stdName, this->m_sliceScaleMode, r[0], r[1],
+                    this->m_sliceScaleGamma);
     this->lutMoment->Modified();
 
     if (ui->vtkImage->renderWindow() && !this->viewingSlice()) {
@@ -5281,7 +5288,13 @@ void vtkWindowCube::showLUTCustomizer()
     if (!this->lutCustomizer) {
         this->lutCustomizer = new LUTCustomizerDialog(this);
         QObject::connect(this->lutCustomizer, &LUTCustomizerDialog::lutUpdated, this,
-                         &vtkWindowCube::renderImage);
+                         [this]() {
+                             // Remember the chosen stretch so reopening the dialog
+                             // and colormap swaps keep it.
+                             this->m_sliceScaleMode = this->lutCustomizer->scaleMode();
+                             this->m_sliceScaleGamma = this->lutCustomizer->scaleGamma();
+                             this->renderImage();
+                         });
     }
 
     this->updateLUTCustomizer();
@@ -5299,11 +5312,11 @@ void vtkWindowCube::updateLUTCustomizer()
     if (this->viewingSlice()) {
         this->lutCustomizer->init(
                 vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0)),
-                this->lutSlice);
+                this->lutSlice, this->m_sliceScaleMode, this->m_sliceScaleGamma);
     } else {
         this->lutCustomizer->init(
                 vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0)),
-                this->lutMoment);
+                this->lutMoment, this->m_sliceScaleMode, this->m_sliceScaleGamma);
     }
 }
 
@@ -5314,7 +5327,10 @@ void vtkWindowCube::showLUTCustomizer3D()
         QObject::connect(this->lutCustomizer3D, &LUTCustomizerDialog::lutUpdated, this,
                          [this]() {
                              // lutVolume was already updated and rebuilt by the dialog.
-                             // Re-derive the CTF from the member LUT and re-render.
+                             // Remember the stretch, then re-derive the CTF from the
+                             // (already-stretched) member LUT and re-render.
+                             this->m_volumeScaleMode = this->lutCustomizer3D->scaleMode();
+                             this->m_volumeScaleGamma = this->lutCustomizer3D->scaleGamma();
                              const std::string name = this->lutVolume->GetObjectName();
                              ColorMaps::SetColorTransferFunction(this->lutVolume,
                                                                  this->volumeColorTransferFunction);
@@ -5334,7 +5350,8 @@ void vtkWindowCube::showLUTCustomizer3D()
     auto *cubeImage =
             vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
     if (cubeImage && cubeImage->GetNumberOfPoints() > 0) {
-        this->lutCustomizer3D->init(cubeImage, this->lutVolume);
+        this->lutCustomizer3D->init(cubeImage, this->lutVolume, this->m_volumeScaleMode,
+                                    this->m_volumeScaleGamma);
     }
     this->lutCustomizer3D->show();
     this->lutCustomizer3D->raise();

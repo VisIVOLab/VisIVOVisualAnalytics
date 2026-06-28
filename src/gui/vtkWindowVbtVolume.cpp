@@ -128,6 +128,8 @@ void vtkWindowVbtVolume::setupUi()
                      [this](int) { this->updateTransferFunctions(); });
     QObject::connect(this->comboScaleMode, &QComboBox::currentIndexChanged, this,
                      [this](int) { this->updateTransferFunctions(); });
+    QObject::connect(this->spinScaleGamma, &QDoubleSpinBox::valueChanged, this,
+                     [this](double) { this->updateTransferFunctions(); });
     QObject::connect(this->buttonAutoscale, &QPushButton::clicked, this, [this]() {
         this->setColorRange(this->dataScalarMin, this->dataScalarMax);
         this->updateTransferFunctions();
@@ -241,11 +243,22 @@ void vtkWindowVbtVolume::setupSidebarUi()
                 u"MinIP: show the minimum scalar value along each ray."_s);
 
         this->comboScaleMode = new QComboBox(inner);
-        this->comboScaleMode->addItems({ u"Linear"_s, u"Log"_s });
+        for (const char *label : LutScale::modeLabels()) {
+            this->comboScaleMode->addItem(QString::fromLatin1(label));
+        }
+
+        this->spinScaleGamma = new QDoubleSpinBox(inner);
+        this->spinScaleGamma->setRange(0.1, 10.0);
+        this->spinScaleGamma->setSingleStep(0.1);
+        this->spinScaleGamma->setDecimals(2);
+        this->spinScaleGamma->setValue(2.0);
+        this->spinScaleGamma->setToolTip(u"Exponent γ for the Power stretch (t^γ)."_s);
+        this->spinScaleGamma->setEnabled(false);  // enabled only in Power mode
 
         fl->addRow(u"Scalar"_s, this->comboScalarField);
         fl->addRow(u"Mode"_s, this->comboBlendMode);
         fl->addRow(u"Scale"_s, this->comboScaleMode);
+        fl->addRow(u"Power γ"_s, this->spinScaleGamma);
         pageVolumeLayout->addWidget(makeCard(u"SOURCE"_s, inner));
     }
 
@@ -594,7 +607,14 @@ void vtkWindowVbtVolume::updateTransferFunctions()
     }
 
     // ── Colour/opacity range ──────────────────────────────────────────────────
-    const bool logMode = this->comboScaleMode && this->comboScaleMode->currentIndex() == 1;
+    const LutScale::Mode scaleMode = this->comboScaleMode
+            ? static_cast<LutScale::Mode>(std::clamp(this->comboScaleMode->currentIndex(), 0, 4))
+            : LutScale::Mode::Linear;
+    const double scaleGamma = this->spinScaleGamma ? this->spinScaleGamma->value() : 2.0;
+    if (this->spinScaleGamma) {
+        this->spinScaleGamma->setEnabled(scaleMode == LutScale::Mode::Power);
+    }
+    const bool logMode = (scaleMode == LutScale::Mode::Log);
     double colorMin = this->activeColorMin;
     double colorMax = this->activeColorMax;
     if (!(colorMin < colorMax)) {
@@ -636,6 +656,14 @@ void vtkWindowVbtVolume::updateTransferFunctions()
         this->colorTransfer->AddRGBPoint(mid1,     0.08, 0.25, 0.70);
         this->colorTransfer->AddRGBPoint(mid2,     0.90, 0.55, 0.12);
         this->colorTransfer->AddRGBPoint(colorMax, 1.00, 0.97, 0.88);
+    }
+
+    // Sqrt/Square/Power: redistribute the linear gradient just built through the
+    // stretch curve (Log keeps its dedicated log-spaced nodes above).
+    if (scaleMode == LutScale::Mode::Sqrt || scaleMode == LutScale::Mode::Square
+        || scaleMode == LutScale::Mode::Power) {
+        LutScale::applyToColorTransferFunction(this->colorTransfer, scaleMode, colorMin, colorMax,
+                                               scaleGamma);
     }
 
     // ── Opacity transfer function ─────────────────────────────────────────────

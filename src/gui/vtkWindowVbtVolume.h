@@ -2,6 +2,7 @@
 #define vtkWindowVbtVolume_h
 
 #include "app/BackendClient.h"
+#include "LutScale.h"
 
 #include <vtkNew.h>
 #include <vtkColorTransferFunction.h>
@@ -71,7 +72,8 @@ private:
     QPointer<QVTKOpenGLNativeWidget> vtkWidget;
     QPointer<QComboBox> comboScalarField;
     QPointer<QComboBox> comboBlendMode;  // Composite / MIP / MinIP
-    QPointer<QComboBox> comboScaleMode;
+    QPointer<QComboBox> comboScaleMode;  // Linear / Log / Sqrt / Square / Power
+    QPointer<QDoubleSpinBox> spinScaleGamma;  // exponent for the Power mode
     QPointer<QComboBox> comboBackground;
     QPointer<QSlider> sliderOpacity;
     QPointer<QDoubleSpinBox> spinRangeMin;

@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "LutScale.h"
+
 struct ImageLayerLoadResult;
 
 class ImageLayer;
@@ -34,6 +36,10 @@ public:
 
     bool usingLogScale(int index) const;
     void setLogScale(int index, bool flag);
+
+    LutScale::Mode scaleMode(int index) const;
+    double scaleGamma(int index) const;
+    void setScaleMode(int index, LutScale::Mode mode, double gamma);
 
     std::string colorMapName(int index) const;
     void setColorMap(int index, const std::string &name);

@@ -1,6 +1,7 @@
 #include "vtkWindowCatalogue3D.h"
 #include "ui_vtkWindowCatalogue3D.h"
 
+#include "LutScale.h"
 #include "app/DiagnosticsManager.h"
 #include "DiagnosticsWindow.h"
 #include "Catalogue3DTableModel.h"
@@ -44,6 +45,7 @@
 #include <QKeySequence>
 #include <QMetaObject>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QDebug>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -175,12 +177,30 @@ void vtkWindowCatalogue3D::setupSidebar()
         this->comboSizeMode = new QComboBox(encCard);
         this->comboMapSize  = this->comboSizeMode;
         this->comboMapColor = new QComboBox(encCard);
+        this->comboColorScale = new QComboBox(encCard);
+        for (const char *label : LutScale::modeLabels()) {
+            this->comboColorScale->addItem(QString::fromLatin1(label));
+        }
+        this->spinColorGamma = new QDoubleSpinBox(encCard);
+        this->spinColorGamma->setRange(0.1, 10.0);
+        this->spinColorGamma->setSingleStep(0.1);
+        this->spinColorGamma->setDecimals(2);
+        this->spinColorGamma->setValue(2.0);
+        this->spinColorGamma->setToolTip(u"Exponent γ for the Power stretch (t^γ)."_s);
+        this->spinColorGamma->setEnabled(false);  // enabled only in Power mode
         auto *encForm = new QFormLayout;
         encForm->setContentsMargins(0, 0, 0, 0);
         encForm->addRow(u"Size"_s,  this->comboSizeMode);
         encForm->addRow(u"Color"_s, this->comboMapColor);
+        encForm->addRow(u"Color scale"_s, this->comboColorScale);
+        encForm->addRow(u"Power γ"_s, this->spinColorGamma);
         encForm->addRow(u"Scale"_s, ui->sliderScale);
         encLayout->addLayout(encForm);
+
+        QObject::connect(this->comboColorScale, &QComboBox::currentIndexChanged, this,
+                         [this](int) { this->updateColorMapping(); });
+        QObject::connect(this->spinColorGamma, &QDoubleSpinBox::valueChanged, this,
+                         [this](double) { this->updateColorMapping(); });
         pageLayout->addWidget(encCard);
 
         // ── Scene card ────────────────────────────────────────────────────────

@@ -111,6 +111,26 @@ void LayerListModel::setLogScale(int index, bool flag)
     emit this->dataChanged(this->index(index), this->index(index));
 }
 
+LutScale::Mode LayerListModel::scaleMode(int index) const
+{
+    return this->layerSet->scaleMode(index);
+}
+
+double LayerListModel::scaleGamma(int index) const
+{
+    return this->layerSet->scaleGamma(index);
+}
+
+void LayerListModel::setScaleMode(int index, LutScale::Mode mode, double gamma)
+{
+    if (index < 0 || index >= this->rowCount()) {
+        return;
+    }
+
+    this->layerSet->setScaleMode(index, mode, gamma);
+    emit this->dataChanged(this->index(index), this->index(index));
+}
+
 std::string LayerListModel::getColorMapName(int index) const
 {
     return this->layerSet->colorMapName(index);

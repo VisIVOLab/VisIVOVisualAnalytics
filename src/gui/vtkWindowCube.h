@@ -3,6 +3,7 @@
 
 #include "CatalogueOverlayUtils.h"
 #include "CubeOpenPreviewTask.h"
+#include "LutScale.h"
 
 // Forward-declared here; full headers are included in vtkWindowCube.cpp where
 // they are constructed and their methods are called.
@@ -749,6 +750,13 @@ private:
 
     // Histogram window (singleton, lives until the user closes it)
     QPointer<QWidget> m_histogramWindow;
+
+    // Colour-scale stretch (Linear/Log/Sqrt/Square/Power) tracked per display so
+    // it survives reopening the LUT dialog and colormap swaps.
+    LutScale::Mode m_sliceScaleMode{ LutScale::Mode::Linear };
+    double m_sliceScaleGamma{ 2.0 };
+    LutScale::Mode m_volumeScaleMode{ LutScale::Mode::Linear };
+    double m_volumeScaleGamma{ 2.0 };
 
     // Slice
     vtkNew<vtkImageMapToColors> sliceColors;
