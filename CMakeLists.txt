@@ -296,7 +296,11 @@ set(PROJECT_SOURCES
         src/gui/CatalogueTableModel.cpp
         src/gui/CatalogueTableModel.h
         src/gui/DataHubWidget.cpp
+        src/gui/DataHubWidget_Recent.cpp
+        src/gui/DataHubWidget_Exports.cpp
+        src/gui/DataHubWidget_Status.cpp
         src/gui/DataHubWidget.h
+        src/gui/CardClickFilter.h
         src/gui/VLKBInventoryTree.cpp
         src/gui/VLKBInventoryTree.h
         src/vlkb/VlkbQueryService.cpp
