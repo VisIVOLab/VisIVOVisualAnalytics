@@ -1,5 +1,6 @@
 #include "vtkWindowImage.h"
 #include "ui_vtkWindowImage.h"
+#include "CubeWcsUtil.h"
 #include "CubeViewportGeometry.h"
 
 #include "app/BackendClient.h"
@@ -107,6 +108,7 @@
 #include <sstream>
 
 using namespace Qt::StringLiterals;
+using namespace CubeWcs;
 using namespace CubeGeom;  // shared viewport-geometry helpers (deduplicated)
 
 namespace {
@@ -309,25 +311,6 @@ double computeBlankFraction(vtkImageData *imageData)
     return static_cast<double>(blanked) / static_cast<double>(sampled);
 }
 
-bool axisHasAnyMetadata(const QString &ctype, const QString &cunit, double crval, double crpix, double cdelt)
-{
-    return !ctype.trimmed().isEmpty() || !cunit.trimmed().isEmpty() || std::isfinite(crval)
-            || std::isfinite(crpix) || std::isfinite(cdelt);
-}
-
-bool axisHasLinearWcs(const QString &ctype, double crval, double crpix, double cdelt)
-{
-    return !ctype.trimmed().isEmpty() && std::isfinite(crval) && std::isfinite(crpix)
-            && std::isfinite(cdelt) && std::abs(cdelt) > 1e-12;
-}
-
-bool isCelestialLikeAxis(const QString &ctypeRaw)
-{
-    const QString ctype = ctypeRaw.trimmed().toUpper();
-    return ctype.startsWith(u"RA"_s) || ctype.startsWith(u"DEC"_s) || ctype.startsWith(u"GLON"_s)
-            || ctype.startsWith(u"GLAT"_s) || ctype.startsWith(u"ELON"_s)
-            || ctype.startsWith(u"ELAT"_s);
-}
 
 
 
@@ -339,37 +322,10 @@ bool isCelestialLikeAxis(const QString &ctypeRaw)
 
 
 
-void configureVerticalAxisTitle(vtkAxisActor2D *axis)
-{
-    auto *titleProp = axis->GetTitleTextProperty();
-    titleProp->SetOrientation(90.);
-    titleProp->SetJustificationToCentered();
-    titleProp->SetVerticalJustificationToCentered();
-    titleProp->SetColor(1., 1., 1.);
-    titleProp->SetFontSize(14);
-    axis->SetTitlePosition(0.5);
-}
 
-QString upperCtype(const QString &value)
-{
-    return value.trimmed().toUpper();
-}
 
-int inferCelestialFrameFromCtypePair(const std::array<QString, 3> &ctype)
-{
-    const QString c1 = upperCtype(ctype[0]);
-    const QString c2 = upperCtype(ctype[1]);
-    if (c1.startsWith(u"GLON"_s) && c2.startsWith(u"GLAT"_s)) {
-        return WCS_GALACTIC;
-    }
-    if (c1.startsWith(u"ELON"_s) && c2.startsWith(u"ELAT"_s)) {
-        return WCS_ECLIPTIC;
-    }
-    if (c1.startsWith(u"RA"_s) && c2.startsWith(u"DEC"_s)) {
-        return WCS_J2000;
-    }
-    return -1;
-}
+
+
 
 SanityReport buildImageSanityReport(const std::array<QString, 3> &ctype,
                                     const std::array<QString, 3> &cunit,

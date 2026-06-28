@@ -1,5 +1,6 @@
 #include "vtkWindowCube.h"
 #include "ui_vtkWindowCube.h"
+#include "CubeWcsUtil.h"
 #include "CubeViewportGeometry.h"
 #include "CubeStatsUtil.h"
 
@@ -153,6 +154,7 @@
 #include <sstream>
 
 using namespace Qt::StringLiterals;
+using namespace CubeWcs;
 using namespace CubeGeom;
 using namespace CubeStats;
 
@@ -233,25 +235,8 @@ double computeBlankFraction(vtkImageData *imageData)
     return static_cast<double>(blanked) / static_cast<double>(total);
 }
 
-bool axisHasAnyMetadata(const QString &ctype, const QString &cunit, double crval, double crpix, double cdelt)
-{
-    return !ctype.trimmed().isEmpty() || !cunit.trimmed().isEmpty() || std::isfinite(crval)
-            || std::isfinite(crpix) || std::isfinite(cdelt);
-}
 
-bool axisHasLinearWcs(const QString &ctype, double crval, double crpix, double cdelt)
-{
-    return !ctype.trimmed().isEmpty() && std::isfinite(crval) && std::isfinite(crpix)
-            && std::isfinite(cdelt) && std::abs(cdelt) > 1e-12;
-}
 
-bool isCelestialLikeAxis(const QString &ctypeRaw)
-{
-    const QString ctype = ctypeRaw.trimmed().toUpper();
-    return ctype.startsWith(u"RA"_s) || ctype.startsWith(u"DEC"_s) || ctype.startsWith(u"GLON"_s)
-            || ctype.startsWith(u"GLAT"_s) || ctype.startsWith(u"ELON"_s)
-            || ctype.startsWith(u"ELAT"_s);
-}
 
 
 
@@ -291,21 +276,7 @@ std::array<int, 4> regionBounds2D(vtkWindowCube::RegionMode mode, const std::arr
 
 
 
-void configureVerticalAxisTitle(vtkAxisActor2D *axis)
-{
-    auto *titleProp = axis->GetTitleTextProperty();
-    titleProp->SetOrientation(90.);
-    titleProp->SetJustificationToCentered();
-    titleProp->SetVerticalJustificationToCentered();
-    titleProp->SetColor(1., 1., 1.);
-    titleProp->SetFontSize(14);
-    axis->SetTitlePosition(0.5);
-}
 
-QString upperCtype(const QString &value)
-{
-    return value.trimmed().toUpper();
-}
 
 
 

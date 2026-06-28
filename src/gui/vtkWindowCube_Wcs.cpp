@@ -1,5 +1,6 @@
 #include "vtkWindowCube.h"
 #include "ui_vtkWindowCube.h"
+#include "CubeWcsUtil.h"
 #include "CubeViewportGeometry.h"
 
 #include "qcustomplot.h"
@@ -152,53 +153,24 @@
 #include <sstream>
 
 using namespace Qt::StringLiterals;
+using namespace CubeWcs;
 using namespace CubeGeom;
 
 // ── WCS / spectral-axis formatting + overlay ─────────────────────────
 // Extracted verbatim from vtkWindowCube.cpp. Spectral-axis descriptors, WCS
 // coordinate formatting, and the slice/moment celestial overlays.
-// upperCtype is duplicated here (trivial; the main TU still uses its own copy).
+// Shared axis/coordinate-format helpers come from CubeWcs (CubeWcsUtil).
 
 namespace {
 constexpr int overlayTickCount = 5;  // moved here with the WCS overlay methods
 
-void configureAxisActor(vtkAxisActor2D *axis, double x1, double y1, double x2, double y2);
-QString upperCtype(const QString &value);
 QString cleanAxisUnit(const QString &value);
 QString spectralAxisKindLabel(vtkWindowCube::SpectralAxisKind kind);
 vtkWindowCube::SpectralAxisDescriptor inferSpectralAxisDescriptor(const QString &ctypeRaw,
                                                                   const QString &unitRaw,
                                                                   bool hasPhysicalCoordinates);
-int inferCelestialFrameFromCtypePair(const std::array<QString, 3> &ctype);
-QString formatCelestialCoordinate(int frame, int axis, double value);
-void configureTickLabelActor(vtkTextActor *actor, bool rightAligned);
 
-void configureAxisActor(vtkAxisActor2D *axis, double x1, double y1, double x2, double y2)
-{
-    axis->GetPoint1Coordinate()->SetCoordinateSystemToDisplay();
-    axis->GetPoint2Coordinate()->SetCoordinateSystemToDisplay();
-    axis->GetPoint1Coordinate()->SetValue(x1, y1);
-    axis->GetPoint2Coordinate()->SetValue(x2, y2);
-    axis->SetNumberOfLabels(5);
-    axis->AdjustLabelsOn();
-    axis->SetLabelFormat("%-#6.4g");
-    axis->SetFontFactor(0.6);
-    axis->SetTickLength(6);
-    axis->AxisVisibilityOn();
-    axis->TickVisibilityOn();
-    axis->LabelVisibilityOn();
-    axis->TitleVisibilityOn();
-    axis->GetProperty()->SetColor(1., 1., 1.);
-    axis->GetLabelTextProperty()->SetColor(1., 1., 1.);
-    axis->GetTitleTextProperty()->SetColor(1., 1., 1.);
-    axis->GetLabelTextProperty()->SetFontSize(14);
-    axis->GetTitleTextProperty()->SetFontSize(16);
-}
 
-QString upperCtype(const QString &value)
-{
-    return value.trimmed().toUpper();
-}
 
 QString cleanAxisUnit(const QString &value)
 {
@@ -274,44 +246,8 @@ vtkWindowCube::SpectralAxisDescriptor inferSpectralAxisDescriptor(const QString 
     return descriptor;
 }
 
-int inferCelestialFrameFromCtypePair(const std::array<QString, 3> &ctype)
-{
-    const QString c1 = upperCtype(ctype[0]);
-    const QString c2 = upperCtype(ctype[1]);
-    if (c1.startsWith(u"GLON"_s) && c2.startsWith(u"GLAT"_s)) {
-        return WCS_GALACTIC;
-    }
-    if (c1.startsWith(u"ELON"_s) && c2.startsWith(u"ELAT"_s)) {
-        return WCS_ECLIPTIC;
-    }
-    if (c1.startsWith(u"RA"_s) && c2.startsWith(u"DEC"_s)) {
-        return WCS_J2000;
-    }
-    return -1;
-}
 
-QString formatCelestialCoordinate(int frame, int axis, double value)
-{
-    char buffer[64] = { 0 };
-    if (frame == WCS_J2000 && axis == 0) {
-        ra2str(buffer, sizeof(buffer), value, 1);
-    } else {
-        dec2str(buffer, sizeof(buffer), value, axis == 0 ? 1 : 0);
-    }
-    return QString::fromLatin1(buffer).trimmed();
-}
 
-void configureTickLabelActor(vtkTextActor *actor, bool rightAligned)
-{
-    actor->GetTextProperty()->SetColor(1., 1., 1.);
-    actor->GetTextProperty()->SetFontSize(12);
-    actor->GetTextProperty()->SetVerticalJustificationToCentered();
-    if (rightAligned) {
-        actor->GetTextProperty()->SetJustificationToRight();
-    } else {
-        actor->GetTextProperty()->SetJustificationToCentered();
-    }
-}
 }  // namespace
 
 vtkWindowCube::SpectralAxisDescriptor vtkWindowCube::spectralAxisDescriptor() const

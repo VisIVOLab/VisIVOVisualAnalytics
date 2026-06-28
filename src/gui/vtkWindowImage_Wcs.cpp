@@ -1,5 +1,6 @@
 #include "vtkWindowImage.h"
 #include "ui_vtkWindowImage.h"
+#include "CubeWcsUtil.h"
 #include "CubeViewportGeometry.h"
 
 #include "app/BackendClient.h"
@@ -107,12 +108,14 @@
 #include <sstream>
 
 using namespace Qt::StringLiterals;
+using namespace CubeWcs;
 using namespace CubeGeom;  // shared viewport-geometry helpers (deduplicated)
 
 // ── WCS / celestial-axis overlay + coordinate formatting ─────────────────────
 // Extracted verbatim from vtkWindowImage.cpp. Geometry helpers come from
-// CubeGeom. upperCtype / hideCustomWcsOverlay / inferCelestialFrameFromCtypePair
-// / isImageExtentUsable are duplicated here (also used by the layer code in main).
+// CubeGeom; shared axis/coordinate-format helpers from CubeWcs (CubeWcsUtil).
+// hideCustomWcsOverlay / isImageExtentUsable stay duplicated here (also used by
+// the layer code in main; not yet identical enough to share).
 
 namespace {
 constexpr int overlayTickCount = 5;
@@ -122,11 +125,6 @@ void hideCustomWcsOverlay(vtkAxisActor2D *xAxis, vtkAxisActor2D *yAxis, vtkTextA
                           vtkTextActor *yTitle,
                           const std::vector<vtkSmartPointer<vtkTextActor>> &xTicks,
                           const std::vector<vtkSmartPointer<vtkTextActor>> &yTicks);
-void configureAxisActor(vtkAxisActor2D *axis, double x1, double y1, double x2, double y2);
-QString upperCtype(const QString &value);
-int inferCelestialFrameFromCtypePair(const std::array<QString, 3> &ctype);
-QString formatCelestialCoordinate(int frame, int axis, double value);
-void configureTickLabelActor(vtkTextActor *actor, bool rightAligned);
 
 bool isImageExtentUsable(vtkImageData *imageData)
 {
@@ -167,71 +165,10 @@ void hideCustomWcsOverlay(vtkAxisActor2D *xAxis, vtkAxisActor2D *yAxis, vtkTextA
     }
 }
 
-void configureAxisActor(vtkAxisActor2D *axis, double x1, double y1, double x2, double y2)
-{
-    axis->GetPoint1Coordinate()->SetCoordinateSystemToDisplay();
-    axis->GetPoint2Coordinate()->SetCoordinateSystemToDisplay();
-    axis->GetPoint1Coordinate()->SetValue(x1, y1);
-    axis->GetPoint2Coordinate()->SetValue(x2, y2);
-    axis->SetNumberOfLabels(5);
-    axis->AdjustLabelsOn();
-    axis->SetLabelFormat("%-#6.4g");
-    axis->SetFontFactor(0.6);
-    axis->SetTickLength(6);
-    axis->AxisVisibilityOn();
-    axis->TickVisibilityOn();
-    axis->LabelVisibilityOn();
-    axis->TitleVisibilityOn();
-    axis->GetProperty()->SetColor(1., 1., 1.);
-    axis->GetLabelTextProperty()->SetColor(1., 1., 1.);
-    axis->GetTitleTextProperty()->SetColor(1., 1., 1.);
-    axis->GetLabelTextProperty()->SetFontSize(14);
-    axis->GetTitleTextProperty()->SetFontSize(16);
-}
 
-QString upperCtype(const QString &value)
-{
-    return value.trimmed().toUpper();
-}
 
-int inferCelestialFrameFromCtypePair(const std::array<QString, 3> &ctype)
-{
-    const QString c1 = upperCtype(ctype[0]);
-    const QString c2 = upperCtype(ctype[1]);
-    if (c1.startsWith(u"GLON"_s) && c2.startsWith(u"GLAT"_s)) {
-        return WCS_GALACTIC;
-    }
-    if (c1.startsWith(u"ELON"_s) && c2.startsWith(u"ELAT"_s)) {
-        return WCS_ECLIPTIC;
-    }
-    if (c1.startsWith(u"RA"_s) && c2.startsWith(u"DEC"_s)) {
-        return WCS_J2000;
-    }
-    return -1;
-}
 
-QString formatCelestialCoordinate(int frame, int axis, double value)
-{
-    char buffer[64] = { 0 };
-    if (frame == WCS_J2000 && axis == 0) {
-        ra2str(buffer, sizeof(buffer), value, 1);
-    } else {
-        dec2str(buffer, sizeof(buffer), value, axis == 0 ? 1 : 0);
-    }
-    return QString::fromLatin1(buffer).trimmed();
-}
 
-void configureTickLabelActor(vtkTextActor *actor, bool rightAligned)
-{
-    actor->GetTextProperty()->SetColor(1., 1., 1.);
-    actor->GetTextProperty()->SetFontSize(12);
-    actor->GetTextProperty()->SetVerticalJustificationToCentered();
-    if (rightAligned) {
-        actor->GetTextProperty()->SetJustificationToRight();
-    } else {
-        actor->GetTextProperty()->SetJustificationToCentered();
-    }
-}
 }  // namespace
 
 void vtkWindowImage::updateWcsOverlay()

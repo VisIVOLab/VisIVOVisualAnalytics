@@ -381,6 +381,10 @@ set(PROJECT_SOURCES
         src/gui/CubeViewportGeometry.h
         src/gui/CubeStatsUtil.cpp
         src/gui/CubeStatsUtil.h
+        src/gui/CubeWcsUtil.cpp
+        src/gui/CubeWcsUtil.h
+        src/gui/CubeRegionGeom.cpp
+        src/gui/CubeRegionGeom.h
         src/gui/vtkWindowImage.cpp
         src/gui/vtkWindowImage.h
         src/gui/vtkWindowImage_Catalogue.cpp
