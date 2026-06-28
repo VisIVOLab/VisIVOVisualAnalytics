@@ -384,6 +384,15 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage.cpp
         src/gui/vtkWindowImage.h
         src/gui/vtkWindowImage_Catalogue.cpp
+        src/gui/vtkWindowImage_Wcs.cpp
+        src/gui/vtkWindowImage_Polarisation.cpp
+        src/gui/vtkWindowImage_Probe.cpp
+        src/gui/vtkWindowImage_Dynspec.cpp
+        src/gui/vtkWindowImage_Measurement.cpp
+        src/gui/vtkWindowImage_Contours.cpp
+        src/gui/vtkWindowImage_Annotations.cpp
+        src/gui/vtkWindowImage_Region.cpp
+        src/gui/vtkWindowImage_Setup.cpp
         src/gui/vtkWindowVbt.cpp
         src/gui/vtkWindowVbt.h
         src/gui/vtkWindowVbtVolume.cpp
