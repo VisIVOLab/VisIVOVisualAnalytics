@@ -324,6 +324,11 @@ set(PROJECT_SOURCES
         src/gui/LUTCustomizerDialog.cpp
         src/gui/LUTCustomizerDialog.h
         src/gui/MainWindow.cpp
+        src/gui/MainWindow_Menus.cpp
+        src/gui/MainWindow_Open.cpp
+        src/gui/MainWindow_Science.cpp
+        src/gui/MainWindow_Samp.cpp
+        src/gui/MainWindow_Sky.cpp
         src/gui/MainWindow.h
         src/gui/ProfileWidget.cpp
         src/gui/ProfileWidget.h
