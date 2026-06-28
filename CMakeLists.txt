@@ -367,6 +367,10 @@ set(PROJECT_SOURCES
         src/gui/SidebarPanel.cpp
         src/gui/SidebarPanel.h
         src/gui/vtkWindowCatalogue3D.cpp
+        src/gui/vtkWindowCatalogue3D_Setup.cpp
+        src/gui/vtkWindowCatalogue3D_Scene.cpp
+        src/gui/vtkWindowCatalogue3D_Interaction.cpp
+        src/gui/vtkWindowCatalogue3D_Data.cpp
         src/gui/vtkWindowCatalogue3D.h
         src/gui/vtkWindowCube.cpp
         src/gui/vtkWindowCube.h
