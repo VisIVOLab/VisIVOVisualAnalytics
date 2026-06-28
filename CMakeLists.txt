@@ -296,7 +296,11 @@ set(PROJECT_SOURCES
         src/gui/CatalogueTableModel.cpp
         src/gui/CatalogueTableModel.h
         src/gui/DataHubWidget.cpp
+        src/gui/DataHubWidget_Recent.cpp
+        src/gui/DataHubWidget_Exports.cpp
+        src/gui/DataHubWidget_Status.cpp
         src/gui/DataHubWidget.h
+        src/gui/CardClickFilter.h
         src/gui/VLKBInventoryTree.cpp
         src/gui/VLKBInventoryTree.h
         src/vlkb/VlkbQueryService.cpp
@@ -324,6 +328,11 @@ set(PROJECT_SOURCES
         src/gui/LUTCustomizerDialog.cpp
         src/gui/LUTCustomizerDialog.h
         src/gui/MainWindow.cpp
+        src/gui/MainWindow_Menus.cpp
+        src/gui/MainWindow_Open.cpp
+        src/gui/MainWindow_Science.cpp
+        src/gui/MainWindow_Samp.cpp
+        src/gui/MainWindow_Sky.cpp
         src/gui/MainWindow.h
         src/gui/ProfileWidget.cpp
         src/gui/ProfileWidget.h
@@ -367,11 +376,40 @@ set(PROJECT_SOURCES
         src/gui/SidebarPanel.cpp
         src/gui/SidebarPanel.h
         src/gui/vtkWindowCatalogue3D.cpp
+        src/gui/vtkWindowCatalogue3D_Setup.cpp
+        src/gui/vtkWindowCatalogue3D_Scene.cpp
+        src/gui/vtkWindowCatalogue3D_Interaction.cpp
+        src/gui/vtkWindowCatalogue3D_Data.cpp
         src/gui/vtkWindowCatalogue3D.h
         src/gui/vtkWindowCube.cpp
         src/gui/vtkWindowCube.h
+        src/gui/vtkWindowCube_Catalogue.cpp
+        src/gui/vtkWindowCube_RemoteRender.cpp
+        src/gui/vtkWindowCube_Wcs.cpp
+        src/gui/vtkWindowCube_RemoteSlice.cpp
+        src/gui/vtkWindowCube_Probe.cpp
+        src/gui/vtkWindowCube_Region.cpp
+        src/gui/vtkWindowCube_Setup.cpp
+        src/gui/CubeViewportGeometry.cpp
+        src/gui/CubeViewportGeometry.h
+        src/gui/CubeStatsUtil.cpp
+        src/gui/CubeStatsUtil.h
+        src/gui/CubeWcsUtil.cpp
+        src/gui/CubeWcsUtil.h
+        src/gui/CubeRegionGeom.cpp
+        src/gui/CubeRegionGeom.h
         src/gui/vtkWindowImage.cpp
         src/gui/vtkWindowImage.h
+        src/gui/vtkWindowImage_Catalogue.cpp
+        src/gui/vtkWindowImage_Wcs.cpp
+        src/gui/vtkWindowImage_Polarisation.cpp
+        src/gui/vtkWindowImage_Probe.cpp
+        src/gui/vtkWindowImage_Dynspec.cpp
+        src/gui/vtkWindowImage_Measurement.cpp
+        src/gui/vtkWindowImage_Contours.cpp
+        src/gui/vtkWindowImage_Annotations.cpp
+        src/gui/vtkWindowImage_Region.cpp
+        src/gui/vtkWindowImage_Setup.cpp
         src/gui/vtkWindowVbt.cpp
         src/gui/vtkWindowVbt.h
         src/gui/vtkWindowVbtVolume.cpp

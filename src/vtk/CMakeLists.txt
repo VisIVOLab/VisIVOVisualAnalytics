@@ -1,5 +1,11 @@
 add_library(visivo_shared_vtk STATIC
         ${PROJECT_SOURCE_DIR}/src/app/BackendClient.cpp
+        ${PROJECT_SOURCE_DIR}/src/app/BackendClient_Spectral.cpp
+        ${PROJECT_SOURCE_DIR}/src/app/BackendClient_Tasks.cpp
+        ${PROJECT_SOURCE_DIR}/src/app/BackendClient_Products.cpp
+        ${PROJECT_SOURCE_DIR}/src/app/BackendClient_Polarisation.cpp
+        ${PROJECT_SOURCE_DIR}/src/app/BackendClient_Discovery.cpp
+        ${PROJECT_SOURCE_DIR}/src/app/BackendClient_RegionRepro.cpp
         ${PROJECT_SOURCE_DIR}/src/app/BackendClient.h
         ${PROJECT_SOURCE_DIR}/src/app/BackendClientFactory.cpp
         ${PROJECT_SOURCE_DIR}/src/app/BackendClientFactory.h

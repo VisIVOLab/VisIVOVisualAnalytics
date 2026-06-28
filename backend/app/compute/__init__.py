@@ -1,0 +1,159 @@
+"""compute package — CPU-bound worker functions for the process pool.
+
+Split from the former monolithic compute.py into domain modules.  This
+package re-exports every worker so existing `from app.compute import
+worker_X` / `from ..compute import worker_X` call sites keep working.
+"""
+
+from ._common import (  # noqa: F401
+    logger,
+    ScientificFitsDataset,
+    _qt_zlib_compress,
+    _b64f32,
+    _b64i32,
+    _b64f32_compressed,
+    _b64i32_compressed,
+    _finite_range,
+    _integrated_spacing,
+)
+
+from .cube import (  # noqa: F401
+    worker_cube_slice,
+    worker_cube_subvolume_raw,
+    worker_cube_subvolume,
+    worker_cube_save_subregion,
+    worker_cube_save_channel_2d,
+    worker_noise_estimate,
+    _build_preview,
+    worker_image_full,
+    worker_image_preview,
+    worker_cube_preview,
+)
+from .moment import (  # noqa: F401
+    _n_moment_threads,
+    _moment1_numba,
+    _moment2_numba,
+    _moment_result_unit,
+    _as_numpy,
+    _chunked_m0,
+    _chunked_m6,
+    _chunked_m10,
+    _moment_map_from_array,
+    _moment_map_dask,
+    _moment_unit,
+    worker_moment,
+    worker_moment_save_fits,
+)
+from .pv_iso import (  # noqa: F401
+    worker_isosurface,
+    _sample_polyline,
+    _local_normal,
+    worker_pv,
+)
+from .spectral import (  # noqa: F401
+    _gaussian,
+    worker_linewidth,
+    _expand_channel_ranges,
+    worker_baseline,
+    worker_stack,
+    _cube_and_spectral_axis,
+    _json_safe,
+    worker_spectral_probe,
+    worker_spectral_aperture,
+    worker_line_fit,
+)
+from .photometry import (  # noqa: F401
+    worker_aperture_photometry,
+    _gaussian_2d,
+    _deconvolve_gaussian_beam,
+    worker_gauss_fit_2d,
+)
+from .astrometry import (  # noqa: F401
+    _region_mask,
+    worker_region_stats,
+    worker_reproject,
+    worker_crossmatch,
+)
+from .polarisation import (  # noqa: F401
+    worker_stokes_plane,
+    worker_polarisation_pi_pa,
+    worker_rm_synthesis,
+)
+from .cosmology import (  # noqa: F401
+    worker_angular_power_spectrum,
+    _skeleton_endpoints,
+    worker_skeleton,
+)
+from .sofia import (  # noqa: F401
+    _sofia_value,
+    _parse_votable_rows,
+    resolve_sofia_bin,
+    worker_sofia,
+)
+
+__all__ = [
+    "worker_cube_slice",
+    "worker_cube_subvolume_raw",
+    "worker_cube_subvolume",
+    "worker_cube_save_subregion",
+    "worker_cube_save_channel_2d",
+    "worker_noise_estimate",
+    "_build_preview",
+    "worker_image_full",
+    "worker_image_preview",
+    "worker_cube_preview",
+    "_n_moment_threads",
+    "_moment1_numba",
+    "_moment2_numba",
+    "_moment_result_unit",
+    "_as_numpy",
+    "_chunked_m0",
+    "_chunked_m6",
+    "_chunked_m10",
+    "_moment_map_from_array",
+    "_moment_map_dask",
+    "_moment_unit",
+    "worker_moment",
+    "worker_moment_save_fits",
+    "worker_isosurface",
+    "_sample_polyline",
+    "_local_normal",
+    "worker_pv",
+    "_gaussian",
+    "worker_linewidth",
+    "_expand_channel_ranges",
+    "worker_baseline",
+    "worker_stack",
+    "_cube_and_spectral_axis",
+    "_json_safe",
+    "worker_spectral_probe",
+    "worker_spectral_aperture",
+    "worker_line_fit",
+    "worker_aperture_photometry",
+    "_gaussian_2d",
+    "_deconvolve_gaussian_beam",
+    "worker_gauss_fit_2d",
+    "_region_mask",
+    "worker_region_stats",
+    "worker_reproject",
+    "worker_crossmatch",
+    "worker_stokes_plane",
+    "worker_polarisation_pi_pa",
+    "worker_rm_synthesis",
+    "worker_angular_power_spectrum",
+    "_skeleton_endpoints",
+    "worker_skeleton",
+    "_sofia_value",
+    "_parse_votable_rows",
+    "resolve_sofia_bin",
+    "worker_sofia",
+    "_qt_zlib_compress",
+    "_b64f32",
+    "_b64i32",
+    "_b64f32_compressed",
+    "_b64i32_compressed",
+    "_finite_range",
+    "_integrated_spacing",
+    "logger",
+    "ScientificFitsDataset",
+]

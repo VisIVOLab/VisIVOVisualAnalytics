@@ -561,7 +561,7 @@ def _numpy_m2(cube: np.ndarray, spectral_values: np.ndarray, valid_mask: np.ndar
 
 def test_moment1_numba_matches_numpy() -> None:
     """Numba M1 result must match numpy M1 within rtol=1e-4 (float32 precision)."""
-    import app.compute as _c
+    import app.compute.moment as _c
 
     if not _c._NUMBA_OK:
         pytest.skip("numba not installed")
@@ -588,7 +588,7 @@ def test_moment1_numba_matches_numpy() -> None:
 
 def test_moment2_numba_matches_numpy() -> None:
     """Numba M2 result must match numpy M2 within rtol=1e-4."""
-    import app.compute as _c
+    import app.compute.moment as _c
 
     if not _c._NUMBA_OK:
         pytest.skip("numba not installed")
@@ -615,7 +615,7 @@ def test_moment2_numba_matches_numpy() -> None:
 
 def test_moment1_fallback_no_numba() -> None:
     """With _NUMBA_OK=False the numpy path is used and no crash occurs."""
-    import app.compute as _c
+    import app.compute.moment as _c
 
     rng = np.random.default_rng(17)
     cube = (rng.standard_normal((8, 16, 16)) * 2 + 5).astype(np.float32)
@@ -640,7 +640,7 @@ def test_moment1_fallback_no_numba() -> None:
 
 def test_dask_moment0_matches_numpy() -> None:
     """Dask M0 result must match numpy M0 within rtol=1e-5 on a small in-memory cube."""
-    import app.compute as _c
+    import app.compute.moment as _c
 
     if not _c._DASK_OK:
         pytest.skip("dask not installed")
@@ -705,7 +705,7 @@ def test_dask_moment0_matches_numpy() -> None:
 
 def test_dask_fallback_when_unavailable() -> None:
     """When _DASK_OK=False the regular numpy path is used without error."""
-    import app.compute as _c
+    import app.compute.moment as _c
 
     rng = np.random.default_rng(99)
     cube = (rng.standard_normal((8, 16, 16)) * 2 + 5).astype(np.float32)
