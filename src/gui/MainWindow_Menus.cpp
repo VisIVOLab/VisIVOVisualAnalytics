@@ -244,6 +244,11 @@ void MainWindow::buildDataMenu()
     auto *actOpenVbt = dataMenu->addAction(u"Open VBT…"_s);
     QObject::connect(actOpenVbt, &QAction::triggered, this, &MainWindow::openVbt);
 
+    auto *actOpenVelocity = dataMenu->addAction(u"Open Velocity Field…"_s);
+    actOpenVelocity->setToolTip(
+            u"Open a cosmic-flow velocity field (3-component FITS) as 3-D streamlines / arrows."_s);
+    QObject::connect(actOpenVelocity, &QAction::triggered, this, &MainWindow::openVelocityField);
+
     dataMenu->addSeparator();
 
     auto *actHiPS = dataMenu->addAction(u"HiPS Viewer…"_s);

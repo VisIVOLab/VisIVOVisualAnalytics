@@ -47,6 +47,7 @@ endif ()
 
 find_package(VTK 9.5.0 CONFIG REQUIRED COMPONENTS
         CommonColor
+        FiltersFlowPaths
         FiltersModeling
         FiltersStatistics
         GUISupportQt
@@ -303,6 +304,8 @@ set(PROJECT_SOURCES
         src/gui/CardClickFilter.h
         src/gui/ColormapIcon.cpp
         src/gui/ColormapIcon.h
+        src/gui/vtkWindowVectorField.cpp
+        src/gui/vtkWindowVectorField.h
         src/gui/VLKBInventoryTree.cpp
         src/gui/VLKBInventoryTree.h
         src/vlkb/VlkbQueryService.cpp

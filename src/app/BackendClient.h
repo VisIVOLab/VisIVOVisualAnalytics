@@ -1043,6 +1043,37 @@ class QUrl;
  *   2. VISIVO_TOKEN environment variable
  *   3. Content of ~/.visivo_token (written by the backend at startup)
  */
+
+/// Result of opening a velocity (cosmic-flow) field — /v1/velocity/open.
+struct BackendVelocityOpenResult
+{
+    bool valid = false;
+    QString error;
+    QString datasetId;
+    QString sessionId;
+    int nx = 0, ny = 0, nz = 0;
+    double speedMin = 0.0, speedMax = 0.0;
+    QString unit;
+    QString frame;
+    bool boxKnown = false;
+};
+
+/// Raw vector grid for a velocity field — /v1/velocity/grid_bin.
+/// `vectors` is interleaved little-endian float32 (npts*3, x-fastest =
+/// vtkImageData point order): vx,vy,vz per point.
+struct BackendVelocityGridResult
+{
+    bool valid = false;
+    QString error;
+    int nx = 0, ny = 0, nz = 0;
+    double sx = 1.0, sy = 1.0, sz = 1.0;   // spacing
+    double ox = 0.0, oy = 0.0, oz = 0.0;   // origin
+    double speedMin = 0.0, speedMax = 0.0;
+    QString unit;
+    QString frame;
+    QByteArray vectors;
+};
+
 class BackendClient
 {
 public:
@@ -1178,6 +1209,12 @@ public:
 
     /** POST /v1/resolve/target – resolve object name → RA/Dec via Sesame. */
     BackendTargetResolveResult resolveTarget(const QString &name) const;
+
+    /// Open a velocity (cosmic-flow) field FITS (multi-component, NAXIS4=3).
+    BackendVelocityOpenResult openVelocityField(const QString &path,
+                                                double boxMpc = 0.0) const;
+    /// Fetch the raw vector grid for a previously-opened velocity field.
+    BackendVelocityGridResult fetchVelocityGrid(const QString &datasetId) const;
     /** POST /v1/hips/catalogue_overlay – RA/Dec sources in current viewport. */
     BackendHiPSCatalogueOverlayResult requestHiPSCatalogueOverlay(
             const QString &cataloguePath, double raDeg, double decDeg, double fovDeg,

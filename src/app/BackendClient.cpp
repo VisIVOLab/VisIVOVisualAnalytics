@@ -1164,6 +1164,87 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
     return result;
 }
 
+// ── Velocity (cosmic-flow) field — F1 ─────────────────────────────────────────
+
+BackendVelocityOpenResult BackendClient::openVelocityField(const QString &path,
+                                                           double boxMpc) const
+{
+    BackendVelocityOpenResult result;
+    QJsonObject bodyObj{ { QStringLiteral("path"), path } };
+    if (boxMpc > 0.0) {
+        bodyObj.insert(QStringLiteral("box_mpc"), boxMpc);
+    }
+    QString error;
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/velocity/open")), QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    result.valid     = obj.value(QStringLiteral("valid")).toBool();
+    result.error     = obj.value(QStringLiteral("error")).toString();
+    result.datasetId = obj.value(QStringLiteral("dataset_id")).toString();
+    result.sessionId = obj.value(QStringLiteral("session_id")).toString();
+    const QJsonObject s = obj.value(QStringLiteral("summary")).toObject();
+    const QJsonArray shape = s.value(QStringLiteral("shape")).toArray();  // [nz, ny, nx]
+    if (shape.size() == 3) {
+        result.nz = shape.at(0).toInt();
+        result.ny = shape.at(1).toInt();
+        result.nx = shape.at(2).toInt();
+    }
+    result.speedMin = s.value(QStringLiteral("speed_min")).toDouble();
+    result.speedMax = s.value(QStringLiteral("speed_max")).toDouble();
+    result.unit     = s.value(QStringLiteral("unit")).toString();
+    result.frame    = s.value(QStringLiteral("frame")).toString();
+    result.boxKnown = s.value(QStringLiteral("box_known")).toBool();
+    return result;
+}
+
+BackendVelocityGridResult BackendClient::fetchVelocityGrid(const QString &datasetId) const
+{
+    BackendVelocityGridResult r;
+    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId } });
+    QNetworkRequest req = buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/velocity/grid_bin")));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray data = performBinaryPost(
+            nam, req, body.toJson(QJsonDocument::Compact), 120000, status, headers, err);
+    if (status != 200) {
+        r.error = err.isEmpty() ? QStringLiteral("HTTP %1 on velocity/grid_bin").arg(status) : err;
+        return r;
+    }
+    const auto hget = [&](const char *name) -> QByteArray {
+        return headers.value(QByteArray(name).toLower());
+    };
+    const auto parse3 = [](const QByteArray &b, double &a, double &c, double &d) {
+        const QStringList p = QString::fromUtf8(b).split(QLatin1Char(','));
+        if (p.size() == 3) { a = p[0].toDouble(); c = p[1].toDouble(); d = p[2].toDouble(); }
+    };
+    r.nx = hget("X-Visivo-Width").toInt();
+    r.ny = hget("X-Visivo-Height").toInt();
+    r.nz = hget("X-Visivo-Depth").toInt();
+    parse3(hget("X-Visivo-Spacing"), r.sx, r.sy, r.sz);
+    parse3(hget("X-Visivo-Origin"), r.ox, r.oy, r.oz);
+    r.speedMin = hget("X-Visivo-Speed-Min").toDouble();
+    r.speedMax = hget("X-Visivo-Speed-Max").toDouble();
+    r.unit  = QString::fromUtf8(hget("X-Visivo-Unit"));
+    r.frame = QString::fromUtf8(hget("X-Visivo-Frame"));
+    const qint64 expected =
+            qint64(r.nx) * qint64(r.ny) * qint64(r.nz) * 3 * qint64(sizeof(float));
+    if (r.nx <= 0 || r.ny <= 0 || r.nz <= 0 || expected != data.size()) {
+        r.error = QStringLiteral("bad velocity grid payload: got %1 bytes, expected %2")
+                          .arg(data.size()).arg(expected);
+        return r;
+    }
+    r.vectors = data;
+    r.valid = true;
+    return r;
+}
+
 BackendCubePvResult BackendClient::requestPv(const QString &datasetId,
                                              const std::vector<std::array<int, 2>> &vertices,
                                              int widthPixels) const

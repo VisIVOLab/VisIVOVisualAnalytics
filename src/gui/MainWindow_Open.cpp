@@ -24,6 +24,7 @@
 #include "vtkWindowCatalogue3D.h"
 #include "vtkWindowCube.h"
 #include "vtkWindowImage.h"
+#include "vtkWindowVectorField.h"
 
 #include <QLabel>
 #include <QStatusBar>
@@ -828,6 +829,62 @@ void MainWindow::openVbt()
     }
 
     doOpenVbtPath(headerPath);
+}
+
+
+void MainWindow::openVelocityField()
+{
+    const QString backendUrl   = this->settings->getBackendUrl();
+    const QString backendToken = this->settings->getBackendToken();
+
+    BackendClient client(backendUrl, backendToken);
+    const auto health = client.health();
+    if (!health.ok) {
+        QMessageBox::critical(
+                this, u"Backend unavailable"_s,
+                u"Cannot open a velocity field: the backend is not reachable.\n\nError: %1"_s
+                        .arg(health.error.isEmpty() ? u"No response"_s : health.error));
+        return;
+    }
+
+    RemoteFileBrowserDialog dialog(client.baseUrl(), client.token(), this);
+    dialog.setExtensionFilter({ u".fits"_s, u".fit"_s }, u"FITS velocity fields"_s);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    const QString path = dialog.selectedFilePath();
+    if (path.isEmpty()) {
+        return;
+    }
+
+    // The 64³×3 grid is small; do the two synchronous calls under a wait cursor.
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    this->statusBar()->showMessage(u"Opening velocity field…"_s);
+    const BackendVelocityOpenResult opened = client.openVelocityField(path);
+    if (!opened.valid) {
+        QApplication::restoreOverrideCursor();
+        QMessageBox::warning(this, u"Velocity Field"_s,
+                             u"Open failed: %1"_s.arg(opened.error.isEmpty() ? u"unknown error"_s
+                                                                             : opened.error));
+        return;
+    }
+    client.setSessionId(opened.sessionId);
+    const BackendVelocityGridResult grid = client.fetchVelocityGrid(opened.datasetId);
+    QApplication::restoreOverrideCursor();
+    if (!grid.valid) {
+        QMessageBox::warning(this, u"Velocity Field"_s,
+                             u"Grid fetch failed: %1"_s.arg(grid.error.isEmpty()
+                                                                    ? u"unknown error"_s
+                                                                    : grid.error));
+        return;
+    }
+
+    auto *win = new vtkWindowVectorField(path, grid, nullptr);
+    win->setAttribute(Qt::WA_DeleteOnClose);
+    win->resize(1100, 760);
+    win->show();
+    this->statusBar()->showMessage(
+            u"Velocity field opened: %1×%2×%3"_s.arg(grid.nx).arg(grid.ny).arg(grid.nz), 5000);
 }
 
 

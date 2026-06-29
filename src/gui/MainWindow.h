@@ -49,6 +49,7 @@ private slots:
     void openData();
     void openCatalogue3D();
     void openVbt();
+    void openVelocityField();   ///< F1: open a cosmic-flow velocity field (3-component FITS)
     void openHiPS();
     void openSettingsDialog();
     void openAboutDialog();
