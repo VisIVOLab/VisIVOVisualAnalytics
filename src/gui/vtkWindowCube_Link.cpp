@@ -66,13 +66,18 @@ void vtkWindowCube::setLinkViews(bool on)
         return;
     }
 
-    // Install the camera-interaction observer once, lazily, remembering the
-    // exact interactor so the destructor removes it from the right object.
+    // Install the camera observers once, lazily, remembering the exact
+    // interactor so the destructor removes them from the right object.
+    // InteractionEvent follows live drags (rotate / pan); EndInteractionEvent
+    // catches mouse-wheel zoom, which does NOT emit InteractionEvent.
     if (this->m_cubeCameraObserverTag == 0) {
         if (auto *rw = ui->vtkCube->renderWindow()) {
             if (auto *iren = rw->GetInteractor()) {
                 this->m_cubeCameraObserverTag = iren->AddObserver(
                         vtkCommand::InteractionEvent, this,
+                        &vtkWindowCube::onCubeCameraInteraction);
+                this->m_cubeCameraEndObserverTag = iren->AddObserver(
+                        vtkCommand::EndInteractionEvent, this,
                         &vtkWindowCube::onCubeCameraInteraction);
                 this->m_cubeCameraInteractor = iren;
             }
@@ -182,38 +187,54 @@ void vtkWindowCube::broadcastLinkedChannel(int channel0)
     // Use the EFFECTIVE descriptor unit (what spectralAxisValue actually uses),
     // not the raw header unit, so the peer eligibility check matches.
     const QString unit = this->spectralAxisDescriptor().unit.trimmed();
+    const int maxIdx = std::max(0, this->remoteSliceCount() - 1);
+    const int clamped = std::clamp(channel0, 0, maxIdx);
+    const double fraction = maxIdx > 0 ? double(clamped) / double(maxIdx) : 0.0;
     const auto windows = s_cubeWindows;   // snapshot
     for (const auto &p : windows)
         if (p && p != this && p->m_linkViews)
-            p->applyLinkedChannel(channel0, spectralValue, ok, unit);
+            p->applyLinkedChannel(channel0, fraction, spectralValue, ok, unit);
 }
 
-void vtkWindowCube::applyLinkedChannel(int channel0, double spectralValue, bool hasSpectral,
-                                       const QString &spectralUnit)
+void vtkWindowCube::applyLinkedChannel(int channel0, double fraction, double spectralValue,
+                                       bool hasSpectral, const QString &spectralUnit)
 {
     const int maxIdx = std::max(0, this->remoteSliceCount() - 1);
-    int target = std::clamp(channel0, 0, maxIdx);
+    int target = -1;
 
-    // Prefer matching by spectral value (velocity) when both cubes expose the
-    // same spectral unit: pick the channel whose spectral value is closest.
+    // Velocity matching is only meaningful when the cubes share a spectral unit
+    // AND the target velocity lies within this cube's velocity range (i.e. they
+    // overlap → likely the same object). Otherwise matching by absolute velocity
+    // just saturates at an extreme, which is meaningless for unrelated cubes.
     if (hasSpectral && !spectralUnit.isEmpty()
         && spectralUnit == this->spectralAxisDescriptor().unit.trimmed()) {
-        double bestDiff = -1.0;
-        int best = -1;
-        for (int c = 0; c <= maxIdx; ++c) {
-            bool ok = false;
-            const double v = this->spectralAxisValue(c, &ok);
-            if (!ok)
-                continue;
-            const double d = std::abs(v - spectralValue);
-            if (best < 0 || d < bestDiff) {
-                bestDiff = d;
-                best = c;
+        bool ok0 = false, okN = false;
+        const double v0 = this->spectralAxisValue(0, &ok0);
+        const double vN = this->spectralAxisValue(maxIdx, &okN);
+        if (ok0 && okN) {
+            const double lo = std::min(v0, vN), hi = std::max(v0, vN);
+            const double tol = (hi - lo) * 1e-3;   // small slack at the ends
+            if (spectralValue >= lo - tol && spectralValue <= hi + tol) {
+                double bestDiff = -1.0;
+                for (int c = 0; c <= maxIdx; ++c) {
+                    bool ok = false;
+                    const double v = this->spectralAxisValue(c, &ok);
+                    if (!ok)
+                        continue;
+                    const double d = std::abs(v - spectralValue);
+                    if (target < 0 || d < bestDiff) {
+                        bestDiff = d;
+                        target = c;
+                    }
+                }
             }
         }
-        if (best >= 0)
-            target = best;
     }
+
+    // Fallback (different objects / units): proportional channel mapping so both
+    // cubes scan their full velocity range together, never saturating.
+    if (target < 0)
+        target = std::clamp(int(std::lround(fraction * maxIdx)), 0, maxIdx);
 
     // The programmatic slice request updates the slider via QSignalBlocker, so
     // it does not re-fire the user slot → no echo.

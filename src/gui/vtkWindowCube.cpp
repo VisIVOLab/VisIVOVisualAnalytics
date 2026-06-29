@@ -2482,9 +2482,14 @@ vtkWindowCube::~vtkWindowCube()
     // Leave the linked-views group and drop the camera observer from the exact
     // interactor it was added to (weak ptr → only if still alive).
     vtkWindowCube::s_cubeWindows.removeAll(this);
-    if (this->m_cubeCameraObserverTag != 0 && this->m_cubeCameraInteractor)
-        this->m_cubeCameraInteractor->RemoveObserver(this->m_cubeCameraObserverTag);
+    if (this->m_cubeCameraInteractor) {
+        if (this->m_cubeCameraObserverTag != 0)
+            this->m_cubeCameraInteractor->RemoveObserver(this->m_cubeCameraObserverTag);
+        if (this->m_cubeCameraEndObserverTag != 0)
+            this->m_cubeCameraInteractor->RemoveObserver(this->m_cubeCameraEndObserverTag);
+    }
     this->m_cubeCameraObserverTag = 0;
+    this->m_cubeCameraEndObserverTag = 0;
     delete ui;
 }
 

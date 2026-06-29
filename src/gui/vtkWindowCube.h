@@ -750,7 +750,8 @@ private:
     static QList<QPointer<vtkWindowCube>> s_cubeWindows;   // every open cube viewer
     bool m_linkViews{ false };
     bool m_applyingLinkedUpdate{ false };                  // echo guard
-    unsigned long m_cubeCameraObserverTag{ 0 };
+    unsigned long m_cubeCameraObserverTag{ 0 };       // InteractionEvent (drag)
+    unsigned long m_cubeCameraEndObserverTag{ 0 };    // EndInteractionEvent (wheel zoom / release)
     // The exact interactor the camera observer was added to, kept weakly so the
     // observer is removed from the right object (and only if still alive).
     vtkWeakPointer<vtkRenderWindowInteractor> m_cubeCameraInteractor;
@@ -766,12 +767,12 @@ private:
     void applyLinkedCamera(const double dir[3], const double up[3], const double relOffset[3],
                            double relDist, double relScale, double viewAngle);
     void broadcastLinkedChannel(int channel0);
-    // Channel is shared by SPECTRAL VALUE (velocity) when the cubes' spectral
-    // units match — each peer jumps to the channel nearest that velocity — so
-    // cubes of different depth / spectral sampling stay physically aligned;
-    // falls back to index clamping when units differ or no spectral axis.
-    void applyLinkedChannel(int channel0, double spectralValue, bool hasSpectral,
-                            const QString &spectralUnit);
+    // Channel sync for heterogeneous cubes: match by SPECTRAL VALUE (velocity)
+    // when the units match AND the velocity falls within the peer's range (same
+    // object → physical alignment); otherwise map PROPORTIONALLY by channel
+    // fraction (unrelated cubes → both scan their full range together).
+    void applyLinkedChannel(int channel0, double fraction, double spectralValue,
+                            bool hasSpectral, const QString &spectralUnit);
     void broadcastLinkedColorMap(const QString &name);
     void applyLinkedColorMap(const QString &name);
     vtkNew<vtkVolume> volume;

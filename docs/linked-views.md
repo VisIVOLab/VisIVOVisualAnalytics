@@ -34,16 +34,23 @@ not by raw coordinates/indices:
   parallel-scale as **fractions of its data diagonal**; each peer reconstructs
   the camera against *its own* centre + diagonal. So a 512×512×200 cube and a
   128×128×64 cube linked together stay correctly framed on their own data with
-  the same orientation and relative zoom — copying absolute world coordinates
-  would have thrown the larger cube off-screen.
-- **Channel** is matched by **velocity**: the sender resolves its current
-  channel's spectral value (`spectralAxisValue`) and each peer jumps to the
-  channel whose spectral value is **closest** to it (linear scan). So if cube A
-  (100 channels) and cube B (50 channels) are linked, B tracks the *velocity* of
-  A's channel rather than its index — B no longer simply saturates at its last
-  channel, and channel N of A is not naively equated with channel N of B. This
-  requires the cubes' effective spectral **units to match** (`spectralAxisDescriptor().unit`);
-  otherwise it falls back to clamped index matching.
+  the same orientation **and zoom** — copying absolute world coordinates would
+  have thrown the larger cube off-screen. (Both `InteractionEvent` *and*
+  `EndInteractionEvent` are observed so mouse-wheel **zoom** — which doesn't emit
+  `InteractionEvent` — is broadcast too.)
+- **Channel** is matched **physically when it makes sense, proportionally
+  otherwise**:
+  - If the cubes share a spectral **unit** *and* the sender's velocity falls
+    **within** the peer's velocity range (their ranges overlap → likely the same
+    object, e.g. data vs model), the peer jumps to the channel whose spectral
+    value is **closest** to the sender's velocity.
+  - Otherwise (different objects, non-overlapping ranges, or different units) it
+    maps **proportionally**: the peer goes to `round(fraction × peerMaxChannel)`
+    where `fraction` is the sender's channel position. So unrelated cubes scan
+    their full velocity ranges **together** instead of one saturating at an end.
+
+  This replaces naive index matching, which both saturated the shorter cube and
+  wrongly equated channel N of one cube with channel N of another.
 
 ---
 
