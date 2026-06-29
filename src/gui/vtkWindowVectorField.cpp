@@ -10,9 +10,11 @@
 #include <vtkBoxRepresentation.h>
 #include <vtkBoxWidget2.h>
 #include <vtkCamera.h>
+#include <vtkDiscreteFlyingEdges3D.h>
 #include <vtkFloatArray.h>
 #include <vtkGlyph3DMapper.h>
 #include <vtkImageData.h>
+#include <vtkIntArray.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkLookupTable.h>
 #include <vtkMaskPoints.h>
@@ -27,6 +29,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QColor>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileInfo>
@@ -157,6 +160,12 @@ void vtkWindowVectorField::setupUi()
     this->chkRoi->setToolTip(u"Show an interactive box; drag it to choose a region"_s);
     form->addRow(u"Define ROI"_s, this->chkRoi);
 
+    this->chkBasins = new QCheckBox(side);
+    this->chkBasins->setToolTip(
+            u"Gravitational basins (watershed): regions whose streamlines converge to the "
+            u"same attractor — the Laniakea-style supercluster definition."_s);
+    form->addRow(u"Show basins"_s, this->chkBasins);
+
     sl->addLayout(form);
 
     this->btnLoadRoi = new QPushButton(u"Load full-res ROI"_s, side);
@@ -220,6 +229,8 @@ void vtkWindowVectorField::setupUi()
                      [this](bool on) { this->toggleRoiWidget(on); });
     QObject::connect(this->btnLoadRoi, &QPushButton::clicked, this,
                      [this]() { this->loadFullResRoi(); });
+    QObject::connect(this->chkBasins, &QCheckBox::toggled, this,
+                     [this](bool on) { this->showBasins(on); });
 }
 
 void vtkWindowVectorField::setupRenderer()
@@ -383,6 +394,10 @@ void vtkWindowVectorField::applyBoxSize(double boxMpc)
     if (this->roiGlyphActor) { this->renderer->RemoveActor(this->roiGlyphActor); this->roiGlyphActor = nullptr; }
     if (this->roiStreamActor) { this->renderer->RemoveActor(this->roiStreamActor); this->roiStreamActor = nullptr; }
     this->rebuildLodActors();
+    // Re-place basins at the new scale (labels are scale-independent, cached).
+    if (this->basinActor && m_basins.valid) {
+        this->placeBasins();
+    }
     this->resetCamera();
     this->renderWindow->Render();
 }
@@ -474,4 +489,88 @@ void vtkWindowVectorField::loadFullResRoi()
     this->statusBar()->showMessage(
             u"Full-res ROI: %1×%2×%3 at [%4,%5,%6]"_s.arg(roi.nx).arg(roi.ny).arg(roi.nz)
                     .arg(roi.roiX0).arg(roi.roiY0).arg(roi.roiZ0), 5000);
+}
+
+void vtkWindowVectorField::showBasins(bool on)
+{
+    if (!on) {
+        if (this->basinActor) { this->renderer->RemoveActor(this->basinActor); this->basinActor = nullptr; }
+        this->m_basins = BackendVelocityBasinsResult{};
+        this->renderWindow->Render();
+        return;
+    }
+
+    BackendClient client(m_backendUrl, m_backendToken);
+    client.setSessionId(m_sessionId);
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    this->statusBar()->showMessage(u"Computing gravitational basins…"_s);
+    this->m_basins = client.fetchVelocityBasins(m_datasetId, 64, 1);
+    QApplication::restoreOverrideCursor();
+    if (!m_basins.valid || m_basins.nBasins <= 0) {
+        QMessageBox::warning(this, u"Basins"_s,
+                             m_basins.valid ? u"No basins found."_s
+                                            : u"Basin computation failed: %1"_s.arg(m_basins.error));
+        this->m_basins = BackendVelocityBasinsResult{};
+        if (this->chkBasins) { QSignalBlocker blk(this->chkBasins); this->chkBasins->setChecked(false); }
+        return;
+    }
+    this->placeBasins();
+}
+
+void vtkWindowVectorField::placeBasins()
+{
+    if (!m_basins.valid || m_basins.nBasins <= 0) {
+        return;
+    }
+    const BackendVelocityBasinsResult &b = this->m_basins;
+
+    // Basin grid spans the same physical box as the display; place it per axis.
+    double ox, oy, oz;
+    this->originVec(ox, oy, oz);
+    const double ex = -2.0 * ox, ey = -2.0 * oy, ez = -2.0 * oz;   // per-axis extent
+    const double cx = (b.nx > 1) ? ex / (b.nx - 1) : 1.0;
+    const double cy = (b.ny > 1) ? ey / (b.ny - 1) : 1.0;
+    const double cz = (b.nz > 1) ? ez / (b.nz - 1) : 1.0;
+
+    vtkNew<vtkImageData> img;
+    img->SetDimensions(b.nx, b.ny, b.nz);
+    img->SetSpacing(cx, cy, cz);
+    img->SetOrigin(ox, oy, oz);
+    const vtkIdType npts = vtkIdType(b.nx) * b.ny * b.nz;
+    vtkNew<vtkIntArray> labels;
+    labels->SetName("basin");
+    labels->SetNumberOfComponents(1);
+    labels->SetNumberOfTuples(npts);
+    std::memcpy(labels->GetVoidPointer(0), b.labels.constData(),
+                std::size_t(npts) * sizeof(vtkTypeInt32));
+    img->GetPointData()->SetScalars(labels);
+
+    vtkNew<vtkDiscreteFlyingEdges3D> surf;   // one closed surface per basin label
+    surf->SetInputData(img);
+    surf->GenerateValues(b.nBasins, 1, b.nBasins);
+
+    // Categorical colours; label 0 (unassigned) is fully transparent.
+    this->basinLut = vtkSmartPointer<vtkLookupTable>::New();
+    this->basinLut->SetNumberOfTableValues(b.nBasins + 1);
+    this->basinLut->SetTableRange(0, b.nBasins);
+    this->basinLut->Build();
+    this->basinLut->SetTableValue(0, 0.0, 0.0, 0.0, 0.0);
+    for (int i = 1; i <= b.nBasins; ++i) {
+        const double hue = std::fmod(0.61 + 0.137 * (i - 1), 1.0);   // golden-angle hue spread
+        const QColor c = QColor::fromHsvF(hue, 0.65, 0.95);
+        this->basinLut->SetTableValue(i, c.redF(), c.greenF(), c.blueF(), 1.0);
+    }
+
+    vtkNew<vtkPolyDataMapper> mapper;
+    mapper->SetInputConnection(surf->GetOutputPort());
+    mapper->SetLookupTable(this->basinLut);
+    mapper->SetScalarRange(0, b.nBasins);
+
+    if (this->basinActor) this->renderer->RemoveActor(this->basinActor);
+    this->basinActor = vtkSmartPointer<vtkActor>::New();
+    this->basinActor->SetMapper(mapper);
+    this->basinActor->GetProperty()->SetOpacity(0.35);   // see streamlines through the basins
+    this->renderer->AddActor(this->basinActor);
+    this->renderWindow->Render();
+    this->statusBar()->showMessage(u"%1 gravitational basins"_s.arg(b.nBasins), 5000);
 }

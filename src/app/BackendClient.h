@@ -1078,6 +1078,17 @@ struct BackendVelocityGridResult
     QByteArray vectors;
 };
 
+/// Gravitational-basin (watershed) label volume — /v1/velocity/basins_bin.
+/// `labels` is little-endian int32 (npts, x-fastest): 0 = unassigned, 1..nBasins.
+struct BackendVelocityBasinsResult
+{
+    bool valid = false;
+    QString error;
+    int nx = 0, ny = 0, nz = 0;
+    int nBasins = 0;
+    QByteArray labels;
+};
+
 class BackendClient
 {
 public:
@@ -1229,6 +1240,11 @@ public:
     BackendVelocityGridResult fetchVelocitySubgrid(const QString &datasetId,
                                                    int x0, int x1, int y0, int y1,
                                                    int z0, int z1) const;
+    /// Gravitational-basin (watershed) segmentation label volume. `direction`:
+    /// +1 = basins of attraction (superclusters), -1 = repulsion (voids).
+    BackendVelocityBasinsResult fetchVelocityBasins(const QString &datasetId,
+                                                    int basinMaxDim = 64,
+                                                    int direction = 1) const;
     /** POST /v1/hips/catalogue_overlay – RA/Dec sources in current viewport. */
     BackendHiPSCatalogueOverlayResult requestHiPSCatalogueOverlay(
             const QString &cataloguePath, double raDeg, double decDeg, double fovDeg,

@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from ..auth import verify_token
 from ..dependencies import _run
 from ..sessions import Session, get_session
+from ..velocity_basins import velocity_basins_worker
 from ..velocity_field import (
     velocity_grid_worker,
     velocity_subgrid_worker,
@@ -53,6 +54,12 @@ class VelocitySubgridRequest(BaseModel):
     y1: int
     z0: int
     z1: int
+
+
+class VelocityBasinsRequest(BaseModel):
+    dataset_id: str
+    basin_max_dim: int = 64   # basins are segmented on a grid this size (coarse, like the science)
+    direction: int = 1        # +1 = basins of attraction (superclusters); -1 = repulsion (voids)
 
 
 @router.post("/v1/velocity/open", response_model=VelocityOpenResponse, tags=["velocity"])
@@ -112,6 +119,39 @@ async def velocity_grid_bin(
         "X-Visivo-Full-Speed-Max": repr(float(payload.get("full_speed_max", payload["speed_max"]))),
         "X-Visivo-Unit": str(payload["unit"]),
         "X-Visivo-Frame": str(payload["frame"]),
+        "X-Visivo-Byte-Order": "little",
+        "Content-Length": str(len(raw)),
+    }
+    return Response(content=raw, media_type="application/octet-stream", headers=headers)
+
+
+@router.post("/v1/velocity/basins_bin", tags=["velocity"])
+async def velocity_basins_bin(
+    request: VelocityBasinsRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Gravitational-basin (watershed) label volume for a velocity field. Returns
+    an int32 label grid (0 = unassigned, 1..N = basins) on a coarse basin grid."""
+    entry = session.datasets.get(request.dataset_id)
+    if not entry or entry.get("kind") != "velocity":
+        return Response(content=b"unknown velocity dataset",
+                        media_type="text/plain", status_code=404)
+    try:
+        payload = await _run(velocity_basins_worker, entry["path"], entry.get("box_mpc"),
+                             request.basin_max_dim, request.direction)
+    except Exception as exc:
+        return Response(content=str(exc).encode("utf-8"),
+                        media_type="text/plain", status_code=500)
+
+    raw: bytes = payload["raw_bytes"]
+    headers = {
+        "X-Visivo-Width": str(payload["nx"]),
+        "X-Visivo-Height": str(payload["ny"]),
+        "X-Visivo-Depth": str(payload["nz"]),
+        "X-Visivo-Components": "1",
+        "X-Visivo-Scalar-Type": "int32",
+        "X-Visivo-N-Basins": str(payload["n_basins"]),
         "X-Visivo-Byte-Order": "little",
         "Content-Length": str(len(raw)),
     }

@@ -60,6 +60,8 @@ private:
     void resetCamera();
     void toggleRoiWidget(bool on);
     void loadFullResRoi();
+    void showBasins(bool on);   // F1 phase-2: gravitational-basin (watershed) regions
+    void placeBasins();         // (re)build the basin actor from m_basins at the current scale
 
     // Per-axis full-resolution cell size + centred origin (point-centred model:
     // box>0 → box/(n-1) and -box/2; else unit spacing, -(n-1)/2). The display
@@ -89,6 +91,9 @@ private:
     vtkSmartPointer<vtkImageData> roiImageData;  // full-res ROI grid
     vtkSmartPointer<vtkActor> roiGlyphActor;
     vtkSmartPointer<vtkActor> roiStreamActor;
+    vtkSmartPointer<vtkActor> basinActor;        // gravitational-basin surfaces
+    vtkSmartPointer<vtkLookupTable> basinLut;    // categorical basin colours
+    BackendVelocityBasinsResult m_basins;        // cached labels (re-placed on scale change)
 
     // Sidebar controls
     QPointer<QCheckBox> chkGlyphs;
@@ -100,6 +105,7 @@ private:
     QPointer<QComboBox> comboLut;
     QPointer<QCheckBox> chkRoi;
     QPointer<QPushButton> btnLoadRoi;
+    QPointer<QCheckBox> chkBasins;
     QPointer<QLabel> summaryLabel;
 };
 

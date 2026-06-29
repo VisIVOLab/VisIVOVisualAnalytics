@@ -37,6 +37,7 @@ the box scale and the ROI stay interactive.
 | Open | `POST /v1/velocity/open` `{path, box_mpc?}` | `dataset_id`, `session_id`, summary (shape, full-res speed range) |
 | Display grid | `POST /v1/velocity/grid_bin` `{dataset_id, max_dim=128}` | LOD vector grid (binary) + `X-Visivo-*` headers |
 | Full-res ROI | `POST /v1/velocity/subgrid_bin` `{dataset_id, x0,x1,y0,y1,z0,z1}` | full-resolution sub-region (binary) |
+| Basins | `POST /v1/velocity/basins_bin` `{dataset_id, basin_max_dim=64, direction=1}` | int32 watershed label volume + `X-Visivo-N-Basins` |
 
 The binary body is **interleaved little-endian float32** vectors, `npts × 3`
 (`vx, vy, vz` per point, point order x-fastest = `vtkImageData` order). Response
@@ -73,6 +74,40 @@ positioned exactly inside the LOD context. Changing the box size clears the ROI
 The cube and image viewers already have the equivalent (`cube/subvolume_bin`,
 image preview→full), so ROI-on-demand was only added here.
 
+## Gravitational basins (watershed)
+
+Tick **Show basins** to segment the field into *basins of attraction* — the
+cosmic-flow definition of a supercluster (Laniakea; Dupuy et al. 2019, Courtois
+et al. 2013). Each basin is the set of points whose velocity streamlines
+converge to the same attractor.
+
+Algorithm (`app/velocity_basins.py`, computed on a coarse grid — `basin_max_dim`,
+default 64, capped at 96):
+
+1. Integrate every grid voxel's streamline through the field, vectorised over all
+   voxels (`scipy.ndimage.map_coordinates` trilinear sampling), with an adaptive
+   step `min(step, |v|)` along the flow direction.
+2. A streamline **converges** when `|v| ≤ eps`, when its direction reverses
+   (it stepped past a critical point — robust on coarse grids), or when it
+   stagnates in one interior cell. Boundary-pinned, limit-cycle (rotational) and
+   truncated paths stay *unassigned* (label 0).
+3. Converged endpoints pool into **attractor cells** (endpoint density ≥
+   threshold); `scipy.ndimage.label` (26-connectivity) turns connected attractor
+   cells into basins; each voxel inherits its sink's basin label.
+
+`direction = +1` gives basins of attraction (superclusters); `-1` gives basins of
+repulsion (voids / the central repeller). The viewer renders one semi-transparent
+coloured surface per basin (`vtkDiscreteFlyingEdges3D` + a categorical LUT, label
+0 transparent) at 0.35 opacity so the streamlines show through. The labels are
+scale-independent and cached, so changing the box size re-places them without
+recomputing. `basin_max_dim` is clamped server-side so a direct API call can't
+force a full-resolution integration sweep.
+
+This is a coarse **visualization heuristic** (adaptive Euler + reversal/stagnation
+convergence on a smoothed, downsampled field), not a publication-grade watershed —
+appropriate for interactive exploration, consistent with how the original
+analyses work on smoothed fields.
+
 ## Rendering
 
 - **Arrows** — `vtkGlyph3DMapper` (GPU instancing) fed by `vtkMaskPoints` in
@@ -104,9 +139,13 @@ all computed per axis so non-cubic grids are handled.
 | Box size (Mpc) | physical scale; `0` = grid units. Live — rescales without re-fetching |
 | Colormap | speed LUT |
 | Define ROI / Load full-res ROI | full-resolution region fetch (LOD grids only) |
+| Show basins | gravitational-basin (watershed) regions — Laniakea-style superclusters |
 
 ## Tests
 
 `backend/tests/test_velocity_field.py` covers the loaders, box scaling,
 `to_vtk_image`, streamline generation, LOD downsampling, and the `grid_bin` /
-`subgrid_bin` routers.
+`subgrid_bin` routers. `backend/tests/test_velocity_basins.py` covers the basin
+segmentation: single sink → 1 basin, two sinks → 2, pure rotation and outward
+flow → mostly unassigned (no false basins), downsampling, and the `basins_bin`
+router.

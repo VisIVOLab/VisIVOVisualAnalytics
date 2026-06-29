@@ -1309,6 +1309,44 @@ BackendVelocityGridResult BackendClient::fetchVelocitySubgrid(const QString &dat
     return r;
 }
 
+BackendVelocityBasinsResult BackendClient::fetchVelocityBasins(const QString &datasetId,
+                                                               int basinMaxDim, int direction) const
+{
+    BackendVelocityBasinsResult r;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("basin_max_dim"), basinMaxDim },
+            { QStringLiteral("direction"), direction } });
+    QNetworkRequest req = buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/velocity/basins_bin")));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray data = performBinaryPost(
+            nam, req, body.toJson(QJsonDocument::Compact), 300000, status, headers, err);
+    if (status != 200) {
+        r.error = err.isEmpty() ? QStringLiteral("HTTP %1 on velocity/basins_bin").arg(status) : err;
+        return r;
+    }
+    const auto hget = [&](const char *name) -> QByteArray {
+        return headers.value(QByteArray(name).toLower());
+    };
+    r.nx = hget("X-Visivo-Width").toInt();
+    r.ny = hget("X-Visivo-Height").toInt();
+    r.nz = hget("X-Visivo-Depth").toInt();
+    r.nBasins = hget("X-Visivo-N-Basins").toInt();
+    const qint64 expected = qint64(r.nx) * qint64(r.ny) * qint64(r.nz) * qint64(sizeof(qint32));
+    if (r.nx <= 0 || r.ny <= 0 || r.nz <= 0 || expected != data.size()) {
+        r.error = QStringLiteral("bad basins payload: got %1 bytes, expected %2")
+                          .arg(data.size()).arg(expected);
+        return r;
+    }
+    r.labels = data;
+    r.valid = true;
+    return r;
+}
+
 BackendCubePvResult BackendClient::requestPv(const QString &datasetId,
                                              const std::vector<std::array<int, 2>> &vertices,
                                              int widthPixels) const
