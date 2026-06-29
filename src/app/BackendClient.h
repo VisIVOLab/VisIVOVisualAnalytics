@@ -318,6 +318,11 @@ struct BackendCatalogueInfo
     std::vector<BackendCatalogueFieldInfo> fields;
     QString raField;
     QString decField;
+    // Cartesian (3-D) catalogues (.speck / XYZ): positions are the X/Y/Z fields.
+    QString xField;
+    QString yField;
+    QString zField;
+    QString coordSystem{ QStringLiteral("sky") };   // "sky" or "cartesian"
 };
 
 struct BackendCatalogueSubset

@@ -678,6 +678,10 @@ BackendCatalogueInfo BackendClient::openCatalogue(const QString &path, const QSt
     const QJsonObject coord = object.value(QStringLiteral("coordinate_fields")).toObject();
     result.raField = coord.value(QStringLiteral("ra")).toString();
     result.decField = coord.value(QStringLiteral("dec")).toString();
+    result.xField = coord.value(QStringLiteral("x")).toString();
+    result.yField = coord.value(QStringLiteral("y")).toString();
+    result.zField = coord.value(QStringLiteral("z")).toString();
+    result.coordSystem = coord.value(QStringLiteral("system")).toString(QStringLiteral("sky"));
     const QJsonArray fields = object.value(QStringLiteral("fields")).toArray();
     result.fields.reserve(fields.size());
     for (const QJsonValue &fieldValue : fields) {

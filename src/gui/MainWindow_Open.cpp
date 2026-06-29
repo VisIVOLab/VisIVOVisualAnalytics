@@ -94,6 +94,9 @@ QString catalogueFormatForPath(const QString &path)
     if (suffix == QStringLiteral("fits") || suffix == QStringLiteral("fit")) {
         return QStringLiteral("fits");
     }
+    if (suffix == QStringLiteral("speck")) {
+        return QStringLiteral("speck");
+    }
     return QStringLiteral("csv");
 }
 
@@ -762,7 +765,7 @@ void MainWindow::openCatalogue3D()
 
     RemoteFileBrowserDialog dialog(client.baseUrl(), client.token(), this);
     dialog.setExtensionFilter({u".csv"_s, u".vot"_s, u".votable"_s, u".xml"_s,
-                               u".fits"_s, u".fit"_s},
+                               u".fits"_s, u".fit"_s, u".speck"_s},
                               u"Catalogue tables"_s);
     if (dialog.exec() != QDialog::Accepted)
         return;

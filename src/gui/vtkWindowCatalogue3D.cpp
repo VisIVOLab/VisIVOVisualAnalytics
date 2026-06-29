@@ -116,6 +116,9 @@ QString catalogueFormatForPath(const QString &path)
     if (suffix == QStringLiteral("fits") || suffix == QStringLiteral("fit")) {
         return QStringLiteral("fits");
     }
+    if (suffix == QStringLiteral("speck")) {
+        return QStringLiteral("speck");
+    }
     return QStringLiteral("csv");
 }
 
@@ -390,6 +393,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         this->schema.fields.reserve(opened.fields.size());
         this->schema.raFieldName = opened.raField;
         this->schema.decFieldName = opened.decField;
+        this->schema.xFieldName = opened.xField;
+        this->schema.yFieldName = opened.yField;
+        this->schema.zFieldName = opened.zField;
         for (const auto &field : opened.fields) {
             this->schema.fields.push_back({ field.name, field.type });
             this->schema.headers.append(field.name);

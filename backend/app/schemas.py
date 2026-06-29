@@ -290,6 +290,10 @@ class CatalogueFieldInfo(BaseModel):
 class CatalogueCoordinateFields(BaseModel):
     ra: str = ""
     dec: str = ""
+    x: str = ""
+    y: str = ""
+    z: str = ""
+    system: str = "sky"   # "sky" (RA/DEC) or "cartesian" (X/Y/Z, e.g. Mpc)
 
 
 class CatalogueOpenResponse(BaseModel):

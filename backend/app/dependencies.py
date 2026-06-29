@@ -592,25 +592,37 @@ def _catalogue_metadata_from_dataframe(frame: pd.DataFrame, fmt: str) -> dict[st
         normalized_to_actual[_normalize_catalogue_field(name)] = name
         fields.append({"name": name, "type": _catalogue_field_type(frame[column].dtype)})
 
-    ra_field = ""
-    dec_field = ""
-    for alias in ("RA", "RADEG", "RAJ2000", "RAJ2000OBS", "ALPHA", "RAICRS"):
-        if alias in normalized_to_actual:
-            ra_field = normalized_to_actual[alias]
-            break
-    for alias in ("DEC", "DE", "DECDEG", "DEJ2000", "DECJ2000", "DELTA", "DECICRS"):
-        if alias in normalized_to_actual:
-            dec_field = normalized_to_actual[alias]
-            break
-    if not ra_field or not dec_field:
-        raise ValueError("Catalogue requires RA and DEC columns.")
+    def _first(aliases: tuple[str, ...]) -> str:
+        for a in aliases:
+            if a in normalized_to_actual:
+                return normalized_to_actual[a]
+        return ""
+
+    ra_field = _first(("RA", "RADEG", "RAJ2000", "RAJ2000OBS", "ALPHA", "RAICRS"))
+    dec_field = _first(("DEC", "DE", "DECDEG", "DEJ2000", "DECJ2000", "DELTA", "DECICRS"))
+    # Cartesian (3-D) catalogues — e.g. Partiview .speck or supergalactic XYZ
+    # reconstructions — carry positions directly instead of RA/DEC.
+    x_field = _first(("X", "SGX", "XMPC", "POSX", "PX"))
+    y_field = _first(("Y", "SGY", "YMPC", "POSY", "PY"))
+    z_field = _first(("Z", "SGZ", "ZMPC", "POSZ", "PZ"))
+
+    if ra_field and dec_field:
+        system = "sky"
+    elif x_field and y_field and z_field:
+        system = "cartesian"
+    else:
+        raise ValueError("Catalogue requires RA/DEC or X/Y/Z columns.")
 
     return {
         "kind": "catalogue",
         "format": fmt,
         "num_rows": int(len(frame.index)),
         "fields": fields,
-        "coordinate_fields": {"ra": ra_field, "dec": dec_field},
+        "coordinate_fields": {
+            "ra": ra_field, "dec": dec_field,
+            "x": x_field, "y": y_field, "z": z_field,
+            "system": system,
+        },
     }
 
 
@@ -624,6 +636,50 @@ def _catalogue_csv_metadata(path: Path) -> dict[str, Any]:
     return _catalogue_metadata_from_dataframe(frame, "csv")
 
 
+def _read_speck(path: Path) -> pd.DataFrame:
+    """Parse a Partiview ``.speck`` point file → DataFrame.
+
+    Columns are X, Y, Z (Cartesian, typically Mpc) followed by the attributes
+    declared by ``datavar <index> <name>`` header lines. Data rows are lines
+    whose first token is numeric (``x y z attr0 attr1 …``, optional trailing
+    text label/comment); all other directive lines are ignored.
+    """
+    idx_names: dict[int, str] = {}
+    data_rows: list[list[str]] = []
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for raw in handle:
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            toks = line.split()
+            if toks[0].lower() == "datavar" and len(toks) >= 3:
+                try:
+                    idx_names[int(toks[1])] = toks[2]
+                except ValueError:
+                    pass
+                continue
+            try:
+                float(toks[0])           # data lines start with a number (the X coord)
+            except ValueError:
+                continue                 # any other directive (texture, mesh, …)
+            data_rows.append(toks)
+    ndv = (max(idx_names) + 1) if idx_names else 0
+    cols = ["X", "Y", "Z"] + [idx_names.get(i, f"var{i}") for i in range(ndv)]
+    rows: list[list[float]] = []
+    for toks in data_rows:
+        vals: list[float] = []
+        for tok in toks[: 3 + ndv]:
+            try:
+                vals.append(float(tok))
+            except ValueError:
+                vals.append(float("nan"))
+        vals.extend([float("nan")] * (len(cols) - len(vals)))
+        rows.append(vals)
+    if not rows:
+        raise ValueError("No data points found in .speck file.")
+    return pd.DataFrame(rows, columns=cols)
+
+
 def _catalogue_load_dataframe(path: Path, fmt: str) -> pd.DataFrame:
     fmt_lower = fmt.strip().lower()
     if fmt_lower == "csv":
@@ -632,6 +688,8 @@ def _catalogue_load_dataframe(path: Path, fmt: str) -> pd.DataFrame:
         return Table.read(path, format="votable").to_pandas()
     if fmt_lower in {"fits", "fit", "fits-table"}:
         return Table.read(path, format="fits").to_pandas()
+    if fmt_lower == "speck":
+        return _read_speck(path)
     raise ValueError(f"Unsupported catalogue format: {fmt}")
 
 

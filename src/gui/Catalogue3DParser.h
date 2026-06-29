@@ -24,6 +24,17 @@ struct Catalogue3DSchema
     std::vector<Catalogue3DFieldInfo> fields;
     QString raFieldName;
     QString decFieldName;
+    // Cartesian (3-D) catalogues (.speck / XYZ Mpc): positions are these fields,
+    // not RA/Dec + distance. When set (and RA/Dec absent) the parser is Cartesian.
+    QString xFieldName;
+    QString yFieldName;
+    QString zFieldName;
+
+    bool isCartesian() const
+    {
+        return (raFieldName.isEmpty() || decFieldName.isEmpty())
+                && !xFieldName.isEmpty() && !yFieldName.isEmpty() && !zFieldName.isEmpty();
+    }
 };
 
 struct Catalogue3DEntry
@@ -164,6 +175,8 @@ inline QString detectedMorphologyField(const Catalogue3DSchema &schema)
 
 inline QString detectedRedshiftField(const Catalogue3DSchema &schema)
 {
+    if (schema.isCartesian())   // no redshift column — positions are explicit X/Y/Z
+        return {};
     QMap<QString, QString> normalizedToActual;
     for (const auto &field : schema.fields) {
         normalizedToActual[normalizeColName(field.name)] = field.name;
@@ -251,6 +264,12 @@ inline void parseSizePair(const QString &raw, double &minorValue, double &majorV
 
 inline double entryDistanceMpc(const Catalogue3DEntry &entry, const Catalogue3DSchema &schema)
 {
+    // Cartesian catalogues: distance = radial distance of the explicit position
+    // from the origin (observer). No redshift/cosmology involved.
+    if (schema.isCartesian()) {
+        return std::sqrt(entry.sceneX * entry.sceneX + entry.sceneY * entry.sceneY
+                         + entry.sceneZ * entry.sceneZ);
+    }
     // Prefer the cosmology-selector override if it has been set.
     if (entry.distanceMpc > 0.0)
         return entry.distanceMpc;
@@ -334,39 +353,60 @@ inline Catalogue3DParseResult parseBackendSubset(const Catalogue3DSchema &schema
 {
     Catalogue3DParseResult result;
     result.schema = schema;
-    if (schema.raFieldName.isEmpty() || schema.decFieldName.isEmpty()) {
-        result.errorMessage = QStringLiteral("Backend catalogue schema does not provide RA/Dec coordinate fields.");
+    const bool cartesian = schema.isCartesian();
+    if (!cartesian && (schema.raFieldName.isEmpty() || schema.decFieldName.isEmpty())) {
+        result.errorMessage = QStringLiteral("Backend catalogue schema does not provide RA/Dec or X/Y/Z coordinate fields.");
         return result;
     }
 
     int entryId = 0;
     for (const QVariantMap &row : rows) {
-        bool okRa = false;
-        bool okDec = false;
-        const double raDeg = row.value(schema.raFieldName).toDouble(&okRa);
-        const double decDeg = row.value(schema.decFieldName).toDouble(&okDec);
-        if (!okRa || !okDec || !std::isfinite(raDeg) || !std::isfinite(decDeg)) {
-            ++result.skippedEntries;
-            continue;
+        Catalogue3DEntry entry;
+
+        if (cartesian) {
+            bool okX = false, okY = false, okZ = false;
+            const double x = row.value(schema.xFieldName).toDouble(&okX);
+            const double y = row.value(schema.yFieldName).toDouble(&okY);
+            const double z = row.value(schema.zFieldName).toDouble(&okZ);
+            if (!okX || !okY || !okZ || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+                ++result.skippedEntries;
+                continue;
+            }
+            // Positions ARE the X/Y/Z fields — feed them straight into the scene
+            // so the default "computed:x/y/z" axis mapping renders them directly.
+            entry.sceneX = x;
+            entry.sceneY = y;
+            entry.sceneZ = z;
+        } else {
+            bool okRa = false, okDec = false;
+            const double raDeg = row.value(schema.raFieldName).toDouble(&okRa);
+            const double decDeg = row.value(schema.decFieldName).toDouble(&okDec);
+            if (!okRa || !okDec || !std::isfinite(raDeg) || !std::isfinite(decDeg)) {
+                ++result.skippedEntries;
+                continue;
+            }
+            entry.raFieldName = schema.raFieldName;
+            entry.decFieldName = schema.decFieldName;
+            entry.raDeg = raDeg;
+            entry.decDeg = decDeg;
         }
 
-        Catalogue3DEntry entry;
         entry.id = entryId++;
         entry.fields = row;
-        entry.raFieldName = schema.raFieldName;
-        entry.decFieldName = schema.decFieldName;
-        entry.raDeg = raDeg;
-        entry.decDeg = decDeg;
         entry.rawFieldValues.reserve(schema.headers.size());
         for (const QString &header : schema.headers) {
             entry.rawFieldValues.append(row.value(header).toString());
         }
-        detail::fillCartesian(entry, schema);
+        if (!cartesian) {
+            detail::fillCartesian(entry, schema);
+        }
         result.entries.push_back(std::move(entry));
     }
 
     if (result.entries.empty()) {
-        result.errorMessage = QStringLiteral("No valid RA/Dec entries were returned by the backend subset.");
+        result.errorMessage = cartesian
+                ? QStringLiteral("No valid X/Y/Z entries were returned by the backend subset.")
+                : QStringLiteral("No valid RA/Dec entries were returned by the backend subset.");
         return result;
     }
 

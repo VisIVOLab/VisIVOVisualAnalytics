@@ -108,12 +108,20 @@ QString catalogueFormatForPath(const QString &path)
     if (suffix == QStringLiteral("fits") || suffix == QStringLiteral("fit")) {
         return QStringLiteral("fits");
     }
+    if (suffix == QStringLiteral("speck")) {
+        return QStringLiteral("speck");
+    }
     return QStringLiteral("csv");
 }
 }  // namespace
 
 void vtkWindowCatalogue3D::applyFrameToEntries()
 {
+    // Cartesian (.speck / XYZ) catalogues carry positions directly — there is no
+    // RA/Dec to transform, so leave the parsed X/Y/Z scene positions untouched.
+    if (this->schema.isCartesian()) {
+        return;
+    }
     if (this->activeFrame == CoordFrame::FK5_J2000) {
         // Restore FK5/J2000 Cartesian positions from the stored RA/Dec.
         // (Galactic mode overwrites sceneX/Y/Z in-place, so we must recompute
@@ -144,6 +152,10 @@ void vtkWindowCatalogue3D::applyFrameToEntries()
 
 void vtkWindowCatalogue3D::triggerCosmologyUpdate()
 {
+    // Cartesian (.speck / XYZ) catalogues have explicit positions — there is no
+    // redshift→distance to recompute, and doing so would clobber the X/Y/Z scene.
+    if (this->schema.isCartesian())
+        return;
     if (this->entries.empty() || this->m_cosmologyBusy)
         return;
 
@@ -237,6 +249,8 @@ void vtkWindowCatalogue3D::onCosmologyFinished()
     this->m_cosmologyBusy = false;
     if (this->comboCosmology)
         this->comboCosmology->setEnabled(true);
+    if (this->schema.isCartesian())   // positions are explicit X/Y/Z; nothing to recompute
+        return;
 
     const auto result = this->m_cosmologyWatcher.result();
     if (!result.valid) {

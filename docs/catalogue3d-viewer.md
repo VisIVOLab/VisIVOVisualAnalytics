@@ -8,9 +8,37 @@ Reference for `vtkWindowCatalogue3D` (`src/gui/vtkWindowCatalogue3D.h/cpp`).
 
 `MainWindow::openCatalogue3D()`:
 1. Health-check the backend via `BackendClient::health()`
-2. Open `RemoteFileBrowserDialog` filtered to `.csv`
+2. Open `RemoteFileBrowserDialog` filtered to `.csv`, `.vot`/`.votable`/`.xml`, `.fits`/`.fit`, `.speck`
 3. Construct `vtkWindowCatalogue3D(filepath, backendUrl, backendToken)`
 4. The viewer calls `BackendClient::openCatalogue()` synchronously in its constructor, then triggers the first `applyFilter()` call
+
+Supported formats (backend `_catalogue_load_dataframe`): **CSV**, **VOTable**
+(`.vot`/`.votable`/`.xml`), **FITS table**, and **Partiview `.speck`** (3-D
+points). The format is inferred from the file suffix (`catalogueFormatForPath`).
+
+---
+
+## Coordinate systems: sky vs Cartesian
+
+A catalogue is opened in one of two coordinate systems, auto-detected by the
+backend (`_catalogue_metadata_from_dataframe`, returned as
+`coordinate_fields.system`):
+
+- **Sky** (`system = "sky"`) — has RA/DEC columns; positions are built from
+  RA/Dec + a distance/redshift (see *Distance resolution* and *Coordinate
+  frames*). The default for CSV/VOTable/FITS sky catalogues.
+- **Cartesian** (`system = "cartesian"`) — has X/Y/Z columns
+  (aliases `X`/`SGX`/`XMPC`/`POSX`/`PX`, etc.; e.g. Partiview `.speck` or
+  supergalactic-Mpc reconstructions). Positions are the X/Y/Z fields directly.
+
+For Cartesian catalogues the parser (`Catalogue3DParser::parseBackendSubset`,
+`schema.isCartesian()`) sets `sceneX/Y/Z` straight from the X/Y/Z columns, so the
+default `computed:x/y/z` axis mapping renders them with no manual remap. The
+RA/Dec machinery is bypassed: `applyFrameToEntries()`, `triggerCosmologyUpdate()`
+and `onCosmologyFinished()` early-return, `detectedRedshiftField()` returns empty,
+and `entryDistanceMpc()` reports the radial distance √(x²+y²+z²) from the origin.
+This lets a galaxy point cloud in supergalactic Mpc be shown in the same frame as
+a velocity field (see the velocity-field viewer).
 
 ---
 
