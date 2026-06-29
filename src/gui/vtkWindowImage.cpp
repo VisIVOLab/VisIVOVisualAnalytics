@@ -1265,30 +1265,12 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     QObject::connect(ui->btnLutEdit, &QPushButton::clicked, this,
                      &vtkWindowImage::showLUTCustomizer);
 
-    // Scale: SegmentedToggle replaces the old radio buttons for visual
-    // consistency with the cube viewer's mode selectors.
+    // Colour scale lives entirely in the LUT Customizer ("Advanced…"), matching
+    // the cube viewer — a single source of truth with the full Linear / Log /
+    // Sqrt / Square / Power(γ) set, instead of a reduced inline toggle. The old
+    // radio buttons stay hidden (showCurrentLayerSettings still reflects state).
     ui->radioLinear->hide();
     ui->radioLog->hide();
-    auto *scaleToggle = new SegmentedToggle(ui->frameLayerControls);
-    scaleToggle->addItem(u"Linear"_s, u"Linear colour scale"_s);
-    scaleToggle->addItem(u"Log"_s,    u"Logarithmic colour scale"_s);
-    scaleToggle->setCurrentIndex(ui->radioLog->isChecked() ? 1 : 0);
-    // Insert right where the radios were (after the LUT combo row).
-    if (auto *fl = qobject_cast<QVBoxLayout *>(ui->frameLayerControls->layout())) {
-        const int radioIdx = fl->indexOf(ui->radioLinear);
-        if (radioIdx >= 0)
-            fl->insertWidget(radioIdx, scaleToggle);
-        else
-            fl->addWidget(scaleToggle);
-    }
-    QObject::connect(scaleToggle, &SegmentedToggle::currentIndexChanged, this,
-                     [this](int idx) {
-                         const QSignalBlocker bL(ui->radioLinear);
-                         const QSignalBlocker bG(ui->radioLog);
-                         ui->radioLinear->setChecked(idx == 0);
-                         ui->radioLog->setChecked(idx == 1);
-                         this->changeCurrentColorScale();
-                     });
 
     // Layer Opacity — label + tooltip
     ui->sliderOpacity->setToolTip(u"Layer opacity (0 = transparent, 100 = opaque)"_s);
@@ -1311,6 +1293,19 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     ui->listLayer->setModel(this->layers);
     ui->listLayer->setCurrentIndex(this->layers->index(0, 0));
     QObject::connect(this->layers, &LayerListModel::dataChanged, this, &vtkWindowImage::vtkRender);
+    // Keep a layer always selected: if the current row is cleared while layers
+    // remain, re-select the first one (deferred to avoid reentrancy).
+    QObject::connect(ui->listLayer->selectionModel(), &QItemSelectionModel::currentChanged, this,
+                     [this](const QModelIndex &current, const QModelIndex &) {
+                         if (!current.isValid() && this->layers && this->layers->rowCount() > 0) {
+                             QTimer::singleShot(0, this, [this]() {
+                                 if (!ui->listLayer->currentIndex().isValid()
+                                     && this->layers->rowCount() > 0) {
+                                     ui->listLayer->setCurrentIndex(this->layers->index(0, 0));
+                                 }
+                             });
+                         }
+                     });
     QObject::connect(ui->listLayer->selectionModel(), &QItemSelectionModel::currentChanged, this,
                      &vtkWindowImage::showCurrentLayerSettings);
     QObject::connect(ui->listLayer->selectionModel(), &QItemSelectionModel::currentChanged, this,
@@ -1439,7 +1434,14 @@ void vtkWindowImage::setInteractorStyleProfile()
 
 int vtkWindowImage::currentLayerIndex() const
 {
-    return ui->listLayer->currentIndex().row();
+    const int row = ui->listLayer->currentIndex().row();
+    // Fall back to the first layer when the list view has no current row but
+    // layers exist (e.g. the selection was cleared) — settings always act on a
+    // concrete layer rather than silently no-op.
+    if (row < 0 && this->layers && this->layers->rowCount() > 0) {
+        return 0;
+    }
+    return row;
 }
 
 void vtkWindowImage::addLayerImage(const std::string &filepath)
