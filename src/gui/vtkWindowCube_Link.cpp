@@ -17,10 +17,12 @@
 
 #include <vtkCamera.h>
 #include <vtkCommand.h>
+#include <vtkImageData.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderWindowInteractor.h>
 #include <vtkRenderer.h>
 #include <vtkRendererCollection.h>
+#include <vtkTrivialProducer.h>
 
 #include <QAction>
 #include <QScopedValueRollback>
@@ -31,6 +33,26 @@ using namespace Qt::StringLiterals;
 
 // Registry of every open cube viewer (QPointer auto-nulls on destruction).
 QList<QPointer<vtkWindowCube>> vtkWindowCube::s_cubeWindows;
+
+namespace {
+// Centre and diagonal of a cube's displayed data bounds. Returns false if the
+// image has no usable bounds (so the camera sync can be skipped safely).
+bool dataBoundsCenterDiag(vtkImageData *im, double center[3], double &diag)
+{
+    if (!im)
+        return false;
+    double b[6];
+    im->GetBounds(b);
+    if (b[1] < b[0] || b[3] < b[2] || b[5] < b[4])
+        return false;
+    center[0] = 0.5 * (b[0] + b[1]);
+    center[1] = 0.5 * (b[2] + b[3]);
+    center[2] = 0.5 * (b[4] + b[5]);
+    const double dx = b[1] - b[0], dy = b[3] - b[2], dz = b[5] - b[4];
+    diag = std::sqrt(dx * dx + dy * dy + dz * dz);
+    return diag > 1e-9;
+}
+}  // namespace
 
 void vtkWindowCube::setLinkViews(bool on)
 {
@@ -87,31 +109,63 @@ void vtkWindowCube::broadcastLinkedCamera()
     auto *cam = ren ? ren->GetActiveCamera() : nullptr;
     if (!cam)
         return;
+    double center[3], diag;
+    if (!dataBoundsCenterDiag(
+                vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0)),
+                center, diag))
+        return;   // no usable data bounds → don't push a meaningless camera
+
     double pos[3], foc[3], up[3];
     cam->GetPosition(pos);
     cam->GetFocalPoint(foc);
     cam->GetViewUp(up);
-    const double scale = cam->GetParallelScale();
+    // Express the camera RELATIVE to this cube's data: view direction (unit),
+    // distance and parallel-scale as fractions of the data diagonal, and the
+    // focal offset from the data centre as a fraction of the diagonal. Peers
+    // reconstruct against their OWN bounds, so different-sized cubes stay framed.
+    double dir[3] = { pos[0] - foc[0], pos[1] - foc[1], pos[2] - foc[2] };
+    const double dist = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+    if (dist < 1e-9)
+        return;
+    dir[0] /= dist; dir[1] /= dist; dir[2] /= dist;
+    const double relDist = dist / diag;
+    const double relScale = cam->GetParallelScale() / diag;
+    const double relOffset[3] = { (foc[0] - center[0]) / diag, (foc[1] - center[1]) / diag,
+                                  (foc[2] - center[2]) / diag };
     const double angle = cam->GetViewAngle();
+
     const auto windows = s_cubeWindows;   // snapshot — peer calls may mutate the list
     for (const auto &p : windows)
         if (p && p != this && p->m_linkViews)
-            p->applyLinkedCamera(pos, foc, up, scale, angle);
+            p->applyLinkedCamera(dir, up, relOffset, relDist, relScale, angle);
 }
 
-void vtkWindowCube::applyLinkedCamera(const double pos[3], const double foc[3],
-                                      const double up[3], double parallelScale, double viewAngle)
+void vtkWindowCube::applyLinkedCamera(const double dir[3], const double up[3],
+                                      const double relOffset[3], double relDist,
+                                      double relScale, double viewAngle)
 {
     auto *rw = ui->vtkCube->renderWindow();
     auto *ren = rw ? rw->GetRenderers()->GetFirstRenderer() : nullptr;
     auto *cam = ren ? ren->GetActiveCamera() : nullptr;
     if (!cam)
         return;
+    double center[3], diag;
+    if (!dataBoundsCenterDiag(
+                vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0)),
+                center, diag))
+        return;
+
+    // Reconstruct the camera against THIS cube's own bounds.
+    const double foc[3] = { center[0] + relOffset[0] * diag, center[1] + relOffset[1] * diag,
+                            center[2] + relOffset[2] * diag };
+    const double dist = relDist * diag;
+    const double pos[3] = { foc[0] + dir[0] * dist, foc[1] + dir[1] * dist,
+                            foc[2] + dir[2] * dist };
     QScopedValueRollback<bool> guard(this->m_applyingLinkedUpdate, true);
-    cam->SetPosition(pos[0], pos[1], pos[2]);
     cam->SetFocalPoint(foc[0], foc[1], foc[2]);
+    cam->SetPosition(pos[0], pos[1], pos[2]);
     cam->SetViewUp(up[0], up[1], up[2]);
-    cam->SetParallelScale(parallelScale);
+    cam->SetParallelScale(relScale * diag);
     cam->SetViewAngle(viewAngle);
     ren->ResetCameraClippingRange();
     rw->Render();
@@ -121,21 +175,50 @@ void vtkWindowCube::broadcastLinkedChannel(int channel0)
 {
     if (!this->m_linkViews)
         return;
+    // Resolve this channel's spectral value (velocity) so peers can match by
+    // physical velocity rather than raw index.
+    bool ok = false;
+    const double spectralValue = this->spectralAxisValue(channel0, &ok);
+    // Use the EFFECTIVE descriptor unit (what spectralAxisValue actually uses),
+    // not the raw header unit, so the peer eligibility check matches.
+    const QString unit = this->spectralAxisDescriptor().unit.trimmed();
     const auto windows = s_cubeWindows;   // snapshot
     for (const auto &p : windows)
         if (p && p != this && p->m_linkViews)
-            p->applyLinkedChannel(channel0);
+            p->applyLinkedChannel(channel0, spectralValue, ok, unit);
 }
 
-void vtkWindowCube::applyLinkedChannel(int channel0)
+void vtkWindowCube::applyLinkedChannel(int channel0, double spectralValue, bool hasSpectral,
+                                       const QString &spectralUnit)
 {
-    // Clamp to this cube's own channel range (peers may differ in depth). The
-    // programmatic slice request updates the slider via QSignalBlocker, so it
-    // does not re-fire the user slot → no echo.
     const int maxIdx = std::max(0, this->remoteSliceCount() - 1);
-    channel0 = std::clamp(channel0, 0, maxIdx);
+    int target = std::clamp(channel0, 0, maxIdx);
+
+    // Prefer matching by spectral value (velocity) when both cubes expose the
+    // same spectral unit: pick the channel whose spectral value is closest.
+    if (hasSpectral && !spectralUnit.isEmpty()
+        && spectralUnit == this->spectralAxisDescriptor().unit.trimmed()) {
+        double bestDiff = -1.0;
+        int best = -1;
+        for (int c = 0; c <= maxIdx; ++c) {
+            bool ok = false;
+            const double v = this->spectralAxisValue(c, &ok);
+            if (!ok)
+                continue;
+            const double d = std::abs(v - spectralValue);
+            if (best < 0 || d < bestDiff) {
+                bestDiff = d;
+                best = c;
+            }
+        }
+        if (best >= 0)
+            target = best;
+    }
+
+    // The programmatic slice request updates the slider via QSignalBlocker, so
+    // it does not re-fire the user slot → no echo.
     QScopedValueRollback<bool> guard(this->m_applyingLinkedUpdate, true);
-    this->requestRemoteSlice(channel0);
+    this->requestRemoteSlice(target);
 }
 
 void vtkWindowCube::broadcastLinkedColorMap(const QString &name)

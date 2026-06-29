@@ -760,10 +760,18 @@ private:
     /// Camera-interaction observer on the 3-D view → broadcast to linked peers.
     void onCubeCameraInteraction();
     void broadcastLinkedCamera();
-    void applyLinkedCamera(const double pos[3], const double foc[3], const double up[3],
-                           double parallelScale, double viewAngle);
+    // Camera is shared RELATIVE to each cube's own data bounds (direction,
+    // view-up, and zoom/pan as fractions of the data diagonal), so cubes of
+    // different size/extent stay correctly framed on their own data.
+    void applyLinkedCamera(const double dir[3], const double up[3], const double relOffset[3],
+                           double relDist, double relScale, double viewAngle);
     void broadcastLinkedChannel(int channel0);
-    void applyLinkedChannel(int channel0);
+    // Channel is shared by SPECTRAL VALUE (velocity) when the cubes' spectral
+    // units match — each peer jumps to the channel nearest that velocity — so
+    // cubes of different depth / spectral sampling stay physically aligned;
+    // falls back to index clamping when units differ or no spectral axis.
+    void applyLinkedChannel(int channel0, double spectralValue, bool hasSpectral,
+                            const QString &spectralUnit);
     void broadcastLinkedColorMap(const QString &name);
     void applyLinkedColorMap(const QString &name);
     vtkNew<vtkVolume> volume;
