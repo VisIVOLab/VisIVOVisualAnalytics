@@ -128,7 +128,27 @@ The workflow is split in two:
   - **Contour level (% peak)** — re-`SetValue` on the kept filter.
   - **Opacity**, **Colour** (colour picker), **Representation** (Wireframe /
     Surface), **Show overlay** (visibility), **Remove overlay**.
+  - **Contour on 2D channel maps** (default on) — see below.
   The panel is reachable again via **View ▸ Kinematic Model** if you close it.
+
+### 2-D channel-map contour (model-vs-data)
+
+The clearest model-vs-data comparison is **per channel**, not in 3-D — this is
+how kinematic models are normally read (SlicerAstro / ³ᴰBarolo / TiRiFiC). With
+*Contour on 2D channel maps* enabled, the model's contour for the **currently
+displayed velocity channel** is drawn over the 2-D channel map; it follows the
+channel slider, the panel's contour level and the overlay colour. A 2-D contour
+is never occluded by the volume, so it reads cleanly:
+
+- Data emission **inside** the contour → gas following regular rotation.
+- Data emission **outside** the contour, or at a velocity the contour doesn't
+  reach → anomalous / extra-planar gas (e.g. a high-velocity cloud).
+
+Implementation: the model's XY plane for the channel is extracted from the kept
+model cube at full XY resolution / unit spacing — exactly the 2-D slice's
+geometry, regardless of any 3-D-display downsampling — contoured with
+`vtkContourFilter`, and drawn as a polyline actor on the slice renderer
+(`sliceWin`), refreshed from `applyRemoteSliceResult()` on every channel change.
 
 **Representation.** Default is **Wireframe** — a mesh lets the data volume show
 *through* the model, the way a kinematic model is normally read against the cube

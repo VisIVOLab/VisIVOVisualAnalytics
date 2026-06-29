@@ -715,6 +715,10 @@ private:
     QPointer<QSlider> m_kinLevelSlider;
     QPointer<QComboBox> m_kinRepCombo;
     QPointer<QCheckBox> m_kinVisibleCheck;
+    QPointer<QCheckBox> m_kinShow2dCheck;
+    // Model contour drawn on the 2-D channel map (sliceWin) for the displayed
+    // channel — the SlicerAstro / ³ᴰBarolo model-vs-data diagnostic.
+    vtkSmartPointer<vtkActor> m_kinematic2dContourActor;
     /// Prompt for tilted-ring parameters and launch the (async) model build +
     /// contour off the GUI thread (see vtkWindowCube_Kinematic.cpp).
     void showKinematicModelDialog();
@@ -724,6 +728,10 @@ private:
     void ensureKinematicPanel();
     /// Apply the panel's representation choice (wireframe/surface) to the actor.
     void applyKinematicRepresentation();
+    /// Redraw the model contour on the 2-D channel map for the current channel
+    /// (no-op / removed when disabled or no overlay). Called by the slice-apply
+    /// path on channel change and by the panel controls.
+    void updateKinematic2dContour(bool render = true);
     /// Remove the kinematic-model overlay actor and hide the panel.
     void clearKinematicModelOverlay();
     vtkNew<vtkVolume> volume;

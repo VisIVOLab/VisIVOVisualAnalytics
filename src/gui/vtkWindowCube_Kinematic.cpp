@@ -27,8 +27,10 @@
 #include "app/BackendClient.h"
 
 #include <vtkActor.h>
+#include <vtkContourFilter.h>
 #include <vtkFloatArray.h>
 #include <vtkFlyingEdges3D.h>
+#include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkImageData.h>
 #include <vtkPointData.h>
 #include <vtkPolyData.h>
@@ -192,6 +194,8 @@ void vtkWindowCube::clearKinematicModelOverlay()
     this->m_kinematicModelImage = nullptr;
     this->m_kinematicContour = nullptr;
     this->m_kinematicModelPeak = 0.0;
+    // Drop the 2-D channel-map contour too (image now null → removed).
+    this->updateKinematic2dContour();
     if (this->m_kinematicPanel)
         this->m_kinematicPanel->hide();
 }
@@ -358,6 +362,8 @@ void vtkWindowCube::onKinematicModelReady()
         this->m_kinematicPanel->show();
         this->m_kinematicPanel->raise();
     }
+    // Draw the 2-D channel-map contour for the current channel (default-on).
+    this->updateKinematic2dContour();
 
     this->statusBar()->showMessage(
             u"Kinematic model overlaid (%1 vertices, mode %2 [%3]) — restyle it in the panel."_s
@@ -365,6 +371,73 @@ void vtkWindowCube::onKinematicModelReady()
                     .arg(result.spectralMode.isEmpty() ? u"?"_s : result.spectralMode)
                     .arg(result.spectralUnit.isEmpty() ? u"?"_s : result.spectralUnit),
             8000);
+}
+
+void vtkWindowCube::updateKinematic2dContour(bool render)
+{
+    auto *ren = this->sliceWin->GetRenderers()->GetFirstRenderer();
+    if (!ren)
+        return;
+    if (this->m_kinematic2dContourActor) {
+        ren->RemoveActor(this->m_kinematic2dContourActor);
+        this->m_kinematic2dContourActor = nullptr;
+    }
+
+    const bool show = this->m_kinShow2dCheck && this->m_kinShow2dCheck->isChecked();
+    if (show && this->m_kinematicModelImage && this->m_kinematicModelPeak > 0.0) {
+        int dims[3] = { 0, 0, 0 };
+        this->m_kinematicModelImage->GetDimensions(dims);
+        const int nx = dims[0], ny = dims[1], nz = dims[2];
+        const int ch = ui->spinSlice ? ui->spinSlice->value() - 1 : 0;   // 1-based UI
+        auto *arr = vtkFloatArray::SafeDownCast(
+                this->m_kinematicModelImage->GetPointData()->GetScalars());
+        if (arr && arr->GetNumberOfComponents() == 1
+            && arr->GetNumberOfTuples() >= vtkIdType(nx) * ny * nz
+            && ch >= 0 && ch < nz && nx > 0 && ny > 0) {
+            // Extract the model's XY plane for this channel at full XY resolution
+            // (origin 0, unit spacing) — exactly the 2-D channel map's geometry,
+            // regardless of any 3-D display downsampling.
+            auto plane = vtkSmartPointer<vtkImageData>::New();
+            plane->SetExtent(0, nx - 1, 0, ny - 1, 0, 0);
+            plane->SetOrigin(0., 0., 0.);
+            plane->SetSpacing(1., 1., 1.);
+            auto ps = vtkSmartPointer<vtkFloatArray>::New();
+            ps->SetNumberOfComponents(1);
+            ps->SetNumberOfTuples(qint64(nx) * ny);
+            const float *src = static_cast<const float *>(arr->GetVoidPointer(0))
+                    + qint64(ch) * nx * ny;
+            std::memcpy(ps->GetVoidPointer(0), src,
+                        sizeof(float) * static_cast<std::size_t>(qint64(nx) * ny));
+            plane->GetPointData()->SetScalars(ps);
+
+            auto contour = vtkSmartPointer<vtkContourFilter>::New();
+            contour->SetInputData(plane);
+            const int pct = this->m_kinLevelSlider ? this->m_kinLevelSlider->value() : 50;
+            contour->SetValue(0, (pct / 100.0) * this->m_kinematicModelPeak);
+            contour->Update();
+
+            auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+            mapper->SetInputConnection(contour->GetOutputPort());
+            mapper->ScalarVisibilityOff();
+            auto actor = vtkSmartPointer<vtkActor>::New();
+            actor->SetMapper(mapper);
+            double rgb[3] = { 0.25, 0.85, 1.0 };
+            if (this->m_kinematicModelActor)
+                this->m_kinematicModelActor->GetProperty()->GetColor(rgb);
+            actor->GetProperty()->SetColor(rgb[0], rgb[1], rgb[2]);
+            actor->GetProperty()->SetLineWidth(2.0);
+            actor->GetProperty()->LightingOff();
+            actor->SetPosition(0., 0., 0.5);   // nudge in front of the image slice
+            actor->PickableOff();
+            ren->AddActor(actor);
+            this->m_kinematic2dContourActor = actor;
+            // Ensure the nudged-forward contour is inside the clip range on the
+            // first draw / after a level change.
+            ren->ResetCameraClippingRange();
+        }
+    }
+    if (render)
+        this->sliceWin->Render();
 }
 
 void vtkWindowCube::applyKinematicRepresentation()
@@ -408,6 +481,7 @@ void vtkWindowCube::ensureKinematicPanel()
             if (auto *rw = ui->vtkCube->renderWindow())
                 rw->Render();
         }
+        this->updateKinematic2dContour();   // keep the 2-D contour at the same level
     });
 
     // Opacity.
@@ -447,8 +521,17 @@ void vtkWindowCube::ensureKinematicPanel()
                     picked.redF(), picked.greenF(), picked.blueF());
             if (auto *rw = ui->vtkCube->renderWindow())
                 rw->Render();
+            this->updateKinematic2dContour();   // match the 2-D contour colour
         }
     });
+
+    // 2-D channel-map contour (the model-vs-data diagnostic) — on by default.
+    auto *show2d = new QCheckBox(u"Contour on 2D channel maps"_s, body);
+    show2d->setChecked(true);
+    form->addRow(show2d);
+    this->m_kinShow2dCheck = show2d;
+    QObject::connect(show2d, &QCheckBox::toggled, this,
+                     [this](bool) { this->updateKinematic2dContour(); });
 
     // Visibility.
     auto *visible = new QCheckBox(u"Show overlay"_s, body);
