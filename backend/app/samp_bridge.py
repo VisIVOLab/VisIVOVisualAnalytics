@@ -190,14 +190,20 @@ class SAMPInbox:
             return len(self._messages)
 
 
-# ── Optional astropy.samp direct connection ───────────────────────────────────
+# ── Optional SAMP direct connection ───────────────────────────────────────────
+# astropy.samp was deprecated in astropy 8.0 (moved to pyvo). Prefer pyvo.samp,
+# falling back to astropy.samp for older environments where pyvo is absent.
 
-_ASTROPY_SAMP_AVAILABLE = False
+_SAMP_AVAILABLE = False
 try:
-    from astropy.samp import SAMPIntegratedClient as _SAMPIntegratedClient  # type: ignore
-    _ASTROPY_SAMP_AVAILABLE = True
+    from pyvo.samp import SAMPIntegratedClient as _SAMPIntegratedClient  # type: ignore
+    _SAMP_AVAILABLE = True
 except ImportError:
-    pass
+    try:
+        from astropy.samp import SAMPIntegratedClient as _SAMPIntegratedClient  # type: ignore
+        _SAMP_AVAILABLE = True
+    except ImportError:
+        pass
 
 
 class SAMPBridge:
@@ -227,8 +233,8 @@ class SAMPBridge:
 
     def connect(self) -> bool:
         """Attempt a direct Hub connection. Returns True if connected."""
-        if not _ASTROPY_SAMP_AVAILABLE:
-            logger.warning("[samp] astropy.samp not available; direct mode disabled.")
+        if not _SAMP_AVAILABLE:
+            logger.warning("[samp] SAMP client (pyvo/astropy) not available; direct mode disabled.")
             return False
         if not self._direct_enabled:
             logger.debug("[samp] direct mode disabled (VISIVO_SAMP_DIRECT != 1).")
