@@ -2,12 +2,13 @@
 
 Interactive 3-D viewer for **cosmic-flow / peculiar-velocity fields** — a
 3-component vector field on a regular grid (e.g. CosmicFlows-4 reconstructions).
-It renders **arrow glyphs** and **streamlines** coloured by speed, with a
-display-resolution LOD and full-resolution **region-of-interest (ROI)** fetch so
-it stays interactive on large (256³/512³) grids.
+It renders **arrow glyphs** and **streamlines** coloured by speed, plus
+**gravitational-basin (watershed)** regions (Laniakea-style superclusters /
+voids), with a display-resolution LOD and full-resolution
+**region-of-interest (ROI)** fetch so it stays interactive on large (256³/512³)
+grids.
 
-This is feature **F1** of the cosmic-flow roadmap. The next phase (F1-2) is
-gravitational-basin / watershed segmentation (Laniakea-style).
+This is feature **F1** of the cosmic-flow roadmap.
 
 ## Opening a velocity field
 
@@ -96,12 +97,17 @@ default 64, capped at 96):
    cells into basins; each voxel inherits its sink's basin label.
 
 `direction = +1` gives basins of attraction (superclusters); `-1` gives basins of
-repulsion (voids / the central repeller). The viewer renders one semi-transparent
+repulsion (voids / the central repeller) — selectable in the viewer via the
+**Basin type** dropdown (Attraction / Repulsion), which re-segments on change. The
+viewer renders one semi-transparent
 coloured surface per basin (`vtkDiscreteFlyingEdges3D` + a categorical LUT, label
 0 transparent) at 0.35 opacity so the streamlines show through. The labels are
 scale-independent and cached, so changing the box size re-places them without
 recomputing. `basin_max_dim` is clamped server-side so a direct API call can't
 force a full-resolution integration sweep.
+
+The status bar reports the basin count, the fraction of volume assigned, and the
+largest basins' share of the assigned volume (which supercluster/void dominates).
 
 This is a coarse **visualization heuristic** (adaptive Euler + reversal/stagnation
 convergence on a smoothed, downsampled field), not a publication-grade watershed —
@@ -140,6 +146,7 @@ all computed per axis so non-cubic grids are handled.
 | Colormap | speed LUT |
 | Define ROI / Load full-res ROI | full-resolution region fetch (LOD grids only) |
 | Show basins | gravitational-basin (watershed) regions — Laniakea-style superclusters |
+| Basin type | attraction (superclusters) vs repulsion (voids) |
 
 ## Tests
 

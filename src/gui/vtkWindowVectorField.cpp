@@ -41,12 +41,16 @@
 #include <QPushButton>
 #include <QSpinBox>
 #include <QStatusBar>
+#include <QStringList>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
+#include <numeric>
+#include <vector>
 
 using namespace Qt::StringLiterals;
 
@@ -166,6 +170,14 @@ void vtkWindowVectorField::setupUi()
             u"same attractor — the Laniakea-style supercluster definition."_s);
     form->addRow(u"Show basins"_s, this->chkBasins);
 
+    this->comboBasinDir = new QComboBox(side);
+    this->comboBasinDir->addItem(u"Attraction (superclusters)"_s);
+    this->comboBasinDir->addItem(u"Repulsion (voids)"_s);
+    this->comboBasinDir->setToolTip(
+            u"Basins of attraction (where flows converge → superclusters) or of "
+            u"repulsion (where flows diverge → voids / repellers)."_s);
+    form->addRow(u"Basin type"_s, this->comboBasinDir);
+
     sl->addLayout(form);
 
     this->btnLoadRoi = new QPushButton(u"Load full-res ROI"_s, side);
@@ -231,6 +243,9 @@ void vtkWindowVectorField::setupUi()
                      [this]() { this->loadFullResRoi(); });
     QObject::connect(this->chkBasins, &QCheckBox::toggled, this,
                      [this](bool on) { this->showBasins(on); });
+    QObject::connect(this->comboBasinDir, &QComboBox::currentIndexChanged, this,
+                     [this](int) { if (this->chkBasins && this->chkBasins->isChecked())
+                                       this->showBasins(true); });
 }
 
 void vtkWindowVectorField::setupRenderer()
@@ -500,11 +515,16 @@ void vtkWindowVectorField::showBasins(bool on)
         return;
     }
 
+    // Clear any existing basin surface before (re)fetching, so a failed re-fetch
+    // (e.g. switching attraction↔repulsion) never leaves a stale surface behind.
+    if (this->basinActor) { this->renderer->RemoveActor(this->basinActor); this->basinActor = nullptr; }
+
     BackendClient client(m_backendUrl, m_backendToken);
     client.setSessionId(m_sessionId);
+    const int direction = (this->comboBasinDir && this->comboBasinDir->currentIndex() == 1) ? -1 : 1;
     QApplication::setOverrideCursor(Qt::WaitCursor);
     this->statusBar()->showMessage(u"Computing gravitational basins…"_s);
-    this->m_basins = client.fetchVelocityBasins(m_datasetId, 64, 1);
+    this->m_basins = client.fetchVelocityBasins(m_datasetId, 64, direction);
     QApplication::restoreOverrideCursor();
     if (!m_basins.valid || m_basins.nBasins <= 0) {
         QMessageBox::warning(this, u"Basins"_s,
@@ -512,6 +532,7 @@ void vtkWindowVectorField::showBasins(bool on)
                                             : u"Basin computation failed: %1"_s.arg(m_basins.error));
         this->m_basins = BackendVelocityBasinsResult{};
         if (this->chkBasins) { QSignalBlocker blk(this->chkBasins); this->chkBasins->setChecked(false); }
+        this->renderWindow->Render();
         return;
     }
     this->placeBasins();
@@ -572,5 +593,27 @@ void vtkWindowVectorField::placeBasins()
     this->basinActor->GetProperty()->SetOpacity(0.35);   // see streamlines through the basins
     this->renderer->AddActor(this->basinActor);
     this->renderWindow->Render();
-    this->statusBar()->showMessage(u"%1 gravitational basins"_s.arg(b.nBasins), 5000);
+
+    // Per-basin volume (voxel count) → fraction of the assigned (non-zero) volume,
+    // sorted largest first, so the user sees which supercluster/void dominates.
+    const vtkTypeInt32 *lab = static_cast<const vtkTypeInt32 *>(labels->GetVoidPointer(0));
+    std::vector<vtkIdType> sizes(std::size_t(b.nBasins) + 1, 0);
+    for (vtkIdType i = 0; i < npts; ++i) {
+        const int v = lab[i];
+        if (v >= 0 && v <= b.nBasins) ++sizes[std::size_t(v)];
+    }
+    std::vector<vtkIdType> basinSizes(sizes.begin() + 1, sizes.end());
+    const vtkIdType assigned = std::accumulate(basinSizes.begin(), basinSizes.end(), vtkIdType(0));
+    std::sort(basinSizes.begin(), basinSizes.end(), std::greater<>());
+    QStringList top;
+    for (std::size_t i = 0; i < basinSizes.size() && i < 4; ++i) {
+        top << u"%1%"_s.arg(100.0 * basinSizes[i] / std::max<vtkIdType>(1, assigned), 0, 'f', 0);
+    }
+    const QString kind = (this->comboBasinDir && this->comboBasinDir->currentIndex() == 1)
+            ? u"repulsion (voids)"_s : u"attraction (superclusters)"_s;
+    this->statusBar()->showMessage(
+            u"%1 basins of %2 · %3% of volume assigned · largest: %4"_s
+                    .arg(b.nBasins).arg(kind)
+                    .arg(100.0 * assigned / std::max<vtkIdType>(1, npts), 0, 'f', 0)
+                    .arg(top.join(u", "_s)));
 }

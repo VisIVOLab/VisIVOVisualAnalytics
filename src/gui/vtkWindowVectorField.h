@@ -106,6 +106,7 @@ private:
     QPointer<QCheckBox> chkRoi;
     QPointer<QPushButton> btnLoadRoi;
     QPointer<QCheckBox> chkBasins;
+    QPointer<QComboBox> comboBasinDir;   // Attraction (superclusters) / Repulsion (voids)
     QPointer<QLabel> summaryLabel;
 };
 
