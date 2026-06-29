@@ -260,10 +260,16 @@ void vtkWindowCube::requestRemoteSlice(int sliceIndex)
 {
     sliceIndex = this->clampRemoteSliceIndex(sliceIndex);
     this->currentRequestedRemoteSliceIndex = sliceIndex;
+    // Linked views: mirror this channel change to the other linked cubes. The
+    // guard skips changes that are themselves driven by a linked peer (no echo).
+    if (this->m_linkViews && !this->m_applyingLinkedUpdate)
+        this->broadcastLinkedChannel(sliceIndex);
     // Mark this as a USER-initiated request so its resulting
     // applyRemoteSliceResult is allowed to spawn ±1 prefetches.
     // Prefetched results themselves leave this flag false → no cascade.
-    this->prefetchAllowedForNextResult = true;
+    // Linked-driven requests skip prefetch so synced scrubbing across N windows
+    // doesn't multiply neighbour fetches.
+    this->prefetchAllowedForNextResult = !this->m_applyingLinkedUpdate;
     // Cancel any pending idle prefetch — the user just acted, so a
     // previously-scheduled prefetch is no longer interesting. The
     // applyRemoteSliceResult for THIS request will re-arm the timer.

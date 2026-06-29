@@ -2231,6 +2231,17 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(m_actExportMovie, &QAction::triggered,
                      this, &vtkWindowCube::showExportMovieDialog);
 
+    // Linked views (F3): sync camera / channel / colour-scale with other open
+    // cube viewers that also have linking enabled.
+    m_actLinkViews = ui->menuTools->addAction(u"Link Views (sync camera / channel / colour)"_s);
+    m_actLinkViews->setCheckable(true);
+    m_actLinkViews->setToolTip(
+            u"Synchronise camera, velocity channel and colour map across all open "
+            u"cube viewers that have Link Views enabled — for side-by-side comparison."_s);
+    QObject::connect(m_actLinkViews, &QAction::toggled,
+                     this, &vtkWindowCube::setLinkViews);
+    vtkWindowCube::s_cubeWindows.append(this);
+
     // REGIONS group
     ui->menuTools->addSeparator();
     this->actionBoxRegion     = ui->menuTools->addAction(u"Box Region Analysis"_s);
@@ -2468,6 +2479,12 @@ vtkWindowCube::~vtkWindowCube()
     // so we don't fire callbacks after the widget hierarchy starts going away.
     this->sliceAnimationTimer.stop();
     this->remove3dPickObserver();
+    // Leave the linked-views group and drop the camera observer from the exact
+    // interactor it was added to (weak ptr → only if still alive).
+    vtkWindowCube::s_cubeWindows.removeAll(this);
+    if (this->m_cubeCameraObserverTag != 0 && this->m_cubeCameraInteractor)
+        this->m_cubeCameraInteractor->RemoveObserver(this->m_cubeCameraObserverTag);
+    this->m_cubeCameraObserverTag = 0;
     delete ui;
 }
 
@@ -2623,6 +2640,10 @@ void vtkWindowCube::applyColorMapByName(const QString &name)
     cmd[u"type"_s] = u"set_lut"_s;
     cmd[u"name"_s] = name;
     this->sendRemoteRenderStateCommand(cmd);
+
+    // Linked views: mirror the colour map to the other linked cubes (echo-guarded).
+    if (this->m_linkViews && !this->m_applyingLinkedUpdate)
+        this->broadcastLinkedColorMap(name);
 }
 
 void vtkWindowCube::applyVolumeBlendMode(int idx)

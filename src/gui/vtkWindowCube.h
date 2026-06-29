@@ -13,6 +13,7 @@ class NoiseController;
 class PvController;
 
 #include <vtkSmartPointer.h>
+#include <vtkWeakPointer.h>
 #include <vtkNew.h>
 
 #include <QFutureWatcher>
@@ -20,6 +21,7 @@ class PvController;
 #include <QElapsedTimer>
 #include <QHash>
 #include <QMainWindow>
+#include <QList>
 #include <QPointer>
 #include <QSet>
 #include <QStringList>
@@ -64,6 +66,7 @@ class vtkCoordinate;
 class vtkFlyingEdges2D;
 class vtkFlyingEdges3D;
 class vtkGenericOpenGLRenderWindow;
+class vtkRenderWindowInteractor;
 class vtkCubeSource;
 class vtkImageData;
 class vtkImageMapToColors;
@@ -741,6 +744,28 @@ private:
     bool m_exportMovieInProgress{ false };
     /// Prompt for movie options and run the capture/encode (vtkWindowCube_Movie.cpp).
     void showExportMovieDialog();
+
+    // Linked views (F3): sync camera / channel / colour-scale across all open
+    // cube viewers that have "Link views" enabled (vtkWindowCube_Link.cpp).
+    static QList<QPointer<vtkWindowCube>> s_cubeWindows;   // every open cube viewer
+    bool m_linkViews{ false };
+    bool m_applyingLinkedUpdate{ false };                  // echo guard
+    unsigned long m_cubeCameraObserverTag{ 0 };
+    // The exact interactor the camera observer was added to, kept weakly so the
+    // observer is removed from the right object (and only if still alive).
+    vtkWeakPointer<vtkRenderWindowInteractor> m_cubeCameraInteractor;
+    QPointer<QAction> m_actLinkViews;
+    /// Toggle this viewer's participation in the linked-views group.
+    void setLinkViews(bool on);
+    /// Camera-interaction observer on the 3-D view → broadcast to linked peers.
+    void onCubeCameraInteraction();
+    void broadcastLinkedCamera();
+    void applyLinkedCamera(const double pos[3], const double foc[3], const double up[3],
+                           double parallelScale, double viewAngle);
+    void broadcastLinkedChannel(int channel0);
+    void applyLinkedChannel(int channel0);
+    void broadcastLinkedColorMap(const QString &name);
+    void applyLinkedColorMap(const QString &name);
     vtkNew<vtkVolume> volume;
     vtkNew<vtkColorTransferFunction> volumeColorTransferFunction;
     vtkNew<vtkPiecewiseFunction> volumeOpacity;
