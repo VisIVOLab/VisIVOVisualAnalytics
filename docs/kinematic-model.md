@@ -116,11 +116,28 @@ Chunked/streamed generation for very large cubes is future work.
 ## Desktop overlay (cube viewer)
 
 In the 3-D cube viewer (`vtkWindowCube`): **Tools ▸ Kinematic Model Overlay…**.
-The dialog collects the tilted-ring parameters (centre, PA, inclination, disk
-radius, Vsys, Vrot, σ) plus a **contour level** as a fraction of the model peak.
-On *Overlay* the model is fetched and contoured (`vtkFlyingEdges3D`) and added as
-a semi-transparent cyan surface over the data. *Remove Overlay* (shown when one
-is present) clears it; re-running replaces it.
+
+The workflow is split in two:
+
+- **The dialog collects only the *model* parameters** (centre, PA, inclination,
+  disk radius, Vsys, Vrot, σ). Changing any of these defines a different model,
+  so *Overlay* triggers a backend fetch + contour (`vtkFlyingEdges3D`) and adds
+  the surface to the cube renderer.
+- **A live "Kinematic Model" dock panel** then restyles the overlay with **no
+  re-fetch** — the model cube and its FlyingEdges filter are kept client-side:
+  - **Contour level (% peak)** — re-`SetValue` on the kept filter.
+  - **Opacity**, **Colour** (colour picker), **Representation** (Wireframe /
+    Surface), **Show overlay** (visibility), **Remove overlay**.
+  The panel is reachable again via **View ▸ Kinematic Model** if you close it.
+
+**Representation.** Default is **Wireframe** — a mesh lets the data volume show
+*through* the model, the way a kinematic model is normally read against the cube
+(SlicerAstro / ³ᴰBarolo). Where the data pokes outside the mesh, or sits at a
+velocity the mesh doesn't cover, you're seeing gas that departs from regular
+rotation. In 3-D the composite volume rendering is opaque and can occlude the
+model where it sits inside the emission — lower the cube's volume opacity or
+switch the cube to **Isosurface** mode to compare two surfaces directly, and
+rotate the box to view the disk edge-on along the velocity axis.
 
 - **Off the UI thread.** The fetch, the float→`vtkImageData` copy and the
   contour all run on a `QtConcurrent` worker that captures only plain values

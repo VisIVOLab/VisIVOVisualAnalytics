@@ -40,6 +40,9 @@ class QDockWidget;
 class QFrame;
 class QLabel;
 class QPushButton;
+class QSlider;
+class QCheckBox;
+class QComboBox;
 class QNetworkAccessManager;
 class QNetworkReply;
 class QStackedWidget;
@@ -141,6 +144,12 @@ struct RemoteKinematicModelResult
     bool empty{ false };
     QString errorMessage;
     vtkSmartPointer<vtkActor> actor;
+    // Kept client-side so appearance (contour level, colour, opacity,
+    // representation) can be re-applied live from the control panel WITHOUT a
+    // re-fetch: `image` is the model cube (display coords), `contour` its
+    // FlyingEdges filter (re-`SetValue` to change the level), `peak` scales it.
+    vtkSmartPointer<vtkImageData> image;
+    vtkSmartPointer<vtkFlyingEdges3D> contour;
     double peak{ 0. };
     double fraction{ 0.5 };
     qint64 numVertices{ 0 };
@@ -688,18 +697,34 @@ private:
     // Kinematic-model overlay (F2). The contoured tilted-ring model actor added
     // over the cube renderer; null when no overlay is shown.
     vtkSmartPointer<vtkActor> m_kinematicModelActor;
+    // Model cube + contour filter kept client-side so the live control panel can
+    // re-style (level / colour / opacity / representation) without re-fetching.
+    vtkSmartPointer<vtkImageData> m_kinematicModelImage;
+    vtkSmartPointer<vtkFlyingEdges3D> m_kinematicContour;
+    double m_kinematicModelPeak{ 0. };
     // Live display geometry (dims + origin) snapshotted when an async model
     // build is launched. The result is registered against this geometry, so if
     // the display is reloaded (preview→full-res / ROI) while the worker runs,
     // the finished handler detects the mismatch and discards the stale actor.
     std::array<int, 3> m_kinematicLaunchDim{ 0, 0, 0 };
     std::array<double, 3> m_kinematicLaunchOrigin{ 0., 0., 0. };
+    // Live overlay control panel (dock), created lazily and shown while an
+    // overlay exists; its widgets mutate the actor/contour directly.
+    QPointer<QDockWidget> m_kinematicPanel;
+    QPointer<QSlider> m_kinOpacitySlider;
+    QPointer<QSlider> m_kinLevelSlider;
+    QPointer<QComboBox> m_kinRepCombo;
+    QPointer<QCheckBox> m_kinVisibleCheck;
     /// Prompt for tilted-ring parameters and launch the (async) model build +
     /// contour off the GUI thread (see vtkWindowCube_Kinematic.cpp).
     void showKinematicModelDialog();
     /// Apply a finished async kinematic-model build: add the overlay actor.
     void onKinematicModelReady();
-    /// Remove the kinematic-model overlay actor, if present.
+    /// Build (once) the live overlay control panel and wire its widgets.
+    void ensureKinematicPanel();
+    /// Apply the panel's representation choice (wireframe/surface) to the actor.
+    void applyKinematicRepresentation();
+    /// Remove the kinematic-model overlay actor and hide the panel.
     void clearKinematicModelOverlay();
     vtkNew<vtkVolume> volume;
     vtkNew<vtkColorTransferFunction> volumeColorTransferFunction;
