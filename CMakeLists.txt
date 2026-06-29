@@ -52,6 +52,7 @@ find_package(VTK 9.5.0 CONFIG REQUIRED COMPONENTS
         FiltersStatistics
         GUISupportQt
         InteractionStyle
+        InteractionWidgets
         RenderingAnnotation
         RenderingImage
         RenderingVolumeOpenGL2

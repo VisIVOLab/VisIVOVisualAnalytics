@@ -1068,9 +1068,13 @@ struct BackendVelocityGridResult
     int nx = 0, ny = 0, nz = 0;
     double sx = 1.0, sy = 1.0, sz = 1.0;   // spacing
     double ox = 0.0, oy = 0.0, oz = 0.0;   // origin
-    double speedMin = 0.0, speedMax = 0.0;
+    double speedMin = 0.0, speedMax = 0.0;        // this (possibly LOD) grid's range
+    double fullSpeedMin = 0.0, fullSpeedMax = 0.0; // full-resolution field range (for LUT/scale)
     QString unit;
     QString frame;
+    int downsampleFactor = 1;              // 1 = full res; >1 = LOD block-average factor
+    int fullNx = 0, fullNy = 0, fullNz = 0; // full-resolution grid dims (pre-LOD)
+    int roiX0 = 0, roiY0 = 0, roiZ0 = 0;   // sub-grid start (subgrid_bin only)
     QByteArray vectors;
 };
 
@@ -1220,6 +1224,11 @@ public:
     /// client memory bounded for large fields.
     BackendVelocityGridResult fetchVelocityGrid(const QString &datasetId,
                                                 int maxDim = 128) const;
+    /// Fetch a FULL-resolution sub-region (ROI on demand) of a velocity field,
+    /// by full-res grid indices. Result carries the clamped start (roiX0/Y0/Z0).
+    BackendVelocityGridResult fetchVelocitySubgrid(const QString &datasetId,
+                                                   int x0, int x1, int y0, int y1,
+                                                   int z0, int z1) const;
     /** POST /v1/hips/catalogue_overlay – RA/Dec sources in current viewport. */
     BackendHiPSCatalogueOverlayResult requestHiPSCatalogueOverlay(
             const QString &cataloguePath, double raDeg, double decDeg, double fovDeg,

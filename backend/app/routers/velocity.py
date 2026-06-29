@@ -13,7 +13,11 @@ from pydantic import BaseModel
 from ..auth import verify_token
 from ..dependencies import _run
 from ..sessions import Session, get_session
-from ..velocity_field import velocity_grid_worker, velocity_summary_worker
+from ..velocity_field import (
+    velocity_grid_worker,
+    velocity_subgrid_worker,
+    velocity_summary_worker,
+)
 
 router = APIRouter(tags=["velocity"])
 logger = logging.getLogger("visivo.velocity.router")
@@ -39,6 +43,16 @@ class VelocityGridRequest(BaseModel):
     # 0 = full resolution. Default keeps transfer + client memory bounded for
     # large (256³/512³) fields.
     max_dim: int = 128
+
+
+class VelocitySubgridRequest(BaseModel):
+    dataset_id: str
+    x0: int
+    x1: int
+    y0: int
+    y1: int
+    z0: int
+    z1: int
 
 
 @router.post("/v1/velocity/open", response_model=VelocityOpenResponse, tags=["velocity"])
@@ -94,8 +108,48 @@ async def velocity_grid_bin(
         "X-Visivo-Origin": ",".join(repr(float(o)) for o in payload["origin"]),
         "X-Visivo-Speed-Min": repr(float(payload["speed_min"])),
         "X-Visivo-Speed-Max": repr(float(payload["speed_max"])),
+        "X-Visivo-Full-Speed-Min": repr(float(payload.get("full_speed_min", payload["speed_min"]))),
+        "X-Visivo-Full-Speed-Max": repr(float(payload.get("full_speed_max", payload["speed_max"]))),
         "X-Visivo-Unit": str(payload["unit"]),
         "X-Visivo-Frame": str(payload["frame"]),
+        "X-Visivo-Byte-Order": "little",
+        "Content-Length": str(len(raw)),
+    }
+    return Response(content=raw, media_type="application/octet-stream", headers=headers)
+
+
+@router.post("/v1/velocity/subgrid_bin", tags=["velocity"])
+async def velocity_subgrid_bin(
+    request: VelocitySubgridRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Full-resolution sub-region (ROI on demand) of a velocity field."""
+    entry = session.datasets.get(request.dataset_id)
+    if not entry or entry.get("kind") != "velocity":
+        return Response(content=b"unknown velocity dataset",
+                        media_type="text/plain", status_code=404)
+    try:
+        payload = await _run(velocity_subgrid_worker, entry["path"],
+                             request.x0, request.x1, request.y0, request.y1,
+                             request.z0, request.z1, entry.get("box_mpc"))
+    except Exception as exc:
+        return Response(content=str(exc).encode("utf-8"),
+                        media_type="text/plain", status_code=500)
+
+    raw: bytes = payload["raw_bytes"]
+    headers = {
+        "X-Visivo-Width": str(payload["nx"]),
+        "X-Visivo-Height": str(payload["ny"]),
+        "X-Visivo-Depth": str(payload["nz"]),
+        "X-Visivo-Components": "3",
+        # Clamped full-res start indices so the client can place the ROI exactly.
+        "X-Visivo-Roi-X0": str(payload["x0"]),
+        "X-Visivo-Roi-Y0": str(payload["y0"]),
+        "X-Visivo-Roi-Z0": str(payload["z0"]),
+        "X-Visivo-Full-Shape": ",".join(str(int(s)) for s in payload["full_shape"]),
+        "X-Visivo-Speed-Min": repr(float(payload["speed_min"])),
+        "X-Visivo-Speed-Max": repr(float(payload["speed_max"])),
         "X-Visivo-Byte-Order": "little",
         "Content-Length": str(len(raw)),
     }

@@ -1238,12 +1238,69 @@ BackendVelocityGridResult BackendClient::fetchVelocityGrid(const QString &datase
     parse3(hget("X-Visivo-Origin"), r.ox, r.oy, r.oz);
     r.speedMin = hget("X-Visivo-Speed-Min").toDouble();
     r.speedMax = hget("X-Visivo-Speed-Max").toDouble();
+    {
+        const QByteArray fmin = hget("X-Visivo-Full-Speed-Min");
+        const QByteArray fmax = hget("X-Visivo-Full-Speed-Max");
+        r.fullSpeedMin = fmin.isEmpty() ? r.speedMin : fmin.toDouble();
+        r.fullSpeedMax = fmax.isEmpty() ? r.speedMax : fmax.toDouble();
+    }
     r.unit  = QString::fromUtf8(hget("X-Visivo-Unit"));
     r.frame = QString::fromUtf8(hget("X-Visivo-Frame"));
+    r.downsampleFactor = std::max(1, hget("X-Visivo-Downsample-Factor").toInt());
+    {
+        const QStringList fs = QString::fromUtf8(hget("X-Visivo-Full-Shape")).split(QLatin1Char(','));
+        if (fs.size() == 3) { r.fullNz = fs[0].toInt(); r.fullNy = fs[1].toInt(); r.fullNx = fs[2].toInt(); }
+    }
     const qint64 expected =
             qint64(r.nx) * qint64(r.ny) * qint64(r.nz) * 3 * qint64(sizeof(float));
     if (r.nx <= 0 || r.ny <= 0 || r.nz <= 0 || expected != data.size()) {
         r.error = QStringLiteral("bad velocity grid payload: got %1 bytes, expected %2")
+                          .arg(data.size()).arg(expected);
+        return r;
+    }
+    r.vectors = data;
+    r.valid = true;
+    return r;
+}
+
+BackendVelocityGridResult BackendClient::fetchVelocitySubgrid(const QString &datasetId,
+                                                              int x0, int x1, int y0, int y1,
+                                                              int z0, int z1) const
+{
+    BackendVelocityGridResult r;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("x0"), x0 }, { QStringLiteral("x1"), x1 },
+            { QStringLiteral("y0"), y0 }, { QStringLiteral("y1"), y1 },
+            { QStringLiteral("z0"), z0 }, { QStringLiteral("z1"), z1 } });
+    QNetworkRequest req = buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/velocity/subgrid_bin")));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray data = performBinaryPost(
+            nam, req, body.toJson(QJsonDocument::Compact), 120000, status, headers, err);
+    if (status != 200) {
+        r.error = err.isEmpty() ? QStringLiteral("HTTP %1 on velocity/subgrid_bin").arg(status) : err;
+        return r;
+    }
+    const auto hget = [&](const char *name) -> QByteArray {
+        return headers.value(QByteArray(name).toLower());
+    };
+    r.nx = hget("X-Visivo-Width").toInt();
+    r.ny = hget("X-Visivo-Height").toInt();
+    r.nz = hget("X-Visivo-Depth").toInt();
+    r.roiX0 = hget("X-Visivo-Roi-X0").toInt();
+    r.roiY0 = hget("X-Visivo-Roi-Y0").toInt();
+    r.roiZ0 = hget("X-Visivo-Roi-Z0").toInt();
+    r.speedMin = hget("X-Visivo-Speed-Min").toDouble();
+    r.speedMax = hget("X-Visivo-Speed-Max").toDouble();
+    r.downsampleFactor = 1;
+    const qint64 expected =
+            qint64(r.nx) * qint64(r.ny) * qint64(r.nz) * 3 * qint64(sizeof(float));
+    if (r.nx <= 0 || r.ny <= 0 || r.nz <= 0 || expected != data.size()) {
+        r.error = QStringLiteral("bad velocity subgrid payload: got %1 bytes, expected %2")
                           .arg(data.size()).arg(expected);
         return r;
     }

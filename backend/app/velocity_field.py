@@ -76,17 +76,18 @@ class VelocityField:
 def _spacing_origin(n: tuple[int, int, int], box_mpc: float | None):
     """Spacing/origin for an (nx, ny, nz) grid centred on the origin.
 
-    With a physical box size the grid spans [-box/2, +box/2] on each axis
-    (reconstructions are centred on the Local Group / observer); without it we
-    use unit spacing centred on zero and flag box_known=False.
+    Point-centred model (matches the desktop viewer): the grid POINTS span
+    exactly [-box/2, +box/2] per axis, so spacing = box/(n-1) and the centred
+    origin is -box/2. Without a physical box we use unit spacing, origin
+    -(n-1)/2 (still centred) and flag box_known=False.
     """
     nx, ny, nz = n
     if box_mpc and box_mpc > 0:
-        sx = box_mpc / nx
-        sy = box_mpc / ny
-        sz = box_mpc / nz
+        sx = box_mpc / max(1, nx - 1)
+        sy = box_mpc / max(1, ny - 1)
+        sz = box_mpc / max(1, nz - 1)
         return (sx, sy, sz), (-0.5 * box_mpc, -0.5 * box_mpc, -0.5 * box_mpc), True
-    return (1.0, 1.0, 1.0), (-0.5 * nx, -0.5 * ny, -0.5 * nz), False
+    return (1.0, 1.0, 1.0), (-0.5 * (nx - 1), -0.5 * (ny - 1), -0.5 * (nz - 1)), False
 
 
 def load_multicomponent_fits(path: str, box_mpc: float | None = None) -> VelocityField:
@@ -230,6 +231,41 @@ def velocity_summary_worker(path: str, box_mpc: float | None = None) -> dict[str
     return load_velocity_field(path, box_mpc).summary()
 
 
+def velocity_subgrid_worker(path: str, x0: int, x1: int, y0: int, y1: int,
+                            z0: int, z1: int, box_mpc: float | None = None) -> dict[str, Any]:
+    """Return a FULL-resolution sub-region [x0:x1, y0:y1, z0:z1] of the field
+    (the ROI-on-demand path). Indices are full-res grid indices, clamped to the
+    grid (start in [0, n-1], end in [start+1, n]). The desktop places the
+    sub-grid from the requested indices, so no spacing/origin is needed here.
+
+    Uses memmap slicing so only the ROI is read from disk — backend memory/I/O
+    stay bounded even for a 512³ source.
+    """
+    with fits.open(path, memmap=True) as hdul:
+        data = hdul[0].data  # memmap, shape (3, nz, ny, nx)
+        if data is None or data.ndim != 4 or data.shape[0] != 3:
+            raise ValueError(
+                f"expected a 4-D FITS with a length-3 component axis; got "
+                f"{None if data is None else data.shape}"
+            )
+        _, nz, ny, nx = data.shape
+        x0 = max(0, min(int(x0), nx - 1)); x1 = max(x0 + 1, min(int(x1), nx))
+        y0 = max(0, min(int(y0), ny - 1)); y1 = max(y0 + 1, min(int(y1), ny))
+        z0 = max(0, min(int(z0), nz - 1)); z1 = max(z0 + 1, min(int(z1), nz))
+        sub = np.asarray(data[:, z0:z1, y0:y1, x0:x1], dtype=np.float32)  # reads only the ROI
+
+    subfield = VelocityField(
+        sub[0].copy(), sub[1].copy(), sub[2].copy(),
+        (1.0, 1.0, 1.0), (0.0, 0.0, 0.0), "km/s (assumed)",
+        "supergalactic (assumed)", False,
+    )
+    payload = grid_raw_payload(subfield)
+    payload["x0"] = x0; payload["y0"] = y0; payload["z0"] = z0
+    payload["downsample_factor"] = 1
+    payload["full_shape"] = [nz, ny, nx]
+    return payload
+
+
 def velocity_grid_worker(path: str, box_mpc: float | None = None,
                          max_dim: int = 0) -> dict[str, Any]:
     """Load + return the binary grid payload (for /v1/velocity/grid_bin).
@@ -240,11 +276,19 @@ def velocity_grid_worker(path: str, box_mpc: float | None = None,
     """
     field = load_velocity_field(path, box_mpc)
     full = field.shape
+    # Full-resolution speed range (block-averaging lowers the LOD max), so the
+    # viewer's LUT/glyph scale still covers values a full-res ROI may contain.
+    full_mag = field.magnitude
+    full_finite = np.isfinite(full_mag)
+    full_speed_min = float(np.nanmin(full_mag)) if full_finite.any() else 0.0
+    full_speed_max = float(np.nanmax(full_mag)) if full_finite.any() else 0.0
     if max_dim and max_dim > 0:
         field = downsample(field, max_dim)
     payload = grid_raw_payload(field)
     payload["full_shape"] = [int(s) for s in full]            # (nz, ny, nx) before LOD
     payload["downsample_factor"] = int(round(full[0] / field.shape[0])) if field.shape[0] else 1
+    payload["full_speed_min"] = full_speed_min
+    payload["full_speed_max"] = full_speed_max
     return payload
 
 

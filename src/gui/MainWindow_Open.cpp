@@ -879,7 +879,8 @@ void MainWindow::openVelocityField()
         return;
     }
 
-    auto *win = new vtkWindowVectorField(path, grid, nullptr);
+    auto *win = new vtkWindowVectorField(path, grid, opened.datasetId, client.baseUrl(),
+                                         client.token(), client.sessionId(), nullptr);
     win->setAttribute(Qt::WA_DeleteOnClose);
     win->resize(1100, 760);
     win->show();

@@ -40,8 +40,8 @@ def test_box_mpc_sets_physical_spacing(tmp_path):
     path, _ = _write_multicomponent(tmp_path, n=10)
     f = load_velocity_field(path, box_mpc=1000.0)
     assert f.box_known is True
-    assert f.spacing == pytest.approx((100.0, 100.0, 100.0))
-    # grid centred on the origin
+    # Point-centred model: points span [-box/2, +box/2] → spacing = box/(n-1).
+    assert f.spacing == pytest.approx((1000.0 / 9, 1000.0 / 9, 1000.0 / 9))
     assert f.origin == pytest.approx((-500.0, -500.0, -500.0))
 
 
@@ -133,6 +133,37 @@ def test_grid_worker_downsamples(tmp_path):
     # full-res when max_dim=0
     p0 = velocity_grid_worker(path, None, max_dim=0)
     assert (p0["nx"], p0["ny"], p0["nz"]) == (20, 20, 20)
+
+
+def test_subgrid_worker_full_res_slice(tmp_path):
+    from app.velocity_field import velocity_subgrid_worker
+    path, data = _write_multicomponent(tmp_path, n=20)
+    p = velocity_subgrid_worker(path, 4, 12, 2, 10, 0, 6, None)
+    assert (p["nx"], p["ny"], p["nz"]) == (8, 8, 6)
+    assert (p["x0"], p["y0"], p["z0"]) == (4, 2, 0)
+    assert p["downsample_factor"] == 1
+    assert len(p["raw_bytes"]) == 8 * 8 * 6 * 3 * 4
+    # out-of-range indices are clamped, not crashing
+    pc = velocity_subgrid_worker(path, -5, 999, 0, 5, 0, 5, None)
+    assert pc["nx"] == 20
+
+
+def test_velocity_subgrid_router(tmp_path):
+    import os
+    os.environ.setdefault("VISIVO_TOKEN", "test-token-visivo-12345")
+    from fastapi.testclient import TestClient
+    from app.main import app
+    auth = {"X-Visivo-Token": "test-token-visivo-12345"}
+    client = TestClient(app, raise_server_exceptions=True)
+    path, _ = _write_multicomponent(tmp_path, n=16)
+    dsid = client.post("/v1/velocity/open", json={"path": path}, headers=auth).json()["dataset_id"]
+    g = client.post("/v1/velocity/subgrid_bin",
+                    json={"dataset_id": dsid, "x0": 2, "x1": 10, "y0": 2, "y1": 10,
+                          "z0": 2, "z1": 10}, headers=auth)
+    assert g.status_code == 200, g.text
+    assert g.headers["X-Visivo-Width"] == "8"
+    assert g.headers["X-Visivo-Roi-X0"] == "2"
+    assert len(g.content) == 8 * 8 * 8 * 3 * 4
 
 
 def test_component_fits_loader(tmp_path):
