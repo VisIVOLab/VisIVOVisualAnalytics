@@ -2223,6 +2223,14 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                      &QFutureWatcher<RemoteKinematicModelResult>::finished,
                      this, &vtkWindowCube::onKinematicModelReady);
 
+    // Movie export (F3): channel scan / camera orbit → MP4 (or PNG frames).
+    m_actExportMovie = ui->menuTools->addAction(u"Export Movie…"_s);
+    m_actExportMovie->setToolTip(
+            u"Export an animation — a velocity channel scan or a 3-D camera "
+            u"orbit — as an MP4 video (or a PNG frame sequence)."_s);
+    QObject::connect(m_actExportMovie, &QAction::triggered,
+                     this, &vtkWindowCube::showExportMovieDialog);
+
     // REGIONS group
     ui->menuTools->addSeparator();
     this->actionBoxRegion     = ui->menuTools->addAction(u"Box Region Analysis"_s);

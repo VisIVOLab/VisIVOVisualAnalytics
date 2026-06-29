@@ -466,6 +466,7 @@ private:
     QPointer<QAction> m_actSliceHistogram;
     QPointer<QAction> m_actSendSliceToImage;
     QPointer<QAction> m_actKinematicModel;
+    QPointer<QAction> m_actExportMovie;
     QPointer<QAction> m_actChannelMaps;
 
     // Beam ellipse overlay (synthesised beam indicator in the 2D slice view).
@@ -734,6 +735,12 @@ private:
     void updateKinematic2dContour(bool render = true);
     /// Remove the kinematic-model overlay actor and hide the panel.
     void clearKinematicModelOverlay();
+
+    // Movie export (F3): capture an animation (channel scan or camera orbit) to
+    // an MP4 via ffmpeg, or a PNG frame sequence when ffmpeg is unavailable.
+    bool m_exportMovieInProgress{ false };
+    /// Prompt for movie options and run the capture/encode (vtkWindowCube_Movie.cpp).
+    void showExportMovieDialog();
     vtkNew<vtkVolume> volume;
     vtkNew<vtkColorTransferFunction> volumeColorTransferFunction;
     vtkNew<vtkPiecewiseFunction> volumeOpacity;
