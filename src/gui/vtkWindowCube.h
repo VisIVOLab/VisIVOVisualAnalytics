@@ -750,6 +750,7 @@ private:
     static QList<QPointer<vtkWindowCube>> s_cubeWindows;   // every open cube viewer
     bool m_linkViews{ false };
     bool m_applyingLinkedUpdate{ false };                  // echo guard
+    int m_lastLinkedChannel{ -1 };                         // dedup for channel broadcasts
     unsigned long m_cubeCameraObserverTag{ 0 };       // InteractionEvent (drag)
     unsigned long m_cubeCameraEndObserverTag{ 0 };    // EndInteractionEvent (wheel zoom / release)
     // The exact interactor the camera observer was added to, kept weakly so the

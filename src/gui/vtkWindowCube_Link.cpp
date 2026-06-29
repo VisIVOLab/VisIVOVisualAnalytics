@@ -15,6 +15,8 @@
 #include "vtkWindowCube.h"
 #include "ui_vtkWindowCube.h"
 
+#include "ChannelOverlay.h"
+
 #include <vtkCamera.h>
 #include <vtkCommand.h>
 #include <vtkImageData.h>
@@ -26,6 +28,7 @@
 
 #include <QAction>
 #include <QScopedValueRollback>
+#include <QSignalBlocker>
 
 #include <algorithm>
 
@@ -93,8 +96,10 @@ void vtkWindowCube::setLinkViews(bool on)
         if (p && p != this && p->m_linkViews)
             ++peers;
     this->broadcastLinkedCamera();
-    if (ui->spinSlice)
-        this->broadcastLinkedChannel(ui->spinSlice->value() - 1);
+    if (ui->spinSlice) {
+        this->m_lastLinkedChannel = ui->spinSlice->value() - 1;
+        this->broadcastLinkedChannel(this->m_lastLinkedChannel);
+    }
     this->statusBar()->showMessage(
             peers > 0 ? u"Linked views: on (%1 linked viewer(s) synced)."_s.arg(peers)
                       : u"Linked views: on — enable it on another cube to sync them."_s,
@@ -236,8 +241,25 @@ void vtkWindowCube::applyLinkedChannel(int channel0, double fraction, double spe
     if (target < 0)
         target = std::clamp(int(std::lround(fraction * maxIdx)), 0, maxIdx);
 
-    // The programmatic slice request updates the slider via QSignalBlocker, so
-    // it does not re-fire the user slot → no echo.
+    // Remember the channel we're moving to so our own slice-result broadcast is
+    // de-duped (no echo back to the sender).
+    this->m_lastLinkedChannel = target;
+    // Reflect the synced channel in the slider/spin widgets immediately — the
+    // async slice result will set them again to the same value.
+    if (ui->sliderSlice) {
+        QSignalBlocker b(ui->sliderSlice);
+        ui->sliderSlice->setValue(target + 1);
+    }
+    if (ui->spinSlice) {
+        QSignalBlocker b(ui->spinSlice);
+        ui->spinSlice->setValue(target + 1);
+    }
+    if (this->channelOverlay) {   // the floating scrubber too (immediate feedback)
+        this->channelOverlay->setChannel(target + 1);
+        this->channelOverlay->setSpectralLabel(this->formatSpectralAxisValue(target));
+    }
+    // Programmatic request; the result path sets the widgets via QSignalBlocker,
+    // so it does not re-fire the user slot → no echo.
     QScopedValueRollback<bool> guard(this->m_applyingLinkedUpdate, true);
     this->requestRemoteSlice(target);
 }

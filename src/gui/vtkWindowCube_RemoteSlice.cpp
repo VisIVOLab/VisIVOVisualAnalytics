@@ -260,10 +260,6 @@ void vtkWindowCube::requestRemoteSlice(int sliceIndex)
 {
     sliceIndex = this->clampRemoteSliceIndex(sliceIndex);
     this->currentRequestedRemoteSliceIndex = sliceIndex;
-    // Linked views: mirror this channel change to the other linked cubes. The
-    // guard skips changes that are themselves driven by a linked peer (no echo).
-    if (this->m_linkViews && !this->m_applyingLinkedUpdate)
-        this->broadcastLinkedChannel(sliceIndex);
     // Mark this as a USER-initiated request so its resulting
     // applyRemoteSliceResult is allowed to spawn ±1 prefetches.
     // Prefetched results themselves leave this flag false → no cascade.
@@ -307,11 +303,30 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     }
     this->lutSlice->SetTableRange(result.imageRange[0], result.imageRange[1]);
 
-    const QSignalBlocker blockSlider(ui->sliderSlice);
-    const QSignalBlocker blockSpin(ui->spinSlice);
-    ui->sliderSlice->setValue(result.index + 1);
-    ui->spinSlice->setValue(result.index + 1);
+    {
+        const QSignalBlocker blockSlider(ui->sliderSlice);
+        const QSignalBlocker blockSpin(ui->spinSlice);
+        ui->sliderSlice->setValue(result.index + 1);
+        ui->spinSlice->setValue(result.index + 1);
+    }
     ui->lineSpectral->setText(this->formatSpectralAxisValue(result.index));
+    // The floating channel scrubber is normally driven by spinSlice::valueChanged,
+    // which we just blocked — update it explicitly so it tracks every displayed
+    // slice (cached / fetched / linked).
+    if (this->channelOverlay) {
+        this->channelOverlay->setChannel(result.index + 1);
+        this->channelOverlay->setSpectralLabel(ui->lineSpectral->text());
+    }
+
+    // Linked views: this is the single convergence where a slice is actually
+    // displayed (covers cached scrubbing AND fetched slices). Broadcast the
+    // committed channel to linked peers, de-duped so an echoed/own channel is
+    // not re-broadcast. The guard skips linked-driven updates.
+    if (this->m_linkViews && !this->m_applyingLinkedUpdate
+        && result.index != this->m_lastLinkedChannel) {
+        this->m_lastLinkedChannel = result.index;
+        this->broadcastLinkedChannel(result.index);
+    }
     this->refreshSpectralAxisUi();
     this->updateRemoteCuttingPlane(result.index);
     ui->vtkCube->renderWindow()->Render();
