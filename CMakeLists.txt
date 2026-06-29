@@ -301,6 +301,8 @@ set(PROJECT_SOURCES
         src/gui/DataHubWidget_Status.cpp
         src/gui/DataHubWidget.h
         src/gui/CardClickFilter.h
+        src/gui/ColormapIcon.cpp
+        src/gui/ColormapIcon.h
         src/gui/VLKBInventoryTree.cpp
         src/gui/VLKBInventoryTree.h
         src/vlkb/VlkbQueryService.cpp

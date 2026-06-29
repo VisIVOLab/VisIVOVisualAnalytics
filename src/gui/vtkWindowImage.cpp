@@ -8,6 +8,7 @@
 #include "app/ThemeManager.h"
 #include "CatalogueTableModel.h"
 #include "ColorMaps.h"
+#include "ColormapIcon.h"
 #include "CatalogueOverlayUtils.h"
 #include "DiagnosticsWindow.h"
 #include "ImageLayerController.h"
@@ -112,30 +113,6 @@ using namespace CubeWcs;
 using namespace CubeGeom;  // shared viewport-geometry helpers (deduplicated)
 
 namespace {
-
-static QIcon makeColormapIcon(const std::string &name, int iconW = 80, int iconH = 14)
-{
-    vtkNew<vtkLookupTable> lut;
-    lut->SetNumberOfTableValues(256);
-    lut->SetTableRange(0.0, 1.0);
-    ColorMaps::SetColorMap(lut.Get(), name);
-    lut->Build();
-    QImage img(iconW, iconH, QImage::Format_RGB32);
-    for (int x = 0; x < iconW; ++x) {
-        // GetColor (maps through the table range) not GetTableValue(idx): some
-        // colormaps (e.g. VolRenTwoLev) have only a few entries, so a fixed
-        // 0..255 index would clamp to the last (grey).
-        const double t = static_cast<double>(x) / std::max(1, iconW - 1);
-        double rgb[3];
-        lut->GetColor(t, rgb);
-        const QRgb c = qRgb(static_cast<int>(rgb[0] * 255.0),
-                            static_cast<int>(rgb[1] * 255.0),
-                            static_cast<int>(rgb[2] * 255.0));
-        for (int y = 0; y < iconH; ++y)
-            img.setPixel(x, y, c);
-    }
-    return QIcon(QPixmap::fromImage(img));
-}
 
 /// Returns at most the last two path segments of @p fullPath, preceded by "…/".
 /// E.g. "/home/user/data/fits" → "…/data/fits".  Paths with ≤ 2 segments are
