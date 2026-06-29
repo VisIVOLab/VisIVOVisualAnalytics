@@ -179,7 +179,7 @@ void vtkWindowCatalogue3D::setupSidebar()
         this->comboMapColor = new QComboBox(encCard);
         this->comboColorScale = new QComboBox(encCard);
         for (const char *label : LutScale::modeLabels()) {
-            this->comboColorScale->addItem(QString::fromLatin1(label));
+            this->comboColorScale->addItem(QString::fromUtf8(label));
         }
         this->spinColorGamma = new QDoubleSpinBox(encCard);
         this->spinColorGamma->setRange(0.1, 10.0);

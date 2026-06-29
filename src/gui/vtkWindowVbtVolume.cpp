@@ -244,7 +244,7 @@ void vtkWindowVbtVolume::setupSidebarUi()
 
         this->comboScaleMode = new QComboBox(inner);
         for (const char *label : LutScale::modeLabels()) {
-            this->comboScaleMode->addItem(QString::fromLatin1(label));
+            this->comboScaleMode->addItem(QString::fromUtf8(label));
         }
 
         this->spinScaleGamma = new QDoubleSpinBox(inner);

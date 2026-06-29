@@ -122,12 +122,15 @@ static QIcon makeColormapIcon(const std::string &name, int iconW = 80, int iconH
     lut->Build();
     QImage img(iconW, iconH, QImage::Format_RGB32);
     for (int x = 0; x < iconW; ++x) {
-        const int tableIdx = static_cast<int>(x * 255.0 / std::max(1, iconW - 1));
-        double rgba[4];
-        lut->GetTableValue(tableIdx, rgba);
-        const QRgb c = qRgb(static_cast<int>(rgba[0] * 255.0),
-                            static_cast<int>(rgba[1] * 255.0),
-                            static_cast<int>(rgba[2] * 255.0));
+        // GetColor (maps through the table range) not GetTableValue(idx): some
+        // colormaps (e.g. VolRenTwoLev) have only a few entries, so a fixed
+        // 0..255 index would clamp to the last (grey).
+        const double t = static_cast<double>(x) / std::max(1, iconW - 1);
+        double rgb[3];
+        lut->GetColor(t, rgb);
+        const QRgb c = qRgb(static_cast<int>(rgb[0] * 255.0),
+                            static_cast<int>(rgb[1] * 255.0),
+                            static_cast<int>(rgb[2] * 255.0));
         for (int y = 0; y < iconH; ++y)
             img.setPixel(x, y, c);
     }
