@@ -131,6 +131,23 @@ struct RemoteCubeSubvolumeResult
     double blankFraction{ 0. };
 };
 
+// Kinematic-model overlay (F2). The model cube fetch, the float→vtkImageData
+// copy and the FlyingEdges contour all run on a worker thread; `actor` is the
+// ready-to-add overlay (null when `empty`), so the GUI thread only calls
+// AddActor + Render. `empty` = model peak ≤ 0 (no emission landed on a channel).
+struct RemoteKinematicModelResult
+{
+    bool valid{ false };
+    bool empty{ false };
+    QString errorMessage;
+    vtkSmartPointer<vtkActor> actor;
+    double peak{ 0. };
+    double fraction{ 0.5 };
+    qint64 numVertices{ 0 };
+    QString spectralMode;
+    QString spectralUnit;
+};
+
 class vtkWindowCube : public QMainWindow
 {
     Q_OBJECT
@@ -439,6 +456,7 @@ private:
     QPointer<QAction> m_actExportChannel2d;
     QPointer<QAction> m_actSliceHistogram;
     QPointer<QAction> m_actSendSliceToImage;
+    QPointer<QAction> m_actKinematicModel;
     QPointer<QAction> m_actChannelMaps;
 
     // Beam ellipse overlay (synthesised beam indicator in the 2D slice view).
@@ -456,6 +474,7 @@ private:
     QFutureWatcher<RemoteCubePreviewResult> remotePreviewWatcher;
     QFutureWatcher<RemoteCubeSubvolumeResult> remoteHighResCubeWatcher;
     QFutureWatcher<AsyncIsosurfaceResult> isosurfaceWatcher;
+    QFutureWatcher<RemoteKinematicModelResult> m_kinematicWatcher;
     // Moment computation is delegated to MomentMapController.
     MomentMapController *momentController{ nullptr };
     // Noise estimation is delegated to NoiseController.
@@ -666,6 +685,22 @@ private:
     vtkNew<vtkFlyingEdges3D> isosurfaceFilter;
     vtkNew<vtkActor> isosurface;
     vtkSmartPointer<vtkActor> currentIsosurfaceActor;
+    // Kinematic-model overlay (F2). The contoured tilted-ring model actor added
+    // over the cube renderer; null when no overlay is shown.
+    vtkSmartPointer<vtkActor> m_kinematicModelActor;
+    // Live display geometry (dims + origin) snapshotted when an async model
+    // build is launched. The result is registered against this geometry, so if
+    // the display is reloaded (preview→full-res / ROI) while the worker runs,
+    // the finished handler detects the mismatch and discards the stale actor.
+    std::array<int, 3> m_kinematicLaunchDim{ 0, 0, 0 };
+    std::array<double, 3> m_kinematicLaunchOrigin{ 0., 0., 0. };
+    /// Prompt for tilted-ring parameters and launch the (async) model build +
+    /// contour off the GUI thread (see vtkWindowCube_Kinematic.cpp).
+    void showKinematicModelDialog();
+    /// Apply a finished async kinematic-model build: add the overlay actor.
+    void onKinematicModelReady();
+    /// Remove the kinematic-model overlay actor, if present.
+    void clearKinematicModelOverlay();
     vtkNew<vtkVolume> volume;
     vtkNew<vtkColorTransferFunction> volumeColorTransferFunction;
     vtkNew<vtkPiecewiseFunction> volumeOpacity;

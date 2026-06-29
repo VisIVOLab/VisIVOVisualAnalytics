@@ -113,6 +113,37 @@ Chunked/streamed generation for very large cubes is future work.
 
 ---
 
+## Desktop overlay (cube viewer)
+
+In the 3-D cube viewer (`vtkWindowCube`): **Tools ▸ Kinematic Model Overlay…**.
+The dialog collects the tilted-ring parameters (centre, PA, inclination, disk
+radius, Vsys, Vrot, σ) plus a **contour level** as a fraction of the model peak.
+On *Overlay* the model is fetched and contoured (`vtkFlyingEdges3D`) and added as
+a semi-transparent cyan surface over the data. *Remove Overlay* (shown when one
+is present) clears it; re-running replaces it.
+
+- **Off the UI thread.** The fetch, the float→`vtkImageData` copy and the
+  contour all run on a `QtConcurrent` worker that captures only plain values
+  (never `this`); a `QFutureWatcher` member delivers the result on the GUI
+  thread, which only does `AddActor` + `Render`. Closing the window during a
+  build is safe.
+- **Registration.** The model is the full grid, but the cube may be showing a
+  downsampled preview, the full-resolution cube, or an ROI sub-volume. Before
+  launching, the viewer snapshots the live display image geometry
+  (`cubeDisplaySource`) and the worker maps the model onto it: for a preview /
+  full-res display (origin 0) the model is scaled to the displayed extent
+  (spacing `(dispDim-1)/(fullDim-1)`, → 1 at full res); for an ROI (placed at
+  its global voxel offset) the model stays in global voxel coordinates.
+- **Stale-result guard.** If the display is reloaded (preview→full-res / ROI)
+  while the build runs, the finished handler detects the geometry change and
+  discards the now-misregistered actor, prompting a re-run.
+- **Empty model.** If no emission lands on a channel (e.g. Vsys outside the
+  cube's spectral range, or a FREQ cube with no rest frequency), the GUI reports
+  the spectral mode/unit so you can re-enter Vsys/Vrot/σ in the right unit.
+- **ROI note.** In ROI mode the full model surface is *not* clipped to the
+  loaded sub-volume — it shows the whole disk for context, so part of it may
+  render outside the visible data box.
+
 ## Limitations (phase-1) / roadmap
 
 - Single PA/incl and a flat rotation curve; **per-ring** parameters (a real
@@ -120,3 +151,8 @@ Chunked/streamed generation for very large cubes is future work.
 - Uniform disk intensity (the overlay is about kinematics/footprint, not flux).
 - Image-pixel PA rather than WCS sky PA (see convention note).
 - Full in-memory materialisation bounded by the voxel cap.
+- Overlay registration distinguishes preview/full-res from ROI by display
+  origin; an ROI starting at voxel (0,0,0) is treated as a full-extent display.
+- The worker builds the mapper/actor off the GUI thread (fully built before
+  hand-off); baking `vtkPolyData` and creating the actor on the GUI thread is a
+  possible future cleanup.

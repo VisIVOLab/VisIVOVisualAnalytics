@@ -396,6 +396,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_Probe.cpp
         src/gui/vtkWindowCube_Region.cpp
         src/gui/vtkWindowCube_Setup.cpp
+        src/gui/vtkWindowCube_Kinematic.cpp
         src/gui/CubeViewportGeometry.cpp
         src/gui/CubeViewportGeometry.h
         src/gui/CubeStatsUtil.cpp

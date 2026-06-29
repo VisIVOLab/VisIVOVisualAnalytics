@@ -1083,6 +1083,22 @@ struct BackendVelocityGridResult
     QByteArray vectors;
 };
 
+/// Tilted-ring kinematic model cube — /v1/cube/kinematic_model_bin (F2).
+/// `data` is little-endian float32 (width*height*depth, x-fastest = vtkImageData
+/// point order), the model emission of a regularly rotating disk to be contoured
+/// over the observed cube. `spectralMode` is "velocity" | "native" | "channel"
+/// and tells the GUI what unit Vsys/Vrot/sigma are in (`spectralAxisUnit`).
+struct BackendKinematicModelResult
+{
+    bool valid = false;
+    QString error;
+    int width = 0, height = 0, depth = 0;
+    double peak = 0.0;
+    QString spectralAxisUnit;
+    QString spectralMode;
+    QByteArray data;
+};
+
 /// Gravitational-basin (watershed) label volume — /v1/velocity/basins_bin.
 /// `labels` is little-endian int32 (npts, x-fastest): 0 = unassigned, 1..nBasins.
 struct BackendVelocityBasinsResult
@@ -1250,6 +1266,14 @@ public:
     BackendVelocityBasinsResult fetchVelocityBasins(const QString &datasetId,
                                                     int basinMaxDim = 64,
                                                     int direction = 1) const;
+    /// Tilted-ring kinematic model cube (F2). Builds a regularly-rotating-disk
+    /// model on the cube's own grid; Vsys/Vrot/sigma are in the cube's spectral
+    /// unit (km/s when the axis converts — see result.spectralMode).
+    BackendKinematicModelResult requestKinematicModel(const QString &datasetId,
+                                                      double x0, double y0,
+                                                      double paDeg, double inclDeg,
+                                                      double vsys, double vrot,
+                                                      double rmaxPix, double sigma) const;
     /** POST /v1/hips/catalogue_overlay – RA/Dec sources in current viewport. */
     BackendHiPSCatalogueOverlayResult requestHiPSCatalogueOverlay(
             const QString &cataloguePath, double raDeg, double decDeg, double fovDeg,

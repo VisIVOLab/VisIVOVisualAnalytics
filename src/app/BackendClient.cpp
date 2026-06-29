@@ -1267,6 +1267,56 @@ BackendVelocityGridResult BackendClient::fetchVelocityGrid(const QString &datase
     return r;
 }
 
+BackendKinematicModelResult BackendClient::requestKinematicModel(
+        const QString &datasetId, double x0, double y0, double paDeg, double inclDeg,
+        double vsys, double vrot, double rmaxPix, double sigma) const
+{
+    BackendKinematicModelResult r;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("x0"), x0 }, { QStringLiteral("y0"), y0 },
+            { QStringLiteral("pa_deg"), paDeg }, { QStringLiteral("incl_deg"), inclDeg },
+            { QStringLiteral("vsys"), vsys }, { QStringLiteral("vrot"), vrot },
+            { QStringLiteral("rmax_pix"), rmaxPix }, { QStringLiteral("sigma"), sigma } });
+    QNetworkRequest req =
+            buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/cube/kinematic_model_bin")));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray data = performBinaryPost(
+            nam, req, body.toJson(QJsonDocument::Compact), 120000, status, headers, err);
+    if (status != 200) {
+        // Body carries a plain-text reason for 413 (too large) / 500.
+        const QString reason = !data.isEmpty() ? QString::fromUtf8(data)
+                             : (err.isEmpty() ? QString() : err);
+        r.error = reason.isEmpty()
+                          ? QStringLiteral("HTTP %1 on kinematic_model_bin").arg(status)
+                          : QStringLiteral("HTTP %1: %2").arg(status).arg(reason);
+        return r;
+    }
+    const auto hget = [&](const char *name) -> QByteArray {
+        return headers.value(QByteArray(name).toLower());
+    };
+    r.width  = hget("X-Visivo-Width").toInt();
+    r.height = hget("X-Visivo-Height").toInt();
+    r.depth  = hget("X-Visivo-Depth").toInt();
+    r.peak   = hget("X-Visivo-Peak").toDouble();
+    r.spectralAxisUnit = QString::fromUtf8(hget("X-Visivo-Spectral-Axis-Unit"));
+    r.spectralMode     = QString::fromUtf8(hget("X-Visivo-Spectral-Mode"));
+    const qint64 expected =
+            qint64(r.width) * qint64(r.height) * qint64(r.depth) * qint64(sizeof(float));
+    if (r.width <= 0 || r.height <= 0 || r.depth <= 0 || expected != data.size()) {
+        r.error = QStringLiteral("bad kinematic model payload: got %1 bytes, expected %2")
+                          .arg(data.size()).arg(expected);
+        return r;
+    }
+    r.data = data;
+    r.valid = true;
+    return r;
+}
+
 BackendVelocityGridResult BackendClient::fetchVelocitySubgrid(const QString &datasetId,
                                                               int x0, int x1, int y0, int y1,
                                                               int z0, int z1) const

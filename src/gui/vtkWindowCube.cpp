@@ -2211,6 +2211,18 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         emit contourDataReady(label, output);
     });
 
+    // Kinematic-model overlay (F2): contour a tilted-ring rotating-disk model
+    // over the cube to highlight gas departing from regular rotation.
+    m_actKinematicModel = ui->menuTools->addAction(u"Kinematic Model Overlay…"_s);
+    m_actKinematicModel->setToolTip(
+            u"Overlay a tilted-ring rotating-disk model on the cube to highlight "
+            u"gas that departs from regular rotation (anomalous / extra-planar)."_s);
+    QObject::connect(m_actKinematicModel, &QAction::triggered,
+                     this, &vtkWindowCube::showKinematicModelDialog);
+    QObject::connect(&this->m_kinematicWatcher,
+                     &QFutureWatcher<RemoteKinematicModelResult>::finished,
+                     this, &vtkWindowCube::onKinematicModelReady);
+
     // REGIONS group
     ui->menuTools->addSeparator();
     this->actionBoxRegion     = ui->menuTools->addAction(u"Box Region Analysis"_s);
