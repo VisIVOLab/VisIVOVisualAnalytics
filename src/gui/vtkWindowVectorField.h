@@ -66,7 +66,7 @@ private:
     QPointer<QCheckBox> chkGlyphs;
     QPointer<QCheckBox> chkStreamlines;
     QPointer<QSpinBox> spinSeeds;
-    QPointer<QSpinBox> spinStride;
+    QPointer<QSpinBox> spinMaxArrows;
     QPointer<QDoubleSpinBox> spinGlyphScale;
     QPointer<QDoubleSpinBox> spinBoxSize;
     QPointer<QComboBox> comboLut;

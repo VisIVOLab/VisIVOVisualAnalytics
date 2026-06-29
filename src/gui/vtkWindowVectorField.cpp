@@ -9,7 +9,7 @@
 #include <vtkAxesActor.h>
 #include <vtkCamera.h>
 #include <vtkFloatArray.h>
-#include <vtkGlyph3D.h>
+#include <vtkGlyph3DMapper.h>
 #include <vtkImageData.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkLookupTable.h>
@@ -93,11 +93,13 @@ void vtkWindowVectorField::setupUi()
     this->chkStreamlines->setChecked(true);
     form->addRow(u"Streamlines"_s, this->chkStreamlines);
 
-    this->spinStride = new QSpinBox(side);
-    this->spinStride->setRange(1, 64);
-    this->spinStride->setValue(4);
-    this->spinStride->setToolTip(u"Show one arrow every N grid points"_s);
-    form->addRow(u"Arrow stride"_s, this->spinStride);
+    this->spinMaxArrows = new QSpinBox(side);
+    this->spinMaxArrows->setRange(1000, 500000);
+    this->spinMaxArrows->setSingleStep(10000);
+    this->spinMaxArrows->setValue(50000);
+    this->spinMaxArrows->setToolTip(
+            u"Max arrows drawn (uniformly sampled) — caps cost on large grids"_s);
+    form->addRow(u"Max arrows"_s, this->spinMaxArrows);
 
     this->spinGlyphScale = new QDoubleSpinBox(side);
     this->spinGlyphScale->setRange(0.0, 100.0);
@@ -108,7 +110,7 @@ void vtkWindowVectorField::setupUi()
 
     this->spinSeeds = new QSpinBox(side);
     this->spinSeeds->setRange(10, 5000);
-    this->spinSeeds->setValue(400);
+    this->spinSeeds->setValue(200);
     form->addRow(u"Seeds"_s, this->spinSeeds);
 
     this->spinBoxSize = new QDoubleSpinBox(side);
@@ -142,7 +144,7 @@ void vtkWindowVectorField::setupUi()
         if (this->streamActor) this->streamActor->SetVisibility(on);
         this->renderWindow->Render();
     });
-    QObject::connect(this->spinStride, &QSpinBox::valueChanged, this,
+    QObject::connect(this->spinMaxArrows, &QSpinBox::valueChanged, this,
                      [this](int) { this->rebuildGlyphs(); this->renderWindow->Render(); });
     QObject::connect(this->spinGlyphScale, &QDoubleSpinBox::valueChanged, this,
                      [this](double) { this->rebuildGlyphs(); this->renderWindow->Render(); });
@@ -188,21 +190,25 @@ void vtkWindowVectorField::buildImageData()
     this->imageData->SetSpacing(m_grid.sx, m_grid.sy, m_grid.sz);
     this->imageData->SetOrigin(m_grid.ox, m_grid.oy, m_grid.oz);
 
-    const float *src = reinterpret_cast<const float *>(m_grid.vectors.constData());
-
     vtkNew<vtkFloatArray> vectors;
     vectors->SetName("velocity");
     vectors->SetNumberOfComponents(3);
     vectors->SetNumberOfTuples(npts);
-    std::memcpy(vectors->GetVoidPointer(0), src, std::size_t(npts) * 3 * sizeof(float));
+    // memcpy is alignment-safe (dest is a VTK-owned float buffer); the payload is
+    // little-endian float32 (X-Visivo-Byte-Order: little — same as this host).
+    std::memcpy(vectors->GetVoidPointer(0), m_grid.vectors.constData(),
+                std::size_t(npts) * 3 * sizeof(float));
 
+    // Compute the speed scalar from the (aligned) VTK array, not the raw bytes.
+    const float *vp = static_cast<const float *>(vectors->GetVoidPointer(0));
     vtkNew<vtkFloatArray> speed;
     speed->SetName("speed");
     speed->SetNumberOfComponents(1);
     speed->SetNumberOfTuples(npts);
+    float *sp = static_cast<float *>(speed->GetVoidPointer(0));
     for (vtkIdType i = 0; i < npts; ++i) {
-        const float vx = src[3 * i], vy = src[3 * i + 1], vz = src[3 * i + 2];
-        speed->SetValue(i, std::sqrt(vx * vx + vy * vy + vz * vz));
+        const float vx = vp[3 * i], vy = vp[3 * i + 1], vz = vp[3 * i + 2];
+        sp[i] = std::sqrt(vx * vx + vy * vy + vz * vz);
     }
 
     this->imageData->GetPointData()->SetVectors(vectors);
@@ -214,38 +220,43 @@ void vtkWindowVectorField::rebuildGlyphs()
     if (!this->imageData) return;
     if (this->glyphActor) this->renderer->RemoveActor(this->glyphActor);
 
+    // Uniformly subsample to a capped count so the cost is bounded regardless of
+    // grid size (RandomMode = spatially uniform, unlike OnRatio which is biased
+    // by point-id memory order).
+    const int maxArrows = this->spinMaxArrows ? this->spinMaxArrows->value() : 50000;
     vtkNew<vtkMaskPoints> mask;
     mask->SetInputData(this->imageData);
-    mask->SetOnRatio(std::max(1, this->spinStride ? this->spinStride->value() : 4));
-    mask->RandomModeOff();
+    mask->RandomModeOn();
+    mask->SetRandomModeType(1);                 // uniform spatial sampling
+    mask->SetMaximumNumberOfPoints(maxArrows);
 
     vtkNew<vtkArrowSource> arrow;
 
-    // Scale factor: a fraction of the cell size divided by the speed range so the
-    // longest arrows span ~a few cells; multiplied by the user scale.
-    double cell = std::min({ m_grid.sx, m_grid.sy, m_grid.sz });
-    if (this->m_boxMpc > 0.0) cell = m_boxMpc / std::max(1, std::max({ m_grid.nx, m_grid.ny, m_grid.nz }));
+    // Arrow length: longest arrow spans ~3 cells, then the user scale.
+    const double cell = (this->m_boxMpc > 0.0)
+            ? m_boxMpc / std::max(1, std::max({ m_grid.nx, m_grid.ny, m_grid.nz }) - 1)
+            : std::min({ m_grid.sx, m_grid.sy, m_grid.sz });
     const double speedMax = std::max(1e-12, m_grid.speedMax);
     const double userScale = this->spinGlyphScale ? this->spinGlyphScale->value() : 1.0;
     const double scaleFactor = userScale * 3.0 * cell / speedMax;
 
-    vtkNew<vtkGlyph3D> glyph;
-    glyph->SetInputConnection(mask->GetOutputPort());
-    glyph->SetSourceConnection(arrow->GetOutputPort());
-    glyph->SetVectorModeToUseVector();
-    glyph->SetScaleModeToScaleByVector();
-    glyph->SetScaleFactor(scaleFactor);
-    glyph->SetColorModeToColorByScalar();
-    glyph->OrientOn();
-
-    vtkNew<vtkPolyDataMapper> mapper;
-    mapper->SetInputConnection(glyph->GetOutputPort());
-    mapper->SetLookupTable(this->lut);
-    mapper->SetScalarRange(m_grid.speedMin, m_grid.speedMax);
-    mapper->SetScalarModeToUsePointData();
+    // vtkGlyph3DMapper glyphs on the GPU (instancing) — far less CPU/RAM than
+    // vtkGlyph3D's CPU geometry expansion.
+    auto gmapper = vtkSmartPointer<vtkGlyph3DMapper>::New();
+    gmapper->SetInputConnection(mask->GetOutputPort());
+    gmapper->SetSourceConnection(arrow->GetOutputPort());
+    gmapper->SetOrientationArray("velocity");
+    gmapper->SetOrientationModeToDirection();
+    gmapper->SetScaleArray("velocity");
+    gmapper->SetScaleModeToScaleByMagnitude();
+    gmapper->SetScaleFactor(scaleFactor);
+    gmapper->SetLookupTable(this->lut);
+    gmapper->SetScalarRange(m_grid.speedMin, m_grid.speedMax);
+    gmapper->SelectColorArray("speed");
+    gmapper->SetScalarModeToUsePointFieldData();
 
     this->glyphActor = vtkSmartPointer<vtkActor>::New();
-    this->glyphActor->SetMapper(mapper);
+    this->glyphActor->SetMapper(gmapper);
     this->glyphActor->SetVisibility(this->chkGlyphs ? this->chkGlyphs->isChecked() : true);
     this->renderer->AddActor(this->glyphActor);
 }
@@ -273,12 +284,14 @@ void vtkWindowVectorField::rebuildStreamlines()
     tracer->SetSourceConnection(seeds->GetOutputPort());
     tracer->SetIntegratorTypeToRungeKutta45();
     tracer->SetIntegrationDirectionToBoth();
-    tracer->SetMaximumPropagation(4.0 * ext);
+    tracer->SetMaximumPropagation(2.0 * ext);
+    tracer->SetMaximumNumberOfSteps(2000);   // bound integration cost
+    tracer->SetComputeVorticity(false);      // not drawing ribbons
 
     vtkNew<vtkTubeFilter> tube;
     tube->SetInputConnection(tracer->GetOutputPort());
     tube->SetRadius(0.0025 * ext);
-    tube->SetNumberOfSides(6);
+    tube->SetNumberOfSides(4);               // fewer sides = lighter geometry
 
     vtkNew<vtkPolyDataMapper> mapper;
     mapper->SetInputConnection(tube->GetOutputPort());
@@ -298,10 +311,14 @@ void vtkWindowVectorField::applyBoxSize(double boxMpc)
 {
     this->m_boxMpc = boxMpc;
     if (!this->imageData) return;
-    const int n = std::max(1, std::max({ m_grid.nx, m_grid.ny, m_grid.nz }));
     if (boxMpc > 0.0) {
-        const double s = boxMpc / n;
-        this->imageData->SetSpacing(s, s, s);
+        // Each axis spans exactly [-box/2, +box/2]: grid points sit at the ends,
+        // so spacing = box/(n-1). (CF4 grids are cubic; non-cubic grids keep each
+        // axis spanning the same physical box.)
+        const double sx = boxMpc / std::max(1, m_grid.nx - 1);
+        const double sy = boxMpc / std::max(1, m_grid.ny - 1);
+        const double sz = boxMpc / std::max(1, m_grid.nz - 1);
+        this->imageData->SetSpacing(sx, sy, sz);
         this->imageData->SetOrigin(-0.5 * boxMpc, -0.5 * boxMpc, -0.5 * boxMpc);
     } else {
         this->imageData->SetSpacing(m_grid.sx, m_grid.sy, m_grid.sz);

@@ -1211,10 +1211,15 @@ public:
     BackendTargetResolveResult resolveTarget(const QString &name) const;
 
     /// Open a velocity (cosmic-flow) field FITS (multi-component, NAXIS4=3).
-    BackendVelocityOpenResult openVelocityField(const QString &path,
-                                                double boxMpc = 0.0) const;
-    /// Fetch the raw vector grid for a previously-opened velocity field.
-    BackendVelocityGridResult fetchVelocityGrid(const QString &datasetId) const;
+    /// Stores the returned session id (like openDataset) so the follow-up
+    /// grid fetch lands in the same backend session.
+    BackendVelocityOpenResult openVelocityField(const QString &path, double boxMpc = 0.0);
+    /// Fetch the vector grid for a previously-opened velocity field.
+    /// `maxDim` caps the display resolution (backend block-averages so the
+    /// largest dimension is <= maxDim; 0 = full resolution) — keeps transfer +
+    /// client memory bounded for large fields.
+    BackendVelocityGridResult fetchVelocityGrid(const QString &datasetId,
+                                                int maxDim = 128) const;
     /** POST /v1/hips/catalogue_overlay – RA/Dec sources in current viewport. */
     BackendHiPSCatalogueOverlayResult requestHiPSCatalogueOverlay(
             const QString &cataloguePath, double raDeg, double decDeg, double fovDeg,

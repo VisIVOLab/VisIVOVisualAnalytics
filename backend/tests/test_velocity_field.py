@@ -111,6 +111,30 @@ def test_velocity_router_open_and_grid_bin(tmp_path):
     assert bad.status_code == 404
 
 
+def test_downsample_caps_largest_dimension(tmp_path):
+    from app.velocity_field import downsample
+    path, _ = _write_multicomponent(tmp_path, n=16)
+    f = load_velocity_field(path)
+    d = downsample(f, max_dim=8)
+    assert max(d.shape) <= 8
+    # spacing grows by the block factor so the physical extent is preserved
+    assert d.spacing == pytest.approx((2.0, 2.0, 2.0))
+    # no-op when already small enough
+    assert downsample(load_velocity_field(path), max_dim=64).shape == (16, 16, 16)
+
+
+def test_grid_worker_downsamples(tmp_path):
+    from app.velocity_field import velocity_grid_worker
+    path, _ = _write_multicomponent(tmp_path, n=20)
+    p = velocity_grid_worker(path, None, max_dim=8)
+    assert max(p["nx"], p["ny"], p["nz"]) <= 8
+    assert p["full_shape"] == [20, 20, 20]
+    assert p["downsample_factor"] >= 2
+    # full-res when max_dim=0
+    p0 = velocity_grid_worker(path, None, max_dim=0)
+    assert (p0["nx"], p0["ny"], p0["nz"]) == (20, 20, 20)
+
+
 def test_component_fits_loader(tmp_path):
     n = 10
     paths = []

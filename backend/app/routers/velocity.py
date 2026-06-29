@@ -35,6 +35,10 @@ class VelocityOpenResponse(BaseModel):
 
 class VelocityGridRequest(BaseModel):
     dataset_id: str
+    # Display-LOD cap: block-average so the largest grid dimension is <= max_dim.
+    # 0 = full resolution. Default keeps transfer + client memory bounded for
+    # large (256³/512³) fields.
+    max_dim: int = 128
 
 
 @router.post("/v1/velocity/open", response_model=VelocityOpenResponse, tags=["velocity"])
@@ -71,16 +75,20 @@ async def velocity_grid_bin(
         return Response(content=b"unknown velocity dataset",
                         media_type="text/plain", status_code=404)
     try:
-        payload = await _run(velocity_grid_worker, entry["path"], entry.get("box_mpc"))
+        payload = await _run(velocity_grid_worker, entry["path"], entry.get("box_mpc"),
+                             request.max_dim)
     except Exception as exc:
         return Response(content=str(exc).encode("utf-8"),
                         media_type="text/plain", status_code=500)
 
     raw: bytes = payload["raw_bytes"]
+    full = payload.get("full_shape", [payload["nz"], payload["ny"], payload["nx"]])
     headers = {
         "X-Visivo-Width": str(payload["nx"]),
         "X-Visivo-Height": str(payload["ny"]),
         "X-Visivo-Depth": str(payload["nz"]),
+        "X-Visivo-Full-Shape": ",".join(str(int(s)) for s in full),  # (nz,ny,nx) pre-LOD
+        "X-Visivo-Downsample-Factor": str(payload.get("downsample_factor", 1)),
         "X-Visivo-Components": "3",
         "X-Visivo-Spacing": ",".join(repr(float(s)) for s in payload["spacing"]),
         "X-Visivo-Origin": ",".join(repr(float(o)) for o in payload["origin"]),

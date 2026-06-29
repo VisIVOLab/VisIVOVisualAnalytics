@@ -1166,8 +1166,7 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
 
 // ── Velocity (cosmic-flow) field — F1 ─────────────────────────────────────────
 
-BackendVelocityOpenResult BackendClient::openVelocityField(const QString &path,
-                                                           double boxMpc) const
+BackendVelocityOpenResult BackendClient::openVelocityField(const QString &path, double boxMpc)
 {
     BackendVelocityOpenResult result;
     QJsonObject bodyObj{ { QStringLiteral("path"), path } };
@@ -1198,13 +1197,21 @@ BackendVelocityOpenResult BackendClient::openVelocityField(const QString &path,
     result.unit     = s.value(QStringLiteral("unit")).toString();
     result.frame    = s.value(QStringLiteral("frame")).toString();
     result.boxKnown = s.value(QStringLiteral("box_known")).toBool();
+    // Persist the session so the follow-up grid fetch hits the same backend
+    // session that just registered the dataset.
+    if (result.valid && !result.sessionId.isEmpty()) {
+        m_sessionId = result.sessionId;
+    }
     return result;
 }
 
-BackendVelocityGridResult BackendClient::fetchVelocityGrid(const QString &datasetId) const
+BackendVelocityGridResult BackendClient::fetchVelocityGrid(const QString &datasetId,
+                                                           int maxDim) const
 {
     BackendVelocityGridResult r;
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId } });
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("max_dim"), maxDim } });
     QNetworkRequest req = buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/velocity/grid_bin")));
     req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     QNetworkAccessManager *nam = getThreadLocalNam();

@@ -163,6 +163,44 @@ def to_vtk_image(field: "VelocityField"):
     return img
 
 
+def _block_average(a: np.ndarray, factor: int) -> np.ndarray:
+    """Block-average a 3-D array by an integer factor per axis (crop to a
+    multiple). Preserves the field far better than stride-decimation."""
+    if factor <= 1:
+        return a
+    nz, ny, nx = a.shape
+    cz, cy, cx = (nz // factor) * factor, (ny // factor) * factor, (nx // factor) * factor
+    if cz == 0 or cy == 0 or cx == 0:
+        return a
+    a = a[:cz, :cy, :cx]
+    return a.reshape(cz // factor, factor, cy // factor, factor, cx // factor, factor).mean(
+        axis=(1, 3, 5)
+    )
+
+
+def downsample(field: "VelocityField", max_dim: int) -> "VelocityField":
+    """Return a display-resolution copy whose largest dimension is <= max_dim,
+    block-averaging the vector components. Spacing grows by the same factor so
+    the physical extent is preserved. No-op when already small enough."""
+    nz, ny, nx = field.shape
+    biggest = max(nx, ny, nz)
+    if max_dim <= 0 or biggest <= max_dim:
+        return field
+    import math
+    factor = int(math.ceil(biggest / max_dim))
+    sx, sy, sz = field.spacing
+    return VelocityField(
+        _block_average(field.vx, factor).astype(np.float32),
+        _block_average(field.vy, factor).astype(np.float32),
+        _block_average(field.vz, factor).astype(np.float32),
+        (sx * factor, sy * factor, sz * factor),
+        field.origin,
+        field.unit,
+        field.frame,
+        field.box_known,
+    )
+
+
 def grid_raw_payload(field: "VelocityField") -> dict[str, Any]:
     """Serialise the field as the desktop viewer wants it: interleaved
     little-endian float32 vectors (npts × 3, point order x-fastest = vtkImageData
@@ -192,9 +230,22 @@ def velocity_summary_worker(path: str, box_mpc: float | None = None) -> dict[str
     return load_velocity_field(path, box_mpc).summary()
 
 
-def velocity_grid_worker(path: str, box_mpc: float | None = None) -> dict[str, Any]:
-    """Load + return the binary grid payload (for /v1/velocity/grid_bin)."""
-    return grid_raw_payload(load_velocity_field(path, box_mpc))
+def velocity_grid_worker(path: str, box_mpc: float | None = None,
+                         max_dim: int = 0) -> dict[str, Any]:
+    """Load + return the binary grid payload (for /v1/velocity/grid_bin).
+
+    `max_dim` > 0 block-averages the field down so its largest dimension is
+    <= max_dim — the display-LOD path that keeps transfer + client memory bounded
+    for large (256³/512³) reconstructions. The result records the applied factor.
+    """
+    field = load_velocity_field(path, box_mpc)
+    full = field.shape
+    if max_dim and max_dim > 0:
+        field = downsample(field, max_dim)
+    payload = grid_raw_payload(field)
+    payload["full_shape"] = [int(s) for s in full]            # (nz, ny, nx) before LOD
+    payload["downsample_factor"] = int(round(full[0] / field.shape[0])) if field.shape[0] else 1
+    return payload
 
 
 def compute_streamlines(field: "VelocityField", n_seeds: int = 400,
