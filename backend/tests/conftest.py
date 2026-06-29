@@ -111,6 +111,7 @@ def _write_fits_cube(path: str) -> None:
     h["CUNIT1"] = "deg"
     h["CUNIT2"] = "deg"
     h["CUNIT3"] = "Hz"
+    h["RESTFRQ"] = 115.271202e9      # CO(1-0) rest frequency (Hz) — enables FREQ→velocity
     h["BUNIT"]  = "Jy/beam"
     hdu.writeto(path, overwrite=True)
 

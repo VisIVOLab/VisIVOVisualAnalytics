@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Any
 import uuid
 import logging
@@ -171,6 +171,68 @@ async def cube_subvolume_bin(
         media_type="application/octet-stream",
         headers=headers,
     )
+
+# ── Tilted-ring kinematic model (F2) ────────────────────────────────────────
+# Build a model PPV cube of a regularly rotating disk from a compact tilted-ring
+# parameter set and stream it as raw little-endian float32 (same wire format as
+# subvolume_bin). The desktop contours it over the data cube so anomalous gas
+# (emission outside the model footprint/velocity field) stands out.
+
+class CubeKinematicModelRequest(BaseModel):
+    dataset_id: str
+    # Finite-only floats (reject NaN/inf at the API boundary).
+    x0: float = Field(allow_inf_nan=False)            # disk centre, pixels
+    y0: float = Field(allow_inf_nan=False)
+    pa_deg: float = Field(allow_inf_nan=False)        # position angle of major axis
+    incl_deg: float = Field(ge=0.0, le=90.0, allow_inf_nan=False)  # 0 face-on … 90 edge-on
+    vsys: float = Field(allow_inf_nan=False)          # systemic velocity (spectral unit)
+    vrot: float = Field(allow_inf_nan=False)          # flat rotation velocity
+    rmax_pix: float = Field(gt=0.0, allow_inf_nan=False)   # disk radius, pixels
+    sigma: float = Field(gt=0.0, allow_inf_nan=False)      # line dispersion (spectral unit)
+
+
+@router.post("/v1/cube/kinematic_model_bin", tags=["cube"])
+async def cube_kinematic_model_bin(
+    request: CubeKinematicModelRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    from ..kinematic_model import kinematic_model_worker, max_voxels, ModelTooLargeError
+    try:
+        path = _require_cube_path(session, request.dataset_id)
+        result = await _run_heavy_with_limit(
+            session,
+            kinematic_model_worker,
+            path,
+            request.x0, request.y0,
+            request.pa_deg, request.incl_deg,
+            request.vsys, request.vrot,
+            request.rmax_pix, request.sigma,
+            max_voxels(),
+        )
+    except HTTPException:
+        raise
+    except ModelTooLargeError as exc:
+        return Response(content=str(exc).encode("utf-8"),
+                        media_type="text/plain", status_code=413)
+    except Exception as exc:
+        return Response(content=str(exc).encode("utf-8"),
+                        media_type="text/plain", status_code=500)
+
+    raw_bytes: bytes = result["raw_bytes"]
+    headers = {
+        "X-Visivo-Width": str(result["width"]),
+        "X-Visivo-Height": str(result["height"]),
+        "X-Visivo-Depth": str(result["depth"]),
+        "X-Visivo-Scalar-Type": "float32",
+        "X-Visivo-Peak": repr(float(result["peak"])),
+        "X-Visivo-Spectral-Axis-Unit": str(result.get("spectral_axis_unit", "")),
+        "X-Visivo-Spectral-Mode": str(result.get("spectral_mode", "")),
+        "X-Visivo-Byte-Order": "little",
+        "Content-Length": str(len(raw_bytes)),
+    }
+    return Response(content=raw_bytes, media_type="application/octet-stream",
+                    headers=headers)
 
 # ── Sub-cube extraction (crop ROI → new FITS dataset) ───────────────────────
 # Inputs are inclusive 0-indexed pixel/channel ranges (same convention as
