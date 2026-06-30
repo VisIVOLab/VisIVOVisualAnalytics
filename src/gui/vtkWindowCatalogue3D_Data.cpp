@@ -21,7 +21,7 @@
 #include <vtkCoordinate.h>
 #include <vtkFloatArray.h>
 #include <vtkGenericOpenGLRenderWindow.h>
-#include <vtkGlyph3D.h>
+#include <vtkGlyph3DMapper.h>
 #include <vtkIntArray.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkLookupTable.h>

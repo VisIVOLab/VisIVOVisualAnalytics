@@ -25,7 +25,7 @@ class vtkCubeAxesActor;
 class vtkCubeSource;
 class vtkGenericOpenGLRenderWindow;
 class vtkFloatArray;
-class vtkGlyph3D;
+class vtkGlyph3DMapper;
 class vtkIntArray;
 class vtkLookupTable;
 class vtkOrientationMarkerWidget;
@@ -216,7 +216,8 @@ private:
     vtkNew<vtkGenericOpenGLRenderWindow> renderWindow;
     vtkNew<vtkRenderer> renderer;
 
-    // Main source cloud (vtkGlyph3D batch)
+    // Main source cloud — GPU-instanced glyphs (vtkGlyph3DMapper) so large
+    // catalogues render fast without materialising per-point geometry on the CPU.
     vtkNew<vtkPoints> sourcePoints;
     vtkNew<vtkIntArray> morphScalars; // one int per source → LUT index
     vtkNew<vtkFloatArray> glyphScaleVectors;
@@ -224,8 +225,7 @@ private:
     vtkNew<vtkSphereSource> sphereSource;
     vtkNew<vtkCubeSource> pointCubeSource;
     vtkNew<vtkAppendPolyData> crossSource;
-    vtkNew<vtkGlyph3D> glyphs;
-    vtkNew<vtkPolyDataMapper> glyphMapper;
+    vtkNew<vtkGlyph3DMapper> glyphMapper;
     vtkNew<vtkActor> glyphActor;
     vtkNew<vtkLookupTable> morphologyLut;
     vtkNew<vtkLookupTable> valueLut;

@@ -4,6 +4,26 @@ Reference for `vtkWindowCatalogue3D` (`src/gui/vtkWindowCatalogue3D.h/cpp`).
 
 ---
 
+## Point-cloud rendering (performance)
+
+The source cloud is rendered with **`vtkGlyph3DMapper`** (GPU-instanced glyphs):
+the mapper takes the point cloud (`sourcesPolyData`) and a glyph source
+(`sphereSource` / `crossSource`) and replicates the glyph per point on the GPU —
+no per-point geometry is materialised on the CPU, so large catalogues stay
+interactive. Per-axis size comes from the `ScaleVector` 3-component point vectors
+(`SetScaleModeToScaleByVectorComponents` + `OrientOff` → ellipsoids); colour from
+the active point scalars through the morphology / value LUT. *Point* geometry
+mode uses a plain points actor instead.
+
+**Picking is independent of the render pipeline** — `pickNearestSource()` does a
+CPU nearest-source search projecting each catalogue entry to display coordinates,
+and hover/selection use separate highlight-sphere actors. So the glyph mapper can
+be changed freely without affecting picking/selection. (Out-of-core LOD —
+octree / k-d / point-budget — and throttling the O(N) hover pick are future F5
+work.)
+
+---
+
 ## Opening a catalogue
 
 `MainWindow::openCatalogue3D()`:

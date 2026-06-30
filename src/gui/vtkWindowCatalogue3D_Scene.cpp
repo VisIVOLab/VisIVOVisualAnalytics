@@ -22,7 +22,7 @@
 #include <vtkCoordinate.h>
 #include <vtkFloatArray.h>
 #include <vtkGenericOpenGLRenderWindow.h>
-#include <vtkGlyph3D.h>
+#include <vtkGlyph3DMapper.h>
 #include <vtkIntArray.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkLookupTable.h>
@@ -244,19 +244,21 @@ void vtkWindowCatalogue3D::buildScene()
     this->crossSource->RemoveAllInputs();
     this->crossSource->AddInputData(crossData);
 
-    glyphs->SetInputData(sourcesPolyData);
-    glyphs->SetSourceConnection(sphereSource->GetOutputPort());
-    glyphs->SetScaleModeToScaleByVectorComponents();
-    glyphs->SetVectorModeToUseVector();
-    glyphs->OrientOff();
-    glyphs->SetColorModeToColorByScalar();  // pass morphology index to mapper
-    glyphs->SetScaleFactor(1.0);
-
+    // GPU-instanced glyphs: the mapper consumes the point cloud directly and
+    // replicates the sphere per point on the GPU — no CPU geometry explosion,
+    // so large catalogues stay interactive. (Picking is independent — it is a
+    // CPU nearest-source search over the entry list, see pickNearestSource.)
     const int nMorph = morphologyNames.size();
-    glyphMapper->SetInputConnection(glyphs->GetOutputPort());
+    glyphMapper->SetInputData(sourcesPolyData);
+    glyphMapper->SetSourceConnection(sphereSource->GetOutputPort());
+    glyphMapper->SetScaleArray("ScaleVector");
+    glyphMapper->SetScaleModeToScaleByVectorComponents();  // per-axis → ellipsoid
+    glyphMapper->OrientOff();
+    glyphMapper->SetScaleFactor(1.0);
     glyphMapper->SetLookupTable(morphologyLut);
     glyphMapper->SetScalarRange(-0.5, nMorph - 0.5);
     glyphMapper->SetColorModeToMapScalars();
+    glyphMapper->SetScalarModeToUsePointData();   // colour by the active point scalars
     glyphMapper->ScalarVisibilityOn();
 
     glyphActor->SetMapper(glyphMapper);
@@ -647,10 +649,10 @@ void vtkWindowCatalogue3D::updateGlyphPipeline()
     switch (this->geometryMode) {
     case GeometryMode::Ellipsoid:
     case GeometryMode::Sphere:
-        this->glyphs->SetSourceConnection(this->sphereSource->GetOutputPort());
+        this->glyphMapper->SetSourceConnection(this->sphereSource->GetOutputPort());
         break;
     case GeometryMode::Cross:
-        this->glyphs->SetSourceConnection(this->crossSource->GetOutputPort());
+        this->glyphMapper->SetSourceConnection(this->crossSource->GetOutputPort());
         break;
     case GeometryMode::Point:
         this->glyphActor->VisibilityOff();
@@ -741,7 +743,8 @@ void vtkWindowCatalogue3D::updateGlyphScales()
         maxVisual = std::max(maxVisual, std::max({ minor, major, depth }));
     }
     this->glyphScaleVectors->Modified();
-    this->glyphs->Modified();
+    this->sourcesPolyData->Modified();   // bump so the glyph mapper re-reads the scale vectors
+    this->glyphMapper->Modified();
     this->pointsActor->GetProperty()->SetPointSize(std::clamp(4.0 * (ui->sliderScale->value() / 100.0), 3.0, 12.0));
 
     updateHighlightSphere(hoverSphere.Get(), hoverActor.Get(), hoveredIndex, 1.45);
