@@ -199,6 +199,12 @@ private:
     Catalogue3DSchema schema;
     QStringList rawHeaders;
     std::vector<int> numericRawFieldIndices;
+    // Column indices of vx/vy/vz when the catalogue carries velocity components
+    // (-1 if absent) → enables the "Speed |v|" colour mapping (peculiar-velocity
+    // magnitude), the cosmic-flow quantity. Recomputed from rawHeaders whenever
+    // the column set changes (BEFORE any buildScene/updateColorMapping).
+    int m_velocityColIdx[3]{ -1, -1, -1 };
+    void detectVelocityColumns();
     std::vector<std::array<double, 3>> mappedPositions;
     // Ordered list of unique morphology names (determines LUT index).
     QStringList morphologyNames;

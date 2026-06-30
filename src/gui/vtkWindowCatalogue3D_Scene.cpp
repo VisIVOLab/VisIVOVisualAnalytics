@@ -487,6 +487,18 @@ double vtkWindowCatalogue3D::mappedColorValue(const Catalogue3DEntry &entry, boo
         ok = false;
         return 0.0;
     }
+    if (this->mapColorKey == QStringLiteral("builtin:speed")) {
+        double vx = 0.0, vy = 0.0, vz = 0.0;
+        if (this->m_velocityColIdx[0] >= 0 && this->m_velocityColIdx[1] >= 0
+            && this->m_velocityColIdx[2] >= 0
+            && this->rawFieldValue(entry, this->m_velocityColIdx[0], vx)
+            && this->rawFieldValue(entry, this->m_velocityColIdx[1], vy)
+            && this->rawFieldValue(entry, this->m_velocityColIdx[2], vz)) {
+            return std::sqrt(vx * vx + vy * vy + vz * vz);
+        }
+        ok = false;
+        return 0.0;
+    }
     ok = false;
     return 0.0;
 }

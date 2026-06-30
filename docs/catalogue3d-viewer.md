@@ -42,6 +42,19 @@ formats to VOTable).
 
 ---
 
+## Colour mapping
+
+The **Color** combo offers *Morphology color*, any numeric raw column
+(`raw:<name>`), and — when the catalogue carries velocity components `vx/vy/vz`
+(detected by `detectVelocityColumns()`) — a derived **Speed |v|** option
+(`builtin:speed`) that colours each source by its peculiar-velocity magnitude
+√(vx²+vy²+vz²). Velocity columns are re-detected from `rawHeaders` whenever the
+column set changes (before any scene/colour rebuild), so the speed mapping never
+uses stale indices. The chosen colour scale (Linear/Log/Sqrt/…) applies via the
+value LUT.
+
+---
+
 ## Coordinate systems: sky vs Cartesian
 
 A catalogue is opened in one of two coordinate systems, auto-detected by the

@@ -463,6 +463,20 @@ void vtkWindowCatalogue3D::refreshCatalogueTable()
     }
 }
 
+void vtkWindowCatalogue3D::detectVelocityColumns()
+{
+    this->m_velocityColIdx[0] = this->m_velocityColIdx[1] = this->m_velocityColIdx[2] = -1;
+    for (int i = 0; i < this->rawHeaders.size(); ++i) {
+        const QString h = this->rawHeaders.at(i).trimmed().toLower();
+        if (h == u"vx"_s)
+            this->m_velocityColIdx[0] = i;
+        else if (h == u"vy"_s)
+            this->m_velocityColIdx[1] = i;
+        else if (h == u"vz"_s)
+            this->m_velocityColIdx[2] = i;
+    }
+}
+
 void vtkWindowCatalogue3D::populateMappingControls()
 {
     if (!this->comboMapX || !this->comboMapY || !this->comboMapZ || !this->comboMapSize
@@ -510,8 +524,15 @@ void vtkWindowCatalogue3D::populateMappingControls()
     int sizeIndex = this->comboMapSize->findData(this->mapSizeKey);
     this->comboMapSize->setCurrentIndex(sizeIndex >= 0 ? sizeIndex : 0);
 
+    // Keep velocity-column indices consistent with the current columns.
+    this->detectVelocityColumns();
+    const bool hasVelocity = this->m_velocityColIdx[0] >= 0 && this->m_velocityColIdx[1] >= 0
+            && this->m_velocityColIdx[2] >= 0;
+
     this->comboMapColor->clear();
     this->comboMapColor->addItem(u"Morphology color"_s, QStringLiteral("builtin:morphology"));
+    if (hasVelocity)   // peculiar-velocity magnitude √(vx²+vy²+vz²)
+        this->comboMapColor->addItem(u"Speed |v|"_s, QStringLiteral("builtin:speed"));
     for (const int index : this->numericRawFieldIndices) {
         this->comboMapColor->addItem(QStringLiteral("raw:%1").arg(this->rawHeaders.value(index)),
                                      QStringLiteral("raw:%1").arg(index));

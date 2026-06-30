@@ -404,6 +404,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             this->schema.headers.append(field.name);
         }
         this->rawHeaders = this->schema.headers;
+        // Detect vx/vy/vz now (before buildScene/updateColorMapping) so a
+        // "Speed |v|" colour mapping never uses stale column indices.
+        this->detectVelocityColumns();
 
         BackendTabularQueryRequest qreq;
         qreq.datasetId = this->remoteDatasetId;
