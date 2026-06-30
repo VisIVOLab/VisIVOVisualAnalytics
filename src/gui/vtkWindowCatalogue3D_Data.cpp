@@ -65,6 +65,7 @@
 #include <QSlider>
 #include <QTableView>
 #include <QTextEdit>
+#include <QTimer>
 #include <QVBoxLayout>
 #include "SidebarPanel.h"
 #include <QtConcurrent>
@@ -249,6 +250,14 @@ void vtkWindowCatalogue3D::triggerCosmologyUpdate()
 
 void vtkWindowCatalogue3D::onCosmologyFinished()
 {
+    if (this->m_sceneBuilding) {
+        // A large buildScene() is pumping the event loop; this queued watcher
+        // signal must NOT mutate entries / rebuild re-entrantly. Flag it and
+        // apply once at the end of the build (result() stays valid).
+        this->m_cosmologyFinishDeferred = true;
+        return;
+    }
+    this->m_cosmologyFinishDeferred = false;
     this->m_cosmologyBusy = false;
     if (this->comboCosmology)
         this->comboCosmology->setEnabled(true);
@@ -308,7 +317,7 @@ void vtkWindowCatalogue3D::onCosmologyFinished()
 
 void vtkWindowCatalogue3D::applyFilter()
 {
-    if (this->remoteDatasetId.isEmpty() || this->filterBusy) {
+    if (this->remoteDatasetId.isEmpty() || this->filterBusy || this->m_sceneBuilding) {
         return;
     }
 
@@ -395,7 +404,7 @@ void vtkWindowCatalogue3D::applyFilter()
 
 void vtkWindowCatalogue3D::loadAllEntries()
 {
-    if (this->remoteDatasetId.isEmpty() || this->m_loadingMore || this->filterBusy)
+    if (this->remoteDatasetId.isEmpty() || this->m_loadingMore || this->filterBusy || this->m_sceneBuilding)
         return;
     const int total = this->m_totalCount;
     if (total <= 0 || this->m_currentOffset >= total)
@@ -420,7 +429,7 @@ void vtkWindowCatalogue3D::loadAllEntries()
 
 void vtkWindowCatalogue3D::loadMoreEntries()
 {
-    if (this->remoteDatasetId.isEmpty() || this->m_loadingMore || this->filterBusy) {
+    if (this->remoteDatasetId.isEmpty() || this->m_loadingMore || this->filterBusy || this->m_sceneBuilding) {
         return;
     }
     if (this->m_totalCount >= 0

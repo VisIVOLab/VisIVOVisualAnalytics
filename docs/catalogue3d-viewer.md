@@ -22,6 +22,38 @@ be changed freely without affecting picking/selection. (Out-of-core LOD —
 octree / k-d / point-budget — and throttling the O(N) hover pick are future F5
 work.)
 
+### Chunked scene build (responsiveness for millions of points)
+
+`buildScene()` runs on the GUI thread (it touches VTK objects, which aren't
+thread-safe). For catalogues above `kAsyncBuildThreshold` (250 000 entries) it
+switches to a **chunked** build so the window never shows as *"not responding"*:
+
+- The glyph + points actors are hidden and a wait cursor is set, so no stray
+  repaint flashes a half-built cloud.
+- Every O(N) loop (positions, vertices, velocity vectors, colour and size
+  normalisation) calls `pumpSceneBuild(i)`, which every `kBuildPumpChunk`
+  (200 000) points updates a *"Building scene… X / Y points"* status and pumps
+  the event loop with `QApplication::processEvents(QEventLoop::ExcludeUserInputEvents)`.
+  `ExcludeUserInputEvents` lets paints/status through but **not** clicks, combo
+  changes, picking or window-close — so no slot can re-enter `buildScene`, mutate
+  the half-built arrays, or delete the window mid-build.
+- `m_sceneBuilding` guards the re-entrant entry points (`applyFilter`,
+  `loadMoreEntries`, `loadAllEntries`) and `closeEvent` ignores the close while a
+  build is in progress (the window is `WA_DeleteOnClose`; closing mid-build would
+  use-after-free its members).
+- A cosmology-watcher result that arrives mid-build (`onCosmologyFinished`) is
+  **deferred**: it sets `m_cosmologyFinishDeferred` and returns instead of
+  mutating entries / rebuilding re-entrantly. At the end of the build (with
+  `m_sceneBuilding` already cleared) a single `QTimer::singleShot(0, …,
+  onCosmologyFinished)` applies it once — queued, so the follow-up rebuild is not
+  stack-recursive. `m_cosmologyBusy` stays true across the deferral so the
+  pending `QFuture` result isn't replaced before it's consumed.
+
+This keeps the *Load all* of a ~3.9M-point snapshot responsive during the
+multi-second build. (The deeper fix — out-of-core LOD / point budget — is still
+future F5 work; chunking only addresses UI responsiveness, not the RAM/build
+cost of materialising every entry.)
+
 ---
 
 ## Opening a catalogue

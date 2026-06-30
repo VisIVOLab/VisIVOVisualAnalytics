@@ -42,6 +42,9 @@
 // ── Qt ───────────────────────────────────────────────────────────────────────
 #include <QAction>
 #include <QApplication>
+#include <QCloseEvent>
+#include <QEventLoop>
+#include <QTimer>
 #include <QCheckBox>
 #include <QKeySequence>
 #include <QMetaObject>
@@ -165,8 +168,46 @@ void vtkWindowCatalogue3D::buildMorphologyLut()
     this->valueLut->Build();
 }
 
+namespace {
+constexpr int kAsyncBuildThreshold = 250000;   // build chunked+pumped above this
+constexpr int kBuildPumpChunk = 200000;         // pump the event loop every N points
+}  // namespace
+
+void vtkWindowCatalogue3D::closeEvent(QCloseEvent *event)
+{
+    if (this->m_sceneBuilding) {
+        event->ignore();   // closing now would delete the window mid-buildScene()
+        return;
+    }
+    QMainWindow::closeEvent(event);
+}
+
+void vtkWindowCatalogue3D::pumpSceneBuild(int processed)
+{
+    if (!this->m_sceneBuilding || (processed % kBuildPumpChunk) != 0)
+        return;
+    if (this->filterStatusLabel)
+        this->filterStatusLabel->setText(QStringLiteral("Building scene… %1 / %2 points")
+                                                 .arg(processed)
+                                                 .arg(entries.size()));
+    // ExcludeUserInputEvents: pump paint/status only — NO clicks, combos, mouse
+    // picking or window-close are dispatched mid-build, so no slot can re-enter
+    // buildScene, mutate the half-built arrays, or delete the window under us.
+    QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+}
+
 void vtkWindowCatalogue3D::buildScene()
 {
+    // For very large catalogues, build with the glyph/points actors hidden and
+    // pump the event loop in the O(N) loops, so the multi-second construction
+    // stays responsive and a stray repaint never shows a half-built cloud.
+    this->m_sceneBuilding = entries.size() > static_cast<std::size_t>(kAsyncBuildThreshold);
+    if (this->m_sceneBuilding) {
+        this->glyphActor->VisibilityOff();
+        this->pointsActor->VisibilityOff();
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+    }
+
     buildMorphologyLut();
     this->mappedPositions.resize(entries.size());
 
@@ -184,6 +225,7 @@ void vtkWindowCatalogue3D::buildScene()
 
     maxDistanceMpc = 1.0;
     for (int i = 0; i < static_cast<int>(entries.size()); ++i) {
+        this->pumpSceneBuild(i);
         const auto &e = entries[i];
         morphScalars->SetValue(i, morphologyIndexOf.value(
                                           Catalogue3DParser::detail::entryMorphology(e, this->schema), 0));
@@ -204,8 +246,10 @@ void vtkWindowCatalogue3D::buildScene()
 
     // Vertices cell array so vtkGlyph3D recognises each point.
     vtkNew<vtkCellArray> verts;
-    for (vtkIdType i = 0; i < static_cast<vtkIdType>(entries.size()); ++i)
+    for (vtkIdType i = 0; i < static_cast<vtkIdType>(entries.size()); ++i) {
+        this->pumpSceneBuild(static_cast<int>(i));
         verts->InsertNextCell(1, &i);
+    }
 
     sourcesPolyData->SetPoints(sourcePoints);
     sourcesPolyData->SetVerts(verts);
@@ -227,6 +271,7 @@ void vtkWindowCatalogue3D::buildScene()
         this->velocityVectors->SetNumberOfComponents(3);
         this->velocityVectors->SetNumberOfTuples(static_cast<vtkIdType>(entries.size()));
         for (vtkIdType i = 0; i < static_cast<vtkIdType>(entries.size()); ++i) {
+            this->pumpSceneBuild(static_cast<int>(i));
             double vx = 0.0, vy = 0.0, vz = 0.0;
             this->rawFieldValue(entries[static_cast<std::size_t>(i)], this->m_velocityColIdx[0], vx);
             this->rawFieldValue(entries[static_cast<std::size_t>(i)], this->m_velocityColIdx[1], vy);
@@ -349,10 +394,23 @@ void vtkWindowCatalogue3D::buildScene()
     this->buildShells();
     this->updatePointPositions();
     this->updateColorMapping();
-    this->updateGlyphPipeline();
+    this->updateGlyphPipeline();   // re-shows the glyph/points actor + renders
 
     renderer->ResetCamera();
     renderWindow->Render();
+
+    if (this->m_sceneBuilding) {
+        this->m_sceneBuilding = false;
+        QApplication::restoreOverrideCursor();
+        if (this->filterStatusLabel)
+            this->filterStatusLabel->setText({});
+        // Apply a cosmology result that arrived (and was deferred) during the
+        // build — now exactly once, with m_sceneBuilding cleared.
+        if (this->m_cosmologyFinishDeferred) {
+            this->m_cosmologyFinishDeferred = false;
+            QTimer::singleShot(0, this, &vtkWindowCatalogue3D::onCosmologyFinished);
+        }
+    }
 }
 
 void vtkWindowCatalogue3D::buildLabels()
@@ -582,6 +640,7 @@ void vtkWindowCatalogue3D::updatePointPositions()
     double zMax = xMax;
 
     for (vtkIdType i = 0; i < static_cast<vtkIdType>(this->entries.size()); ++i) {
+        this->pumpSceneBuild(static_cast<int>(i));
         const auto &entry = this->entries[static_cast<std::size_t>(i)];
         const double x = this->mappedAxisValue(entry, resolvedXKey);
         const double y = this->mappedAxisValue(entry, resolvedYKey);
@@ -626,6 +685,7 @@ void vtkWindowCatalogue3D::updateColorMapping()
 
     if (this->mapColorKey == QStringLiteral("builtin:morphology")) {
         for (vtkIdType i = 0; i < static_cast<vtkIdType>(this->entries.size()); ++i) {
+            this->pumpSceneBuild(static_cast<int>(i));
             const auto &entry = this->entries[static_cast<std::size_t>(i)];
             this->morphScalars->SetValue(
                     i, this->morphologyIndexOf.value(
@@ -645,6 +705,7 @@ void vtkWindowCatalogue3D::updateColorMapping()
     double maxValue = std::numeric_limits<double>::lowest();
     bool anyValid = false;
     for (vtkIdType i = 0; i < static_cast<vtkIdType>(this->entries.size()); ++i) {
+        this->pumpSceneBuild(static_cast<int>(i));
         bool ok = false;
         const double value = this->mappedColorValue(this->entries[static_cast<std::size_t>(i)], ok);
         if (!ok || !std::isfinite(value)) {
@@ -772,7 +833,9 @@ void vtkWindowCatalogue3D::updateGlyphScales()
 
     sizeNormalizationValue = 1.0;
     bool anyValid = false;
+    int normIdx = 0;
     for (const auto &entry : entries) {
+        this->pumpSceneBuild(normIdx++);
         bool ok = false;
         const double value = this->mappedSizeValue(entry, ok);
         if (!ok || !std::isfinite(value) || value <= 0.0) {
@@ -797,6 +860,7 @@ void vtkWindowCatalogue3D::updateGlyphScales()
     double minVisual = std::numeric_limits<double>::max();
     double maxVisual = 0.0;
     for (vtkIdType i = 0; i < static_cast<vtkIdType>(entries.size()); ++i) {
+        this->pumpSceneBuild(static_cast<int>(i));
         const Catalogue3DEntry &entry = entries[static_cast<std::size_t>(i)];
         bool ok = false;
         const double sourceValue = this->mappedSizeValue(entry, ok);

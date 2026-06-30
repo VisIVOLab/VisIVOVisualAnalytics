@@ -115,6 +115,12 @@ signals:
     /// that the dataset be reopened.  Connect to MainWindow::doOpenCataloguePath.
     void reopenRequested(const QString &filepath, const QStringList &paths = QStringList());
 
+protected:
+    // Refuse to close (and self-delete via WA_DeleteOnClose) while a large scene
+    // build is pumping the event loop — that would delete the window under
+    // buildScene() and use-after-free its members.
+    void closeEvent(QCloseEvent *event) override;
+
 private:
     enum class GeometryMode
     {
@@ -264,6 +270,11 @@ private:
     // Billboard text labels (world-space, camera-facing)
     std::vector<vtkSmartPointer<vtkBillboardTextActor3D>> labelActors;
     bool m_labelsSkippedDueToScale{ false };  // per-point labels not built (too many sources)
+    bool m_sceneBuilding{ false };            // a large buildScene() is in progress
+    bool m_cosmologyFinishDeferred{ false };  // a cosmology result arrived mid-build → apply after
+    /// During a large buildScene(), pump the event loop + show progress every
+    /// few hundred-k points so the UI stays responsive (no OS "not responding").
+    void pumpSceneBuild(int processed);
 
     // Orientation axes corner widget
     vtkNew<vtkOrientationMarkerWidget> axesWidget;
