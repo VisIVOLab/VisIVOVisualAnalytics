@@ -50,9 +50,23 @@ switches to a **chunked** build so the window never shows as *"not responding"*:
   pending `QFuture` result isn't replaced before it's consumed.
 
 This keeps the *Load all* of a ~3.9M-point snapshot responsive during the
-multi-second build. (The deeper fix — out-of-core LOD / point budget — is still
-future F5 work; chunking only addresses UI responsiveness, not the RAM/build
-cost of materialising every entry.)
+multi-second build. (Out-of-core LOD / point budget — capping how many points
+reach the GPU — is still future F5 work; chunking only addresses UI
+responsiveness, not the cost of materialising every entry.)
+
+### Per-entry memory (compact row store)
+
+`Catalogue3DEntry` stores its row **once**, as a `QVariantList fields` in
+`schema.headers` order. Index access (velocity, table model, details text) is
+direct; name access (`fieldString`/`fieldDouble`) resolves the column via
+`Catalogue3DSchema::indexOf()`, an O(1) lazily-built (build-once) header→index
+`QHash`. This replaced the previous layout, where every row was duplicated as a
+`QMap<QString,QVariant>` (column-name keys repeated per row) **and** a parallel
+`QStringList`, plus two dead per-row RA/Dec name strings. On a ~3.9M-row snapshot
+that redundancy cost gigabytes; the single `QVariant` store also keeps full
+numeric precision (the old `QStringList` had stringified values to ~6 significant
+digits). This is the data-model half of F5 (RAM); the render/LOD half is still
+pending.
 
 ---
 

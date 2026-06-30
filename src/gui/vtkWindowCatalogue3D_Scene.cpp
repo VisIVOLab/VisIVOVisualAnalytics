@@ -484,10 +484,10 @@ QStringList vtkWindowCatalogue3D::numericRawFieldNames() const
 bool vtkWindowCatalogue3D::rawFieldValue(const Catalogue3DEntry &entry, int fieldIndex,
                                          double &value) const
 {
-    if (fieldIndex < 0 || fieldIndex >= entry.rawFieldValues.size()) {
+    if (fieldIndex < 0 || fieldIndex >= entry.fields.size()) {
         return false;
     }
-    return Catalogue3DParser::detail::maybeNumeric(entry.rawFieldValues.at(fieldIndex), value);
+    return Catalogue3DParser::detail::maybeNumeric(entry.fields.at(fieldIndex), value);
 }
 
 double vtkWindowCatalogue3D::mappedAxisValue(const Catalogue3DEntry &entry, const QString &mappingKey) const
@@ -588,8 +588,8 @@ double vtkWindowCatalogue3D::mappedColorValue(const Catalogue3DEntry &entry, boo
 QString vtkWindowCatalogue3D::fallbackDetailsText(const Catalogue3DEntry &entry) const
 {
     QString text;
-    for (int i = 0; i < this->rawHeaders.size() && i < entry.rawFieldValues.size(); ++i) {
-        const QString value = entry.rawFieldValues.at(i).trimmed();
+    for (int i = 0; i < this->rawHeaders.size() && i < entry.fields.size(); ++i) {
+        const QString value = entry.fields.at(i).toString().trimmed();
         if (value.isEmpty()) {
             continue;
         }

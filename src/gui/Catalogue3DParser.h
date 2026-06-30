@@ -1,11 +1,13 @@
 #ifndef Catalogue3DParser_h
 #define Catalogue3DParser_h
 
+#include <QHash>
 #include <QMap>
 #include <QRegularExpression>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
+#include <QVariantList>
 
 #include <cmath>
 #include <initializer_list>
@@ -35,20 +37,45 @@ struct Catalogue3DSchema
         return (raFieldName.isEmpty() || decFieldName.isEmpty())
                 && !xFieldName.isEmpty() && !yFieldName.isEmpty() && !zFieldName.isEmpty();
     }
+
+    // O(1) header → column-index lookup (lazily cached); -1 when absent. Lets
+    // each Catalogue3DEntry store its row once as an index-ordered QVariantList
+    // (see below) instead of a per-row name→value QMap, which cost gigabytes on
+    // multi-million-row catalogues. Headers are set once at open and not mutated
+    // afterwards, so a build-once flag is a correct (and robust) cache guard —
+    // unlike a size check it does not thrash on duplicate header names (where
+    // QHash::size() < headers.size()). For duplicate names, the last index wins.
+    int indexOf(const QString &name) const
+    {
+        if (!this->headerIndexBuilt) {
+            this->headerIndex.clear();
+            this->headerIndex.reserve(this->headers.size());
+            for (int i = 0; i < this->headers.size(); ++i)
+                this->headerIndex.insert(this->headers.at(i), i);
+            this->headerIndexBuilt = true;
+        }
+        return this->headerIndex.value(name, -1);
+    }
+
+private:
+    mutable QHash<QString, int> headerIndex;     // built lazily from headers
+    mutable bool headerIndexBuilt{ false };
 };
 
 struct Catalogue3DEntry
 {
     int id{ 0 };
-    QMap<QString, QVariant> fields;
-    QString raFieldName;
-    QString decFieldName;
+    // Row values in schema.headers order. Index access is direct; name access
+    // goes through Catalogue3DSchema::indexOf(). This single compact store
+    // replaces the old per-row QMap<QString,QVariant> *and* its duplicate
+    // QStringList — together gigabytes of redundant keys/copies on
+    // multi-million-row catalogues. QVariant preserves full numeric precision.
+    QVariantList fields;
     double raDeg{ 0.0 };
     double decDeg{ 0.0 };
     double sceneX{ 0.0 };
     double sceneY{ 0.0 };
     double sceneZ{ 0.0 };
-    QStringList rawFieldValues;
     // Override distance (Mpc) set by the cosmology selector.  When 0.0, the
     // parser falls back to computing the distance from the catalogue fields.
     double distanceMpc{ 0.0 };
@@ -97,16 +124,22 @@ inline bool maybeNumeric(const QString &raw, double &value)
     return maybeNumeric(QVariant(raw.trimmed()), value);
 }
 
-inline QString fieldString(const Catalogue3DEntry &entry, const QString &fieldName)
+inline QString fieldString(const Catalogue3DEntry &entry, const Catalogue3DSchema &schema,
+                           const QString &fieldName)
 {
-    return entry.fields.value(fieldName).toString().trimmed();
+    const int idx = schema.indexOf(fieldName);
+    if (idx < 0 || idx >= entry.fields.size())
+        return {};
+    return entry.fields.at(idx).toString().trimmed();
 }
 
-inline double fieldDouble(const Catalogue3DEntry &entry, const QString &fieldName, bool *ok = nullptr)
+inline double fieldDouble(const Catalogue3DEntry &entry, const Catalogue3DSchema &schema,
+                          const QString &fieldName, bool *ok = nullptr)
 {
-    const QVariant value = entry.fields.value(fieldName);
+    const int idx = schema.indexOf(fieldName);
     double parsed = 0.0;
-    const bool valid = maybeNumeric(value, parsed);
+    const bool valid = (idx >= 0 && idx < entry.fields.size())
+            && maybeNumeric(entry.fields.at(idx), parsed);
     if (ok) {
         *ok = valid;
     }
@@ -275,13 +308,13 @@ inline double entryDistanceMpc(const Catalogue3DEntry &entry, const Catalogue3DS
         return entry.distanceMpc;
     const QString distanceField = detectedDistanceField(schema);
     bool okDistance = false;
-    const double distance = fieldDouble(entry, distanceField, &okDistance);
+    const double distance = fieldDouble(entry, schema, distanceField, &okDistance);
     if (okDistance && distance > 0.0) {
         return distance;
     }
     const QString redshiftField = detectedRedshiftField(schema);
     bool okRedshift = false;
-    const double redshift = fieldDouble(entry, redshiftField, &okRedshift);
+    const double redshift = fieldDouble(entry, schema, redshiftField, &okRedshift);
     if (okRedshift && redshift > 0.0) {
         return comovingDistanceMpc(redshift);
     }
@@ -291,30 +324,30 @@ inline double entryDistanceMpc(const Catalogue3DEntry &entry, const Catalogue3DS
 inline QString entryDisplayName(const Catalogue3DEntry &entry, const Catalogue3DSchema &schema)
 {
     const QString nameField = detectedNameField(schema);
-    const QString name = fieldString(entry, nameField);
+    const QString name = fieldString(entry, schema, nameField);
     return name.isEmpty() ? QStringLiteral("Source %1").arg(entry.id) : name;
 }
 
 inline QString entryMorphology(const Catalogue3DEntry &entry, const Catalogue3DSchema &schema)
 {
     const QString field = detectedMorphologyField(schema);
-    const QString morph = fieldString(entry, field).toLower().trimmed();
+    const QString morph = fieldString(entry, schema, field).toLower().trimmed();
     return morph.isEmpty() ? QStringLiteral("other") : morph;
 }
 
 inline double entryMajorAxisArcmin(const Catalogue3DEntry &entry, const Catalogue3DSchema &schema)
 {
-    return fieldDouble(entry, detectedMajorAxisField(schema));
+    return fieldDouble(entry, schema, detectedMajorAxisField(schema));
 }
 
 inline double entryMinorAxisArcmin(const Catalogue3DEntry &entry, const Catalogue3DSchema &schema)
 {
-    return fieldDouble(entry, detectedMinorAxisField(schema));
+    return fieldDouble(entry, schema, detectedMinorAxisField(schema));
 }
 
 inline double entryFluxMJy(const Catalogue3DEntry &entry, const Catalogue3DSchema &schema)
 {
-    return fieldDouble(entry, detectedFluxField(schema));
+    return fieldDouble(entry, schema, detectedFluxField(schema));
 }
 
 inline double entryLlsMajorKpc(const Catalogue3DEntry &entry, const Catalogue3DSchema &schema)
@@ -322,7 +355,7 @@ inline double entryLlsMajorKpc(const Catalogue3DEntry &entry, const Catalogue3DS
     const QString llsField = detectedLlsField(schema);
     double minor = 0.0;
     double major = 0.0;
-    parseSizePair(fieldString(entry, llsField), minor, major);
+    parseSizePair(fieldString(entry, schema, llsField), minor, major);
     return major;
 }
 
@@ -331,7 +364,7 @@ inline double entryLlsMinorKpc(const Catalogue3DEntry &entry, const Catalogue3DS
     const QString llsField = detectedLlsField(schema);
     double minor = 0.0;
     double major = 0.0;
-    parseSizePair(fieldString(entry, llsField), minor, major);
+    parseSizePair(fieldString(entry, schema, llsField), minor, major);
     return minor;
 }
 
@@ -385,17 +418,16 @@ inline Catalogue3DParseResult parseBackendSubset(const Catalogue3DSchema &schema
                 ++result.skippedEntries;
                 continue;
             }
-            entry.raFieldName = schema.raFieldName;
-            entry.decFieldName = schema.decFieldName;
             entry.raDeg = raDeg;
             entry.decDeg = decDeg;
         }
 
         entry.id = entryId++;
-        entry.fields = row;
-        entry.rawFieldValues.reserve(schema.headers.size());
+        // Store the row once, in schema.headers order (index access; name
+        // access via schema.indexOf()). QVariant keeps full numeric precision.
+        entry.fields.reserve(schema.headers.size());
         for (const QString &header : schema.headers) {
-            entry.rawFieldValues.append(row.value(header).toString());
+            entry.fields.append(row.value(header));
         }
         if (!cartesian) {
             detail::fillCartesian(entry, schema);

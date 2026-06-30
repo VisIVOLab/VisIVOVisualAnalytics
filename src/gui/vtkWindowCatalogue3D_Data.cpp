@@ -223,12 +223,12 @@ void vtkWindowCatalogue3D::triggerCosmologyUpdate()
     for (const auto &e : this->entries) {
         bool ok = false;
         const double z = Catalogue3DParser::detail::fieldDouble(
-                e, Catalogue3DParser::detail::detectedRedshiftField(schema), &ok);
+                e, schema, Catalogue3DParser::detail::detectedRedshiftField(schema), &ok);
         redshifts.append((ok && z > 0.0) ? z : 0.0);
     }
 
     this->m_cosmologyWatcher.setFuture(QtConcurrent::run(
-            [backendUrl, backendToken, model, redshifts, schema]()
+            [backendUrl, backendToken, model, redshifts]()
                     -> Catalogue3DCosmologyTaskResult {
                 Catalogue3DCosmologyTaskResult out;
                 BackendClient client(backendUrl, backendToken);

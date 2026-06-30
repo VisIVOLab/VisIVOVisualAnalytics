@@ -242,7 +242,7 @@ void vtkWindowCatalogue3D::updateInfoPanel()
     const QString morphology = Catalogue3DParser::detail::entryMorphology(e, this->schema);
     const double distanceMpc = Catalogue3DParser::detail::entryDistanceMpc(e, this->schema);
     const double redshift =
-            Catalogue3DParser::detail::fieldDouble(e, Catalogue3DParser::detail::detectedRedshiftField(this->schema));
+            Catalogue3DParser::detail::fieldDouble(e, this->schema, Catalogue3DParser::detail::detectedRedshiftField(this->schema));
     const double majorAxisArcmin =
             Catalogue3DParser::detail::entryMajorAxisArcmin(e, this->schema);
     const double minorAxisArcmin =
