@@ -189,12 +189,14 @@ static std::optional<BackendTabularFilter> showAddFilterDialog(
 // ─────────────────────────────────────────────────────────────────────────────
 
 vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QString &backendUrl,
-                                           const QString &backendToken, QWidget *parent)
+                                           const QString &backendToken, const QStringList &paths,
+                                           QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::vtkWindowCatalogue3D)
     , filepath(filepath)
     , backendUrl(backendUrl)
     , backendToken(backendToken)
+    , m_cataloguePaths(paths)
 {
     ui->setupUi(this);
     this->setupSidebar();
@@ -233,7 +235,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                  msg.exec();
                                  if (msg.clickedButton() == btnReopen) {
                                      const QString path = this->filepath;
-                                     emit reopenRequested(path);
+                                     emit reopenRequested(path, this->m_cataloguePaths);
                                      this->close();
                                  }
                              } else {
@@ -385,7 +387,10 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                      });
 
     BackendClient client(backendUrl, backendToken);
-    const auto opened = client.openCatalogue(filepath, catalogueFormatForPath(filepath));
+    const QString catFormat = catalogueFormatForPath(filepath);
+    const auto opened = this->m_cataloguePaths.size() > 1
+            ? client.openCatalogue(this->m_cataloguePaths, catFormat)
+            : client.openCatalogue(filepath, catFormat);
     if (!opened.valid) {
         QMessageBox::critical(this, u"Catalogue Error"_s, opened.error);
         ui->labelStatus->setText(u"Load error: "_s + opened.error);

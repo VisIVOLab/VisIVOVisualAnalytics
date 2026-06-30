@@ -88,8 +88,13 @@ class vtkWindowCatalogue3D : public QMainWindow
     Q_OBJECT
 
 public:
+    // `paths` (optional) opens several catalogue files of the same format as ONE
+    // concatenated catalogue; `filepath` is the primary/label path. Empty or
+    // single-element `paths` behaves as a normal single-file open.
     explicit vtkWindowCatalogue3D(const QString &filepath, const QString &backendUrl,
-                                  const QString &backendToken, QWidget *parent = nullptr);
+                                  const QString &backendToken,
+                                  const QStringList &paths = QStringList(),
+                                  QWidget *parent = nullptr);
     ~vtkWindowCatalogue3D() override;
 
 private slots:
@@ -108,7 +113,7 @@ signals:
     void sourceSelectionChanged(int index);
     /// Emitted when a session-expiry error is detected and the user requests
     /// that the dataset be reopened.  Connect to MainWindow::doOpenCataloguePath.
-    void reopenRequested(const QString &filepath);
+    void reopenRequested(const QString &filepath, const QStringList &paths = QStringList());
 
 private:
     enum class GeometryMode
@@ -193,6 +198,7 @@ private:
     // ── Data ────────────────────────────────────────────────────────────────
     Ui::vtkWindowCatalogue3D *ui;
     QString filepath;
+    QStringList m_cataloguePaths;   // multi-file open (>1 → concatenated); else empty/single
     QString backendUrl;
     QString backendToken;
     QString remoteDatasetId;

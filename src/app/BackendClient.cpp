@@ -656,10 +656,19 @@ BackendOpenDatasetResult BackendClient::openSkavaDataset(const QString &obsId,
 
 BackendCatalogueInfo BackendClient::openCatalogue(const QString &path, const QString &format)
 {
+    return openCatalogue(QStringList{ path }, format);
+}
+
+BackendCatalogueInfo BackendClient::openCatalogue(const QStringList &paths, const QString &format)
+{
     BackendCatalogueInfo result;
     QString error;
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("path"), path },
-                                          { QStringLiteral("format"), format } });
+    QJsonArray pathsArr;
+    for (const QString &p : paths)
+        pathsArr.append(p);
+    const QJsonDocument body(QJsonObject{ { QStringLiteral("path"), paths.value(0) },
+                                          { QStringLiteral("format"), format },
+                                          { QStringLiteral("paths"), pathsArr } });
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/catalogue/open")), body, error);
     if (!error.isEmpty()) {

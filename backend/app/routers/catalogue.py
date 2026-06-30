@@ -30,14 +30,34 @@ async def open_catalogue(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> CatalogueOpenResponse:
-    path = _normalize_path(request.path)
-    if not path.exists() or not path.is_file():
-        return CatalogueOpenResponse(valid=False, error="Catalogue file not found.")
+    raw_paths = request.paths if request.paths else [request.path]
+    paths = [_normalize_path(p) for p in raw_paths]
+    for p in paths:
+        if not p.exists() or not p.is_file():
+            return CatalogueOpenResponse(valid=False, error=f"Catalogue file not found: {p}")
     try:
-        dataframe, metadata = _catalogue_metadata(path, request.format)
+        if len(paths) == 1:
+            dataframe, metadata = _catalogue_metadata(paths[0], request.format)
+        else:
+            # Multi-file: load each (same format) and concatenate into one
+            # catalogue. Require identical columns so a silent NaN-fill can't
+            # corrupt "same catalogue split into files".
+            frames = [_catalogue_load_dataframe(p, request.format) for p in paths]
+            base_cols = list(frames[0].columns)
+            for src, frame in zip(paths[1:], frames[1:]):
+                if list(frame.columns) != base_cols:
+                    raise ValueError(
+                        f"Column mismatch in {src.name}: expected {base_cols}, "
+                        f"got {list(frame.columns)}"
+                    )
+            dataframe = pd.concat(frames, ignore_index=True)
+            if dataframe.empty and len(dataframe.columns) == 0:
+                raise ValueError("Catalogue is empty.")
+            metadata = _catalogue_metadata_from_dataframe(dataframe, request.format.strip().lower())
     except Exception as exc:
         return CatalogueOpenResponse(valid=False, error=str(exc))
 
+    path = paths[0]
     dataset_id = f"cat_{uuid.uuid4().hex[:12]}"
     session.datasets[dataset_id] = {"path": str(path), "dataframe": dataframe, **metadata}
     logger.info(

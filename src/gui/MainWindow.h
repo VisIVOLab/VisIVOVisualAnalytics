@@ -74,7 +74,7 @@ private:
 
     // Path-based open helpers (skip the file browser dialog, used for reopen).
     void doOpenDataPath(const QString &path);
-    void doOpenCataloguePath(const QString &path);
+    void doOpenCataloguePath(const QString &path, const QStringList &paths = QStringList());
     /// Resolve a remote URL → download via VisIVO backend → open. Used by
     /// the SKAVA Discovery tab after a DataLink lookup. ``obsId`` is the
     /// SKAVA-side identifier, used as a filename hint in the cache and as

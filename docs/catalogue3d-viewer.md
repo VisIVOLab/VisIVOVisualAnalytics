@@ -40,6 +40,17 @@ format is inferred from the file suffix (`catalogueFormatForPath`). All formats
 can also be relayed over SAMP (`/v1/samp/send-catalogue` converts non-native
 formats to VOTable).
 
+### Multi-file load
+
+When you pick a catalogue file that has same-extension siblings in its folder,
+the viewer offers to load **all of them as one combined catalogue** (e.g. the 27
+spatial subtables of a cosmological snapshot). The desktop sends the full path
+list; `/v1/catalogue/open` accepts `paths: [...]`, loads each (same format) and
+`pd.concat`s them — **requiring identical columns** (a mismatch is rejected,
+naming the offending file, so a silent NaN union can't corrupt the data). The
+group is preserved across session-expiry reconnect, so a reopen rebuilds the
+same combined catalogue.
+
 ---
 
 ## Colour mapping

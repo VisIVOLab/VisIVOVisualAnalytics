@@ -64,3 +64,57 @@ def test_ipac_router_open(tmp_path):
     body = r.json()
     assert body["valid"] is True, body
     assert body["coordinate_fields"]["system"] == "cartesian"
+
+
+def test_ipac_router_open_multifile(tmp_path):
+    """Several .tbl files open as ONE concatenated catalogue (snapshot subtables)."""
+    import os
+    os.environ.setdefault("VISIVO_TOKEN", "test-token-visivo-12345")
+    from fastapi.testclient import TestClient
+    from app.main import app
+    auth = {"X-Visivo-Token": "test-token-visivo-12345"}
+    client = TestClient(app, raise_server_exceptions=True)
+    p1 = tmp_path / "a.tbl"
+    p1.write_text(IPAC)
+    p2 = tmp_path / "b.tbl"
+    p2.write_text(IPAC)
+    r = client.post(
+        "/v1/catalogue/open",
+        json={"path": str(p1), "format": "tbl", "paths": [str(p1), str(p2)]},
+        headers=auth,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["valid"] is True, body
+    assert body["num_rows"] == 6   # 3 + 3 concatenated
+    assert body["coordinate_fields"]["system"] == "cartesian"
+
+
+def test_ipac_multifile_rejects_column_mismatch(tmp_path):
+    """Multi-file open refuses files whose columns differ (no silent NaN fill)."""
+    import os
+    os.environ.setdefault("VISIVO_TOKEN", "test-token-visivo-12345")
+    from fastapi.testclient import TestClient
+    from app.main import app
+    auth = {"X-Visivo-Token": "test-token-visivo-12345"}
+    client = TestClient(app, raise_server_exceptions=True)
+    p1 = tmp_path / "a.tbl"
+    p1.write_text(IPAC)
+    # A second table with DIFFERENT columns (x/y/z/foo, not x/y/z/vx/LogMass).
+    other = (
+        "|    x     |    y     |    z     |   foo    |\n"
+        "|    r     |    r     |    r     |    r     |\n"
+        "|   Mpc    |   Mpc    |   Mpc    |   unk    |\n"
+        "     1.0       2.0       3.0       4.0\n"
+    )
+    p2 = tmp_path / "b.tbl"
+    p2.write_text(other)
+    r = client.post(
+        "/v1/catalogue/open",
+        json={"path": str(p1), "format": "tbl", "paths": [str(p1), str(p2)]},
+        headers=auth,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["valid"] is False
+    assert "mismatch" in body["error"].lower()

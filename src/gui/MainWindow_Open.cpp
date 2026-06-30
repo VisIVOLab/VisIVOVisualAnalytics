@@ -777,11 +777,41 @@ void MainWindow::openCatalogue3D()
     if (filepath.isEmpty())
         return;
 
-    doOpenCataloguePath(filepath);
+    // Offer to load all same-extension siblings in the folder as ONE combined
+    // catalogue (e.g. the spatial subtables of a cosmological snapshot).
+    QStringList groupPaths;
+    {
+        const QFileInfo fi(filepath);
+        const QString suffix = fi.suffix().toLower();
+        const auto listing = client.listFiles(fi.path());
+        if (listing.valid) {
+            for (const auto &e : listing.entries) {
+                if (e.type == u"file"_s && !e.path.isEmpty()
+                    && QFileInfo(e.name).suffix().toLower() == suffix)
+                    groupPaths << e.path;
+            }
+        }
+        if (groupPaths.size() > 1) {
+            std::sort(groupPaths.begin(), groupPaths.end());
+            const auto answer = QMessageBox::question(
+                    this, u"Multiple catalogue files"_s,
+                    u"Found %1 .%2 files in this folder.\n\nLoad ALL of them as one "
+                    u"combined catalogue? (No = open just the selected file.)"_s
+                            .arg(groupPaths.size())
+                            .arg(suffix),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+            if (answer != QMessageBox::Yes)
+                groupPaths.clear();
+        } else {
+            groupPaths.clear();
+        }
+    }
+
+    doOpenCataloguePath(filepath, groupPaths);
 }
 
 
-void MainWindow::doOpenCataloguePath(const QString &filepath)
+void MainWindow::doOpenCataloguePath(const QString &filepath, const QStringList &paths)
 {
     this->m_sampCurrentFitsPath.clear();
     this->m_sampCurrentFitsName.clear();
@@ -790,11 +820,15 @@ void MainWindow::doOpenCataloguePath(const QString &filepath)
     this->m_sampCurrentCatalogueFormat = catalogueFormatForPath(filepath);
     this->updateSampActions();
     auto *win = new vtkWindowCatalogue3D(filepath, settings->getBackendUrl(),
-                                         settings->getBackendToken(), this);
+                                         settings->getBackendToken(), paths, this);
     win->setAttribute(Qt::WA_DeleteOnClose);
-    // On session expiry the window emits reopenRequested; reuse the normal open flow.
-    QObject::connect(win, &vtkWindowCatalogue3D::reopenRequested,
-                     this, &MainWindow::doOpenCataloguePath);
+    // On session expiry the window emits reopenRequested with its current path
+    // group (single or multi-file), so the reopened window rebuilds the same
+    // combined catalogue.
+    QObject::connect(win, &vtkWindowCatalogue3D::reopenRequested, this,
+                     [this](const QString &p, const QStringList &ps) {
+                         this->doOpenCataloguePath(p, ps);
+                     });
     win->showMaximized();
     win->raise();
     win->activateWindow();

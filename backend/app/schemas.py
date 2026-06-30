@@ -280,6 +280,10 @@ class CubeNoiseResponse(BaseModel):
 class CatalogueOpenRequest(BaseModel):
     path: str
     format: str = "csv"
+    # Optional: open SEVERAL catalogue files of the same format as ONE catalogue
+    # (e.g. the 27 spatial subtables of a cosmological snapshot). When non-empty
+    # these are concatenated; `path` is then a fallback label only.
+    paths: list[str] = []
 
 
 class CatalogueFieldInfo(BaseModel):

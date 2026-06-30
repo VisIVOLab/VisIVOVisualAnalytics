@@ -1202,6 +1202,10 @@ public:
     BackendOpenDatasetResult openSkavaDataset(const QString &obsId,
                                                 const QString &accessUrl);
     BackendCatalogueInfo openCatalogue(const QString &path, const QString &format = QStringLiteral("csv"));
+    /// Open SEVERAL catalogue files of the same format as ONE concatenated
+    /// catalogue (e.g. the spatial subtables of a cosmological snapshot).
+    BackendCatalogueInfo openCatalogue(const QStringList &paths,
+                                       const QString &format = QStringLiteral("csv"));
     BackendSampSendResult sendFitsToSamp(const QString &path,
                                          const QString &filename = QString()) const;
     BackendSampSendResult sendCatalogueToSamp(const QString &path, const QString &format,

@@ -466,10 +466,13 @@ void vtkWindowCatalogue3D::autoReopenThenLoadMore()
     const QString url      = this->backendUrl;
     const QString token    = this->backendToken;
     const QString filePath = this->filepath;
+    const QStringList paths = this->m_cataloguePaths;   // preserve a multi-file group
 
     this->m_reopenWatcher.setFuture(QtConcurrent::run(
-            [url, token, filePath]() -> BackendCatalogueInfo {
+            [url, token, filePath, paths]() -> BackendCatalogueInfo {
                 BackendClient client(url, token);
-                return client.openCatalogue(filePath, catalogueFormatForPath(filePath));
+                const QString fmt = catalogueFormatForPath(filePath);
+                return paths.size() > 1 ? client.openCatalogue(paths, fmt)
+                                        : client.openCatalogue(filePath, fmt);
             }));
 }
