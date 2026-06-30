@@ -40,6 +40,17 @@ format is inferred from the file suffix (`catalogueFormatForPath`). All formats
 can also be relayed over SAMP (`/v1/samp/send-catalogue` converts non-native
 formats to VOTable).
 
+### Paging — Load more / Load all
+
+The viewer loads sources in pages of 50 000 (`m_pageSize`); the **Filters** tab
+shows a *"Loaded X of Y sources"* status and a **Load more…** button (appends the
+next page) plus a **Load all** button (one query for every remaining row, no
+paging). For large catalogues *Load all* asks for confirmation (>500 000) because
+it materialises the whole point cloud at once — the GPU glyph mapper renders
+millions fine and per-point labels are capped, but the scene build runs on the
+GUI thread and can briefly freeze it. Both buttons hide once everything is
+loaded.
+
 ### Multi-file load
 
 When you pick a catalogue file that has same-extension siblings in its folder,

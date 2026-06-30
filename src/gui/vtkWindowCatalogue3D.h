@@ -303,8 +303,10 @@ private:
     int m_totalCount{ -1 };
     bool m_loadingMore{ false };
     QPointer<QPushButton> btnLoadMore;
+    QPointer<QPushButton> btnLoadAll;
     QFutureWatcher<Catalogue3DFilterTaskResult> m_loadMoreWatcher;
     void loadMoreEntries();
+    void loadAllEntries();   // load every remaining row in one query (no paging)
     // ── Session-expiry auto-recovery ──────────────────────────────────────────
     QFutureWatcher<BackendCatalogueInfo> m_reopenWatcher;
     void autoReopenThenLoadMore();

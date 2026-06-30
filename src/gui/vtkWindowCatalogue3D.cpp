@@ -249,6 +249,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          this->m_currentOffset = static_cast<int>(result.entries.size());
                          this->m_totalCount = result.totalRows;
                          const bool hasMore = this->m_currentOffset < this->m_totalCount;
+                         if (this->btnLoadAll)
+                             this->btnLoadAll->setVisible(hasMore);
                          if (this->btnLoadMore) {
                              this->btnLoadMore->setVisible(hasMore);
                              this->btnLoadMore->setEnabled(true);
@@ -327,6 +329,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                 this->applyFrameToEntries();
 
                 const bool hasMore = this->m_currentOffset < this->m_totalCount;
+                if (this->btnLoadAll)
+                    this->btnLoadAll->setVisible(hasMore);
                 if (this->btnLoadMore) {
                     this->btnLoadMore->setVisible(hasMore);
                     this->btnLoadMore->setEnabled(true);

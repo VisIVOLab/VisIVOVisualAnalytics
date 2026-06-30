@@ -295,6 +295,15 @@ void vtkWindowCatalogue3D::setupSidebar()
         QObject::connect(this->btnLoadMore, &QPushButton::clicked,
                          this, &vtkWindowCatalogue3D::loadMoreEntries);
 
+        this->btnLoadAll = new QPushButton(u"Load all"_s, filtersCard);
+        this->btnLoadAll->setVisible(false);
+        this->btnLoadAll->setToolTip(
+                u"Load every remaining source at once (no paging). May use significant "
+                u"memory for very large catalogues."_s);
+        filtersCardLayout->addWidget(this->btnLoadAll);
+        QObject::connect(this->btnLoadAll, &QPushButton::clicked,
+                         this, &vtkWindowCatalogue3D::loadAllEntries);
+
         pageLayout->addWidget(filtersCard);
 
         // Actions card.

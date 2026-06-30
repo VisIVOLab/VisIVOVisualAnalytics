@@ -326,6 +326,9 @@ void vtkWindowCatalogue3D::applyFilter()
     if (this->btnLoadMore) {
         this->btnLoadMore->setVisible(false);
     }
+    if (this->btnLoadAll) {
+        this->btnLoadAll->setVisible(false);
+    }
     if (this->filterStatusLabel) {
         this->filterStatusLabel->setText(u"Applying filters…"_s);
     }
@@ -388,6 +391,31 @@ void vtkWindowCatalogue3D::applyFilter()
                 out.valid = true;
                 return out;
             }));
+}
+
+void vtkWindowCatalogue3D::loadAllEntries()
+{
+    if (this->remoteDatasetId.isEmpty() || this->m_loadingMore || this->filterBusy)
+        return;
+    const int total = this->m_totalCount;
+    if (total <= 0 || this->m_currentOffset >= total)
+        return;
+    if (total > 500000) {
+        const auto answer = QMessageBox::question(
+                this, u"Load all sources"_s,
+                QStringLiteral("Load all %1 sources at once?\n\nThis can use significant memory "
+                               "and may temporarily freeze the UI while the scene builds.")
+                        .arg(total),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes)
+            return;
+    }
+    // One page = everything. applyFilter() captures the page size synchronously,
+    // so we can restore it immediately for any later paginated query.
+    const int savedPageSize = this->m_pageSize;
+    this->m_pageSize = total;
+    this->applyFilter();
+    this->m_pageSize = savedPageSize;
 }
 
 void vtkWindowCatalogue3D::loadMoreEntries()
