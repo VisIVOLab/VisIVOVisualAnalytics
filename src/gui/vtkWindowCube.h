@@ -45,6 +45,8 @@ class QPushButton;
 class QSlider;
 class QCheckBox;
 class QComboBox;
+class QJsonObject;
+class QJsonArray;
 class QNetworkAccessManager;
 class QNetworkReply;
 class QStackedWidget;
@@ -518,6 +520,10 @@ private:
     bool pendingRemoteRefinementReload{ false };
     bool probeModeActive{ false };
     RegionMode regionMode{ RegionMode::None };
+    // The shape of the last finalised region, kept after analysis sets
+    // regionMode back to None (geometry + regionValid persist while the result
+    // dialogs are open) so Region IO export still knows the shape to serialise.
+    RegionMode m_exportableRegionShape{ RegionMode::None };
     bool pvModeActive{ false };
     bool pvDragging{ false };
     bool pvValid{ false };
@@ -626,6 +632,15 @@ private:
     void clearRegion();
     void clearPv();
     void analyzeCurrentRegion();
+    // Region IO (CRTF/DS9) on the cube's 2-D view (vtkWindowCube_RegionIO.cpp).
+    QPointer<QAction> m_actExportCubeRegion;
+    QPointer<QAction> m_actImportCubeRegion;
+    QJsonObject currentRegionToJson() const;   ///< active drawn ROI → canonical dict (1-based px)
+    void exportRegionsToFile();
+    void importRegionsFromFile();
+    /// Map the first parsed canonical region (image-frame, 1-based px) onto the
+    /// cube's region model, draw it and run region analysis.
+    void applyImportedRegion(const QJsonArray &regions);
     /// Clear the 2D region overlay once both result-dialog and spectrum plot
     /// have been closed. Wired to QObject::destroyed of both widgets.
     void maybeClearRegionAfterDisplay();

@@ -700,6 +700,7 @@ void vtkWindowCube::clearNoiseRegionPreview()
 void vtkWindowCube::clearRegion()
 {
     this->regionValid = false;
+    this->m_exportableRegionShape = RegionMode::None;
     this->regionDragging = false;
     this->ignoreNextPolygonRelease = false;
     this->regionPolygonVertices.clear();
@@ -731,6 +732,10 @@ void vtkWindowCube::analyzeCurrentRegion()
     if (this->regionMode == RegionMode::None || !this->regionValid) {
         return;
     }
+    // Remember the shape: after analysis the region action is unchecked and
+    // regionMode goes back to None (geometry stays for display), but Region IO
+    // export still needs to know what shape to serialise.
+    this->m_exportableRegionShape = this->regionMode;
 
     auto *imageData = this->viewingSlice()
             ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))

@@ -2211,6 +2211,18 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         emit contourDataReady(label, output);
     });
 
+    // Region IO (CRTF/DS9) on the 2-D view — interop parity with the image viewer.
+    m_actImportCubeRegion = ui->menuTools->addAction(u"Import Region (CRTF/DS9)…"_s);
+    m_actImportCubeRegion->setToolTip(
+            u"Load a CASA CRTF or DS9 (.reg) region file onto the 2-D view and analyse it."_s);
+    QObject::connect(m_actImportCubeRegion, &QAction::triggered,
+                     this, &vtkWindowCube::importRegionsFromFile);
+    m_actExportCubeRegion = ui->menuTools->addAction(u"Export Region (CRTF/DS9)…"_s);
+    m_actExportCubeRegion->setToolTip(
+            u"Save the drawn region as a CASA CRTF or DS9 (.reg) file."_s);
+    QObject::connect(m_actExportCubeRegion, &QAction::triggered,
+                     this, &vtkWindowCube::exportRegionsToFile);
+
     // Kinematic-model overlay (F2): contour a tilted-ring rotating-disk model
     // over the cube to highlight gas departing from regular rotation.
     m_actKinematicModel = ui->menuTools->addAction(u"Kinematic Model Overlay…"_s);
