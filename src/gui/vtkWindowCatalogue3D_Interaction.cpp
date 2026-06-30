@@ -347,6 +347,9 @@ void vtkWindowCatalogue3D::updateGeometryMode()
     case 3:
         this->geometryMode = GeometryMode::Cross;
         break;
+    case 4:   // "Arrows (velocity)" — only present when vx/vy/vz exist
+        this->geometryMode = GeometryMode::Velocity;
+        break;
     default:
         this->geometryMode = GeometryMode::Ellipsoid;
         break;

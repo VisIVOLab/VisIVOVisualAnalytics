@@ -529,6 +529,23 @@ void vtkWindowCatalogue3D::populateMappingControls()
     const bool hasVelocity = this->m_velocityColIdx[0] >= 0 && this->m_velocityColIdx[1] >= 0
             && this->m_velocityColIdx[2] >= 0;
 
+    // The "Arrows (velocity)" shape is only meaningful with vx/vy/vz — add/remove
+    // it to match (it is the 5th item, index 4, handled in updateGeometryMode()).
+    if (this->comboGeometry) {
+        const QString arrowsLabel = u"Arrows (velocity)"_s;
+        const int arrowsIdx = this->comboGeometry->findText(arrowsLabel);
+        if (hasVelocity && arrowsIdx < 0) {
+            this->comboGeometry->addItem(arrowsLabel);
+        } else if (!hasVelocity && arrowsIdx >= 0) {
+            QSignalBlocker blk(this->comboGeometry);
+            if (this->comboGeometry->currentIndex() == arrowsIdx) {
+                this->comboGeometry->setCurrentIndex(0);
+                this->geometryMode = GeometryMode::Ellipsoid;   // keep model in sync
+            }
+            this->comboGeometry->removeItem(arrowsIdx);
+        }
+    }
+
     this->comboMapColor->clear();
     this->comboMapColor->addItem(u"Morphology color"_s, QStringLiteral("builtin:morphology"));
     if (hasVelocity)   // peculiar-velocity magnitude √(vx²+vy²+vz²)

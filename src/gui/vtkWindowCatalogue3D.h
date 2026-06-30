@@ -35,6 +35,7 @@ class vtkPolyDataAlgorithm;
 class vtkPolyDataMapper;
 class vtkRenderer;
 class vtkSphereSource;
+class vtkArrowSource;
 class vtkAppendPolyData;
 class QAction;
 class QCheckBox;
@@ -116,6 +117,7 @@ private:
         Sphere,
         Point,
         Cross,
+        Velocity,   // arrows oriented by vx/vy/vz, scaled by speed
     };
 
     enum class SizeMode
@@ -225,10 +227,15 @@ private:
     // Main source cloud — GPU-instanced glyphs (vtkGlyph3DMapper) so large
     // catalogues render fast without materialising per-point geometry on the CPU.
     vtkNew<vtkPoints> sourcePoints;
-    vtkNew<vtkIntArray> morphScalars; // one int per source → LUT index
+    // One scalar per source feeding the active colour LUT. Float (not int) so
+    // continuous colour modes (raw columns, "Speed |v|") aren't truncated;
+    // morphology stores integer class indices, which float holds exactly.
+    vtkNew<vtkFloatArray> morphScalars;
     vtkNew<vtkFloatArray> glyphScaleVectors;
+    vtkNew<vtkFloatArray> velocityVectors;   // vx/vy/vz per source (named "VelocityVector")
     vtkNew<vtkPolyData> sourcesPolyData;
     vtkNew<vtkSphereSource> sphereSource;
+    vtkNew<vtkArrowSource> arrowSource;       // glyph source for the Velocity mode
     vtkNew<vtkCubeSource> pointCubeSource;
     vtkNew<vtkAppendPolyData> crossSource;
     vtkNew<vtkGlyph3DMapper> glyphMapper;

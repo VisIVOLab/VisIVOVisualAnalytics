@@ -11,6 +11,7 @@
 #include <QVTKOpenGLNativeWidget.h>
 #include <vtkActor.h>
 #include <vtkAppendPolyData.h>
+#include <vtkArrowSource.h>
 #include <vtkAxesActor.h>
 #include <vtkBillboardTextActor3D.h>
 #include <vtkCallbackCommand.h>

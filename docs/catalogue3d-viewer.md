@@ -51,7 +51,20 @@ The **Color** combo offers *Morphology color*, any numeric raw column
 √(vx²+vy²+vz²). Velocity columns are re-detected from `rawHeaders` whenever the
 column set changes (before any scene/colour rebuild), so the speed mapping never
 uses stale indices. The chosen colour scale (Linear/Log/Sqrt/…) applies via the
-value LUT.
+value LUT. The colour scalar array is `float`, so continuous mappings
+(speed, raw columns) keep full precision.
+
+## Velocity arrows
+
+When the catalogue carries `vx/vy/vz`, the **Shape** combo gains **Arrows
+(velocity)**: each source becomes a `vtkArrowSource` glyph **oriented** by its
+velocity vector and **scaled by speed** (the fastest arrow ≈ 6 % of the data
+diagonal) — a peculiar-velocity / cosmic-flow view of the point cloud. It uses
+the same GPU-instanced `vtkGlyph3DMapper`, orienting/scaling by a named
+`VelocityVector` point array (built in `buildScene`) while the other shape modes
+keep `ScaleVector` for ellipsoid sizing. Colour still follows the Color combo, so
+*Speed |v|* colours the arrows by magnitude too. (If a catalogue without velocity
+is loaded, the mode falls back to *Ellipsoid*.)
 
 ---
 

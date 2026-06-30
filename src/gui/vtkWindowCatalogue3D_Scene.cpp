@@ -35,6 +35,7 @@
 #include <vtkRenderer.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderWindowInteractor.h>
+#include <vtkArrowSource.h>
 #include <vtkSphereSource.h>
 #include <vtkTextProperty.h>
 
@@ -213,6 +214,29 @@ void vtkWindowCatalogue3D::buildScene()
     this->glyphScaleVectors->SetNumberOfComponents(3);
     this->glyphScaleVectors->SetNumberOfTuples(static_cast<vtkIdType>(entries.size()));
     sourcesPolyData->GetPointData()->SetVectors(this->glyphScaleVectors);
+
+    // Velocity vectors (vx/vy/vz) for the arrow glyph mode, when present. Stored
+    // as a NAMED array (not the active vectors) so the glyph mapper can orient +
+    // scale arrows by it in Velocity mode while ScaleVector stays the ellipsoid
+    // size driver for the other modes.
+    this->detectVelocityColumns();
+    const bool hasVelocity = this->m_velocityColIdx[0] >= 0 && this->m_velocityColIdx[1] >= 0
+            && this->m_velocityColIdx[2] >= 0;
+    if (hasVelocity) {
+        this->velocityVectors->SetName("VelocityVector");
+        this->velocityVectors->SetNumberOfComponents(3);
+        this->velocityVectors->SetNumberOfTuples(static_cast<vtkIdType>(entries.size()));
+        for (vtkIdType i = 0; i < static_cast<vtkIdType>(entries.size()); ++i) {
+            double vx = 0.0, vy = 0.0, vz = 0.0;
+            this->rawFieldValue(entries[static_cast<std::size_t>(i)], this->m_velocityColIdx[0], vx);
+            this->rawFieldValue(entries[static_cast<std::size_t>(i)], this->m_velocityColIdx[1], vy);
+            this->rawFieldValue(entries[static_cast<std::size_t>(i)], this->m_velocityColIdx[2], vz);
+            this->velocityVectors->SetTuple3(i, vx, vy, vz);
+        }
+        sourcesPolyData->GetPointData()->AddArray(this->velocityVectors);
+    } else {
+        sourcesPolyData->GetPointData()->RemoveArray("VelocityVector");
+    }
 
     // ── Glyph pipeline ────────────────────────────────────────────────────────
     sphereSource->SetRadius(0.5); // unit sphere; scaled by SetScaleFactor
@@ -670,21 +694,73 @@ void vtkWindowCatalogue3D::updateGlyphPipeline()
 
     this->pointsActor->VisibilityOff();
     this->glyphActor->VisibilityOn();
+
+    // Restore the per-axis (ellipsoid) scaling config for the shape modes; the
+    // Velocity mode overrides it below.
+    const auto restoreShapeScaling = [this]() {
+        this->glyphMapper->SetScaleArray("ScaleVector");
+        this->glyphMapper->SetScaleModeToScaleByVectorComponents();
+        this->glyphMapper->OrientOff();
+        this->glyphMapper->SetScaleFactor(1.0);
+    };
+
     switch (this->geometryMode) {
     case GeometryMode::Ellipsoid:
     case GeometryMode::Sphere:
         this->glyphMapper->SetSourceConnection(this->sphereSource->GetOutputPort());
+        restoreShapeScaling();
         break;
     case GeometryMode::Cross:
         this->glyphMapper->SetSourceConnection(this->crossSource->GetOutputPort());
+        restoreShapeScaling();
         break;
+    case GeometryMode::Velocity: {
+        // Defensive: if velocity columns are unavailable (e.g. a catalogue
+        // without vx/vy/vz was loaded while Velocity mode lingered), fall back to
+        // the ellipsoid shape rather than orienting by a missing array.
+        const bool hasVel = this->m_velocityColIdx[0] >= 0 && this->m_velocityColIdx[1] >= 0
+                && this->m_velocityColIdx[2] >= 0;
+        if (!hasVel) {
+            this->geometryMode = GeometryMode::Ellipsoid;
+            this->glyphMapper->SetSourceConnection(this->sphereSource->GetOutputPort());
+            restoreShapeScaling();
+            break;
+        }
+        // Arrows oriented by the velocity vector, scaled by speed.
+        this->glyphMapper->SetSourceConnection(this->arrowSource->GetOutputPort());
+        this->glyphMapper->SetOrientationArray("VelocityVector");
+        this->glyphMapper->SetOrientationModeToDirection();
+        this->glyphMapper->OrientOn();
+        this->glyphMapper->SetScaleArray("VelocityVector");
+        this->glyphMapper->SetScaleModeToScaleByMagnitude();
+        // Scale so the fastest arrow spans ~6% of the data diagonal.
+        double maxSpeed = 0.0;
+        for (const auto &e : this->entries) {
+            double vx = 0.0, vy = 0.0, vz = 0.0;
+            this->rawFieldValue(e, this->m_velocityColIdx[0], vx);
+            this->rawFieldValue(e, this->m_velocityColIdx[1], vy);
+            this->rawFieldValue(e, this->m_velocityColIdx[2], vz);
+            maxSpeed = std::max(maxSpeed, std::sqrt(vx * vx + vy * vy + vz * vz));
+        }
+        double b[6];
+        this->sourcePoints->GetBounds(b);
+        const double diag = std::sqrt((b[1] - b[0]) * (b[1] - b[0]) + (b[3] - b[2]) * (b[3] - b[2])
+                                      + (b[5] - b[4]) * (b[5] - b[4]));
+        this->glyphMapper->SetScaleFactor(
+                (maxSpeed > 1e-12 && diag > 0.0) ? 0.06 * diag / maxSpeed : 1.0);
+        break;
+    }
     case GeometryMode::Point:
         this->glyphActor->VisibilityOff();
         this->pointsActor->VisibilityOn();
+        restoreShapeScaling();
         break;
     }
 
-    this->updateGlyphScales();
+    // updateGlyphScales drives the ScaleVector (ellipsoid) sizing — irrelevant in
+    // Velocity mode, which scales by the velocity magnitude instead.
+    if (this->geometryMode != GeometryMode::Velocity)
+        this->updateGlyphScales();
     this->renderWindow->Render();
 }
 
