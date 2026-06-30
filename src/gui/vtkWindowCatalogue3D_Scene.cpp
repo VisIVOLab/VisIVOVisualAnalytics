@@ -333,6 +333,18 @@ void vtkWindowCatalogue3D::buildScene()
 
 void vtkWindowCatalogue3D::buildLabels()
 {
+    // Per-point billboard text actors do NOT scale: creating tens of thousands
+    // of them (and adding each to the renderer) hangs the GUI thread for minutes,
+    // and that many on-screen labels are visually useless anyway. Skip building
+    // them above a cap — labels stay available for normal-sized catalogues, and
+    // hover/selection still show the source name on demand.
+    constexpr std::size_t kMaxLabelEntries = 2000;
+    this->m_labelsSkippedDueToScale = (entries.size() > kMaxLabelEntries);
+    if (this->m_labelsSkippedDueToScale) {
+        qInfo() << "[catalogue3d] per-point labels skipped for" << entries.size()
+                << "sources (cap" << kMaxLabelEntries << ") — not built at this scale";
+        return;
+    }
     for (const auto &e : entries) {
         auto actor = vtkSmartPointer<vtkBillboardTextActor3D>::New();
         actor->SetInput(Catalogue3DParser::detail::entryDisplayName(e, this->schema).toUtf8().constData());

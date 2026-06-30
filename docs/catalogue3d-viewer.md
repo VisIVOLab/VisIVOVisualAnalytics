@@ -28,13 +28,17 @@ work.)
 
 `MainWindow::openCatalogue3D()`:
 1. Health-check the backend via `BackendClient::health()`
-2. Open `RemoteFileBrowserDialog` filtered to `.csv`, `.vot`/`.votable`/`.xml`, `.fits`/`.fit`, `.speck`
+2. Open `RemoteFileBrowserDialog` filtered to `.csv`, `.vot`/`.votable`/`.xml`, `.fits`/`.fit`, `.speck`, `.tbl`
 3. Construct `vtkWindowCatalogue3D(filepath, backendUrl, backendToken)`
 4. The viewer calls `BackendClient::openCatalogue()` synchronously in its constructor, then triggers the first `applyFilter()` call
 
 Supported formats (backend `_catalogue_load_dataframe`): **CSV**, **VOTable**
-(`.vot`/`.votable`/`.xml`), **FITS table**, and **Partiview `.speck`** (3-D
-points). The format is inferred from the file suffix (`catalogueFormatForPath`).
+(`.vot`/`.votable`/`.xml`), **FITS table**, **Partiview `.speck`** (3-D points),
+and **IPAC ASCII table `.tbl`** (`format` "ipac"/"tbl"; e.g. cosmological-snapshot
+subtables with `x y z` Mpc + `vx vy vz` + attribute columns → Cartesian). The
+format is inferred from the file suffix (`catalogueFormatForPath`). All formats
+can also be relayed over SAMP (`/v1/samp/send-catalogue` converts non-native
+formats to VOTable).
 
 ---
 

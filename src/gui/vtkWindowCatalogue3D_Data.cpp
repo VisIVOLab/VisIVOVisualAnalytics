@@ -111,6 +111,9 @@ QString catalogueFormatForPath(const QString &path)
     if (suffix == QStringLiteral("speck")) {
         return QStringLiteral("speck");
     }
+    if (suffix == QStringLiteral("tbl")) {
+        return QStringLiteral("ipac");
+    }
     return QStringLiteral("csv");
 }
 }  // namespace

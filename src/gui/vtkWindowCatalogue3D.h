@@ -244,6 +244,7 @@ private:
 
     // Billboard text labels (world-space, camera-facing)
     std::vector<vtkSmartPointer<vtkBillboardTextActor3D>> labelActors;
+    bool m_labelsSkippedDueToScale{ false };  // per-point labels not built (too many sources)
 
     // Orientation axes corner widget
     vtkNew<vtkOrientationMarkerWidget> axesWidget;

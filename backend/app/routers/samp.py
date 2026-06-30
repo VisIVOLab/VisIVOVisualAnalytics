@@ -430,6 +430,20 @@ async def samp_send_catalogue(
             filename = request.filename or src.name
             token = store_samp_file_from_path(src, filename)
             mtype = MTYPE_TABLE_LOAD_FITS
+        elif fmt in {"ipac", "tbl", "speck"}:
+            # No native SAMP mtype for these — load via the catalogue reader and
+            # re-emit as VOTable (same path as CSV).
+            from ..dependencies import _catalogue_load_dataframe  # noqa: PLC0415
+
+            dataframe = _catalogue_load_dataframe(src, fmt)
+            table = Table.from_pandas(dataframe)
+            buffer = BytesIO()
+            table.write(buffer, format="votable")
+            # Force a .vot name — the bytes are VOTable now, not the source format.
+            stem = Path(request.filename).stem if request.filename else src.stem
+            filename = f"{stem}.vot"
+            token = store_samp_file(buffer.getvalue(), filename)
+            mtype = MTYPE_TABLE_LOAD_VOTABLE
         else:
             return SAMPSendResponse(
                 valid=False,

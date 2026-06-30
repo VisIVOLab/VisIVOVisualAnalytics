@@ -289,6 +289,16 @@ void vtkWindowCatalogue3D::updateInfoPanel()
 
 void vtkWindowCatalogue3D::toggleLabels(bool checked)
 {
+    if (checked && this->m_labelsSkippedDueToScale && labelActors.empty()) {
+        // Labels were not built (too many sources). Tell the user instead of
+        // silently doing nothing — the toggle isn't broken.
+        const QString msg = u"Per-point labels are unavailable for catalogues over "
+                            u"2000 sources (hover a source to see its name)."_s;
+        ui->labelStatus->setText(msg);
+        if (this->filterStatusLabel)
+            this->filterStatusLabel->setText(msg);
+        return;
+    }
     for (auto &actor : labelActors)
         actor->SetVisibility(checked ? 1 : 0);
     if (!entries.empty())

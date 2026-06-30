@@ -680,6 +680,20 @@ def _read_speck(path: Path) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=cols)
 
 
+def _read_ipac(path: Path) -> pd.DataFrame:
+    """Read an IPAC ASCII table (``.tbl``).
+
+    Format: ``\\``-prefixed comment/keyword lines, then ``|``-delimited header
+    rows (column names / types / units) followed by whitespace-aligned data —
+    e.g. cosmological-snapshot subtables with ``x y z`` (Mpc) + ``vx vy vz`` +
+    attribute columns. astropy parses it natively; keeping the column names lets
+    the X/Y/Z detection treat it as a Cartesian catalogue.
+    """
+    from astropy.io import ascii as astropy_ascii  # noqa: PLC0415
+
+    return astropy_ascii.read(str(path), format="ipac").to_pandas()
+
+
 def _catalogue_load_dataframe(path: Path, fmt: str) -> pd.DataFrame:
     fmt_lower = fmt.strip().lower()
     if fmt_lower == "csv":
@@ -690,6 +704,8 @@ def _catalogue_load_dataframe(path: Path, fmt: str) -> pd.DataFrame:
         return Table.read(path, format="fits").to_pandas()
     if fmt_lower == "speck":
         return _read_speck(path)
+    if fmt_lower in {"ipac", "tbl"}:
+        return _read_ipac(path)
     raise ValueError(f"Unsupported catalogue format: {fmt}")
 
 
