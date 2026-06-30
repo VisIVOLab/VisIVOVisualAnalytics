@@ -18,6 +18,7 @@ you want in the group. `src/gui/vtkWindowCube_Link.cpp`.
 | **Camera** (3-D view) | `vtkCommand::InteractionEvent` on the cube interactor | shared **relative to each cube's data bounds** (see below), then re-render |
 | **Velocity channel** | `requestRemoteSlice()` (the single convergence for all channel changes) | matched by **spectral value (velocity)** — see below |
 | **Volume colour** | `applyColorMapByName()` / 3-D LUT customizer | colormap **name** + volume **stretch** (scale mode + gamma) |
+| **Volume blend mode** | the Composite/MIP/MinIP toggle | `applyVolumeBlendMode(idx)` |
 
 Enabling Link Views on a viewer immediately pushes its **camera + channel** to
 the other already-linked viewers so they snap into alignment. The colour map is

@@ -1006,7 +1006,10 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         if (action == this->m_actionMIP)   idx = 1;
         if (action == this->m_actionMinIP) idx = 2;
         this->applyVolumeBlendMode(idx);
-        m_uiAssembler->syncVolumeModeSidebar(idx);
+        if (this->m_uiAssembler)
+            this->m_uiAssembler->syncVolumeModeSidebar(idx);
+        if (this->m_linkViews && !this->m_applyingLinkedUpdate)
+            this->broadcastLinkedBlendMode();
     });
 
     QObject::connect(this->actionShowWcsAxes, &QAction::toggled, this, [this](bool checked) {
@@ -2668,6 +2671,7 @@ void vtkWindowCube::applyVolumeBlendMode(int idx)
     if (!this->volumeMapper) {
         return;
     }
+    this->m_volumeBlendMode = idx;   // tracked for linked-views sync
     switch (idx) {
     case 1:
         this->volumeMapper->SetBlendModeToMaximumIntensity();

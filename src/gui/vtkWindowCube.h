@@ -794,6 +794,10 @@ private:
     // cube is auto-ranged to its own data.
     void broadcastLinkedColour();
     void applyLinkedColour(const QString &name, int scaleMode, double gamma);
+    // Shared volume blend mode (0=Composite, 1=MIP, 2=MinIP).
+    int m_volumeBlendMode{ 0 };
+    void broadcastLinkedBlendMode();
+    void applyLinkedBlendMode(int idx);
     vtkNew<vtkVolume> volume;
     vtkNew<vtkColorTransferFunction> volumeColorTransferFunction;
     vtkNew<vtkPiecewiseFunction> volumeOpacity;

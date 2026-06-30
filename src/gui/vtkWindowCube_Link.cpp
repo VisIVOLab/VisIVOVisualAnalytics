@@ -16,6 +16,7 @@
 #include "ui_vtkWindowCube.h"
 
 #include "ChannelOverlay.h"
+#include "CubeUiAssembler.h"
 #include "LutScale.h"
 
 #include <vtkCamera.h>
@@ -335,4 +336,34 @@ void vtkWindowCube::applyLinkedColour(const QString &name, int scaleMode, double
     // applyColorMapByName rebuilds the volume LUT through the (now updated)
     // stretch, so this applies both colormap and stretch in one go.
     this->applyColorMapByName(name.isEmpty() ? this->m_activeColorMapName : name);
+}
+
+void vtkWindowCube::broadcastLinkedBlendMode()
+{
+    if (!this->m_linkViews)
+        return;
+    const int idx = this->m_volumeBlendMode;
+    const auto windows = s_cubeWindows;   // snapshot
+    for (const auto &p : windows)
+        if (p && p != this && p->m_linkViews)
+            p->applyLinkedBlendMode(idx);
+}
+
+void vtkWindowCube::applyLinkedBlendMode(int idx)
+{
+    idx = std::clamp(idx, 0, 2);   // 0=Composite, 1=MIP, 2=MinIP
+    if (idx == this->m_volumeBlendMode)
+        return;
+    QScopedValueRollback<bool> guard(this->m_applyingLinkedUpdate, true);
+    this->applyVolumeBlendMode(idx);   // sets m_volumeBlendMode + renders
+    if (this->m_uiAssembler)
+        this->m_uiAssembler->syncVolumeModeSidebar(idx);
+    // Reflect in the menu actions (QActionGroup) without re-triggering them.
+    QAction *act = idx == 1 ? this->m_actionMIP
+                 : idx == 2 ? this->m_actionMinIP
+                            : this->m_actionComposite;
+    if (act) {
+        QSignalBlocker b(act);
+        act->setChecked(true);
+    }
 }
