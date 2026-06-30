@@ -789,8 +789,11 @@ private:
     // fraction (unrelated cubes → both scan their full range together).
     void applyLinkedChannel(int channel0, double fraction, double spectralValue,
                             bool hasSpectral, const QString &spectralUnit);
-    void broadcastLinkedColorMap(const QString &name);
-    void applyLinkedColorMap(const QString &name);
+    // Shared colour: colormap name + volume stretch (scale mode + gamma). The
+    // table RANGE is intentionally NOT shared — it is data-dependent and each
+    // cube is auto-ranged to its own data.
+    void broadcastLinkedColour();
+    void applyLinkedColour(const QString &name, int scaleMode, double gamma);
     vtkNew<vtkVolume> volume;
     vtkNew<vtkColorTransferFunction> volumeColorTransferFunction;
     vtkNew<vtkPiecewiseFunction> volumeOpacity;

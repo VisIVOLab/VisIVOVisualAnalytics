@@ -17,7 +17,7 @@ you want in the group. `src/gui/vtkWindowCube_Link.cpp`.
 |--------|-----------|------------------|
 | **Camera** (3-D view) | `vtkCommand::InteractionEvent` on the cube interactor | shared **relative to each cube's data bounds** (see below), then re-render |
 | **Velocity channel** | `requestRemoteSlice()` (the single convergence for all channel changes) | matched by **spectral value (velocity)** — see below |
-| **Colour map** | `applyColorMapByName()` | `applyColorMapByName(name)` |
+| **Volume colour** | `applyColorMapByName()` / 3-D LUT customizer | colormap **name** + volume **stretch** (scale mode + gamma) |
 
 Enabling Link Views on a viewer immediately pushes its **camera + channel** to
 the other already-linked viewers so they snap into alignment. The colour map is
@@ -52,6 +52,11 @@ not by raw coordinates/indices:
   This replaces naive index matching, which both saturated the shorter cube and
   wrongly equated channel N of one cube with channel N of another.
 
+  Velocity matching also works across **convertible units** — `m/s ↔ km/s`, and
+  within frequency `Hz/kHz/MHz/GHz` — so a data cube in m/s and a model in km/s
+  of the same object still align by velocity. Frequency↔velocity is *not*
+  converted (it needs a rest frequency), so those fall back to proportional.
+
 ---
 
 ## How it works
@@ -74,7 +79,16 @@ not by raw coordinates/indices:
 
 ## Notes / limitations (phase-1)
 
-- Channel velocity-matching requires matching spectral **units** between cubes
-  (no Hz↔m/s conversion yet); mismatched units fall back to index clamping.
-- The **colour-map name** is synced, not the table range or stretch.
+- Channel velocity-matching works for identical or **convertible** spectral
+  units (m/s↔km/s, Hz/kHz/MHz/GHz); frequency↔velocity and unrelated units fall
+  back to proportional mapping.
+- The **3-D volume** colour syncs (colormap name + stretch); the **table range**
+  is intentionally *not* shared (data-dependent — each cube auto-ranges to its
+  own data), and the **2-D slice** plane's colour scale is managed separately
+  and not synced.
+- Colour sync is **local-render only**; the server-side-rendering (SSR) path
+  mirrors only the colormap name, not the linked stretch.
+- If the 3-D LUT customizer dialog is open on a peer when a linked stretch
+  arrives, the model/LUT update but the dialog's controls may show stale values
+  until reopened.
 - Sync is peer-to-peer across open viewers; there is no single "grid" container.

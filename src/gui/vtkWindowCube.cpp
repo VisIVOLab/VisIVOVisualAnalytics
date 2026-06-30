@@ -2658,9 +2658,9 @@ void vtkWindowCube::applyColorMapByName(const QString &name)
     cmd[u"name"_s] = name;
     this->sendRemoteRenderStateCommand(cmd);
 
-    // Linked views: mirror the colour map to the other linked cubes (echo-guarded).
+    // Linked views: mirror the colour (map + volume stretch) to linked cubes.
     if (this->m_linkViews && !this->m_applyingLinkedUpdate)
-        this->broadcastLinkedColorMap(name);
+        this->broadcastLinkedColour();
 }
 
 void vtkWindowCube::applyVolumeBlendMode(int idx)
@@ -5401,6 +5401,10 @@ void vtkWindowCube::showLUTCustomizer3D()
                              }
                              if (ui->vtkCube->renderWindow())
                                  ui->vtkCube->renderWindow()->Render();
+                             // Linked views: a volume stretch change is part of
+                             // the shared colour state.
+                             if (this->m_linkViews && !this->m_applyingLinkedUpdate)
+                                 this->broadcastLinkedColour();
                          });
     }
 

@@ -16,6 +16,7 @@
 #include "ui_vtkWindowCube.h"
 
 #include "ChannelOverlay.h"
+#include "LutScale.h"
 
 #include <vtkCamera.h>
 #include <vtkCommand.h>
@@ -54,6 +55,44 @@ bool dataBoundsCenterDiag(vtkImageData *im, double center[3], double &diag)
     const double dx = b[1] - b[0], dy = b[3] - b[2], dz = b[5] - b[4];
     diag = std::sqrt(dx * dx + dy * dy + dz * dz);
     return diag > 1e-9;
+}
+
+// Spectral-axis unit → (physical quantity, factor to SI). quantity: 1 = velocity
+// (SI m/s), 2 = frequency (SI Hz). ok=false for unrecognised units. Handles the
+// header and astropy-normalised spellings (km/s, m/s, m.s**-1, Hz/kHz/MHz/GHz).
+struct SpectralUnit { int quantity{ 0 }; double siFactor{ 1.0 }; bool ok{ false }; };
+SpectralUnit parseSpectralUnit(QString u)
+{
+    u = u.trimmed().toLower();
+    u.remove(QLatin1Char(' '));
+    u.remove(QLatin1Char('.'));
+    u.replace(u"**"_s, u""_s);
+    u.remove(QLatin1Char('/'));
+    // frequency (check before velocity: "mhz" must not look like a velocity)
+    if (u == u"hz"_s)  return { 2, 1.0, true };
+    if (u == u"khz"_s) return { 2, 1.0e3, true };
+    if (u == u"mhz"_s) return { 2, 1.0e6, true };
+    if (u == u"ghz"_s) return { 2, 1.0e9, true };
+    // velocity: km/s→"kms", m/s→"ms", m.s**-1→"ms-1", km.s**-1→"kms-1".
+    // Exact normalised matches (not startsWith) so an unrelated "ms…" string is
+    // not mistaken for a velocity.
+    if (u == u"kms"_s || u == u"kms-1"_s) return { 1, 1.0e3, true };
+    if (u == u"ms"_s || u == u"ms-1"_s)   return { 1, 1.0, true };
+    return {};
+}
+
+// Convert a spectral value between two units of the SAME physical quantity.
+// Returns false (no conversion) if either unit is unknown or they differ in
+// quantity (e.g. frequency vs velocity, which needs a rest frequency).
+bool convertSpectralValue(double value, const QString &fromUnit, const QString &toUnit,
+                          double &out)
+{
+    const SpectralUnit f = parseSpectralUnit(fromUnit);
+    const SpectralUnit t = parseSpectralUnit(toUnit);
+    if (!f.ok || !t.ok || f.quantity != t.quantity)
+        return false;
+    out = value * f.siFactor / t.siFactor;
+    return true;
 }
 }  // namespace
 
@@ -207,26 +246,32 @@ void vtkWindowCube::applyLinkedChannel(int channel0, double fraction, double spe
     const int maxIdx = std::max(0, this->remoteSliceCount() - 1);
     int target = -1;
 
-    // Velocity matching is only meaningful when the cubes share a spectral unit
-    // AND the target velocity lies within this cube's velocity range (i.e. they
-    // overlap → likely the same object). Otherwise matching by absolute velocity
-    // just saturates at an extreme, which is meaningless for unrelated cubes.
-    if (hasSpectral && !spectralUnit.isEmpty()
-        && spectralUnit == this->spectralAxisDescriptor().unit.trimmed()) {
+    // Velocity matching is meaningful when the cubes' spectral axes are the same
+    // physical quantity (same unit, OR convertible e.g. m/s↔km/s) AND the target
+    // velocity lies within this cube's range (they overlap → likely the same
+    // object). Otherwise matching by absolute velocity just saturates at an
+    // extreme, which is meaningless for unrelated cubes.
+    if (hasSpectral && !spectralUnit.isEmpty()) {
+        const QString myUnit = this->spectralAxisDescriptor().unit.trimmed();
+        double matchValue = spectralValue;
+        bool canMatch = (spectralUnit == myUnit);   // identical unit: no conversion
+        if (!canMatch)
+            canMatch = convertSpectralValue(spectralValue, spectralUnit, myUnit, matchValue);
+
         bool ok0 = false, okN = false;
         const double v0 = this->spectralAxisValue(0, &ok0);
         const double vN = this->spectralAxisValue(maxIdx, &okN);
-        if (ok0 && okN) {
+        if (canMatch && ok0 && okN) {
             const double lo = std::min(v0, vN), hi = std::max(v0, vN);
             const double tol = (hi - lo) * 1e-3;   // small slack at the ends
-            if (spectralValue >= lo - tol && spectralValue <= hi + tol) {
+            if (matchValue >= lo - tol && matchValue <= hi + tol) {
                 double bestDiff = -1.0;
                 for (int c = 0; c <= maxIdx; ++c) {
                     bool ok = false;
                     const double v = this->spectralAxisValue(c, &ok);
                     if (!ok)
                         continue;
-                    const double d = std::abs(v - spectralValue);
+                    const double d = std::abs(v - matchValue);
                     if (target < 0 || d < bestDiff) {
                         bestDiff = d;
                         target = c;
@@ -264,20 +309,30 @@ void vtkWindowCube::applyLinkedChannel(int channel0, double fraction, double spe
     this->requestRemoteSlice(target);
 }
 
-void vtkWindowCube::broadcastLinkedColorMap(const QString &name)
+void vtkWindowCube::broadcastLinkedColour()
 {
-    if (!this->m_linkViews || name.isEmpty())
+    if (!this->m_linkViews)
         return;
+    const QString name = this->m_activeColorMapName;
+    const int mode = static_cast<int>(this->m_volumeScaleMode);
+    const double gamma = this->m_volumeScaleGamma;
     const auto windows = s_cubeWindows;   // snapshot
     for (const auto &p : windows)
         if (p && p != this && p->m_linkViews)
-            p->applyLinkedColorMap(name);
+            p->applyLinkedColour(name, mode, gamma);
 }
 
-void vtkWindowCube::applyLinkedColorMap(const QString &name)
+void vtkWindowCube::applyLinkedColour(const QString &name, int scaleMode, double gamma)
 {
-    if (name == this->m_activeColorMapName)
+    const bool sameName = (name.isEmpty() || name == this->m_activeColorMapName);
+    const bool sameScale = (static_cast<int>(this->m_volumeScaleMode) == scaleMode
+                            && std::abs(this->m_volumeScaleGamma - gamma) < 1e-9);
+    if (sameName && sameScale)
         return;
     QScopedValueRollback<bool> guard(this->m_applyingLinkedUpdate, true);
-    this->applyColorMapByName(name);
+    this->m_volumeScaleMode = static_cast<LutScale::Mode>(scaleMode);
+    this->m_volumeScaleGamma = gamma;
+    // applyColorMapByName rebuilds the volume LUT through the (now updated)
+    // stretch, so this applies both colormap and stretch in one go.
+    this->applyColorMapByName(name.isEmpty() ? this->m_activeColorMapName : name);
 }
