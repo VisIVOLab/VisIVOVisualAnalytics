@@ -190,13 +190,22 @@ number for how well the whole catalogue matches the reconstruction.
 gold. On overlay, a named `vtkFloatArray` is attached to the point cloud for each
 numeric column (values via the shared parser accessor), plus a derived
 **Speed |v|** = √(vx²+vy²+vz²) when vx/vy/vz are present, and — when vx/vy/vz are
-present *and* a field is loaded — a **Field agreement** scalar: the cosine of the
-angle between each galaxy's peculiar velocity and the reconstructed field
-sampled at its position (`vtkProbeFilter`, with the galaxies' own arrays not
-passed through so the interpolated field velocity isn't shadowed). +1 = the
-galaxy flows *with* the reconstruction, −1 = against it, 0 = outside the field
-box. This is the CosmicFlows "does the reconstruction predict the observed
-motions?" diagnostic. Selecting a key drives
+present *and* a field is loaded — two field-comparison scalars from a single
+`vtkProbeFilter` sampling of the field at each galaxy (with the galaxies' own
+arrays not passed through so the interpolated field velocity isn't shadowed):
+
+- **Field agreement** — cos(angle) between the galaxy's peculiar velocity and
+  the field at its position. +1 = flows *with* the reconstruction, −1 = against,
+  0 = outside the field box.
+- **Residual |v|** — the magnitude |v_galaxy − v_field|: the part of the observed
+  motion the reconstruction *fails to explain* (highlights missing attractors /
+  bulk flow beyond the model).
+
+After loading, the status bar reports the sample statistics over the in-box
+galaxies: **agreement** (mean cosine), **residual** (mean |v_galaxy − v_field|),
+and **bulk** (the coherent bulk flow, |mean v_galaxy|) — the last two are genuine
+cosmic-flow quantities (bulk-flow amplitude tests ΛCDM). All velocity numbers
+assume the field and catalogue share units (km/s in the CosmicFlows data path). Selecting a key drives
 the mapper via `SetScalarModeToUsePointFieldData` + `SelectColorArray` through a
 blue→red LUT auto-ranged to the attribute; *Uniform* returns to the flat colour.
 Re-colouring never re-fetches.

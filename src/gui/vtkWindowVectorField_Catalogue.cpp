@@ -202,6 +202,8 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
 
     const Catalogue3DSchema &schema = data.schema;
     double meanAgreement = 0.0;   // mean field-agreement over in-box galaxies
+    double meanResidual = 0.0;    // mean |v_galaxy − v_field| (typical mismatch, km/s)
+    double bulkAmp = 0.0;         // |mean v_galaxy| — coherent bulk flow (km/s)
     bool haveAgreement = false;
 
     // Point cloud from the parsed scene positions (Cartesian = the X/Y/Z fields).
@@ -309,7 +311,13 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
                 vtkNew<vtkFloatArray> agree;
                 agree->SetName("Field agreement");
                 agree->SetNumberOfTuples(nPts);
-                double sum = 0.0;
+                // |v_galaxy − v_field| per galaxy — the local residual: the part
+                // of the observed motion the reconstruction does not explain.
+                // (Assumes the field and catalogue share velocity units, km/s.)
+                vtkNew<vtkFloatArray> resid;
+                resid->SetName("Residual |v|");
+                resid->SetNumberOfTuples(nPts);
+                double sum = 0.0, resSum = 0.0, bulk[3] = { 0.0, 0.0, 0.0 };
                 vtkIdType counted = 0;
                 for (vtkIdType i = 0; i < nPts; ++i) {
                     double g[3], fv[3];
@@ -318,21 +326,31 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
                     const bool valid = !mask || mask->GetComponent(i, 0) != 0.0;
                     const double gm = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
                     const double fm = std::sqrt(fv[0] * fv[0] + fv[1] * fv[1] + fv[2] * fv[2]);
-                    double a = 0.0;
+                    double a = 0.0, rmag = 0.0;
                     const bool usable = valid && gm > 1e-9 && fm > 1e-9;
-                    if (usable)
-                        a = (g[0] * fv[0] + g[1] * fv[1] + g[2] * fv[2]) / (gm * fm);
-                    a = std::max(-1.0, std::min(1.0, a));   // guard fp roundoff
-                    agree->SetValue(i, static_cast<float>(a));
                     if (usable) {
+                        a = (g[0] * fv[0] + g[1] * fv[1] + g[2] * fv[2]) / (gm * fm);
+                        const double rx = g[0] - fv[0], ry = g[1] - fv[1], rz = g[2] - fv[2];
+                        rmag = std::sqrt(rx * rx + ry * ry + rz * rz);
+                        resSum += rmag;
+                        bulk[0] += g[0];
+                        bulk[1] += g[1];
+                        bulk[2] += g[2];
                         sum += a;
                         ++counted;
                     }
+                    a = std::max(-1.0, std::min(1.0, a));   // guard fp roundoff
+                    agree->SetValue(i, static_cast<float>(a));
+                    resid->SetValue(i, static_cast<float>(rmag));
                 }
                 poly->GetPointData()->AddArray(agree);
-                colourKeys << u"Field agreement"_s;
+                poly->GetPointData()->AddArray(resid);
+                colourKeys << u"Field agreement"_s << u"Residual |v|"_s;
                 if (counted > 0) {
-                    meanAgreement = sum / static_cast<double>(counted);
+                    const double inv = 1.0 / static_cast<double>(counted);
+                    meanAgreement = sum * inv;
+                    meanResidual = resSum * inv;
+                    bulkAmp = std::sqrt(bulk[0] * bulk[0] + bulk[1] * bulk[1] + bulk[2] * bulk[2]) * inv;
                     haveAgreement = true;
                 }
             }
@@ -452,8 +470,11 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
     if (!data.cartesian)
         msg += u" — note: not a Cartesian catalogue, positions may not match the field frame"_s;
     if (haveAgreement)
-        msg += u" · mean field agreement %1"_s.arg(meanAgreement, 0, 'f', 2);
-    this->statusBar()->showMessage(msg, 12000);
+        msg += u" · agreement %1 · residual %2 · bulk %3 (km/s)"_s
+                       .arg(meanAgreement, 0, 'f', 2)
+                       .arg(meanResidual, 0, 'f', 0)
+                       .arg(bulkAmp, 0, 'f', 0);
+    this->statusBar()->showMessage(msg, 15000);
     if (this->summaryLabel) {
         if (this->m_summaryBase.isEmpty())
             this->m_summaryBase = this->summaryLabel->text();

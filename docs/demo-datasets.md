@@ -112,10 +112,11 @@ co-registered, so the overlay actually aligns.
 | Overlay (async) | pick the CSV | 23.5 k gold points land **inside** the field box; button disables during load |
 | Galaxy colour + legend | Galaxy color → *Speed \|v\|* (or `mass`) | recolours; a legend appears **left**; centre = low speed (cyan), edge = high (red) |
 | **Field agreement** | Galaxy color → *Field agreement* | ≈ +1 (red) almost everywhere — the demo galaxies carry the field velocity + noise, so they flow *with* the reconstruction |
+| **Residual \|v\|** | Galaxy color → *Residual \|v\|* | small, roughly uniform (≈ the 30 km/s injected noise) — the reconstruction explains the rest |
 | Velocity arrows | Galaxy shape → *Velocity arrows* | galaxy arrows point toward centre — **same direction as the field** |
 | Density isosurface | check *Galaxy density*; drag *Density level %* | translucent cyan surface wraps the 5 clusters; tightens with level |
 | Show galaxies / size | toggle / spin | overlay hides / points resize |
-| Mean agreement | (read the status bar after loading) | *"mean field agreement 0.9x"* — high, since the demo galaxies follow the field |
+| Sample statistics | (read the status bar after loading) | *"agreement 0.9x · residual ~30 · bulk ~0 (km/s)"* — high agreement, residual ≈ the injected noise, near-zero bulk flow (radial infall is symmetric) |
 | Remove overlay | click *Remove overlay* | galaxies/density/legend gone, controls reset |
 
 ## 7 · HI PPV cube  ·  `hi_cube.fits`
