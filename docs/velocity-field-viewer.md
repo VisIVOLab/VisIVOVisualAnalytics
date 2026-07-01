@@ -189,8 +189,14 @@ A second **scalar bar** (legend) titled with the attribute appears on the **left
 (clear of the field's speed bar on the right and the orientation-axes marker in
 the corner). It shares the galaxy LUT, retitles/reranges as you switch keys, and
 is shown only while the galaxies are visible *and* attribute-coloured (hidden on
-*Uniform*, when *Show galaxies* is off, or on a fresh overlay). (Still future:
-multiple overlays, and an async fetch.)
+*Uniform*, when *Show galaxies* is off, or on a fresh overlay).
+
+The open/query/parse runs **off the GUI thread** (`QtConcurrent` +
+`QFutureWatcher`), so a large catalogue doesn't freeze the UI: the worker
+(`fetchCatalogueOverlay`, capturing only value copies, exceptions caught →
+`ok=false`) returns the parsed positions + schema, and `onCatalogueOverlayReady()`
+builds the VTK actor on the GUI thread. The button is disabled while a fetch runs
+(re-entry guarded by `isRunning()`). (Still future: multiple overlays.)
 
 ## Tests
 

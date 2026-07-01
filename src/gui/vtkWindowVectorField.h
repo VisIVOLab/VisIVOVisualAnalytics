@@ -2,15 +2,33 @@
 #define vtkWindowVectorField_h
 
 #include "app/BackendClient.h"
+#include "Catalogue3DParser.h"
 
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkNew.h>
 #include <vtkRenderer.h>
 #include <vtkSmartPointer.h>
 
+#include <QFutureWatcher>
 #include <QMainWindow>
 #include <QPointer>
 #include <QString>
+
+#include <vector>
+
+/// Result of the async galaxy-overlay fetch (built off the GUI thread): the
+/// parsed catalogue positions + schema. The VTK actor is built from this on the
+/// GUI thread in onCatalogueOverlayReady().
+struct CatalogueOverlayData
+{
+    bool ok = false;
+    QString error;
+    QString name;                            // catalogue basename (for status)
+    int totalRows = 0;                       // backend total (for the "capped" note)
+    bool cartesian = false;                  // schema.isCartesian() after XYZ forcing
+    Catalogue3DSchema schema;
+    std::vector<Catalogue3DEntry> entries;
+};
 
 class QCheckBox;
 class QComboBox;
@@ -65,7 +83,8 @@ private:
 
     // CosmicFlows combo: overlay a galaxy catalogue's point cloud in the same
     // Cartesian frame as the velocity field ("where galaxies sit in the flow").
-    void overlayCatalogue();          // pick a catalogue, fetch XYZ, build the point actor
+    void overlayCatalogue();          // pick a catalogue, launch the async fetch
+    void onCatalogueOverlayReady();   // build the point actor from the fetched data
     void setCatalogueVisible(bool on);
     void recolourCatalogue(const QString &key);   // colour galaxies by a catalogue attribute
 
@@ -107,6 +126,7 @@ private:
     QString m_catalogueName;                     // basename, for the status label
     int m_catalogueCount = 0;                    // points drawn in the overlay
     QString m_summaryBase;                        // summary text before any overlay suffix
+    QFutureWatcher<CatalogueOverlayData> m_catalogueWatcher;  // async overlay fetch
 
     // Sidebar controls
     QPointer<QCheckBox> chkGlyphs;

@@ -33,6 +33,7 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QStatusBar>
+#include <QtConcurrent>
 
 using namespace Qt::StringLiterals;
 
@@ -59,10 +60,79 @@ QString catalogueFormatForPath(const QString &path)
         return u"ipac"_s;
     return u"csv"_s;
 }
+
+// Off-GUI-thread worker: open + query + parse a catalogue into plain data. Takes
+// value copies only (never touches the widget) so it's safe to run detached; VTK
+// objects are built later on the GUI thread from the returned entries/schema.
+CatalogueOverlayData fetchCatalogueOverlay(QString backendUrl, QString backendToken,
+                                           QString sessionId, QString path, QString format,
+                                           QString name)
+{
+    CatalogueOverlayData out;
+    out.name = name;
+
+    // Never let an exception escape the worker — QFutureWatcher::result() would
+    // rethrow it on the GUI thread. Surface it as a normal failure instead.
+    try {
+        BackendClient client(backendUrl, backendToken);
+        if (!sessionId.isEmpty())
+            client.setSessionId(sessionId);
+
+        const auto opened = client.openCatalogue(path, format);
+        if (!opened.valid) {
+            out.error = opened.error.isEmpty() ? u"unknown error"_s : opened.error;
+            return out;
+        }
+
+        Catalogue3DSchema schema;
+        schema.raFieldName = opened.raField;
+        schema.decFieldName = opened.decField;
+        schema.xFieldName = opened.xField;
+        schema.yFieldName = opened.yField;
+        schema.zFieldName = opened.zField;
+        schema.fields.reserve(opened.fields.size());
+        for (const auto &f : opened.fields) {
+            schema.fields.push_back({ f.name, f.type });
+            schema.headers.append(f.name);
+        }
+        // Prefer physical Cartesian X/Y/Z when present (see overlayCatalogue notes).
+        const bool haveXYZ = !schema.xFieldName.isEmpty() && !schema.yFieldName.isEmpty()
+                && !schema.zFieldName.isEmpty();
+        if (haveXYZ) {
+            schema.raFieldName.clear();
+            schema.decFieldName.clear();
+        }
+
+        BackendTabularQueryRequest qreq;
+        qreq.datasetId = opened.datasetId;   // limit defaults to 100k — plenty for context
+        const auto subset = client.queryTabularCatalogue(qreq);
+        const auto parsed = Catalogue3DParser::parseBackendSubset(schema, subset.rows);
+        if (!subset.valid || !parsed.valid) {
+            out.error = !subset.valid ? subset.error : parsed.errorMessage;
+            return out;
+        }
+
+        out.ok = true;
+        out.totalRows = subset.totalRows;
+        out.cartesian = schema.isCartesian();
+        out.schema = schema;
+        out.entries = parsed.entries;
+    } catch (const std::exception &e) {
+        out.ok = false;
+        out.error = QString::fromUtf8(e.what());
+    } catch (...) {
+        out.ok = false;
+        out.error = u"unknown error during catalogue fetch"_s;
+    }
+    return out;
+}
 }  // namespace
 
 void vtkWindowVectorField::overlayCatalogue()
 {
+    if (this->m_catalogueWatcher.isRunning())
+        return;   // one overlay fetch at a time
+
     // The field is only in physical Mpc once a box size is set; until then it is
     // in grid units and catalogue Mpc positions won't align. Warn up front.
     if (this->m_boxMpc <= 0.0) {
@@ -76,11 +146,7 @@ void vtkWindowVectorField::overlayCatalogue()
             return;
     }
 
-    BackendClient client(this->m_backendUrl, this->m_backendToken);
-    if (!this->m_sessionId.isEmpty())
-        client.setSessionId(this->m_sessionId);
-
-    RemoteFileBrowserDialog dialog(client.baseUrl(), client.token(), this);
+    RemoteFileBrowserDialog dialog(this->m_backendUrl, this->m_backendToken, this);
     dialog.setExtensionFilter(
             { u".csv"_s, u".vot"_s, u".votable"_s, u".xml"_s, u".fits"_s, u".fit"_s,
               u".speck"_s, u".tbl"_s },
@@ -91,63 +157,49 @@ void vtkWindowVectorField::overlayCatalogue()
     if (path.isEmpty())
         return;
 
-    QApplication::setOverrideCursor(Qt::WaitCursor);
+    // Fetch + parse off the GUI thread so a large catalogue doesn't freeze the UI.
+    // The worker captures only value copies (never `this`); the VTK actor is built
+    // in onCatalogueOverlayReady() on the GUI thread.
+    if (this->btnOverlayCatalogue)
+        this->btnOverlayCatalogue->setEnabled(false);
     this->statusBar()->showMessage(u"Overlaying catalogue…"_s);
 
-    const auto opened = client.openCatalogue(path, catalogueFormatForPath(path));
-    if (!opened.valid) {
-        QApplication::restoreOverrideCursor();
+    const QString backendUrl = this->m_backendUrl;
+    const QString backendToken = this->m_backendToken;
+    const QString sessionId = this->m_sessionId;
+    const QString format = catalogueFormatForPath(path);
+    const QString name = QFileInfo(path).fileName();
+    this->m_catalogueWatcher.setFuture(QtConcurrent::run(
+            [backendUrl, backendToken, sessionId, path, format, name]() {
+                return fetchCatalogueOverlay(backendUrl, backendToken, sessionId, path, format,
+                                             name);
+            }));
+}
+
+void vtkWindowVectorField::onCatalogueOverlayReady()
+{
+    if (this->btnOverlayCatalogue)
+        this->btnOverlayCatalogue->setEnabled(true);
+
+    const CatalogueOverlayData data = this->m_catalogueWatcher.result();
+    if (!data.ok) {
+        this->statusBar()->clearMessage();
         QMessageBox::warning(this, u"Overlay Catalogue"_s,
-                             u"Open failed: %1"_s.arg(opened.error.isEmpty()
-                                                              ? u"unknown error"_s
-                                                              : opened.error));
+                             u"Load failed: %1"_s.arg(data.error.isEmpty() ? u"unknown error"_s
+                                                                           : data.error));
         return;
     }
 
-    // Build the parser schema as the 3-D catalogue viewer does.
-    Catalogue3DSchema schema;
-    schema.raFieldName = opened.raField;
-    schema.decFieldName = opened.decField;
-    schema.xFieldName = opened.xField;
-    schema.yFieldName = opened.yField;
-    schema.zFieldName = opened.zField;
-    schema.fields.reserve(opened.fields.size());
-    for (const auto &f : opened.fields) {
-        schema.fields.push_back({ f.name, f.type });
-        schema.headers.append(f.name);
-    }
-
-    // For the flow overlay we want the physical Cartesian positions. Whenever
-    // X/Y/Z are present (backend "cartesian" always implies them), force the
-    // parser's Cartesian branch — otherwise a catalogue that ALSO carries RA/Dec
-    // would be treated as sky and land on an RA/Dec-derived shell. Guarded on
-    // haveXYZ so we never strip RA/Dec with no Cartesian columns to fall back to.
-    const bool haveXYZ = !schema.xFieldName.isEmpty() && !schema.yFieldName.isEmpty()
-            && !schema.zFieldName.isEmpty();
-    if (haveXYZ) {
-        schema.raFieldName.clear();
-        schema.decFieldName.clear();
-    }
-
-    BackendTabularQueryRequest qreq;
-    qreq.datasetId = opened.datasetId;   // limit defaults to 100k — plenty for context
-    const auto subset = client.queryTabularCatalogue(qreq);
-    const auto parsed = Catalogue3DParser::parseBackendSubset(schema, subset.rows);
-    if (!subset.valid || !parsed.valid) {
-        QApplication::restoreOverrideCursor();
-        QMessageBox::warning(this, u"Overlay Catalogue"_s,
-                             u"Load failed: %1"_s.arg(!subset.valid ? subset.error
-                                                                    : parsed.errorMessage));
-        return;
-    }
+    const Catalogue3DSchema &schema = data.schema;
 
     // Point cloud from the parsed scene positions (Cartesian = the X/Y/Z fields).
+    const vtkIdType nPts = static_cast<vtkIdType>(data.entries.size());
     vtkNew<vtkPoints> points;
-    points->SetNumberOfPoints(static_cast<vtkIdType>(parsed.entries.size()));
+    points->SetNumberOfPoints(nPts);
     vtkNew<vtkCellArray> verts;
-    verts->AllocateEstimate(static_cast<vtkIdType>(parsed.entries.size()), 1);
-    for (vtkIdType i = 0; i < static_cast<vtkIdType>(parsed.entries.size()); ++i) {
-        const auto &e = parsed.entries[static_cast<std::size_t>(i)];
+    verts->AllocateEstimate(nPts, 1);
+    for (vtkIdType i = 0; i < nPts; ++i) {
+        const auto &e = data.entries[static_cast<std::size_t>(i)];
         points->SetPoint(i, e.sceneX, e.sceneY, e.sceneZ);
         verts->InsertNextCell(1, &i);
     }
@@ -158,7 +210,6 @@ void vtkWindowVectorField::overlayCatalogue()
     // Attach a named scalar array per numeric column so the galaxies can be
     // coloured by any attribute without re-fetching. Field lookups reuse the
     // parser accessor (name → index via schema), so precision matches the viewer.
-    const vtkIdType nPts = static_cast<vtkIdType>(parsed.entries.size());
     QStringList colourKeys;
     for (const auto &field : schema.fields) {
         const QString type = field.type.toLower();
@@ -171,7 +222,7 @@ void vtkWindowVectorField::overlayCatalogue()
         arr->SetNumberOfTuples(nPts);
         for (vtkIdType i = 0; i < nPts; ++i) {
             const double v = Catalogue3DParser::detail::fieldDouble(
-                    parsed.entries[static_cast<std::size_t>(i)], schema, field.name);
+                    data.entries[static_cast<std::size_t>(i)], schema, field.name);
             arr->SetValue(i, static_cast<float>(v));
         }
         poly->GetPointData()->AddArray(arr);
@@ -201,7 +252,7 @@ void vtkWindowVectorField::overlayCatalogue()
         speed->SetName("Speed |v|");
         speed->SetNumberOfTuples(nPts);
         for (vtkIdType i = 0; i < nPts; ++i) {
-            const auto &e = parsed.entries[static_cast<std::size_t>(i)];
+            const auto &e = data.entries[static_cast<std::size_t>(i)];
             const double vx = comp(e, vxi), vy = comp(e, vyi), vz = comp(e, vzi);
             speed->SetValue(i, static_cast<float>(std::sqrt(vx * vx + vy * vy + vz * vz)));
         }
@@ -223,8 +274,8 @@ void vtkWindowVectorField::overlayCatalogue()
             this->spinCataloguePointSize ? this->spinCataloguePointSize->value() : 3.0);
     this->renderer->AddActor(this->catalogueActor);
 
-    this->m_catalogueName = QFileInfo(path).fileName();
-    this->m_catalogueCount = static_cast<int>(parsed.entries.size());
+    this->m_catalogueName = data.name;
+    this->m_catalogueCount = static_cast<int>(data.entries.size());
 
     if (this->chkShowCatalogue) {
         QSignalBlocker blk(this->chkShowCatalogue);
@@ -253,14 +304,13 @@ void vtkWindowVectorField::overlayCatalogue()
     if (firstOverlay)
         this->renderer->ResetCamera();
     this->renderWindow->Render();
-    QApplication::restoreOverrideCursor();
 
-    const bool capped = subset.totalRows > this->m_catalogueCount;
+    const bool capped = data.totalRows > this->m_catalogueCount;
     QString msg = u"Overlaid %1 galaxies from %2"_s.arg(this->m_catalogueCount)
                           .arg(this->m_catalogueName);
     if (capped)
-        msg += u" (of %1; capped)"_s.arg(subset.totalRows);
-    if (!schema.isCartesian())
+        msg += u" (of %1; capped)"_s.arg(data.totalRows);
+    if (!data.cartesian)
         msg += u" — note: not a Cartesian catalogue, positions may not match the field frame"_s;
     this->statusBar()->showMessage(msg, 8000);
     if (this->summaryLabel) {

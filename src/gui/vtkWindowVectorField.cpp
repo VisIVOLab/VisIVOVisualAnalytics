@@ -288,6 +288,9 @@ void vtkWindowVectorField::setupUi()
                      });
     QObject::connect(this->comboGalaxyColor, &QComboBox::currentTextChanged, this,
                      [this](const QString &key) { this->recolourCatalogue(key); });
+    QObject::connect(&this->m_catalogueWatcher,
+                     &QFutureWatcher<CatalogueOverlayData>::finished, this,
+                     [this]() { this->onCatalogueOverlayReady(); });
 }
 
 void vtkWindowVectorField::setupRenderer()
