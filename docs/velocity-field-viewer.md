@@ -118,6 +118,24 @@ convergence on a smoothed, downsampled field), not a publication-grade watershed
 appropriate for interactive exploration, consistent with how the original
 analyses work on smoothed fields.
 
+## Density from the velocity divergence
+
+**Overdensity (−∇·v)** renders the *density field implied by the flow*: in linear
+theory the density contrast δ ∝ −∇·v, so **converging flow (∇·v < 0) marks
+overdensities**. `buildFieldDensity()` runs `vtkGradientFilter`
+(`ComputeDivergenceOn`) on the display grid's `velocity` array to get ∇·v, and
+`updateFieldDensityContour()` draws a translucent orange `vtkFlyingEdges3D`
+isosurface of the convergent cores at *Overdensity level %* of the most-negative
+∇·v (higher % → tighter, denser cores). The ∇·v field is cached and
+re-contoured on the slider; a box-size change invalidates it (the divergence
+depends on the grid spacing) and rebuilds if shown.
+
+Because the isosurface is a *level set* of ∇·v, it needs a **structured** field:
+a field with distinct convergence peaks (e.g. multiple attractors) shows cores at
+those peaks, while a uniform-divergence flow (a pure radial infall) has no
+isosurface — the status bar says so. This is an **overdensity proxy** (∝ δ, not
+calibrated by faH), the "where's the matter" complement to the flow itself.
+
 ## Rendering
 
 - **Arrows** — `vtkGlyph3DMapper` (GPU instancing) fed by `vtkMaskPoints` in
@@ -150,6 +168,7 @@ all computed per axis so non-cubic grids are handled.
 | Colormap | speed LUT |
 | Define ROI / Load full-res ROI | full-resolution region fetch (LOD grids only) |
 | Show basins | gravitational-basin (watershed) regions — Laniakea-style superclusters |
+| Overdensity (−∇·v) / level % | density-from-divergence isosurface (convergent cores) + its level |
 | Basin type | attraction (superclusters) vs repulsion (voids) |
 | Overlay galaxy catalogue… | load a catalogue and draw its galaxies as points in this field's frame |
 | Show galaxies / Galaxy size | toggle the overlay / point size |

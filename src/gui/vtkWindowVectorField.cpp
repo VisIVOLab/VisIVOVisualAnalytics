@@ -10,7 +10,10 @@
 #include <vtkBoxRepresentation.h>
 #include <vtkBoxWidget2.h>
 #include <vtkCamera.h>
+#include <vtkDataObject.h>
 #include <vtkDiscreteFlyingEdges3D.h>
+#include <vtkFlyingEdges3D.h>
+#include <vtkGradientFilter.h>
 #include <vtkFloatArray.h>
 #include <vtkGlyph3DMapper.h>
 #include <vtkImageData.h>
@@ -179,6 +182,19 @@ void vtkWindowVectorField::setupUi()
             u"repulsion (where flows diverge → voids / repellers)."_s);
     form->addRow(u"Basin type"_s, this->comboBasinDir);
 
+    this->chkFieldDensity = new QCheckBox(side);
+    this->chkFieldDensity->setToolTip(
+            u"Overdensity proxy from the velocity divergence (δ ∝ −∇·v, linear "
+            u"theory): an isosurface of the convergent (∇·v < 0) cores. Best on a "
+            u"structured field — a uniform-divergence flow has no isosurface."_s);
+    form->addRow(u"Overdensity (−∇·v)"_s, this->chkFieldDensity);
+    this->sliderFieldDensityLevel = new QSlider(Qt::Horizontal, side);
+    this->sliderFieldDensityLevel->setRange(5, 95);
+    this->sliderFieldDensityLevel->setValue(35);
+    this->sliderFieldDensityLevel->setToolTip(
+            u"Overdensity isosurface level (higher = tighter, denser cores)."_s);
+    form->addRow(u"Density level %"_s, this->sliderFieldDensityLevel);
+
     sl->addLayout(form);
 
     this->btnLoadRoi = new QPushButton(u"Load full-res ROI"_s, side);
@@ -309,6 +325,13 @@ void vtkWindowVectorField::setupUi()
     QObject::connect(this->comboBasinDir, &QComboBox::currentIndexChanged, this,
                      [this](int) { if (this->chkBasins && this->chkBasins->isChecked())
                                        this->showBasins(true); });
+    QObject::connect(this->chkFieldDensity, &QCheckBox::toggled, this,
+                     [this](bool on) { this->showFieldDensity(on); });
+    QObject::connect(this->sliderFieldDensityLevel, &QSlider::valueChanged, this,
+                     [this](int) {
+                         if (this->chkFieldDensity && this->chkFieldDensity->isChecked())
+                             this->updateFieldDensityContour();
+                     });
     QObject::connect(this->btnOverlayCatalogue, &QPushButton::clicked, this,
                      [this]() { this->overlayCatalogue(); });
     QObject::connect(this->btnRemoveCatalogue, &QPushButton::clicked, this,
@@ -504,6 +527,13 @@ void vtkWindowVectorField::applyBoxSize(double boxMpc)
     // Re-place basins at the new scale (labels are scale-independent, cached).
     if (this->basinActor && m_basins.valid) {
         this->placeBasins();
+    }
+    // The ∇·v density depends on the grid geometry (spacing) — invalidate and,
+    // if it's showing, recompute at the new scale.
+    this->divergenceGrid = nullptr;
+    if (this->chkFieldDensity && this->chkFieldDensity->isChecked()) {
+        this->buildFieldDensity();
+        this->updateFieldDensityContour();
     }
     this->resetCamera();
     this->renderWindow->Render();
@@ -708,4 +738,85 @@ void vtkWindowVectorField::placeBasins()
                     .arg(b.nBasins).arg(kind)
                     .arg(100.0 * assigned / std::max<vtkIdType>(1, npts), 0, 'f', 0)
                     .arg(top.join(u", "_s)));
+}
+
+void vtkWindowVectorField::buildFieldDensity()
+{
+    if (!this->imageData)
+        return;
+    // ∇·v on the display grid. Converging flow (∇·v < 0) marks overdensities
+    // (δ ∝ −∇·v in linear theory); we contour the strongly-convergent cores.
+    vtkNew<vtkGradientFilter> grad;
+    grad->SetInputData(this->imageData);
+    grad->SetInputArrayToProcess(0, 0, 0, vtkDataObject::FIELD_ASSOCIATION_POINTS, "velocity");
+    grad->ComputeGradientOff();
+    grad->ComputeDivergenceOn();
+    grad->SetDivergenceArrayName("Divergence");
+    grad->Update();
+
+    auto *out = vtkImageData::SafeDownCast(grad->GetOutput());
+    vtkDataArray *div = out ? out->GetPointData()->GetArray("Divergence") : nullptr;
+    if (!div) {
+        this->divergenceGrid = nullptr;
+        this->m_divMin = 0.0;
+        return;
+    }
+    out->GetPointData()->SetScalars(div);   // contour on the divergence scalar
+    this->divergenceGrid = out;
+    double r[2] = { 0.0, 0.0 };
+    div->GetRange(r);
+    this->m_divMin = r[0];   // most negative ∇·v = strongest convergence
+}
+
+void vtkWindowVectorField::updateFieldDensityContour()
+{
+    // Drop any previous surface first, so a rebuild that yields nothing (e.g. a
+    // near-uniform divergence field) can't leave a stale actor to be re-shown.
+    if (this->divergenceActor) {
+        this->renderer->RemoveActor(this->divergenceActor);
+        this->divergenceActor = nullptr;
+    }
+    if (!this->divergenceGrid || this->m_divMin >= 0.0) {
+        this->statusBar()->showMessage(
+                u"Density (∇·v): no convergent structure in this field."_s, 5000);
+        this->renderWindow->Render();
+        return;
+    }
+    const double frac =
+            (this->sliderFieldDensityLevel ? this->sliderFieldDensityLevel->value() : 35) / 100.0;
+    const double level = frac * this->m_divMin;   // < 0; higher % → tighter, denser core
+
+    vtkNew<vtkFlyingEdges3D> surf;
+    surf->SetInputData(this->divergenceGrid);
+    surf->SetValue(0, level);
+    surf->ComputeNormalsOn();
+
+    vtkNew<vtkPolyDataMapper> mapper;
+    mapper->SetInputConnection(surf->GetOutputPort());
+    mapper->ScalarVisibilityOff();
+
+    // (the previous actor was already removed + nulled at the top)
+    this->divergenceActor = vtkSmartPointer<vtkActor>::New();
+    this->divergenceActor->SetMapper(mapper);
+    this->divergenceActor->GetProperty()->SetColor(0.95, 0.55, 0.25);  // warm orange
+    this->divergenceActor->GetProperty()->SetOpacity(0.30);   // see the flow through it
+    this->renderer->AddActor(this->divergenceActor);
+    this->renderWindow->Render();
+}
+
+void vtkWindowVectorField::showFieldDensity(bool on)
+{
+    if (!on) {
+        if (this->divergenceActor)
+            this->divergenceActor->VisibilityOff();
+        this->renderWindow->Render();
+        return;
+    }
+    if (!this->imageData)
+        return;
+    if (!this->divergenceGrid)
+        this->buildFieldDensity();
+    this->updateFieldDensityContour();
+    if (this->divergenceActor)
+        this->divergenceActor->VisibilityOn();
 }

@@ -86,6 +86,12 @@ private:
     void showBasins(bool on);   // F1 phase-2: gravitational-basin (watershed) regions
     void placeBasins();         // (re)build the basin actor from m_basins at the current scale
 
+    // Density from the velocity divergence (δ ∝ −∇·v, linear theory): converging
+    // flow (∇·v < 0) marks overdensities. An isosurface of the overdense cores.
+    void showFieldDensity(bool on);
+    void buildFieldDensity();          // ∇·v on the grid → cached overdensity field
+    void updateFieldDensityContour();  // (re)contour the cached field at the level
+
     // CosmicFlows combo: overlay a galaxy catalogue's point cloud in the same
     // Cartesian frame as the velocity field ("where galaxies sit in the flow").
     void overlayCatalogue();          // pick a catalogue, launch the async fetch
@@ -131,6 +137,10 @@ private:
     vtkSmartPointer<vtkLookupTable> basinLut;    // categorical basin colours
     BackendVelocityBasinsResult m_basins;        // cached labels (re-placed on scale change)
 
+    vtkSmartPointer<vtkImageData> divergenceGrid;  // cached ∇·v field (scalars); overdense = ∇·v<0
+    vtkSmartPointer<vtkActor> divergenceActor;     // overdensity (convergent-core) isosurface
+    double m_divMin = 0.0;                          // most-negative ∇·v (peak overdensity)
+
     vtkSmartPointer<vtkActor> catalogueActor;    // overlaid galaxy point cloud
     vtkSmartPointer<vtkPolyData> cataloguePoly;  // the galaxy points + attribute arrays
     vtkSmartPointer<vtkPolyDataMapper> cataloguePointsMapper;  // Points shape
@@ -159,6 +169,8 @@ private:
     QPointer<QPushButton> btnLoadRoi;
     QPointer<QCheckBox> chkBasins;
     QPointer<QComboBox> comboBasinDir;   // Attraction (superclusters) / Repulsion (voids)
+    QPointer<QCheckBox> chkFieldDensity;      // overdensity isosurface from ∇·v
+    QPointer<QSlider> sliderFieldDensityLevel;
     QPointer<QPushButton> btnOverlayCatalogue;
     QPointer<QPushButton> btnRemoveCatalogue;
     QPointer<QPushButton> btnBulkFlow;

@@ -98,6 +98,7 @@ catalogue (~12 k points). Exercises the IPAC reader, multi-file concat, and
 | Colour + scalar bar | Colormap combo | speed LUT 16–400 km/s |
 | **Show basins** | check it | **two** watershed basins (one per sink), translucent |
 | Basin type | Attraction ↔ Repulsion | re-segments (superclusters vs voids) |
+| **Overdensity (−∇·v)** + level % | check it | two translucent orange cores at the sinks (converging flow → overdensity); the level slider tightens them |
 
 *(LOD downsampling + full-res ROI only engage above 128³, so they read "n/a" on
 this 64³ demo — that path needs a larger field.)*
