@@ -150,6 +150,7 @@ all computed per axis so non-cubic grids are handled.
 | Overlay galaxy catalogue… | load a catalogue and draw its galaxies as points in this field's frame |
 | Show galaxies / Galaxy size | toggle the overlay / point size |
 | Galaxy color | Uniform, or colour by a numeric attribute / Speed \|v\| |
+| Galaxy shape | Points, or Velocity arrows (peculiar-velocity glyphs) when vx/vy/vz exist |
 
 ## Galaxy overlay (CosmicFlows combo)
 
@@ -190,6 +191,17 @@ A second **scalar bar** (legend) titled with the attribute appears on the **left
 the corner). It shares the galaxy LUT, retitles/reranges as you switch keys, and
 is shown only while the galaxies are visible *and* attribute-coloured (hidden on
 *Uniform*, when *Show galaxies* is off, or on a fresh overlay).
+
+**Galaxy shape** switches the overlay between plain **Points** and **Velocity
+arrows** — available when the catalogue carries vx/vy/vz. In arrow mode a
+`vtkGlyph3DMapper` draws a `vtkArrowSource` per galaxy, oriented and scaled by a
+3-component `velocity` point array (built at overlay), with the fastest arrow
+≈ 4 % of the data diagonal. This is the CosmicFlows comparison: individual galaxy
+peculiar velocities against the reconstructed flow field. Colour still follows
+*Galaxy color* (so *Speed |v|* colours the arrows too); *Galaxy size* is a
+point-size and is disabled in arrow mode. The overlay keeps both a points mapper
+and a glyph mapper on the same point cloud, so shape/colour switch with no
+re-fetch.
 
 The open/query/parse runs **off the GUI thread** (`QtConcurrent` +
 `QFutureWatcher`), so a large catalogue doesn't freeze the UI: the worker

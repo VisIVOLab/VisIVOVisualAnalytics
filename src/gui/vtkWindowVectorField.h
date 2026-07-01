@@ -38,10 +38,14 @@ class QPushButton;
 class QSpinBox;
 class QVTKOpenGLNativeWidget;
 class vtkActor;
+class vtkArrowSource;
 class vtkBoxWidget2;
+class vtkGlyph3DMapper;
 class vtkImageData;
 class vtkLookupTable;
 class vtkOrientationMarkerWidget;
+class vtkPolyData;
+class vtkPolyDataMapper;
 class vtkScalarBarActor;
 
 /// 3-D viewer for a cosmic-flow velocity field (F1): glyph arrows + streamlines
@@ -87,6 +91,7 @@ private:
     void onCatalogueOverlayReady();   // build the point actor from the fetched data
     void setCatalogueVisible(bool on);
     void recolourCatalogue(const QString &key);   // colour galaxies by a catalogue attribute
+    void setCatalogueShape(const QString &mode);  // Points vs Velocity arrows
 
     // Per-axis full-resolution cell size + centred origin (point-centred model:
     // box>0 → box/(n-1) and -box/2; else unit spacing, -(n-1)/2). The display
@@ -121,8 +126,13 @@ private:
     BackendVelocityBasinsResult m_basins;        // cached labels (re-placed on scale change)
 
     vtkSmartPointer<vtkActor> catalogueActor;    // overlaid galaxy point cloud
+    vtkSmartPointer<vtkPolyData> cataloguePoly;  // the galaxy points + attribute arrays
+    vtkSmartPointer<vtkPolyDataMapper> cataloguePointsMapper;  // Points shape
+    vtkSmartPointer<vtkGlyph3DMapper> catalogueGlyphMapper;    // Velocity arrows shape
+    vtkSmartPointer<vtkArrowSource> catalogueArrow;
     vtkSmartPointer<vtkLookupTable> catalogueLut; // attribute colour ramp (lazy)
     vtkSmartPointer<vtkScalarBarActor> catalogueScalarBar;  // galaxy-attribute legend (left)
+    bool m_catalogueHasVelocity = false;         // vx/vy/vz present → arrows available
     QString m_catalogueName;                     // basename, for the status label
     int m_catalogueCount = 0;                    // points drawn in the overlay
     QString m_summaryBase;                        // summary text before any overlay suffix
@@ -144,6 +154,7 @@ private:
     QPointer<QCheckBox> chkShowCatalogue;
     QPointer<QDoubleSpinBox> spinCataloguePointSize;
     QPointer<QComboBox> comboGalaxyColor;   // Uniform / numeric column / Speed |v|
+    QPointer<QComboBox> comboGalaxyShape;   // Points / Velocity arrows
     QPointer<QLabel> summaryLabel;
 };
 

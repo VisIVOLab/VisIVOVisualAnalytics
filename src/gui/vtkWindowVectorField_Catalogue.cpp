@@ -5,11 +5,14 @@
 #include "app/BackendClient.h"
 
 #include <vtkActor.h>
+#include <vtkArrowSource.h>
 #include <vtkCellArray.h>
 #include <vtkCoordinate.h>
 #include <vtkDataArray.h>
 #include <vtkFloatArray.h>
+#include <vtkGlyph3DMapper.h>
 #include <vtkLookupTable.h>
+#include <vtkMapper.h>
 #include <vtkNew.h>
 #include <vtkPointData.h>
 #include <vtkPoints.h>
@@ -237,8 +240,8 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
         else if (h == u"vy"_s) vyi = c;
         else if (h == u"vz"_s) vzi = c;
     }
-    // Skip the derived key if a real column already claims that name (rare).
-    if (vxi >= 0 && vyi >= 0 && vzi >= 0 && !colourKeys.contains(u"Speed |v|"_s)) {
+    this->m_catalogueHasVelocity = (vxi >= 0 && vyi >= 0 && vzi >= 0);
+    if (this->m_catalogueHasVelocity) {
         // Read a component defensively — a null/NaN entry must not poison the
         // array range (unlike fieldDouble, raw toDouble() doesn't finite-check).
         const auto comp = [](const Catalogue3DEntry &e, int idx) -> double {
@@ -248,27 +251,71 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
             const double v = e.fields.at(idx).toDouble(&ok);
             return (ok && std::isfinite(v)) ? v : 0.0;
         };
+        // 3-component "velocity" vector → the arrow glyphs orient/scale by it.
+        vtkNew<vtkFloatArray> vel;
+        vel->SetName("velocity");
+        vel->SetNumberOfComponents(3);
+        vel->SetNumberOfTuples(nPts);
+        // Scalar "Speed |v|" for colouring (skip if a real column already owns it).
+        const bool addSpeed = !colourKeys.contains(u"Speed |v|"_s);
         vtkNew<vtkFloatArray> speed;
-        speed->SetName("Speed |v|");
-        speed->SetNumberOfTuples(nPts);
+        if (addSpeed) {
+            speed->SetName("Speed |v|");
+            speed->SetNumberOfTuples(nPts);
+        }
         for (vtkIdType i = 0; i < nPts; ++i) {
             const auto &e = data.entries[static_cast<std::size_t>(i)];
             const double vx = comp(e, vxi), vy = comp(e, vyi), vz = comp(e, vzi);
-            speed->SetValue(i, static_cast<float>(std::sqrt(vx * vx + vy * vy + vz * vz)));
+            vel->SetTuple3(i, vx, vy, vz);
+            if (addSpeed)
+                speed->SetValue(i, static_cast<float>(std::sqrt(vx * vx + vy * vy + vz * vz)));
         }
-        poly->GetPointData()->AddArray(speed);
-        colourKeys << u"Speed |v|"_s;
+        poly->GetPointData()->AddArray(vel);
+        if (addSpeed) {
+            poly->GetPointData()->AddArray(speed);
+            colourKeys << u"Speed |v|"_s;
+        }
     }
 
-    vtkNew<vtkPolyDataMapper> mapper;
-    mapper->SetInputData(poly);
-    mapper->ScalarVisibilityOff();   // uniform colour — the arrows carry the speed LUT
+    // Keep the poly + both mappers as members so shape/colour can switch with no
+    // re-fetch: a plain points mapper, and a GPU-instanced arrow-glyph mapper
+    // oriented/scaled by each galaxy's peculiar velocity.
+    this->cataloguePoly = poly;
+
+    this->cataloguePointsMapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+    this->cataloguePointsMapper->SetInputData(poly);
+    this->cataloguePointsMapper->ScalarVisibilityOff();   // uniform gold by default
+
+    this->catalogueGlyphMapper = vtkSmartPointer<vtkGlyph3DMapper>::New();
+    this->catalogueGlyphMapper->SetInputData(poly);
+    this->catalogueGlyphMapper->ScalarVisibilityOff();
+    if (this->m_catalogueHasVelocity) {
+        if (!this->catalogueArrow)
+            this->catalogueArrow = vtkSmartPointer<vtkArrowSource>::New();
+        this->catalogueGlyphMapper->SetSourceConnection(this->catalogueArrow->GetOutputPort());
+        this->catalogueGlyphMapper->SetOrientationArray("velocity");
+        this->catalogueGlyphMapper->SetOrientationModeToDirection();
+        this->catalogueGlyphMapper->OrientOn();
+        this->catalogueGlyphMapper->SetScaleArray("velocity");
+        this->catalogueGlyphMapper->SetScaleModeToScaleByMagnitude();
+        // Scale so the fastest galaxy arrow spans ~4% of the data diagonal.
+        double b[6];
+        poly->GetBounds(b);
+        const double diag = std::sqrt((b[1] - b[0]) * (b[1] - b[0])
+                                      + (b[3] - b[2]) * (b[3] - b[2])
+                                      + (b[5] - b[4]) * (b[5] - b[4]));
+        double vrange[2] = { 0.0, 1.0 };
+        poly->GetPointData()->GetArray("velocity")->GetRange(vrange, -1);  // -1 = magnitude
+        const double maxSpeed = vrange[1];
+        this->catalogueGlyphMapper->SetScaleFactor(
+                (maxSpeed > 1e-12 && diag > 0.0) ? 0.04 * diag / maxSpeed : 1.0);
+    }
 
     const bool firstOverlay = !this->catalogueActor;
     if (this->catalogueActor)
         this->renderer->RemoveActor(this->catalogueActor);
     this->catalogueActor = vtkSmartPointer<vtkActor>::New();
-    this->catalogueActor->SetMapper(mapper);
+    this->catalogueActor->SetMapper(this->cataloguePointsMapper);   // Points by default
     this->catalogueActor->GetProperty()->SetColor(0.95, 0.85, 0.30);  // warm gold
     this->catalogueActor->GetProperty()->SetPointSize(
             this->spinCataloguePointSize ? this->spinCataloguePointSize->value() : 3.0);
@@ -293,6 +340,18 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
         this->comboGalaxyColor->addItems(colourKeys);
         this->comboGalaxyColor->setCurrentIndex(0);
         this->comboGalaxyColor->setEnabled(true);
+    }
+    if (this->comboGalaxyShape) {
+        // Points always; Velocity arrows only when vx/vy/vz were present. Reset
+        // to Points (the actor already uses the points mapper) — blocked so it
+        // doesn't fire setCatalogueShape.
+        QSignalBlocker blk(this->comboGalaxyShape);
+        this->comboGalaxyShape->clear();
+        this->comboGalaxyShape->addItem(u"Points"_s);
+        if (this->m_catalogueHasVelocity)
+            this->comboGalaxyShape->addItem(u"Velocity arrows"_s);
+        this->comboGalaxyShape->setCurrentIndex(0);
+        this->comboGalaxyShape->setEnabled(true);
     }
     // New actor starts Uniform — drop any legend left from a previous overlay.
     if (this->catalogueScalarBar)
@@ -329,18 +388,36 @@ void vtkWindowVectorField::setCatalogueVisible(bool on)
     // The attribute legend only makes sense while the (attribute-coloured)
     // galaxies are shown.
     if (this->catalogueScalarBar) {
-        auto *mapper = vtkPolyDataMapper::SafeDownCast(this->catalogueActor->GetMapper());
+        vtkMapper *mapper = this->catalogueActor->GetMapper();
         const bool coloured = mapper && mapper->GetScalarVisibility();
         this->catalogueScalarBar->SetVisibility(on && coloured);
     }
     this->renderWindow->Render();
 }
 
+void vtkWindowVectorField::setCatalogueShape(const QString &mode)
+{
+    if (!this->catalogueActor)
+        return;
+    const bool arrows = (mode == u"Velocity arrows"_s) && this->m_catalogueHasVelocity
+            && this->catalogueGlyphMapper;
+    this->catalogueActor->SetMapper(arrows
+                                            ? static_cast<vtkMapper *>(this->catalogueGlyphMapper)
+                                            : static_cast<vtkMapper *>(this->cataloguePointsMapper));
+    // Galaxy size is a point-size — it doesn't apply to arrows (their scale is
+    // fixed from the data extent), so disable it in arrow mode to avoid confusion.
+    if (this->spinCataloguePointSize)
+        this->spinCataloguePointSize->setEnabled(!arrows);
+    // Re-apply the current colour to the now-active mapper (also re-renders).
+    this->recolourCatalogue(this->comboGalaxyColor ? this->comboGalaxyColor->currentText()
+                                                   : u"Uniform"_s);
+}
+
 void vtkWindowVectorField::recolourCatalogue(const QString &key)
 {
     if (!this->catalogueActor)
         return;
-    auto *mapper = vtkPolyDataMapper::SafeDownCast(this->catalogueActor->GetMapper());
+    vtkMapper *mapper = this->catalogueActor->GetMapper();   // points or glyph mapper
     if (!mapper)
         return;
 
@@ -352,7 +429,7 @@ void vtkWindowVectorField::recolourCatalogue(const QString &key)
         return;
     }
 
-    auto *poly = vtkPolyData::SafeDownCast(mapper->GetInput());
+    vtkPolyData *poly = this->cataloguePoly;
     vtkDataArray *arr = poly ? poly->GetPointData()->GetArray(key.toUtf8().constData()) : nullptr;
     if (!arr) {
         mapper->ScalarVisibilityOff();

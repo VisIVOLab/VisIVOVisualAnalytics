@@ -213,6 +213,14 @@ void vtkWindowVectorField::setupUi()
             u"Colour the galaxies by a catalogue attribute (numeric column, or Speed |v| "
             u"from vx/vy/vz) instead of a flat colour."_s);
     overlayForm->addRow(u"Galaxy color"_s, this->comboGalaxyColor);
+    this->comboGalaxyShape = new QComboBox(side);
+    this->comboGalaxyShape->addItem(u"Points"_s);
+    this->comboGalaxyShape->setEnabled(false);
+    this->comboGalaxyShape->setToolTip(
+            u"Draw galaxies as points, or — when the catalogue carries vx/vy/vz — as "
+            u"arrows oriented and scaled by each galaxy's peculiar velocity, to compare "
+            u"against the reconstructed flow field."_s);
+    overlayForm->addRow(u"Galaxy shape"_s, this->comboGalaxyShape);
     sl->addLayout(overlayForm);
 
     sl->addStretch(1);
@@ -288,6 +296,8 @@ void vtkWindowVectorField::setupUi()
                      });
     QObject::connect(this->comboGalaxyColor, &QComboBox::currentTextChanged, this,
                      [this](const QString &key) { this->recolourCatalogue(key); });
+    QObject::connect(this->comboGalaxyShape, &QComboBox::currentTextChanged, this,
+                     [this](const QString &mode) { this->setCatalogueShape(mode); });
     QObject::connect(&this->m_catalogueWatcher,
                      &QFutureWatcher<CatalogueOverlayData>::finished, this,
                      [this]() { this->onCatalogueOverlayReady(); });
