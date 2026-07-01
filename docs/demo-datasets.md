@@ -87,18 +87,21 @@ catalogue (~12 k points). Exercises the IPAC reader, multi-file concat, and
 
 ## 5 · Velocity field  ·  `velocity_field.fits`
 
-64³ 3-component field whose flow converges on **two** sinks.
+64³ 3-component field superposing **one attractor** (sink → supercluster) and
+**one repeller** (source → void), so one field shows the full cosmography.
 
 **Open:** *Data ▸ Open Velocity Field…* → `velocity_field.fits`, then set
 **Box size (Mpc) = 200**.
 
 | Feature | Do this | Expect |
 |---|---|---|
-| Glyph arrows / streamlines | toggle each | arrows + tubes converging on the two sinks |
-| Colour + scalar bar | Colormap combo | speed LUT 16–400 km/s |
-| **Show basins** | check it | **two** watershed basins (one per sink), translucent |
-| Basin type | Attraction ↔ Repulsion | re-segments (superclusters vs voids) |
-| **Overdensity (−∇·v)** + level % | check it | two translucent orange cores at the sinks (converging flow → overdensity); the level slider tightens them |
+| Glyph arrows / streamlines | toggle each | arrows converge on the sink, diverge from the source |
+| Colour + scalar bar | Colormap combo | speed LUT |
+| **Show basins** | check it (Attraction) | the attraction basin around the sink |
+| Basin type | Attraction ↔ Repulsion | Repulsion → the basin around the source (repeller) |
+| **Overdensity (−∇·v)** | check it | an orange core at the **sink** (converging → overdense) |
+| **Void (+∇·v)** | check it | a blue core at the **source** (diverging → underdense); show both at once for the full picture |
+| ∇·v level % | drag | both isosurfaces tighten toward their peaks |
 
 *(LOD downsampling + full-res ROI only engage above 128³, so they read "n/a" on
 this 64³ demo — that path needs a larger field.)*

@@ -365,3 +365,4 @@ VisIVOVisualAnalytics.dmg
 /docs/context-chat.md
 /.qt
 /backend/.venv
+/backend/scripts/__pycache__

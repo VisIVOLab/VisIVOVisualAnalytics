@@ -89,8 +89,10 @@ private:
     // Density from the velocity divergence (δ ∝ −∇·v, linear theory): converging
     // flow (∇·v < 0) marks overdensities. An isosurface of the overdense cores.
     void showFieldDensity(bool on);
-    void buildFieldDensity();          // ∇·v on the grid → cached overdensity field
-    void updateFieldDensityContour();  // (re)contour the cached field at the level
+    void buildFieldDensity();          // ∇·v on the grid → cached field (both signs)
+    void updateFieldDensityContour();  // (re)contour the convergent (overdense) cores
+    void showFieldVoid(bool on);       // divergent side (∇·v > 0): voids / repellers
+    void updateFieldVoidContour();
 
     // CosmicFlows combo: overlay a galaxy catalogue's point cloud in the same
     // Cartesian frame as the velocity field ("where galaxies sit in the flow").
@@ -139,7 +141,9 @@ private:
 
     vtkSmartPointer<vtkImageData> divergenceGrid;  // cached ∇·v field (scalars); overdense = ∇·v<0
     vtkSmartPointer<vtkActor> divergenceActor;     // overdensity (convergent-core) isosurface
+    vtkSmartPointer<vtkActor> voidActor;           // void (divergent-core) isosurface
     double m_divMin = 0.0;                          // most-negative ∇·v (peak overdensity)
+    double m_divMax = 0.0;                          // most-positive ∇·v (peak void/divergence)
 
     vtkSmartPointer<vtkActor> catalogueActor;    // overlaid galaxy point cloud
     vtkSmartPointer<vtkPolyData> cataloguePoly;  // the galaxy points + attribute arrays
@@ -170,6 +174,7 @@ private:
     QPointer<QCheckBox> chkBasins;
     QPointer<QComboBox> comboBasinDir;   // Attraction (superclusters) / Repulsion (voids)
     QPointer<QCheckBox> chkFieldDensity;      // overdensity isosurface from ∇·v
+    QPointer<QCheckBox> chkFieldVoid;         // void isosurface from ∇·v
     QPointer<QSlider> sliderFieldDensityLevel;
     QPointer<QPushButton> btnOverlayCatalogue;
     QPointer<QPushButton> btnRemoveCatalogue;

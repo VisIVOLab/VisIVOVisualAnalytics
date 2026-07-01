@@ -130,11 +130,17 @@ isosurface of the convergent cores at *Overdensity level %* of the most-negative
 re-contoured on the slider; a box-size change invalidates it (the divergence
 depends on the grid spacing) and rebuilds if shown.
 
-Because the isosurface is a *level set* of ∇·v, it needs a **structured** field:
-a field with distinct convergence peaks (e.g. multiple attractors) shows cores at
-those peaks, while a uniform-divergence flow (a pure radial infall) has no
-isosurface — the status bar says so. This is an **overdensity proxy** (∝ δ, not
-calibrated by faH), the "where's the matter" complement to the flow itself.
+**Void (+∇·v)** is the symmetric companion: an isosurface of the *divergent*
+cores (∇·v > 0), i.e. underdensities / repellers (the Local Void, the Dipole
+Repeller). It shares the ∇·v field and the level slider (which maps its % to each
+side's extremum independently), and draws a cool-blue surface. Overdensity and
+Void can be shown together — an attractor glows orange, a repeller blue.
+
+Because each isosurface is a *level set* of ∇·v, it needs a **structured** field:
+a flow with distinct convergence/divergence peaks shows cores at those peaks,
+while a uniform-divergence flow (a pure radial infall) has none — the status bar
+says so. These are **density proxies** (∝ δ, not calibrated by faH), the "where's
+the matter / where's the emptiness" complement to the flow itself.
 
 ## Rendering
 
@@ -168,7 +174,8 @@ all computed per axis so non-cubic grids are handled.
 | Colormap | speed LUT |
 | Define ROI / Load full-res ROI | full-resolution region fetch (LOD grids only) |
 | Show basins | gravitational-basin (watershed) regions — Laniakea-style superclusters |
-| Overdensity (−∇·v) / level % | density-from-divergence isosurface (convergent cores) + its level |
+| Overdensity (−∇·v) / Void (+∇·v) | density-from-divergence isosurfaces — convergent (orange) / divergent (blue) cores |
+| ∇·v level % | shared isosurface level for both (% of peak convergence/divergence) |
 | Basin type | attraction (superclusters) vs repulsion (voids) |
 | Overlay galaxy catalogue… | load a catalogue and draw its galaxies as points in this field's frame |
 | Show galaxies / Galaxy size | toggle the overlay / point size |

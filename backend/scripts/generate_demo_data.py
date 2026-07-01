@@ -148,31 +148,39 @@ def make_ipac_snapshot(out: Path) -> list[Path]:
 
 # ── 5. Velocity field FITS (glyphs / streamlines / basins) ────────────────────
 def make_velocity_field(out: Path, name: str, box: float,
-                        sinks: list[np.ndarray]) -> Path:
-    """3-component velocity field: flow converges to the NEAREST of `sinks`.
+                        sinks: list[np.ndarray],
+                        sources: list[np.ndarray] | None = None) -> Path:
+    """3-component velocity field superposing infall onto `sinks` (attractors)
+    and outflow from `sources` (repellers).
 
-    Exercises: Velocity Field viewer (arrows/streamlines), Show basins
-    (one basin per sink), Box size (Mpc), colormap. (LOD/ROI only kick in
-    above 128³ — kept at 64³ here so the download stays small.)
+    Exercises: Velocity Field viewer (arrows/streamlines), Show basins (attraction
+    → sinks / repulsion → sources), Overdensity (−∇·v, at sinks) and Void (+∇·v,
+    at sources), Box size (Mpc), colormap. (LOD/ROI only kick in above 128³ — kept
+    at 64³ here so the download stays small.)
     """
+    sources = sources or []
     n = 64
     half = box / 2.0
     c = np.linspace(-half, half, n)
     Z, Y, X = np.meshgrid(c, c, c, indexing="ij")      # arrays are [z, y, x]
     P = np.stack([X, Y, Z], axis=-1)                    # (n, n, n, 3)
-    # Nearest-sink assignment → convergent flow → distinct watershed basins.
-    dist = np.stack([np.linalg.norm(P - s, axis=-1) for s in sinks], axis=-1)
-    nearest = np.argmin(dist, axis=-1)
+
+    # Superpose a unit infall toward each sink and a unit outflow from each
+    # source, each with a tanh speed ramp (≈0 at the feature, rising outward).
+    def _contribution(feature, sign):
+        d = P - feature
+        r = np.linalg.norm(d, axis=-1, keepdims=True)
+        return sign * (d / np.maximum(r, 1e-6)) * np.tanh(r / (0.3 * half))
+
     vec = np.zeros_like(P)
-    for i, s in enumerate(sinks):
-        m = nearest == i
-        vec[m] = -(P[m] - s)          # points toward the owning sink
+    for s in sinks:
+        vec += _contribution(s, -1.0)     # toward the sink (convergent → overdensity)
+    for s in sources:
+        vec += _contribution(s, +1.0)     # away from the source (divergent → void)
+
     amp = 400.0
-    norm = np.linalg.norm(vec, axis=-1, keepdims=True)   # (n, n, n, 1)
-    # Unit direction × a speed that ramps from ~0 at the sink up toward `amp`
-    # farther out (tanh ramp), so streamlines converge cleanly on each sink.
-    vec = amp * (vec / np.maximum(norm, 1e-6)) * np.tanh(norm / (0.3 * half))
-    cube = np.stack([vec[..., 0], vec[..., 1], vec[..., 2]], axis=0).astype(np.float32)
+    cube = np.stack([amp * vec[..., 0], amp * vec[..., 1], amp * vec[..., 2]],
+                    axis=0).astype(np.float32)
 
     hdu = fits.PrimaryHDU(cube)
     hdu.header["BUNIT"] = "km/s"
@@ -317,7 +325,8 @@ def main() -> int:
     made += [str(p) for p in make_ipac_snapshot(out)]
     made.append(str(make_velocity_field(
         out, "velocity_field.fits", 200.0,
-        [np.array([-45.0, -30.0, 20.0]), np.array([50.0, 40.0, -25.0])])))
+        sinks=[np.array([-45.0, -30.0, 20.0])],      # attractor  → overdensity
+        sources=[np.array([50.0, 40.0, -25.0])])))   # repeller   → void
     fpath, cpath = make_combo(out)
     made += [str(fpath), str(cpath)]
     made.append(str(make_hi_cube(out)))

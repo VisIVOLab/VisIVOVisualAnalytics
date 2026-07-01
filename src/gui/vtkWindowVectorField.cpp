@@ -191,12 +191,19 @@ void vtkWindowVectorField::setupUi()
             u"theory): an isosurface of the convergent (∇·v < 0) cores. Best on a "
             u"structured field — a uniform-divergence flow has no isosurface."_s);
     form->addRow(u"Overdensity (−∇·v)"_s, this->chkFieldDensity);
+    this->chkFieldVoid = new QCheckBox(side);
+    this->chkFieldVoid->setToolTip(
+            u"Void proxy from the velocity divergence: an isosurface of the divergent "
+            u"(∇·v > 0) cores — underdensities / repellers (the Local Void, Dipole "
+            u"Repeller). Needs a diverging region (a flow source)."_s);
+    form->addRow(u"Void (+∇·v)"_s, this->chkFieldVoid);
     this->sliderFieldDensityLevel = new QSlider(Qt::Horizontal, side);
     this->sliderFieldDensityLevel->setRange(5, 95);
     this->sliderFieldDensityLevel->setValue(35);
     this->sliderFieldDensityLevel->setToolTip(
-            u"Overdensity isosurface level (higher = tighter, denser cores)."_s);
-    form->addRow(u"Density level %"_s, this->sliderFieldDensityLevel);
+            u"∇·v isosurface level, as % of the peak convergence/divergence (higher = "
+            u"tighter cores). Applies to both Overdensity and Void."_s);
+    form->addRow(u"∇·v level %"_s, this->sliderFieldDensityLevel);
 
     sl->addLayout(form);
 
@@ -332,10 +339,14 @@ void vtkWindowVectorField::setupUi()
                                        this->showBasins(true); });
     QObject::connect(this->chkFieldDensity, &QCheckBox::toggled, this,
                      [this](bool on) { this->showFieldDensity(on); });
+    QObject::connect(this->chkFieldVoid, &QCheckBox::toggled, this,
+                     [this](bool on) { this->showFieldVoid(on); });
     QObject::connect(this->sliderFieldDensityLevel, &QSlider::valueChanged, this,
                      [this](int) {
                          if (this->chkFieldDensity && this->chkFieldDensity->isChecked())
                              this->updateFieldDensityContour();
+                         if (this->chkFieldVoid && this->chkFieldVoid->isChecked())
+                             this->updateFieldVoidContour();
                      });
     QObject::connect(this->btnOverlayCatalogue, &QPushButton::clicked, this,
                      [this]() { this->overlayCatalogue(); });
@@ -533,12 +544,17 @@ void vtkWindowVectorField::applyBoxSize(double boxMpc)
     if (this->basinActor && m_basins.valid) {
         this->placeBasins();
     }
-    // The ∇·v density depends on the grid geometry (spacing) — invalidate and,
-    // if it's showing, recompute at the new scale.
+    // The ∇·v density/void depends on the grid geometry (spacing) — invalidate
+    // and, if either is showing, recompute at the new scale.
     this->divergenceGrid = nullptr;
-    if (this->chkFieldDensity && this->chkFieldDensity->isChecked()) {
+    const bool densOn = this->chkFieldDensity && this->chkFieldDensity->isChecked();
+    const bool voidOn = this->chkFieldVoid && this->chkFieldVoid->isChecked();
+    if (densOn || voidOn) {
         this->buildFieldDensity();
-        this->updateFieldDensityContour();
+        if (densOn)
+            this->updateFieldDensityContour();
+        if (voidOn)
+            this->updateFieldVoidContour();
     }
     this->resetCamera();
     this->renderWindow->Render();
@@ -764,13 +780,15 @@ void vtkWindowVectorField::buildFieldDensity()
     if (!div) {
         this->divergenceGrid = nullptr;
         this->m_divMin = 0.0;
+        this->m_divMax = 0.0;
         return;
     }
     out->GetPointData()->SetScalars(div);   // contour on the divergence scalar
     this->divergenceGrid = out;
     double r[2] = { 0.0, 0.0 };
     div->GetRange(r);
-    this->m_divMin = r[0];   // most negative ∇·v = strongest convergence
+    this->m_divMin = r[0];   // most negative ∇·v = strongest convergence (overdensity)
+    this->m_divMax = r[1];   // most positive ∇·v = strongest divergence (void)
 }
 
 void vtkWindowVectorField::updateFieldDensityContour()
@@ -824,4 +842,54 @@ void vtkWindowVectorField::showFieldDensity(bool on)
     this->updateFieldDensityContour();
     if (this->divergenceActor)
         this->divergenceActor->VisibilityOn();
+}
+
+void vtkWindowVectorField::updateFieldVoidContour()
+{
+    if (this->voidActor) {
+        this->renderer->RemoveActor(this->voidActor);
+        this->voidActor = nullptr;
+    }
+    if (!this->divergenceGrid || this->m_divMax <= 0.0) {
+        this->statusBar()->showMessage(
+                u"Void (∇·v): no divergent structure in this field."_s, 5000);
+        this->renderWindow->Render();
+        return;
+    }
+    const double frac =
+            (this->sliderFieldDensityLevel ? this->sliderFieldDensityLevel->value() : 35) / 100.0;
+    const double level = frac * this->m_divMax;   // > 0; higher % → tighter void core
+
+    vtkNew<vtkFlyingEdges3D> surf;
+    surf->SetInputData(this->divergenceGrid);
+    surf->SetValue(0, level);
+    surf->ComputeNormalsOn();
+
+    vtkNew<vtkPolyDataMapper> mapper;
+    mapper->SetInputConnection(surf->GetOutputPort());
+    mapper->ScalarVisibilityOff();
+
+    this->voidActor = vtkSmartPointer<vtkActor>::New();
+    this->voidActor->SetMapper(mapper);
+    this->voidActor->GetProperty()->SetColor(0.35, 0.55, 0.95);  // cool blue (underdense)
+    this->voidActor->GetProperty()->SetOpacity(0.25);
+    this->renderer->AddActor(this->voidActor);
+    this->renderWindow->Render();
+}
+
+void vtkWindowVectorField::showFieldVoid(bool on)
+{
+    if (!on) {
+        if (this->voidActor)
+            this->voidActor->VisibilityOff();
+        this->renderWindow->Render();
+        return;
+    }
+    if (!this->imageData)
+        return;
+    if (!this->divergenceGrid)
+        this->buildFieldDensity();
+    this->updateFieldVoidContour();
+    if (this->voidActor)
+        this->voidActor->VisibilityOn();
 }
