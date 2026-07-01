@@ -90,6 +90,7 @@ private:
     // flow (∇·v < 0) marks overdensities. An isosurface of the overdense cores.
     void showFieldDensity(bool on);
     void buildFieldDensity();          // ∇·v on the grid → cached field (both signs)
+    bool buildFieldDensityFromBackend();  // higher-res ∇·v from the backend (LOD fields)
     void updateFieldDensityContour();  // (re)contour the convergent (overdense) cores
     void showFieldVoid(bool on);       // divergent side (∇·v > 0): voids / repellers
     void updateFieldVoidContour();

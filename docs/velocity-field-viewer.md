@@ -136,6 +136,14 @@ Repeller). It shares the ∇·v field and the level slider (which maps its % to 
 side's extremum independently), and draws a cool-blue surface. Overdensity and
 Void can be shown together — an attractor glows orange, a repeller blue.
 
+For a **downsampled (large) field**, the ≤128³ display LOD is too coarse to
+resolve the ∇·v cores, so the viewer fetches a higher-resolution divergence from
+the backend (`POST /v1/velocity/density_bin` → `BackendClient::fetchVelocityDensity`,
+capped at 256³) and places it at the client box geometry — full-res for fields
+≤256³. A full-resolution display computes ∇·v locally with no round-trip. The
+backend worker (`velocity_density_worker`) is unit-tested (radial in/outflow →
+∇·v = ∓3 at unit spacing).
+
 Because each isosurface is a *level set* of ∇·v, it needs a **structured** field:
 a flow with distinct convergence/divergence peaks shows cores at those peaks,
 while a uniform-divergence flow (a pure radial infall) has none — the status bar

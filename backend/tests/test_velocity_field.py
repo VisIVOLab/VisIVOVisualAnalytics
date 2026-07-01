@@ -176,3 +176,46 @@ def test_component_fits_loader(tmp_path):
     f = load_component_fits(*paths)
     assert f.shape == (n, n, n)
     assert f.summary()["speed_max"] == pytest.approx(np.sqrt(3.0), rel=1e-5)
+
+
+def _write_radial(tmp_path, n=16, sign=1.0):
+    """A purely radial field v = sign·(p − centre); with unit spacing its
+    divergence is 3·sign everywhere (outflow → +, infall → −)."""
+    z, y, x = np.mgrid[0:n, 0:n, 0:n].astype(np.float32)
+    c = (n - 1) / 2.0
+    data = np.stack([sign * (x - c), sign * (y - c), sign * (z - c)]).astype(np.float32)
+    p = tmp_path / f"radial_{'out' if sign > 0 else 'in'}.fits"
+    fits.PrimaryHDU(data).writeto(p, overwrite=True)
+    return str(p)
+
+
+def test_velocity_density_worker_signs(tmp_path):
+    from app.velocity_field import velocity_density_worker
+
+    out = velocity_density_worker(_write_radial(tmp_path, sign=+1.0), None, 0)
+    assert out["nx"] == out["ny"] == out["nz"] == 16
+    assert len(out["raw_bytes"]) == 16 ** 3 * 4
+    div = np.frombuffer(out["raw_bytes"], dtype="<f4").reshape(16, 16, 16)
+    assert np.allclose(div, 3.0, atol=1e-3)   # ∇·(p) = 3 exactly at unit spacing (linear ramp)
+    assert out["unit"].endswith("/pixel")     # box unknown → per-pixel divergence
+
+    inn = velocity_density_worker(_write_radial(tmp_path, sign=-1.0), None, 0)
+    idiv = np.frombuffer(inn["raw_bytes"], dtype="<f4").reshape(16, 16, 16)
+    assert np.all(idiv < 0)                   # infall → convergent everywhere (overdensity)
+
+
+def test_velocity_density_bin_endpoint(tmp_path):
+    import os
+    os.environ.setdefault("VISIVO_TOKEN", "test-token-visivo-12345")
+    from fastapi.testclient import TestClient
+    from app.main import app
+    auth = {"X-Visivo-Token": "test-token-visivo-12345"}
+    client = TestClient(app, raise_server_exceptions=True)
+    path = _write_radial(tmp_path, n=16, sign=1.0)
+    dsid = client.post("/v1/velocity/open", json={"path": path}, headers=auth).json()["dataset_id"]
+    r = client.post("/v1/velocity/density_bin", json={"dataset_id": dsid}, headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.headers["X-Visivo-Width"] == "16"
+    assert r.headers["X-Visivo-Scalar-Type"] == "float32"
+    assert float(r.headers["X-Visivo-Div-Max"]) > 0.0
+    assert len(r.content) == 16 ** 3 * 4

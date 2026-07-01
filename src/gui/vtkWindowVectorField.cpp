@@ -761,10 +761,65 @@ void vtkWindowVectorField::placeBasins()
                     .arg(top.join(u", "_s)));
 }
 
+bool vtkWindowVectorField::buildFieldDensityFromBackend()
+{
+    if (this->m_datasetId.isEmpty())
+        return false;
+    BackendClient client(this->m_backendUrl, this->m_backendToken);
+    if (!this->m_sessionId.isEmpty())
+        client.setSessionId(this->m_sessionId);
+    // Density at up to 256³ — always finer than the 128³ display LOD (full-res
+    // for fields ≤256³; 256³ for larger), capped to bound the transfer (~64 MB).
+    const BackendVelocityDensityResult d = client.fetchVelocityDensity(this->m_datasetId, 256);
+    if (!d.valid || d.nx <= 0 || d.ny <= 0 || d.nz <= 0)
+        return false;
+    const vtkIdType npts = vtkIdType(d.nx) * d.ny * d.nz;
+    if (d.divergence.size() != npts * qint64(sizeof(float)))
+        return false;
+
+    // Place the density grid at the CLIENT's box geometry (like placeBasins) — the
+    // backend values are the divergence *structure*; the isosurface must sit in
+    // the display frame, which the user scales client-side via Box size.
+    double ox, oy, oz;
+    this->originVec(ox, oy, oz);
+    const double ex = -2.0 * ox, ey = -2.0 * oy, ez = -2.0 * oz;
+    vtkNew<vtkImageData> img;
+    img->SetDimensions(d.nx, d.ny, d.nz);
+    img->SetSpacing((d.nx > 1) ? ex / (d.nx - 1) : 1.0,
+                    (d.ny > 1) ? ey / (d.ny - 1) : 1.0,
+                    (d.nz > 1) ? ez / (d.nz - 1) : 1.0);
+    img->SetOrigin(ox, oy, oz);
+    vtkNew<vtkFloatArray> div;
+    div->SetName("Divergence");
+    div->SetNumberOfComponents(1);
+    div->SetNumberOfTuples(npts);
+    std::memcpy(div->GetVoidPointer(0), d.divergence.constData(),
+                std::size_t(npts) * sizeof(float));
+    img->GetPointData()->SetScalars(div);
+
+    this->divergenceGrid = img;
+    double r[2] = { 0.0, 0.0 };
+    div->GetRange(r);
+    this->m_divMin = r[0];
+    this->m_divMax = r[1];
+    return true;
+}
+
 void vtkWindowVectorField::buildFieldDensity()
 {
     if (!this->imageData)
         return;
+    // For a downsampled (large) field, the display LOD is too coarse to resolve
+    // the ∇·v cores — get a higher-res divergence from the backend. For a
+    // full-res display, compute locally (no round-trip).
+    if (this->m_grid.downsampleFactor > 1 && !this->m_datasetId.isEmpty()) {
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        const bool ok = this->buildFieldDensityFromBackend();
+        QApplication::restoreOverrideCursor();
+        if (ok)
+            return;
+        // else fall through to the local computation
+    }
     // ∇·v on the display grid. Converging flow (∇·v < 0) marks overdensities
     // (δ ∝ −∇·v in linear theory); we contour the strongly-convergent cores.
     vtkNew<vtkGradientFilter> grad;

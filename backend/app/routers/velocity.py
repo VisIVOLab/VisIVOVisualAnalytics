@@ -15,6 +15,7 @@ from ..dependencies import _run
 from ..sessions import Session, get_session
 from ..velocity_basins import velocity_basins_worker
 from ..velocity_field import (
+    velocity_density_worker,
     velocity_grid_worker,
     velocity_subgrid_worker,
     velocity_summary_worker,
@@ -60,6 +61,11 @@ class VelocityBasinsRequest(BaseModel):
     dataset_id: str
     basin_max_dim: int = 64   # basins are segmented on a grid this size (coarse, like the science)
     direction: int = 1        # +1 = basins of attraction (superclusters); -1 = repulsion (voids)
+
+
+class VelocityDensityRequest(BaseModel):
+    dataset_id: str
+    max_dim: int = 0          # 0 = full-res ∇·v density; >0 block-averages first (LOD)
 
 
 @router.post("/v1/velocity/open", response_model=VelocityOpenResponse, tags=["velocity"])
@@ -152,6 +158,44 @@ async def velocity_basins_bin(
         "X-Visivo-Components": "1",
         "X-Visivo-Scalar-Type": "int32",
         "X-Visivo-N-Basins": str(payload["n_basins"]),
+        "X-Visivo-Byte-Order": "little",
+        "Content-Length": str(len(raw)),
+    }
+    return Response(content=raw, media_type="application/octet-stream", headers=headers)
+
+
+@router.post("/v1/velocity/density_bin", tags=["velocity"])
+async def velocity_density_bin(
+    request: VelocityDensityRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Density-from-divergence (∇·v) scalar grid for a velocity field. Returns a
+    little-endian float32 volume (x fastest); ∇·v < 0 = overdensity, > 0 = void.
+    Use it for a full-res density on large fields the display LOD can't resolve."""
+    entry = session.datasets.get(request.dataset_id)
+    if not entry or entry.get("kind") != "velocity":
+        return Response(content=b"unknown velocity dataset",
+                        media_type="text/plain", status_code=404)
+    try:
+        payload = await _run(velocity_density_worker, entry["path"], entry.get("box_mpc"),
+                             request.max_dim)
+    except Exception as exc:
+        return Response(content=str(exc).encode("utf-8"),
+                        media_type="text/plain", status_code=500)
+
+    raw: bytes = payload["raw_bytes"]
+    headers = {
+        "X-Visivo-Width": str(payload["nx"]),
+        "X-Visivo-Height": str(payload["ny"]),
+        "X-Visivo-Depth": str(payload["nz"]),
+        "X-Visivo-Components": "1",
+        "X-Visivo-Scalar-Type": "float32",
+        "X-Visivo-Spacing": ",".join(repr(float(s)) for s in payload["spacing"]),
+        "X-Visivo-Origin": ",".join(repr(float(o)) for o in payload["origin"]),
+        "X-Visivo-Div-Min": repr(float(payload["div_min"])),
+        "X-Visivo-Div-Max": repr(float(payload["div_max"])),
+        "X-Visivo-Unit": str(payload["unit"]),
         "X-Visivo-Byte-Order": "little",
         "Content-Length": str(len(raw)),
     }

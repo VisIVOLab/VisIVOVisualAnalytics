@@ -1110,6 +1110,21 @@ struct BackendVelocityBasinsResult
     QByteArray labels;
 };
 
+/// Density-from-divergence (∇·v) scalar grid: ∇·v < 0 = overdensity (convergent),
+/// > 0 = void (divergent). Full-resolution alternative to the client's LOD-grid
+/// divergence, for large fields the display LOD can't resolve.
+struct BackendVelocityDensityResult
+{
+    bool valid = false;
+    QString error;
+    int nx = 0, ny = 0, nz = 0;
+    double spacing[3] = { 1.0, 1.0, 1.0 };
+    double origin[3] = { 0.0, 0.0, 0.0 };
+    double divMin = 0.0, divMax = 0.0;
+    QString unit;
+    QByteArray divergence;   // little-endian float32, x-fastest (vtkImageData order)
+};
+
 class BackendClient
 {
 public:
@@ -1270,6 +1285,10 @@ public:
     BackendVelocityBasinsResult fetchVelocityBasins(const QString &datasetId,
                                                     int basinMaxDim = 64,
                                                     int direction = 1) const;
+    /// Density-from-divergence (∇·v) scalar grid. `maxDim`: 0 = full resolution,
+    /// >0 block-averages first (LOD). ∇·v < 0 = overdensity, > 0 = void.
+    BackendVelocityDensityResult fetchVelocityDensity(const QString &datasetId,
+                                                      int maxDim = 0) const;
     /// Tilted-ring kinematic model cube (F2). Builds a regularly-rotating-disk
     /// model on the cube's own grid; Vsys/Vrot/sigma are in the cube's spectral
     /// unit (km/s when the axis converts — see result.spectralMode).

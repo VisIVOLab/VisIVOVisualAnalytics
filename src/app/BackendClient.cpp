@@ -1410,6 +1410,52 @@ BackendVelocityBasinsResult BackendClient::fetchVelocityBasins(const QString &da
     return r;
 }
 
+BackendVelocityDensityResult BackendClient::fetchVelocityDensity(const QString &datasetId,
+                                                                 int maxDim) const
+{
+    BackendVelocityDensityResult r;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("max_dim"), maxDim } });
+    QNetworkRequest req = buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/velocity/density_bin")));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray data = performBinaryPost(
+            nam, req, body.toJson(QJsonDocument::Compact), 300000, status, headers, err);
+    if (status != 200) {
+        r.error = err.isEmpty() ? QStringLiteral("HTTP %1 on velocity/density_bin").arg(status) : err;
+        return r;
+    }
+    const auto hget = [&](const char *name) -> QByteArray {
+        return headers.value(QByteArray(name).toLower());
+    };
+    r.nx = hget("X-Visivo-Width").toInt();
+    r.ny = hget("X-Visivo-Height").toInt();
+    r.nz = hget("X-Visivo-Depth").toInt();
+    r.divMin = hget("X-Visivo-Div-Min").toDouble();
+    r.divMax = hget("X-Visivo-Div-Max").toDouble();
+    r.unit = QString::fromUtf8(hget("X-Visivo-Unit"));
+    const auto parse3 = [&](const char *name, double out[3]) {
+        const QList<QByteArray> parts = hget(name).split(',');
+        for (int i = 0; i < 3 && i < parts.size(); ++i)
+            out[i] = parts[i].trimmed().toDouble();
+    };
+    parse3("X-Visivo-Spacing", r.spacing);
+    parse3("X-Visivo-Origin", r.origin);
+    const qint64 expected = qint64(r.nx) * qint64(r.ny) * qint64(r.nz) * qint64(sizeof(float));
+    if (r.nx <= 0 || r.ny <= 0 || r.nz <= 0 || expected != data.size()) {
+        r.error = QStringLiteral("bad density payload: got %1 bytes, expected %2")
+                          .arg(data.size()).arg(expected);
+        return r;
+    }
+    r.divergence = data;
+    r.valid = true;
+    return r;
+}
+
 BackendCubePvResult BackendClient::requestPv(const QString &datasetId,
                                              const std::vector<std::array<int, 2>> &vertices,
                                              int widthPixels) const

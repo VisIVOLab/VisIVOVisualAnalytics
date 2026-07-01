@@ -292,6 +292,44 @@ def velocity_grid_worker(path: str, box_mpc: float | None = None,
     return payload
 
 
+def velocity_density_worker(path: str, box_mpc: float | None = None,
+                            max_dim: int = 0) -> dict[str, Any]:
+    """Density proxy from the velocity divergence (δ ∝ −∇·v, linear theory).
+
+    Returns the ∇·v scalar grid as little-endian float32 in vtkImageData order
+    (x fastest). ``max_dim`` > 0 block-averages first (LOD); 0 = full resolution —
+    the point of this endpoint is a *full-res* density for large (256³/512³)
+    fields, where the display LOD is too coarse to resolve the convergence
+    (overdensity) / divergence (void) cores. Convergent flow (∇·v < 0) marks
+    overdensities; divergent flow (∇·v > 0) marks voids / repellers.
+    """
+    field = load_velocity_field(path, box_mpc)
+    if max_dim and max_dim > 0:
+        field = downsample(field, max_dim)
+    sx, sy, sz = (float(s) for s in field.spacing)
+    # Component arrays are indexed [z, y, x]; ∂/∂x is axis 2, ∂/∂y axis 1, ∂/∂z 0.
+    div = (np.gradient(field.vx, sx, axis=2)
+           + np.gradient(field.vy, sy, axis=1)
+           + np.gradient(field.vz, sz, axis=0))
+    # C-contiguous [z, y, x] little-endian float32 == vtkImageData scalar order.
+    div = np.ascontiguousarray(div, dtype="<f4")
+    nz, ny, nx = div.shape
+    finite = np.isfinite(div)
+    dmin = float(div[finite].min()) if finite.any() else 0.0
+    dmax = float(div[finite].max()) if finite.any() else 0.0
+    # ∇·v is velocity per distance — the density-proxy unit, not the field's.
+    per = "Mpc" if field.box_known else "pixel"
+    return {
+        "raw_bytes": div.tobytes(),
+        "nx": int(nx), "ny": int(ny), "nz": int(nz),
+        "spacing": [sx, sy, sz],
+        "origin": [float(o) for o in field.origin],
+        "div_min": dmin,
+        "div_max": dmax,
+        "unit": f"{field.unit}/{per}",
+    }
+
+
 def compute_streamlines(field: "VelocityField", n_seeds: int = 400,
                         max_propagation: float | None = None) -> int:
     """Trace streamlines through the field (VTK vtkStreamTracer), seeded on a
