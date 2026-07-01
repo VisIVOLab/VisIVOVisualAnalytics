@@ -205,6 +205,7 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
     double meanResidual = 0.0;    // mean |v_galaxy − v_field| (typical mismatch, km/s)
     double bulkAmp = 0.0;         // |mean v_galaxy| — coherent bulk flow (km/s)
     bool haveAgreement = false;
+    bool haveResidual = false;    // a "residual" vector array was built (for arrows)
 
     // Point cloud from the parsed scene positions (Cartesian = the X/Y/Z fields).
     const vtkIdType nPts = static_cast<vtkIdType>(data.entries.size());
@@ -317,6 +318,11 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
                 vtkNew<vtkFloatArray> resid;
                 resid->SetName("Residual |v|");
                 resid->SetNumberOfTuples(nPts);
+                // 3-component residual vector → "Residual arrows" glyph mode.
+                vtkNew<vtkFloatArray> residVec;
+                residVec->SetName("residual");
+                residVec->SetNumberOfComponents(3);
+                residVec->SetNumberOfTuples(nPts);
                 double sum = 0.0, resSum = 0.0, bulk[3] = { 0.0, 0.0, 0.0 };
                 vtkIdType counted = 0;
                 for (vtkIdType i = 0; i < nPts; ++i) {
@@ -326,11 +332,13 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
                     const bool valid = !mask || mask->GetComponent(i, 0) != 0.0;
                     const double gm = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
                     const double fm = std::sqrt(fv[0] * fv[0] + fv[1] * fv[1] + fv[2] * fv[2]);
-                    double a = 0.0, rmag = 0.0;
+                    double a = 0.0, rmag = 0.0, rx = 0.0, ry = 0.0, rz = 0.0;
                     const bool usable = valid && gm > 1e-9 && fm > 1e-9;
                     if (usable) {
                         a = (g[0] * fv[0] + g[1] * fv[1] + g[2] * fv[2]) / (gm * fm);
-                        const double rx = g[0] - fv[0], ry = g[1] - fv[1], rz = g[2] - fv[2];
+                        rx = g[0] - fv[0];
+                        ry = g[1] - fv[1];
+                        rz = g[2] - fv[2];
                         rmag = std::sqrt(rx * rx + ry * ry + rz * rz);
                         resSum += rmag;
                         bulk[0] += g[0];
@@ -342,9 +350,12 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
                     a = std::max(-1.0, std::min(1.0, a));   // guard fp roundoff
                     agree->SetValue(i, static_cast<float>(a));
                     resid->SetValue(i, static_cast<float>(rmag));
+                    residVec->SetTuple3(i, rx, ry, rz);
                 }
                 poly->GetPointData()->AddArray(agree);
                 poly->GetPointData()->AddArray(resid);
+                poly->GetPointData()->AddArray(residVec);
+                haveResidual = true;
                 colourKeys << u"Field agreement"_s << u"Residual |v|"_s;
                 if (counted > 0) {
                     const double inv = 1.0 / static_cast<double>(counted);
@@ -366,30 +377,12 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
     this->cataloguePointsMapper->SetInputData(poly);
     this->cataloguePointsMapper->ScalarVisibilityOff();   // uniform gold by default
 
+    // The glyph mapper's orientation/scale array (velocity vs residual) + scale
+    // factor are (re)configured per shape in setCatalogueShape; here we only set
+    // its input. The actor starts on the points mapper, so no arrows show yet.
     this->catalogueGlyphMapper = vtkSmartPointer<vtkGlyph3DMapper>::New();
     this->catalogueGlyphMapper->SetInputData(poly);
     this->catalogueGlyphMapper->ScalarVisibilityOff();
-    if (this->m_catalogueHasVelocity) {
-        if (!this->catalogueArrow)
-            this->catalogueArrow = vtkSmartPointer<vtkArrowSource>::New();
-        this->catalogueGlyphMapper->SetSourceConnection(this->catalogueArrow->GetOutputPort());
-        this->catalogueGlyphMapper->SetOrientationArray("velocity");
-        this->catalogueGlyphMapper->SetOrientationModeToDirection();
-        this->catalogueGlyphMapper->OrientOn();
-        this->catalogueGlyphMapper->SetScaleArray("velocity");
-        this->catalogueGlyphMapper->SetScaleModeToScaleByMagnitude();
-        // Scale so the fastest galaxy arrow spans ~4% of the data diagonal.
-        double b[6];
-        poly->GetBounds(b);
-        const double diag = std::sqrt((b[1] - b[0]) * (b[1] - b[0])
-                                      + (b[3] - b[2]) * (b[3] - b[2])
-                                      + (b[5] - b[4]) * (b[5] - b[4]));
-        double vrange[2] = { 0.0, 1.0 };
-        poly->GetPointData()->GetArray("velocity")->GetRange(vrange, -1);  // -1 = magnitude
-        const double maxSpeed = vrange[1];
-        this->catalogueGlyphMapper->SetScaleFactor(
-                (maxSpeed > 1e-12 && diag > 0.0) ? 0.04 * diag / maxSpeed : 1.0);
-    }
 
     const bool firstOverlay = !this->catalogueActor;
     if (this->catalogueActor)
@@ -432,6 +425,8 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
         this->comboGalaxyShape->addItem(u"Points"_s);
         if (this->m_catalogueHasVelocity)
             this->comboGalaxyShape->addItem(u"Velocity arrows"_s);
+        if (haveResidual)
+            this->comboGalaxyShape->addItem(u"Residual arrows"_s);
         this->comboGalaxyShape->setCurrentIndex(0);
         this->comboGalaxyShape->setEnabled(true);
     }
@@ -655,11 +650,47 @@ void vtkWindowVectorField::setCatalogueShape(const QString &mode)
 {
     if (!this->catalogueActor)
         return;
-    const bool arrows = (mode == u"Velocity arrows"_s) && this->m_catalogueHasVelocity
-            && this->catalogueGlyphMapper;
-    this->catalogueActor->SetMapper(arrows
-                                            ? static_cast<vtkMapper *>(this->catalogueGlyphMapper)
-                                            : static_cast<vtkMapper *>(this->cataloguePointsMapper));
+
+    // Which per-point vector drives the arrow glyphs: peculiar velocity, or the
+    // residual (galaxy − field). Points mode uses the plain points mapper.
+    const char *vecArray = (mode == u"Velocity arrows"_s)   ? "velocity"
+                         : (mode == u"Residual arrows"_s)    ? "residual"
+                                                             : nullptr;
+    vtkDataArray *arr = (vecArray && this->cataloguePoly)
+            ? this->cataloguePoly->GetPointData()->GetArray(vecArray)
+            : nullptr;
+    const bool arrows = vecArray && arr && this->catalogueGlyphMapper;
+
+    if (arrows) {
+        if (!this->catalogueArrow)
+            this->catalogueArrow = vtkSmartPointer<vtkArrowSource>::New();
+        this->catalogueGlyphMapper->SetSourceConnection(this->catalogueArrow->GetOutputPort());
+        this->catalogueGlyphMapper->SetOrientationArray(vecArray);
+        this->catalogueGlyphMapper->SetOrientationModeToDirection();
+        this->catalogueGlyphMapper->OrientOn();
+        this->catalogueGlyphMapper->SetScaleArray(vecArray);
+        this->catalogueGlyphMapper->SetScaleModeToScaleByMagnitude();
+        // Scale BOTH arrow modes on the same physical scale — the peculiar-velocity
+        // magnitude — so the largest velocity arrow spans ~4% of the data diagonal
+        // and residual arrows stay directly comparable (a small residual → a short
+        // arrow, not a spurious full-length one from normalising to its own max).
+        double b[6];
+        this->cataloguePoly->GetBounds(b);
+        const double diag = std::sqrt((b[1] - b[0]) * (b[1] - b[0])
+                                      + (b[3] - b[2]) * (b[3] - b[2])
+                                      + (b[5] - b[4]) * (b[5] - b[4]));
+        vtkDataArray *velArr = this->cataloguePoly->GetPointData()->GetArray("velocity");
+        double range[2] = { 0.0, 1.0 };
+        if (velArr)
+            velArr->GetRange(range, -1);   // -1 = vector magnitude
+        const double maxSpeed = range[1];
+        this->catalogueGlyphMapper->SetScaleFactor(
+                (maxSpeed > 1e-12 && diag > 0.0) ? 0.04 * diag / maxSpeed : 1.0);
+        this->catalogueActor->SetMapper(this->catalogueGlyphMapper);
+    } else {
+        this->catalogueActor->SetMapper(this->cataloguePointsMapper);
+    }
+
     // Galaxy size is a point-size — it doesn't apply to arrows (their scale is
     // fixed from the data extent), so disable it in arrow mode to avoid confusion.
     if (this->spinCataloguePointSize)

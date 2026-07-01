@@ -216,12 +216,16 @@ the corner). It shares the galaxy LUT, retitles/reranges as you switch keys, and
 is shown only while the galaxies are visible *and* attribute-coloured (hidden on
 *Uniform*, when *Show galaxies* is off, or on a fresh overlay).
 
-**Galaxy shape** switches the overlay between plain **Points** and **Velocity
-arrows** — available when the catalogue carries vx/vy/vz. In arrow mode a
-`vtkGlyph3DMapper` draws a `vtkArrowSource` per galaxy, oriented and scaled by a
-3-component `velocity` point array (built at overlay), with the fastest arrow
-≈ 4 % of the data diagonal. This is the CosmicFlows comparison: individual galaxy
-peculiar velocities against the reconstructed flow field. Colour still follows
+**Galaxy shape** switches the overlay between **Points**, **Velocity arrows**
+(when the catalogue carries vx/vy/vz), and **Residual arrows** (when a field is
+also loaded). A `vtkGlyph3DMapper` draws a `vtkArrowSource` per galaxy, oriented
+and scaled by the chosen 3-component array — `velocity` (peculiar velocity) or
+`residual` (v_galaxy − v_field, the *unexplained* motion). Both arrow modes share
+**one physical scale** (from the peculiar-velocity magnitude — largest velocity
+arrow ≈ 4 % of the data diagonal), so residual arrows are directly comparable:
+short where the reconstruction fits, long and coherent where it misses. This is
+the CosmicFlows comparison — individual galaxy motions, and their reconstruction
+residuals, against the flow field. Colour still follows
 *Galaxy color* (so *Speed |v|* colours the arrows too); *Galaxy size* is a
 point-size and is disabled in arrow mode. The overlay keeps both a points mapper
 and a glyph mapper on the same point cloud, so shape/colour switch with no

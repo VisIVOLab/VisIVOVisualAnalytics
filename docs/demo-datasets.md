@@ -114,6 +114,7 @@ co-registered, so the overlay actually aligns.
 | **Field agreement** | Galaxy color → *Field agreement* | ≈ +1 (red) almost everywhere — the demo galaxies carry the field velocity + noise, so they flow *with* the reconstruction |
 | **Residual \|v\|** | Galaxy color → *Residual \|v\|* | small, roughly uniform (≈ the 30 km/s injected noise) — the reconstruction explains the rest |
 | Velocity arrows | Galaxy shape → *Velocity arrows* | galaxy arrows point toward centre — **same direction as the field** |
+| Residual arrows | Galaxy shape → *Residual arrows* | **tiny, randomly-oriented** arrows (the ~30 km/s noise) — the reconstruction explains the coherent motion; a real missed attractor would show long, aligned residuals |
 | Density isosurface | check *Galaxy density*; drag *Density level %* | translucent cyan surface wraps the 5 clusters; tightens with level |
 | Show galaxies / size | toggle / spin | overlay hides / points resize |
 | Sample statistics | (read the status bar after loading) | *"agreement 0.9x · residual ~30 · bulk ~0 (km/s)"* — high agreement, residual ≈ the injected noise, near-zero bulk flow (radial infall is symmetric) |

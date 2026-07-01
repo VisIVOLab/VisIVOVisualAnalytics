@@ -223,8 +223,9 @@ void vtkWindowVectorField::setupUi()
     this->comboGalaxyShape->setEnabled(false);
     this->comboGalaxyShape->setToolTip(
             u"Draw galaxies as points, or — when the catalogue carries vx/vy/vz — as "
-            u"arrows oriented and scaled by each galaxy's peculiar velocity, to compare "
-            u"against the reconstructed flow field."_s);
+            u"velocity arrows (each galaxy's peculiar velocity), or — with a field "
+            u"loaded — residual arrows (v_galaxy − v_field: the unexplained motion). "
+            u"Both arrow modes share one physical scale, so they're comparable."_s);
     overlayForm->addRow(u"Galaxy shape"_s, this->comboGalaxyShape);
     this->chkGalaxyDensity = new QCheckBox(side);
     this->chkGalaxyDensity->setEnabled(false);
