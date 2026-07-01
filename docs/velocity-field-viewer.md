@@ -205,7 +205,15 @@ After loading, the status bar reports the sample statistics over the in-box
 galaxies: **agreement** (mean cosine), **residual** (mean |v_galaxy − v_field|),
 and **bulk** (the coherent bulk flow, |mean v_galaxy|) — the last two are genuine
 cosmic-flow quantities (bulk-flow amplitude tests ΛCDM). All velocity numbers
-assume the field and catalogue share units (km/s in the CosmicFlows data path). Selecting a key drives
+assume the field and catalogue share units (km/s in the CosmicFlows data path).
+
+**Bulk flow vs radius…** opens a plot of the bulk-flow amplitude |⟨v⟩| in spheres
+of growing radius about the observer (origin) — the Watkins–Feldman–Hudson curve.
+Two curves share the *same galaxy selection*: the **galaxies** (observed
+peculiar velocities) and the **reconstruction at galaxies** (the field sampled at
+each galaxy position, stored as `field_velocity` during the overlay probe). Where
+the two diverge, the reconstruction under- or over-predicts the coherent flow at
+that scale. (The radius axis is Mpc when a box size is set, else grid units.) Selecting a key drives
 the mapper via `SetScalarModeToUsePointFieldData` + `SelectColorArray` through a
 blue→red LUT auto-ranged to the attribute; *Uniform* returns to the flat colour.
 Re-colouring never re-fetches.

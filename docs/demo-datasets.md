@@ -121,6 +121,7 @@ co-registered, so the overlay actually aligns.
 | Density isosurface | check *Galaxy density*; drag *Density level %* | translucent cyan surface wraps the 5 clusters; tightens with level |
 | Show galaxies / size | toggle / spin | overlay hides / points resize |
 | Sample statistics | (read the status bar after loading) | *"agreement 0.9x · residual ~30 · bulk ~0 (km/s)"* — high agreement, residual ≈ the injected noise, near-zero bulk flow (radial infall is symmetric) |
+| Bulk flow vs radius | click *Bulk flow vs radius…* | a plot with two near-identical curves (galaxies vs reconstruction) rising then flattening — the reconstruction tracks the galaxies because the demo galaxies follow the field |
 | Remove overlay | click *Remove overlay* | galaxies/density/legend gone, controls reset |
 
 ## 7 · HI PPV cube  ·  `hi_cube.fits`

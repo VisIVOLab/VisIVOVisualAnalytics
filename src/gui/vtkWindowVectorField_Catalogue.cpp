@@ -3,12 +3,14 @@
 #include "Catalogue3DParser.h"
 #include "RemoteFileBrowserDialog.h"
 #include "app/BackendClient.h"
+#include "qcustomplot.h"
 
 #include <vtkActor.h>
 #include <vtkArrowSource.h>
 #include <vtkCellArray.h>
 #include <vtkCoordinate.h>
 #include <vtkDataArray.h>
+#include <vtkDataSet.h>
 #include <vtkFloatArray.h>
 #include <vtkFlyingEdges3D.h>
 #include <vtkGlyph3DMapper.h>
@@ -39,10 +41,13 @@
 #include <QFileInfo>
 #include <QLabel>
 #include <QMessageBox>
+#include <QDialog>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStatusBar>
+#include <QVBoxLayout>
+#include <QVector>
 #include <QtConcurrent>
 
 using namespace Qt::StringLiterals;
@@ -69,6 +74,36 @@ QString catalogueFormatForPath(const QString &path)
     if (suffix == u"tbl"_s)
         return u"ipac"_s;
     return u"csv"_s;
+}
+
+// Bulk flow |⟨v⟩| in spheres of growing radius about the origin (the observer):
+// for each radius, the magnitude of the mean velocity vector over the points
+// within it. Works for both the galaxy cloud and the field grid (any vtkDataSet
+// with a 3-component "velocity" point array).
+QVector<double> bulkFlowVsRadius(vtkDataSet *ds, vtkDataArray *vel,
+                                 const QVector<double> &radii)
+{
+    QVector<double> out(radii.size(), 0.0);
+    const vtkIdType n = ds->GetNumberOfPoints();
+    for (int k = 0; k < radii.size(); ++k) {
+        const double r2 = radii[k] * radii[k];
+        double sx = 0.0, sy = 0.0, sz = 0.0;
+        vtkIdType c = 0;
+        for (vtkIdType i = 0; i < n; ++i) {
+            double p[3];
+            ds->GetPoint(i, p);
+            if (p[0] * p[0] + p[1] * p[1] + p[2] * p[2] <= r2) {
+                double v[3];
+                vel->GetTuple(i, v);
+                sx += v[0];
+                sy += v[1];
+                sz += v[2];
+                ++c;
+            }
+        }
+        out[k] = c ? std::sqrt(sx * sx + sy * sy + sz * sz) / static_cast<double>(c) : 0.0;
+    }
+    return out;
 }
 
 // Off-GUI-thread worker: open + query + parse a catalogue into plain data. Takes
@@ -323,6 +358,12 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
                 residVec->SetName("residual");
                 residVec->SetNumberOfComponents(3);
                 residVec->SetNumberOfTuples(nPts);
+                // Field velocity sampled AT each galaxy → the reconstruction's
+                // bulk flow over the SAME selection as the galaxies (WFH-style).
+                vtkNew<vtkFloatArray> fieldVel;
+                fieldVel->SetName("field_velocity");
+                fieldVel->SetNumberOfComponents(3);
+                fieldVel->SetNumberOfTuples(nPts);
                 double sum = 0.0, resSum = 0.0, bulk[3] = { 0.0, 0.0, 0.0 };
                 vtkIdType counted = 0;
                 for (vtkIdType i = 0; i < nPts; ++i) {
@@ -351,10 +392,15 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
                     agree->SetValue(i, static_cast<float>(a));
                     resid->SetValue(i, static_cast<float>(rmag));
                     residVec->SetTuple3(i, rx, ry, rz);
+                    if (usable)
+                        fieldVel->SetTuple3(i, fv[0], fv[1], fv[2]);
+                    else
+                        fieldVel->SetTuple3(i, 0.0, 0.0, 0.0);
                 }
                 poly->GetPointData()->AddArray(agree);
                 poly->GetPointData()->AddArray(resid);
                 poly->GetPointData()->AddArray(residVec);
+                poly->GetPointData()->AddArray(fieldVel);
                 haveResidual = true;
                 colourKeys << u"Field agreement"_s << u"Residual |v|"_s;
                 if (counted > 0) {
@@ -404,6 +450,8 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
     }
     if (this->btnRemoveCatalogue)
         this->btnRemoveCatalogue->setEnabled(true);
+    if (this->btnBulkFlow)
+        this->btnBulkFlow->setEnabled(this->m_catalogueHasVelocity);
     if (this->spinCataloguePointSize)
         this->spinCataloguePointSize->setEnabled(true);
     if (this->comboGalaxyColor) {
@@ -639,11 +687,87 @@ void vtkWindowVectorField::clearCatalogueOverlay()
     disable(this->chkGalaxyDensity);
     disable(this->sliderDensityLevel);
     disable(this->btnRemoveCatalogue);
+    disable(this->btnBulkFlow);
 
     if (this->summaryLabel && !this->m_summaryBase.isEmpty())
         this->summaryLabel->setText(this->m_summaryBase);   // drop the "· N galaxies" suffix
     this->statusBar()->showMessage(u"Overlay removed."_s, 4000);
     this->renderWindow->Render();
+}
+
+void vtkWindowVectorField::showBulkFlowProfile()
+{
+    if (!this->cataloguePoly)
+        return;
+    vtkPoints *pts = this->cataloguePoly->GetPoints();
+    auto *galV = vtkFloatArray::SafeDownCast(
+            this->cataloguePoly->GetPointData()->GetArray("velocity"));
+    if (!pts || !galV)
+        return;
+    const vtkIdType nG = pts->GetNumberOfPoints();
+    if (nG == 0)
+        return;
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    // Radii out to the farthest galaxy from the origin (observer).
+    double rmax = 0.0;
+    for (vtkIdType i = 0; i < nG; ++i) {
+        double p[3];
+        pts->GetPoint(i, p);
+        rmax = std::max(rmax, std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]));
+    }
+    if (rmax <= 0.0) {
+        QApplication::restoreOverrideCursor();
+        this->statusBar()->showMessage(u"Bulk flow: galaxies have no radial extent."_s, 5000);
+        return;
+    }
+    constexpr int NB = 30;
+    QVector<double> radii(NB);
+    for (int k = 0; k < NB; ++k)
+        radii[k] = rmax * (k + 1) / NB;
+
+    const QVector<double> galBulk = bulkFlowVsRadius(this->cataloguePoly, galV, radii);
+    // Reconstruction curve from the field velocity sampled AT the galaxies
+    // ("field_velocity", built during the overlay probe) — same selection window
+    // as the galaxies, so the two curves are a like-for-like WFH comparison.
+    QVector<double> fldBulk;
+    bool haveField = false;
+    if (auto *fgV = vtkFloatArray::SafeDownCast(
+                this->cataloguePoly->GetPointData()->GetArray("field_velocity"))) {
+        fldBulk = bulkFlowVsRadius(this->cataloguePoly, fgV, radii);
+        haveField = true;
+    }
+    QApplication::restoreOverrideCursor();
+
+    // Non-modal plot window (galaxies vs the reconstruction).
+    auto *dlg = new QDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowTitle(u"Bulk flow vs radius — %1"_s.arg(this->m_catalogueName));
+    auto *lay = new QVBoxLayout(dlg);
+    auto *plot = new QCustomPlot(dlg);
+    plot->addGraph();
+    plot->graph(0)->setData(radii, galBulk);
+    plot->graph(0)->setName(u"Galaxies"_s);
+    plot->graph(0)->setPen(QPen(QColor(230, 150, 40), 2));
+    if (haveField) {
+        plot->addGraph();
+        plot->graph(1)->setData(radii, fldBulk);
+        plot->graph(1)->setName(u"Reconstruction (at galaxies)"_s);
+        QPen pen(QColor(80, 160, 230), 2);
+        pen.setStyle(Qt::DashLine);
+        plot->graph(1)->setPen(pen);
+    }
+    // The positions are physical Mpc only when a box size is set; otherwise the
+    // field (and hence the radius) is in grid units.
+    plot->xAxis->setLabel(this->m_boxMpc > 0.0 ? u"Radius (Mpc)"_s
+                                               : u"Radius (grid units)"_s);
+    plot->yAxis->setLabel(u"Bulk flow |⟨v⟩| (km/s)"_s);
+    plot->legend->setVisible(true);
+    plot->rescaleAxes();
+    plot->replot();
+    lay->addWidget(plot);
+    dlg->resize(560, 400);
+    dlg->show();
 }
 
 void vtkWindowVectorField::setCatalogueShape(const QString &mode)

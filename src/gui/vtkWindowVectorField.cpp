@@ -241,6 +241,14 @@ void vtkWindowVectorField::setupUi()
     overlayForm->addRow(u"Density level %"_s, this->sliderDensityLevel);
     sl->addLayout(overlayForm);
 
+    this->btnBulkFlow = new QPushButton(u"Bulk flow vs radius…"_s, side);
+    this->btnBulkFlow->setEnabled(false);
+    this->btnBulkFlow->setToolTip(
+            u"Plot the bulk-flow amplitude |⟨v⟩| in spheres of growing radius — the "
+            u"galaxies vs the reconstructed field. The Watkins–Feldman–Hudson curve "
+            u"(its amplitude vs scale tests ΛCDM)."_s);
+    sl->addWidget(this->btnBulkFlow);
+
     sl->addStretch(1);
     root->addWidget(side, 0);
     this->setCentralWidget(central);
@@ -305,6 +313,8 @@ void vtkWindowVectorField::setupUi()
                      [this]() { this->overlayCatalogue(); });
     QObject::connect(this->btnRemoveCatalogue, &QPushButton::clicked, this,
                      [this]() { this->clearCatalogueOverlay(); });
+    QObject::connect(this->btnBulkFlow, &QPushButton::clicked, this,
+                     [this]() { this->showBulkFlowProfile(); });
     QObject::connect(this->chkShowCatalogue, &QCheckBox::toggled, this,
                      [this](bool on) { this->setCatalogueVisible(on); });
     QObject::connect(this->spinCataloguePointSize, &QDoubleSpinBox::valueChanged, this,

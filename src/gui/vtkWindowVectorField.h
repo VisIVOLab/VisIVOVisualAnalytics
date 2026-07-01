@@ -97,6 +97,7 @@ private:
     void updateCatalogueDensityContour();         // (re)contour the grid at the current level
     void showCatalogueDensity(bool on);           // overdensity isosurface on/off
     void clearCatalogueOverlay();                 // remove the overlay + reset its controls
+    void showBulkFlowProfile();                   // bulk flow |⟨v⟩| vs radius (galaxies vs field)
 
     // Per-axis full-resolution cell size + centred origin (point-centred model:
     // box>0 → box/(n-1) and -box/2; else unit spacing, -(n-1)/2). The display
@@ -160,6 +161,7 @@ private:
     QPointer<QComboBox> comboBasinDir;   // Attraction (superclusters) / Repulsion (voids)
     QPointer<QPushButton> btnOverlayCatalogue;
     QPointer<QPushButton> btnRemoveCatalogue;
+    QPointer<QPushButton> btnBulkFlow;
     QPointer<QCheckBox> chkShowCatalogue;
     QPointer<QDoubleSpinBox> spinCataloguePointSize;
     QPointer<QComboBox> comboGalaxyColor;   // Uniform / numeric column / Speed |v|
