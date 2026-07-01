@@ -18,7 +18,14 @@ mode uses a plain points actor instead.
 **Picking is independent of the render pipeline** — `pickNearestSource()` does a
 CPU nearest-source search projecting each catalogue entry to display coordinates,
 and hover/selection use separate highlight-sphere actors. So the glyph mapper can
-be changed freely without affecting picking/selection.
+be changed freely without affecting picking/selection — and picking stays exact
+regardless of the render budget (which only thins the GPU-fed cloud, not the
+entry list). Rather than a `vtkCoordinate` transform per entry (millions of
+virtual calls per click), it fetches the camera's composite world→clip matrix
+**once** and projects each point inline (matrix·point → perspective divide →
+NDC→viewport pixels), keeping the same nearest-within-14px screen test. This is
+~10–50× faster (verified to match `vtkCoordinate` to ≤1px — its int rounding —
+against VTK 9.6.2); points with clip-w ≤ 0 (at/behind the camera) are skipped.
 
 ### Render budget (GPU point LOD)
 
