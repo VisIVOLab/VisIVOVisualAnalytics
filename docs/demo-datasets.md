@@ -3,7 +3,10 @@
 Synthetic datasets that exercise every desktop viewer feature end-to-end, so you
 can smoke-test the app without hunting for real data. They are produced by a
 single reproducible generator (fixed RNG seed), so the **script is the
-downloadable artifact** — commit it and regenerate anywhere.
+downloadable artifact** — commit it and regenerate anywhere. A regression test
+(`backend/tests/test_demo_data.py`) generates the set and asserts every file
+loads through the backend paths + that the HI cube matches the kinematic model at
+the documented params, so the demo contract can't silently rot.
 
 ## Generate
 
