@@ -147,6 +147,35 @@ all computed per axis so non-cubic grids are handled.
 | Define ROI / Load full-res ROI | full-resolution region fetch (LOD grids only) |
 | Show basins | gravitational-basin (watershed) regions — Laniakea-style superclusters |
 | Basin type | attraction (superclusters) vs repulsion (voids) |
+| Overlay galaxy catalogue… | load a catalogue and draw its galaxies as points in this field's frame |
+| Show galaxies / Galaxy size | toggle the overlay / point size |
+
+## Galaxy overlay (CosmicFlows combo)
+
+*Overlay galaxy catalogue…* draws a galaxy point cloud **in the same frame as
+the velocity field** — the "where do galaxies sit in the flow" view. The viewer
+reuses its live backend session to open a catalogue (`BackendClient::openCatalogue`
+→ `queryTabularCatalogue` → `Catalogue3DParser::parseBackendSubset`, the same path
+as the 3-D catalogue viewer, capped at 100 000 rows for context) and adds the
+parsed `sceneX/Y/Z` positions as a gold point actor to the field's renderer.
+
+Because the overlay uses **physical Cartesian Mpc** positions, two conditions
+matter for alignment, and the viewer guards both:
+
+- **Cartesian positions** — if the catalogue provides X/Y/Z (backend `cartesian`
+  always implies them) the parser's Cartesian branch is forced, so a catalogue
+  that *also* carries RA/Dec still uses its physical XYZ rather than an
+  RA/Dec-derived shell. A non-Cartesian (sky) catalogue is still overlaid but the
+  status warns its positions may not match the field frame.
+- **Physical box set** — the field is only in Mpc once *Box size (Mpc)* is set;
+  while it is `0` (grid units) the overlay asks for confirmation, since Mpc
+  galaxies won't align with a unitless grid.
+
+The camera reframes on the first overlay (so the galaxies are visible — or a
+zoom-out makes a frame mismatch obvious); later re-overlays keep the current
+view. *Show galaxies* toggles visibility and *Galaxy size* sets the point size
+live. (First slice: one catalogue overlay, uniform colour. Colour-by-attribute,
+multiple overlays, and an async fetch are future work.)
 
 ## Tests
 

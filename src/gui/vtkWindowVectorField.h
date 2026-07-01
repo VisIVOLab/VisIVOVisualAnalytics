@@ -63,6 +63,11 @@ private:
     void showBasins(bool on);   // F1 phase-2: gravitational-basin (watershed) regions
     void placeBasins();         // (re)build the basin actor from m_basins at the current scale
 
+    // CosmicFlows combo: overlay a galaxy catalogue's point cloud in the same
+    // Cartesian frame as the velocity field ("where galaxies sit in the flow").
+    void overlayCatalogue();          // pick a catalogue, fetch XYZ, build the point actor
+    void setCatalogueVisible(bool on);
+
     // Per-axis full-resolution cell size + centred origin (point-centred model:
     // box>0 → box/(n-1) and -box/2; else unit spacing, -(n-1)/2). The display
     // (LOD) cell is fullCell * downsampleFactor.
@@ -95,6 +100,11 @@ private:
     vtkSmartPointer<vtkLookupTable> basinLut;    // categorical basin colours
     BackendVelocityBasinsResult m_basins;        // cached labels (re-placed on scale change)
 
+    vtkSmartPointer<vtkActor> catalogueActor;    // overlaid galaxy point cloud
+    QString m_catalogueName;                     // basename, for the status label
+    int m_catalogueCount = 0;                    // points drawn in the overlay
+    QString m_summaryBase;                        // summary text before any overlay suffix
+
     // Sidebar controls
     QPointer<QCheckBox> chkGlyphs;
     QPointer<QCheckBox> chkStreamlines;
@@ -107,6 +117,9 @@ private:
     QPointer<QPushButton> btnLoadRoi;
     QPointer<QCheckBox> chkBasins;
     QPointer<QComboBox> comboBasinDir;   // Attraction (superclusters) / Repulsion (voids)
+    QPointer<QPushButton> btnOverlayCatalogue;
+    QPointer<QCheckBox> chkShowCatalogue;
+    QPointer<QDoubleSpinBox> spinCataloguePointSize;
     QPointer<QLabel> summaryLabel;
 };
 

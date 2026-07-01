@@ -306,6 +306,7 @@ set(PROJECT_SOURCES
         src/gui/ColormapIcon.cpp
         src/gui/ColormapIcon.h
         src/gui/vtkWindowVectorField.cpp
+        src/gui/vtkWindowVectorField_Catalogue.cpp
         src/gui/vtkWindowVectorField.h
         src/gui/VLKBInventoryTree.cpp
         src/gui/VLKBInventoryTree.h

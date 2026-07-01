@@ -186,6 +186,28 @@ void vtkWindowVectorField::setupUi()
             u"Fetch the boxed region at full resolution (the display grid is a downsampled LOD)"_s);
     sl->addWidget(this->btnLoadRoi);
 
+    // ── Galaxy overlay (CosmicFlows combo) ──────────────────────────────────
+    this->btnOverlayCatalogue = new QPushButton(u"Overlay galaxy catalogue…"_s, side);
+    this->btnOverlayCatalogue->setToolTip(
+            u"Load a Cartesian (X/Y/Z Mpc) catalogue and draw its galaxies as points in "
+            u"this velocity field's frame — 'where galaxies sit in the flow'. Both must "
+            u"share the same coordinate system/origin to align."_s);
+    sl->addWidget(this->btnOverlayCatalogue);
+
+    auto *overlayForm = new QFormLayout;
+    overlayForm->setContentsMargins(0, 0, 0, 0);
+    this->chkShowCatalogue = new QCheckBox(side);
+    this->chkShowCatalogue->setChecked(true);
+    this->chkShowCatalogue->setEnabled(false);   // enabled once a catalogue loads
+    overlayForm->addRow(u"Show galaxies"_s, this->chkShowCatalogue);
+    this->spinCataloguePointSize = new QDoubleSpinBox(side);
+    this->spinCataloguePointSize->setRange(1.0, 12.0);
+    this->spinCataloguePointSize->setSingleStep(0.5);
+    this->spinCataloguePointSize->setValue(3.0);
+    this->spinCataloguePointSize->setEnabled(false);
+    overlayForm->addRow(u"Galaxy size"_s, this->spinCataloguePointSize);
+    sl->addLayout(overlayForm);
+
     sl->addStretch(1);
     root->addWidget(side, 0);
     this->setCentralWidget(central);
@@ -246,6 +268,17 @@ void vtkWindowVectorField::setupUi()
     QObject::connect(this->comboBasinDir, &QComboBox::currentIndexChanged, this,
                      [this](int) { if (this->chkBasins && this->chkBasins->isChecked())
                                        this->showBasins(true); });
+    QObject::connect(this->btnOverlayCatalogue, &QPushButton::clicked, this,
+                     [this]() { this->overlayCatalogue(); });
+    QObject::connect(this->chkShowCatalogue, &QCheckBox::toggled, this,
+                     [this](bool on) { this->setCatalogueVisible(on); });
+    QObject::connect(this->spinCataloguePointSize, &QDoubleSpinBox::valueChanged, this,
+                     [this](double sz) {
+                         if (this->catalogueActor) {
+                             this->catalogueActor->GetProperty()->SetPointSize(sz);
+                             this->renderWindow->Render();
+                         }
+                     });
 }
 
 void vtkWindowVectorField::setupRenderer()
