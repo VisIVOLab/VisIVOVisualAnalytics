@@ -152,6 +152,9 @@ void vtkWindowVectorField::setupUi()
     this->spinBoxSize->setDecimals(1);
     this->spinBoxSize->setSingleStep(10.0);
     this->spinBoxSize->setValue(0.0);
+    // Commit only when the user finishes typing (Enter / focus-out) or steps the
+    // arrows — not on every digit, so the scene isn't rebuilt at "2" → "20" → …
+    this->spinBoxSize->setKeyboardTracking(false);
     this->spinBoxSize->setSpecialValueText(u"grid units"_s);
     this->spinBoxSize->setToolTip(u"Physical box size in Mpc (0 = grid units)"_s);
     form->addRow(u"Box size (Mpc)"_s, this->spinBoxSize);
@@ -311,6 +314,8 @@ void vtkWindowVectorField::setupUi()
                      [this](double) { this->rebuildLodActors(); this->renderWindow->Render(); });
     QObject::connect(this->spinSeeds, &QSpinBox::valueChanged, this,
                      [this](int) { this->rebuildLodActors(); this->renderWindow->Render(); });
+    // valueChanged now fires only on commit (Enter / focus-out / arrow step)
+    // because keyboardTracking is off — so this no longer rebuilds per keystroke.
     QObject::connect(this->spinBoxSize, &QDoubleSpinBox::valueChanged, this,
                      [this](double mpc) { this->applyBoxSize(mpc); });
     QObject::connect(this->comboLut, &QComboBox::currentTextChanged, this,
