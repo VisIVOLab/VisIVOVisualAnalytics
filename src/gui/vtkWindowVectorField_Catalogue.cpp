@@ -6,13 +6,21 @@
 
 #include <vtkActor.h>
 #include <vtkCellArray.h>
+#include <vtkDataArray.h>
+#include <vtkFloatArray.h>
+#include <vtkLookupTable.h>
 #include <vtkNew.h>
+#include <vtkPointData.h>
 #include <vtkPoints.h>
 #include <vtkPolyData.h>
 #include <vtkPolyDataMapper.h>
 #include <vtkProperty.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderer.h>
+
+#include <QComboBox>
+
+#include <cmath>
 
 #include <QApplication>
 #include <QCheckBox>
@@ -145,6 +153,60 @@ void vtkWindowVectorField::overlayCatalogue()
     poly->SetPoints(points);
     poly->SetVerts(verts);
 
+    // Attach a named scalar array per numeric column so the galaxies can be
+    // coloured by any attribute without re-fetching. Field lookups reuse the
+    // parser accessor (name → index via schema), so precision matches the viewer.
+    const vtkIdType nPts = static_cast<vtkIdType>(parsed.entries.size());
+    QStringList colourKeys;
+    for (const auto &field : schema.fields) {
+        const QString type = field.type.toLower();
+        const bool numeric = type.contains(u"float"_s) || type.contains(u"double"_s)
+                || type.contains(u"int"_s) || type.contains(u"real"_s);
+        if (!numeric)
+            continue;
+        vtkNew<vtkFloatArray> arr;
+        arr->SetName(field.name.toUtf8().constData());
+        arr->SetNumberOfTuples(nPts);
+        for (vtkIdType i = 0; i < nPts; ++i) {
+            const double v = Catalogue3DParser::detail::fieldDouble(
+                    parsed.entries[static_cast<std::size_t>(i)], schema, field.name);
+            arr->SetValue(i, static_cast<float>(v));
+        }
+        poly->GetPointData()->AddArray(arr);
+        colourKeys << field.name;
+    }
+
+    // Speed |v| from vx/vy/vz when present — the cosmic-flow attribute.
+    int vxi = -1, vyi = -1, vzi = -1;
+    for (int c = 0; c < schema.headers.size(); ++c) {
+        const QString h = schema.headers.at(c).trimmed().toLower();
+        if (h == u"vx"_s) vxi = c;
+        else if (h == u"vy"_s) vyi = c;
+        else if (h == u"vz"_s) vzi = c;
+    }
+    // Skip the derived key if a real column already claims that name (rare).
+    if (vxi >= 0 && vyi >= 0 && vzi >= 0 && !colourKeys.contains(u"Speed |v|"_s)) {
+        // Read a component defensively — a null/NaN entry must not poison the
+        // array range (unlike fieldDouble, raw toDouble() doesn't finite-check).
+        const auto comp = [](const Catalogue3DEntry &e, int idx) -> double {
+            if (idx < 0 || idx >= e.fields.size())
+                return 0.0;
+            bool ok = false;
+            const double v = e.fields.at(idx).toDouble(&ok);
+            return (ok && std::isfinite(v)) ? v : 0.0;
+        };
+        vtkNew<vtkFloatArray> speed;
+        speed->SetName("Speed |v|");
+        speed->SetNumberOfTuples(nPts);
+        for (vtkIdType i = 0; i < nPts; ++i) {
+            const auto &e = parsed.entries[static_cast<std::size_t>(i)];
+            const double vx = comp(e, vxi), vy = comp(e, vyi), vz = comp(e, vzi);
+            speed->SetValue(i, static_cast<float>(std::sqrt(vx * vx + vy * vy + vz * vz)));
+        }
+        poly->GetPointData()->AddArray(speed);
+        colourKeys << u"Speed |v|"_s;
+    }
+
     vtkNew<vtkPolyDataMapper> mapper;
     mapper->SetInputData(poly);
     mapper->ScalarVisibilityOff();   // uniform colour — the arrows carry the speed LUT
@@ -169,6 +231,16 @@ void vtkWindowVectorField::overlayCatalogue()
     }
     if (this->spinCataloguePointSize)
         this->spinCataloguePointSize->setEnabled(true);
+    if (this->comboGalaxyColor) {
+        // Repopulate to Uniform + this catalogue's numeric attributes. Blocked so
+        // it doesn't fire recolour — the actor already starts Uniform.
+        QSignalBlocker blk(this->comboGalaxyColor);
+        this->comboGalaxyColor->clear();
+        this->comboGalaxyColor->addItem(u"Uniform"_s);
+        this->comboGalaxyColor->addItems(colourKeys);
+        this->comboGalaxyColor->setCurrentIndex(0);
+        this->comboGalaxyColor->setEnabled(true);
+    }
 
     // Reframe on the FIRST overlay so the galaxies are visible — if the catalogue
     // shares the field's frame they sit inside it; if not, the zoom-out makes the
@@ -199,5 +271,48 @@ void vtkWindowVectorField::setCatalogueVisible(bool on)
     if (!this->catalogueActor)
         return;
     this->catalogueActor->SetVisibility(on);
+    this->renderWindow->Render();
+}
+
+void vtkWindowVectorField::recolourCatalogue(const QString &key)
+{
+    if (!this->catalogueActor)
+        return;
+    auto *mapper = vtkPolyDataMapper::SafeDownCast(this->catalogueActor->GetMapper());
+    if (!mapper)
+        return;
+
+    if (key.isEmpty() || key == u"Uniform"_s) {
+        mapper->ScalarVisibilityOff();   // back to the flat gold colour
+        this->renderWindow->Render();
+        return;
+    }
+
+    auto *poly = vtkPolyData::SafeDownCast(mapper->GetInput());
+    vtkDataArray *arr = poly ? poly->GetPointData()->GetArray(key.toUtf8().constData()) : nullptr;
+    if (!arr) {
+        mapper->ScalarVisibilityOff();
+        this->renderWindow->Render();
+        return;
+    }
+
+    if (!this->catalogueLut) {
+        // Blue → red ramp, distinct from the field's speed colormap.
+        this->catalogueLut = vtkSmartPointer<vtkLookupTable>::New();
+        this->catalogueLut->SetHueRange(0.667, 0.0);
+        this->catalogueLut->SetNumberOfTableValues(256);
+        this->catalogueLut->Build();
+    }
+    double range[2];
+    arr->GetRange(range);
+    if (!(range[0] < range[1]))
+        range[1] = range[0] + 1.0;   // degenerate range → keep the LUT valid
+    this->catalogueLut->SetTableRange(range);
+
+    mapper->SetLookupTable(this->catalogueLut);
+    mapper->SetScalarModeToUsePointFieldData();
+    mapper->SelectColorArray(key.toUtf8().constData());
+    mapper->SetScalarRange(range);
+    mapper->ScalarVisibilityOn();
     this->renderWindow->Render();
 }

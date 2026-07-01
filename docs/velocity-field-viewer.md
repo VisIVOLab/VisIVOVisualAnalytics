@@ -149,6 +149,7 @@ all computed per axis so non-cubic grids are handled.
 | Basin type | attraction (superclusters) vs repulsion (voids) |
 | Overlay galaxy catalogue… | load a catalogue and draw its galaxies as points in this field's frame |
 | Show galaxies / Galaxy size | toggle the overlay / point size |
+| Galaxy color | Uniform, or colour by a numeric attribute / Speed \|v\| |
 
 ## Galaxy overlay (CosmicFlows combo)
 
@@ -174,8 +175,16 @@ matter for alignment, and the viewer guards both:
 The camera reframes on the first overlay (so the galaxies are visible — or a
 zoom-out makes a frame mismatch obvious); later re-overlays keep the current
 view. *Show galaxies* toggles visibility and *Galaxy size* sets the point size
-live. (First slice: one catalogue overlay, uniform colour. Colour-by-attribute,
-multiple overlays, and an async fetch are future work.)
+live.
+
+**Galaxy color** colours the points by a catalogue attribute rather than a flat
+gold. On overlay, a named `vtkFloatArray` is attached to the point cloud for each
+numeric column (values via the shared parser accessor), plus a derived
+**Speed |v|** = √(vx²+vy²+vz²) when vx/vy/vz are present. Selecting a key drives
+the mapper via `SetScalarModeToUsePointFieldData` + `SelectColorArray` through a
+blue→red LUT auto-ranged to the attribute; *Uniform* returns to the flat colour.
+Re-colouring never re-fetches. (Still future: a scalar bar for the galaxy
+attribute, multiple overlays, and an async fetch.)
 
 ## Tests
 

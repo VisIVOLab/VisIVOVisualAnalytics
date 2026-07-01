@@ -67,6 +67,7 @@ private:
     // Cartesian frame as the velocity field ("where galaxies sit in the flow").
     void overlayCatalogue();          // pick a catalogue, fetch XYZ, build the point actor
     void setCatalogueVisible(bool on);
+    void recolourCatalogue(const QString &key);   // colour galaxies by a catalogue attribute
 
     // Per-axis full-resolution cell size + centred origin (point-centred model:
     // box>0 → box/(n-1) and -box/2; else unit spacing, -(n-1)/2). The display
@@ -101,6 +102,7 @@ private:
     BackendVelocityBasinsResult m_basins;        // cached labels (re-placed on scale change)
 
     vtkSmartPointer<vtkActor> catalogueActor;    // overlaid galaxy point cloud
+    vtkSmartPointer<vtkLookupTable> catalogueLut; // attribute colour ramp (lazy)
     QString m_catalogueName;                     // basename, for the status label
     int m_catalogueCount = 0;                    // points drawn in the overlay
     QString m_summaryBase;                        // summary text before any overlay suffix
@@ -120,6 +122,7 @@ private:
     QPointer<QPushButton> btnOverlayCatalogue;
     QPointer<QCheckBox> chkShowCatalogue;
     QPointer<QDoubleSpinBox> spinCataloguePointSize;
+    QPointer<QComboBox> comboGalaxyColor;   // Uniform / numeric column / Speed |v|
     QPointer<QLabel> summaryLabel;
 };
 

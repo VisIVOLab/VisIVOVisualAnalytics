@@ -206,6 +206,13 @@ void vtkWindowVectorField::setupUi()
     this->spinCataloguePointSize->setValue(3.0);
     this->spinCataloguePointSize->setEnabled(false);
     overlayForm->addRow(u"Galaxy size"_s, this->spinCataloguePointSize);
+    this->comboGalaxyColor = new QComboBox(side);
+    this->comboGalaxyColor->addItem(u"Uniform"_s);
+    this->comboGalaxyColor->setEnabled(false);
+    this->comboGalaxyColor->setToolTip(
+            u"Colour the galaxies by a catalogue attribute (numeric column, or Speed |v| "
+            u"from vx/vy/vz) instead of a flat colour."_s);
+    overlayForm->addRow(u"Galaxy color"_s, this->comboGalaxyColor);
     sl->addLayout(overlayForm);
 
     sl->addStretch(1);
@@ -279,6 +286,8 @@ void vtkWindowVectorField::setupUi()
                              this->renderWindow->Render();
                          }
                      });
+    QObject::connect(this->comboGalaxyColor, &QComboBox::currentTextChanged, this,
+                     [this](const QString &key) { this->recolourCatalogue(key); });
 }
 
 void vtkWindowVectorField::setupRenderer()
