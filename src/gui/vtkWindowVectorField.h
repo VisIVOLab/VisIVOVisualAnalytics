@@ -107,6 +107,7 @@ private:
     void showCatalogueDensity(bool on);           // overdensity isosurface on/off
     void clearCatalogueOverlay();                 // remove the overlay + reset its controls
     void showBulkFlowProfile();                   // bulk flow |⟨v⟩| vs radius (galaxies vs field)
+    void showFieldBulkFlow();                     // the field's own bulk flow vs radius (no catalogue)
 
     // Per-axis full-resolution cell size + centred origin (point-centred model:
     // box>0 → box/(n-1) and -box/2; else unit spacing, -(n-1)/2). The display
@@ -177,6 +178,7 @@ private:
     QPointer<QCheckBox> chkFieldDensity;      // overdensity isosurface from ∇·v
     QPointer<QCheckBox> chkFieldVoid;         // void isosurface from ∇·v
     QPointer<QSlider> sliderFieldDensityLevel;
+    QPointer<QPushButton> btnFieldBulkFlow;   // reconstruction bulk flow vs radius
     QPointer<QPushButton> btnOverlayCatalogue;
     QPointer<QPushButton> btnRemoveCatalogue;
     QPointer<QPushButton> btnBulkFlow;

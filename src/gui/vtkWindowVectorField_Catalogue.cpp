@@ -770,6 +770,54 @@ void vtkWindowVectorField::showBulkFlowProfile()
     dlg->show();
 }
 
+void vtkWindowVectorField::showFieldBulkFlow()
+{
+    if (!this->imageData)
+        return;
+    auto *vel = vtkFloatArray::SafeDownCast(
+            this->imageData->GetPointData()->GetArray("velocity"));
+    if (!vel)
+        return;
+
+    // Farthest grid corner from the origin (observer) sets the radius range.
+    double b[6];
+    this->imageData->GetBounds(b);
+    const double rx = std::max(std::abs(b[0]), std::abs(b[1]));
+    const double ry = std::max(std::abs(b[2]), std::abs(b[3]));
+    const double rz = std::max(std::abs(b[4]), std::abs(b[5]));
+    const double rmax = std::sqrt(rx * rx + ry * ry + rz * rz);
+    if (rmax <= 0.0)
+        return;
+    constexpr int NB = 30;
+    QVector<double> radii(NB);
+    for (int k = 0; k < NB; ++k)
+        radii[k] = rmax * (k + 1) / NB;
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const QVector<double> bulk = bulkFlowVsRadius(this->imageData, vel, radii);
+    QApplication::restoreOverrideCursor();
+
+    // Non-modal plot: the reconstruction's own (volume-weighted) bulk flow.
+    auto *dlg = new QDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowTitle(u"Field bulk flow vs radius"_s);
+    auto *lay = new QVBoxLayout(dlg);
+    auto *plot = new QCustomPlot(dlg);
+    plot->addGraph();
+    plot->graph(0)->setData(radii, bulk);
+    plot->graph(0)->setName(u"Reconstruction"_s);
+    plot->graph(0)->setPen(QPen(QColor(80, 160, 230), 2));
+    plot->xAxis->setLabel(this->m_boxMpc > 0.0 ? u"Radius (Mpc)"_s
+                                               : u"Radius (grid units)"_s);
+    plot->yAxis->setLabel(u"Bulk flow |⟨v⟩| (km/s)"_s);
+    plot->legend->setVisible(true);
+    plot->rescaleAxes();
+    plot->replot();
+    lay->addWidget(plot);
+    dlg->resize(560, 400);
+    dlg->show();
+}
+
 void vtkWindowVectorField::setCatalogueShape(const QString &mode)
 {
     if (!this->catalogueActor)

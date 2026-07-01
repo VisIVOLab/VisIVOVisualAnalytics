@@ -189,6 +189,7 @@ any window height.
 | Show basins | gravitational-basin (watershed) regions — Laniakea-style superclusters |
 | Overdensity (−∇·v) / Void (+∇·v) | density-from-divergence isosurfaces — convergent (orange) / divergent (blue) cores |
 | ∇·v level % | shared isosurface level for both (% of peak convergence/divergence) |
+| Field bulk flow vs radius | plot the reconstruction's own volume-weighted bulk flow \|⟨v⟩\| in spheres (no catalogue needed; ≈0 for a symmetric field, non-zero for a coherent one) |
 | Basin type | attraction (superclusters) vs repulsion (voids) |
 | Overlay galaxy catalogue… | load a catalogue and draw its galaxies as points in this field's frame |
 | Show galaxies / Galaxy size | toggle the overlay / point size |

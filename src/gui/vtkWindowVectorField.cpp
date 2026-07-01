@@ -214,6 +214,13 @@ void vtkWindowVectorField::setupUi()
             u"tighter cores). Applies to both Overdensity and Void."_s);
     structForm->addRow(u"∇·v level %"_s, this->sliderFieldDensityLevel);
 
+    this->btnFieldBulkFlow = new QPushButton(u"Field bulk flow vs radius…"_s, side);
+    this->btnFieldBulkFlow->setToolTip(
+            u"Plot the reconstruction's own bulk flow |⟨v⟩| in spheres of growing "
+            u"radius about the observer — the field's coherent large-scale motion, "
+            u"available without a catalogue."_s);
+    structForm->addRow(this->btnFieldBulkFlow);
+
     this->btnLoadRoi = new QPushButton(u"Load full-res ROI"_s, side);
     this->btnLoadRoi->setEnabled(false);
     this->btnLoadRoi->setToolTip(
@@ -359,6 +366,8 @@ void vtkWindowVectorField::setupUi()
                      [this](bool on) { this->showFieldDensity(on); });
     QObject::connect(this->chkFieldVoid, &QCheckBox::toggled, this,
                      [this](bool on) { this->showFieldVoid(on); });
+    QObject::connect(this->btnFieldBulkFlow, &QPushButton::clicked, this,
+                     [this]() { this->showFieldBulkFlow(); });
     QObject::connect(this->sliderFieldDensityLevel, &QSlider::valueChanged, this,
                      [this](int) {
                          if (this->chkFieldDensity && this->chkFieldDensity->isChecked())
