@@ -111,6 +111,7 @@ co-registered, so the overlay actually aligns.
 |---|---|---|
 | Overlay (async) | pick the CSV | 23.5 k gold points land **inside** the field box; button disables during load |
 | Galaxy colour + legend | Galaxy color → *Speed \|v\|* (or `mass`) | recolours; a legend appears **left**; centre = low speed (cyan), edge = high (red) |
+| **Field agreement** | Galaxy color → *Field agreement* | ≈ +1 (red) almost everywhere — the demo galaxies carry the field velocity + noise, so they flow *with* the reconstruction |
 | Velocity arrows | Galaxy shape → *Velocity arrows* | galaxy arrows point toward centre — **same direction as the field** |
 | Density isosurface | check *Galaxy density*; drag *Density level %* | translucent cyan surface wraps the 5 clusters; tightens with level |
 | Show galaxies / size | toggle / spin | overlay hides / points resize |

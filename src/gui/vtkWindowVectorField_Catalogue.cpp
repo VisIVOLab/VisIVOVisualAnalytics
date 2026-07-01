@@ -21,6 +21,7 @@
 #include <vtkPoints.h>
 #include <vtkPolyData.h>
 #include <vtkPolyDataMapper.h>
+#include <vtkProbeFilter.h>
 #include <vtkProperty.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderer.h>
@@ -28,6 +29,7 @@
 
 #include <QComboBox>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -279,6 +281,48 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
         if (addSpeed) {
             poly->GetPointData()->AddArray(speed);
             colourKeys << u"Speed |v|"_s;
+        }
+
+        // Field agreement: cos(angle) between each galaxy's peculiar velocity and
+        // the reconstructed field at its location — the CosmicFlows "do galaxies
+        // flow with the reconstruction?" diagnostic. Sample the field grid with a
+        // probe filter (galaxies outside the box / zero-velocity → 0).
+        if (this->imageData) {
+            vtkNew<vtkProbeFilter> probe;
+            probe->SetInputData(poly);            // galaxies
+            probe->SetSourceData(this->imageData);  // field grid ("velocity" vectors)
+            // Don't pass the galaxies' own arrays through — the input already has
+            // a "velocity" array, so passthrough would shadow the interpolated
+            // field "velocity" and make the agreement identically 1.
+            probe->PassPointArraysOff();
+            probe->Update();
+            auto *probed = vtkPolyData::SafeDownCast(probe->GetOutput());
+            auto *fieldV = probed ? vtkFloatArray::SafeDownCast(
+                                   probed->GetPointData()->GetArray("velocity"))
+                                  : nullptr;
+            vtkDataArray *mask = probed
+                    ? probed->GetPointData()->GetArray("vtkValidPointMask")
+                    : nullptr;
+            if (fieldV) {
+                vtkNew<vtkFloatArray> agree;
+                agree->SetName("Field agreement");
+                agree->SetNumberOfTuples(nPts);
+                for (vtkIdType i = 0; i < nPts; ++i) {
+                    double g[3], fv[3];
+                    vel->GetTuple(i, g);
+                    fieldV->GetTuple(i, fv);
+                    const bool valid = !mask || mask->GetComponent(i, 0) != 0.0;
+                    const double gm = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+                    const double fm = std::sqrt(fv[0] * fv[0] + fv[1] * fv[1] + fv[2] * fv[2]);
+                    double a = 0.0;
+                    if (valid && gm > 1e-9 && fm > 1e-9)
+                        a = (g[0] * fv[0] + g[1] * fv[1] + g[2] * fv[2]) / (gm * fm);
+                    a = std::max(-1.0, std::min(1.0, a));   // guard fp roundoff
+                    agree->SetValue(i, static_cast<float>(a));
+                }
+                poly->GetPointData()->AddArray(agree);
+                colourKeys << u"Field agreement"_s;
+            }
         }
     }
 

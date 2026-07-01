@@ -186,7 +186,14 @@ live.
 **Galaxy color** colours the points by a catalogue attribute rather than a flat
 gold. On overlay, a named `vtkFloatArray` is attached to the point cloud for each
 numeric column (values via the shared parser accessor), plus a derived
-**Speed |v|** = √(vx²+vy²+vz²) when vx/vy/vz are present. Selecting a key drives
+**Speed |v|** = √(vx²+vy²+vz²) when vx/vy/vz are present, and — when vx/vy/vz are
+present *and* a field is loaded — a **Field agreement** scalar: the cosine of the
+angle between each galaxy's peculiar velocity and the reconstructed field
+sampled at its position (`vtkProbeFilter`, with the galaxies' own arrays not
+passed through so the interpolated field velocity isn't shadowed). +1 = the
+galaxy flows *with* the reconstruction, −1 = against it, 0 = outside the field
+box. This is the CosmicFlows "does the reconstruction predict the observed
+motions?" diagnostic. Selecting a key drives
 the mapper via `SetScalarModeToUsePointFieldData` + `SelectColorArray` through a
 blue→red LUT auto-ranged to the attribute; *Uniform* returns to the flat colour.
 Re-colouring never re-fetches.
