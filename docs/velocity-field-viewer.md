@@ -172,6 +172,11 @@ all computed per axis so non-cubic grids are handled.
 
 ## Sidebar controls
 
+The panel is grouped into **Flow** (glyphs / streamlines / display scale),
+**Structure** (ROI + derived cosmography: basins, ∇·v overdensity/void), and
+**Galaxy overlay** sections, in a scroll area so the (now sizeable) toolkit fits
+any window height.
+
 | Control | Effect |
 | --- | --- |
 | Arrows / Streamlines | toggle each actor set |

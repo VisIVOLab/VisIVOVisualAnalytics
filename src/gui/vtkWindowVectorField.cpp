@@ -39,6 +39,8 @@
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
+#include <QGroupBox>
+#include <QScrollArea>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
@@ -117,7 +119,9 @@ void vtkWindowVectorField::setupUi()
     this->summaryLabel->setWordWrap(true);
     sl->addWidget(this->summaryLabel);
 
-    auto *form = new QFormLayout;
+    // ── Flow: glyphs / streamlines / display scale ──────────────────────────
+    auto *flowGroup = new QGroupBox(u"Flow"_s, side);
+    auto *form = new QFormLayout(flowGroup);
 
     this->chkGlyphs = new QCheckBox(side);
     this->chkGlyphs->setChecked(true);
@@ -166,16 +170,21 @@ void vtkWindowVectorField::setupUi()
     }
     this->comboLut->setCurrentText(u"Inferno"_s);
     form->addRow(u"Colormap"_s, this->comboLut);
+    sl->addWidget(flowGroup);
+
+    // ── Structure: ROI + derived cosmography (basins, density) ──────────────
+    auto *structGroup = new QGroupBox(u"Structure"_s, side);
+    auto *structForm = new QFormLayout(structGroup);
 
     this->chkRoi = new QCheckBox(side);
     this->chkRoi->setToolTip(u"Show an interactive box; drag it to choose a region"_s);
-    form->addRow(u"Define ROI"_s, this->chkRoi);
+    structForm->addRow(u"Define ROI"_s, this->chkRoi);
 
     this->chkBasins = new QCheckBox(side);
     this->chkBasins->setToolTip(
             u"Gravitational basins (watershed): regions whose streamlines converge to the "
             u"same attractor — the Laniakea-style supercluster definition."_s);
-    form->addRow(u"Show basins"_s, this->chkBasins);
+    structForm->addRow(u"Show basins"_s, this->chkBasins);
 
     this->comboBasinDir = new QComboBox(side);
     this->comboBasinDir->addItem(u"Attraction (superclusters)"_s);
@@ -183,47 +192,48 @@ void vtkWindowVectorField::setupUi()
     this->comboBasinDir->setToolTip(
             u"Basins of attraction (where flows converge → superclusters) or of "
             u"repulsion (where flows diverge → voids / repellers)."_s);
-    form->addRow(u"Basin type"_s, this->comboBasinDir);
+    structForm->addRow(u"Basin type"_s, this->comboBasinDir);
 
     this->chkFieldDensity = new QCheckBox(side);
     this->chkFieldDensity->setToolTip(
             u"Overdensity proxy from the velocity divergence (δ ∝ −∇·v, linear "
             u"theory): an isosurface of the convergent (∇·v < 0) cores. Best on a "
             u"structured field — a uniform-divergence flow has no isosurface."_s);
-    form->addRow(u"Overdensity (−∇·v)"_s, this->chkFieldDensity);
+    structForm->addRow(u"Overdensity (−∇·v)"_s, this->chkFieldDensity);
     this->chkFieldVoid = new QCheckBox(side);
     this->chkFieldVoid->setToolTip(
             u"Void proxy from the velocity divergence: an isosurface of the divergent "
             u"(∇·v > 0) cores — underdensities / repellers (the Local Void, Dipole "
             u"Repeller). Needs a diverging region (a flow source)."_s);
-    form->addRow(u"Void (+∇·v)"_s, this->chkFieldVoid);
+    structForm->addRow(u"Void (+∇·v)"_s, this->chkFieldVoid);
     this->sliderFieldDensityLevel = new QSlider(Qt::Horizontal, side);
     this->sliderFieldDensityLevel->setRange(5, 95);
     this->sliderFieldDensityLevel->setValue(35);
     this->sliderFieldDensityLevel->setToolTip(
             u"∇·v isosurface level, as % of the peak convergence/divergence (higher = "
             u"tighter cores). Applies to both Overdensity and Void."_s);
-    form->addRow(u"∇·v level %"_s, this->sliderFieldDensityLevel);
-
-    sl->addLayout(form);
+    structForm->addRow(u"∇·v level %"_s, this->sliderFieldDensityLevel);
 
     this->btnLoadRoi = new QPushButton(u"Load full-res ROI"_s, side);
     this->btnLoadRoi->setEnabled(false);
     this->btnLoadRoi->setToolTip(
             u"Fetch the boxed region at full resolution (the display grid is a downsampled LOD)"_s);
-    sl->addWidget(this->btnLoadRoi);
+    structForm->addRow(this->btnLoadRoi);
+    sl->addWidget(structGroup);
 
     // ── Galaxy overlay (CosmicFlows combo) ──────────────────────────────────
+    auto *ovGroup = new QGroupBox(u"Galaxy overlay"_s, side);
+    auto *ovLay = new QVBoxLayout(ovGroup);
     this->btnOverlayCatalogue = new QPushButton(u"Overlay galaxy catalogue…"_s, side);
     this->btnOverlayCatalogue->setToolTip(
             u"Load a Cartesian (X/Y/Z Mpc) catalogue and draw its galaxies as points in "
             u"this velocity field's frame — 'where galaxies sit in the flow'. Both must "
             u"share the same coordinate system/origin to align."_s);
-    sl->addWidget(this->btnOverlayCatalogue);
+    ovLay->addWidget(this->btnOverlayCatalogue);
     this->btnRemoveCatalogue = new QPushButton(u"Remove overlay"_s, side);
     this->btnRemoveCatalogue->setEnabled(false);
     this->btnRemoveCatalogue->setToolTip(u"Remove the overlaid galaxies, density and legend."_s);
-    sl->addWidget(this->btnRemoveCatalogue);
+    ovLay->addWidget(this->btnRemoveCatalogue);
 
     auto *overlayForm = new QFormLayout;
     overlayForm->setContentsMargins(0, 0, 0, 0);
@@ -265,7 +275,7 @@ void vtkWindowVectorField::setupUi()
     this->sliderDensityLevel->setEnabled(false);
     this->sliderDensityLevel->setToolTip(u"Isosurface level as a percentage of peak density."_s);
     overlayForm->addRow(u"Density level %"_s, this->sliderDensityLevel);
-    sl->addLayout(overlayForm);
+    ovLay->addLayout(overlayForm);
 
     this->btnBulkFlow = new QPushButton(u"Bulk flow vs radius…"_s, side);
     this->btnBulkFlow->setEnabled(false);
@@ -273,10 +283,18 @@ void vtkWindowVectorField::setupUi()
             u"Plot the bulk-flow amplitude |⟨v⟩| in spheres of growing radius — the "
             u"galaxies vs the reconstructed field. The Watkins–Feldman–Hudson curve "
             u"(its amplitude vs scale tests ΛCDM)."_s);
-    sl->addWidget(this->btnBulkFlow);
+    ovLay->addWidget(this->btnBulkFlow);
+    sl->addWidget(ovGroup);
 
     sl->addStretch(1);
-    root->addWidget(side, 0);
+    // The grouped panel can be taller than the window — make it scroll.
+    auto *sideScroll = new QScrollArea(central);
+    sideScroll->setWidget(side);
+    sideScroll->setWidgetResizable(true);
+    sideScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    sideScroll->setMaximumWidth(320);
+    sideScroll->setFrameShape(QFrame::NoFrame);
+    root->addWidget(sideScroll, 0);
     this->setCentralWidget(central);
 
     // Summary text (incl. LOD note when the display grid is downsampled).
@@ -300,7 +318,7 @@ void vtkWindowVectorField::setupUi()
         this->chkRoi->setEnabled(false);
         this->chkRoi->setToolTip(why);
         this->btnLoadRoi->setToolTip(why);
-        if (auto *lbl = qobject_cast<QLabel *>(form->labelForField(this->chkRoi))) {
+        if (auto *lbl = qobject_cast<QLabel *>(structForm->labelForField(this->chkRoi))) {
             lbl->setText(u"Define ROI (n/a — full res)"_s);
         }
     }
