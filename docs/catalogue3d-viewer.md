@@ -18,9 +18,32 @@ mode uses a plain points actor instead.
 **Picking is independent of the render pipeline** — `pickNearestSource()` does a
 CPU nearest-source search projecting each catalogue entry to display coordinates,
 and hover/selection use separate highlight-sphere actors. So the glyph mapper can
-be changed freely without affecting picking/selection. (Out-of-core LOD —
-octree / k-d / point-budget — and throttling the O(N) hover pick are future F5
-work.)
+be changed freely without affecting picking/selection.
+
+### Render budget (GPU point LOD)
+
+Rotating millions of *real* glyphs (sphere/arrow geometry) is GPU-heavy, so the
+mappers are fed through a **`vtkMaskPoints` decimator** when the catalogue exceeds
+the **Render budget** (Visualization ▸ encoding card; 500k / 1M / 2M / 5M /
+Unlimited, default 1M). `applyRenderBudget()` sets the decimator to a
+**deterministic stride** (`OnRatio = ⌈N/budget⌉`, `RandomMode` **off**) and
+routes the glyph + points mappers to its output; under budget (or *Unlimited*)
+the mappers read `sourcesPolyData` directly with no extra pass.
+
+Stride — not `vtkMaskPoints` RandomMode — is used deliberately: every random
+distribution (RANDOM_SAMPLING, RANDOMIZED_ID_STRIDES, SPATIALLY_STRATIFIED)
+**reseeds on each `Update()`**, so it re-picks a *different* subset every time a
+colour/size/position edit bumps the input's MTime — the cloud would visibly
+shimmer (verified against VTK 9.6.2). Stride is stable across re-executions and,
+for ID-ordered catalogues, samples all spatial regions proportionally so density
+still reads correctly. Colour/scale edits (`morphScalars->Modified()` etc.)
+propagate through the decimator to the subsample.
+
+**Only the GPU-fed polydata is thinned** — `pickNearestSource()`, region stats
+and `ResetCamera` framing all use the complete entry list. When decimation is
+active the Filters status shows *"Render budget: drawing ≤N of M points (LOD) —
+picking and stats use all"*. (Out-of-core streaming — octree / k-d tiling for
+catalogues too large for RAM — remains future work.)
 
 ### Chunked scene build (responsiveness for millions of points)
 
@@ -50,9 +73,9 @@ switches to a **chunked** build so the window never shows as *"not responding"*:
   pending `QFuture` result isn't replaced before it's consumed.
 
 This keeps the *Load all* of a ~3.9M-point snapshot responsive during the
-multi-second build. (Out-of-core LOD / point budget — capping how many points
-reach the GPU — is still future F5 work; chunking only addresses UI
-responsiveness, not the cost of materialising every entry.)
+multi-second build. (Chunking addresses build-time UI responsiveness; the GPU
+render cost is handled separately by the *Render budget* below, and per-entry RAM
+by the compact row store.)
 
 ### Per-entry memory (compact row store)
 

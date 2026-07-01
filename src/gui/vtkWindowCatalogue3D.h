@@ -252,12 +252,15 @@ private:
     vtkNew<vtkCubeSource> pointCubeSource;
     vtkNew<vtkAppendPolyData> crossSource;
     // Render LOD: when the catalogue exceeds m_renderBudget points, the mappers
-    // are fed a density-preserving random subsample of this many points (full
+    // are fed a deterministic stride subsample of about this many points (full
     // data is kept for picking / stats / camera framing). 0 = unlimited.
     vtkNew<vtkMaskPoints> renderDecimator;
     int m_renderBudget{ 1000000 };
     bool m_renderDecimated{ false };
     void applyRenderBudget();
+    /// Status text when the GPU point budget is thinning the cloud (empty when
+    /// the full cloud is drawn). Reassures that picking/stats use every source.
+    QString renderBudgetStatusText() const;
 
     vtkNew<vtkGlyph3DMapper> glyphMapper;
     vtkNew<vtkActor> glyphActor;

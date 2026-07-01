@@ -407,7 +407,7 @@ void vtkWindowCatalogue3D::buildScene()
         this->m_sceneBuilding = false;
         QApplication::restoreOverrideCursor();
         if (this->filterStatusLabel)
-            this->filterStatusLabel->setText({});
+            this->filterStatusLabel->setText(this->renderBudgetStatusText());
         // Apply a cosmology result that arrived (and was deferred) during the
         // build — now exactly once, with m_sceneBuilding cleared.
         if (this->m_cosmologyFinishDeferred) {
@@ -751,11 +751,22 @@ void vtkWindowCatalogue3D::updateColorMapping()
             << "range:" << mapperRange[0] << mapperRange[1];
 }
 
+QString vtkWindowCatalogue3D::renderBudgetStatusText() const
+{
+    if (!this->m_renderDecimated)
+        return {};
+    return QStringLiteral(
+                   "Render budget: drawing ≤%L1 of %L2 points (LOD) — picking and stats use all")
+            .arg(this->m_renderBudget)
+            .arg(static_cast<qulonglong>(this->entries.size()));
+}
+
 void vtkWindowCatalogue3D::applyRenderBudget()
 {
-    // Above the budget, render a density-preserving random subsample so glyph
-    // modes (real sphere/arrow geometry) stay smooth to rotate at millions of
-    // points. The full entry list is untouched — picking, region stats and
+    // Above the budget, render a deterministic density-preserving stride
+    // subsample so glyph modes (real sphere/arrow geometry) stay smooth to
+    // rotate at millions of points. The full entry list is untouched — picking,
+    // region stats and
     // ResetCamera framing all use the complete data, only the GPU-fed polydata
     // is thinned. Under budget (or budget == 0) the mappers read the cloud
     // directly with no extra pipeline pass.
@@ -764,15 +775,18 @@ void vtkWindowCatalogue3D::applyRenderBudget()
     this->m_renderDecimated = decimate;
 
     if (decimate) {
+        // Deterministic stride (keep every k-th point), NOT vtkMaskPoints'
+        // RandomMode: every random distribution — RANDOM_SAMPLING,
+        // RANDOMIZED_ID_STRIDES, SPATIALLY_STRATIFIED — reseeds on each Update(),
+        // so it re-picks a *different* subset every time colour/size/position
+        // edits bump the input MTime, making the cloud shimmer (verified against
+        // VTK 9.6.2). OnRatio is stable and, for ID-ordered catalogues, samples
+        // all spatial regions proportionally so density still reads correctly.
+        const int ratio = std::max<vtkIdType>(1, (n + this->m_renderBudget - 1)
+                                                          / this->m_renderBudget);
         this->renderDecimator->SetInputData(this->sourcesPolyData);
-        this->renderDecimator->SetMaximumNumberOfPoints(this->m_renderBudget);
-        this->renderDecimator->RandomModeOn();
-        // RANDOM_SAMPLING keeps the spatial density (denser structure keeps more
-        // points), so cosmic-web filaments/voids still read correctly.
-        this->renderDecimator->SetRandomModeType(vtkMaskPoints::RANDOM_SAMPLING);
-        // Fixed seed → the same subsample on every pipeline re-execution (colour
-        // and size edits bump the input's MTime), so the cloud never "shimmers".
-        this->renderDecimator->SetRandomSeed(1);
+        this->renderDecimator->RandomModeOff();
+        this->renderDecimator->SetOnRatio(ratio);
         this->renderDecimator->GenerateVerticesOn();   // Point mode needs vert cells
         this->renderDecimator->SingleVertexPerCellOn();
         this->glyphMapper->SetInputConnection(this->renderDecimator->GetOutputPort());

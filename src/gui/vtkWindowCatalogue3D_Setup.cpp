@@ -226,6 +226,9 @@ void vtkWindowCatalogue3D::setupSidebar()
                                  return;
                              this->applyRenderBudget();
                              this->renderWindow->Render();
+                             if (this->filterStatusLabel)
+                                 this->filterStatusLabel->setText(
+                                         this->renderBudgetStatusText());
                          });
         pageLayout->addWidget(encCard);
 
