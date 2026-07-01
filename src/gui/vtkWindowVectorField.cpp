@@ -29,6 +29,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QSlider>
 #include <QColor>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -221,6 +222,18 @@ void vtkWindowVectorField::setupUi()
             u"arrows oriented and scaled by each galaxy's peculiar velocity, to compare "
             u"against the reconstructed flow field."_s);
     overlayForm->addRow(u"Galaxy shape"_s, this->comboGalaxyShape);
+    this->chkGalaxyDensity = new QCheckBox(side);
+    this->chkGalaxyDensity->setEnabled(false);
+    this->chkGalaxyDensity->setToolTip(
+            u"Bin the galaxies into a density field and show an overdensity isosurface — "
+            u"where large-scale structure (filaments/clusters) sits in the flow."_s);
+    overlayForm->addRow(u"Galaxy density"_s, this->chkGalaxyDensity);
+    this->sliderDensityLevel = new QSlider(Qt::Horizontal, side);
+    this->sliderDensityLevel->setRange(5, 95);
+    this->sliderDensityLevel->setValue(30);
+    this->sliderDensityLevel->setEnabled(false);
+    this->sliderDensityLevel->setToolTip(u"Isosurface level as a percentage of peak density."_s);
+    overlayForm->addRow(u"Density level %"_s, this->sliderDensityLevel);
     sl->addLayout(overlayForm);
 
     sl->addStretch(1);
@@ -298,6 +311,13 @@ void vtkWindowVectorField::setupUi()
                      [this](const QString &key) { this->recolourCatalogue(key); });
     QObject::connect(this->comboGalaxyShape, &QComboBox::currentTextChanged, this,
                      [this](const QString &mode) { this->setCatalogueShape(mode); });
+    QObject::connect(this->chkGalaxyDensity, &QCheckBox::toggled, this,
+                     [this](bool on) { this->showCatalogueDensity(on); });
+    QObject::connect(this->sliderDensityLevel, &QSlider::valueChanged, this,
+                     [this](int) {
+                         if (this->chkGalaxyDensity && this->chkGalaxyDensity->isChecked())
+                             this->updateCatalogueDensityContour();
+                     });
     QObject::connect(&this->m_catalogueWatcher,
                      &QFutureWatcher<CatalogueOverlayData>::finished, this,
                      [this]() { this->onCatalogueOverlayReady(); });

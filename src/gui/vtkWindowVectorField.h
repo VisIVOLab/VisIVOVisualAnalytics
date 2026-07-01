@@ -35,6 +35,7 @@ class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
 class QPushButton;
+class QSlider;
 class QSpinBox;
 class QVTKOpenGLNativeWidget;
 class vtkActor;
@@ -92,6 +93,9 @@ private:
     void setCatalogueVisible(bool on);
     void recolourCatalogue(const QString &key);   // colour galaxies by a catalogue attribute
     void setCatalogueShape(const QString &mode);  // Points vs Velocity arrows
+    void buildCatalogueDensity();                 // bin galaxy points → smoothed density grid
+    void updateCatalogueDensityContour();         // (re)contour the grid at the current level
+    void showCatalogueDensity(bool on);           // overdensity isosurface on/off
 
     // Per-axis full-resolution cell size + centred origin (point-centred model:
     // box>0 → box/(n-1) and -box/2; else unit spacing, -(n-1)/2). The display
@@ -133,6 +137,9 @@ private:
     vtkSmartPointer<vtkLookupTable> catalogueLut; // attribute colour ramp (lazy)
     vtkSmartPointer<vtkScalarBarActor> catalogueScalarBar;  // galaxy-attribute legend (left)
     bool m_catalogueHasVelocity = false;         // vx/vy/vz present → arrows available
+    vtkSmartPointer<vtkImageData> catalogueDensityGrid;   // smoothed galaxy-density field (lazy)
+    vtkSmartPointer<vtkActor> catalogueDensityActor;      // overdensity isosurface
+    double m_catalogueDensityMax = 0.0;          // peak density → contour level = frac·max
     QString m_catalogueName;                     // basename, for the status label
     int m_catalogueCount = 0;                    // points drawn in the overlay
     QString m_summaryBase;                        // summary text before any overlay suffix
@@ -155,6 +162,8 @@ private:
     QPointer<QDoubleSpinBox> spinCataloguePointSize;
     QPointer<QComboBox> comboGalaxyColor;   // Uniform / numeric column / Speed |v|
     QPointer<QComboBox> comboGalaxyShape;   // Points / Velocity arrows
+    QPointer<QCheckBox> chkGalaxyDensity;   // overdensity isosurface toggle
+    QPointer<QSlider> sliderDensityLevel;   // isosurface level (% of peak)
     QPointer<QLabel> summaryLabel;
 };
 

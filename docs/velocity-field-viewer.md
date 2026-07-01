@@ -151,6 +151,7 @@ all computed per axis so non-cubic grids are handled.
 | Show galaxies / Galaxy size | toggle the overlay / point size |
 | Galaxy color | Uniform, or colour by a numeric attribute / Speed \|v\| |
 | Galaxy shape | Points, or Velocity arrows (peculiar-velocity glyphs) when vx/vy/vz exist |
+| Galaxy density / Density level % | overdensity isosurface from the galaxies + its level |
 
 ## Galaxy overlay (CosmicFlows combo)
 
@@ -202,6 +203,15 @@ peculiar velocities against the reconstructed flow field. Colour still follows
 point-size and is disabled in arrow mode. The overlay keeps both a points mapper
 and a glyph mapper on the same point cloud, so shape/colour switch with no
 re-fetch.
+
+**Galaxy density** overlays an **overdensity isosurface** built from the galaxies
+themselves — where large-scale structure (filaments/clusters) sits relative to
+the flow. On first toggle the points are accumulated onto a 48³ grid over the
+catalogue bounds, Gaussian-smoothed into a density field (`vtkImageGaussianSmooth`),
+and contoured (`vtkFlyingEdges3D`) at *Density level %* of the peak — a translucent
+pale-cyan surface you can see the flow through. The grid is cached (rebuilt only
+on a new overlay); moving the level slider just re-contours. (All client-side on
+the GUI thread — a 48³ smooth of ≤100k points is milliseconds.)
 
 The open/query/parse runs **off the GUI thread** (`QtConcurrent` +
 `QFutureWatcher`), so a large catalogue doesn't freeze the UI: the worker

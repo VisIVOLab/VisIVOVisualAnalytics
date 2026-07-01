@@ -51,6 +51,7 @@ find_package(VTK 9.5.0 CONFIG REQUIRED COMPONENTS
         FiltersModeling
         FiltersStatistics
         GUISupportQt
+        ImagingGeneral
         InteractionStyle
         InteractionWidgets
         RenderingAnnotation

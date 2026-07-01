@@ -10,7 +10,10 @@
 #include <vtkCoordinate.h>
 #include <vtkDataArray.h>
 #include <vtkFloatArray.h>
+#include <vtkFlyingEdges3D.h>
 #include <vtkGlyph3DMapper.h>
+#include <vtkImageData.h>
+#include <vtkImageGaussianSmooth.h>
 #include <vtkLookupTable.h>
 #include <vtkMapper.h>
 #include <vtkNew.h>
@@ -26,6 +29,7 @@
 #include <QComboBox>
 
 #include <cmath>
+#include <cstring>
 
 #include <QApplication>
 #include <QCheckBox>
@@ -35,6 +39,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QSlider>
 #include <QStatusBar>
 #include <QtConcurrent>
 
@@ -357,6 +362,22 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
     if (this->catalogueScalarBar)
         this->catalogueScalarBar->VisibilityOff();
 
+    // Invalidate any density field from a previous overlay; rebuilt lazily when
+    // the user turns it on for this catalogue.
+    this->catalogueDensityGrid = nullptr;
+    this->m_catalogueDensityMax = 0.0;
+    if (this->catalogueDensityActor) {
+        this->renderer->RemoveActor(this->catalogueDensityActor);
+        this->catalogueDensityActor = nullptr;
+    }
+    if (this->chkGalaxyDensity) {
+        QSignalBlocker blk(this->chkGalaxyDensity);
+        this->chkGalaxyDensity->setChecked(false);
+        this->chkGalaxyDensity->setEnabled(true);
+    }
+    if (this->sliderDensityLevel)
+        this->sliderDensityLevel->setEnabled(true);
+
     // Reframe on the FIRST overlay so the galaxies are visible — if the catalogue
     // shares the field's frame they sit inside it; if not, the zoom-out makes the
     // mismatch obvious. Later re-overlays keep the user's current view.
@@ -393,6 +414,107 @@ void vtkWindowVectorField::setCatalogueVisible(bool on)
         this->catalogueScalarBar->SetVisibility(on && coloured);
     }
     this->renderWindow->Render();
+}
+
+void vtkWindowVectorField::buildCatalogueDensity()
+{
+    if (!this->cataloguePoly)
+        return;
+    vtkPoints *pts = this->cataloguePoly->GetPoints();
+    const vtkIdType n = pts ? pts->GetNumberOfPoints() : 0;
+    if (n == 0)
+        return;
+
+    // Accumulate each galaxy at its nearest point of a coarse grid over the
+    // catalogue bounds (a point-sampled density field, not cell counts).
+    constexpr int N = 48;
+    double b[6];
+    this->cataloguePoly->GetBounds(b);
+    double ext[3] = { b[1] - b[0], b[3] - b[2], b[5] - b[4] };
+    for (double &e : ext)
+        if (e <= 0.0)
+            e = 1.0;   // guard a flat axis
+    const double sp[3] = { ext[0] / (N - 1), ext[1] / (N - 1), ext[2] / (N - 1) };
+
+    vtkNew<vtkImageData> grid;
+    grid->SetDimensions(N, N, N);
+    grid->SetOrigin(b[0], b[2], b[4]);
+    grid->SetSpacing(sp[0], sp[1], sp[2]);
+    const vtkIdType nCells = static_cast<vtkIdType>(N) * N * N;
+    vtkNew<vtkFloatArray> dens;
+    dens->SetName("density");
+    dens->SetNumberOfTuples(nCells);
+    float *d = static_cast<float *>(dens->GetVoidPointer(0));
+    std::memset(d, 0, sizeof(float) * static_cast<std::size_t>(nCells));
+    const auto clampIdx = [](double t) {
+        const int i = static_cast<int>(t + 0.5);
+        return i < 0 ? 0 : (i > N - 1 ? N - 1 : i);
+    };
+    for (vtkIdType i = 0; i < n; ++i) {
+        double p[3];
+        pts->GetPoint(i, p);
+        const int ix = clampIdx((p[0] - b[0]) / sp[0]);
+        const int iy = clampIdx((p[1] - b[2]) / sp[1]);
+        const int iz = clampIdx((p[2] - b[4]) / sp[2]);
+        d[ix + N * (iy + N * iz)] += 1.0f;   // vtkImageData point id = x + N·(y + N·z)
+    }
+    grid->GetPointData()->SetScalars(dens);
+
+    // Smooth the counts into a continuous density field for clean isosurfaces.
+    vtkNew<vtkImageGaussianSmooth> smooth;
+    smooth->SetInputData(grid);
+    smooth->SetStandardDeviations(1.2, 1.2, 1.2);
+    smooth->SetRadiusFactors(2.0, 2.0, 2.0);
+    smooth->Update();
+    this->catalogueDensityGrid = smooth->GetOutput();
+
+    double r[2] = { 0.0, 0.0 };
+    if (auto *scal = this->catalogueDensityGrid->GetPointData()->GetScalars())
+        scal->GetRange(r);
+    this->m_catalogueDensityMax = r[1];
+}
+
+void vtkWindowVectorField::updateCatalogueDensityContour()
+{
+    if (!this->catalogueDensityGrid || this->m_catalogueDensityMax <= 0.0)
+        return;
+    const double frac = (this->sliderDensityLevel ? this->sliderDensityLevel->value() : 30) / 100.0;
+    const double level = frac * this->m_catalogueDensityMax;
+
+    vtkNew<vtkFlyingEdges3D> surf;
+    surf->SetInputData(this->catalogueDensityGrid);
+    surf->SetValue(0, level);
+    surf->ComputeNormalsOn();
+
+    vtkNew<vtkPolyDataMapper> mapper;
+    mapper->SetInputConnection(surf->GetOutputPort());
+    mapper->ScalarVisibilityOff();
+
+    if (this->catalogueDensityActor)
+        this->renderer->RemoveActor(this->catalogueDensityActor);
+    this->catalogueDensityActor = vtkSmartPointer<vtkActor>::New();
+    this->catalogueDensityActor->SetMapper(mapper);
+    this->catalogueDensityActor->GetProperty()->SetColor(0.55, 0.85, 1.0);  // pale cyan
+    this->catalogueDensityActor->GetProperty()->SetOpacity(0.25);   // see the flow through it
+    this->renderer->AddActor(this->catalogueDensityActor);
+    this->renderWindow->Render();
+}
+
+void vtkWindowVectorField::showCatalogueDensity(bool on)
+{
+    if (!on) {
+        if (this->catalogueDensityActor)
+            this->catalogueDensityActor->VisibilityOff();
+        this->renderWindow->Render();
+        return;
+    }
+    if (!this->cataloguePoly)
+        return;
+    if (!this->catalogueDensityGrid)
+        this->buildCatalogueDensity();   // lazy — only when first requested
+    this->updateCatalogueDensityContour();
+    if (this->catalogueDensityActor)
+        this->catalogueDensityActor->VisibilityOn();
 }
 
 void vtkWindowVectorField::setCatalogueShape(const QString &mode)
