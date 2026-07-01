@@ -26,6 +26,7 @@
 #include <vtkIntArray.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkLookupTable.h>
+#include <vtkMaskPoints.h>
 #include <vtkOrientationMarkerWidget.h>
 #include <vtkPointData.h>
 #include <vtkPoints.h>

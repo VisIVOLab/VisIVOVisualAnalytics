@@ -26,6 +26,7 @@
 #include <vtkIntArray.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkLookupTable.h>
+#include <vtkMaskPoints.h>
 #include <vtkOrientationMarkerWidget.h>
 #include <vtkPointData.h>
 #include <vtkPoints.h>
@@ -341,6 +342,9 @@ void vtkWindowCatalogue3D::buildScene()
     this->pointsActor->GetProperty()->SetColor(0.78, 0.82, 0.95);
     this->pointsActor->VisibilityOff();
     renderer->AddActor(this->pointsActor);
+
+    // Route the mappers through the render-budget decimator (no-op under budget).
+    this->applyRenderBudget();
 
     // ── Hover highlight (yellow wireframe) ────────────────────────────────────
     hoverSphere->SetRadius(defaultGlyphRadius * 1.35);
@@ -745,6 +749,38 @@ void vtkWindowCatalogue3D::updateColorMapping()
     this->pointsMapper->SetScalarRange(mapperRange[0], mapperRange[1]);
     qInfo() << "[catalogue3d] color mapping:" << this->mapColorKey
             << "range:" << mapperRange[0] << mapperRange[1];
+}
+
+void vtkWindowCatalogue3D::applyRenderBudget()
+{
+    // Above the budget, render a density-preserving random subsample so glyph
+    // modes (real sphere/arrow geometry) stay smooth to rotate at millions of
+    // points. The full entry list is untouched — picking, region stats and
+    // ResetCamera framing all use the complete data, only the GPU-fed polydata
+    // is thinned. Under budget (or budget == 0) the mappers read the cloud
+    // directly with no extra pipeline pass.
+    const vtkIdType n = static_cast<vtkIdType>(this->entries.size());
+    const bool decimate = this->m_renderBudget > 0 && n > this->m_renderBudget;
+    this->m_renderDecimated = decimate;
+
+    if (decimate) {
+        this->renderDecimator->SetInputData(this->sourcesPolyData);
+        this->renderDecimator->SetMaximumNumberOfPoints(this->m_renderBudget);
+        this->renderDecimator->RandomModeOn();
+        // RANDOM_SAMPLING keeps the spatial density (denser structure keeps more
+        // points), so cosmic-web filaments/voids still read correctly.
+        this->renderDecimator->SetRandomModeType(vtkMaskPoints::RANDOM_SAMPLING);
+        // Fixed seed → the same subsample on every pipeline re-execution (colour
+        // and size edits bump the input's MTime), so the cloud never "shimmers".
+        this->renderDecimator->SetRandomSeed(1);
+        this->renderDecimator->GenerateVerticesOn();   // Point mode needs vert cells
+        this->renderDecimator->SingleVertexPerCellOn();
+        this->glyphMapper->SetInputConnection(this->renderDecimator->GetOutputPort());
+        this->pointsMapper->SetInputConnection(this->renderDecimator->GetOutputPort());
+    } else {
+        this->glyphMapper->SetInputData(this->sourcesPolyData);
+        this->pointsMapper->SetInputData(this->sourcesPolyData);
+    }
 }
 
 void vtkWindowCatalogue3D::updateGlyphPipeline()

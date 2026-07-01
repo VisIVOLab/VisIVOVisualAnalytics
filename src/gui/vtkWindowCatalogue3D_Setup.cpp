@@ -195,12 +195,38 @@ void vtkWindowCatalogue3D::setupSidebar()
         encForm->addRow(u"Color scale"_s, this->comboColorScale);
         encForm->addRow(u"Power γ"_s, this->spinColorGamma);
         encForm->addRow(u"Scale"_s, ui->sliderScale);
+
+        // Render budget (GPU point LOD): cap how many points the mappers draw so
+        // glyph modes stay smooth on million-point catalogues. Picking/stats use
+        // the full data. userData holds the point cap (0 = unlimited).
+        this->comboRenderBudget = new QComboBox(encCard);
+        this->comboRenderBudget->addItem(u"500k"_s, 500000);
+        this->comboRenderBudget->addItem(u"1M"_s, 1000000);
+        this->comboRenderBudget->addItem(u"2M"_s, 2000000);
+        this->comboRenderBudget->addItem(u"5M"_s, 5000000);
+        this->comboRenderBudget->addItem(u"Unlimited"_s, 0);
+        this->comboRenderBudget->setCurrentIndex(1);   // 1M default (matches m_renderBudget)
+        this->comboRenderBudget->setToolTip(
+                u"Maximum points drawn on the GPU. Above this a density-preserving "
+                u"random subsample is shown; picking and stats still use every source."_s);
+        encForm->addRow(u"Render budget"_s, this->comboRenderBudget);
         encLayout->addLayout(encForm);
 
         QObject::connect(this->comboColorScale, &QComboBox::currentIndexChanged, this,
                          [this](int) { this->updateColorMapping(); });
         QObject::connect(this->spinColorGamma, &QDoubleSpinBox::valueChanged, this,
                          [this](double) { this->updateColorMapping(); });
+        QObject::connect(this->comboRenderBudget, &QComboBox::currentIndexChanged, this,
+                         [this](int) {
+                             if (!this->comboRenderBudget)
+                                 return;
+                             this->m_renderBudget =
+                                     this->comboRenderBudget->currentData().toInt();
+                             if (this->entries.empty())
+                                 return;
+                             this->applyRenderBudget();
+                             this->renderWindow->Render();
+                         });
         pageLayout->addWidget(encCard);
 
         // ── Scene card ────────────────────────────────────────────────────────

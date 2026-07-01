@@ -28,6 +28,7 @@ class vtkFloatArray;
 class vtkGlyph3DMapper;
 class vtkIntArray;
 class vtkLookupTable;
+class vtkMaskPoints;
 class vtkOrientationMarkerWidget;
 class vtkPoints;
 class vtkPolyData;
@@ -250,6 +251,14 @@ private:
     vtkNew<vtkArrowSource> arrowSource;       // glyph source for the Velocity mode
     vtkNew<vtkCubeSource> pointCubeSource;
     vtkNew<vtkAppendPolyData> crossSource;
+    // Render LOD: when the catalogue exceeds m_renderBudget points, the mappers
+    // are fed a density-preserving random subsample of this many points (full
+    // data is kept for picking / stats / camera framing). 0 = unlimited.
+    vtkNew<vtkMaskPoints> renderDecimator;
+    int m_renderBudget{ 1000000 };
+    bool m_renderDecimated{ false };
+    void applyRenderBudget();
+
     vtkNew<vtkGlyph3DMapper> glyphMapper;
     vtkNew<vtkActor> glyphActor;
     vtkNew<vtkLookupTable> morphologyLut;
@@ -292,6 +301,7 @@ private:
     QPointer<QComboBox> comboColorScale;       // Linear / Log / Sqrt / Square / Power
     QPointer<QDoubleSpinBox> spinColorGamma;   // exponent for the Power mode
     QPointer<QComboBox> comboGeometry;
+    QPointer<QComboBox> comboRenderBudget;     // GPU point budget (render LOD)
     QPointer<QComboBox> comboSizeMode;
     QPointer<QComboBox> comboFrame;
     QPointer<QComboBox> comboCosmology;
