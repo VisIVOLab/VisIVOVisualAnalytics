@@ -115,6 +115,8 @@ co-registered, so the overlay actually aligns.
 | Velocity arrows | Galaxy shape → *Velocity arrows* | galaxy arrows point toward centre — **same direction as the field** |
 | Density isosurface | check *Galaxy density*; drag *Density level %* | translucent cyan surface wraps the 5 clusters; tightens with level |
 | Show galaxies / size | toggle / spin | overlay hides / points resize |
+| Mean agreement | (read the status bar after loading) | *"mean field agreement 0.9x"* — high, since the demo galaxies follow the field |
+| Remove overlay | click *Remove overlay* | galaxies/density/legend gone, controls reset |
 
 ## 7 · HI PPV cube  ·  `hi_cube.fits`
 

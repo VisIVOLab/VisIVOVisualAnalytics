@@ -194,6 +194,10 @@ void vtkWindowVectorField::setupUi()
             u"this velocity field's frame — 'where galaxies sit in the flow'. Both must "
             u"share the same coordinate system/origin to align."_s);
     sl->addWidget(this->btnOverlayCatalogue);
+    this->btnRemoveCatalogue = new QPushButton(u"Remove overlay"_s, side);
+    this->btnRemoveCatalogue->setEnabled(false);
+    this->btnRemoveCatalogue->setToolTip(u"Remove the overlaid galaxies, density and legend."_s);
+    sl->addWidget(this->btnRemoveCatalogue);
 
     auto *overlayForm = new QFormLayout;
     overlayForm->setContentsMargins(0, 0, 0, 0);
@@ -298,6 +302,8 @@ void vtkWindowVectorField::setupUi()
                                        this->showBasins(true); });
     QObject::connect(this->btnOverlayCatalogue, &QPushButton::clicked, this,
                      [this]() { this->overlayCatalogue(); });
+    QObject::connect(this->btnRemoveCatalogue, &QPushButton::clicked, this,
+                     [this]() { this->clearCatalogueOverlay(); });
     QObject::connect(this->chkShowCatalogue, &QCheckBox::toggled, this,
                      [this](bool on) { this->setCatalogueVisible(on); });
     QObject::connect(this->spinCataloguePointSize, &QDoubleSpinBox::valueChanged, this,

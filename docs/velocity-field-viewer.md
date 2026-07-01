@@ -181,7 +181,10 @@ matter for alignment, and the viewer guards both:
 The camera reframes on the first overlay (so the galaxies are visible — or a
 zoom-out makes a frame mismatch obvious); later re-overlays keep the current
 view. *Show galaxies* toggles visibility and *Galaxy size* sets the point size
-live.
+live. **Remove overlay** drops all overlay actors (points/arrows, density,
+legend) and resets the controls. When Field agreement is computed the status
+also reports the **mean field agreement** over the in-box galaxies — a single
+number for how well the whole catalogue matches the reconstruction.
 
 **Galaxy color** colours the points by a catalogue attribute rather than a flat
 gold. On overlay, a named `vtkFloatArray` is attached to the point cloud for each

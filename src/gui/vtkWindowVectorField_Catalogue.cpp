@@ -201,6 +201,8 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
     }
 
     const Catalogue3DSchema &schema = data.schema;
+    double meanAgreement = 0.0;   // mean field-agreement over in-box galaxies
+    bool haveAgreement = false;
 
     // Point cloud from the parsed scene positions (Cartesian = the X/Y/Z fields).
     const vtkIdType nPts = static_cast<vtkIdType>(data.entries.size());
@@ -307,6 +309,8 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
                 vtkNew<vtkFloatArray> agree;
                 agree->SetName("Field agreement");
                 agree->SetNumberOfTuples(nPts);
+                double sum = 0.0;
+                vtkIdType counted = 0;
                 for (vtkIdType i = 0; i < nPts; ++i) {
                     double g[3], fv[3];
                     vel->GetTuple(i, g);
@@ -315,13 +319,22 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
                     const double gm = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
                     const double fm = std::sqrt(fv[0] * fv[0] + fv[1] * fv[1] + fv[2] * fv[2]);
                     double a = 0.0;
-                    if (valid && gm > 1e-9 && fm > 1e-9)
+                    const bool usable = valid && gm > 1e-9 && fm > 1e-9;
+                    if (usable)
                         a = (g[0] * fv[0] + g[1] * fv[1] + g[2] * fv[2]) / (gm * fm);
                     a = std::max(-1.0, std::min(1.0, a));   // guard fp roundoff
                     agree->SetValue(i, static_cast<float>(a));
+                    if (usable) {
+                        sum += a;
+                        ++counted;
+                    }
                 }
                 poly->GetPointData()->AddArray(agree);
                 colourKeys << u"Field agreement"_s;
+                if (counted > 0) {
+                    meanAgreement = sum / static_cast<double>(counted);
+                    haveAgreement = true;
+                }
             }
         }
     }
@@ -378,6 +391,8 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
         this->chkShowCatalogue->setChecked(true);
         this->chkShowCatalogue->setEnabled(true);
     }
+    if (this->btnRemoveCatalogue)
+        this->btnRemoveCatalogue->setEnabled(true);
     if (this->spinCataloguePointSize)
         this->spinCataloguePointSize->setEnabled(true);
     if (this->comboGalaxyColor) {
@@ -436,7 +451,9 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
         msg += u" (of %1; capped)"_s.arg(data.totalRows);
     if (!data.cartesian)
         msg += u" — note: not a Cartesian catalogue, positions may not match the field frame"_s;
-    this->statusBar()->showMessage(msg, 8000);
+    if (haveAgreement)
+        msg += u" · mean field agreement %1"_s.arg(meanAgreement, 0, 'f', 2);
+    this->statusBar()->showMessage(msg, 12000);
     if (this->summaryLabel) {
         if (this->m_summaryBase.isEmpty())
             this->m_summaryBase = this->summaryLabel->text();
@@ -559,6 +576,58 @@ void vtkWindowVectorField::showCatalogueDensity(bool on)
     this->updateCatalogueDensityContour();
     if (this->catalogueDensityActor)
         this->catalogueDensityActor->VisibilityOn();
+}
+
+void vtkWindowVectorField::clearCatalogueOverlay()
+{
+    // Drop every overlay actor and cached artefact, then reset the controls to
+    // their pre-overlay (disabled) state so the panel reads clean.
+    if (this->catalogueActor)
+        this->renderer->RemoveActor(this->catalogueActor);
+    if (this->catalogueDensityActor)
+        this->renderer->RemoveActor(this->catalogueDensityActor);
+    if (this->catalogueScalarBar)
+        this->catalogueScalarBar->VisibilityOff();
+    this->catalogueActor = nullptr;
+    this->cataloguePoly = nullptr;
+    this->cataloguePointsMapper = nullptr;
+    this->catalogueGlyphMapper = nullptr;
+    this->catalogueDensityActor = nullptr;
+    this->catalogueDensityGrid = nullptr;
+    this->m_catalogueHasVelocity = false;
+    this->m_catalogueDensityMax = 0.0;
+    this->m_catalogueCount = 0;
+    this->m_catalogueName.clear();
+
+    const auto disable = [](QWidget *w) { if (w) w->setEnabled(false); };
+    if (this->chkShowCatalogue) {
+        QSignalBlocker blk(this->chkShowCatalogue);
+        this->chkShowCatalogue->setChecked(true);   // default state for next overlay
+    }
+    disable(this->chkShowCatalogue);
+    disable(this->spinCataloguePointSize);
+    if (this->comboGalaxyColor) {
+        QSignalBlocker blk(this->comboGalaxyColor);
+        this->comboGalaxyColor->setCurrentIndex(0);   // Uniform
+    }
+    if (this->comboGalaxyShape) {
+        QSignalBlocker blk(this->comboGalaxyShape);
+        this->comboGalaxyShape->setCurrentIndex(0);    // Points
+    }
+    disable(this->comboGalaxyColor);
+    disable(this->comboGalaxyShape);
+    if (this->chkGalaxyDensity) {
+        QSignalBlocker blk(this->chkGalaxyDensity);
+        this->chkGalaxyDensity->setChecked(false);
+    }
+    disable(this->chkGalaxyDensity);
+    disable(this->sliderDensityLevel);
+    disable(this->btnRemoveCatalogue);
+
+    if (this->summaryLabel && !this->m_summaryBase.isEmpty())
+        this->summaryLabel->setText(this->m_summaryBase);   // drop the "· N galaxies" suffix
+    this->statusBar()->showMessage(u"Overlay removed."_s, 4000);
+    this->renderWindow->Render();
 }
 
 void vtkWindowVectorField::setCatalogueShape(const QString &mode)
