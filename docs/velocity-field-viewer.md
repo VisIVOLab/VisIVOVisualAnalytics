@@ -183,8 +183,14 @@ numeric column (values via the shared parser accessor), plus a derived
 **Speed |v|** = √(vx²+vy²+vz²) when vx/vy/vz are present. Selecting a key drives
 the mapper via `SetScalarModeToUsePointFieldData` + `SelectColorArray` through a
 blue→red LUT auto-ranged to the attribute; *Uniform* returns to the flat colour.
-Re-colouring never re-fetches. (Still future: a scalar bar for the galaxy
-attribute, multiple overlays, and an async fetch.)
+Re-colouring never re-fetches.
+
+A second **scalar bar** (legend) titled with the attribute appears on the **left**
+(clear of the field's speed bar on the right and the orientation-axes marker in
+the corner). It shares the galaxy LUT, retitles/reranges as you switch keys, and
+is shown only while the galaxies are visible *and* attribute-coloured (hidden on
+*Uniform*, when *Show galaxies* is off, or on a fresh overlay). (Still future:
+multiple overlays, and an async fetch.)
 
 ## Tests
 

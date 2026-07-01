@@ -6,6 +6,7 @@
 
 #include <vtkActor.h>
 #include <vtkCellArray.h>
+#include <vtkCoordinate.h>
 #include <vtkDataArray.h>
 #include <vtkFloatArray.h>
 #include <vtkLookupTable.h>
@@ -17,6 +18,7 @@
 #include <vtkProperty.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderer.h>
+#include <vtkScalarBarActor.h>
 
 #include <QComboBox>
 
@@ -241,6 +243,9 @@ void vtkWindowVectorField::overlayCatalogue()
         this->comboGalaxyColor->setCurrentIndex(0);
         this->comboGalaxyColor->setEnabled(true);
     }
+    // New actor starts Uniform — drop any legend left from a previous overlay.
+    if (this->catalogueScalarBar)
+        this->catalogueScalarBar->VisibilityOff();
 
     // Reframe on the FIRST overlay so the galaxies are visible — if the catalogue
     // shares the field's frame they sit inside it; if not, the zoom-out makes the
@@ -271,6 +276,13 @@ void vtkWindowVectorField::setCatalogueVisible(bool on)
     if (!this->catalogueActor)
         return;
     this->catalogueActor->SetVisibility(on);
+    // The attribute legend only makes sense while the (attribute-coloured)
+    // galaxies are shown.
+    if (this->catalogueScalarBar) {
+        auto *mapper = vtkPolyDataMapper::SafeDownCast(this->catalogueActor->GetMapper());
+        const bool coloured = mapper && mapper->GetScalarVisibility();
+        this->catalogueScalarBar->SetVisibility(on && coloured);
+    }
     this->renderWindow->Render();
 }
 
@@ -284,6 +296,8 @@ void vtkWindowVectorField::recolourCatalogue(const QString &key)
 
     if (key.isEmpty() || key == u"Uniform"_s) {
         mapper->ScalarVisibilityOff();   // back to the flat gold colour
+        if (this->catalogueScalarBar)
+            this->catalogueScalarBar->VisibilityOff();
         this->renderWindow->Render();
         return;
     }
@@ -292,6 +306,8 @@ void vtkWindowVectorField::recolourCatalogue(const QString &key)
     vtkDataArray *arr = poly ? poly->GetPointData()->GetArray(key.toUtf8().constData()) : nullptr;
     if (!arr) {
         mapper->ScalarVisibilityOff();
+        if (this->catalogueScalarBar)
+            this->catalogueScalarBar->VisibilityOff();
         this->renderWindow->Render();
         return;
     }
@@ -314,5 +330,23 @@ void vtkWindowVectorField::recolourCatalogue(const QString &key)
     mapper->SelectColorArray(key.toUtf8().constData());
     mapper->SetScalarRange(range);
     mapper->ScalarVisibilityOn();
+
+    // Legend for the galaxy attribute, on the LEFT so it doesn't collide with the
+    // field's speed bar (right). Built once, then just retitled/reshown.
+    if (!this->catalogueScalarBar) {
+        this->catalogueScalarBar = vtkSmartPointer<vtkScalarBarActor>::New();
+        this->catalogueScalarBar->SetLookupTable(this->catalogueLut);
+        this->catalogueScalarBar->SetMaximumWidthInPixels(90);
+        this->catalogueScalarBar->GetPositionCoordinate()
+                ->SetCoordinateSystemToNormalizedViewport();
+        // y = 0.20 keeps it clear of the orientation-axes marker (0,0)–(0.14,0.14).
+        this->catalogueScalarBar->GetPositionCoordinate()->SetValue(0.02, 0.20);
+        this->catalogueScalarBar->SetWidth(0.10);
+        this->catalogueScalarBar->SetHeight(0.4);
+        this->renderer->AddActor2D(this->catalogueScalarBar);
+    }
+    this->catalogueScalarBar->SetTitle(key.toUtf8().constData());
+    this->catalogueScalarBar->SetVisibility(
+            this->catalogueActor->GetVisibility() ? 1 : 0);
     this->renderWindow->Render();
 }

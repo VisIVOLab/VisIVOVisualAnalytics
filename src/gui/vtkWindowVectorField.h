@@ -103,6 +103,7 @@ private:
 
     vtkSmartPointer<vtkActor> catalogueActor;    // overlaid galaxy point cloud
     vtkSmartPointer<vtkLookupTable> catalogueLut; // attribute colour ramp (lazy)
+    vtkSmartPointer<vtkScalarBarActor> catalogueScalarBar;  // galaxy-attribute legend (left)
     QString m_catalogueName;                     // basename, for the status label
     int m_catalogueCount = 0;                    // points drawn in the overlay
     QString m_summaryBase;                        // summary text before any overlay suffix
