@@ -265,11 +265,17 @@ Compound names like `flux_z` normalise to `FLUXZ` and do not match `Z`.
 
 | Event | Effect |
 |-------|--------|
-| Mouse move | `pickNearestSource()` within 14 px → yellow wireframe sphere |
+| Mouse move | `pickNearestSource()` within 14 px → yellow wireframe sphere (throttled to ~30 ms; hover cleared while dragging) |
 | Left click (no drag) | select source → red wireframe sphere + info panel |
-| Left click + drag | camera trackball rotate (VTK) |
+| Left click + drag | camera trackball rotate (VTK), hover suppressed |
 | Click selected source again | deselect |
 | `syncTableSelection()` | table row → camera center on source |
+
+Hover highlighting runs the accelerated `pickNearestSource()` on mouse motion,
+leading-edge throttled (`m_hoverThrottle`, ~30 ms) so a flood of move events
+can't saturate the pick on a multi-million-point catalogue; `setHoveredSource()`
+no-ops when the nearest source is unchanged, so a still cursor triggers no
+re-renders.
 
 ---
 

@@ -9,6 +9,7 @@
 #include <vtkSmartPointer.h>
 
 #include <QDockWidget>
+#include <QElapsedTimer>
 #include <QFutureWatcher>
 #include <QMainWindow>
 #include <QMap>
@@ -348,6 +349,7 @@ private:
     // Interaction state
     int hoveredIndex{ -1 };
     int selectedIndex{ -1 };
+    QElapsedTimer m_hoverThrottle;   // rate-limits hover picking during motion
     // Left-button drag tracking (to distinguish click from camera rotate)
     bool leftButtonDown{ false };
     bool leftClickCandidate{ false };

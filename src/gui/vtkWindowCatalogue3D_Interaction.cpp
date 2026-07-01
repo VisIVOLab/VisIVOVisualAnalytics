@@ -160,10 +160,22 @@ void vtkWindowCatalogue3D::onMouseEvent(unsigned long eid)
         return;
     }
 
-    // MouseMoveEvent: no hover activation/highlighting. Camera drag remains owned by VTK.
+    // MouseMoveEvent: hover-highlight the nearest source (yellow sphere). Camera
+    // drag stays owned by VTK. Picking is now cheap (one-time matrix + inline
+    // projection), so it can run on motion — but throttle it so a flood of move
+    // events can't saturate the pick on a multi-million-point catalogue.
     if (leftButtonDown) {
-        qInfo() << "[catalogue3d] drag mouse move observed -> camera interaction path";
+        // Don't trail a stale highlight while rotating the camera.
+        setHoveredSource(-1);
+        return;
     }
+    if (entries.empty())
+        return;
+    constexpr qint64 kHoverThrottleMs = 30;
+    if (m_hoverThrottle.isValid() && m_hoverThrottle.elapsed() < kHoverThrottleMs)
+        return;
+    m_hoverThrottle.start();   // (re)start the throttle window
+    setHoveredSource(pickNearestSource(x, y));
 }
 
 int vtkWindowCatalogue3D::pickNearestSource(int displayX, int displayY) const
