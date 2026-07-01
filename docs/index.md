@@ -172,6 +172,7 @@ velocity-field-viewer
 kinematic-model
 movie-export
 linked-views
+demo-datasets
 testing
 ```
 

@@ -10,6 +10,10 @@ grids.
 
 This is feature **F1** of the cosmic-flow roadmap.
 
+> Ready-made test data: see [Demo datasets](demo-datasets) —
+> `velocity_field.fits` (two-sink field for basins) and the co-registered
+> `combo/velocity.fits` + `combo/galaxies.csv` for the galaxy overlay.
+
 ## Opening a velocity field
 
 **Data ▸ Open Velocity Field…** → pick a FITS file from the backend file

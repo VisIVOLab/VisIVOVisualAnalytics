@@ -2,6 +2,10 @@
 
 Reference for `vtkWindowCatalogue3D` (`src/gui/vtkWindowCatalogue3D.h/cpp`).
 
+> Ready-made test data for every feature below: see
+> [Demo datasets](demo-datasets) (`catalogue_sky.csv`, `catalogue_cartesian.csv`,
+> `catalogue.speck`, the `.tbl` snapshot).
+
 ---
 
 ## Point-cloud rendering (performance)
