@@ -751,8 +751,12 @@ Test suite → links only `visivo_test_support` (core subset).
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `VISIVO_MOMENT_THREADS` | `0` (auto) | Number of threads for M0/M6/M10 moment chunking. `0` = `min(4, cpu_count)`. Positive values set the count explicitly. M1, M2, M8 are sequential (normalisation requires the full axis). |
-| `VISIVO_DASK_THRESHOLD_BYTES` | `4294967296` (4 GiB) | Cube byte size above which the Dask out-of-core path is selected (when Dask is installed). |
+| `VISIVO_MOMENT_THREADS` | `0` (auto) | Number of threads for M0/M6/M10 moment chunking. `0` = `min(4, cpu_count)`. Positive values set the count explicitly. |
+| `VISIVO_MOMENT_STREAM_BYTES` | `2147483648` (2 GiB) | Materialised-subset size above which M0/M1/M2 stream in spectral slabs (out-of-core) instead of loading the whole channel range. |
+| `VISIVO_MOMENT_SLAB_CHANNELS` | `64` | Channels per slab in the streaming moment path. |
+| `VISIVO_DASK_MODE` | `auto` | Moment compute backend: `auto` (distributed if a scheduler is set, else local threaded Dask for large jobs), `off`, `local` (always local threaded Dask), `distributed` (require a cluster). |
+| `VISIVO_DASK_MIN_BYTES` | `536870912` (512 MiB) | In `auto` mode, minimum materialised-subset size before a moment is routed to the local threaded Dask path. |
+| `VISIVO_DASK_SCHEDULER` | *(unset)* | Address of a `dask.distributed` scheduler; when set, moments fan out across the cluster. |
 | `VISIVO_WORKERS` | `min(4, cpu_count)` | Number of ProcessPoolExecutor workers for CPU-bound FITS operations. |
 | `VISIVO_HEAVY_SLOTS` | `max(1, VISIVO_WORKERS-1)` | Max concurrent heavy tasks (moment / isosurface / pv / spectral). Leaves `WORKERS - HEAVY_SLOTS` pool slots reserved for interactive requests so the GUI stays responsive while compute is running. |
 | `VISIVO_LINEWIDTH_CHUNKS` | `VISIVO_WORKERS` | Row-chunks the linewidth orchestrator fans out per request. Already gated by `VISIVO_HEAVY_SLOTS`, so usually no need to lower this. |

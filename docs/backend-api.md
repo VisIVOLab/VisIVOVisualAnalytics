@@ -174,9 +174,19 @@ Returns `channel_start`, `channel_end`, `num_channels`, `mad[]`, `sigma[]`, `reg
 ### `POST /v1/products/moment`
 Synchronous moment map computation (small datasets / fast moments).
 ```json
-{ "dataset_id": "...", "order": 0, "channel_start": 10, "channel_end": 50, "rms": 0.002 }
+{
+  "dataset_id": "...", "moment_order": 1,
+  "channel_start": 10, "channel_end": 50,
+  "mask_enabled": true, "threshold_value": 0.0, "threshold_auto": true
+}
 ```
-Response: `valid`, `width`, `height`, `scalar_type`, `range_min`, `range_max`, `spectral_axis_type`, `spectral_axis_unit`, `moment_unit`, `bunit`, `wcs_status`, `wcs_warning_message`, base64 `data`.
+- `mask_enabled` (default `false` at the API; the desktop client defaults it to `true`) — only voxels above the threshold contribute.
+- `threshold_auto` (default `false`) — when set with `mask_enabled`, the backend derives the threshold from the data as `median + 3·σ` (σ from the MAD), ignoring `threshold_value`. The estimate is strided in all three axes so it stays out-of-core on large cubes.
+- `threshold_value` — the manual threshold, used only when `mask_enabled` and not `threshold_auto`.
+
+Response: `valid`, `width`, `height`, `scalar_type`, `range_min`, `range_max`, `spectral_axis_type`, `spectral_axis_unit`, `moment_unit`, `bunit`, `threshold_used` (the resolved threshold, `null` when no mask was applied), `wcs_status`, `wcs_warning_message`, base64 `data`.
+
+**Physical-range guard (M1/M2).** Regardless of masking, the backend blanks M1 pixels outside the sampled spectral axis `[vmin, vmax]` and M2 pixels outside `[0, span²]`. These can only arise from mixed-sign (noise) weights and would otherwise produce non-physical (e.g. super-luminal) values; the guard never removes a legitimate positive-weight voxel.
 
 Supported `order` values and their definitions:
 
@@ -199,6 +209,23 @@ For orders 3–5, `spectral_delta` (channel spacing) is used as the integration 
 { "dataset_id": "...", "threshold": 0.05 }
 ```
 Returns base64-encoded mesh data + bounds.
+
+---
+
+## Astrometry
+
+### `GET /v1/astrometry/crossmatch/{dataset_id}`
+Cross-match the image footprint against an external catalogue via `astroquery`.
+
+Query params: `catalogue` (`simbad` | `2MASS` | `NVSS` | `FIRST`, default `simbad`), `radius_arcsec` (default 60), `max_sources` (1–5000, default 500).
+
+Response: `{ valid, error, n_sources, sources, truncated, centre_ra_deg, centre_dec_deg }`, where each source is `{ ra_deg, dec_deg, name, catalogue_id, separation_arcsec }`. The `X-Truncated` header mirrors `truncated`. Catalogue column names are resolved case-insensitively (robust across `astroquery` versions), and unparseable rows are skipped rather than failing the whole query. Errors map to HTTP: missing `astroquery` → 503, unknown catalogue → 422.
+
+### `POST /v1/astrometry/reproject/{dataset_id}`
+```json
+{ "target_wcs": { "...": "FITS WCS header cards" }, "target_shape": [ny, nx], "order": 1 }
+```
+Reprojects an image plane onto a target WCS/grid, writes a new FITS to the session workspace, and registers it. Response: `{ valid, new_dataset_id, width, height, range_min, range_max, output_path, order }`. Missing `reproject` package → 503.
 
 ---
 
@@ -425,3 +452,8 @@ Tunables:
 | `VISIVO_HEAVY_SLOTS` | `max(1, WORKERS-1)` | Max concurrent heavy tasks (rest of the pool stays available for interactive requests) |
 | `VISIVO_LINEWIDTH_CHUNKS` | `VISIVO_WORKERS` | Row-chunks the linewidth compute is split into (already throttled by `_HEAVY_SEM`) |
 | `VISIVO_LINEWIDTH_SNR` | 3.0 | SNR cutoff for skipping background pixels in linewidth fit (0 disables skip) |
+| `VISIVO_MOMENT_STREAM_BYTES` | 2 GiB | Materialised-subset size above which M0/M1/M2 stream in spectral slabs (out-of-core) instead of loading the whole range |
+| `VISIVO_MOMENT_SLAB_CHANNELS` | 64 | Channels per slab in the streaming moment path |
+| `VISIVO_DASK_MODE` | `auto` | Moment compute backend: `auto` (distributed if a scheduler is set, else local threaded Dask for large jobs), `off` (plain worker), `local` (always local threaded Dask), `distributed` (require a cluster) |
+| `VISIVO_DASK_MIN_BYTES` | 512 MB | In `auto`, minimum materialised-subset size before a moment is routed to the local threaded Dask path |
+| `VISIVO_DASK_SCHEDULER` | *(unset)* | Address of a `dask.distributed` scheduler; when set, moments fan out across the cluster |

@@ -508,6 +508,24 @@ image WCS, drawn as glyphs, and listed in a sortable side table. Click a
 row to centre the view on the source; click on a glyph to highlight the
 matching table row.
 
+### Cross-match with a catalogue
+
+*Tools → Cross-match with Catalogue…* queries an external catalogue over the
+footprint of the current image and overlays the matches — no file needed. It
+requires a celestial WCS and a loaded dataset.
+
+1. Pick a catalogue — **SIMBAD**, **2MASS**, **NVSS**, or **FIRST** — and a
+   search radius in arcseconds.
+2. The backend resolves the image centre + footprint, queries the catalogue
+   (via `astroquery`), and returns the matches sorted by separation.
+3. The results are drawn and listed exactly like a file overlay (same
+   projection and side table), so you can click through them.
+
+The query runs asynchronously, so the UI stays responsive; results are capped
+at the backend's `max_sources` and flagged as *truncated* if there were more.
+Catalogue column names are resolved case-insensitively, so the feature stays
+robust across `astroquery` versions.
+
 ## Diagnostics & errors
 
 Backend errors during load (`/v1/datasets/open`, `/v1/image/full`) and

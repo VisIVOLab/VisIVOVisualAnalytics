@@ -21,8 +21,12 @@ In the [cube viewer](cube-viewer):
    - **Channel start / end** — the spectral range to integrate over.
      Defaults to the full cube. Restrict it to the channels containing the
      line to avoid integrating background.
-   - **Mask threshold** — when *Enabled*, only voxels with intensity above
-     `threshold_value` contribute. Used to suppress noise pixels in M1/M2.
+   - **Mask** — **on by default**. Only voxels above the threshold contribute,
+     which is what keeps M1/M2 physically clean (see the note below).
+   - **Auto threshold (≈ 3 σ)** — **on by default**. The backend derives the
+     mask threshold from the data itself (median + 3 · σ, with σ from the MAD),
+     the same convention CASA/SoFiA use. Untick it to type a value by hand in
+     **Mask threshold**; untick **Mask** entirely to compute an unmasked moment.
    - **RMS** — the cube noise level, used by some orders (e.g. weighted by
      1/σ²). Auto-filled from the latest noise estimate if available.
 3. Click **Compute**. The Moment card in the sidebar tracks the state
@@ -34,6 +38,19 @@ You can switch back and forth between *Slice* and *Moment* without
 recomputing — the moment map is cached in memory and on the backend's
 LRU `PRODUCT_CACHE` (keyed by `dataset_id + parameters`). Identical
 re-requests return instantly.
+
+```{note}
+**Why M1/M2 are masked by default.** An intensity-weighted mean velocity (M1)
+is only meaningful where there is signal. On pure-noise pixels the denominator
+M₀ → 0 and the ratio explodes — without a mask you get "velocities" far outside
+the cube's spectral axis (even faster than light), which blow out the colour
+scale and hide the real rotation field. VisIVO applies two safeguards: a
+**default ~3 σ mask** (removes the noise pixels), and an always-on
+**physical-range guard** that blanks any M1 outside the sampled velocity axis
+and any M2 outside `[0, span²]` — even when you deliberately compute unmasked.
+The guard never removes a legitimate voxel, because a positive-weight moment is
+bounded by construction.
+```
 
 ## The supported orders
 
@@ -171,12 +188,21 @@ You can right-click the moment dock and:
 - Results are LRU-cached on the backend (`PRODUCT_CACHE`, default 32
   entries). Identical recomputes (same dataset + params) return in
   sub-milliseconds.
-- For very large cubes (> 4 GB by default) the M0 / M6 / M10 path
-  automatically switches to Dask out-of-core if `dask` is installed
-  on the backend; control with `VISIVO_DASK_THRESHOLD_BYTES`.
-- M1 / M2 / M8 are sequential (full-axis normalisation), so they don't
-  parallelise across rows but they're inherently cheaper than the
-  Gauss-fit-based [line-width map](spectral-tools).
+- **Out-of-core by default.** M0/M1/M2 stream the cube in spectral slabs
+  rather than loading the whole channel range, so a moment over a 100+ GB
+  cube never materialises it in RAM. The streaming path kicks in when the
+  selected subset would exceed `VISIVO_MOMENT_STREAM_BYTES` (default 2 GiB);
+  slab size is `VISIVO_MOMENT_SLAB_CHANNELS` (default 64).
+- **Dask is on by default** (`VISIVO_DASK_MODE=auto`). Large moments
+  (materialised subset ≥ `VISIVO_DASK_MIN_BYTES`, default 512 MB) are computed
+  with the chunked `dask.array` path — across a distributed cluster when
+  `VISIVO_DASK_SCHEDULER` is set, otherwise with a local threaded scheduler
+  that parallelises across cores. This also gives the high-order moments
+  (M3–M10) an out-of-core path they previously lacked. Small cubes stay on the
+  fast in-process worker. Set `VISIVO_DASK_MODE=off` to force the plain worker,
+  `local` to always use local threaded Dask, or `distributed` to require a
+  cluster. See the [backend API reference](../backend-api) for the full
+  tunables table.
 
 ## Common pitfalls
 
@@ -187,11 +213,13 @@ You can right-click the moment dock and:
 * - Symptom
   - Cause / fix
 * - M1 map is dominated by noise everywhere except the bright source.
-  - You integrated over too wide a range without a mask. Tighten the
-    channel range or enable a threshold mask above ~3 σ.
+  - You unticked the mask. Re-enable it (it is on by default with an auto
+    ~3 σ threshold), or tighten the channel range. Note the map can no longer
+    show *super-luminal* values — the physical-range guard blanks those — but
+    an unmasked map still speckles with in-range noise.
 * - M2 has implausibly large values at the cube edges.
-  - Low M0 in the denominator → numerical noise amplification. Same fix as
-    above; consider also a higher mask threshold.
+  - Low M0 in the denominator → numerical noise amplification. Keep the mask on
+    (default) or raise the threshold; the guard already caps M2 at `span²`.
 * - "Backend returned an error: M5 normalisation undefined."
   - Cube is mostly blanked over the integration range. Choose a different
     range or extract a noise mask first to ensure σ ≠ 0.
