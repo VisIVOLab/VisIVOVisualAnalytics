@@ -18,10 +18,17 @@ static Catalogue3DSchema makeSchema(const QStringList &fieldNames)
     return schema;
 }
 
-static Catalogue3DEntry makeEntry(const QMap<QString, QVariant> &fields = {})
+static Catalogue3DEntry makeEntry(const Catalogue3DSchema &schema,
+                                  const QMap<QString, QVariant> &fields = {})
 {
+    // Catalogue3DEntry::fields is now an index-ordered QVariantList aligned with
+    // schema.fields (the memory-optimised layout that replaced the old per-row
+    // name→value QMap). Place each named value at its schema index.
     Catalogue3DEntry entry;
-    entry.fields = fields;
+    entry.fields.reserve(static_cast<int>(schema.fields.size()));
+    for (const auto &f : schema.fields) {
+        entry.fields.append(fields.value(f.name, QVariant()));
+    }
     return entry;
 }
 
@@ -160,14 +167,14 @@ void TestCatalogueParser::entryDist_fromDistanceField()
 {
     const auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"),
                                   QStringLiteral("distance") });
-    auto e = makeEntry({ { QStringLiteral("distance"), QVariant(500.0) } });
+    auto e = makeEntry(s, { { QStringLiteral("distance"), QVariant(500.0) } });
     QCOMPARE(Catalogue3DParser::detail::entryDistanceMpc(e, s), 500.0);
 }
 
 void TestCatalogueParser::entryDist_fromRedshiftField()
 {
     const auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"), QStringLiteral("z") });
-    auto e = makeEntry({ { QStringLiteral("z"), QVariant(0.1) } });
+    auto e = makeEntry(s, { { QStringLiteral("z"), QVariant(0.1) } });
     const double d = Catalogue3DParser::detail::entryDistanceMpc(e, s);
     QVERIFY2(d > 400.0 && d < 460.0,
              qPrintable(QStringLiteral("via z=0.1 got %1 Mpc; expected 400–460").arg(d)));
@@ -178,7 +185,7 @@ void TestCatalogueParser::entryDist_fallback300Mpc()
     // No usable distance or redshift → hardcoded 300 Mpc default.
     const auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"),
                                   QStringLiteral("flux") });
-    auto e = makeEntry();
+    auto e = makeEntry(s);
     QCOMPARE(Catalogue3DParser::detail::entryDistanceMpc(e, s), 300.0);
 }
 
@@ -188,7 +195,7 @@ void TestCatalogueParser::entryDist_distanceMpcOverride_takesPriority()
     // any catalogue field value.
     const auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"),
                                   QStringLiteral("distance") });
-    auto e = makeEntry({ { QStringLiteral("distance"), QVariant(500.0) } });
+    auto e = makeEntry(s, { { QStringLiteral("distance"), QVariant(500.0) } });
     e.distanceMpc = 750.0;
     QCOMPARE(Catalogue3DParser::detail::entryDistanceMpc(e, s), 750.0);
 }
@@ -199,7 +206,7 @@ void TestCatalogueParser::entryDist_negativeDistanceField_fallsBackToRedshift()
     // and fall back to the redshift column.
     const auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"),
                                   QStringLiteral("distance"), QStringLiteral("z") });
-    auto e = makeEntry({ { QStringLiteral("distance"), QVariant(-100.0) },
+    auto e = makeEntry(s, { { QStringLiteral("distance"), QVariant(-100.0) },
                          { QStringLiteral("z"),        QVariant(0.05)   } });
     const double d = Catalogue3DParser::detail::entryDistanceMpc(e, s);
     // comovingDistanceMpc(0.05) ≈ 200 Mpc
@@ -212,6 +219,6 @@ void TestCatalogueParser::entryDist_zeroRedshift_fallsBackTo300()
     // z == 0 is treated as "not provided" → comovingDistanceMpc(0) == 0,
     // so the parser should fall through to the 300 Mpc default.
     const auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"), QStringLiteral("z") });
-    auto e = makeEntry({ { QStringLiteral("z"), QVariant(0.0) } });
+    auto e = makeEntry(s, { { QStringLiteral("z"), QVariant(0.0) } });
     QCOMPARE(Catalogue3DParser::detail::entryDistanceMpc(e, s), 300.0);
 }

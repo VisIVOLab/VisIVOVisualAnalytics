@@ -315,6 +315,8 @@ set(PROJECT_SOURCES
         src/vlkb/VlkbQueryService.h
         src/skava/SkavaClient.cpp
         src/skava/SkavaClient.h
+        src/skava/BackendRouting.cpp
+        src/skava/BackendRouting.h
         src/gui/SkavaSearchPanel.cpp
         src/gui/SkavaSearchPanel.h
         src/gui/RemoteRenderWidget.cpp
