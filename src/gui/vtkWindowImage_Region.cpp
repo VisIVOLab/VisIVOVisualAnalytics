@@ -555,15 +555,35 @@ void vtkWindowImage::clearRegion()
 QJsonObject vtkWindowImage::currentRegionToJson() const
 {
     // Canonical image-frame region in 1-based pixel coordinates (the FITS /
-    // ds9 / CRTF convention). The viewer stores 0-based voxels, so +1 here.
+    // ds9 / CRTF convention). The viewer stores 0-based *display* voxels; when
+    // the displayed image is decimated (spacing>1 for a preview or a future LOD
+    // level) those must be mapped back onto the full-resolution pixel grid
+    // before the +1. This is a no-op for a full-resolution image (origin 0,
+    // spacing 1, extent0 0 → pxX(v) == v+1), so exports are byte-identical.
+    double ox = 0.0, oy = 0.0, sx = 1.0, sy = 1.0;
+    int ex0 = 0, ey0 = 0;
+    if (this->layers) {
+        if (auto *img = this->layers->getImageData(this->layers->getMasterIndex())) {
+            double origin[3], spacing[3];
+            int extent[6];
+            img->GetOrigin(origin);
+            img->GetSpacing(spacing);
+            img->GetExtent(extent);
+            ox = origin[0]; oy = origin[1];
+            sx = spacing[0]; sy = spacing[1];
+            ex0 = extent[0]; ey0 = extent[2];
+        }
+    }
     QJsonObject r;
     r[u"frame"_s] = u"image"_s;
     r[u"unit"_s]  = u"pix"_s;
-    const auto px = [](int v) { return double(v) + 1.0; };
+    // Display voxel → full-res 1-based FITS pixel (per axis).
+    const auto pxX = [=](int v) { return (ox + (v - ex0) * sx) + 1.0; };
+    const auto pxY = [=](int v) { return (oy + (v - ey0) * sy) + 1.0; };
     switch (this->regionMode) {
     case RegionMode::Box: {
-        const double ax = px(regionAnchorVoxel[0]), ay = px(regionAnchorVoxel[1]);
-        const double bx = px(regionCurrentVoxel[0]), by = px(regionCurrentVoxel[1]);
+        const double ax = pxX(regionAnchorVoxel[0]), ay = pxY(regionAnchorVoxel[1]);
+        const double bx = pxX(regionCurrentVoxel[0]), by = pxY(regionCurrentVoxel[1]);
         r[u"shape"_s] = u"box"_s;
         r[u"center"_s] = QJsonArray{ (ax + bx) / 2.0, (ay + by) / 2.0 };
         r[u"size"_s]   = QJsonArray{ std::abs(bx - ax), std::abs(by - ay) };
@@ -571,26 +591,26 @@ QJsonObject vtkWindowImage::currentRegionToJson() const
         break;
     }
     case RegionMode::Circle: {
-        const double dx = regionCurrentVoxel[0] - regionAnchorVoxel[0];
-        const double dy = regionCurrentVoxel[1] - regionAnchorVoxel[1];
+        const double dx = (regionCurrentVoxel[0] - regionAnchorVoxel[0]) * sx;
+        const double dy = (regionCurrentVoxel[1] - regionAnchorVoxel[1]) * sy;
         r[u"shape"_s] = u"circle"_s;
-        r[u"center"_s] = QJsonArray{ px(regionAnchorVoxel[0]), px(regionAnchorVoxel[1]) };
+        r[u"center"_s] = QJsonArray{ pxX(regionAnchorVoxel[0]), pxY(regionAnchorVoxel[1]) };
         r[u"radius"_s] = std::sqrt(dx * dx + dy * dy);
         break;
     }
     case RegionMode::Annulus: {
-        const double dx = regionCurrentVoxel[0] - regionAnchorVoxel[0];
-        const double dy = regionCurrentVoxel[1] - regionAnchorVoxel[1];
+        const double dx = (regionCurrentVoxel[0] - regionAnchorVoxel[0]) * sx;
+        const double dy = (regionCurrentVoxel[1] - regionAnchorVoxel[1]) * sy;
         r[u"shape"_s] = u"annulus"_s;
-        r[u"center"_s] = QJsonArray{ px(regionAnchorVoxel[0]), px(regionAnchorVoxel[1]) };
-        r[u"radii"_s]  = QJsonArray{ regionAnnulusInnerRadius, std::sqrt(dx * dx + dy * dy) };
+        r[u"center"_s] = QJsonArray{ pxX(regionAnchorVoxel[0]), pxY(regionAnchorVoxel[1]) };
+        r[u"radii"_s]  = QJsonArray{ regionAnnulusInnerRadius * sx, std::sqrt(dx * dx + dy * dy) };
         break;
     }
     case RegionMode::Polygon: {
         r[u"shape"_s] = u"polygon"_s;
         QJsonArray pts;
         for (const auto &v : regionPolygonVertices)
-            pts.append(QJsonArray{ px(v[0]), px(v[1]) });
+            pts.append(QJsonArray{ pxX(v[0]), pxY(v[1]) });
         r[u"points"_s] = pts;
         break;
     }
