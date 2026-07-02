@@ -872,3 +872,74 @@ def test_moment_m1_physical_range_guard_and_auto_mask(tmp_path):
     assert abs(r_auto["threshold_used"] - thr) < 1e-6
     # Masking removes noise pixels, so fewer valid pixels than the unmasked map.
     assert fina.sum() < fin.sum()
+
+
+def test_select_moment_backend_modes(monkeypatch):
+    """VISIVO_DASK_MODE routing: off disables, auto uses local threaded dask
+    only for large jobs, local always, distributed needs a cluster."""
+    import app.dependencies as d
+
+    monkeypatch.setattr(d, "_DASK_SCHEDULER", "")       # no distributed cluster
+    monkeypatch.setattr(d, "_DASK_SYNC_CLIENT", None)
+    monkeypatch.setattr(d, "_DASK_AVAILABLE", True)     # pretend dask.array importable
+    big = 800 * 1024 ** 2
+    small = 8 * 1024 ** 2
+
+    monkeypatch.setattr(d, "_DASK_MODE", "auto")
+    assert d._select_moment_backend(1, small) == (False, None)
+    assert d._select_moment_backend(1, big) == (True, None)
+    assert d._select_moment_backend(7, big) == (False, None)   # order 7 unsupported
+
+    monkeypatch.setattr(d, "_DASK_MODE", "off")
+    assert d._select_moment_backend(1, big) == (False, None)
+
+    monkeypatch.setattr(d, "_DASK_MODE", "local")
+    assert d._select_moment_backend(2, small) == (True, None)  # forced local
+    # 'local' must win even when a distributed cluster is configured/reachable.
+    monkeypatch.setattr(d, "_DASK_SYNC_CLIENT", object())
+    assert d._select_moment_backend(1, big) == (True, None)
+    monkeypatch.setattr(d, "_DASK_SYNC_CLIENT", None)
+
+    monkeypatch.setattr(d, "_DASK_MODE", "distributed")
+    assert d._select_moment_backend(1, big) == (False, None)   # cluster required, none
+
+    # dask.array unavailable → never route to the local threaded path
+    monkeypatch.setattr(d, "_DASK_MODE", "auto")
+    monkeypatch.setattr(d, "_DASK_AVAILABLE", False)
+    assert d._select_moment_backend(1, big) == (False, None)
+
+
+def test_moment_dask_local_matches_worker(tmp_path):
+    """The local threaded dask.array path (dist_client=None) must agree with the
+    in-process worker_moment on a positive-emission cube for every order the
+    dask path supports."""
+    import numpy as np
+    from astropy.io import fits
+    from app.compute import worker_moment
+    from app.compute.moment import _moment_map_dask
+
+    nz, ny, nx = 40, 10, 10
+    rng = np.random.default_rng(3)
+    zc = np.arange(nz)
+    data = np.zeros((nz, ny, nx), dtype=np.float32)
+    for j in range(ny):
+        for i in range(nx):
+            data[:, j, i] = rng.uniform(2.0, 5.0) * np.exp(
+                -((zc - rng.uniform(14, 26)) ** 2) / (2.0 * 5.0 ** 2))
+    data += 0.5  # strictly positive → all moment validity rules agree
+    p = tmp_path / "pos_cube_dask.fits"
+    hdu = fits.PrimaryHDU(data)
+    h = hdu.header
+    h["CTYPE1"], h["CTYPE2"], h["CTYPE3"] = "RA---SIN", "DEC--SIN", "VRAD"
+    h["CRVAL3"], h["CRPIX3"], h["CDELT3"] = 0.0, 1.0, 1000.0
+    h["CUNIT3"] = "m/s"
+    hdu.writeto(p, overwrite=True)
+
+    for order in (0, 1, 2, 6):
+        a = _decode_f32(worker_moment(str(p), order, 0, nz - 1, False, 0.0)["data_base64"])
+        b = _decode_f32(
+            _moment_map_dask(str(p), order, 0, nz - 1, 0.0, False, 64, None)["data_base64"])
+        assert a.shape == b.shape
+        fin = np.isfinite(a) & np.isfinite(b)
+        assert fin.any()
+        assert np.allclose(a[fin], b[fin], rtol=1e-4, atol=1e-4), f"order {order}"

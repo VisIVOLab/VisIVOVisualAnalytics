@@ -132,6 +132,17 @@ _POOL = ProcessPoolExecutor(
 )
 _DASK_CLIENT = None
 _DASK_SCHEDULER = os.environ.get('VISIVO_DASK_SCHEDULER', '')
+# Dask is now ON by default (auto). Modes: 'auto' → use a distributed scheduler
+# when VISIVO_DASK_SCHEDULER is set, otherwise fall back to a local *threaded*
+# dask.array scheduler for large out-of-core jobs; 'off' disables dask;
+# 'local' forces local threaded dask; 'distributed' requires a scheduler.
+_DASK_MODE = os.environ.get('VISIVO_DASK_MODE', 'auto').strip().lower()
+# Minimum materialised-subset size before the local threaded dask path is worth
+# its overhead. Small cubes stay on the fast in-process worker path.
+_DASK_MIN_BYTES = int(os.environ.get('VISIVO_DASK_MIN_BYTES', str(512 * 1024 ** 2)))
+# Orders the chunked dask.array path (_moment_map_dask) can compute.
+_DASK_MOMENT_ORDERS = frozenset({0, 1, 2, 3, 4, 5, 6, 8, 10})
+_DASK_AVAILABLE: "bool | None" = None
 _VTK_AVAILABLE = False
 try:
     import vtk as _vtk
@@ -771,6 +782,67 @@ def _get_dask_client_sync():
     return _DASK_SYNC_CLIENT if _DASK_SYNC_CLIENT else None
 
 
+def _dask_array_available() -> bool:
+    """True if ``dask.array`` can be imported (cached). Needed before routing a
+    job to the local threaded dask path, which uses dask.array directly."""
+    global _DASK_AVAILABLE
+    if _DASK_AVAILABLE is None:
+        try:
+            import dask.array  # noqa: F401  (probe only)
+            _DASK_AVAILABLE = True
+        except Exception:
+            _DASK_AVAILABLE = False
+    return _DASK_AVAILABLE
+
+
+def _estimate_moment_subset_bytes(dataset, request) -> int:
+    """Cheap upper-bound on the float32 bytes a moment over the requested
+    channel range would materialise (NAXIS1·NAXIS2·nchannels·4), from the
+    header alone — no data read."""
+    try:
+        nx = int(dataset.header.get("NAXIS1", 0) or 0)
+        ny = int(dataset.header.get("NAXIS2", 0) or 0)
+        nch_total = int(dataset.header.get("NAXIS3", 0) or 0)
+        cs = int(request.channel_start)
+        ce = int(request.channel_end)
+        nch = (ce - cs + 1) if ce >= cs else nch_total
+        if nch <= 0:
+            nch = nch_total or 1
+        return max(0, nx) * max(0, ny) * max(1, nch) * 4
+    except Exception:
+        return 0
+
+
+def _select_moment_backend(order: int, subset_bytes: int):
+    """Choose the moment compute backend under VISIVO_DASK_MODE.
+
+    Returns ``(use_dask, dist_client)``:
+      * ``(True, client)``  → chunked dask.array over a **distributed** cluster
+      * ``(True, None)``    → chunked dask.array over the **local threaded**
+                              scheduler (out-of-core, parallel across cores)
+      * ``(False, None)``   → the in-process ``worker_moment`` path
+
+    'auto' (default) prefers a configured distributed scheduler, else uses the
+    local threaded path once the job is large enough to amortise dask overhead.
+    """
+    if _DASK_MODE == "off" or order not in _DASK_MOMENT_ORDERS:
+        return (False, None)
+    # 'local' forces the local threaded scheduler even if a cluster is
+    # configured — it must win before we ever consult the distributed client.
+    if _DASK_MODE == "local":
+        return (True, None) if _dask_array_available() else (False, None)
+    sync_client = _get_dask_client_sync()  # non-None only when a scheduler is set
+    if sync_client is not None:
+        return (True, sync_client)
+    if _DASK_MODE == "distributed":
+        return (False, None)  # a cluster was required but none is reachable
+    if not _dask_array_available():
+        return (False, None)
+    if subset_bytes >= _DASK_MIN_BYTES:
+        return (True, None)  # auto: local threaded dask once big enough
+    return (False, None)
+
+
 async def _run(fn, *args) -> Any:
     """Run a CPU-bound function via Dask (if configured) or local ProcessPoolExecutor.
 
@@ -902,12 +974,18 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
     if cached is not None:
         return dict(cached.payload), True
 
-    # When a Dask cluster is configured, fan the work out across all
-    # workers via the chunked dask.array path. Each worker reads only
-    # its slab from the shared filesystem; the scheduler aggregates.
-    # Otherwise fall back to the single-task ProcessPoolExecutor path.
-    sync_client = _get_dask_client_sync()
-    if sync_client is not None and request.moment_order in {0, 1, 2, 3, 4, 5, 6, 8, 10}:
+    # Backend selection (VISIVO_DASK_MODE, default 'auto'): route large / high-
+    # order moments through the chunked dask.array path so they compute out-of-
+    # core and in parallel. A configured distributed cluster fans the work out
+    # across nodes; otherwise a local threaded dask scheduler parallelises across
+    # cores. Small cubes stay on the fast in-process worker_moment path.
+    subset_bytes = _estimate_moment_subset_bytes(dataset, request)
+    use_dask, dist_client = _select_moment_backend(request.moment_order, subset_bytes)
+    if use_dask and dist_client is not None:
+        logger.info(
+            "[moment] backend=dask-distributed order=%s subset_bytes=%s",
+            request.moment_order, subset_bytes,
+        )
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
@@ -919,9 +997,34 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
             request.threshold_value,
             request.mask_enabled,
             64,                     # chunk_z
-            sync_client,            # dist_client → distributed cluster
+            dist_client,            # → distributed cluster
             request.threshold_auto,
         )
+    elif use_dask:
+        # Local threaded dask.array — CPU-heavy. Run it DIRECTLY on the local
+        # process pool under the heavy semaphore, NOT via _run_heavy/_run: the
+        # latter would re-dispatch to an async Dask cluster if one happens to be
+        # reachable, turning "local threaded" into a single remote task. Pinning
+        # to _POOL keeps it a local subprocess with scheduler="threads" inside.
+        logger.info(
+            "[moment] backend=dask-local-threaded order=%s subset_bytes=%s",
+            request.moment_order, subset_bytes,
+        )
+        async with _heavy_semaphore():
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                _POOL,
+                _moment_map_dask,
+                dataset.path,
+                request.moment_order,
+                request.channel_start,
+                request.channel_end,
+                request.threshold_value,
+                request.mask_enabled,
+                64,       # chunk_z
+                None,     # dist_client → local threaded scheduler
+                request.threshold_auto,
+            )
     else:
         # Heavy task — throttled so other interactive requests stay responsive.
         result = await _run_heavy(
