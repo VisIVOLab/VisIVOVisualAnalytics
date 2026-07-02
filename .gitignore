@@ -366,3 +366,7 @@ VisIVOVisualAnalytics.dmg
 /.qt
 /backend/.venv
 /backend/scripts/__pycache__
+
+# Python bytecode — general patterns so stray __pycache__ never gets tracked again
+__pycache__/
+*.pyc
