@@ -14,9 +14,11 @@ tests/
   test_catalogue_parser.cpp  # 26 tests
   TestBackendRouting.h
   test_backend_routing.cpp   # 13 tests — Settings backend registry + SKAVA routing
+  TestImageLod.h
+  test_image_lod.cpp         # 12 tests — viewport LOD math (level select + visible tiles)
 ```
 
-Total: **69 tests**.
+Total: **81 tests**.
 
 ---
 

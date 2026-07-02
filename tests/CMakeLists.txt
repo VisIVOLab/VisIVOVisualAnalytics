@@ -25,6 +25,7 @@ add_library(visivo_test_support STATIC
     ${PROJECT_SOURCE_DIR}/src/app/DiagnosticsManager.cpp
     ${PROJECT_SOURCE_DIR}/src/Settings.cpp
     ${PROJECT_SOURCE_DIR}/src/skava/BackendRouting.cpp
+    ${PROJECT_SOURCE_DIR}/src/vtk/ImageLod.cpp
 )
 set_target_properties(visivo_test_support PROPERTIES AUTOMOC ON)
 target_include_directories(visivo_test_support
@@ -33,6 +34,7 @@ target_include_directories(visivo_test_support
         ${PROJECT_SOURCE_DIR}/src/app
         ${PROJECT_SOURCE_DIR}/src/gui
         ${PROJECT_SOURCE_DIR}/src/skava
+        ${PROJECT_SOURCE_DIR}/src/vtk
         ${PROJECT_BINARY_DIR}      # for generated headers (Version.h etc.)
 )
 target_link_libraries(visivo_test_support
@@ -50,6 +52,8 @@ add_executable(VisIVOTests
     test_catalogue_parser.cpp
     TestBackendRouting.h
     test_backend_routing.cpp
+    TestImageLod.h
+    test_image_lod.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

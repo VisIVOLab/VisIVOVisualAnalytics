@@ -6,6 +6,7 @@
 #include "TestBackendClient.h"
 #include "TestCatalogueParser.h"
 #include "TestBackendRouting.h"
+#include "TestImageLod.h"
 
 #include <QCoreApplication>
 #include <QTest>
@@ -18,5 +19,6 @@ int main(int argc, char *argv[])
     { TestBackendClient   t; status |= QTest::qExec(&t, argc, argv); }
     { TestCatalogueParser t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendRouting  t; status |= QTest::qExec(&t, argc, argv); }
+    { TestImageLod        t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }
