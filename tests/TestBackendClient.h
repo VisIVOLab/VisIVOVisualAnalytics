@@ -42,4 +42,9 @@ private slots:
     void parseExportsList_errorResponse();
     void parseExportsDelete_happyPath();
     void parseExportsDelete_missingFile();
+
+    // ── parseImageTileObject ──────────────────────────────────────────────
+    void parseImageTile_happyPath();
+    void parseImageTile_errorResponse();
+    void parseImageTile_missingFields_defaults();
 };

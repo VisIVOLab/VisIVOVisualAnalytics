@@ -9,14 +9,14 @@ tests/
   CMakeLists.txt          # visivo_test_support + VisIVOTests
   main.cpp                # QCoreApplication + QTest::qExec for each class
   TestBackendClient.h     # Q_OBJECT test class declaration
-  test_backendclient.cpp  # 14 tests
+  test_backendclient.cpp  # 30 tests (incl. image-tile parsing)
   TestCatalogueParser.h
   test_catalogue_parser.cpp  # 26 tests
   TestBackendRouting.h
   test_backend_routing.cpp   # 13 tests — Settings backend registry + SKAVA routing
 ```
 
-Total: **53 tests**.
+Total: **69 tests**.
 
 ---
 
@@ -49,9 +49,10 @@ Does **not** pull in Qt::Widgets, VTK, or libwcs.
 
 ---
 
-## `TestBackendClient` (14 tests)
+## `TestBackendClient` (30 tests)
 
-All tests use `QJsonObject` literals — no network calls.
+All tests use `QJsonObject` literals — no network calls. Covers the static
+`parse*Object` methods (moment, PV, noise, save/exports, **image tile**).
 
 ### `parseMomentResultObject`
 | Test | What it checks |
@@ -80,6 +81,13 @@ All tests use `QJsonObject` literals — no network calls.
 | `parseNoise_missingRegion_defaultsToZero` | absent region → all coords 0 |
 
 **Note on `parsePv_errorResponse`**: `parsePvResultObject` calls `result.error.clear()` after the `positions_arcsec_base64` decode step (missing arcsec positions is non-fatal, and `error` is reused as a scratch buffer). The test therefore only asserts `!r.valid` and documents this behaviour.
+
+### `parseImageTileObject`
+| Test | What it checks |
+|------|---------------|
+| `parseImageTile_happyPath` | all tile fields (dims, level, num_levels, tile_x/y, range) round-trip |
+| `parseImageTile_errorResponse` | `valid=false`, `error` preserved (e.g. out-of-range level) |
+| `parseImageTile_missingFields_defaults` | `full_*` default to width/height, `num_levels`→1, `level`→0 |
 
 ---
 

@@ -425,3 +425,52 @@ void TestBackendClient::parseExportsDelete_missingFile()
     QVERIFY(r.error.contains(QStringLiteral("not found")));
     QVERIFY(r.deletedFilename.isEmpty());
 }
+
+// ── parseImageTileObject ──────────────────────────────────────────────────────
+
+void TestBackendClient::parseImageTile_happyPath()
+{
+    const auto o = fromLiteral(R"({
+        "valid": true, "error": "",
+        "width": 256, "height": 200,
+        "full_width": 8192, "full_height": 6000,
+        "level": 1, "num_levels": 6,
+        "tile_x": 3, "tile_y": 2, "tile_size": 256,
+        "scalar_type": "float32",
+        "range_min": -0.5, "range_max": 42.25
+    })");
+    const auto r = BackendClient::parseImageTileObject(o);
+    QVERIFY(r.valid);
+    QCOMPARE(r.width, 256);
+    QCOMPARE(r.height, 200);
+    QCOMPARE(r.fullWidth, 8192);
+    QCOMPARE(r.fullHeight, 6000);
+    QCOMPARE(r.level, 1);
+    QCOMPARE(r.numLevels, 6);
+    QCOMPARE(r.tileX, 3);
+    QCOMPARE(r.tileY, 2);
+    QCOMPARE(r.tileSize, 256);
+    QCOMPARE(r.scalarType, QStringLiteral("float32"));
+    QCOMPARE(r.rangeMin, -0.5);
+    QCOMPARE(r.rangeMax, 42.25);
+}
+
+void TestBackendClient::parseImageTile_errorResponse()
+{
+    const auto o = fromLiteral(R"({ "valid": false, "error": "out of range" })");
+    const auto r = BackendClient::parseImageTileObject(o);
+    QVERIFY(!r.valid);
+    QCOMPARE(r.error, QStringLiteral("out of range"));
+}
+
+void TestBackendClient::parseImageTile_missingFields_defaults()
+{
+    // full_* default to width/height; num_levels defaults to 1.
+    const auto o = fromLiteral(R"({ "valid": true, "width": 64, "height": 64 })");
+    const auto r = BackendClient::parseImageTileObject(o);
+    QVERIFY(r.valid);
+    QCOMPARE(r.fullWidth, 64);
+    QCOMPARE(r.fullHeight, 64);
+    QCOMPARE(r.numLevels, 1);
+    QCOMPARE(r.level, 0);
+}

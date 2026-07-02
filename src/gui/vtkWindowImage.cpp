@@ -472,6 +472,126 @@ ImageLayerLoadResult fetchRemoteImageLayer(const QString &backendUrl, const QStr
     return result;
 }
 
+// Assemble the full-resolution image from level-0 pyramid tiles. Each tile is a
+// bounded out-of-core read on the backend, so a mosaic too large for the backend
+// to load in one /v1/image/full call can still be served tile-by-tile. The
+// client-side vtkImageData is full size (same as the single-request full load);
+// display downsampling is handled downstream by ImageLayer.
+ImageLayerLoadResult fetchRemoteImageLayerTiled(const QString &backendUrl, const QString &datasetId,
+                                                const QString &datasetPath, int tileSize,
+                                                int requestGeneration, const QString &sessionId,
+                                                const QString &backendToken)
+{
+    ImageLayerLoadResult result;
+    result.filepath = datasetPath.toStdString();
+    result.requestGeneration = requestGeneration;
+
+    BackendClient client(backendUrl, backendToken);
+    client.setSessionId(sessionId);
+
+    // Probe tile (0,0) to learn full dims + tile grid before allocating.
+    const auto probe = client.requestImageTile(datasetId, 0, 0, 0, tileSize);
+    if (!probe.valid) {
+        result.errorMessage = probe.error.isEmpty() ? "Remote image tile request failed."
+                                                     : probe.error.toStdString();
+        return result;
+    }
+    if (probe.scalarType != u"float32"_s) {
+        result.errorMessage = "Unsupported remote image scalar type.";
+        return result;
+    }
+    const int fullW = probe.fullWidth;
+    const int fullH = probe.fullHeight;
+    const int ts = probe.tileSize > 0 ? probe.tileSize : tileSize;
+    if (fullW <= 0 || fullH <= 0 || ts <= 0) {
+        result.errorMessage = "Invalid remote image dimensions.";
+        return result;
+    }
+
+    vtkSmartPointer<vtkImageData> image = vtkSmartPointer<vtkImageData>::New();
+    image->SetExtent(0, fullW - 1, 0, fullH - 1, 0, 0);
+    image->SetOrigin(0., 0., 0.);
+    image->SetSpacing(1., 1., 1.);
+    image->AllocateScalars(VTK_FLOAT, 1);
+    float *const buf = static_cast<float *>(image->GetScalarPointer());
+
+    // Copy one tile into the full buffer at its (tileX, tileY) offset, row by row.
+    const auto blit = [&](const BackendImageTileResult &t) -> bool {
+        const qsizetype expected =
+                static_cast<qsizetype>(t.width) * t.height * static_cast<qsizetype>(sizeof(float));
+        if (t.width <= 0 || t.height <= 0 || t.data.size() != expected) {
+            return false;
+        }
+        const int x0 = t.tileX * ts;
+        const int y0 = t.tileY * ts;
+        if (x0 + t.width > fullW || y0 + t.height > fullH) {
+            return false;
+        }
+        const float *src = reinterpret_cast<const float *>(t.data.constData());
+        for (int r = 0; r < t.height; ++r) {
+            std::memcpy(buf + (static_cast<qsizetype>(y0 + r) * fullW + x0),
+                        src + static_cast<qsizetype>(r) * t.width,
+                        static_cast<std::size_t>(t.width) * sizeof(float));
+        }
+        return true;
+    };
+
+    if (!blit(probe)) {
+        result.errorMessage = "Invalid remote image tile payload.";
+        return result;
+    }
+
+    // Combine per-tile ranges, ignoring degenerate (e.g. all-NaN) tiles that the
+    // backend reports as [0, 0] — including the probe, so an all-NaN corner tile
+    // cannot drag the global range toward 0 and skew the LUT.
+    double rmin = 0.0;
+    double rmax = 0.0;
+    bool haveRange = false;
+    const auto updateRange = [&](const BackendImageTileResult &t) {
+        if (t.rangeMin >= t.rangeMax) {
+            return;
+        }
+        if (!haveRange) {
+            rmin = t.rangeMin;
+            rmax = t.rangeMax;
+            haveRange = true;
+        } else {
+            rmin = std::min(rmin, t.rangeMin);
+            rmax = std::max(rmax, t.rangeMax);
+        }
+    };
+    updateRange(probe);
+
+    const int cols = (fullW + ts - 1) / ts;
+    const int rows = (fullH + ts - 1) / ts;
+    for (int ty = 0; ty < rows; ++ty) {
+        for (int tx = 0; tx < cols; ++tx) {
+            if (tx == 0 && ty == 0) {
+                continue;  // probe tile already blitted
+            }
+            const auto t = client.requestImageTile(datasetId, 0, tx, ty, ts);
+            if (!t.valid || !blit(t)) {
+                result.errorMessage = t.error.isEmpty() ? "Remote image tile assembly failed."
+                                                        : t.error.toStdString();
+                return result;
+            }
+            updateRange(t);
+        }
+    }
+
+    result.imageData = image;
+    result.scalarRange = { rmin, rmax };
+    result.isPreview = false;
+    result.fullWidth = fullW;
+    result.fullHeight = fullH;
+    result.previewScaleFactor = 1.0;
+    result.valid = true;
+    qDebug().noquote()
+            << QStringLiteral("[remote-image] assembled full=%1x%2 from %3x%4 tiles (size %5)")
+                       .arg(fullW).arg(fullH).arg(cols).arg(rows).arg(ts);
+    return result;
+}
+
 // ── WCS TAN projection helpers ────────────────────────────────────────────────
 // Implements gnomonic (TAN) forward and inverse transforms matching the math
 // used by AstroUtils / libwcs.  All angles in degrees; pixels are 0-indexed.
@@ -1684,12 +1804,18 @@ void vtkWindowImage::startRemoteFullResolutionLoad()
     this->transitioningToFull = true;
     this->suspendLutEditorUpdates = true;
     qDebug().noquote()
-            << QStringLiteral("[remote-image] requesting full-resolution image dataset=%1")
+            << QStringLiteral("[remote-image] requesting full-resolution image (tiled) dataset=%1")
                        .arg(this->remoteDatasetId);
+    // Assemble the full-resolution image from pyramid tiles: each tile is a
+    // bounded out-of-core read on the backend, so mosaics too large for a single
+    // /v1/image/full call load without OOMing the backend. 512 px balances
+    // request count against per-tile payload size.
+    constexpr int kFullResTileSize = 512;
     this->remoteFullImageWatcher.setFuture(
-            QtConcurrent::run(&fetchRemoteImageLayer, this->remoteBackendUrl, this->remoteDatasetId,
-                              this->filepath, false, 1536, this->remoteLoadGeneration,
-                              this->remoteSessionId, this->remoteBackendToken));
+            QtConcurrent::run(&fetchRemoteImageLayerTiled, this->remoteBackendUrl,
+                              this->remoteDatasetId, this->filepath, kFullResTileSize,
+                              this->remoteLoadGeneration, this->remoteSessionId,
+                              this->remoteBackendToken));
 }
 
 bool vtkWindowImage::isBusy() const

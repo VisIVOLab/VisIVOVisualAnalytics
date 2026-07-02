@@ -437,6 +437,25 @@ struct BackendImageResult
     QByteArray data;
 };
 
+struct BackendImageTileResult
+{
+    bool valid{ false };
+    QString error;
+    int width{ 0 };        ///< actual tile pixel dims (≤ tileSize at edges)
+    int height{ 0 };
+    int fullWidth{ 0 };
+    int fullHeight{ 0 };
+    int level{ 0 };
+    int numLevels{ 1 };
+    int tileX{ 0 };
+    int tileY{ 0 };
+    int tileSize{ 256 };
+    QString scalarType;
+    double rangeMin{ 0. };
+    double rangeMax{ 0. };
+    QByteArray data;       ///< float32 LE, row-major, width*height
+};
+
 struct BackendIsosurfaceResult
 {
     bool valid{ false };
@@ -1384,6 +1403,11 @@ public:
 
     BackendImageResult requestImagePreview(const QString &datasetId, int maxLongestSide) const;
     BackendImageResult requestImage(const QString &datasetId) const;
+    /// One out-of-core pyramid tile (POST /v1/image/tile). level 0 = full res,
+    /// L decimates by 2^L. Used to assemble large mosaics tile-by-tile so the
+    /// backend never loads the whole plane. See docs/backend-api.md.
+    BackendImageTileResult requestImageTile(const QString &datasetId, int level,
+                                            int tileX, int tileY, int tileSize = 256) const;
     BackendIsosurfaceResult requestIsosurface(const QString &datasetId, double threshold) const;
     BackendMomentResult requestMoment(const QString &datasetId, int order, int channelStart,
                                       int channelEnd, bool maskEnabled,
@@ -1402,6 +1426,9 @@ public:
     static BackendMomentResult    parseMomentResultObject(const QJsonObject &object);
     static BackendCubePvResult    parsePvResultObject(const QJsonObject &object);
     static BackendCubeNoiseResult parseNoiseResultObject(const QJsonObject &object);
+    /// Parse a /v1/image/tile JSON object into a tile result (metadata only;
+    /// data_base64 must still be decoded via decodePayload by the caller).
+    static BackendImageTileResult parseImageTileObject(const QJsonObject &object);
 
     /// JSON-only parsers for the Workspace Exports lifecycle, factored out
     /// so they can be unit-tested without a live HTTP server (mirrors the

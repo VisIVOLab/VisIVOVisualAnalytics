@@ -1774,6 +1774,56 @@ BackendImageResult BackendClient::requestImagePreview(const QString &datasetId,
     return result;
 }
 
+BackendImageTileResult BackendClient::requestImageTile(const QString &datasetId, int level,
+                                                       int tileX, int tileY, int tileSize) const
+{
+    BackendImageTileResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("level"), level },
+            { QStringLiteral("tile_x"), tileX },
+            { QStringLiteral("tile_y"), tileY },
+            { QStringLiteral("tile_size"), tileSize } });
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/image/tile")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result = parseImageTileObject(object);
+    if (result.tileSize <= 0) {
+        result.tileSize = tileSize;
+    }
+    result.data = decodePayload(object, QStringLiteral("data_base64"),
+                                QStringLiteral("compression"), result.error);
+    if (!result.error.isEmpty()) {
+        result.valid = false;
+    }
+    return result;
+}
+
+BackendImageTileResult BackendClient::parseImageTileObject(const QJsonObject &object)
+{
+    BackendImageTileResult result;
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.width = object.value(QStringLiteral("width")).toInt();
+    result.height = object.value(QStringLiteral("height")).toInt();
+    result.fullWidth = object.value(QStringLiteral("full_width")).toInt(result.width);
+    result.fullHeight = object.value(QStringLiteral("full_height")).toInt(result.height);
+    result.level = object.value(QStringLiteral("level")).toInt();
+    result.numLevels = object.value(QStringLiteral("num_levels")).toInt(1);
+    result.tileX = object.value(QStringLiteral("tile_x")).toInt();
+    result.tileY = object.value(QStringLiteral("tile_y")).toInt();
+    result.tileSize = object.value(QStringLiteral("tile_size")).toInt();
+    result.scalarType = object.value(QStringLiteral("scalar_type")).toString();
+    result.rangeMin = object.value(QStringLiteral("range_min")).toDouble();
+    result.rangeMax = object.value(QStringLiteral("range_max")).toDouble();
+    return result;
+}
+
 BackendIsosurfaceResult BackendClient::requestIsosurface(const QString &datasetId,
                                                          double threshold) const
 {
