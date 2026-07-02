@@ -307,6 +307,10 @@ private:
     bool suspendHeavyOverlayUpdates{ false };
     bool ignoreNextPolygonRelease{ false };
     std::array<int, 2> probeVoxel{ -1, -1 };
+    // Full-resolution pixel coordinate of the probe (== displayed voxel × spacing);
+    // drives the readout + change-detection so coordinates update at full-res
+    // granularity even when the displayed image is decimated (LOD).
+    std::array<int, 2> m_probeFullPixel{ -1, -1 };
     std::array<int, 2> regionAnchorVoxel{ -1, -1 };
     std::array<int, 2> regionCurrentVoxel{ -1, -1 };
     std::vector<std::array<int, 2>> regionPolygonVertices;

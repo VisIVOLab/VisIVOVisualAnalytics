@@ -160,9 +160,28 @@ void vtkWindowImage::addMeasurementPoint(int voxelX, int voxelY)
 
 void vtkWindowImage::refreshMeasurementOverlay()
 {
+    // Stored measurement points are 0-based *display* voxel indices; the ruler
+    // renders in world coordinates and angularSeparationDeg needs full-res pixel
+    // indices. Map voxel → world (== full-res pixel via the image spacing) so
+    // both are correct when the displayed image is decimated. No-op for a
+    // full-res image (spacing 1, origin 0, extent0 0 → world == voxel).
+    double mo[3] = { 0., 0., 0. };
+    double ms[3] = { 1., 1., 1. };
+    int me[6] = { 0, 0, 0, 0, 0, 0 };
+    if (this->layers) {
+        if (auto *img = this->layers->getImageData(this->layers->getMasterIndex())) {
+            img->GetOrigin(mo);
+            img->GetSpacing(ms);
+            img->GetExtent(me);
+        }
+    }
+    const auto toWorld = [&](const std::array<int, 2> &p) -> std::array<double, 2> {
+        return { mo[0] + (p[0] - me[0]) * ms[0], mo[1] + (p[1] - me[1]) * ms[1] };
+    };
+
     if (m_measMode == MeasurementMode::Ruler && m_measPoints.size() >= 2) {
-        const auto &a = m_measPoints[0];
-        const auto &b = m_measPoints[1];
+        const auto a = toWorld(m_measPoints[0]);
+        const auto b = toWorld(m_measPoints[1]);
         m_measLine1->SetPoint1(a[0], a[1], 0.0);
         m_measLine1->SetPoint2(b[0], b[1], 0.0);
         m_measLineActor1->VisibilityOn();
@@ -192,9 +211,9 @@ void vtkWindowImage::refreshMeasurementOverlay()
             m_measLabelActor->VisibilityOn();
         }
     } else if (m_measMode == MeasurementMode::Angle && m_measPoints.size() >= 3) {
-        const auto &a = m_measPoints[0];
-        const auto &b = m_measPoints[1];
-        const auto &c = m_measPoints[2];
+        const auto a = toWorld(m_measPoints[0]);
+        const auto b = toWorld(m_measPoints[1]);
+        const auto c = toWorld(m_measPoints[2]);
         m_measLine1->SetPoint1(a[0], a[1], 0.0);
         m_measLine1->SetPoint2(b[0], b[1], 0.0);
         m_measLine2->SetPoint1(b[0], b[1], 0.0);

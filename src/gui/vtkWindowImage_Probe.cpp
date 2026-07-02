@@ -310,25 +310,29 @@ bool vtkWindowImage::updateProbeFromDisplayPosition(int displayX, int displayY)
         return false;
     }
 
-    if (this->probeValid && this->probeVoxel[0] == voxelX && this->probeVoxel[1] == voxelY) {
+    // Full-resolution pixel coordinate from the CONTINUOUS world position (world
+    // coords == full-res pixel coords via the image spacing). On a decimated
+    // display (spacing>1) the displayed voxel grid is coarser than full-res, so
+    // track the readout + change-detection at full-res granularity — otherwise
+    // the coordinates stall within one decimated pixel when zoomed in.
+    // remoteVoxelToWcs expects a full-res pixel index. No-op for a full-res image
+    // (spacing 1, origin 0 → worldCoord == voxel).
+    const double fullResX = worldCoord[0] - origin[0];
+    const double fullResY = worldCoord[1] - origin[1];
+    const int fullXi = std::lround(fullResX);
+    const int fullYi = std::lround(fullResY);
+    if (this->probeValid && this->m_probeFullPixel[0] == fullXi
+        && this->m_probeFullPixel[1] == fullYi) {
         return true;
     }
 
     this->probeValid = true;
-    this->probeVoxel = { voxelX, voxelY };
+    this->m_probeFullPixel = { fullXi, fullYi };
+    this->probeVoxel = { voxelX, voxelY };  // display voxel — value lookup + crosshair/profile
 
     const float value = this->layers->getPixelValue(this->layers->getMasterIndex(), voxelX, voxelY);
     QString valueText = std::isfinite(value) ? QString::number(value, 'g', 8) : u"NaN"_s;
-    // The displayed image may be decimated (spacing>1 for a preview or a future
-    // LOD level), so map the display voxel back onto the full-resolution pixel
-    // grid before reading WCS / reporting X,Y. remoteVoxelToWcs expects a full-res
-    // pixel index. This is a no-op when spacing==1 (a full-resolution image):
-    // fullResX == voxelX, so readouts are byte-identical to before.
-    const double fullResX = origin[0] + (voxelX - extent[0]) * spacing[0];
-    const double fullResY = origin[1] + (voxelY - extent[2]) * spacing[1];
-    QString message = u"X=%1  Y=%2  Value=%3"_s.arg(std::lround(fullResX))
-                              .arg(std::lround(fullResY))
-                              .arg(valueText);
+    QString message = u"X=%1  Y=%2  Value=%3"_s.arg(fullXi).arg(fullYi).arg(valueText);
     {
         QString axis0 = this->remoteFormatAxisCoordinate(0, fullResX);
         QString axis1 = this->remoteFormatAxisCoordinate(1, fullResY);
@@ -375,10 +379,15 @@ void vtkWindowImage::refreshProbeOverlay()
 
     double bounds[6];
     imageData->GetBounds(bounds);
-    this->probeHorizontalLine->SetPoint1(bounds[0], static_cast<double>(this->probeVoxel[1]), 0.0);
-    this->probeHorizontalLine->SetPoint2(bounds[1], static_cast<double>(this->probeVoxel[1]), 0.0);
-    this->probeVerticalLine->SetPoint1(static_cast<double>(this->probeVoxel[0]), bounds[2], 0.0);
-    this->probeVerticalLine->SetPoint2(static_cast<double>(this->probeVoxel[0]), bounds[3], 0.0);
+    // Crosshair position is in WORLD coordinates (== full-res pixel via spacing),
+    // so use the full-res probe coordinate, not the decimated display voxel.
+    // No-op for a full-res image (m_probeFullPixel == probeVoxel).
+    const double cx = static_cast<double>(this->m_probeFullPixel[0]);
+    const double cy = static_cast<double>(this->m_probeFullPixel[1]);
+    this->probeHorizontalLine->SetPoint1(bounds[0], cy, 0.0);
+    this->probeHorizontalLine->SetPoint2(bounds[1], cy, 0.0);
+    this->probeVerticalLine->SetPoint1(cx, bounds[2], 0.0);
+    this->probeVerticalLine->SetPoint2(cx, bounds[3], 0.0);
     this->probeHorizontalActor->VisibilityOn();
     this->probeVerticalActor->VisibilityOn();
 }
