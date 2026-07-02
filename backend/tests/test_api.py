@@ -896,3 +896,50 @@ def _vtk_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+# ── Image tiling (out-of-core 2-D pyramid) ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_image_tile_endpoint(client: AsyncClient, opened_image: dict) -> None:
+    resp = await client.post(
+        "/v1/image/tile",
+        json={"dataset_id": opened_image["dataset_id"],
+              "level": 0, "tile_x": 0, "tile_y": 0, "tile_size": 32},
+        headers=opened_image["headers"],
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["valid"], data.get("error")
+    assert (data["full_width"], data["full_height"]) == (64, 64)
+    assert (data["width"], data["height"]) == (32, 32)
+    assert data["level"] == 0
+    assert data["num_levels"] >= 2      # 64px / 32px tile → 2 levels
+    assert data["data_base64"]
+
+
+@pytest.mark.asyncio
+async def test_image_tile_out_of_range_returns_422(
+    client: AsyncClient, opened_image: dict
+) -> None:
+    resp = await client.post(
+        "/v1/image/tile",
+        json={"dataset_id": opened_image["dataset_id"],
+              "level": 0, "tile_x": 99, "tile_y": 0, "tile_size": 32},
+        headers=opened_image["headers"],
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_image_tile_on_cube_returns_422(
+    client: AsyncClient, opened_cube: dict
+) -> None:
+    resp = await client.post(
+        "/v1/image/tile",
+        json={"dataset_id": opened_cube["dataset_id"], "level": 0,
+              "tile_x": 0, "tile_y": 0, "tile_size": 32},
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 422

@@ -59,3 +59,34 @@ async def image_preview(
     except Exception as exc:
         return ImageFullResponse(valid=False, error=str(exc))
     return ImageFullResponse(valid=True, error="", **result)
+
+
+@router.post("/v1/image/tile", response_model=ImageTileResponse, tags=["image"])
+async def image_tile(
+    request: ImageTileRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> ImageTileResponse:
+    """Serve one out-of-core pyramid tile of a 2-D image mosaic.
+
+    Unlike ``/v1/image/full`` (which loads the whole plane), this reads only the
+    decimated tile region from the memmap, so multi-GB mosaics can be panned /
+    zoomed without materialising the full image. Level 0 is full resolution;
+    level ``L`` decimates by ``2**L``. Out-of-range tiles → 422.
+    """
+    from ..compute import worker_image_tile
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "image":
+            raise HTTPException(422, "Image tile endpoint requires an image dataset.")
+        result = await _run_with_limit(
+            session, worker_image_tile, entry["path"],
+            request.level, request.tile_x, request.tile_y, request.tile_size,
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        return ImageTileResponse(valid=False, error=str(exc))
+    return ImageTileResponse(valid=True, error="", **result)

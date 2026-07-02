@@ -242,6 +242,34 @@ class ImagePreviewRequest(BaseModel):
     max_longest_side: int = 1536
 
 
+class ImageTileRequest(BaseModel):
+    dataset_id: str
+    # Pyramid level: 0 = full resolution, L decimates by 2**L.
+    level: int = 0
+    tile_x: int = 0
+    tile_y: int = 0
+    tile_size: int = 256
+
+
+class ImageTileResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    width: int = 0            # actual tile pixel dims (≤ tile_size at edges)
+    height: int = 0
+    full_width: int = 0
+    full_height: int = 0
+    level: int = 0
+    num_levels: int = 1
+    tile_x: int = 0
+    tile_y: int = 0
+    tile_size: int = 256
+    scalar_type: str = ""
+    range_min: float = 0.0
+    range_max: float = 0.0
+    compression: str = ""
+    data_base64: str = ""
+
+
 class ImageFullResponse(BaseModel):
     valid: bool
     error: str

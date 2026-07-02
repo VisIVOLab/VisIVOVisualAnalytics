@@ -943,3 +943,119 @@ def test_moment_dask_local_matches_worker(tmp_path):
         fin = np.isfinite(a) & np.isfinite(b)
         assert fin.any()
         assert np.allclose(a[fin], b[fin], rtol=1e-4, atol=1e-4), f"order {order}"
+
+
+# ── worker_image_tile: out-of-core 2-D pyramid tiling ─────────────────────────
+
+
+def _decode_tile(result: dict) -> np.ndarray:
+    """Decode a tile payload (either raw or qt-zlib) into a (h, w) array."""
+    b64 = result["data_base64"]
+    flat = _decode_qt_zlib(b64) if result.get("compression") == "qt-zlib" else _decode_f32(b64)
+    return flat.reshape(result["height"], result["width"])
+
+
+def _write_gradient_image(path: str, h: int, w: int) -> None:
+    from astropy.io import fits
+    # value = row*10000 + col → every pixel is unique, so decimation is checkable
+    data = (np.arange(h)[:, None] * 10000 + np.arange(w)[None, :]).astype(np.float32)
+    fits.PrimaryHDU(data).writeto(path, overwrite=True)
+
+
+def test_image_tile_level0_matches_source(tmp_path):
+    from app.compute import worker_image_tile
+    p = tmp_path / "mosaic.fits"
+    _write_gradient_image(str(p), 3000, 2000)
+
+    r = worker_image_tile(str(p), 0, 0, 0, 256)
+    assert (r["full_width"], r["full_height"]) == (2000, 3000)
+    assert (r["width"], r["height"]) == (256, 256)
+    assert r["level"] == 0 and r["num_levels"] >= 4
+    t = _decode_tile(r)
+    # Top-left block equals the source pixels exactly at level 0.
+    assert t[0, 0] == 0.0 and t[0, 1] == 1.0 and t[1, 0] == 10000.0
+
+
+def test_image_tile_level1_decimates_by_two(tmp_path):
+    from app.compute import worker_image_tile
+    p = tmp_path / "mosaic.fits"
+    _write_gradient_image(str(p), 1024, 1024)
+
+    r = worker_image_tile(str(p), 1, 0, 0, 256)
+    t = _decode_tile(r)
+    # step = 2 → samples columns 0,2,4… and rows 0,2,4…
+    assert t[0, 0] == 0.0 and t[0, 1] == 2.0 and t[1, 0] == 20000.0
+
+
+def test_image_tile_edge_tile_is_clipped(tmp_path):
+    from app.compute import worker_image_tile
+    p = tmp_path / "mosaic.fits"
+    _write_gradient_image(str(p), 500, 2000)
+
+    last_tx = (2000 - 1) // 256  # 7
+    r = worker_image_tile(str(p), 0, last_tx, 0, 256)
+    assert r["width"] == 2000 - last_tx * 256   # 208
+    assert r["height"] == 256
+
+
+def test_image_tile_out_of_range_raises(tmp_path):
+    from app.compute import worker_image_tile
+    p = tmp_path / "mosaic.fits"
+    _write_gradient_image(str(p), 512, 512)
+    with pytest.raises(ValueError, match="out of range"):
+        worker_image_tile(str(p), 0, 999, 0, 256)
+
+
+def test_image_tile_rejects_bad_params(tmp_path):
+    from app.compute import worker_image_tile
+    p = tmp_path / "mosaic.fits"
+    _write_gradient_image(str(p), 512, 512)
+    with pytest.raises(ValueError):
+        worker_image_tile(str(p), -1, 0, 0, 256)
+    with pytest.raises(ValueError):
+        worker_image_tile(str(p), 0, 0, 0, 0)          # tile_size < 1
+    with pytest.raises(ValueError):
+        worker_image_tile(str(p), 0, 0, 0, 99999)      # tile_size > 4096
+
+
+def test_image_tile_num_levels_and_coarsest_fits_one_tile(tmp_path):
+    from app.compute import worker_image_tile
+    from app.compute.cube import _num_pyramid_levels
+    p = tmp_path / "mosaic.fits"
+    _write_gradient_image(str(p), 3000, 2000)
+
+    nl = _num_pyramid_levels(2000, 3000, 256)
+    # At the coarsest level the whole image must fit within one tile.
+    r = worker_image_tile(str(p), nl - 1, 0, 0, 256)
+    assert r["width"] <= 256 and r["height"] <= 256
+    assert r["num_levels"] == nl
+    # A level beyond the advertised range must be rejected (no phantom levels).
+    with pytest.raises(ValueError, match="out of range"):
+        worker_image_tile(str(p), nl, 0, 0, 256)
+
+
+def test_image_tile_is_out_of_core(tmp_path):
+    """The tile read must materialise only the tile, not the full plane."""
+    import tracemalloc
+    from app.compute import worker_image_tile
+    p = tmp_path / "big.fits"
+    # ~48 MB on disk; a full-plane load would dwarf a single 256² tile (256 KB).
+    _write_gradient_image(str(p), 4000, 3000)
+
+    tracemalloc.start()
+    r = worker_image_tile(str(p), 2, 1, 1, 256)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    # A 256² float32 tile is 256 KB; allow generous headroom but far below the
+    # 48 MB full plane — proves the strided read never loaded the whole image.
+    assert peak < 8_000_000, f"tile read used {peak} bytes — not out-of-core"
+    assert r["width"] <= 256 and r["height"] <= 256
+
+
+def test_image_tile_requires_2d(tmp_path):
+    from app.compute import worker_image_tile
+    from astropy.io import fits
+    p = tmp_path / "cube.fits"
+    fits.PrimaryHDU(np.zeros((4, 8, 8), dtype=np.float32)).writeto(str(p), overwrite=True)
+    with pytest.raises(ValueError, match="2D"):
+        worker_image_tile(str(p), 0, 0, 0, 256)

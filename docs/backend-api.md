@@ -259,7 +259,20 @@ Cancel and remove.
 Returns RGBA PNG bytes (base64) + `width`, `height`, `range_min`, `range_max`, `bunit`.
 
 ### `POST /v1/image/full`
-Same, no size cap.
+Same, no size cap. **Loads the whole plane into RAM** — use `/v1/image/tile` for large mosaics.
+
+### `POST /v1/image/tile`
+Out-of-core pyramid tile of a 2-D image mosaic — reads only the requested tile
+region from the memmap, so multi-GB mosaics can be panned / zoomed without
+materialising the full plane (unlike `full` / `preview`).
+```json
+{ "dataset_id": "...", "level": 0, "tile_x": 0, "tile_y": 0, "tile_size": 256 }
+```
+- `level` — pyramid level: `0` = full resolution, `L` decimates by `2**L` (nearest-neighbour). Must be `0..num_levels-1`.
+- `tile_x` / `tile_y` — tile indices at that level; each tile covers `tile_size` downsampled pixels per axis.
+- `tile_size` — output tile edge in pixels (1–4096, default 256).
+
+Response: `width` / `height` (actual tile dims, smaller at edges), `full_width` / `full_height`, `level`, `num_levels`, `tile_x`, `tile_y`, `tile_size`, `range_min` / `range_max`, `compression`, base64 `data`. Out-of-range tile or `level ≥ num_levels` → 422; non-image dataset → 422.
 
 ---
 

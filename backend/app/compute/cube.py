@@ -615,6 +615,97 @@ def worker_image_preview(path: str, max_longest_side: int) -> dict[str, Any]:
     }
 
 
+def _num_pyramid_levels(full_w: int, full_h: int, tile_size: int) -> int:
+    """Number of pyramid levels until the whole image fits in a single tile.
+
+    Level 0 is full resolution; each level halves the resolution. Level
+    ``num_levels - 1`` is the coarsest, where the image is ≤ tile_size on both
+    axes.
+    """
+    levels = 1
+    w, h = int(full_w), int(full_h)
+    ts = max(1, int(tile_size))
+    while w > ts or h > ts:
+        w = (w + 1) // 2
+        h = (h + 1) // 2
+        levels += 1
+    return levels
+
+
+def worker_image_tile(
+    path: str, level: int, tile_x: int, tile_y: int, tile_size: int = 256
+) -> dict[str, Any]:
+    """Serve one pyramid tile of a 2-D image, **out-of-core**.
+
+    Level 0 is full resolution; level ``L`` decimates by ``2**L``. A tile
+    ``(tile_x, tile_y)`` covers ``tile_size`` downsampled pixels per axis. Only
+    the strided sub-region is materialised (≤ ``tile_size²`` floats), so a
+    multi-GB mosaic never loads into RAM — unlike ``worker_image_full`` /
+    ``worker_image_preview`` which read the whole plane.
+
+    Downsampling is nearest-neighbour decimation (stride read); this keeps the
+    memory bound independent of level at the cost of some aliasing on coarse
+    levels, which is acceptable for pan/zoom navigation.
+    """
+    level = int(level)
+    tile_x = int(tile_x)
+    tile_y = int(tile_y)
+    tile_size = int(tile_size)
+    if level < 0 or tile_x < 0 or tile_y < 0:
+        raise ValueError("level, tile_x and tile_y must be non-negative.")
+    if tile_size < 1 or tile_size > 4096:
+        raise ValueError("tile_size must be in [1, 4096].")
+
+    dataset = ScientificFitsDataset(path)
+    hdul, raw = dataset.open_memmap()
+    try:
+        data = dataset.squeeze_to_3d(raw)
+        if data.ndim != 2:
+            raise ValueError("Image tile endpoint requires a 2D FITS dataset.")
+        full_h, full_w = int(data.shape[0]), int(data.shape[1])
+        num_levels = _num_pyramid_levels(full_w, full_h, tile_size)
+        if level >= num_levels:
+            raise ValueError(
+                f"level {level} is out of range: this {full_w}x{full_h} image has "
+                f"{num_levels} pyramid level(s) (0..{num_levels - 1}) for tile_size "
+                f"{tile_size}."
+            )
+        step = 1 << level  # 2 ** level
+        x0 = tile_x * tile_size * step
+        y0 = tile_y * tile_size * step
+        if x0 >= full_w or y0 >= full_h:
+            raise ValueError(
+                f"Tile (level={level}, x={tile_x}, y={tile_y}) is out of range "
+                f"for a {full_w}x{full_h} image."
+            )
+        x_stop = min(x0 + tile_size * step, full_w)
+        y_stop = min(y0 + tile_size * step, full_h)
+        # Out-of-core: the strided slice copies only the decimated tile
+        # (≤ tile_size² floats), never the full plane.
+        tile = np.asarray(data[y0:y_stop:step, x0:x_stop:step], dtype=np.float32)
+    finally:
+        hdul.close()
+
+    range_min, range_max = _finite_range(tile)
+    compression, data_b64 = _b64f32_compressed(tile)
+    return {
+        "width": int(tile.shape[1]),
+        "height": int(tile.shape[0]),
+        "full_width": full_w,
+        "full_height": full_h,
+        "level": level,
+        "num_levels": num_levels,
+        "tile_x": tile_x,
+        "tile_y": tile_y,
+        "tile_size": tile_size,
+        "scalar_type": "float32",
+        "range_min": range_min,
+        "range_max": range_max,
+        "compression": compression,
+        "data_base64": data_b64,
+    }
+
+
 def worker_cube_preview(path: str, downsample: int) -> dict[str, Any]:
     dataset = ScientificFitsDataset(path)
     hdul, raw = dataset.open_memmap()
