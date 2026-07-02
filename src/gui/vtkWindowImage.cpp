@@ -992,6 +992,10 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                      [this](bool checked) { this->setRegionMode(RegionMode::Annulus, checked); });
     ui->menuTools->addSeparator();
     this->actionLoadCatalogueOverlay = ui->menuTools->addAction(u"Load Catalogue Overlay"_s);
+    this->actionCrossmatch = ui->menuTools->addAction(u"Cross-match with Catalogue…"_s);
+    this->actionCrossmatch->setToolTip(
+            u"Query an external catalogue (SIMBAD / 2MASS / NVSS / FIRST) over this image's "
+            u"footprint and overlay the matches."_s);
     this->actionShowCatalogueOverlay = ui->menuTools->addAction(u"Show Catalogue Overlay"_s);
     this->actionShowCatalogueLabels = ui->menuTools->addAction(u"Show Catalogue Labels"_s);
     this->actionClearCatalogueOverlay = ui->menuTools->addAction(u"Clear Catalogue Overlay"_s);
@@ -1004,6 +1008,11 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     this->actionClearCatalogueOverlay->setEnabled(false);
     QObject::connect(this->actionLoadCatalogueOverlay, &QAction::triggered, this,
                      &vtkWindowImage::loadCatalogueOverlay);
+    QObject::connect(this->actionCrossmatch, &QAction::triggered, this,
+                     &vtkWindowImage::crossmatchCatalogue);
+    QObject::connect(&this->m_crossmatchWatcher,
+                     &QFutureWatcher<CatalogueOverlayParseResult>::finished, this,
+                     &vtkWindowImage::onCrossmatchReady);
     QObject::connect(this->actionShowCatalogueOverlay, &QAction::toggled, this,
                      &vtkWindowImage::setCatalogueOverlayVisible);
     QObject::connect(this->actionShowCatalogueLabels, &QAction::toggled, this,

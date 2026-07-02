@@ -214,6 +214,7 @@ private:
     QPointer<QAction> actionPolygonRegion;
     QPointer<QAction> actionAnnulusRegion;
     QPointer<QAction> actionLoadCatalogueOverlay;
+    QPointer<QAction> actionCrossmatch;
     QPointer<QAction> actionShowCatalogueOverlay;
     QPointer<QAction> actionShowCatalogueLabels;
     QPointer<QAction> actionClearCatalogueOverlay;
@@ -221,6 +222,7 @@ private:
     QFutureWatcher<ImageLayerLoadResult> layerLoadWatcher;
     QFutureWatcher<ImageLayerLoadResult> remoteImageWatcher;
     QFutureWatcher<ImageLayerLoadResult> remoteFullImageWatcher;
+    QFutureWatcher<CatalogueOverlayParseResult> m_crossmatchWatcher;  // async cross-match
     /// Set by addLayerFromBackendPath before calling addLayerImage so that the
     /// layerLoadWatcher completion slot can rename the new layer to the VLKB label.
     QString m_pendingVlkbDisplayName;
@@ -399,6 +401,9 @@ private:
     bool finalizePolygonRegion();
     void updateLargeImageMode(vtkImageData *imageData, const char *context);
     void loadCatalogueOverlay();
+    void crossmatchCatalogue();          // query an external catalogue over the image footprint
+    void onCrossmatchReady();            // display the async cross-match result as an overlay
+    void applyCatalogueOverlayResult(const CatalogueOverlayParseResult &parsed);
     void clearCatalogueOverlay();
     void setCatalogueOverlayVisible(bool visible);
     void rebuildCatalogueOverlay();

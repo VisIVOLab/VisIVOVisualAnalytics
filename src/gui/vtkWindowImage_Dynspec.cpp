@@ -128,6 +128,7 @@ void vtkWindowImage::setDynamicSpectrumMode(bool enabled)
     setActionEnabled(actionWcsSexagesimal);
     setActionEnabled(actionWcsDecimal);
     setActionEnabled(actionLoadCatalogueOverlay);
+    setActionEnabled(actionCrossmatch);
     setActionEnabled(actionShowCatalogueOverlay);
     setActionEnabled(actionShowCatalogueLabels);
     setActionEnabled(actionClearCatalogueOverlay);

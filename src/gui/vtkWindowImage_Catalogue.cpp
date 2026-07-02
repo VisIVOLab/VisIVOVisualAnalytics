@@ -80,6 +80,8 @@
 #include <QHeaderView>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
+#include <QtConcurrent>
 #include <QInputDialog>
 #include <QPushButton>
 #include <QTableWidget>
@@ -261,6 +263,13 @@ void vtkWindowImage::loadCatalogueOverlay()
         return;
     }
 
+    this->applyCatalogueOverlayResult(parsed);
+}
+
+// Project a parsed/queried catalogue onto the current image WCS and display it —
+// the shared back end for both file overlays and the catalogue cross-match.
+void vtkWindowImage::applyCatalogueOverlayResult(const CatalogueOverlayParseResult &parsed)
+{
     if (!this->remoteHasCelestialAxes()) {
         const bool hasImageEntries = std::any_of(
                 parsed.entries.cbegin(), parsed.entries.cend(), [](const CatalogueOverlayEntry &entry) {
@@ -359,6 +368,107 @@ void vtkWindowImage::loadCatalogueOverlay()
                                           .arg(skippedProjection);
     }
     ui->vtk->renderWindow()->Render();
+}
+
+void vtkWindowImage::crossmatchCatalogue()
+{
+    if (this->m_crossmatchWatcher.isRunning())
+        return;
+    if (!this->remoteHasCelestialAxes()) {
+        QMessageBox::warning(this, u"Cross-match"_s,
+                             u"Cross-match requires celestial WCS information."_s);
+        return;
+    }
+    if (this->remoteDatasetId.isEmpty())
+        return;
+
+    // Parameter dialog: which external catalogue + search radius.
+    QDialog dlg(this);
+    dlg.setWindowTitle(u"Cross-match with Catalogue"_s);
+    auto *form = new QFormLayout(&dlg);
+    auto *combo = new QComboBox(&dlg);
+    combo->addItems({ u"simbad"_s, u"2MASS"_s, u"NVSS"_s, u"FIRST"_s });
+    form->addRow(u"Catalogue"_s, combo);
+    auto *spin = new QDoubleSpinBox(&dlg);
+    spin->setRange(1.0, 3600.0);
+    spin->setValue(60.0);
+    spin->setSuffix(u" arcsec"_s);
+    form->addRow(u"Search radius"_s, spin);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    form->addRow(buttons);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    // Query off the GUI thread — external catalogue services can be slow. The
+    // worker converts the result into a CatalogueOverlayParseResult (valid/error
+    // encoded there) so the finished handler just projects it like a file overlay.
+    const QString url = this->remoteBackendUrl;
+    const QString token = this->remoteBackendToken;
+    const QString sid = this->remoteSessionId;
+    const QString dsid = this->remoteDatasetId;
+    const QString catalogue = combo->currentText();
+    const double radius = spin->value();
+
+    if (this->actionCrossmatch)
+        this->actionCrossmatch->setEnabled(false);
+    this->statusBar()->showMessage(u"Cross-matching against %1…"_s.arg(catalogue));
+
+    this->m_crossmatchWatcher.setFuture(QtConcurrent::run(
+            [url, token, sid, dsid, radius, catalogue]() -> CatalogueOverlayParseResult {
+                CatalogueOverlayParseResult out;
+                try {
+                    BackendClient c(url, token);
+                    if (!sid.isEmpty())
+                        c.setSessionId(sid);
+                    const BackendCrossmatchResult r = c.requestCrossmatch(dsid, radius, catalogue);
+                    if (!r.valid) {
+                        out.errorMessage = r.error.isEmpty() ? QStringLiteral("Cross-match failed.")
+                                                             : r.error;
+                        return out;
+                    }
+                    out.valid = true;
+                    out.frameLabel = QStringLiteral("ICRS");
+                    out.sourceLabel = QStringLiteral("Cross-match (%1)").arg(catalogue);
+                    out.entries.reserve(r.sources.size());
+                    for (const BackendCrossmatchSource &s : r.sources) {
+                        CatalogueOverlayEntry e;
+                        e.frame = CatalogueOverlayEntry::Frame::Sky;
+                        e.shape = CatalogueOverlayEntry::Shape::Marker;
+                        e.raDeg = s.raDeg;
+                        e.decDeg = s.decDeg;
+                        e.label = s.name;
+                        out.entries.push_back(e);
+                    }
+                } catch (const std::exception &e) {
+                    out.valid = false;
+                    out.errorMessage = QString::fromUtf8(e.what());
+                } catch (...) {
+                    out.valid = false;
+                    out.errorMessage = QStringLiteral("unknown error during cross-match");
+                }
+                return out;
+            }));
+}
+
+void vtkWindowImage::onCrossmatchReady()
+{
+    if (this->actionCrossmatch)
+        this->actionCrossmatch->setEnabled(true);
+    this->statusBar()->clearMessage();
+    const CatalogueOverlayParseResult parsed = this->m_crossmatchWatcher.result();
+    if (!parsed.valid) {
+        QMessageBox::warning(this, u"Cross-match"_s,
+                             u"Cross-match failed:\n%1"_s.arg(parsed.errorMessage));
+        return;
+    }
+    if (parsed.entries.empty()) {
+        this->showPersistentStatusMessage(
+                u"Cross-match: no catalogue sources in this image footprint."_s, 4000);
+        return;
+    }
+    this->applyCatalogueOverlayResult(parsed);
 }
 
 void vtkWindowImage::clearCatalogueOverlay()
