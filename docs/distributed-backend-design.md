@@ -1,8 +1,20 @@
 # Distributed VisIVO Backend — Architecture & Design
 
-> Status: design baseline, draft 1
+> Status: **desktop side implemented** (July 2026); SKAVA server side still design
 > Author: VisIVO integration, June 2026
 > Related: SKAVA D3.1 (§3.4 Data Locality), SKAVA D3.1 (§13.3 Data Staging)
+
+```{note}
+**Implementation status (July 2026).** The desktop side of this design is
+built and shipped: the `Settings` multi-backend registry (§6.1), the
+`BackendsSettingsWidget` dialog tab (§6.2), `BackendClientFactory` session
+caching (§6.3), SKAVA `visivo-backend` descriptor parsing (§6.4), and the
+`pickBackendForSkavaDataset` / `doOpenSkavaDataset` routing (§4.2 / §6.5).
+The routing decision is unit-tested (`tests/TestBackendRouting`, see
+[Testing](testing)). What remains design-only is the **SKAVA server side**
+(§7 — the `nodes.visivo_backend_url` column and DataLink descriptor
+emission), which lives in the SKAVA repository, not this one.
+```
 
 ## 1. Executive Summary
 
@@ -576,18 +588,20 @@ when absent.
 
 ## 13. Roadmap
 
-| Phase | Work | Estimated effort |
-|---|---|---|
-| 1 | Settings backend registry (data model + accessors) | 0.5 day |
-| 2 | Settings dialog UI for backends | 0.5 day |
-| 3 | BackendClientFactory + session caching | 0.5 day |
-| 4 | SkavaClient: parse visivo-backend descriptors | 0.25 day |
-| 5 | MainWindow routing + viewer badge | 0.5 day |
-| 6 | SKAVA migration + model + DataLink builder | 0.5 day |
-| 7 | SKAVA seed_d22 update | 0.25 day |
-| 8 | End-to-end testing + docs | 0.5 day |
+| Phase | Work | Estimated effort | Status |
+|---|---|---|---|
+| 1 | Settings backend registry (data model + accessors) | 0.5 day | ✅ done |
+| 2 | Settings dialog UI for backends | 0.5 day | ✅ done |
+| 3 | BackendClientFactory + session caching | 0.5 day | ✅ done |
+| 4 | SkavaClient: parse visivo-backend descriptors | 0.25 day | ✅ done |
+| 5 | MainWindow routing + viewer badge | 0.5 day | ✅ done |
+| 6 | SKAVA migration + model + DataLink builder | 0.5 day | ⏳ SKAVA repo |
+| 7 | SKAVA seed_d22 update | 0.25 day | ⏳ SKAVA repo |
+| 8 | End-to-end testing + docs | 0.5 day | ◑ unit tests + docs done; SRC e2e pending server side |
 
-**Total ≈ 3.5 days** of focused work for the full implementation.
+**Total ≈ 3.5 days** of focused work for the full implementation. The desktop
+phases (1–5) and their unit tests / docs are complete; phases 6–7 land in the
+SKAVA repository.
 
 ## 14. Out of scope
 

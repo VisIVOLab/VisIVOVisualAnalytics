@@ -156,23 +156,32 @@ class RenderManager:
         )
         return True
 
+    async def _reap_once(self) -> list[str]:
+        """One TTL-eviction pass: close every session idle past the TTL.
+
+        Returns the ids that were evicted. Split out from :meth:`_reap_loop`
+        so the eviction policy is unit-testable without waiting on the timer.
+        """
+        now = time.time()
+        to_evict: list[str] = []
+        async with self._lock:
+            for sid, sess in self._sessions.items():
+                if now - sess.stats.last_command_at > self._idle_ttl:
+                    to_evict.append(sid)
+        for sid in to_evict:
+            logger.info(
+                "[render-manager] TTL evict %s (idle > %.0fs)",
+                sid, self._idle_ttl,
+            )
+            await self._evict(sid)
+        return to_evict
+
     async def _reap_loop(self) -> None:
         """Background coroutine: every 30 s, evict sessions idle past TTL."""
         try:
             while True:
                 await asyncio.sleep(30.0)
-                now = time.time()
-                to_evict: list[str] = []
-                async with self._lock:
-                    for sid, sess in self._sessions.items():
-                        if now - sess.stats.last_command_at > self._idle_ttl:
-                            to_evict.append(sid)
-                for sid in to_evict:
-                    logger.info(
-                        "[render-manager] TTL evict %s (idle > %.0fs)",
-                        sid, self._idle_ttl,
-                    )
-                    await self._evict(sid)
+                await self._reap_once()
         except asyncio.CancelledError:
             return
 

@@ -11,10 +11,12 @@ tests/
   TestBackendClient.h     # Q_OBJECT test class declaration
   test_backendclient.cpp  # 14 tests
   TestCatalogueParser.h
-  test_catalogue_parser.cpp  # 24 tests
+  test_catalogue_parser.cpp  # 26 tests
+  TestBackendRouting.h
+  test_backend_routing.cpp   # 13 tests — Settings backend registry + SKAVA routing
 ```
 
-Total: **38 tests**.
+Total: **53 tests**.
 
 ---
 
@@ -37,6 +39,8 @@ Compiled once, linked by all test targets.
 Contents:
 - `BackendClient.cpp`
 - `DiagnosticsManager.cpp`
+- `Settings.cpp` — for the multi-backend registry tests
+- `skava/BackendRouting.cpp` — the SKAVA → backend routing decision
 
 Dependencies: `Qt::Core`, `Qt::Network` only.
 Does **not** pull in Qt::Widgets, VTK, or libwcs.
@@ -79,7 +83,7 @@ All tests use `QJsonObject` literals — no network calls.
 
 ---
 
-## `TestCatalogueParser` (24 tests)
+## `TestCatalogueParser` (26 tests)
 
 ### `detectedRedshiftField`
 | Test | Input schema | Expected result |
@@ -120,6 +124,35 @@ All tests use `QJsonObject` literals — no network calls.
 | `entryDist_distanceMpcOverride_takesPriority` | `distance=500`, `entry.distanceMpc=750` | 750.0 |
 | `entryDist_negativeDistanceField_fallsBackToRedshift` | `distance=-100`, `z=0.05` | 150–280 Mpc |
 | `entryDist_zeroRedshift_fallsBackTo300` | `z=0.0` | 300.0 (z=0 → Dc=0 → fallback) |
+
+---
+
+## `TestBackendRouting` (13 tests)
+
+Covers the desktop side of the [distributed backend](distributed-backend-design)
+model: the `Settings` multi-backend registry and the SKAVA → backend routing
+decision (`pickBackendForSkavaDataset`, extracted into `src/skava/BackendRouting.cpp`
+so it is testable without the GUI/VTK stack). Each test runs against a fresh
+`Settings` on a `QTemporaryDir`.
+
+### Settings backend registry
+| Test | Assertion |
+|------|-----------|
+| `registryAlwaysHasLocal` | the auto-managed `local` node is always present (even on a fresh store) |
+| `upsertInsertsAndUpdates` | `upsertBackendNode` inserts a new node, then updates in place (no duplicate) |
+| `removeDropsNode` | `removeBackendNode` deletes a non-local node |
+| `localCannotBeRemoved` | `removeBackendNode("local")` is a no-op — `local` is protected |
+| `defaultBackendIdFallsBackToLocal` | default id is `local`; empty is coerced back to `local`; a real id sticks |
+
+### `pickBackendForSkavaDataset`
+| Test | Setup | Expected |
+|------|-------|---------|
+| `routeByExactUrl` | descriptor endpoint == registry URL | that node |
+| `routeByUrlIgnoresTrailingSlash` | endpoint has a trailing `/` | still matches (normalised) |
+| `routeByNodeCode` | endpoint differs, `node_code == srcCode` | that node |
+| `routeNoMatchReturnsEmpty` | unknown URL + code | empty node (→ local-download fallback) |
+| `routeEmptyDatalinkReturnsEmpty` | no `visivoBackends` | empty node |
+| `routeNullSettingsReturnsEmpty` | `settings == nullptr` | empty node |
 
 ---
 
