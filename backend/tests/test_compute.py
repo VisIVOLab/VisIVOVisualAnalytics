@@ -1059,3 +1059,32 @@ def test_image_tile_requires_2d(tmp_path):
     fits.PrimaryHDU(np.zeros((4, 8, 8), dtype=np.float32)).writeto(str(p), overwrite=True)
     with pytest.raises(ValueError, match="2D"):
         worker_image_tile(str(p), 0, 0, 0, 256)
+
+
+def test_image_preview_is_out_of_core(tmp_path):
+    """worker_image_preview must downsample by reading only the decimated pixels
+    from the memmap, never materialising the whole plane, and must match the
+    in-memory _build_preview result exactly."""
+    import tracemalloc
+    from astropy.io import fits
+    from app.compute import worker_image_preview
+    from app.compute.cube import _build_preview
+
+    H, W = 6000, 4000  # 96 MB plane
+    data = (np.arange(H, dtype=np.float32)[:, None] + np.arange(W, dtype=np.float32)[None, :])
+    p = tmp_path / "mosaic.fits"
+    fits.PrimaryHDU(data).writeto(str(p), overwrite=True)
+
+    reference, _ = _build_preview(data, 1536)  # in-memory path
+
+    tracemalloc.start()
+    r = worker_image_preview(str(p), 1536)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert (r["full_width"], r["full_height"]) == (W, H)
+    assert r["is_preview"] is True
+    got = _decode_tile(r).reshape(r["height"], r["width"])
+    assert np.array_equal(got, reference), "OOC preview must match the in-memory downsample"
+    # Peak well under the full plane (H*W*4 bytes) → the whole image was never loaded.
+    assert peak < (H * W * 4) // 3, f"preview used {peak} bytes — not out-of-core"

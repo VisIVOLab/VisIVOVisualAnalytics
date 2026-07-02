@@ -592,12 +592,14 @@ def worker_image_preview(path: str, max_longest_side: int) -> dict[str, Any]:
         if data.ndim != 2:
             raise ValueError("Image preview endpoint requires a 2D FITS dataset.")
         full_h, full_w = int(data.shape[0]), int(data.shape[1])
-        image = np.asarray(data, dtype=np.float32)
+        # Out-of-core: _build_preview reads only the decimated pixels straight
+        # from the memmap (via np.ix_), so a multi-GB mosaic is never fully
+        # loaded into RAM just to be downsampled for the initial preview.
+        preview, scale = _build_preview(data, max_longest_side)
     finally:
         hdul.close()
 
-    preview, scale = _build_preview(image, max_longest_side)
-    is_preview = preview.shape != image.shape
+    is_preview = preview.shape[0] != full_h or preview.shape[1] != full_w
     range_min, range_max = _finite_range(preview)
     compression, data_b64 = _b64f32_compressed(preview)
     return {

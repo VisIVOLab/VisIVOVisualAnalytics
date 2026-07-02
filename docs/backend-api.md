@@ -256,10 +256,10 @@ Cancel and remove.
 ```json
 { "dataset_id": "...", "max_longest_side": 1024 }
 ```
-Returns RGBA PNG bytes (base64) + `width`, `height`, `range_min`, `range_max`, `bunit`.
+Returns a downsampled float32 image (base64) + `width`, `height`, `full_width`, `full_height`, `range_min`, `range_max`, `is_preview`, `preview_scale_factor`, `bunit`. **Out-of-core**: reads only the decimated pixels from the memmap (via `np.ix_`), so a multi-GB mosaic is never fully loaded just to preview it.
 
 ### `POST /v1/image/full`
-Same, no size cap. **Loads the whole plane into RAM** — use `/v1/image/tile` for large mosaics.
+Same, no size cap. **Loads the whole plane into RAM** — use `/v1/image/tile` (or `/v1/image/preview`) for large mosaics.
 
 ### `POST /v1/image/tile`
 Out-of-core pyramid tile of a 2-D image mosaic — reads only the requested tile
