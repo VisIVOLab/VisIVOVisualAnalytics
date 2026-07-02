@@ -101,6 +101,7 @@
 #include <QToolButton>
 #include <QTableView>
 #include <QVBoxLayout>
+#include <QThreadPool>
 #include <QtConcurrentRun>
 
 #include <algorithm>
@@ -516,7 +517,10 @@ ImageLayerLoadResult fetchRemoteImageLayerTiled(const QString &backendUrl, const
     float *const buf = static_cast<float *>(image->GetScalarPointer());
 
     // Copy one tile into the full buffer at its (tileX, tileY) offset, row by row.
-    const auto blit = [&](const BackendImageTileResult &t) -> bool {
+    // Copy a tile into the full buffer at its (tileX, tileY) offset. Captured by
+    // VALUE (buf pointer + dims) so it is safe to run from worker threads: every
+    // tile writes a disjoint rectangle, so no locking is needed.
+    const auto blit = [buf, fullW, fullH, ts](const BackendImageTileResult &t) -> bool {
         const qsizetype expected =
                 static_cast<qsizetype>(t.width) * t.height * static_cast<qsizetype>(sizeof(float));
         if (t.width <= 0 || t.height <= 0 || t.data.size() != expected) {
@@ -541,41 +545,106 @@ ImageLayerLoadResult fetchRemoteImageLayerTiled(const QString &backendUrl, const
         return result;
     }
 
-    // Combine per-tile ranges, ignoring degenerate (e.g. all-NaN) tiles that the
-    // backend reports as [0, 0] — including the probe, so an all-NaN corner tile
-    // cannot drag the global range toward 0 and skew the LUT.
-    double rmin = 0.0;
-    double rmax = 0.0;
-    bool haveRange = false;
-    const auto updateRange = [&](const BackendImageTileResult &t) {
-        if (t.rangeMin >= t.rangeMax) {
-            return;
-        }
-        if (!haveRange) {
-            rmin = t.rangeMin;
-            rmax = t.rangeMax;
-            haveRange = true;
-        } else {
-            rmin = std::min(rmin, t.rangeMin);
-            rmax = std::max(rmax, t.rangeMax);
-        }
-    };
-    updateRange(probe);
-
     const int cols = (fullW + ts - 1) / ts;
     const int rows = (fullH + ts - 1) / ts;
+
+    // Every tile except the already-fetched probe (0,0).
+    QVector<QPair<int, int>> coords;
+    coords.reserve(cols * rows);
     for (int ty = 0; ty < rows; ++ty) {
         for (int tx = 0; tx < cols; ++tx) {
             if (tx == 0 && ty == 0) {
-                continue;  // probe tile already blitted
+                continue;
             }
-            const auto t = client.requestImageTile(datasetId, 0, tx, ty, ts);
+            coords.append({ tx, ty });
+        }
+    }
+
+    // Per-chunk result: ok/error + the chunk's finite value range (degenerate
+    // [0,0] all-NaN tiles are skipped so they don't drag the range toward 0).
+    struct ChunkResult
+    {
+        bool ok{ true };
+        QString error;
+        double rmin{ 0.0 };
+        double rmax{ 0.0 };
+        bool haveRange{ false };
+    };
+    // Fetch + blit one chunk of tiles with its own BackendClient (value-copied
+    // inputs only). Blits are lock-free (disjoint regions).
+    const auto processChunk =
+            [backendUrl, datasetId, sessionId, backendToken, ts, blit](
+                    const QVector<QPair<int, int>> &chunk) -> ChunkResult {
+        ChunkResult cr;
+        BackendClient c(backendUrl, backendToken);
+        c.setSessionId(sessionId);
+        for (const auto &xy : chunk) {
+            const auto t = c.requestImageTile(datasetId, 0, xy.first, xy.second, ts);
             if (!t.valid || !blit(t)) {
-                result.errorMessage = t.error.isEmpty() ? "Remote image tile assembly failed."
-                                                        : t.error.toStdString();
-                return result;
+                cr.ok = false;
+                cr.error = t.error.isEmpty() ? u"Remote image tile assembly failed."_s : t.error;
+                return cr;
             }
-            updateRange(t);
+            if (t.rangeMin < t.rangeMax) {
+                if (!cr.haveRange) {
+                    cr.rmin = t.rangeMin;
+                    cr.rmax = t.rangeMax;
+                    cr.haveRange = true;
+                } else {
+                    cr.rmin = std::min(cr.rmin, t.rangeMin);
+                    cr.rmax = std::max(cr.rmax, t.rangeMax);
+                }
+            }
+        }
+        return cr;
+    };
+
+    double rmin = 0.0;
+    double rmax = 0.0;
+    bool haveRange = false;
+    const auto foldRange = [&](double lo, double hi, bool have) {
+        if (!have) {
+            return;
+        }
+        if (!haveRange) {
+            rmin = lo;
+            rmax = hi;
+            haveRange = true;
+        } else {
+            rmin = std::min(rmin, lo);
+            rmax = std::max(rmax, hi);
+        }
+    };
+    foldRange(probe.rangeMin, probe.rangeMax, probe.rangeMin < probe.rangeMax);
+
+    // Parallel fan-out: the backend serves tile POSTs concurrently on its
+    // process pool, so a bounded burst turns the hundreds-of-round-trips serial
+    // assembly into ~wall-clock/kConcurrency. Round-robin balances edge tiles
+    // (which are cheaper) across chunks.
+    int concurrency = 1;
+    if (!coords.isEmpty()) {
+        constexpr int kConcurrency = 8;
+        const int nChunks = std::min(kConcurrency, static_cast<int>(coords.size()));
+        concurrency = nChunks;
+        QVector<QVector<QPair<int, int>>> chunks(nChunks);
+        for (int i = 0; i < coords.size(); ++i) {
+            chunks[i % nChunks].append(coords[i]);
+        }
+        QThreadPool pool;
+        pool.setMaxThreadCount(nChunks);
+        QVector<QFuture<ChunkResult>> futures;
+        futures.reserve(nChunks);
+        for (const auto &chunk : chunks) {
+            futures.append(QtConcurrent::run(&pool, processChunk, chunk));
+        }
+        for (auto &f : futures) {
+            f.waitForFinished();
+            const ChunkResult cr = f.result();
+            if (!cr.ok) {
+                result.errorMessage = cr.error.toStdString();
+                return result;  // pool dtor joins the remaining tasks before image frees
+            }
+            foldRange(cr.rmin, cr.rmax, cr.haveRange);
         }
     }
 
@@ -587,8 +656,8 @@ ImageLayerLoadResult fetchRemoteImageLayerTiled(const QString &backendUrl, const
     result.previewScaleFactor = 1.0;
     result.valid = true;
     qDebug().noquote()
-            << QStringLiteral("[remote-image] assembled full=%1x%2 from %3x%4 tiles (size %5)")
-                       .arg(fullW).arg(fullH).arg(cols).arg(rows).arg(ts);
+            << QStringLiteral("[remote-image] assembled full=%1x%2 from %3x%4 tiles (size %5, %6-way)")
+                       .arg(fullW).arg(fullH).arg(cols).arg(rows).arg(ts).arg(concurrency);
     return result;
 }
 

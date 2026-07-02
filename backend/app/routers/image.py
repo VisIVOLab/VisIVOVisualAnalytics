@@ -79,8 +79,14 @@ async def image_tile(
         entry = _require_dataset(session, request.dataset_id)
         if entry["kind"] != "image":
             raise HTTPException(422, "Image tile endpoint requires an image dataset.")
-        result = await _run_with_limit(
-            session, worker_image_tile, entry["path"],
+        # Interactive path (not _run_with_limit): the desktop assembles a mosaic
+        # as a burst of parallel tile POSTs, so counting each against the
+        # per-session task quota (VISIVO_MAX_CONCURRENT_TASKS, default 3) would
+        # 429 most of the burst. Tile reads are bounded strided memmap reads
+        # (I/O-bound, not heavy compute), so they run on the interactive pool —
+        # same rationale as the binary subvolume endpoint.
+        result = await _run(
+            worker_image_tile, entry["path"],
             request.level, request.tile_x, request.tile_y, request.tile_size,
         )
     except HTTPException:
