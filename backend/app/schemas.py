@@ -87,6 +87,9 @@ class MomentProductRequest(BaseModel):
     channel_end: int = 0
     mask_enabled: bool = False
     threshold_value: float = 0.0
+    # When True (and mask_enabled), the backend derives the mask threshold from
+    # the data itself (median + 3·σ via MAD) instead of using threshold_value.
+    threshold_auto: bool = False
 
 
 class MomentProductResponse(BaseModel):
@@ -101,6 +104,9 @@ class MomentProductResponse(BaseModel):
     spectral_axis_unit: str = ""
     moment_unit: str = ""
     bunit: str = ""
+    # Echo of the mask threshold actually applied (resolved value when
+    # threshold_auto was requested); null when no mask was applied.
+    threshold_used: float | None = None
     data_base64: str = ""
 
 

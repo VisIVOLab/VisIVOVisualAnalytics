@@ -2876,7 +2876,9 @@ void vtkWindowCube::requestMomentMode()
                                  .arg(cfg.channelStart + 1)
                                  .arg(cfg.channelEnd + 1);
         if (cfg.maskEnabled) {
-            detail += u" · mask \u2265 %1"_s.arg(cfg.thresholdValue, 0, 'g', 4);
+            detail += cfg.thresholdAuto
+                    ? u" · mask auto (\u2248 3\u03c3)"_s
+                    : u" · mask \u2265 %1"_s.arg(cfg.thresholdValue, 0, 'g', 4);
         }
         this->setMomentCardState(MomentCardState::Computing, detail);
 
@@ -4034,6 +4036,7 @@ void vtkWindowCube::exportMomentMapAsFits()
     const int chEnd             = cfg.channelEnd;
     const bool maskEnabled      = cfg.maskEnabled;
     const double thresholdValue = cfg.thresholdValue;
+    const bool thresholdAuto    = cfg.thresholdAuto;
 
     this->statusBar()->showMessage(
             u"Exporting moment-%1 map to workspace…"_s.arg(order), 0);
@@ -4070,11 +4073,12 @@ void vtkWindowCube::exportMomentMapAsFits()
                      });
     watcher->setFuture(QtConcurrent::run(
             [url, token, sessionId, datasetId, order, chStart, chEnd,
-             maskEnabled, thresholdValue, basename]() {
+             maskEnabled, thresholdValue, thresholdAuto, basename]() {
                 BackendClient c(url, token);
                 c.setSessionId(sessionId);
                 return c.saveMomentFits(datasetId, order, chStart, chEnd,
-                                        maskEnabled, thresholdValue, basename);
+                                        maskEnabled, thresholdValue, basename,
+                                        thresholdAuto);
             }));
 }
 
@@ -5220,7 +5224,9 @@ void vtkWindowCube::setMomentOrder(int order)
                                  .arg(cfg.channelStart + 1)
                                  .arg(cfg.channelEnd + 1);
         if (cfg.maskEnabled) {
-            detail += u" · mask \u2265 %1"_s.arg(cfg.thresholdValue, 0, 'g', 4);
+            detail += cfg.thresholdAuto
+                    ? u" · mask auto (\u2248 3\u03c3)"_s
+                    : u" · mask \u2265 %1"_s.arg(cfg.thresholdValue, 0, 'g', 4);
         }
         this->setMomentCardState(MomentCardState::Computing, detail);
         DiagnosticsManager::instance()->publish(

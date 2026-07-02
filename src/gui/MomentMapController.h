@@ -50,8 +50,11 @@ public:
         int order{ 0 };
         int channelStart{ 0 };
         int channelEnd{ 0 };
-        bool maskEnabled{ false };
+        // Mask ON with an auto (~3·σ) threshold by default: M1/M2 need masking
+        // to be physically clean, and CASA/SoFiA mask by default too.
+        bool maskEnabled{ true };
         double thresholdValue{ 0.0 };
+        bool thresholdAuto{ true };
     };
 
     // onRunFinished – called when the watcher transitions busy state:

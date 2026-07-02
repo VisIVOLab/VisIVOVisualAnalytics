@@ -94,7 +94,8 @@ BackendSaveMomentFitsResult BackendClient::saveMomentFits(
         int channelStart, int channelEnd,
         bool maskEnabled,
         double thresholdValue,
-        const QString &outputBasename)
+        const QString &outputBasename,
+        bool thresholdAuto)
 {
     BackendSaveMomentFitsResult result;
     QString error;
@@ -105,6 +106,7 @@ BackendSaveMomentFitsResult BackendClient::saveMomentFits(
             { QStringLiteral("channel_end"),      channelEnd },
             { QStringLiteral("mask_enabled"),     maskEnabled },
             { QStringLiteral("threshold_value"),  thresholdValue },
+            { QStringLiteral("threshold_auto"),   thresholdAuto },
             { QStringLiteral("output_basename"),  outputBasename } });
     const QByteArray raw =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/moment_fits")),
@@ -247,7 +249,8 @@ BackendSourceFindResult BackendClient::runSourceFind(const QString &datasetId,
 BackendTaskCreateResult BackendClient::createMomentTask(const QString &datasetId, int order,
                                                         int channelStart, int channelEnd,
                                                         bool maskEnabled,
-                                                        double thresholdValue) const
+                                                        double thresholdValue,
+                                                        bool thresholdAuto) const
 {
     BackendTaskCreateResult result;
     QString error;
@@ -257,7 +260,8 @@ BackendTaskCreateResult BackendClient::createMomentTask(const QString &datasetId
                          { QStringLiteral("channel_start"), channelStart },
                          { QStringLiteral("channel_end"), channelEnd },
                          { QStringLiteral("mask_enabled"), maskEnabled },
-                         { QStringLiteral("threshold_value"), thresholdValue } });
+                         { QStringLiteral("threshold_value"), thresholdValue },
+                         { QStringLiteral("threshold_auto"), thresholdAuto } });
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/moment")), body, error);
     if (!error.isEmpty()) {

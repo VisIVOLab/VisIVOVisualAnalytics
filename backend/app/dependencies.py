@@ -895,6 +895,7 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
         "channel_end": request.channel_end,
         "mask_enabled": request.mask_enabled,
         "threshold_value": request.threshold_value,
+        "threshold_auto": request.threshold_auto,
     }
     cache_key, param_hash = PRODUCT_CACHE.make_key(dataset.path, "moment", cache_params)
     cached = PRODUCT_CACHE.get(cache_key)
@@ -917,8 +918,9 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
             request.channel_end,
             request.threshold_value,
             request.mask_enabled,
-            64,           # chunk_z
-            sync_client,  # dist_client → distributed cluster
+            64,                     # chunk_z
+            sync_client,            # dist_client → distributed cluster
+            request.threshold_auto,
         )
     else:
         # Heavy task — throttled so other interactive requests stay responsive.
@@ -930,6 +932,7 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
             request.channel_end,
             request.mask_enabled,
             request.threshold_value,
+            request.threshold_auto,
         )
     PRODUCT_CACHE.put(
         key=cache_key,

@@ -207,10 +207,15 @@ void RemoteMomentWindow::requestMoment(int order)
     this->watcher.setProperty("requestId", requestId);
     this->watcher.setProperty("momentOrder", order);
     this->showPersistentStatusMessage(u"Computing moment..."_s);
+    // Mask ON with an auto (~3σ) threshold by default, mirroring the main
+    // Compute Moment dialog so M1/M2 come out physically clean here too.
+    // (channelStart/channelEnd keep their prior 0/0 defaults.)
     this->watcher.setFuture(QtConcurrent::run(
             &computeMomentMap,
             MomentMapComputeRequest { {}, this->datasetId, this->backendUrl, this->sessionId,
-                                      this->backendToken, order }));
+                                      this->backendToken, order, 0, 0,
+                                      /*maskEnabled=*/true, /*thresholdValue=*/0.0,
+                                      /*thresholdAuto=*/true }));
 }
 
 void RemoteMomentWindow::showPersistentStatusMessage(const QString &text, int minDurationMs)

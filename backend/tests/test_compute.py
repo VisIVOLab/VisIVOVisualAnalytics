@@ -819,3 +819,56 @@ def test_worker_moment_streaming_branch(tmp_path, monkeypatch):
         assert np.array_equal(np.isnan(a), np.isnan(b)), f"nan pattern order {o}"
         fin = np.isfinite(a) & np.isfinite(b)
         assert np.allclose(a[fin], b[fin], rtol=1e-4, atol=1e-4), f"order {o}"
+
+
+def test_moment_m1_physical_range_guard_and_auto_mask(tmp_path):
+    """On a noisy cube with mask OFF, unmasked M1 must be blanked outside the
+    velocity axis (no superluminal values) instead of blowing up; and the
+    auto-threshold path must yield a physical, better-masked map."""
+    import numpy as np
+    from astropy.io import fits
+    from app.compute import worker_moment
+    from app.compute.moment import _auto_mask_threshold
+
+    nz, ny, nx = 64, 24, 24
+    rng = np.random.default_rng(7)
+    zc = np.arange(nz)
+    # Faint centred emission blob + zero-mean noise (produces ΣI→0 pixels).
+    data = rng.normal(0.0, 0.01, (nz, ny, nx)).astype(np.float32)
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    disk = ((yy - ny / 2) ** 2 + (xx - nx / 2) ** 2) < (ny / 3) ** 2
+    for j in range(ny):
+        for i in range(nx):
+            if disk[j, i]:
+                data[:, j, i] += 1.0 * np.exp(-((zc - 32) ** 2) / (2.0 * 6.0 ** 2))
+    p = tmp_path / "noisy_cube.fits"
+    hdu = fits.PrimaryHDU(data)
+    h = hdu.header
+    h["CTYPE1"], h["CTYPE2"], h["CTYPE3"] = "RA---SIN", "DEC--SIN", "VRAD"
+    h["CRVAL1"], h["CRVAL2"], h["CRVAL3"] = 83.8, -5.4, -320000.0
+    h["CRPIX1"], h["CRPIX2"], h["CRPIX3"] = nx / 2.0, ny / 2.0, 1.0
+    h["CDELT1"], h["CDELT2"], h["CDELT3"] = -1e-3, 1e-3, 10000.0
+    h["CUNIT3"] = "m/s"
+    hdu.writeto(p, overwrite=True)
+
+    vmin, vmax = -320000.0, -320000.0 + (nz - 1) * 10000.0
+
+    # Mask OFF: physical-range guard must bound M1 to the velocity axis.
+    r_off = worker_moment(str(p), 1, 0, nz - 1, False, 0.0, False)
+    m1 = _decode_f32(r_off["data_base64"])
+    fin = np.isfinite(m1)
+    assert fin.any()
+    assert m1[fin].min() >= vmin - 1e-3 and m1[fin].max() <= vmax + 1e-3
+    assert r_off["threshold_used"] is None
+
+    # Auto mask: threshold resolves to ~3σ (≈0.03) and the map stays physical.
+    thr = _auto_mask_threshold(data, 0, nz - 1)
+    assert 0.01 < thr < 0.1
+    r_auto = worker_moment(str(p), 1, 0, nz - 1, True, 0.0, True)
+    m1a = _decode_f32(r_auto["data_base64"])
+    fina = np.isfinite(m1a)
+    assert fina.any()
+    assert m1a[fina].min() >= vmin - 1e-3 and m1a[fina].max() <= vmax + 1e-3
+    assert abs(r_auto["threshold_used"] - thr) < 1e-6
+    # Masking removes noise pixels, so fewer valid pixels than the unmasked map.
+    assert fina.sum() < fin.sum()

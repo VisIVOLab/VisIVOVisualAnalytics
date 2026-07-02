@@ -1806,7 +1806,8 @@ BackendIsosurfaceResult BackendClient::requestIsosurface(const QString &datasetI
 
 BackendMomentResult BackendClient::requestMoment(const QString &datasetId, int order,
                                                  int channelStart, int channelEnd,
-                                                 bool maskEnabled, double thresholdValue) const
+                                                 bool maskEnabled, double thresholdValue,
+                                                 bool thresholdAuto) const
 {
     QString error;
     const QJsonDocument body(
@@ -1815,7 +1816,8 @@ BackendMomentResult BackendClient::requestMoment(const QString &datasetId, int o
                          { QStringLiteral("channel_start"), channelStart },
                          { QStringLiteral("channel_end"), channelEnd },
                          { QStringLiteral("mask_enabled"), maskEnabled },
-                         { QStringLiteral("threshold_value"), thresholdValue } });
+                         { QStringLiteral("threshold_value"), thresholdValue },
+                         { QStringLiteral("threshold_auto"), thresholdAuto } });
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/moment")), body, error);
     if (!error.isEmpty()) {
@@ -1830,7 +1832,8 @@ BinaryArrayResult BackendClient::fetchMomentBinary(const QString &datasetId,
                                                     int order,
                                                     int channelStart, int channelEnd,
                                                     bool maskEnabled, float threshold,
-                                                    const QString &sessionId)
+                                                    const QString &sessionId,
+                                                    bool thresholdAuto)
 {
     BinaryArrayResult result;
     const QString prevSession = m_sessionId;
@@ -1844,7 +1847,8 @@ BinaryArrayResult BackendClient::fetchMomentBinary(const QString &datasetId,
                          { QStringLiteral("channel_start"), channelStart },
                          { QStringLiteral("channel_end"), channelEnd },
                          { QStringLiteral("mask_enabled"), maskEnabled },
-                         { QStringLiteral("threshold_value"), static_cast<double>(threshold) } });
+                         { QStringLiteral("threshold_value"), static_cast<double>(threshold) },
+                         { QStringLiteral("threshold_auto"), thresholdAuto } });
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/moment/result/binary")), body, error);
     m_sessionId = prevSession;

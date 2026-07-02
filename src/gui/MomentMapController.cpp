@@ -167,7 +167,9 @@ void MomentMapController::startComputation(int defaultOrder)
         // vtkWindowCube's onCompleted lambda appends the two WCS-specific fields
         // (spectralAxisTitle, currentWcsFrameLabel) that require window state.
         const QString maskSummary = config.maskEnabled
-                ? u">= %1"_s.arg(config.thresholdValue, 0, 'g', 8)
+                ? (config.thresholdAuto
+                           ? u"auto (≈ 3σ)"_s
+                           : u">= %1"_s.arg(config.thresholdValue, 0, 'g', 8))
                 : u"none"_s;
         const QString unitLabel = result.momentUnit.isEmpty() ? u"\u2014"_s : result.momentUnit;
 
@@ -202,7 +204,9 @@ void MomentMapController::startComputation(int defaultOrder)
                         .arg(formatMomentChannelRange(config))
                         .arg(config.maskEnabled ? u"enabled"_s : u"none"_s)
                         .arg(config.maskEnabled
-                                     ? QString::number(config.thresholdValue, 'g', 8)
+                                     ? (config.thresholdAuto
+                                                ? u"auto (≈ 3σ, from MAD)"_s
+                                                : QString::number(config.thresholdValue, 'g', 8))
                                      : u"n/a"_s)
                         .arg(describeMomentScope());
 
@@ -222,7 +226,8 @@ void MomentMapController::startComputation(int defaultOrder)
                                      config.channelStart,
                                      config.channelEnd,
                                      config.maskEnabled,
-                                     config.thresholdValue }));
+                                     config.thresholdValue,
+                                     config.thresholdAuto }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -346,21 +351,38 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
 
     auto *maskCheck = new QCheckBox(u"Enable threshold mask"_s, &dialog);
     maskCheck->setChecked(config.maskEnabled);
+
+    auto *autoCheck = new QCheckBox(u"Auto threshold (≈ 3σ from MAD)"_s, &dialog);
+    autoCheck->setChecked(config.thresholdAuto);
+    autoCheck->setEnabled(config.maskEnabled);
+
     auto *thresholdSpin = new QDoubleSpinBox(&dialog);
     thresholdSpin->setRange(-1.0e30, 1.0e30);
     thresholdSpin->setDecimals(6);
     thresholdSpin->setValue(config.thresholdValue);
-    thresholdSpin->setEnabled(config.maskEnabled);
-    QObject::connect(maskCheck, &QCheckBox::toggled, thresholdSpin, &QWidget::setEnabled);
+    // The manual threshold is only editable when masking is on AND auto is off.
+    thresholdSpin->setEnabled(config.maskEnabled && !config.thresholdAuto);
+
+    auto updateThresholdEnabled = [maskCheck, autoCheck, thresholdSpin]() {
+        const bool on = maskCheck->isChecked();
+        autoCheck->setEnabled(on);
+        thresholdSpin->setEnabled(on && !autoCheck->isChecked());
+    };
+    QObject::connect(maskCheck, &QCheckBox::toggled, &dialog,
+                     [updateThresholdEnabled](bool) { updateThresholdEnabled(); });
+    QObject::connect(autoCheck, &QCheckBox::toggled, &dialog,
+                     [updateThresholdEnabled](bool) { updateThresholdEnabled(); });
 
     auto *maskHintLabel = new QLabel(
-            u"When enabled, only voxels with intensity above the threshold "
-            u"contribute to the moment — typical use is masking out below "
-            u"~3·σ noise to clean up M1/M2."_s, &dialog);
+            u"Only voxels above the threshold contribute to the moment — this "
+            u"cleans up M1/M2. With Auto, the backend derives the threshold "
+            u"from the noise (median + 3·σ via MAD); untick it to set a value "
+            u"by hand."_s, &dialog);
     maskHintLabel->setStyleSheet(ToolDialogStyle::helperCss());
     maskHintLabel->setWordWrap(true);
 
     maskForm->addRow(u"Mask"_s,           maskCheck);
+    maskForm->addRow(QString(),           autoCheck);
     maskForm->addRow(u"Mask threshold"_s, thresholdSpin);
     maskForm->addRow(QString(),           maskHintLabel);
 
@@ -409,6 +431,7 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
     config.channelStart = channelStart;
     config.channelEnd = channelEnd;
     config.maskEnabled = maskCheck->isChecked();
+    config.thresholdAuto = autoCheck->isChecked();
     config.thresholdValue = thresholdSpin->value();
     return true;
 }

@@ -232,6 +232,72 @@ def worker_reproject(
 # ── A-04: External catalogue cross-match ─────────────────────────────────────
 
 
+def _sources_from_table(table, centre_coord, ra_cands, dec_cands, name_cands, catalogue_id):
+    """Extract source dicts from an astroquery result table robustly.
+
+    Column names drift between astroquery/astropy versions (e.g. SIMBAD went
+    from ``RA``/``RA_d`` to lowercase ``ra``/``dec`` in degrees around 0.4.9).
+    Resolve columns case-insensitively, accept both decimal-degree and
+    sexagesimal string values, and skip any row that fails to parse instead of
+    aborting the whole query.
+    """
+    from astropy.coordinates import SkyCoord  # noqa: PLC0415
+    import astropy.units as _u                # noqa: PLC0415
+
+    if table is None or len(table) == 0:
+        return []
+
+    colmap = {str(c).lower(): c for c in table.colnames}
+
+    def _pick(cands):
+        for cand in cands:
+            hit = colmap.get(cand.lower())
+            if hit is not None:
+                return hit
+        return None
+
+    ra_col = _pick(ra_cands)
+    dec_col = _pick(dec_cands)
+    if ra_col is None or dec_col is None:
+        raise ValueError(
+            f"{catalogue_id} result missing RA/Dec columns (got {list(table.colnames)})."
+        )
+    name_col = _pick(name_cands)
+
+    out: list[dict[str, Any]] = []
+    for row in table:
+        try:
+            ra_v, dec_v = row[ra_col], row[dec_col]
+            try:
+                ra_s, dec_s = float(ra_v), float(dec_v)
+            except (TypeError, ValueError):
+                # Sexagesimal strings (RA in hours, Dec in degrees).
+                sc = SkyCoord(str(ra_v), str(dec_v), unit=(_u.hourangle, _u.deg))
+                ra_s, dec_s = float(sc.ra.deg), float(sc.dec.deg)
+            if not (np.isfinite(ra_s) and np.isfinite(dec_s)):
+                continue
+            sep = float(
+                centre_coord.separation(SkyCoord(ra_s, dec_s, unit="deg")).arcsec
+            )
+            name = ""
+            if name_col is not None:
+                name_val = row[name_col]
+                if name_val is not None and not (
+                    hasattr(name_val, "mask") and bool(getattr(name_val, "mask"))
+                ):
+                    name = str(name_val)
+            out.append({
+                "ra_deg": ra_s,
+                "dec_deg": dec_s,
+                "name": name,
+                "catalogue_id": catalogue_id,
+                "separation_arcsec": sep,
+            })
+        except Exception:  # noqa: BLE001 — one bad row must not sink the query
+            continue
+    return out
+
+
 def worker_crossmatch(
     path: str,
     radius_arcsec: float,
@@ -291,26 +357,26 @@ def worker_crossmatch(
         import astropy.units as _u                # noqa: PLC0415
 
         simbad = Simbad()
-        simbad.add_votable_fields("ra(d)", "dec(d)")
+        # ra/dec (decimal degrees) are default outputs in recent astroquery;
+        # older versions need them requested explicitly. Best-effort either way.
+        for _fld in ("ra", "dec", "ra(d)", "dec(d)"):
+            try:
+                simbad.add_votable_fields(_fld)
+            except Exception:  # noqa: BLE001
+                pass
         result_table = simbad.query_region(
             SkyCoord(ra_cen, dec_cen, unit="deg"),
             radius=search_radius_deg * _u.deg,
         )
-        if result_table is not None:
-            centre_coord = SkyCoord(ra_cen, dec_cen, unit="deg")
-            for row in result_table:
-                ra_s  = float(row["RA_d"])  if "RA_d"  in result_table.colnames else float(row["RA"])
-                dec_s = float(row["DEC_d"]) if "DEC_d" in result_table.colnames else float(row["DEC"])
-                sep = float(centre_coord.separation(
-                    SkyCoord(ra_s, dec_s, unit="deg")
-                ).arcsec)
-                sources.append({
-                    "ra_deg": ra_s,
-                    "dec_deg": dec_s,
-                    "name": str(row.get("MAIN_ID", "")),
-                    "catalogue_id": "SIMBAD",
-                    "separation_arcsec": sep,
-                })
+        centre_coord = SkyCoord(ra_cen, dec_cen, unit="deg")
+        sources = _sources_from_table(
+            result_table,
+            centre_coord,
+            ra_cands=("ra_d", "ra", "raj2000"),
+            dec_cands=("dec_d", "dec", "dej2000"),
+            name_cands=("main_id",),
+            catalogue_id="SIMBAD",
+        )
     else:
         # Vizier
         vizier_cat = VIZIER_CATALOG_IDS.get(catalogue.upper())
@@ -338,23 +404,14 @@ def worker_crossmatch(
         if result_list and len(result_list) > 0:
             table = result_list[0]
             centre_coord = SkyCoord(ra_cen, dec_cen, unit="deg")
-            ra_col  = next((c for c in table.colnames if c.upper() in ("RAJ2000", "_RAJ2000", "RA")), None)
-            dec_col = next((c for c in table.colnames if c.upper() in ("DEJ2000", "_DEJ2000", "DEC")), None)
-            if ra_col and dec_col:
-                for row in table:
-                    ra_s  = float(row[ra_col])
-                    dec_s = float(row[dec_col])
-                    sep = float(centre_coord.separation(
-                        SkyCoord(ra_s, dec_s, unit="deg")
-                    ).arcsec)
-                    name = str(row.get("_2MASS", row.get("NVSS", row.get("Name", ""))))
-                    sources.append({
-                        "ra_deg": ra_s,
-                        "dec_deg": dec_s,
-                        "name": name,
-                        "catalogue_id": catalogue.upper(),
-                        "separation_arcsec": sep,
-                    })
+            sources = _sources_from_table(
+                table,
+                centre_coord,
+                ra_cands=("raj2000", "_raj2000", "ra"),
+                dec_cands=("dej2000", "_dej2000", "de", "dec"),
+                name_cands=("_2mass", "2mass", "nvss", "first", "name"),
+                catalogue_id=catalogue.upper(),
+            )
 
     # Sort by separation, cap at max_sources
     sources.sort(key=lambda s: s["separation_arcsec"])

@@ -62,6 +62,7 @@ async def moment_product(
             "channel_end": request.channel_end,
             "mask_enabled": request.mask_enabled,
             "threshold_value": request.threshold_value,
+            "threshold_auto": request.threshold_auto,
         },
     )
     return MomentProductResponse(valid=True, error="", **result)
@@ -80,6 +81,7 @@ class MomentSaveFitsRequest(BaseModel):
     channel_end: int = 0
     mask_enabled: bool = False
     threshold_value: float = 0.0
+    threshold_auto: bool = False
     # Workspace Exports filename (basename only). Empty → synthesised
     # from source name + moment order.
     output_basename: str = ""
@@ -129,6 +131,7 @@ async def moment_save_fits(
             int(request.channel_end),
             bool(request.mask_enabled),
             float(request.threshold_value),
+            bool(request.threshold_auto),
         )
     except HTTPException:
         raise

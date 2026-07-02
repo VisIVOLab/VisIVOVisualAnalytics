@@ -21,6 +21,7 @@ struct MomentRequest
     int channelEnd{ 0 };
     bool maskEnabled{ false };
     double thresholdValue{ 0.0 };
+    bool thresholdAuto{ false };
 };
 
 struct MomentResult

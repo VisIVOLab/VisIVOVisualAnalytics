@@ -1387,10 +1387,10 @@ public:
     BackendIsosurfaceResult requestIsosurface(const QString &datasetId, double threshold) const;
     BackendMomentResult requestMoment(const QString &datasetId, int order, int channelStart,
                                       int channelEnd, bool maskEnabled,
-                                      double thresholdValue) const;
+                                      double thresholdValue, bool thresholdAuto = false) const;
     BackendTaskCreateResult createMomentTask(const QString &datasetId, int order, int channelStart,
                                              int channelEnd, bool maskEnabled,
-                                             double thresholdValue) const;
+                                             double thresholdValue, bool thresholdAuto = false) const;
     BackendTaskCreateResult createPvTask(const QString &datasetId,
                                          const std::vector<std::array<int, 2>> &vertices,
                                          int widthPixels) const;
@@ -1417,7 +1417,8 @@ public:
                                         int order,
                                         int channelStart, int channelEnd,
                                         bool maskEnabled, float threshold,
-                                        const QString &sessionId);
+                                        const QString &sessionId,
+                                        bool thresholdAuto = false);
     BinaryArrayResult fetchPvBinary(const QString &datasetId,
                                     const QVector<QPointF> &path,
                                     int slitWidth,
@@ -1511,7 +1512,8 @@ public:
                                                 int channelStart, int channelEnd,
                                                 bool maskEnabled,
                                                 double thresholdValue,
-                                                const QString &outputBasename = {});
+                                                const QString &outputBasename = {},
+                                                bool thresholdAuto = false);
 
     // ── Workspace Exports management ──────────────────────────────────────────
     /** POST /v1/exports/copy_dataset — copy a dataset's FITS file into

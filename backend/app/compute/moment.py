@@ -513,6 +513,66 @@ def _moment_map_streaming(
     raise ValueError(f"Streaming moment not supported for order {order}.")
 
 
+def _auto_mask_threshold(
+    data: np.ndarray, z0: int, z1: int, k: float = 3.0, max_samples: int = 4_000_000
+) -> float:
+    """Robust noise-based mask threshold: median + k·σ with σ = 1.4826·MAD.
+
+    Estimated over the selected channel range [z0, z1]. To stay out-of-core on
+    SKA-scale cubes the sample is strided in *both* the spectral and the two
+    spatial axes so at most ~``max_samples`` voxels are ever materialised —
+    important when a single spatial plane already exceeds the cap. Returns
+    ``0.0`` when no finite voxel is available.
+    """
+    nz = z1 - z0 + 1
+    ny, nx = int(data.shape[1]), int(data.shape[2])
+    if nz <= 0 or ny == 0 or nx == 0:
+        return 0.0
+    # Cap sampled channels first, then split the remaining budget spatially so
+    # the strided read (channels × pixels) stays within max_samples.
+    max_planes = min(nz, 64)
+    z_step = max(1, int(np.ceil(nz / max_planes)))
+    n_planes = len(range(0, nz, z_step))
+    spatial_budget = max(1, max_samples // n_planes)
+    sp = max(1, int(np.ceil((float(ny * nx) / spatial_budget) ** 0.5)))
+    sample = np.asarray(data[z0 : z1 + 1 : z_step, ::sp, ::sp], dtype=np.float32)
+    finite = sample[np.isfinite(sample)]
+    if finite.size == 0:
+        return 0.0
+    med = float(np.median(finite))
+    mad = float(np.median(np.abs(finite - med)))
+    return med + k * (1.4826 * mad)
+
+
+def _apply_position_moment_range_guard(
+    image: np.ndarray, order: int, spectral_coordinates: np.ndarray
+) -> None:
+    """Blank physically-impossible M1/M2 voxels in place.
+
+    An intensity-weighted mean velocity (M1) must lie within the sampled
+    spectral axis [vmin, vmax], and a weighted variance (M2) within [0, span²].
+    Values outside can only arise from mixed-sign (noise) weights when no mask
+    is applied; they would otherwise dominate the colour scale (e.g.
+    superluminal M1) and hide the real signal. Positive-weight moments are
+    bounded by construction, so this never removes a legitimate voxel. No-op for
+    orders other than 1 and 2.
+    """
+    if order not in (1, 2):
+        return
+    coords = np.asarray(spectral_coordinates, dtype=np.float64)
+    if not coords.size:
+        return
+    vmin = float(np.nanmin(coords))
+    vmax = float(np.nanmax(coords))
+    if order == 1:
+        bad = np.isfinite(image) & ((image < vmin) | (image > vmax))
+    else:  # order == 2 — variance
+        span = vmax - vmin
+        bad = np.isfinite(image) & ((image < 0.0) | (image > span * span))
+    if bad.any():
+        image[bad] = np.nan
+
+
 def _moment_map_dask(
     fits_path: str,
     order: int,
@@ -522,6 +582,7 @@ def _moment_map_dask(
     mask_enabled: bool,
     chunk_z: int = 64,
     dist_client: Any = None,
+    threshold_auto: bool = False,
 ) -> dict[str, Any]:
     """Out-of-core moment computation via Dask arrays.
 
@@ -543,6 +604,9 @@ def _moment_map_dask(
         z1 = max(0, min(int(channel_end), data.shape[0] - 1))
         if z0 > z1:
             raise ValueError("Invalid channel range.")
+        effective_threshold = float(mask_threshold)
+        if mask_enabled and threshold_auto:
+            effective_threshold = _auto_mask_threshold(data, z0, z1)
         spectral = dataset.spectral_axis_metadata(z0, z1)
         # Wrap the memmap slice in a Dask array — data is NOT loaded yet.
         sub_memmap = data[z0 : z1 + 1, :, :]
@@ -557,7 +621,7 @@ def _moment_map_dask(
     # Apply validity mask lazily.
     da_safe = _da.where(_da.isfinite(da_cube), da_cube, np.nan)
     if mask_enabled:
-        da_safe = _da.where(da_safe >= float(mask_threshold), da_safe, np.nan)
+        da_safe = _da.where(da_safe >= float(effective_threshold), da_safe, np.nan)
 
     da_delta = _da.from_array(spectral_delta[:, None, None], chunks=(chunk_z, -1, -1))
 
@@ -625,6 +689,8 @@ def _moment_map_dask(
             scheduler="threads", num_workers=_n_moment_threads()
         ).astype(np.float32)
 
+    _apply_position_moment_range_guard(image, order, spectral_values)
+
     if not np.isfinite(image).any():
         raise ValueError("No valid voxels found for the selected moment parameters (dask path).")
 
@@ -640,6 +706,7 @@ def _moment_map_dask(
         "moment_unit": moment_unit,
         "bunit": bunit,
         "moment_threads_used": _n_moment_threads(),
+        "threshold_used": float(effective_threshold) if mask_enabled else None,
         "data_base64": _b64f32(image),
     }
 
@@ -664,11 +731,17 @@ def worker_moment(
     channel_end: int,
     mask_enabled: bool,
     threshold_value: float,
+    threshold_auto: bool = False,
 ) -> dict[str, Any]:
     """
     Compute a moment map reading only [channel_start:channel_end] planes.
     With memmap=True the slice read is O(nchannels * ny * nx) – not the
     full cube size.
+
+    When ``mask_enabled`` and ``threshold_auto`` are both set, the mask
+    threshold is derived from the data (median + 3·σ via MAD) instead of using
+    the supplied ``threshold_value`` — the CASA/SoFiA default that keeps M1/M2
+    clean without the caller having to know the noise level.
     """
     dataset = ScientificFitsDataset(path)
     hdul, raw = dataset.open_memmap()
@@ -680,6 +753,9 @@ def worker_moment(
         z1 = max(0, min(int(channel_end), data.shape[0] - 1))
         if z0 > z1:
             raise ValueError("Invalid channel range.")
+        effective_threshold = float(threshold_value)
+        if mask_enabled and threshold_auto:
+            effective_threshold = _auto_mask_threshold(data, z0, z1)
         spectral = dataset.spectral_axis_metadata(z0, z1)
         # Out-of-core path for the big/OOM-prone orders: if the channel range would
         # materialise to more than the stream threshold, stream slabs from disk
@@ -687,7 +763,7 @@ def worker_moment(
         subset_bytes = (z1 - z0 + 1) * int(data.shape[1]) * int(data.shape[2]) * 4
         if order in (0, 1, 2) and subset_bytes > _MOMENT_STREAM_BYTES:
             image = _moment_map_streaming(
-                data, z0, z1, order, spectral["coordinates"], mask_enabled, threshold_value)
+                data, z0, z1, order, spectral["coordinates"], mask_enabled, effective_threshold)
         else:
             subset = np.asarray(data[z0 : z1 + 1, :, :], dtype=np.float32)
             image = _moment_map_from_array(
@@ -695,8 +771,11 @@ def worker_moment(
                 order,
                 spectral["coordinates"],
                 mask_enabled,
-                threshold_value,
+                effective_threshold,
             )
+        # Physical-range guard for the position moments (blanks superluminal-M1
+        # / out-of-range-M2 noise voxels; shared with the Dask path).
+        _apply_position_moment_range_guard(image, order, spectral["coordinates"])
         bunit = dataset.bunit
         moment_unit = _moment_result_unit(order, bunit, str(spectral["axis_unit"]))
         logger.info(
@@ -725,6 +804,7 @@ def worker_moment(
         "moment_unit": moment_unit,
         "bunit": bunit,
         "moment_threads_used": _n_moment_threads(),
+        "threshold_used": float(effective_threshold) if mask_enabled else None,
         "data_base64": _b64f32(image),
     }
 
@@ -737,6 +817,7 @@ def worker_moment_save_fits(
     channel_end: int,
     mask_enabled: bool,
     threshold_value: float,
+    threshold_auto: bool = False,
 ) -> dict[str, Any]:
     """Compute a moment map and persist it as a standalone 2-D FITS file at
     ``output_path``.
@@ -758,7 +839,7 @@ def worker_moment_save_fits(
     # Decode the array data once via the canonical moment worker.
     payload = worker_moment(
         src_path, int(order), int(channel_start), int(channel_end),
-        bool(mask_enabled), float(threshold_value),
+        bool(mask_enabled), float(threshold_value), bool(threshold_auto),
     )
     # The base64 round-trip is unnecessary for the FITS path but keeps a
     # single source of truth — the cost is one float32 array decode, dwarfed
@@ -790,11 +871,15 @@ def worker_moment_save_fits(
     if moment_unit:
         out_header["BUNIT"] = moment_unit
     out_header["OBJECT"] = src_header.get("OBJECT", out_header.get("OBJECT", ""))
+    threshold_used = payload.get("threshold_used", float(threshold_value))
+    mask_desc = "off"
+    if mask_enabled:
+        mode = "auto" if threshold_auto else "manual"
+        mask_desc = f"on ({mode}, threshold={float(threshold_used):.6g})"
     out_header.add_history(
         f"VisIVO moment-{int(order)} map from {Path(src_path).name}: "
         f"channels {int(channel_start)}..{int(channel_end)} "
-        f"mask={'on' if mask_enabled else 'off'} "
-        f"threshold={float(threshold_value):.6g}"
+        f"mask={mask_desc}"
     )
 
     logger.info(
