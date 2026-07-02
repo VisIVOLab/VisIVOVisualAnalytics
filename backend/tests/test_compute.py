@@ -721,3 +721,101 @@ def test_dask_fallback_when_unavailable() -> None:
         assert np.isfinite(result).any(), "All values NaN — fallback failed"
     finally:
         _c._DASK_OK = original
+
+
+# ── Out-of-core (streaming) moments: M0/M1/M2 must match the in-memory result ──
+def test_moment_streaming_matches_in_memory():
+    """Streamed-slab M0/M1/M2 equal the in-memory map (uniform axis)."""
+    import numpy as np
+    import app.compute.moment as M
+    from app.compute.moment import _moment_map_from_array, _moment_map_streaming
+
+    rng = np.random.default_rng(3)
+    nz, ny, nx = 50, 12, 10
+    idx = np.arange(nz)
+    cube = np.zeros((nz, ny, nx), dtype=np.float32)
+    for j in range(ny):
+        for i in range(nx):
+            amp = 0.0 if i == 0 else rng.uniform(1.0, 5.0)   # column 0 = empty → blank path
+            vc = rng.uniform(10.0, 40.0)
+            sig = rng.uniform(4.0, 10.0)
+            cube[:, j, i] = amp * np.exp(-((idx - vc) ** 2) / (2.0 * sig ** 2))
+    cube += np.abs(rng.normal(0.0, 0.02, cube.shape)).astype(np.float32)  # small positive noise
+
+    # Two uniform axes: velocity (small coords) and — crucially for M2 numerical
+    # stability — a FREQ axis with ~1e11 offsets, which breaks the naive
+    # ΣI·v² − M1² identity but not the two-pass differencing.
+    velocity_axis = np.linspace(-100.0, 100.0, nz)
+    freq_axis = 1.15e11 + idx * 1.0e6
+
+    orig_slab = M._MOMENT_SLAB_CHANNELS
+    M._MOMENT_SLAB_CHANNELS = 7                    # force many slabs
+    try:
+        for coords in (velocity_axis, freq_axis):
+            for mask_enabled, thr in [(False, 0.0), (True, 0.5)]:
+                for order in (0, 1, 2):
+                    ref = _moment_map_from_array(cube, order, coords, mask_enabled, thr)
+                    got = _moment_map_streaming(cube, 0, nz - 1, order, coords, mask_enabled, thr)
+                    assert got.shape == ref.shape
+                    assert np.array_equal(np.isnan(got), np.isnan(ref)), \
+                        f"NaN pattern mismatch order={order} mask={mask_enabled}"
+                    fin = ~np.isnan(got)
+                    # M2 on a 1e11 FREQ axis needs a generous relative tolerance.
+                    rtol = 1e-3 if (order == 2 and coords[0] > 1e6) else 1e-4
+                    assert np.allclose(got[fin], ref[fin], rtol=rtol, atol=1e-4), \
+                        f"value mismatch order={order} mask={mask_enabled}"
+
+        # Non-zero channel start: streaming over data[z0:z1] must equal the
+        # in-memory result on the pre-sliced sub-cube.
+        za, zb = 6, 41
+        for order in (0, 1, 2):
+            ref = _moment_map_from_array(cube[za:zb + 1], order, velocity_axis[za:zb + 1], False, 0.0)
+            got = _moment_map_streaming(cube, za, zb, order, velocity_axis[za:zb + 1], False, 0.0)
+            fin = ~np.isnan(got)
+            assert np.array_equal(np.isnan(got), np.isnan(ref)), f"z0!=0 nan order={order}"
+            assert np.allclose(got[fin], ref[fin], rtol=1e-4, atol=1e-4), f"z0!=0 order={order}"
+    finally:
+        M._MOMENT_SLAB_CHANNELS = orig_slab
+
+
+def test_worker_moment_streaming_branch(tmp_path, monkeypatch):
+    """Forcing the streaming branch (threshold 0) yields the same map as the
+    in-memory path, on a realistic positive-emission cube (ΣI > 0 everywhere, so
+    all moment paths agree — the ambiguous ΣI ≤ 0 case is covered by the direct
+    test above)."""
+    import numpy as np
+    from astropy.io import fits
+    import app.compute.moment as M
+    from app.compute import worker_moment
+
+    nz, ny, nx = 40, 12, 12
+    rng = np.random.default_rng(11)
+    zc = np.arange(nz)
+    data = np.zeros((nz, ny, nx), dtype=np.float32)
+    for j in range(ny):
+        for i in range(nx):
+            c = rng.uniform(12.0, 28.0)
+            amp = rng.uniform(2.0, 6.0)
+            sig = rng.uniform(3.0, 7.0)
+            data[:, j, i] = amp * np.exp(-((zc - c) ** 2) / (2.0 * sig ** 2))
+    data += 0.5 + np.abs(rng.normal(0.0, 0.05, data.shape)).astype(np.float32)  # positive baseline
+    p = tmp_path / "pos_cube.fits"
+    hdu = fits.PrimaryHDU(data)
+    h = hdu.header
+    h["CTYPE1"], h["CTYPE2"], h["CTYPE3"] = "RA---SIN", "DEC--SIN", "VRAD"
+    h["CRVAL1"], h["CRVAL2"], h["CRVAL3"] = 83.8, -5.4, 0.0
+    h["CRPIX1"], h["CRPIX2"], h["CRPIX3"] = nx / 2.0, ny / 2.0, 1.0
+    h["CDELT1"], h["CDELT2"], h["CDELT3"] = -1e-3, 1e-3, 1000.0
+    h["CUNIT3"] = "m/s"
+    hdu.writeto(p, overwrite=True)
+
+    in_mem = {o: _decode_f32(worker_moment(str(p), o, 0, nz - 1, False, 0.0)["data_base64"])
+              for o in (0, 1, 2)}
+    monkeypatch.setattr(M, "_MOMENT_STREAM_BYTES", 0)   # force streaming for any size
+    for o in (0, 1, 2):
+        b = _decode_f32(worker_moment(str(p), o, 0, nz - 1, False, 0.0)["data_base64"])
+        a = in_mem[o]
+        assert a.shape == b.shape
+        assert np.array_equal(np.isnan(a), np.isnan(b)), f"nan pattern order {o}"
+        fin = np.isfinite(a) & np.isfinite(b)
+        assert np.allclose(a[fin], b[fin], rtol=1e-4, atol=1e-4), f"order {o}"

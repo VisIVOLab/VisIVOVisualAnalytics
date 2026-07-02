@@ -63,6 +63,13 @@ except ImportError:
 _MOMENT_THREADS = int(_os.environ.get("VISIVO_MOMENT_THREADS", "0"))
 # 0 = auto: min(4, cpu_count); positive = explicit count
 
+# Out-of-core moments: above this materialised channel-range size, M0/M1/M2 are
+# computed by streaming spectral slabs from disk (constant memory) instead of
+# loading the whole range into RAM — so SKA-scale cubes don't OOM. Small cubes
+# keep the faster in-memory (GPU/Numba) path.
+_MOMENT_STREAM_BYTES = int(_os.environ.get("VISIVO_MOMENT_STREAM_BYTES", str(2 * 1024 ** 3)))
+_MOMENT_SLAB_CHANNELS = max(1, int(_os.environ.get("VISIVO_MOMENT_SLAB_CHANNELS", "64")))
+
 
 def _n_moment_threads() -> int:
     """Return the number of threads to use for parallelisable moment orders."""
@@ -428,6 +435,84 @@ def _moment_map_from_array(
     raise ValueError(f"Unsupported moment order: {order}.")
 
 
+def _moment_map_streaming(
+    data: Any,                      # memmap-backed 3-D array [nz, ny, nx] (NOT materialised)
+    z0: int,
+    z1: int,
+    order: int,
+    spectral_coordinates: np.ndarray,
+    mask_enabled: bool,
+    threshold_value: float,
+) -> np.ndarray:
+    """Out-of-core M0/M1/M2 — stream spectral slabs and accumulate running sums so
+    the whole channel range never sits in RAM (SKA-scale cubes).
+
+    Matches the in-memory (Numba) path for uniform spacing:
+      M0 = Σ I·Δv, blanked where a pixel has no valid voxel;
+      M1 = Σ(I·v) / ΣI  (blanked where ΣI ≤ 0);
+      M2 = Σ I·(v − M1)² / ΣI  — a TRUE two-pass (a second slab sweep), not the
+      Σ(I·v²)/ΣI − M1² identity: differencing avoids the ~1e22 cancellation on
+      large-offset (FREQ) axes and needs no non-negativity clamp.
+    Memory is O(slab · ny · nx), independent of nz (M2 does two slab passes).
+    Note: M1/M2 weight by raw intensity (no Δv), matching Numba; on a NON-uniform
+    axis the numpy fallback's Δv-weighting differs — a pre-existing inconsistency.
+    """
+    sv = np.asarray(spectral_coordinates, dtype=np.float64)
+    ny, nx = int(data.shape[1]), int(data.shape[2])
+    nch = z1 - z0 + 1
+    if sv.shape[0] != nch:
+        raise ValueError("spectral_coordinates must be the [z0:z1] slice (length nch).")
+    delta = _integrated_spacing(sv)                     # per-channel Δv weight (M0)
+
+    def _slabs():
+        """Yield (cs, ce, inten64, valid) for each spectral slab — only that slab
+        is read from disk, so peak memory is O(slab · ny · nx), not O(nz)."""
+        for cs in range(0, nch, _MOMENT_SLAB_CHANNELS):
+            ce = min(cs + _MOMENT_SLAB_CHANNELS, nch)
+            block = np.asarray(data[z0 + cs : z0 + ce, :, :], dtype=np.float32)
+            valid = np.isfinite(block)
+            if mask_enabled:
+                valid &= block >= float(threshold_value)
+            inten = np.where(valid, block.astype(np.float64), 0.0)  # invalid → 0 (dropped from sums)
+            yield cs, ce, inten, valid
+
+    # Pass 1: M0 (Σ I·Δv), and the M1 weights ΣI, Σ(I·v).
+    s0d = np.zeros((ny, nx), dtype=np.float64)
+    s_i = np.zeros((ny, nx), dtype=np.float64)
+    s_iv = np.zeros((ny, nx), dtype=np.float64)
+    any_valid = np.zeros((ny, nx), dtype=bool)
+    for cs, ce, inten, valid in _slabs():
+        s0d += np.sum(inten * delta[cs:ce][:, None, None], axis=0)
+        s_i += np.sum(inten, axis=0)
+        s_iv += np.sum(inten * sv[cs:ce][:, None, None], axis=0)
+        any_valid |= valid.any(axis=0)
+
+    if order == 0:
+        m0 = s0d.astype(np.float32)
+        m0[~any_valid] = np.nan   # no valid voxel → undefined, not zero (matches M1/M2 + CARTA)
+        return m0
+
+    pos = s_i > 0.0
+    m1 = np.full((ny, nx), np.nan, dtype=np.float64)
+    m1[pos] = s_iv[pos] / s_i[pos]                       # intensity-weighted mean velocity
+    out = np.full((ny, nx), np.nan, dtype=np.float32)
+    if order == 1:
+        out[pos] = m1[pos].astype(np.float32)
+        return out
+    if order == 2:
+        # Pass 2: Σ I·(v − M1)² / ΣI — the Numba two-pass, computed exactly. The
+        # differences are O(channel width), so there is no 1e22-scale cancellation
+        # (unlike the ΣI·v² − M1² identity) and no clamp is needed; signed-weight
+        # variance is returned as-is, matching the in-memory path.
+        s_num = np.zeros((ny, nx), dtype=np.float64)
+        for cs, ce, inten, _valid in _slabs():
+            dv = sv[cs:ce][:, None, None] - m1[None, :, :]
+            s_num += np.sum(inten * dv * dv, axis=0)
+        out[pos] = (s_num[pos] / s_i[pos]).astype(np.float32)
+        return out
+    raise ValueError(f"Streaming moment not supported for order {order}.")
+
+
 def _moment_map_dask(
     fits_path: str,
     order: int,
@@ -596,14 +681,22 @@ def worker_moment(
         if z0 > z1:
             raise ValueError("Invalid channel range.")
         spectral = dataset.spectral_axis_metadata(z0, z1)
-        subset = np.asarray(data[z0 : z1 + 1, :, :], dtype=np.float32)
-        image = _moment_map_from_array(
-            subset,
-            order,
-            spectral["coordinates"],
-            mask_enabled,
-            threshold_value,
-        )
+        # Out-of-core path for the big/OOM-prone orders: if the channel range would
+        # materialise to more than the stream threshold, stream slabs from disk
+        # instead of loading it all. Small cubes keep the in-memory GPU/Numba path.
+        subset_bytes = (z1 - z0 + 1) * int(data.shape[1]) * int(data.shape[2]) * 4
+        if order in (0, 1, 2) and subset_bytes > _MOMENT_STREAM_BYTES:
+            image = _moment_map_streaming(
+                data, z0, z1, order, spectral["coordinates"], mask_enabled, threshold_value)
+        else:
+            subset = np.asarray(data[z0 : z1 + 1, :, :], dtype=np.float32)
+            image = _moment_map_from_array(
+                subset,
+                order,
+                spectral["coordinates"],
+                mask_enabled,
+                threshold_value,
+            )
         bunit = dataset.bunit
         moment_unit = _moment_result_unit(order, bunit, str(spectral["axis_unit"]))
         logger.info(
