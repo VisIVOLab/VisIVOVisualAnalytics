@@ -319,15 +319,24 @@ bool vtkWindowImage::updateProbeFromDisplayPosition(int displayX, int displayY)
 
     const float value = this->layers->getPixelValue(this->layers->getMasterIndex(), voxelX, voxelY);
     QString valueText = std::isfinite(value) ? QString::number(value, 'g', 8) : u"NaN"_s;
-    QString message = u"X=%1  Y=%2  Value=%3"_s.arg(voxelX).arg(voxelY).arg(valueText);
+    // The displayed image may be decimated (spacing>1 for a preview or a future
+    // LOD level), so map the display voxel back onto the full-resolution pixel
+    // grid before reading WCS / reporting X,Y. remoteVoxelToWcs expects a full-res
+    // pixel index. This is a no-op when spacing==1 (a full-resolution image):
+    // fullResX == voxelX, so readouts are byte-identical to before.
+    const double fullResX = origin[0] + (voxelX - extent[0]) * spacing[0];
+    const double fullResY = origin[1] + (voxelY - extent[2]) * spacing[1];
+    QString message = u"X=%1  Y=%2  Value=%3"_s.arg(std::lround(fullResX))
+                              .arg(std::lround(fullResY))
+                              .arg(valueText);
     {
-        QString axis0 = this->remoteFormatAxisCoordinate(0, voxelX);
-        QString axis1 = this->remoteFormatAxisCoordinate(1, voxelY);
+        QString axis0 = this->remoteFormatAxisCoordinate(0, fullResX);
+        QString axis1 = this->remoteFormatAxisCoordinate(1, fullResY);
         if (this->remoteHasCelestialAxes()) {
             bool ok0 = false;
             bool ok1 = false;
-            const double nativeX = this->remoteVoxelToWcs(0, voxelX, &ok0);
-            const double nativeY = this->remoteVoxelToWcs(1, voxelY, &ok1);
+            const double nativeX = this->remoteVoxelToWcs(0, fullResX, &ok0);
+            const double nativeY = this->remoteVoxelToWcs(1, fullResY, &ok1);
             double frameX = nativeX;
             double frameY = nativeY;
             if (ok0 && ok1 && this->convertRemoteCelestialCoordinates(nativeX, nativeY, frameX, frameY)) {
