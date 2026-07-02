@@ -48,6 +48,27 @@ void TestImageLod::tileCounts_matchBackendGrid()
     QCOMPARE(ImageLod::tileCounts(2, g), qMakePair(8, 7));     // 2048px tiles
 }
 
+void TestImageLod::chooseAssemblyLevel_fullResWhenItFits()
+{
+    // A 2000×2000 = 4MP image easily fits a 64MP budget → full res (level 0).
+    QCOMPARE(ImageLod::chooseAssemblyLevel(2000, 2000, 4, 64'000'000), 0);
+}
+
+void TestImageLod::chooseAssemblyLevel_capsHugeMosaic()
+{
+    // 15979×14204 = 227MP > 64MP; level 1 = 7990×7102 = 56.7MP ≤ 64MP.
+    QCOMPARE(ImageLod::chooseAssemblyLevel(15979, 14204, 6, 64'000'000), 1);
+    // A tiny budget forces the coarsest available level.
+    QCOMPARE(ImageLod::chooseAssemblyLevel(15979, 14204, 6, 1), 5);
+}
+
+void TestImageLod::chooseAssemblyLevel_clampsAndGuards()
+{
+    QCOMPARE(ImageLod::chooseAssemblyLevel(15979, 14204, 1, 1), 0);      // numLevels=1
+    QCOMPARE(ImageLod::chooseAssemblyLevel(0, 0, 6, 64'000'000), 5);     // degenerate dims
+    QCOMPARE(ImageLod::chooseAssemblyLevel(2000, 2000, 4, 0), 3);        // maxPixels<=0 → coarsest
+}
+
 void TestImageLod::visibleTiles_singleTile()
 {
     const TileGrid g{ 2000, 2000, 512, 4 };

@@ -31,6 +31,13 @@ int chooseLevel(double visibleSourceHeightPx, double viewportHeightPx, int numLe
 /// source): cols = ceil(fullWidth / (tileSize·2^level)), likewise rows.
 QPair<int, int> tileCounts(int level, const TileGrid &grid);
 
+/// Coarsest-necessary level to assemble the WHOLE image within a pixel budget:
+/// the smallest level L whose decimated dims ceil(w/2^L)·ceil(h/2^L) ≤
+/// maxPixels. Level 0 (full res) when the image already fits. Used so a huge
+/// mosaic loads at a bounded resolution instead of materialising every full-res
+/// tile (the display is downsampled anyway). Clamped to [0, numLevels-1].
+int chooseAssemblyLevel(int fullWidth, int fullHeight, int numLevels, long long maxPixels);
+
 /// Tiles (tx, ty) at ``level`` covering the source-pixel rectangle
 /// [x0,x1]×[y0,y1] (any corner order), expanded by ``margin`` tiles and
 /// clamped to the grid. Returned in row-major order, unique.

@@ -16,6 +16,10 @@ private slots:
 
     void tileCounts_matchBackendGrid();
 
+    void chooseAssemblyLevel_fullResWhenItFits();
+    void chooseAssemblyLevel_capsHugeMosaic();
+    void chooseAssemblyLevel_clampsAndGuards();
+
     void visibleTiles_singleTile();
     void visibleTiles_marginExpands();
     void visibleTiles_cornerOrderTolerant();

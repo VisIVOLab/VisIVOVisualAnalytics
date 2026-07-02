@@ -32,6 +32,23 @@ QPair<int, int> tileCounts(int level, const TileGrid &grid)
     return { cols, rows };
 }
 
+int chooseAssemblyLevel(int fullWidth, int fullHeight, int numLevels, long long maxPixels)
+{
+    const int maxLevel = std::max(0, numLevels - 1);
+    if (fullWidth <= 0 || fullHeight <= 0 || maxPixels <= 0) {
+        return maxLevel;
+    }
+    for (int level = 0; level <= maxLevel; ++level) {
+        const long long step = 1LL << level;
+        const long long dw = (static_cast<long long>(fullWidth) + step - 1) / step;
+        const long long dh = (static_cast<long long>(fullHeight) + step - 1) / step;
+        if (dw * dh <= maxPixels) {
+            return level;
+        }
+    }
+    return maxLevel;
+}
+
 QVector<QPair<int, int>> visibleTiles(double x0, double y0, double x1, double y1,
                                       int level, const TileGrid &grid, int margin)
 {
