@@ -31,6 +31,15 @@ interactive immediately. The full resolution (`/v1/image/full`) loads in
 the background; the LUT and WCS overlay continue to work during the
 upgrade.
 
+For very large mosaics the full upgrade is assembled from tiles
+(`/v1/image/tile`) at a **decimated level of detail** capped at ~64 Mpx,
+rather than uploading every pixel. The decimated image is visually identical
+(display is downsampled for rendering anyway), and all overlays and tools —
+probe, profile, region statistics, ruler/angle, catalogue markers — report
+**full-resolution pixel and WCS coordinates**, so measurements are unaffected
+by the LOD. The badge next to the file path shows `full-res` once the upgrade
+has loaded.
+
 ## Adding layers
 
 You can overlay or compare multiple images in the same window:
@@ -515,16 +524,28 @@ footprint of the current image and overlays the matches — no file needed. It
 requires a celestial WCS and a loaded dataset.
 
 1. Pick a catalogue — **SIMBAD**, **2MASS**, **NVSS**, or **FIRST** — and a
-   search radius in arcseconds.
+   search radius in arcseconds (the effective radius is at least the image
+   half-diagonal, so the whole footprint is always covered).
 2. The backend resolves the image centre + footprint, queries the catalogue
-   (via `astroquery`), and returns the matches sorted by separation.
+   (via `astroquery`), and **crops the matches to the valid image pixels** —
+   sources that project onto the blank/unobserved (NaN) border of a
+   non-rectangular mosaic are discarded, so the overlay only marks real data.
 3. The results are drawn and listed exactly like a file overlay (same
-   projection and side table), so you can click through them.
+   projection and side table), so you can click through them. The side table
+   includes **RA / Dec (deg)** alongside the projected image **X / Y**.
 
 The query runs asynchronously, so the UI stays responsive; results are capped
 at the backend's `max_sources` and flagged as *truncated* if there were more.
-Catalogue column names are resolved case-insensitively, so the feature stays
-robust across `astroquery` versions.
+When a dense field exceeds the cap, the retained sources are a **uniform
+spatial sub-sample** across the whole footprint (not just the ones nearest the
+centre), so the overlay stays representative instead of collapsing into a
+central clump. Catalogue column names are resolved case-insensitively, so the
+feature stays robust across `astroquery` versions.
+
+Overlay markers are sized relative to the image, so they stay visible on very
+large (multi-thousand-pixel) mosaics. Catalogue coordinates are equatorial
+(RA/Dec); if the status bar reads Galactic, switch **WCS → FK5** to compare
+them directly against the table.
 
 ## Diagnostics & errors
 

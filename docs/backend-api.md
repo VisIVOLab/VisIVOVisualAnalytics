@@ -219,7 +219,7 @@ Cross-match the image footprint against an external catalogue via `astroquery`.
 
 Query params: `catalogue` (`simbad` | `2MASS` | `NVSS` | `FIRST`, default `simbad`), `radius_arcsec` (default 60), `max_sources` (1–5000, default 500).
 
-Response: `{ valid, error, n_sources, sources, truncated, centre_ra_deg, centre_dec_deg }`, where each source is `{ ra_deg, dec_deg, name, catalogue_id, separation_arcsec }`. The `X-Truncated` header mirrors `truncated`. Catalogue column names are resolved case-insensitively (robust across `astroquery` versions), and unparseable rows are skipped rather than failing the whole query. Errors map to HTTP: missing `astroquery` → 503, unknown catalogue → 422.
+Response: `{ valid, error, n_sources, sources, truncated, centre_ra_deg, centre_dec_deg }`, where each source is `{ ra_deg, dec_deg, name, catalogue_id, separation_arcsec }`. The `X-Truncated` header mirrors `truncated`. Sources are cropped to the **valid (finite) image pixels** — those projecting onto the blank/NaN border of a non-rectangular footprint are dropped. When the field exceeds `max_sources`, the retained set is a **uniform spatial sub-sample** across the footprint (queried against a generous upstream row cap) rather than only the sources nearest the image centre, so coverage stays representative. Catalogue column names are resolved case-insensitively (robust across `astroquery` versions), and unparseable rows are skipped rather than failing the whole query. Errors map to HTTP: missing `astroquery` → 503, unknown catalogue → 422.
 
 ### `POST /v1/astrometry/reproject/{dataset_id}`
 ```json
