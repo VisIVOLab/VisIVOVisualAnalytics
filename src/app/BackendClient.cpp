@@ -388,6 +388,7 @@ static BackendOpenDatasetResult parseOpenDatasetObject(const QJsonObject &object
     }
     result.spectralAxisType = object.value(QStringLiteral("spectral_axis_type")).toString();
     result.spectralAxisUnit = object.value(QStringLiteral("spectral_axis_unit")).toString();
+    result.bunit = object.value(QStringLiteral("bunit")).toString();
 
     const QJsonArray spacing = object.value(QStringLiteral("spacing")).toArray();
     const QJsonArray origin = object.value(QStringLiteral("origin")).toArray();
@@ -568,6 +569,7 @@ BackendOpenDatasetResult BackendClient::openSkavaDataset(const QString &obsId,
     }
     result.spectralAxisType = object.value(QStringLiteral("spectral_axis_type")).toString();
     result.spectralAxisUnit = object.value(QStringLiteral("spectral_axis_unit")).toString();
+    result.bunit = object.value(QStringLiteral("bunit")).toString();
 
     const QJsonArray spacing = object.value(QStringLiteral("spacing")).toArray();
     const QJsonArray origin = object.value(QStringLiteral("origin")).toArray();

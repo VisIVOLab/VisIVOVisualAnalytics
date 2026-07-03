@@ -124,6 +124,7 @@ struct BackendOpenDatasetResult
     QString spectralAxisUnit;
     std::array<double, 3> spacing{ 1.0, 1.0, 1.0 };
     std::array<double, 3> origin{ 0.0, 0.0, 0.0 };
+    QString bunit;   ///< raw BUNIT from the FITS header (physical value unit)
     std::array<QString, 3> ctype{ QString(), QString(), QString() };
     std::array<QString, 3> cunit{ QString(), QString(), QString() };
     std::array<double, 3> crval{ 0.0, 0.0, 0.0 };

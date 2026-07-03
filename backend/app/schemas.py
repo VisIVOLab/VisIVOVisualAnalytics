@@ -57,6 +57,7 @@ class OpenDatasetResponse(BaseModel):
     spectral_axis_unit: str = ""
     spacing: list[float] = [1.0, 1.0, 1.0]
     origin: list[float] = [0.0, 0.0, 0.0]
+    bunit: str = ""
     ctype: list[str] = ["", "", ""]
     cunit: list[str] = ["", "", ""]
     crval: list[float] = [0.0, 0.0, 0.0]

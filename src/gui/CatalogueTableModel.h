@@ -26,6 +26,8 @@ private:
     {
         Name = 0,
         Type,
+        RA,
+        Dec,
         X,
         Y,
         Size,

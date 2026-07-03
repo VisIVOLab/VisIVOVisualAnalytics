@@ -73,7 +73,8 @@ public:
                    const std::array<QString, 3> &remoteCunit,
                    const std::array<double, 3> &remoteCrval,
                    const std::array<double, 3> &remoteCrpix,
-                   const std::array<double, 3> &remoteCdelt, const QString &remoteDegenerateAxesSummary,
+                   const std::array<double, 3> &remoteCdelt, const QString &remoteBunit,
+                   const QString &remoteDegenerateAxesSummary,
                    const QString &remoteWcsStatus = QStringLiteral("ok"),
                    const QString &remoteWcsWarningMessage = QString(),
                    const QString &remoteSessionId = QString(),
@@ -171,6 +172,7 @@ private:
     const std::array<double, 3> remoteDatasetCrval;
     const std::array<double, 3> remoteDatasetCrpix;
     const std::array<double, 3> remoteDatasetCdelt;
+    const QString remoteDatasetBunit;   ///< raw BUNIT from the FITS header (physical value unit)
     const QString remoteDegenerateAxesSummary;
     const QString remoteWcsStatus;
     const QString remoteWcsWarningMessage;

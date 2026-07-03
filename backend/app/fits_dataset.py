@@ -328,6 +328,7 @@ class ScientificFitsDataset:
             "depth": depth,
             "spacing": spacing,
             "origin": origin,
+            "bunit": self.bunit,
             "ctype": [str(self.header.get(f"CTYPE{i}", "")) for i in range(1, 4)],
             "cunit": [str(self.header.get(f"CUNIT{i}", "")) for i in range(1, 4)],
             "crval": [self._axis_float(f"CRVAL{i}") for i in range(1, 4)],

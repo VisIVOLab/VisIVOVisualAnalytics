@@ -436,6 +436,29 @@ void vtkWindowImage::refreshRegionOverlay()
         return;
     }
 
+    // Region geometry (anchor/current voxels, polygon vertices, annulus radii) is expressed in
+    // the *displayed* image's voxel index space. On a decimated LOD image that voxel space is
+    // coarser than full-res world coordinates (spacing ~= 2), so drawing the overlay directly in
+    // voxel coordinates would place it at half position / half size. Map the whole region overlay
+    // from voxel space to world space with a per-actor transform instead of converting every
+    // primitive (box lines, circle/annulus sources, triangulated fills, polygon). At spacing=1,
+    // origin=0, extent0=0 this is the identity, so full-res images are unaffected.
+    double ro[3], rs[3];
+    int rext[6];
+    imageData->GetOrigin(ro);
+    imageData->GetSpacing(rs);
+    imageData->GetExtent(rext);
+    const double regionPosX = ro[0] - rext[0] * rs[0];
+    const double regionPosY = ro[1] - rext[2] * rs[1];
+    for (vtkActor *a : { this->regionTopActor.Get(), this->regionBottomActor.Get(),
+                         this->regionLeftActor.Get(), this->regionRightActor.Get(),
+                         this->regionCircleActor.Get(), this->regionAnnulusOuterActor.Get(),
+                         this->regionAnnulusInnerActor.Get(), this->regionAnnulusFillActor.Get(),
+                         this->regionPolygonActor.Get(), this->regionPolygonFillActor.Get() }) {
+        a->SetScale(rs[0], rs[1], 1.0);
+        a->SetPosition(regionPosX, regionPosY, 0.0);
+    }
+
     const int xmin = std::min(this->regionAnchorVoxel[0], this->regionCurrentVoxel[0]);
     const int xmax = std::max(this->regionAnchorVoxel[0], this->regionCurrentVoxel[0]);
     const int ymin = std::min(this->regionAnchorVoxel[1], this->regionCurrentVoxel[1]);

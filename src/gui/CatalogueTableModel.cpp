@@ -32,7 +32,7 @@ int CatalogueTableModel::columnCount(const QModelIndex &parent) const
     if (parent.isValid()) {
         return 0;
     }
-    return 6;
+    return 8;
 }
 
 QVariant CatalogueTableModel::data(const QModelIndex &index, int role) const
@@ -65,6 +65,12 @@ QVariant CatalogueTableModel::data(const QModelIndex &index, int role) const
                                                : entry.label.trimmed();
     case Column::Type:
         return catalogueShapeName(entry.shape);
+    case Column::RA:
+        return entry.frame == CatalogueOverlayEntry::Frame::Sky
+                ? QString::number(entry.raDeg, 'f', 5) : QVariant{};
+    case Column::Dec:
+        return entry.frame == CatalogueOverlayEntry::Frame::Sky
+                ? QString::number(entry.decDeg, 'f', 5) : QVariant{};
     case Column::X:
         return QString::number(entry.pixelX, 'f', 2);
     case Column::Y:
@@ -97,6 +103,10 @@ QVariant CatalogueTableModel::headerData(int section, Qt::Orientation orientatio
         return QStringLiteral("Name");
     case Column::Type:
         return QStringLiteral("Type");
+    case Column::RA:
+        return QStringLiteral("RA (deg)");
+    case Column::Dec:
+        return QStringLiteral("Dec (deg)");
     case Column::X:
         return QStringLiteral("X");
     case Column::Y:

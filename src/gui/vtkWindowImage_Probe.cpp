@@ -434,7 +434,10 @@ void vtkWindowImage::setProbeModeActive(bool active)
     if (!this->profileWidget) {
         this->profileWidget = new ProfileWidget(this);
         this->profileWidget->setUsageMode(ProfileWidget::UsageMode::ProbeLive, u"Profile"_s);
-        this->profileWidget->setupImagePlots(u"Pixel"_s, u"Value"_s);
+        // Label the profile value axis with the physical unit (BUNIT) when known.
+        this->profileWidget->setupImagePlots(
+                u"Pixel"_s,
+                this->remoteDatasetBunit.isEmpty() ? u"Value"_s : this->remoteDatasetBunit);
         QObject::connect(this->profileWidget, &ProfileWidget::destroyed, this, [this]() {
             this->profileWidget = nullptr;
             if (ui->actionProfile->isChecked()) {
@@ -472,25 +475,33 @@ void vtkWindowImage::updateProbeProfile()
         return;
     }
     int extent[6];
+    double origin[3];
+    double spacing[3];
     imageData->GetExtent(extent);
+    imageData->GetOrigin(origin);
+    imageData->GetSpacing(spacing);
     if (this->probeVoxel[0] < extent[0] || this->probeVoxel[0] > extent[1] || this->probeVoxel[1] < extent[2]
         || this->probeVoxel[1] > extent[3]) {
         return;
     }
 
+    // Profile is sampled over the DISPLAYED (possibly decimated) image, but the
+    // X/Y axes and marker are labelled in full-resolution pixels (world coords)
+    // so they match the readout. No-op for a full-res image (spacing 1).
     const int width = extent[1] - extent[0] + 1;
     const int height = extent[3] - extent[2] + 1;
     QVector<double> keyX(width), valuesX(width), keyY(height), valuesY(height);
     for (int x = extent[0]; x <= extent[1]; ++x) {
         const int idx = x - extent[0];
-        keyX[idx] = x;
+        keyX[idx] = origin[0] + (x - extent[0]) * spacing[0];
         valuesX[idx] = this->layers->getPixelValue(this->layers->getMasterIndex(), x, this->probeVoxel[1]);
     }
     for (int y = extent[2]; y <= extent[3]; ++y) {
         const int idx = y - extent[2];
-        keyY[idx] = y;
+        keyY[idx] = origin[1] + (y - extent[2]) * spacing[1];
         valuesY[idx] = this->layers->getPixelValue(this->layers->getMasterIndex(), this->probeVoxel[0], y);
     }
-    this->profileWidget->updateImageProfiles(keyX, valuesX, keyY, valuesY, this->probeVoxel[0],
-                                             this->probeVoxel[1], !this->probeFrozen);
+    this->profileWidget->updateImageProfiles(keyX, valuesX, keyY, valuesY,
+                                             this->m_probeFullPixel[0], this->m_probeFullPixel[1],
+                                             !this->probeFrozen);
 }

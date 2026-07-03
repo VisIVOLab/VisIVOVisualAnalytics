@@ -569,7 +569,7 @@ void MainWindow::openViewerFromOpenedDataset(const QString &path,
                                         : opened.degenerateAxesSummary);
         auto *imgWin = new vtkWindowImage(path, client.baseUrl(), opened.datasetId,
                                  opened.ctype, opened.cunit, opened.crval, opened.crpix,
-                                 opened.cdelt, opened.degenerateAxesSummary,
+                                 opened.cdelt, opened.bunit, opened.degenerateAxesSummary,
                                  opened.wcsStatus, opened.wcsWarningMessage,
                                  client.sessionId(), client.token(), this);
         if (!isDynspec) {
@@ -693,7 +693,7 @@ void MainWindow::openVlkbImageLayer(const QString &backendPath, const QString &d
 
     auto *win = new vtkWindowImage(backendPath, client.baseUrl(), opened.datasetId,
                                     opened.ctype, opened.cunit, opened.crval, opened.crpix,
-                                    opened.cdelt, opened.degenerateAxesSummary,
+                                    opened.cdelt, opened.bunit, opened.degenerateAxesSummary,
                                     opened.wcsStatus, opened.wcsWarningMessage,
                                     client.sessionId(), client.token(), this);
     // Override the master layer name with the human-readable inventory label.

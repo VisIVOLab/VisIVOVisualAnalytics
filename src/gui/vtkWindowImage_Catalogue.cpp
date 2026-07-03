@@ -294,6 +294,23 @@ void vtkWindowImage::applyCatalogueOverlayResult(const CatalogueOverlayParseResu
     this->hoveredCatalogueSourceIndex = -1;
     this->selectedCatalogueSourceIndex = -1;
     int skippedProjection = 0;
+    // Sky-frame markers are drawn as a small cross in full-res world units. A fixed
+    // 3-px cross is invisible on a multi-thousand-pixel image (and on a decimated LOD
+    // the world span is the full-res width, e.g. ~16000), so scale the cross to a small
+    // fraction of the image so markers are actually visible. Keep a sensible floor for
+    // tiny images. Uses full-res world extent (extent * spacing) so it is correct on
+    // both decimated and full-res images.
+    double markerHalfSize = catalogueMarkerHalfSize;
+    if (this->layers) {
+        if (auto *img = this->layers->getImageData(this->layers->getMasterIndex())) {
+            int ext[6]; double sp[3];
+            img->GetExtent(ext);
+            img->GetSpacing(sp);
+            const double worldW = (ext[1] - ext[0]) * sp[0];
+            const double worldH = (ext[3] - ext[2]) * sp[1];
+            markerHalfSize = std::max(catalogueMarkerHalfSize, 0.004 * std::max(worldW, worldH));
+        }
+    }
     for (const CatalogueOverlayEntry &entry : parsed.entries) {
         CatalogueOverlayEntry storedEntry = entry;
         std::array<double, 2> anchor{ 0.0, 0.0 };
@@ -316,11 +333,11 @@ void vtkWindowImage::applyCatalogueOverlayResult(const CatalogueOverlayParseResu
             }
 
             this->catalogueOverlayPolylines.push_back(
-                    { { anchor[0] - catalogueMarkerHalfSize, anchor[1] },
-                      { anchor[0] + catalogueMarkerHalfSize, anchor[1] } });
+                    { { anchor[0] - markerHalfSize, anchor[1] },
+                      { anchor[0] + markerHalfSize, anchor[1] } });
             this->catalogueOverlayPolylines.push_back(
-                    { { anchor[0], anchor[1] - catalogueMarkerHalfSize },
-                      { anchor[0], anchor[1] + catalogueMarkerHalfSize } });
+                    { { anchor[0], anchor[1] - markerHalfSize },
+                      { anchor[0], anchor[1] + markerHalfSize } });
         }
         storedEntry.pixelX = anchor[0];
         storedEntry.pixelY = anchor[1];

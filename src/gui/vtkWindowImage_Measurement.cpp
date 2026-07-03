@@ -175,8 +175,9 @@ void vtkWindowImage::refreshMeasurementOverlay()
             img->GetExtent(me);
         }
     }
+    // me[] = {xmin, xmax, ymin, ymax, zmin, zmax}: Y must use me[2] (ymin), not me[1] (xmax).
     const auto toWorld = [&](const std::array<int, 2> &p) -> std::array<double, 2> {
-        return { mo[0] + (p[0] - me[0]) * ms[0], mo[1] + (p[1] - me[1]) * ms[1] };
+        return { mo[0] + (p[0] - me[0]) * ms[0], mo[1] + (p[1] - me[2]) * ms[1] };
     };
 
     if (m_measMode == MeasurementMode::Ruler && m_measPoints.size() >= 2) {

@@ -345,6 +345,14 @@ def worker_crossmatch(
     sources: list[dict[str, Any]] = []
     truncated = False
 
+    # Upstream row cap: query far more rows than the final display cap so the
+    # spread-preserving sub-sample below has the full footprint population to draw
+    # from. Both SIMBAD and Vizier return rows sorted by distance from the centre,
+    # so a tight upstream limit (e.g. max_sources+1) would itself bias the result
+    # to the image centre and defeat the uniform sub-sampling. Bounded so ultra-dense
+    # fields don't trigger an unbounded download.
+    upstream_row_cap = min(max(20 * max_sources, 20000), 50000)
+
     if cat_lower == "simbad":
         try:
             from astroquery.simbad import Simbad  # noqa: PLC0415
@@ -357,6 +365,7 @@ def worker_crossmatch(
         import astropy.units as _u                # noqa: PLC0415
 
         simbad = Simbad()
+        simbad.ROW_LIMIT = upstream_row_cap
         # ra/dec (decimal degrees) are default outputs in recent astroquery;
         # older versions need them requested explicitly. Best-effort either way.
         for _fld in ("ra", "dec", "ra(d)", "dec(d)"):
@@ -395,7 +404,7 @@ def worker_crossmatch(
         from astropy.coordinates import SkyCoord  # noqa: PLC0415
         import astropy.units as _u                # noqa: PLC0415
 
-        v = Vizier(columns=["*"], row_limit=max_sources + 1)
+        v = Vizier(columns=["*"], row_limit=upstream_row_cap)
         result_list = v.query_region(
             SkyCoord(ra_cen, dec_cen, unit="deg"),
             radius=search_radius_deg * _u.deg,
@@ -413,10 +422,54 @@ def worker_crossmatch(
                 catalogue_id=catalogue.upper(),
             )
 
-    # Sort by separation, cap at max_sources
+    # Crop to the *valid* image footprint. The cone query radius is the image
+    # half-diagonal (the circle circumscribing the rectangular grid), so it returns
+    # sources outside the rectangle AND sources in the blank/NaN border of a
+    # non-rectangular footprint (e.g. a rounded radio mosaic). Project each source to
+    # pixel coordinates with the image WCS, drop those outside the grid, then drop
+    # those landing on a non-finite (unobserved) pixel so the overlay only shows
+    # sources on real data. Done before sub-sampling so the retained max_sources all
+    # land on the image.
+    if sources:
+        hdul = None
+        try:
+            radec = np.array([[s["ra_deg"], s["dec_deg"]] for s in sources], dtype=float)
+            pix = np.asarray(celestial.all_world2pix(radec, 0), dtype=float)
+            xi = np.round(pix[:, 0]).astype(int)
+            yi = np.round(pix[:, 1]).astype(int)
+            in_box = (xi >= 0) & (xi <= nx - 1) & (yi >= 0) & (yi <= ny - 1)
+            keep = in_box.copy()
+            # Refine the bbox crop to the *valid* (finite) pixels. If reading the
+            # image data fails, fall back to the bbox crop rather than dropping the
+            # crop entirely.
+            try:
+                if in_box.any():
+                    hdul, data = dataset.open_memmap()
+                    img2d = ScientificFitsDataset.squeeze_to_3d(data)
+                    while img2d.ndim > 2:
+                        img2d = img2d[0]
+                    vals = np.asarray(img2d[yi[in_box], xi[in_box]], dtype=float)
+                    keep[in_box] = np.isfinite(vals)
+            except Exception as exc:  # noqa: BLE001 — keep the bbox crop on data-read failure
+                logger.warning("[crossmatch] valid-pixel refine skipped, using bbox: %s", exc)
+                keep = in_box
+            sources = [s for s, k in zip(sources, keep) if k]
+        except Exception as exc:  # noqa: BLE001 — a projection failure must not sink the query
+            logger.warning("[crossmatch] footprint crop skipped (projection failed): %s", exc)
+        finally:
+            if hdul is not None:
+                hdul.close()
+
+    # Sort by separation (nearest first, useful for the table / "closest match").
     sources.sort(key=lambda s: s["separation_arcsec"])
     if len(sources) > max_sources:
-        sources = sources[:max_sources]
+        # Do NOT keep only the nearest-to-centre sources: in a dense field that
+        # collapses the overlay into a tiny central disk instead of covering the
+        # image footprint. Uniformly sub-sample across the separation-sorted list
+        # so the retained sources preserve the spatial (radial) distribution and
+        # spread across the whole field. The nearest source is always kept.
+        step = len(sources) / max_sources
+        sources = [sources[int(i * step)] for i in range(max_sources)]
         truncated = True
 
     return {

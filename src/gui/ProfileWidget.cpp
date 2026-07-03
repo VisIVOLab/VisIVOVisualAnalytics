@@ -1007,6 +1007,51 @@ void ProfileWidget::updateSpectrumPlotSeries(const QVector<double> &key,
     showAndRaiseFirstTime();
 }
 
+// X-axis (coordinate) range from the actual key values, with a small margin.
+static QCPRange coordinateRange(const QVector<double> &key)
+{
+    if (key.isEmpty()) {
+        return QCPRange(-1.0, 1.0);
+    }
+    const double lo = std::min(key.first(), key.last());
+    const double hi = std::max(key.first(), key.last());
+    const double pad = std::max(1.0, (hi - lo) * 0.01);
+    return QCPRange(lo - pad, hi + pad);
+}
+
+// Robust value-axis range: clip to the [loPct, hiPct] percentiles of the finite
+// values so a few bright point sources don't squash the whole profile against
+// zero (same idea as the image LUT's percentile clip). NaN/blank samples ignored.
+static QCPRange robustValueRange(const QVector<double> &values, double loPct = 1.0,
+                                 double hiPct = 99.5)
+{
+    QVector<double> finite;
+    finite.reserve(values.size());
+    for (const double v : values) {
+        if (std::isfinite(v)) {
+            finite.append(v);
+        }
+    }
+    if (finite.isEmpty()) {
+        return QCPRange(-1.0, 1.0);
+    }
+    std::sort(finite.begin(), finite.end());
+    const auto pct = [&](double p) {
+        const double frac = std::clamp(p / 100.0, 0.0, 1.0);
+        const int idx = static_cast<int>(std::lround(frac * (finite.size() - 1)));
+        return finite[std::clamp(idx, 0, static_cast<int>(finite.size()) - 1)];
+    };
+    double lo = pct(loPct);
+    double hi = pct(hiPct);
+    if (!(hi > lo)) {  // flat profile → give it a tiny visible span
+        const double eps = std::max(1e-9, std::abs(hi) * 1e-3);
+        lo -= eps;
+        hi += eps;
+    }
+    const double pad = (hi - lo) * 0.08;  // headroom so peaks aren't flush to the edge
+    return QCPRange(lo - pad, hi + pad);
+}
+
 void ProfileWidget::updateImageProfiles(const QVector<double> &keyX, const QVector<double> &valuesX,
                                         const QVector<double> &keyY, const QVector<double> &valuesY,
                                         double probeX, double probeY, bool live)
@@ -1018,8 +1063,8 @@ void ProfileWidget::updateImageProfiles(const QVector<double> &keyX, const QVect
     }
 
     ui->plot1->graph()->setData(keyX, valuesX);
-    ui->plot1->rescaleAxes();
-    ui->plot1->xAxis->setRange(-1., keyX.size() + 1.);
+    ui->plot1->xAxis->setRange(coordinateRange(keyX));
+    ui->plot1->yAxis->setRange(robustValueRange(valuesX));
     if (this->refLineX) {
         this->refLineX->start->setCoords(probeX, ui->plot1->yAxis->range().lower);
         this->refLineX->end->setCoords(probeX, ui->plot1->yAxis->range().upper);
@@ -1030,8 +1075,8 @@ void ProfileWidget::updateImageProfiles(const QVector<double> &keyX, const QVect
     ui->plot1->replot();
 
     ui->plot2->graph()->setData(keyY, valuesY);
-    ui->plot2->rescaleAxes();
-    ui->plot2->xAxis->setRange(-1., keyY.size() + 1.);
+    ui->plot2->xAxis->setRange(coordinateRange(keyY));
+    ui->plot2->yAxis->setRange(robustValueRange(valuesY));
     if (this->refLineY) {
         this->refLineY->start->setCoords(probeY, ui->plot2->yAxis->range().lower);
         this->refLineY->end->setCoords(probeY, ui->plot2->yAxis->range().upper);
