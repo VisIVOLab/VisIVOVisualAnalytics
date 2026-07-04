@@ -364,6 +364,56 @@ class TestWorkerCubeSaveSubregion:
             )
 
 
+class TestWorkerCubeMask:
+    """3-D masking: blank inside/outside a box, full dims + WCS preserved."""
+
+    def test_blank_inside_nans_box_keeps_rest(self, freq_cube_path, tmp_path):
+        from app.compute import worker_cube_mask
+        from astropy.io import fits
+        import numpy as np
+        out = tmp_path / "mask_in.fits"
+        with fits.open(str(freq_cube_path)) as src:
+            src_shape = np.squeeze(src[0].data).shape   # (nz, ny, nx)
+            src_crpix1 = src[0].header["CRPIX1"]
+        result = worker_cube_mask(
+            str(freq_cube_path), str(out), 2, 5, 2, 5, 2, 5, "blank_inside")
+        # Full dimensions preserved (no crop).
+        assert (result["depth"], result["height"], result["width"]) == src_shape
+        with fits.open(str(out)) as hdul:
+            data = np.squeeze(hdul[0].data)
+            assert data.shape == src_shape
+            # The box is all-NaN; a voxel outside the box is finite.
+            assert np.all(np.isnan(data[2:6, 2:6, 2:6]))
+            assert np.isfinite(data[0, 0, 0])
+            # WCS kept verbatim (no crop shift).
+            assert hdul[0].header["CRPIX1"] == src_crpix1
+
+    def test_blank_outside_isolates_box(self, freq_cube_path, tmp_path):
+        from app.compute import worker_cube_mask
+        from astropy.io import fits
+        import numpy as np
+        out = tmp_path / "mask_out.fits"
+        worker_cube_mask(
+            str(freq_cube_path), str(out), 3, 7, 3, 7, 3, 7, "blank_outside")
+        with fits.open(str(out)) as hdul:
+            data = np.squeeze(hdul[0].data)
+            # Outside the box is NaN; inside is finite (matches the source values).
+            assert np.isnan(data[0, 0, 0])
+            assert np.all(np.isfinite(data[3:8, 3:8, 3:8]))
+
+    def test_mask_bad_mode_raises(self, freq_cube_path, tmp_path):
+        from app.compute import worker_cube_mask
+        with pytest.raises(ValueError):
+            worker_cube_mask(str(freq_cube_path), str(tmp_path / "bad.fits"),
+                             0, 5, 0, 5, 0, 5, "nonsense")
+
+    def test_mask_invalid_box_raises(self, freq_cube_path, tmp_path):
+        from app.compute import worker_cube_mask
+        with pytest.raises(ValueError):
+            worker_cube_mask(str(freq_cube_path), str(tmp_path / "bad.fits"),
+                             10, 3, 0, 5, 0, 5, "blank_inside")   # x0 > x1
+
+
 class TestWorkerMomentSaveFits:
     """Moment FITS persistence: 2-D output with celestial WCS + BUNIT."""
 

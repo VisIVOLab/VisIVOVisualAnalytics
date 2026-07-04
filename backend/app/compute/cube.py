@@ -340,6 +340,114 @@ def worker_cube_save_subregion(
     }
 
 
+def worker_cube_mask(
+    src_path: str,
+    output_path: str,
+    x0: int, x1: int,
+    y0: int, y1: int,
+    z0: int, z1: int,
+    mode: str,
+) -> dict[str, Any]:
+    """Blank (set to NaN) the voxels INSIDE or OUTSIDE the box
+    ``[z0..z1, y0..y1, x0..x1]`` (inclusive, 0-indexed), keeping the cube's FULL
+    dimensions + WCS, and write the masked cube to ``output_path`` as a new FITS
+    dataset.
+
+    ``mode="blank_inside"``  removes the boxed region (e.g. a bright artefact or
+    a satellite line) while keeping the rest of the field.
+    ``mode="blank_outside"`` isolates the boxed region (e.g. a clump of anomalous
+    gas), blanking everything else — the SlicerAstro / van der Hulst use case of
+    3D selection coupled to the analysis backend: the masked cube can then be
+    moment-mapped, profiled or noise-estimated on just the selection.
+
+    Unlike :func:`worker_cube_save_subregion` this does NOT crop — the output has
+    the same shape as the source, so its WCS (CRPIX/CDELT/…) and full structure
+    are preserved verbatim and every voxel keeps its original sky/spectral
+    coordinate.
+
+    Out-of-core: the source file is copied, then the masked voxels are written in
+    place through a memmap so peak RAM stays bounded (only the blanked regions are
+    touched) — masking a 100 GB cube does not materialise it.
+    """
+    import shutil                             # noqa: PLC0415
+    from astropy.io import fits as _fits      # noqa: PLC0415
+
+    if mode not in ("blank_inside", "blank_outside"):
+        raise ValueError(
+            f"Unknown mask mode {mode!r}; expected 'blank_inside' or 'blank_outside'.")
+
+    # Read the geometry (not the data) to clamp/validate the box.
+    dataset = ScientificFitsDataset(src_path)
+    hdul, raw = dataset.open_memmap()
+    try:
+        data = dataset.squeeze_to_3d(raw)
+        if data.ndim != 3:
+            raise ValueError("3D masking requires a 3D cube dataset.")
+        depth, height, width = data.shape
+    finally:
+        hdul.close()
+
+    x0c, x1c = max(0, int(x0)), min(int(x1), width - 1)
+    y0c, y1c = max(0, int(y0)), min(int(y1), height - 1)
+    z0c, z1c = max(0, int(z0)), min(int(z1), depth - 1)
+    if x0c > x1c or y0c > y1c or z0c > z1c:
+        raise ValueError(
+            f"Invalid mask box: x=({x0c}..{x1c}), y=({y0c}..{y1c}), z=({z0c}..{z1c}).")
+
+    # Copy the source verbatim, then edit the copy in place via a memmap. This
+    # preserves the exact header/WCS/structure and stays out-of-core.
+    shutil.copyfile(src_path, output_path)
+    logger.info(
+        "[cube_mask] masking in place  out=%s  mode=%s  box=(x=%s..%s, y=%s..%s, z=%s..%s)",
+        output_path, mode, x0c, x1c, y0c, y1c, z0c, z1c,
+    )
+    out_hdul = _fits.open(output_path, mode="update", memmap=True)
+    try:
+        # Same 3-D reduction the geometry read (and the viewer) use, so a
+        # degenerate-or-non-degenerate 4D source is treated consistently. Returns
+        # a view onto the update-mode memmap, so assignments write back on flush.
+        arr = ScientificFitsDataset.squeeze_to_3d(out_hdul[0].data)
+        if arr.ndim != 3:
+            raise ValueError("3D masking requires a 3D cube dataset.")
+        if mode == "blank_inside":
+            arr[z0c:z1c + 1, y0c:y1c + 1, x0c:x1c + 1] = np.nan   # touches only the box
+        else:  # blank_outside — blank everything except the box, region by region
+            arr[:z0c] = np.nan
+            arr[z1c + 1:] = np.nan
+            inbox = arr[z0c:z1c + 1]
+            if y0c > 0:          inbox[:, :y0c, :] = np.nan
+            if y1c + 1 < height: inbox[:, y1c + 1:, :] = np.nan
+            if x0c > 0:          inbox[:, :, :x0c] = np.nan
+            if x1c + 1 < width:  inbox[:, :, x1c + 1:] = np.nan
+        out_hdul[0].header.add_history(
+            f"VisIVO 3D mask ({mode}) from {Path(src_path).name}: "
+            f"box x={x0c}..{x1c} y={y0c}..{y1c} z={z0c}..{z1c} (0-indexed, inclusive)"
+        )
+        # Value range of the KEPT data (for the client's initial autoscale),
+        # sampled bounded so it stays out-of-core: the box for blank_outside, a
+        # strided whole-cube sample for blank_inside (where the box is now NaN).
+        if mode == "blank_outside":
+            sample = arr[z0c:z1c + 1, y0c:y1c + 1, x0c:x1c + 1]
+        else:
+            sz = max(1, depth // 32)
+            sy = max(1, height // 64)
+            sx = max(1, width // 64)
+            sample = arr[::sz, ::sy, ::sx]
+        range_min, range_max = _finite_range(sample)
+        out_hdul.flush()
+    finally:
+        out_hdul.close()
+
+    return {
+        "width": int(width),
+        "height": int(height),
+        "depth": int(depth),
+        "range_min": float(range_min),
+        "range_max": float(range_max),
+        "output_path": output_path,
+    }
+
+
 def worker_cube_save_channel_2d(
     src_path: str,
     output_path: str,

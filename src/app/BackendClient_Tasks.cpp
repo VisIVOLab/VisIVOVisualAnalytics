@@ -67,6 +67,29 @@ BackendSaveSubregionResult BackendClient::saveCubeSubregion(
     return parseSaveSubregionObject(QJsonDocument::fromJson(raw).object());
 }
 
+BackendSaveSubregionResult BackendClient::maskCubeRegion(
+        const QString &datasetId,
+        int x0, int x1, int y0, int y1, int z0, int z1,
+        const QString &mode, const QString &outputBasename)
+{
+    BackendSaveSubregionResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("x0"), x0 }, { QStringLiteral("x1"), x1 },
+            { QStringLiteral("y0"), y0 }, { QStringLiteral("y1"), y1 },
+            { QStringLiteral("z0"), z0 }, { QStringLiteral("z1"), z1 },
+            { QStringLiteral("mode"), mode },
+            { QStringLiteral("output_basename"), outputBasename } });
+    const QByteArray raw =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/mask")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    return parseSaveSubregionObject(QJsonDocument::fromJson(raw).object());
+}
+
 BackendSaveChannel2dResult BackendClient::saveCubeChannelAs2dFits(
         const QString &datasetId,
         int channel,

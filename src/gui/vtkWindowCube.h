@@ -472,6 +472,7 @@ private:
     /// screen (the controller pushes the first result). Stays enabled.
     QPointer<QAction> m_actExportMomentFits;
     QPointer<QAction> m_actExportSubCube;
+    QPointer<QAction> m_actMaskRegion;
     QPointer<QAction> m_actExportChannel2d;
     QPointer<QAction> m_actSliceHistogram;
     QPointer<QAction> m_actSendSliceToImage;
@@ -654,6 +655,12 @@ private:
     /// full extent), then posts to /v1/cube/save_subregion. Async — uses
     /// QtConcurrent to keep the UI responsive while the backend writes.
     void exportSubCubeAsFits();
+    /// Tools → "Mask 3-D Region…". Selects a 3-D box (same dialog as the sub-cube
+    /// export) + an isolate/remove choice, then posts to /v1/cube/mask to blank
+    /// inside/outside the box, keeping full dimensions + WCS, and registers the
+    /// masked cube as a new session dataset (the van der Hulst 3-D-selection-
+    /// coupled-to-analysis use case). Async; shows the box in the 3-D volume.
+    void maskCubeRegion3d();
     /// Tools → "Export Current Channel as 2-D FITS…". Writes the currently
     /// displayed channel as a true 2-D FITS image (NAXIS=2, no degenerate
     /// spectral axis) — the canonical input for the Stokes / spectral-index

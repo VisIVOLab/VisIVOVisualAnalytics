@@ -2167,6 +2167,14 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(m_actExportSubCube, &QAction::triggered,
                      this, &vtkWindowCube::exportSubCubeAsFits);
 
+    m_actMaskRegion = ui->menuTools->addAction(u"Mask 3-D Region…"_s);
+    m_actMaskRegion->setToolTip(
+            u"Blank the voxels inside or outside a 3-D box (full dimensions + WCS "
+            u"kept) → a new masked cube you can moment-map / profile on just the "
+            u"selection. Isolate anomalous gas, or remove an artefact."_s);
+    QObject::connect(m_actMaskRegion, &QAction::triggered,
+                     this, &vtkWindowCube::maskCubeRegion3d);
+
     m_actExportChannel2d = ui->menuTools->addAction(
             u"Export Current Channel as 2-D FITS…"_s);
     m_actExportChannel2d->setToolTip(
@@ -3729,6 +3737,84 @@ void vtkWindowCube::exportSubCubeAsFits()
                 BackendClient c(url, token);
                 c.setSessionId(sessionId);
                 return c.saveCubeSubregion(datasetId, x0, x1, y0, y1, z0, z1, basename);
+            }));
+}
+
+void vtkWindowCube::maskCubeRegion3d()
+{
+    // Default box from a drawn region (AABB) or the full extent — same seeding as
+    // the sub-cube export.
+    int defX0 = 0, defX1 = std::max(0, this->remoteDatasetWidth  - 1);
+    int defY0 = 0, defY1 = std::max(0, this->remoteDatasetHeight - 1);
+    int defZ0 = 0, defZ1 = std::max(0, this->remoteDatasetDepth  - 1);
+    if (this->regionValid && this->regionMode != RegionMode::None) {
+        const auto bounds = regionBounds2D(this->regionMode, this->regionAnchorVoxel,
+                                           this->regionCurrentVoxel, this->regionPolygonVertices);
+        defX0 = std::clamp(bounds[0], 0, defX1);
+        defX1 = std::clamp(bounds[1], defX0, std::max(0, this->remoteDatasetWidth  - 1));
+        defY0 = std::clamp(bounds[2], 0, defY1);
+        defY1 = std::clamp(bounds[3], defY0, std::max(0, this->remoteDatasetHeight - 1));
+    }
+
+    int x0 = 0, x1 = 0, y0 = 0, y1 = 0, z0 = 0, z1 = 0;
+    if (!runSubCubeBoundsDialog(this, this->remoteDatasetWidth, this->remoteDatasetHeight,
+                                this->remoteDatasetDepth, defX0, defX1, defY0, defY1, defZ0, defZ1,
+                                x0, x1, y0, y1, z0, z1)) {
+        return;
+    }
+
+    // Choose what to blank.
+    const QStringList modes{ u"Isolate box (blank everything OUTSIDE)"_s,
+                             u"Remove box (blank everything INSIDE)"_s };
+    bool ok = false;
+    const QString choice = QInputDialog::getItem(
+            this, u"Mask 3-D Region"_s,
+            u"How should the selected box be masked?"_s, modes, 0, false, &ok);
+    if (!ok) return;
+    const QString mode = (choice == modes.at(1)) ? u"blank_inside"_s : u"blank_outside"_s;
+
+    // Show the selected box in the 3-D volume while the mask computes (reuses the
+    // noise-region 3-D box preview — cleared when the result arrives).
+    this->setNoiseRegionPreview(x0, x1, y0, y1, z0, z1);
+    if (m_actMaskRegion) m_actMaskRegion->setEnabled(false);   // no concurrent masks
+
+    const QString url       = this->remoteBackendUrl;
+    const QString token     = this->remoteBackendToken;
+    const QString sessionId = this->remoteSessionId;
+    const QString datasetId = this->remoteDatasetId;
+    this->statusBar()->showMessage(u"Masking cube region…"_s, 0);
+
+    auto *watcher = new QFutureWatcher<BackendSaveSubregionResult>(this);
+    QPointer<vtkWindowCube> self(this);
+    QObject::connect(watcher, &QFutureWatcher<BackendSaveSubregionResult>::finished, this,
+                     [self, watcher]() {
+                         const auto r = watcher->result();
+                         watcher->deleteLater();
+                         if (!self) return;
+                         self->statusBar()->clearMessage();
+                         self->clearNoiseRegionPreview();
+                         if (self->m_actMaskRegion) self->m_actMaskRegion->setEnabled(true);
+                         if (!r.valid) {
+                             QMessageBox::warning(self, u"Mask 3-D Region"_s,
+                                     u"Masking failed:\n\n%1"_s.arg(r.error));
+                             return;
+                         }
+                         emit self->workspaceExportsChanged();
+                         QMessageBox::information(self, u"Mask 3-D Region"_s,
+                             u"Masked cube saved to the Workspace Exports and registered "
+                             u"in this session as '%1'.\n\n"
+                             u"Filename: %2\n"
+                             u"Shape: %3 × %4 × %5 (W × H × channels)\n\n"
+                             u"Open it from the Workspace Exports panel in the Data Hub to "
+                             u"volume-render, moment-map or profile just the selection."_s
+                             .arg(r.newDatasetId, r.workspaceFilename)
+                             .arg(r.width).arg(r.height).arg(r.depth));
+                     });
+    watcher->setFuture(QtConcurrent::run(
+            [url, token, sessionId, datasetId, x0, x1, y0, y1, z0, z1, mode]() {
+                BackendClient c(url, token);
+                c.setSessionId(sessionId);
+                return c.maskCubeRegion(datasetId, x0, x1, y0, y1, z0, z1, mode);
             }));
 }
 

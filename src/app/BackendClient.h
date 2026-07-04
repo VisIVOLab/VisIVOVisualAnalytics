@@ -1492,6 +1492,18 @@ public:
                                                   int z0, int z1,
                                                   const QString &outputBasename = {});
 
+    /** POST /v1/cube/mask — blank (NaN) the voxels inside or outside a 3-D box,
+     *  keeping FULL cube dimensions + WCS, and register the masked cube as a new
+     *  dataset in the current session. @p mode is "blank_inside" (remove the box)
+     *  or "blank_outside" (isolate the box). Inclusive 0-indexed bounds. Reuses
+     *  the save-subregion result shape (same fields). */
+    BackendSaveSubregionResult maskCubeRegion(const QString &datasetId,
+                                              int x0, int x1,
+                                              int y0, int y1,
+                                              int z0, int z1,
+                                              const QString &mode,
+                                              const QString &outputBasename = {});
+
     /** POST /v1/cube/save_channel_2d — extract a single channel of the cube
      *  and write it as a **standalone 2-D FITS image** (NAXIS=2, no
      *  degenerate spectral axis). The result is registered as a new ``image``

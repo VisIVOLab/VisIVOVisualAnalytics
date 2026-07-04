@@ -299,6 +299,62 @@ async def test_cube_subvolume(client: AsyncClient, opened_cube: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_cube_mask_registers_new_dataset(client: AsyncClient, opened_cube: dict) -> None:
+    resp = await client.post(
+        "/v1/cube/mask",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "x0": 10, "x1": 20, "y0": 10, "y1": 20, "z0": 5, "z1": 10,
+            "mode": "blank_outside",
+        },
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["valid"] is True
+    assert data["new_dataset_id"].startswith("ds_")
+    # Masking keeps full cube dimensions (unlike subvolume which crops).
+    assert (data["width"], data["height"], data["depth"]) == (64, 64, 32)
+
+
+@pytest.mark.asyncio
+async def test_cube_mask_bad_mode_422(client: AsyncClient, opened_cube: dict) -> None:
+    resp = await client.post(
+        "/v1/cube/mask",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "x0": 0, "x1": 5, "y0": 0, "y1": 5, "z0": 0, "z1": 5, "mode": "nope",
+        },
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_cube_kinematic_select_bin(client: AsyncClient, opened_cube: dict) -> None:
+    resp = await client.post(
+        "/v1/cube/kinematic_select_bin",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "seed_z": 16, "seed_y": 32, "seed_x": 32,
+            "reach": 8.0, "lambda_v": 1.0, "roi_radius": 20,
+        },
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 200, resp.text
+    # Payload is the ROI (bounding box of the selection), not the full cube.
+    rw = int(resp.headers["X-Visivo-Width"])
+    rh = int(resp.headers["X-Visivo-Height"])
+    rd = int(resp.headers["X-Visivo-Depth"])
+    assert len(resp.content) == rw * rh * rd * 4          # float32 ROI mask
+    assert resp.headers["X-Visivo-Full-Shape"] == "64,64,32"
+    assert len(resp.headers["X-Visivo-Origin"].split(",")) == 3
+    count = int(resp.headers["X-Visivo-Selected-Count"])
+    assert count >= 1                                     # at least the seed
+    assert len(resp.headers["X-Visivo-Bbox"].split(",")) == 6
+
+
+@pytest.mark.asyncio
 async def test_cube_preview(client: AsyncClient, opened_cube: dict) -> None:
     resp = await client.post(
         "/v1/cube/preview",

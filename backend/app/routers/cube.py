@@ -370,6 +370,163 @@ async def cube_save_subregion(
            ("output_path", "width", "height", "depth", "range_min", "range_max")})
 
 
+# ── Interactive 3-D masking (blank inside / outside a box) ───────────────────
+# Blank the voxels inside or outside a 3-D box, keeping full cube dimensions +
+# WCS, and register the masked cube as a new session dataset — the SlicerAstro /
+# van der Hulst "3-D selection coupled to analysis" use case: isolate a clump of
+# anomalous gas (blank outside) or remove an artefact (blank inside), then
+# moment-map / profile / noise-estimate on just the selection.
+
+class CubeMaskRequest(BaseModel):
+    dataset_id: str
+    x0: int
+    x1: int
+    y0: int
+    y1: int
+    z0: int
+    z1: int
+    mode: str = "blank_outside"   # "blank_outside" (isolate box) | "blank_inside" (remove box)
+    output_basename: str = ""
+
+    @model_validator(mode="after")
+    def _check_mode(self) -> "CubeMaskRequest":
+        if self.mode not in ("blank_inside", "blank_outside"):
+            raise ValueError("mode must be 'blank_inside' or 'blank_outside'")
+        return self
+
+
+class CubeMaskResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    new_dataset_id: str = ""
+    output_path: str = ""
+    workspace_filename: str = ""
+    width: int = 0
+    height: int = 0
+    depth: int = 0
+    range_min: float = 0.0
+    range_max: float = 0.0
+
+
+@router.post("/v1/cube/mask", response_model=CubeMaskResponse, tags=["cube"])
+async def cube_mask(
+    request: CubeMaskRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> CubeMaskResponse:
+    """Blank inside/outside a 3-D box and persist the masked cube in the
+    Workspace Exports dir, registered as a new session dataset."""
+    from ..compute import worker_cube_mask  # noqa: PLC0415
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "cube":
+            raise HTTPException(422, "3-D masking requires a spectral cube dataset.")
+
+        src_stem = Path(entry["path"]).stem
+        tag = "inside" if request.mode == "blank_inside" else "outside"
+        default_basename = (
+            f"{src_stem}_mask-{tag}_x{request.x0}-{request.x1}"
+            f"_y{request.y0}-{request.y1}_z{request.z0}-{request.z1}.fits"
+        )
+        basename = request.output_basename.strip() or default_basename
+        output_path = str(make_workspace_path(basename))
+
+        # Heavy throttle: masking rewrites a full-size cube (I/O over every voxel
+        # for blank_outside), so it is not an interactive/light task.
+        result = await _run_heavy_with_limit(
+            session,
+            worker_cube_mask,
+            entry["path"],
+            output_path,
+            request.x0, request.x1,
+            request.y0, request.y1,
+            request.z0, request.z1,
+            request.mode,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return CubeMaskResponse(valid=False, error=str(exc))
+
+    new_id = f"ds_{uuid.uuid4().hex[:12]}"
+    session.datasets[new_id] = {
+        "path":   result["output_path"],
+        "kind":   "cube",
+        "width":  result["width"],
+        "height": result["height"],
+        "depth":  result["depth"],
+    }
+    workspace_filename = Path(result["output_path"]).name
+    logger.info("[cube_mask] registered new dataset new_id=%s path=%s mode=%s",
+                new_id, result["output_path"], request.mode)
+    return CubeMaskResponse(
+        valid=True, new_dataset_id=new_id, workspace_filename=workspace_filename,
+        **{k: result[k] for k in
+           ("output_path", "width", "height", "depth", "range_min", "range_max")})
+
+
+# ── Kinematic Lasso — geodesic 3-D selection from a clicked seed ──────────────
+# Click a source in the volume render → the front end ray-casts a seed voxel →
+# this grows a kinematics-aware geodesic region (bright voxels cheap to cross,
+# faint/NaN = barriers; velocity steps weighted by lambda_v) and returns a binary
+# mask cube the viewer contours as a live isosurface preview. Then apply it
+# (isolate / remove) via /v1/cube/mask_selection.
+
+class CubeKinematicSelectRequest(BaseModel):
+    dataset_id: str
+    seed_z: int
+    seed_y: int
+    seed_x: int
+    reach: float = Field(default=8.0, gt=0.0, allow_inf_nan=False)     # cost budget
+    lambda_v: float = Field(default=1.0, gt=0.0, allow_inf_nan=False)  # velocity weight
+    sigma: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)     # 0 → robust auto
+    nsigma: float = Field(default=2.5, gt=0.0, allow_inf_nan=False)    # soft threshold (σ units)
+    roi_radius: int = Field(default=32, ge=1, le=64)                   # spatial bound (≤64: caps graph size)
+
+
+@router.post("/v1/cube/kinematic_select_bin", tags=["cube"])
+async def cube_kinematic_select_bin(
+    request: CubeKinematicSelectRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    from ..compute import worker_cube_kinematic_select  # noqa: PLC0415
+    try:
+        path = _require_cube_path(session, request.dataset_id)
+        result = await _run_heavy_with_limit(
+            session,
+            worker_cube_kinematic_select,
+            path,
+            request.seed_z, request.seed_y, request.seed_x,
+            request.reach, request.lambda_v, request.sigma,
+            request.roi_radius, request.nsigma,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return Response(content=str(exc).encode("utf-8"),
+                        media_type="text/plain", status_code=500)
+
+    raw_bytes: bytes = result["raw_bytes"]
+    bbox = result["bbox"]
+    headers = {
+        # ROI dimensions + its origin in cube voxels (the payload is the bounding
+        # box of the selection, not the full cube) + the full cube dims.
+        "X-Visivo-Width": str(result["roi_width"]),
+        "X-Visivo-Height": str(result["roi_height"]),
+        "X-Visivo-Depth": str(result["roi_depth"]),
+        "X-Visivo-Origin": f"{result['origin_x']},{result['origin_y']},{result['origin_z']}",
+        "X-Visivo-Full-Shape": f"{result['full_width']},{result['full_height']},{result['full_depth']}",
+        "X-Visivo-Scalar-Type": "float32",
+        "X-Visivo-Selected-Count": str(result["count"]),
+        "X-Visivo-Bbox": ",".join(str(v) for v in bbox),   # x0,x1,y0,y1,z0,z1
+        "X-Visivo-Byte-Order": "little",
+        "Content-Length": str(len(raw_bytes)),
+    }
+    return Response(content=raw_bytes, media_type="application/octet-stream",
+                    headers=headers)
+
+
 # ── Single-channel 2-D FITS export ───────────────────────────────────────────
 
 class CubeSaveChannel2dRequest(BaseModel):

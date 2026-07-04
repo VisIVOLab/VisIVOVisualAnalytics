@@ -52,6 +52,22 @@ realised peak depends on how close a channel falls to each pixel's `Vlos`.
 All floats are validated finite at the API boundary (NaN/inf → HTTP 422), with
 `incl_deg ∈ [0, 90]` and `rmax_pix, sigma > 0`.
 
+### Per-ring profile (warp + rotation curve)
+
+Beyond the single-disk model, the request accepts an optional `rings` array —
+one entry per ring, each `{r_pix, pa_deg, incl_deg, vrot}` — for a **warped,
+non-flat** disk in the 3DBarolo / TiRiFiC picture: the position angle,
+inclination and rotation velocity each vary with galactocentric radius. Values
+between rings are linearly interpolated (held at the nearest ring outside the
+range); `rmax` is the outermost ring, and `x0/y0/vsys/sigma` stay shared. When
+`rings` is present the scalar `pa_deg/incl_deg/vrot/rmax_pix` are ignored (and
+may be omitted); when it is empty they are required.
+
+Because a warp makes each pixel's deprojected radius depend on the *local*
+inclination/PA — which themselves depend on radius — the deprojection is solved
+by a few fixed-point iterations. Ring radii must be **distinct** (duplicate
+`r_pix` → HTTP 422). A constant profile reduces exactly to the single-disk model.
+
 ---
 
 ## Velocity units (FREQ vs velocity axes)
@@ -126,6 +142,12 @@ The workflow is split in two:
   dataset** — re-opening the dialog for the same cube (this session or a later
   one) pre-fills your last values, so refining a disk model is iterative rather
   than starting from the geometric defaults each time.
+  - Tick **Per-ring profile (warp / rotation curve)** to switch from a single
+    disk to a **ring table** (Radius / PA / Incl / Vrot per row, *Add ring* /
+    *Remove selected*). Each ring's PA, inclination and rotation velocity are
+    interpolated with radius, so you can model a warp (tilt changing outward) or
+    a real rotation curve (rising-then-flat) instead of one flat value. The
+    table is seeded from the current scalar values; radii must be distinct.
 - **A live "Kinematic Model" dock panel** then restyles the overlay with **no
   re-fetch** — the model cube and its FlyingEdges filter are kept client-side:
   - **Contour level (% peak)** — re-`SetValue` on the kept filter.

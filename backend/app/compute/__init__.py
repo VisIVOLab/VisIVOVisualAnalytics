@@ -22,6 +22,7 @@ from .cube import (  # noqa: F401
     worker_cube_subvolume_raw,
     worker_cube_subvolume,
     worker_cube_save_subregion,
+    worker_cube_mask,
     worker_cube_save_channel_2d,
     worker_noise_estimate,
     _build_preview,
@@ -50,6 +51,10 @@ from .pv_iso import (  # noqa: F401
     _sample_polyline,
     _local_normal,
     worker_pv,
+)
+from .selection import (  # noqa: F401
+    cube_kinematic_select,
+    worker_cube_kinematic_select,
 )
 from .spectral import (  # noqa: F401
     _gaussian,
@@ -97,6 +102,7 @@ __all__ = [
     "worker_cube_subvolume_raw",
     "worker_cube_subvolume",
     "worker_cube_save_subregion",
+    "worker_cube_mask",
     "worker_cube_save_channel_2d",
     "worker_noise_estimate",
     "_build_preview",
@@ -121,6 +127,8 @@ __all__ = [
     "_sample_polyline",
     "_local_normal",
     "worker_pv",
+    "cube_kinematic_select",
+    "worker_cube_kinematic_select",
     "_gaussian",
     "worker_linewidth",
     "_expand_channel_ranges",
