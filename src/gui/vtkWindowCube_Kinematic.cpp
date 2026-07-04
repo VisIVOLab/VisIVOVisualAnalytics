@@ -24,6 +24,7 @@
 #include "vtkWindowCube.h"
 #include "ui_vtkWindowCube.h"
 
+#include "AnalysisParamStore.h"
 #include "app/BackendClient.h"
 
 #include <vtkActor.h>
@@ -245,6 +246,23 @@ void vtkWindowCube::showKinematicModelDialog()
     form->addRow(u"Rotation velocity (Vrot)"_s, spinVrot);
     form->addRow(u"Velocity dispersion (σ)"_s, spinSig);
 
+    // Pre-fill from the parameters last used for THIS dataset (if any) so the
+    // user doesn't re-enter the disk geometry every session. setValue clamps to
+    // each spin's range automatically.
+    {
+        const QVariantMap saved = AnalysisParamStore().load(this->filepath, u"kinematic"_s);
+        if (!saved.isEmpty()) {
+            if (saved.contains(u"x0"_s))    spinX0->setValue(saved.value(u"x0"_s).toDouble());
+            if (saved.contains(u"y0"_s))    spinY0->setValue(saved.value(u"y0"_s).toDouble());
+            if (saved.contains(u"pa"_s))    spinPa->setValue(saved.value(u"pa"_s).toDouble());
+            if (saved.contains(u"incl"_s))  spinIncl->setValue(saved.value(u"incl"_s).toDouble());
+            if (saved.contains(u"rmax"_s))  spinRmax->setValue(saved.value(u"rmax"_s).toDouble());
+            if (saved.contains(u"vsys"_s))  spinVsys->setValue(saved.value(u"vsys"_s).toDouble());
+            if (saved.contains(u"vrot"_s))  spinVrot->setValue(saved.value(u"vrot"_s).toDouble());
+            if (saved.contains(u"sigma"_s)) spinSig->setValue(saved.value(u"sigma"_s).toDouble());
+        }
+    }
+
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
     buttons->button(QDialogButtonBox::Ok)->setText(u"Overlay"_s);
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
@@ -253,6 +271,13 @@ void vtkWindowCube::showKinematicModelDialog()
 
     if (dlg.exec() != QDialog::Accepted)
         return;
+
+    // Remember these parameters for this dataset so the dialog re-opens pre-filled.
+    AnalysisParamStore().save(this->filepath, u"kinematic"_s, {
+            { u"x0"_s, spinX0->value() },   { u"y0"_s, spinY0->value() },
+            { u"pa"_s, spinPa->value() },   { u"incl"_s, spinIncl->value() },
+            { u"rmax"_s, spinRmax->value() }, { u"vsys"_s, spinVsys->value() },
+            { u"vrot"_s, spinVrot->value() }, { u"sigma"_s, spinSig->value() } });
 
     // Snapshot the live display geometry (preview / full-res / ROI) so the
     // worker can register the full-grid model onto what's on screen.

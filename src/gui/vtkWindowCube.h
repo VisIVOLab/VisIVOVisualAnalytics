@@ -300,6 +300,11 @@ public:
     };
 
 public:
+    /// Stable key for persisting per-dataset analysis parameters (the FITS file
+    /// path — unlike the session-scoped backend dataset id, it's the same across
+    /// sessions). See AnalysisParamStore.
+    QString datasetPersistKey() const { return this->filepath; }
+
     enum class RegionMode
     {
         None,

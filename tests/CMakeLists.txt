@@ -23,6 +23,7 @@ find_package(Qt6 REQUIRED COMPONENTS Test Core Network)
 add_library(visivo_test_support STATIC
     ${PROJECT_SOURCE_DIR}/src/app/BackendClient.cpp
     ${PROJECT_SOURCE_DIR}/src/app/DiagnosticsManager.cpp
+    ${PROJECT_SOURCE_DIR}/src/AnalysisParamStore.cpp
     ${PROJECT_SOURCE_DIR}/src/Settings.cpp
     ${PROJECT_SOURCE_DIR}/src/skava/BackendRouting.cpp
     ${PROJECT_SOURCE_DIR}/src/vtk/ImageLod.cpp
@@ -54,6 +55,8 @@ add_executable(VisIVOTests
     test_backend_routing.cpp
     TestImageLod.h
     test_image_lod.cpp
+    TestAnalysisParamStore.h
+    test_analysis_param_store.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

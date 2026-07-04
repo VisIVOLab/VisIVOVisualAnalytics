@@ -31,6 +31,10 @@ public:
     int channelStart() const;
     int channelEnd()   const;
 
+    // Pre-fill the spinboxes (e.g. from the region last used for this dataset).
+    // Values are clamped to the cube extent by the spinboxes; call before exec().
+    void setRegion(int x0, int x1, int y0, int y1, int chStart, int chEnd);
+
 signals:
     // Emitted whenever any spinbox value changes (spatial or spectral) so
     // the cube viewer can paint live preview overlays: an amber rectangle

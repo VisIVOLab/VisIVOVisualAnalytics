@@ -222,3 +222,16 @@ int NoiseRegionDialog::y0()          const { return m_y0Spin->value(); }
 int NoiseRegionDialog::y1()          const { return m_y1Spin->value(); }
 int NoiseRegionDialog::channelStart() const { return m_chStartSpin->value(); }
 int NoiseRegionDialog::channelEnd()   const { return m_chEndSpin->value(); }
+
+void NoiseRegionDialog::setRegion(int x0, int x1, int y0, int y1, int chStart, int chEnd)
+{
+    // The spinboxes clamp out-of-range values to the cube extent. Setting them
+    // fires the valueChanged connections → validate() + emitRegion() run, so the
+    // OK-enabled state and the live preview reflect the restored region.
+    m_x0Spin->setValue(x0);
+    m_x1Spin->setValue(x1);
+    m_y0Spin->setValue(y0);
+    m_y1Spin->setValue(y1);
+    m_chStartSpin->setValue(chStart);
+    m_chEndSpin->setValue(chEnd);
+}

@@ -5,6 +5,7 @@
 
 #include "NoiseController.h"
 
+#include "AnalysisParamStore.h"
 #include "CubeNoiseTypes.h"
 #include "NoiseRegionDialog.h"
 #include "ToolResultDialog.h"
@@ -119,6 +120,18 @@ void NoiseController::startEstimation()
     if (cube) {
         QObject::connect(&dlg, &NoiseRegionDialog::regionPreviewChanged,
                          cube, &vtkWindowCube::setNoiseRegionPreview);
+        // Restore the noise region last used for this dataset (if any).
+        const QVariantMap saved =
+                AnalysisParamStore().load(cube->datasetPersistKey(), u"noise"_s);
+        // Require the full set so a truncated/old settings file doesn't silently
+        // default missing axes to 0.
+        if (saved.contains(u"x0"_s) && saved.contains(u"x1"_s) && saved.contains(u"y0"_s)
+            && saved.contains(u"y1"_s) && saved.contains(u"chStart"_s)
+            && saved.contains(u"chEnd"_s)) {
+            dlg.setRegion(saved.value(u"x0"_s).toInt(), saved.value(u"x1"_s).toInt(),
+                          saved.value(u"y0"_s).toInt(), saved.value(u"y1"_s).toInt(),
+                          saved.value(u"chStart"_s).toInt(), saved.value(u"chEnd"_s).toInt());
+        }
     }
 
     const int rc = dlg.exec();
@@ -139,6 +152,13 @@ void NoiseController::startEstimation()
     const int y1           = dlg.y1();
     const int channelStart = dlg.channelStart();
     const int channelEnd   = dlg.channelEnd();
+
+    // Remember this region for the dataset so the dialog re-opens pre-filled.
+    if (cube) {
+        AnalysisParamStore().save(cube->datasetPersistKey(), u"noise"_s, {
+                { u"x0"_s, x0 }, { u"x1"_s, x1 }, { u"y0"_s, y0 }, { u"y1"_s, y1 },
+                { u"chStart"_s, channelStart }, { u"chEnd"_s, channelEnd } });
+    }
 
     DiagnosticsManager::instance()->publish(
             DiagnosticsLevel::Info, DiagnosticsCategory::Remote,

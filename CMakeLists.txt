@@ -259,6 +259,8 @@ set(PROJECT_SOURCES
         src/LayerListModel.cpp
         src/LayerListModel.h
         src/main.cpp
+        src/AnalysisParamStore.cpp
+        src/AnalysisParamStore.h
         src/Settings.cpp
         src/Settings.h
         src/WebViewProcess.cpp
