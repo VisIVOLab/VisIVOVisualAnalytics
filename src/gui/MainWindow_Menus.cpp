@@ -105,7 +105,7 @@ void MainWindow::rebuildCommandPalette()
                  [this]() { this->openData(); }});
         this->m_commandPalette->addAction(
                 {u"✦"_s, u"Open 3D Catalogue…"_s,
-                 u"File · CSV / VOTable in 3D viewer"_s, QString(), u"File"_s,
+                 u"File · CSV / VOTable / FITS / speck / IPAC in 3D viewer"_s, QString(), u"File"_s,
                  [this]() { this->openCatalogue3D(); }});
         this->m_commandPalette->addAction(
                 {u"▦"_s, u"Open VBT…"_s,
@@ -252,7 +252,7 @@ void MainWindow::buildDataMenu()
     dataMenu->addSeparator();
 
     auto *actHiPS = dataMenu->addAction(u"HiPS Viewer…"_s);
-    actHiPS->setToolTip(u"Open the HiPS panoramic sky viewer (coming soon)."_s);
+    actHiPS->setToolTip(u"Open the HiPS panoramic sky viewer."_s);
     QObject::connect(actHiPS, &QAction::triggered, this, &MainWindow::openHiPS);
 }
 

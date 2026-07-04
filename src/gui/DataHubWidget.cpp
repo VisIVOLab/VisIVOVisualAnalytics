@@ -520,7 +520,7 @@ QFrame *DataHubWidget::buildQuickActionsList()
             Spec{u"dataset"_s,   u"Open Remote Dataset…"_s,
                  u"Browse FITS on the backend filesystem"_s, u"⌘O"_s, "openDataRequested"},
             Spec{u"catalogue"_s, u"Open 3D Catalogue…"_s,
-                 u"CSV / VOTable in the source viewer"_s, QString(),  "openCatalogueRequested"},
+                 u"CSV / VOTable / FITS / speck / IPAC in the source viewer"_s, QString(),  "openCatalogueRequested"},
             Spec{u"vbt"_s,       u"Open VBT…"_s,
                  u"VisIVO Binary Table — points / volumes"_s, u"⇧⌘B"_s, "openVbtRequested"},
             // Sky-map engines: both open as their own viewer tabs.
@@ -742,7 +742,7 @@ QFrame *DataHubWidget::buildActionGrid()
 
     const CardInfo cards[] = {
         { u"dataset"_s,   u"Open Remote Dataset"_s, u"Browse and open FITS images or spectral cubes via the backend."_s },
-        { u"catalogue"_s, u"Open 3D Catalogue"_s,   u"Visualise astronomical CSV catalogues in the 3D source viewer."_s },
+        { u"catalogue"_s, u"Open 3D Catalogue"_s,   u"Visualise astronomical catalogues (CSV / VOTable / FITS / speck / IPAC) in the 3D source viewer."_s },
         { u"vbt"_s,       u"Open VBT"_s,            u"Load a VisIVO Binary Table for point-cloud or volume rendering."_s },
         { u"hips"_s,      u"HiPS Viewer"_s,         u"Explore hierarchical progressive sky surveys."_s },
     };
