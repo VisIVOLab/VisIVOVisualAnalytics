@@ -52,15 +52,19 @@
 #include <QDockWidget>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QtConcurrentRun>
+#include <QTableWidget>
 #include <QWidget>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstring>
 
 using namespace Qt::StringLiterals;
@@ -99,7 +103,8 @@ RemoteKinematicModelResult fetchKinematicModelWorker(
         QString url, QString token, QString session, QString datasetId,
         int nx, int ny, int nz, int ddx, int ddy, int ddz,
         double dox, double doy, double doz, double x0, double y0, double pa, double incl,
-        double vsys, double vrot, double rmax, double sigma)
+        double vsys, double vrot, double rmax, double sigma,
+        QVector<std::array<double, 4>> rings)
 {
     RemoteKinematicModelResult out;
     out.fraction = kInitialFraction;
@@ -107,7 +112,7 @@ RemoteKinematicModelResult fetchKinematicModelWorker(
     BackendClient client(url, token);
     client.setSessionId(session);
     const BackendKinematicModelResult m = client.requestKinematicModel(
-            datasetId, x0, y0, pa, incl, vsys, vrot, rmax, sigma);
+            datasetId, x0, y0, pa, incl, vsys, vrot, rmax, sigma, rings);
     if (!m.valid) {
         out.errorMessage = m.error;
         return out;
@@ -267,6 +272,76 @@ void vtkWindowCube::showKinematicModelDialog()
         }
     }
 
+    // ── Per-ring (warp / rotation curve) profile ──────────────────────────────
+    // When enabled, PA / inclination / Vrot vary with radius (the 3DBarolo /
+    // TiRiFiC picture) via the ring table below; the scalar PA/Incl/Vrot/rmax
+    // above are then ignored (x0/y0/Vsys/σ stay shared).
+    auto *perRingCheck = new QCheckBox(u"Per-ring profile (warp / rotation curve)"_s);
+    form->addRow(perRingCheck);
+
+    auto *ringTable = new QTableWidget(0, 4, &dlg);
+    ringTable->setHorizontalHeaderLabels({ u"Radius (px)"_s, u"PA (°)"_s, u"Incl (°)"_s, u"Vrot"_s });
+    ringTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    ringTable->verticalHeader()->setVisible(false);
+    ringTable->setMinimumHeight(140);
+    ringTable->setVisible(false);
+    form->addRow(ringTable);
+
+    auto *ringButtonsW = new QWidget(&dlg);
+    auto *ringButtons = new QHBoxLayout(ringButtonsW);
+    ringButtons->setContentsMargins(0, 0, 0, 0);
+    auto *addRingBtn = new QPushButton(u"Add ring"_s, ringButtonsW);
+    auto *removeRingBtn = new QPushButton(u"Remove selected"_s, ringButtonsW);
+    ringButtons->addWidget(addRingBtn);
+    ringButtons->addWidget(removeRingBtn);
+    ringButtons->addStretch(1);
+    ringButtonsW->setVisible(false);
+    form->addRow(ringButtonsW);
+
+    const auto addRingRow = [ringTable](double r, double pa, double incl, double vrot) {
+        const int row = ringTable->rowCount();
+        ringTable->insertRow(row);
+        const double vals[4] = { r, pa, incl, vrot };
+        for (int c = 0; c < 4; ++c) {
+            ringTable->setItem(row, c, new QTableWidgetItem(QString::number(vals[c], 'g', 6)));
+        }
+    };
+    QObject::connect(perRingCheck, &QCheckBox::toggled, &dlg,
+                     [=](bool on) {
+        ringTable->setVisible(on);
+        ringButtonsW->setVisible(on);
+        spinPa->setEnabled(!on);
+        spinIncl->setEnabled(!on);
+        spinVrot->setEnabled(!on);
+        spinRmax->setEnabled(!on);
+        // Seed two rings from the scalar values on first enable (inner half-Vrot,
+        // outer full-Vrot at rmax) so the user has a sensible starting curve.
+        if (on && ringTable->rowCount() == 0) {
+            const double rmax = spinRmax->value();
+            addRingRow(std::max(1.0, rmax / 3.0), spinPa->value(), spinIncl->value(),
+                       spinVrot->value() * 0.5);
+            addRingRow(rmax, spinPa->value(), spinIncl->value(), spinVrot->value());
+        }
+    });
+    QObject::connect(addRingBtn, &QPushButton::clicked, &dlg, [=]() {
+        // New ring at a radius strictly beyond the current outermost (ring radii
+        // must be distinct — the backend rejects duplicates).
+        double maxR = 0.0;
+        for (int row = 0; row < ringTable->rowCount(); ++row) {
+            if (auto *it = ringTable->item(row, 0)) {
+                maxR = std::max(maxR, it->text().toDouble());
+            }
+        }
+        const double step = std::max(1.0, spinRmax->value() * 0.25);
+        const double newR = ringTable->rowCount() == 0 ? spinRmax->value() : maxR + step;
+        addRingRow(newR, spinPa->value(), spinIncl->value(), spinVrot->value());
+    });
+    QObject::connect(removeRingBtn, &QPushButton::clicked, &dlg, [ringTable]() {
+        const int row = ringTable->currentRow() >= 0 ? ringTable->currentRow()
+                                                      : ringTable->rowCount() - 1;
+        if (row >= 0) ringTable->removeRow(row);
+    });
+
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
     buttons->button(QDialogButtonBox::Ok)->setText(u"Overlay"_s);
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
@@ -275,6 +350,52 @@ void vtkWindowCube::showKinematicModelDialog()
 
     if (dlg.exec() != QDialog::Accepted)
         return;
+
+    // Build the per-ring profile from the table (empty → scalar model). Validate
+    // each cell so a stray non-numeric entry doesn't silently become 0.
+    QVector<std::array<double, 4>> rings;
+    if (perRingCheck->isChecked()) {
+        if (ringTable->rowCount() == 0) {
+            QMessageBox::warning(this, u"Kinematic Model"_s,
+                                 u"Per-ring profile is enabled but the ring table is empty. "
+                                 u"Add at least one ring, or disable per-ring mode."_s);
+            return;
+        }
+        for (int row = 0; row < ringTable->rowCount(); ++row) {
+            double vals[4];
+            for (int c = 0; c < 4; ++c) {
+                auto *it = ringTable->item(row, c);
+                bool ok = false;
+                vals[c] = it ? it->text().trimmed().toDouble(&ok) : 0.0;
+                if (!ok || !std::isfinite(vals[c])) {
+                    QMessageBox::warning(this, u"Kinematic Model"_s,
+                                         u"Ring %1 has a non-numeric value — fix the table or "
+                                         u"disable per-ring mode."_s.arg(row + 1));
+                    return;
+                }
+            }
+            if (vals[0] <= 0.0) {
+                QMessageBox::warning(this, u"Kinematic Model"_s,
+                                     u"Ring %1: radius must be > 0."_s.arg(row + 1));
+                return;
+            }
+            if (vals[2] < 0.0 || vals[2] > 90.0) {
+                QMessageBox::warning(this, u"Kinematic Model"_s,
+                                     u"Ring %1: inclination must be between 0 and 90°."_s.arg(row + 1));
+                return;
+            }
+            rings.append({ vals[0], vals[1], vals[2], vals[3] });
+        }
+        // Ring radii must be distinct (the model interpolates on them).
+        QVector<double> radii;
+        for (const auto &ring : rings) radii.append(ring[0]);
+        std::sort(radii.begin(), radii.end());
+        if (std::adjacent_find(radii.begin(), radii.end()) != radii.end()) {
+            QMessageBox::warning(this, u"Kinematic Model"_s,
+                                 u"Ring radii must be distinct."_s);
+            return;
+        }
+    }
 
     // Remember these parameters for this dataset so the dialog re-opens pre-filled.
     AnalysisParamStore().save(this->filepath, u"kinematic"_s, {
@@ -304,7 +425,8 @@ void vtkWindowCube::showKinematicModelDialog()
             this->remoteSessionId, this->remoteDatasetId, nx, ny, nz,
             ddim[0], ddim[1], ddim[2], dorg[0], dorg[1], dorg[2],
             spinX0->value(), spinY0->value(), spinPa->value(), spinIncl->value(),
-            spinVsys->value(), spinVrot->value(), spinRmax->value(), spinSig->value()));
+            spinVsys->value(), spinVrot->value(), spinRmax->value(), spinSig->value(),
+            rings));
 }
 
 void vtkWindowCube::onKinematicModelReady()

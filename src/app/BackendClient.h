@@ -1312,11 +1312,15 @@ public:
     /// Tilted-ring kinematic model cube (F2). Builds a regularly-rotating-disk
     /// model on the cube's own grid; Vsys/Vrot/sigma are in the cube's spectral
     /// unit (km/s when the axis converts — see result.spectralMode).
+    /// @param rings optional per-ring (warp / rotation-curve) profile: each entry
+    /// is {r_pix, pa_deg, incl_deg, vrot}. When non-empty the backend builds a
+    /// warped tilted-ring model and ignores the scalar pa/incl/vrot/rmax.
     BackendKinematicModelResult requestKinematicModel(const QString &datasetId,
                                                       double x0, double y0,
                                                       double paDeg, double inclDeg,
                                                       double vsys, double vrot,
-                                                      double rmaxPix, double sigma) const;
+                                                      double rmaxPix, double sigma,
+                                                      const QVector<std::array<double, 4>> &rings = {}) const;
     /** POST /v1/hips/catalogue_overlay – RA/Dec sources in current viewport. */
     BackendHiPSCatalogueOverlayResult requestHiPSCatalogueOverlay(
             const QString &cataloguePath, double raDeg, double decDeg, double fovDeg,

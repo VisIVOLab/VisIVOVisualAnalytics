@@ -108,3 +108,121 @@ async def test_kinematic_model_size_guard(client, opened_cube, monkeypatch):
         headers=opened_cube["headers"],
     )
     assert resp.status_code == 413, resp.text
+
+
+# ── Per-ring (warped) model: app.kinematic_model.tilted_ring_model_profile ────
+
+def test_profile_constant_equals_scalar():
+    """A constant per-ring profile must reduce EXACTLY to the scalar model."""
+    from app.kinematic_model import tilted_ring_model_profile
+    spectral = np.linspace(-150.0, 150.0, 48)
+    scalar = tilted_ring_model(64, 64, spectral, x0=32, y0=30, pa_deg=25.0,
+                               incl_deg=60.0, vsys=10.0, vrot=120.0,
+                               rmax_pix=22.0, sigma=9.0)
+    profile = tilted_ring_model_profile(
+        64, 64, spectral, x0=32, y0=30,
+        ring_r=[0.0, 22.0], ring_pa_deg=[25.0, 25.0], ring_incl_deg=[60.0, 60.0],
+        ring_vrot=[120.0, 120.0], vsys=10.0, sigma=9.0)
+    assert profile.shape == scalar.shape
+    assert np.allclose(profile, scalar, atol=1e-5)
+
+
+def test_profile_rising_rotation_curve():
+    """A rising Vrot(r) → an outer pixel peaks further from vsys than an inner
+    one on the SAME (approaching/receding) side of the major axis."""
+    from app.kinematic_model import tilted_ring_model_profile
+    spectral = np.linspace(-200.0, 200.0, 81)   # vsys=0 at channel 40
+    model = tilted_ring_model_profile(
+        64, 64, spectral, x0=32, y0=32,
+        ring_r=[2.0, 8.0, 24.0], ring_pa_deg=[0.0, 0.0, 0.0],
+        ring_incl_deg=[60.0, 60.0, 60.0], ring_vrot=[20.0, 60.0, 160.0],
+        vsys=0.0, sigma=7.0)
+    # PA=0 → major axis along +y. Inner pixel (5 px up) vs outer (22 px up).
+    inner_idx = int(np.argmax(model[:, 37, 32]))
+    outer_idx = int(np.argmax(model[:, 54, 32]))
+    centre_idx = int(np.argmax(model[:, 32, 32]))   # vsys channel
+    assert outer_idx > inner_idx > centre_idx        # velocity grows with radius
+
+
+def test_profile_unsorted_rings_are_sorted():
+    """Rings given out of radius order must be handled (sorted internally)."""
+    from app.kinematic_model import tilted_ring_model_profile
+    spectral = np.linspace(-150.0, 150.0, 40)
+    a = tilted_ring_model_profile(
+        48, 48, spectral, x0=24, y0=24,
+        ring_r=[24.0, 4.0, 12.0], ring_pa_deg=[0.0, 0.0, 0.0],
+        ring_incl_deg=[55.0, 55.0, 55.0], ring_vrot=[150.0, 30.0, 90.0],
+        vsys=0.0, sigma=8.0)
+    b = tilted_ring_model_profile(
+        48, 48, spectral, x0=24, y0=24,
+        ring_r=[4.0, 12.0, 24.0], ring_pa_deg=[0.0, 0.0, 0.0],
+        ring_incl_deg=[55.0, 55.0, 55.0], ring_vrot=[30.0, 90.0, 150.0],
+        vsys=0.0, sigma=8.0)
+    assert np.array_equal(a, b)
+
+
+def test_profile_warp_runs_and_masks_disk():
+    """A warped disk (incl and PA varying with radius) produces a valid cube and
+    still blanks pixels outside the outermost ring."""
+    from app.kinematic_model import tilted_ring_model_profile
+    spectral = np.linspace(-200.0, 200.0, 48)
+    model = tilted_ring_model_profile(
+        80, 80, spectral, x0=40, y0=40,
+        ring_r=[3.0, 15.0, 30.0], ring_pa_deg=[10.0, 25.0, 60.0],
+        ring_incl_deg=[30.0, 50.0, 75.0], ring_vrot=[40.0, 120.0, 140.0],
+        vsys=5.0, sigma=8.0)
+    assert model.shape == (48, 80, 80)
+    assert model.dtype == np.float32
+    assert model.max() > 0.5
+    assert model[:, 0, 0].sum() == 0.0     # corner outside the outer ring
+    assert model[:, 40, 40].max() > 0.5    # centre emits
+
+
+def test_profile_bad_arrays_raise():
+    from app.kinematic_model import tilted_ring_model_profile
+    spectral = np.linspace(-100.0, 100.0, 16)
+    with pytest.raises(ValueError):
+        tilted_ring_model_profile(32, 32, spectral, x0=16, y0=16,
+                                  ring_r=[0.0, 10.0], ring_pa_deg=[0.0],
+                                  ring_incl_deg=[60.0, 60.0], ring_vrot=[100.0, 100.0],
+                                  vsys=0.0, sigma=5.0)
+
+
+@pytest.mark.asyncio
+async def test_kinematic_model_endpoint_per_ring(client, opened_cube):
+    """The endpoint accepts a per-ring profile and returns a valid model cube."""
+    resp = await client.post(
+        "/v1/cube/kinematic_model_bin",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "x0": 32.0, "y0": 32.0, "vsys": 0.0, "sigma": 3.0,
+            "rings": [
+                {"r_pix": 4.0,  "pa_deg": 0.0, "incl_deg": 60.0, "vrot": 2.0},
+                {"r_pix": 12.0, "pa_deg": 0.0, "incl_deg": 60.0, "vrot": 5.0},
+                {"r_pix": 22.0, "pa_deg": 0.0, "incl_deg": 65.0, "vrot": 6.0},
+            ],
+        },
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 200, resp.text
+    w = int(resp.headers["X-Visivo-Width"])
+    h = int(resp.headers["X-Visivo-Height"])
+    d = int(resp.headers["X-Visivo-Depth"])
+    assert (w, h, d) == (64, 64, 32)
+    assert len(resp.content) == w * h * d * 4
+    assert float(resp.headers["X-Visivo-Peak"]) > 0.0
+
+
+@pytest.mark.asyncio
+async def test_kinematic_model_scalar_requires_params(client, opened_cube):
+    """A scalar request (no rings) missing pa/incl/vrot/rmax must be rejected."""
+    resp = await client.post(
+        "/v1/cube/kinematic_model_bin",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "x0": 32.0, "y0": 32.0, "vsys": 0.0, "sigma": 3.0,
+            # no pa_deg/incl_deg/vrot/rmax_pix and no rings → invalid
+        },
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 422, resp.text

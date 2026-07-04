@@ -1280,15 +1280,26 @@ BackendVelocityGridResult BackendClient::fetchVelocityGrid(const QString &datase
 
 BackendKinematicModelResult BackendClient::requestKinematicModel(
         const QString &datasetId, double x0, double y0, double paDeg, double inclDeg,
-        double vsys, double vrot, double rmaxPix, double sigma) const
+        double vsys, double vrot, double rmaxPix, double sigma,
+        const QVector<std::array<double, 4>> &rings) const
 {
     BackendKinematicModelResult r;
-    const QJsonDocument body(QJsonObject{
+    QJsonObject bodyObj{
             { QStringLiteral("dataset_id"), datasetId },
             { QStringLiteral("x0"), x0 }, { QStringLiteral("y0"), y0 },
             { QStringLiteral("pa_deg"), paDeg }, { QStringLiteral("incl_deg"), inclDeg },
             { QStringLiteral("vsys"), vsys }, { QStringLiteral("vrot"), vrot },
-            { QStringLiteral("rmax_pix"), rmaxPix }, { QStringLiteral("sigma"), sigma } });
+            { QStringLiteral("rmax_pix"), rmaxPix }, { QStringLiteral("sigma"), sigma } };
+    if (!rings.isEmpty()) {
+        QJsonArray ringArr;
+        for (const auto &ring : rings) {
+            ringArr.append(QJsonObject{
+                    { QStringLiteral("r_pix"), ring[0] }, { QStringLiteral("pa_deg"), ring[1] },
+                    { QStringLiteral("incl_deg"), ring[2] }, { QStringLiteral("vrot"), ring[3] } });
+        }
+        bodyObj.insert(QStringLiteral("rings"), ringArr);
+    }
+    const QJsonDocument body(bodyObj);
     QNetworkRequest req =
             buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/cube/kinematic_model_bin")));
     req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));

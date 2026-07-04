@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Any
 import uuid
 import logging
@@ -178,17 +178,49 @@ async def cube_subvolume_bin(
 # subvolume_bin). The desktop contours it over the data cube so anomalous gas
 # (emission outside the model footprint/velocity field) stands out.
 
+class CubeKinematicRing(BaseModel):
+    """One ring of a per-ring (warped) tilted-ring model."""
+    r_pix: float = Field(gt=0.0, allow_inf_nan=False)             # ring radius, pixels
+    pa_deg: float = Field(allow_inf_nan=False)                    # position angle at this ring
+    incl_deg: float = Field(ge=0.0, le=90.0, allow_inf_nan=False) # inclination at this ring
+    vrot: float = Field(allow_inf_nan=False)                      # rotation velocity at this ring
+
+
 class CubeKinematicModelRequest(BaseModel):
     dataset_id: str
     # Finite-only floats (reject NaN/inf at the API boundary).
     x0: float = Field(allow_inf_nan=False)            # disk centre, pixels
     y0: float = Field(allow_inf_nan=False)
-    pa_deg: float = Field(allow_inf_nan=False)        # position angle of major axis
-    incl_deg: float = Field(ge=0.0, le=90.0, allow_inf_nan=False)  # 0 face-on … 90 edge-on
     vsys: float = Field(allow_inf_nan=False)          # systemic velocity (spectral unit)
-    vrot: float = Field(allow_inf_nan=False)          # flat rotation velocity
-    rmax_pix: float = Field(gt=0.0, allow_inf_nan=False)   # disk radius, pixels
     sigma: float = Field(gt=0.0, allow_inf_nan=False)      # line dispersion (spectral unit)
+    # Scalar single-ring parameters — REQUIRED when `rings` is empty (enforced by
+    # the validator below), optional/ignored for a per-ring request.
+    pa_deg: float | None = Field(default=None, allow_inf_nan=False)       # position angle of major axis
+    incl_deg: float | None = Field(default=None, ge=0.0, le=90.0, allow_inf_nan=False)  # 0 face-on … 90 edge-on
+    vrot: float | None = Field(default=None, allow_inf_nan=False)         # flat rotation velocity
+    rmax_pix: float | None = Field(default=None, gt=0.0, allow_inf_nan=False)  # disk radius, pixels
+    # Optional per-ring profile (3DBarolo/TiRiFiC-style warp + rotation curve).
+    # When given the model varies PA/incl/Vrot with radius and rmax = the
+    # outermost ring; the scalar pa/incl/vrot/rmax are ignored.
+    rings: list[CubeKinematicRing] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_params(self) -> "CubeKinematicModelRequest":
+        if not self.rings:
+            missing = [n for n in ("pa_deg", "incl_deg", "vrot", "rmax_pix")
+                       if getattr(self, n) is None]
+            if missing:
+                raise ValueError(
+                    "scalar kinematic model requires " + ", ".join(missing)
+                    + " (or provide a `rings` per-ring profile)")
+        else:
+            # Ring radii must be distinct: duplicate radii make the piecewise
+            # interpolation order-dependent and impossible for a user to reason
+            # about.
+            radii = [r.r_pix for r in self.rings]
+            if len(set(radii)) != len(radii):
+                raise ValueError("ring radii (r_pix) must be distinct")
+        return self
 
 
 @router.post("/v1/cube/kinematic_model_bin", tags=["cube"])
@@ -200,15 +232,21 @@ async def cube_kinematic_model_bin(
     from ..kinematic_model import kinematic_model_worker, max_voxels, ModelTooLargeError
     try:
         path = _require_cube_path(session, request.dataset_id)
+        # Plain tuples (picklable for the pre-forked worker pool). Empty when the
+        # request is a scalar single-ring model.
+        rings = [(r.r_pix, r.pa_deg, r.incl_deg, r.vrot) for r in request.rings]
+        # Scalar params are validated non-None when rings is empty; when rings is
+        # given they are ignored, so coalesce None → 0.0 for the positional call.
         result = await _run_heavy_with_limit(
             session,
             kinematic_model_worker,
             path,
             request.x0, request.y0,
-            request.pa_deg, request.incl_deg,
-            request.vsys, request.vrot,
-            request.rmax_pix, request.sigma,
+            request.pa_deg or 0.0, request.incl_deg or 0.0,
+            request.vsys, request.vrot or 0.0,
+            request.rmax_pix or 1.0, request.sigma,
             max_voxels(),
+            rings,
         )
     except HTTPException:
         raise

@@ -109,6 +109,90 @@ def tilted_ring_model(nx: int, ny: int, spectral: np.ndarray, x0: float, y0: flo
     return model
 
 
+def tilted_ring_model_profile(nx: int, ny: int, spectral: np.ndarray, x0: float, y0: float,
+                              ring_r: np.ndarray, ring_pa_deg: np.ndarray, ring_incl_deg: np.ndarray,
+                              ring_vrot: np.ndarray, vsys: float, sigma: float,
+                              cap: int | None = None, iterations: int = 2) -> np.ndarray:
+    """Per-ring (warped) tilted-ring model → cube of shape (nchan, ny, nx), float32.
+
+    Generalises :func:`tilted_ring_model` so the position angle, inclination and
+    rotation velocity each vary with galactocentric radius (the 3DBarolo /
+    TiRiFiC picture): ``ring_r`` are the ring radii in pixels (ascending) and
+    ``ring_pa_deg / ring_incl_deg / ring_vrot`` the value at each ring. Values
+    between rings are linearly interpolated; outside the ring range they are held
+    at the nearest ring (``np.interp`` clamps). ``rmax`` = the outermost ring.
+
+    Because a warp makes each pixel's deprojected radius depend on the *local*
+    inclination/PA — which themselves depend on radius — the deprojection is
+    solved by a few fixed-point iterations (``iterations``), starting from the
+    innermost ring's geometry. A constant profile reduces exactly to the scalar
+    :func:`tilted_ring_model`.
+    """
+    spectral = np.asarray(spectral, dtype=np.float64).ravel()
+    nchan = spectral.size
+    nvox = int(nchan) * int(ny) * int(nx)
+    cap = _DEFAULT_MAX_VOXELS if cap is None else int(cap)
+    if nvox > cap:
+        raise ModelTooLargeError(
+            f"Kinematic model cube too large: {nvox} voxels "
+            f"({nx}×{ny}×{nchan}) exceeds the {cap}-voxel cap. "
+            "Crop the cube (sub-region) or raise VISIVO_KINEMATIC_MAX_VOXELS."
+        )
+
+    ring_r = np.asarray(ring_r, dtype=np.float64).ravel()
+    ring_pa = np.asarray(ring_pa_deg, dtype=np.float64).ravel()
+    ring_incl = np.asarray(ring_incl_deg, dtype=np.float64).ravel()
+    ring_v = np.asarray(ring_vrot, dtype=np.float64).ravel()
+    if not (ring_r.size == ring_pa.size == ring_incl.size == ring_v.size) or ring_r.size == 0:
+        raise ValueError("Per-ring profile arrays must be non-empty and the same length.")
+    # np.interp requires ascending sample points.
+    order = np.argsort(ring_r, kind="stable")
+    ring_r, ring_pa, ring_incl, ring_v = ring_r[order], ring_pa[order], ring_incl[order], ring_v[order]
+    rmax_pix = float(ring_r[-1])
+    sigma = max(float(sigma), 1e-6)
+
+    yy, xx = np.mgrid[0:ny, 0:nx].astype(np.float64)
+    dx = xx - x0
+    dy = yy - y0
+
+    def _deproject(pa_map: np.ndarray, incl_map: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        cos_i = np.clip(np.cos(incl_map), 1e-3, None)
+        x_d = -dx * np.sin(pa_map) + dy * np.cos(pa_map)
+        y_d = (-dx * np.cos(pa_map) - dy * np.sin(pa_map)) / cos_i
+        r = np.sqrt(x_d * x_d + y_d * y_d)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            cos_theta = np.where(r > 0, x_d / r, 0.0)
+        return r, cos_theta
+
+    # Fixed-point deprojection: start from the innermost ring's geometry, then
+    # re-evaluate PA/incl at each pixel's current radius and repeat.
+    pa_map = np.full((ny, nx), math.radians(ring_pa[0]))
+    incl_map = np.full((ny, nx), math.radians(ring_incl[0]))
+    for _ in range(max(1, iterations)):
+        r, _ = _deproject(pa_map, incl_map)
+        rc = np.clip(r, ring_r[0], ring_r[-1])
+        pa_map = np.radians(np.interp(rc, ring_r, ring_pa))
+        incl_map = np.radians(np.interp(rc, ring_r, ring_incl))
+
+    # Final deprojection with the converged geometry maps, so r / cos_theta are
+    # consistent with the SAME pa_map / incl_map used for the velocity projection
+    # (without this, r came from the previous iteration's geometry — wrong on a
+    # warped disk). vrot is then read at that final radius.
+    r, cos_theta = _deproject(pa_map, incl_map)
+    rc = np.clip(r, ring_r[0], ring_r[-1])
+    vrot_map = np.interp(rc, ring_r, ring_v)
+    vlos = vsys + vrot_map * np.sin(incl_map) * cos_theta   # (ny, nx)
+    disk = r <= rmax_pix
+
+    model = np.zeros((nchan, ny, nx), dtype=np.float32)
+    inv = 1.0 / (2.0 * sigma * sigma)
+    for c in range(nchan):
+        dvel = spectral[c] - vlos
+        plane = np.exp(-(dvel * dvel) * inv)
+        model[c] = np.where(disk, plane, 0.0).astype(np.float32)
+    return model
+
+
 def _spectral_axis_kms(coords: np.ndarray, axis_unit: str, axis_type: str,
                        restfreq_hz: float) -> tuple[np.ndarray, str, str]:
     """Convert a native spectral axis to radio-convention velocity in km/s.
@@ -145,7 +229,9 @@ def kinematic_model_payload(model: np.ndarray) -> dict[str, Any]:
 
 def kinematic_model_worker(path: str, x0: float, y0: float, pa_deg: float, incl_deg: float,
                            vsys: float, vrot: float, rmax_pix: float, sigma: float,
-                           cap: int) -> dict[str, Any]:
+                           cap: int,
+                           rings: list[tuple[float, float, float, float]] | None = None,
+                           ) -> dict[str, Any]:
     """Top-level worker (picklable for the ProcessPoolExecutor).
 
     Reads the cube's geometry and per-channel spectral axis from ``path``,
@@ -200,8 +286,17 @@ def kinematic_model_worker(path: str, x0: float, y0: float, pa_deg: float, incl_
                 break
         velocity, unit, mode = _spectral_axis_kms(coords, axis_unit, axis_type, restfreq)
 
-    model = tilted_ring_model(width, height, velocity, x0, y0, pa_deg, incl_deg,
-                              vsys, vrot, rmax_pix, sigma, cap=cap)
+    if rings:
+        ring_r = [float(r[0]) for r in rings]
+        ring_pa = [float(r[1]) for r in rings]
+        ring_incl = [float(r[2]) for r in rings]
+        ring_v = [float(r[3]) for r in rings]
+        model = tilted_ring_model_profile(width, height, velocity, x0, y0,
+                                          ring_r, ring_pa, ring_incl, ring_v,
+                                          vsys, sigma, cap=cap)
+    else:
+        model = tilted_ring_model(width, height, velocity, x0, y0, pa_deg, incl_deg,
+                                  vsys, vrot, rmax_pix, sigma, cap=cap)
     payload = kinematic_model_payload(model)
     payload["spectral_axis_unit"] = unit
     payload["spectral_mode"] = mode
