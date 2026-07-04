@@ -208,6 +208,16 @@ void vtkWindowImage::setupRenderer()
                                       &vtkWindowImage::finishRegionInteraction);
     win->GetInteractor()->AddObserver(vtkCommand::LeftButtonDoubleClickEvent, this,
                                       &vtkWindowImage::finishRegionInteraction);
+    // Viewport-driven LOD: when a camera interaction (pan / zoom) ends, re-arm a
+    // short debounce; if the view settled on a different region/zoom we stream
+    // the visible tiles at the appropriate pyramid level.
+    win->GetInteractor()->AddObserver(vtkCommand::EndInteractionEvent, this,
+                                      &vtkWindowImage::onImageInteractionSettled);
+    this->m_lodSettleTimer = new QTimer(this);
+    this->m_lodSettleTimer->setSingleShot(true);
+    this->m_lodSettleTimer->setInterval(150);
+    QObject::connect(this->m_lodSettleTimer, &QTimer::timeout, this,
+                     &vtkWindowImage::maybeStreamViewportLod);
 
     this->coordinate->SetCoordinateSystemToDisplay();
     this->coordinate->SetViewport(ren);

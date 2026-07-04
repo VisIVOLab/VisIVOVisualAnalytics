@@ -700,6 +700,7 @@ ImageLayerLoadResult fetchRemoteImageLayerTiled(const QString &backendUrl, const
     result.fullWidth = fullW;
     result.fullHeight = fullH;
     result.previewScaleFactor = static_cast<double>(step);
+    result.numLevels = probe.numLevels;
     result.valid = true;
     qDebug().noquote()
             << QStringLiteral("[remote-image] assembled level=%1 dims=%2x%3 (full %4x%5) "
@@ -795,6 +796,7 @@ ImageLayerLoadResult fetchRemoteImageLayerViewport(
     result.origin = { va.originX, va.originY, 0.0 };
     result.fullWidth = fullW;
     result.fullHeight = fullH;
+    result.numLevels = numLevels;
     result.previewScaleFactor = static_cast<double>(1 << va.level);
     result.valid = true;
     qDebug().noquote()
@@ -1248,8 +1250,24 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                          this->transitioningToFull = false;
                          this->suspendLutEditorUpdates = false;
                          this->applyRemoteMasterLayer(result);
+                         // Enable viewport-driven LOD once the multi-level pyramid
+                         // image is loaded: further zoom/pan re-streams the visible
+                         // region at the appropriate level.
+                         this->m_lodFullWidth = result.fullWidth;
+                         this->m_lodFullHeight = result.fullHeight;
+                         this->m_lodNumLevels = result.numLevels;
+                         this->m_viewportLodEnabled = (result.numLevels > 1
+                                                       && result.fullWidth > 0 && result.fullHeight > 0);
+                         this->m_lodApplied = { -1, -1, -1, -1, -1 };
+                         qDebug().noquote()
+                                 << QStringLiteral("[viewport-lod] %1 (full=%2x%3 levels=%4)")
+                                            .arg(this->m_viewportLodEnabled ? u"enabled"_s : u"disabled"_s)
+                                            .arg(result.fullWidth).arg(result.fullHeight).arg(result.numLevels);
                          this->clearPersistentStatusMessage();
                      });
+
+    QObject::connect(&this->m_viewportLodWatcher, &QFutureWatcher<ImageLayerLoadResult>::finished,
+                     this, &vtkWindowImage::onViewportLodReady);
 
     // Backend-authoritative: initialise with a placeholder; real image data
     // arrives via the remote full-image watcher.
@@ -1907,7 +1925,7 @@ void vtkWindowImage::updateLargeImageMode(vtkImageData *imageData, const char *c
                        .arg(large);
 }
 
-void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result)
+void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result, bool preserveView)
 {
     auto *newActor = this->layers->updateMasterLayer(result);
     if (!newActor) {
@@ -1931,7 +1949,11 @@ void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result)
     } else if (lut) {
         lut->Build();
     }
-    this->updateLargeImageMode(imageData, "remote apply");
+    // A viewport-LOD reload swaps in a small sub-region; large-image mode reflects
+    // the FULL image (unchanged) so don't recompute it from the sub-image dims.
+    if (!preserveView) {
+        this->updateLargeImageMode(imageData, "remote apply");
+    }
     auto *renderWindow = ui && ui->vtk ? ui->vtk->renderWindow() : nullptr;
     auto *renderer = renderWindow ? renderWindow->GetRenderers()->GetFirstRenderer() : nullptr;
     const bool validExtent = isImageExtentUsable(imageData);
@@ -1942,7 +1964,9 @@ void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result)
                        .arg(imageData ? imageData->GetExtent()[2] : -1)
                        .arg(imageData ? imageData->GetExtent()[3] : -1)
                        .arg(validExtent);
-    if (renderer) {
+    // Reset the camera only on a fresh load; a viewport-LOD reload MUST keep the
+    // user's current zoom/pan (that camera is what drove the tile request).
+    if (renderer && !preserveView) {
         renderer->ResetCamera();
         renderer->ResetCameraClippingRange();
     }
@@ -2038,6 +2062,101 @@ bool vtkWindowImage::isBusy() const
 {
     return this->layerLoadWatcher.isRunning() || this->remoteImageWatcher.isRunning()
             || this->remoteFullImageWatcher.isRunning();
+}
+
+void vtkWindowImage::onImageInteractionSettled()
+{
+    // A camera pan/zoom ended — (re)arm the debounce so a burst of end-events
+    // collapses into a single stream request once the view is quiet.
+    if (this->m_viewportLodEnabled && this->m_lodSettleTimer) {
+        this->m_lodSettleTimer->start();
+    }
+}
+
+void vtkWindowImage::maybeStreamViewportLod()
+{
+    if (!this->m_viewportLodEnabled || this->isBusy() || this->m_viewportLodWatcher.isRunning()) {
+        return;
+    }
+    // Don't re-stream while the user is drawing/probing (the master swap would
+    // disturb the region/measurement in progress).
+    if (this->probeModeActive || this->regionMode != RegionMode::None
+        || this->m_measMode != MeasurementMode::None) {
+        return;
+    }
+    auto *renderWindow = ui && ui->vtk ? ui->vtk->renderWindow() : nullptr;
+    auto *renderer = renderWindow ? renderWindow->GetRenderers()->GetFirstRenderer() : nullptr;
+    auto *camera = renderer ? renderer->GetActiveCamera() : nullptr;
+    if (!renderer || !camera) {
+        return;
+    }
+    const int *sz = renderWindow->GetSize();
+    if (!sz || sz[0] <= 0 || sz[1] <= 0) {
+        return;
+    }
+    // Raw viewport rectangle in WORLD coords (== full-res source pixels, since the
+    // image world extent equals the full-res grid). NOT clamped to the currently
+    // displayed sub-image — we must see the whole panned-to region to know which
+    // tiles to fetch; viewportAssembly() clamps to the full image itself.
+    const double *fp = camera->GetFocalPoint();
+    const double halfH = camera->GetParallelScale();
+    const double halfW = halfH * static_cast<double>(sz[0]) / static_cast<double>(sz[1]);
+    const double rx0 = fp[0] - halfW, rx1 = fp[0] + halfW;
+    const double ry0 = fp[1] - halfH, ry1 = fp[1] + halfH;
+    const double viewportH = static_cast<double>(sz[1]);
+
+    const ImageLod::TileGrid grid{ this->m_lodFullWidth, this->m_lodFullHeight,
+                                   this->m_lodTileSize, this->m_lodNumLevels };
+    const ImageLod::ViewportAssembly va =
+            ImageLod::viewportAssembly(rx0, ry0, rx1, ry1, viewportH, grid, 1);
+    if (!va.valid) {
+        return;
+    }
+    const std::array<int, 5> sig{ { va.level, va.txMin, va.txMax, va.tyMin, va.tyMax } };
+    if (sig == this->m_lodApplied) {
+        return;   // same region + level already displayed
+    }
+    this->m_lodPending = sig;
+    qDebug().noquote()
+            << QStringLiteral("[viewport-lod] stream level=%1 tiles x[%2..%3] y[%4..%5] "
+                              "view=[%6..%7, %8..%9] vpH=%10")
+                       .arg(va.level).arg(va.txMin).arg(va.txMax).arg(va.tyMin).arg(va.tyMax)
+                       .arg(rx0, 0, 'f', 0).arg(rx1, 0, 'f', 0)
+                       .arg(ry0, 0, 'f', 0).arg(ry1, 0, 'f', 0)
+                       .arg(viewportH, 0, 'f', 0);
+    const int gen = ++this->m_lodGeneration;
+    this->m_viewportLodWatcher.setFuture(QtConcurrent::run(
+            &fetchRemoteImageLayerViewport, this->remoteBackendUrl, this->remoteDatasetId,
+            this->filepath, this->m_lodFullWidth, this->m_lodFullHeight, this->m_lodNumLevels,
+            this->m_lodTileSize, rx0, ry0, rx1, ry1,
+            viewportH, gen, this->remoteSessionId, this->remoteBackendToken));
+}
+
+void vtkWindowImage::onViewportLodReady()
+{
+    const auto result = this->m_viewportLodWatcher.result();
+    if (result.requestGeneration != this->m_lodGeneration) {
+        qDebug().noquote() << QStringLiteral("[viewport-lod] discarded stale gen=%1 current=%2")
+                                      .arg(result.requestGeneration).arg(this->m_lodGeneration);
+        return;
+    }
+    if (!result.valid || !result.imageData) {
+        qDebug().noquote() << QStringLiteral("[viewport-lod] stream failed: %1")
+                                      .arg(QString::fromStdString(result.errorMessage));
+        // The view may have moved while this (failed) fetch was in flight, and the
+        // debounce that would have re-checked was dropped by the isRunning() guard.
+        // Re-arm so a transient tile failure self-heals — but bounded so a dead
+        // backend isn't polled forever.
+        if (++this->m_lodConsecutiveFailures <= 3 && this->m_lodSettleTimer) {
+            this->m_lodSettleTimer->start();
+        }
+        return;
+    }
+    this->m_lodConsecutiveFailures = 0;
+    this->applyRemoteMasterLayer(result, /*preserveView=*/true);
+    this->m_lodApplied = this->m_lodPending;   // this view is now displayed
+    // The view may have moved again while the tiles were fetching — re-check.
+    this->maybeStreamViewportLod();
 }
 
 void vtkWindowImage::showPersistentStatusMessage(const QString &text, int minDurationMs)

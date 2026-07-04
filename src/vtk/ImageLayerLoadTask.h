@@ -27,6 +27,7 @@ struct ImageLayerLoadResult
     bool isPreview{ false };
     int fullWidth{ 0 };
     int fullHeight{ 0 };
+    int numLevels{ 1 };   ///< pyramid levels available (for viewport-driven LOD gating)
     double previewScaleFactor{ 1.0 };
     int requestGeneration{ 0 };
 };

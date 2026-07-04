@@ -224,6 +224,25 @@ private:
     QFutureWatcher<ImageLayerLoadResult> layerLoadWatcher;
     QFutureWatcher<ImageLayerLoadResult> remoteImageWatcher;
     QFutureWatcher<ImageLayerLoadResult> remoteFullImageWatcher;
+
+    // ── Viewport-driven LOD (tile streaming) ────────────────────────────────
+    // When the remote image has a multi-level pyramid, re-assemble only the
+    // visible region at the zoom-appropriate level when the camera settles, so
+    // zooming in reveals more detail than the bounded whole-image assembly.
+    bool m_viewportLodEnabled{ false };   ///< true once a multi-level tiled image is loaded
+    int  m_lodFullWidth{ 0 };
+    int  m_lodFullHeight{ 0 };
+    int  m_lodNumLevels{ 1 };
+    int  m_lodTileSize{ 512 };
+    int  m_lodGeneration{ 0 };            ///< bumped per request; stale replies discarded
+    int  m_lodConsecutiveFailures{ 0 };   ///< bounds retry-on-failure so a dead backend isn't polled forever
+    std::array<int, 5> m_lodApplied{ { -1, -1, -1, -1, -1 } };  ///< last {level,txMin,txMax,tyMin,tyMax}
+    std::array<int, 5> m_lodPending{ { -1, -1, -1, -1, -1 } };  ///< signature of the in-flight request
+    QTimer *m_lodSettleTimer{ nullptr };  ///< debounce camera-settle bursts
+    QFutureWatcher<ImageLayerLoadResult> m_viewportLodWatcher;
+    void onImageInteractionSettled();     ///< EndInteractionEvent → (re)arm the debounce
+    void maybeStreamViewportLod();        ///< compute visible region + level, fetch if changed
+    void onViewportLodReady();            ///< apply a viewport tile assembly (camera preserved)
     QFutureWatcher<CatalogueOverlayParseResult> m_crossmatchWatcher;  // async cross-match
     /// Set by addLayerFromBackendPath before calling addLayerImage so that the
     /// layerLoadWatcher completion slot can rename the new layer to the VLKB label.
@@ -433,7 +452,9 @@ private:
     LayerListModel *layers;
     std::unique_ptr<ImageLayerController> layerController;
     void applyLoadedLayer(const ImageLayerLoadResult &result);
-    void applyRemoteMasterLayer(const ImageLayerLoadResult &result);
+    // preserveView: keep the current camera + large-image mode (viewport-LOD
+    // reload of a sub-region); default resets the camera to fit (initial load).
+    void applyRemoteMasterLayer(const ImageLayerLoadResult &result, bool preserveView = false);
     void startRemoteFullResolutionLoad();
     void markDisplayStateAdjusted(const char *reason);
     bool isBusy() const;
