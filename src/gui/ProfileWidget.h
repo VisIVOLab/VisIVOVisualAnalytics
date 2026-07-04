@@ -5,6 +5,7 @@
 
 #include <vtkSmartPointer.h>
 
+#include <QColor>
 #include <QWidget>
 #include <QVector>
 
@@ -96,6 +97,17 @@ public:
     /// fit button stays disabled.
     void setBackend(const QString &url, const QString &token);
 
+    /// Pin the currently displayed spectrum as a persistent comparison curve
+    /// (spectrum mode only). Subsequent live / region updates keep the pinned
+    /// curves so several regions' spectra can be overlaid and compared. Each
+    /// pin gets a distinct colour and a legend entry. No-op if there is no
+    /// current spectrum. @p label names the legend entry (falls back to the
+    /// current plot title, then an auto index).
+    void pinCurrentSpectrum(const QString &label = QString());
+    /// Drop all pinned comparison curves and hide the legend.
+    void clearPinnedSpectra();
+    int  pinnedSpectrumCount() const { return static_cast<int>(m_pinnedGraphs.size()); }
+
 signals:
     /// Emitted when the user toggles the Pin button in the header. The cube
     /// viewer connects this to its probeFrozen state so the spectrum freezes
@@ -131,6 +143,18 @@ private:
     QPushButton *m_btnSavePlot2 { nullptr };
     QPushButton *m_btnSaveCsv   { nullptr };
     bool m_darkTheme{ true };
+
+    // ── Multi-region comparison (pinned spectra) ────────────────────────────
+    // Persistent overlay curves the user "pins" from successive region/probe
+    // spectra so they can be compared. graph(0) is always the live/current
+    // series; pinned graphs are appended after it and survive live updates.
+    QVector<QCPGraph *> m_pinnedGraphs;
+    QString m_lastSpectrumTitle;   ///< last title passed to updateSpectrumPlot (pin label default)
+    QPushButton *m_btnPin       { nullptr };
+    QPushButton *m_btnClearPins { nullptr };
+    void refreshPinButtons();
+    void applyPinnedLegendTheme();
+    static QColor pinColour(int index);
     // Tracks whether we've already shown the window once. raise() and
     // activateWindow() must only run on the very first appearance — if we
     // call them on every hover update (which happens many times per second
@@ -191,6 +215,11 @@ private:
     // lazily in buildSpectrumHeader().
     QComboBox *m_smoothCombo{ nullptr };
     void applySmoothAndReplot();
+    /// The spectrum values as currently DISPLAYED — raw m_lastSpectrumValues
+    /// with the active smoothing kernel applied (identity when smoothing is
+    /// off). Used by both applySmoothAndReplot() and pinCurrentSpectrum() so a
+    /// pinned curve matches exactly what was on screen when it was pinned.
+    QVector<double> displayedSpectrumValues() const;
 
     // Line identification overlay — vertical annotated lines at known
     // spectral frequencies loaded from a user CSV (rest_freq, label).

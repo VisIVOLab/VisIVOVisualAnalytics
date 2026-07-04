@@ -307,6 +307,8 @@ void ProfileWidget::setupSpectrumPlot(const QString &xLabel, const QString &yLab
     ui->plot1->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     this->clearFitOverlay();   // drop fit refs before clearGraphs() frees them
     ui->plot1->clearGraphs();
+    m_pinnedGraphs.clear();    // clearGraphs() just freed the pinned graph pointers
+    refreshPinButtons();
     ui->plot1->addGraph();
     ui->plot1->legend->setVisible(false);
     // Allow both axes to drag/zoom — astronomers regularly need to zoom
@@ -437,9 +439,23 @@ void ProfileWidget::buildSpectrumHeader()
             u"via the backend; overlays the fitted curve and reports peak, centre,\n"
             u"FWHM and integrated flux in the axis units. Enabled once connected."_s);
     m_btnFit->setEnabled(!m_backendUrl.isEmpty());
+    // Pin / Clear-pins: overlay several regions' spectra for comparison.
+    m_btnPin = new QPushButton(u"Pin Spectrum"_s);
+    m_btnPin->setStyleSheet(pillCss);
+    m_btnPin->setCursor(Qt::PointingHandCursor);
+    m_btnPin->setToolTip(
+            u"Pin the current spectrum as a comparison curve. Draw another region\n"
+            u"(or move the probe) and its spectrum overlays on top, so several\n"
+            u"regions can be compared on the same axes. Each pin gets its own colour."_s);
+    m_btnClearPins = new QPushButton(u"Clear Pins"_s);
+    m_btnClearPins->setStyleSheet(pillCss);
+    m_btnClearPins->setCursor(Qt::PointingHandCursor);
+    m_btnClearPins->setToolTip(u"Remove all pinned comparison spectra."_s);
     toolRow->addWidget(loadLinesBtn);
     toolRow->addWidget(clearLinesBtn);
     toolRow->addWidget(m_btnFit);
+    toolRow->addWidget(m_btnPin);
+    toolRow->addWidget(m_btnClearPins);
     col->addLayout(toolRow);
 
     QObject::connect(m_smoothCombo, qOverload<int>(&QComboBox::currentIndexChanged),
@@ -450,6 +466,11 @@ void ProfileWidget::buildSpectrumHeader()
                      this, &ProfileWidget::clearLineIdOverlay);
     QObject::connect(m_btnFit,      &QPushButton::clicked,
                      this, &ProfileWidget::requestLineFit);
+    QObject::connect(m_btnPin,      &QPushButton::clicked,
+                     this, [this]() { this->pinCurrentSpectrum(); });
+    QObject::connect(m_btnClearPins, &QPushButton::clicked,
+                     this, &ProfileWidget::clearPinnedSpectra);
+    refreshPinButtons();
 
     // Insert the header at the very top of the widget's outer layout.
     auto *vLayout = qobject_cast<QVBoxLayout *>(this->layout());
@@ -576,22 +597,7 @@ void ProfileWidget::applySmoothAndReplot()
     if (m_lastSpectrumKey.isEmpty() || m_lastSpectrumValues.isEmpty()) return;
     if (!m_smoothCombo) return;
 
-    const int mode = m_smoothCombo->currentData().toInt();
-    QVector<double> smoothed = m_lastSpectrumValues;
-
-    if (mode == 1) {
-        // Hanning (3-tap)
-        smoothed = convolve1D(m_lastSpectrumValues, { 0.25, 0.5, 0.25 });
-    } else if (mode >= 3 && mode < 10) {
-        // Boxcar of width N
-        const int w = mode;
-        QVector<double> k(w, 1.0);
-        smoothed = convolve1D(m_lastSpectrumValues, k);
-    } else if (mode == 10) {
-        smoothed = convolve1D(m_lastSpectrumValues, gaussianKernel(1.0));
-    } else if (mode == 20) {
-        smoothed = convolve1D(m_lastSpectrumValues, gaussianKernel(2.0));
-    }
+    const QVector<double> smoothed = displayedSpectrumValues();
 
     // Replot with smoothed data; keep the original in m_lastSpectrum* for
     // the next smooth-change and for CSV export.
@@ -601,6 +607,21 @@ void ProfileWidget::applySmoothAndReplot()
         ui->plot1->replot();
     }
     refreshSpectrumStats(m_lastSpectrumKey, smoothed);
+}
+
+QVector<double> ProfileWidget::displayedSpectrumValues() const
+{
+    const int mode = m_smoothCombo ? m_smoothCombo->currentData().toInt() : 0;
+    if (mode == 1) {                       // Hanning (3-tap)
+        return convolve1D(m_lastSpectrumValues, { 0.25, 0.5, 0.25 });
+    } else if (mode >= 3 && mode < 10) {   // Boxcar of width N
+        return convolve1D(m_lastSpectrumValues, QVector<double>(mode, 1.0));
+    } else if (mode == 10) {
+        return convolve1D(m_lastSpectrumValues, gaussianKernel(1.0));
+    } else if (mode == 20) {
+        return convolve1D(m_lastSpectrumValues, gaussianKernel(2.0));
+    }
+    return m_lastSpectrumValues;           // "None" — raw
 }
 
 void ProfileWidget::setRegionContext(const QString &shapeLabel,
@@ -904,7 +925,13 @@ void ProfileWidget::plotSpectrum(double x, double y, bool live)
         key[k] = initSpectral + k * axesInc[2];
         values[k] = this->ScalarPointer[idx];
     }
-    ui->plot1->graph()->setData(key, values);
+    if (ui->plot1->graphCount() == 0) ui->plot1->addGraph();
+    ui->plot1->graph(0)->setData(key, values);   // graph(0) is always the live series
+    if (!m_pinnedGraphs.isEmpty()) {
+        ui->plot1->graph(0)->setName(u"Current"_s);
+        ui->plot1->legend->setVisible(true);
+        applyPinnedLegendTheme();
+    }
     ui->plot1->rescaleAxes();
     // The pixel coords drive the header meta row — refresh through the
     // public path so the title bar and stats stay in sync.
@@ -912,6 +939,7 @@ void ProfileWidget::plotSpectrum(double x, double y, bool live)
     m_pixelY = static_cast<int>(pixY);
     m_lastSpectrumKey    = key;     // cached for CSV export
     m_lastSpectrumValues = values;
+    refreshPinButtons();
     refreshSpectrumHeader();
     // If a smoothing kernel is active, apply it to the display; otherwise
     // show raw data. Stats are computed on the (possibly smoothed) data.
@@ -931,24 +959,36 @@ void ProfileWidget::updateSpectrumPlot(const QVector<double> &key, const QVector
     if (m_dialogInProgress) return;   // suppress live updates while saving
     this->clearFitOverlay();          // a new spectrum invalidates any prior fit
     ++this->m_spectrumGeneration;
+    m_lastSpectrumTitle = title;
     if (ui->plot1->graphCount() == 0) {
         ui->plot1->addGraph();
     }
-    while (ui->plot1->graphCount() > 1) {
-        ui->plot1->removeGraph(ui->plot1->graphCount() - 1);
+    // Keep graph(0) (live) and the pinned comparison curves; drop only any
+    // other leftover graph (e.g. a secondary series from a prior two-series
+    // update). Pinned curves must survive so several regions can be compared.
+    for (int i = ui->plot1->graphCount() - 1; i >= 1; --i) {
+        QCPGraph *g = ui->plot1->graph(i);
+        if (!m_pinnedGraphs.contains(g)) {
+            ui->plot1->removeGraph(g);
+        }
     }
-    ui->plot1->legend->setVisible(false);
 
     Q_UNUSED(live);
 
-    ui->plot1->graph()->setPen(QPen(QColor(0, 170, 255), 1.5));
-    ui->plot1->graph()->setData(key, values);
+    const bool havePins = !m_pinnedGraphs.isEmpty();
+    QCPGraph *live0 = ui->plot1->graph(0);
+    live0->setPen(QPen(QColor(0, 170, 255), 1.5));
+    live0->setData(key, values);
+    live0->setName(havePins ? u"Current"_s : QString());
+    ui->plot1->legend->setVisible(havePins);
+    if (havePins) applyPinnedLegendTheme();
     ui->plot1->rescaleAxes();
     if (auto *titleElement = qobject_cast<QCPTextElement *>(ui->plot1->plotLayout()->element(0, 0))) {
         titleElement->setText(title);
     }
     m_lastSpectrumKey    = key;     // cached for CSV export
     m_lastSpectrumValues = values;
+    refreshPinButtons();
     refreshSpectrumHeader();
     if (m_smoothCombo && m_smoothCombo->currentData().toInt() != 0) {
         applySmoothAndReplot();
@@ -968,6 +1008,9 @@ void ProfileWidget::updateSpectrumPlotSeries(const QVector<double> &key,
 {
     if (m_dialogInProgress) return;   // suppress live updates while saving
     this->clearFitOverlay();          // a new spectrum invalidates any prior fit
+    // Pinned comparison curves are single-series; a two-series update owns
+    // graph(0)+graph(1), so drop any pins first to avoid clobbering them.
+    this->clearPinnedSpectra();
     ++this->m_spectrumGeneration;
     // Cache the primary series so a Gaussian fit uses it (not stale data).
     m_lastSpectrumKey = key;
@@ -1005,6 +1048,87 @@ void ProfileWidget::updateSpectrumPlotSeries(const QVector<double> &key,
     refreshSpectrumStats(key, primaryValues);
     ui->plot1->replot();
     showAndRaiseFirstTime();
+}
+
+// ── Multi-region comparison: pinned spectra ─────────────────────────────────
+
+QColor ProfileWidget::pinColour(int index)
+{
+    static const QColor palette[] = {
+        QColor(255, 158,  32),   // orange
+        QColor( 53, 196, 106),   // green
+        QColor(226,  86, 200),   // magenta
+        QColor(229, 208,  32),   // yellow
+        QColor( 64, 208, 208),   // cyan
+        QColor(229,  80,  60),   // red
+        QColor(150, 130, 255),   // violet
+        QColor(120, 200, 120),   // lime
+    };
+    const int n = static_cast<int>(sizeof(palette) / sizeof(palette[0]));
+    return palette[((index % n) + n) % n];
+}
+
+void ProfileWidget::applyPinnedLegendTheme()
+{
+    if (m_darkTheme) {
+        ui->plot1->legend->setBrush(QColor(tHeaderBg()));
+        ui->plot1->legend->setBorderPen(QPen(QColor(tBorder())));
+        ui->plot1->legend->setTextColor(QColor(tValue()));
+    } else {
+        ui->plot1->legend->setBrush(Qt::white);
+        ui->plot1->legend->setBorderPen(QPen(Qt::black));
+        ui->plot1->legend->setTextColor(Qt::black);
+    }
+}
+
+void ProfileWidget::pinCurrentSpectrum(const QString &label)
+{
+    if (m_dialogInProgress) return;
+    if (m_lastSpectrumKey.isEmpty() || m_lastSpectrumValues.isEmpty()) return;   // nothing to pin
+
+    const int idx = static_cast<int>(m_pinnedGraphs.size());
+    QString name = label.isEmpty() ? m_lastSpectrumTitle : label;
+    if (name.isEmpty()) name = u"Spectrum"_s;
+    name = u"%1. %2"_s.arg(idx + 1).arg(name);
+
+    auto *g = ui->plot1->addGraph();
+    g->setData(m_lastSpectrumKey, displayedSpectrumValues());   // match what's on screen
+    QPen pen(pinColour(idx));
+    pen.setWidthF(1.5);
+    g->setPen(pen);
+    g->setName(name);
+    m_pinnedGraphs.push_back(g);
+
+    // With at least one pin the legend becomes meaningful; label the live curve.
+    if (ui->plot1->graphCount() > 0) ui->plot1->graph(0)->setName(u"Current"_s);
+    ui->plot1->legend->setVisible(true);
+    applyPinnedLegendTheme();
+    ui->plot1->replot();
+    refreshPinButtons();
+}
+
+void ProfileWidget::clearPinnedSpectra()
+{
+    if (m_pinnedGraphs.isEmpty()) { refreshPinButtons(); return; }
+    for (QCPGraph *g : m_pinnedGraphs) {
+        ui->plot1->removeGraph(g);
+    }
+    m_pinnedGraphs.clear();
+    ui->plot1->legend->setVisible(false);
+    if (ui->plot1->graphCount() > 0) ui->plot1->graph(0)->setName(QString());
+    ui->plot1->replot();
+    refreshPinButtons();
+}
+
+void ProfileWidget::refreshPinButtons()
+{
+    if (m_btnPin) m_btnPin->setEnabled(!m_lastSpectrumKey.isEmpty());
+    if (m_btnClearPins) {
+        const bool any = !m_pinnedGraphs.isEmpty();
+        m_btnClearPins->setEnabled(any);
+        m_btnClearPins->setText(any ? u"Clear Pins (%1)"_s.arg(m_pinnedGraphs.size())
+                                    : u"Clear Pins"_s);
+    }
 }
 
 // X-axis (coordinate) range from the actual key values, with a small margin.
