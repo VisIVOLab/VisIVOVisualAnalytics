@@ -101,7 +101,7 @@ public slots:
     void startComputation(int defaultOrder);
 
 private:
-    bool configureMomentDialog(int defaultOrder, Config &config);
+    bool configureMomentDialog(int defaultOrder, Config &config, bool restoredFromLastSession);
 
     static QString describeMomentOrder(int order);
     static QString describeMomentScope();

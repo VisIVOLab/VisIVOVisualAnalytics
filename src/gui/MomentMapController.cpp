@@ -88,8 +88,9 @@ void MomentMapController::startComputation(int defaultOrder)
     // Restore the channel range + mask settings last used for THIS dataset so the
     // dialog re-opens with them across sessions (order comes from the menu action,
     // so it is NOT persisted).
+    const QVariantMap saved = AnalysisParamStore().load(m_filepath, u"moment"_s);
+    const bool restoredFromLastSession = !saved.isEmpty();
     {
-        const QVariantMap saved = AnalysisParamStore().load(m_filepath, u"moment"_s);
         if (saved.contains(u"channelStart"_s))  config.channelStart  = saved.value(u"channelStart"_s).toInt();
         if (saved.contains(u"channelEnd"_s))    config.channelEnd    = saved.value(u"channelEnd"_s).toInt();
         if (saved.contains(u"maskEnabled"_s))   config.maskEnabled   = saved.value(u"maskEnabled"_s).toBool();
@@ -109,7 +110,7 @@ void MomentMapController::startComputation(int defaultOrder)
         config.channelStart = 0;
         config.channelEnd = totalChannels - 1;
     }
-    if (!configureMomentDialog(defaultOrder, config)) {
+    if (!configureMomentDialog(defaultOrder, config, restoredFromLastSession)) {
         return;
     }
     m_currentConfig = config;
@@ -258,7 +259,8 @@ void MomentMapController::startComputation(int defaultOrder)
 // Dialog – moved verbatim from vtkWindowCube::configureMomentRequest()
 // ─────────────────────────────────────────────────────────────────────────────
 
-bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config)
+bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config,
+                                                bool restoredFromLastSession)
 {
     // Shared visual chrome (input theming + section headers + helper text)
     // is in ToolDialogStyle so every parameter dialog looks the same.
@@ -273,6 +275,15 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
     layout->setContentsMargins(16, 14, 16, 14);
     layout->setSpacing(10);
     layout->addWidget(ToolDialogStyle::makeBreadcrumb(&dialog, u"Compute Moment"_s));
+
+    if (restoredFromLastSession) {
+        auto *restoredHint = new QLabel(
+                u"↺ Channel range and mask restored from your last session for this cube."_s,
+                &dialog);
+        restoredHint->setStyleSheet(QStringLiteral("color: %1; font-style: italic;").arg(tMuted));
+        restoredHint->setWordWrap(true);
+        layout->addWidget(restoredHint);
+    }
 
     // ── COMPUTE: moment order + per-order helper text ──────────────────────
     auto *computeForm = ToolDialogStyle::addSection(layout, u"Compute"_s, &dialog);

@@ -70,6 +70,13 @@ NoiseRegionDialog::NoiseRegionDialog(int width, int height, int depth, QWidget *
     intro->setWordWrap(true);
     root->addWidget(intro);
 
+    // Hidden until setRegion() restores a previously-saved region for this cube.
+    m_restoredHint = new QLabel(u"↺ Restored from your last session for this cube."_s, this);
+    m_restoredHint->setStyleSheet(QStringLiteral("color: %1; font-style: italic;").arg(tMuted));
+    m_restoredHint->setWordWrap(true);
+    m_restoredHint->hide();
+    root->addWidget(m_restoredHint);
+
     // ── SPATIAL REGION ───────────────────────────────────────────────────
     auto *spatialForm = ToolDialogStyle::addSection(root, u"Spatial region (pixels)"_s, this);
 
@@ -234,4 +241,7 @@ void NoiseRegionDialog::setRegion(int x0, int x1, int y0, int y1, int chStart, i
     m_y1Spin->setValue(y1);
     m_chStartSpin->setValue(chStart);
     m_chEndSpin->setValue(chEnd);
+    if (m_restoredHint) {
+        m_restoredHint->show();   // called only when restoring a saved region
+    }
 }

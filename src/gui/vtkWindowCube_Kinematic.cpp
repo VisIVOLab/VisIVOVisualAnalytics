@@ -260,6 +260,10 @@ void vtkWindowCube::showKinematicModelDialog()
             if (saved.contains(u"vsys"_s))  spinVsys->setValue(saved.value(u"vsys"_s).toDouble());
             if (saved.contains(u"vrot"_s))  spinVrot->setValue(saved.value(u"vrot"_s).toDouble());
             if (saved.contains(u"sigma"_s)) spinSig->setValue(saved.value(u"sigma"_s).toDouble());
+            auto *restoredHint = new QLabel(
+                    u"↺ Restored from your last session for this cube."_s);
+            restoredHint->setStyleSheet(u"color: palette(mid); font-style: italic;"_s);
+            form->addRow(restoredHint);
         }
     }
 

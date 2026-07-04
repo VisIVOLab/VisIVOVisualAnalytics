@@ -66,6 +66,9 @@ private:
     // doesn't have to read the docs to know what makes a good region.
     QLabel *m_spatialHint  { nullptr };
     QLabel *m_spectralHint { nullptr };
+    // Shown (via setRegion) only when the spinboxes were pre-filled from a
+    // previously-saved region for this dataset, so the restore is visible.
+    QLabel *m_restoredHint { nullptr };
 };
 
 #endif // NoiseRegionDialog_h
