@@ -63,6 +63,12 @@ cube channels** (not just the current slice). The stats bar
 (`N / Min / Max / Mean / RMS / ∫`), channel marker, theme, and CSV
 export all work identically to pixel-probe mode.
 
+To **compare several regions**, click **Pin Spectrum** in the plot header
+before drawing the next region: the current mean spectrum is kept as a
+colour-coded comparison curve and the next region's spectrum overlays on
+the same axes with a legend. See
+[Comparing regions (pinned spectra)](cube-viewer#comparing-regions-pinned-spectra).
+
 ### Statistics shown
 
 For each region the *Region Info* card shows:

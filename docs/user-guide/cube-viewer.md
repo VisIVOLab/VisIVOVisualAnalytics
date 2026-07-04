@@ -256,6 +256,33 @@ stats: current slice · spectrum: full cube"*. Plot, stats bar, channel
 marker and CSV export behave identically.
 ```
 
+#### Comparing regions (pinned spectra)
+
+The **Pin Spectrum** button in the spectrum header keeps the current
+profile on the plot as a persistent comparison curve, so you can overlay
+several regions' spectra on the same axes:
+
+1. Draw a region (Box / Circle / Polygon / Annulus) → its mean-per-channel
+   spectrum appears as the live **Current** curve (brand blue).
+2. Click **Pin Spectrum** → the current curve is frozen in place with its
+   own colour and a **legend** entry labelled from its title (e.g.
+   *"1. Mean per channel — Circle region"*).
+3. Draw another region → its spectrum becomes the new **Current** curve
+   while the pinned one stays overlaid. Repeat to accumulate more.
+4. **Clear Pins (N)** removes all pinned curves and hides the legend.
+
+The Y axis rescales to include every curve, so faint and bright regions
+stay visible together. Each pin captures the curve **as displayed** — if a
+smoothing kernel is active, the pinned curve is smoothed to match (CSV
+export still saves the raw *Current* spectrum only). Pinning also works on
+the live single-pixel probe spectrum, so you can compare spectra from
+different lines of sight.
+
+**Why it matters scientifically:** overlaying the mean spectra of several
+regions is the quickest way to compare line profiles across a source —
+e.g. a bright core vs. a faint outflow lobe, or the two horns of a
+rotating disk — without exporting each one and replotting externally.
+
 ### Open in VR
 
 Open the current cube in a VR headset and explore the volume in stereo.
