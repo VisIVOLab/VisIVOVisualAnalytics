@@ -122,7 +122,10 @@ The workflow is split in two:
 - **The dialog collects only the *model* parameters** (centre, PA, inclination,
   disk radius, Vsys, Vrot, σ). Changing any of these defines a different model,
   so *Overlay* triggers a backend fetch + contour (`vtkFlyingEdges3D`) and adds
-  the surface to the cube renderer.
+  the surface to the cube renderer. These parameters are **remembered per
+  dataset** — re-opening the dialog for the same cube (this session or a later
+  one) pre-fills your last values, so refining a disk model is iterative rather
+  than starting from the geometric defaults each time.
 - **A live "Kinematic Model" dock panel** then restyles the overlay with **no
   re-fetch** — the model cube and its FlyingEdges filter are kept client-side:
   - **Contour level (% peak)** — re-`SetValue` on the kept filter.

@@ -190,6 +190,10 @@ region and channel range.
    - **Channel range** — `Channel start / end`. Defaults to all channels.
      For per-channel σ across the full cube, leave defaults; for a single
      scalar σ over a specific line-free band, narrow to those channels.
+
+   The region you pick is **remembered per dataset**: the next time you open
+   this cube the dialog re-opens pre-filled with your last noise region, so you
+   don't have to hunt for the same line-free box again.
 3. Click **OK**. The dialog closes and the backend starts computing.
 4. The result panel shows summary stats over the per-channel arrays:
    - **σ per channel** = 1.4826 × MAD (robust 1σ for Gaussian noise),
