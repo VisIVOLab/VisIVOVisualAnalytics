@@ -30,7 +30,10 @@ In the [cube viewer](cube-viewer):
    - **RMS** — the cube noise level, used by some orders (e.g. weighted by
      1/σ²). Auto-filled from the latest noise estimate if available.
 3. Click **Compute**. The Moment card in the sidebar tracks the state
-   (`Computing… → Ready` or `Error`).
+   (`Computing… → Ready` or `Error`). The channel range and mask settings are
+   **remembered per dataset**, so re-opening the dialog for the same cube (this
+   session or later) restores your last-used range and threshold rather than
+   the full-cube default.
 4. When ready the result appears in the 2-D dock (replacing the slice
    view); the *2-D mode* combo flips to **Moment**.
 

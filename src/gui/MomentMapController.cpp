@@ -6,6 +6,7 @@
 
 #include "MomentMapController.h"
 
+#include "AnalysisParamStore.h"
 #include "app/DiagnosticsManager.h"
 #include "theme/ToolDialogStyle.h"
 #include "theme/VisivoTheme.h"
@@ -84,6 +85,24 @@ void MomentMapController::startComputation(int defaultOrder)
 
     Config config = m_currentConfig;
     config.order = defaultOrder;
+    // Restore the channel range + mask settings last used for THIS dataset so the
+    // dialog re-opens with them across sessions (order comes from the menu action,
+    // so it is NOT persisted).
+    {
+        const QVariantMap saved = AnalysisParamStore().load(m_filepath, u"moment"_s);
+        if (saved.contains(u"channelStart"_s))  config.channelStart  = saved.value(u"channelStart"_s).toInt();
+        if (saved.contains(u"channelEnd"_s))    config.channelEnd    = saved.value(u"channelEnd"_s).toInt();
+        if (saved.contains(u"maskEnabled"_s))   config.maskEnabled   = saved.value(u"maskEnabled"_s).toBool();
+        if (saved.contains(u"thresholdAuto"_s)) config.thresholdAuto = saved.value(u"thresholdAuto"_s).toBool();
+        if (saved.contains(u"thresholdValue"_s)) config.thresholdValue = saved.value(u"thresholdValue"_s).toDouble();
+    }
+    // Clamp restored channels to the current cube depth (defensive against a
+    // corrupted/hand-edited settings file).
+    {
+        const int maxCh = std::max(0, m_depth - 1);
+        config.channelStart = std::clamp(config.channelStart, 0, maxCh);
+        config.channelEnd   = std::clamp(config.channelEnd, 0, maxCh);
+    }
     // If the stored channel range is empty/uninitialised, default to the full cube.
     if (config.channelEnd <= config.channelStart) {
         const int totalChannels = std::max(1, m_depth);
@@ -94,6 +113,11 @@ void MomentMapController::startComputation(int defaultOrder)
         return;
     }
     m_currentConfig = config;
+    // Persist for the next session.
+    AnalysisParamStore().save(m_filepath, u"moment"_s, {
+            { u"channelStart"_s, config.channelStart }, { u"channelEnd"_s, config.channelEnd },
+            { u"maskEnabled"_s, config.maskEnabled }, { u"thresholdAuto"_s, config.thresholdAuto },
+            { u"thresholdValue"_s, config.thresholdValue } });
 
     const int requestId = ++m_currentRequestId;
 
