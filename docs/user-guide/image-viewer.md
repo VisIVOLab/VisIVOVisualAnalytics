@@ -40,6 +40,20 @@ probe, profile, region statistics, ruler/angle, catalogue markers — report
 by the LOD. The badge next to the file path shows `full-res` once the upgrade
 has loaded.
 
+### Viewport-driven level of detail
+
+On a multi-level pyramid image the viewer then **streams the visible region
+at the zoom-appropriate resolution**: when a pan or zoom settles, it fetches
+only the tiles covering the current view at the pyramid level where one source
+pixel ≈ one screen pixel, and swaps that sub-image in while keeping your camera
+in place. So zooming into a source reveals its **full-resolution** detail
+without ever materialising the whole gigapixel mosaic, and panning loads new
+regions on demand; memory stays bounded by the viewport rather than the image.
+The streamed sub-image carries a non-zero origin, but its world coordinates are
+still full-resolution source pixels, so every readout and overlay stays correct.
+Zooming back out returns to a coarse whole-image level. This is transparent —
+there are no controls; it just tracks your view.
+
 ## Adding layers
 
 You can overlay or compare multiple images in the same window:
