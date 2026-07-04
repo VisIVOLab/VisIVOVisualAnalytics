@@ -115,3 +115,89 @@ void TestImageLod::visibleTiles_fullImageCoversAll()
     const auto t = ImageLod::visibleTiles(0, 0, 1999, 1999, 0, g, 0);
     QCOMPARE(t.size(), 16);
 }
+
+void TestImageLod::viewportAssembly_fullResSubRegion()
+{
+    // Zoomed in: an 800px-tall source window shown on a 1000px viewport
+    // (< 1 source px per screen px) → full res (level 0). margin 0.
+    const auto g = bigGrid();  // 15979×14204, 512px, 6 levels
+    const auto va = ImageLod::viewportAssembly(1000, 1000, 1800, 1800, 1000.0, g, /*margin=*/0);
+    QVERIFY(va.valid);
+    QCOMPARE(va.level, 0);
+    QCOMPARE(va.spacing, 1.0);
+    QCOMPARE(va.txMin, 1);   // floor(1000/512)
+    QCOMPARE(va.txMax, 3);   // floor(1800/512)
+    QCOMPARE(va.originX, 512.0);   // txMin * span (span=512 at level 0)
+    QCOMPARE(va.originY, 512.0);
+    QCOMPARE(va.width, 1536);   // 3 tiles × 512
+    QCOMPARE(va.height, 1536);
+}
+
+void TestImageLod::viewportAssembly_wholeImageZoomedOut()
+{
+    // Fully zoomed out (whole 14204px height on a 1000px viewport → ~14×,
+    // log2≈3.83 → level 4). Covers every tile; the last tile is CLIPPED to the
+    // level grid, not padded (width 999, not 2×512=1024).
+    const auto g = bigGrid();
+    const auto va = ImageLod::viewportAssembly(0, 0, 15978, 14203, 1000.0, g, /*margin=*/1);
+    QVERIFY(va.valid);
+    QCOMPARE(va.level, 4);           // step 16, span 8192, tileCounts(4) = 2×2
+    QCOMPARE(va.spacing, 16.0);
+    QCOMPARE(va.txMin, 0);
+    QCOMPARE(va.txMax, 1);
+    QCOMPARE(va.originX, 0.0);
+    QCOMPARE(va.width, 999);         // ceil(15979/16) clipped from 1024
+    QCOMPARE(va.height, 888);        // ceil(14204/16) clipped from 1024
+}
+
+void TestImageLod::viewportAssembly_midLevelOriginAndSpacing()
+{
+    // 4000px source window on a 1000px viewport → 4× → level 2 (step 4, span 2048).
+    const auto g = bigGrid();
+    const auto va = ImageLod::viewportAssembly(4000, 4000, 8000, 8000, 1000.0, g, /*margin=*/0);
+    QVERIFY(va.valid);
+    QCOMPARE(va.level, 2);
+    QCOMPARE(va.spacing, 4.0);
+    QCOMPARE(va.txMin, 1);           // floor(4000/2048)
+    QCOMPARE(va.txMax, 3);           // floor(8000/2048)
+    QCOMPARE(va.originX, 2048.0);    // txMin * span
+    QCOMPARE(va.width, 1536);        // 3 tiles × 512
+}
+
+void TestImageLod::viewportAssembly_coordinateMappingIsFullRes()
+{
+    // The whole point: a decimated voxel v maps to full-res pixel
+    // originX + v*spacing, and that must equal the true source pixel of that
+    // sample. voxel 0 is the union's first level pixel (tileOriginX) → full-res
+    // tileOriginX*step; the last voxel maps within the image bounds.
+    const auto g = bigGrid();
+    const auto va = ImageLod::viewportAssembly(3000, 5000, 6000, 9000, 1000.0, g, /*margin=*/0);
+    QVERIFY(va.valid);
+    const double step = va.spacing;
+    QCOMPARE(va.originX, static_cast<double>(va.tileOriginX) * step);   // voxel 0 → full-res
+    QCOMPARE(va.originY, static_cast<double>(va.tileOriginY) * step);
+    // Last voxel stays inside the full-res image.
+    const double lastX = va.originX + (va.width - 1) * va.spacing;
+    const double lastY = va.originY + (va.height - 1) * va.spacing;
+    QVERIFY(lastX <= g.fullWidth - 1);
+    QVERIFY(lastY <= g.fullHeight - 1);
+}
+
+void TestImageLod::viewportAssembly_degenerateGridInvalid()
+{
+    const ImageLod::TileGrid bad{ 0, 0, 512, 6 };
+    const auto va = ImageLod::viewportAssembly(0, 0, 100, 100, 1000.0, bad, 1);
+    QVERIFY(!va.valid);
+}
+
+void TestImageLod::viewportAssembly_nonIntersectingInvalid()
+{
+    // Rectangle entirely off the image (panned away) → invalid, so the caller
+    // keeps its current view instead of over-fetching an edge tile.
+    const auto g = bigGrid();
+    const auto off = ImageLod::viewportAssembly(-5000, -5000, -1000, -1000, 1000.0, g, 1);
+    QVERIFY(!off.valid);
+    // Partially overlapping (top-left corner clipped in) still assembles.
+    const auto partial = ImageLod::viewportAssembly(-1000, -1000, 500, 500, 1000.0, g, 0);
+    QVERIFY(partial.valid);
+}

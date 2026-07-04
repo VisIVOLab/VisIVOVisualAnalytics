@@ -475,6 +475,112 @@ ImageLayerLoadResult fetchRemoteImageLayer(const QString &backendUrl, const QStr
     return result;
 }
 
+// Outcome of assembling a set of tiles: ok/error + the folded finite value range
+// (degenerate all-NaN [0,0] tiles are skipped so they don't drag the range to 0).
+struct TileAssembleOutcome
+{
+    bool ok{ true };
+    QString error;
+    double rmin{ 0.0 };
+    double rmax{ 0.0 };
+    bool haveRange{ false };
+};
+
+// Fetch every tile in `coords` at `level` and blit it via `blit`, fanned out
+// across up to 8 parallel chunks (each its own BackendClient — value-copied
+// inputs only; blits are lock-free since every tile writes a disjoint rectangle
+// of the shared destination buffer). `blit(tile)` returns false on a malformed
+// tile. Shared by the whole-image and viewport assemblers. On a chunk failure
+// the outcome carries the first error but ALL chunks are still joined before
+// returning (the caller discards the half-built image).
+template <typename BlitFn>
+TileAssembleOutcome fetchAndBlitTiles(const QString &backendUrl, const QString &datasetId,
+                                      const QString &sessionId, const QString &backendToken,
+                                      int level, int tileSize,
+                                      const QVector<QPair<int, int>> &coords, BlitFn blit)
+{
+    TileAssembleOutcome out;
+    if (coords.isEmpty()) {
+        return out;
+    }
+
+    struct ChunkResult
+    {
+        bool ok{ true };
+        QString error;
+        double rmin{ 0.0 };
+        double rmax{ 0.0 };
+        bool haveRange{ false };
+    };
+    const auto processChunk =
+            [backendUrl, datasetId, sessionId, backendToken, tileSize, level, blit](
+                    const QVector<QPair<int, int>> &chunk) -> ChunkResult {
+        ChunkResult cr;
+        BackendClient c(backendUrl, backendToken);
+        c.setSessionId(sessionId);
+        for (const auto &xy : chunk) {
+            const auto t = c.requestImageTile(datasetId, level, xy.first, xy.second, tileSize);
+            if (!t.valid || !blit(t)) {
+                cr.ok = false;
+                cr.error = t.error.isEmpty() ? u"Remote image tile assembly failed."_s : t.error;
+                return cr;
+            }
+            if (t.rangeMin < t.rangeMax) {
+                if (!cr.haveRange) {
+                    cr.rmin = t.rangeMin;
+                    cr.rmax = t.rangeMax;
+                    cr.haveRange = true;
+                } else {
+                    cr.rmin = std::min(cr.rmin, t.rangeMin);
+                    cr.rmax = std::max(cr.rmax, t.rangeMax);
+                }
+            }
+        }
+        return cr;
+    };
+
+    const auto foldRange = [&](double lo, double hi, bool have) {
+        if (!have) {
+            return;
+        }
+        if (!out.haveRange) {
+            out.rmin = lo;
+            out.rmax = hi;
+            out.haveRange = true;
+        } else {
+            out.rmin = std::min(out.rmin, lo);
+            out.rmax = std::max(out.rmax, hi);
+        }
+    };
+
+    constexpr int kConcurrency = 8;
+    const int nChunks = std::min(kConcurrency, static_cast<int>(coords.size()));
+    QVector<QVector<QPair<int, int>>> chunks(nChunks);
+    for (int i = 0; i < coords.size(); ++i) {
+        chunks[i % nChunks].append(coords[i]);
+    }
+    QThreadPool pool;
+    pool.setMaxThreadCount(nChunks);
+    QVector<QFuture<ChunkResult>> futures;
+    futures.reserve(nChunks);
+    for (const auto &chunk : chunks) {
+        futures.append(QtConcurrent::run(&pool, processChunk, chunk));
+    }
+    for (auto &f : futures) {
+        f.waitForFinished();
+        const ChunkResult cr = f.result();
+        if (!cr.ok) {
+            out.ok = false;
+            if (out.error.isEmpty()) {
+                out.error = cr.error;
+            }
+        } else {
+            foldRange(cr.rmin, cr.rmax, cr.haveRange);
+        }
+    }
+    return out;
+}
+
 // Assemble the full-resolution image from level-0 pyramid tiles. Each tile is a
 // bounded out-of-core read on the backend, so a mosaic too large for the backend
 // to load in one /v1/image/full call can still be served tile-by-tile. The
@@ -573,95 +679,19 @@ ImageLayerLoadResult fetchRemoteImageLayerTiled(const QString &backendUrl, const
         }
     }
 
-    // Per-chunk result: ok/error + the chunk's finite value range (degenerate
-    // [0,0] all-NaN tiles are skipped so they don't drag the range toward 0).
-    struct ChunkResult
-    {
-        bool ok{ true };
-        QString error;
-        double rmin{ 0.0 };
-        double rmax{ 0.0 };
-        bool haveRange{ false };
-    };
-    // Fetch + blit one chunk of tiles with its own BackendClient (value-copied
-    // inputs only). Blits are lock-free (disjoint regions).
-    const auto processChunk =
-            [backendUrl, datasetId, sessionId, backendToken, ts, level, blit](
-                    const QVector<QPair<int, int>> &chunk) -> ChunkResult {
-        ChunkResult cr;
-        BackendClient c(backendUrl, backendToken);
-        c.setSessionId(sessionId);
-        for (const auto &xy : chunk) {
-            const auto t = c.requestImageTile(datasetId, level, xy.first, xy.second, ts);
-            if (!t.valid || !blit(t)) {
-                cr.ok = false;
-                cr.error = t.error.isEmpty() ? u"Remote image tile assembly failed."_s : t.error;
-                return cr;
-            }
-            if (t.rangeMin < t.rangeMax) {
-                if (!cr.haveRange) {
-                    cr.rmin = t.rangeMin;
-                    cr.rmax = t.rangeMax;
-                    cr.haveRange = true;
-                } else {
-                    cr.rmin = std::min(cr.rmin, t.rangeMin);
-                    cr.rmax = std::max(cr.rmax, t.rangeMax);
-                }
-            }
-        }
-        return cr;
-    };
-
-    double rmin = 0.0;
-    double rmax = 0.0;
-    bool haveRange = false;
-    const auto foldRange = [&](double lo, double hi, bool have) {
-        if (!have) {
-            return;
-        }
-        if (!haveRange) {
-            rmin = lo;
-            rmax = hi;
-            haveRange = true;
-        } else {
-            rmin = std::min(rmin, lo);
-            rmax = std::max(rmax, hi);
-        }
-    };
-
-    // Parallel fan-out: the backend serves tile POSTs concurrently on its
-    // process pool, so a bounded burst turns the hundreds-of-round-trips serial
-    // assembly into ~wall-clock/kConcurrency. Round-robin balances edge tiles
-    // (which are cheaper) across chunks.
-    int concurrency = 1;
-    if (!coords.isEmpty()) {
-        constexpr int kConcurrency = 8;
-        const int nChunks = std::min(kConcurrency, static_cast<int>(coords.size()));
-        concurrency = nChunks;
-        QVector<QVector<QPair<int, int>>> chunks(nChunks);
-        for (int i = 0; i < coords.size(); ++i) {
-            chunks[i % nChunks].append(coords[i]);
-        }
-        QThreadPool pool;
-        pool.setMaxThreadCount(nChunks);
-        QVector<QFuture<ChunkResult>> futures;
-        futures.reserve(nChunks);
-        for (const auto &chunk : chunks) {
-            futures.append(QtConcurrent::run(&pool, processChunk, chunk));
-        }
-        for (auto &f : futures) {
-            f.waitForFinished();
-            const ChunkResult cr = f.result();
-            if (!cr.ok) {
-                result.errorMessage = cr.error.toStdString();
-                return result;  // pool dtor joins the remaining tasks before image frees
-            }
-            foldRange(cr.rmin, cr.rmax, cr.haveRange);
-        }
+    // Parallel fan-out: the backend serves tile POSTs concurrently, so a bounded
+    // burst turns hundreds of serial round-trips into ~wall-clock/kConcurrency.
+    const auto outcome = fetchAndBlitTiles(backendUrl, datasetId, sessionId, backendToken,
+                                           level, ts, coords, blit);
+    if (!outcome.ok) {
+        result.errorMessage = outcome.error.toStdString();
+        return result;
     }
+    const int concurrency = coords.isEmpty() ? 1 : std::min(8, static_cast<int>(coords.size()));
 
     result.imageData = image;
-    result.scalarRange = { rmin, rmax };
+    result.scalarRange = { outcome.haveRange ? outcome.rmin : 0.0,
+                           outcome.haveRange ? outcome.rmax : 0.0 };
     // Final image (not a preview in the reload-chain sense — must NOT trigger
     // another fetch). Decimation is conveyed via spacing/origin.
     result.isPreview = false;
@@ -676,6 +706,103 @@ ImageLayerLoadResult fetchRemoteImageLayerTiled(const QString &backendUrl, const
                               "from %6x%7 tiles (size %8, %9-way)")
                        .arg(level).arg(downW).arg(downH).arg(fullW).arg(fullH)
                        .arg(cols).arg(rows).arg(ts).arg(concurrency);
+    return result;
+}
+
+// Assemble ONLY the tiles covering the currently-visible source rectangle, at the
+// pyramid level chosen for the current zoom (viewport-driven LOD). Unlike the
+// whole-image assembler this produces a sub-image with a non-zero origin: the VTK
+// image's world coords still equal full-res source pixels (origin + voxel*spacing),
+// so every overlay/readout stays correct. RAM is bounded by the viewport, not the
+// image, enabling smooth pan/zoom on gigapixel mosaics. `rect*` is the visible
+// source-pixel rectangle (full res) and `viewportHeightPx` the on-screen height.
+ImageLayerLoadResult fetchRemoteImageLayerViewport(
+        const QString &backendUrl, const QString &datasetId, const QString &datasetPath,
+        int fullW, int fullH, int numLevels, int tileSize,
+        double rectX0, double rectY0, double rectX1, double rectY1, double viewportHeightPx,
+        int requestGeneration, const QString &sessionId, const QString &backendToken)
+{
+    ImageLayerLoadResult result;
+    result.filepath = datasetPath.toStdString();
+    result.requestGeneration = requestGeneration;
+
+    const int ts = tileSize > 0 ? tileSize : 256;
+    const ImageLod::TileGrid grid{ fullW, fullH, ts, numLevels };
+    const ImageLod::ViewportAssembly va =
+            ImageLod::viewportAssembly(rectX0, rectY0, rectX1, rectY1, viewportHeightPx, grid, 1);
+    if (!va.valid) {
+        result.errorMessage = "Invalid viewport LOD geometry.";
+        return result;
+    }
+
+    const int unionW = va.width;
+    const int unionH = va.height;
+    const int x0px = va.tileOriginX;   // level-pixel offset of the tile union
+    const int y0px = va.tileOriginY;
+
+    vtkSmartPointer<vtkImageData> image = vtkSmartPointer<vtkImageData>::New();
+    image->SetExtent(0, unionW - 1, 0, unionH - 1, 0, 0);
+    image->SetOrigin(va.originX, va.originY, 0.);
+    image->SetSpacing(va.spacing, va.spacing, 1.);
+    image->AllocateScalars(VTK_FLOAT, 1);
+    float *const buf = static_cast<float *>(image->GetScalarPointer());
+
+    // Blit a tile into the union buffer at its offset relative to the union origin
+    // (level pixels). Captured by value (buf + dims + offsets) so it is safe across
+    // worker threads: every tile writes a disjoint rectangle, no locking.
+    const auto blit = [buf, unionW, unionH, ts, x0px, y0px](
+                              const BackendImageTileResult &t) -> bool {
+        const qsizetype expected =
+                static_cast<qsizetype>(t.width) * t.height * static_cast<qsizetype>(sizeof(float));
+        if (t.width <= 0 || t.height <= 0 || t.data.size() != expected) {
+            return false;
+        }
+        const int cx = t.tileX * ts - x0px;   // column offset within the union
+        const int cy = t.tileY * ts - y0px;   // row offset within the union
+        if (cx < 0 || cy < 0 || cx + t.width > unionW || cy + t.height > unionH) {
+            return false;
+        }
+        const float *src = reinterpret_cast<const float *>(t.data.constData());
+        for (int r = 0; r < t.height; ++r) {
+            std::memcpy(buf + (static_cast<qsizetype>(cy + r) * unionW + cx),
+                        src + static_cast<qsizetype>(r) * t.width,
+                        static_cast<std::size_t>(t.width) * sizeof(float));
+        }
+        return true;
+    };
+
+    QVector<QPair<int, int>> coords;
+    coords.reserve((va.txMax - va.txMin + 1) * (va.tyMax - va.tyMin + 1));
+    for (int ty = va.tyMin; ty <= va.tyMax; ++ty) {
+        for (int tx = va.txMin; tx <= va.txMax; ++tx) {
+            coords.append({ tx, ty });
+        }
+    }
+
+    const auto outcome = fetchAndBlitTiles(backendUrl, datasetId, sessionId, backendToken,
+                                           va.level, ts, coords, blit);
+    if (!outcome.ok) {
+        result.errorMessage = outcome.error.toStdString();
+        return result;
+    }
+    const int concurrency = coords.isEmpty() ? 1 : std::min(8, static_cast<int>(coords.size()));
+
+    result.imageData = image;
+    result.scalarRange = { outcome.haveRange ? outcome.rmin : 0.0,
+                           outcome.haveRange ? outcome.rmax : 0.0 };
+    result.isPreview = false;
+    result.spacing = { va.spacing, va.spacing, 1.0 };
+    result.origin = { va.originX, va.originY, 0.0 };
+    result.fullWidth = fullW;
+    result.fullHeight = fullH;
+    result.previewScaleFactor = static_cast<double>(1 << va.level);
+    result.valid = true;
+    qDebug().noquote()
+            << QStringLiteral("[remote-image] viewport assembled level=%1 dims=%2x%3 "
+                              "origin=(%4,%5) tiles=%6 (%7-way) full=%8x%9")
+                       .arg(va.level).arg(unionW).arg(unionH)
+                       .arg(va.originX, 0, 'f', 0).arg(va.originY, 0, 'f', 0)
+                       .arg(coords.size()).arg(concurrency).arg(fullW).arg(fullH);
     return result;
 }
 

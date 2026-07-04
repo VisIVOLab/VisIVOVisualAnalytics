@@ -44,6 +44,32 @@ int chooseAssemblyLevel(int fullWidth, int fullHeight, int numLevels, long long 
 QVector<QPair<int, int>> visibleTiles(double x0, double y0, double x1, double y1,
                                       int level, const TileGrid &grid, int margin = 1);
 
+/// Everything the viewer needs to assemble ONE sub-image covering the visible
+/// source rectangle at the level-of-detail chosen for the current zoom. All
+/// pixel coordinates are FULL-RES source pixels unless noted. Feeds the VTK
+/// image: SetExtent(0,width-1, 0,height-1), SetOrigin(originX,originY,0),
+/// SetSpacing(spacing,spacing,1) — so a decimated voxel v maps to full-res
+/// pixel originX + v*spacing, keeping every coordinate readout / overlay
+/// correct (same convention the whole-image assembly uses).
+struct ViewportAssembly
+{
+    int level{ 0 };
+    int txMin{ 0 }, tyMin{ 0 }, txMax{ 0 }, tyMax{ 0 };  ///< inclusive tile range at level
+    int tileOriginX{ 0 }, tileOriginY{ 0 };  ///< level-pixel offset of the union (txMin*tileSize)
+    int width{ 0 }, height{ 0 };             ///< assembled sub-image dims, in level pixels
+    double originX{ 0.0 }, originY{ 0.0 };   ///< full-res pixel offset of the union
+    double spacing{ 1.0 };                   ///< full-res px per level px == 2^level
+    bool valid{ false };
+};
+
+/// Compute the ViewportAssembly for the visible source rectangle [x0,x1]×[y0,y1]
+/// (full-res px, any corner order) given the viewport height in screen px. The
+/// level is chosen so one displayed pixel ≈ one screen pixel; the tile set is
+/// the visible tiles + ``margin`` ring, clamped to the image. Returns {valid=false}
+/// if the grid is degenerate or the rectangle does not intersect the image.
+ViewportAssembly viewportAssembly(double x0, double y0, double x1, double y1,
+                                  double viewportHeightPx, const TileGrid &grid, int margin = 1);
+
 }  // namespace ImageLod
 
 #endif  // ImageLod_h

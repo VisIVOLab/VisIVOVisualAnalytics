@@ -25,6 +25,13 @@ private slots:
     void visibleTiles_cornerOrderTolerant();
     void visibleTiles_clampsToImage();
     void visibleTiles_fullImageCoversAll();
+
+    void viewportAssembly_fullResSubRegion();
+    void viewportAssembly_wholeImageZoomedOut();
+    void viewportAssembly_midLevelOriginAndSpacing();
+    void viewportAssembly_coordinateMappingIsFullRes();
+    void viewportAssembly_degenerateGridInvalid();
+    void viewportAssembly_nonIntersectingInvalid();
 };
 
 #endif  // TestImageLod_h

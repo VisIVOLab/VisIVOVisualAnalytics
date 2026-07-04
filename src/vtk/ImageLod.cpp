@@ -88,4 +88,65 @@ QVector<QPair<int, int>> visibleTiles(double x0, double y0, double x1, double y1
     return out;
 }
 
+ViewportAssembly viewportAssembly(double x0, double y0, double x1, double y1,
+                                  double viewportHeightPx, const TileGrid &grid, int margin)
+{
+    ViewportAssembly va;
+    const int ts = std::max(1, grid.tileSize);
+    if (grid.fullWidth <= 0 || grid.fullHeight <= 0) {
+        return va;  // valid == false
+    }
+
+    const double visibleSourceHeightPx = std::abs(y1 - y0);
+    const int lvl = std::clamp(chooseLevel(visibleSourceHeightPx, viewportHeightPx, grid.numLevels),
+                               0, std::max(0, grid.numLevels - 1));
+    const long long step = 1LL << lvl;
+    const long long span = static_cast<long long>(ts) << lvl;  // full-res px per tile
+
+    const auto counts = tileCounts(lvl, grid);
+    const int cols = counts.first;
+    const int rows = counts.second;
+    if (cols <= 0 || rows <= 0) {
+        return va;
+    }
+
+    // Reject a rectangle that does not intersect the image at all (fully panned
+    // away): the caller should keep its current view rather than fetch an edge
+    // tile. Corner-order tolerant.
+    const double rminx = std::min(x0, x1), rmaxx = std::max(x0, x1);
+    const double rminy = std::min(y0, y1), rmaxy = std::max(y0, y1);
+    if (rmaxx < 0.0 || rminx > grid.fullWidth - 1.0
+        || rmaxy < 0.0 || rminy > grid.fullHeight - 1.0) {
+        return va;  // valid == false
+    }
+
+    // Clamp the requested rectangle to the image (tolerant of corner order).
+    const double lox = std::clamp(std::min(x0, x1), 0.0, static_cast<double>(grid.fullWidth - 1));
+    const double hix = std::clamp(std::max(x0, x1), 0.0, static_cast<double>(grid.fullWidth - 1));
+    const double loy = std::clamp(std::min(y0, y1), 0.0, static_cast<double>(grid.fullHeight - 1));
+    const double hiy = std::clamp(std::max(y0, y1), 0.0, static_cast<double>(grid.fullHeight - 1));
+
+    const int m = std::max(0, margin);
+    const double spanD = static_cast<double>(span);
+    va.txMin = std::clamp(static_cast<int>(std::floor(lox / spanD)) - m, 0, cols - 1);
+    va.txMax = std::clamp(static_cast<int>(std::floor(hix / spanD)) + m, 0, cols - 1);
+    va.tyMin = std::clamp(static_cast<int>(std::floor(loy / spanD)) - m, 0, rows - 1);
+    va.tyMax = std::clamp(static_cast<int>(std::floor(hiy / spanD)) + m, 0, rows - 1);
+
+    // Whole-image dims at this level (so the last tile is clipped, not padded).
+    const int downW = static_cast<int>((static_cast<long long>(grid.fullWidth) + step - 1) / step);
+    const int downH = static_cast<int>((static_cast<long long>(grid.fullHeight) + step - 1) / step);
+
+    va.level = lvl;
+    va.tileOriginX = va.txMin * ts;
+    va.tileOriginY = va.tyMin * ts;
+    va.width  = std::min((va.txMax + 1) * ts, downW) - va.tileOriginX;
+    va.height = std::min((va.tyMax + 1) * ts, downH) - va.tileOriginY;
+    va.originX = static_cast<double>(va.txMin) * spanD;   // == tileOriginX * step
+    va.originY = static_cast<double>(va.tyMin) * spanD;
+    va.spacing = static_cast<double>(step);
+    va.valid = (va.width > 0 && va.height > 0);
+    return va;
+}
+
 }  // namespace ImageLod
