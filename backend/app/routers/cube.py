@@ -477,11 +477,22 @@ class CubeKinematicSelectRequest(BaseModel):
     seed_z: int
     seed_y: int
     seed_x: int
+    # Extra seeds for multi-object selection: ⇧-click ADDs another source (union),
+    # ⌜-click CARVEs a region out. Each is [z, y, x].
+    add_seeds: list[list[int]] = Field(default_factory=list)
+    sub_seeds: list[list[int]] = Field(default_factory=list)
     reach: float = Field(default=8.0, gt=0.0, allow_inf_nan=False)     # cost budget
     lambda_v: float = Field(default=1.0, gt=0.0, allow_inf_nan=False)  # velocity weight
     sigma: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)     # 0 → robust auto
     nsigma: float = Field(default=2.5, gt=0.0, allow_inf_nan=False)    # soft threshold (σ units)
     roi_radius: int = Field(default=32, ge=1, le=64)                   # spatial bound (≤64: caps graph size)
+
+    @model_validator(mode="after")
+    def _check_seeds(self) -> "CubeKinematicSelectRequest":
+        for s in (*self.add_seeds, *self.sub_seeds):
+            if len(s) != 3:
+                raise ValueError("each add/sub seed must be [z, y, x]")
+        return self
 
 
 @router.post("/v1/cube/kinematic_select_bin", tags=["cube"])
@@ -493,16 +504,23 @@ async def cube_kinematic_select_bin(
     from ..compute import worker_cube_kinematic_select  # noqa: PLC0415
     try:
         path = _require_cube_path(session, request.dataset_id)
+        seeds = [[request.seed_z, request.seed_y, request.seed_x], *[list(s) for s in request.add_seeds]]
+        subs = [list(s) for s in request.sub_seeds]
         result = await _run_heavy_with_limit(
             session,
             worker_cube_kinematic_select,
             path,
-            request.seed_z, request.seed_y, request.seed_x,
+            seeds, subs,
             request.reach, request.lambda_v, request.sigma,
             request.roi_radius, request.nsigma,
         )
     except HTTPException:
         raise
+    except ValueError as exc:
+        # Bad user input (seed outside cube / on blank emission, empty seed set) →
+        # 422, not a server error.
+        return Response(content=str(exc).encode("utf-8"),
+                        media_type="text/plain", status_code=422)
     except Exception as exc:
         return Response(content=str(exc).encode("utf-8"),
                         media_type="text/plain", status_code=500)
@@ -525,6 +543,67 @@ async def cube_kinematic_select_bin(
     }
     return Response(content=raw_bytes, media_type="application/octet-stream",
                     headers=headers)
+
+
+class CubeMaskSelectionRequest(CubeKinematicSelectRequest):
+    """Apply a Kinematic Lasso selection to the cube (isolate / remove)."""
+    mode: str = "blank_outside"   # "blank_outside" (isolate) | "blank_inside" (remove)
+    output_basename: str = ""
+
+    @model_validator(mode="after")
+    def _check_mode2(self) -> "CubeMaskSelectionRequest":
+        if self.mode not in ("blank_inside", "blank_outside"):
+            raise ValueError("mode must be 'blank_inside' or 'blank_outside'")
+        return self
+
+
+@router.post("/v1/cube/mask_selection", response_model=CubeMaskResponse, tags=["cube"])
+async def cube_mask_selection(
+    request: CubeMaskSelectionRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> CubeMaskResponse:
+    """Blank inside/outside a Kinematic Lasso selection and register the masked
+    cube as a new session dataset (persisted in Workspace Exports)."""
+    from ..compute import worker_cube_mask_selection  # noqa: PLC0415
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "cube":
+            raise HTTPException(422, "3-D masking requires a spectral cube dataset.")
+        src_stem = Path(entry["path"]).stem
+        tag = "inside" if request.mode == "blank_inside" else "outside"
+        basename = request.output_basename.strip() or f"{src_stem}_lasso-{tag}.fits"
+        output_path = str(make_workspace_path(basename))
+
+        seeds = [[request.seed_z, request.seed_y, request.seed_x], *[list(s) for s in request.add_seeds]]
+        subs = [list(s) for s in request.sub_seeds]
+        result = await _run_heavy_with_limit(
+            session,
+            worker_cube_mask_selection,
+            entry["path"], output_path,
+            seeds, subs,
+            request.reach, request.lambda_v, request.sigma,
+            request.roi_radius, request.nsigma, request.mode,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return CubeMaskResponse(valid=False, error=str(exc))
+
+    new_id = f"ds_{uuid.uuid4().hex[:12]}"
+    session.datasets[new_id] = {
+        "path":   result["output_path"],
+        "kind":   "cube",
+        "width":  result["width"],
+        "height": result["height"],
+        "depth":  result["depth"],
+    }
+    workspace_filename = Path(result["output_path"]).name
+    logger.info("[cube_mask_selection] new dataset new_id=%s mode=%s", new_id, request.mode)
+    return CubeMaskResponse(
+        valid=True, new_dataset_id=new_id, workspace_filename=workspace_filename,
+        **{k: result[k] for k in
+           ("output_path", "width", "height", "depth", "range_min", "range_max")})
 
 
 # ── Single-channel 2-D FITS export ───────────────────────────────────────────

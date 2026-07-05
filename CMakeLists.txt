@@ -403,6 +403,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_Region.cpp
         src/gui/vtkWindowCube_Setup.cpp
         src/gui/vtkWindowCube_Kinematic.cpp
+        src/gui/vtkWindowCube_Lasso.cpp
         src/gui/vtkWindowCube_Movie.cpp
         src/gui/vtkWindowCube_Link.cpp
         src/gui/vtkWindowCube_RegionIO.cpp

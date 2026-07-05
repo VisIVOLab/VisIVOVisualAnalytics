@@ -1339,6 +1339,113 @@ BackendKinematicModelResult BackendClient::requestKinematicModel(
     return r;
 }
 
+// Build a JSON array of [z,y,x] seed triples.
+static QJsonArray seedsToJson(const QVector<std::array<int, 3>> &seeds)
+{
+    QJsonArray arr;
+    for (const auto &s : seeds) {
+        arr.append(QJsonArray{ s[0], s[1], s[2] });
+    }
+    return arr;
+}
+
+BackendKinematicSelectResult BackendClient::kinematicSelect(
+        const QString &datasetId, int seedZ, int seedY, int seedX,
+        double reach, double lambdaV, double sigma, double nsigma, int roiRadius,
+        const QVector<std::array<int, 3>> &addSeeds,
+        const QVector<std::array<int, 3>> &subSeeds) const
+{
+    BackendKinematicSelectResult r;
+    QJsonObject bodyObj{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("seed_z"), seedZ }, { QStringLiteral("seed_y"), seedY },
+            { QStringLiteral("seed_x"), seedX },
+            { QStringLiteral("reach"), reach }, { QStringLiteral("lambda_v"), lambdaV },
+            { QStringLiteral("sigma"), sigma }, { QStringLiteral("nsigma"), nsigma },
+            { QStringLiteral("roi_radius"), roiRadius } };
+    if (!addSeeds.isEmpty()) bodyObj.insert(QStringLiteral("add_seeds"), seedsToJson(addSeeds));
+    if (!subSeeds.isEmpty()) bodyObj.insert(QStringLiteral("sub_seeds"), seedsToJson(subSeeds));
+    const QJsonDocument body(bodyObj);
+    QNetworkRequest req =
+            buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/cube/kinematic_select_bin")));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray data = performBinaryPost(
+            nam, req, body.toJson(QJsonDocument::Compact), 120000, status, headers, err);
+    if (status != 200) {
+        const QString reason = !data.isEmpty() ? QString::fromUtf8(data)
+                             : (err.isEmpty() ? QString() : err);
+        r.error = reason.isEmpty()
+                          ? QStringLiteral("HTTP %1 on kinematic_select_bin").arg(status)
+                          : QStringLiteral("HTTP %1: %2").arg(status).arg(reason);
+        return r;
+    }
+    const auto hget = [&](const char *name) -> QByteArray {
+        return headers.value(QByteArray(name).toLower());
+    };
+    r.roiWidth  = hget("X-Visivo-Width").toInt();
+    r.roiHeight = hget("X-Visivo-Height").toInt();
+    r.roiDepth  = hget("X-Visivo-Depth").toInt();
+    r.count     = hget("X-Visivo-Selected-Count").toInt();
+    const auto origin = hget("X-Visivo-Origin").split(',');
+    if (origin.size() == 3) {
+        r.originX = origin[0].toInt();
+        r.originY = origin[1].toInt();
+        r.originZ = origin[2].toInt();
+    }
+    const auto full = hget("X-Visivo-Full-Shape").split(',');
+    if (full.size() == 3) {
+        r.fullWidth  = full[0].toInt();
+        r.fullHeight = full[1].toInt();
+        r.fullDepth  = full[2].toInt();
+    }
+    const auto bb = hget("X-Visivo-Bbox").split(',');
+    for (int i = 0; i < 6 && i < bb.size(); ++i) {
+        r.bbox[i] = bb[i].toInt();
+    }
+    const qint64 expected =
+            qint64(r.roiWidth) * qint64(r.roiHeight) * qint64(r.roiDepth) * qint64(sizeof(float));
+    if (r.roiWidth <= 0 || r.roiHeight <= 0 || r.roiDepth <= 0 || expected != data.size()) {
+        r.error = QStringLiteral("bad kinematic selection payload: got %1 bytes, expected %2")
+                          .arg(data.size()).arg(expected);
+        return r;
+    }
+    r.data = data;
+    r.valid = true;
+    return r;
+}
+
+BackendSaveSubregionResult BackendClient::maskCubeSelection(
+        const QString &datasetId, int seedZ, int seedY, int seedX,
+        const QVector<std::array<int, 3>> &addSeeds, const QVector<std::array<int, 3>> &subSeeds,
+        double reach, double lambdaV, const QString &mode,
+        double sigma, double nsigma, int roiRadius, const QString &outputBasename) const
+{
+    BackendSaveSubregionResult result;
+    QJsonObject bodyObj{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("seed_z"), seedZ }, { QStringLiteral("seed_y"), seedY },
+            { QStringLiteral("seed_x"), seedX },
+            { QStringLiteral("reach"), reach }, { QStringLiteral("lambda_v"), lambdaV },
+            { QStringLiteral("sigma"), sigma }, { QStringLiteral("nsigma"), nsigma },
+            { QStringLiteral("roi_radius"), roiRadius },
+            { QStringLiteral("mode"), mode },
+            { QStringLiteral("output_basename"), outputBasename } };
+    if (!addSeeds.isEmpty()) bodyObj.insert(QStringLiteral("add_seeds"), seedsToJson(addSeeds));
+    if (!subSeeds.isEmpty()) bodyObj.insert(QStringLiteral("sub_seeds"), seedsToJson(subSeeds));
+    QString error;
+    const QByteArray raw = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/cube/mask_selection")), QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    return parseSaveSubregionObject(QJsonDocument::fromJson(raw).object());
+}
+
 BackendVelocityGridResult BackendClient::fetchVelocitySubgrid(const QString &datasetId,
                                                               int x0, int x1, int y0, int y1,
                                                               int z0, int z1) const

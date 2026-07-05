@@ -20,9 +20,12 @@ isosurface preview and/or applies it (isolate / remove) via the mask endpoint.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from ._common import _finite_range, ScientificFitsDataset
 
 
 def cube_kinematic_select(
@@ -127,9 +130,40 @@ def cube_kinematic_select(
     return mask
 
 
+def cube_kinematic_select_multi(
+    data: np.ndarray,
+    seeds: list[tuple[int, int, int]],
+    sub_seeds: list[tuple[int, int, int]],
+    reach: float = 8.0,
+    lambda_v: float = 1.0,
+    sigma: float | None = None,
+    roi_radius: int = 32,
+    nsigma: float = 2.5,
+) -> np.ndarray:
+    """Union of the geodesic selections grown from each seed in ``seeds``, minus
+    the selections grown from each seed in ``sub_seeds`` — so the user can ⇧-click
+    to ADD another source and ⌥-click to CARVE a region out. A ``sub_seed`` that
+    lands on blank/NaN is skipped (nothing to subtract)."""
+    if not seeds:
+        raise ValueError("At least one selection seed is required.")
+    mask: np.ndarray | None = None
+    for s in seeds:
+        m = cube_kinematic_select(data, s, reach, lambda_v, sigma, roi_radius, nsigma)
+        mask = m if mask is None else (mask | m)
+    assert mask is not None
+    for s in sub_seeds:
+        try:
+            m = cube_kinematic_select(data, s, reach, lambda_v, sigma, roi_radius, nsigma)
+        except ValueError:
+            continue    # sub-seed on blank emission → nothing to remove
+        mask &= ~m
+    return mask
+
+
 def worker_cube_kinematic_select(
     path: str,
-    seed_z: int, seed_y: int, seed_x: int,
+    seeds: list[tuple[int, int, int]],
+    sub_seeds: list[tuple[int, int, int]],
     reach: float,
     lambda_v: float,
     sigma: float,
@@ -150,11 +184,11 @@ def worker_cube_kinematic_select(
         data = ScientificFitsDataset.squeeze_to_3d(raw)   # memmap-backed view
         if data.ndim != 3:
             raise ValueError("Kinematic selection requires a 3-D cube dataset.")
-        # Runs while the memmap is open; cube_kinematic_select reads ONLY the ROI
-        # around the seed (out-of-core on huge cubes). The returned mask is a fresh
-        # array, safe to use after the file closes.
-        mask = cube_kinematic_select(
-            data, (seed_z, seed_y, seed_x),
+        # Runs while the memmap is open; each grow reads ONLY the ROI around its
+        # seed (out-of-core on huge cubes). The returned mask is a fresh array,
+        # safe to use after the file closes.
+        mask = cube_kinematic_select_multi(
+            data, list(seeds), list(sub_seeds),
             reach=float(reach), lambda_v=float(lambda_v),
             sigma=float(sigma) if sigma and sigma > 0 else None,
             roi_radius=int(roi_radius), nsigma=float(nsigma),
@@ -182,4 +216,74 @@ def worker_cube_kinematic_select(
         "origin_x": x0, "origin_y": y0, "origin_z": z0,
         "full_width": int(nx), "full_height": int(ny), "full_depth": int(nz),
         "count": count, "bbox": [x0, x1, y0, y1, z0, z1],
+    }
+
+
+def worker_cube_mask_selection(
+    path: str,
+    output_path: str,
+    seeds: list[tuple[int, int, int]],
+    sub_seeds: list[tuple[int, int, int]],
+    reach: float,
+    lambda_v: float,
+    sigma: float,
+    roi_radius: int,
+    nsigma: float,
+    mode: str,
+) -> dict[str, Any]:
+    """Apply a Kinematic Lasso selection to the cube: blank the voxels INSIDE the
+    selection (mode="blank_inside", remove the object) or OUTSIDE it
+    (mode="blank_outside", isolate the object), keeping full dimensions + WCS, and
+    write the masked cube as a new dataset. Out-of-core (copy + memmap update),
+    same as the box-mask worker but with the geodesic selection mask."""
+    import shutil                             # noqa: PLC0415
+    from astropy.io import fits as _fits      # noqa: PLC0415
+
+    if mode not in ("blank_inside", "blank_outside"):
+        raise ValueError(
+            f"Unknown mask mode {mode!r}; expected 'blank_inside' or 'blank_outside'.")
+
+    dataset = ScientificFitsDataset(path)
+    hdul, raw = dataset.open_memmap()
+    try:
+        data = ScientificFitsDataset.squeeze_to_3d(raw)
+        if data.ndim != 3:
+            raise ValueError("3-D masking requires a 3-D cube dataset.")
+        mask = cube_kinematic_select_multi(
+            data, list(seeds), list(sub_seeds),
+            reach=float(reach), lambda_v=float(lambda_v),
+            sigma=float(sigma) if sigma and sigma > 0 else None,
+            roi_radius=int(roi_radius), nsigma=float(nsigma))
+    finally:
+        hdul.close()
+    if not mask.any():
+        raise ValueError("Selection is empty — nothing to mask.")
+
+    shutil.copyfile(path, output_path)
+    out_hdul = _fits.open(output_path, mode="update", memmap=True)
+    try:
+        arr = ScientificFitsDataset.squeeze_to_3d(out_hdul[0].data)
+        if arr.shape != mask.shape:
+            raise ValueError("Masked cube shape does not match the selection.")
+        if mode == "blank_inside":
+            arr[mask] = np.nan
+            kept = arr[::max(1, arr.shape[0] // 32), ::max(1, arr.shape[1] // 64),
+                       ::max(1, arr.shape[2] // 64)]
+        else:  # blank_outside — isolate the selection
+            arr[~mask] = np.nan
+            kept = arr[mask]
+        out_hdul[0].header.add_history(
+            f"VisIVO Kinematic Lasso mask ({mode}) from {Path(path).name}: "
+            f"{len(seeds)} add + {len(sub_seeds)} subtract seeds, "
+            f"reach={reach}, lambda_v={lambda_v}")
+        range_min, range_max = _finite_range(kept)
+        out_hdul.flush()
+        nz, ny, nx = arr.shape
+    finally:
+        out_hdul.close()
+
+    return {
+        "width": int(nx), "height": int(ny), "depth": int(nz),
+        "range_min": float(range_min), "range_max": float(range_max),
+        "output_path": output_path,
     }

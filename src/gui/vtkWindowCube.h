@@ -162,6 +162,20 @@ struct RemoteKinematicModelResult
     QString spectralUnit;
 };
 
+/// GUI-side result of a Kinematic Lasso selection (wraps the backend reply so the
+/// cube header stays decoupled from BackendClient.h, like RemoteKinematicModelResult).
+struct RemoteKinematicSelectResult
+{
+    bool valid{ false };
+    QString errorMessage;
+    int roiWidth{ 0 }, roiHeight{ 0 }, roiDepth{ 0 };
+    int originX{ 0 }, originY{ 0 }, originZ{ 0 };
+    int fullWidth{ 0 }, fullHeight{ 0 }, fullDepth{ 0 };
+    int count{ 0 };
+    int bbox[6]{ 0, 0, 0, 0, 0, 0 };
+    QByteArray data;   // ROI binary mask (float32 0/1)
+};
+
 class vtkWindowCube : public QMainWindow
 {
     Q_OBJECT
@@ -496,6 +510,51 @@ private:
     QFutureWatcher<RemoteCubeSubvolumeResult> remoteHighResCubeWatcher;
     QFutureWatcher<AsyncIsosurfaceResult> isosurfaceWatcher;
     QFutureWatcher<RemoteKinematicModelResult> m_kinematicWatcher;
+
+    // ── Kinematic Lasso (interactive kinematics-aware 3-D selection) ─────────
+    bool m_lassoActive{ false };
+    unsigned long m_lassoPressTag{ 0 };
+    unsigned long m_lassoReleaseTag{ 0 };
+    int m_lassoPressPos[2]{ 0, 0 };
+    double m_lassoReach{ 8.0 };       ///< geodesic cost budget (selection reach)
+    double m_lassoLambdaV{ 1.0 };     ///< velocity-axis weight (the kinematic knob)
+    int m_lassoRoiRadius{ 32 };
+    // Display geometry snapshot at the moment of the pick, so the preview places
+    // the selection with the SAME mapping used to derive the seed (robust to the
+    // display swapping mid-fetch). ROI displays have a non-zero origin + spacing 1
+    // (world == full-res voxels); preview/full have origin 0 (world == display voxels).
+    bool m_lassoSnapRoi{ false };
+    double m_lassoSnapOrigin[3]{ 0., 0., 0. };
+    int m_lassoSnapDim[3]{ 0, 0, 0 };
+    QFutureWatcher<RemoteKinematicSelectResult> m_lassoSelectWatcher;
+    vtkSmartPointer<vtkActor> m_lassoActor;
+    vtkSmartPointer<vtkImageData> m_lassoImage;
+    vtkSmartPointer<vtkActor> m_lassoSeedActor;   ///< marker at the clicked seed
+    QPointer<QAction> m_actKinematicLasso;
+    int m_lassoLastSeed[3]{ -1, -1, -1 };         ///< primary picked full-res seed (z,y,x)
+    bool m_lassoHasSeed{ false };
+    // ⇧-click ADDs another source (union), ⌥-click CARVEs a region out. Each is (z,y,x).
+    QVector<std::array<int, 3>> m_lassoAddSeeds;
+    QVector<std::array<int, 3>> m_lassoSubSeeds;
+    bool m_lassoDiscardResult{ false };           ///< discard the in-flight grow (cleared mid-fetch)
+    bool m_lassoPendingRegrow{ false };           ///< a slider moved during a grow → re-grow on finish
+    // Live refinement panel (built lazily on first selection).
+    QPointer<QDockWidget> m_lassoPanel;
+    QSlider *m_lassoReachSlider{ nullptr };
+    QSlider *m_lassoLambdaSlider{ nullptr };
+    QLabel  *m_lassoReachValue{ nullptr };
+    QLabel  *m_lassoLambdaValue{ nullptr };
+    QLabel  *m_lassoCountLabel{ nullptr };
+    QPushButton *m_lassoIsolateBtn{ nullptr };    ///< Apply buttons — disabled while a grow is in flight
+    QPushButton *m_lassoRemoveBtn{ nullptr };
+    void setLassoApplyEnabled(bool on);           ///< gate Apply on the displayed selection being current
+    void onLassoPress();
+    void onLassoRelease();
+    void onLassoSelectReady();
+    void requestLassoSelection();                 ///< (re)grow from the current seeds
+    void ensureLassoPanel();
+    void placeLassoSeedMarker(const double world[3]);
+    void applyLassoMask(const QString &mode);     ///< isolate/remove the selection → new cube
     // Moment computation is delegated to MomentMapController.
     MomentMapController *momentController{ nullptr };
     // Noise estimation is delegated to NoiseController.
@@ -661,6 +720,11 @@ private:
     /// masked cube as a new session dataset (the van der Hulst 3-D-selection-
     /// coupled-to-analysis use case). Async; shows the box in the 3-D volume.
     void maskCubeRegion3d();
+    /// Tools → "Kinematic Lasso". Toggles the click-to-select mode: a click in the
+    /// 3-D view ray-casts a seed voxel and the backend grows a kinematics-aware
+    /// geodesic selection, shown as a green isosurface. See vtkWindowCube_Lasso.cpp.
+    void setKinematicLassoActive(bool active);
+    void clearKinematicLassoSelection();
     /// Tools → "Export Current Channel as 2-D FITS…". Writes the currently
     /// displayed channel as a true 2-D FITS image (NAXIS=2, no degenerate
     /// spectral axis) — the canonical input for the Stokes / spectral-index

@@ -54,7 +54,9 @@ from .pv_iso import (  # noqa: F401
 )
 from .selection import (  # noqa: F401
     cube_kinematic_select,
+    cube_kinematic_select_multi,
     worker_cube_kinematic_select,
+    worker_cube_mask_selection,
 )
 from .spectral import (  # noqa: F401
     _gaussian,
@@ -128,7 +130,9 @@ __all__ = [
     "_local_normal",
     "worker_pv",
     "cube_kinematic_select",
+    "cube_kinematic_select_multi",
     "worker_cube_kinematic_select",
+    "worker_cube_mask_selection",
     "_gaussian",
     "worker_linewidth",
     "_expand_channel_ranges",

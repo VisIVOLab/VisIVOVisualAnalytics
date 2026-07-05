@@ -79,3 +79,25 @@ def test_nan_acts_as_barrier():
     data[20, 20, 25:] = np.nan          # a NaN wall on the +x side of the seed
     mask = cube_kinematic_select(data, (20, 20, 20), reach=10.0, lambda_v=1.0)
     assert not mask[20, 20, 27]         # cannot cross the NaN wall
+
+
+def test_multi_seed_union_and_subtract():
+    from app.compute.selection import cube_kinematic_select_multi
+    data = _blob_cube(centers=((10, 10, 10), (30, 30, 30)), width=3.0)
+    # Two add-seeds → the union covers BOTH blobs.
+    both = cube_kinematic_select_multi(data, [(10, 10, 10), (30, 30, 30)], [],
+                                       reach=6.0, lambda_v=1.0)
+    assert both[10, 10, 10] and both[30, 30, 30]
+    # Subtracting the second blob's seed carves it back out.
+    carved = cube_kinematic_select_multi(data, [(10, 10, 10), (30, 30, 30)],
+                                         [(30, 30, 30)], reach=6.0, lambda_v=1.0)
+    assert carved[10, 10, 10]
+    assert not carved[30, 30, 30]
+
+
+def test_multi_seed_requires_a_seed():
+    from app.compute.selection import cube_kinematic_select_multi
+    import pytest as _pytest
+    data = _blob_cube()
+    with _pytest.raises(ValueError):
+        cube_kinematic_select_multi(data, [], [], reach=6.0)

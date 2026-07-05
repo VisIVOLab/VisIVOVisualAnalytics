@@ -355,6 +355,62 @@ async def test_cube_kinematic_select_bin(client: AsyncClient, opened_cube: dict)
 
 
 @pytest.mark.asyncio
+async def test_cube_kinematic_select_bin_seed_outside_is_422(
+    client: AsyncClient, opened_cube: dict
+) -> None:
+    # A seed outside the cube is bad user input, not a server error → 422, not 500.
+    resp = await client.post(
+        "/v1/cube/kinematic_select_bin",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "seed_z": 999, "seed_y": 32, "seed_x": 32,
+            "reach": 8.0, "lambda_v": 1.0, "roi_radius": 20,
+        },
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_cube_kinematic_select_bin_multi_seed(
+    client: AsyncClient, opened_cube: dict
+) -> None:
+    # ⇧-click add-seed + ⌥-click sub-seed round-trip through the API.
+    resp = await client.post(
+        "/v1/cube/kinematic_select_bin",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "seed_z": 16, "seed_y": 32, "seed_x": 32,
+            "add_seeds": [[16, 30, 30]],
+            "sub_seeds": [[16, 40, 40]],
+            "reach": 8.0, "lambda_v": 1.0, "roi_radius": 20,
+        },
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 200, resp.text
+    assert int(resp.headers["X-Visivo-Selected-Count"]) >= 1
+
+
+@pytest.mark.asyncio
+async def test_cube_mask_selection_registers_new_dataset(client: AsyncClient, opened_cube: dict) -> None:
+    resp = await client.post(
+        "/v1/cube/mask_selection",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "seed_z": 16, "seed_y": 32, "seed_x": 32,
+            "reach": 8.0, "lambda_v": 1.0, "roi_radius": 20,
+            "mode": "blank_outside",
+        },
+        headers=opened_cube["headers"],
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["valid"] is True
+    assert data["new_dataset_id"].startswith("ds_")
+    assert (data["width"], data["height"], data["depth"]) == (64, 64, 32)  # full dims
+
+
+@pytest.mark.asyncio
 async def test_cube_preview(client: AsyncClient, opened_cube: dict) -> None:
     resp = await client.post(
         "/v1/cube/preview",

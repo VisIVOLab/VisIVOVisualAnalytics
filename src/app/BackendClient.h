@@ -1119,6 +1119,22 @@ struct BackendKinematicModelResult
     QByteArray data;
 };
 
+/// Kinematic Lasso selection — /v1/cube/kinematic_select_bin. `data` is the
+/// selection's bounding-box binary mask (little-endian float32 0/1, x-fastest =
+/// vtkImageData order), of size roiW×roiH×roiD, placed at (originX,originY,
+/// originZ) in the full cube's voxel space. `count` = selected voxels.
+struct BackendKinematicSelectResult
+{
+    bool valid = false;
+    QString error;
+    int roiWidth = 0, roiHeight = 0, roiDepth = 0;
+    int originX = 0, originY = 0, originZ = 0;
+    int fullWidth = 0, fullHeight = 0, fullDepth = 0;
+    int count = 0;
+    int bbox[6] = { 0, 0, 0, 0, 0, 0 };   // x0,x1,y0,y1,z0,z1
+    QByteArray data;
+};
+
 /// Gravitational-basin (watershed) label volume — /v1/velocity/basins_bin.
 /// `labels` is little-endian int32 (npts, x-fastest): 0 = unassigned, 1..nBasins.
 struct BackendVelocityBasinsResult
@@ -1321,6 +1337,31 @@ public:
                                                       double vsys, double vrot,
                                                       double rmaxPix, double sigma,
                                                       const QVector<std::array<double, 4>> &rings = {}) const;
+
+    /** POST /v1/cube/kinematic_select_bin — Kinematic Lasso. Grows a geodesic,
+     *  kinematics-aware selection from the seed voxel (z,y,x) and returns the
+     *  selection's bounding-box binary mask + its origin. @p reach is the cost
+     *  budget, @p lambdaV the velocity-axis weight (the kinematic knob). */
+    BackendKinematicSelectResult kinematicSelect(const QString &datasetId,
+                                                 int seedZ, int seedY, int seedX,
+                                                 double reach, double lambdaV,
+                                                 double sigma = 0.0, double nsigma = 2.5,
+                                                 int roiRadius = 32,
+                                                 const QVector<std::array<int, 3>> &addSeeds = {},
+                                                 const QVector<std::array<int, 3>> &subSeeds = {}) const;
+
+    /** POST /v1/cube/mask_selection — apply a Kinematic Lasso selection: blank
+     *  inside (@p mode "blank_inside", remove) or outside ("blank_outside",
+     *  isolate) the selection, keeping full dims + WCS, and register the masked
+     *  cube as a new dataset. Reuses the save-subregion result shape. */
+    BackendSaveSubregionResult maskCubeSelection(const QString &datasetId,
+                                                 int seedZ, int seedY, int seedX,
+                                                 const QVector<std::array<int, 3>> &addSeeds,
+                                                 const QVector<std::array<int, 3>> &subSeeds,
+                                                 double reach, double lambdaV, const QString &mode,
+                                                 double sigma = 0.0, double nsigma = 2.5,
+                                                 int roiRadius = 32,
+                                                 const QString &outputBasename = {}) const;
     /** POST /v1/hips/catalogue_overlay – RA/Dec sources in current viewport. */
     BackendHiPSCatalogueOverlayResult requestHiPSCatalogueOverlay(
             const QString &cataloguePath, double raDeg, double decDeg, double fovDeg,

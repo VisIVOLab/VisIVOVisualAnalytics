@@ -2175,6 +2175,18 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(m_actMaskRegion, &QAction::triggered,
                      this, &vtkWindowCube::maskCubeRegion3d);
 
+    m_actKinematicLasso = ui->menuTools->addAction(u"Kinematic Lasso (click to select)"_s);
+    m_actKinematicLasso->setCheckable(true);
+    m_actKinematicLasso->setToolTip(
+            u"Click a source in the 3-D view to select the whole kinematically-"
+            u"coherent object (geodesic, velocity-aware) — no coordinates, no box. "
+            u"The green isosurface is the selection."_s);
+    QObject::connect(m_actKinematicLasso, &QAction::toggled,
+                     this, &vtkWindowCube::setKinematicLassoActive);
+    QObject::connect(&m_lassoSelectWatcher,
+                     &QFutureWatcher<RemoteKinematicSelectResult>::finished,
+                     this, &vtkWindowCube::onLassoSelectReady);
+
     m_actExportChannel2d = ui->menuTools->addAction(
             u"Export Current Channel as 2-D FITS…"_s);
     m_actExportChannel2d->setToolTip(
