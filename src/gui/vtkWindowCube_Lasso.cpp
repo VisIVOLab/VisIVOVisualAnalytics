@@ -25,6 +25,8 @@
 #include <vtkRendererCollection.h>
 #include <vtkSmartPointer.h>
 #include <vtkSphereSource.h>
+#include <vtkTextActor.h>
+#include <vtkTextProperty.h>
 #include <vtkTrivialProducer.h>
 #include <vtkVolumePicker.h>
 
@@ -93,13 +95,58 @@ void vtkWindowCube::setKinematicLassoActive(bool active)
                     vtkCommand::LeftButtonReleaseEvent, this, &vtkWindowCube::onLassoRelease, 1.0);
         }
         ui->vtkCube->setCursor(Qt::CrossCursor);
+        // Open the panel right away so the controls are discoverable before the
+        // first click, and paint an in-viewport prompt telling the user what to do.
+        this->ensureLassoPanel();
+        if (this->m_lassoPanel) { this->m_lassoPanel->show(); this->m_lassoPanel->raise(); }
+        if (!this->m_lassoHasSeed) this->showLassoHint(true);
         this->statusBar()->showMessage(
-                u"Kinematic Lasso: click a source in the 3-D view to select it."_s, 4000);
+                u"Kinematic Lasso: click a source in the 3-D view to select it."_s, 0);
     } else {
         if (this->m_lassoPressTag)   { iren->RemoveObserver(this->m_lassoPressTag);   this->m_lassoPressTag = 0; }
         if (this->m_lassoReleaseTag) { iren->RemoveObserver(this->m_lassoReleaseTag); this->m_lassoReleaseTag = 0; }
         ui->vtkCube->setCursor(Qt::ArrowCursor);
+        this->showLassoHint(false);
+        this->statusBar()->clearMessage();
     }
+}
+
+void vtkWindowCube::showLassoHint(bool on)
+{
+    auto *renderer = ui->vtkCube && ui->vtkCube->renderWindow()
+            ? ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer() : nullptr;
+    if (!on && !renderer) {
+        this->m_lassoHintActor = nullptr;   // renderer already gone (teardown) → just release
+        return;
+    }
+    if (!renderer) {
+        return;
+    }
+    if (on) {
+        if (!this->m_lassoHintActor) {
+            this->m_lassoHintActor = vtkSmartPointer<vtkTextActor>::New();
+            this->m_lassoHintActor->SetInput(
+                    "KINEMATIC LASSO ACTIVE\n"
+                    "Click a bright source in the 3-D view to select it\n"
+                    "Shift-click adds another source    Alt-click carves a region out");
+            auto *tp = this->m_lassoHintActor->GetTextProperty();
+            tp->SetFontSize(20);
+            tp->SetJustificationToCentered();
+            tp->SetVerticalJustificationToTop();
+            tp->SetColor(0.60, 1.0, 0.70);       // same green family as the selection
+            tp->SetShadow(1);
+            tp->SetShadowOffset(1, -1);
+            tp->SetLineSpacing(1.3);
+            this->m_lassoHintActor->GetPositionCoordinate()
+                    ->SetCoordinateSystemToNormalizedViewport();
+            this->m_lassoHintActor->SetPosition(0.5, 0.96);
+            renderer->AddActor2D(this->m_lassoHintActor);
+        }
+    } else if (this->m_lassoHintActor) {
+        renderer->RemoveActor2D(this->m_lassoHintActor);
+        this->m_lassoHintActor = nullptr;
+    }
+    if (ui->vtkCube->renderWindow()) ui->vtkCube->renderWindow()->Render();
 }
 
 void vtkWindowCube::onLassoPress()
@@ -299,6 +346,7 @@ void vtkWindowCube::onLassoSelectReady()
         if (pending) this->requestLassoSelection();
         return;
     }
+    this->showLassoHint(false);   // a source is selected → the prompt has done its job
 
     // Place the ROI mask in the DISPLAY scene using the geometry snapshotted at
     // pick time. ROI display: world == full-res voxels → origin = selection voxel,
@@ -510,6 +558,8 @@ void vtkWindowCube::clearKinematicLassoSelection()
     this->m_lassoSubSeeds.clear();
     this->setLassoApplyEnabled(false);
     if (this->m_lassoCountLabel) this->m_lassoCountLabel->setText(u"—"_s);
+    // Back to the start: re-arm the call-to-action so it's obvious a click is needed.
+    if (this->m_lassoActive) this->showLassoHint(true);
 }
 
 void vtkWindowCube::applyLassoMask(const QString &mode)

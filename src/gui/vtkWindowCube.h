@@ -530,6 +530,8 @@ private:
     vtkSmartPointer<vtkActor> m_lassoActor;
     vtkSmartPointer<vtkImageData> m_lassoImage;
     vtkSmartPointer<vtkActor> m_lassoSeedActor;   ///< marker at the clicked seed
+    vtkSmartPointer<vtkTextActor> m_lassoHintActor;  ///< in-viewport "click a source" prompt
+    void showLassoHint(bool on);                  ///< show/hide the call-to-action overlay
     QPointer<QAction> m_actKinematicLasso;
     int m_lassoLastSeed[3]{ -1, -1, -1 };         ///< primary picked full-res seed (z,y,x)
     bool m_lassoHasSeed{ false };
