@@ -20,6 +20,7 @@ isosurface preview and/or applies it (isolate / remove) via the mask endpoint.
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -28,29 +29,65 @@ import numpy as np
 from ._common import _finite_range, ScientificFitsDataset
 
 
+# Safety ceiling on the geodesic graph: at most this many voxels become nodes, so
+# a pathological all-bright cube can't build a multi-GB graph. The real bound is the
+# connected object itself, which is far smaller; this only guards the worst case.
+_MAX_SELECT_NODES = 4_000_000
+
+# Object-bounded default: with roi_radius=0 the grow is confined to a seed-centred
+# window of this half-size, big enough to swallow a large galaxy disk yet capping the
+# connected-component / graph memory on datasets far larger than the object.
+_SAFE_RADIUS = 256
+
+
+def _robust_sigma(data: np.ndarray) -> float:
+    """Robust noise scale (1.4826·MAD) from a strided sample — never materialises
+    the whole cube, so it stays cheap out-of-core on huge memmapped datasets."""
+    n = data.size
+    step = 1
+    if n > 3_000_000:
+        step = max(1, int(round((n / 3_000_000) ** (1.0 / 3.0))))
+    sample = np.asarray(data[::step, ::step, ::step], dtype=np.float64)
+    finite = sample[np.isfinite(sample)]
+    if finite.size == 0:
+        return 1.0
+    med = np.median(finite)
+    mad = np.median(np.abs(finite - med))
+    s = 1.4826 * float(mad)
+    return s if s > 1e-6 else max(float(np.std(finite)), 1e-6)
+
+
 def cube_kinematic_select(
     data: np.ndarray,
     seed_zyx: tuple[int, int, int],
     reach: float = 8.0,
     lambda_v: float = 1.0,
     sigma: float | None = None,
-    roi_radius: int = 48,
+    roi_radius: int = 0,
     nsigma: float = 2.5,
 ) -> np.ndarray:
     """Geodesic, kinematics-aware region grow from ``seed_zyx`` (z=velocity).
 
+    The grow is bounded by the OBJECT, not a fixed box: we take the connected
+    component of the ~nσ emission that contains the seed (so the whole galaxy /
+    clump is grabbed from one click, however large), then run the geodesic only
+    over that component's voxels — memory scales with the object, not with a ROI
+    cube, so it stays out-of-core on big datasets. Isolated noise specks above nσ
+    are their own tiny components and are dropped.
+
     @param data       3-D cube (nz, ny, nx); NaN voxels act as barriers.
     @param seed_zyx   seed voxel (z, y, x), 0-indexed.
-    @param reach      geodesic cost budget — larger selects further into the
-                      faint outskirts of the object.
+    @param reach      geodesic cost budget — larger selects further along the
+                      object (through its fainter, near-nσ extent).
     @param lambda_v   velocity-axis step weight (the kinematic knob); 1 = isotropic.
     @param sigma      intensity scale for the cost; None → robust noise (MAD).
-    @param roi_radius half-size (voxels) of the ROI around the seed the grow is
-                      confined to (bounds work on huge cubes).
+    @param roi_radius optional hard half-box (voxels) around the seed the grow is
+                      confined to; ``<= 0`` = object-bounded (no box).
     @returns boolean mask of shape ``data.shape`` (True = selected).
     """
-    from scipy.sparse import csr_matrix          # noqa: PLC0415
-    from scipy.sparse.csgraph import dijkstra     # noqa: PLC0415
+    from scipy import ndimage                     # noqa: PLC0415
+    from scipy.sparse import csr_matrix           # noqa: PLC0415
+    from scipy.sparse.csgraph import dijkstra      # noqa: PLC0415
 
     if data.ndim != 3:
         raise ValueError("Kinematic selection requires a 3-D cube.")
@@ -60,73 +97,134 @@ def cube_kinematic_select(
         raise ValueError(f"Seed {(sz, sy, sx)} is outside the cube {data.shape}.")
     if not np.isfinite(data[sz, sy, sx]):
         raise ValueError("Seed voxel is blank/NaN — click on visible emission.")
-    r = max(1, int(roi_radius))
 
-    z0, z1 = max(0, sz - r), min(nz, sz + r + 1)
-    y0, y1 = max(0, sy - r), min(ny, sy + r + 1)
-    x0, x1 = max(0, sx - r), min(nx, sx + r + 1)
-    roi = np.asarray(data[z0:z1, y0:y1, x0:x1], dtype=np.float64)
-    dz, dy, dx = roi.shape
-
-    # Intensity scale: robust noise (1.4826·MAD) unless the caller pins it.
     if sigma is None or not np.isfinite(sigma) or sigma <= 0.0:
-        finite = roi[np.isfinite(roi)]
-        if finite.size:
-            med = np.median(finite)
-            mad = np.median(np.abs(finite - med))
-            sigma = max(1.4826 * float(mad), 1e-6)
-        else:
-            sigma = 1.0
+        sigma = _robust_sigma(data)
+    sigma = float(sigma)
 
-    # Per-voxel traversal cost with a SOFT threshold at ``nsigma``·σ: a voxel at
-    # nσ costs 1; brighter voxels are ~free (the grow flows through the object),
-    # fainter voxels cost exp((nσ − I)/σ) which blows up below the noise floor so
-    # it acts as a barrier — the grow stops at the object's ~nσ contour and the
-    # ``reach`` budget controls how far into the faint outskirts it extends. NaN
-    # (unobserved) → hard barrier.
+    # Work inside a seed-centred WINDOW, so every full-array temporary (candidate,
+    # labels, component) is bounded by the window, not the whole cube — this is what
+    # keeps the connected-component step out-of-core on datasets larger than the one
+    # object being grown. roi_radius>0 = an explicit hard box; 0 = a generous safety
+    # radius that still covers a large galaxy while capping the worst case.
+    r = int(roi_radius) if (roi_radius and int(roi_radius) > 0) else _SAFE_RADIUS
+    wz0, wz1 = max(0, sz - r), min(nz, sz + r + 1)
+    wy0, wy1 = max(0, sy - r), min(ny, sy + r + 1)
+    wx0, wx1 = max(0, sx - r), min(nx, sx + r + 1)
+    w = data[wz0:wz1, wy0:wy1, wx0:wx1]        # memmap view — no full-window copy
+    lz, ly, lx = sz - wz0, sy - wy0, sx - wx0  # seed in window-local coords
+
+    # Candidate emission: finite voxels at/above the nσ contour that DEFINES the
+    # object. Below that the soft-threshold cost blows up anyway, so seeding the
+    # component from ≥nσ both grabs the whole object and keeps the graph small.
+    thr = float(nsigma) * sigma
+    finite_w = np.isfinite(w)
+    candidate = finite_w & (np.asarray(w) > thr)
+    candidate[lz, ly, lx] = True               # the clicked voxel always seeds it
+
+    # Connected component (6-connectivity) containing the seed → the object.
+    structure = ndimage.generate_binary_structure(3, 1)
+    labels, _ = ndimage.label(candidate, structure=structure)
+    seed_label = int(labels[lz, ly, lx])
+    if seed_label == 0:                        # seed isolated → nothing to grow
+        mask = np.zeros((nz, ny, nx), dtype=bool)
+        mask[sz, sy, sx] = True
+        return mask
+    comp = labels == seed_label
+    del labels, candidate
+
+    # Include a shell of sub-nσ voxels so ``reach`` / ``lambda_v`` can bleed the grow
+    # into the faint margin just beyond the nσ contour (the geodesic then bounds it).
+    # A near-threshold voxel costs ≈1 per step, so the budget can pay for ≈reach steps
+    # (×1/min(lambda_v,1) when velocity steps are cheap) — size the shell for that so
+    # the faint outskirts are never clipped before dijkstra decides.
+    denom = min(float(lambda_v), 1.0)
+    margin = 1 + int(math.ceil(float(reach) / denom)) if denom > 0.0 else 49
+    margin = max(1, min(margin, 48))
+    comp = ndimage.binary_dilation(comp, structure=structure, iterations=margin)
+    comp &= finite_w                           # NaN stays a hard barrier
+    comp[lz, ly, lx] = True
+
+    # Worst-case guard: shrink to a seed-centred box until the node count is sane.
+    if int(comp.sum()) > _MAX_SELECT_NODES:
+        rr = 128
+        while rr >= 8:
+            box = np.zeros_like(comp)
+            box[max(0, lz - rr):lz + rr + 1,
+                max(0, ly - rr):ly + rr + 1,
+                max(0, lx - rr):lx + rr + 1] = True
+            trimmed = comp & box
+            if int(trimmed.sum()) <= _MAX_SELECT_NODES:
+                comp = trimmed
+                break
+            rr //= 2
+
+    # Tight bbox of the component (window-local) → build the graph only over it.
+    zc = np.where(comp.any(axis=(1, 2)))[0]
+    yc = np.where(comp.any(axis=(0, 2)))[0]
+    xc = np.where(comp.any(axis=(0, 1)))[0]
+    z0, z1 = int(zc[0]), int(zc[-1]) + 1
+    y0, y1 = int(yc[0]), int(yc[-1]) + 1
+    x0, x1 = int(xc[0]), int(xc[-1]) + 1
+    sub = comp[z0:z1, y0:y1, x0:x1]
+    subdata = np.asarray(w[z0:z1, y0:y1, x0:x1], dtype=np.float64)
+    dz, dy, dx = sub.shape
+
+    # Node ids for component voxels only (−1 elsewhere).
+    idx = np.full(sub.shape, -1, dtype=np.int64)
+    n_nodes = int(sub.sum())
+    idx[sub] = np.arange(n_nodes)
+
+    # Per-voxel traversal cost: soft threshold at nσ·σ — a voxel at nσ costs 1,
+    # brighter voxels are ~free (the grow flows through the object), fainter ones
+    # cost exp((nσ − I)/σ) so ``reach`` controls how far into the near-nσ margin
+    # the grow bleeds before stopping.
     with np.errstate(over="ignore"):
-        cost = np.exp(float(nsigma) - np.clip(roi, 0.0, None) / float(sigma))
-    cost = np.where(np.isfinite(roi), np.minimum(cost, 1.0e6), 1.0e6).astype(np.float64)
-    cost_flat = cost.ravel()
-
-    n = dz * dy * dx
-    ids = np.arange(n).reshape(dz, dy, dx)
+        costv = np.exp(float(nsigma) - np.clip(subdata, 0.0, None) / sigma)
+    costv = np.minimum(costv, 1.0e6)
 
     rows: list[np.ndarray] = []
     cols: list[np.ndarray] = []
     wts: list[np.ndarray] = []
 
-    def _link(a: np.ndarray, b: np.ndarray, factor: float) -> None:
-        # Directed edges both ways; entering a voxel costs that voxel's cost, so
-        # the grow flows into bright neighbours cheaply. Velocity steps ×factor.
-        a = a.ravel()
-        b = b.ravel()
-        rows.append(a); cols.append(b); wts.append(cost_flat[b] * factor)
-        rows.append(b); cols.append(a); wts.append(cost_flat[a] * factor)
+    def _link(a: np.ndarray, b: np.ndarray, ca: np.ndarray, cb: np.ndarray,
+              factor: float) -> None:
+        # Directed edges between adjacent COMPONENT voxels only; entering a voxel
+        # costs that voxel's cost. Velocity (z) steps are weighted ×factor.
+        a = a.ravel(); b = b.ravel(); ca = ca.ravel(); cb = cb.ravel()
+        v = (a >= 0) & (b >= 0)
+        rows.append(a[v]); cols.append(b[v]); wts.append(cb[v] * factor)
+        rows.append(b[v]); cols.append(a[v]); wts.append(ca[v] * factor)
 
     if dz > 1:
-        _link(ids[:-1, :, :], ids[1:, :, :], float(lambda_v))   # z = velocity axis
+        _link(idx[:-1, :, :], idx[1:, :, :], costv[:-1, :, :], costv[1:, :, :],
+              float(lambda_v))                                   # z = velocity axis
     if dy > 1:
-        _link(ids[:, :-1, :], ids[:, 1:, :], 1.0)
+        _link(idx[:, :-1, :], idx[:, 1:, :], costv[:, :-1, :], costv[:, 1:, :], 1.0)
     if dx > 1:
-        _link(ids[:, :, :-1], ids[:, :, 1:], 1.0)
+        _link(idx[:, :, :-1], idx[:, :, 1:], costv[:, :, :-1], costv[:, :, 1:], 1.0)
 
-    seed_flat = int(ids[sz - z0, sy - y0, sx - x0])
-    if not rows:                       # degenerate 1-voxel ROI → seed only
+    seed_node = int(idx[lz - z0, ly - y0, lx - x0])
+    if not rows or not any(r.size for r in rows):   # single-voxel component
         mask = np.zeros((nz, ny, nx), dtype=bool)
         mask[sz, sy, sx] = True
         return mask
 
     graph = csr_matrix(
         (np.concatenate(wts), (np.concatenate(rows), np.concatenate(cols))),
-        shape=(n, n),
+        shape=(n_nodes, n_nodes),
     )
     # limit prunes nodes past the budget → bounded work; unreachable → inf.
-    dist = dijkstra(graph, directed=True, indices=seed_flat, limit=float(reach))
-    sel_roi = np.asarray(dist <= float(reach)).reshape(dz, dy, dx)
+    dist = dijkstra(graph, directed=True, indices=seed_node, limit=float(reach))
 
+    sel_sub = np.zeros(sub.shape, dtype=bool)
+    reached = np.asarray(dist <= float(reach))
+    node_zyx = np.where(sub)
+    sel_sub[node_zyx] = reached
+
+    # Map the window-local bbox selection back to full-cube coordinates.
     mask = np.zeros((nz, ny, nx), dtype=bool)
-    mask[z0:z1, y0:y1, x0:x1] = sel_roi
+    mask[wz0 + z0:wz0 + z1, wy0 + y0:wy0 + y1, wx0 + x0:wx0 + x1] = sel_sub
     return mask
 
 
@@ -137,7 +235,7 @@ def cube_kinematic_select_multi(
     reach: float = 8.0,
     lambda_v: float = 1.0,
     sigma: float | None = None,
-    roi_radius: int = 32,
+    roi_radius: int = 0,
     nsigma: float = 2.5,
 ) -> np.ndarray:
     """Union of the geodesic selections grown from each seed in ``seeds``, minus

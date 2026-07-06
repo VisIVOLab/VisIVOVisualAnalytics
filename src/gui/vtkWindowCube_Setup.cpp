@@ -1217,7 +1217,10 @@ void vtkWindowCube::setupSliceRenderer()
 
     // Slice — remote backend always provides slice tiles; initialize with a placeholder.
     this->lutSlice->SetTableRange(0., 0.);
-    this->lutSlice->SetNanColor(1., 1., 1., 1.);
+    // Blank (NaN) pixels — masked / removed / off-footprint — render TRANSPARENT so
+    // they read as empty background, not an opaque white silhouette that looks like
+    // leftover data (matters e.g. for a Kinematic-Lasso "Remove" residual cube).
+    this->lutSlice->SetNanColor(0., 0., 0., 0.);
     ColorMaps::SetColorMap(this->lutSlice);
     {
         auto *img = vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0));

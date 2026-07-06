@@ -12,6 +12,7 @@
 #include "app/BackendClient.h"
 
 #include <vtkActor.h>
+#include <vtkCamera.h>
 #include <vtkCommand.h>
 #include <vtkFloatArray.h>
 #include <vtkFlyingEdges3D.h>
@@ -86,24 +87,30 @@ void vtkWindowCube::setKinematicLassoActive(bool active)
         return;
     }
     if (active) {
-        if (!this->m_lassoPressTag) {
-            this->m_lassoPressTag = iren->AddObserver(
-                    vtkCommand::LeftButtonPressEvent, this, &vtkWindowCube::onLassoPress, 1.0);
-        }
+        // Selection is bound to the DOUBLE-click: single left-drag stays free for
+        // rotating the volume to line up the source, then a double-click picks it.
+        // This is unambiguous (the OS position-locks a double-click) — no fragile
+        // click-vs-drag pixel heuristic that a firm tap or a HiDPI display defeats.
         if (!this->m_lassoReleaseTag) {
             this->m_lassoReleaseTag = iren->AddObserver(
-                    vtkCommand::LeftButtonReleaseEvent, this, &vtkWindowCube::onLassoRelease, 1.0);
+                    vtkCommand::LeftButtonDoubleClickEvent, this, &vtkWindowCube::onLassoRelease, 1.0);
         }
         ui->vtkCube->setCursor(Qt::CrossCursor);
+        // 0 = object-bounded: the backend grows the whole connected source from one
+        // click (component of the ≥nσ emission), so a single double-click grabs the
+        // entire galaxy/clump — no fixed ROI box to clip large extended objects.
+        this->m_lassoRoiRadius = 0;
         // Open the panel right away so the controls are discoverable before the
         // first click, and paint an in-viewport prompt telling the user what to do.
         this->ensureLassoPanel();
-        if (this->m_lassoPanel) { this->m_lassoPanel->show(); this->m_lassoPanel->raise(); }
+        if (this->m_lassoPanel) this->m_lassoPanel->show();
+        // Keep the mouse/keyboard focus on the 3-D view so the very first click
+        // selects instead of being spent re-focusing the widget.
+        ui->vtkCube->setFocus(Qt::OtherFocusReason);
         if (!this->m_lassoHasSeed) this->showLassoHint(true);
         this->statusBar()->showMessage(
-                u"Kinematic Lasso: click a source in the 3-D view to select it."_s, 0);
+                u"Kinematic Lasso: drag to rotate, then double-click a source to select it."_s, 0);
     } else {
-        if (this->m_lassoPressTag)   { iren->RemoveObserver(this->m_lassoPressTag);   this->m_lassoPressTag = 0; }
         if (this->m_lassoReleaseTag) { iren->RemoveObserver(this->m_lassoReleaseTag); this->m_lassoReleaseTag = 0; }
         ui->vtkCube->setCursor(Qt::ArrowCursor);
         this->showLassoHint(false);
@@ -126,20 +133,18 @@ void vtkWindowCube::showLassoHint(bool on)
         if (!this->m_lassoHintActor) {
             this->m_lassoHintActor = vtkSmartPointer<vtkTextActor>::New();
             this->m_lassoHintActor->SetInput(
-                    "KINEMATIC LASSO ACTIVE\n"
-                    "Click a bright source in the 3-D view to select it\n"
-                    "Shift-click adds another source    Alt-click carves a region out");
+                    "Drag to rotate.  Double-click a source to select it.   "
+                    "(Shift = add,  Alt = subtract)");
             auto *tp = this->m_lassoHintActor->GetTextProperty();
-            tp->SetFontSize(20);
+            tp->SetFontSize(13);
             tp->SetJustificationToCentered();
             tp->SetVerticalJustificationToTop();
-            tp->SetColor(0.60, 1.0, 0.70);       // same green family as the selection
-            tp->SetShadow(1);
-            tp->SetShadowOffset(1, -1);
-            tp->SetLineSpacing(1.3);
+            tp->SetColor(0.62, 0.78, 0.68);      // muted green — informative, not shouting
+            tp->SetOpacity(0.75);
+            tp->SetShadow(0);
             this->m_lassoHintActor->GetPositionCoordinate()
                     ->SetCoordinateSystemToNormalizedViewport();
-            this->m_lassoHintActor->SetPosition(0.5, 0.96);
+            this->m_lassoHintActor->SetPosition(0.5, 0.985);
             renderer->AddActor2D(this->m_lassoHintActor);
         }
     } else if (this->m_lassoHintActor) {
@@ -149,18 +154,7 @@ void vtkWindowCube::showLassoHint(bool on)
     if (ui->vtkCube->renderWindow()) ui->vtkCube->renderWindow()->Render();
 }
 
-void vtkWindowCube::onLassoPress()
-{
-    auto *iren = ui->vtkCube && ui->vtkCube->renderWindow()
-            ? ui->vtkCube->renderWindow()->GetInteractor() : nullptr;
-    if (iren) {
-        int pos[2];
-        iren->GetEventPosition(pos);
-        this->m_lassoPressPos[0] = pos[0];
-        this->m_lassoPressPos[1] = pos[1];
-    }
-}
-
+// Selection handler — bound to the LEFT DOUBLE-click (single drag rotates freely).
 void vtkWindowCube::onLassoRelease()
 {
     if (!this->m_lassoActive || this->m_lassoSelectWatcher.isRunning()) {
@@ -175,11 +169,6 @@ void vtkWindowCube::onLassoRelease()
     }
     int pos[2];
     iren->GetEventPosition(pos);
-    // Distinguish a click from a camera-rotation drag: skip if the mouse moved.
-    if (std::abs(pos[0] - this->m_lassoPressPos[0]) > 3
-        || std::abs(pos[1] - this->m_lassoPressPos[1]) > 3) {
-        return;
-    }
 
     // Ray-cast the click into the VOLUME: the picker stops at the visible surface
     // of the source (where the transfer function accumulates opacity) → the seed
@@ -444,7 +433,7 @@ void vtkWindowCube::ensureLassoPanel()
     auto *intro = new QLabel(
             u"Refine the selection: <b>Reach</b> grows it into the faint outskirts; "
             u"<b>Velocity coupling</b> follows the source further along velocity "
-            u"(the kinematic knob). Re-click a source to select a different one."_s, body);
+            u"(the kinematic knob). Double-click a source to select a different one."_s, body);
     intro->setWordWrap(true);
     outer->addWidget(intro);
 
@@ -481,7 +470,8 @@ void vtkWindowCube::ensureLassoPanel()
     outer->addWidget(m_lassoCountLabel);
 
     auto *hint = new QLabel(
-            u"<i>⇧-click adds another source, ⌥-click carves a region out.</i>"_s, body);
+            u"<i>One double-click grabs the whole connected source. "
+            u"⇧-double-click adds a separate source, ⌥-double-click carves a region out.</i>"_s, body);
     hint->setWordWrap(true);
     outer->addWidget(hint);
 
@@ -583,6 +573,7 @@ void vtkWindowCube::applyLassoMask(const QString &mode)
     const QVector<std::array<int, 3>> addSeeds = this->m_lassoAddSeeds;
     const QVector<std::array<int, 3>> subSeeds = this->m_lassoSubSeeds;
     const double reach = this->m_lassoReach, lambdaV = this->m_lassoLambdaV;
+    const int roiRadius = this->m_lassoRoiRadius;   // MUST match the preview grow
     this->statusBar()->showMessage(u"Kinematic Lasso: applying mask…"_s, 0);
 
     auto *watcher = new QFutureWatcher<BackendSaveSubregionResult>(this);
@@ -608,10 +599,13 @@ void vtkWindowCube::applyLassoMask(const QString &mode)
                      });
     watcher->setFuture(QtConcurrent::run(
             [url, token, session, dataset, seedZ, seedY, seedX, addSeeds, subSeeds,
-             reach, lambdaV, mode]() {
+             reach, lambdaV, mode, roiRadius]() {
                 BackendClient c(url, token);
                 c.setSessionId(session);
+                // sigma=0 (robust auto) + nsigma=2.5 + roiRadius match the preview
+                // grow exactly, so the applied mask == the isosurface the user saw.
                 return c.maskCubeSelection(dataset, seedZ, seedY, seedX, addSeeds, subSeeds,
-                                           reach, lambdaV, mode);
+                                           reach, lambdaV, mode, /*sigma=*/0.0,
+                                           /*nsigma=*/2.5, roiRadius);
             }));
 }

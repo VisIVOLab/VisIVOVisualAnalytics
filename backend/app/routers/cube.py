@@ -485,7 +485,7 @@ class CubeKinematicSelectRequest(BaseModel):
     lambda_v: float = Field(default=1.0, gt=0.0, allow_inf_nan=False)  # velocity weight
     sigma: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)     # 0 → robust auto
     nsigma: float = Field(default=2.5, gt=0.0, allow_inf_nan=False)    # soft threshold (σ units)
-    roi_radius: int = Field(default=32, ge=1, le=64)                   # spatial bound (≤64: caps graph size)
+    roi_radius: int = Field(default=0, ge=0, le=256)                   # 0 = object-bounded (grab whole connected source); >0 = hard half-box around the seed
 
     @model_validator(mode="after")
     def _check_seeds(self) -> "CubeKinematicSelectRequest":

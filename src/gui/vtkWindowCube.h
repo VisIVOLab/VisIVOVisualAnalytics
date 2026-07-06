@@ -513,12 +513,12 @@ private:
 
     // ── Kinematic Lasso (interactive kinematics-aware 3-D selection) ─────────
     bool m_lassoActive{ false };
-    unsigned long m_lassoPressTag{ 0 };
+    // Selection fires on the LEFT double-click (left-drag is left free for rotation);
+    // this tag holds the LeftButtonDoubleClickEvent observer.
     unsigned long m_lassoReleaseTag{ 0 };
-    int m_lassoPressPos[2]{ 0, 0 };
     double m_lassoReach{ 8.0 };       ///< geodesic cost budget (selection reach)
     double m_lassoLambdaV{ 1.0 };     ///< velocity-axis weight (the kinematic knob)
-    int m_lassoRoiRadius{ 32 };
+    int m_lassoRoiRadius{ 0 };   ///< 0 = object-bounded grow (whole connected source)
     // Display geometry snapshot at the moment of the pick, so the preview places
     // the selection with the SAME mapping used to derive the seed (robust to the
     // display swapping mid-fetch). ROI displays have a non-zero origin + spacing 1
@@ -550,8 +550,7 @@ private:
     QPushButton *m_lassoIsolateBtn{ nullptr };    ///< Apply buttons — disabled while a grow is in flight
     QPushButton *m_lassoRemoveBtn{ nullptr };
     void setLassoApplyEnabled(bool on);           ///< gate Apply on the displayed selection being current
-    void onLassoPress();
-    void onLassoRelease();
+    void onLassoRelease();                        ///< selection handler (bound to the left double-click)
     void onLassoSelectReady();
     void requestLassoSelection();                 ///< (re)grow from the current seeds
     void ensureLassoPanel();

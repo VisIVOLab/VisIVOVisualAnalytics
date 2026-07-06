@@ -1346,7 +1346,7 @@ public:
                                                  int seedZ, int seedY, int seedX,
                                                  double reach, double lambdaV,
                                                  double sigma = 0.0, double nsigma = 2.5,
-                                                 int roiRadius = 32,
+                                                 int roiRadius = 0,   // 0 = object-bounded (whole connected source)
                                                  const QVector<std::array<int, 3>> &addSeeds = {},
                                                  const QVector<std::array<int, 3>> &subSeeds = {}) const;
 
@@ -1360,7 +1360,7 @@ public:
                                                  const QVector<std::array<int, 3>> &subSeeds,
                                                  double reach, double lambdaV, const QString &mode,
                                                  double sigma = 0.0, double nsigma = 2.5,
-                                                 int roiRadius = 32,
+                                                 int roiRadius = 0,   // 0 = object-bounded (whole connected source)
                                                  const QString &outputBasename = {}) const;
     /** POST /v1/hips/catalogue_overlay – RA/Dec sources in current viewport. */
     BackendHiPSCatalogueOverlayResult requestHiPSCatalogueOverlay(
