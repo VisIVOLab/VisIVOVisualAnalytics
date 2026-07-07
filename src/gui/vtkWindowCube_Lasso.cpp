@@ -13,11 +13,17 @@
 
 #include <vtkActor.h>
 #include <vtkCamera.h>
+#include <vtkCellArray.h>
 #include <vtkCommand.h>
+#include <vtkContourFilter.h>
+#include <vtkPoints.h>
+#include <vtkPolyData.h>
 #include <vtkFloatArray.h>
 #include <vtkFlyingEdges3D.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkImageData.h>
+#include <vtkInteractorStyleImage.h>
+#include <vtkInteractorStyleUser.h>
 #include <vtkPointData.h>
 #include <vtkPolyDataMapper.h>
 #include <vtkProperty.h>
@@ -39,6 +45,7 @@
 #include <QMessageBox>
 #include <QPointer>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QtConcurrentRun>
 #include <QVBoxLayout>
@@ -47,6 +54,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 using namespace Qt::StringLiterals;
 
@@ -74,6 +82,22 @@ RemoteKinematicSelectResult fetchKinematicSelect(
     for (int i = 0; i < 6; ++i) out.bbox[i] = b.bbox[i];
     out.data = b.data;
     return out;
+}
+
+// Ray-casting point-in-polygon test over integer polygon vertices (x,y).
+bool pointInPolygon(int px, int py, const std::vector<std::array<int, 2>> &poly)
+{
+    bool inside = false;
+    const std::size_t n = poly.size();
+    for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
+        const double xi = poly[i][0], yi = poly[i][1];
+        const double xj = poly[j][0], yj = poly[j][1];
+        const bool crosses = ((yi > py) != (yj > py))
+                && (double(px) < (xj - xi) * (double(py) - yi) / (yj - yi) + xi);
+        if (crosses)
+            inside = !inside;
+    }
+    return inside;
 }
 
 }  // namespace
@@ -259,6 +283,13 @@ void vtkWindowCube::requestLassoSelection()
         return;
     }
     this->m_lassoDiscardResult = false;
+    // The mask is about to be recomputed → any in-progress 2-D refinement is against
+    // a stale mask; tear it down so its observers don't edit the wrong array.
+    if (this->m_lassoEditActive) this->setLassoEditActive(false);
+    if (this->m_lassoEditToggle) {
+        QSignalBlocker b(this->m_lassoEditToggle);
+        this->m_lassoEditToggle->setChecked(false);
+    }
     this->setLassoApplyEnabled(false);   // block Apply on a soon-to-be-superseded surface
     // Busy feedback scoped to the 3-D widget (not a global override cursor, which
     // could stick if the window closes mid-grow) + a prominent status.
@@ -337,9 +368,20 @@ void vtkWindowCube::onLassoSelectReady()
     }
     this->showLassoHint(false);   // a source is selected → the prompt has done its job
 
-    // Place the ROI mask in the DISPLAY scene using the geometry snapshotted at
-    // pick time. ROI display: world == full-res voxels → origin = selection voxel,
-    // spacing 1. Preview/full: world == display voxels → origin = selection·s,
+    // Keep the EXACT ROI mask (full-res voxel coords) so Apply sends what's shown
+    // and the 2-D channel overlay can slice it per channel.
+    this->m_lassoMaskBytes = r.data;
+    this->m_lassoMaskOrigin[0] = r.originX;
+    this->m_lassoMaskOrigin[1] = r.originY;
+    this->m_lassoMaskOrigin[2] = r.originZ;
+    this->m_lassoMaskDims[0] = r.roiWidth;
+    this->m_lassoMaskDims[1] = r.roiHeight;
+    this->m_lassoMaskDims[2] = r.roiDepth;
+    this->updateLassoMaskOverlay(true);
+
+    // Store the DISPLAY geometry for the ROI mask so the isosurface can be rebuilt
+    // after 2-D edits. ROI display: world == full-res voxels → origin = selection
+    // voxel, spacing 1. Preview/full: world == display voxels → origin = selection·s,
     // spacing s = (displayDim-1)/(fullDim-1) (same convention as the kinematic model).
     double sx = 1.0, sy = 1.0, sz = 1.0;
     double ox = r.originX, oy = r.originY, oz = r.originZ;
@@ -352,47 +394,14 @@ void vtkWindowCube::onLassoSelectReady()
         sz = scale(this->m_lassoSnapDim[2], r.fullDepth);
         ox = r.originX * sx;  oy = r.originY * sy;  oz = r.originZ * sz;
     }
+    this->m_lassoDispOrigin[0] = ox; this->m_lassoDispOrigin[1] = oy; this->m_lassoDispOrigin[2] = oz;
+    this->m_lassoDispSpacing[0] = sx; this->m_lassoDispSpacing[1] = sy; this->m_lassoDispSpacing[2] = sz;
 
-    auto img = vtkSmartPointer<vtkImageData>::New();
-    img->SetDimensions(r.roiWidth, r.roiHeight, r.roiDepth);
-    img->SetOrigin(ox, oy, oz);
-    img->SetSpacing(sx, sy, sz);
-    auto scalars = vtkSmartPointer<vtkFloatArray>::New();
-    scalars->SetNumberOfComponents(1);
-    scalars->SetNumberOfTuples(qint64(r.roiWidth) * r.roiHeight * r.roiDepth);
-    std::memcpy(scalars->GetVoidPointer(0), r.data.constData(),
-                static_cast<std::size_t>(r.data.size()));
-    img->GetPointData()->SetScalars(scalars);
-
-    auto contour = vtkSmartPointer<vtkFlyingEdges3D>::New();
-    contour->SetInputData(img);
-    contour->SetValue(0, 0.5);          // binary 0/1 mask → surface at 0.5
-    contour->ComputeNormalsOn();
-    contour->Update();
-
-    auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
-    mapper->SetInputConnection(contour->GetOutputPort());
-    mapper->ScalarVisibilityOff();
-
-    auto actor = vtkSmartPointer<vtkActor>::New();
-    actor->SetMapper(mapper);
-    auto *prop = actor->GetProperty();
-    prop->SetColor(0.20, 0.95, 0.35);   // green — the selection
-    prop->SetOpacity(0.55);
-    actor->PickableOff();
-
-    auto *renderer = ui->vtkCube && ui->vtkCube->renderWindow()
-            ? ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer() : nullptr;
-    if (!renderer) {
+    this->rebuildLassoIsosurface(true);
+    if (!(ui->vtkCube && ui->vtkCube->renderWindow()
+          && ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer())) {
         return;
     }
-    if (this->m_lassoActor) {
-        renderer->RemoveActor(this->m_lassoActor);   // replace the prior selection
-    }
-    this->m_lassoActor = actor;
-    this->m_lassoImage = img;
-    renderer->AddActor(actor);
-    ui->vtkCube->renderWindow()->Render();
 
     this->ensureLassoPanel();
     if (this->m_lassoPanel) {
@@ -416,6 +425,7 @@ void vtkWindowCube::setLassoApplyEnabled(bool on)
 {
     if (this->m_lassoIsolateBtn) this->m_lassoIsolateBtn->setEnabled(on);
     if (this->m_lassoRemoveBtn)  this->m_lassoRemoveBtn->setEnabled(on);
+    if (this->m_lassoEditToggle) this->m_lassoEditToggle->setEnabled(on);
 }
 
 void vtkWindowCube::ensureLassoPanel()
@@ -494,6 +504,41 @@ void vtkWindowCube::ensureLassoPanel()
     isolateBtn->setEnabled(ready);
     removeBtn->setEnabled(ready);
 
+    // Phase 2 — refine the mask by drawing polygons on the 2-D channel map.
+    auto *editToggle = new QPushButton(u"Refine on 2-D map…"_s, body);
+    editToggle->setCheckable(true);
+    editToggle->setToolTip(u"Draw a polygon on the 2-D channel map to add/subtract "
+                           u"selection pixels on the current channel."_s);
+    outer->addWidget(editToggle);
+    auto *modeRow = new QWidget(body);
+    auto *modeLay = new QHBoxLayout(modeRow);
+    modeLay->setContentsMargins(0, 0, 0, 0);
+    auto *addBtn = new QPushButton(u"Add"_s, modeRow);
+    addBtn->setCheckable(true);
+    addBtn->setChecked(true);
+    auto *subBtn = new QPushButton(u"Subtract"_s, modeRow);
+    subBtn->setCheckable(true);
+    modeLay->addWidget(addBtn);
+    modeLay->addWidget(subBtn);
+    outer->addWidget(modeRow);
+    modeRow->setEnabled(false);
+    editToggle->setEnabled(this->m_lassoHasSeed);
+    this->m_lassoEditToggle = editToggle;
+    this->m_lassoEditAddBtn = addBtn;
+    this->m_lassoEditSubBtn = subBtn;
+    QObject::connect(editToggle, &QPushButton::toggled, this, [this, modeRow](bool on) {
+        modeRow->setEnabled(on);
+        this->setLassoEditActive(on);
+    });
+    const auto setEditMode = [this](bool add) {
+        this->m_lassoEditAdd = add;
+        if (this->m_lassoEditAddBtn) this->m_lassoEditAddBtn->setChecked(add);
+        if (this->m_lassoEditSubBtn) this->m_lassoEditSubBtn->setChecked(!add);
+        if (this->m_lassoEditActive) this->setLassoEditActive(true);   // refresh the status hint
+    };
+    QObject::connect(addBtn, &QPushButton::clicked, this, [setEditMode]() { setEditMode(true); });
+    QObject::connect(subBtn, &QPushButton::clicked, this, [setEditMode]() { setEditMode(false); });
+
     auto *clearBtn = new QPushButton(u"Clear selection"_s, body);
     outer->addWidget(clearBtn);
     outer->addStretch(1);
@@ -525,6 +570,369 @@ void vtkWindowCube::ensureLassoPanel()
     this->m_lassoPanel = dock;
 }
 
+void vtkWindowCube::updateLassoMaskOverlay(bool render)
+{
+    // Draw the selection's outline on the 2-D channel map for the CURRENT channel,
+    // so you can see (and, in phase 2, refine) which pixels are selected slice by
+    // slice. Mirrors the kinematic 2-D contour: extract the ROI mask's XY plane for
+    // this channel at full-res slice geometry (origin 0, spacing 1), placed at the
+    // mask's (ox,oy) offset, contour at 0.5.
+    auto *ren = this->sliceWin ? this->sliceWin->GetRenderers()->GetFirstRenderer() : nullptr;
+    if (!ren)
+        return;
+    if (this->m_lassoMask2dActor) {
+        ren->RemoveActor(this->m_lassoMask2dActor);
+        this->m_lassoMask2dActor = nullptr;
+    }
+    const int mw = this->m_lassoMaskDims[0], mh = this->m_lassoMaskDims[1], md = this->m_lassoMaskDims[2];
+    if (!this->m_lassoMaskBytes.isEmpty() && mw > 0 && mh > 0 && md > 0) {
+        const int ox = this->m_lassoMaskOrigin[0], oy = this->m_lassoMaskOrigin[1];
+        const int oz = this->m_lassoMaskOrigin[2];
+        const int ch = ui->spinSlice ? ui->spinSlice->value() - 1 : 0;   // 1-based UI → full-res z
+        const int localZ = ch - oz;
+        const qint64 planeCount = qint64(mw) * mh;
+        const qint64 need = planeCount * md;
+        if (localZ >= 0 && localZ < md
+            && this->m_lassoMaskBytes.size() >= need * qint64(sizeof(float))) {
+            auto plane = vtkSmartPointer<vtkImageData>::New();
+            plane->SetExtent(ox, ox + mw - 1, oy, oy + mh - 1, 0, 0);
+            plane->SetOrigin(0., 0., 0.);
+            plane->SetSpacing(1., 1., 1.);
+            auto ps = vtkSmartPointer<vtkFloatArray>::New();
+            ps->SetNumberOfComponents(1);
+            ps->SetNumberOfTuples(planeCount);
+            const float *src = reinterpret_cast<const float *>(this->m_lassoMaskBytes.constData())
+                    + qint64(localZ) * planeCount;
+            std::memcpy(ps->GetVoidPointer(0), src,
+                        sizeof(float) * static_cast<std::size_t>(planeCount));
+            plane->GetPointData()->SetScalars(ps);
+
+            auto contour = vtkSmartPointer<vtkContourFilter>::New();
+            contour->SetInputData(plane);
+            contour->SetValue(0, 0.5);           // boundary of the binary mask
+            contour->Update();
+
+            auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+            mapper->SetInputConnection(contour->GetOutputPort());
+            mapper->ScalarVisibilityOff();
+            auto actor = vtkSmartPointer<vtkActor>::New();
+            actor->SetMapper(mapper);
+            actor->GetProperty()->SetColor(0.35, 1.0, 0.55);   // green — matches the 3-D isosurface
+            actor->GetProperty()->SetLineWidth(2.0);
+            actor->GetProperty()->LightingOff();
+            actor->SetPosition(0., 0., 0.5);     // nudge in front of the image slice
+            actor->PickableOff();
+            ren->AddActor(actor);
+            this->m_lassoMask2dActor = actor;
+            ren->ResetCameraClippingRange();
+        }
+    }
+    if (render && this->sliceWin)
+        this->sliceWin->Render();
+}
+
+void vtkWindowCube::rebuildLassoIsosurface(bool render)
+{
+    auto *renderer = ui->vtkCube && ui->vtkCube->renderWindow()
+            ? ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer() : nullptr;
+    if (!renderer)
+        return;
+    const int mw = this->m_lassoMaskDims[0], mh = this->m_lassoMaskDims[1], md = this->m_lassoMaskDims[2];
+    if (this->m_lassoMaskBytes.isEmpty() || mw <= 0 || mh <= 0 || md <= 0) {
+        if (this->m_lassoActor) { renderer->RemoveActor(this->m_lassoActor); this->m_lassoActor = nullptr; }
+        this->m_lassoImage = nullptr;
+        if (render && ui->vtkCube->renderWindow()) ui->vtkCube->renderWindow()->Render();
+        return;
+    }
+    auto img = vtkSmartPointer<vtkImageData>::New();
+    img->SetDimensions(mw, mh, md);
+    img->SetOrigin(this->m_lassoDispOrigin);
+    img->SetSpacing(this->m_lassoDispSpacing);
+    auto scalars = vtkSmartPointer<vtkFloatArray>::New();
+    scalars->SetNumberOfComponents(1);
+    scalars->SetNumberOfTuples(qint64(mw) * mh * md);
+    std::memcpy(scalars->GetVoidPointer(0), this->m_lassoMaskBytes.constData(),
+                static_cast<std::size_t>(this->m_lassoMaskBytes.size()));
+    img->GetPointData()->SetScalars(scalars);
+
+    auto contour = vtkSmartPointer<vtkFlyingEdges3D>::New();
+    contour->SetInputData(img);
+    contour->SetValue(0, 0.5);          // binary 0/1 mask → surface at 0.5
+    contour->ComputeNormalsOn();
+    contour->Update();
+    auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+    mapper->SetInputConnection(contour->GetOutputPort());
+    mapper->ScalarVisibilityOff();
+    auto actor = vtkSmartPointer<vtkActor>::New();
+    actor->SetMapper(mapper);
+    actor->GetProperty()->SetColor(0.20, 0.95, 0.35);   // green — the selection
+    actor->GetProperty()->SetOpacity(0.55);
+    actor->PickableOff();
+    if (this->m_lassoActor)
+        renderer->RemoveActor(this->m_lassoActor);
+    this->m_lassoActor = actor;
+    this->m_lassoImage = img;
+    renderer->AddActor(actor);
+    if (render && ui->vtkCube->renderWindow())
+        ui->vtkCube->renderWindow()->Render();
+}
+
+// ── Phase 2: draw a polygon on the 2-D channel map to add/subtract mask pixels ──
+void vtkWindowCube::setLassoEditActive(bool on)
+{
+    if (on) {
+        // Editing is slice-only (the mapping + overlay are the channel map). Refuse
+        // if the 2-D view is showing a moment map, so observers never land on the
+        // wrong (moment) interactor.
+        if (!this->viewingSlice()) {
+            this->statusBar()->showMessage(
+                    u"Mask edit: switch the 2-D view to the channel map first."_s, 3500);
+            if (this->m_lassoEditToggle) {
+                QSignalBlocker b(this->m_lassoEditToggle);
+                this->m_lassoEditToggle->setChecked(false);
+            }
+            this->m_lassoEditActive = false;
+            return;
+        }
+        auto *iren = ui->vtkImage && ui->vtkImage->renderWindow()
+                ? ui->vtkImage->renderWindow()->GetInteractor() : nullptr;
+        if (!iren) {
+            this->m_lassoEditActive = false;
+            return;
+        }
+        this->m_lassoEditActive = true;
+        this->m_lassoEditIren = iren;
+        // Peer 2-D tools share this interactor's permanent observers; those callbacks
+        // early-return while m_lassoEditActive so a click doesn't also toggle the probe
+        // or drop a PV / region vertex.
+        // Neutralise the default window/level image style while drawing (a tiny
+        // press-drag would otherwise change brightness) — set it on THIS interactor
+        // directly so the restore later hits the same one regardless of view swaps.
+        {
+            vtkNew<vtkInteractorStyleUser> userStyle;
+            iren->SetInteractorStyle(userStyle);
+        }
+        if (!this->m_lassoEditClickTag)
+            this->m_lassoEditClickTag = iren->AddObserver(
+                    vtkCommand::LeftButtonPressEvent, this, &vtkWindowCube::onLassoEditClick, 2.0);
+        if (!this->m_lassoEditMoveTag)
+            this->m_lassoEditMoveTag = iren->AddObserver(
+                    vtkCommand::MouseMoveEvent, this, &vtkWindowCube::onLassoEditMove, 2.0);
+        if (!this->m_lassoEditRightTag)
+            this->m_lassoEditRightTag = iren->AddObserver(
+                    vtkCommand::RightButtonPressEvent, this, &vtkWindowCube::commitLassoEditPolygon, 2.0);
+        if (ui->vtkImage) ui->vtkImage->setCursor(Qt::CrossCursor);
+        this->statusBar()->showMessage(
+                u"Mask edit: click points on the channel map; right-click (or click the first point) "
+                u"to close and %1."_s.arg(this->m_lassoEditAdd ? u"ADD"_s : u"SUBTRACT"_s), 0);
+    } else {
+        this->m_lassoEditActive = false;
+        // Remove observers from the EXACT interactor we added them to (ui->vtkImage
+        // may since have swapped to the moment window).
+        auto *iren = this->m_lassoEditIren.GetPointer();
+        if (iren) {
+            if (this->m_lassoEditClickTag) { iren->RemoveObserver(this->m_lassoEditClickTag); this->m_lassoEditClickTag = 0; }
+            if (this->m_lassoEditMoveTag)  { iren->RemoveObserver(this->m_lassoEditMoveTag);  this->m_lassoEditMoveTag = 0; }
+            if (this->m_lassoEditRightTag) { iren->RemoveObserver(this->m_lassoEditRightTag); this->m_lassoEditRightTag = 0; }
+            // Restore the default window/level style on the SAME interactor, even if
+            // the 2-D view has since swapped to the moment window.
+            vtkNew<vtkInteractorStyleImage> imgStyle;
+            iren->SetInteractorStyle(imgStyle);
+        }
+        this->m_lassoEditClickTag = this->m_lassoEditMoveTag = this->m_lassoEditRightTag = 0;
+        this->m_lassoEditIren = nullptr;
+        if (ui->vtkImage) ui->vtkImage->setCursor(Qt::ArrowCursor);
+        this->m_lassoEditVerts.clear();
+        this->refreshLassoEditPreview();
+        this->statusBar()->clearMessage();
+    }
+}
+
+bool vtkWindowCube::mapDisplayToFullVoxel(int dx, int dy, int &outX, int &outY) const
+{
+    auto *renderer = ui->vtkImage && ui->vtkImage->renderWindow()
+            ? ui->vtkImage->renderWindow()->GetRenderers()->GetFirstRenderer() : nullptr;
+    auto *imageData = vtkImageData::SafeDownCast(
+            this->remoteSliceDisplaySource->GetOutputDataObject(0));
+    if (!renderer || !imageData)
+        return false;
+    this->coordinate->SetValue(dx, dy);
+    const double *w = this->coordinate->GetComputedWorldValue(renderer);
+    if (!w)
+        return false;
+    int extent[6];
+    double origin[3], spacing[3];
+    imageData->GetExtent(extent);
+    imageData->GetOrigin(origin);
+    imageData->GetSpacing(spacing);
+    outX = int(std::lround(extent[0] + (w[0] - origin[0]) / spacing[0]));
+    outY = int(std::lround(extent[2] + (w[1] - origin[1]) / spacing[1]));   // ext[2], not ext[1]
+    return true;
+}
+
+void vtkWindowCube::onLassoEditClick()
+{
+    if (!this->m_lassoEditActive)
+        return;
+    auto *iren = ui->vtkImage && ui->vtkImage->renderWindow()
+            ? ui->vtkImage->renderWindow()->GetInteractor() : nullptr;
+    if (!iren)
+        return;
+    int pos[2];
+    iren->GetEventPosition(pos);
+    int vx = 0, vy = 0;
+    if (!this->mapDisplayToFullVoxel(pos[0], pos[1], vx, vy))
+        return;
+    // Click near the first point → close and commit.
+    if (this->m_lassoEditVerts.size() >= 3) {
+        const std::array<int, 2> &f = this->m_lassoEditVerts.front();
+        if (std::abs(vx - f[0]) <= 3 && std::abs(vy - f[1]) <= 3) {
+            this->commitLassoEditPolygon();
+            return;
+        }
+    }
+    this->m_lassoEditVerts.push_back({ vx, vy });
+    this->refreshLassoEditPreview();
+}
+
+void vtkWindowCube::onLassoEditMove()
+{
+    if (!this->m_lassoEditActive || this->m_lassoEditVerts.empty())
+        return;
+    auto *iren = ui->vtkImage && ui->vtkImage->renderWindow()
+            ? ui->vtkImage->renderWindow()->GetInteractor() : nullptr;
+    if (!iren)
+        return;
+    int pos[2];
+    iren->GetEventPosition(pos);
+    int vx = 0, vy = 0;
+    if (!this->mapDisplayToFullVoxel(pos[0], pos[1], vx, vy))
+        return;
+    // Rubber-band: draw the committed points plus a segment to the live cursor.
+    std::vector<std::array<int, 2>> preview = this->m_lassoEditVerts;
+    preview.push_back({ vx, vy });
+    auto *ren = this->sliceWin ? this->sliceWin->GetRenderers()->GetFirstRenderer() : nullptr;
+    if (!ren)
+        return;
+    if (this->m_lassoEditPolyActor) {
+        ren->RemoveActor(this->m_lassoEditPolyActor);
+        this->m_lassoEditPolyActor = nullptr;
+    }
+    auto pts = vtkSmartPointer<vtkPoints>::New();
+    for (const auto &p : preview)
+        pts->InsertNextPoint(double(p[0]), double(p[1]), 0.6);
+    auto lines = vtkSmartPointer<vtkCellArray>::New();
+    lines->InsertNextCell(vtkIdType(preview.size()));
+    for (vtkIdType i = 0; i < vtkIdType(preview.size()); ++i)
+        lines->InsertCellPoint(i);
+    auto pd = vtkSmartPointer<vtkPolyData>::New();
+    pd->SetPoints(pts);
+    pd->SetLines(lines);
+    auto mp = vtkSmartPointer<vtkPolyDataMapper>::New();
+    mp->SetInputData(pd);
+    auto actor = vtkSmartPointer<vtkActor>::New();
+    actor->SetMapper(mp);
+    actor->GetProperty()->SetColor(this->m_lassoEditAdd ? 1.0 : 1.0,
+                                   this->m_lassoEditAdd ? 0.85 : 0.4,
+                                   this->m_lassoEditAdd ? 0.1 : 0.4);  // yellow=add, red=subtract
+    actor->GetProperty()->SetLineWidth(1.5);
+    actor->GetProperty()->LightingOff();
+    actor->PickableOff();
+    ren->AddActor(actor);
+    this->m_lassoEditPolyActor = actor;
+    if (this->sliceWin) this->sliceWin->Render();
+}
+
+void vtkWindowCube::refreshLassoEditPreview()
+{
+    auto *ren = this->sliceWin ? this->sliceWin->GetRenderers()->GetFirstRenderer() : nullptr;
+    if (!ren)
+        return;
+    if (this->m_lassoEditPolyActor) {
+        ren->RemoveActor(this->m_lassoEditPolyActor);
+        this->m_lassoEditPolyActor = nullptr;
+    }
+    if (this->m_lassoEditVerts.size() >= 2) {
+        auto pts = vtkSmartPointer<vtkPoints>::New();
+        for (const auto &p : this->m_lassoEditVerts)
+            pts->InsertNextPoint(double(p[0]), double(p[1]), 0.6);
+        auto lines = vtkSmartPointer<vtkCellArray>::New();
+        lines->InsertNextCell(vtkIdType(this->m_lassoEditVerts.size()));
+        for (vtkIdType i = 0; i < vtkIdType(this->m_lassoEditVerts.size()); ++i)
+            lines->InsertCellPoint(i);
+        auto pd = vtkSmartPointer<vtkPolyData>::New();
+        pd->SetPoints(pts);
+        pd->SetLines(lines);
+        auto mp = vtkSmartPointer<vtkPolyDataMapper>::New();
+        mp->SetInputData(pd);
+        auto actor = vtkSmartPointer<vtkActor>::New();
+        actor->SetMapper(mp);
+        actor->GetProperty()->SetColor(this->m_lassoEditAdd ? 1.0 : 1.0,
+                                       this->m_lassoEditAdd ? 0.85 : 0.4,
+                                       this->m_lassoEditAdd ? 0.1 : 0.4);
+        actor->GetProperty()->SetLineWidth(1.5);
+        actor->GetProperty()->LightingOff();
+        actor->PickableOff();
+        ren->AddActor(actor);
+        this->m_lassoEditPolyActor = actor;
+    }
+    if (this->sliceWin) this->sliceWin->Render();
+}
+
+void vtkWindowCube::commitLassoEditPolygon()
+{
+    if (!this->m_lassoEditActive)
+        return;
+    if (this->m_lassoEditVerts.size() < 3) {
+        this->m_lassoEditVerts.clear();
+        this->refreshLassoEditPreview();
+        this->statusBar()->showMessage(u"Mask edit: need at least 3 points to close a polygon."_s, 2000);
+        return;
+    }
+    const int mw = this->m_lassoMaskDims[0], mh = this->m_lassoMaskDims[1], md = this->m_lassoMaskDims[2];
+    const int ox = this->m_lassoMaskOrigin[0], oy = this->m_lassoMaskOrigin[1], oz = this->m_lassoMaskOrigin[2];
+    const int ch = ui->spinSlice ? ui->spinSlice->value() - 1 : 0;   // 1-based UI → full-res z
+    const int lz = ch - oz;
+    if (this->m_lassoMaskBytes.isEmpty() || mw <= 0 || mh <= 0 || md <= 0 || lz < 0 || lz >= md) {
+        this->statusBar()->showMessage(
+                u"Mask edit: this channel is outside the current selection extent (extend not yet supported)."_s,
+                3500);
+        this->m_lassoEditVerts.clear();
+        this->refreshLassoEditPreview();
+        return;
+    }
+    // Rasterize the polygon over the ROI-clamped bounding box at this channel.
+    int px0 = std::numeric_limits<int>::max(), px1 = std::numeric_limits<int>::min();
+    int py0 = std::numeric_limits<int>::max(), py1 = std::numeric_limits<int>::min();
+    for (const auto &v : this->m_lassoEditVerts) {
+        px0 = std::min(px0, v[0]); px1 = std::max(px1, v[0]);
+        py0 = std::min(py0, v[1]); py1 = std::max(py1, v[1]);
+    }
+    px0 = std::max(px0, ox); px1 = std::min(px1, ox + mw - 1);
+    py0 = std::max(py0, oy); py1 = std::min(py1, oy + mh - 1);
+    float *mask = reinterpret_cast<float *>(this->m_lassoMaskBytes.data());
+    const float val = this->m_lassoEditAdd ? 1.0f : 0.0f;
+    qint64 changed = 0;
+    for (int y = py0; y <= py1; ++y) {
+        for (int x = px0; x <= px1; ++x) {
+            if (pointInPolygon(x, y, this->m_lassoEditVerts)) {
+                const qint64 idx = (qint64(lz) * mh + (y - oy)) * mw + (x - ox);
+                if (mask[idx] != val) { mask[idx] = val; ++changed; }
+            }
+        }
+    }
+    this->m_lassoEditVerts.clear();
+    this->refreshLassoEditPreview();
+    if (changed > 0) {
+        this->rebuildLassoIsosurface(true);
+        this->updateLassoMaskOverlay(true);
+    }
+    this->statusBar()->showMessage(
+            u"Mask edit: %1 %2 voxels on channel %3."_s
+                    .arg(this->m_lassoEditAdd ? u"added"_s : u"removed"_s)
+                    .arg(changed).arg(ch + 1), 3000);
+}
+
 void vtkWindowCube::clearKinematicLassoSelection()
 {
     // If a grow is in flight, discard its result so it doesn't re-add a selection
@@ -546,6 +954,13 @@ void vtkWindowCube::clearKinematicLassoSelection()
     this->m_lassoHasSeed = false;
     this->m_lassoAddSeeds.clear();
     this->m_lassoSubSeeds.clear();
+    this->m_lassoMaskBytes.clear();
+    if (this->m_lassoEditActive) this->setLassoEditActive(false);
+    if (this->m_lassoEditToggle) {
+        QSignalBlocker blk(this->m_lassoEditToggle);
+        this->m_lassoEditToggle->setChecked(false);
+    }
+    this->updateLassoMaskOverlay(true);     // remove the 2-D outline
     this->setLassoApplyEnabled(false);
     if (this->m_lassoCountLabel) this->m_lassoCountLabel->setText(u"—"_s);
     // Back to the start: re-arm the call-to-action so it's obvious a click is needed.
@@ -565,15 +980,19 @@ void vtkWindowCube::applyLassoMask(const QString &mode)
                 u"Kinematic Lasso: wait for the selection to finish before applying."_s, 3000);
         return;
     }
+    if (this->m_lassoMaskBytes.isEmpty()) {
+        this->statusBar()->showMessage(u"Kinematic Lasso: no selection to apply."_s, 3000);
+        return;
+    }
     const QString url = this->remoteBackendUrl, token = this->remoteBackendToken;
     const QString session = this->remoteSessionId, dataset = this->remoteDatasetId;
-    const int seedZ = this->m_lassoLastSeed[0];
-    const int seedY = this->m_lassoLastSeed[1];
-    const int seedX = this->m_lassoLastSeed[2];
-    const QVector<std::array<int, 3>> addSeeds = this->m_lassoAddSeeds;
-    const QVector<std::array<int, 3>> subSeeds = this->m_lassoSubSeeds;
-    const double reach = this->m_lassoReach, lambdaV = this->m_lassoLambdaV;
-    const int roiRadius = this->m_lassoRoiRadius;   // MUST match the preview grow
+    // Apply the EXACT mask currently shown (bytes + full-res origin/dims), not a
+    // re-grow — so a hand-refined mask (phase 2) will apply verbatim too.
+    const QByteArray maskBytes = this->m_lassoMaskBytes;
+    const int ox = this->m_lassoMaskOrigin[0], oy = this->m_lassoMaskOrigin[1],
+              oz = this->m_lassoMaskOrigin[2];
+    const int mw = this->m_lassoMaskDims[0], mh = this->m_lassoMaskDims[1],
+              md = this->m_lassoMaskDims[2];
     this->statusBar()->showMessage(u"Kinematic Lasso: applying mask…"_s, 0);
 
     auto *watcher = new QFutureWatcher<BackendSaveSubregionResult>(this);
@@ -598,14 +1017,9 @@ void vtkWindowCube::applyLassoMask(const QString &mode)
                              .arg(what, r.newDatasetId).arg(r.width).arg(r.height).arg(r.depth));
                      });
     watcher->setFuture(QtConcurrent::run(
-            [url, token, session, dataset, seedZ, seedY, seedX, addSeeds, subSeeds,
-             reach, lambdaV, mode, roiRadius]() {
+            [url, token, session, dataset, maskBytes, ox, oy, oz, mw, mh, md, mode]() {
                 BackendClient c(url, token);
                 c.setSessionId(session);
-                // sigma=0 (robust auto) + nsigma=2.5 + roiRadius match the preview
-                // grow exactly, so the applied mask == the isosurface the user saw.
-                return c.maskCubeSelection(dataset, seedZ, seedY, seedX, addSeeds, subSeeds,
-                                           reach, lambdaV, mode, /*sigma=*/0.0,
-                                           /*nsigma=*/2.5, roiRadius);
+                return c.applyCubeMask(dataset, maskBytes, ox, oy, oz, mw, mh, md, mode);
             }));
 }

@@ -3217,6 +3217,9 @@ void vtkWindowCube::finalizePvInteraction()
     if (this->isBusy()) {
         return;
     }
+    if (this->m_lassoEditActive) {
+        return;   // lasso 2-D edit consumes the right-click / double-click
+    }
 
     if (this->regionMode == RegionMode::Polygon && this->regionDragging) {
         if (this->finalizePolygonRegion()) {
@@ -5774,6 +5777,16 @@ void vtkWindowCube::setInteractorStyleProfile()
 
 void vtkWindowCube::changeImageRenderer()
 {
+    // Leaving the channel-map view invalidates 2-D mask editing (the moment map maps
+    // differently) → tear it down cleanly while the slice interactor is still current.
+    if (this->m_lassoEditActive && !ui->actionSlice->isChecked()) {
+        this->setLassoEditActive(false);
+        if (this->m_lassoEditToggle) {
+            QSignalBlocker blk(this->m_lassoEditToggle);
+            this->m_lassoEditToggle->setChecked(false);
+        }
+    }
+
     double imgRange[2];
     vtkImageData *imgForStats = nullptr;
 

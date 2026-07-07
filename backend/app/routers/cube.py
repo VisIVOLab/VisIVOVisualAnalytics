@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, model_validator
 from typing import Any
 import uuid
@@ -600,6 +600,65 @@ async def cube_mask_selection(
     }
     workspace_filename = Path(result["output_path"]).name
     logger.info("[cube_mask_selection] new dataset new_id=%s mode=%s", new_id, request.mode)
+    return CubeMaskResponse(
+        valid=True, new_dataset_id=new_id, workspace_filename=workspace_filename,
+        **{k: result[k] for k in
+           ("output_path", "width", "height", "depth", "range_min", "range_max")})
+
+
+@router.post("/v1/cube/mask_apply_bin", response_model=CubeMaskResponse, tags=["cube"])
+async def cube_mask_apply_bin(
+    request: Request,
+    dataset_id: str = Query(...),
+    origin_x: int = Query(...), origin_y: int = Query(...), origin_z: int = Query(...),
+    width: int = Query(..., ge=1), height: int = Query(..., ge=1), depth: int = Query(..., ge=1),
+    mode: str = Query("blank_outside"),
+    output_basename: str = Query(""),
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> CubeMaskResponse:
+    """Apply an EXPLICIT selection mask (raw little-endian float32 ROI mask in the
+    request body, + its origin/dims as query params — the same wire the select
+    preview returns) and register the masked cube as a new dataset. Unlike
+    /v1/cube/mask_selection this does NOT re-grow from seeds, so a hand-refined mask
+    is applied exactly as shown."""
+    from ..compute import worker_cube_mask_apply  # noqa: PLC0415
+    if mode not in ("blank_inside", "blank_outside"):
+        raise HTTPException(422, "mode must be 'blank_inside' or 'blank_outside'")
+    mask_bytes = await request.body()
+    expected = int(width) * int(height) * int(depth) * 4
+    if len(mask_bytes) != expected:
+        raise HTTPException(
+            422, f"mask body is {len(mask_bytes)} bytes; expected {expected}")
+    try:
+        entry = _require_dataset(session, dataset_id)
+        if entry["kind"] != "cube":
+            raise HTTPException(422, "3-D masking requires a spectral cube dataset.")
+        src_stem = Path(entry["path"]).stem
+        tag = "inside" if mode == "blank_inside" else "outside"
+        basename = output_basename.strip() or f"{src_stem}_lasso-{tag}.fits"
+        output_path = str(make_workspace_path(basename))
+        result = await _run_heavy_with_limit(
+            session,
+            worker_cube_mask_apply,
+            entry["path"], output_path, mask_bytes,
+            origin_x, origin_y, origin_z, width, height, depth, mode,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return CubeMaskResponse(valid=False, error=str(exc))
+
+    new_id = f"ds_{uuid.uuid4().hex[:12]}"
+    session.datasets[new_id] = {
+        "path":   result["output_path"],
+        "kind":   "cube",
+        "width":  result["width"],
+        "height": result["height"],
+        "depth":  result["depth"],
+    }
+    workspace_filename = Path(result["output_path"]).name
+    logger.info("[cube_mask_apply_bin] new dataset new_id=%s mode=%s", new_id, mode)
     return CubeMaskResponse(
         valid=True, new_dataset_id=new_id, workspace_filename=workspace_filename,
         **{k: result[k] for k in

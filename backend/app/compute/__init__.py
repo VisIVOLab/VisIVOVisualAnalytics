@@ -57,6 +57,7 @@ from .selection import (  # noqa: F401
     cube_kinematic_select_multi,
     worker_cube_kinematic_select,
     worker_cube_mask_selection,
+    worker_cube_mask_apply,
 )
 from .spectral import (  # noqa: F401
     _gaussian,
@@ -133,6 +134,7 @@ __all__ = [
     "cube_kinematic_select_multi",
     "worker_cube_kinematic_select",
     "worker_cube_mask_selection",
+    "worker_cube_mask_apply",
     "_gaussian",
     "worker_linewidth",
     "_expand_channel_ranges",

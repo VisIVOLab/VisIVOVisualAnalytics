@@ -314,6 +314,9 @@ void vtkWindowCube::finishRegionInteraction()
     if (this->isBusy()) {
         return;
     }
+    if (this->m_lassoEditActive) {
+        return;   // lasso 2-D edit consumes the release
+    }
 
     if (this->regionMode == RegionMode::None || !this->regionDragging) {
         return;

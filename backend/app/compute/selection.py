@@ -385,3 +385,75 @@ def worker_cube_mask_selection(
         "range_min": float(range_min), "range_max": float(range_max),
         "output_path": output_path,
     }
+
+
+def worker_cube_mask_apply(
+    path: str,
+    output_path: str,
+    mask_bytes: bytes,
+    origin_x: int, origin_y: int, origin_z: int,
+    roi_width: int, roi_height: int, roi_depth: int,
+    mode: str,
+) -> dict[str, Any]:
+    """Apply an EXPLICIT selection mask (a ROI bounding-box binary mask + its origin
+    in cube voxels, little-endian float32 0/1 x-fastest = the same wire the select
+    preview returns) — NOT re-grown from seeds. This is what lets a hand-refined
+    mask be applied exactly as shown. Blanks inside (remove) or outside (isolate)
+    the mask, keeps full dims + WCS, writes a new dataset. Out-of-core: only the ROI
+    region + memmap writes, never a full-cube bool."""
+    import shutil                             # noqa: PLC0415
+    from astropy.io import fits as _fits      # noqa: PLC0415
+
+    if mode not in ("blank_inside", "blank_outside"):
+        raise ValueError(
+            f"Unknown mask mode {mode!r}; expected 'blank_inside' or 'blank_outside'.")
+    rw, rh, rd = int(roi_width), int(roi_height), int(roi_depth)
+    expected = rw * rh * rd * 4
+    if rw <= 0 or rh <= 0 or rd <= 0 or len(mask_bytes) != expected:
+        raise ValueError(
+            f"Mask payload is {len(mask_bytes)} bytes; expected {expected} "
+            f"({rw}×{rh}×{rd} float32).")
+    roi_mask = (np.frombuffer(mask_bytes, dtype="<f4").reshape(rd, rh, rw) > 0.5)
+    if not roi_mask.any():
+        raise ValueError("Mask is empty — nothing to apply.")
+
+    dataset = ScientificFitsDataset(path)
+    hdul, raw = dataset.open_memmap()
+    try:
+        data = ScientificFitsDataset.squeeze_to_3d(raw)
+        nz, ny, nx = data.shape
+    finally:
+        hdul.close()
+    ox, oy, oz = int(origin_x), int(origin_y), int(origin_z)
+    if (ox < 0 or oy < 0 or oz < 0
+            or ox + rw > nx or oy + rh > ny or oz + rd > nz):
+        raise ValueError("Mask ROI falls outside the cube bounds.")
+
+    shutil.copyfile(path, output_path)
+    out_hdul = _fits.open(output_path, mode="update", memmap=True)
+    try:
+        arr = ScientificFitsDataset.squeeze_to_3d(out_hdul[0].data)
+        if arr.shape != (nz, ny, nx):
+            raise ValueError("Masked cube shape does not match the source.")
+        roi = arr[oz:oz + rd, oy:oy + rh, ox:ox + rw]
+        if mode == "blank_inside":
+            roi[roi_mask] = np.nan                       # touches only the ROI region
+            kept = arr[::max(1, nz // 32), ::max(1, ny // 64), ::max(1, nx // 64)]
+        else:  # blank_outside — isolate: keep ONLY the selected voxels
+            saved = np.where(roi_mask, roi, np.nan)      # selected values, nan elsewhere
+            arr[:] = np.nan                              # blank the whole cube (memmap I/O)
+            arr[oz:oz + rd, oy:oy + rh, ox:ox + rw] = saved
+            kept = saved[roi_mask]
+        out_hdul[0].header.add_history(
+            f"VisIVO Kinematic Lasso mask ({mode}) from {Path(path).name}: "
+            f"explicit {int(roi_mask.sum())}-voxel mask at ({ox},{oy},{oz})")
+        range_min, range_max = _finite_range(kept)
+        out_hdul.flush()
+    finally:
+        out_hdul.close()
+
+    return {
+        "width": int(nx), "height": int(ny), "depth": int(nz),
+        "range_min": float(range_min), "range_max": float(range_max),
+        "output_path": output_path,
+    }

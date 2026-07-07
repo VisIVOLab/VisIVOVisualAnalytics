@@ -411,6 +411,57 @@ async def test_cube_mask_selection_registers_new_dataset(client: AsyncClient, op
 
 
 @pytest.mark.asyncio
+async def test_cube_mask_apply_bin_explicit_mask(client: AsyncClient, opened_cube: dict) -> None:
+    # Apply an explicit ROI mask (float32 0/1, x-fastest) — no re-grow from seeds.
+    import numpy as np
+    rw, rh, rd = 5, 4, 3
+    m = np.zeros((rd, rh, rw), dtype="<f4")
+    m[1, 1:3, 1:3] = 1.0                       # a few selected voxels
+    resp = await client.post(
+        "/v1/cube/mask_apply_bin",
+        params={
+            "dataset_id": opened_cube["dataset_id"],
+            "origin_x": 20, "origin_y": 24, "origin_z": 8,
+            "width": rw, "height": rh, "depth": rd,
+            "mode": "blank_outside",
+        },
+        content=m.tobytes(),
+        headers={**opened_cube["headers"], "Content-Type": "application/octet-stream"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["valid"] is True
+    assert data["new_dataset_id"].startswith("ds_")
+    assert (data["width"], data["height"], data["depth"]) == (64, 64, 32)  # full dims kept
+
+    # The EXACT mask must have been applied verbatim (not re-grown): for blank_outside
+    # ONLY the selected ROI voxels stay finite, everything else is NaN.
+    from astropy.io import fits
+    out = np.squeeze(fits.getdata(data["output_path"]))
+    assert out.shape == (32, 64, 64)                       # (z, y, x)
+    finite = np.isfinite(out)
+    assert int(finite.sum()) == int((m > 0.5).sum())       # == selected-voxel count
+    sub = finite[8:8 + rd, 24:24 + rh, 20:20 + rw]         # the ROI region (oz,oy,ox)
+    assert np.array_equal(sub, (m > 0.5))                  # finite exactly where the mask is
+
+
+@pytest.mark.asyncio
+async def test_cube_mask_apply_bin_bad_size_422(client: AsyncClient, opened_cube: dict) -> None:
+    resp = await client.post(
+        "/v1/cube/mask_apply_bin",
+        params={
+            "dataset_id": opened_cube["dataset_id"],
+            "origin_x": 0, "origin_y": 0, "origin_z": 0,
+            "width": 4, "height": 4, "depth": 4,   # expects 256 bytes
+            "mode": "blank_inside",
+        },
+        content=b"\x00\x00\x00\x00",              # 4 bytes → mismatch
+        headers={**opened_cube["headers"], "Content-Type": "application/octet-stream"},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
 async def test_cube_preview(client: AsyncClient, opened_cube: dict) -> None:
     resp = await client.post(
         "/v1/cube/preview",

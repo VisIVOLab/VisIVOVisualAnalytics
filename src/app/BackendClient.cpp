@@ -891,7 +891,10 @@ static QByteArray performBinaryPost(QNetworkAccessManager *nam,
     statusOut = 0;
     headersOut.clear();
     QNetworkRequest request = reqTemplate;
-    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    // Default to JSON, but preserve a content type the caller already set (e.g.
+    // application/octet-stream for a raw binary body like the mask-apply payload).
+    if (!request.hasRawHeader("Content-Type"))
+        request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
     QEventLoop loop;
     QNetworkReply *reply = nam->post(request, bodyBytes);
@@ -1441,6 +1444,46 @@ BackendSaveSubregionResult BackendClient::maskCubeSelection(
             QUrl(m_baseUrl + QStringLiteral("/v1/cube/mask_selection")), QJsonDocument(bodyObj), error);
     if (!error.isEmpty()) {
         result.error = error;
+        return result;
+    }
+    return parseSaveSubregionObject(QJsonDocument::fromJson(raw).object());
+}
+
+BackendSaveSubregionResult BackendClient::applyCubeMask(
+        const QString &datasetId, const QByteArray &maskBytes,
+        int originX, int originY, int originZ,
+        int width, int height, int depth,
+        const QString &mode, const QString &outputBasename) const
+{
+    BackendSaveSubregionResult result;
+    QUrl url(m_baseUrl + QStringLiteral("/v1/cube/mask_apply_bin"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("dataset_id"), datasetId);
+    q.addQueryItem(QStringLiteral("origin_x"), QString::number(originX));
+    q.addQueryItem(QStringLiteral("origin_y"), QString::number(originY));
+    q.addQueryItem(QStringLiteral("origin_z"), QString::number(originZ));
+    q.addQueryItem(QStringLiteral("width"), QString::number(width));
+    q.addQueryItem(QStringLiteral("height"), QString::number(height));
+    q.addQueryItem(QStringLiteral("depth"), QString::number(depth));
+    q.addQueryItem(QStringLiteral("mode"), mode);
+    if (!outputBasename.isEmpty())
+        q.addQueryItem(QStringLiteral("output_basename"), outputBasename);
+    url.setQuery(q);
+
+    QNetworkRequest req = buildRequest(url);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/octet-stream"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray raw =
+            performBinaryPost(nam, req, maskBytes, 120000, status, headers, err);
+    if (status != 200) {
+        const QString reason = !raw.isEmpty() ? QString::fromUtf8(raw)
+                             : (err.isEmpty() ? QString() : err);
+        result.error = reason.isEmpty()
+                ? QStringLiteral("HTTP %1 on mask_apply_bin").arg(status)
+                : QStringLiteral("HTTP %1: %2").arg(status).arg(reason);
         return result;
     }
     return parseSaveSubregionObject(QJsonDocument::fromJson(raw).object());

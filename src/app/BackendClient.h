@@ -1362,6 +1362,18 @@ public:
                                                  double sigma = 0.0, double nsigma = 2.5,
                                                  int roiRadius = 0,   // 0 = object-bounded (whole connected source)
                                                  const QString &outputBasename = {}) const;
+
+    /** POST /v1/cube/mask_apply_bin — apply an EXPLICIT ROI mask (raw little-endian
+     *  float32 0/1, x-fastest = the select payload) at @p origin, blanking inside
+     *  (@p mode "blank_inside") or outside ("blank_outside"), and register the
+     *  masked cube as a new dataset. Unlike maskCubeSelection this applies the mask
+     *  bytes verbatim (no re-grow), so a hand-refined mask is applied as shown. */
+    BackendSaveSubregionResult applyCubeMask(const QString &datasetId,
+                                             const QByteArray &maskBytes,
+                                             int originX, int originY, int originZ,
+                                             int width, int height, int depth,
+                                             const QString &mode,
+                                             const QString &outputBasename = {}) const;
     /** POST /v1/hips/catalogue_overlay – RA/Dec sources in current viewport. */
     BackendHiPSCatalogueOverlayResult requestHiPSCatalogueOverlay(
             const QString &cataloguePath, double raDeg, double decDeg, double fovDeg,

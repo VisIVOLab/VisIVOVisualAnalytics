@@ -166,6 +166,9 @@ void vtkWindowCube::mouseCallback()
     if (this->isBusy()) {
         return;
     }
+    if (this->m_lassoEditActive) {
+        return;   // Kinematic-Lasso 2-D mask edit owns the channel-map pointer
+    }
 
     if (this->probeModeActive && this->probeFrozen) {
         return;
@@ -194,6 +197,9 @@ void vtkWindowCube::toggleProbeFreeze()
 {
     if (this->isBusy()) {
         return;
+    }
+    if (this->m_lassoEditActive) {
+        return;   // lasso 2-D edit consumes the left-click
     }
 
     const int *position = ui->vtkImage->renderWindow()->GetInteractor()->GetEventPosition();

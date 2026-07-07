@@ -349,9 +349,11 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
         this->refreshProbeOverlay();
         this->updateProbeReadout(result.imageData);
     }
-    // Refresh the kinematic-model contour for the newly displayed channel (the
-    // following sliceWin->Render() paints it — no extra render needed here).
+    // Refresh the kinematic-model contour + the Kinematic-Lasso selection outline
+    // for the newly displayed channel (the following sliceWin->Render() paints them
+    // — no extra render needed here).
     this->updateKinematic2dContour(/*render=*/false);
+    this->updateLassoMaskOverlay(/*render=*/false);
     this->sliceWin->Render();
     // Smart prefetch: schedule ±1 neighbour fetch ``idlePrefetchDelayMs``
     // from now, only when this slice was the user's explicit request

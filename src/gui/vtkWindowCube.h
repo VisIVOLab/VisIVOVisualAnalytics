@@ -529,6 +529,33 @@ private:
     QFutureWatcher<RemoteKinematicSelectResult> m_lassoSelectWatcher;
     vtkSmartPointer<vtkActor> m_lassoActor;
     vtkSmartPointer<vtkImageData> m_lassoImage;
+    // The displayed selection's raw ROI mask (little-endian float32 0/1, x-fastest)
+    // + its full-res voxel origin/dims — kept so Apply sends the EXACT mask shown
+    // (foundation for per-channel 2-D refinement) and the 2-D overlay can slice it.
+    QByteArray m_lassoMaskBytes;
+    int m_lassoMaskOrigin[3]{ 0, 0, 0 };   ///< full-res voxel origin (x,y,z)
+    int m_lassoMaskDims[3]{ 0, 0, 0 };     ///< ROI dims (w,h,d) = (x,y,z)
+    double m_lassoDispOrigin[3]{ 0., 0., 0. };   ///< 3-D display origin of the ROI mask
+    double m_lassoDispSpacing[3]{ 1., 1., 1. };  ///< 3-D display spacing (preview vs full)
+    void rebuildLassoIsosurface(bool render = true);  ///< (re)build the green 3-D surface from m_lassoMaskBytes
+    // ── Phase 2: per-channel 2-D mask refinement (draw a polygon on the channel map)
+    bool m_lassoEditActive{ false };
+    bool m_lassoEditAdd{ true };                  ///< true = add pixels, false = subtract
+    unsigned long m_lassoEditClickTag{ 0 };
+    unsigned long m_lassoEditMoveTag{ 0 };
+    unsigned long m_lassoEditRightTag{ 0 };
+    vtkWeakPointer<vtkRenderWindowInteractor> m_lassoEditIren;  ///< exact interactor the observers live on
+    std::vector<std::array<int, 2>> m_lassoEditVerts;   ///< in-progress polygon (full-res x,y)
+    vtkSmartPointer<vtkActor> m_lassoEditPolyActor;     ///< live rubber-band on the 2-D view
+    QPushButton *m_lassoEditToggle{ nullptr };
+    QPushButton *m_lassoEditAddBtn{ nullptr };
+    QPushButton *m_lassoEditSubBtn{ nullptr };
+    void setLassoEditActive(bool on);
+    void onLassoEditClick();
+    void onLassoEditMove();
+    void commitLassoEditPolygon();
+    void refreshLassoEditPreview();
+    bool mapDisplayToFullVoxel(int dx, int dy, int &outX, int &outY) const;
     vtkSmartPointer<vtkActor> m_lassoSeedActor;   ///< marker at the clicked seed
     vtkSmartPointer<vtkTextActor> m_lassoHintActor;  ///< in-viewport "click a source" prompt
     void showLassoHint(bool on);                  ///< show/hide the call-to-action overlay
@@ -550,6 +577,8 @@ private:
     QPushButton *m_lassoIsolateBtn{ nullptr };    ///< Apply buttons — disabled while a grow is in flight
     QPushButton *m_lassoRemoveBtn{ nullptr };
     void setLassoApplyEnabled(bool on);           ///< gate Apply on the displayed selection being current
+    vtkSmartPointer<vtkActor> m_lassoMask2dActor; ///< selection outline on the 2-D channel map
+    void updateLassoMaskOverlay(bool render = true);  ///< redraw the 2-D overlay for the current channel
     void onLassoRelease();                        ///< selection handler (bound to the left double-click)
     void onLassoSelectReady();
     void requestLassoSelection();                 ///< (re)grow from the current seeds
