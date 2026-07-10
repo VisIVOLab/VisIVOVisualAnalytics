@@ -60,3 +60,19 @@ Completeness drops for the faintest sources because the lasso's nσ = 2.5 contou
 is more conservative than SoFiA's multi-scale smooth+clip — the interactive
 reach / nσ controls let the user recover them, but the numbers above are the
 strict single-click default.
+
+## Interactive recovery of faint sources
+
+`lasso_sensitivity.py` sweeps the two interactive controls on a bright and a
+faint SoFiA source and measures completeness vs the mask (`out/sensitivity.png`):
+
+```bash
+backend/.venv/bin/python validation/lasso_sensitivity.py
+```
+
+The faint source, only 59 % complete at the default nσ = 2.5, rises to **97 %**
+when the threshold is lowered to nσ = 1.5 — matching the bright source — and to
+88 % by raising *reach* alone. The bright source stays 80–99 % complete across
+the whole range. So the low default completeness of faint sources is a *tunable
+starting point*, not a limit of the method: one slider recovers them.
+
