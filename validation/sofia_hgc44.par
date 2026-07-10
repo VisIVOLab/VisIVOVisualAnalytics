@@ -1,0 +1,37 @@
+# SoFiA-2 parameter file — reproducible HI source mask for the Kinematic-Lasso
+# validation on the HGC 44 cube. Run via the official Docker image:
+#
+#   docker run --rm -v /Users/fvitello/downloads/DemoData:/data \
+#       -v <repo>/validation/sofia_out:/out sofiapipeline/sofia2 \
+#       sofia /out/sofia_hgc44.par
+#
+# (this file is copied into sofia_out/ so /out/sofia_hgc44.par resolves in-container)
+
+input.data              =  /data/hgc44_3axes.fits
+
+# Smooth + clip source finder: clip at 4σ over a small set of spatial/spectral
+# smoothing kernels (0 = unsmoothed), robust noise via MAD.
+scfind.enable           =  true
+scfind.threshold        =  4.0
+scfind.kernelsXY        =  0, 3, 6
+scfind.kernelsZ         =  0, 3, 7, 15
+scfind.replacement      =  2.0
+scfind.statistic        =  mad
+
+# Merge detected voxels into sources.
+linker.enable           =  true
+linker.radiusXY         =  2
+linker.radiusZ          =  2
+linker.minSizeXY        =  5
+linker.minSizeZ         =  5
+
+# Reliability filtering from the negative-detection distribution.
+reliability.enable      =  true
+reliability.threshold   =  0.9
+filter.minSNR           =  3.0
+
+output.directory        =  /out
+output.filename         =  sofia_hgc44
+output.writeMask        =  true
+output.writeCatXML      =  true
+output.overwrite        =  true

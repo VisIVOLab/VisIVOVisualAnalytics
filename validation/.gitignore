@@ -1,0 +1,3 @@
+# Heavy / regenerable validation artifacts (reproduce via README).
+sofia_out/
+out/*.png

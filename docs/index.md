@@ -170,6 +170,7 @@ service-mapping-note
 catalogue3d-viewer
 velocity-field-viewer
 kinematic-model
+kinematic-lasso
 movie-export
 linked-views
 demo-datasets
@@ -257,6 +258,10 @@ every tool together with the page that documents its scientific use.
   - **Tools → Extract PV Diagram** + polyline on the slice
   - 2-D PV map
   - [Regions, PV, noise · PV](user-guide/region-pv-noise#position-velocity-diagrams)
+* - Select & mask a 3-D object (Kinematic Lasso)
+  - **Tools → Kinematic Lasso** + double-click a source in the 3-D view
+  - Geodesic PPV selection → isolated / removed new cube
+  - [Kinematic Lasso](kinematic-lasso)
 * - **REGIONS tools** (draw on the 2-D slice / moment)
   -
   -
