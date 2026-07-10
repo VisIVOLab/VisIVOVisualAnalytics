@@ -76,6 +76,11 @@ def main() -> None:
     header["CTYPE3"], header["CRPIX3"] = "VRAD", nz / 2
     header["CRVAL3"], header["CDELT3"] = 0.0, 5.0e3   # 5 km/s channels
     header["CUNIT3"] = "m/s"
+    # Spectral frame keywords so casacore/CARTA can build the spectral coordinate
+    # (VRAD needs a rest frequency + reference frame, else the load silently fails).
+    header["SPECSYS"] = "LSRK"
+    header["RESTFRQ"] = 1.420405751786e9   # HI 21 cm
+    header["VELREF"] = 257                  # LSRK, radio convention
     header["BMAJ"] = header["BMIN"] = 8.0e-3
     header["BPA"] = 0.0
 

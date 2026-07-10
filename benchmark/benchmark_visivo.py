@@ -159,16 +159,25 @@ def bench_cube(cli: Client, cube: str, repeats: int, seed, roi_only_above_gb: fl
                 ts.append(t)
             rec["ops"]["fullres"] = ts
             log(f"    full-res       {med_mad(ts)[0]:.2f}s  ({n/1e9:.1f} GB)")
-        # camera ROI: central half-box (1/8 of the voxels), always measured
+        # camera ROI: a CENTRED box bounded by the viewport, not a fixed fraction
+        # of the cube — the desktop fetches only what the camera frames (and in
+        # parallel slabs). Cap it to ROI_CAP_VOX (~1 GB f32) so the single-request
+        # measurement is realistic and comparable across cube sizes; a 1/8 box of a
+        # 30 GB cube (3.7 GB in one blob) is neither.
+        ROI_CAP_VOX = 268_000_000
+        side = int(round(ROI_CAP_VOX ** (1.0 / 3.0)))
+        bx, by, bz = min(w, side), min(h, side), min(d, side)
+        x0c, y0c, z0c = (w - bx) // 2, (h - by) // 2, (d - bz) // 2
         ts = []
         for _ in range(repeats):
             t, (n, _) = timed(cli.post_stream, "/v1/cube/subvolume_bin",
                               dict(dataset_id=ds,
-                                   x0=w // 4, x1=w // 4 + w // 2 - 1,
-                                   y0=h // 4, y1=h // 4 + h // 2 - 1,
-                                   z0=d // 4, z1=d // 4 + d // 2 - 1))
+                                   x0=x0c, x1=x0c + bx - 1,
+                                   y0=y0c, y1=y0c + by - 1,
+                                   z0=z0c, z1=z0c + bz - 1))
             ts.append(t)
         rec["ops"]["roi"] = ts
+        rec["roi_gb"] = round(n / 1e9, 2)
         log(f"    camera ROI     {med_mad(ts)[0]:.2f}s  ({n/1e9:.2f} GB)")
 
     # -- seed for the lasso --------------------------------------------------
