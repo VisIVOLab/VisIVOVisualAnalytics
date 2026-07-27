@@ -8,6 +8,7 @@
 // Forward-declared here; full headers are included in vtkWindowCube.cpp where
 // they are constructed and their methods are called.
 class CubeUiAssembler;
+class WorkspaceChrome;
 class MomentMapController;
 class NoiseController;
 class PvController;
@@ -361,6 +362,7 @@ private:
     };
 
     Ui::vtkWindowCube *ui;
+    WorkspaceChrome *m_workspaceChrome = nullptr;   ///< shared command-bar + status-rail chrome
     const QString filepath;
     const QString remoteBackendUrl;
     const QString remoteDatasetId;
@@ -1171,6 +1173,22 @@ private:
     bool showWcsAxes{ true };
     void applyMomentMapResult(const MomentMapApplyResult &result);
     bool isBusy() const;
+
+    /// Register a derived product in the session-wide ProductRegistry so it
+    /// appears nested under this dataset in the Session Data tree. @p window is
+    /// the result window/widget to raise when the tree row is activated. When
+    /// @p stableId is non-empty it is used as the product id, so re-computing an
+    /// in-place product (e.g. the moment map) updates its row instead of adding
+    /// a duplicate. Returns the assigned product id.
+    QString registerAnalysisProduct(const QString &kind, const QString &label,
+                                    const QVariantMap &params, QWidget *window,
+                                    const QString &stableId = QString());
+
+    /// Populate the right Inspector shell (Properties/Analysis tabs) and wire the
+    /// pane-layout + Linked controls. Tools trigger the existing dialog QActions.
+    void setupInspector();
+    /// Apply a saved-ish pane arrangement to the view docks (1/2/4).
+    void applyPaneLayout(int panes);
 
     // ── Server-side rendering plumbing ────────────────────────────────────────
     // The 3D viewport widget is wrapped in a QStackedWidget with two pages:

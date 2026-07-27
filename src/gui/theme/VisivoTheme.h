@@ -232,16 +232,27 @@ struct ViewerToolbarSpec
     QString secondaryTag;   // "remote · full-res" (neutral)
 };
 
+// Handles to the interactive widgets the toolbar builds, so the caller (or the
+// shared WorkspaceChrome helper) can wire behaviour. All are owned by the
+// returned toolbar widget; any may be null if not built.
+struct ViewerToolbarWidgets
+{
+    QToolButton *find = nullptr;
+    QToolButton *command = nullptr;        // "Command ⌘K"
+    QToolButton *exportBtn = nullptr;
+    QToolButton *primaryTag = nullptr;     // "CUBE · …" clickable (FITS header)
+    QToolButton *datasetSwitch = nullptr;  // "▼" recent-dataset switcher
+    QToolButton *theme = nullptr;          // "◐/◑" dark/light toggle
+    QLabel      *remoteChip = nullptr;     // live "host · N running" health chip
+};
+
 // Returns a fully built QWidget for placement at the top of a viewer's central
-// area. Out parameters expose the action buttons so the caller can wire them
-// to handlers; pass nullptr to skip any. `primaryTagButton` returns the
-// "CUBE · 1024×…" tag chip rendered as a clickable button so callers can hook
-// it up (e.g. to open the FITS header dialog).
+// area. `out` (optional) receives handles to the action widgets so the caller
+// can wire them — Find / Command / Export, the clickable "CUBE · …" primary
+// tag (e.g. opens the FITS header dialog), the dataset switcher, the theme
+// toggle, and the live remote/health chip.
 QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
-                           QToolButton **findButton,
-                           QToolButton **commandButton,
-                           QToolButton **exportButton,
-                           QToolButton **primaryTagButton = nullptr,
+                           ViewerToolbarWidgets *out = nullptr,
                            QWidget *parent = nullptr);
 
 // Small "Tools → Foo…" breadcrumb chip used in the footer of tool dialogs to

@@ -296,6 +296,14 @@ set(PROJECT_SOURCES
         src/gui/AboutDialog.h
         src/gui/CommandPalette.cpp
         src/gui/CommandPalette.h
+        src/gui/WorkspaceChrome.cpp
+        src/gui/WorkspaceChrome.h
+        src/gui/SessionDataTree.cpp
+        src/gui/SessionDataTree.h
+        src/gui/InspectorPanel.cpp
+        src/gui/InspectorPanel.h
+        src/app/ProductRegistry.cpp
+        src/app/ProductRegistry.h
         src/app/ThumbnailCache.cpp
         src/app/ThumbnailCache.h
         src/gui/CatalogueTableModel.cpp

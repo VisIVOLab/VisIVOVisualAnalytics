@@ -23,6 +23,7 @@
 #include "theme/SegmentedToggle.h"
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
+#include "WorkspaceChrome.h"
 #include "ToolResultDialog.h"
 #include "vtkInteractorStyleProfile.h"
 #include "vtkLegendScaleActorWCS.h"
@@ -1144,6 +1145,15 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     this->catalogueInfoLabel->setStyleSheet(u"QLabel { padding-left: 8px; color: palette(window-text); }"_s);
     this->catalogueInfoLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     this->statusBar()->addPermanentWidget(this->catalogueInfoLabel);
+    // Install the additive status rail now that the window's own permanent
+    // labels exist (so the rail lands to their right), then poll backend health.
+    if (this->m_workspaceChrome) {
+        this->m_workspaceChrome->installStatusRail();
+        this->m_workspaceChrome->installSessionDock(
+                this->filepath, QFileInfo(this->filepath).fileName(), u"image"_s);
+        // setupInspector()/start() run at the END of the constructor — the
+        // Analysis-tab tools reference QActions created later below.
+    }
     this->updateCatalogueInfoPanel();
     this->statusMessageClearTimer.setSingleShot(true);
     QObject::connect(&this->statusMessageClearTimer, &QTimer::timeout, this, [this]() {
@@ -1650,6 +1660,13 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                      &vtkWindowImage::showCurrentLayerSettings);
     QObject::connect(ui->listLayer->selectionModel(), &QItemSelectionModel::currentChanged, this,
                      &vtkWindowImage::updateLUTCustomizer);
+
+    // Inspector shell + first health poll: done last so every Analysis-tab tool
+    // action (created above) is available.
+    if (this->m_workspaceChrome) {
+        this->setupInspector();
+        this->m_workspaceChrome->start();
+    }
 
     // Backend-authoritative: kick off the preview load immediately.
     this->showPersistentStatusMessage(u"Loading image preview..."_s);

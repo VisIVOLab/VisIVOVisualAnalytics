@@ -22,6 +22,7 @@
 #include <memory>
 #include <vector>
 
+class WorkspaceChrome;
 class ImageLayerController;
 class ImageLayerImportService;
 class LayerListModel;
@@ -165,6 +166,7 @@ public:
 
 private:
     Ui::vtkWindowImage *ui;
+    WorkspaceChrome *m_workspaceChrome = nullptr;   ///< shared command-bar + status-rail chrome
     const QString filepath;
     const QString remoteBackendUrl;
     const QString remoteDatasetId;
@@ -263,6 +265,10 @@ private:
 
     // Layout B-style top toolbar: path-pill + tag chips + Find/Command/Export.
     void setupViewerToolbar();
+
+    /// Populate the right Inspector shell (Properties/Analysis). The image is a
+    /// single-view window, so pane-layout and Linked are disabled.
+    void setupInspector();
 
     // Opens a non-modal dialog showing the FITS header cards for `filepath`.
     // Triggered by the primary tag chip in the viewer toolbar.

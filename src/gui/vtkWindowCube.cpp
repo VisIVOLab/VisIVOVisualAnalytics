@@ -8,6 +8,9 @@
 #include "ColorMaps.h"
 #include "ChannelOverlay.h"
 #include "CubeUiAssembler.h"
+#include "WorkspaceChrome.h"
+#include "InspectorPanel.h"
+#include "app/ProductRegistry.h"
 #include "CubeVRController.h"
 #include "DiagnosticsWindow.h"
 #include "theme/SegmentedToggle.h"
@@ -975,6 +978,17 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // ── View → Rendering submenu (SSR mode toggle) ────────────────────────────
     this->setupRenderModeUi();
 
+    // Install the additive status rail AFTER setupRenderModeUi() (which appends
+    // the render-mode/FPS badges as permanent widgets) so the rail's four slots
+    // land to the right of every window-owned status widget, then start polling.
+    if (this->m_workspaceChrome) {
+        this->m_workspaceChrome->installStatusRail();
+        this->m_workspaceChrome->installSessionDock(
+                this->filepath, QFileInfo(this->filepath).fileName(), u"cube"_s);
+        // setupInspector()/start() run at the END of the constructor — the
+        // Analysis-tab tools reference QActions created later below.
+    }
+
     // ── Volume Rendering submenu ──────────────────────────────────────────
     ui->menuView->addSeparator();
     this->m_menuVolumeRendering = ui->menuView->addMenu(u"Volume Rendering"_s);
@@ -1832,6 +1846,11 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                                  xLabel, yLabel,
                                                  u"PV Diagram (Polyline)"_s, pvInfo);
                 this->clearPersistentStatusMessage();
+                // The PV widget is created once and reused → stable id updates
+                // the same product row; the widget is what we raise on activate.
+                this->registerAnalysisProduct(
+                        u"pv"_s, u"PV diagram"_s, {}, this->pvDiagramWidget,
+                        QStringLiteral("pv@%1").arg(this->datasetPersistKey()));
             },
             this);
 
@@ -1921,6 +1940,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                         this);
         dlg->setAttribute(Qt::WA_DeleteOnClose);
         dlg->show();
+        // NOTE: LinewidthDialog spawns its actual result window (ScienceMapWindow)
+        // only after the user runs it, so registering the product belongs with
+        // that result window — deferred to tappa 4 (dialog→product migration).
     });
 
     // S-03 Baseline subtraction
@@ -1936,6 +1958,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                        this);
         dlg->setAttribute(Qt::WA_DeleteOnClose);
         dlg->show();
+        this->registerAnalysisProduct(u"baseline"_s, u"Baseline-subtracted cube"_s, {}, dlg);
     });
 
     // S-04 Stack spectral cubes
@@ -1987,6 +2010,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              // long-running compute already shows its own modal
                              // QProgressDialog so the wait is still indicated.
                              dlg->show();
+                             // NOTE: StackDialog creates its result plot window on
+                             // accept and closes itself, so product registration
+                             // belongs with that result window — deferred to tappa 4.
                          });
         watcher->setFuture(QtConcurrent::run([url, token, sessionId]() {
             BackendClient c(url, token);
@@ -2154,6 +2180,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 this->filepath, this);
         win->show();
         win->raise();
+        this->registerAnalysisProduct(u"channelmaps"_s, u"Channel maps"_s, {}, win);
     });
 
     // ANALYSIS: persist-to-FITS exports (sub-cube crop + moment map). These
@@ -2506,6 +2533,13 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                               downsample, this->remoteSessionId, this->remoteBackendToken));
     qDebug().noquote() << QStringLiteral("[preview-debug] setFuture returned, isRunning=%1")
                                   .arg(this->remotePreviewWatcher.isRunning());
+
+    // Inspector shell + first health poll: done last so every Analysis-tab tool
+    // action (created above) is available and Linked is wired.
+    if (this->m_workspaceChrome) {
+        this->setupInspector();
+        this->m_workspaceChrome->start();
+    }
 }
 
 vtkWindowCube::~vtkWindowCube()
@@ -5531,6 +5565,92 @@ void vtkWindowCube::showLUTCustomizer3D()
     this->lutCustomizer3D->activateWindow();
 }
 
+QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QString &label,
+                                               const QVariantMap &params, QWidget *window,
+                                               const QString &stableId)
+{
+    AnalysisProduct p;
+    p.productId = stableId;
+    p.parentKey = this->datasetPersistKey();
+    p.parentLabel = QFileInfo(this->filepath).fileName();
+    p.kind = kind;
+    p.label = label;
+    p.params = params;
+    p.sourceDatasetId = this->remoteDatasetId;
+    p.sessionId = this->remoteSessionId;
+    p.window = window;
+    return ProductRegistry::instance().registerProduct(std::move(p));
+}
+
+void vtkWindowCube::setupInspector()
+{
+    if (!this->m_workspaceChrome)
+        return;
+    InspectorPanel *panel = this->m_workspaceChrome->installInspectorDock();
+    if (!panel)
+        return;
+
+    // ── Properties ────────────────────────────────────────────────────────────
+    panel->setProperties({
+            { u"Dataset"_s, QFileInfo(this->filepath).fileName() },
+            { u"Type"_s, QStringLiteral("CUBE · %1×%2×%3")
+                                 .arg(this->remoteDatasetWidth)
+                                 .arg(this->remoteDatasetHeight)
+                                 .arg(this->remoteDatasetDepth) },
+            { u"Path"_s, this->filepath },
+            { u"Session"_s, this->remoteSessionId },
+            { u"Backend"_s, this->remoteBackendUrl },
+    });
+
+    // ── Analysis (tools trigger the existing dialog QActions) ─────────────────
+    const auto add = [panel](const QString &grp, const QString &label, QAction *a) {
+        if (a) panel->addTool(grp, label, a);
+    };
+    add(u"Statistics"_s, u"Estimate Noise…"_s, this->actionEstimateNoise);
+    add(u"Statistics"_s, u"Slice Histogram…"_s, this->m_actSliceHistogram);
+    add(u"Spectral"_s, u"Extract Spectrum"_s, ui->actionExtractSpectrum);
+    add(u"Spectral"_s, u"Position–Velocity Diagram…"_s, this->actionExtractPvDiagram);
+    add(u"Spectral"_s, u"Line-Width Map…"_s, ui->actionLinewidthMap);
+    add(u"Spectral"_s, u"Baseline Subtraction…"_s, ui->actionBaselineSubtract);
+    add(u"Spectral"_s, u"Stack Spectral Cubes…"_s, ui->actionStackCubes);
+    add(u"Maps"_s, u"Compute Moment…"_s, ui->actionComputeMoment);
+    add(u"Maps"_s, u"Channel Maps…"_s, this->m_actChannelMaps);
+    add(u"Sources & Kinematics"_s, u"Kinematic Lasso"_s, this->m_actKinematicLasso);
+    add(u"Sources & Kinematics"_s, u"Kinematic Model Overlay…"_s, this->m_actKinematicModel);
+
+    // ── Linked (reuse the existing cross-viewer link action) ──────────────────
+    panel->setLinkedSupported(true);
+    if (this->m_actLinkViews) {
+        panel->setLinkedChecked(this->m_actLinkViews->isChecked());
+        QObject::connect(panel, &InspectorPanel::linkedToggled, this,
+                         [this](bool on) { this->setLinkViews(on); });
+        QObject::connect(this->m_actLinkViews, &QAction::toggled, panel,
+                         [panel](bool on) { panel->setLinkedChecked(on); });
+    }
+
+    // ── Pane layout (1 / 2 / 4 over the two view docks) ───────────────────────
+    panel->setPaneLayoutEnabled(true);
+    QObject::connect(panel, &InspectorPanel::paneLayoutRequested, this,
+                     [this](int panes) { this->applyPaneLayout(panes); });
+}
+
+void vtkWindowCube::applyPaneLayout(int panes)
+{
+    if (!this->dockCubeView || !this->dockSliceView)
+        return;
+    // The cube has two view docks (3D + 2D). "1" shows only the 2D view; "2"/"4"
+    // restore the side-by-side workspace layout. (True 4-up awaits more product
+    // panes — the button is present for design parity.)
+    if (panes == 1) {
+        this->dockCubeView->hide();
+        this->dockSliceView->show();
+    } else {
+        this->dockCubeView->show();
+        this->dockSliceView->show();
+        this->resetWorkspaceLayout();
+    }
+}
+
 void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
 {
     if (!result.imageData) {
@@ -5622,6 +5742,13 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
             renderTimer.elapsed());
     qDebug().noquote() << QStringLiteral("[perf][moment] apply total: %1 ms").arg(
             totalTimer.elapsed());
+
+    // The moment map is rendered in-place into this cube's 2D view, so activate
+    // the cube window itself when the tree row is picked. Stable id → recomputing
+    // updates the same row instead of stacking duplicates.
+    this->registerAnalysisProduct(
+            u"moment"_s, u"Moment map"_s, {}, this,
+            QStringLiteral("moment@%1").arg(this->datasetPersistKey()));
 }
 
 bool vtkWindowCube::isBusy() const

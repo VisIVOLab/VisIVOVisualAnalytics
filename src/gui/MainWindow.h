@@ -41,6 +41,16 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
+    /// Recent-datasets model, shared with viewer windows (dataset switcher).
+    RecentDatasetsManager *recentDatasetsManager() const { return recentMgr; }
+
+public slots:
+    /// Flip the persisted colour scheme dark ⇄ light and re-apply the theme.
+    /// Wired to the viewer command-bar theme toggle (WorkspaceChrome).
+    void toggleColorScheme();
+    /// Reopen a previously opened dataset (dataset switcher / Recent panel).
+    void reopenDataset(const RecentDataset &dataset);
+
 protected:
     void closeEvent(QCloseEvent *event) override;
 
@@ -56,7 +66,6 @@ private slots:
     void loadPanoramicView();
     void changeViewSelectionMode();
     void skyRegionSelected(const QString &point, const QString &area);
-    void reopenDataset(const RecentDataset &dataset);
     void queryVlkb();   ///< Triggered by btnQuery in the VLKB panel
 
 private:

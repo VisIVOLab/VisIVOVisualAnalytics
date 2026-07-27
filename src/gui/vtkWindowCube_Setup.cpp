@@ -18,6 +18,7 @@
 #include "StackDialog.h"
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
+#include "WorkspaceChrome.h"
 #include "ToolResultDialog.h"
 #include "ProfileWidget.h"
 #include "PvController.h"
@@ -182,16 +183,12 @@ void vtkWindowCube::setupViewerToolbar()
                               .arg(this->remoteDatasetDepth);
     spec.secondaryTag = QStringLiteral("remote · full-res");
 
-    QToolButton *findBtn = nullptr;
-    QToolButton *cmdBtn  = nullptr;
-    QToolButton *expBtn  = nullptr;
-    QToolButton *tagBtn  = nullptr;
-    QWidget *bar = VisivoTheme::makeViewerToolbar(
-            spec, &findBtn, &cmdBtn, &expBtn, &tagBtn, this);
+    VisivoTheme::ViewerToolbarWidgets w;
+    QWidget *bar = VisivoTheme::makeViewerToolbar(spec, &w, this);
 
     // Click on the "CUBE · …" tag opens the FITS header viewer.
-    if (tagBtn) {
-        QObject::connect(tagBtn, &QToolButton::clicked, this, [this]() {
+    if (w.primaryTag) {
+        QObject::connect(w.primaryTag, &QToolButton::clicked, this, [this]() {
             this->showFitsHeaderDialog();
         });
     }
@@ -213,12 +210,14 @@ void vtkWindowCube::setupViewerToolbar()
     qtBar->addWidget(bar);
     this->addToolBar(Qt::TopToolBarArea, qtBar);
 
-    // The Find/Command/Export buttons are deliberately left unwired for now —
-    // they read as visual affordances. Find triggers Edit→Find, Command opens
-    // the future ⌘K palette, Export hooks into the existing export menu.
-    Q_UNUSED(findBtn);
-    Q_UNUSED(cmdBtn);
-    Q_UNUSED(expBtn);
+    // Shared chrome wiring (⌘K, dataset switcher, theme toggle, live health
+    // chip). The status rail is installed later from the constructor, once the
+    // window's own permanent status-bar labels exist, so the rail slots land to
+    // their right. See vtkWindowCube.cpp.
+    m_workspaceChrome = new WorkspaceChrome(
+            this, this->remoteBackendUrl, this->remoteBackendToken,
+            this->remoteSessionId, this);
+    m_workspaceChrome->attachCommandBar(w);
 }
 
 void vtkWindowCube::setupSidebar()

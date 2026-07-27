@@ -414,11 +414,36 @@ QLabel *makeBreadcrumbTag(const QString &text, QWidget *parent)
     return lbl;
 }
 
+namespace {
+
+// A compact square glyph button (▼ switcher, ◐ theme toggle) matching the
+// toolbar's neutral chrome.
+QToolButton *makeGlyphButton(const QString &glyph, QWidget *parent)
+{
+    auto *btn = new QToolButton(parent);
+    btn->setText(glyph);
+    btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setStyleSheet(
+            QStringLiteral(
+                    "QToolButton {"
+                    "  background-color: %1; color: %2;"
+                    "  border: 1px solid %3; border-radius: 6px;"
+                    "  padding: 3px 7px; font-size: 11px; font-weight: 600;"
+                    "}"
+                    "QToolButton:hover { border-color: %4; color: %4; }"
+                    "QToolButton::menu-indicator { image: none; width: 0; }")
+                    .arg(QLatin1StringView(kSurfaceContainerHigh()),
+                         QLatin1StringView(kOnSurfaceVariant()),
+                         QLatin1StringView(kOutline()),
+                         QLatin1StringView(kPrimary())));
+    return btn;
+}
+
+} // namespace
+
 QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
-                           QToolButton **findButton,
-                           QToolButton **commandButton,
-                           QToolButton **exportButton,
-                           QToolButton **primaryTagButton,
+                           ViewerToolbarWidgets *out,
                            QWidget *parent)
 {
     auto *bar = new QFrame(parent);
@@ -492,26 +517,39 @@ QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
 
     hbox->addWidget(pill);
 
+    // ── Dataset switcher (▼): opens a recent-datasets menu ───────────────────
+    auto *switchBtn = makeGlyphButton(QStringLiteral("▼"), bar);
+    switchBtn->setToolTip(QStringLiteral("Switch dataset"));
+    switchBtn->setPopupMode(QToolButton::InstantPopup);
+    hbox->addWidget(switchBtn);
+    if (out) out->datasetSwitch = switchBtn;
+
     // ── Tag chips (primary cyan-tinted clickable, secondary neutral) ─────────
     if (!spec.primaryTag.isEmpty()) {
         auto *primaryBtn = makeTagButton(spec.primaryTag, /*accent=*/true, bar);
         primaryBtn->setToolTip(QStringLiteral("Show FITS header"));
         hbox->addWidget(primaryBtn);
-        if (primaryTagButton) *primaryTagButton = primaryBtn;
+        if (out) out->primaryTag = primaryBtn;
     }
     if (!spec.secondaryTag.isEmpty())
         hbox->addWidget(makeTagChip(spec.secondaryTag, /*accent=*/false, bar));
 
     hbox->addStretch(1);
 
+    // ── Live remote/health chip ("host · N running") ─────────────────────────
+    auto *remoteChip = makeTagChip(QStringLiteral("remote"), /*accent=*/false, bar);
+    remoteChip->setToolTip(QStringLiteral("Backend host and running-task count"));
+    hbox->addWidget(remoteChip);
+    if (out) out->remoteChip = remoteChip;
+
     // ── Action buttons (Find / Command / Export) ────────────────────────────
     auto *findBtn = makeToolbarButton(QStringLiteral("Find"), false, bar);
     hbox->addWidget(findBtn);
-    if (findButton) *findButton = findBtn;
+    if (out) out->find = findBtn;
 
     auto *cmdBtn = makeToolbarButton(QStringLiteral("Command  ⌘K"), true, bar);
     hbox->addWidget(cmdBtn);
-    if (commandButton) *commandButton = cmdBtn;
+    if (out) out->command = cmdBtn;
 
     // Subtle vertical pipe separator before destructive/export action.
     auto *pipe = new QLabel(QStringLiteral("·"), bar);
@@ -522,7 +560,13 @@ QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
 
     auto *expBtn = makeToolbarButton(QStringLiteral("Export"), false, bar);
     hbox->addWidget(expBtn);
-    if (exportButton) *exportButton = expBtn;
+    if (out) out->exportBtn = expBtn;
+
+    // ── Theme toggle (◐) ─────────────────────────────────────────────────────
+    auto *themeBtn = makeGlyphButton(QStringLiteral("◐"), bar);
+    themeBtn->setToolTip(QStringLiteral("Toggle dark / light theme"));
+    hbox->addWidget(themeBtn);
+    if (out) out->theme = themeBtn;
 
     return bar;
 }

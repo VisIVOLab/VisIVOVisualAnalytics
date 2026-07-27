@@ -21,6 +21,8 @@
 #include "theme/SegmentedToggle.h"
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
+#include "WorkspaceChrome.h"
+#include "InspectorPanel.h"
 #include "ToolResultDialog.h"
 #include "vtkInteractorStyleProfile.h"
 #include "vtkLegendScaleActorWCS.h"
@@ -523,15 +525,11 @@ void vtkWindowImage::setupViewerToolbar()
     spec.primaryTag = QStringLiteral("IMAGE");
     spec.secondaryTag = QStringLiteral("remote · full-res");
 
-    QToolButton *findBtn = nullptr;
-    QToolButton *cmdBtn  = nullptr;
-    QToolButton *expBtn  = nullptr;
-    QToolButton *tagBtn  = nullptr;
-    QWidget *bar = VisivoTheme::makeViewerToolbar(
-            spec, &findBtn, &cmdBtn, &expBtn, &tagBtn, this);
+    VisivoTheme::ViewerToolbarWidgets w;
+    QWidget *bar = VisivoTheme::makeViewerToolbar(spec, &w, this);
 
-    if (tagBtn) {
-        QObject::connect(tagBtn, &QToolButton::clicked, this, [this]() {
+    if (w.primaryTag) {
+        QObject::connect(w.primaryTag, &QToolButton::clicked, this, [this]() {
             this->showFitsHeaderDialog();
         });
     }
@@ -552,9 +550,49 @@ void vtkWindowImage::setupViewerToolbar()
     qtBar->addWidget(bar);
     this->addToolBar(Qt::TopToolBarArea, qtBar);
 
-    Q_UNUSED(findBtn);
-    Q_UNUSED(cmdBtn);
-    Q_UNUSED(expBtn);
+    // Shared chrome wiring (⌘K, dataset switcher, theme toggle, live health
+    // chip). installStatusRail()/start() run later from the constructor, after
+    // the window's own permanent status labels are added.
+    m_workspaceChrome = new WorkspaceChrome(
+            this, this->remoteBackendUrl, this->remoteBackendToken,
+            this->remoteSessionId, this);
+    m_workspaceChrome->attachCommandBar(w);
+}
+
+void vtkWindowImage::setupInspector()
+{
+    if (!this->m_workspaceChrome)
+        return;
+    InspectorPanel *panel = this->m_workspaceChrome->installInspectorDock();
+    if (!panel)
+        return;
+
+    panel->setProperties({
+            { u"Dataset"_s, QFileInfo(this->filepath).fileName() },
+            { u"Type"_s, u"IMAGE"_s },
+            { u"Path"_s, this->filepath },
+            { u"Session"_s, this->remoteSessionId },
+            { u"Backend"_s, this->remoteBackendUrl },
+    });
+
+    const auto add = [panel](const QString &grp, const QString &label, QAction *a) {
+        if (a) panel->addTool(grp, label, a);
+    };
+    add(u"Spectral"_s, u"Extract Spectrum"_s, this->actionExtractSpectrum);
+    add(u"Regions"_s, u"Box Region"_s, this->actionBoxRegion);
+    add(u"Regions"_s, u"Circle Region"_s, this->actionCircleRegion);
+    add(u"Regions"_s, u"Polygon Region"_s, this->actionPolygonRegion);
+    add(u"Regions"_s, u"Annulus Region"_s, this->actionAnnulusRegion);
+    add(u"Catalogue"_s, u"Load Catalogue Overlay…"_s, this->actionLoadCatalogueOverlay);
+    add(u"Catalogue"_s, u"Cross-match…"_s, this->actionCrossmatch);
+    add(u"Contours"_s, u"Show Contours"_s, this->m_actToggleContours);
+    add(u"Contours"_s, u"Load Contour from FITS…"_s, this->m_actLoadExternalContour);
+    add(u"Measure"_s, u"Ruler (Distance)"_s, this->m_actRuler);
+    add(u"Measure"_s, u"Angle (3 Points)"_s, this->m_actAngle);
+
+    // Single-view window: no pane grid, no cross-viewer link.
+    panel->setPaneLayoutEnabled(false);
+    panel->setLinkedSupported(false);
 }
 
 void vtkWindowImage::setupSidebar()

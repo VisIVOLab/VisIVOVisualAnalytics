@@ -536,6 +536,19 @@ void MainWindow::setApplicationTheme()
     ThemeManager::instance().apply(this->settings->getColorScheme(), qApp);
 }
 
+void MainWindow::toggleColorScheme()
+{
+    if (!this->settings)
+        return;
+    // Flip based on the *effective* theme so it does the intuitive thing even
+    // when the current setting is "follow OS" (Unknown).
+    const bool nowDark =
+            ThemeManager::instance().effectiveTheme() == EffectiveTheme::Dark;
+    const Qt::ColorScheme next = nowDark ? Qt::ColorScheme::Light : Qt::ColorScheme::Dark;
+    this->settings->setColorScheme(next);          // persist the choice
+    ThemeManager::instance().apply(next, qApp);    // apply immediately
+}
+
 void MainWindow::openSettingsDialog()
 {
     SettingsDialog dialog(this->settings, this->auth, this);
