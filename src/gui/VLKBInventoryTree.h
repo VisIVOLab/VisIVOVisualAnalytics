@@ -38,8 +38,12 @@ struct Cutout
 // download and opening the resulting FITS file.
 // ---------------------------------------------------------------------------
 class QStandardItem;
+class QStandardItemModel;
 class QModelIndex;
 class QTreeView;
+class QLineEdit;
+class QLabel;
+class QPushButton;
 
 class VLKBInventoryTree : public QWidget
 {
@@ -70,6 +74,9 @@ signals:
 
 private slots:
     void onDoubleClicked(const QModelIndex &idx);
+    void onSelectionChanged();
+    void downloadSelected();
+    void applyFilter(const QString &text);
 
 private:
     struct WavelengthGroup { QString name; double lambdaMin; double lambdaMax; };
@@ -79,9 +86,17 @@ private:
     void setupTopLevels();
     void parseVOTable(const QByteArray &votable);
     void applyStyleHints(const QModelIndex &parent);
+    void annotateCounts();                       ///< append "(N)" to branch nodes, grey empties
+    int  countAndTag(QStandardItem *node);        ///< recursive leaf count + tagging
+    bool filterNode(QStandardItem *node, const QString &needle);  ///< recursive hide/show
+    void requestCutout(const QModelIndex &idx);   ///< shared by double-click + button
     int  groupIndexOf(double lambda) const;
 
-    QTreeView *m_tree { nullptr };
+    QTreeView          *m_tree        { nullptr };
+    QStandardItemModel *m_model       { nullptr };
+    QLineEdit          *m_filter      { nullptr };
+    QLabel             *m_totalLabel  { nullptr };
+    QPushButton        *m_openButton  { nullptr };
     QList<WavelengthGroup>       m_groups;
     QHash<QUuid, Cutout>         m_cutouts;
     QString                      m_posCutout;

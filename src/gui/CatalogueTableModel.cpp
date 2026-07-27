@@ -5,8 +5,11 @@
 namespace {
 QString catalogueShapeName(CatalogueOverlayEntry::Shape shape)
 {
-    return shape == CatalogueOverlayEntry::Shape::Ellipse ? QStringLiteral("Ellipse")
-                                                          : QStringLiteral("Point");
+    switch (shape) {
+    case CatalogueOverlayEntry::Shape::Ellipse:  return QStringLiteral("Ellipse");
+    case CatalogueOverlayEntry::Shape::Polyline: return QStringLiteral("Polyline");
+    default:                                     return QStringLiteral("Point");
+    }
 }
 }
 

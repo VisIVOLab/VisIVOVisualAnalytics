@@ -8,6 +8,7 @@
 #include <QStringList>
 #include <QTextStream>
 
+#include <array>
 #include <vector>
 
 struct CatalogueOverlayEntry
@@ -22,6 +23,7 @@ struct CatalogueOverlayEntry
     {
         Marker,
         Ellipse,
+        Polyline,   ///< an open/closed run of points (Image frame, pixel coords)
     };
 
     Frame frame{ Frame::Sky };
@@ -33,6 +35,9 @@ struct CatalogueOverlayEntry
     double radiusX{ 0.0 };
     double radiusY{ 0.0 };
     double angleDeg{ 0.0 };
+    std::vector<std::array<double, 2>> polyline;   ///< Shape::Polyline vertices (pixels)
+    std::array<double, 3> color{ -1.0, -1.0, -1.0 };  ///< per-entry RGB; <0 = default actor colour
+    QString band;    ///< group tag (e.g. VLKB band "250") for per-group visibility toggles
     QString label;
 };
 
@@ -44,6 +49,20 @@ struct CatalogueOverlayParseResult
     QString sourceLabel;
     int skippedEntries{ 0 };
     std::vector<CatalogueOverlayEntry> entries;
+};
+
+// Raw VLKB catalogue query result, in Galactic coordinates (deg). The network
+// worker fills this off the GUI thread; the GUI thread then projects it to image
+// pixels (which needs the window's WCS) and hands it to applyCatalogueOverlayResult.
+struct VlkbCatalogueRaw
+{
+    bool valid{ false };
+    QString error;
+    QString sourceLabel;
+    struct Ellipse { double glon, glat, fwhmaArcsec, fwhmbArcsec, paDeg; QString band; QString label; };
+    struct Polyline { std::vector<std::array<double, 2>> pts; QString label; };  // (glon,glat)
+    std::vector<Ellipse> ellipses;
+    std::vector<Polyline> polylines;
 };
 
 namespace CatalogueOverlayUtils {

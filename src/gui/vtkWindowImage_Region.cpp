@@ -291,6 +291,7 @@ RegionStatistics computeRegionStatistics2D(vtkImageData *imageData, vtkWindowIma
 
 void vtkWindowImage::finishRegionInteraction()
 {
+    if (this->m_vlkbSelectActive) return;
     if (this->m_annotPlaceMode != AnnotPlaceMode::None) {
         this->cancelAnnotationPlacement();
         return;

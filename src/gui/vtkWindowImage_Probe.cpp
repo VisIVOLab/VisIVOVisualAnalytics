@@ -114,6 +114,7 @@ using namespace CubeGeom;  // shared viewport-geometry helpers (deduplicated)
 
 void vtkWindowImage::mouseCallback()
 {
+    if (this->m_vlkbSelectActive) return;   // VLKB rectangle select owns the pointer
     if (this->isBusy()) {
         return;
     }
@@ -154,6 +155,7 @@ void vtkWindowImage::mouseCallback()
 
 void vtkWindowImage::beginImageInteraction()
 {
+    if (this->m_vlkbSelectActive) return;
     if (!this->largeImageModeActive) {
         return;
     }
@@ -166,6 +168,7 @@ void vtkWindowImage::beginImageInteraction()
 
 void vtkWindowImage::endImageInteraction()
 {
+    if (this->m_vlkbSelectActive) return;
     if (!this->suspendHeavyOverlayUpdates) {
         return;
     }
@@ -177,6 +180,7 @@ void vtkWindowImage::endImageInteraction()
 
 void vtkWindowImage::toggleProbeFreeze()
 {
+    if (this->m_vlkbSelectActive) return;
     if (this->isBusy()) {
         return;
     }

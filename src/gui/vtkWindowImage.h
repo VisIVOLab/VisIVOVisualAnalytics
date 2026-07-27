@@ -13,6 +13,7 @@
 #include <QHash>
 #include <QMainWindow>
 #include <QPointer>
+#include <QSet>
 #include <QStringList>
 #include <QTimer>
 
@@ -40,6 +41,8 @@ class SidebarPanel;
 class vtkActor;
 class vtkAxisActor2D;
 class vtkCoordinate;
+class vtkActor2D;
+class vtkInteractorObserver;
 class QLineEdit;
 class QSpinBox;
 class vtkFlyingEdges2D;
@@ -339,6 +342,12 @@ private:
     std::vector<CatalogueOverlayEntry> catalogueOverlayEntries;
     std::vector<std::array<double, 2>> catalogueOverlayPixels;
     std::vector<std::vector<std::array<double, 2>>> catalogueOverlayPolylines;
+    std::vector<std::array<unsigned char, 3>> catalogueOverlayPolylineColors;  ///< per-polyline RGB
+    std::vector<QString> catalogueOverlayPolylineBand;   ///< per-polyline group tag (VLKB band)
+    QSet<QString> m_vlkbHiddenBands;                      ///< bands toggled off
+    void toggleVlkbBand(const QString &band, bool visible);   ///< show/hide a band's sources
+    void ensureVlkbBandPanel();                          ///< dock with a checkbox per present band
+    QPointer<QDockWidget> m_vlkbBandPanel;
     std::vector<int> catalogueOverlaySourceFirstPolyline;
     std::vector<int> catalogueOverlaySourcePolylineCount;
     std::vector<int> catalogueOverlayLabelIndices;
@@ -446,6 +455,38 @@ private:
     void centerViewOnCatalogueSource(int index, double zoomFactor = 2.5);
     bool catalogueWorldToPixel(double raDeg, double decDeg, std::array<double, 2> &pixel) const;
     QString selectedFrameAxisTitle(int axis) const;
+
+    // ── VLKB catalogue overlays (compact sources / filaments over the footprint) ──
+    void overlayVlkbSources();     ///< btnSources — band-merged compact sources (+ band picker)
+    void overlayVlkbFilaments();   ///< btnFilaments — filament outlines as polylines
+    void onVlkbCatalogueReady();   ///< project the raw Galactic result → overlay
+    /// Project a Galactic (glon,glat) position to full-res image pixels via the
+    /// window's WCS (handles a non-Galactic native frame by converting first).
+    bool galacticToImagePixel(double glon, double glat, std::array<double, 2> &pixel) const;
+    /// Galactic bounding box (deg) of the current image footprint, for the query.
+    bool imageGalacticFootprint(double &glonMin, double &glonMax,
+                                double &glatMin, double &glatMax) const;
+    QFutureWatcher<VlkbCatalogueRaw> m_vlkbCatWatcher;
+    bool m_vlkbCatIsFilament{ false };   ///< which shape the pending result carries
+    // Rubber-band region select: drag a rectangle to query only that area (like the
+    // legacy client); a click without a drag falls back to the whole image footprint.
+    void beginVlkbRegionSelect(bool isFilament);
+    void endVlkbRegionSelect();
+    void onVlkbSelectPress();
+    void onVlkbSelectMove();
+    void onVlkbSelectRelease();
+    void runVlkbCatalogueQuery(double glonMin, double glonMax, double glatMin, double glatMax);
+    void runVlkbCatalogueQueryWholeImage(bool isFilament);   ///< click-without-drag fallback
+    bool m_vlkbSelectActive{ false };
+    bool m_vlkbSelectDragging{ false };
+    QString m_vlkbBand{ QStringLiteral("250") };
+    int m_vlkbSelStart[2]{ 0, 0 };
+    int m_vlkbSelEnd[2]{ 0, 0 };
+    unsigned long m_vlkbPressTag{ 0 };
+    unsigned long m_vlkbMoveTag{ 0 };
+    unsigned long m_vlkbReleaseTag{ 0 };
+    vtkSmartPointer<vtkActor2D> m_vlkbRubberActor;
+    vtkSmartPointer<vtkInteractorObserver> m_vlkbPrevStyle;   ///< restored after selection
 
     // Stack
     vtkNew<vtkImageStack> stack;

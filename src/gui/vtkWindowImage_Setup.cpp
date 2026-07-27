@@ -1221,6 +1221,13 @@ void vtkWindowImage::setupSidebar()
     this->m_sidebar = new SidebarPanel(272, this);
     this->m_sidebar->addPage(u":/icons/rail_layers.svg"_s,    u"Layer Settings"_s, ui->pageLayer);
     this->m_sidebar->addPage(u":/icons/rail_catalogue.svg"_s, u"Catalogue"_s,       ui->pageCatalogue);
+    // VLKB catalogue overlays: compact sources / filaments over the image footprint.
+    QObject::connect(ui->btnSources, &QPushButton::clicked, this,
+                     &vtkWindowImage::overlayVlkbSources);
+    QObject::connect(ui->btnFilaments, &QPushButton::clicked, this,
+                     &vtkWindowImage::overlayVlkbFilaments);
+    QObject::connect(&this->m_vlkbCatWatcher, &QFutureWatcher<VlkbCatalogueRaw>::finished, this,
+                     &vtkWindowImage::onVlkbCatalogueReady);
     this->m_sidebar->addPage(u":/icons/rail_viz.svg"_s,        u"Tools"_s,           pageTools);
     this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,      u"Info / Stats"_s,    pageInfo);
     // Note: the "3D View" page (ui->page3D) is intentionally omitted — not relevant
