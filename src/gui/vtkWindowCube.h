@@ -44,6 +44,7 @@ class QFrame;
 class QLabel;
 class QPushButton;
 class QSlider;
+class QSplitter;
 class QCheckBox;
 class QComboBox;
 class QJsonObject;
@@ -363,6 +364,15 @@ private:
 
     Ui::vtkWindowCube *ui;
     WorkspaceChrome *m_workspaceChrome = nullptr;   ///< shared command-bar + status-rail chrome
+    QPointer<QSplitter> m_paneSplitter;             ///< central 3D+2D pane container (design #1d)
+    // Former SidebarPanel pages, migrated into the Inspector's Properties tab
+    // (design #1d — no separate rail in the central widget). Built in
+    // setupSidebar(), reparented in setupInspector().
+    QPointer<QWidget> m_hiddenPageHolder;  ///< hidden container so no page is a free child of the window
+    QPointer<QWidget> m_inspectorPage3d;
+    QPointer<QWidget> m_inspectorPage2d;
+    QPointer<QWidget> m_inspectorPageInfo;
+    QPointer<QWidget> m_orphanToolsPage;   ///< kept alive, not shown (Analysis tab supersedes it)
     const QString filepath;
     const QString remoteBackendUrl;
     const QString remoteDatasetId;
@@ -1189,6 +1199,9 @@ private:
     void setupInspector();
     /// Apply a saved-ish pane arrangement to the view docks (1/2/4).
     void applyPaneLayout(int panes);
+    /// Reparent any stray direct-child widget of the window (not central/dock/
+    /// toolbar/menu/status) into the hidden holder so it can't paint at (0,0).
+    void parkOrphanDirectChildren();
 
     // ── Server-side rendering plumbing ────────────────────────────────────────
     // The 3D viewport widget is wrapped in a QStackedWidget with two pages:

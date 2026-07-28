@@ -167,6 +167,13 @@ public:
 private:
     Ui::vtkWindowImage *ui;
     WorkspaceChrome *m_workspaceChrome = nullptr;   ///< shared command-bar + status-rail chrome
+    // Former SidebarPanel pages, migrated into the Inspector's Properties tab
+    // (design #1d). Built in setupSidebar(), reparented in setupInspector().
+    QPointer<QWidget> m_hiddenPageHolder;  ///< hidden container so no page is a free child of the window
+    QPointer<QWidget> m_inspectorPageLayer;
+    QPointer<QWidget> m_inspectorPageCatalogue;
+    QPointer<QWidget> m_inspectorPageInfo;
+    QPointer<QWidget> m_orphanToolsPage;   ///< kept alive, not shown (Analysis tab supersedes it)
     const QString filepath;
     const QString remoteBackendUrl;
     const QString remoteDatasetId;
@@ -269,6 +276,9 @@ private:
     /// Populate the right Inspector shell (Properties/Analysis). The image is a
     /// single-view window, so pane-layout and Linked are disabled.
     void setupInspector();
+    /// Reparent any stray direct-child widget of the window (not central/dock/
+    /// toolbar/menu/status) into the hidden holder so it can't paint at (0,0).
+    void parkOrphanDirectChildren();
 
     // Opens a non-modal dialog showing the FITS header cards for `filepath`.
     // Triggered by the primary tag chip in the viewer toolbar.

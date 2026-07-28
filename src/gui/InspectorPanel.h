@@ -30,6 +30,11 @@ public:
     /// Properties tab: replace the key/value rows shown.
     void setProperties(const QList<QPair<QString, QString>> &rows);
 
+    /// Properties tab: append a full widget section (e.g. a migrated sidebar page
+    /// such as the 3D/2D view settings) below the key/value rows. Ownership moves
+    /// to the Properties page.
+    void addPropertiesSection(QWidget *section);
+
     /// Analysis tab: add a captioned group, then tools under it. Each tool is a
     /// button that triggers @p action (the existing dialog-opening QAction).
     void addToolGroup(const QString &caption);

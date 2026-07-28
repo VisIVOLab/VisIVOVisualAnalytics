@@ -133,6 +133,7 @@
 #include <QNetworkRequest>
 #include <QResizeEvent>
 #include <QStackedWidget>
+#include <QSplitter>
 #include <QTimer>
 #include <QScrollBar>
 #include <QSignalBlocker>
@@ -170,11 +171,10 @@ vtkSmartPointer<vtkImageData> createPlaceholderImageData()
 
 void vtkWindowCube::setupViewerToolbar()
 {
-    // Layout B principle: a thin horizontal "screen header" above the central
-    // area showing the file context (path-pill), data tags, and quick actions
-    // (Find / Command / Export). Hosted via QMainWindow::addToolBar so we
-    // don't have to restructure the .ui file's central widget — the toolbar
-    // sits between the menu bar and centralwidget by default.
+    // Workspace command bar (design #1d): VisIVO mark, dataset pill, centred ⌘K
+    // search field, remote chip + theme toggle. Hosted via QMainWindow::addToolBar
+    // so we don't have to restructure the .ui central widget — the toolbar sits
+    // between the menu bar and centralwidget by default.
     VisivoTheme::ViewerToolbarSpec spec;
     spec.filePath = this->filepath;
     spec.primaryTag = QStringLiteral("CUBE · %1×%2×%3")
@@ -530,13 +530,29 @@ void vtkWindowCube::setupSidebar()
                          }
                      });
 
-    this->m_sidebar = new SidebarPanel(220, this);
-    this->m_sidebar->addPage(u":/icons/rail_3d.svg"_s,    u"3D View Settings"_s, page3dSettings);
-    this->m_sidebar->addPage(u":/icons/rail_slice.svg"_s, u"2D View Settings"_s, page2dSettings);
-    this->m_sidebar->addPage(u":/icons/rail_filter.svg"_s, u"Tools"_s,           pageTools);
-    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s, u"Inspector"_s,        pageInfoStats);
-    this->m_sidebar->finalize(0);
-    mainLayout->insertWidget(0, this->m_sidebar);
+    // Design #1d: the cube viewer has NO rail in the central widget. The setting
+    // pages built above are migrated into the right-hand Inspector's Properties
+    // tab by setupInspector(); the Tools page is superseded by the Inspector's
+    // Analysis tab (kept alive but hidden so its QAction-mirror buttons don't
+    // become stray top-level windows). Parent them to the window and hide until
+    // setupInspector() reparents the ones it hosts.
+    // Bug-class fix: never leave a CubeUiAssembler page as a free child of the
+    // QMainWindow — a hidden page with no layout still paints its section headers
+    // at (0,0), over the left Session Data dock. Park ALL pages inside one hidden
+    // holder (a real container with a layout); setupInspector() reparents the
+    // ones it shows out of it. Anything left behind stays contained and unpainted.
+    auto *holder = new QWidget(this);
+    holder->setObjectName(u"hiddenSidebarPageHolder"_s);
+    holder->hide();
+    auto *holderLayout = new QVBoxLayout(holder);
+    holderLayout->setContentsMargins(0, 0, 0, 0);
+    for (QWidget *p : { page3dSettings, page2dSettings, pageTools, pageInfoStats })
+        holderLayout->addWidget(p);
+    this->m_hiddenPageHolder  = holder;
+    this->m_inspectorPage3d   = page3dSettings;
+    this->m_inspectorPage2d   = page2dSettings;
+    this->m_inspectorPageInfo = pageInfoStats;
+    this->m_orphanToolsPage   = pageTools;
 
     // ── Bidirectional sync: rendering mode combo ↔ menu actions ──────────────
     QObject::connect(m_uiAssembler->renderModeCombo(), &SegmentedToggle::currentIndexChanged,
@@ -639,9 +655,11 @@ void vtkWindowCube::setupSidebar()
     QObject::connect(m_uiAssembler->lutEditMomentButton(), &QToolButton::clicked,
                      this, &vtkWindowCube::showLUTCustomizer);
 
-    // View menu toggle action — wired bidirectionally by SidebarPanel.
-    this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
-            u"Controls Sidebar"_s, this);
+    // View menu toggle action — now toggles the right-hand Inspector dock
+    // (wired to it in setupInspector(), which runs after the dock exists).
+    this->actionShowControlsSidebar = new QAction(u"Inspector Panel"_s, this);
+    this->actionShowControlsSidebar->setCheckable(true);
+    this->actionShowControlsSidebar->setChecked(true);
 }
 
 void vtkWindowCube::setupWorkspaceDocks()
@@ -660,9 +678,11 @@ void vtkWindowCube::setupWorkspaceDocks()
     mainLayout->removeWidget(ui->viewerContainer);
     ui->viewerContainer->hide();
 
-    // The central widget now only holds m_sidebar.  Prevent it from expanding
-    // horizontally so the dock area gets the rest of the window width.
-    ui->centralwidget->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Expanding);
+    // The central widget now hosts the 3D/2D pane splitter (added below) — it is
+    // the CENTRAL widget and must expand to take the residual space, with the
+    // Session/Inspector docks flanking it. (Do NOT constrain it to Maximum, or
+    // an empty/thin central steals priority from the docks.)
+    ui->centralwidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     // Shared dock stylesheet. The title-bar text color tracks the theme so the
     // section labels stay legible whether the app shell is dark or light.
@@ -694,15 +714,16 @@ void vtkWindowCube::setupWorkspaceDocks()
                     "}")
                     .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
 
-    // ── 3D View dock ─────────────────────────────────────────────────────────
-    auto *dockCube = new QDockWidget(u"3D View"_s, this);
-    dockCube->setObjectName(u"dockCubeView"_s);
-
-    // The dock wraps a QStackedWidget so the user can flip between the
-    // local QVTKOpenGLNativeWidget pipeline and a server-rendered JPEG
-    // stream. ui->vtkCube becomes page 0 (Local); page 1 (Remote) is
-    // a container with a dismissible banner above the RemoteRenderWidget.
-    this->m_renderStack = new QStackedWidget(dockCube);
+    // ── 3D View pane (goes into the central splitter, not a dock — design #1d)
+    // The 3D and 2D views are the CENTRAL widget so QMainWindow gives them the
+    // residual space; Session Data / Inspector are the only two docks flanking
+    // them. (Views-as-docks + an empty central widget squeezed the viewports.)
+    //
+    // The 3D pane is a QStackedWidget so the user can flip between the local
+    // QVTKOpenGLNativeWidget pipeline and a server-rendered JPEG stream.
+    // ui->vtkCube becomes page 0 (Local); page 1 (Remote) is a container with a
+    // dismissible banner above the RemoteRenderWidget.
+    this->m_renderStack = new QStackedWidget(this);
 
     // Local page (0): wrap ui->vtkCube in a container so we can stack a
     // soft "Remote rendering recommended" banner on top when the cube
@@ -819,70 +840,41 @@ void vtkWindowCube::setupWorkspaceDocks()
     this->m_renderStack->addWidget(this->m_remoteRenderContainer);  // page 1 — Remote
     this->m_renderStack->setCurrentIndex(0);
 
-    dockCube->setWidget(this->m_renderStack);  // dock owns the stack now
-    dockCube->setAllowedAreas(Qt::AllDockWidgetAreas);
-    dockCube->setFeatures(QDockWidget::DockWidgetMovable
-                          | QDockWidget::DockWidgetFloatable
-                          | QDockWidget::DockWidgetClosable);
-    dockCube->setStyleSheet(dockStyle);
+    Q_UNUSED(dockStyle);   // dock chrome no longer used for the view panes
 
-    // ── 2D View dock ─────────────────────────────────────────────────────────
-    auto *dockSlice = new QDockWidget(u"2D View"_s, this);
-    dockSlice->setObjectName(u"dockSliceView"_s);
-    dockSlice->setWidget(ui->vtkImage);        // reparents vtkImage into the dock
-    dockSlice->setAllowedAreas(Qt::AllDockWidgetAreas);
-    dockSlice->setFeatures(QDockWidget::DockWidgetMovable
-                           | QDockWidget::DockWidgetFloatable
-                           | QDockWidget::DockWidgetClosable);
-    dockSlice->setStyleSheet(dockStyle);
+    // ── Central pane splitter: 3D (left) + 2D (right) ────────────────────────
+    // Reusing ui->centralwidget's layout keeps the views as the CENTRAL widget
+    // (residual space) instead of leaving an empty central that competes with
+    // the docks.
+    this->m_paneSplitter = new QSplitter(Qt::Horizontal, ui->centralwidget);
+    this->m_paneSplitter->setObjectName(u"paneSplitter"_s);
+    this->m_paneSplitter->setChildrenCollapsible(false);
+    this->m_paneSplitter->addWidget(this->m_renderStack);   // 3D pane
+    this->m_paneSplitter->addWidget(ui->vtkImage);          // 2D pane
+    this->m_paneSplitter->setStretchFactor(0, 1);
+    this->m_paneSplitter->setStretchFactor(1, 1);
+    mainLayout->addWidget(this->m_paneSplitter);
+    // dockCubeView / dockSliceView intentionally stay null — the views are no
+    // longer docks; applyPaneLayout()/resetWorkspaceLayout() drive the splitter.
 
-    // Place both docks in the right dock area, then split them side-by-side.
-    this->addDockWidget(Qt::RightDockWidgetArea, dockCube);
-    this->addDockWidget(Qt::RightDockWidgetArea, dockSlice);
-    this->splitDockWidget(dockCube, dockSlice, Qt::Horizontal);
-
-    this->dockCubeView  = dockCube;
-    this->dockSliceView = dockSlice;
-
-    // Before the QStackedWidget swap, splitDockWidget gave 50/50 by default
-    // because both dock contents (ui->vtkCube, ui->vtkImage) reported the
-    // same sizeHint. The stacked widget now wraps ui->vtkCube and contributes
-    // a wider preferred size that biases the split heavily towards the 3D
-    // view (~95/5 in the wild). Force the split with resizeDocks deferred to
-    // the event loop so the dock area has already been laid out — calling it
-    // immediately is a no-op because the dock widths are still zero at this
-    // point in the constructor.
+    // Equalise the two panes once the splitter has a real width.
     QTimer::singleShot(0, this, [this]() {
-        if (!this->dockCubeView || !this->dockSliceView) return;
-        const int sidebarW = this->m_sidebar ? this->m_sidebar->width() : 48;
-        const int avail = std::max(400, this->width() - sidebarW);
-        this->resizeDocks({ this->dockCubeView, this->dockSliceView },
-                          { avail / 2, avail / 2 }, Qt::Horizontal);
+        if (!this->m_paneSplitter) return;
+        const int w = std::max(400, this->m_paneSplitter->width());
+        this->m_paneSplitter->setSizes({ w / 2, w / 2 });
     });
 }
 
 void vtkWindowCube::resetWorkspaceLayout()
 {
-    if (!this->dockCubeView || !this->dockSliceView) {
+    if (!this->m_paneSplitter) {
         return;
     }
-
-    // Unfloat and show both docks.
-    this->dockCubeView->setFloating(false);
-    this->dockSliceView->setFloating(false);
-    this->dockCubeView->show();
-    this->dockSliceView->show();
-
-    // Re-establish the side-by-side layout in the right dock area.
-    this->addDockWidget(Qt::RightDockWidgetArea, this->dockCubeView);
-    this->addDockWidget(Qt::RightDockWidgetArea, this->dockSliceView);
-    this->splitDockWidget(this->dockCubeView, this->dockSliceView, Qt::Horizontal);
-
-    // Resize to equal halves of the available horizontal space.
-    const int sidebarW = this->m_sidebar ? this->m_sidebar->width() : 48;
-    const int avail = std::max(400, this->width() - sidebarW);
-    this->resizeDocks({ this->dockCubeView, this->dockSliceView },
-                      { avail / 2, avail / 2 }, Qt::Horizontal);
+    // Show both panes side-by-side at equal halves of the central splitter.
+    if (this->m_renderStack) this->m_renderStack->show();
+    if (ui->vtkImage) ui->vtkImage->show();
+    const int w = std::max(400, this->m_paneSplitter->width());
+    this->m_paneSplitter->setSizes({ w / 2, w / 2 });
 }
 
 void vtkWindowCube::setupRenderModeUi()
@@ -1006,7 +998,7 @@ void vtkWindowCube::setupRenderModeUi()
 void vtkWindowCube::setupCubeRenderer()
 {
     vtkNew<vtkRenderer> ren;
-    ren->SetBackground(0.21, 0.23, 0.25);
+    ren->SetBackground(0.0, 0.0, 0.0157);   // #000004 — scientific colormaps need black (VisivoTheme.h)
 
     vtkNew<vtkGenericOpenGLRenderWindow> win;
     win->AddRenderer(ren);
@@ -1192,7 +1184,7 @@ void vtkWindowCube::setupSliceRenderer()
 {
     this->sliceWcsOverlayInitialized = false;
     vtkNew<vtkRenderer> ren;
-    ren->SetBackground(0.21, 0.23, 0.25);
+    ren->SetBackground(0.0, 0.0, 0.0157);   // #000004 — scientific colormaps need black (VisivoTheme.h)
     ren->GetActiveCamera()->ParallelProjectionOn();
 
     this->sliceWin->AddRenderer(ren);
@@ -1453,7 +1445,7 @@ void vtkWindowCube::setupMomentRenderer()
 {
     this->momentWcsOverlayInitialized = false;
     vtkNew<vtkRenderer> ren;
-    ren->SetBackground(0.21, 0.23, 0.25);
+    ren->SetBackground(0.0, 0.0, 0.0157);   // #000004 — scientific colormaps need black (VisivoTheme.h)
     ren->GetActiveCamera()->ParallelProjectionOn();
     this->momentWin->AddRenderer(ren);
 

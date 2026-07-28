@@ -967,9 +967,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     ui->menuView->addAction(this->actionShowControlsSidebar);
     ui->menuView->addAction(this->actionShowWcsAxes);
     ui->menuView->addSeparator();
-    ui->menuView->addAction(this->dockCubeView->toggleViewAction());
-    ui->menuView->addAction(this->dockSliceView->toggleViewAction());
-    ui->menuView->addSeparator();
+    // (The 3D/2D views are now central panes, not dockable views — their
+    // show/hide is driven by the Inspector's 1/2/4 pane control.)
     this->actionResetLayout = new QAction(u"Reset Layout"_s, this);
     ui->menuView->addAction(this->actionResetLayout);
     QObject::connect(this->actionResetLayout, &QAction::triggered,
@@ -5601,6 +5600,29 @@ void vtkWindowCube::setupInspector()
             { u"Session"_s, this->remoteSessionId },
             { u"Backend"_s, this->remoteBackendUrl },
     });
+    // Design #1d: the view/rendering controls (3D + 2D settings) live in the LEFT
+    // column's LAYERS block, NOT in the Inspector — that keeps Properties compact
+    // and fills the otherwise-empty Session Data column. Only info/stats stays in
+    // Properties.
+    if (this->m_inspectorPage3d)   this->m_workspaceChrome->addSessionLayers(this->m_inspectorPage3d);
+    if (this->m_inspectorPage2d)   this->m_workspaceChrome->addSessionLayers(this->m_inspectorPage2d);
+    if (this->m_inspectorPageInfo) panel->addPropertiesSection(this->m_inspectorPageInfo);
+    // Re-home the kept-alive Tools page as a HIDDEN child of the inspector (not a
+    // free child of the QMainWindow, where it painted at (0,0) over the left dock).
+    if (this->m_orphanToolsPage) {
+        this->m_orphanToolsPage->setParent(panel);
+        this->m_orphanToolsPage->hide();
+    }
+
+    // View → "Inspector Panel" toggles the dock now that it exists.
+    if (auto *dock = this->m_workspaceChrome->inspectorDock()) {
+        if (this->actionShowControlsSidebar) {
+            QObject::connect(this->actionShowControlsSidebar, &QAction::toggled,
+                             dock, &QDockWidget::setVisible);
+            QObject::connect(dock, &QDockWidget::visibilityChanged,
+                             this->actionShowControlsSidebar, &QAction::setChecked);
+        }
+    }
 
     // ── Analysis (tools trigger the existing dialog QActions) ─────────────────
     const auto add = [panel](const QString &grp, const QString &label, QAction *a) {
@@ -5632,21 +5654,45 @@ void vtkWindowCube::setupInspector()
     panel->setPaneLayoutEnabled(true);
     QObject::connect(panel, &InspectorPanel::paneLayoutRequested, this,
                      [this](int panes) { this->applyPaneLayout(panes); });
+
+    // Belt-and-suspenders: park any stray direct-child widget of the window that
+    // is not the central widget / a dock / a toolbar / the menu or status bar —
+    // such a widget paints at (0,0) over the docks. Reparent it into the hidden
+    // holder so it can never paint. (See vtkWindowCube_Setup.cpp bug-class note.)
+    this->parkOrphanDirectChildren();
+}
+
+void vtkWindowCube::parkOrphanDirectChildren()
+{
+    if (!this->m_hiddenPageHolder)
+        return;
+    const auto children = this->findChildren<QWidget *>(Qt::FindDirectChildrenOnly);
+    for (QWidget *w : children) {
+        if (w == this->centralWidget() || w == this->m_hiddenPageHolder
+            || w == this->menuBar() || w == this->statusBar()
+            || qobject_cast<QDockWidget *>(w) || qobject_cast<QToolBar *>(w)
+            || w->isWindow())
+            continue;
+        qWarning().noquote() << QStringLiteral("[workspace] parking orphan direct child: %1 (%2) %3")
+                                        .arg(w->objectName(),
+                                             QString::fromLatin1(w->metaObject()->className()),
+                                             QString::number(w->isVisible()));
+        w->setParent(this->m_hiddenPageHolder);
+        w->hide();
+    }
 }
 
 void vtkWindowCube::applyPaneLayout(int panes)
 {
-    if (!this->dockCubeView || !this->dockSliceView)
+    if (!this->m_renderStack || !ui->vtkImage)
         return;
-    // The cube has two view docks (3D + 2D). "1" shows only the 2D view; "2"/"4"
-    // restore the side-by-side workspace layout. (True 4-up awaits more product
-    // panes — the button is present for design parity.)
+    // The cube has two central panes (3D + 2D) in a splitter. "1" shows only the
+    // 2D view; "2"/"4" restore the side-by-side layout. (True 4-up awaits more
+    // product panes — the button is present for design parity.)
     if (panes == 1) {
-        this->dockCubeView->hide();
-        this->dockSliceView->show();
+        this->m_renderStack->hide();
+        ui->vtkImage->show();
     } else {
-        this->dockCubeView->show();
-        this->dockSliceView->show();
         this->resetWorkspaceLayout();
     }
 }

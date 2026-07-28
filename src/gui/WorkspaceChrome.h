@@ -25,6 +25,7 @@ class QMainWindow;
 class QLabel;
 class QToolButton;
 class QDockWidget;
+class QVBoxLayout;
 class MainWindow;
 class SessionDataTree;
 class InspectorPanel;
@@ -52,10 +53,17 @@ public:
     void installSessionDock(const QString &datasetKey, const QString &datasetLabel,
                             const QString &datasetKind);
 
+    /// Add a widget to the left column's LAYERS block, below the product tree
+    /// (design #1d: the view/rendering controls live here, not in the Inspector).
+    void addSessionLayers(QWidget *w);
+
     /// Create the right "Inspector" dock (Properties / Analysis / Provenance +
     /// cloud chip). Returns the panel so the window can populate its tabs and
     /// wire the pane-layout / Linked controls. Cloud chip is fed by the poll.
     InspectorPanel *installInspectorDock();
+
+    /// The inspector dock (for wiring a show/hide toggle). Null until installed.
+    QDockWidget *inspectorDock() const { return m_inspectorDock; }
 
     /// Begin polling backend health (safe no-op if no backend URL).
     void start();
@@ -87,6 +95,8 @@ private:
 
     QPointer<QDockWidget> m_sessionDock;
     QPointer<SessionDataTree> m_sessionTree;
+    QVBoxLayout *m_sessionLayersLayout = nullptr;   ///< LAYERS block below the tree
+    QPointer<QLabel> m_sessionLayersHeader;
     QPointer<QDockWidget> m_inspectorDock;
     QPointer<InspectorPanel> m_inspector;
     QPointer<QLabel> m_cloudChip;   // inspector cloud chip, fed by the poll

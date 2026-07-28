@@ -574,6 +574,28 @@ void vtkWindowImage::setupInspector()
             { u"Session"_s, this->remoteSessionId },
             { u"Backend"_s, this->remoteBackendUrl },
     });
+    // Migrate the former rail pages (layers, catalogue, info/stats) here.
+    // Design #1d: layer/catalogue (view) controls live in the LEFT column's
+    // LAYERS block; only info/stats stays in the Inspector Properties.
+    if (this->m_inspectorPageLayer)     this->m_workspaceChrome->addSessionLayers(this->m_inspectorPageLayer);
+    if (this->m_inspectorPageCatalogue) this->m_workspaceChrome->addSessionLayers(this->m_inspectorPageCatalogue);
+    if (this->m_inspectorPageInfo)      panel->addPropertiesSection(this->m_inspectorPageInfo);
+    // Re-home the kept-alive Tools page as a HIDDEN child of the inspector (not a
+    // free child of the QMainWindow, where it could paint over the left dock).
+    if (this->m_orphanToolsPage) {
+        this->m_orphanToolsPage->setParent(panel);
+        this->m_orphanToolsPage->hide();
+    }
+
+    // View → "Inspector Panel" toggles the dock.
+    if (auto *dock = this->m_workspaceChrome->inspectorDock()) {
+        if (this->actionShowControlsSidebar) {
+            QObject::connect(this->actionShowControlsSidebar, &QAction::toggled,
+                             dock, &QDockWidget::setVisible);
+            QObject::connect(dock, &QDockWidget::visibilityChanged,
+                             this->actionShowControlsSidebar, &QAction::setChecked);
+        }
+    }
 
     const auto add = [panel](const QString &grp, const QString &label, QAction *a) {
         if (a) panel->addTool(grp, label, a);
@@ -593,6 +615,28 @@ void vtkWindowImage::setupInspector()
     // Single-view window: no pane grid, no cross-viewer link.
     panel->setPaneLayoutEnabled(false);
     panel->setLinkedSupported(false);
+
+    // Belt-and-suspenders: neutralise any stray direct-child widget painting at (0,0).
+    this->parkOrphanDirectChildren();
+}
+
+void vtkWindowImage::parkOrphanDirectChildren()
+{
+    if (!this->m_hiddenPageHolder)
+        return;
+    const auto children = this->findChildren<QWidget *>(Qt::FindDirectChildrenOnly);
+    for (QWidget *w : children) {
+        if (w == this->centralWidget() || w == this->m_hiddenPageHolder
+            || w == this->menuBar() || w == this->statusBar()
+            || qobject_cast<QDockWidget *>(w) || qobject_cast<QToolBar *>(w)
+            || w->isWindow())
+            continue;
+        qWarning().noquote() << QStringLiteral("[workspace] parking orphan direct child: %1 (%2)")
+                                        .arg(w->objectName(),
+                                             QString::fromLatin1(w->metaObject()->className()));
+        w->setParent(this->m_hiddenPageHolder);
+        w->hide();
+    }
 }
 
 void vtkWindowImage::setupSidebar()
@@ -1255,10 +1299,6 @@ void vtkWindowImage::setupSidebar()
 
     infoLayout->addStretch(1);
 
-    // ── Wire pages into SidebarPanel ──────────────────────────────────────────
-    this->m_sidebar = new SidebarPanel(272, this);
-    this->m_sidebar->addPage(u":/icons/rail_layers.svg"_s,    u"Layer Settings"_s, ui->pageLayer);
-    this->m_sidebar->addPage(u":/icons/rail_catalogue.svg"_s, u"Catalogue"_s,       ui->pageCatalogue);
     // VLKB catalogue overlays: compact sources / filaments over the image footprint.
     QObject::connect(ui->btnSources, &QPushButton::clicked, this,
                      &vtkWindowImage::overlayVlkbSources);
@@ -1266,14 +1306,29 @@ void vtkWindowImage::setupSidebar()
                      &vtkWindowImage::overlayVlkbFilaments);
     QObject::connect(&this->m_vlkbCatWatcher, &QFutureWatcher<VlkbCatalogueRaw>::finished, this,
                      &vtkWindowImage::onVlkbCatalogueReady);
-    this->m_sidebar->addPage(u":/icons/rail_viz.svg"_s,        u"Tools"_s,           pageTools);
-    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,      u"Info / Stats"_s,    pageInfo);
-    // Note: the "3D View" page (ui->page3D) is intentionally omitted — not relevant
-    // for the 2D image viewer. The widget remains in the hidden sidebarContainer.
-    this->m_sidebar->finalize(0);
-    mainLayout->insertWidget(0, this->m_sidebar);
 
-    this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
-            u"Controls Sidebar"_s, this);
+    // Design #1d: no rail in the central widget. Stash the setting pages for the
+    // Inspector's Properties tab (setupInspector()); the Tools page is superseded
+    // by the Inspector's Analysis tab (kept alive, hidden). Parent + hide until
+    // setupInspector() reparents them so they don't flash as top-level windows.
+    // Bug-class fix (see vtkWindowCube_Setup.cpp): park ALL assembler pages in one
+    // hidden holder so none is a free child of the QMainWindow painting at (0,0)
+    // over the left dock. setupInspector() reparents the shown ones out of it.
+    auto *holder = new QWidget(this);
+    holder->setObjectName(u"hiddenSidebarPageHolder"_s);
+    holder->hide();
+    auto *holderLayout = new QVBoxLayout(holder);
+    holderLayout->setContentsMargins(0, 0, 0, 0);
+    for (QWidget *p : { ui->pageLayer, ui->pageCatalogue, pageTools, pageInfo })
+        holderLayout->addWidget(p);
+    this->m_hiddenPageHolder       = holder;
+    this->m_inspectorPageLayer     = ui->pageLayer;
+    this->m_inspectorPageCatalogue = ui->pageCatalogue;
+    this->m_inspectorPageInfo      = pageInfo;
+    this->m_orphanToolsPage        = pageTools;
+
+    this->actionShowControlsSidebar = new QAction(u"Inspector Panel"_s, this);
+    this->actionShowControlsSidebar->setCheckable(true);
+    this->actionShowControlsSidebar->setChecked(true);
     ui->menuView->addAction(this->actionShowControlsSidebar);
 }

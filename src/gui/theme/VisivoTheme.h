@@ -219,11 +219,11 @@ QString infoValueStyleSheet();
 // QToolButton — sidebar action button with brand-blue hover / checked tint.
 QString sidebarToolButtonStyleSheet();
 
-// ── Layout B viewer toolbar ──────────────────────────────────────────────────
-// Slim horizontal bar that anchors a viewer screen: a path-pill on the left
-// (icon + selectable file path), one or more tag chips, and an action zone on
-// the right (Find / Command / Export). Used at the top of the cube and image
-// viewers so they share the same Layout B "screen" header.
+// ── Workspace command bar (design #1d) ───────────────────────────────────────
+// Slim horizontal bar at the top of the cube and image viewers: VisIVO app mark,
+// the dataset pill (path + kind/dims tags + ▼ switcher), a centred ⌘K search
+// field that opens the command palette, and the live remote/health chip + theme
+// toggle on the right.
 
 struct ViewerToolbarSpec
 {

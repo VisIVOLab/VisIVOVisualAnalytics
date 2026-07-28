@@ -14,6 +14,9 @@
 #include <QApplication>
 #include <QDockWidget>
 #include <QElapsedTimer>
+#include <QFrame>
+#include <QScrollArea>
+#include <QVBoxLayout>
 #include <QKeySequence>
 #include <QLabel>
 #include <QMainWindow>
@@ -277,10 +280,58 @@ void WorkspaceChrome::installSessionDock(const QString &datasetKey,
     m_sessionDock->setFeatures(QDockWidget::DockWidgetMovable
                                | QDockWidget::DockWidgetFloatable
                                | QDockWidget::DockWidgetClosable);
-    m_sessionTree = new SessionDataTree(m_sessionDock);
-    m_sessionDock->setWidget(m_sessionTree);
+    // Left column container: product tree on top, LAYERS block below (design #1d).
+    auto *container = new QWidget(m_sessionDock);
+    container->setMinimumWidth(220);
+    container->setMaximumWidth(320);
+    auto *vbox = new QVBoxLayout(container);
+    vbox->setContentsMargins(0, 0, 0, 0);
+    vbox->setSpacing(0);
+
+    m_sessionTree = new SessionDataTree(container);
+    vbox->addWidget(m_sessionTree, 1);
+
+    // LAYERS header + host for the view/rendering controls (filled by the window
+    // via addSessionLayers(); hidden until something is added).
+    m_sessionLayersHeader = new QLabel(QObject::tr("LAYERS"), container);
+    m_sessionLayersHeader->setStyleSheet(
+            QStringLiteral("QLabel { color:%1; font-size:10px; font-weight:700;"
+                           " letter-spacing:0.12em; padding:8px 10px 4px 10px; }")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    m_sessionLayersHeader->hide();
+    vbox->addWidget(m_sessionLayersHeader);
+
+    auto *layersScroll = new QScrollArea(container);
+    layersScroll->setWidgetResizable(true);
+    layersScroll->setFrameShape(QFrame::NoFrame);
+    layersScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto *layersInner = new QWidget(layersScroll);
+    m_sessionLayersLayout = new QVBoxLayout(layersInner);
+    m_sessionLayersLayout->setContentsMargins(0, 0, 0, 0);
+    m_sessionLayersLayout->setSpacing(0);
+    m_sessionLayersLayout->addStretch(1);
+    layersScroll->setWidget(layersInner);
+    vbox->addWidget(layersScroll, 2);
+
+    m_sessionDock->setWidget(container);
     m_window->addDockWidget(Qt::LeftDockWidgetArea, m_sessionDock);
     m_sessionTree->setCurrentDataset(datasetKey, datasetLabel, datasetKind);
+}
+
+void WorkspaceChrome::addSessionLayers(QWidget *w)
+{
+    if (!w || !m_sessionLayersLayout)
+        return;
+    // Remove from its current layout (the hidden holder) first, then insert here.
+    // insertWidget() reparents; an explicit removeWidget avoids leaving a stale
+    // layout item behind in the holder.
+    if (auto *p = w->parentWidget())
+        if (auto *l = p->layout())
+            l->removeWidget(w);
+    m_sessionLayersLayout->insertWidget(m_sessionLayersLayout->count() - 1, w);
+    w->show();
+    if (m_sessionLayersHeader)
+        m_sessionLayersHeader->show();
 }
 
 InspectorPanel *WorkspaceChrome::installInspectorDock()
@@ -297,6 +348,9 @@ InspectorPanel *WorkspaceChrome::installInspectorDock()
                                  | QDockWidget::DockWidgetFloatable
                                  | QDockWidget::DockWidgetClosable);
     m_inspector = new InspectorPanel(m_inspectorDock);
+    // Fixed right column (design #1d: 320 px) so the viewports keep the centre.
+    m_inspector->setMinimumWidth(320);
+    m_inspector->setMaximumWidth(340);
     m_inspectorDock->setWidget(m_inspector);
     m_window->addDockWidget(Qt::RightDockWidgetArea, m_inspectorDock);
 
@@ -358,18 +412,20 @@ void WorkspaceChrome::onPollFinished()
     const QString hostLabel = host.isEmpty() ? QStringLiteral("backend") : host;
 
     // Command-bar chip + inspector cloud chip: "host · N running" (or offline).
+    // Leading "●" status dot inherits the chip's foreground colour, so it reads
+    // green (idle) / teal (running) / red (offline) alongside the host text.
     const auto updateChip = [&](QLabel *chip) {
         if (!chip)
             return;
         if (!s.ok) {
-            chip->setText(QStringLiteral("%1 · offline").arg(hostLabel));
+            chip->setText(QStringLiteral("● %1 · offline").arg(hostLabel));
             styleChip(chip, VisivoTheme::kError());
         } else if (s.runningTasks > 0) {
-            chip->setText(QStringLiteral("%1 · %2 running").arg(hostLabel).arg(s.runningTasks));
+            chip->setText(QStringLiteral("● %1 · %2 running").arg(hostLabel).arg(s.runningTasks));
             styleChip(chip, VisivoTheme::kRunning());
         } else {
-            chip->setText(hostLabel);
-            styleChip(chip, VisivoTheme::kOnSurfaceVariant());
+            chip->setText(QStringLiteral("● %1").arg(hostLabel));
+            styleChip(chip, VisivoTheme::kSuccess());
         }
     };
     updateChip(m_remoteChip);

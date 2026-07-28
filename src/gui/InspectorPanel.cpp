@@ -59,18 +59,10 @@ InspectorPanel::InspectorPanel(QWidget *parent)
     root->setContentsMargins(10, 10, 10, 10);
     root->setSpacing(8);
 
-    // ── Cloud chip + pane-layout / Linked strip ──────────────────────────────
+    // ── Pane-layout / Linked strip ───────────────────────────────────────────
+    // (The backend/host chip lives once in the command bar — not duplicated here.)
     auto *topRow = new QHBoxLayout;
     topRow->setSpacing(6);
-    m_cloudChip = new QLabel(u"remote"_s, this);
-    m_cloudChip->setStyleSheet(
-            QStringLiteral("QLabel { background:%1; color:%2; font-family:'JetBrains Mono',"
-                           "monospace; font-size:10px; font-weight:600; padding:3px 8px;"
-                           " border-radius:4px; border:1px solid %3; }")
-                    .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerLow()),
-                         QLatin1StringView(VisivoTheme::kOnSurfaceVariant()),
-                         QLatin1StringView(VisivoTheme::kOutline())));
-    topRow->addWidget(m_cloudChip);
     topRow->addStretch(1);
     m_pane1 = paneBtn(u"▪"_s, this);
     m_pane2 = paneBtn(u"▪▪"_s, this);
@@ -102,13 +94,17 @@ InspectorPanel::InspectorPanel(QWidget *parent)
     m_tabs = new QTabWidget(this);
     root->addWidget(m_tabs, 1);
 
-    // Properties
-    m_propsPage = new QWidget(m_tabs);
+    // Properties (scrollable — hosts KV rows plus migrated setting sections)
+    auto *propsScroll = new QScrollArea(m_tabs);
+    propsScroll->setWidgetResizable(true);
+    propsScroll->setFrameShape(QFrame::NoFrame);
+    m_propsPage = new QWidget(propsScroll);
     m_propsLayout = new QVBoxLayout(m_propsPage);
     m_propsLayout->setContentsMargins(4, 8, 4, 4);
     m_propsLayout->setSpacing(4);
     m_propsLayout->addStretch(1);
-    m_tabs->addTab(m_propsPage, u"Properties"_s);
+    propsScroll->setWidget(m_propsPage);
+    m_tabs->addTab(propsScroll, u"Properties"_s);
 
     // Analysis (scrollable list of tool groups)
     auto *analysisScroll = new QScrollArea(m_tabs);
@@ -184,6 +180,16 @@ void InspectorPanel::setProperties(const QList<QPair<QString, QString>> &rows)
     }
 }
 
+void InspectorPanel::addPropertiesSection(QWidget *section)
+{
+    if (!section)
+        return;
+    section->setParent(m_propsPage);
+    // Insert before the trailing stretch so sections stack under the KV rows.
+    m_propsLayout->insertWidget(m_propsLayout->count() - 1, section);
+    section->show();
+}
+
 QVBoxLayout *InspectorPanel::groupLayout(const QString &caption)
 {
     if (auto *l = m_groupLayouts.value(caption, nullptr))
@@ -212,16 +218,10 @@ void InspectorPanel::addTool(const QString &groupCaption, const QString &label, 
     btn->setText(label);
     btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
     btn->setCursor(Qt::PointingHandCursor);
+    // Full-width + left-aligned text (matches the section headers above), same
+    // treatment as the sidebar tool buttons.
     btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    btn->setStyleSheet(
-            QStringLiteral(
-                    "QToolButton { text-align:left; background:transparent; color:%1;"
-                    " border:none; padding:4px 6px; font-size:12px; }"
-                    "QToolButton:hover { color:%2; }"
-                    "QToolButton:disabled { color:%3; }")
-                    .arg(QLatin1StringView(VisivoTheme::kOnSurface()),
-                         QLatin1StringView(VisivoTheme::kPrimary()),
-                         QLatin1StringView(VisivoTheme::kOutline())));
+    btn->setStyleSheet(VisivoTheme::sidebarToolButtonStyleSheet());
     if (action) {
         btn->setEnabled(action->isEnabled());
         connect(btn, &QToolButton::clicked, action, &QAction::trigger);

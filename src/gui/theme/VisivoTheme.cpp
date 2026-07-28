@@ -463,6 +463,28 @@ QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
     hbox->setContentsMargins(10, 6, 10, 6);
     hbox->setSpacing(8);
 
+    // ── VisIVO app mark: 8×8 accent square + brand wordmark + divider ─────────
+    {
+        auto *square = new QLabel(bar);
+        square->setFixedSize(8, 8);
+        square->setStyleSheet(
+                QStringLiteral("background-color: %1; border-radius: 2px;")
+                        .arg(QLatin1StringView(kPrimary())));
+        hbox->addWidget(square);
+        auto *mark = new QLabel(QStringLiteral("VisIVO"), bar);
+        mark->setStyleSheet(
+                QStringLiteral("color: %1; font-family: '%2'; font-size: 13px; font-weight: 900;")
+                        .arg(QLatin1StringView(kOnSurface()),
+                             QLatin1StringView(kBrandFamily)));
+        hbox->addWidget(mark);
+        auto *divider = new QFrame(bar);
+        divider->setFrameShape(QFrame::VLine);
+        divider->setFixedWidth(1);
+        divider->setStyleSheet(QStringLiteral("color: %1; background: %1; border: none;")
+                                       .arg(QLatin1StringView(kOutline())));
+        hbox->addWidget(divider);
+    }
+
     // ── Path-pill: home glyph + dim parent path + bright file name ───────────
     auto *pill = new QFrame(bar);
     pill->setObjectName(QStringLiteral("viewerPathPill"));
@@ -536,31 +558,38 @@ QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
 
     hbox->addStretch(1);
 
-    // ── Live remote/health chip ("host · N running") ─────────────────────────
+    // ── Centred search field: opens the ⌘K command palette ───────────────────
+    // Rendered as a button styled like a search input with a trailing key-cap.
+    {
+        auto *search = new QToolButton(bar);
+        search->setCursor(Qt::PointingHandCursor);
+        search->setText(QStringLiteral("⌕   Search datasets, tools, products…        ⌘K"));
+        search->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        search->setFixedWidth(420);
+        search->setStyleSheet(
+                QStringLiteral(
+                        "QToolButton {"
+                        "  text-align: left; background-color: %1; color: %2;"
+                        "  border: 1px solid %3; border-radius: 7px;"
+                        "  padding: 5px 12px; font-size: 12px;"
+                        "}"
+                        "QToolButton:hover { border-color: %4; }")
+                        .arg(QLatin1StringView(kSurfaceContainerHigh()),
+                             QLatin1StringView(kOnSurfaceVariant()),
+                             QLatin1StringView(kOutline()),
+                             QLatin1StringView(kPrimary())));
+        hbox->addWidget(search);
+        // Reuse the "command" slot so WorkspaceChrome wires it to openCommandPalette.
+        if (out) out->command = search;
+    }
+
+    hbox->addStretch(1);
+
+    // ── Live remote/health chip ("● host · N running") ───────────────────────
     auto *remoteChip = makeTagChip(QStringLiteral("remote"), /*accent=*/false, bar);
     remoteChip->setToolTip(QStringLiteral("Backend host and running-task count"));
     hbox->addWidget(remoteChip);
     if (out) out->remoteChip = remoteChip;
-
-    // ── Action buttons (Find / Command / Export) ────────────────────────────
-    auto *findBtn = makeToolbarButton(QStringLiteral("Find"), false, bar);
-    hbox->addWidget(findBtn);
-    if (out) out->find = findBtn;
-
-    auto *cmdBtn = makeToolbarButton(QStringLiteral("Command  ⌘K"), true, bar);
-    hbox->addWidget(cmdBtn);
-    if (out) out->command = cmdBtn;
-
-    // Subtle vertical pipe separator before destructive/export action.
-    auto *pipe = new QLabel(QStringLiteral("·"), bar);
-    pipe->setStyleSheet(
-            QStringLiteral("color: %1; font-size: 14px;")
-                    .arg(QLatin1StringView(kSecondary())));
-    hbox->addWidget(pipe);
-
-    auto *expBtn = makeToolbarButton(QStringLiteral("Export"), false, bar);
-    hbox->addWidget(expBtn);
-    if (out) out->exportBtn = expBtn;
 
     // ── Theme toggle (◐) ─────────────────────────────────────────────────────
     auto *themeBtn = makeGlyphButton(QStringLiteral("◐"), bar);
