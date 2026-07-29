@@ -27,6 +27,8 @@ struct AnalysisProduct
     QString parentLabel;     ///< display name of the parent dataset
     QString kind;            ///< "moment" | "pv" | "noise" | "linewidth" | …
     QString label;           ///< e.g. "Moment 0 — integrated"
+    QString renderer;        ///< non-empty ⇒ showable in a pane (§3.2); "" ⇒ Inspector-only
+                             ///< (e.g. "moment2d"). Statistics/exports leave this empty.
     QString status{ QStringLiteral("ready") };  ///< "ready" | "running" | "failed"
     double  progress{ 1.0 }; ///< 0..1 (for running tasks)
     QVariantMap params;      ///< recipe (mirrors the AnalysisParamStore group)

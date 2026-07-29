@@ -364,7 +364,38 @@ private:
     {
         vtkSmartPointer<vtkImageData> imageData;
         std::array<double, 2> imageRange;
+        int order{ 0 };   ///< moment order — scopes the product id so orders coexist (§3.2)
+        // The recipe needed to re-export THIS moment (§3.2): with several moments cached,
+        // export must use the DISPLAYED product's recipe, not the last-computed one.
+        int channelStart{ 0 };
+        int channelEnd{ 0 };
+        bool maskEnabled{ false };
+        double thresholdValue{ 0. };
+        bool thresholdAuto{ false };
     };
+
+    // §3.2 Increment B: retain every computed 2-D product's image so distinct
+    // moments (Moment 0 AND Moment 1) coexist. The single moment pipeline
+    // (momentDisplaySource) overwrites on each compute; this cache does not. Keyed
+    // by the SAME productId the registry uses, so tree / dropdown / cache agree.
+    struct Product2D
+    {
+        vtkSmartPointer<vtkImageData> imageData;
+        std::array<double, 2> imageRange{ 0., 0. };
+        QString lutName;                                 ///< colormap at compute time
+        LutScale::Mode scaleMode{ LutScale::Mode::Linear };
+        double gamma{ 2.0 };
+        QString label;                                   ///< identical to the tree/dropdown label
+        // Export recipe — so "Export Moment as FITS" re-exports the DISPLAYED product,
+        // not whatever was computed last (§3.2).
+        int order{ 0 };
+        int channelStart{ 0 };
+        int channelEnd{ 0 };
+        bool maskEnabled{ false };
+        double thresholdValue{ 0. };
+        bool thresholdAuto{ false };
+    };
+    QHash<QString, Product2D> m_products2d;
 
     struct MomentProvenanceState
     {
@@ -395,8 +426,23 @@ private:
     void setActivePane(int pane);
     void refreshPaneActiveStyles();
 
-    // ── §3.1 pane model: 4 slots, a view registry, one reconcile ──────────────
-    enum class ViewId { None, View3D, Slice2D, Moment0, Spectrum };
+    // ── §3.1/§3.2 pane model: 4 slots, a view registry, one reconcile ─────────
+    // A pane shows one of the fixed views (3D / 2D slice / spectrum) OR an arbitrary
+    // computed Product (a moment map, …) identified by its registry productId — so
+    // two different moments can occupy two panes (§3.2). `kind` alone drives every
+    // fixed-view branch; `productId` is meaningful only when kind == Product.
+    enum class ViewId { None, View3D, Slice2D, Spectrum, Product };
+    struct PaneView
+    {
+        ViewId kind{ ViewId::None };
+        QString productId;   ///< only for Product
+        bool operator==(const PaneView &o) const
+        {
+            return kind == o.kind && productId == o.productId;
+        }
+        bool operator!=(const PaneView &o) const { return !(*this == o); }
+        bool isNone() const { return kind == ViewId::None; }
+    };
     struct PaneSlot
     {
         QPointer<QFrame> frame;          ///< header + view, carries the active border
@@ -408,7 +454,7 @@ private:
         QHBoxLayout *viewHostLayout{ nullptr };
         QHBoxLayout *controls{ nullptr };   ///< per-view control slot in the header
         QPointer<QToolButton> maxBtn;    ///< ⤢ maximize / ⤡ restore (§3.2)
-        ViewId view{ ViewId::None };
+        PaneView view;
     };
     std::array<PaneSlot, 4> m_slots;
     int m_paneCount{ 1 };                 ///< 1 / 2 / 4 (spec §3.1 default is 1)
@@ -419,20 +465,24 @@ private:
     // user's explicit override (second click on the "2" glyph), persisted (§3.1).
     enum class PaneDirection { Auto, Rows, Cols };
     PaneDirection m_paneDirection{ PaneDirection::Auto };
-    QPointer<QWidget> m_momentEmptyState;    ///< shown in a Moment0 slot with no computed map
+    QPointer<QWidget> m_momentEmptyState;    ///< shown in a Product moment slot with no computed map
     QPointer<QWidget> m_spectrumEmptyState;  ///< shown in a Spectrum slot with no probe yet
-    QWidget *emptyStateWidget(ViewId id);    ///< lazily builds the "what's missing + action" block
-    bool viewHasData(ViewId id) const;       ///< false → mount the empty state, not the render
+    QWidget *emptyStateWidget(const PaneView &v);  ///< lazily builds the "what's missing + action" block
+    bool viewHasData(const PaneView &v) const;     ///< false → mount the empty state, not the render
     QPointer<SegmentedToggle> m_paneCountToggle;
     QPointer<SegmentedToggle> m_pick3d2d;
     QPointer<SegmentedToggle> m_renderModeSeg;   ///< Auto/Local/Remote — re-hosted into the View3D slot
     QPointer<QLabel> m_linkedQualifier;          ///< "camera · channel · LUT" (narrows at 4 panes)
+    QString m_momentPipelineProductId;           ///< which product's image is loaded in m_vtkMoment (§3.2 B2)
+    QString m_lastComputedMomentProductId;       ///< most recently computed moment (may be off-screen, §3.2)
 
-    QWidget *viewWidget(ViewId id) const;      ///< the (always-existing) widget for a view
-    QString viewTitle(ViewId id) const;
+    QWidget *viewWidget(const PaneView &v) const;  ///< the render widget for a view (Product→moment pipeline in B2)
+    QString viewTitle(const PaneView &v) const;
+    QList<PaneView> availableViews() const;        ///< fixed views + every renderable product (dropdown order)
+    void loadProductIntoMomentPipeline(const QString &productId, bool force = false);  ///< swap the single moment pipeline's image
     void buildPaneSlots();                     ///< construct the 4 slot frames + columns
     void assignViews(const std::array<bool, 4> &visible);   ///< fill empty VISIBLE slots (§3.3)
-    void clearViewFromOtherSlots(int keepSlot, ViewId v);   ///< enforce one-slot-per-view
+    void clearViewFromOtherSlots(int keepSlot);  ///< one slot per RENDER WIDGET (3D + shared 2D pipelines)
     bool paneStacked() const;   ///< 2-pane direction: explicit override, else width-derived
     bool m_restoringLayout{ false };           ///< suppress saveLayoutSettings during restore
     int firstVisibleSlot() const;
@@ -1320,7 +1370,8 @@ protected:
     /// a duplicate. Returns the assigned product id.
     QString registerAnalysisProduct(const QString &kind, const QString &label,
                                     const QVariantMap &params, QWidget *window,
-                                    const QString &stableId = QString());
+                                    const QString &stableId = QString(),
+                                    const QString &renderer = QString());
 
     /// Populate the right Inspector shell (Properties/Analysis tabs) and wire the
     /// pane-layout + Linked controls. Tools trigger the existing dialog QActions.

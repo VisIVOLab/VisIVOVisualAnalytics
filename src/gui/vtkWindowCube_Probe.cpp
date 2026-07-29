@@ -506,7 +506,7 @@ void vtkWindowCube::updateProbePlot()
         // §3.1: if a pane is already showing Spectrum, mount the just-created plot
         // into it (it was empty until the widget existed).
         for (int i = 0; i < 4; ++i)
-            if (m_slots[i].view == ViewId::Spectrum) {
+            if (m_slots[i].view.kind == ViewId::Spectrum) {
                 mountView(i);
                 break;
             }
@@ -526,7 +526,7 @@ void vtkWindowCube::updateProbePlot()
                              // so the dying widget is fully gone before we re-lay hosts.
                              QTimer::singleShot(0, this, [this]() {
                                  for (int i = 0; i < 4; ++i)
-                                     if (m_slots[i].view == ViewId::Spectrum)
+                                     if (m_slots[i].view.kind == ViewId::Spectrum)
                                          mountView(i);
                              });
                              if (actExtract && actExtract->isChecked()) {
