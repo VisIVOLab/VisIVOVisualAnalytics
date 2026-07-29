@@ -302,6 +302,8 @@ set(PROJECT_SOURCES
         src/gui/SessionDataTree.h
         src/gui/InspectorPanel.cpp
         src/gui/InspectorPanel.h
+        src/gui/DockRail.cpp
+        src/gui/DockRail.h
         src/app/ProductRegistry.cpp
         src/app/ProductRegistry.h
         src/app/ThumbnailCache.cpp
@@ -531,6 +533,11 @@ qt_add_resources(${PROJECT_NAME} rail_icons
         resources/icons/rail_metadata.svg
         resources/icons/chevron_down.svg
         resources/icons/chevron_up.svg
+        resources/icons/pane_1.svg
+        resources/icons/pane_2.svg
+        resources/icons/pane_4.svg
+        resources/icons/check.svg
+        resources/icons/rail_provenance.svg
 )
 
 add_subdirectory(src/libwcs)

@@ -694,8 +694,8 @@ void vtkWindowCube::setLassoEditActive(bool on)
             this->m_lassoEditActive = false;
             return;
         }
-        auto *iren = ui->vtkImage && ui->vtkImage->renderWindow()
-                ? ui->vtkImage->renderWindow()->GetInteractor() : nullptr;
+        auto *iren = ui->vtkImage && this->active2dWin()
+                ? this->active2dWin()->GetInteractor() : nullptr;
         if (!iren) {
             this->m_lassoEditActive = false;
             return;
@@ -721,7 +721,7 @@ void vtkWindowCube::setLassoEditActive(bool on)
         if (!this->m_lassoEditRightTag)
             this->m_lassoEditRightTag = iren->AddObserver(
                     vtkCommand::RightButtonPressEvent, this, &vtkWindowCube::commitLassoEditPolygon, 2.0);
-        if (ui->vtkImage) ui->vtkImage->setCursor(Qt::CrossCursor);
+        if (ui->vtkImage) if (auto *w2d = this->active2dWidget()) w2d->setCursor(Qt::CrossCursor);
         this->statusBar()->showMessage(
                 u"Mask edit: click points on the channel map; right-click (or click the first point) "
                 u"to close and %1."_s.arg(this->m_lassoEditAdd ? u"ADD"_s : u"SUBTRACT"_s), 0);
@@ -741,7 +741,7 @@ void vtkWindowCube::setLassoEditActive(bool on)
         }
         this->m_lassoEditClickTag = this->m_lassoEditMoveTag = this->m_lassoEditRightTag = 0;
         this->m_lassoEditIren = nullptr;
-        if (ui->vtkImage) ui->vtkImage->setCursor(Qt::ArrowCursor);
+        if (ui->vtkImage) if (auto *w2d = this->active2dWidget()) w2d->setCursor(Qt::ArrowCursor);
         this->m_lassoEditVerts.clear();
         this->refreshLassoEditPreview();
         this->statusBar()->clearMessage();
@@ -750,8 +750,8 @@ void vtkWindowCube::setLassoEditActive(bool on)
 
 bool vtkWindowCube::mapDisplayToFullVoxel(int dx, int dy, int &outX, int &outY) const
 {
-    auto *renderer = ui->vtkImage && ui->vtkImage->renderWindow()
-            ? ui->vtkImage->renderWindow()->GetRenderers()->GetFirstRenderer() : nullptr;
+    auto *renderer = ui->vtkImage && this->active2dWin()
+            ? this->active2dWin()->GetRenderers()->GetFirstRenderer() : nullptr;
     auto *imageData = vtkImageData::SafeDownCast(
             this->remoteSliceDisplaySource->GetOutputDataObject(0));
     if (!renderer || !imageData)
@@ -774,8 +774,8 @@ void vtkWindowCube::onLassoEditClick()
 {
     if (!this->m_lassoEditActive)
         return;
-    auto *iren = ui->vtkImage && ui->vtkImage->renderWindow()
-            ? ui->vtkImage->renderWindow()->GetInteractor() : nullptr;
+    auto *iren = ui->vtkImage && this->active2dWin()
+            ? this->active2dWin()->GetInteractor() : nullptr;
     if (!iren)
         return;
     int pos[2];
@@ -799,8 +799,8 @@ void vtkWindowCube::onLassoEditMove()
 {
     if (!this->m_lassoEditActive || this->m_lassoEditVerts.empty())
         return;
-    auto *iren = ui->vtkImage && ui->vtkImage->renderWindow()
-            ? ui->vtkImage->renderWindow()->GetInteractor() : nullptr;
+    auto *iren = ui->vtkImage && this->active2dWin()
+            ? this->active2dWin()->GetInteractor() : nullptr;
     if (!iren)
         return;
     int pos[2];

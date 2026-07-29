@@ -7,8 +7,12 @@
 #include <vtkTextActor.h>
 #include <vtkTextProperty.h>
 
+#include <QDir>
+#include <QFile>
+#include <QStandardPaths>
 #include <QString>
 #include <array>
+#include <string>
 
 #include <algorithm>
 #include <cmath>
@@ -16,6 +20,43 @@
 using namespace Qt::StringLiterals;
 
 namespace CubeWcs {
+
+namespace {
+// VTK renders text with its own font engine; its default (Arial-ish, faintly
+// serif at small sizes) makes the 2-D overlays read as a different application
+// from the Qt UI. Point VTK at the app's bundled Lato — but VTK wants a filesystem
+// path, and our fonts live in the Qt resource bundle, so extract it once into the
+// cache directory (§3.0c #8). No mono .ttf is bundled; Lato is the UI font.
+const char *overlayFontFile()
+{
+    static const std::string path = []() -> std::string {
+        const QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+        if (cacheDir.isEmpty())
+            return {};
+        QDir().mkpath(cacheDir);
+        const QString dest = cacheDir + u"/visivo-overlay-Lato-Regular.ttf"_s;
+        if (!QFile::exists(dest)) {
+            QFile src(u":/fonts/Lato-Regular.ttf"_s);
+            if (!src.copy(dest))
+                return {};
+            QFile::setPermissions(dest, QFile::ReadOwner | QFile::WriteOwner);
+        }
+        return dest.toStdString();
+    }();
+    return path.c_str();
+}
+}  // namespace
+
+void applyOverlayFont(vtkTextProperty *tp)
+{
+    if (!tp)
+        return;
+    const char *ff = overlayFontFile();
+    if (ff && ff[0]) {
+        tp->SetFontFamily(VTK_FONT_FILE);
+        tp->SetFontFile(ff);
+    }
+}
 
 void configureAxisActor(vtkAxisActor2D *axis, double x1, double y1, double x2, double y2)
 {
@@ -37,6 +78,8 @@ void configureAxisActor(vtkAxisActor2D *axis, double x1, double y1, double x2, d
     axis->GetTitleTextProperty()->SetColor(1., 1., 1.);
     axis->GetLabelTextProperty()->SetFontSize(14);
     axis->GetTitleTextProperty()->SetFontSize(16);
+    applyOverlayFont(axis->GetLabelTextProperty());
+    applyOverlayFont(axis->GetTitleTextProperty());
 }
 
 void configureTickLabelActor(vtkTextActor *actor, bool rightAligned)
@@ -49,6 +92,7 @@ void configureTickLabelActor(vtkTextActor *actor, bool rightAligned)
     } else {
         actor->GetTextProperty()->SetJustificationToCentered();
     }
+    applyOverlayFont(actor->GetTextProperty());
 }
 
 void configureVerticalAxisTitle(vtkAxisActor2D *axis)
@@ -59,6 +103,7 @@ void configureVerticalAxisTitle(vtkAxisActor2D *axis)
     titleProp->SetVerticalJustificationToCentered();
     titleProp->SetColor(1., 1., 1.);
     titleProp->SetFontSize(14);
+    applyOverlayFont(titleProp);
     axis->SetTitlePosition(0.5);
 }
 

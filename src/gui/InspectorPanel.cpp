@@ -4,6 +4,7 @@
 
 #include <QAction>
 #include <QButtonGroup>
+#include <QDebug>
 #include <QFileDialog>
 #include <QFrame>
 #include <QGroupBox>
@@ -13,7 +14,9 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QTabBar>
 #include <QTabWidget>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -31,24 +34,6 @@ QLabel *sectionCaption(const QString &text, QWidget *parent)
     return lbl;
 }
 
-QToolButton *paneBtn(const QString &glyph, QWidget *parent)
-{
-    auto *b = new QToolButton(parent);
-    b->setText(glyph);
-    b->setCheckable(true);
-    b->setCursor(Qt::PointingHandCursor);
-    b->setStyleSheet(
-            QStringLiteral(
-                    "QToolButton { background:%1; color:%2; border:1px solid %3;"
-                    " border-radius:5px; padding:2px 8px; font-size:11px; font-weight:600; }"
-                    "QToolButton:checked { color:%4; border-color:%4; }"
-                    "QToolButton:disabled { color:%3; }")
-                    .arg(QLatin1StringView(VisivoTheme::kSurfaceContainerHigh()),
-                         QLatin1StringView(VisivoTheme::kOnSurfaceVariant()),
-                         QLatin1StringView(VisivoTheme::kOutline()),
-                         QLatin1StringView(VisivoTheme::kPrimary())));
-    return b;
-}
 
 } // namespace
 
@@ -59,46 +44,26 @@ InspectorPanel::InspectorPanel(QWidget *parent)
     root->setContentsMargins(10, 10, 10, 10);
     root->setSpacing(8);
 
-    // ── Pane-layout / Linked strip ───────────────────────────────────────────
-    // (The backend/host chip lives once in the command bar — not duplicated here.)
-    auto *topRow = new QHBoxLayout;
-    topRow->setSpacing(6);
-    topRow->addStretch(1);
-    m_pane1 = paneBtn(u"▪"_s, this);
-    m_pane2 = paneBtn(u"▪▪"_s, this);
-    m_pane4 = paneBtn(u"⊞"_s, this);
-    m_pane1->setToolTip(u"Single pane"_s);
-    m_pane2->setToolTip(u"Two panes"_s);
-    m_pane4->setToolTip(u"Four panes"_s);
-    connect(m_pane1, &QToolButton::clicked, this, [this]() { emit paneLayoutRequested(1); });
-    connect(m_pane2, &QToolButton::clicked, this, [this]() { emit paneLayoutRequested(2); });
-    connect(m_pane4, &QToolButton::clicked, this, [this]() { emit paneLayoutRequested(4); });
-    // Exclusive: exactly one pane-layout is "current".
-    auto *paneGroup = new QButtonGroup(this);
-    paneGroup->setExclusive(true);
-    paneGroup->addButton(m_pane1);
-    paneGroup->addButton(m_pane2);
-    paneGroup->addButton(m_pane4);
-    m_pane2->setChecked(true);   // two-pane is the default workspace layout
-    topRow->addWidget(m_pane1);
-    topRow->addWidget(m_pane2);
-    topRow->addWidget(m_pane4);
-    m_linkedBtn = paneBtn(u"⛓ Linked"_s, this);
-    m_linkedBtn->setToolTip(u"Sync camera · channel · LUT across linked viewers"_s);
-    connect(m_linkedBtn, &QToolButton::toggled, this,
-            [this](bool on) { emit linkedToggled(on); });
-    topRow->addWidget(m_linkedBtn);
-    root->addLayout(topRow);
+    // NOTE: the 1/2/4 + Linked strip lives in the CENTRE toolbar (above the pane
+    // splitter), not here — it controls the views, not the panel. Keeping it out
+    // of the Inspector also gives the three tabs the full 320px (no truncation).
 
     // ── Tabs ──────────────────────────────────────────────────────────────────
     m_tabs = new QTabWidget(this);
+    // Three short labels fit 320px easily — never elide them; and trim the tab
+    // padding (the global QSS default was wide enough to force truncation).
+    m_tabs->tabBar()->setElideMode(Qt::ElideNone);
+    m_tabs->tabBar()->setExpanding(false);
+    m_tabs->setStyleSheet(QStringLiteral("QTabBar::tab { padding: 8px 12px; }"));
     root->addWidget(m_tabs, 1);
 
     // Properties (scrollable — hosts KV rows plus migrated setting sections)
     auto *propsScroll = new QScrollArea(m_tabs);
+    m_propsScroll = propsScroll;
     propsScroll->setWidgetResizable(true);
     propsScroll->setFrameShape(QFrame::NoFrame);
     m_propsPage = new QWidget(propsScroll);
+    m_propsPage->setObjectName(u"inspectorPropertiesPage"_s);
     m_propsLayout = new QVBoxLayout(m_propsPage);
     m_propsLayout->setContentsMargins(4, 8, 4, 4);
     m_propsLayout->setSpacing(4);
@@ -156,28 +121,73 @@ InspectorPanel::InspectorPanel(QWidget *parent)
     m_tabs->addTab(m_provPage, u"Provenance"_s);
 }
 
-void InspectorPanel::setProperties(const QList<QPair<QString, QString>> &rows)
+void InspectorPanel::clearProperties()
 {
-    // Clear existing rows (keep the trailing stretch).
-    while (m_propsLayout->count() > 1) {
+    while (m_propsLayout->count() > 1) {   // keep the trailing stretch
         QLayoutItem *item = m_propsLayout->takeAt(0);
         if (QWidget *w = item->widget())
             w->deleteLater();
         delete item;
     }
-    int insertAt = 0;
-    for (const auto &kv : rows) {
-        auto *row = new QLabel(m_propsPage);
-        row->setTextFormat(Qt::RichText);
-        row->setText(QStringLiteral("<span style='color:%1'>%2</span>&nbsp;&nbsp;"
-                                    "<span style='color:%3'>%4</span>")
-                             .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()),
-                                  kv.first.toHtmlEscaped(),
-                                  QLatin1StringView(VisivoTheme::kOnSurface()),
-                                  kv.second.toHtmlEscaped()));
-        row->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        m_propsLayout->insertWidget(insertAt++, row);
+}
+
+void InspectorPanel::addPropertyCaption(const QString &caption, bool sub)
+{
+    auto *lbl = new QLabel(caption, m_propsPage);
+    if (sub) {
+        lbl->setStyleSheet(
+                QStringLiteral("QLabel { color:%1; font-family:'Lato'; font-size:10px;"
+                               " font-weight:600; padding:6px 0 1px 0; }")
+                        .arg(QLatin1StringView(VisivoTheme::kSecondary())));
+    } else {
+        lbl->setStyleSheet(
+                QStringLiteral("QLabel { color:%1; %2 padding:10px 0 3px 0; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()),
+                             VisivoTheme::sectionHeaderCss()));
     }
+    m_propsLayout->insertWidget(m_propsLayout->count() - 1, lbl);
+}
+
+void InspectorPanel::addPropertyRow(const QString &key, const QString &value)
+{
+    auto *val = new QLabel(value);
+    val->setStyleSheet(
+            QStringLiteral("color:%1; font-family:'JetBrains Mono','SF Mono',monospace;"
+                           " font-size:11px;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
+    val->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    val->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    val->setToolTip(value);
+    addPropertyRow(key, static_cast<QWidget *>(val));
+}
+
+void InspectorPanel::addPropertyRow(const QString &key, QWidget *valueWidget)
+{
+    auto *row = new QWidget(m_propsPage);
+    auto *h = new QHBoxLayout(row);
+    h->setContentsMargins(0, 1, 0, 1);
+    h->setSpacing(8);
+    auto *k = new QLabel(key, row);
+    k->setStyleSheet(QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;")
+                             .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    h->addWidget(k, 1);
+    if (valueWidget) {
+        // Detach from any previous layout first (re-hosted live widgets), so no
+        // stale layout item is left behind in the parked info page.
+        if (auto *p = valueWidget->parentWidget())
+            if (auto *l = p->layout())
+                l->removeWidget(valueWidget);
+        valueWidget->setParent(row);
+        h->addWidget(valueWidget, 0, Qt::AlignRight);
+    }
+    m_propsLayout->insertWidget(m_propsLayout->count() - 1, row);
+}
+
+void InspectorPanel::setProperties(const QList<QPair<QString, QString>> &rows)
+{
+    clearProperties();
+    for (const auto &kv : rows)
+        addPropertyRow(kv.first, kv.second);
 }
 
 void InspectorPanel::addPropertiesSection(QWidget *section)
@@ -224,11 +234,51 @@ void InspectorPanel::addTool(const QString &groupCaption, const QString &label, 
     btn->setStyleSheet(VisivoTheme::sidebarToolButtonStyleSheet());
     if (action) {
         btn->setEnabled(action->isEnabled());
+        // Emit BEFORE triggering the action: the tool may open a modal dialog, and
+        // we want the Inspector to expand onto Analysis first (§4.1.4).
+        connect(btn, &QToolButton::clicked, this, &InspectorPanel::toolLaunched);
         connect(btn, &QToolButton::clicked, action, &QAction::trigger);
         connect(action, &QAction::changed, btn,
                 [btn, action]() { btn->setEnabled(action->isEnabled()); });
     }
     g->addWidget(btn);
+}
+
+void InspectorPanel::showTab(int index)
+{
+    if (m_tabs && index >= 0 && index < m_tabs->count())
+        m_tabs->setCurrentIndex(index);
+}
+
+int InspectorPanel::currentTab() const
+{
+    return m_tabs ? m_tabs->currentIndex() : -1;
+}
+
+int InspectorPanel::propertiesContentHeight() const
+{
+    return m_propsPage ? m_propsPage->sizeHint().height() : 0;
+}
+
+void InspectorPanel::logPropertiesFit()
+{
+    // Defer to after the first layout pass — at construction the scroll viewport
+    // has no real height yet (reads ~30 px), which is meaningless.
+    QTimer::singleShot(0, this, [this]() {
+        if (!m_propsPage || !m_propsScroll)
+            return;
+        const int content = m_propsPage->sizeHint().height();
+        const int viewport = m_propsScroll->viewport()->height();
+        const QRect g = m_propsPage->geometry();
+        qDebug().noquote() << QStringLiteral(
+                "[step0] Properties fit: widget='%1' geom=%2,%3 %4x%5  contentHint=%6  "
+                "viewport=%7  %8")
+                .arg(m_propsPage->objectName())
+                .arg(g.x()).arg(g.y()).arg(g.width()).arg(g.height())
+                .arg(content).arg(viewport)
+                .arg(content <= viewport ? u"OK (no scroll)"_s
+                                         : u"OVERFLOW → scrolls"_s);
+    });
 }
 
 void InspectorPanel::showProvenance(const QString &title, const QVariantMap &params)
@@ -252,21 +302,3 @@ void InspectorPanel::clearProvenance()
     m_provBody->clear();
 }
 
-void InspectorPanel::setPaneLayoutEnabled(bool enabled)
-{
-    m_pane1->setEnabled(enabled);
-    m_pane2->setEnabled(enabled);
-    m_pane4->setEnabled(enabled);
-}
-
-void InspectorPanel::setLinkedSupported(bool supported)
-{
-    m_linkedBtn->setEnabled(supported);
-    m_linkedBtn->setVisible(supported);
-}
-
-void InspectorPanel::setLinkedChecked(bool checked)
-{
-    QSignalBlocker b(m_linkedBtn);
-    m_linkedBtn->setChecked(checked);
-}

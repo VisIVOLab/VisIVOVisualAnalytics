@@ -5,6 +5,8 @@
 #include "ColorMaps.h"
 #include "ChannelOverlay.h"
 #include "CubeUiAssembler.h"
+#include "CubeViewportGeometry.h"
+#include "CubeWcsUtil.h"
 #include "CubeVRController.h"
 #include "DiagnosticsWindow.h"
 #include "theme/SegmentedToggle.h"
@@ -359,6 +361,7 @@ void vtkWindowCube::setupSidebar()
         opacityVal->setToolTip(u"Current cutting plane opacity."_s);
         cl->addWidget(opacityVal);
         appendToPage(page3dSettings, hdr, card);
+        this->m_cuttingPlaneOpacitySlider = opacitySlider;   // re-hosted by the flat left dock
     }
 
     // ─── Section: 3D Reference (→ 3D View Settings) ─────────────────────────
@@ -870,9 +873,11 @@ void vtkWindowCube::resetWorkspaceLayout()
     if (!this->m_paneSplitter) {
         return;
     }
-    // Show both panes side-by-side at equal halves of the central splitter.
-    if (this->m_renderStack) this->m_renderStack->show();
-    if (ui->vtkImage) ui->vtkImage->show();
+    // Show both pane frames side-by-side at equal halves of the central splitter.
+    if (this->m_pane3dFrame) this->m_pane3dFrame->show();
+    if (this->m_pane2dFrame) this->m_pane2dFrame->show();
+    if (!this->m_pane3dFrame && this->m_renderStack) this->m_renderStack->show();
+    if (!this->m_pane2dFrame && ui->vtkImage) ui->vtkImage->show();
     const int w = std::max(400, this->m_paneSplitter->width());
     this->m_paneSplitter->setSizes({ w / 2, w / 2 });
 }
@@ -1230,12 +1235,14 @@ void vtkWindowCube::setupSliceRenderer()
     sliceActor->GetProperty()->SetInterpolationTypeToNearest();
     ren->AddViewProp(sliceActor);
 
-    // Color bar
-    vtkNew<vtkScalarBarActor> colorbar;
-    colorbar->SetLookupTable(this->lutSlice);
-    colorbar->SetMaximumWidthInPixels(100);
-    colorbar->SetPosition(0.9, 0.1);
-    ren->AddViewProp(colorbar);
+    // Color bar — parked in the right gutter, laid out by layout2dPane().
+    this->m_sliceColorbar->SetLookupTable(this->lutSlice);
+    CubeWcs::applyOverlayFont(this->m_sliceColorbar->GetLabelTextProperty());   // §3.0c #8
+    ren->AddViewProp(this->m_sliceColorbar);
+    // Placeholder layout; layout2dPaneFor(slice) below re-lays it with the real data area.
+    CubeGeom::layoutColorbarInGutter(this->m_sliceColorbar, ren,
+                                     this->gutter2dFor(/*slice=*/true), CubeGeom::ImageRect{},
+                                     this->dprFor(/*slice=*/true));
 
     // Contours
     this->contours->SetInputConnection(this->remoteSliceDisplaySource->GetOutputPort());
@@ -1412,6 +1419,8 @@ void vtkWindowCube::setupSliceRenderer()
     this->sliceOverlayYTitleActor->GetTextProperty()->SetOrientation(90.);
     this->sliceOverlayYTitleActor->GetTextProperty()->SetJustificationToCentered();
     this->sliceOverlayYTitleActor->GetTextProperty()->SetVerticalJustificationToCentered();
+    CubeWcs::applyOverlayFont(this->sliceOverlayXTitleActor->GetTextProperty());   // §3.0c #8
+    CubeWcs::applyOverlayFont(this->sliceOverlayYTitleActor->GetTextProperty());
     this->ensureOverlayTickActors(ren, this->sliceOverlayXTickActors, this->sliceOverlayYTickActors);
     this->sliceWcsOverlayInitialized = true;
     this->set2dWcsOverlayVisible(this->showWcsAxes);
@@ -1437,7 +1446,8 @@ void vtkWindowCube::setupSliceRenderer()
         ren->AddViewProp(this->m_slice2dLoadingActor);
     }
 
-    ren->ResetCamera();
+    ren->ResetCamera();                       // keep: establishes a sane camera distance
+    this->layout2dPaneFor(/*slice=*/true, true); // then letterbox it into the gutter
     this->sliceWin->Render();
 }
 
@@ -1473,7 +1483,10 @@ void vtkWindowCube::setupMomentRenderer()
     } else {
         this->lutMoment->SetTableRange(0., 0.);
     }
-    this->lutMoment->SetNanColor(1., 1., 1., 1.);
+    // Masked-out (NaN) pixels read as ABSENT, not full-scale: transparent so the
+    // #000004 viewport shows through. Opaque white made the ≈3σ-masked frame read
+    // as a white sheet — the max end of most scientific colormaps (§3.0b).
+    this->lutMoment->SetNanColor(0., 0., 0., 0.);
     ColorMaps::SetColorMap(this->lutMoment);
     if (momentImage) {
         this->momentColors->SetInputData(momentImage);
@@ -1489,12 +1502,14 @@ void vtkWindowCube::setupMomentRenderer()
     momentActor->GetProperty()->SetInterpolationTypeToNearest();
     ren->AddViewProp(momentActor);
 
-    // Color bar
-    vtkNew<vtkScalarBarActor> colorbar;
-    colorbar->SetLookupTable(this->lutMoment);
-    colorbar->SetMaximumWidthInPixels(100);
-    colorbar->SetPosition(0.9, 0.1);
-    ren->AddViewProp(colorbar);
+    // Color bar — parked in the right gutter, laid out by layout2dPane().
+    this->m_momentColorbar->SetLookupTable(this->lutMoment);
+    CubeWcs::applyOverlayFont(this->m_momentColorbar->GetLabelTextProperty());   // §3.0c #8
+    ren->AddViewProp(this->m_momentColorbar);
+    // Placeholder layout; layout2dPaneFor(moment) below re-lays it with the real data area.
+    CubeGeom::layoutColorbarInGutter(this->m_momentColorbar, ren,
+                                     this->gutter2dFor(/*slice=*/false), CubeGeom::ImageRect{},
+                                     this->dprFor(/*slice=*/false));
 
     // Legend: local AstroUtils-based legend not used in backend mode; remote WCS overlay actors are used instead.
     ren->AddViewProp(this->momentOverlayXAxis);
@@ -1643,13 +1658,16 @@ void vtkWindowCube::setupMomentRenderer()
     this->momentOverlayYTitleActor->GetTextProperty()->SetOrientation(90.);
     this->momentOverlayYTitleActor->GetTextProperty()->SetJustificationToCentered();
     this->momentOverlayYTitleActor->GetTextProperty()->SetVerticalJustificationToCentered();
+    CubeWcs::applyOverlayFont(this->momentOverlayXTitleActor->GetTextProperty());   // §3.0c #8
+    CubeWcs::applyOverlayFont(this->momentOverlayYTitleActor->GetTextProperty());
     this->ensureOverlayTickActors(ren, this->momentOverlayXTickActors, this->momentOverlayYTickActors);
     this->momentWcsOverlayInitialized = true;
     this->set2dWcsOverlayVisible(this->showWcsAxes);
     this->momentWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::updateMomentWcsOverlay);
     this->momentWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::updateCatalogueOverlayLabels);
 
-    ren->ResetCamera();
+    ren->ResetCamera();                        // keep: establishes a sane camera distance
+    this->layout2dPaneFor(/*slice=*/false, true); // then letterbox it into the gutter
 }
 
 void vtkWindowCube::resetCubeCamera()

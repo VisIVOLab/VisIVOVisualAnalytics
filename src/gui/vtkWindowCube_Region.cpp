@@ -328,12 +328,12 @@ void vtkWindowCube::finishRegionInteraction()
             return;
         }
         if (this->finalizePolygonRegion()) {
-            ui->vtkImage->renderWindow()->Render();
+            this->active2dWin()->Render();
         }
         return;
     }
 
-    const int *position = ui->vtkImage->renderWindow()->GetInteractor()->GetEventPosition();
+    const int *position = this->active2dWin()->GetInteractor()->GetEventPosition();
     if (position) {
         this->updateRegionFromDisplayPosition(position[0], position[1]);
     }
@@ -357,20 +357,20 @@ void vtkWindowCube::finishRegionInteraction()
             this->regionAnnulusInnerRadius = 0.0;
             this->regionValid = true;
             this->refreshRegionOverlay();
-            ui->vtkImage->renderWindow()->Render();
+            this->active2dWin()->Render();
             return;
         }
         this->regionAnnulusInnerRadius = innerRadius;
         this->regionDragging = false;
         this->regionValid = true;
         this->refreshRegionOverlay();
-        ui->vtkImage->renderWindow()->Render();
+        this->active2dWin()->Render();
     }
     this->regionDragging = false;
     this->regionValid = true;
     this->refreshRegionOverlay();
     this->analyzeCurrentRegion();
-    ui->vtkImage->renderWindow()->Render();
+    this->active2dWin()->Render();
     if (this->regionMode == RegionMode::Box && this->actionBoxRegion && this->actionBoxRegion->isChecked()) {
         this->actionBoxRegion->setChecked(false);
     } else if (this->regionMode == RegionMode::Circle && this->actionCircleRegion
@@ -401,9 +401,9 @@ void vtkWindowCube::setRegionMode(RegionMode mode, bool active)
                 this->clearRegion();
             }
             this->setInteractorStyleImage();
-            ui->vtkImage->setCursor(this->probeModeActive ? Qt::CrossCursor : Qt::ArrowCursor);
-            if (ui->vtkImage->renderWindow()) {
-                ui->vtkImage->renderWindow()->Render();
+            if (auto *w2d = this->active2dWidget()) w2d->setCursor(this->probeModeActive ? Qt::CrossCursor : Qt::ArrowCursor);
+            if (this->active2dWin()) {
+                this->active2dWin()->Render();
             }
         }
         return;
@@ -435,12 +435,12 @@ void vtkWindowCube::setRegionMode(RegionMode mode, bool active)
     this->regionAnnulusInnerRadius = 0.0;
     this->clearRegion();
     this->setInteractorStyleRegion();
-    ui->vtkImage->setCursor(Qt::CrossCursor);
+    if (auto *w2d = this->active2dWidget()) w2d->setCursor(Qt::CrossCursor);
 }
 
 bool vtkWindowCube::updateRegionFromDisplayPosition(int displayX, int displayY)
 {
-    auto *renderer = ui->vtkImage->renderWindow() ? ui->vtkImage->renderWindow()->GetRenderers()->GetFirstRenderer()
+    auto *renderer = this->active2dWin() ? this->active2dWin()->GetRenderers()->GetFirstRenderer()
                                                   : nullptr;
     auto *imageData = this->viewingSlice()
             ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
@@ -675,8 +675,8 @@ void vtkWindowCube::setNoiseRegionPreview(int x0, int x1, int y0, int y1,
     this->noisePreviewCubeFaceActor->VisibilityOn();
     this->noisePreviewCubeEdgeActor->VisibilityOn();
 
-    if (ui->vtkImage && ui->vtkImage->renderWindow()) {
-        ui->vtkImage->renderWindow()->Render();
+    if (ui->vtkImage && this->active2dWin()) {
+        this->active2dWin()->Render();
     }
     if (ui->vtkCube && ui->vtkCube->renderWindow()) {
         ui->vtkCube->renderWindow()->Render();
@@ -692,8 +692,8 @@ void vtkWindowCube::clearNoiseRegionPreview()
     this->noisePreviewCubeFaceActor->VisibilityOff();
     this->noisePreviewCubeEdgeActor->VisibilityOff();
 
-    if (ui->vtkImage && ui->vtkImage->renderWindow()) {
-        ui->vtkImage->renderWindow()->Render();
+    if (ui->vtkImage && this->active2dWin()) {
+        this->active2dWin()->Render();
     }
     if (ui->vtkCube && ui->vtkCube->renderWindow()) {
         ui->vtkCube->renderWindow()->Render();
@@ -951,14 +951,14 @@ void vtkWindowCube::maybeClearRegionAfterDisplay()
     if (this->probePlotWidget) return;
     if (this->regionMode != RegionMode::None) return;  // user re-armed a tool
     this->clearRegion();
-    if (ui->vtkImage && ui->vtkImage->renderWindow()) {
-        ui->vtkImage->renderWindow()->Render();
+    if (ui->vtkImage && this->active2dWin()) {
+        this->active2dWin()->Render();
     }
 }
 
 bool vtkWindowCube::finalizePolygonRegion()
 {
-    const int *position = ui->vtkImage->renderWindow()->GetInteractor()->GetEventPosition();
+    const int *position = this->active2dWin()->GetInteractor()->GetEventPosition();
     if (position) {
         this->updateRegionFromDisplayPosition(position[0], position[1]);
         const bool closesToFirst = this->regionPolygonVertices.size() >= 3

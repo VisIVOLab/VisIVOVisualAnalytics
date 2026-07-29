@@ -2,6 +2,7 @@
 
 #include "MainWindow.h"
 #include "DiagnosticsWindow.h"
+#include "DockRail.h"
 #include "InspectorPanel.h"
 #include "SessionDataTree.h"
 #include "app/ProductRegistry.h"
@@ -21,8 +22,11 @@
 #include <QLabel>
 #include <QMainWindow>
 #include <QMenu>
+#include <QHBoxLayout>
 #include <QShortcut>
+#include <QStackedWidget>
 #include <QStatusBar>
+#include <QTabWidget>
 #include <QToolButton>
 #include <QUrl>
 #include <QtConcurrentRun>
@@ -277,30 +281,28 @@ void WorkspaceChrome::installSessionDock(const QString &datasetKey,
 
     m_sessionDock = new QDockWidget(QObject::tr("Session Data"), m_window);
     m_sessionDock->setObjectName(u"dockSessionData"_s);
+    // Not closable — the dock collapses to a rail instead of hiding (§4.1).
     m_sessionDock->setFeatures(QDockWidget::DockWidgetMovable
-                               | QDockWidget::DockWidgetFloatable
-                               | QDockWidget::DockWidgetClosable);
+                               | QDockWidget::DockWidgetFloatable);
     // Left column container: product tree on top, LAYERS block below (design #1d).
+    // Fixed width from the spec constant (272 px) — checkable in one place.
     auto *container = new QWidget(m_sessionDock);
-    container->setMinimumWidth(220);
-    container->setMaximumWidth(320);
+    container->setMinimumWidth(VisivoTheme::kLeftDockWidth);
+    container->setMaximumWidth(VisivoTheme::kLeftDockWidth);
     auto *vbox = new QVBoxLayout(container);
     vbox->setContentsMargins(0, 0, 0, 0);
     vbox->setSpacing(0);
 
     m_sessionTree = new SessionDataTree(container);
-    vbox->addWidget(m_sessionTree, 1);
+    // Tree takes its natural height (flex:none) — NOT the layout stretch, or it
+    // leaves a big gap above LAYERS. The stretch goes at the bottom of the panel.
+    m_sessionTree->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    vbox->addWidget(m_sessionTree, 0);
 
-    // LAYERS header + host for the view/rendering controls (filled by the window
-    // via addSessionLayers(); hidden until something is added).
-    m_sessionLayersHeader = new QLabel(QObject::tr("LAYERS"), container);
-    m_sessionLayersHeader->setStyleSheet(
-            QStringLiteral("QLabel { color:%1; font-size:10px; font-weight:700;"
-                           " letter-spacing:0.12em; padding:8px 10px 4px 10px; }")
-                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
-    m_sessionLayersHeader->hide();
-    vbox->addWidget(m_sessionLayersHeader);
-
+    // Host for the view/rendering controls (filled by the window via
+    // addSessionLayers()). NOTE: no "LAYERS" header here — the flat controls the
+    // window installs bring their own section headers (DISPLAY — 3D, LAYERS, …),
+    // so a header here would read as the parent of the rendering controls.
     auto *layersScroll = new QScrollArea(container);
     layersScroll->setWidgetResizable(true);
     layersScroll->setFrameShape(QFrame::NoFrame);
@@ -313,9 +315,23 @@ void WorkspaceChrome::installSessionDock(const QString &datasetKey,
     layersScroll->setWidget(layersInner);
     vbox->addWidget(layersScroll, 2);
 
-    m_sessionDock->setWidget(container);
+    // Two-state: page 0 the content, page 1 a 36 px rail (§4.1.2). Collapsing
+    // swaps the page + pins the dock width — it does not resize the content.
+    m_sessionStack = new QStackedWidget(m_sessionDock);
+    m_sessionRail = new DockRail(QObject::tr("SESSION DATA"), u"◧"_s, m_sessionStack);
+    m_sessionStack->addWidget(container);      // page 0
+    m_sessionStack->addWidget(m_sessionRail);  // page 1
+    m_sessionDock->setWidget(m_sessionStack);
+    QObject::connect(m_sessionRail, &DockRail::expandRequested, this,
+                     [this]() { setSessionCollapsed(false); });
+
+    m_sessionDock->setTitleBarWidget(
+            makeDockTitleBar(QObject::tr("Session Data"), u"◧"_s,
+                             [this]() { setSessionCollapsed(true); }));
+
     m_window->addDockWidget(Qt::LeftDockWidgetArea, m_sessionDock);
     m_sessionTree->setCurrentDataset(datasetKey, datasetLabel, datasetKind);
+    applyDockWidth(m_sessionDock, m_sessionStack, /*collapsed=*/false, VisivoTheme::kLeftDockWidth);
 }
 
 void WorkspaceChrome::addSessionLayers(QWidget *w)
@@ -330,8 +346,6 @@ void WorkspaceChrome::addSessionLayers(QWidget *w)
             l->removeWidget(w);
     m_sessionLayersLayout->insertWidget(m_sessionLayersLayout->count() - 1, w);
     w->show();
-    if (m_sessionLayersHeader)
-        m_sessionLayersHeader->show();
 }
 
 InspectorPanel *WorkspaceChrome::installInspectorDock()
@@ -344,15 +358,44 @@ InspectorPanel *WorkspaceChrome::installInspectorDock()
 
     m_inspectorDock = new QDockWidget(QObject::tr("Inspector"), m_window);
     m_inspectorDock->setObjectName(u"dockInspector"_s);
+    // Not closable — collapses to a rail instead of hiding (§4.1).
     m_inspectorDock->setFeatures(QDockWidget::DockWidgetMovable
-                                 | QDockWidget::DockWidgetFloatable
-                                 | QDockWidget::DockWidgetClosable);
+                                 | QDockWidget::DockWidgetFloatable);
     m_inspector = new InspectorPanel(m_inspectorDock);
-    // Fixed right column (design #1d: 320 px) so the viewports keep the centre.
-    m_inspector->setMinimumWidth(320);
-    m_inspector->setMaximumWidth(340);
-    m_inspectorDock->setWidget(m_inspector);
+    // Fixed right column from the spec constant (320 px).
+    m_inspector->setMinimumWidth(VisivoTheme::kRightDockWidth);
+    m_inspector->setMaximumWidth(VisivoTheme::kRightDockWidth);
+
+    // Two-state: page 0 the panel, page 1 a rail carrying the three tab names as
+    // clickable entries (§4.1.2). Right starts collapsed (§4.1.4).
+    m_inspectorStack = new QStackedWidget(m_inspectorDock);
+    m_inspectorRail = new DockRail(QObject::tr("INSPECTOR"), u"◨"_s, m_inspectorStack);
+    // Icons only when collapsed (no rotated text): Properties→info, Analysis→stats,
+    // Provenance→metadata; the tab name is the tooltip (§3.0c).
+    m_inspectorRail->setEntries({ { u":/icons/rail_info.svg"_s, QObject::tr("Properties") },
+                                  { u":/icons/rail_stats.svg"_s, QObject::tr("Analysis") },
+                                  { u":/icons/rail_provenance.svg"_s, QObject::tr("Provenance") } });
+    m_inspectorStack->addWidget(m_inspector);       // page 0
+    m_inspectorStack->addWidget(m_inspectorRail);   // page 1
+    m_inspectorDock->setWidget(m_inspectorStack);
+    QObject::connect(m_inspectorRail, &DockRail::expandRequested, this,
+                     [this]() { setInspectorCollapsed(false); });
+    QObject::connect(m_inspectorRail, &DockRail::entryClicked, this,
+                     [this](int i) { revealInspectorTab(i); });
+
+    m_inspectorDock->setTitleBarWidget(
+            makeDockTitleBar(QObject::tr("Inspector"), u"◨"_s,
+                             [this]() { setInspectorCollapsed(true); }));
+
     m_window->addDockWidget(Qt::RightDockWidgetArea, m_inspectorDock);
+
+    // Keep the rail's active entry in sync when the tab changes by any route.
+    if (auto *tabs = m_inspector->findChild<QTabWidget *>()) {
+        QObject::connect(tabs, &QTabWidget::currentChanged, this, [this](int i) {
+            if (m_inspectorRail)
+                m_inspectorRail->setActiveEntry(i);
+        });
+    }
 
     // Cloud chip is driven by the same health poll as the command-bar chip.
     m_cloudChip = m_inspector->cloudChip();
@@ -371,7 +414,160 @@ InspectorPanel *WorkspaceChrome::installInspectorDock()
                     m_inspector->showProvenance(p.label.isEmpty() ? p.kind : p.label, p.params);
                 });
     }
+
+    // Launching an Analysis tool auto-expands the Inspector onto the Analysis tab.
+    connect(m_inspector, &InspectorPanel::toolLaunched, this,
+            [this]() { revealInspectorTab(1); });
+
+    // Right dock starts as a rail (§4.1.4) — the Inspector is only needed when
+    // starting a task; threshold/LUT/blend on the left are touched constantly.
+    setInspectorCollapsed(true);
     return m_inspector;
+}
+
+QWidget *WorkspaceChrome::makeDockTitleBar(const QString &title, const QString &glyph,
+                                           const std::function<void()> &onToggle)
+{
+    auto *bar = new QWidget();
+    bar->setFixedHeight(34);
+    auto *h = new QHBoxLayout(bar);
+    h->setContentsMargins(14, 0, 8, 0);
+    auto *label = new QLabel(title, bar);
+    label->setStyleSheet(QStringLiteral("color:%1; font-family:'Lato'; font-size:12px;")
+                                 .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
+    h->addWidget(label);
+    h->addStretch(1);
+    auto *btn = new QToolButton(bar);
+    btn->setText(glyph);
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setToolTip(QObject::tr("Collapse panel"));
+    btn->setStyleSheet(QStringLiteral("QToolButton{background:transparent;border:none;"
+                                      "color:%1;font-size:13px;}QToolButton:hover{color:%2;}")
+                               .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()),
+                                    QLatin1StringView(VisivoTheme::kPrimary())));
+    QObject::connect(btn, &QToolButton::clicked, bar, onToggle);
+    h->addWidget(btn);
+    return bar;
+}
+
+void WorkspaceChrome::applyDockWidth(QDockWidget *dock, QStackedWidget *stack, bool collapsed,
+                                     int openWidth)
+{
+    if (!stack)
+        return;
+    const int w = collapsed ? VisivoTheme::kRailWidth : openWidth;
+    stack->setCurrentIndex(collapsed ? 1 : 0);
+    // Relax page 0's pinned width while hidden — otherwise its 272/320 minimum
+    // leaks through QStackedWidget::minimumSizeHint() (max over all pages) and Qt
+    // resolves min>max in favour of the minimum, keeping the rail wide.
+    if (auto *page = stack->widget(0)) {
+        page->setMinimumWidth(collapsed ? 0 : openWidth);
+        page->setMaximumWidth(collapsed ? QWIDGETSIZE_MAX : openWidth);
+    }
+    stack->setMinimumWidth(w);
+    stack->setMaximumWidth(w);
+
+    // Deferred so the widths are read AFTER the layout settles — an inline read here
+    // reports the pre-layout geometry. Collapsed must land 36 / 36 / 36 (+ handle).
+    QPointer<QDockWidget> dockp(dock);
+    QPointer<QStackedWidget> stackp(stack);
+    QTimer::singleShot(0, this, [this, dockp, stackp, collapsed]() {
+        if (!dockp || !stackp)
+            return;
+        qDebug().noquote()
+                << QStringLiteral("[dock] %1 collapsed=%2 stack=%3 dock=%4 area=%5")
+                           .arg(dockp->objectName())
+                           .arg(collapsed)
+                           .arg(stackp->width())
+                           .arg(dockp->width())
+                           .arg(m_window && m_window->centralWidget()
+                                        ? m_window->centralWidget()->x()
+                                        : -1);
+    });
+}
+
+void WorkspaceChrome::setSessionCollapsed(bool collapsed)
+{
+    if (!m_sessionStack || !m_sessionDock || m_sessionCollapsed == collapsed)
+        return;
+    m_sessionCollapsed = collapsed;
+    applyDockWidth(m_sessionDock, m_sessionStack, collapsed, VisivoTheme::kLeftDockWidth);
+    // Swap (not hide) the title bar: a hidden bar still contributes its minimum
+    // width to the dock (§4.5). Collapsed → an empty 0-height bar; the rail carries
+    // the name + glyph.
+    QWidget *oldBar = m_sessionDock->titleBarWidget();
+    if (collapsed) {
+        auto *empty = new QWidget(m_sessionDock);
+        empty->setFixedHeight(0);
+        m_sessionDock->setTitleBarWidget(empty);
+    } else {
+        m_sessionDock->setTitleBarWidget(
+                makeDockTitleBar(QObject::tr("Session Data"), u"◧"_s,
+                                 [this]() { setSessionCollapsed(true); }));
+    }
+    if (oldBar)
+        oldBar->deleteLater();
+    // Never closable (acceptance §4: a dock can never reach 0 px); a 36 px rail is
+    // not draggable/floatable either.
+    m_sessionDock->setFeatures(collapsed ? QDockWidget::NoDockWidgetFeatures
+                                         : (QDockWidget::DockWidgetMovable
+                                            | QDockWidget::DockWidgetFloatable));
+    emit dockCollapseChanged();
+}
+
+void WorkspaceChrome::setInspectorCollapsed(bool collapsed)
+{
+    if (!m_inspectorStack || !m_inspectorDock || m_inspectorCollapsed == collapsed)
+        return;
+    m_inspectorCollapsed = collapsed;
+    applyDockWidth(m_inspectorDock, m_inspectorStack, collapsed, VisivoTheme::kRightDockWidth);
+    // Swap (not hide) the title bar — see setSessionCollapsed (§4.5).
+    QWidget *oldBar = m_inspectorDock->titleBarWidget();
+    if (collapsed) {
+        auto *empty = new QWidget(m_inspectorDock);
+        empty->setFixedHeight(0);
+        m_inspectorDock->setTitleBarWidget(empty);
+    } else {
+        m_inspectorDock->setTitleBarWidget(
+                makeDockTitleBar(QObject::tr("Inspector"), u"◨"_s,
+                                 [this]() { setInspectorCollapsed(true); }));
+    }
+    if (oldBar)
+        oldBar->deleteLater();
+    m_inspectorDock->setFeatures(collapsed ? QDockWidget::NoDockWidgetFeatures
+                                           : (QDockWidget::DockWidgetMovable
+                                              | QDockWidget::DockWidgetFloatable));
+    emit dockCollapseChanged();
+}
+
+void WorkspaceChrome::revealInspectorTab(int index)
+{
+    setInspectorCollapsed(false);
+    if (m_inspector)
+        m_inspector->showTab(index);
+    if (m_inspectorRail)
+        m_inspectorRail->setActiveEntry(index);
+}
+
+void WorkspaceChrome::setSessionRailCount(int count)
+{
+    if (m_sessionRail)
+        m_sessionRail->setCount(count);
+}
+
+void WorkspaceChrome::selectSessionProduct(const QString &productId)
+{
+    if (m_sessionTree)
+        m_sessionTree->selectProduct(productId);
+}
+
+void WorkspaceChrome::setStatusRailCompact(bool compact)
+{
+    // Health + queue always stay; cache + session are the ones focus mode drops.
+    if (m_cacheSlot)
+        m_cacheSlot->setVisible(!compact);
+    if (m_sessionSlot)
+        m_sessionSlot->setVisible(!compact);
 }
 
 void WorkspaceChrome::start()
@@ -447,6 +643,10 @@ void WorkspaceChrome::onPollFinished()
         m_queueSlot->setText(
                 QStringLiteral("%1 running · %2 queued").arg(s.runningTasks).arg(queued));
     }
+    // Right rail count reuses the running-task figure the poll already computed
+    // (§4.1.4 — do not add a second poll).
+    if (m_inspectorRail)
+        m_inspectorRail->setCount(s.runningTasks);
     if (m_cacheSlot) {
         m_cacheSlot->setText(
                 QStringLiteral("cache %1/%2").arg(s.cacheEntries).arg(s.cacheCapacity));

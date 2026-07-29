@@ -1,9 +1,12 @@
 #include "CubeViewportGeometry.h"
 
 #include <vtkCamera.h>
+#include <vtkCoordinate.h>
 #include <vtkImageData.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderer.h>
+#include <vtkScalarBarActor.h>
+#include <vtkTextProperty.h>
 
 #include <algorithm>
 #include <array>
@@ -167,6 +170,142 @@ bool pointInVisibleBounds(const std::array<double, 2> &point, const VisibleImage
 {
     return visible.valid && point[0] >= visible.xmin && point[0] <= visible.xmax && point[1] >= visible.ymin
             && point[1] <= visible.ymax;
+}
+
+ImageGutter imageGutter(bool wcsAxesVisible, double rightGutter, double dpr)
+{
+    ImageGutter g;
+    // Every field is in DEVICE pixels; the authored numbers are logical, hence ×dpr.
+    if (!wcsAxesVisible) {
+        g.left = g.bottom = g.top = 12. * dpr;
+    } else {
+        g.left *= dpr;
+        g.bottom *= dpr;
+        g.top *= dpr;
+    }
+    // `right` is the measured colorbar column (already device px); clamp in device px.
+    g.right = std::clamp(rightGutter, 96. * dpr, 200. * dpr);
+    return g;   // `right` (the colorbar's) survives the axes being hidden
+}
+
+ImageRect dataAreaFor(const int size[2], vtkImageData *image, const ImageGutter &g)
+{
+    ImageRect r;
+    if (!size || size[0] <= 0 || size[1] <= 0 || !image) {
+        return r;
+    }
+    double b[6];
+    image->GetBounds(b);
+    if (!validBounds(b)) {
+        return r;
+    }
+    const double innerW = static_cast<double>(size[0]) - g.left - g.right;
+    const double innerH = static_cast<double>(size[1]) - g.bottom - g.top;
+    if (innerW < 16. || innerH < 16.) {
+        return r;
+    }
+    // World units per screen pixel, aspect preserved: the BINDING axis is whichever
+    // of the two is scarcer (width in a wide pane, height in a tall one).
+    const double w = std::max(b[1] - b[0], 1e-9);
+    const double h = std::max(b[3] - b[2], 1e-9);
+    const double perPixel = std::max(w / (innerW - 2.), h / (innerH - 2.));
+    r.valid = true;
+    r.width = w / perPixel;
+    r.height = h / perPixel;
+    r.x = g.left + (innerW - r.width) / 2.;
+    r.y = g.bottom + (innerH - r.height) / 2.;
+    return r;
+}
+
+bool fitImageInGutter(vtkRenderer *renderer, vtkImageData *image, const ImageGutter &g,
+                      ImageRect *dataArea)
+{
+    if (!renderer || !image) {
+        return false;
+    }
+    const int *size = renderer->GetSize();
+    const ImageRect r = dataAreaFor(size, image, g);   // one formula, shared with the overlays
+    if (!r.valid) {
+        return false;   // pane too small / bad bounds — leave the camera
+    }
+    double b[6];
+    image->GetBounds(b);
+    const double w = std::max(b[1] - b[0], 1e-9);
+    const double perPixel = w / r.width;   // recovered from the shared rect
+
+    auto *cam = renderer->GetActiveCamera();
+    cam->ParallelProjectionOn();
+    cam->SetParallelScale(perPixel * static_cast<double>(size[1]) / 2.);
+
+    // Offset the focal point so the image centre lands at the DATA AREA centre
+    // rather than the viewport centre — this is what puts the letterbox bands
+    // around the whole group instead of between the image and its own axis.
+    const double dxPx = (r.x + r.width / 2.) - static_cast<double>(size[0]) / 2.;
+    const double dyPx = (r.y + r.height / 2.) - static_cast<double>(size[1]) / 2.;
+    const double cx = (b[0] + b[1]) / 2. - dxPx * perPixel;
+    const double cy = (b[2] + b[3]) / 2. - dyPx * perPixel;
+    const double cz = (b[4] + b[5]) / 2.;
+
+    double distance = cam->GetDistance();
+    if (!std::isfinite(distance) || distance <= 0.) {
+        distance = 1.;
+    }
+    cam->SetFocalPoint(cx, cy, cz);
+    cam->SetPosition(cx, cy, cz + distance);
+    cam->SetViewUp(0., 1., 0.);
+    renderer->ResetCameraClippingRange();
+
+    if (dataArea) {
+        *dataArea = r;
+    }
+    return true;
+}
+
+void layoutColorbarInGutter(vtkScalarBarActor *bar, vtkRenderer *renderer,
+                            const ImageGutter &g, const ImageRect &dataArea, double dpr)
+{
+    if (!bar || !renderer) {
+        return;
+    }
+    const int *size = renderer->GetSize();
+    if (!size || size[0] <= 0 || size[1] <= 0) {
+        return;
+    }
+    const double W = static_cast<double>(size[0]);
+    const double H = static_cast<double>(size[1]);
+    // All device px (renderer->GetSize() is device px); authored numbers × dpr.
+    const double gap = kColorbarGap * dpr;      // data area → bar
+    const double barW = kColorbarBarWidth * dpr;
+    const double pad = kColorbarTextPad * dpr;
+    const double boxW = std::max(g.right - gap - kColorbarMargin * dpr, barW + pad + 8. * dpr);
+    // Level with the image (data area), not the inner box — otherwise the bar's
+    // top/bottom fifths map values onto the letterbox bands.
+    const double barY = dataArea.valid ? dataArea.y : g.bottom;
+    const double boxH = std::max(dataArea.valid ? dataArea.height : H - g.bottom - g.top, 1.);
+
+    bar->SetOrientationToVertical();
+    bar->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
+    bar->SetPosition((W - g.right + gap) / W, barY / H);
+    bar->SetWidth(boxW / W);
+    bar->SetHeight(boxH / H);
+    bar->SetMaximumWidthInPixels(static_cast<int>(boxW));
+    bar->SetMaximumHeightInPixels(static_cast<int>(boxH));
+    bar->SetNumberOfLabels(5);
+    bar->SetLabelFormat("%.3g");   // 0.0386 → "0.0386"; exact extrema live in STATISTICS
+    bar->SetTitle("");
+    bar->UnconstrainedFontSizeOn();
+    // Pin the swatch to a fixed width instead of inheriting the default BarRatio
+    // (0.375): the label column is then exactly what gutter2dFor() measured, so both
+    // sides of the gap are sized by the same code and the value can't clip (§3.0b).
+    bar->SetBarRatio(std::clamp(barW / boxW, 0.05, 0.9));
+    bar->SetTextPad(static_cast<int>(pad));
+    if (auto *tp = bar->GetLabelTextProperty()) {
+        tp->SetFontSize(kColorbarLabelFontSize);   // VTK scales by DPI itself
+        tp->SetColor(0.85, 0.90, 0.95);
+        tp->BoldOff();
+        tp->ShadowOff();
+        tp->SetJustificationToLeft();
+    }
 }
 
 }  // namespace CubeGeom

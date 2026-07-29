@@ -367,7 +367,7 @@ QToolButton *makeTagButton(const QString &text, bool accent, QWidget *parent)
 } // namespace
 
 QPixmap renderThemeIcon(const QString &resourcePath, int size,
-                        const QColor *colorOverride)
+                        const QColor *colorOverride, double dpr)
 {
     // Load the SVG text from the Qt resource bundle, swap `currentColor`
     // tokens for the active theme's hex, then render via QSvgRenderer. We
@@ -387,7 +387,11 @@ QPixmap renderThemeIcon(const QString &resourcePath, int size,
     QSvgRenderer renderer(svg);
     if (!renderer.isValid()) return {};
 
-    QPixmap pm(size, size);
+    // DPR-correct: back the pixmap with size×dpr physical pixels and tag it, so it
+    // stays crisp on a retina panel while still measuring `size` logical px (§3.0c).
+    const double d = dpr > 0. ? dpr : 1.;
+    QPixmap pm(static_cast<int>(std::lround(size * d)), static_cast<int>(std::lround(size * d)));
+    pm.setDevicePixelRatio(d);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
@@ -873,6 +877,10 @@ QString darkStyleSheet()
             "  subcontrol-origin: padding;"
             "  subcontrol-position: center right;"
             "}"
+            "QComboBox::down-arrow {"   // themed chevron, not the system arrow (§3.0c)
+            "  image: url(:/icons/chevron_down.svg);"
+            "  width: 10px; height: 7px;"
+            "}"
             "QComboBox QAbstractItemView {"
             "  background-color: #11181F;"
             "  color: #F1F4F6;"
@@ -993,10 +1001,14 @@ QString darkStyleSheet()
             "}"
             "QCheckBox::indicator {"
             "  width: 16px; height: 16px; border-radius: 3px;"
-            "  border: 2px solid #2B343C; background-color: #11181F;"
+            "  border: 1px solid #4A5257; background-color: transparent;"
             "}"
-            "QRadioButton::indicator:checked, QCheckBox::indicator:checked {"
+            "QRadioButton::indicator:checked {"
             "  background-color: #048ABF; border-color: #048ABF;"
+            "}"
+            "QCheckBox::indicator:checked {"
+            "  background-color: #048ABF; border-color: #048ABF;"
+            "  image: url(:/icons/check.svg);"
             "}"
             "QRadioButton::indicator:hover, QCheckBox::indicator:hover {"
             "  border-color: #048ABF;"
@@ -1397,6 +1409,10 @@ QString lightStyleSheet()
             "  subcontrol-origin: padding;"
             "  subcontrol-position: center right;"
             "}"
+            "QComboBox::down-arrow {"   // themed chevron, not the system arrow (§3.0c)
+            "  image: url(:/icons/chevron_down.svg);"
+            "  width: 10px; height: 7px;"
+            "}"
             "QComboBox QAbstractItemView {"
             "  background-color: #FFFFFF;"
             "  color: #1C2734;"
@@ -1517,10 +1533,14 @@ QString lightStyleSheet()
             "}"
             "QCheckBox::indicator {"
             "  width: 16px; height: 16px; border-radius: 3px;"
-            "  border: 2px solid #D8DEE7; background-color: #FFFFFF;"
+            "  border: 1px solid #B7C0CC; background-color: transparent;"
             "}"
-            "QRadioButton::indicator:checked, QCheckBox::indicator:checked {"
+            "QRadioButton::indicator:checked {"
             "  background-color: #005574; border-color: #005574;"
+            "}"
+            "QCheckBox::indicator:checked {"
+            "  background-color: #005574; border-color: #005574;"
+            "  image: url(:/icons/check.svg);"
             "}"
             "QRadioButton::indicator:hover, QCheckBox::indicator:hover {"
             "  border-color: #005574;"

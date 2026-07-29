@@ -174,7 +174,7 @@ void vtkWindowCube::mouseCallback()
         return;
     }
 
-    const int *position = ui->vtkImage->renderWindow()->GetInteractor()->GetEventPosition();
+    const int *position = this->active2dWin()->GetInteractor()->GetEventPosition();
     if (!position) {
         return;
     }
@@ -182,13 +182,13 @@ void vtkWindowCube::mouseCallback()
     this->updateProbeFromDisplayPosition(position[0], position[1]);
     if (this->pvModeActive) {
         if (this->updatePvFromDisplayPosition(position[0], position[1]) && this->pvDragging) {
-            ui->vtkImage->renderWindow()->Render();
+            this->active2dWin()->Render();
         }
         return;
     }
     if (this->regionMode != RegionMode::None && this->regionDragging) {
         if (this->updateRegionFromDisplayPosition(position[0], position[1])) {
-            ui->vtkImage->renderWindow()->Render();
+            this->active2dWin()->Render();
         }
     }
 }
@@ -202,7 +202,7 @@ void vtkWindowCube::toggleProbeFreeze()
         return;   // lasso 2-D edit consumes the left-click
     }
 
-    const int *position = ui->vtkImage->renderWindow()->GetInteractor()->GetEventPosition();
+    const int *position = this->active2dWin()->GetInteractor()->GetEventPosition();
     if (!position) {
         return;
     }
@@ -231,7 +231,7 @@ void vtkWindowCube::toggleProbeFreeze()
             }
             this->pvValid = this->pvPolylineVertices.size() >= 1;
             this->refreshPvOverlay();
-            ui->vtkImage->renderWindow()->Render();
+            this->active2dWin()->Render();
         }
         return;
     }
@@ -250,7 +250,7 @@ void vtkWindowCube::toggleProbeFreeze()
                     this->regionCurrentVoxel = this->regionPolygonVertices.front();
                     this->ignoreNextPolygonRelease = false;
                     if (this->finalizePolygonRegion()) {
-                        ui->vtkImage->renderWindow()->Render();
+                        this->active2dWin()->Render();
                     }
                     return;
                 } else if (this->regionPolygonVertices.empty()
@@ -265,7 +265,7 @@ void vtkWindowCube::toggleProbeFreeze()
                 this->regionValid = true;
             }
             this->refreshRegionOverlay();
-            ui->vtkImage->renderWindow()->Render();
+            this->active2dWin()->Render();
         }
         return;
     }
@@ -295,7 +295,7 @@ void vtkWindowCube::toggleProbeFreeze()
 
 bool vtkWindowCube::updateProbeFromDisplayPosition(int displayX, int displayY)
 {
-    auto *renderer = ui->vtkImage->renderWindow() ? ui->vtkImage->renderWindow()->GetRenderers()->GetFirstRenderer()
+    auto *renderer = this->active2dWin() ? this->active2dWin()->GetRenderers()->GetFirstRenderer()
                                                   : nullptr;
     auto *imageData = this->viewingSlice()
             ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
@@ -339,7 +339,7 @@ bool vtkWindowCube::updateProbeFromDisplayPosition(int displayX, int displayY)
     if (this->probeModeActive) {
         this->refreshProbeOverlay();
         this->updateProbePlot();
-        ui->vtkImage->renderWindow()->Render();
+        this->active2dWin()->Render();
     }
     return true;
 }
@@ -391,11 +391,28 @@ void vtkWindowCube::updateProbeReadout(vtkImageData *imageData)
     }
 
     const float value = imageData->GetScalarComponentAsFloat(this->probeVoxel[0], this->probeVoxel[1], 0, 0);
-    QString valueText = std::isfinite(value) ? QString::number(value, 'g', 8) : u"NaN"_s;
-    QString message = u"X=%1  Y=%2  Z=%3  Value=%4"_s.arg(this->probeVoxel[0])
-                              .arg(this->probeVoxel[1])
-                              .arg(this->probeVoxel[2])
-                              .arg(valueText);
+    // Value in scientific notation (spec §1.1) — the exact figure is in Inspector ›
+    // Properties › STATISTICS; this readout is for a quick glance, not to quote.
+    QString valueText = std::isfinite(value) ? QString::number(value, 'e', 2) : u"NaN"_s;
+    // Append the brightness unit from the header when known — an unqualified value
+    // in a brightness readout is ambiguous, but a wrong unit is worse than none.
+    if (std::isfinite(value) && !this->m_brightnessUnit.isEmpty()) {
+        valueText += u" %1"_s.arg(this->m_brightnessUnit);
+    }
+    const QString channelText = u"ch %1"_s.arg(this->probeVoxel[2] + 1);
+
+    // Short axis symbols — the full names live on the axes, so no KEY= labels here.
+    const auto shortAxis = [](const QString &title) -> QString {
+        const QString t = title.toLower();
+        if (t.contains(u"longitude"_s))   return u"l"_s;
+        if (t.contains(u"latitude"_s))    return u"b"_s;
+        if (t.contains(u"ascension"_s))   return u"α"_s;
+        if (t.contains(u"declination"_s)) return u"δ"_s;
+        return title;
+    };
+
+    QString coords;
+    bool haveWcs = false;
     {
         QString axis0 = this->remoteFormatAxisCoordinate(0, this->probeVoxel[0]);
         QString axis1 = this->remoteFormatAxisCoordinate(1, this->probeVoxel[1]);
@@ -409,17 +426,23 @@ void vtkWindowCube::updateProbeReadout(vtkImageData *imageData)
             if (ok0 && ok1 && this->convertRemoteCelestialCoordinates(nativeX, nativeY, frameX, frameY)) {
                 axis0 = this->formatRemoteOverlayCoordinate(0, frameX);
                 axis1 = this->formatRemoteOverlayCoordinate(1, frameY);
+                haveWcs = true;
             }
         }
-        message += u"  %1=%2  %3=%4  %5=%6"_s.arg(this->selectedFrameAxisTitle(0),
-                                                  axis0,
-                                                  this->selectedFrameAxisTitle(1),
-                                                  axis1,
-                                                  this->spectralAxisTitle(),
-                                                  this->formatSpectralAxisValue(this->probeVoxel[2]));
+        if (haveWcs) {
+            // e.g.  "l 104.89  b +68.53"
+            coords = u"%1 %2  %3 %4"_s.arg(shortAxis(this->selectedFrameAxisTitle(0)), axis0,
+                                           shortAxis(this->selectedFrameAxisTitle(1)), axis1);
+        } else {
+            // No WCS solution → fall back to voxel indices (spec: indices only then).
+            coords = u"x %1  y %2"_s.arg(this->probeVoxel[0]).arg(this->probeVoxel[1]);
+        }
     }
+
+    // "l 104.89  b +68.53  ·  1.37e-02  ·  ch 1"
+    QString message = u"%1  ·  %2  ·  %3"_s.arg(coords, valueText, channelText);
     if (this->probeFrozen) {
-        message += u"  [Frozen]"_s;
+        message += u"  [frozen]"_s;
     }
     if (this->hoverReadoutLabel) {
         this->hoverReadoutLabel->setText(message);
@@ -591,7 +614,7 @@ void vtkWindowCube::setProbeModeActive(bool active)
             this->actionAnnulusRegion->setChecked(false);
         }
     }
-    ui->vtkImage->setCursor(active ? Qt::CrossCursor : Qt::ArrowCursor);
+    if (auto *w2d = this->active2dWidget()) w2d->setCursor(active ? Qt::CrossCursor : Qt::ArrowCursor);
     this->probeFrozen = false;
 
     if (!active) {
@@ -602,8 +625,8 @@ void vtkWindowCube::setProbeModeActive(bool active)
         if (this->probePlotWidget) {
             this->probePlotWidget->close();
         }
-        if (ui->vtkImage->renderWindow()) {
-            ui->vtkImage->renderWindow()->Render();
+        if (this->active2dWin()) {
+            this->active2dWin()->Render();
         }
         return;
     }

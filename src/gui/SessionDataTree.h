@@ -26,6 +26,10 @@ public:
     void setCurrentDataset(const QString &parentKey, const QString &label,
                            const QString &kind);
 
+    /// Select the product row with this id (emits productSelected → drives the
+    /// Inspector's Provenance). No-op if the id is empty or not present.
+    void selectProduct(const QString &productId);
+
 signals:
     /// Emitted when the selection lands on a product row (empty string when the
     /// selection is a dataset root or cleared).
@@ -40,6 +44,10 @@ private:
     QStandardItem *datasetItem(const QString &parentKey, const QString &label,
                                const QString &kind, bool createIfMissing);
     void upsertProduct(const AnalysisProduct &product);
+    /// Size the tree to exactly its visible rows (no dead space above LAYERS),
+    /// growing as products are added. Called after every content/expansion change.
+    void updateHeightToContents();
+    int visibleRowHeight(const QModelIndex &parent) const;
 
     QTreeView *m_tree = nullptr;
     QStandardItemModel *m_model = nullptr;

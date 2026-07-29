@@ -278,7 +278,7 @@ void vtkWindowCube::applyImportedRegion(const QJsonArray &regions)
     this->ignoreNextPolygonRelease = false;
     this->regionValid = true;
     this->refreshRegionOverlay();
-    if (auto *rw = ui->vtkImage->renderWindow())
+    if (auto *rw = this->active2dWin())
         rw->Render();
     // analyzeCurrentRegion() opens the stats/spectrum windows AND records the
     // shape in m_exportableRegionShape (so the imported region is re-exportable).

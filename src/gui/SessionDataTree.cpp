@@ -4,11 +4,13 @@
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
 
+#include <QHash>
 #include <QHeaderView>
 #include <QIcon>
 #include <QItemSelectionModel>
 #include <QStandardItem>
 #include <QStandardItemModel>
+#include <QTimer>
 #include <QTreeView>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -18,9 +20,24 @@ using namespace Qt::StringLiterals;
 constexpr int kParentKeyRole = Qt::UserRole;       // dataset roots
 constexpr int kProductIdRole = Qt::UserRole + 1;   // product children
 
+// A short uppercase chip per product kind — mirrors the dataset's "CUBE" badge so
+// a product row reads as a typed child, not a bare label (§3.0c).
+QString productBadge(const QString &kind)
+{
+    static const QHash<QString, QString> map{
+        { u"moment"_s, u"MOM0"_s },   { u"baseline"_s, u"BASE"_s },
+        { u"channelmaps"_s, u"CHAN"_s }, { u"linewidth"_s, u"LINE"_s },
+        { u"pv"_s, u"PV"_s },         { u"noise"_s, u"NOISE"_s },
+        { u"stack"_s, u"STACK"_s },   { u"spectrum"_s, u"SPEC"_s },
+    };
+    const QString b = map.value(kind);
+    return b.isEmpty() ? kind.left(4).toUpper() : b;
+}
+
 QString productText(const AnalysisProduct &p)
 {
-    QString t = p.label.isEmpty() ? p.kind : p.label;
+    const QString badge = p.kind.isEmpty() ? QString() : QStringLiteral("%1  ").arg(productBadge(p.kind));
+    QString t = badge + (p.label.isEmpty() ? p.kind : p.label);
     if (p.status == u"running"_s)
         t += QStringLiteral(" · %1%").arg(int(p.progress * 100.0 + 0.5));
     else if (p.status == u"failed"_s)
@@ -45,9 +62,29 @@ SessionDataTree::SessionDataTree(QWidget *parent)
     m_tree->setIconSize(QSize(40, 26));
     m_tree->setExpandsOnDoubleClick(false);   // double-click activates products
     m_tree->header()->setStretchLastSection(true);
+    // Soft selection (§3.0c): a full-width solid-cyan band erased the parent/child
+    // hierarchy — use a 16%-alpha tint + a 2 px brand-blue left marker instead.
+    m_tree->setStyleSheet(QStringLiteral(
+            "QTreeView { background: transparent; border: none; outline: none; }"
+            "QTreeView::item { padding: 4px 2px; border-left: 2px solid transparent; }"
+            "QTreeView::item:selected {"
+            "  background: rgba(4, 138, 191, 0.16);"
+            "  border-left: 2px solid %1;"
+            "  color: %2;"
+            "}")
+            .arg(QLatin1StringView(VisivoTheme::kPrimary()),
+                 QLatin1StringView(VisivoTheme::kOnSurface())));
     layout->addWidget(m_tree);
 
     connect(m_tree, &QTreeView::doubleClicked, this, &SessionDataTree::onActivated);
+    // Keep the tree exactly as tall as its visible rows (no dead space above the
+    // LAYERS section below it), growing as products/datasets appear.
+    connect(m_tree, &QTreeView::expanded, this, [this]() { updateHeightToContents(); });
+    connect(m_tree, &QTreeView::collapsed, this, [this]() { updateHeightToContents(); });
+    connect(m_model, &QStandardItemModel::rowsInserted, this,
+            [this]() { updateHeightToContents(); });
+    connect(m_model, &QStandardItemModel::rowsRemoved, this,
+            [this]() { updateHeightToContents(); });
     connect(m_tree->selectionModel(), &QItemSelectionModel::currentChanged, this,
             [this](const QModelIndex &cur, const QModelIndex &) {
                 QStandardItem *it = m_model->itemFromIndex(cur);
@@ -114,6 +151,9 @@ void SessionDataTree::setCurrentDataset(const QString &parentKey, const QString 
         upsertProduct(p);
     if (ds)
         m_tree->setCurrentIndex(ds->index());
+    // Defer once so row heights are realised by the layout before we measure.
+    updateHeightToContents();
+    QTimer::singleShot(0, this, [this]() { updateHeightToContents(); });
 }
 
 void SessionDataTree::onProductAdded(const AnalysisProduct &product)
@@ -121,9 +161,49 @@ void SessionDataTree::onProductAdded(const AnalysisProduct &product)
     upsertProduct(product);
 }
 
+void SessionDataTree::selectProduct(const QString &productId)
+{
+    if (productId.isEmpty())
+        return;
+    for (int r = 0; r < m_model->rowCount(); ++r) {
+        QStandardItem *ds = m_model->item(r);
+        if (!ds)
+            continue;
+        for (int i = 0; i < ds->rowCount(); ++i) {
+            QStandardItem *child = ds->child(i);
+            if (child && child->data(kProductIdRole).toString() == productId) {
+                m_tree->setCurrentIndex(child->index());   // → currentChanged → productSelected
+                return;
+            }
+        }
+    }
+}
+
 void SessionDataTree::onProductUpdated(const AnalysisProduct &product)
 {
     upsertProduct(product);
+}
+
+int SessionDataTree::visibleRowHeight(const QModelIndex &parent) const
+{
+    int h = 0;
+    const int n = m_model->rowCount(parent);
+    for (int i = 0; i < n; ++i) {
+        const QModelIndex idx = m_model->index(i, 0, parent);
+        const int rh = m_tree->visualRect(idx).height();          // public; 0 if not shown
+        h += rh > 0 ? rh : m_tree->sizeHintForIndex(idx).height();
+        if (m_tree->isExpanded(idx))
+            h += visibleRowHeight(idx);
+    }
+    return h;
+}
+
+void SessionDataTree::updateHeightToContents()
+{
+    int h = 2 * m_tree->frameWidth() + visibleRowHeight(QModelIndex());
+    if (h <= 0)
+        h = m_tree->frameWidth() * 2 + 24;       // at least one row's worth
+    m_tree->setFixedHeight(h);
 }
 
 void SessionDataTree::onActivated(const QModelIndex &index)

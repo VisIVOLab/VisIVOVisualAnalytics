@@ -15,6 +15,7 @@
 class QLabel;
 class QTabWidget;
 class QVBoxLayout;
+class QScrollArea;
 class QAction;
 class QToolButton;
 
@@ -30,6 +31,16 @@ public:
     /// Properties tab: replace the key/value rows shown.
     void setProperties(const QList<QPair<QString, QString>> &rows);
 
+    // ── Structured Properties builder (identity + captioned sections) ─────────
+    /// Clear all Properties rows (call before the add* sequence).
+    void clearProperties();
+    /// Section caption (Lato 10px/700, 0.14em) — or a lighter sub-caption.
+    void addPropertyCaption(const QString &caption, bool sub = false);
+    /// Key/value row with a string value (value in mono, right-aligned).
+    void addPropertyRow(const QString &key, const QString &value);
+    /// Key/value row whose value is a live widget (e.g. a re-hosted stat label).
+    void addPropertyRow(const QString &key, QWidget *valueWidget);
+
     /// Properties tab: append a full widget section (e.g. a migrated sidebar page
     /// such as the 3D/2D view settings) below the key/value rows. Ownership moves
     /// to the Properties page.
@@ -40,18 +51,29 @@ public:
     void addToolGroup(const QString &caption);
     void addTool(const QString &groupCaption, const QString &label, QAction *action);
 
+    /// Select / query the active tab (0 Properties, 1 Analysis, 2 Provenance).
+    /// Used by the collapsible-rail entries and the auto-expand triggers (§4.1.4).
+    void showTab(int index);
+    int currentTab() const;
+
+    /// Preferred height of the Properties tab content (for a no-scroll check).
+    int propertiesContentHeight() const;
+
+signals:
+    /// Emitted when an Analysis tool button is triggered — the window uses it to
+    /// auto-expand the Inspector onto the Analysis tab (§4.1.4).
+    void toolLaunched();
+
+public:
+
+    /// Deferred (post-layout) diagnostic: logs the Properties content vs its
+    /// scroll viewport — with the measured widget's objectName + geometry — so a
+    /// wrong measurement target or an overflow is visible in the console.
+    void logPropertiesFit();
+
     /// Provenance tab: show the recipe (params) of the selected product.
     void showProvenance(const QString &title, const QVariantMap &params);
     void clearProvenance();
-
-    /// Pane-layout + Linked strip. Windows enable what they support.
-    void setPaneLayoutEnabled(bool enabled);
-    void setLinkedSupported(bool supported);
-    void setLinkedChecked(bool checked);
-
-signals:
-    void paneLayoutRequested(int panes);   ///< 1 / 2 / 4
-    void linkedToggled(bool on);
 
 private:
     QVBoxLayout *groupLayout(const QString &caption);   ///< find/create an analysis group box
@@ -60,6 +82,7 @@ private:
     QTabWidget *m_tabs = nullptr;
 
     QWidget *m_propsPage = nullptr;
+    QScrollArea *m_propsScroll = nullptr;
     QVBoxLayout *m_propsLayout = nullptr;
 
     QWidget *m_analysisPage = nullptr;
@@ -71,11 +94,6 @@ private:
     QLabel *m_provTitle = nullptr;
     QLabel *m_provBody = nullptr;
     QVariantMap m_provParams;
-
-    QToolButton *m_linkedBtn = nullptr;
-    QToolButton *m_pane1 = nullptr;
-    QToolButton *m_pane2 = nullptr;
-    QToolButton *m_pane4 = nullptr;
 };
 
 #endif // INSPECTORPANEL_H

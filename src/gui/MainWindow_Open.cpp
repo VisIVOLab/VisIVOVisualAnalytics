@@ -603,6 +603,7 @@ void MainWindow::openViewerFromOpenedDataset(const QString &path,
         cubeWin->setDarkPlots(this->settings->getPlotTheme() == 0);
         cubeWin->setBeamInfo(opened.beamMajorDeg, opened.beamMinorDeg,
                              opened.beamPaDeg);
+        cubeWin->setBrightnessUnit(opened.bunit);
         // Live refresh: when this cube viewer pushes a new FITS into the
         // Workspace Exports, the Data Hub panel updates within frames of
         // the operation instead of on the next backend health tick.

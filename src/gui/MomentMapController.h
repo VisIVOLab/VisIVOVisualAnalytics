@@ -95,6 +95,11 @@ public:
     // Empty if the last computation succeeded or none has run yet.
     const QString &lastError() const { return m_lastError; }
 
+    // Stateless provenance-string formatters (used by the Inspector › Provenance
+    // params too, so exposed publicly — §3.0b).
+    static QString describeMomentOrder(int order);
+    static QString describeMomentScope();
+
 public slots:
     // Opens the dialog with defaultOrder pre-selected; if accepted, dispatches
     // the async computation.  Re-entrancy-safe: no-op if already running.
@@ -102,9 +107,6 @@ public slots:
 
 private:
     bool configureMomentDialog(int defaultOrder, Config &config, bool restoredFromLastSession);
-
-    static QString describeMomentOrder(int order);
-    static QString describeMomentScope();
     static QString formatMomentChannelRange(const Config &config);
 
     const QString m_filepath;

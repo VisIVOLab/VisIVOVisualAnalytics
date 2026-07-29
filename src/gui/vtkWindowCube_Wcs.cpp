@@ -85,6 +85,7 @@
 #include <vtkIdTypeArray.h>
 #include <vtkPointData.h>
 #include <vtkTextProperty.h>
+#include <vtkTextRenderer.h>
 #include <vtkTrivialProducer.h>
 #include <vtkVolume.h>
 #include <vtkVolumeProperty.h>
@@ -145,6 +146,9 @@
 #include <QThread>
 #include <QtConcurrentRun>
 #include <QVBoxLayout>
+
+#include <QFont>
+#include <QFontMetrics>
 
 #include <algorithm>
 #include <cmath>
@@ -552,12 +556,115 @@ void vtkWindowCube::requestWcsOverlayRender()
                     this->sliceWin->Render();
                 } else if (!this->viewingSlice() && this->momentWin) {
                     this->momentWin->Render();
-                } else if (ui->vtkImage->renderWindow()) {
-                    ui->vtkImage->renderWindow()->Render();
+                } else if (this->active2dWin()) {
+                    this->active2dWin()->Render();
                 }
-                ui->vtkImage->update();
+                if (auto *w2d = this->active2dWidget()) w2d->update();
             },
             Qt::QueuedConnection);
+}
+
+double vtkWindowCube::dprFor(bool slice) const
+{
+    QVTKOpenGLNativeWidget *w = slice ? ui->vtkImage : m_vtkMoment.data();
+    return (w && w->devicePixelRatioF() > 0.) ? w->devicePixelRatioF() : 1.;
+}
+
+CubeGeom::ImageGutter vtkWindowCube::gutter2dFor(bool slice) const
+{
+    auto *lut = slice ? this->lutSlice.GetPointer() : this->lutMoment.GetPointer();
+    double range[2] = { 0., 0. };
+    if (lut)
+        lut->GetTableRange(range);
+
+    // The gutter lives in RENDER-WINDOW (device) pixels — that is what
+    // renderer->GetSize() reports. VTK draws the labels at the window's DPI, which
+    // QVTKOpenGLNativeWidget sets to logicalDpi × devicePixelRatio, so a column sized
+    // from logical-pixel metrics is half the width it needs on a retina panel. That,
+    // not any Qt↔VTK font divergence, was clipping the Moment-0 labels (§3.0b).
+    const double dpr = this->dprFor(slice);
+
+    // Measure with VTK's OWN text engine, at the property the colorbar will use, so
+    // there is nothing left to over-provision: the number below IS the drawn width.
+    auto *win = slice ? this->sliceWin.GetPointer() : this->momentWin.GetPointer();
+    // Harden against an unset (plain 72) DPI on a retina panel — never measure below
+    // the DPR-scaled DPI, or the label column comes out half-width (§3.0b).
+    const int dpi = std::max(win ? win->GetDPI() : 72, static_cast<int>(72. * dpr));
+    vtkNew<vtkTextProperty> tp;
+    tp->SetFontSize(CubeGeom::kColorbarLabelFontSize);
+    tp->BoldOff();
+    tp->ShadowOff();
+    double labelW = 0.;
+    if (auto *tr = vtkTextRenderer::GetInstance()) {
+        for (double v : { range[0], range[1] }) {
+            int bbox[4] = { 0, 0, 0, 0 };
+            const std::string s = QString::asprintf("%.3g", v).toStdString();
+            if (tr->GetBoundingBox(tp, s, bbox, dpi))
+                labelW = std::max<double>(labelW, bbox[1] - bbox[0] + 1);
+        }
+    }
+    if (labelW <= 0.)               // headless / no text engine
+        labelW = 7. * 7. * dpr;     // 7 chars of a %.3g exponent, device px
+
+    const double rightGutter = CubeGeom::kColorbarGap * dpr       // data area → bar
+            + CubeGeom::kColorbarBarWidth * dpr                   // the swatch
+            + CubeGeom::kColorbarTextPad * dpr                    // bar → label
+            + labelW                                              // already device px
+            + CubeGeom::kColorbarMargin * dpr;                    // label → pane edge
+    return CubeGeom::imageGutter(this->showWcsAxes, rightGutter, dpr);
+}
+
+void vtkWindowCube::layout2dPane(bool force)
+{
+    // Resize / mode-switch: the currently-visible pane IS the one to re-fit.
+    this->layout2dPaneFor(this->viewingSlice(), force);
+}
+
+void vtkWindowCube::layout2dPaneFor(bool slice, bool force)
+{
+    auto *win = slice ? this->sliceWin.GetPointer() : this->momentWin.GetPointer();
+    if (!win) {
+        return;
+    }
+    auto *renderers = win->GetRenderers();
+    auto *renderer = renderers ? renderers->GetFirstRenderer() : nullptr;
+    if (!renderer) {
+        return;
+    }
+    const int *size = renderer->GetSize();
+    if (!size || size[0] <= 0 || size[1] <= 0) {
+        return;
+    }
+    // The gutter (hence the data-area size) depends on the LUT range via the
+    // measured colorbar column, so a range change must re-fit even at the same
+    // viewport (§3.0b). Key the guard on both — but skip when NEITHER changed, so a
+    // bare render (or a range drag that doesn't move the label width) keeps the zoom.
+    const auto gutter = this->gutter2dFor(slice);
+    const std::array<int, 2> viewport = { size[0], size[1] };
+    auto &lastFit = slice ? this->m_slice2dFitSize : this->m_moment2dFitSize;
+    auto &lastRight = slice ? this->m_slice2dFitRight : this->m_moment2dFitRight;
+    if (!force && viewport == lastFit && gutter.right == lastRight) {
+        return;   // same geometry — do NOT touch the camera, the user may have zoomed
+    }
+
+    auto *image = slice
+            ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
+            : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
+    CubeGeom::ImageRect dataArea;
+    const bool fitted = CubeGeom::fitImageInGutter(renderer, image, gutter, &dataArea);
+    // Only re-lay the colorbar when we actually fit (valid data area). If the fit
+    // failed (e.g. the widget was just shown and its size is still stale), keep the
+    // previous colorbar rather than fall back to the inner box — that fallback made
+    // the moment swatch start below the data top when switching views (§3.0c). The
+    // next valid layout (resize / mode-switch) lays it against the real data area.
+    if (fitted) {
+        CubeGeom::layoutColorbarInGutter(slice ? this->m_sliceColorbar : this->m_momentColorbar,
+                                         renderer, gutter, dataArea, this->dprFor(slice));
+        lastFit = viewport;   // only remember a viewport we actually fit into
+        lastRight = gutter.right;
+    }
+    this->invalidateWcsOverlayCache();   // keep last — makes the next EndEvent recompute
+    win->Render();
 }
 
 void vtkWindowCube::updateSliceWcsOverlay()
@@ -616,37 +723,55 @@ void vtkWindowCube::updateSliceWcsOverlay()
 
     const std::array<double, 4> visibleBounds = { visible.xmin, visible.xmax, visible.ymin, visible.ymax };
     const std::array<int, 2> viewportSize = { size[0], size[1] };
+    // Camera MTime is part of the key: a pan/zoom that keeps the full image visible
+    // leaves visibleBounds unchanged but moves the projected axis rect, so the axes
+    // must recompute anyway.
+    const unsigned long camMTime = renderer->GetActiveCamera()->GetMTime();
     if (visibleBounds == this->lastSliceOverlayVisibleBounds
-        && viewportSize == this->lastSliceOverlayViewportSize) {
+        && viewportSize == this->lastSliceOverlayViewportSize
+        && camMTime == this->lastSliceOverlayCameraMTime) {
         return;
     }
     this->lastSliceOverlayVisibleBounds = visibleBounds;
     this->lastSliceOverlayViewportSize = viewportSize;
+    this->lastSliceOverlayCameraMTime = camMTime;
 
-    constexpr double leftMargin = 168.;
-    constexpr double axisX = 136.;
-    constexpr double bottomMargin = 58.;
-    constexpr double rightMargin = 34.;
-    constexpr double topMargin = 28.;
-    configureAxisActor(this->sliceOverlayXAxis, axisX, bottomMargin, size[0] - rightMargin,
-                       bottomMargin);
-    configureAxisActor(this->sliceOverlayYAxis, axisX, size[1] - topMargin, axisX, bottomMargin);
+    const auto gutter = this->gutter2dFor(/*slice=*/true);
+    const double dpr = this->dprFor(/*slice=*/true);   // offsets below are logical px × dpr
+    // Derive the data area at the CURRENT viewport size — never a cached member,
+    // which goes stale across the multiple resizes a dock toggle produces (§2.7).
+    const auto data = CubeGeom::dataAreaFor(size, imageData, gutter);
+    const double axisX = data.valid ? data.x : gutter.left;
+    const double xRight = data.valid ? data.x + data.width : size[0] - gutter.right;
+    const double yTop = data.valid ? data.y + data.height : size[1] - gutter.top;
+    const double bottomMargin = data.valid ? data.y : gutter.bottom;
+    configureAxisActor(this->sliceOverlayXAxis, axisX, bottomMargin, xRight, bottomMargin);
+    configureAxisActor(this->sliceOverlayYAxis, axisX, yTop, axisX, bottomMargin);
     this->sliceOverlayXAxis->SetTitle("");
     this->sliceOverlayXTitleActor->SetInput(this->remoteOverlayAxisTitle(0).toStdString().c_str());
-    this->sliceOverlayXTitleActor->SetDisplayPosition((axisX + (size[0] - rightMargin)) / 2,
-                                                      static_cast<int>(bottomMargin / 2.0) - 2);
+    // Titles travel with their axis (§2.7): centred under the tick row (data.y-18),
+    // and left of the tick column (data.x-10); floored so they stay on screen.
+    this->sliceOverlayXTitleActor->SetDisplayPosition(static_cast<int>((axisX + xRight) / 2.),
+                                                      static_cast<int>(std::max(bottomMargin - 38. * dpr, 10. * dpr)));
     this->sliceOverlayYAxis->SetTitle("");
     this->sliceOverlayYTitleActor->SetInput(this->remoteOverlayAxisTitle(1).toStdString().c_str());
-    this->sliceOverlayYTitleActor->SetDisplayPosition(static_cast<int>(leftMargin / 3.0), size[1] / 2);
+    this->sliceOverlayYTitleActor->SetDisplayPosition(static_cast<int>(std::max(axisX - 74. * dpr, 12. * dpr)),
+                                                      static_cast<int>((bottomMargin + yTop) / 2.));
 
+    // The image exactly fills the data area, so its full visible extent maps to the
+    // axis endpoints — range and ticks come straight from the visible bounds.
+    const double rxMin = visible.xmin;
+    const double rxMax = visible.xmax;
+    const double ryMin = visible.ymin;
+    const double ryMax = visible.ymax;
     bool xOk = false;
     bool yOk = false;
-    const double xMin = this->remoteVoxelToWcs(0, visible.xmin, &xOk);
-    const double xMax = this->remoteVoxelToWcs(0, visible.xmax, &xOk);
-    const double yMin = this->remoteVoxelToWcs(1, visible.ymin, &yOk);
-    const double yMax = this->remoteVoxelToWcs(1, visible.ymax, &yOk);
-    this->sliceOverlayXAxis->SetRange(xOk ? xMin : visible.xmin, xOk ? xMax : visible.xmax);
-    this->sliceOverlayYAxis->SetRange(yOk ? yMax : visible.ymax, yOk ? yMin : visible.ymin);
+    const double xMin = this->remoteVoxelToWcs(0, rxMin, &xOk);
+    const double xMax = this->remoteVoxelToWcs(0, rxMax, &xOk);
+    const double yMin = this->remoteVoxelToWcs(1, ryMin, &yOk);
+    const double yMax = this->remoteVoxelToWcs(1, ryMax, &yOk);
+    this->sliceOverlayXAxis->SetRange(xOk ? xMin : rxMin, xOk ? xMax : rxMax);
+    this->sliceOverlayYAxis->SetRange(yOk ? yMax : ryMax, yOk ? yMin : ryMin);
     this->sliceOverlayXAxis->LabelVisibilityOff();
     this->sliceOverlayYAxis->LabelVisibilityOff();
     this->sliceOverlayXAxis->VisibilityOn();
@@ -657,8 +782,8 @@ void vtkWindowCube::updateSliceWcsOverlay()
         const double t = overlayTickCount == 1 ? 0.0
                                                : static_cast<double>(i)
                         / static_cast<double>(overlayTickCount - 1);
-        const double voxelX = visible.xmin + t * (visible.xmax - visible.xmin);
-        const double voxelY = visible.ymin + t * (visible.ymax - visible.ymin);
+        const double voxelX = rxMin + t * (rxMax - rxMin);
+        const double voxelY = ryMin + t * (ryMax - ryMin);
         bool tickXOk = false;
         bool tickYOk = false;
         double tickX = this->remoteVoxelToWcs(0, voxelX, &tickXOk);
@@ -671,14 +796,16 @@ void vtkWindowCube::updateSliceWcsOverlay()
         this->sliceOverlayXTickActors[static_cast<std::size_t>(i)]->SetInput(
                 this->formatRemoteOverlayCoordinate(0, frameX).toStdString().c_str());
         this->sliceOverlayXTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
-                static_cast<int>(axisX + t * ((size[0] - rightMargin) - axisX)),
-                static_cast<int>(bottomMargin - 18));
-        this->sliceOverlayXTickActors[static_cast<std::size_t>(i)]->VisibilityOn();
+                static_cast<int>(axisX + t * (xRight - axisX)),
+                static_cast<int>(bottomMargin - 18. * dpr));
+        // Drop the leftmost x label — it collides with the bottom y label in the
+        // corner, and that value is readable from the y axis anyway.
+        this->sliceOverlayXTickActors[static_cast<std::size_t>(i)]->SetVisibility(i != 0);
         this->sliceOverlayYTickActors[static_cast<std::size_t>(i)]->SetInput(
                 this->formatRemoteOverlayCoordinate(1, frameY).toStdString().c_str());
         this->sliceOverlayYTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
-                static_cast<int>(axisX - 10),
-                static_cast<int>(bottomMargin + t * ((size[1] - topMargin) - bottomMargin)));
+                static_cast<int>(axisX - 10. * dpr),
+                static_cast<int>(bottomMargin + t * (yTop - bottomMargin)));
         this->sliceOverlayYTickActors[static_cast<std::size_t>(i)]->VisibilityOn();
     }
     qDebug().noquote()
@@ -691,10 +818,10 @@ void vtkWindowCube::updateSliceWcsOverlay()
                        .arg(size[1])
                        .arg(this->sliceOverlayXAxis->GetVisibility())
                        .arg(axisX, 0, 'g', 12)
-                       .arg(size[1] - topMargin, 0, 'g', 12)
+                       .arg(yTop, 0, 'g', 12)
                        .arg(axisX, 0, 'g', 12)
                        .arg(bottomMargin, 0, 'g', 12)
-                       .arg(leftMargin, 0, 'g', 12);
+                       .arg(xRight, 0, 'g', 12);
 }
 
 void vtkWindowCube::updateMomentWcsOverlay()
@@ -751,37 +878,51 @@ void vtkWindowCube::updateMomentWcsOverlay()
 
     const std::array<double, 4> visibleBounds = { visible.xmin, visible.xmax, visible.ymin, visible.ymax };
     const std::array<int, 2> viewportSize = { size[0], size[1] };
+    // Camera MTime is part of the key (see updateSliceWcsOverlay): a pan/zoom that
+    // keeps the full image visible still moves the projected axis rect.
+    const unsigned long camMTime = renderer->GetActiveCamera()->GetMTime();
     if (visibleBounds == this->lastMomentOverlayVisibleBounds
-        && viewportSize == this->lastMomentOverlayViewportSize) {
+        && viewportSize == this->lastMomentOverlayViewportSize
+        && camMTime == this->lastMomentOverlayCameraMTime) {
         return;
     }
     this->lastMomentOverlayVisibleBounds = visibleBounds;
     this->lastMomentOverlayViewportSize = viewportSize;
+    this->lastMomentOverlayCameraMTime = camMTime;
 
-    constexpr double leftMargin = 168.;
-    constexpr double axisX = 136.;
-    constexpr double bottomMargin = 58.;
-    constexpr double rightMargin = 34.;
-    constexpr double topMargin = 28.;
-    configureAxisActor(this->momentOverlayXAxis, axisX, bottomMargin, size[0] - rightMargin,
-                       bottomMargin);
-    configureAxisActor(this->momentOverlayYAxis, axisX, size[1] - topMargin, axisX, bottomMargin);
+    const auto gutter = this->gutter2dFor(/*slice=*/false);
+    const double dpr = this->dprFor(/*slice=*/false);   // offsets below are logical px × dpr
+    // Derive the data area at the CURRENT viewport size — never a cached member (§2.7).
+    const auto data = CubeGeom::dataAreaFor(size, imageData, gutter);
+    const double axisX = data.valid ? data.x : gutter.left;
+    const double xRight = data.valid ? data.x + data.width : size[0] - gutter.right;
+    const double yTop = data.valid ? data.y + data.height : size[1] - gutter.top;
+    const double bottomMargin = data.valid ? data.y : gutter.bottom;
+    configureAxisActor(this->momentOverlayXAxis, axisX, bottomMargin, xRight, bottomMargin);
+    configureAxisActor(this->momentOverlayYAxis, axisX, yTop, axisX, bottomMargin);
     this->momentOverlayXAxis->SetTitle("");
     this->momentOverlayXTitleActor->SetInput(this->remoteOverlayAxisTitle(0).toStdString().c_str());
-    this->momentOverlayXTitleActor->SetDisplayPosition((axisX + (size[0] - rightMargin)) / 2,
-                                                       static_cast<int>(bottomMargin / 2.0) - 2);
+    // Titles travel with their axis (§2.7).
+    this->momentOverlayXTitleActor->SetDisplayPosition(static_cast<int>((axisX + xRight) / 2.),
+                                                       static_cast<int>(std::max(bottomMargin - 38. * dpr, 10. * dpr)));
     this->momentOverlayYAxis->SetTitle("");
     this->momentOverlayYTitleActor->SetInput(this->remoteOverlayAxisTitle(1).toStdString().c_str());
-    this->momentOverlayYTitleActor->SetDisplayPosition(static_cast<int>(leftMargin / 3.0), size[1] / 2);
+    this->momentOverlayYTitleActor->SetDisplayPosition(static_cast<int>(std::max(axisX - 74. * dpr, 12. * dpr)),
+                                                       static_cast<int>((bottomMargin + yTop) / 2.));
 
+    // The image exactly fills the data area — range and ticks from the visible bounds.
+    const double rxMin = visible.xmin;
+    const double rxMax = visible.xmax;
+    const double ryMin = visible.ymin;
+    const double ryMax = visible.ymax;
     bool xOk = false;
     bool yOk = false;
-    const double xMin = this->remoteVoxelToWcs(0, visible.xmin, &xOk);
-    const double xMax = this->remoteVoxelToWcs(0, visible.xmax, &xOk);
-    const double yMin = this->remoteVoxelToWcs(1, visible.ymin, &yOk);
-    const double yMax = this->remoteVoxelToWcs(1, visible.ymax, &yOk);
-    this->momentOverlayXAxis->SetRange(xOk ? xMin : visible.xmin, xOk ? xMax : visible.xmax);
-    this->momentOverlayYAxis->SetRange(yOk ? yMax : visible.ymax, yOk ? yMin : visible.ymin);
+    const double xMin = this->remoteVoxelToWcs(0, rxMin, &xOk);
+    const double xMax = this->remoteVoxelToWcs(0, rxMax, &xOk);
+    const double yMin = this->remoteVoxelToWcs(1, ryMin, &yOk);
+    const double yMax = this->remoteVoxelToWcs(1, ryMax, &yOk);
+    this->momentOverlayXAxis->SetRange(xOk ? xMin : rxMin, xOk ? xMax : rxMax);
+    this->momentOverlayYAxis->SetRange(yOk ? yMax : ryMax, yOk ? yMin : ryMin);
     this->momentOverlayXAxis->LabelVisibilityOff();
     this->momentOverlayYAxis->LabelVisibilityOff();
     this->momentOverlayXAxis->VisibilityOn();
@@ -792,8 +933,8 @@ void vtkWindowCube::updateMomentWcsOverlay()
         const double t = overlayTickCount == 1 ? 0.0
                                                : static_cast<double>(i)
                         / static_cast<double>(overlayTickCount - 1);
-        const double voxelX = visible.xmin + t * (visible.xmax - visible.xmin);
-        const double voxelY = visible.ymin + t * (visible.ymax - visible.ymin);
+        const double voxelX = rxMin + t * (rxMax - rxMin);
+        const double voxelY = ryMin + t * (ryMax - ryMin);
         bool tickXOk = false;
         bool tickYOk = false;
         double tickX = this->remoteVoxelToWcs(0, voxelX, &tickXOk);
@@ -806,14 +947,15 @@ void vtkWindowCube::updateMomentWcsOverlay()
         this->momentOverlayXTickActors[static_cast<std::size_t>(i)]->SetInput(
                 this->formatRemoteOverlayCoordinate(0, frameX).toStdString().c_str());
         this->momentOverlayXTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
-                static_cast<int>(axisX + t * ((size[0] - rightMargin) - axisX)),
-                static_cast<int>(bottomMargin - 18));
-        this->momentOverlayXTickActors[static_cast<std::size_t>(i)]->VisibilityOn();
+                static_cast<int>(axisX + t * (xRight - axisX)),
+                static_cast<int>(bottomMargin - 18. * dpr));
+        // Drop the leftmost x label — corner collision with the bottom y label.
+        this->momentOverlayXTickActors[static_cast<std::size_t>(i)]->SetVisibility(i != 0);
         this->momentOverlayYTickActors[static_cast<std::size_t>(i)]->SetInput(
                 this->formatRemoteOverlayCoordinate(1, frameY).toStdString().c_str());
         this->momentOverlayYTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
-                static_cast<int>(axisX - 10),
-                static_cast<int>(bottomMargin + t * ((size[1] - topMargin) - bottomMargin)));
+                static_cast<int>(axisX - 10. * dpr),
+                static_cast<int>(bottomMargin + t * (yTop - bottomMargin)));
         this->momentOverlayYTickActors[static_cast<std::size_t>(i)]->VisibilityOn();
     }
     qDebug().noquote()
@@ -826,8 +968,8 @@ void vtkWindowCube::updateMomentWcsOverlay()
                        .arg(size[1])
                        .arg(this->momentOverlayXAxis->GetVisibility())
                        .arg(axisX, 0, 'g', 12)
-                       .arg(size[1] - topMargin, 0, 'g', 12)
+                       .arg(yTop, 0, 'g', 12)
                        .arg(axisX, 0, 'g', 12)
                        .arg(bottomMargin, 0, 'g', 12)
-                       .arg(leftMargin, 0, 'g', 12);
+                       .arg(xRight, 0, 'g', 12);
 }

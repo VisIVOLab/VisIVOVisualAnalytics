@@ -21,14 +21,19 @@
 #include <QTimer>
 #include <QFutureWatcher>
 
+#include <functional>
+
 class QMainWindow;
 class QLabel;
 class QToolButton;
 class QDockWidget;
 class QVBoxLayout;
+class QStackedWidget;
+class QWidget;
 class MainWindow;
 class SessionDataTree;
 class InspectorPanel;
+class DockRail;
 
 class WorkspaceChrome : public QObject
 {
@@ -65,16 +70,47 @@ public:
     /// The inspector dock (for wiring a show/hide toggle). Null until installed.
     QDockWidget *inspectorDock() const { return m_inspectorDock; }
 
+    // ── Collapsible rails (§4.1) ──────────────────────────────────────────────
+    // Each dock is two-state: full content (272 / 320 px) or a 36 px rail. Never
+    // 0, never hidden. Only the user's click, focus mode, or a restored setting
+    // collapses — never auto-collapse.
+    void setSessionCollapsed(bool collapsed);
+    void setInspectorCollapsed(bool collapsed);
+    bool sessionCollapsed() const { return m_sessionCollapsed; }
+    bool inspectorCollapsed() const { return m_inspectorCollapsed; }
+    /// Expand the Inspector + select a tab. Called by the rail entries and by the
+    /// auto-expand triggers (tool launch → Analysis, product → Provenance).
+    void revealInspectorTab(int index);
+    /// Left-rail product count (fed by the window from ProductRegistry).
+    void setSessionRailCount(int count);
+
+    /// Select a product row in the Session tree → drives Inspector › Provenance.
+    void selectSessionProduct(const QString &productId);
+
+    /// Focus mode thins the status rail to health + queue (the two that change);
+    /// hides the cache + session slots. @p compact = true while focus is active.
+    void setStatusRailCompact(bool compact);
+
     /// Begin polling backend health (safe no-op if no backend URL).
     void start();
 
     /// Snapshot returned by the health worker (backend health + latency).
     struct HealthSnapshot;
 
+signals:
+    void dockCollapseChanged();   ///< so the window can re-fit the 2-D panes
+
 private:
     MainWindow *mainWindow() const;
     void poll();
     void onPollFinished();
+    /// Custom dock title bar (label + collapse glyph). Lets the header hide cleanly.
+    QWidget *makeDockTitleBar(const QString &title, const QString &glyph,
+                              const std::function<void()> &onToggle);
+    /// Swap the stack page + pin the dock width to rail (36) or open width. Also
+    /// relaxes page 0's pinned min/max while hidden (QStackedWidget::minimumSizeHint
+    /// is the max over ALL pages, so a pinned page-0 would keep the rail wide).
+    void applyDockWidth(QDockWidget *dock, QStackedWidget *stack, bool collapsed, int openWidth);
     /// Re-apply theme-token styles to the rail widgets after a dark⇄light flip
     /// (they bake token colours at build time and don't follow the global QSS).
     void restyleForTheme();
@@ -95,11 +131,18 @@ private:
 
     QPointer<QDockWidget> m_sessionDock;
     QPointer<SessionDataTree> m_sessionTree;
-    QVBoxLayout *m_sessionLayersLayout = nullptr;   ///< LAYERS block below the tree
-    QPointer<QLabel> m_sessionLayersHeader;
+    QVBoxLayout *m_sessionLayersLayout = nullptr;   ///< view/rendering controls below the tree
     QPointer<QDockWidget> m_inspectorDock;
     QPointer<InspectorPanel> m_inspector;
     QPointer<QLabel> m_cloudChip;   // inspector cloud chip, fed by the poll
+
+    // Collapsible-rail state (§4.1).
+    QPointer<QStackedWidget> m_sessionStack;    ///< page 0 content, page 1 rail
+    QPointer<QStackedWidget> m_inspectorStack;
+    QPointer<DockRail> m_sessionRail;
+    QPointer<DockRail> m_inspectorRail;
+    bool m_sessionCollapsed = false;
+    bool m_inspectorCollapsed = false;
 
     QTimer m_timer;
     QFutureWatcher<HealthSnapshot> *m_watcher = nullptr;

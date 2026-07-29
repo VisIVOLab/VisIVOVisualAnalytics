@@ -345,6 +345,7 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     auto *sliceRenderer = this->sliceWin->GetRenderers()->GetFirstRenderer();
     refitParallelSliceCamera(sliceRenderer, result.imageData, this->sliceWin);
     sliceRenderer->ResetCameraClippingRange();
+    this->layout2dPaneFor(/*slice=*/true, true);   // gutter-aware letterbox supersedes the plain refit
     if (this->probeModeActive && this->probeValid) {
         this->refreshProbeOverlay();
         this->updateProbeReadout(result.imageData);

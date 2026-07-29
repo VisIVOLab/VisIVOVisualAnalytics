@@ -13,9 +13,12 @@ class MomentMapController;
 class NoiseController;
 class PvController;
 
+#include "CubeViewportGeometry.h"
+
 #include <vtkSmartPointer.h>
 #include <vtkWeakPointer.h>
 #include <vtkNew.h>
+#include <vtkScalarBarActor.h>
 
 #include <QFutureWatcher>
 #include <QCloseEvent>
@@ -45,6 +48,7 @@ class QLabel;
 class QPushButton;
 class QSlider;
 class QSplitter;
+class QHBoxLayout;
 class QCheckBox;
 class QComboBox;
 class QJsonObject;
@@ -52,6 +56,7 @@ class QJsonArray;
 class QNetworkAccessManager;
 class QNetworkReply;
 class QStackedWidget;
+class QVTKOpenGLNativeWidget;
 class QToolButton;
 class RemoteRenderWidget;
 class LUTCustomizerDialog;
@@ -220,6 +225,10 @@ public:
     /// Set whether plots (PV Diagram, spectra) should use a dark background.
     /// Called once by MainWindow after construction based on Settings::getPlotTheme().
     void setDarkPlots(bool dark) { m_darkPlots = dark; }
+
+    /// Raw BUNIT (brightness value unit, e.g. "Jy/beam") from the FITS header.
+    /// Set once by MainWindow after construction; shown in the cursor readout.
+    void setBrightnessUnit(const QString &unit) { m_brightnessUnit = unit; }
     /// Provide beam metadata (BMAJ/BMIN in degrees, BPA in degrees E of N).
     /// Call after construction; the beam ellipse is drawn in the 2D slice
     /// renderer's bottom-left corner. Pass NaN major to hide the indicator.
@@ -365,6 +374,27 @@ private:
     Ui::vtkWindowCube *ui;
     WorkspaceChrome *m_workspaceChrome = nullptr;   ///< shared command-bar + status-rail chrome
     QPointer<QSplitter> m_paneSplitter;             ///< central 3D+2D pane container (design #1d)
+    QPointer<QSlider> m_cuttingPlaneOpacitySlider;  ///< re-hosted into the flat LAYERS section
+    // Step 1 — centre toolbar + per-pane headers.
+    QPointer<QFrame> m_pane3dFrame;                  ///< [header + 3D view] wrapper (active border)
+    QPointer<QFrame> m_pane2dFrame;                  ///< [header + 2D view] wrapper
+    QPointer<QLabel> m_pane3dDot;                    ///< active indicator dot (3D header)
+    QPointer<QLabel> m_pane2dDot;                    ///< active indicator dot (2D header)
+    QPointer<QHBoxLayout> m_pane3dHeaderControls;    ///< where setupRenderModeUi() drops Auto/Local/Remote
+    int m_activePane{ 0 };                           ///< 0 = 3D, 1 = 2D
+    // Focus mode (§4.2): remember the dock pair before collapsing so leaving it
+    // restores exactly the previous state (it is a toggle, not a mode).
+    bool m_focusPrevSessionCollapsed{ false };
+    bool m_focusPrevInspectorCollapsed{ true };
+    QPointer<QWidget> m_pane3dHeader;                ///< 3D header widget (click → active)
+    QPointer<QWidget> m_pane2dHeader;                ///< 2D header widget
+    QPointer<QToolButton> m_paneLinkedBtn;           ///< toolbar Linked chip (synced with m_actLinkViews)
+    void setupPaneChrome();                          ///< centre toolbar + per-pane headers (Step 1)
+    void setActivePane(int pane);
+    void refreshPaneActiveStyles();
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;   ///< pane-header click → active
     // Former SidebarPanel pages, migrated into the Inspector's Properties tab
     // (design #1d — no separate rail in the central widget). Built in
     // setupSidebar(), reparented in setupInspector().
@@ -647,6 +677,7 @@ private:
     bool catalogueOverlayLoaded{ false };
     bool ignoreNextPolygonRelease{ false };
     MomentProvenanceState momentProvenanceState;
+    QVariantMap m_momentProvenanceParams;   ///< key/value recipe → Inspector › Provenance (§3.0b)
     std::array<int, 3> probeVoxel{ -1, -1, -1 };
     std::array<int, 2> regionAnchorVoxel{ -1, -1 };
     std::array<int, 2> regionCurrentVoxel{ -1, -1 };
@@ -813,6 +844,18 @@ private:
     QString selectedFrameAxisTitle(int axis) const;
     bool viewingIsosurface() const;
     bool viewingSlice() const;
+    /// The 2-D render window / host widget currently shown in the 2-D slot. Since
+    /// §3.0 slice and moment have SEPARATE host widgets (m_vtkImage / m_vtkMoment),
+    /// so "the current 2-D window" is a function of the mode, not `ui->vtkImage`.
+    vtkRenderWindow *active2dWin() const;
+    QVTKOpenGLNativeWidget *active2dWidget() const;
+    /// The 2-D gutter for a given view, with the colorbar column width MEASURED from
+    /// the LUT's actual extremes (§3.0b) so the labels never clip. Shared by the fit,
+    /// the colorbar and the WCS overlay so all three agree on where the data ends.
+    CubeGeom::ImageGutter gutter2dFor(bool slice) const;
+    /// Device-pixel ratio of the host widget for a 2-D view — the gutter and
+    /// colorbar live in device px, so every authored (logical) number scales by it.
+    double dprFor(bool slice) const;
 
     // ── Loading placeholders (VTK 2D text actors shown while data is in flight) ─
     vtkNew<vtkTextActor> m_cube3dLoadingActor;   ///< Shown in 3D view until first preview
@@ -1094,6 +1137,7 @@ private:
                                                          std::numeric_limits<double>::quiet_NaN(),
                                                          std::numeric_limits<double>::quiet_NaN() };
     std::array<int, 2> lastSliceOverlayViewportSize{ -1, -1 };
+    unsigned long lastSliceOverlayCameraMTime{ 0 };   ///< re-run overlay on 2D zoom/pan
     QHash<QString, RemoteCubeSliceResult> remoteSliceCache;
     QList<QString> remoteSliceCacheLru;
     QSet<QString> remoteSliceFetchesInFlight;
@@ -1180,7 +1224,27 @@ private:
                                                           std::numeric_limits<double>::quiet_NaN(),
                                                           std::numeric_limits<double>::quiet_NaN() };
     std::array<int, 2> lastMomentOverlayViewportSize{ -1, -1 };
+    unsigned long lastMomentOverlayCameraMTime{ 0 };   ///< re-run overlay on 2D zoom/pan
     bool showWcsAxes{ true };
+
+    vtkNew<vtkScalarBarActor> m_sliceColorbar;    ///< 2D slice colorbar (right gutter)
+    vtkNew<vtkScalarBarActor> m_momentColorbar;   ///< moment-map colorbar (right gutter)
+    std::array<int, 2> m_slice2dFitSize{ -1, -1 };
+    std::array<int, 2> m_moment2dFitSize{ -1, -1 };
+    double m_slice2dFitRight{ -1. };    ///< gutter.right the slice was last fit for (§3.0b)
+    double m_moment2dFitRight{ -1. };
+    QString m_brightnessUnit;   ///< raw BUNIT for the cursor readout (may be empty)
+
+    /// Aspect-preserving gutter fit + colorbar placement for the currently-visible
+    /// 2-D pane. Cheap and idempotent: returns immediately unless the viewport
+    /// changed size, so it cannot fight a user zoom/pan. Pass force = true after
+    /// new data. Use for resize / mode-switch, where the visible pane IS the target.
+    void layout2dPane(bool force = false);
+    /// Same, but for an explicit pane (@p slice = true → slice, false → moment)
+    /// regardless of which is currently shown — for data-arrival and setup, where a
+    /// background slice result must not letterbox the moment camera and vice-versa.
+    void layout2dPaneFor(bool slice, bool force);
+
     void applyMomentMapResult(const MomentMapApplyResult &result);
     bool isBusy() const;
 
@@ -1197,6 +1261,10 @@ private:
     /// Populate the right Inspector shell (Properties/Analysis tabs) and wire the
     /// pane-layout + Linked controls. Tools trigger the existing dialog QActions.
     void setupInspector();
+    /// Build the FLAT left-dock controls (DISPLAY—3D / LAYERS / INTERACTION▶ /
+    /// SLICE ANIMATION▶) by re-hosting the already-wired controls into flat rows
+    /// — no bordered cards. sidebarCardStyle() is left intact for other viewers.
+    QWidget *buildFlatLeftDockControls();
     /// Apply a saved-ish pane arrangement to the view docks (1/2/4).
     void applyPaneLayout(int panes);
     /// Reparent any stray direct-child widget of the window (not central/dock/
@@ -1212,6 +1280,7 @@ private:
     // products keep flowing over the existing REST endpoints, only the 3D
     // pixels switch transport.
     QStackedWidget       *m_renderStack{ nullptr };
+    QPointer<QVTKOpenGLNativeWidget> m_vtkMoment;   ///< dedicated host for momentWin (§3.0)
     QWidget              *m_remoteRenderContainer{ nullptr };
     RemoteRenderWidget   *m_remoteRenderWidget{ nullptr };
     QLabel               *m_remoteRenderBannerLabel{ nullptr };

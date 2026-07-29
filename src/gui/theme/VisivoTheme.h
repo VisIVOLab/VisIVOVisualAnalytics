@@ -40,6 +40,22 @@ class QWidget;
 // ---------------------------------------------------------------------------
 namespace VisivoTheme {
 
+// ── Workspace layout metrics (design #1d / CUBE_VIEWER_SPEC.md) ────────────────
+// Fixed dimensions asserted once here rather than as literals at each call site,
+// so a screenshot only has to confirm them in one place.
+inline constexpr int kLeftDockWidth  = 272;   ///< Session Data / left dock (open)
+inline constexpr int kRightDockWidth = 320;   ///< Inspector / right dock (open)
+inline constexpr int kRailWidth      = 36;    ///< collapsed dock rail (never 0)
+inline constexpr int kSectionHeaderPtSize = 10;   ///< section header font size (px)
+// Section-header CSS fragment (Lato 10px/700, letter-spacing 0.14em, muted).
+// Append a color at the call site if a non-default is needed.
+inline QString sectionHeaderCss()
+{
+    return QStringLiteral("font-family:'Lato'; font-size:%1px; font-weight:700;"
+                          " letter-spacing:0.14em;")
+            .arg(kSectionHeaderPtSize);
+}
+
 // ── Theme mode tracking ───────────────────────────────────────────────────────
 // Set by applyDarkTo() / applyLightTo(); read by the color functions below.
 // All colors that vary between dark and light are returned by inline accessors
@@ -264,7 +280,7 @@ QLabel *makeBreadcrumbTag(const QString &text, QWidget *parent = nullptr);
 // colour (kOnSurfaceVariant). Used by the viewer rail buttons so the icons
 // follow the theme without needing per-theme SVG variants.
 QPixmap renderThemeIcon(const QString &resourcePath, int size,
-                        const QColor *colorOverride = nullptr);
+                        const QColor *colorOverride = nullptr, double dpr = 1.0);
 
 // ── Global theme application ──────────────────────────────────────────────────
 

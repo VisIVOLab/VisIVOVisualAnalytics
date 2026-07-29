@@ -10,7 +10,11 @@
 #include "CubeUiAssembler.h"
 #include "WorkspaceChrome.h"
 #include "InspectorPanel.h"
+#include "theme/SegmentedToggle.h"
 #include "app/ProductRegistry.h"
+
+#include <QEvent>
+#include <QIcon>
 #include "CubeVRController.h"
 #include "DiagnosticsWindow.h"
 #include "theme/SegmentedToggle.h"
@@ -149,6 +153,7 @@
 #include <QThread>
 #include <QtConcurrentRun>
 #include <QVBoxLayout>
+#include <QVTKOpenGLNativeWidget.h>
 
 #include <algorithm>
 #include <cmath>
@@ -946,7 +951,16 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->cubeOpenStateLabel->hide();
     this->statusBar()->addPermanentWidget(this->cubeOpenStateLabel);
     this->hoverReadoutLabel = new QLabel(this);
-    this->hoverReadoutLabel->setStyleSheet(u"QLabel { padding-left: 8px; }"_s);
+    // Compact cursor readout (spec §1.1): JetBrains Mono 10 px. A fixed minimum width
+    // sized to a representative full string stops the toolbar reflowing as the cursor
+    // moves; overflow elides at the tail rather than the head.
+    this->hoverReadoutLabel->setStyleSheet(
+            u"QLabel { padding-left: 8px; font-family: 'JetBrains Mono','SF Mono',monospace;"
+            u" font-size: 10px; }"_s);
+    this->hoverReadoutLabel->setMinimumWidth(
+            this->hoverReadoutLabel->fontMetrics().horizontalAdvance(
+                    u"l 104.89  b +68.53  ·  1.37e-02 Jy/beam  ·  ch 1"_s)
+            + 12);
     this->hoverReadoutLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     this->statusBar()->addPermanentWidget(this->hoverReadoutLabel, 1);
     m_uiAssembler->initStatusBarLabels(this->statusBar());
@@ -974,8 +988,38 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(this->actionResetLayout, &QAction::triggered,
                      this, &vtkWindowCube::resetWorkspaceLayout);
 
+    // Focus mode (§4.2): collapse both docks to rails and thin the status rail; a
+    // toggle, not a mode — leaving it restores the exact pair it collapsed.
+    auto *focusAct = new QAction(u"Focus mode"_s, this);
+    focusAct->setCheckable(true);
+#ifdef Q_OS_MACOS
+    focusAct->setShortcut(QKeySequence(Qt::ALT | Qt::SHIFT | Qt::Key_F));
+#else
+    focusAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F));
+#endif
+    ui->menuView->addAction(focusAct);
+    QObject::connect(focusAct, &QAction::toggled, this, [this](bool on) {
+        if (!this->m_workspaceChrome)
+            return;
+        if (on) {
+            this->m_focusPrevSessionCollapsed = this->m_workspaceChrome->sessionCollapsed();
+            this->m_focusPrevInspectorCollapsed = this->m_workspaceChrome->inspectorCollapsed();
+            this->m_workspaceChrome->setSessionCollapsed(true);
+            this->m_workspaceChrome->setInspectorCollapsed(true);
+        } else {
+            this->m_workspaceChrome->setSessionCollapsed(this->m_focusPrevSessionCollapsed);
+            this->m_workspaceChrome->setInspectorCollapsed(this->m_focusPrevInspectorCollapsed);
+        }
+        this->m_workspaceChrome->setStatusRailCompact(on);
+    });
+
     // ── View → Rendering submenu (SSR mode toggle) ────────────────────────────
     this->setupRenderModeUi();
+
+    // Centre toolbar + per-pane headers (Step 1). Runs after setupRenderModeUi()
+    // so the render-mode badge exists to re-host into the 3D pane header, and
+    // after hoverReadoutLabel exists to re-host as the toolbar cursor readout.
+    this->setupPaneChrome();
 
     // Install the additive status rail AFTER setupRenderModeUi() (which appends
     // the render-mode/FPS badges as permanent widgets) so the rail's four slots
@@ -1038,8 +1082,14 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->lastSliceOverlayViewportSize = { -1, -1 };
     this->lastMomentOverlayViewportSize = { -1, -1 };
     this->set2dWcsOverlayVisible(checked);
+    // The gutter (and thus the image fit) depends on showWcsAxes: with the axes
+    // off the image grows into the freed left/bottom margin. Reset both fit caches
+    // so the hidden pane re-fits when next shown, then re-letterbox the visible one.
+    this->m_slice2dFitSize = { -1, -1 };
+    this->m_moment2dFitSize = { -1, -1 };
+    this->layout2dPane(/*force=*/true);
     this->requestWcsOverlayRender();
-    }); 
+    });
 
     // ── Cutting plane visibility + opacity submenu (View menu) ────────────
     // QAction itself was pre-created above setupSidebar(); here we configure
@@ -1371,6 +1421,11 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->setupCubeRenderer();
     this->setupSliceRenderer();
     this->setupMomentRenderer();
+    // §3.0: bind the moment host widget now that momentWin has its renderer +
+    // (manual) QVTKInteractor with the probe/region/PV observers — same order as the
+    // pre-§3.0 changeImageRenderer swap, which is known to preserve the interactor.
+    if (m_vtkMoment)
+        m_vtkMoment->setRenderWindow(this->momentWin);
 
     // Attach the cutting-plane texture now that setupSliceRenderer() has
     // wired sliceColors with a real input and LUT — connecting it earlier
@@ -1684,9 +1739,30 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 }
             },
             [this](const MomentMapComputeResult &result,
-                   const MomentMapController::Config & /*config*/,
+                   const MomentMapController::Config &config,
                    const QString &summary,
                    const QString &details) {
+                // Build the Provenance recipe BEFORE applyMomentMapResult — it ends
+                // by registering the product, and registerAnalysisProduct reads these
+                // params (§3.0b (c)). Same fields as the status summary.
+                this->m_momentProvenanceParams.clear();
+                this->m_momentProvenanceParams.insert(
+                        u"Order"_s, MomentMapController::describeMomentOrder(config.order));
+                this->m_momentProvenanceParams.insert(
+                        u"Channels"_s,
+                        u"%1–%2"_s.arg(config.channelStart + 1).arg(config.channelEnd + 1));
+                this->m_momentProvenanceParams.insert(
+                        u"Mask"_s,
+                        config.maskEnabled
+                                ? (config.thresholdAuto
+                                           ? u"auto (≈ 3σ)"_s
+                                           : u">= %1"_s.arg(config.thresholdValue, 0, 'g', 8))
+                                : u"none"_s);
+                this->m_momentProvenanceParams.insert(u"Scope"_s,
+                                                      MomentMapController::describeMomentScope());
+                this->m_momentProvenanceParams.insert(
+                        u"Unit"_s, result.momentUnit.isEmpty() ? u"—"_s : result.momentUnit);
+
                 QElapsedTimer applyTimer;
                 applyTimer.start();
                 this->applyMomentMapResult(
@@ -1801,8 +1877,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                 // Window closed → remove the path overlay from
                                 // both the slice and moment 2D views.
                                 this->clearPv();
-                                if (ui->vtkImage->renderWindow())
-                                    ui->vtkImage->renderWindow()->Render();
+                                if (this->active2dWin())
+                                    this->active2dWin()->Render();
                                 if (this->actionExtractPvDiagram
                                     && this->actionExtractPvDiagram->isChecked()) {
                                     this->actionExtractPvDiagram->setChecked(false);
@@ -1824,8 +1900,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 // refreshPvOverlay()), so the overlay survives the
                 // PV-mode-off transition.
                 this->refreshPvOverlay();
-                if (ui->vtkImage->renderWindow())
-                    ui->vtkImage->renderWindow()->Render();
+                if (this->active2dWin())
+                    this->active2dWin()->Render();
 
                 // Choose spatial axis (prefer physical arcsec when available).
                 const bool hasArcsec = !result.positionsArcsec.isEmpty()
@@ -2844,8 +2920,8 @@ void vtkWindowCube::applySliceLutByName(const QString &name)
                     this->m_sliceScaleGamma);
     this->lutSlice->Modified();
 
-    if (ui->vtkImage->renderWindow() && this->viewingSlice()) {
-        ui->vtkImage->renderWindow()->Render();
+    if (this->active2dWin() && this->viewingSlice()) {
+        this->active2dWin()->Render();
     }
 }
 
@@ -2864,8 +2940,8 @@ void vtkWindowCube::applyMomentLutByName(const QString &name)
                     this->m_sliceScaleGamma);
     this->lutMoment->Modified();
 
-    if (ui->vtkImage->renderWindow() && !this->viewingSlice()) {
-        ui->vtkImage->renderWindow()->Render();
+    if (this->active2dWin() && !this->viewingSlice()) {
+        this->active2dWin()->Render();
     }
 }
 
@@ -3256,7 +3332,7 @@ void vtkWindowCube::finalizePvInteraction()
 
     if (this->regionMode == RegionMode::Polygon && this->regionDragging) {
         if (this->finalizePolygonRegion()) {
-            ui->vtkImage->renderWindow()->Render();
+            this->active2dWin()->Render();
         }
         return;
     }
@@ -3265,7 +3341,7 @@ void vtkWindowCube::finalizePvInteraction()
         return;
     }
 
-    const int *position = ui->vtkImage->renderWindow()->GetInteractor()->GetEventPosition();
+    const int *position = this->active2dWin()->GetInteractor()->GetEventPosition();
     if (position) {
         this->updatePvFromDisplayPosition(position[0], position[1]);
     }
@@ -3292,12 +3368,12 @@ void vtkWindowCube::finalizePvInteraction()
 
     if (!this->pvValid) {
         this->statusBar()->showMessage(u"Define at least two points for PV path."_s, 2500);
-        ui->vtkImage->renderWindow()->Render();
+        this->active2dWin()->Render();
         return;
     }
 
     this->extractCurrentPvDiagram();
-    ui->vtkImage->renderWindow()->Render();
+    this->active2dWin()->Render();
     // DO NOT toggle off actionExtractPvDiagram here. It triggers
     // setPvModeActive(false) → clearPv() (guarded by `if (!pvDiagramWidget)`
     // which is still null until the async backend response arrives), wiping
@@ -3323,9 +3399,9 @@ void vtkWindowCube::setPvModeActive(bool active)
             this->clearPv();
         }
         this->setInteractorStyleImage();
-        ui->vtkImage->setCursor(this->probeModeActive ? Qt::CrossCursor : Qt::ArrowCursor);
-        if (ui->vtkImage->renderWindow()) {
-            ui->vtkImage->renderWindow()->Render();
+        if (auto *w2d = this->active2dWidget()) w2d->setCursor(this->probeModeActive ? Qt::CrossCursor : Qt::ArrowCursor);
+        if (this->active2dWin()) {
+            this->active2dWin()->Render();
         }
         return;
     }
@@ -3362,13 +3438,13 @@ void vtkWindowCube::setPvModeActive(bool active)
     this->pvValid = false;
     this->clearPv();
     this->setInteractorStyleRegion();
-    ui->vtkImage->setCursor(Qt::CrossCursor);
+    if (auto *w2d = this->active2dWidget()) w2d->setCursor(Qt::CrossCursor);
 }
 
 
 bool vtkWindowCube::updatePvFromDisplayPosition(int displayX, int displayY)
 {
-    auto *renderer = ui->vtkImage->renderWindow() ? ui->vtkImage->renderWindow()->GetRenderers()->GetFirstRenderer()
+    auto *renderer = this->active2dWin() ? this->active2dWin()->GetRenderers()->GetFirstRenderer()
                                                   : nullptr;
     auto *imageData = this->viewingSlice()
             ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
@@ -3472,14 +3548,14 @@ void vtkWindowCube::setBeamInfo(double majorDeg, double minorDeg, double paDeg)
     m_beamActor->VisibilityOn();
 
     // Add to the 2D slice renderer if not already added.
-    auto *ren = ui->vtkImage->renderWindow()
-                        ? ui->vtkImage->renderWindow()->GetRenderers()->GetFirstRenderer()
+    auto *ren = this->active2dWin()
+                        ? this->active2dWin()->GetRenderers()->GetFirstRenderer()
                         : nullptr;
     if (ren && !ren->HasViewProp(m_beamActor)) {
         ren->AddActor(m_beamActor);
     }
-    if (ui->vtkImage->renderWindow()) {
-        ui->vtkImage->renderWindow()->Render();
+    if (this->active2dWin()) {
+        this->active2dWin()->Render();
     }
 }
 
@@ -4117,6 +4193,11 @@ void vtkWindowCube::showSliceHistogramPanel()
                 if (hi > lo && self->lutSlice) {
                     self->lutSlice->SetTableRange(lo, hi);
                     self->lutSlice->Build();
+                    // A range change can widen the colorbar labels → re-fit only if
+                    // the gutter width actually changed (else the zoom is preserved).
+                    self->layout2dPaneFor(/*slice=*/true, /*force=*/false);
+                    // Always repaint the new LUT — layout2dPaneFor() early-returns
+                    // (no render) when the gutter did not change.
                     if (self->sliceWin) self->sliceWin->Render();
                 }
             }
@@ -4359,7 +4440,20 @@ bool vtkWindowCube::viewingIsosurface() const
 
 bool vtkWindowCube::viewingSlice() const
 {
-    return ui->vtkImage->renderWindow() == this->sliceWin;
+    // State-based since §3.0: slice and moment have separate host widgets, so the
+    // mode can no longer be read from which render window is on ui->vtkImage.
+    return ui->actionSlice->isChecked();
+}
+
+vtkRenderWindow *vtkWindowCube::active2dWin() const
+{
+    return this->viewingSlice() ? static_cast<vtkRenderWindow *>(this->sliceWin.GetPointer())
+                                : static_cast<vtkRenderWindow *>(this->momentWin.GetPointer());
+}
+
+QVTKOpenGLNativeWidget *vtkWindowCube::active2dWidget() const
+{
+    return this->viewingSlice() ? ui->vtkImage : m_vtkMoment.data();
 }
 
 void vtkWindowCube::applyThresholdToPipeline(double threshold)
@@ -4918,6 +5012,9 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
         this->momentDisplaySource->SetOutput(result.momentImageData);
         this->momentDisplaySource->Modified();
         this->lutMoment->SetTableRange(result.momentRange[0], result.momentRange[1]);
+        // Moment range changed → its colorbar labels may widen the gutter; re-fit
+        // only if it actually changed (§3.0b).
+        this->layout2dPaneFor(/*slice=*/false, /*force=*/false);
     }
     if (auto *mapper = this->volume->GetMapper()) {
         mapper->Modified();
@@ -5094,7 +5191,7 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
                 << QStringLiteral("[perf][cube] apply cube Render (GPU upload): %1 ms")
                            .arg(renderTimer.elapsed());
 
-        ui->vtkImage->renderWindow()->Render();
+        this->active2dWin()->Render();
         this->requestRemoteSlice(clampedSlice);
     });
     qDebug().noquote() << QStringLiteral("[perf][cube] apply total (sync): %1 ms").arg(
@@ -5154,18 +5251,13 @@ void vtkWindowCube::updateSlice()
 
 void vtkWindowCube::updateMomentProvenancePanel()
 {
-    if (!this->momentProvenanceLabel) {
-        return;
+    // §3.0b (d): the moment provenance now lives in Inspector › Provenance (fed via
+    // the registered product's params). The status-bar label is retired — it sat in
+    // the middle of the rail next to the duplicate "Full resolution" text. Keep the
+    // widget (momentProvenanceState is still read elsewhere) but never show it.
+    if (this->momentProvenanceLabel) {
+        this->momentProvenanceLabel->hide();
     }
-
-    if (!this->momentProvenanceState.valid) {
-        this->momentProvenanceLabel->setVisible(false);
-        return;
-    }
-
-    this->momentProvenanceLabel->setText(this->momentProvenanceState.summary);
-    this->momentProvenanceLabel->setToolTip(this->momentProvenanceState.details);
-    this->momentProvenanceLabel->setVisible(true);
 }
 
 void vtkWindowCube::updateSanityPanel()
@@ -5578,7 +5670,549 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
     p.sourceDatasetId = this->remoteDatasetId;
     p.sessionId = this->remoteSessionId;
     p.window = window;
-    return ProductRegistry::instance().registerProduct(std::move(p));
+    const QString id = ProductRegistry::instance().registerProduct(std::move(p));
+    if (this->m_workspaceChrome) {
+        // Select the new product first (so Provenance is populated), then auto-expand
+        // the Inspector onto Provenance (§4.1.4) — otherwise the tab reveals empty
+        // (§3.0b (c)). Also refresh the left rail's product count.
+        this->m_workspaceChrome->selectSessionProduct(id);
+        this->m_workspaceChrome->revealInspectorTab(2);
+        this->m_workspaceChrome->setSessionRailCount(
+                ProductRegistry::instance().productsFor(this->datasetPersistKey()).size());
+    }
+    return id;
+}
+
+QWidget *vtkWindowCube::buildFlatLeftDockControls()
+{
+    const QLatin1StringView fgMuted(VisivoTheme::kOnSurfaceVariant());
+    const QLatin1StringView fg(VisivoTheme::kOnSurface());
+    const QLatin1StringView pri(VisivoTheme::kPrimary());
+    const QString labelCss =
+            QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;").arg(fgMuted);
+
+    auto *root = new QWidget();
+    auto *rootLay = new QVBoxLayout(root);
+    rootLay->setContentsMargins(0, 0, 0, 0);
+    rootLay->setSpacing(0);
+
+    const QString hdrCss = QStringLiteral(
+            "QToolButton{background:transparent;border:none;color:%1;%2"
+            "padding:8px 14px;text-align:left;}")
+            .arg(fgMuted, VisivoTheme::sectionHeaderCss());
+
+    // Collapsible flat section: header (▼/▶) + content. A full-width rule is drawn
+    // only when @p divider — a section reads from the weight of its header, so the
+    // collapsible ▶ sections (INTERACTION / SLICE ANIMATION) carry no line (§3.0c).
+    auto addSection = [&](const QString &title, bool expanded, bool divider = true) -> QVBoxLayout * {
+        auto *hdr = new QToolButton(root);
+        hdr->setCheckable(true);
+        hdr->setChecked(expanded);
+        hdr->setCursor(Qt::PointingHandCursor);
+        hdr->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        hdr->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        hdr->setStyleSheet(hdrCss);
+        auto setTxt = [hdr, title](bool on) { hdr->setText((on ? u"▼  "_s : u"▶  "_s) + title); };
+        setTxt(expanded);
+        rootLay->addWidget(hdr);
+        auto *content = new QWidget(root);
+        auto *cl = new QVBoxLayout(content);
+        cl->setContentsMargins(10, 0, 10, 8);
+        cl->setSpacing(7);
+        content->setVisible(expanded);
+        rootLay->addWidget(content);
+        QObject::connect(hdr, &QToolButton::toggled, content,
+                         [content, setTxt](bool on) { setTxt(on); content->setVisible(on); });
+        if (divider) {
+            auto *rule = new QFrame(root);
+            rule->setFixedHeight(1);
+            rule->setStyleSheet(u"background: rgba(4,138,191,0.20); border:none;"_s);
+            rootLay->addWidget(rule);
+        }
+        return cl;
+    };
+
+    // Detach a widget from its current layout before re-hosting it, so no stale
+    // layout item is left behind in the (hidden) assembler card.
+    auto rehost = [](QWidget *w) {
+        if (!w) return;
+        if (auto *p = w->parentWidget())
+            if (auto *l = p->layout())
+                l->removeWidget(w);
+    };
+
+    // ── DISPLAY — 3D (mode · blend · threshold · LUT) ─────────────────────────
+    QVBoxLayout *disp = addSection(u"DISPLAY — 3D"_s, true);
+    SegmentedToggle *modeCombo = m_uiAssembler->renderModeCombo();
+    if (modeCombo) {
+        rehost(modeCombo);
+        modeCombo->setMinimumWidth(0);   // let segments share the narrow dock, never overflow
+        modeCombo->setParent(root);
+        disp->addWidget(modeCombo);
+    }
+    QWidget *volRow = nullptr;
+    if (auto *v = m_uiAssembler->volumeModeCombo()) {
+        volRow = new QWidget();
+        auto *h = new QHBoxLayout(volRow);
+        h->setContentsMargins(0, 0, 0, 0);
+        rehost(v);
+        v->setMinimumWidth(0);
+        v->setParent(volRow);
+        h->addWidget(v, 1);
+        disp->addWidget(volRow);
+    }
+    {   // Threshold: label + mono value, then the slider full-width.
+        auto *r = new QWidget();
+        auto *h = new QHBoxLayout(r);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(8);
+        auto *l = new QLabel(u"Threshold"_s, r);
+        l->setStyleSheet(labelCss);
+        h->addWidget(l, 1);
+        if (ui->lineThreshold) {
+            rehost(ui->lineThreshold);
+            ui->lineThreshold->setParent(r);
+            // Room for the full value ("0.188071" = 8 chars, allow ~11).
+            ui->lineThreshold->setMinimumWidth(96);
+            ui->lineThreshold->setMaximumWidth(140);
+            ui->lineThreshold->setAlignment(Qt::AlignRight);
+            // Compact field (§3.0c): 26 px tall, mono 12, right-aligned value.
+            ui->lineThreshold->setFixedHeight(26);
+            ui->lineThreshold->setStyleSheet(
+                    u"QLineEdit { font-family:'JetBrains Mono','SF Mono',monospace;"
+                    u" font-size:12px; padding:2px 8px; }"_s);
+            h->addWidget(ui->lineThreshold, 0);
+        }
+        disp->addWidget(r);
+    }
+    if (ui->sliderThreshold) {
+        rehost(ui->sliderThreshold);
+        ui->sliderThreshold->setParent(root);
+        // Compact row step (§3.0c): the slider's tall default sizeHint made the
+        // Threshold→slider→Color-map step ~50 px; cap it so the column steps ~34.
+        ui->sliderThreshold->setMaximumHeight(22);
+        disp->addWidget(ui->sliderThreshold);
+    }
+    {   // Color map: LUT combo + "Edit" link (no full-width "Advanced…").
+        auto *r = new QWidget();
+        auto *h = new QHBoxLayout(r);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(8);
+        auto *l = new QLabel(u"Color map"_s, r);
+        l->setStyleSheet(labelCss);
+        h->addWidget(l, 0);
+        if (auto *lut = m_uiAssembler->lutCombo()) {
+            rehost(lut);
+            // Let the combo shrink in the narrow dock instead of forcing the row
+            // wider than the viewport (which clipped the whole content on the right).
+            lut->setMinimumWidth(0);
+            lut->setMinimumContentsLength(3);
+            lut->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+            lut->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+            // Field height is a theme constant, not a per-widget property: match the
+            // threshold line edit (26 px) so the two inputs in this column align (§3.0c).
+            lut->setFixedHeight(26);
+            lut->setParent(r);
+            h->addWidget(lut, 1);
+        }
+        if (auto *edit = m_uiAssembler->lutEdit3dButton()) {
+            rehost(edit);
+            edit->setParent(r);
+            edit->setText(u"Edit"_s);
+            edit->setToolButtonStyle(Qt::ToolButtonTextOnly);
+            edit->setStyleSheet(
+                    QStringLiteral("QToolButton{background:transparent;border:none;color:%1;"
+                                   "font-size:11px;font-weight:600;}")
+                            .arg(pri));
+            h->addWidget(edit, 0);
+        }
+        disp->addWidget(r);
+    }
+    QWidget *surfRow = nullptr;
+    if (ui->btnCubeColor) {
+        surfRow = new QWidget();
+        auto *h = new QHBoxLayout(surfRow);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(8);
+        auto *l = new QLabel(u"Surface color"_s, surfRow);
+        l->setStyleSheet(labelCss);
+        h->addWidget(l, 1);
+        rehost(ui->btnCubeColor);
+        ui->btnCubeColor->setParent(surfRow);
+        h->addWidget(ui->btnCubeColor, 0);
+        disp->addWidget(surfRow);
+    }
+    // Volume-mode / surface-color rows follow the render mode. Drive off the
+    // segmented control's OWN signal — the render-mode combo updates actionVolume
+    // under a QSignalBlocker, so actionVolume::toggled would miss these changes.
+    if (modeCombo) {
+        auto applyVis = [volRow, surfRow](int idx) {
+            if (volRow) volRow->setVisible(idx == 1);
+            if (surfRow) surfRow->setVisible(idx == 0);
+        };
+        applyVis(modeCombo->currentIndex());
+        QObject::connect(modeCombo, &SegmentedToggle::currentIndexChanged, root,
+                         [applyVis](int i) { applyVis(i); });
+        // Also follow the View-menu path: the action handlers set the combo under
+        // a QSignalBlocker, so the combo signal alone would miss menu toggles.
+        // Each source blocks the other, so wiring both cannot loop.
+        if (ui->actionVolume)
+            QObject::connect(ui->actionVolume, &QAction::toggled, root,
+                             [applyVis](bool on) { applyVis(on ? 1 : 0); });
+    }
+
+    // ── LAYERS — five fixed visibility rows (stable regardless of load) ───────
+    QVBoxLayout *lay = addSection(u"LAYERS"_s, true, /*divider=*/false);
+    auto layerCheck = [&](const QString &label, QAction *act, const QString &disabledReason,
+                          QWidget *trailing) {
+        auto *row = new QWidget();
+        auto *h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(8);
+        auto *cb = new QCheckBox(label, row);
+        cb->setStyleSheet(QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;").arg(fg));
+        if (act) {
+            cb->setChecked(act->isChecked());
+            cb->setEnabled(act->isEnabled());
+            QObject::connect(cb, &QCheckBox::clicked, act, [act]() { act->trigger(); });
+            QObject::connect(act, &QAction::toggled, cb,
+                             [cb](bool on) { QSignalBlocker b(cb); cb->setChecked(on); });
+            QObject::connect(act, &QAction::changed, cb,
+                             [cb, act]() { cb->setEnabled(act->isEnabled()); });
+        } else {
+            cb->setEnabled(false);
+            cb->setToolTip(disabledReason);
+        }
+        h->addWidget(cb, 1);
+        if (trailing) { rehost(trailing); trailing->setParent(row); trailing->setMaximumWidth(96); h->addWidget(trailing, 0); }
+        lay->addWidget(row);
+    };
+    // Volume row is custom: it mirrors the render mode (source = the segmented
+    // control, which is not blocked), not the exclusive actionVolume directly.
+    {
+        auto *row = new QWidget();
+        auto *h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(8);
+        auto *cb = new QCheckBox(u"Volume"_s, row);
+        cb->setStyleSheet(QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;").arg(fg));
+        if (modeCombo) {
+            cb->setChecked(modeCombo->currentIndex() == 1);
+            QObject::connect(cb, &QCheckBox::clicked, modeCombo,
+                             [modeCombo](bool on) { modeCombo->setCurrentIndex(on ? 1 : 0); });
+            QObject::connect(modeCombo, &SegmentedToggle::currentIndexChanged, cb,
+                             [cb](int i) { QSignalBlocker b(cb); cb->setChecked(i == 1); });
+        }
+        // Follow the View-menu path too (combo is set under a blocker there).
+        if (ui->actionVolume)
+            QObject::connect(ui->actionVolume, &QAction::toggled, cb,
+                             [cb](bool on) { QSignalBlocker b(cb); cb->setChecked(on); });
+        h->addWidget(cb, 1);
+        lay->addWidget(row);
+    }
+    layerCheck(u"Cutting plane"_s, actionShowCuttingPlane, QString(),
+               m_cuttingPlaneOpacitySlider);
+    layerCheck(u"Contours"_s, nullptr, u"No contours computed for this cube yet."_s, nullptr);
+    layerCheck(u"Catalogue sources"_s, actionShowCatalogueOverlay, QString(), nullptr);
+    layerCheck(u"3D WCS axes"_s, actionShow3dWcsAxes, QString(), nullptr);
+
+    // ── INTERACTION ▶ (collapsed) ─────────────────────────────────────────────
+    QVBoxLayout *inter = addSection(u"INTERACTION"_s, false, /*divider=*/false);
+    {
+        auto *cb = new QCheckBox(u"Pick spectrum on plane click"_s);
+        cb->setStyleSheet(QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;").arg(fg));
+        if (actionPickSpectrum3d) {
+            cb->setChecked(actionPickSpectrum3d->isChecked());
+            QObject::connect(cb, &QCheckBox::clicked, actionPickSpectrum3d,
+                             [this]() { actionPickSpectrum3d->trigger(); });
+            QObject::connect(actionPickSpectrum3d, &QAction::toggled, cb,
+                             [cb](bool on) { QSignalBlocker b(cb); cb->setChecked(on); });
+        } else {
+            cb->setEnabled(false);
+        }
+        inter->addWidget(cb);
+    }
+
+    // ── SLICE ANIMATION ▶ (collapsed) ─────────────────────────────────────────
+    QVBoxLayout *anim = addSection(u"SLICE ANIMATION"_s, false, /*divider=*/false);
+    {
+        auto *ph = new QLabel(u"Use the channel scrubber below the 2D view."_s);
+        ph->setWordWrap(true);
+        ph->setStyleSheet(labelCss);
+        anim->addWidget(ph);
+    }
+
+    rootLay->addStretch(1);   // stretch at the BOTTOM — sections stay flex:none
+
+    // Instrumentation (measure, don't eyeball): if the content's minimum width
+    // exceeds the dock viewport, the right side clips (h-scroll is off).
+    QTimer::singleShot(0, root, [root]() {
+        QWidget *vp = root->parentWidget();
+        qDebug().noquote() << QStringLiteral(
+                "[leftdock] content minWidth=%1  width=%2  viewport=%3  %4")
+                .arg(root->minimumSizeHint().width())
+                .arg(root->width())
+                .arg(vp ? vp->width() : -1)
+                .arg(vp && root->minimumSizeHint().width() <= vp->width()
+                             ? u"OK (fits)"_s : u"OVERFLOW → clips"_s);
+    });
+    return root;
+}
+
+void vtkWindowCube::setActivePane(int pane)
+{
+    m_activePane = pane;
+    refreshPaneActiveStyles();
+}
+
+void vtkWindowCube::refreshPaneActiveStyles()
+{
+    const QLatin1StringView pri(VisivoTheme::kPrimary());
+    const QLatin1StringView outline(VisivoTheme::kOutline());
+    const QLatin1StringView sec(VisivoTheme::kSecondary());
+    const auto frameCss = [](QLatin1StringView c) {
+        return QStringLiteral("QFrame#paneFrame { border: 1px solid %1; }").arg(c);
+    };
+    if (m_pane3dFrame) m_pane3dFrame->setStyleSheet(frameCss(m_activePane == 0 ? pri : outline));
+    if (m_pane2dFrame) m_pane2dFrame->setStyleSheet(frameCss(m_activePane == 1 ? pri : outline));
+    const auto dotCss = [](QLatin1StringView c) {
+        return QStringLiteral("font-size:9px; color:%1;").arg(c);
+    };
+    if (m_pane3dDot) m_pane3dDot->setStyleSheet(dotCss(m_activePane == 0 ? pri : sec));
+    if (m_pane2dDot) m_pane2dDot->setStyleSheet(dotCss(m_activePane == 1 ? pri : sec));
+}
+
+bool vtkWindowCube::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() == QEvent::MouseButtonPress) {
+        if (watched == m_pane3dHeader) { setActivePane(0); }
+        else if (watched == m_pane2dHeader) { setActivePane(1); }
+    }
+    if (event->type() == QEvent::Resize
+        && (watched == ui->vtkImage || watched == m_vtkMoment)) {
+        // Deferred: during Resize the VTK render window has not yet adopted the
+        // new size, so an immediate fit would use the old one. Either 2-D host can
+        // fire it — whichever is currently visible (§3.0).
+        QTimer::singleShot(0, this, [this]() { this->layout2dPane(); });
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
+
+void vtkWindowCube::setupPaneChrome()
+{
+    if (!m_paneSplitter)
+        return;
+    const QLatin1StringView fg(VisivoTheme::kOnSurface());
+    const QLatin1StringView fgMuted(VisivoTheme::kOnSurfaceVariant());
+    const QLatin1StringView pri(VisivoTheme::kPrimary());
+
+    auto rehost = [](QWidget *w) {
+        if (!w) return;
+        if (auto *p = w->parentWidget())
+            if (auto *l = p->layout())
+                l->removeWidget(w);
+    };
+
+    // [header h34][view] wrapped in a frame that carries the active-pane border.
+    auto wrapPane = [&](QWidget *view, int paneIndex, const QString &title,
+                        const QString &qualifier, QLabel **dotOut, QWidget **headerOut,
+                        QHBoxLayout **ctrlSlotOut) -> QFrame * {
+        auto *frame = new QFrame();
+        frame->setObjectName(u"paneFrame"_s);
+        auto *v = new QVBoxLayout(frame);
+        v->setContentsMargins(1, 1, 1, 1);
+        v->setSpacing(0);
+        auto *hdr = new QWidget(frame);
+        hdr->setObjectName(u"paneHeader"_s);
+        hdr->setFixedHeight(34);
+        auto *h = new QHBoxLayout(hdr);
+        h->setContentsMargins(10, 0, 6, 0);
+        h->setSpacing(8);
+        auto *dot = new QLabel(u"●"_s, hdr);
+        dot->setStyleSheet(QStringLiteral("font-size:9px; color:%1;").arg(pri));
+        h->addWidget(dot);
+        if (dotOut) *dotOut = dot;
+        auto *t = new QLabel(title, hdr);
+        t->setStyleSheet(QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;"
+                                        " font-weight:700;").arg(fg));
+        h->addWidget(t);
+        if (!qualifier.isEmpty()) {
+            auto *q = new QLabel(qualifier, hdr);
+            q->setStyleSheet(QStringLiteral("color:%1; font-family:'JetBrains Mono','SF Mono',"
+                                            "monospace; font-size:10px;").arg(fgMuted));
+            h->addWidget(q);
+        }
+        h->addStretch(1);
+        if (ctrlSlotOut) *ctrlSlotOut = h;
+        auto *maxBtn = new QToolButton(hdr);
+        maxBtn->setText(u"⤢"_s);
+        maxBtn->setCursor(Qt::PointingHandCursor);
+        maxBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        maxBtn->setToolTip(u"Focus this pane"_s);
+        maxBtn->setStyleSheet(QStringLiteral("QToolButton{background:transparent;border:none;"
+                                             "color:%1;font-size:13px;}QToolButton:hover{color:%2;}")
+                                      .arg(fgMuted, pri));
+        QObject::connect(maxBtn, &QToolButton::clicked, this,
+                         [this, paneIndex]() { this->setActivePane(paneIndex); });
+        h->addWidget(maxBtn);
+        v->addWidget(hdr);
+        view->setParent(frame);
+        v->addWidget(view, 1);
+        hdr->installEventFilter(this);
+        if (headerOut) *headerOut = hdr;
+        return frame;
+    };
+
+    QHBoxLayout *ctrl3d = nullptr, *ctrl2d = nullptr;
+    QLabel *dot3d = nullptr, *dot2d = nullptr;
+    QWidget *hdr3d = nullptr, *hdr2d = nullptr;
+    m_pane3dFrame = wrapPane(m_renderStack, 0, u"3D View"_s, u"volume"_s,
+                             &dot3d, &hdr3d, &ctrl3d);
+    m_pane2dFrame = wrapPane(ui->vtkImage, 1, u"2D Slice"_s, QString(),
+                             &dot2d, &hdr2d, &ctrl2d);
+    // §3.0: the moment map gets its OWN host widget (not a render-window swap on
+    // ui->vtkImage), so Slice and Moment can be shown at once (4-pane, §3.2). It
+    // lives beside the slice widget in the same 2-D frame; only one is visible at a
+    // time (changeImageRenderer). setRenderWindow is deferred to after
+    // setupMomentRenderer() has built momentWin's renderer + interactor.
+    if (!m_vtkMoment)
+        m_vtkMoment = new QVTKOpenGLNativeWidget();
+    if (auto *v2d = qobject_cast<QVBoxLayout *>(m_pane2dFrame->layout())) {
+        m_vtkMoment->setParent(m_pane2dFrame);
+        v2d->addWidget(m_vtkMoment, 1);
+        m_vtkMoment->hide();
+    }
+    m_pane3dDot = dot3d;
+    m_pane2dDot = dot2d;
+    m_pane3dHeader = hdr3d;
+    m_pane2dHeader = hdr2d;
+    m_pane3dHeaderControls = ctrl3d;
+
+    // 3D header control: an Auto / Local / Remote segmented control (spec #11a) —
+    // a control, not a label. Bound to the existing render-mode actions; the old
+    // status-bar "RENDER: LOCAL" badge is retired.
+    if (ctrl3d) {
+        auto *rmode = new SegmentedToggle();
+        rmode->addItem(u"Auto"_s, u"Choose local or remote rendering automatically."_s);
+        rmode->addItem(u"Local"_s, u"Render on this machine."_s);
+        rmode->addItem(u"Remote"_s, u"Render on the backend GPU and stream it."_s);
+        const auto currentIdx = [this]() -> int {
+            if (m_actionRenderLocal && m_actionRenderLocal->isChecked()) return 1;
+            if (m_actionRenderRemote && m_actionRenderRemote->isChecked()) return 2;
+            return 0;
+        };
+        rmode->setCurrentIndex(currentIdx());
+        QObject::connect(rmode, &SegmentedToggle::currentIndexChanged, this, [this](int i) {
+            QAction *a = (i == 1) ? m_actionRenderLocal
+                                  : (i == 2) ? m_actionRenderRemote : m_actionRenderAuto;
+            if (a && !a->isChecked())
+                a->trigger();
+        });
+        const auto syncIdx = [rmode, currentIdx]() {
+            QSignalBlocker b(rmode);
+            rmode->setCurrentIndex(currentIdx());
+        };
+        for (QAction *a : { m_actionRenderAuto, m_actionRenderLocal, m_actionRenderRemote })
+            if (a) QObject::connect(a, &QAction::toggled, rmode, [syncIdx](bool) { syncIdx(); });
+        ctrl3d->insertWidget(ctrl3d->count() - 1, rmode);
+        if (m_renderModeBadge) {   // retire the status-bar badge (superseded)
+            this->statusBar()->removeWidget(m_renderModeBadge);
+            m_renderModeBadge->hide();
+        }
+    }
+    // 2D header control: Slice / Moment segmented (re-host the assembler's combo).
+    if (auto *c2 = m_uiAssembler->combo2dMode()) {
+        rehost(c2);
+        ctrl2d->insertWidget(ctrl2d->count() - 1, c2);
+    }
+
+    // Wrap the raw views (now inside frames) back into the splitter.
+    m_paneSplitter->insertWidget(0, m_pane3dFrame);
+    m_paneSplitter->insertWidget(1, m_pane2dFrame);
+    m_paneSplitter->setStretchFactor(0, 1);
+    m_paneSplitter->setStretchFactor(1, 1);
+
+    // Re-fit the 2-D data area into its gutter whenever the pane changes size
+    // (deferred in eventFilter so VTK has adopted the new size first). Both 2-D
+    // hosts are watched — either can be the visible one (§3.0).
+    ui->vtkImage->installEventFilter(this);
+    if (m_vtkMoment)
+        m_vtkMoment->installEventFilter(this);
+
+    // ── Centre toolbar (h30): 1/2/4 · 3D/2D · Linked · cursor readout ─────────
+    auto *toolbar = new QWidget();
+    toolbar->setObjectName(u"paneToolbar"_s);
+    toolbar->setFixedHeight(30);
+    auto *tb = new QHBoxLayout(toolbar);
+    tb->setContentsMargins(8, 0, 8, 0);
+    tb->setSpacing(8);
+
+    auto *paneCount = new SegmentedToggle(toolbar);
+    paneCount->addItem(u"1"_s);
+    paneCount->addItem(u"2"_s);
+    paneCount->addItem(u"4"_s);
+    paneCount->setCurrentIndex(1);       // two panes on screen today
+    paneCount->setMaximumWidth(96);
+    QObject::connect(paneCount, &SegmentedToggle::currentIndexChanged, this,
+                     [this](int i) { this->applyPaneLayout(i == 0 ? 1 : (i == 1 ? 2 : 4)); });
+    tb->addWidget(paneCount);
+
+    auto *pick3d2d = new SegmentedToggle(toolbar);
+    pick3d2d->addItem(u"3D"_s);
+    pick3d2d->addItem(u"2D"_s);
+    pick3d2d->setMaximumWidth(72);
+    pick3d2d->setVisible(false);         // only meaningful at paneCount==1 (Step 3)
+    tb->addWidget(pick3d2d);
+
+    auto *linked = new QToolButton(toolbar);
+    linked->setText(u" Linked"_s);
+    linked->setCheckable(true);
+    linked->setCursor(Qt::PointingHandCursor);
+    linked->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    {
+        QColor c(QString::fromLatin1(VisivoTheme::kOnSurfaceVariant()));
+        linked->setIcon(QIcon(VisivoTheme::renderThemeIcon(u":/icons/rail_viz.svg"_s, 13, &c)));
+    }
+    linked->setStyleSheet(
+            QStringLiteral("QToolButton{background:transparent;border:1px solid %1;border-radius:5px;"
+                           "color:%2;font-size:11px;padding:2px 8px;}"
+                           "QToolButton:checked{color:%3;border-color:%3;}")
+                    .arg(QLatin1StringView(VisivoTheme::kOutline()), fgMuted, pri));
+    // Toggling drives setLinkViews() directly. The reverse sync (action → chip)
+    // is wired in setupInspector(), which runs after m_actLinkViews is created.
+    QObject::connect(linked, &QToolButton::toggled, this,
+                     [this](bool on) { this->setLinkViews(on); });
+    m_paneLinkedBtn = linked;
+    tb->addWidget(linked);
+    auto *linkedQual = new QLabel(u"camera · channel · LUT"_s, toolbar);
+    linkedQual->setStyleSheet(QStringLiteral("color:%1; font-family:'JetBrains Mono','SF Mono',"
+                                             "monospace; font-size:10px;").arg(fgMuted));
+    tb->addWidget(linkedQual);
+    tb->addStretch(1);
+
+    // Cursor readout — re-host the status hover label into the toolbar (Fix 6
+    // finalises the rail; this already moves the readout to where the spec wants).
+    if (this->hoverReadoutLabel) {
+        this->statusBar()->removeWidget(this->hoverReadoutLabel);
+        this->hoverReadoutLabel->setParent(toolbar);
+        this->hoverReadoutLabel->show();
+        tb->addWidget(this->hoverReadoutLabel);
+    }
+
+    // ── Central column: [toolbar] above [pane splitter] ──────────────────────
+    auto *centralLayout = qobject_cast<QHBoxLayout *>(ui->centralwidget->layout());
+    if (centralLayout)
+        centralLayout->removeWidget(m_paneSplitter);
+    auto *centreCol = new QWidget(ui->centralwidget);
+    auto *cv = new QVBoxLayout(centreCol);
+    cv->setContentsMargins(0, 0, 0, 0);
+    cv->setSpacing(8);
+    cv->addWidget(toolbar);
+    cv->addWidget(m_paneSplitter, 1);
+    if (centralLayout)
+        centralLayout->addWidget(centreCol);
+
+    refreshPaneActiveStyles();
 }
 
 void vtkWindowCube::setupInspector()
@@ -5589,24 +6223,72 @@ void vtkWindowCube::setupInspector()
     if (!panel)
         return;
 
-    // ── Properties ────────────────────────────────────────────────────────────
-    panel->setProperties({
-            { u"Dataset"_s, QFileInfo(this->filepath).fileName() },
-            { u"Type"_s, QStringLiteral("CUBE · %1×%2×%3")
-                                 .arg(this->remoteDatasetWidth)
-                                 .arg(this->remoteDatasetHeight)
-                                 .arg(this->remoteDatasetDepth) },
-            { u"Path"_s, this->filepath },
-            { u"Session"_s, this->remoteSessionId },
-            { u"Backend"_s, this->remoteBackendUrl },
-    });
+    // Collapsing/expanding a dock resizes the panes; the gutter fit is size-driven
+    // and the QEvent::Resize filter is not reliable when both docks change in the
+    // same event-loop turn (§4.1.2).
+    connect(this->m_workspaceChrome, &WorkspaceChrome::dockCollapseChanged, this,
+            [this]() { QTimer::singleShot(0, this, [this]() { this->layout2dPane(); }); });
+
+    // ── Properties — captioned KV sections (spec #11a: never needs a scrollbar)
+    // identity · DATASET · STATISTICS (2D image + 3D cube) · WCS. Rendering
+    // controls live in the LEFT dock, not here. The statistics values are the
+    // live stat widgets re-hosted from the (parked) info page, so they stay in
+    // sync with updateInfoStats().
+    panel->clearProperties();
+    panel->addPropertyRow(u"Dataset"_s, QFileInfo(this->filepath).fileName());
+    panel->addPropertyRow(u"Type"_s, QStringLiteral("CUBE · %1×%2×%3")
+                                             .arg(this->remoteDatasetWidth)
+                                             .arg(this->remoteDatasetHeight)
+                                             .arg(this->remoteDatasetDepth));
+
+    panel->addPropertyCaption(u"DATASET"_s);
+    {   // Path elided on the LEFT so the filename + extension always show.
+        const QString elided = QFontMetrics(QApplication::font())
+                                       .elidedText(this->filepath, Qt::ElideLeft, 180);
+        panel->addPropertyRow(u"Path"_s, elided);
+    }
+    panel->addPropertyRow(u"Session"_s, this->remoteSessionId);
+    panel->addPropertyRow(u"Backend"_s, this->remoteBackendUrl);
+    panel->addPropertyRow(u"Sanity"_s, this->remoteWcsStatus.isEmpty() ? u"—"_s
+                                                                       : this->remoteWcsStatus);
+
+    // Flatten a re-hosted stat widget so it reads as a value, not an input box.
+    const QString statCss =
+            QStringLiteral("border:none; background:transparent; color:%1;"
+                           " font-family:'JetBrains Mono','SF Mono',monospace; font-size:11px;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurface()));
+    auto statVal = [&](QWidget *w) { if (w) w->setStyleSheet(statCss); return w; };
+
+    panel->addPropertyCaption(u"STATISTICS"_s);
+    panel->addPropertyCaption(u"2D image"_s, /*sub=*/true);
+    panel->addPropertyRow(u"Min"_s,  statVal(ui->lineImgMin));
+    panel->addPropertyRow(u"Max"_s,  statVal(ui->lineImgMax));
+    panel->addPropertyRow(u"Mean"_s, statVal(ui->lineImgMean));
+    panel->addPropertyRow(u"RMS"_s,  statVal(ui->lineImgRms));
+    panel->addPropertyCaption(u"3D cube"_s, /*sub=*/true);
+    panel->addPropertyRow(u"Min"_s,  statVal(ui->lineCubeMin));
+    panel->addPropertyRow(u"Max"_s,  statVal(ui->lineCubeMax));
+    panel->addPropertyRow(u"Mean"_s, statVal(ui->lineCubeMean));
+    panel->addPropertyRow(u"RMS"_s,  statVal(ui->lineCubeRms));
+
+    panel->addPropertyCaption(u"WCS"_s);
+    panel->addPropertyRow(u"Status"_s, this->remoteWcsStatus.isEmpty() ? u"—"_s
+                                                                      : this->remoteWcsStatus);
+    panel->addPropertyRow(u"Frame"_s, this->currentWcsFrameLabel());
+    panel->addPropertyRow(u"Spectral axis"_s, this->spectralAxisTitle());
     // Design #1d: the view/rendering controls (3D + 2D settings) live in the LEFT
     // column's LAYERS block, NOT in the Inspector — that keeps Properties compact
     // and fills the otherwise-empty Session Data column. Only info/stats stays in
     // Properties.
-    if (this->m_inspectorPage3d)   this->m_workspaceChrome->addSessionLayers(this->m_inspectorPage3d);
-    if (this->m_inspectorPage2d)   this->m_workspaceChrome->addSessionLayers(this->m_inspectorPage2d);
-    if (this->m_inspectorPageInfo) panel->addPropertiesSection(this->m_inspectorPageInfo);
+    // Left dock: the FLAT rebuilt controls (DISPLAY—3D / LAYERS / INTERACTION /
+    // SLICE ANIMATION), re-hosting the wired widgets out of the assembler's cards.
+    // The old card pages (m_inspectorPage3d/2d/Info) stay parked in the hidden
+    // holder — their remaining widgets are used later (2D pane header, stats KV).
+    this->m_workspaceChrome->addSessionLayers(this->buildFlatLeftDockControls());
+
+    // Step-0 instrumentation: report (post-layout) whether Properties fits
+    // without scrolling, naming the measured widget.
+    panel->logPropertiesFit();
     // Re-home the kept-alive Tools page as a HIDDEN child of the inspector (not a
     // free child of the QMainWindow, where it painted at (0,0) over the left dock).
     if (this->m_orphanToolsPage) {
@@ -5614,14 +6296,26 @@ void vtkWindowCube::setupInspector()
         this->m_orphanToolsPage->hide();
     }
 
-    // View → "Inspector Panel" toggles the dock now that it exists.
-    if (auto *dock = this->m_workspaceChrome->inspectorDock()) {
-        if (this->actionShowControlsSidebar) {
-            QObject::connect(this->actionShowControlsSidebar, &QAction::toggled,
-                             dock, &QDockWidget::setVisible);
-            QObject::connect(dock, &QDockWidget::visibilityChanged,
-                             this->actionShowControlsSidebar, &QAction::setChecked);
-        }
+    // View → "Inspector Panel" expands/collapses the dock (never setVisible, which
+    // would hide the rail to 0 px and bypass the collapse state — §4.1).
+    if (this->actionShowControlsSidebar) {
+        QObject::connect(this->actionShowControlsSidebar, &QAction::toggled, this,
+                         [this](bool checked) {
+                             if (this->m_workspaceChrome)
+                                 this->m_workspaceChrome->setInspectorCollapsed(!checked);
+                         });
+        QObject::connect(this->m_workspaceChrome, &WorkspaceChrome::dockCollapseChanged, this,
+                         [this]() {
+                             if (!this->m_workspaceChrome)
+                                 return;
+                             QSignalBlocker b(this->actionShowControlsSidebar);
+                             this->actionShowControlsSidebar->setChecked(
+                                     !this->m_workspaceChrome->inspectorCollapsed());
+                         });
+        // Seed the checkstate from the (already-applied) collapsed default.
+        QSignalBlocker b(this->actionShowControlsSidebar);
+        this->actionShowControlsSidebar->setChecked(
+                !this->m_workspaceChrome->inspectorCollapsed());
     }
 
     // ── Analysis (tools trigger the existing dialog QActions) ─────────────────
@@ -5640,20 +6334,20 @@ void vtkWindowCube::setupInspector()
     add(u"Sources & Kinematics"_s, u"Kinematic Lasso"_s, this->m_actKinematicLasso);
     add(u"Sources & Kinematics"_s, u"Kinematic Model Overlay…"_s, this->m_actKinematicModel);
 
-    // ── Linked (reuse the existing cross-viewer link action) ──────────────────
-    panel->setLinkedSupported(true);
-    if (this->m_actLinkViews) {
-        panel->setLinkedChecked(this->m_actLinkViews->isChecked());
-        QObject::connect(panel, &InspectorPanel::linkedToggled, this,
-                         [this](bool on) { this->setLinkViews(on); });
-        QObject::connect(this->m_actLinkViews, &QAction::toggled, panel,
-                         [panel](bool on) { panel->setLinkedChecked(on); });
+    // (Pane-layout 1/2/4 + Linked now live in the centre toolbar — setupPaneChrome.)
+    // Wire the toolbar Linked chip ↔ m_actLinkViews now that the action exists.
+    if (this->m_paneLinkedBtn && this->m_actLinkViews) {
+        {
+            QSignalBlocker b(this->m_paneLinkedBtn);
+            this->m_paneLinkedBtn->setChecked(this->m_actLinkViews->isChecked());
+        }
+        QObject::connect(this->m_actLinkViews, &QAction::toggled, this->m_paneLinkedBtn,
+                         [btn = this->m_paneLinkedBtn](bool on) {
+                             if (!btn) return;
+                             QSignalBlocker b(btn);
+                             btn->setChecked(on);
+                         });
     }
-
-    // ── Pane layout (1 / 2 / 4 over the two view docks) ───────────────────────
-    panel->setPaneLayoutEnabled(true);
-    QObject::connect(panel, &InspectorPanel::paneLayoutRequested, this,
-                     [this](int panes) { this->applyPaneLayout(panes); });
 
     // Belt-and-suspenders: park any stray direct-child widget of the window that
     // is not the central widget / a dock / a toolbar / the menu or status bar —
@@ -5684,14 +6378,14 @@ void vtkWindowCube::parkOrphanDirectChildren()
 
 void vtkWindowCube::applyPaneLayout(int panes)
 {
-    if (!this->m_renderStack || !ui->vtkImage)
+    if (!this->m_pane3dFrame || !this->m_pane2dFrame)
         return;
-    // The cube has two central panes (3D + 2D) in a splitter. "1" shows only the
-    // 2D view; "2"/"4" restore the side-by-side layout. (True 4-up awaits more
-    // product panes — the button is present for design parity.)
+    // The two central panes are wrapped in header frames; show/hide the FRAMES so
+    // a hidden pane takes its header + border with it. "1" shows only the 2D pane;
+    // "2"/"4" restore side-by-side. (True 4-up awaits more product panes — Step 3.)
     if (panes == 1) {
-        this->m_renderStack->hide();
-        ui->vtkImage->show();
+        this->m_pane3dFrame->hide();
+        this->m_pane2dFrame->show();
     } else {
         this->resetWorkspaceLayout();
     }
@@ -5732,13 +6426,18 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
     m_uiAssembler->sync2dModeSidebar(false);
     this->update2dModeVisibility(false);
 
-    ui->vtkImage->setRenderWindow(this->momentWin);
+    // §3.0: show the moment host widget (actionMomentMap was checked above, so
+    // active2dWin() is now momentWin) — no render-window swap on ui->vtkImage.
+    if (ui->vtkImage) ui->vtkImage->setVisible(false);
+    if (m_vtkMoment)  m_vtkMoment->setVisible(true);
     ui->labelImg->setText(u"Moment Map:"_s);
-    this->coordinate->SetViewport(ui->vtkImage->renderWindow()->GetRenderers()->GetFirstRenderer());
+    if (auto *r = this->momentWin->GetRenderers()->GetFirstRenderer())
+        this->coordinate->SetViewport(r);
     if (auto *renderer = this->momentWin->GetRenderers()->GetFirstRenderer()) {
         renderer->ResetCamera();
         renderer->ResetCameraClippingRange();
     }
+    this->layout2dPaneFor(/*slice=*/false, true);   // letterbox the new moment map into the gutter
     this->lastMomentOverlayVisibleBounds = { std::numeric_limits<double>::quiet_NaN(),
                                              std::numeric_limits<double>::quiet_NaN(),
                                              std::numeric_limits<double>::quiet_NaN(),
@@ -5766,7 +6465,7 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
             << QStringLiteral("[perf][moment] apply data+ui sync: %1 ms").arg(totalTimer.elapsed());
     QElapsedTimer renderTimer;
     renderTimer.start();
-    ui->vtkImage->renderWindow()->Render();
+    this->active2dWin()->Render();
     QMetaObject::invokeMethod(
             this,
             [this]() {
@@ -5780,7 +6479,7 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
                     this->momentWin->Render();
                 }
                 if (ui && ui->vtkImage) {
-                    ui->vtkImage->update();
+                    if (auto *w2d = this->active2dWidget()) w2d->update();
                 }
             },
             Qt::QueuedConnection);
@@ -5793,7 +6492,7 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
     // the cube window itself when the tree row is picked. Stable id → recomputing
     // updates the same row instead of stacking duplicates.
     this->registerAnalysisProduct(
-            u"moment"_s, u"Moment map"_s, {}, this,
+            u"moment"_s, u"Moment 0"_s, this->m_momentProvenanceParams, this,
             QStringLiteral("moment@%1").arg(this->datasetPersistKey()));
 }
 
@@ -5898,42 +6597,51 @@ void vtkWindowCube::setCubeOpenActionsEnabled(bool enabled)
     ui->actionExtractSpectrum->setEnabled(enabled);
 }
 
-void vtkWindowCube::setCubeOpenStateLabel(const QString &text)
+void vtkWindowCube::setCubeOpenStateLabel(const QString & /*text*/)
 {
-    if (!this->cubeOpenStateLabel) {
-        return;
-    }
-
-    if (text.isEmpty()) {
+    // §3.0c: retired. This standalone label duplicated the load-state the status
+    // panel already shows ("Remote · Full resolution"), leaving two "Full
+    // resolution" strings in the rail. Kept as a no-op (callers unchanged); the
+    // widget stays hidden.
+    if (this->cubeOpenStateLabel)
         this->cubeOpenStateLabel->hide();
-        this->cubeOpenStateLabel->clear();
-        return;
-    }
-
-    this->cubeOpenStateLabel->setText(text);
-    this->cubeOpenStateLabel->show();
 }
 
 void vtkWindowCube::setInteractorStyleImage()
 {
-    vtkNew<vtkInteractorStyleImage> style;
-    ui->vtkImage->renderWindow()->GetInteractor()->SetInteractorStyle(style);
-    ui->vtkImage->renderWindow()->Render();
+    // §3.0: slice and moment have separate interactors — set the style on BOTH so
+    // the mode holds whichever 2-D widget is shown.
+    for (auto *win : { this->sliceWin.GetPointer(), this->momentWin.GetPointer() }) {
+        if (win && win->GetInteractor()) {
+            vtkNew<vtkInteractorStyleImage> style;
+            win->GetInteractor()->SetInteractorStyle(style);
+        }
+    }
+    if (auto *win = this->active2dWin())
+        win->Render();
 }
 
 void vtkWindowCube::setInteractorStyleRegion()
 {
-    vtkNew<vtkInteractorStyleUser> style;
-    ui->vtkImage->renderWindow()->GetInteractor()->SetInteractorStyle(style);
-    ui->vtkImage->renderWindow()->Render();
+    for (auto *win : { this->sliceWin.GetPointer(), this->momentWin.GetPointer() }) {
+        if (win && win->GetInteractor()) {
+            vtkNew<vtkInteractorStyleUser> style;
+            win->GetInteractor()->SetInteractorStyle(style);
+        }
+    }
+    if (auto *win = this->active2dWin())
+        win->Render();
 }
 
 void vtkWindowCube::setInteractorStyleProfile()
 {
     if (!this->profileWidget) {
+        // Profile (spectrum) extraction draws on the SLICE — a slice-mode operation.
         vtkNew<vtkInteractorStyleProfile> style;
-        ui->vtkImage->renderWindow()->GetInteractor()->SetInteractorStyle(style);
-        ui->vtkImage->renderWindow()->Render();
+        if (this->sliceWin && this->sliceWin->GetInteractor())
+            this->sliceWin->GetInteractor()->SetInteractorStyle(style);
+        if (this->sliceWin)
+            this->sliceWin->Render();
 
         this->profileWidget = new ProfileWidget(
                 style, vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0)),
@@ -5962,9 +6670,14 @@ void vtkWindowCube::changeImageRenderer()
 
     double imgRange[2];
     vtkImageData *imgForStats = nullptr;
+    const bool slice = ui->actionSlice->isChecked();
 
-    if (ui->actionSlice->isChecked()) {
-        ui->vtkImage->setRenderWindow(this->sliceWin);
+    // §3.0: Slice / Moment is now WHICH host widget is visible in the 2-D slot, not
+    // which render window is on one widget — so the two can coexist at 4 panes.
+    if (ui->vtkImage) ui->vtkImage->setVisible(slice);
+    if (m_vtkMoment)  m_vtkMoment->setVisible(!slice);
+
+    if (slice) {
         ui->labelImg->setText(u"Slice:"_s);
         auto *sliceImage = vtkImageData::SafeDownCast(
                 this->remoteSliceDisplaySource->GetOutputDataObject(0));
@@ -5976,7 +6689,6 @@ void vtkWindowCube::changeImageRenderer()
             imgRange[1] = 0.;
         }
     } else {
-        ui->vtkImage->setRenderWindow(this->momentWin);
         ui->labelImg->setText(u"Moment Map:"_s);
         auto *momentImage = vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
         imgForStats = momentImage;
@@ -5994,10 +6706,11 @@ void vtkWindowCube::changeImageRenderer()
     computeImageStats(imgForStats, mean, rms);
     ui->lineImgMean->setText(fmtStat(mean));
     ui->lineImgRms->setText(fmtStat(rms));
-    this->coordinate->SetViewport(ui->vtkImage->renderWindow()->GetRenderers()->GetFirstRenderer());
+    if (auto *win = this->active2dWin())
+        this->coordinate->SetViewport(win->GetRenderers()->GetFirstRenderer());
     if (this->probeModeActive && this->probeValid) {
         this->refreshProbeOverlay();
-        auto *currentImage = this->viewingSlice()
+        auto *currentImage = slice
                 ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
                 : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
         this->updateProbeReadout(currentImage);
@@ -6009,10 +6722,12 @@ void vtkWindowCube::changeImageRenderer()
         this->refreshPvOverlay();
     }
     // Keep the 2D sidebar in sync with the active mode.
-    m_uiAssembler->sync2dModeSidebar(ui->actionSlice->isChecked());
-    this->update2dModeVisibility(ui->actionSlice->isChecked());
+    m_uiAssembler->sync2dModeSidebar(slice);
+    this->update2dModeVisibility(slice);
     this->updateInfoStatsPage();
-    ui->vtkImage->renderWindow()->Render();
+    this->layout2dPaneFor(slice, /*force=*/true);   // re-letterbox the newly-shown 2-D window
+    if (auto *win = this->active2dWin())
+        win->Render();
 }
 
 void vtkWindowCube::changeCubeRender()
@@ -6085,7 +6800,7 @@ void vtkWindowCube::changeCubeColor()
 
 void vtkWindowCube::renderImage()
 {
-    ui->vtkImage->renderWindow()->Render();
+    this->active2dWin()->Render();
 }
 
 void vtkWindowCube::startAsyncIsosurface(double isoValue)

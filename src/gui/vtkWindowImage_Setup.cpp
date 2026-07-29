@@ -587,14 +587,25 @@ void vtkWindowImage::setupInspector()
         this->m_orphanToolsPage->hide();
     }
 
-    // View → "Inspector Panel" toggles the dock.
-    if (auto *dock = this->m_workspaceChrome->inspectorDock()) {
-        if (this->actionShowControlsSidebar) {
-            QObject::connect(this->actionShowControlsSidebar, &QAction::toggled,
-                             dock, &QDockWidget::setVisible);
-            QObject::connect(dock, &QDockWidget::visibilityChanged,
-                             this->actionShowControlsSidebar, &QAction::setChecked);
-        }
+    // View → "Inspector Panel" expands/collapses the dock (never setVisible, which
+    // would hide the rail to 0 px and bypass the collapse state — §4.1).
+    if (this->actionShowControlsSidebar && this->m_workspaceChrome) {
+        QObject::connect(this->actionShowControlsSidebar, &QAction::toggled, this,
+                         [this](bool checked) {
+                             if (this->m_workspaceChrome)
+                                 this->m_workspaceChrome->setInspectorCollapsed(!checked);
+                         });
+        QObject::connect(this->m_workspaceChrome, &WorkspaceChrome::dockCollapseChanged, this,
+                         [this]() {
+                             if (!this->m_workspaceChrome)
+                                 return;
+                             QSignalBlocker b(this->actionShowControlsSidebar);
+                             this->actionShowControlsSidebar->setChecked(
+                                     !this->m_workspaceChrome->inspectorCollapsed());
+                         });
+        QSignalBlocker b(this->actionShowControlsSidebar);
+        this->actionShowControlsSidebar->setChecked(
+                !this->m_workspaceChrome->inspectorCollapsed());
     }
 
     const auto add = [panel](const QString &grp, const QString &label, QAction *a) {
@@ -612,9 +623,8 @@ void vtkWindowImage::setupInspector()
     add(u"Measure"_s, u"Ruler (Distance)"_s, this->m_actRuler);
     add(u"Measure"_s, u"Angle (3 Points)"_s, this->m_actAngle);
 
-    // Single-view window: no pane grid, no cross-viewer link.
-    panel->setPaneLayoutEnabled(false);
-    panel->setLinkedSupported(false);
+    // Single-view window: no pane grid / Linked (those live in the cube's centre
+    // toolbar, not the image viewer).
 
     // Belt-and-suspenders: neutralise any stray direct-child widget painting at (0,0).
     this->parkOrphanDirectChildren();
