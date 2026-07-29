@@ -5718,7 +5718,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         auto *content = new QWidget(root);
         auto *cl = new QVBoxLayout(content);
         cl->setContentsMargins(10, 0, 10, 8);
-        cl->setSpacing(7);
+        cl->setSpacing(6);   // rows are fixed 28 → step ≈ 34 (§3.0c density)
         content->setVisible(expanded);
         rootLay->addWidget(content);
         QObject::connect(hdr, &QToolButton::toggled, content,
@@ -5783,14 +5783,17 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
                     u" font-size:12px; padding:2px 8px; }"_s);
             h->addWidget(ui->lineThreshold, 0);
         }
+        r->setFixedHeight(28);   // deterministic row step (§3.0c density)
         disp->addWidget(r);
     }
     if (ui->sliderThreshold) {
         rehost(ui->sliderThreshold);
         ui->sliderThreshold->setParent(root);
-        // Compact row step (§3.0c): the slider's tall default sizeHint made the
-        // Threshold→slider→Color-map step ~50 px; cap it so the column steps ~34.
-        ui->sliderThreshold->setMaximumHeight(22);
+        // Compact row step (§3.0c): setMaximumHeight alone loses to the QSlider's
+        // style-imposed minimumHeight (groove + 14px handle + margin:-5px), so the
+        // slider kept rendering ~39 px and dominated the Threshold→slider step.
+        // setFixedHeight forces min==max==22.
+        ui->sliderThreshold->setFixedHeight(22);
         disp->addWidget(ui->sliderThreshold);
     }
     {   // Color map: LUT combo + "Edit" link (no full-width "Advanced…").
@@ -5826,6 +5829,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
                             .arg(pri));
             h->addWidget(edit, 0);
         }
+        r->setFixedHeight(28);   // deterministic row step (§3.0c density)
         disp->addWidget(r);
     }
     QWidget *surfRow = nullptr;
@@ -5840,6 +5844,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         rehost(ui->btnCubeColor);
         ui->btnCubeColor->setParent(surfRow);
         h->addWidget(ui->btnCubeColor, 0);
+        surfRow->setFixedHeight(28);   // deterministic row step (§3.0c density)
         disp->addWidget(surfRow);
     }
     // Volume-mode / surface-color rows follow the render mode. Drive off the

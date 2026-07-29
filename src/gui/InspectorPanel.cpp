@@ -289,10 +289,30 @@ void InspectorPanel::showProvenance(const QString &title, const QVariantMap &par
         m_provBody->setText(u"No recorded parameters for this product."_s);
         return;
     }
-    QStringList lines;
+    // Same grid as Properties (§3.0c): key left/muted, value right/mono. And a
+    // preferred order — Order is the product's identity, so it leads; Channels/Mask
+    // are its parameters. Unknown keys follow, in insertion/alpha order.
+    QStringList keys;
+    for (const QString &k : { u"Order"_s, u"Channels"_s, u"Mask"_s, u"Scope"_s, u"Unit"_s })
+        if (params.contains(k))
+            keys << k;
     for (auto it = params.constBegin(); it != params.constEnd(); ++it)
-        lines << QStringLiteral("%1 = %2").arg(it.key(), it.value().toString());
-    m_provBody->setText(lines.join(u'\n'));
+        if (!keys.contains(it.key()))
+            keys << it.key();
+
+    const QString muted = QString::fromLatin1(VisivoTheme::kOnSurfaceVariant());
+    const QString ink = QString::fromLatin1(VisivoTheme::kOnSurface());
+    QString html = u"<table width='100%' cellspacing='0' cellpadding='2'>"_s;
+    for (const QString &k : std::as_const(keys)) {
+        html += QStringLiteral(
+                        "<tr><td style='color:%1; font-family:Lato; font-size:11px;'>%2</td>"
+                        "<td align='right' style='color:%3;"
+                        " font-family:\"JetBrains Mono\",\"SF Mono\",monospace; font-size:11px;'>%4</td></tr>")
+                        .arg(muted, k.toHtmlEscaped(), ink, params.value(k).toString().toHtmlEscaped());
+    }
+    html += u"</table>"_s;
+    m_provBody->setText(html);
+    m_provBody->setTextFormat(Qt::RichText);
 }
 
 void InspectorPanel::clearProvenance()
