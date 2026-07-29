@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Rightward chevron for the collapsed QTreeView branch (§3.2). Explicit width/height
+     so Qt's SVG renderer does NOT stretch it to the whole branch rect (viewBox alone
+     has no intrinsic size). Same baked stroke as chevron_down.svg (§3.0c). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"
+     fill="none" stroke="#D0DEFF" stroke-width="1.6"
+     stroke-linecap="round" stroke-linejoin="round">
+  <polyline points="3.5,2 7,5 3.5,8"/>
+</svg>

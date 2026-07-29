@@ -34,9 +34,20 @@ QString productBadge(const QString &kind)
     return b.isEmpty() ? kind.left(4).toUpper() : b;
 }
 
+// Moment products share kind "moment"; their badge must carry the ORDER (MOM0, MOM1, …)
+// or every order reads as MOM0 (§3.2). The order lives in the id ("moment<order>@…").
+QString momentBadge(const AnalysisProduct &p)
+{
+    const int at = p.productId.indexOf(u'@');
+    if (p.productId.startsWith(u"moment"_s) && at > 6)
+        return u"MOM"_s + p.productId.mid(6, at - 6);
+    return u"MOM"_s;
+}
+
 QString productText(const AnalysisProduct &p)
 {
-    const QString badge = p.kind.isEmpty() ? QString() : QStringLiteral("%1  ").arg(productBadge(p.kind));
+    const QString chip = (p.kind == u"moment"_s) ? momentBadge(p) : productBadge(p.kind);
+    const QString badge = p.kind.isEmpty() ? QString() : QStringLiteral("%1  ").arg(chip);
     QString t = badge + (p.label.isEmpty() ? p.kind : p.label);
     if (p.status == u"running"_s)
         t += QStringLiteral(" · %1%").arg(int(p.progress * 100.0 + 0.5));
@@ -60,6 +71,7 @@ SessionDataTree::SessionDataTree(QWidget *parent)
     m_tree->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_tree->setSelectionMode(QAbstractItemView::SingleSelection);
     m_tree->setIconSize(QSize(40, 26));
+    m_tree->setIndentation(14);                // tight indent; branch chevron is 10px (§3.2)
     m_tree->setExpandsOnDoubleClick(false);   // double-click activates products
     m_tree->header()->setStretchLastSection(true);
     // Soft selection (§3.0c): a full-width solid-cyan band erased the parent/child
@@ -71,6 +83,16 @@ SessionDataTree::SessionDataTree(QWidget *parent)
             "  background: rgba(4, 138, 191, 0.16);"
             "  border-left: 2px solid %1;"
             "  color: %2;"
+            "}"
+            // Themed branch chevron — the default triangle stays black in dark mode
+            // (§3.2). Same baked SVG the combos use (§3.0c), not the system indicator.
+            "QTreeView::branch:has-children:!has-siblings:closed,"
+            "QTreeView::branch:closed:has-children:has-siblings {"
+            "  image: url(:/icons/chevron_right.svg);"
+            "}"
+            "QTreeView::branch:open:has-children:!has-siblings,"
+            "QTreeView::branch:open:has-children:has-siblings {"
+            "  image: url(:/icons/chevron_down.svg);"
             "}")
             .arg(QLatin1StringView(VisivoTheme::kPrimary()),
                  QLatin1StringView(VisivoTheme::kOnSurface())));

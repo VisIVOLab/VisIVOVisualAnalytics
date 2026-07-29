@@ -6575,12 +6575,53 @@ void vtkWindowCube::refreshPaneChrome()
             s.titleBtn->setPopupMode(QToolButton::InstantPopup);
             s.titleBtn->setText(viewTitle(s.view) + u"  ▾"_s);
             QMenu *menu = new QMenu(s.titleBtn);
+            menu->setToolTipsVisible(true);
             for (const PaneView &cand : choices) {
-                QAction *a = menu->addAction(viewTitle(cand));
+                // A choice already on screen is checked and carries the pane number that
+                // shows it (§3.2) — the dropdown answers "where is this?" at a glance.
+                int atPane = -1;
+                for (int p = 0; p < 4; ++p)
+                    if (m_slots[p].frame && m_slots[p].frame->isVisible()
+                        && m_slots[p].view == cand) {
+                        atPane = p;
+                        break;
+                    }
+                // Collision (§3.2): a DIFFERENT view already using cand's render widget on
+                // a visible pane, while THIS pane doesn't own that widget. In B2 all moment
+                // products share the single pipeline, so a second pane can't show another
+                // moment — picking it would EVICT the on-screen one (a masked loss, not a
+                // swap). Disable + explain, rather than silently steal. Fixed views have
+                // distinct widgets so they never collide; relocating the SAME product
+                // (exact match, handled by the swap below) stays allowed. B3 gives each
+                // product its own Pane2DView widget → no collision → these re-enable.
+                QWidget *wCand = viewWidget(cand);
+                int collideJ = -1;
+                if (wCand && viewWidget(s.view) != wCand)
+                    for (int j = 0; j < 4; ++j)
+                        if (j != i && m_slots[j].frame && m_slots[j].frame->isVisible()
+                            && viewWidget(m_slots[j].view) == wCand
+                            && m_slots[j].view != cand) {
+                            collideJ = j;
+                            break;
+                        }
+                QString label = viewTitle(cand);
+                if (atPane >= 0)
+                    label += QStringLiteral("   ·  P%1").arg(atPane + 1);
+                QAction *a = menu->addAction(label);
                 a->setCheckable(true);
-                a->setChecked(cand == s.view);
+                a->setChecked(atPane >= 0);
+                if (collideJ >= 0) {
+                    a->setEnabled(false);
+                    a->setToolTip(QStringLiteral("%1 is already shown in P%2 — one moment map "
+                                                 "at a time")
+                                          .arg(viewTitle(m_slots[collideJ].view))
+                                          .arg(collideJ + 1));
+                    continue;
+                }
                 QObject::connect(a, &QAction::triggered, this, [this, i, cand]() {
-                    // Picking a view shown elsewhere swaps the two slots.
+                    // Picking a view already shown elsewhere RELOCATES it: swap the two
+                    // panes' views so neither goes blank (fixed views, or the same product
+                    // moved to another pane — nothing is lost).
                     for (int j = 0; j < 4; ++j) {
                         if (j != i && m_slots[j].view == cand) {
                             std::swap(m_slots[i].view, m_slots[j].view);
