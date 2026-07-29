@@ -503,6 +503,13 @@ void vtkWindowCube::updateProbePlot()
         // slice click no longer overwrites the pinned spectrum.
         QObject::connect(this->probePlotWidget, &ProfileWidget::freezeToggled,
                          this, [this](bool frozen) { this->probeFrozen = frozen; });
+        // §3.1: if a pane is already showing Spectrum, mount the just-created plot
+        // into it (it was empty until the widget existed).
+        for (int i = 0; i < 4; ++i)
+            if (m_slots[i].view == ViewId::Spectrum) {
+                mountView(i);
+                break;
+            }
         // Capture the action as a QPointer so the destroyed handler is
         // safe at app-shutdown time: the cube viewer's ui-> members are
         // wiped in ~vtkWindowCube before QObject::deleteChildren()
@@ -514,6 +521,14 @@ void vtkWindowCube::updateProbePlot()
         QObject::connect(this->probePlotWidget, &ProfileWidget::destroyed, this,
                          [this, actExtract]() {
                              this->probePlotWidget = nullptr;
+                             // §3.1: a Spectrum pane was showing this plot — swap it
+                             // back to the empty state so it doesn't go blank. Deferred
+                             // so the dying widget is fully gone before we re-lay hosts.
+                             QTimer::singleShot(0, this, [this]() {
+                                 for (int i = 0; i < 4; ++i)
+                                     if (m_slots[i].view == ViewId::Spectrum)
+                                         mountView(i);
+                             });
                              if (actExtract && actExtract->isChecked()) {
                                  actExtract->setChecked(false);
                              }

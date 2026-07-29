@@ -40,6 +40,7 @@ class PvController;
 class QAction;
 class QActionGroup;
 class QMenu;
+class QShortcut;
 class SidebarPanel;
 class CatalogueTableModel;
 class QDockWidget;
@@ -48,6 +49,7 @@ class QLabel;
 class QPushButton;
 class QSlider;
 class QSplitter;
+class SegmentedToggle;
 class QHBoxLayout;
 class QCheckBox;
 class QComboBox;
@@ -392,6 +394,68 @@ private:
     void setupPaneChrome();                          ///< centre toolbar + per-pane headers (Step 1)
     void setActivePane(int pane);
     void refreshPaneActiveStyles();
+
+    // ── §3.1 pane model: 4 slots, a view registry, one reconcile ──────────────
+    enum class ViewId { None, View3D, Slice2D, Moment0, Spectrum };
+    struct PaneSlot
+    {
+        QPointer<QFrame> frame;          ///< header + view, carries the active border
+        QPointer<QWidget> header;        ///< click → active
+        QPointer<QLabel> dot;            ///< active indicator
+        QPointer<QToolButton> titleBtn;  ///< plain text @ 1 pane, dropdown @ >1
+        QPointer<QLabel> qualifier;      ///< mono meta (e.g. "volume")
+        QPointer<QWidget> viewHost;      ///< the mounted view is reparented in here
+        QHBoxLayout *viewHostLayout{ nullptr };
+        QHBoxLayout *controls{ nullptr };   ///< per-view control slot in the header
+        QPointer<QToolButton> maxBtn;    ///< ⤢ maximize / ⤡ restore (§3.2)
+        ViewId view{ ViewId::None };
+    };
+    std::array<PaneSlot, 4> m_slots;
+    int m_paneCount{ 1 };                 ///< 1 / 2 / 4 (spec §3.1 default is 1)
+    QPointer<QSplitter> m_leftColumn;     ///< slot 0 (top) + slot 2 (bottom)
+    QPointer<QSplitter> m_rightColumn;    ///< slot 1 (top) + slot 3 (bottom)
+    QPointer<QWidget> m_viewParkingLot;   ///< hidden holder for off-screen views
+    // 2-pane direction: Auto derives from the container width; Rows/Cols is the
+    // user's explicit override (second click on the "2" glyph), persisted (§3.1).
+    enum class PaneDirection { Auto, Rows, Cols };
+    PaneDirection m_paneDirection{ PaneDirection::Auto };
+    QPointer<QWidget> m_momentEmptyState;    ///< shown in a Moment0 slot with no computed map
+    QPointer<QWidget> m_spectrumEmptyState;  ///< shown in a Spectrum slot with no probe yet
+    QWidget *emptyStateWidget(ViewId id);    ///< lazily builds the "what's missing + action" block
+    bool viewHasData(ViewId id) const;       ///< false → mount the empty state, not the render
+    QPointer<SegmentedToggle> m_paneCountToggle;
+    QPointer<SegmentedToggle> m_pick3d2d;
+    QPointer<SegmentedToggle> m_renderModeSeg;   ///< Auto/Local/Remote — re-hosted into the View3D slot
+    QPointer<QLabel> m_linkedQualifier;          ///< "camera · channel · LUT" (narrows at 4 panes)
+
+    QWidget *viewWidget(ViewId id) const;      ///< the (always-existing) widget for a view
+    QString viewTitle(ViewId id) const;
+    void buildPaneSlots();                     ///< construct the 4 slot frames + columns
+    void assignViews(const std::array<bool, 4> &visible);   ///< fill empty VISIBLE slots (§3.3)
+    void clearViewFromOtherSlots(int keepSlot, ViewId v);   ///< enforce one-slot-per-view
+    bool paneStacked() const;   ///< 2-pane direction: explicit override, else width-derived
+    bool m_restoringLayout{ false };           ///< suppress saveLayoutSettings during restore
+    int firstVisibleSlot() const;
+    void mountView(int slot);                  ///< reparent the slot's view out of the parking lot
+    void parkView(int slot);                   ///< reparent a slot's view into the parking lot
+    void refreshPaneChrome();                  ///< dots, titles, qualifiers, per-view controls
+    void refreshPaneCursors();                 ///< arrow on non-active 2D data area, crosshair on active (§3.2)
+    void syncPick3d2d();                        ///< keep the 1-pane 3D/2D toggle in step with slot 0's view
+    // Fullscreen ⤢ (§3.2): maximize one pane WITHIN the workspace (no showFullScreen).
+    // We remember the pre-maximize pane count + active pane and just toggle frame /
+    // column visibility, so restore re-applies the saved arrangement with no re-render.
+    int m_maximizedPane{ -1 };                 ///< -1 = not maximized, else the slot index
+    int m_preMaxPaneCount{ 1 };
+    int m_preMaxActive{ 0 };
+    QPointer<QShortcut> m_escRestoreShortcut;  ///< enabled only while maximized (§3.2)
+    // Click-to-activate (§3.2): the whole gesture that activates a non-active 2D pane
+    // is swallowed (press + release + the trailing double-click), so an armed tool
+    // fires only on the NEXT, separate click — not on the activating click.
+    QPointer<QWidget> m_paneActivationGesture;
+    void maximizePane(int slot);
+    void restorePaneMaximize();
+    void saveLayoutSettings();                 ///< §4.3 (layout_v2/cube/)
+    void restoreLayoutSettings();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;   ///< pane-header click → active

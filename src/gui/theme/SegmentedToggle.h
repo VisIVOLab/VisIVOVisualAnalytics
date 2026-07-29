@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QIcon>
 #include <QStringList>
 #include <QWidget>
 
@@ -31,11 +32,18 @@ public:
     /// Append a segment with the given label.
     void addItem(const QString &label, const QString &toolTip = {});
 
+    /// Append an icon-only segment (e.g. the 1/2/4 pane glyphs). The tooltip is
+    /// mandatory — a bare glyph doesn't say which layout it is (§3.1).
+    void addItem(const QIcon &icon, const QString &toolTip);
+
     /// Replace all segments at once (clears the selection).
     void setItems(const QStringList &labels);
 
     /// Set a tooltip on a specific segment.
     void setItemToolTip(int index, const QString &toolTip);
+
+    /// Replace a segment's icon (e.g. rotate the "2" glyph rows↔cols).
+    void setItemIcon(int index, const QIcon &icon);
 
     /// Select segment `index`. Out-of-range values are clamped/ignored.
     /// Emits `currentIndexChanged` when the selection actually changes.
@@ -48,6 +56,9 @@ public:
 
 signals:
     void currentIndexChanged(int index);
+    /// Fires on ANY segment click, including re-clicking the already-selected one
+    /// (currentIndexChanged does not) — used for "second click inverts" behaviour.
+    void segmentClicked(int index);
 
 private:
     void applyStyle();

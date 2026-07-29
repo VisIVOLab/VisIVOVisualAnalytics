@@ -21,6 +21,7 @@ SegmentedToggle::SegmentedToggle(QWidget *parent)
     setAttribute(Qt::WA_StyledBackground, true);
 
     QObject::connect(m_group, &QButtonGroup::idClicked, this, [this](int idx) {
+        emit segmentClicked(idx);   // fires even when re-clicking the current segment
         if (idx == m_currentIndex) return;
         m_currentIndex = idx;
         refreshSegmentLooks();
@@ -64,6 +65,30 @@ void SegmentedToggle::addItem(const QString &label, const QString &toolTip)
     refreshSegmentLooks();
 }
 
+void SegmentedToggle::addItem(const QIcon &icon, const QString &toolTip)
+{
+    auto *btn = new QToolButton(this);
+    btn->setIcon(icon);
+    btn->setIconSize(QSize(14, 14));
+    btn->setCheckable(true);
+    btn->setAutoExclusive(false);
+    btn->setFocusPolicy(Qt::TabFocus);
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    btn->setMinimumWidth(30);   // icon-only: room for the glyph + padding
+    btn->setToolTip(toolTip);   // mandatory — the glyph alone doesn't name the layout
+
+    const int idx = count();
+    m_group->addButton(btn, idx);
+    m_layout->addWidget(btn);
+    if (m_currentIndex < 0) {
+        m_currentIndex = 0;
+        btn->setChecked(true);
+    }
+    refreshSegmentLooks();
+}
+
 void SegmentedToggle::setItems(const QStringList &labels)
 {
     // Clear existing.
@@ -84,6 +109,12 @@ void SegmentedToggle::setItemToolTip(int index, const QString &toolTip)
     if (auto *btn = m_group->button(index)) {
         btn->setToolTip(toolTip);
     }
+}
+
+void SegmentedToggle::setItemIcon(int index, const QIcon &icon)
+{
+    if (auto *btn = qobject_cast<QToolButton *>(m_group->button(index)))
+        btn->setIcon(icon);
 }
 
 void SegmentedToggle::setCurrentIndex(int index)

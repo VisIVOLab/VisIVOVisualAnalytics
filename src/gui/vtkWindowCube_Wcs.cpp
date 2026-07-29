@@ -677,9 +677,10 @@ void vtkWindowCube::updateSliceWcsOverlay()
 
     auto *rendererCollection = this->sliceWin->GetRenderers();
     auto *renderer = rendererCollection ? rendererCollection->GetFirstRenderer() : nullptr;
-    auto *imageData = this->viewingSlice()
-            ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-            : nullptr;
+    // §3.1: this is the SLICE window's own overlay — load slice data unconditionally
+    // (not gated by viewingSlice()), or at 4 panes the slice pane loses its axes
+    // whenever the moment pane is the active one.
+    auto *imageData = vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0));
     if (!renderer || !this->sliceOverlayXAxis.GetPointer() || !this->sliceOverlayYAxis.GetPointer()
         || !this->sliceOverlayXTitleActor.GetPointer() || !this->sliceOverlayYTitleActor.GetPointer()) {
         qDebug().noquote()

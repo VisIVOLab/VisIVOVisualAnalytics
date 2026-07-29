@@ -870,14 +870,11 @@ void vtkWindowCube::setupWorkspaceDocks()
 
 void vtkWindowCube::resetWorkspaceLayout()
 {
-    if (!this->m_paneSplitter) {
+    // §3.1: "Reset layout" re-applies the current pane count through the slot model
+    // (equalising the splitters) — it no longer pokes individual frames.
+    if (!this->m_paneSplitter)
         return;
-    }
-    // Show both pane frames side-by-side at equal halves of the central splitter.
-    if (this->m_pane3dFrame) this->m_pane3dFrame->show();
-    if (this->m_pane2dFrame) this->m_pane2dFrame->show();
-    if (!this->m_pane3dFrame && this->m_renderStack) this->m_renderStack->show();
-    if (!this->m_pane2dFrame && ui->vtkImage) ui->vtkImage->show();
+    this->applyPaneLayout(this->m_paneCount);
     const int w = std::max(400, this->m_paneSplitter->width());
     this->m_paneSplitter->setSizes({ w / 2, w / 2 });
 }
