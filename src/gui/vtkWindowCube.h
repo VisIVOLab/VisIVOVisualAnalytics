@@ -59,6 +59,7 @@ class QNetworkAccessManager;
 class QNetworkReply;
 class QStackedWidget;
 class QVTKOpenGLNativeWidget;
+class Pane2DView;
 class QToolButton;
 class RemoteRenderWidget;
 class LUTCustomizerDialog;
@@ -285,6 +286,10 @@ private slots:
 signals:
     void catalogueSourceSelectionChanged(int index);
 
+    /// §5.2: the active pane changed (or its view kind changed) — the DISPLAY dock
+    /// rebinds its section header + body to the newly-active pane.
+    void activePaneChanged(int pane);
+
     /// Emitted right after a successful Tools → Export … as FITS so any
     /// open Data Hub can refresh its Workspace Exports panel immediately
     /// (without waiting for the 4-second background poll). Carries no
@@ -382,10 +387,11 @@ private:
     {
         vtkSmartPointer<vtkImageData> imageData;
         std::array<double, 2> imageRange{ 0., 0. };
-        QString lutName;                                 ///< colormap at compute time
+        QString lutName;                                 ///< colormap (by kind: velocity → diverging)
         LutScale::Mode scaleMode{ LutScale::Mode::Linear };
         double gamma{ 2.0 };
         QString label;                                   ///< identical to the tree/dropdown label
+        bool clampOutliers{ false };                     ///< velocity: hide out-of-range noise spikes (§3.2)
         // Export recipe — so "Export Moment as FITS" re-exports the DISPLAYED product,
         // not whatever was computed last (§3.2).
         int order{ 0 };
@@ -425,6 +431,7 @@ private:
     void setupPaneChrome();                          ///< centre toolbar + per-pane headers (Step 1)
     void setActivePane(int pane);
     void refreshPaneActiveStyles();
+    void refreshPaneInteractors();   ///< §5.1: only the active pane's interactor is live
 
     // ── §3.1/§3.2 pane model: 4 slots, a view registry, one reconcile ─────────
     // A pane shows one of the fixed views (3D / 2D slice / spectrum) OR an arbitrary
@@ -457,6 +464,12 @@ private:
         PaneView view;
     };
     std::array<PaneSlot, 4> m_slots;
+    // §3.2 B3: each pane that shows a Product gets its OWN display-only Pane2DView
+    // (independent camera / LUT / colorbar / WCS overlay), reading the shared per-product
+    // imageData from m_products2d — so Moment 0 ∥ Moment 1 (and the same product twice)
+    // render side by side without doubling the image memory. Lazily created per slot.
+    std::array<Pane2DView *, 4> m_paneViews{ nullptr, nullptr, nullptr, nullptr };
+    Pane2DView *ensureSlotProductView(int slot);   ///< create + WCS-wire the slot's view
     int m_paneCount{ 1 };                 ///< 1 / 2 / 4 (spec §3.1 default is 1)
     QPointer<QSplitter> m_leftColumn;     ///< slot 0 (top) + slot 2 (bottom)
     QPointer<QSplitter> m_rightColumn;    ///< slot 1 (top) + slot 3 (bottom)

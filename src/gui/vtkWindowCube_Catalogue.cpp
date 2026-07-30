@@ -566,12 +566,12 @@ void vtkWindowCube::refreshCatalogueOverlayInteraction(int displayX, int display
         return;
     }
 
-    vtkRenderer *renderer = nullptr;
-    if (ui->actionMomentMap->isChecked()) {
-        renderer = this->momentWin->GetRenderers()->GetFirstRenderer();
-    } else {
-        renderer = this->sliceWin->GetRenderers()->GetFirstRenderer();
-    }
+    // §3.2 B3: route to the active interactive 2-D pipeline. A moment product pane is a
+    // display-only Pane2DView (no catalogue actors), so viewingSlice() folds it to the
+    // slice — never the now-dead moment window.
+    vtkRenderer *renderer = this->active2dWin()
+            ? this->active2dWin()->GetRenderers()->GetFirstRenderer()
+            : nullptr;
     if (!renderer) {
         return;
     }
@@ -802,15 +802,11 @@ void vtkWindowCube::centerViewOnCatalogueSource(int index, double zoomFactor)
         return;
     }
 
-    vtkRenderer *renderer = nullptr;
-    vtkGenericOpenGLRenderWindow *window = nullptr;
-    if (ui->actionMomentMap->isChecked()) {
-        renderer = this->momentWin->GetRenderers()->GetFirstRenderer();
-        window = this->momentWin;
-    } else {
-        renderer = this->sliceWin->GetRenderers()->GetFirstRenderer();
-        window = this->sliceWin;
-    }
+    // §3.2 B3: route to the active interactive 2-D window — a moment product pane is a
+    // display-only Pane2DView, folded to the slice by viewingSlice(); never the now-dead
+    // moment window.
+    vtkGenericOpenGLRenderWindow *window = this->viewingSlice() ? this->sliceWin : this->momentWin;
+    vtkRenderer *renderer = window->GetRenderers()->GetFirstRenderer();
     auto *camera = renderer ? renderer->GetActiveCamera() : nullptr;
     if (!renderer || !camera || !window) {
         return;

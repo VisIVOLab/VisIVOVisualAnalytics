@@ -2,6 +2,7 @@
 #include "ui_vtkWindowCube.h"
 #include "CubeWcsUtil.h"
 #include "CubeViewportGeometry.h"
+#include "Pane2DView.h"
 #include "CubeStatsUtil.h"
 
 #include "qcustomplot.h"
@@ -2641,6 +2642,13 @@ vtkWindowCube::~vtkWindowCube()
     }
     this->m_cubeCameraObserverTag = 0;
     this->m_cubeCameraEndObserverTag = 0;
+    // §3.2 B3: destroy the per-slot Pane2DViews FIRST — their destructors remove the
+    // render-window EndEvent observer, so it can't fire against a half-torn-down widget
+    // once `delete ui` starts tearing the pane hierarchy down.
+    for (auto *&pv : m_paneViews) {
+        delete pv;
+        pv = nullptr;
+    }
     delete ui;
 }
 
@@ -4479,8 +4487,12 @@ bool vtkWindowCube::viewingSlice() const
         const ViewId k = m_slots[m_activePane].view.kind;
         if (k == ViewId::Slice2D)
             return true;
-        if (k == ViewId::Product)   // a moment product is a 2-D view but not the slice
-            return false;
+        // §3.2 B3: a Product pane is a display-only Pane2DView with no interactive
+        // pipeline. Route probe/region/PV and any programmatic active2dWin() render to
+        // the LIVE slice pipeline, NOT the now-dead shared moment window (which is never
+        // shown) — tools act on the 2-D Slice, where they belong for a collapsed map.
+        if (k == ViewId::Product)
+            return true;
     }
     return ui->actionSlice->isChecked();
 }
@@ -5452,6 +5464,10 @@ void vtkWindowCube::set2dWcsOverlayVisible(bool visible)
             actor->SetVisibility(visible);
         }
     }
+    // §3.2 B3: product panes render into their own Pane2DView — propagate the toggle.
+    for (int i = 0; i < 4; ++i)
+        if (m_paneViews[i])
+            m_paneViews[i]->setWcsAxesVisible(visible);
 }
 
 
@@ -6009,8 +6025,23 @@ void vtkWindowCube::setActivePane(int pane)
 {
     if (pane < 0 || pane > 3)
         return;
+    const bool changed = (m_activePane != pane);
     m_activePane = pane;
-    refreshPaneActiveStyles();
+    refreshPaneActiveStyles();   // also re-gates interactors (§5.1)
+    if (changed)
+        emit activePaneChanged(pane);   // §5.2: DISPLAY dock follows the active pane
+}
+
+void vtkWindowCube::refreshPaneInteractors()
+{
+    // §5.1: the "idle pane takes no input" rule is enforced by the event filter, which
+    // swallows every mouse event on a NON-active pane (see eventFilter). We do NOT flip
+    // the VTK interactor's Enabled flag — QVTKOpenGLNativeWidget drives its render loop
+    // through the interactor, so disabling it paints the pane black. This hook stays so
+    // the activation slot has one place to notify the (currently no-op) views.
+    for (int i = 0; i < 4; ++i)
+        if (m_paneViews[i])
+            m_paneViews[i]->setInteractive(i == m_activePane);
 }
 
 void vtkWindowCube::refreshPaneActiveStyles()
@@ -6031,8 +6062,14 @@ void vtkWindowCube::refreshPaneActiveStyles()
         if (m_slots[i].dot)
             m_slots[i].dot->setStyleSheet(
                     QStringLiteral("font-size:9px; color:%1;").arg(active ? pri : kInactiveDot));
+        // §5.1: the active pane's header row carries an 8% primary wash.
+        if (m_slots[i].header)
+            m_slots[i].header->setStyleSheet(
+                    active ? QStringLiteral("QWidget#paneHeader { background: rgba(4,138,191,0.08); }")
+                           : QStringLiteral("QWidget#paneHeader { background: transparent; }"));
     }
     refreshPaneCursors();
+    refreshPaneInteractors();   // §5.1: keep the live interactor in step with the active pane
 }
 
 void vtkWindowCube::syncPick3d2d()
@@ -6053,10 +6090,14 @@ void vtkWindowCube::refreshPaneCursors()
     // arrow — so hovering a secondary pane never *looks* like it will take a tool (§3.2).
     for (int i = 0; i < 4; ++i) {
         const ViewId k = m_slots[i].view.kind;
-        if (k != ViewId::Slice2D && k != ViewId::Product)
-            continue;
-        if (QWidget *w = viewWidget(m_slots[i].view))
-            w->setCursor((m_activePane == i) ? Qt::CrossCursor : Qt::ArrowCursor);
+        if (k == ViewId::Slice2D) {
+            if (QWidget *w = viewWidget(m_slots[i].view))
+                w->setCursor((m_activePane == i) ? Qt::CrossCursor : Qt::ArrowCursor);
+        } else if (k == ViewId::Product && m_paneViews[i] && m_paneViews[i]->widget()) {
+            // Display-only: always the plain arrow, never a crosshair — a moment pane
+            // takes no probe/region/PV (those act on the 2-D Slice). §3.2 B3.
+            m_paneViews[i]->widget()->setCursor(Qt::ArrowCursor);
+        }
     }
 }
 
@@ -6070,53 +6111,63 @@ bool vtkWindowCube::eventFilter(QObject *watched, QEvent *event)
                 break;
             }
     }
-    // Click-to-activate is a GESTURE, not a hidden requirement (§3.2): clicking a
-    // non-active 2D pane activates it and the WHOLE activating gesture (press, release,
-    // the trailing double-click Qt sends as PV's finalize trigger) is swallowed, so an
-    // armed tool fires only on the NEXT separate click. Hover moves over a non-active
-    // 2D pane are swallowed too, so it never draws a probe crosshair — it is display-only.
-    QWidget *w2d = (watched == ui->vtkImage || watched == m_vtkMoment)
-                           ? qobject_cast<QWidget *>(watched)
-                           : nullptr;
-    if (w2d
-        && (et == QEvent::MouseButtonPress || et == QEvent::MouseButtonRelease
-            || et == QEvent::MouseButtonDblClick || et == QEvent::MouseMove)) {
-        int slot = -1;
-        for (int i = 0; i < 4; ++i)
-            if (viewWidget(m_slots[i].view) == w2d && m_slots[i].frame
-                && m_slots[i].frame->isVisible()) {
-                slot = i;
+    // §5.1: ONE activation + idle-input rule for every render pane (2D Slice, local 3D,
+    // and each Product Pane2DView). The VTK interactor stays enabled — QVTKOpenGLNativeWidget
+    // drives its render through it, so we must NOT disable it. Instead the container
+    // swallows the mouse events of an IDLE pane here. The first press on a non-active pane
+    // activates it and is swallowed (so it doesn't also begin a drag / window-level); the
+    // rest of that gesture is swallowed too; the next gesture on the now-active pane passes
+    // through. Hover / wheel on an idle pane do nothing.
+    QWidget *rw = qobject_cast<QWidget *>(watched);
+    int renderSlot = -1;
+    if (rw)
+        for (int i = 0; i < 4; ++i) {
+            const ViewId k = m_slots[i].view.kind;
+            QWidget *paneW = (k == ViewId::Slice2D) ? static_cast<QWidget *>(ui->vtkImage)
+                    : (k == ViewId::View3D)         ? static_cast<QWidget *>(ui->vtkCube)
+                    : (k == ViewId::Product && m_paneViews[i]) ? m_paneViews[i]->widget()
+                                                               : nullptr;
+            if (paneW && paneW == rw && m_slots[i].frame && m_slots[i].frame->isVisible()) {
+                renderSlot = i;
                 break;
             }
-        if (slot >= 0) {
-            const bool nonActive = (m_activePane != slot);
-            if (et == QEvent::MouseButtonPress) {
-                if (nonActive) {
-                    setActivePane(slot);
-                    m_paneActivationGesture = w2d;   // swallow the rest of this gesture
-                    return true;
-                }
-                // A fresh press on the already-active pane starts a real gesture — let
-                // it through and end any lingering activation swallow.
-                m_paneActivationGesture = nullptr;
-            } else if (et == QEvent::MouseMove) {
-                if (nonActive)
-                    return true;   // no hover crosshair on a non-active pane
-                // active pane: hover works — do NOT consult the gesture flag, or the
-                // just-activated pane would stay hover-dead until the next click.
-            } else if (m_paneActivationGesture == w2d || nonActive) {
-                return true;   // release / trailing dbl-click of the activating gesture
+        }
+    if (renderSlot >= 0) {
+        const bool nonActive = (m_activePane != renderSlot);
+        if (et == QEvent::MouseButtonPress) {
+            if (nonActive) {
+                setActivePane(renderSlot);
+                m_paneActivationGesture = rw;   // swallow the rest of this gesture
+                return true;
             }
+            m_paneActivationGesture = nullptr;  // fresh gesture on the active pane
+        } else if (et == QEvent::MouseMove) {
+            if (nonActive)
+                return true;                    // no hover interaction on an idle pane
+        } else if (et == QEvent::MouseButtonRelease || et == QEvent::MouseButtonDblClick) {
+            if (nonActive || m_paneActivationGesture == rw)
+                return true;                    // idle input, or tail of the activating gesture
+        } else if (et == QEvent::Wheel) {
+            if (nonActive)
+                return true;                    // no wheel-zoom on an idle pane
         }
     }
-    if (et == QEvent::Resize
-        && (watched == ui->vtkImage || watched == m_vtkMoment)) {
-        // Deferred: during Resize the VTK render window has not yet adopted the new
-        // size. Fit the SPECIFIC widget that resized (§3.1) — at 4 panes slice and
-        // moment resize independently, so fitting only the active one would leave the
-        // other stale.
-        const bool slice = (watched == ui->vtkImage);
-        QTimer::singleShot(0, this, [this, slice]() { this->layout2dPaneFor(slice, false); });
+
+    // Deferred re-fit on resize (the render window hasn't adopted the new size yet).
+    if (et == QEvent::Resize) {
+        if (watched == ui->vtkImage || watched == m_vtkMoment) {
+            const bool slice = (watched == ui->vtkImage);
+            QTimer::singleShot(0, this, [this, slice]() { this->layout2dPaneFor(slice, false); });
+        } else {
+            for (int i = 0; i < 4; ++i)
+                if (m_paneViews[i] && watched == m_paneViews[i]->widget()) {
+                    QTimer::singleShot(0, this, [this, i]() {
+                        if (m_paneViews[i])
+                            m_paneViews[i]->fit(false);
+                    });
+                    break;
+                }
+        }
     }
     return QMainWindow::eventFilter(watched, event);
 }
@@ -6127,9 +6178,40 @@ QWidget *vtkWindowCube::viewWidget(const PaneView &v) const
     case ViewId::View3D:   return m_renderStack;
     case ViewId::Slice2D:  return ui->vtkImage;
     case ViewId::Spectrum: return probePlotWidget;   // ProfileWidget (null until first probe)
-    case ViewId::Product:  return m_vtkMoment;       // B2: single moment pipeline; B3: per-product Pane2DView
+    // §3.2 B3: a Product has NO shared singleton widget — each pane owns a Pane2DView
+    // (see ensureSlotProductView / mountView). Returning null here means the dedup +
+    // collision checks that key on "same render widget" never fire for products, so two
+    // panes CAN show two moments (or the same moment) at once.
+    case ViewId::Product:  return nullptr;
     default:               return nullptr;
     }
+}
+
+Pane2DView *vtkWindowCube::ensureSlotProductView(int slot)
+{
+    if (slot < 0 || slot > 3)
+        return nullptr;
+    if (!m_paneViews[slot]) {
+        auto *pv = new Pane2DView(this);
+        // Decoupled WCS: hand the view the dataset-level conversion closures (all const,
+        // channel-independent). For the app's LINEAR/CAR cutouts the per-axis form is
+        // exact; a gnomonic celestial cube would need the paired conversion (noted).
+        Pane2DView::WcsContext ctx;
+        ctx.voxelToWcs = [this](int axis, double v, bool *ok) {
+            return this->remoteVoxelToWcs(axis, v, ok);
+        };
+        ctx.hasCelestial = [this]() { return this->remoteHasCelestialAxes(); };
+        ctx.axisTitle = [this](int axis) { return this->remoteOverlayAxisTitle(axis); };
+        ctx.formatCoord = [this](int axis, double value) {
+            return this->formatRemoteOverlayCoordinate(axis, value);
+        };
+        pv->setWcsContext(std::move(ctx));
+        pv->setWcsAxesVisible(this->showWcsAxes);
+        if (pv->widget())
+            pv->widget()->installEventFilter(this);   // click-to-activate + resize-fit
+        m_paneViews[slot] = pv;
+    }
+    return m_paneViews[slot];
 }
 
 QString vtkWindowCube::viewTitle(const PaneView &v) const
@@ -6140,12 +6222,19 @@ QString vtkWindowCube::viewTitle(const PaneView &v) const
     case ViewId::Spectrum: return u"Spectrum"_s;
     case ViewId::Product: {
         // The label is IDENTICAL to the Session Data tree row (§3.2 corollary 3):
-        // read it from the registry, then the cache, then a generic fallback.
+        // registry → cache → derive "Moment N" from the id (an uncomputed seed slot
+        // reads "Moment 0", never a meaningless "Product"). Only a truly unassigned
+        // slot (kind None) says "Pick a view".
         const AnalysisProduct p = ProductRegistry::instance().product(v.productId);
         if (!p.label.isEmpty())
             return p.label;
         auto it = m_products2d.constFind(v.productId);
-        return it != m_products2d.constEnd() ? it->label : u"Product"_s;
+        if (it != m_products2d.constEnd())
+            return it->label;
+        const int at = v.productId.indexOf(u'@');
+        if (v.productId.startsWith(u"moment"_s) && at > 6)
+            return u"Moment "_s + v.productId.mid(6, at - 6);
+        return u"Pick a view"_s;
     }
     default:               return u"Pick a view"_s;
     }
@@ -6235,6 +6324,20 @@ QWidget *vtkWindowCube::emptyStateWidget(const PaneView &v)
     } else {   // Spectrum
         title->setText(u"No spectrum"_s);
         sub->setText(u"Click a pixel in the 2D view to trace its spectrum"_s);
+        // Parity with the moment empty state (§3.2): a first-class action, not just a
+        // hint. Arms the same Extract-Spectrum probe mode as Analysis ▸ Extract Spectrum.
+        auto *btn = new QPushButton(u"Extract Spectrum…"_s, w);
+        btn->setCursor(Qt::PointingHandCursor);
+        auto *row = new QHBoxLayout();
+        row->addStretch(1);
+        row->addWidget(btn);
+        row->addStretch(1);
+        outer->addSpacing(8);
+        outer->addLayout(row);
+        QObject::connect(btn, &QPushButton::clicked, this, [this]() {
+            if (ui->actionExtractSpectrum && !ui->actionExtractSpectrum->isChecked())
+                ui->actionExtractSpectrum->trigger();   // enter probe mode → click a pixel
+        });
     }
     outer->addStretch(1);
     *slot = w;
@@ -6258,6 +6361,45 @@ void vtkWindowCube::clearViewFromOtherSlots(int keepSlot)
             m_slots[j].view = {};
 }
 
+// A robust, symmetric display range for a signed field (a velocity moment): centre on
+// the median, half-width = 4·(1.4826·MAD). MAD has a 50% breakdown point, so the sparse
+// noise-spike pixels (±channel-velocity garbage) never inflate the scale the way min/max
+// does. Returns false on degenerate data so the caller keeps the true min/max (§3.2).
+static bool robustSymmetricMomentRange(vtkImageData *img, double &lo, double &hi)
+{
+    vtkDataArray *sc = img ? img->GetPointData()->GetScalars() : nullptr;
+    if (!sc)
+        return false;
+    std::vector<double> v;
+    const vtkIdType n = sc->GetNumberOfTuples();
+    v.reserve(static_cast<size_t>(n));
+    for (vtkIdType i = 0; i < n; ++i) {
+        const double x = sc->GetComponent(i, 0);
+        if (std::isfinite(x))
+            v.push_back(x);
+    }
+    if (v.size() < 8)
+        return false;
+    auto medianOf = [](std::vector<double> &a) {
+        std::sort(a.begin(), a.end());
+        const size_t m = a.size();
+        return (m % 2) ? a[m / 2] : 0.5 * (a[m / 2 - 1] + a[m / 2]);
+    };
+    const double med = medianOf(v);
+    std::vector<double> dev;
+    dev.reserve(v.size());
+    for (double x : v)
+        dev.push_back(std::fabs(x - med));
+    const double mad = medianOf(dev);
+    const double sigma = 1.4826 * mad;
+    if (!(sigma > 0.0))
+        return false;
+    const double half = 4.0 * sigma;
+    lo = med - half;
+    hi = med + half;
+    return true;
+}
+
 void vtkWindowCube::loadProductIntoMomentPipeline(const QString &productId, bool force)
 {
     // B2: the single moment pipeline (m_vtkMoment) shows one product at a time; make it
@@ -6274,7 +6416,25 @@ void vtkWindowCube::loadProductIntoMomentPipeline(const QString &productId, bool
     m_momentPipelineProductId = productId;
     this->momentDisplaySource->SetOutput(it->imageData);
     this->momentColors->SetInputData(it->imageData);
-    this->lutMoment->SetTableRange(it->imageRange[0], it->imageRange[1]);
+    // Colormap + range come from the product (by kind): a velocity moment gets a
+    // diverging map and a robust range, intensity keeps its sequential map + min/max.
+    this->m_activeMomentLutName = it->lutName;
+    LutScale::build(this->lutMoment, it->lutName.toStdString(), it->scaleMode,
+                    it->imageRange[0], it->imageRange[1], it->gamma);
+    // Velocity: sparse noise-spike pixels fall OUTSIDE the robust range → paint them
+    // transparent (like NaN) so they don't dominate; intensity leaves this off so a
+    // bright peak above the range is never hidden.
+    if (it->clampOutliers) {
+        this->lutMoment->SetUseAboveRangeColor(1);
+        this->lutMoment->SetAboveRangeColor(0., 0., 0., 0.);
+        this->lutMoment->SetUseBelowRangeColor(1);
+        this->lutMoment->SetBelowRangeColor(0., 0., 0., 0.);
+    } else {
+        this->lutMoment->SetUseAboveRangeColor(0);
+        this->lutMoment->SetUseBelowRangeColor(0);
+    }
+    this->lutMoment->Build();   // append the special (above/below/NaN) colors into the table
+    this->lutMoment->Modified();
     if (auto *r = this->momentWin->GetRenderers()->GetFirstRenderer()) {
         r->ResetCamera();
         r->ResetCameraClippingRange();
@@ -6408,6 +6568,13 @@ void vtkWindowCube::buildPaneSlots()
     for (QWidget *w : { static_cast<QWidget *>(ui->vtkImage), static_cast<QWidget *>(m_vtkMoment) })
         if (w)
             w->installEventFilter(this);   // either 2-D host can drive layout2dPane
+    // §5.1: the local 3-D viewport body must also click-to-activate (its interactor is
+    // gated in refreshPaneInteractors), so a body click re-activates 3D — not just the
+    // header. ClickFocus so no hover focus.
+    if (ui->vtkCube) {
+        ui->vtkCube->installEventFilter(this);
+        ui->vtkCube->setFocusPolicy(Qt::ClickFocus);
+    }
     auto park = [this](QWidget *w) {
         if (!w)
             return;
@@ -6458,14 +6625,29 @@ void vtkWindowCube::mountView(int slot)
         delete it;
     }
     const PaneView v = m_slots[slot].view;
-    // A Product pane shows the single moment pipeline (B2) — make it hold THIS
-    // product's image before mounting the shared widget, so the pane matches its title.
-    const bool productWithData = (v.kind == ViewId::Product && viewHasData(v));
-    if (productWithData)
-        loadProductIntoMomentPipeline(v.productId);
-    // When the view has no data yet, mount its empty state (what's missing + the
-    // action) instead of a degenerate render (§3.1).
-    QWidget *w = viewHasData(v) ? viewWidget(v) : emptyStateWidget(v);
+    // §3.2 B3: a Product pane renders into its OWN Pane2DView (display-only), configured
+    // from the shared per-product cache — so two panes can show two different moments,
+    // or the same moment, without a shared-pipeline collision.
+    Pane2DView *pv = nullptr;
+    QWidget *w = nullptr;
+    if (v.kind == ViewId::Product && viewHasData(v)) {
+        pv = ensureSlotProductView(slot);
+        const Product2D &p = m_products2d[v.productId];
+        if (!pv->lutInitialized()) {
+            // First mount: seed the default LUT BY KIND (§5.3) from the product cache.
+            pv->setImageData(p.imageData, p.imageRange[0], p.imageRange[1]);
+            pv->setColorMap(p.lutName, p.scaleMode, p.gamma, p.clampOutliers);
+        } else {
+            // Remount / recompute: keep THIS pane's own LUT + range, swap only the
+            // pixels (§5.3 / acceptance #7 — two panes on the same product may differ).
+            pv->setImageData(p.imageData, pv->rangeMin(), pv->rangeMax());
+        }
+        w = pv->widget();
+    } else {
+        // No data yet → the empty state (what's missing + the action); fixed views →
+        // their singleton widget (§3.1).
+        w = viewHasData(v) ? viewWidget(v) : emptyStateWidget(v);
+    }
     if (!w)
         return;   // truly nothing to show (None) — leave the host empty
     if (auto *p = w->parentWidget())
@@ -6474,23 +6656,22 @@ void vtkWindowCube::mountView(int slot)
     w->setParent(m_slots[slot].viewHost);
     vhl->addWidget(w, 1);
     w->show();
-    // Fit + render the moment window against its host so a Product pane displays
-    // correctly whichever caller mounted it (dropdown / layout / compute) — but only
-    // once the frame is actually visible, so a layout pass that mounts before showing
-    // frames doesn't render into a stale size (applyPaneLayout re-fits after).
-    if (productWithData && w == m_vtkMoment && m_slots[slot].frame
-        && m_slots[slot].frame->isVisible()) {
-        layout2dPaneFor(/*slice=*/false, /*force=*/true);
-        if (momentWin)
-            momentWin->Render();
-    }
+    // Fit the Pane2DView against its now-visible host (letterbox + colorbar + overlay).
+    // Only once the frame is actually visible, so a layout pass that mounts before
+    // showing frames doesn't fit into a stale size (applyPaneLayout re-fits after).
+    if (pv && m_slots[slot].frame && m_slots[slot].frame->isVisible())
+        pv->fit(true);
 }
 
 void vtkWindowCube::parkView(int slot)
 {
     if (slot < 0 || slot > 3 || !m_viewParkingLot)
         return;
+    // Product panes have no shared singleton (viewWidget → null); their widget is the
+    // slot's own Pane2DView. Park whichever it is.
     QWidget *w = viewWidget(m_slots[slot].view);
+    if (!w && m_slots[slot].view.kind == ViewId::Product && m_paneViews[slot])
+        w = m_paneViews[slot]->widget();
     if (!w || !m_slots[slot].viewHost)
         return;
     // Only park a view that actually lives in THIS slot's host — never steal one
@@ -6607,10 +6788,14 @@ void vtkWindowCube::refreshPaneChrome()
                 QString label = viewTitle(cand);
                 if (atPane >= 0)
                     label += QStringLiteral("   ·  P%1").arg(atPane + 1);
+                else if (collideJ >= 0)
+                    label += QStringLiteral("   ·  P%1").arg(collideJ + 1);  // the blocking pane
                 QAction *a = menu->addAction(label);
                 a->setCheckable(true);
                 a->setChecked(atPane >= 0);
                 if (collideJ >= 0) {
+                    // Disabled + the pane number reads as "can't — a moment is in P3"
+                    // without needing the tooltip (which stays as the full explanation).
                     a->setEnabled(false);
                     a->setToolTip(QStringLiteral("%1 is already shown in P%2 — one moment map "
                                                  "at a time")
@@ -6619,18 +6804,21 @@ void vtkWindowCube::refreshPaneChrome()
                     continue;
                 }
                 QObject::connect(a, &QAction::triggered, this, [this, i, cand]() {
-                    // Picking a view already shown elsewhere RELOCATES it: swap the two
-                    // panes' views so neither goes blank (fixed views, or the same product
-                    // moved to another pane — nothing is lost).
-                    for (int j = 0; j < 4; ++j) {
-                        if (j != i && m_slots[j].view == cand) {
-                            std::swap(m_slots[i].view, m_slots[j].view);
-                            mountView(i);
-                            mountView(j);
-                            syncPick3d2d();
-                            refreshPaneChrome();
-                            layout2dPane(true);
-                            return;
+                    // A FIXED view (single shared widget) already shown elsewhere RELOCATES
+                    // via a swap, so neither pane goes blank. A Product has a per-slot
+                    // Pane2DView (viewWidget → null), so it can DUPLICATE — fall through to
+                    // the set path and give this pane its own copy (§3.2 B3).
+                    if (viewWidget(cand)) {
+                        for (int j = 0; j < 4; ++j) {
+                            if (j != i && m_slots[j].view == cand) {
+                                std::swap(m_slots[i].view, m_slots[j].view);
+                                mountView(i);
+                                mountView(j);
+                                syncPick3d2d();
+                                refreshPaneChrome();
+                                layout2dPane(true);
+                                return;
+                            }
                         }
                     }
                     m_slots[i].view = cand;
@@ -7194,13 +7382,34 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
             QStringLiteral("moment%1@%2").arg(result.order).arg(this->datasetPersistKey());
     const QString productLabel = QStringLiteral("Moment %1").arg(result.order);
 
+    // Colormap + range default BY KIND, not inherited from the cube (§3.2). A velocity
+    // field (Moment 1) reads as a DIVERGING map on a robust symmetric range centred on
+    // systemic velocity, with sparse noise spikes clamped transparent; intensity
+    // (Moment 0) and the rest keep the sequential map + true min/max.
+    const bool velocity = (result.order == 1);
+    std::array<double, 2> displayRange = result.imageRange;
+    bool clampOutliers = false;
+    if (velocity) {
+        double lo = 0., hi = 0.;
+        if (robustSymmetricMomentRange(result.imageData, lo, hi)) {
+            displayRange = { lo, hi };
+            clampOutliers = true;
+        }
+    }
+    // Default strictly BY KIND, never inherited (else a prior velocity's CoolWarm would
+    // leak onto a later intensity map). A signed velocity field is always shown Linear —
+    // a Log/Sqrt stretch floors negatives and would push blueshift below-range (§3.2).
+    const QString momentLut = velocity ? u"CoolWarm"_s : u"Inferno"_s;
+    const LutScale::Mode momentScale = velocity ? LutScale::Mode::Linear : this->m_sliceScaleMode;
+
     Product2D cached;
     cached.imageData = result.imageData;
-    cached.imageRange = result.imageRange;
-    cached.lutName = this->m_activeMomentLutName;
-    cached.scaleMode = this->m_sliceScaleMode;
+    cached.imageRange = displayRange;
+    cached.lutName = momentLut;
+    cached.scaleMode = momentScale;
     cached.gamma = this->m_sliceScaleGamma;
     cached.label = productLabel;
+    cached.clampOutliers = clampOutliers;
     cached.order = result.order;
     cached.channelStart = result.channelStart;
     cached.channelEnd = result.channelEnd;
@@ -7209,11 +7418,6 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
     cached.thresholdAuto = result.thresholdAuto;
     this->m_products2d.insert(productId, cached);
     this->m_lastComputedMomentProductId = productId;   // for the Slice/Moment toggle + export fallback
-    // If the single pipeline currently holds THIS id, its image is now stale (a recompute
-    // produced a new one). Invalidate so the next mount reloads it even off-screen — the
-    // non-force loader would otherwise early-return on the matching id and show the old map.
-    if (this->m_momentPipelineProductId == productId)
-        this->m_momentPipelineProductId.clear();
     this->registerAnalysisProduct(u"moment"_s, productLabel, this->m_momentProvenanceParams,
                                   this, productId, u"moment2d"_s);
 
@@ -7225,16 +7429,22 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
     // visible pane wants it, the product lives only in the tree + dropdown.
     auto visible = [&](int i) { return m_slots[i].frame && m_slots[i].frame->isVisible(); };
     int target = -1;
+    // Recompute: refresh EVERY visible pane already showing this product (a pane may be
+    // duplicated), so a re-run swaps the new image into all of them — not just the first.
     for (int i = 0; i < 4; ++i)
         if (visible(i) && m_slots[i].view == PaneView{ ViewId::Product, productId }) {
-            target = i;
-            break;
+            mountView(i);
+            if (target < 0)
+                target = i;
         }
+    // Else fill the FIRST empty moment pane (no-steal: only a pane already asking for a
+    // moment). A pane showing the slice / 3-D / a different moment is never stolen.
     if (target < 0)
         for (int i = 0; i < 4; ++i) {
-            const PaneView &pv = m_slots[i].view;
-            if (visible(i) && pv.kind == ViewId::Product && !viewHasData(pv)) {  // empty moment pane
-                m_slots[i].view.productId = productId;
+            PaneView &pv = m_slots[i].view;
+            if (visible(i) && pv.kind == ViewId::Product && !viewHasData(pv)) {
+                pv.productId = productId;
+                mountView(i);
                 target = i;
                 break;
             }
@@ -7242,45 +7452,16 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
 
     if (target < 0) {
         // No-steal: nothing on screen wanted a moment — refresh chrome so existing
-        // dropdowns list the new product, and leave the pipeline/UI exactly as they were.
+        // dropdowns list the new product, and leave everything else as it was.
         refreshPaneChrome();
         return;
     }
 
-    // Displaying this product: force the fresh image into the single moment pipeline
-    // (force so a same-id recompute swaps in the NEW image), mount + activate the pane.
-    this->loadProductIntoMomentPipeline(productId, /*force=*/true);
-    clearViewFromOtherSlots(target);
-    mountView(target);
+    // Activate the (first) pane that now shows it so its border/dot read as current.
     setActivePane(target);
-
-    {
-        const QSignalBlocker blockSliceAction(ui->actionSlice);
-        const QSignalBlocker blockMomentAction(ui->actionMomentMap);
-        ui->actionSlice->setChecked(false);
-        ui->actionMomentMap->setChecked(true);
-    }
-    // Sync the 2D sidebar (actions were blocked above so the toggled handler
-    // did not fire; update manually here).
-    m_uiAssembler->sync2dModeSidebar(false);
-    this->update2dModeVisibility(false);
     refreshPaneChrome();
 
-    ui->labelImg->setText(u"Moment Map:"_s);
-    if (auto *r = this->momentWin->GetRenderers()->GetFirstRenderer())
-        this->coordinate->SetViewport(r);
-    if (auto *renderer = this->momentWin->GetRenderers()->GetFirstRenderer()) {
-        renderer->ResetCamera();
-        renderer->ResetCameraClippingRange();
-    }
-    this->layout2dPaneFor(/*slice=*/false, true);   // letterbox the new moment map into the gutter
-    this->lastMomentOverlayVisibleBounds = { std::numeric_limits<double>::quiet_NaN(),
-                                             std::numeric_limits<double>::quiet_NaN(),
-                                             std::numeric_limits<double>::quiet_NaN(),
-                                             std::numeric_limits<double>::quiet_NaN() };
-    this->lastMomentOverlayViewportSize = { -1, -1 };
-    this->updateMomentWcsOverlay();
-
+    // Sidebar stats readout — the TRUE data min/max/mean/rms (informational).
     {
         const QSignalBlocker blockMin(ui->lineImgMin);
         const QSignalBlocker blockMax(ui->lineImgMax);
@@ -7291,29 +7472,6 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
         ui->lineImgMean->setText(fmtStat(mean));
         ui->lineImgRms->setText(fmtStat(rms));
     }
-
-    this->updateLUTCustomizer();
-    if (this->probeModeActive && this->probeValid) {
-        this->refreshProbeOverlay();
-        this->updateProbeReadout(result.imageData);
-    }
-    if (this->momentWin)
-        this->momentWin->Render();
-    QMetaObject::invokeMethod(
-            this,
-            [this]() {
-                this->lastMomentOverlayVisibleBounds = { std::numeric_limits<double>::quiet_NaN(),
-                                                         std::numeric_limits<double>::quiet_NaN(),
-                                                         std::numeric_limits<double>::quiet_NaN(),
-                                                         std::numeric_limits<double>::quiet_NaN() };
-                this->lastMomentOverlayViewportSize = { -1, -1 };
-                this->updateMomentWcsOverlay();
-                if (this->momentWin)
-                    this->momentWin->Render();
-                if (auto *w2d = this->active2dWidget())
-                    w2d->update();
-            },
-            Qt::QueuedConnection);
     qDebug().noquote() << QStringLiteral("[perf][moment] apply total: %1 ms").arg(
             totalTimer.elapsed());
 }

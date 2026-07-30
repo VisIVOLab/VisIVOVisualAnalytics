@@ -417,6 +417,8 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_Movie.cpp
         src/gui/vtkWindowCube_Link.cpp
         src/gui/vtkWindowCube_RegionIO.cpp
+        src/gui/Pane2DView.cpp
+        src/gui/Pane2DView.h
         src/gui/CubeViewportGeometry.cpp
         src/gui/CubeViewportGeometry.h
         src/gui/CubeStatsUtil.cpp
