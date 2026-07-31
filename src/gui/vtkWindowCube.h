@@ -476,6 +476,15 @@ private:
     // imageData from m_products2d — so Moment 0 ∥ Moment 1 (and the same product twice)
     // render side by side without doubling the image memory. Lazily created per slot.
     std::array<Pane2DView *, 4> m_paneViews{ nullptr, nullptr, nullptr, nullptr };
+    // The productId currently seeded into each slot's Pane2DView. lutInitialized() alone is
+    // per-slot, so a slot reused for a DIFFERENT product would keep the old LUT; comparing
+    // this reseeds the by-kind default on a product SWITCH while still keeping the pane's own
+    // LUT on a same-product recompute (§5.3 / §5.4b).
+    std::array<QString, 4> m_paneProductId;
+    // §5.4b: a non-curated map picked via "More maps…" persists as a 7th entry (top of the
+    // popover + dock combo) for THIS pane for the session, so it's re-selectable after
+    // switching away. One per pane; a newer non-standard pick replaces it (never grows).
+    std::array<QString, 4> m_paneCustomColorMap;
     Pane2DView *ensureSlotProductView(int slot);   ///< create + WCS-wire the slot's view
 
     // §5.2: the DISPLAY dock section follows the active pane. Page 0 = the 3D controls
@@ -516,6 +525,7 @@ private:
     // popover (colormap list + Edit LUT… · Invert · Reset), writing the same per-pane state.
     void refreshPaneLutStrip(int slot);         ///< update the strip swatch + visibility
     void showPaneLutStripPopover(int slot);     ///< the colormap popover for a pane
+    void showMoreColorMapsDialog();             ///< §5.4b full-registry picker (minus MinMax)
     void flashPaneLutStrip(int slot);           ///< §5.5: ~400ms confirmation flash on a receiver
     bool m_sliceInvert{ false };                ///< slice LUT inverted (Pane2DView tracks its own)
     void propagatePaneLutWithinWindow(int srcSlot);   ///< §5.5 Linked·LUT: same-product panes (full)

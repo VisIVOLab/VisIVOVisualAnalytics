@@ -461,6 +461,8 @@ QWidget *CubeUiAssembler::build2dViewPage()
         const auto names = ColorMaps::GetColorMapNames();
         for (const auto &stdName : names) {
             const QString qName = QString::fromStdString(stdName);
+            if (qName == u"MinMax"_s)
+                continue;   // MinMax is a range mode, not a colormap (§5.4b)
             m_comboSliceLut->addItem(QIcon(buildLutPreview(qName, 48, 12)), qName);
         }
         const QString defaultName = QString::fromStdString(ColorMaps::DefaultColorMap);
@@ -570,6 +572,8 @@ QWidget *CubeUiAssembler::build2dViewPage()
         const auto names2 = ColorMaps::GetColorMapNames();
         for (const auto &stdName : names2) {
             const QString qName = QString::fromStdString(stdName);
+            if (qName == u"MinMax"_s)
+                continue;   // MinMax is a range mode, not a colormap (§5.4b)
             m_comboMomentLut->addItem(QIcon(buildLutPreview(qName, 48, 12)), qName);
         }
         const QString defaultName2 = QString::fromStdString(ColorMaps::DefaultColorMap);

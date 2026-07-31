@@ -116,6 +116,9 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QToolTip>
+#include <QListWidget>
+#include <QWidgetAction>
+#include <QMouseEvent>
 #include <QDebug>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -174,6 +177,31 @@ using namespace CubeStats;
 
 namespace {
 constexpr double pi = 3.14159265358979323846;
+
+// §5.4b: a lightweight click filter so a custom QWidgetAction row in the LUT popover acts
+// like a menu item (a QWidgetAction's default widget doesn't trigger on click by itself).
+// No Q_OBJECT needed — eventFilter is virtual, and we carry a plain std::function callback.
+class RowClickFilter : public QObject
+{
+public:
+    using QObject::QObject;
+    std::function<void()> onClick;
+    bool eventFilter(QObject *obj, QEvent *ev) override
+    {
+        if (ev->type() == QEvent::MouseButtonRelease && onClick) {
+            auto *me = static_cast<QMouseEvent *>(ev);
+            if (me->button() != Qt::LeftButton)
+                return false;   // only a left click activates
+            // Ignore a release that drifted outside the row (drag-out cancel).
+            if (auto *w = qobject_cast<QWidget *>(obj))
+                if (!w->rect().contains(me->position().toPoint()))
+                    return false;
+            onClick();
+            return true;
+        }
+        return QObject::eventFilter(obj, ev);
+    }
+};
 const QString kMomentBackendTooltip =
         QStringLiteral("Moment computation requires a backend-visible dataset. Use File → Open Remote or copy the dataset to the backend host.");
 const QString kPvBackendTooltip =
@@ -6076,6 +6104,17 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
 
 // Central-percentile clip range (CARTA-style): pct=99.9 keeps the central 99.9% of finite
 // values, i.e. clip at the (100-pct)/2 and 100-(100-pct)/2 percentiles. pct=100 → min/max.
+// §5.4b: the six curated 2-D colormaps offered directly in the LUT strip popover and the
+// dock's Color-map combo (registry casing). Everything else — the volume-rendering transfer
+// functions and single-colour ramps — lives behind "More maps…". MinMax is NOT a colormap
+// (it's a range mode) and is excluded from every colormap list.
+static const QStringList &curatedColorMaps()
+{
+    static const QStringList k{ u"Inferno"_s,  u"Magma"_s,    u"Plasma"_s,
+                               u"Viridis"_s, u"CoolWarm"_s, u"Gray"_s };
+    return k;
+}
+
 static bool percentileClipRange(vtkImageData *img, double pct, double &lo, double &hi)
 {
     vtkDataArray *sc = img ? img->GetPointData()->GetScalars() : nullptr;
@@ -6172,6 +6211,12 @@ double vtkWindowCube::activeDisplayRangeHi() const
 
 void vtkWindowCube::setActiveDisplayColorMap(const QString &name)
 {
+    // §5.4b: a non-curated pick becomes this pane's persistent custom entry (top of the
+    // popover + combo), replacing any prior one. Curated picks never clear it; MinMax is a
+    // range mode, never a colormap, so it never becomes a custom entry.
+    if (m_activePane >= 0 && m_activePane < 4 && !name.isEmpty() && name != u"MinMax"_s
+        && !curatedColorMaps().contains(name))
+        m_paneCustomColorMap[m_activePane] = name;
     if (Pane2DView *pv = activePane2DView()) {
         pv->setColorMapName(name);   // emits lutChanged → strip refresh + Linked propagate
         return;
@@ -6330,23 +6375,66 @@ void vtkWindowCube::showPaneLutStripPopover(int slot)
     menu->setToolTipsVisible(true);
     menu->setAttribute(Qt::WA_DeleteOnClose);
     const QString current = activeDisplayColorMapName();
-    auto *group = new QActionGroup(menu);
-    group->setExclusive(true);
-    for (const auto &nm : ColorMaps::GetColorMapNames()) {
-        const QString qn = QString::fromStdString(nm);
-        QAction *a = menu->addAction(QIcon(CubeUiAssembler::buildLutPreview(qn, 30, 9)), qn);
-        a->setCheckable(true);
-        a->setChecked(qn == current);
-        group->addAction(a);
-        // Re-activate the popover's pane before acting: the dispatch targets the ACTIVE
-        // pane, so an action must not fire against a pane that became active meanwhile.
-        QObject::connect(a, &QAction::triggered, this, [this, slot, qn]() {
+    // Sync the pane's custom entry to the current map right here — covers the same-active-pane
+    // open where a non-curated current arrived via a path that didn't go through
+    // setActiveDisplayColorMap (e.g. a legacy combo), so the current row is present + marked
+    //. Never MinMax (a range mode).
+    if (!current.isEmpty() && current != u"MinMax"_s && !curatedColorMaps().contains(current))
+        m_paneCustomColorMap[slot] = current;
+    const QLatin1StringView fg(VisivoTheme::kOnSurface());
+    const QLatin1StringView fg2(VisivoTheme::kOnSurfaceVariant());
+    const QLatin1StringView line(VisivoTheme::kOutline());
+
+    // §5.4b: custom rows (not plain checkable QActions) so the CURRENT map is visibly marked
+    // — check on the right edge, semibold kOnSurface label, an rgba(4,138,191,0.14) fill with
+    // a 1 px kOutline border — the app's selected-list-row treatment. Exactly one is marked.
+    auto addMapRow = [&](const QString &qn) {
+        const bool cur = (qn == current);
+        auto *row = new QWidget(menu);
+        row->setCursor(Qt::PointingHandCursor);
+        row->setStyleSheet(cur ? QStringLiteral("background:rgba(4,138,191,0.14);"
+                                                "border:1px solid %1;border-radius:3px;")
+                                         .arg(line)
+                               : u"background:transparent;border:1px solid transparent;"_s);
+        auto *h = new QHBoxLayout(row);
+        h->setContentsMargins(8, 3, 8, 3);
+        h->setSpacing(8);
+        auto *sw = new QLabel(row);
+        sw->setPixmap(CubeUiAssembler::buildLutPreview(qn, 40, 12));
+        sw->setAttribute(Qt::WA_TransparentForMouseEvents);
+        h->addWidget(sw, 0);
+        auto *name = new QLabel(qn, row);
+        name->setAttribute(Qt::WA_TransparentForMouseEvents);
+        name->setStyleSheet(QStringLiteral("color:%1;font-family:'Lato';font-size:11px;%2")
+                                    .arg(cur ? fg : fg2, cur ? u"font-weight:600;"_s : QString()));
+        h->addWidget(name, 1);
+        auto *check = new QLabel(cur ? u"✓"_s : QString(), row);
+        check->setAttribute(Qt::WA_TransparentForMouseEvents);
+        check->setStyleSheet(QStringLiteral("color:%1;font-size:11px;font-weight:700;")
+                                     .arg(QLatin1StringView(VisivoTheme::kPrimary())));
+        h->addWidget(check, 0);
+        auto *wa = new QWidgetAction(menu);
+        wa->setDefaultWidget(row);
+        auto *filter = new RowClickFilter(menu);
+        filter->onClick = [this, slot, qn, menu]() {
             setActivePane(slot);
             setActiveDisplayColorMap(qn);
             updateDisplaySectionForActivePane();
             refreshPaneLutStrip(slot);
-        });
-    }
+            menu->close();
+        };
+        row->installEventFilter(filter);
+        menu->addAction(wa);
+    };
+    // A non-standard pick (from More maps…) persists as the 7th row at the TOP, above the six.
+    if (!m_paneCustomColorMap[slot].isEmpty()
+        && !curatedColorMaps().contains(m_paneCustomColorMap[slot]))
+        addMapRow(m_paneCustomColorMap[slot]);
+    for (const QString &qn : curatedColorMaps())
+        addMapRow(qn);
+    menu->addSeparator();
+    QObject::connect(menu->addAction(u"More maps…"_s), &QAction::triggered, this,
+                     [this, slot]() { setActivePane(slot); showMoreColorMapsDialog(); });
     menu->addSeparator();
     QObject::connect(menu->addAction(u"Edit LUT…"_s), &QAction::triggered, this,
                      [this, slot]() { setActivePane(slot); showActiveDisplayLUTEditor(); });
@@ -6364,6 +6452,47 @@ void vtkWindowCube::showPaneLutStripPopover(int slot)
 
     QToolButton *btn = m_slots[slot].lutBtn;
     menu->popup(btn ? btn->mapToGlobal(QPoint(0, btn->height())) : QCursor::pos());
+}
+
+void vtkWindowCube::showMoreColorMapsDialog()
+{
+    // §5.4b: the rare-case full picker — every registry colormap EXCEPT MinMax (a range
+    // mode, not a colormap). Scrollable, swatches, current pre-selected. Applies to the
+    // active display target (the pane the popover / combo was opened for).
+    QDialog dlg(this);
+    dlg.setWindowTitle(u"Colour maps"_s);
+    auto *lay = new QVBoxLayout(&dlg);
+    auto *list = new QListWidget(&dlg);
+    list->setIconSize(QSize(64, 12));
+    const QString current = activeDisplayColorMapName();
+    for (const auto &nm : ColorMaps::GetColorMapNames()) {
+        const QString qn = QString::fromStdString(nm);
+        if (qn == u"MinMax"_s)
+            continue;   // a range mode, never a colormap (§5.4b)
+        auto *it =
+                new QListWidgetItem(QIcon(CubeUiAssembler::buildLutPreview(qn, 64, 12)), qn, list);
+        if (qn == current)
+            list->setCurrentItem(it);
+    }
+    lay->addWidget(list, 1);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    lay->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    QObject::connect(list, &QListWidget::itemDoubleClicked, &dlg,
+                     [&dlg](QListWidgetItem *) { dlg.accept(); });
+    dlg.resize(280, 440);
+    // exec() spins a nested loop — async work could change the active pane. Re-assert the
+    // pane this picker was opened for before applying.
+    const int slot = m_activePane;
+    if (dlg.exec() == QDialog::Accepted && list->currentItem()) {
+        if (slot >= 0 && slot < 4)
+            setActivePane(slot);
+        setActiveDisplayColorMap(list->currentItem()->text());
+        updateDisplaySectionForActivePane();
+        if (m_activePane >= 0 && m_activePane < 4)
+            refreshPaneLutStrip(m_activePane);
+    }
 }
 
 void vtkWindowCube::flashPaneLutStrip(int slot)
@@ -6442,10 +6571,12 @@ QWidget *vtkWindowCube::buildPaneDisplayPage()
         l->setStyleSheet(labelCss);
         h->addWidget(l, 0);
         m_paneLutCombo = new QComboBox(r);
-        for (const auto &nm : ColorMaps::GetColorMapNames()) {
-            const QString qn = QString::fromStdString(nm);
+        // §5.4b: the six curated maps, then "More maps…" as the last entry (opens the full
+        // registry picker). NOT the whole VTK registry, and never MinMax (a range mode).
+        for (const QString &qn : curatedColorMaps())
             m_paneLutCombo->addItem(QIcon(CubeUiAssembler::buildLutPreview(qn, 48, 12)), qn);
-        }
+        m_paneLutCombo->insertSeparator(m_paneLutCombo->count());
+        m_paneLutCombo->addItem(u"More maps…"_s);
         m_paneLutCombo->setMinimumWidth(0);
         m_paneLutCombo->setMinimumContentsLength(3);
         m_paneLutCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
@@ -6466,6 +6597,13 @@ QWidget *vtkWindowCube::buildPaneDisplayPage()
                          [this](const QString &name) {
                              if (m_applyingPaneDisplay)
                                  return;
+                             if (name == u"More maps…"_s) {
+                                 // Not a real choice — open the full picker, then restore the
+                                 // combo to whatever is actually active (§5.4b).
+                                 showMoreColorMapsDialog();
+                                 updateDisplaySectionForActivePane();
+                                 return;
+                             }
                              setActiveDisplayColorMap(name);
                          });
         QObject::connect(edit, &QToolButton::clicked, this,
@@ -6711,8 +6849,29 @@ void vtkWindowCube::updateDisplaySectionForActivePane()
     if (m_paneSymmetricRow)
         m_paneSymmetricRow->setVisible(velocityMoment);   // Symmetric: velocity Moment only
     const QString cmap = activeDisplayColorMapName();
-    if (m_paneLutCombo && !cmap.isEmpty())
+    // Keep the pane's persistent custom entry in sync with ANY non-curated current — whether
+    // it arrived via More maps…, Edit LUT…, or a legacy combo — so the popover marks it and
+    // the dock combo can show it. Never MinMax (a range mode, not a colormap) (§5.4b).
+    if (!cmap.isEmpty() && cmap != u"MinMax"_s && !curatedColorMaps().contains(cmap)
+        && m_activePane >= 0 && m_activePane < 4)
+        m_paneCustomColorMap[m_activePane] = cmap;
+    if (m_paneLutCombo && !cmap.isEmpty()) {
+        // The combo lists the six curated maps + "More maps…". The active pane's persistent
+        // non-standard pick (m_paneCustomColorMap) shows as a REAL top entry that stays put
+        // for re-selection — not a transient label; a newer non-standard replaces it (§5.4b).
+        const QString custom =
+                (m_activePane >= 0 && m_activePane < 4) ? m_paneCustomColorMap[m_activePane]
+                                                        : QString();
+        // Drop any previously-inserted custom extra at index 0 (bounded to one).
+        if (m_paneLutCombo->count() && m_paneLutCombo->itemText(0) != u"More maps…"_s
+            && !m_paneLutCombo->itemText(0).isEmpty()
+            && !curatedColorMaps().contains(m_paneLutCombo->itemText(0)))
+            m_paneLutCombo->removeItem(0);
+        if (!custom.isEmpty() && !curatedColorMaps().contains(custom))
+            m_paneLutCombo->insertItem(
+                    0, QIcon(CubeUiAssembler::buildLutPreview(custom, 48, 12)), custom);
         m_paneLutCombo->setCurrentText(cmap);
+    }
     if (m_paneRangeMin)
         m_paneRangeMin->setValue(activeDisplayRangeLo());
     if (m_paneRangeMax)
@@ -7521,12 +7680,16 @@ void vtkWindowCube::mountView(int slot)
     if (v.kind == ViewId::Product && viewHasData(v)) {
         pv = ensureSlotProductView(slot);
         const Product2D &p = m_products2d[v.productId];
-        if (!pv->lutInitialized()) {
-            // First mount: seed the default LUT BY KIND (§5.3) from the product cache.
+        // Seed the by-kind default on a FIRST mount OR when this slot is reused for a
+        // DIFFERENT product; keep the pane's own LUT/range only on a same-product recompute
+        // (lutInitialized alone can't tell those apart — it's per-slot, not per-product).
+        const bool sameProduct = pv->lutInitialized() && (m_paneProductId[slot] == v.productId);
+        if (!sameProduct) {
             pv->setImageData(p.imageData, p.imageRange[0], p.imageRange[1]);
             pv->setColorMap(p.lutName, p.scaleMode, p.gamma, p.clampOutliers);
+            m_paneProductId[slot] = v.productId;
         } else {
-            // Remount / recompute: keep THIS pane's own LUT + range, swap only the
+            // Recompute of the SAME product: keep THIS pane's own LUT + range, swap only the
             // pixels (§5.3 / acceptance #7 — two panes on the same product may differ).
             pv->setImageData(p.imageData, pv->rangeMin(), pv->rangeMax());
         }
@@ -8346,7 +8509,11 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
     // Default strictly BY KIND, never inherited (else a prior velocity's CoolWarm would
     // leak onto a later intensity map). A signed velocity field is always shown Linear —
     // a Log/Sqrt stretch floors negatives and would push blueshift below-range (§3.2).
-    const QString momentLut = velocity ? u"CoolWarm"_s : u"Inferno"_s;
+    // §5.4b: mom0 (intensity) → Inferno, mom1 (velocity) → CoolWarm, mom2 (dispersion/width)
+    // → Viridis; any higher order falls back to Inferno.
+    const QString momentLut = (result.order == 1)   ? u"CoolWarm"_s
+                            : (result.order == 2)   ? u"Viridis"_s
+                                                    : u"Inferno"_s;
     const LutScale::Mode momentScale = velocity ? LutScale::Mode::Linear : this->m_sliceScaleMode;
 
     Product2D cached;

@@ -1,5 +1,6 @@
 #include "Pane2DView.h"
 
+#include "ColorMaps.h"
 #include "CubeViewportGeometry.h"
 #include "CubeWcsUtil.h"
 
@@ -201,6 +202,11 @@ Pane2DView::Pane2DView(QObject *parent)
     m_lut = vtkSmartPointer<vtkLookupTable>::New();
     m_lut->SetTableRange(0., 0.);
     m_lut->SetNanColor(0., 0., 0., 0.);   // masked / NaN pixels read as ABSENT (transparent)
+    // Seed a real colormap, NOT vtkLookupTable::Build()'s raw HSV rainbow: a pane rendered
+    // before its by-kind setColorMap() lands (or with an empty name) must never flash the
+    // rainbow — it reads as a broken "MinMax" default (§5.4b).
+    m_colorMapName = QString::fromStdString(ColorMaps::DefaultColorMap);
+    ColorMaps::SetColorMap(m_lut, ColorMaps::DefaultColorMap);
     m_lut->Build();
 
     m_colors = vtkSmartPointer<vtkImageMapToColors>::New();
@@ -364,6 +370,11 @@ void Pane2DView::rebuildLut()
 {
     double range[2] = { 0., 0. };
     m_lut->GetTableRange(range);   // build against the CURRENT table range
+    // Empty name → ColorMaps::SetColorMap is a no-op → the raw rainbow would survive; fall
+    // back to the default so the table is always a real colormap AND the stored name matches
+    // what's drawn (so colorMapName()/the strip aren't blank) (§5.4b).
+    if (m_colorMapName.isEmpty())
+        m_colorMapName = QString::fromStdString(ColorMaps::DefaultColorMap);
     LutScale::build(m_lut, m_colorMapName.toStdString(), m_scale, range[0], range[1], m_gamma);
     if (m_invert) {
         // Reverse the colour ramp in place (ColorMaps has no reverse; flip the table).

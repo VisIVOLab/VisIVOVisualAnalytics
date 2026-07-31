@@ -101,6 +101,8 @@ LUTCustomizerDialog::LUTCustomizerDialog(QWidget *parent)
     ui->comboLut->setIconSize(QSize(80, 14));
     auto cmaps = ColorMaps::GetColorMapNames();
     std::for_each(cmaps.cbegin(), cmaps.cend(), [this](const std::string &name) {
+        if (name == "MinMax")
+            return;   // a range mode, not a colormap (§5.4b)
         ui->comboLut->addItem(makeColormapIcon(name), QString::fromStdString(name));
     });
     ui->comboLut->setCurrentText(QString::fromStdString(ColorMaps::DefaultColorMap));
