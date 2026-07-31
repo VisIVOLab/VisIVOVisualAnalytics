@@ -100,6 +100,8 @@ bool convertSpectralValue(double value, const QString &fromUnit, const QString &
 void vtkWindowCube::setLinkViews(bool on)
 {
     this->m_linkViews = on;
+    this->m_linkNoReceiverHintShown = false;   // §5.5: toggling the master re-arms the hint
+    this->refreshLinkedFacetChips();           // §5.5: grey/enable the per-facet toggles
     if (this->m_actLinkViews && this->m_actLinkViews->isChecked() != on) {
         QSignalBlocker b(this->m_actLinkViews);
         this->m_actLinkViews->setChecked(on);
@@ -223,7 +225,7 @@ void vtkWindowCube::applyLinkedCamera(const double dir[3], const double up[3],
 
 void vtkWindowCube::broadcastLinkedChannel(int channel0)
 {
-    if (!this->m_linkViews)
+    if (!this->m_linkViews || !this->m_linkChannel)   // §5.5: gated by the "channel" facet
         return;
     // Resolve this channel's spectral value (velocity) so peers can match by
     // physical velocity rather than raw index.
@@ -237,7 +239,8 @@ void vtkWindowCube::broadcastLinkedChannel(int channel0)
     const double fraction = maxIdx > 0 ? double(clamped) / double(maxIdx) : 0.0;
     const auto windows = s_cubeWindows;   // snapshot
     for (const auto &p : windows)
-        if (p && p != this && p->m_linkViews)
+        // §5.5: a peer with its "channel" facet off has opted out of channel sync.
+        if (p && p != this && p->m_linkViews && p->m_linkChannel)
             p->applyLinkedChannel(channel0, fraction, spectralValue, ok, unit);
 }
 
@@ -312,14 +315,15 @@ void vtkWindowCube::applyLinkedChannel(int channel0, double fraction, double spe
 
 void vtkWindowCube::broadcastLinkedColour()
 {
-    if (!this->m_linkViews)
+    if (!this->m_linkViews || !this->m_linkLut)   // §5.5: gated by the "LUT" facet
         return;
     const QString name = this->m_activeColorMapName;
     const int mode = static_cast<int>(this->m_volumeScaleMode);
     const double gamma = this->m_volumeScaleGamma;
     const auto windows = s_cubeWindows;   // snapshot
     for (const auto &p : windows)
-        if (p && p != this && p->m_linkViews)
+        // §5.5: a peer with its "LUT" facet off has opted out of colour sync.
+        if (p && p != this && p->m_linkViews && p->m_linkLut)
             p->applyLinkedColour(name, mode, gamma);
 }
 

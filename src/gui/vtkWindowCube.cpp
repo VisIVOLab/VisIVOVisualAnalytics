@@ -115,6 +115,7 @@
 #include <QPushButton>
 #include <QToolBar>
 #include <QToolButton>
+#include <QToolTip>
 #include <QDebug>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -2941,6 +2942,15 @@ void vtkWindowCube::applySliceLutByName(const QString &name)
     const double *r = this->lutSlice->GetTableRange();
     LutScale::build(this->lutSlice, stdName, this->m_sliceScaleMode, r[0], r[1],
                     this->m_sliceScaleGamma);
+    if (this->m_sliceInvert) {
+        // §5.4 Invert: reverse the colour ramp in place (range/stretch unchanged).
+        const int n = this->lutSlice->GetNumberOfTableValues();
+        std::vector<std::array<double, 4>> tmp(n);
+        for (int i = 0; i < n; ++i)
+            this->lutSlice->GetTableValue(i, tmp[i].data());
+        for (int i = 0; i < n; ++i)
+            this->lutSlice->SetTableValue(i, tmp[n - 1 - i].data());
+    }
     this->lutSlice->Modified();
 
     if (this->active2dWin() && this->viewingSlice()) {
@@ -6163,22 +6173,21 @@ double vtkWindowCube::activeDisplayRangeHi() const
 void vtkWindowCube::setActiveDisplayColorMap(const QString &name)
 {
     if (Pane2DView *pv = activePane2DView()) {
-        pv->setColorMapName(name);
-        propagatePaneLutWithinWindow(m_activePane);
+        pv->setColorMapName(name);   // emits lutChanged → strip refresh + Linked propagate
         return;
     }
     if (activePaneIsSlice()) {
         applySliceLutByName(name);   // rebuilds lutSlice; renders if the slice is on screen
         if (this->sliceWin)
             this->sliceWin->Render();
+        refreshPaneLutStrip(m_activePane);   // §5.4: slice strip mirrors the new colormap
     }
 }
 
 void vtkWindowCube::setActiveDisplayScale(LutScale::Mode mode)
 {
     if (Pane2DView *pv = activePane2DView()) {
-        pv->setScale(mode);
-        propagatePaneLutWithinWindow(m_activePane);
+        pv->setScale(mode);   // emits lutChanged → strip refresh + Linked propagate
         return;
     }
     if (activePaneIsSlice()) {
@@ -6192,8 +6201,7 @@ void vtkWindowCube::setActiveDisplayScale(LutScale::Mode mode)
 void vtkWindowCube::setActiveDisplayRange(double lo, double hi)
 {
     if (Pane2DView *pv = activePane2DView()) {
-        pv->setRange(lo, hi);
-        propagatePaneLutWithinWindow(m_activePane);
+        pv->setRange(lo, hi);   // emits rangeChanged → dock sync + Linked range propagate
         return;
     }
     if (activePaneIsSlice() && this->lutSlice) {
@@ -6215,6 +6223,201 @@ void vtkWindowCube::showActiveDisplayLUTEditor()
     }
     if (activePaneIsSlice())
         showLUTCustomizer();   // the existing slice/3D customizer, already targets lutSlice
+}
+
+bool vtkWindowCube::activeDisplayInvert() const
+{
+    if (Pane2DView *pv = activePane2DView())
+        return pv->invert();
+    if (activePaneIsSlice())
+        return this->m_sliceInvert;
+    return false;
+}
+
+void vtkWindowCube::setActiveDisplayInvert(bool on)
+{
+    if (Pane2DView *pv = activePane2DView()) {
+        pv->setInvert(on);   // emits lutChanged → strip refresh + Linked propagate
+        return;
+    }
+    if (activePaneIsSlice()) {
+        this->m_sliceInvert = on;
+        applySliceLutByName(this->m_activeSliceLutName);   // rebuild + flip
+        if (this->sliceWin)
+            this->sliceWin->Render();
+    }
+}
+
+void vtkWindowCube::resetActiveDisplayLut()
+{
+    // §5.4 Reset → the default appearance BY KIND. A Product pane re-seeds from the shared
+    // product cache (the original colormap/scale/gamma/range the moment was registered
+    // with); the Slice drops any stretch/invert and refits its full data range.
+    if (Pane2DView *pv = activePane2DView()) {
+        const QString pid = m_slots[m_activePane].view.productId;
+        auto it = m_products2d.constFind(pid);
+        if (it == m_products2d.constEnd())
+            return;
+        const Product2D &p = *it;
+        {
+            // Range FIRST, then setColorMap — setColorMap rebuilds via LutScale::build at the
+            // pane's current TableRange, so seeding the range first keeps the Log positive-
+            // floor handling (a lo≤0 default would otherwise be mishandled). Guarded so the
+            // intermediate rangeChanged doesn't double-propagate; one explicit full propagate
+            // after (setColorMap is the SILENT seed setter, emits nothing).
+            QScopedValueRollback<bool> guard(m_applyingPaneDisplay, true);
+            pv->setRange(p.imageRange[0], p.imageRange[1]);
+            pv->setColorMap(p.lutName, p.scaleMode, p.gamma, p.clampOutliers);
+        }
+        propagatePaneLutWithinWindow(m_activePane);
+        updateDisplaySectionForActivePane();
+        refreshPaneLutStrip(m_activePane);
+        return;
+    }
+    if (activePaneIsSlice() && this->lutSlice) {
+        this->m_sliceInvert = false;
+        this->m_sliceScaleMode = LutScale::Mode::Linear;
+        vtkImageData *img = activeDisplayImageData();
+        if (img) {
+            double range[2] = { 0., 0. };
+            img->GetScalarRange(range);
+            if (std::isfinite(range[0]) && std::isfinite(range[1]) && range[1] > range[0])
+                this->lutSlice->SetTableRange(range[0], range[1]);
+        }
+        applySliceLutByName(this->m_activeSliceLutName);
+        this->layout2dPaneFor(/*slice=*/true, /*force=*/false);
+        if (this->sliceWin)
+            this->sliceWin->Render();
+        updateDisplaySectionForActivePane();
+        refreshPaneLutStrip(m_activePane);
+    }
+}
+
+void vtkWindowCube::refreshPaneLutStrip(int slot)
+{
+    // §5.4: the header strip mirrors THIS pane's colormap. Visible only for a 2-D LUT pane
+    // (a Product with cached pixels, or the 2D Slice); hidden for 3D / Spectrum / None.
+    if (slot < 0 || slot > 3 || !m_slots[slot].lutBtn)
+        return;
+    QToolButton *btn = m_slots[slot].lutBtn;
+    const PaneView &v = m_slots[slot].view;
+    QString cmap;
+    if (v.kind == ViewId::Product && m_paneViews[slot] && viewHasData(v))
+        cmap = m_paneViews[slot]->colorMapName();
+    else if (v.kind == ViewId::Slice2D)
+        cmap = m_activeSliceLutName;
+    const bool show = !cmap.isEmpty();
+    btn->setVisible(show);
+    if (show)
+        btn->setIcon(QIcon(CubeUiAssembler::buildLutPreview(cmap, 30, 9)));
+}
+
+void vtkWindowCube::showPaneLutStripPopover(int slot)
+{
+    using namespace Qt::StringLiterals;
+    if (slot < 0 || slot > 3)
+        return;
+    // Clicking the strip activates the pane so the activeDisplay* dispatch targets it, then
+    // offers the one-click colormap list + Edit/Invert/Reset — the same per-pane state the
+    // left dock writes (§5.4).
+    setActivePane(slot);
+    const PaneView &v = m_slots[slot].view;
+    const bool is2dLut = (v.kind == ViewId::Product && viewHasData(v)) || v.kind == ViewId::Slice2D;
+    if (!is2dLut)
+        return;
+
+    auto *menu = new QMenu(m_slots[slot].lutBtn ? m_slots[slot].lutBtn.data() : nullptr);
+    menu->setToolTipsVisible(true);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    const QString current = activeDisplayColorMapName();
+    auto *group = new QActionGroup(menu);
+    group->setExclusive(true);
+    for (const auto &nm : ColorMaps::GetColorMapNames()) {
+        const QString qn = QString::fromStdString(nm);
+        QAction *a = menu->addAction(QIcon(CubeUiAssembler::buildLutPreview(qn, 30, 9)), qn);
+        a->setCheckable(true);
+        a->setChecked(qn == current);
+        group->addAction(a);
+        // Re-activate the popover's pane before acting: the dispatch targets the ACTIVE
+        // pane, so an action must not fire against a pane that became active meanwhile.
+        QObject::connect(a, &QAction::triggered, this, [this, slot, qn]() {
+            setActivePane(slot);
+            setActiveDisplayColorMap(qn);
+            updateDisplaySectionForActivePane();
+            refreshPaneLutStrip(slot);
+        });
+    }
+    menu->addSeparator();
+    QObject::connect(menu->addAction(u"Edit LUT…"_s), &QAction::triggered, this,
+                     [this, slot]() { setActivePane(slot); showActiveDisplayLUTEditor(); });
+    QAction *inv = menu->addAction(u"Invert"_s);
+    inv->setCheckable(true);
+    inv->setChecked(activeDisplayInvert());
+    QObject::connect(inv, &QAction::triggered, this, [this, slot](bool on) {
+        setActivePane(slot);
+        setActiveDisplayInvert(on);
+        updateDisplaySectionForActivePane();
+        refreshPaneLutStrip(slot);
+    });
+    QObject::connect(menu->addAction(u"Reset"_s), &QAction::triggered, this,
+                     [this, slot]() { setActivePane(slot); resetActiveDisplayLut(); });
+
+    QToolButton *btn = m_slots[slot].lutBtn;
+    menu->popup(btn ? btn->mapToGlobal(QPoint(0, btn->height())) : QCursor::pos());
+}
+
+void vtkWindowCube::flashPaneLutStrip(int slot)
+{
+    // §5.5: a ~400ms confirmation flash on a pane that just RECEIVED a linked LUT, so the
+    // propagation is visible ("correct implementation = no effect = looks broken").
+    if (slot < 0 || slot > 3 || !m_slots[slot].lutBtn)
+        return;
+    QPointer<QToolButton> btn = m_slots[slot].lutBtn;
+    const QLatin1StringView pri(VisivoTheme::kPrimary());
+    const QString base =
+            u"QToolButton{background:transparent;border:1px solid #2A3238;border-radius:2px;"
+            u"padding:1px;}QToolButton:hover{border-color:%1;}"_s.arg(pri);
+    btn->setStyleSheet(u"QToolButton{background:rgba(4,138,191,0.28);border:2px solid %1;"
+                       u"border-radius:2px;padding:0px;}"_s.arg(pri));
+    QTimer::singleShot(400, btn, [btn, base]() {
+        if (btn)
+            btn->setStyleSheet(base);
+    });
+}
+
+void vtkWindowCube::refreshLinkedFacetChips()
+{
+    // §5.5: the facet toggles are live only when the Linked master is on AND there is more
+    // than one pane to link. Off → greyed (disabled) but their checked state is preserved,
+    // so re-enabling restores the user's choice.
+    const bool master = m_linkViews && m_paneCount > 1;
+    if (m_linkChannelChip) {
+        m_linkChannelChip->setEnabled(master);
+        QSignalBlocker b(m_linkChannelChip);
+        m_linkChannelChip->setChecked(m_linkChannel);
+    }
+    if (m_linkLutChip) {
+        m_linkLutChip->setEnabled(master);
+        QSignalBlocker b(m_linkLutChip);
+        m_linkLutChip->setChecked(m_linkLut);
+    }
+}
+
+void vtkWindowCube::showLinkNoReceiverHint(int srcSlot)
+{
+    // §5.5: Linked·LUT is on but nothing else shows this product, so the change had no
+    // visible peer. Say it once (per layout) near the chip rather than leaving the user to
+    // wonder why "Linked" did nothing.
+    if (m_linkNoReceiverHintShown || srcSlot < 0 || srcSlot > 3)
+        return;
+    m_linkNoReceiverHintShown = true;
+    const QString label = viewTitle(m_slots[srcSlot].view);
+    const QString msg = QStringLiteral("Only pane showing %1 — nothing to link").arg(label);
+    QWidget *anchor = m_linkLutChip ? m_linkLutChip.data()
+                    : m_paneLinkedBtn ? m_paneLinkedBtn.data()
+                                      : nullptr;
+    if (anchor)
+        QToolTip::showText(anchor->mapToGlobal(QPoint(0, anchor->height())), msg, anchor);
 }
 
 QWidget *vtkWindowCube::buildPaneDisplayPage()
@@ -6321,9 +6524,8 @@ QWidget *vtkWindowCube::buildPaneDisplayPage()
                 return;
             if (on) {
                 const double m = std::max(std::fabs(pv->rangeMin()), std::fabs(pv->rangeMax()));
-                pv->setRange(-m, m);
+                pv->setRange(-m, m);   // emits rangeChanged → Linked range propagate
             }
-            propagatePaneLutWithinWindow(m_activePane);
         });
     }
 
@@ -6445,14 +6647,10 @@ void vtkWindowCube::showPaneLUTCustomizer()
                 return;
             // The dialog mutated the pane's OWN lut in place (name via ObjectName, range,
             // stretch). Adopt name+scale+gamma so getters/Linked aren't stale, then re-fit.
+            // adoptLutState emits lutChanged → the pane's own slot refreshes its strip and
+            // runs the Linked propagation (no explicit propagate here — would double-flash).
             p->adoptLutState(QString::fromStdString(p->lookupTable()->GetObjectName()),
                              m_paneLutCustomizer->scaleMode(), m_paneLutCustomizer->scaleGamma());
-            // find the source slot for propagation
-            for (int i = 0; i < 4; ++i)
-                if (m_paneViews[i] == p) {
-                    propagatePaneLutWithinWindow(i);
-                    break;
-                }
             updateDisplaySectionForActivePane();
         });
     }
@@ -6533,29 +6731,41 @@ void vtkWindowCube::propagatePaneLutWithinWindow(int srcSlot)
     // §5.5: with Linked on, a pane's LUT change follows only panes showing the SAME
     // product (same kind AND productId) — never across kinds, never moment→slice. This
     // is within-window and separate from the cross-window broadcastLinkedColour path.
-    if (!m_linkViews || m_applyingPaneDisplay || srcSlot < 0 || srcSlot > 3)
+    if (!m_linkViews || !m_linkLut || m_applyingPaneDisplay || srcSlot < 0 || srcSlot > 3)
         return;
     Pane2DView *src = m_paneViews[srcSlot];
     if (!src || m_slots[srcSlot].view.kind != ViewId::Product)
         return;
     const QString pid = m_slots[srcSlot].view.productId;
-    QScopedValueRollback<bool> guard(m_applyingPaneDisplay, true);
-    for (int j = 0; j < 4; ++j) {
-        if (j == srcSlot || !m_paneViews[j])
-            continue;
-        if (m_slots[j].view.kind != ViewId::Product || m_slots[j].view.productId != pid)
-            continue;
-        m_paneViews[j]->applyLut(src->colorMapName(), src->scale(), src->gamma(), src->invert());
-        m_paneViews[j]->setRange(src->rangeMin(), src->rangeMax());
+    int receivers = 0;
+    {
+        QScopedValueRollback<bool> guard(m_applyingPaneDisplay, true);
+        for (int j = 0; j < 4; ++j) {
+            if (j == srcSlot || !m_paneViews[j])
+                continue;
+            if (m_slots[j].view.kind != ViewId::Product || m_slots[j].view.productId != pid)
+                continue;
+            m_paneViews[j]->applyLut(src->colorMapName(), src->scale(), src->gamma(),
+                                     src->invert());
+            m_paneViews[j]->setRange(src->rangeMin(), src->rangeMax());
+            refreshPaneLutStrip(j);
+            flashPaneLutStrip(j);   // §5.5: the receiver flashes so propagation is VISIBLE
+            ++receivers;
+        }
     }
+    // §5.5: with Linked·LUT on but nothing showing the same product, say so once — otherwise
+    // "correct = no effect" reads as broken.
+    if (receivers == 0)
+        showLinkNoReceiverHint(srcSlot);
 }
 
 void vtkWindowCube::propagatePaneRangeWithinWindow(int srcSlot)
 {
     // §5.5: cheap path used on a LIVE window/level drag — only the RANGE follows the
     // same-product peers (no colormap rebuild), so a linked drag doesn't re-Build LUTs
-    // on every mouse move. Colormap/scale/invert use the full path (lutChanged).
-    if (!m_linkViews || m_applyingPaneDisplay || srcSlot < 0 || srcSlot > 3)
+    // on every mouse move. Colormap/scale/invert use the full path (lutChanged). Range is
+    // part of the "LUT" facet (colour map / range), so it obeys m_linkLut too.
+    if (!m_linkViews || !m_linkLut || m_applyingPaneDisplay || srcSlot < 0 || srcSlot > 3)
         return;
     Pane2DView *src = m_paneViews[srcSlot];
     if (!src || m_slots[srcSlot].view.kind != ViewId::Product)
@@ -6832,6 +7042,7 @@ Pane2DView *vtkWindowCube::ensureSlotProductView(int slot)
             propagatePaneRangeWithinWindow(slot);   // range-only: cheap on a live drag
         });
         QObject::connect(pv, &Pane2DView::lutChanged, this, [this, slot]() {
+            refreshPaneLutStrip(slot);            // §5.4: keep this pane's header strip current
             if (m_applyingPaneDisplay)
                 return;
             propagatePaneLutWithinWindow(slot);   // colormap/scale/invert → same-product panes
@@ -7168,6 +7379,22 @@ void vtkWindowCube::buildPaneSlots()
 
         h->addStretch(1);
 
+        // §5.4: the LUT strip is a real button — a 30×9 swatch of THIS pane's colormap.
+        // Click activates the pane and opens the colormap popover (list + Edit/Invert/Reset).
+        // Shown only on 2-D LUT panes (Product / Slice); hidden for 3D / Spectrum / None.
+        auto *lutBtn = new QToolButton(hdr);
+        lutBtn->setCursor(Qt::PointingHandCursor);
+        lutBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        lutBtn->setIconSize(QSize(30, 9));
+        lutBtn->setToolTip(u"Colour map — click to change"_s);
+        lutBtn->setStyleSheet(u"QToolButton{background:transparent;border:1px solid #2A3238;"
+                              u"border-radius:2px;padding:1px;}QToolButton:hover{border-color:%1;}"_s
+                                      .arg(pri));
+        lutBtn->setVisible(false);
+        QObject::connect(lutBtn, &QToolButton::clicked, this,
+                         [this, i]() { this->showPaneLutStripPopover(i); });
+        h->addWidget(lutBtn);
+
         auto *maxBtn = new QToolButton(hdr);
         maxBtn->setText(u"⤢"_s);
         maxBtn->setCursor(Qt::PointingHandCursor);
@@ -7205,6 +7432,7 @@ void vtkWindowCube::buildPaneSlots()
         m_slots[i].viewHostLayout = vhl;
         m_slots[i].controls = ctrl;
         m_slots[i].maxBtn = maxBtn;
+        m_slots[i].lutBtn = lutBtn;
         m_slots[i].view = {};
     };
     for (int i = 0; i < 4; ++i)
@@ -7514,6 +7742,9 @@ void vtkWindowCube::refreshPaneChrome()
     refreshPaneActiveStyles();
     updateDisplaySectionForActivePane();   // §5.2: view of the active pane may have changed
     syncSessionTreeToActivePane();         // reverse sync when the active pane's view changed
+    for (int i = 0; i < 4; ++i)
+        refreshPaneLutStrip(i);            // §5.4: keep each header strip on its pane's LUT
+    m_linkNoReceiverHintShown = false;     // §5.5: pane composition changed → re-arm the hint
 }
 
 void vtkWindowCube::setupPaneChrome()
@@ -7623,10 +7854,38 @@ void vtkWindowCube::setupPaneChrome()
                      [this](bool on) { this->setLinkViews(on); });
     m_paneLinkedBtn = linked;
     tb->addWidget(linked);
-    m_linkedQualifier = new QLabel(u"camera · channel · LUT"_s, toolbar);
-    m_linkedQualifier->setStyleSheet(QStringLiteral("color:%1; font-family:'JetBrains Mono','SF Mono',"
-                                                    "monospace; font-size:10px;").arg(fgMuted));
-    tb->addWidget(m_linkedQualifier);
+    // §5.5: "channel · LUT" is REAL state now — two per-facet toggles. Each gates one
+    // propagation kind; both grey out (disabled) when the Linked master is off, so the
+    // control reads its own state instead of being a decorative caption.
+    auto makeFacetChip = [&](const QString &txt) {
+        auto *c = new QToolButton(toolbar);
+        c->setText(txt);
+        c->setCheckable(true);
+        c->setChecked(true);
+        c->setCursor(Qt::PointingHandCursor);
+        c->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        c->setStyleSheet(QStringLiteral(
+                "QToolButton{background:transparent;border:none;font-family:'JetBrains Mono',"
+                "'SF Mono',monospace;font-size:10px;padding:1px 3px;color:%1;}"
+                "QToolButton:checked{color:%2;}QToolButton:disabled{color:#3A4247;}")
+                                 .arg(fgMuted, pri));
+        return c;
+    };
+    m_linkChannelChip = makeFacetChip(u"channel"_s);
+    m_linkChannelChip->setToolTip(u"Linked: sync the channel / slice index across panes"_s);
+    QObject::connect(m_linkChannelChip, &QToolButton::toggled, this,
+                     [this](bool on) { m_linkChannel = on; });
+    tb->addWidget(m_linkChannelChip);
+    auto *facetSep = new QLabel(u"·"_s, toolbar);
+    facetSep->setStyleSheet(QStringLiteral("color:%1; font-family:'JetBrains Mono','SF Mono',"
+                                           "monospace; font-size:10px;").arg(fgMuted));
+    tb->addWidget(facetSep);
+    m_linkLutChip = makeFacetChip(u"LUT"_s);
+    m_linkLutChip->setToolTip(u"Linked: propagate colour map / range to panes on the same product"_s);
+    QObject::connect(m_linkLutChip, &QToolButton::toggled, this,
+                     [this](bool on) { m_linkLut = on; });
+    tb->addWidget(m_linkLutChip);
+    refreshLinkedFacetChips();
     tb->addStretch(1);
 
     if (this->hoverReadoutLabel) {
@@ -7947,8 +8206,7 @@ void vtkWindowCube::applyPaneLayout(int panes)
     }
     if (m_paneLinkedBtn)
         m_paneLinkedBtn->setEnabled(panes > 1);   // nothing to link with a single pane
-    if (m_linkedQualifier)
-        m_linkedQualifier->setText(panes == 4 ? u"channel · LUT"_s : u"camera · channel · LUT"_s);
+    refreshLinkedFacetChips();                     // §5.5: facet toggles follow the master
     if (m_paneCountToggle) {
         QSignalBlocker b(m_paneCountToggle);
         m_paneCountToggle->setCurrentIndex(panes == 1 ? 0 : (panes == 2 ? 1 : 2));

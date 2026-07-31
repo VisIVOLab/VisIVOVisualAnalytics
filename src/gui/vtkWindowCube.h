@@ -467,6 +467,7 @@ private:
         QHBoxLayout *viewHostLayout{ nullptr };
         QHBoxLayout *controls{ nullptr };   ///< per-view control slot in the header
         QPointer<QToolButton> maxBtn;    ///< ⤢ maximize / ⤡ restore (§3.2)
+        QPointer<QToolButton> lutBtn;    ///< §5.4 header LUT strip → colormap popover (2D panes)
         PaneView view;
     };
     std::array<PaneSlot, 4> m_slots;
@@ -506,8 +507,17 @@ private:
     void setActiveDisplayColorMap(const QString &name);
     void setActiveDisplayScale(LutScale::Mode mode);
     void setActiveDisplayRange(double lo, double hi);
+    bool activeDisplayInvert() const;
+    void setActiveDisplayInvert(bool on);
+    void resetActiveDisplayLut();               ///< §5.4 popover Reset → default LUT by kind
     void showActiveDisplayLUTEditor();
     void applyPaneDisplayRange(bool fromMin);   ///< dock spinbox → active pane setRange
+    // §5.4: the header LUT strip is a shortcut button — click activates the pane + opens a
+    // popover (colormap list + Edit LUT… · Invert · Reset), writing the same per-pane state.
+    void refreshPaneLutStrip(int slot);         ///< update the strip swatch + visibility
+    void showPaneLutStripPopover(int slot);     ///< the colormap popover for a pane
+    void flashPaneLutStrip(int slot);           ///< §5.5: ~400ms confirmation flash on a receiver
+    bool m_sliceInvert{ false };                ///< slice LUT inverted (Pane2DView tracks its own)
     void propagatePaneLutWithinWindow(int srcSlot);   ///< §5.5 Linked·LUT: same-product panes (full)
     void propagatePaneRangeWithinWindow(int srcSlot); ///< §5.5: range only (cheap, for live drag)
     int m_paneCount{ 1 };                 ///< 1 / 2 / 4 (spec §3.1 default is 1)
@@ -1099,6 +1109,16 @@ protected:
     // cube viewers that have "Link views" enabled (vtkWindowCube_Link.cpp).
     static QList<QPointer<vtkWindowCube>> s_cubeWindows;   // every open cube viewer
     bool m_linkViews{ false };
+    // §5.5: Linked is a MASTER with per-facet toggles rendered as two chips in the header
+    // ("channel" · "LUT"). Each gates one propagation kind; both grey out when the master
+    // is off. Camera (zoom/pan) sync is a later facet.
+    bool m_linkChannel{ true };
+    bool m_linkLut{ true };
+    bool m_linkNoReceiverHintShown{ false };   // "nothing to link" is one-shot per layout
+    QPointer<QToolButton> m_linkChannelChip;   // per-facet toggle
+    QPointer<QToolButton> m_linkLutChip;       // per-facet toggle
+    void refreshLinkedFacetChips();            // enabled/checked state follows the master
+    void showLinkNoReceiverHint(int srcSlot);  // §5.5 one-shot hint near the chip
     bool m_applyingLinkedUpdate{ false };                  // echo guard
     int m_lastLinkedChannel{ -1 };                         // dedup for channel broadcasts
     unsigned long m_cubeCameraObserverTag{ 0 };       // InteractionEvent (drag)
