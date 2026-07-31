@@ -87,6 +87,10 @@ public:
     /// Select a product row in the Session tree → drives Inspector › Provenance.
     void selectSessionProduct(const QString &productId);
 
+    /// Reverse sync: highlight the Session-tree row for the now-active pane (view or
+    /// product) without re-triggering activation.
+    void selectSessionRowForView(const QString &viewTag, const QString &productId);
+
     /// Focus mode thins the status rail to health + queue (the two that change);
     /// hides the cache + session slots. @p compact = true while focus is active.
     void setStatusRailCompact(bool compact);
@@ -99,6 +103,9 @@ public:
 
 signals:
     void dockCollapseChanged();   ///< so the window can re-fit the 2-D panes
+    /// A Session-tree row was selected → the viewer should activate the matching pane.
+    /// @p viewTag is "view3d"/"slice2d" for intrinsic views; @p productId for a product.
+    void sessionRowActivated(const QString &viewTag, const QString &productId);
 
 private:
     MainWindow *mainWindow() const;

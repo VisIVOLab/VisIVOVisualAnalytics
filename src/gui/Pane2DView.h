@@ -82,6 +82,13 @@ public:
 
     void setColorMapName(const QString &name);             // rebuild m_lut at the current range
     void setScale(LutScale::Mode mode);
+    // §5.2: adopt state AFTER an external editor (the LUT customizer) mutated m_lut in
+    // place — store name/scale/gamma so getters + Linked propagation aren't stale. No
+    // rebuild (the dialog already built the table); just re-fit.
+    void adoptLutState(const QString &name, LutScale::Mode scale, double gamma);
+    // §5.5: apply a full colormap state (name+scale+gamma+invert) in ONE rebuild — used
+    // by Linked propagation so a Power-stretch gamma follows the peers too.
+    void applyLut(const QString &name, LutScale::Mode scale, double gamma, bool invert);
     void setInvert(bool on);
     void setRange(double lo, double hi);                   // authoritative TableRange → colorbar
 

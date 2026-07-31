@@ -134,6 +134,8 @@
 #include <QLabel>
 #include <QList>
 #include <QMetaObject>
+#include <QAbstractSpinBox>
+#include <QGridLayout>
 #include <QMenu>
 #include <QShortcut>
 #include <QSettings>
@@ -1031,6 +1033,12 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         this->m_workspaceChrome->installStatusRail();
         this->m_workspaceChrome->installSessionDock(
                 this->filepath, QFileInfo(this->filepath).fileName(), u"cube"_s);
+        // Tree-selection = pane-selection: activate (or mount) the matching pane.
+        connect(this->m_workspaceChrome, &WorkspaceChrome::sessionRowActivated, this,
+                &vtkWindowCube::activateSessionView);
+        // Reverse sync: activating a pane by any route highlights its Session-tree row.
+        connect(this, &vtkWindowCube::activePaneChanged, this,
+                [this](int) { syncSessionTreeToActivePane(); });
         // setupInspector()/start() run at the END of the constructor — the
         // Analysis-tab tools reference QActions created later below.
     }
@@ -5643,7 +5651,16 @@ void vtkWindowCube::showLUTCustomizer()
                              // and colormap swaps keep it.
                              this->m_sliceScaleMode = this->lutCustomizer->scaleMode();
                              this->m_sliceScaleGamma = this->lutCustomizer->scaleGamma();
+                             // Adopt the colormap the dialog just applied (it renamed the
+                             // slice LUT) so the DISPLAY combo + a later scale change don't
+                             // rebuild lutSlice with a stale name.
+                             if (this->viewingSlice() && this->lutSlice) {
+                                 const std::string nm = this->lutSlice->GetObjectName();
+                                 if (!nm.empty())
+                                     this->m_activeSliceLutName = QString::fromStdString(nm);
+                             }
                              this->renderImage();
+                             updateDisplaySectionForActivePane();   // resync the DISPLAY combo
                          });
     }
 
@@ -5761,8 +5778,11 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     // Collapsible flat section: header (▼/▶) + content. A full-width rule is drawn
     // only when @p divider — a section reads from the weight of its header, so the
     // collapsible ▶ sections (INTERACTION / SLICE ANIMATION) carry no line (§3.0c).
-    auto addSection = [&](const QString &title, bool expanded, bool divider = true) -> QVBoxLayout * {
+    auto addSection = [&](const QString &title, bool expanded, bool divider = true,
+                          QToolButton **outHdr = nullptr) -> QVBoxLayout * {
         auto *hdr = new QToolButton(root);
+        if (outHdr)
+            *outHdr = hdr;
         hdr->setCheckable(true);
         hdr->setChecked(expanded);
         hdr->setCursor(Qt::PointingHandCursor);
@@ -5798,14 +5818,27 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
                 l->removeWidget(w);
     };
 
-    // ── DISPLAY — 3D (mode · blend · threshold · LUT) ─────────────────────────
-    QVBoxLayout *disp = addSection(u"DISPLAY — 3D"_s, true);
+    // ── DISPLAY — <active pane> (§5.2): a stacked section. Page 0 = the 3D controls
+    // (unchanged). Page 1 = the 2D/Moment pane page driving the active Pane2DView. The
+    // header text + current page follow the active pane via activePaneChanged.
+    QToolButton *dispHdr = nullptr;
+    QVBoxLayout *disp = addSection(u"DISPLAY — 3D"_s, true, true, &dispHdr);
+    m_displayHeaderBtn = dispHdr;
+    auto *dispStack = new QStackedWidget(root);
+    m_displayStack = dispStack;
+    disp->addWidget(dispStack);
+    auto *page3d = new QWidget(dispStack);
+    auto *p3 = new QVBoxLayout(page3d);
+    p3->setContentsMargins(0, 0, 0, 0);
+    p3->setSpacing(6);
+    dispStack->addWidget(page3d);   // index 0
+    QVBoxLayout *disp3d = p3;       // the 3D widgets below go into the 3D PAGE, not `disp`
     SegmentedToggle *modeCombo = m_uiAssembler->renderModeCombo();
     if (modeCombo) {
         rehost(modeCombo);
         modeCombo->setMinimumWidth(0);   // let segments share the narrow dock, never overflow
         modeCombo->setParent(root);
-        disp->addWidget(modeCombo);
+        disp3d->addWidget(modeCombo);
     }
     QWidget *volRow = nullptr;
     if (auto *v = m_uiAssembler->volumeModeCombo()) {
@@ -5816,7 +5849,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         v->setMinimumWidth(0);
         v->setParent(volRow);
         h->addWidget(v, 1);
-        disp->addWidget(volRow);
+        disp3d->addWidget(volRow);
     }
     {   // Threshold: label + mono value, then the slider full-width.
         auto *r = new QWidget();
@@ -5841,7 +5874,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
             h->addWidget(ui->lineThreshold, 0);
         }
         r->setFixedHeight(28);   // deterministic row step (§3.0c density)
-        disp->addWidget(r);
+        disp3d->addWidget(r);
     }
     if (ui->sliderThreshold) {
         rehost(ui->sliderThreshold);
@@ -5851,7 +5884,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         // slider kept rendering ~39 px and dominated the Threshold→slider step.
         // setFixedHeight forces min==max==22.
         ui->sliderThreshold->setFixedHeight(22);
-        disp->addWidget(ui->sliderThreshold);
+        disp3d->addWidget(ui->sliderThreshold);
     }
     {   // Color map: LUT combo + "Edit" link (no full-width "Advanced…").
         auto *r = new QWidget();
@@ -5887,7 +5920,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
             h->addWidget(edit, 0);
         }
         r->setFixedHeight(28);   // deterministic row step (§3.0c density)
-        disp->addWidget(r);
+        disp3d->addWidget(r);
     }
     QWidget *surfRow = nullptr;
     if (ui->btnCubeColor) {
@@ -5902,7 +5935,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         ui->btnCubeColor->setParent(surfRow);
         h->addWidget(ui->btnCubeColor, 0);
         surfRow->setFixedHeight(28);   // deterministic row step (§3.0c density)
-        disp->addWidget(surfRow);
+        disp3d->addWidget(surfRow);
     }
     // Volume-mode / surface-color rows follow the render mode. Drive off the
     // segmented control's OWN signal — the render-mode combo updates actionVolume
@@ -5922,6 +5955,16 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
             QObject::connect(ui->actionVolume, &QAction::toggled, root,
                              [applyVis](bool on) { applyVis(on ? 1 : 0); });
     }
+    // Page 1 (§5.2): the 2D/Moment pane DISPLAY controls, driving the active Pane2DView.
+    dispStack->addWidget(buildPaneDisplayPage());   // index 1
+    // The DISPLAY section header + which page follow the active pane; keep the header
+    // text correct through collapse/expand too (its built-in setTxt would revert it).
+    QObject::connect(this, &vtkWindowCube::activePaneChanged, root,
+                     [this](int) { updateDisplaySectionForActivePane(); });
+    if (m_displayHeaderBtn)
+        QObject::connect(m_displayHeaderBtn, &QToolButton::toggled, root,
+                         [this](bool) { updateDisplaySectionForActivePane(); });
+    updateDisplaySectionForActivePane();
 
     // ── LAYERS — five fixed visibility rows (stable regardless of load) ───────
     QVBoxLayout *lay = addSection(u"LAYERS"_s, true, /*divider=*/false);
@@ -6021,6 +6064,510 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     return root;
 }
 
+// Central-percentile clip range (CARTA-style): pct=99.9 keeps the central 99.9% of finite
+// values, i.e. clip at the (100-pct)/2 and 100-(100-pct)/2 percentiles. pct=100 → min/max.
+static bool percentileClipRange(vtkImageData *img, double pct, double &lo, double &hi)
+{
+    vtkDataArray *sc = img ? img->GetPointData()->GetScalars() : nullptr;
+    if (!sc)
+        return false;
+    std::vector<double> v;
+    const vtkIdType n = sc->GetNumberOfTuples();
+    v.reserve(static_cast<size_t>(n));
+    for (vtkIdType i = 0; i < n; ++i) {
+        const double x = sc->GetComponent(i, 0);
+        if (std::isfinite(x))
+            v.push_back(x);
+    }
+    if (v.size() < 4)
+        return false;
+    std::sort(v.begin(), v.end());
+    const double tail = std::clamp((100.0 - pct) / 2.0, 0.0, 50.0) / 100.0;
+    auto at = [&](double f) {
+        const double idx = f * static_cast<double>(v.size() - 1);
+        const size_t i0 = static_cast<size_t>(idx);
+        const size_t i1 = std::min(i0 + 1, v.size() - 1);
+        const double frac = idx - static_cast<double>(i0);
+        return v[i0] * (1.0 - frac) + v[i1] * frac;
+    };
+    lo = at(tail);
+    hi = at(1.0 - tail);
+    if (!(hi > lo)) {
+        lo = v.front();
+        hi = v.back();
+    }
+    return hi > lo;
+}
+
+Pane2DView *vtkWindowCube::activePane2DView() const
+{
+    if (m_activePane < 0 || m_activePane > 3)
+        return nullptr;
+    if (m_slots[m_activePane].view.kind != ViewId::Product)
+        return nullptr;
+    return m_paneViews[m_activePane];
+}
+
+// ── §5.4 follow-up: DISPLAY-page dispatch (Product pane vs 2D Slice) ─────────────
+bool vtkWindowCube::activePaneIsSlice() const
+{
+    return m_activePane >= 0 && m_activePane < 4
+            && m_slots[m_activePane].view.kind == ViewId::Slice2D;
+}
+
+vtkImageData *vtkWindowCube::activeDisplayImageData() const
+{
+    if (Pane2DView *pv = activePane2DView())
+        return pv->imageData();
+    if (activePaneIsSlice() && this->remoteSliceDisplaySource)
+        return vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0));
+    return nullptr;
+}
+
+QString vtkWindowCube::activeDisplayColorMapName() const
+{
+    if (Pane2DView *pv = activePane2DView())
+        return pv->colorMapName();
+    if (activePaneIsSlice())
+        return this->m_activeSliceLutName;
+    return QString();
+}
+
+LutScale::Mode vtkWindowCube::activeDisplayScale() const
+{
+    if (Pane2DView *pv = activePane2DView())
+        return pv->scale();
+    if (activePaneIsSlice())
+        return this->m_sliceScaleMode;
+    return LutScale::Mode::Linear;
+}
+
+double vtkWindowCube::activeDisplayRangeLo() const
+{
+    if (Pane2DView *pv = activePane2DView())
+        return pv->rangeMin();
+    if (activePaneIsSlice() && this->lutSlice)
+        return this->lutSlice->GetTableRange()[0];
+    return 0.;
+}
+
+double vtkWindowCube::activeDisplayRangeHi() const
+{
+    if (Pane2DView *pv = activePane2DView())
+        return pv->rangeMax();
+    if (activePaneIsSlice() && this->lutSlice)
+        return this->lutSlice->GetTableRange()[1];
+    return 0.;
+}
+
+void vtkWindowCube::setActiveDisplayColorMap(const QString &name)
+{
+    if (Pane2DView *pv = activePane2DView()) {
+        pv->setColorMapName(name);
+        propagatePaneLutWithinWindow(m_activePane);
+        return;
+    }
+    if (activePaneIsSlice()) {
+        applySliceLutByName(name);   // rebuilds lutSlice; renders if the slice is on screen
+        if (this->sliceWin)
+            this->sliceWin->Render();
+    }
+}
+
+void vtkWindowCube::setActiveDisplayScale(LutScale::Mode mode)
+{
+    if (Pane2DView *pv = activePane2DView()) {
+        pv->setScale(mode);
+        propagatePaneLutWithinWindow(m_activePane);
+        return;
+    }
+    if (activePaneIsSlice()) {
+        this->m_sliceScaleMode = mode;
+        applySliceLutByName(this->m_activeSliceLutName);   // re-apply the stretch at range
+        if (this->sliceWin)
+            this->sliceWin->Render();
+    }
+}
+
+void vtkWindowCube::setActiveDisplayRange(double lo, double hi)
+{
+    if (Pane2DView *pv = activePane2DView()) {
+        pv->setRange(lo, hi);
+        propagatePaneLutWithinWindow(m_activePane);
+        return;
+    }
+    if (activePaneIsSlice() && this->lutSlice) {
+        if (!std::isfinite(lo) || !std::isfinite(hi) || hi <= lo)
+            return;
+        this->lutSlice->SetTableRange(lo, hi);
+        this->lutSlice->Build();
+        this->layout2dPaneFor(/*slice=*/true, /*force=*/false);
+        if (this->sliceWin)
+            this->sliceWin->Render();
+    }
+}
+
+void vtkWindowCube::showActiveDisplayLUTEditor()
+{
+    if (activePane2DView()) {
+        showPaneLUTCustomizer();
+        return;
+    }
+    if (activePaneIsSlice())
+        showLUTCustomizer();   // the existing slice/3D customizer, already targets lutSlice
+}
+
+QWidget *vtkWindowCube::buildPaneDisplayPage()
+{
+    const QLatin1StringView fgMuted(VisivoTheme::kOnSurfaceVariant());
+    const QLatin1StringView pri(VisivoTheme::kPrimary());
+    const QString labelCss =
+            QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;").arg(fgMuted);
+
+    auto *page = new QWidget();
+    auto *lay = new QVBoxLayout(page);
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->setSpacing(6);
+
+    // Color map + Edit (Edit → the active pane's OWN lookup table, §5.2).
+    {
+        auto *r = new QWidget();
+        auto *h = new QHBoxLayout(r);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(8);
+        auto *l = new QLabel(u"Color map"_s, r);
+        l->setStyleSheet(labelCss);
+        h->addWidget(l, 0);
+        m_paneLutCombo = new QComboBox(r);
+        for (const auto &nm : ColorMaps::GetColorMapNames()) {
+            const QString qn = QString::fromStdString(nm);
+            m_paneLutCombo->addItem(QIcon(CubeUiAssembler::buildLutPreview(qn, 48, 12)), qn);
+        }
+        m_paneLutCombo->setMinimumWidth(0);
+        m_paneLutCombo->setMinimumContentsLength(3);
+        m_paneLutCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        m_paneLutCombo->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        m_paneLutCombo->setFixedHeight(26);
+        h->addWidget(m_paneLutCombo, 1);
+        auto *edit = new QToolButton(r);
+        edit->setText(u"Edit"_s);
+        edit->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        edit->setCursor(Qt::PointingHandCursor);
+        edit->setStyleSheet(QStringLiteral("QToolButton{background:transparent;border:none;"
+                                           "color:%1;font-size:11px;font-weight:600;}")
+                                    .arg(pri));
+        h->addWidget(edit, 0);
+        r->setFixedHeight(28);
+        lay->addWidget(r);
+        QObject::connect(m_paneLutCombo, &QComboBox::currentTextChanged, this,
+                         [this](const QString &name) {
+                             if (m_applyingPaneDisplay)
+                                 return;
+                             setActiveDisplayColorMap(name);
+                         });
+        QObject::connect(edit, &QToolButton::clicked, this,
+                         [this]() { this->showActiveDisplayLUTEditor(); });
+    }
+
+    // Scale (2D Slice only): linear / log / asinh.
+    {
+        m_paneScaleRow = new QWidget();
+        auto *h = new QHBoxLayout(m_paneScaleRow);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(8);
+        auto *l = new QLabel(u"Scale"_s, m_paneScaleRow);
+        l->setStyleSheet(labelCss);
+        h->addWidget(l, 0);
+        m_paneScaleSeg = new SegmentedToggle(m_paneScaleRow);
+        m_paneScaleSeg->addItem(u"Linear"_s);
+        m_paneScaleSeg->addItem(u"Log"_s);
+        m_paneScaleSeg->addItem(u"Sqrt"_s);   // LutScale has no Asinh; Sqrt is the DS9/CARTA stretch
+        m_paneScaleSeg->setMinimumWidth(0);
+        h->addWidget(m_paneScaleSeg, 1);
+        m_paneScaleRow->setFixedHeight(28);
+        lay->addWidget(m_paneScaleRow);
+        QObject::connect(m_paneScaleSeg, &SegmentedToggle::currentIndexChanged, this,
+                         [this](int i) {
+                             if (m_applyingPaneDisplay)
+                                 return;
+                             const LutScale::Mode m = (i == 1) ? LutScale::Mode::Log
+                                                     : (i == 2) ? LutScale::Mode::Sqrt
+                                                                : LutScale::Mode::Linear;
+                             setActiveDisplayScale(m);
+                         });
+    }
+
+    // Symmetric about 0 (Moment only) — default on for velocity (mom1).
+    {
+        m_paneSymmetricRow = new QWidget();
+        auto *h = new QHBoxLayout(m_paneSymmetricRow);
+        h->setContentsMargins(0, 0, 0, 0);
+        m_paneSymmetric = new QCheckBox(u"Symmetric about 0"_s, m_paneSymmetricRow);
+        m_paneSymmetric->setStyleSheet(labelCss);
+        // Only meaningful for a signed velocity field (Moment 1): force the colour range to
+        // -v..+v so the diverging map puts systemic velocity (0) at the centre and shows
+        // blueshift/redshift symmetrically. Meaningless for intensity (Moment 0) or width
+        // (Moment 2), which are ≥ 0 — the row is hidden there.
+        m_paneSymmetric->setToolTip(u"Centre the colour range on 0 (±max) so a velocity "
+                                    u"field shows blueshift and redshift symmetrically."_s);
+        h->addWidget(m_paneSymmetric, 1);
+        m_paneSymmetricRow->setFixedHeight(28);
+        lay->addWidget(m_paneSymmetricRow);
+        QObject::connect(m_paneSymmetric, &QCheckBox::toggled, this, [this](bool on) {
+            if (m_applyingPaneDisplay)
+                return;
+            Pane2DView *pv = activePane2DView();
+            if (!pv)
+                return;
+            if (on) {
+                const double m = std::max(std::fabs(pv->rangeMin()), std::fabs(pv->rangeMax()));
+                pv->setRange(-m, m);
+            }
+            propagatePaneLutWithinWindow(m_activePane);
+        });
+    }
+
+    // Range: CARTA percentile presets + manual clip min/max (§5.2, user-chosen).
+    {
+        auto *presets = new QWidget();
+        auto *pg = new QGridLayout(presets);
+        pg->setContentsMargins(0, 0, 0, 0);
+        pg->setHorizontalSpacing(4);
+        pg->setVerticalSpacing(4);
+        const struct {
+            const char16_t *txt;
+            double pct;
+        } kPresets[] = { { u"90", 90. },      { u"95", 95. },       { u"99", 99. },
+                         { u"99.5", 99.5 },   { u"99.9", 99.9 },    { u"99.95", 99.95 },
+                         { u"99.99", 99.99 }, { u"100", 100. } };
+        int col = 0, rowN = 0;
+        for (const auto &pr : kPresets) {
+            auto *b = new QToolButton(presets);
+            b->setText(QString::fromUtf16(pr.txt));
+            b->setCursor(Qt::PointingHandCursor);
+            b->setStyleSheet(QStringLiteral(
+                    "QToolButton{background:%1;border:1px solid %2;border-radius:4px;"
+                    "color:%3;font-size:10px;padding:3px 4px;}QToolButton:hover{border-color:%4;}")
+                                     .arg(QLatin1StringView(VisivoTheme::kSurface()),
+                                          QLatin1StringView(VisivoTheme::kOutline()),
+                                          QLatin1StringView(VisivoTheme::kOnSurfaceVariant()), pri));
+            pg->addWidget(b, rowN, col);
+            if (++col == 4) {
+                col = 0;
+                ++rowN;
+            }
+            const double pct = pr.pct;
+            QObject::connect(b, &QToolButton::clicked, this, [this, pct]() {
+                vtkImageData *img = activeDisplayImageData();
+                if (!img)
+                    return;
+                double lo = 0., hi = 0.;
+                if (!percentileClipRange(img, pct, lo, hi))
+                    return;
+                if (m_paneSymmetricRow && m_paneSymmetricRow->isVisible() && m_paneSymmetric
+                    && m_paneSymmetric->isChecked()) {
+                    const double m = std::max(std::fabs(lo), std::fabs(hi));
+                    lo = -m;
+                    hi = m;
+                }
+                setActiveDisplayRange(lo, hi);
+            });
+        }
+        lay->addWidget(presets);
+    }
+    {
+        auto *r = new QWidget();
+        auto *h = new QHBoxLayout(r);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(6);
+        auto *l = new QLabel(u"Clip"_s, r);
+        l->setStyleSheet(labelCss);
+        h->addWidget(l, 0);
+        auto mkSpin = [&]() {
+            auto *s = new QDoubleSpinBox(r);
+            s->setRange(-1e30, 1e30);
+            s->setDecimals(6);   // keep precision; the width fix below is the size policy
+            s->setButtonSymbols(QAbstractSpinBox::NoButtons);
+            s->setFixedHeight(26);
+            // A ±1e30 range at N decimals gives a HUGE minimumSizeHint (space for a
+            // 38-char value), so two side-by-side overflow the 272 px dock and clip the
+            // whole page. Ignore the width hint (like the colormap combo) so the stretch
+            // factor compresses both to fit; the value scrolls inside the field.
+            s->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+            s->setMinimumWidth(0);
+            s->setStyleSheet(u"QDoubleSpinBox{font-family:'JetBrains Mono','SF Mono',monospace;"
+                             u"font-size:11px;padding:2px 6px;}"_s);
+            return s;
+        };
+        m_paneRangeMin = mkSpin();
+        m_paneRangeMax = mkSpin();
+        h->addWidget(m_paneRangeMin, 1);
+        h->addWidget(m_paneRangeMax, 1);
+        r->setFixedHeight(28);
+        lay->addWidget(r);
+        QObject::connect(m_paneRangeMin, &QDoubleSpinBox::editingFinished, this,
+                         [this]() { applyPaneDisplayRange(true); });
+        QObject::connect(m_paneRangeMax, &QDoubleSpinBox::editingFinished, this,
+                         [this]() { applyPaneDisplayRange(false); });
+    }
+    return page;
+}
+
+void vtkWindowCube::applyPaneDisplayRange(bool /*fromMin*/)
+{
+    if (m_applyingPaneDisplay)
+        return;
+    if (!m_paneRangeMin || !m_paneRangeMax)
+        return;
+    double lo = m_paneRangeMin->value(), hi = m_paneRangeMax->value();
+    if (m_paneSymmetricRow && m_paneSymmetricRow->isVisible() && m_paneSymmetric
+        && m_paneSymmetric->isChecked()) {
+        const double m = std::max(std::fabs(lo), std::fabs(hi));
+        lo = -m;
+        hi = m;
+    }
+    setActiveDisplayRange(lo, hi);
+}
+
+void vtkWindowCube::showPaneLUTCustomizer()
+{
+    Pane2DView *pv = activePane2DView();
+    if (!pv)
+        return;
+    // Dedicated dialog instance (NOT the shared 3D/slice one) with a single lutUpdated
+    // slot; the target pane is captured so Apply edits the pane that OPENED the dialog,
+    // not whatever is active later (§5.2, review).
+    if (!m_paneLutCustomizer) {
+        m_paneLutCustomizer = new LUTCustomizerDialog(this);
+        QObject::connect(m_paneLutCustomizer, &LUTCustomizerDialog::lutUpdated, this, [this]() {
+            Pane2DView *p = m_paneLutTarget;
+            if (!p || !p->lookupTable())
+                return;
+            // The dialog mutated the pane's OWN lut in place (name via ObjectName, range,
+            // stretch). Adopt name+scale+gamma so getters/Linked aren't stale, then re-fit.
+            p->adoptLutState(QString::fromStdString(p->lookupTable()->GetObjectName()),
+                             m_paneLutCustomizer->scaleMode(), m_paneLutCustomizer->scaleGamma());
+            // find the source slot for propagation
+            for (int i = 0; i < 4; ++i)
+                if (m_paneViews[i] == p) {
+                    propagatePaneLutWithinWindow(i);
+                    break;
+                }
+            updateDisplaySectionForActivePane();
+        });
+    }
+    m_paneLutTarget = pv;
+    m_paneLutCustomizer->init(pv->imageData(), pv->lookupTable(), pv->scale(), pv->gamma());
+    m_paneLutCustomizer->show();
+    m_paneLutCustomizer->raise();
+    m_paneLutCustomizer->activateWindow();
+}
+
+void vtkWindowCube::updateDisplaySectionForActivePane()
+{
+    if (!m_displayStack || !m_displayHeaderBtn)
+        return;
+    const ViewId kind =
+            (m_activePane >= 0 && m_activePane < 4) ? m_slots[m_activePane].view.kind : ViewId::None;
+    const bool is3d = (kind == ViewId::View3D);
+    // Page 1 (the per-pane controls) drives EITHER a Product pane (its own Pane2DView) or
+    // the 2D Slice (the shared lutSlice/m_sliceScaleMode) via the activeDisplay* dispatch.
+    const bool isPane = (kind == ViewId::Product || kind == ViewId::Slice2D);
+
+    m_displayStack->setCurrentIndex(is3d ? 0 : 1);
+    if (auto *p1 = m_displayStack->widget(1))
+        p1->setEnabled(isPane);
+
+    // Header text `DISPLAY — <active pane title>` (pane name in primary is handled by the
+    // section style; keep it simple text here). The built-in setTxt would revert this on
+    // toggle, so this runs on toggle too.
+    const bool hasActive = (m_activePane >= 0 && m_activePane < 4);
+    QString title = is3d ? u"3D VIEW"_s
+                  : (kind == ViewId::Slice2D)  ? u"2D SLICE"_s
+                  : (kind == ViewId::Product)  ? viewTitle(m_slots[m_activePane].view).toUpper()
+                  : (kind == ViewId::Spectrum) ? u"SPECTRUM"_s
+                  : hasActive                  ? u"NO PRODUCT"_s   // a None "empty" pane is active
+                                               : u"NO PANE SELECTED"_s;
+    const bool open = m_displayHeaderBtn->isChecked();
+    m_displayHeaderBtn->setText((open ? u"▼  "_s : u"▶  "_s) + u"DISPLAY — "_s + title);
+
+    if (!isPane)
+        return;
+
+    // Repopulate the pane page from the active display target (Product pane or 2D Slice)
+    // via the activeDisplay* dispatch; guard the two-way binding.
+    QSignalBlocker bMin(m_paneRangeMin), bMax(m_paneRangeMax), bSym(m_paneSymmetric),
+            bScale(m_paneScaleSeg), bLut(m_paneLutCombo);
+    m_applyingPaneDisplay = true;
+    if (m_paneScaleRow)
+        m_paneScaleRow->setVisible(kind == ViewId::Slice2D);   // Scale: 2D Slice only
+    // Symmetric-about-0 only makes sense for a SIGNED velocity field (Moment 1). Intensity
+    // (Moment 0) and width (Moment 2) are ≥ 0, so hide it there — showing it on Moment 0
+    // reads as a no-op control.
+    bool velocityMoment = false;
+    if (kind == ViewId::Product) {
+        const QString pid = m_slots[m_activePane].view.productId;
+        auto it = m_products2d.constFind(pid);
+        velocityMoment = (it != m_products2d.constEnd() && it->order == 1);
+    }
+    if (m_paneSymmetricRow)
+        m_paneSymmetricRow->setVisible(velocityMoment);   // Symmetric: velocity Moment only
+    const QString cmap = activeDisplayColorMapName();
+    if (m_paneLutCombo && !cmap.isEmpty())
+        m_paneLutCombo->setCurrentText(cmap);
+    if (m_paneRangeMin)
+        m_paneRangeMin->setValue(activeDisplayRangeLo());
+    if (m_paneRangeMax)
+        m_paneRangeMax->setValue(activeDisplayRangeHi());
+    if (m_paneScaleSeg) {
+        const LutScale::Mode sc = activeDisplayScale();
+        m_paneScaleSeg->setCurrentIndex(sc == LutScale::Mode::Log    ? 1
+                                        : sc == LutScale::Mode::Sqrt ? 2
+                                                                     : 0);
+    }
+    m_applyingPaneDisplay = false;
+}
+
+void vtkWindowCube::propagatePaneLutWithinWindow(int srcSlot)
+{
+    // §5.5: with Linked on, a pane's LUT change follows only panes showing the SAME
+    // product (same kind AND productId) — never across kinds, never moment→slice. This
+    // is within-window and separate from the cross-window broadcastLinkedColour path.
+    if (!m_linkViews || m_applyingPaneDisplay || srcSlot < 0 || srcSlot > 3)
+        return;
+    Pane2DView *src = m_paneViews[srcSlot];
+    if (!src || m_slots[srcSlot].view.kind != ViewId::Product)
+        return;
+    const QString pid = m_slots[srcSlot].view.productId;
+    QScopedValueRollback<bool> guard(m_applyingPaneDisplay, true);
+    for (int j = 0; j < 4; ++j) {
+        if (j == srcSlot || !m_paneViews[j])
+            continue;
+        if (m_slots[j].view.kind != ViewId::Product || m_slots[j].view.productId != pid)
+            continue;
+        m_paneViews[j]->applyLut(src->colorMapName(), src->scale(), src->gamma(), src->invert());
+        m_paneViews[j]->setRange(src->rangeMin(), src->rangeMax());
+    }
+}
+
+void vtkWindowCube::propagatePaneRangeWithinWindow(int srcSlot)
+{
+    // §5.5: cheap path used on a LIVE window/level drag — only the RANGE follows the
+    // same-product peers (no colormap rebuild), so a linked drag doesn't re-Build LUTs
+    // on every mouse move. Colormap/scale/invert use the full path (lutChanged).
+    if (!m_linkViews || m_applyingPaneDisplay || srcSlot < 0 || srcSlot > 3)
+        return;
+    Pane2DView *src = m_paneViews[srcSlot];
+    if (!src || m_slots[srcSlot].view.kind != ViewId::Product)
+        return;
+    const QString pid = m_slots[srcSlot].view.productId;
+    QScopedValueRollback<bool> guard(m_applyingPaneDisplay, true);
+    for (int j = 0; j < 4; ++j)
+        if (j != srcSlot && m_paneViews[j] && m_slots[j].view.kind == ViewId::Product
+            && m_slots[j].view.productId == pid)
+            m_paneViews[j]->setRange(src->rangeMin(), src->rangeMax());
+}
+
 void vtkWindowCube::setActivePane(int pane)
 {
     if (pane < 0 || pane > 3)
@@ -6030,6 +6577,68 @@ void vtkWindowCube::setActivePane(int pane)
     refreshPaneActiveStyles();   // also re-gates interactors (§5.1)
     if (changed)
         emit activePaneChanged(pane);   // §5.2: DISPLAY dock follows the active pane
+}
+
+void vtkWindowCube::activateSessionView(const QString &viewTag, const QString &productId)
+{
+    // Resolve the Session-tree row to a pane view. A dataset root (both empty) has no
+    // pane — leave the selection alone.
+    using namespace Qt::StringLiterals;
+    PaneView target;
+    if (viewTag == u"view3d"_s)
+        target = { ViewId::View3D, {} };
+    else if (viewTag == u"slice2d"_s)
+        target = { ViewId::Slice2D, {} };
+    else if (!productId.isEmpty() && m_products2d.contains(productId))
+        // Only a pane-renderable 2-D product (a moment map, cached in m_products2d) can be
+        // mounted. PV / baseline / channel-map / noise rows open their OWN windows — for
+        // those, a single-click selection just drives Provenance; double-click raises the
+        // window (onActivated). Mounting them would replace the pane with a bogus empty
+        // state, since they have no image in m_products2d.
+        target = { ViewId::Product, productId };
+    else
+        return;
+
+    // Already on a visible pane → just make it active (tree-select = pane-select).
+    for (int i = 0; i < 4; ++i)
+        if (m_slots[i].frame && m_slots[i].frame->isVisible() && m_slots[i].view == target) {
+            setActivePane(i);
+            return;
+        }
+
+    // Not shown → mount it in the active pane (fall back to pane 0 if that's hidden).
+    int slot = (m_activePane >= 0 && m_activePane < 4 && m_slots[m_activePane].frame
+                && m_slots[m_activePane].frame->isVisible())
+                       ? m_activePane
+                       : 0;
+    m_slots[slot].view = target;
+    clearViewFromOtherSlots(slot);
+    mountView(slot);
+    syncPick3d2d();
+    refreshPaneChrome();
+    layout2dPane(true);
+    setActivePane(slot);
+}
+
+void vtkWindowCube::syncSessionTreeToActivePane()
+{
+    // Highlight the Session-tree row matching whatever the active pane now shows. Called
+    // both on activePaneChanged (index change) AND from refreshPaneChrome, since a view
+    // swap / 3D⇄2D toggle mutates m_slots[active].view WITHOUT changing the index — the
+    // tree highlight would otherwise stay on the previous row.
+    if (!m_workspaceChrome || m_activePane < 0 || m_activePane > 3)
+        return;
+    const PaneView &v = m_slots[m_activePane].view;
+    QString tag, pid;
+    if (v.kind == ViewId::View3D)
+        tag = u"view3d"_s;
+    else if (v.kind == ViewId::Slice2D)
+        tag = u"slice2d"_s;
+    else if (v.kind == ViewId::Product)
+        pid = v.productId;
+    else
+        return;   // None / Spectrum: no tree row — leave the current highlight
+    m_workspaceChrome->selectSessionRowForView(tag, pid);
 }
 
 void vtkWindowCube::refreshPaneInteractors()
@@ -6209,6 +6818,24 @@ Pane2DView *vtkWindowCube::ensureSlotProductView(int slot)
         pv->setWcsAxesVisible(this->showWcsAxes);
         if (pv->widget())
             pv->widget()->installEventFilter(this);   // click-to-activate + resize-fit
+        // §5.2: a window/level DRAG on the pane writes its LUT range and emits this —
+        // mirror it into the dock Range fields (drag + dock are one state), and propagate
+        // to Linked same-product panes. Only for the ACTIVE pane, and never re-entrantly.
+        QObject::connect(pv, &Pane2DView::rangeChanged, this, [this, slot](double lo, double hi) {
+            if (m_applyingPaneDisplay)
+                return;
+            if (m_activePane == slot && m_paneRangeMin && m_paneRangeMax) {
+                QSignalBlocker a(m_paneRangeMin), b(m_paneRangeMax);
+                m_paneRangeMin->setValue(lo);
+                m_paneRangeMax->setValue(hi);
+            }
+            propagatePaneRangeWithinWindow(slot);   // range-only: cheap on a live drag
+        });
+        QObject::connect(pv, &Pane2DView::lutChanged, this, [this, slot]() {
+            if (m_applyingPaneDisplay)
+                return;
+            propagatePaneLutWithinWindow(slot);   // colormap/scale/invert → same-product panes
+        });
         m_paneViews[slot] = pv;
     }
     return m_paneViews[slot];
@@ -6250,7 +6877,11 @@ QList<vtkWindowCube::PaneView> vtkWindowCube::availableViews() const
     out << PaneView{ ViewId::View3D, {} } << PaneView{ ViewId::Slice2D, {} };
     const auto products = ProductRegistry::instance().productsFor(this->datasetPersistKey());
     for (const AnalysisProduct &p : products)
-        if (!p.renderer.isEmpty())
+        // Renderable AND actually cached in THIS window (m_products2d holds the pixels).
+        // The registry is session-wide, so a same-dataset sibling window could register a
+        // product this window never cached — offering it would mount a blank Product pane
+        //. viewHasData() is the same predicate mountView/activateSessionView use.
+        if (!p.renderer.isEmpty() && m_products2d.contains(p.productId))
             out << PaneView{ ViewId::Product, p.productId };
     out << PaneView{ ViewId::Spectrum, {} };
     return out;
@@ -6341,6 +6972,35 @@ QWidget *vtkWindowCube::emptyStateWidget(const PaneView &v)
     }
     outer->addStretch(1);
     *slot = w;
+    return w;
+}
+
+QWidget *vtkWindowCube::noProductStateWidget(int slot)
+{
+    // Neutral placeholder for a None pane (e.g. the 3rd/4th pane at 4-up before any
+    // product exists). Per-slot cached: several panes can be None simultaneously, and a
+    // widget can only live in one host. No compute button — products are added from
+    // Analysis and auto-placed here, or activated from Session Data (user request).
+    if (slot < 0 || slot > 3)
+        return nullptr;
+    if (m_noProductState[slot])
+        return m_noProductState[slot];
+    const QLatin1StringView ink(VisivoTheme::kOnSurfaceVariant());
+    auto *w = new QWidget(m_viewParkingLot);
+    w->setStyleSheet(u"background:#000004;"_s);   // matches the viewport
+    auto *outer = new QVBoxLayout(w);
+    outer->addStretch(1);
+    auto *title = new QLabel(u"No product available"_s, w);
+    title->setAlignment(Qt::AlignCenter);
+    title->setStyleSheet(QStringLiteral("color:%1; font-family:'Lato'; font-size:13px;").arg(ink));
+    outer->addWidget(title);
+    auto *sub = new QLabel(u"Compute a product, or pick a view from the pane header ▾"_s, w);
+    sub->setAlignment(Qt::AlignCenter);
+    sub->setWordWrap(true);
+    sub->setStyleSheet(QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;").arg(ink));
+    outer->addWidget(sub);
+    outer->addStretch(1);
+    m_noProductState[slot] = w;
     return w;
 }
 
@@ -6648,8 +7308,10 @@ void vtkWindowCube::mountView(int slot)
         // their singleton widget (§3.1).
         w = viewHasData(v) ? viewWidget(v) : emptyStateWidget(v);
     }
+    if (!w && v.isNone())
+        w = noProductStateWidget(slot);   // neutral "No product available" placeholder
     if (!w)
-        return;   // truly nothing to show (None) — leave the host empty
+        return;   // truly nothing to show — leave the host empty
     if (auto *p = w->parentWidget())
         if (auto *l = p->layout())
             l->removeWidget(w);
@@ -6697,13 +7359,12 @@ void vtkWindowCube::assignViews(const std::array<bool, 4> &visible)
     };
     if (visible[0] && m_slots[0].view.isNone())
         m_slots[0].view = { ViewId::View3D, {} };
-    // The seeded moment slot uses the order-0 product id: before any moment is computed
-    // it has no cached image → viewHasData is false → the "No moment map" empty state
-    // (with the Compute Moment 0 action) shows, exactly as in §3.1.
-    const PaneView seedMoment{ ViewId::Product,
-                               QStringLiteral("moment0@%1").arg(this->datasetPersistKey()) };
-    const std::array<PaneView, 3> order{ PaneView{ ViewId::Slice2D, {} }, seedMoment,
-                                         PaneView{ ViewId::Spectrum, {} } };
+    // Auto-fill only the cube's INTRINSIC views (3D on slot 0, the 2D Slice next). Moment /
+    // Spectrum are PRODUCTS — never pre-seed them: an empty pane at 4-up shows the neutral
+    // "No product available" state, and a computed product fills the first free pane (or
+    // waits in Session Data for manual activation). This avoids a wall of "compute me"
+    // placeholders the user didn't ask for (user request).
+    const std::array<PaneView, 1> order{ PaneView{ ViewId::Slice2D, {} } };
     for (int i = 0; i < 4; ++i) {
         if (!visible[i] || !m_slots[i].view.isNone())
             continue;
@@ -6713,7 +7374,7 @@ void vtkWindowCube::assignViews(const std::array<bool, 4> &visible)
                 break;
             }
         }
-        // Nothing left → empty pane with a "Pick a view" title (never a black box).
+        // Nothing left → the pane stays None → "No product available" empty state.
     }
     // A view must live in exactly one slot: clear any duplicate a hidden slot still
     // holds before mounting (else parkView could later steal a visible slot's widget).
@@ -6790,9 +7451,15 @@ void vtkWindowCube::refreshPaneChrome()
                     label += QStringLiteral("   ·  P%1").arg(atPane + 1);
                 else if (collideJ >= 0)
                     label += QStringLiteral("   ·  P%1").arg(collideJ + 1);  // the blocking pane
+                // Duplication hint: a product shown in ANOTHER pane is NOT checked here
+                // (this pane doesn't show it) and reads "· P1" — clicking it DUPLICATES it
+                // into this pane (each Product gets its own Pane2DView, §3.2 B3). Only the
+                // view THIS pane currently shows is checked.
+                if (atPane >= 0 && atPane != i && cand.kind == ViewId::Product)
+                    label += u"  (duplicate here)"_s;
                 QAction *a = menu->addAction(label);
                 a->setCheckable(true);
-                a->setChecked(atPane >= 0);
+                a->setChecked(cand == s.view);
                 if (collideJ >= 0) {
                     // Disabled + the pane number reads as "can't — a moment is in P3"
                     // without needing the tooltip (which stays as the full explanation).
@@ -6845,6 +7512,8 @@ void vtkWindowCube::refreshPaneChrome()
         }
     }
     refreshPaneActiveStyles();
+    updateDisplaySectionForActivePane();   // §5.2: view of the active pane may have changed
+    syncSessionTreeToActivePane();         // reverse sync when the active pane's view changed
 }
 
 void vtkWindowCube::setupPaneChrome()
@@ -7247,6 +7916,26 @@ void vtkWindowCube::applyPaneLayout(int panes)
     if (!vis[m_activePane])
         setActivePane(firstVisibleSlot());
 
+    // Start every multi-pane split at EQUAL sizes so the grid opens symmetric (the user
+    // can drag the dividers from there). Skipped during a saved-layout restore — the
+    // stored splitter state is re-applied right after applyPaneLayout() returns. Equal
+    // ratio values suffice; QSplitter scales them to the real pixel extent (user request).
+    if (!m_restoringLayout) {
+        constexpr int kEq = 1 << 20;
+        const QList<int> half{ kEq, kEq };
+        if (panes == 4) {
+            if (m_paneSplitter) m_paneSplitter->setSizes(half);
+            if (m_leftColumn) m_leftColumn->setSizes(half);
+            if (m_rightColumn) m_rightColumn->setSizes(half);
+        } else if (panes == 2) {
+            if (stacked) {
+                if (m_leftColumn) m_leftColumn->setSizes(half);
+            } else if (m_paneSplitter) {
+                m_paneSplitter->setSizes(half);
+            }
+        }
+    }
+
     if (m_pick3d2d) {
         m_pick3d2d->setVisible(panes == 1);
         if (panes == 1) {
@@ -7437,13 +8126,19 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
             if (target < 0)
                 target = i;
         }
-    // Else fill the FIRST empty moment pane (no-steal: only a pane already asking for a
-    // moment). A pane showing the slice / 3-D / a different moment is never stolen.
+    // Else drop it into the FIRST free pane (no-steal): a None "No product available" pane,
+    // or a legacy empty moment pane. A pane showing the slice / 3-D / a spectrum / a
+    // different moment is never stolen — if nothing is free the product waits in Session
+    // Data for manual activation (user request).
     if (target < 0)
         for (int i = 0; i < 4; ++i) {
+            if (!visible(i))
+                continue;
             PaneView &pv = m_slots[i].view;
-            if (visible(i) && pv.kind == ViewId::Product && !viewHasData(pv)) {
-                pv.productId = productId;
+            const bool freeNone = pv.isNone();
+            const bool emptyMoment = (pv.kind == ViewId::Product && !viewHasData(pv));
+            if (freeNone || emptyMoment) {
+                pv = PaneView{ ViewId::Product, productId };
                 mountView(i);
                 target = i;
                 break;

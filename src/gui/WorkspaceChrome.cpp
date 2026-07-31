@@ -298,6 +298,10 @@ void WorkspaceChrome::installSessionDock(const QString &datasetKey,
     // leaves a big gap above LAYERS. The stretch goes at the bottom of the panel.
     m_sessionTree->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     vbox->addWidget(m_sessionTree, 0);
+    // Tree selection = pane activation: forward to the window so it can make the pane
+    // showing that view/product the active one (or mount it).
+    connect(m_sessionTree, &SessionDataTree::rowActivated, this,
+            &WorkspaceChrome::sessionRowActivated);
 
     // Host for the view/rendering controls (filled by the window via
     // addSessionLayers()). NOTE: no "LAYERS" header here — the flat controls the
@@ -559,6 +563,12 @@ void WorkspaceChrome::selectSessionProduct(const QString &productId)
 {
     if (m_sessionTree)
         m_sessionTree->selectProduct(productId);
+}
+
+void WorkspaceChrome::selectSessionRowForView(const QString &viewTag, const QString &productId)
+{
+    if (m_sessionTree)
+        m_sessionTree->selectForView(viewTag, productId);
 }
 
 void WorkspaceChrome::setStatusRailCompact(bool compact)

@@ -53,6 +53,7 @@ class SegmentedToggle;
 class QHBoxLayout;
 class QCheckBox;
 class QComboBox;
+class QDoubleSpinBox;
 class QJsonObject;
 class QJsonArray;
 class QNetworkAccessManager;
@@ -430,6 +431,11 @@ private:
     QPointer<QToolButton> m_paneLinkedBtn;           ///< toolbar Linked chip (synced with m_actLinkViews)
     void setupPaneChrome();                          ///< centre toolbar + per-pane headers (Step 1)
     void setActivePane(int pane);
+    /// Session-tree row → active pane: if a visible pane already shows the view/product,
+    /// make it active; otherwise mount it in the active pane. @p viewTag is
+    /// "view3d"/"slice2d"; @p productId targets a derived product (empty for view rows).
+    void activateSessionView(const QString &viewTag, const QString &productId);
+    void syncSessionTreeToActivePane();   ///< reverse sync: highlight the active pane's tree row
     void refreshPaneActiveStyles();
     void refreshPaneInteractors();   ///< §5.1: only the active pane's interactor is live
 
@@ -470,6 +476,40 @@ private:
     // render side by side without doubling the image memory. Lazily created per slot.
     std::array<Pane2DView *, 4> m_paneViews{ nullptr, nullptr, nullptr, nullptr };
     Pane2DView *ensureSlotProductView(int slot);   ///< create + WCS-wire the slot's view
+
+    // §5.2: the DISPLAY dock section follows the active pane. Page 0 = the 3D controls
+    // (unchanged, holds m_uiAssembler/ui singletons); page 1 = the 2D/Moment pane page
+    // (colormap + CARTA range presets + scale/symmetric) driving the active Pane2DView.
+    QPointer<QToolButton> m_displayHeaderBtn;
+    QPointer<QStackedWidget> m_displayStack;
+    QPointer<QComboBox> m_paneLutCombo;
+    QPointer<QDoubleSpinBox> m_paneRangeMin;
+    QPointer<QDoubleSpinBox> m_paneRangeMax;
+    QPointer<QWidget> m_paneScaleRow;      ///< 2D Slice only (linear/log/asinh)
+    QPointer<SegmentedToggle> m_paneScaleSeg;
+    QPointer<QWidget> m_paneSymmetricRow;  ///< Moment only ("Symmetric about 0")
+    QPointer<QCheckBox> m_paneSymmetric;
+    bool m_applyingPaneDisplay{ false };   ///< guard dock↔pane two-way binding
+    QWidget *buildPaneDisplayPage();       ///< the 2D/Moment DISPLAY page (page 1)
+    void updateDisplaySectionForActivePane();   ///< header + page + field values
+    void showPaneLUTCustomizer();          ///< Edit → the active pane's own LUT
+    Pane2DView *activePane2DView() const;  ///< m_paneViews[m_activePane] if it's a Product pane
+    // §5.4 follow-up: the DISPLAY page drives EITHER a Product pane (its own Pane2DView) or
+    // the 2D Slice (the shared lutSlice/m_sliceScaleMode). These dispatch on the active kind
+    // so the page handlers and updateDisplaySectionForActivePane() stay agnostic.
+    bool activePaneIsSlice() const;
+    vtkImageData *activeDisplayImageData() const;
+    QString activeDisplayColorMapName() const;
+    LutScale::Mode activeDisplayScale() const;
+    double activeDisplayRangeLo() const;
+    double activeDisplayRangeHi() const;
+    void setActiveDisplayColorMap(const QString &name);
+    void setActiveDisplayScale(LutScale::Mode mode);
+    void setActiveDisplayRange(double lo, double hi);
+    void showActiveDisplayLUTEditor();
+    void applyPaneDisplayRange(bool fromMin);   ///< dock spinbox → active pane setRange
+    void propagatePaneLutWithinWindow(int srcSlot);   ///< §5.5 Linked·LUT: same-product panes (full)
+    void propagatePaneRangeWithinWindow(int srcSlot); ///< §5.5: range only (cheap, for live drag)
     int m_paneCount{ 1 };                 ///< 1 / 2 / 4 (spec §3.1 default is 1)
     QPointer<QSplitter> m_leftColumn;     ///< slot 0 (top) + slot 2 (bottom)
     QPointer<QSplitter> m_rightColumn;    ///< slot 1 (top) + slot 3 (bottom)
@@ -480,6 +520,11 @@ private:
     PaneDirection m_paneDirection{ PaneDirection::Auto };
     QPointer<QWidget> m_momentEmptyState;    ///< shown in a Product moment slot with no computed map
     QPointer<QWidget> m_spectrumEmptyState;  ///< shown in a Spectrum slot with no probe yet
+    // A None pane shows a neutral "No product available" state. Unlike moment/spectrum
+    // (one on screen at a time), SEVERAL panes can be None at 4-up, so this is per-slot
+    // (a QWidget lives in one parent) rather than a shared singleton.
+    std::array<QPointer<QWidget>, 4> m_noProductState;
+    QWidget *noProductStateWidget(int slot);
     QWidget *emptyStateWidget(const PaneView &v);  ///< lazily builds the "what's missing + action" block
     bool viewHasData(const PaneView &v) const;     ///< false → mount the empty state, not the render
     QPointer<SegmentedToggle> m_paneCountToggle;
@@ -554,6 +599,8 @@ protected:
 
     QPointer<LUTCustomizerDialog> lutCustomizer;   ///< 2D slice/moment LUT editor
     QPointer<LUTCustomizerDialog> lutCustomizer3D; ///< 3D volume LUT editor
+    QPointer<LUTCustomizerDialog> m_paneLutCustomizer;  ///< §5.2: per-pane (Pane2DView) LUT editor
+    QPointer<Pane2DView> m_paneLutTarget;               ///< the pane the dialog is editing
     QPointer<ProfileWidget> profileWidget;
     QPointer<ProfileWidget> probePlotWidget;
     // Floating channel scrubber anchored at the bottom of the 3D viewport.

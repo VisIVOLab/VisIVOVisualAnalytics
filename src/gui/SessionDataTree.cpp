@@ -6,6 +6,8 @@
 
 #include <QHash>
 #include <QHeaderView>
+
+#include <functional>
 #include <QIcon>
 #include <QItemSelectionModel>
 #include <QStandardItem>
@@ -19,6 +21,7 @@ namespace {
 using namespace Qt::StringLiterals;
 constexpr int kParentKeyRole = Qt::UserRole;       // dataset roots
 constexpr int kProductIdRole = Qt::UserRole + 1;   // product children
+constexpr int kViewTagRole = Qt::UserRole + 2;     // intrinsic view rows ("view3d"/"slice2d")
 
 // A short uppercase chip per product kind — mirrors the dataset's "CUBE" badge so
 // a product row reads as a typed child, not a bare label (§3.0c).
@@ -110,7 +113,11 @@ SessionDataTree::SessionDataTree(QWidget *parent)
     connect(m_tree->selectionModel(), &QItemSelectionModel::currentChanged, this,
             [this](const QModelIndex &cur, const QModelIndex &) {
                 QStandardItem *it = m_model->itemFromIndex(cur);
-                emit productSelected(it ? it->data(kProductIdRole).toString() : QString());
+                const QString productId = it ? it->data(kProductIdRole).toString() : QString();
+                const QString viewTag = it ? it->data(kViewTagRole).toString() : QString();
+                emit productSelected(productId);                 // → Inspector › Provenance
+                if (!m_suppressActivate)
+                    emit rowActivated(viewTag, productId);       // → viewer activates the pane
             });
 
     ProductRegistry &reg = ProductRegistry::instance();
@@ -138,6 +145,21 @@ QStandardItem *SessionDataTree::datasetItem(const QString &parentKey, const QStr
     if (!thumb.isNull())
         it->setIcon(QIcon(thumb));
     root->appendRow(it);
+
+    // The cube's intrinsic views (3D Volume, 2D Slice) are first-class rows under the
+    // dataset — selecting one activates its pane and points DISPLAY at its LUT. They are
+    // NOT products (no id in ProductRegistry); the derived products nest below them. Only
+    // a cube has these views — a flat 2-D image (vtkWindowImage) has neither.
+    if (kind.compare(u"cube"_s, Qt::CaseInsensitive) == 0) {
+        auto addViewRow = [&](const QString &text, const QString &tag) {
+            auto *v = new QStandardItem(text);
+            v->setData(tag, kViewTagRole);
+            it->appendRow(v);
+        };
+        addViewRow(u"3D Volume"_s, u"view3d"_s);
+        addViewRow(u"2D Slice"_s, u"slice2d"_s);
+    }
+
     m_tree->expand(it->index());
     return it;
 }
@@ -194,7 +216,12 @@ void SessionDataTree::selectProduct(const QString &productId)
         for (int i = 0; i < ds->rowCount(); ++i) {
             QStandardItem *child = ds->child(i);
             if (child && child->data(kProductIdRole).toString() == productId) {
+                // Programmatic selection (e.g. registerAnalysisProduct populating
+                // Provenance): drive productSelected but NOT rowActivated — a passive
+                // registration must never mount/steal a pane.
+                m_suppressActivate = true;
                 m_tree->setCurrentIndex(child->index());   // → currentChanged → productSelected
+                m_suppressActivate = false;
                 return;
             }
         }
@@ -204,6 +231,37 @@ void SessionDataTree::selectProduct(const QString &productId)
 void SessionDataTree::onProductUpdated(const AnalysisProduct &product)
 {
     upsertProduct(product);
+}
+
+void SessionDataTree::selectForView(const QString &viewTag, const QString &productId)
+{
+    // Match either an intrinsic view row (by tag) or a product row (by id), anywhere in
+    // the tree, and select it without re-emitting rowActivated (would loop pane→tree→pane).
+    QStandardItem *match = nullptr;
+    std::function<void(QStandardItem *)> walk = [&](QStandardItem *parent) {
+        if (match || !parent)
+            return;
+        for (int i = 0; i < parent->rowCount() && !match; ++i) {
+            QStandardItem *it = parent->child(i);
+            if (!it)
+                continue;
+            const bool hitView = !viewTag.isEmpty()
+                    && it->data(kViewTagRole).toString() == viewTag;
+            const bool hitProd = !productId.isEmpty()
+                    && it->data(kProductIdRole).toString() == productId;
+            if (hitView || hitProd) {
+                match = it;
+                return;
+            }
+            walk(it);
+        }
+    };
+    walk(m_model->invisibleRootItem());
+    if (!match)
+        return;
+    m_suppressActivate = true;
+    m_tree->setCurrentIndex(match->index());
+    m_suppressActivate = false;
 }
 
 int SessionDataTree::visibleRowHeight(const QModelIndex &parent) const
