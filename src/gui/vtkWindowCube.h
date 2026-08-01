@@ -384,6 +384,16 @@ private:
     // moments (Moment 0 AND Moment 1) coexist. The single moment pipeline
     // (momentDisplaySource) overwrites on each compute; this cache does not. Keyed
     // by the SAME productId the registry uses, so tree / dropdown / cache agree.
+    // Whole-map statistics of a 2-D field (ignoring NaN/masked pixels). `valid` is false
+    // when there are no finite pixels — every summary stat is then undefined (rendered "—").
+    struct MapStats
+    {
+        bool valid{ false };
+        long count{ 0 };
+        double min{ 0. }, max{ 0. }, mean{ 0. }, median{ 0. }, std{ 0. }, rms{ 0. }, sum{ 0. };
+    };
+    static MapStats computeMapStats(vtkImageData *img);
+
     struct Product2D
     {
         vtkSmartPointer<vtkImageData> imageData;
@@ -402,18 +412,49 @@ private:
         double thresholdValue{ 0. };
         bool thresholdAuto{ false };
         QString unit;                                    ///< physical unit (Inspector stats)
-        // §5.1b follow-up: whole-map statistics, computed once from imageData and cached
-        // (a moment is the natural place for aperture-style numbers: total flux on mom0,
-        // mean velocity on mom1, mean dispersion on mom2). Ignores NaN/masked pixels.
-        bool statsComputed{ false };
-        long statCount{ 0 };
-        double statMin{ 0. }, statMax{ 0. }, statMean{ 0. };
-        double statMedian{ 0. }, statStd{ 0. }, statSum{ 0. };
+        MapStats stats;                                  ///< cached whole-map stats
+        bool statsComputed{ false };                     ///< compute once (imageData is immutable)
     };
     QHash<QString, Product2D> m_products2d;
-    void ensureMomentStats(Product2D &p);          ///< compute + cache whole-map stats
-    void updateInspectorMomentStats();             ///< active-moment stats → Inspector Properties
-    QPointer<QWidget> m_momentStatsSection;        ///< contextual stats block (hidden off-moment)
+
+    // #5: a 1-D spectrum product (Pin Spectrum, region spectrum). Like Product2D but the
+    // renderable payload is two parallel vectors rendered by a per-slot ProfileWidget — the
+    // FIRST product kind that is NOT a 2-D image, so ViewId::Product now dispatches on the
+    // product's renderer ("spectrum1d" → ProfileWidget, else "image2d"/"moment2d" → Pane2DView).
+    struct Spectrum1D
+    {
+        QVector<double> key;      ///< spectral axis (velocity / frequency)
+        QVector<double> values;   ///< intensity per channel
+        QString xLabel, yLabel;   ///< axis titles
+        QString label;            ///< identical to the tree/dropdown label
+    };
+    QHash<QString, Spectrum1D> m_products1d;
+    std::array<class ProfileWidget *, 4> m_paneSpectra{ nullptr, nullptr, nullptr, nullptr };
+    class ProfileWidget *ensureSlotSpectrumView(int slot, const QString &xLabel,
+                                                const QString &yLabel);   ///< per-slot spectrum view
+    /// The renderer a product uses: "spectrum1d" (m_products1d) / "image2d" (m_products2d) / "".
+    QString productRenderer(const QString &productId) const;
+    /// #5: capture the current probe spectrum as a pinned 1-D product (Pin Spectrum).
+    void pinCurrentSpectrum();
+    // #5b: the live Extract-Spectrum preview renders in a PANE (transitory "Spectrum (live)"
+    // product), NOT a floating window. Started/stopped with the probe tool; updated on hover.
+    QString m_spectrumLiveId;   ///< the transitory live product id (empty when the tool is off)
+    void startLiveSpectrum();   ///< place a live spectrum pane + tree entry
+    void stopLiveSpectrum();    ///< drop the live pane + tree entry
+    void updateLiveSpectrumPane(const QVector<double> &key, const QVector<double> &values,
+                                const QString &pixelLabel);
+    // Last probe spectrum captured for pinning (filled on every probe update).
+    QVector<double> m_lastProbeKey;
+    QVector<double> m_lastProbeValues;
+    QString m_lastProbeXLabel, m_lastProbeYLabel, m_lastProbeContext;
+    int m_pinnedSpectrumCount{ 0 };   ///< suffix for the next Pin Spectrum product id/label
+
+    void ensureMomentStats(Product2D &p);          ///< compute + cache the product's whole-map stats
+    // The STATISTICS › 2D image block follows the ACTIVE 2-D pane (Slice or a Moment),
+    // labelled by the pane, with the full stat set. There is ONE authoritative 2-D block —
+    // no separate per-moment section duplicating the same numbers ((a)).
+    void updateActiveMapStats();
+    QPointer<QWidget> m_activeMapStatsSection;     ///< the single active-pane 2D stats block
 
     struct MomentProvenanceState
     {
@@ -454,6 +495,7 @@ private:
     /// "view3d"/"slice2d"; @p productId targets a derived product (empty for view rows).
     void activateSessionView(const QString &viewTag, const QString &productId);
     void syncSessionTreeToActivePane();   ///< reverse sync: highlight the active pane's tree row
+    void pushProductPaneBadges();         ///< (#4) which pane(s) show each product → tree badges
     void refreshPaneActiveStyles();
     void refreshPaneInteractors();   ///< §5.1: only the active pane's interactor is live
 
@@ -1245,9 +1287,9 @@ protected:
     bool remoteHasCelestialAxes() const;
     bool convertRemoteCelestialCoordinates(double nativeX, double nativeY, double &frameX,
                                            double &frameY) const;
-    QString formatRemoteOverlayCoordinate(int axis, double value) const;
+    QString formatRemoteOverlayCoordinate(int axis, double value, double axisSpan = -1.0) const;
     QString remoteOverlayAxisTitle(int axis) const;
-    QString formatDegreeCoordinate(double value) const;
+    QString formatDegreeCoordinate(double value, double axisSpan = -1.0) const;
     void updateDataStatePanel();
     QString currentWcsFrameLabel() const;
     void setRegionMode(RegionMode mode, bool active);

@@ -10,8 +10,12 @@
 #include <functional>
 #include <QIcon>
 #include <QItemSelectionModel>
+#include <QFont>
+#include <QMouseEvent>
+#include <QPainter>
 #include <QStandardItem>
 #include <QStandardItemModel>
+#include <QStyledItemDelegate>
 #include <QTimer>
 #include <QTreeView>
 #include <QVBoxLayout>
@@ -22,6 +26,62 @@ using namespace Qt::StringLiterals;
 constexpr int kParentKeyRole = Qt::UserRole;       // dataset roots
 constexpr int kProductIdRole = Qt::UserRole + 1;   // product children
 constexpr int kViewTagRole = Qt::UserRole + 2;     // intrinsic view rows ("view3d"/"slice2d")
+constexpr int kPaneNumbersRole = Qt::UserRole + 3; // (#4) QVariantList of pane numbers (1..4)
+
+// (#4) The pane-number badges are laid out 16×16 from the RIGHT edge of the row, in
+// ascending pane order. Shared by the delegate (paint) and the viewport filter (hit-test)
+// so a click lands exactly on what's drawn.
+QList<QRect> paneBadgeRects(const QRect &itemRect, int count)
+{
+    QList<QRect> rects;
+    constexpr int sz = 16, gap = 4, padRight = 8;
+    int right = itemRect.right() - padRight;
+    for (int i = 0; i < count; ++i) {
+        const int top = itemRect.top() + (itemRect.height() - sz) / 2;
+        rects.prepend(QRect(right - sz, top, sz, sz));   // build right→left, store ascending
+        right -= (sz + gap);
+    }
+    return rects;
+}
+
+// Paints the default row, then the pane-number badges (outline box + muted number).
+class PaneBadgeDelegate : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    void paint(QPainter *p, const QStyleOptionViewItem &opt,
+               const QModelIndex &idx) const override
+    {
+        const QVariantList nums = idx.data(kPaneNumbersRole).toList();
+        // Reserve a right-side band so the base delegate ELIDES the label before the badges
+        // (never draws text under them), then draw the badges at the ORIGINAL rect.
+        QStyleOptionViewItem o = opt;
+        if (!nums.isEmpty()) {
+            const int n = static_cast<int>(nums.size());
+            const int band = n * 16 + (n - 1) * 4 + 8 + 6;   // badges + right pad + gap
+            o.rect.setRight(o.rect.right() - band);
+        }
+        QStyledItemDelegate::paint(p, o, idx);
+        if (nums.isEmpty())
+            return;
+        const QList<QRect> rects = paneBadgeRects(opt.rect, static_cast<int>(nums.size()));
+        p->save();
+        p->setRenderHint(QPainter::Antialiasing, true);
+        QFont f = opt.font;
+        f.setPointSizeF(f.pointSizeF() * 0.82);
+        p->setFont(f);
+        const QColor border(QString::fromLatin1(VisivoTheme::kOutline()));
+        const QColor text(QString::fromLatin1(VisivoTheme::kOnSurfaceVariant()));
+        for (int i = 0; i < rects.size() && i < nums.size(); ++i) {
+            p->setPen(QPen(border, 1));
+            p->setBrush(Qt::NoBrush);
+            p->drawRoundedRect(QRectF(rects[i]).adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
+            p->setPen(text);
+            p->drawText(rects[i], Qt::AlignCenter, QString::number(nums[i].toInt()));
+        }
+        p->restore();
+    }
+};
 
 // A short uppercase chip per product kind — mirrors the dataset's "CUBE" badge so
 // a product row reads as a typed child, not a bare label (§3.0c).
@@ -99,6 +159,8 @@ SessionDataTree::SessionDataTree(QWidget *parent)
             "}")
             .arg(QLatin1StringView(VisivoTheme::kPrimary()),
                  QLatin1StringView(VisivoTheme::kOnSurface())));
+    m_tree->setItemDelegate(new PaneBadgeDelegate(m_tree));   // (#4) paints pane-number badges
+    m_tree->viewport()->installEventFilter(this);             // (#4) badge clicks → activate pane
     layout->addWidget(m_tree);
 
     connect(m_tree, &QTreeView::doubleClicked, this, &SessionDataTree::onActivated);
@@ -123,6 +185,7 @@ SessionDataTree::SessionDataTree(QWidget *parent)
     ProductRegistry &reg = ProductRegistry::instance();
     connect(&reg, &ProductRegistry::productAdded, this, &SessionDataTree::onProductAdded);
     connect(&reg, &ProductRegistry::productUpdated, this, &SessionDataTree::onProductUpdated);
+    connect(&reg, &ProductRegistry::productRemoved, this, &SessionDataTree::onProductRemoved);
 }
 
 QStandardItem *SessionDataTree::datasetItem(const QString &parentKey, const QString &label,
@@ -169,18 +232,49 @@ void SessionDataTree::upsertProduct(const AnalysisProduct &p)
     QStandardItem *ds = datasetItem(p.parentKey, p.parentLabel, QString(), /*create=*/true);
     if (!ds)
         return;
+    // A TRANSITORY "live" entry (e.g. the Extract-Spectrum live preview) reads distinct from
+    // a stable product: italic label in the muted foreground.
+    const bool live = (p.status == u"live"_s);
+    auto styleItem = [&](QStandardItem *item) {
+        QFont f = item->font();
+        f.setItalic(live);
+        item->setFont(f);
+        item->setForeground(live ? QBrush(QColor(QString::fromLatin1(VisivoTheme::kOnSurfaceVariant())))
+                                 : QBrush());
+    };
     for (int i = 0; i < ds->rowCount(); ++i) {
         QStandardItem *child = ds->child(i);
         if (child && child->data(kProductIdRole).toString() == p.productId) {
             child->setText(productText(p));
+            styleItem(child);
             return;
         }
     }
     auto *child = new QStandardItem(productText(p));
     child->setData(p.productId, kProductIdRole);
     child->setToolTip(p.kind);
+    styleItem(child);
     ds->appendRow(child);
     m_tree->expand(ds->index());
+}
+
+void SessionDataTree::onProductRemoved(const QString &productId)
+{
+    if (productId.isEmpty())
+        return;
+    for (int r = 0; r < m_model->rowCount(); ++r) {
+        QStandardItem *ds = m_model->item(r);
+        if (!ds)
+            continue;
+        for (int i = 0; i < ds->rowCount(); ++i) {
+            QStandardItem *child = ds->child(i);
+            if (child && child->data(kProductIdRole).toString() == productId) {
+                ds->removeRow(i);
+                updateHeightToContents();
+                return;
+            }
+        }
+    }
 }
 
 void SessionDataTree::setCurrentDataset(const QString &parentKey, const QString &label,
@@ -231,6 +325,61 @@ void SessionDataTree::selectProduct(const QString &productId)
 void SessionDataTree::onProductUpdated(const AnalysisProduct &product)
 {
     upsertProduct(product);
+}
+
+void SessionDataTree::setProductPaneAssignments(const QHash<QString, QList<int>> &assignments)
+{
+    // (#4) Stamp each product row with the pane numbers that currently SHOW it (empty →
+    // no badge). Walk every dataset's product children; a productId absent from the map
+    // clears its badges.
+    for (int r = 0; r < m_model->rowCount(); ++r) {
+        QStandardItem *ds = m_model->item(r);
+        if (!ds)
+            continue;
+        for (int i = 0; i < ds->rowCount(); ++i) {
+            QStandardItem *child = ds->child(i);
+            if (!child)
+                continue;
+            const QString pid = child->data(kProductIdRole).toString();
+            if (pid.isEmpty())
+                continue;   // a view row (3D Volume / 2D Slice), not a product
+            QVariantList nums;
+            for (int n : assignments.value(pid))
+                nums << n;
+            child->setData(nums, kPaneNumbersRole);
+        }
+    }
+    if (m_tree && m_tree->viewport())
+        m_tree->viewport()->update();
+}
+
+bool SessionDataTree::eventFilter(QObject *watched, QEvent *event)
+{
+    // (#4) A click on a pane-number badge activates that pane (§5.1) — consume it so it
+    // doesn't also change the tree selection.
+    if (m_tree && watched == m_tree->viewport()
+        && (event->type() == QEvent::MouseButtonPress
+            || event->type() == QEvent::MouseButtonDblClick)) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::LeftButton) {
+            const QPoint pos = me->position().toPoint();
+            const QModelIndex idx = m_tree->indexAt(pos);
+            const QVariantList nums = idx.data(kPaneNumbersRole).toList();
+            if (!nums.isEmpty()) {
+                const QList<QRect> rects =
+                        paneBadgeRects(m_tree->visualRect(idx), static_cast<int>(nums.size()));
+                for (int i = 0; i < rects.size() && i < nums.size(); ++i)
+                    if (rects[i].contains(pos)) {
+                        // Emit once (on press); swallow the dbl-click too so it neither
+                        // re-emits nor reaches onActivated().
+                        if (event->type() == QEvent::MouseButtonPress)
+                            emit paneBadgeActivated(nums[i].toInt());
+                        return true;   // swallow — do not select/activate the row
+                    }
+            }
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void SessionDataTree::selectForView(const QString &viewTag, const QString &productId)

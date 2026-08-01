@@ -660,12 +660,16 @@ void Pane2DView::updateWcsOverlay()
         // want to branch on it; the tick loop itself needs no cross-axis mixing.
         (void)hasCelestial;
         const auto x = static_cast<std::size_t>(i);
-        m_overlayXTicks[x]->SetInput(m_wcs.formatCoord(0, frameX).toStdString().c_str());
+        // Pass the axis' WCS span so the formatter uses enough decimals for THIS zoom (a
+        // 0.007° moment field must not print "47.21" on every tick) (b).
+        const double spanX = std::fabs(xMax - xMin);
+        const double spanY = std::fabs(yMax - yMin);
+        m_overlayXTicks[x]->SetInput(m_wcs.formatCoord(0, frameX, spanX).toStdString().c_str());
         m_overlayXTicks[x]->SetDisplayPosition(static_cast<int>(axisX + t * (xRight - axisX)),
                                                static_cast<int>(bottomMargin - 18. * d));
         // Drop the leftmost x label — corner collision with the bottom y label.
         m_overlayXTicks[x]->SetVisibility(i != 0);
-        m_overlayYTicks[x]->SetInput(m_wcs.formatCoord(1, frameY).toStdString().c_str());
+        m_overlayYTicks[x]->SetInput(m_wcs.formatCoord(1, frameY, spanY).toStdString().c_str());
         m_overlayYTicks[x]->SetDisplayPosition(
                 static_cast<int>(axisX - 10. * d),
                 static_cast<int>(bottomMargin + t * (yTop - bottomMargin)));

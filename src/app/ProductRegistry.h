@@ -51,6 +51,10 @@ public:
     /// Update status/progress of a registered product (emits productUpdated).
     void setStatus(const QString &productId, const QString &status, double progress = 1.0);
 
+    /// Remove a product (emits productRemoved). Used for a TRANSITORY live entry that a tool
+    /// promotes-or-drops (e.g. the Extract-Spectrum live preview). No-op if not present.
+    void removeProduct(const QString &productId);
+
     /// Associate a result window with a product (for focus-on-activate).
     void attachWindow(const QString &productId, QWidget *window);
 
@@ -61,6 +65,7 @@ public:
 signals:
     void productAdded(const AnalysisProduct &product);
     void productUpdated(const AnalysisProduct &product);
+    void productRemoved(const QString &productId);
 
 private:
     ProductRegistry() = default;

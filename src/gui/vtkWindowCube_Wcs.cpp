@@ -438,13 +438,13 @@ bool vtkWindowCube::convertRemoteCelestialCoordinates(double nativeX, double nat
     return true;
 }
 
-QString vtkWindowCube::formatRemoteOverlayCoordinate(int axis, double value) const
+QString vtkWindowCube::formatRemoteOverlayCoordinate(int axis, double value, double axisSpan) const
 {
     if (!this->remoteHasCelestialAxes()) {
         return QString::number(value, 'g', 8);
     }
     if (!this->useSexagesimalWcsFormat) {
-        return this->formatDegreeCoordinate(value);
+        return this->formatDegreeCoordinate(value, axisSpan);
     }
     return formatCelestialCoordinate(this->selectedWcsFrame(), axis, value);
 }
@@ -464,9 +464,18 @@ QString vtkWindowCube::remoteOverlayAxisTitle(int axis) const
     return axis == 0 ? u"Ecliptic Longitude"_s : u"Ecliptic Latitude"_s;
 }
 
-QString vtkWindowCube::formatDegreeCoordinate(double value) const
+QString vtkWindowCube::formatDegreeCoordinate(double value, double axisSpan) const
 {
-    return QString::number(value, 'f', 2);
+    // (b) Adaptive precision: over an axis span S with ~5 ticks the spacing is ~S/4, so pick
+    // enough decimals that adjacent ticks differ — otherwise a 0.007° field prints "47.21"
+    // on every tick. Default (span ≤ 0, e.g. the hover readout) keeps the old 2 decimals.
+    int decimals = 2;
+    if (axisSpan > 0.0 && std::isfinite(axisSpan)) {
+        const double spacing = axisSpan / 4.0;
+        if (spacing > 0.0)
+            decimals = std::clamp(static_cast<int>(std::ceil(-std::log10(spacing))) + 1, 2, 8);
+    }
+    return QString::number(value, 'f', decimals);
 }
 
 QString vtkWindowCube::currentWcsFrameLabel() const
@@ -779,6 +788,24 @@ void vtkWindowCube::updateSliceWcsOverlay()
     this->sliceOverlayYAxis->VisibilityOn();
     this->sliceOverlayXTitleActor->VisibilityOn();
     this->sliceOverlayYTitleActor->VisibilityOn();
+    // (b) axis WCS span (from the tick extremes, honouring the paired celestial conversion)
+    // so the degree formatter uses enough precision that adjacent ticks never coincide.
+    auto frameAt = [&](double tt, double &fx, double &fy) {
+        const double vx = rxMin + tt * (rxMax - rxMin);
+        const double vy = ryMin + tt * (ryMax - ryMin);
+        bool ox = false, oy = false;
+        double tx = this->remoteVoxelToWcs(0, vx, &ox);
+        double ty = this->remoteVoxelToWcs(1, vy, &oy);
+        fx = tx;
+        fy = ty;
+        if (ox && oy && this->remoteHasCelestialAxes())
+            this->convertRemoteCelestialCoordinates(tx, ty, fx, fy);
+    };
+    double fx0 = 0., fy0 = 0., fx1 = 0., fy1 = 0.;
+    frameAt(0.0, fx0, fy0);
+    frameAt(1.0, fx1, fy1);
+    const double sliceSpanX = std::fabs(fx1 - fx0);
+    const double sliceSpanY = std::fabs(fy1 - fy0);
     for (int i = 0; i < overlayTickCount; ++i) {
         const double t = overlayTickCount == 1 ? 0.0
                                                : static_cast<double>(i)
@@ -795,7 +822,7 @@ void vtkWindowCube::updateSliceWcsOverlay()
             this->convertRemoteCelestialCoordinates(tickX, tickY, frameX, frameY);
         }
         this->sliceOverlayXTickActors[static_cast<std::size_t>(i)]->SetInput(
-                this->formatRemoteOverlayCoordinate(0, frameX).toStdString().c_str());
+                this->formatRemoteOverlayCoordinate(0, frameX, sliceSpanX).toStdString().c_str());
         this->sliceOverlayXTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
                 static_cast<int>(axisX + t * (xRight - axisX)),
                 static_cast<int>(bottomMargin - 18. * dpr));
@@ -803,7 +830,7 @@ void vtkWindowCube::updateSliceWcsOverlay()
         // corner, and that value is readable from the y axis anyway.
         this->sliceOverlayXTickActors[static_cast<std::size_t>(i)]->SetVisibility(i != 0);
         this->sliceOverlayYTickActors[static_cast<std::size_t>(i)]->SetInput(
-                this->formatRemoteOverlayCoordinate(1, frameY).toStdString().c_str());
+                this->formatRemoteOverlayCoordinate(1, frameY, sliceSpanY).toStdString().c_str());
         this->sliceOverlayYTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
                 static_cast<int>(axisX - 10. * dpr),
                 static_cast<int>(bottomMargin + t * (yTop - bottomMargin)));

@@ -17,6 +17,8 @@
 
 #include <QObject>
 #include <QPointer>
+#include <QHash>
+#include <QList>
 #include <QString>
 #include <QTimer>
 #include <QFutureWatcher>
@@ -91,6 +93,9 @@ public:
     /// product) without re-triggering activation.
     void selectSessionRowForView(const QString &viewTag, const QString &productId);
 
+    /// (#4) Push which pane(s) show each product → pane-number badges in the tree.
+    void setSessionProductPaneAssignments(const QHash<QString, QList<int>> &assignments);
+
     /// Focus mode thins the status rail to health + queue (the two that change);
     /// hides the cache + session slots. @p compact = true while focus is active.
     void setStatusRailCompact(bool compact);
@@ -106,6 +111,9 @@ signals:
     /// A Session-tree row was selected → the viewer should activate the matching pane.
     /// @p viewTag is "view3d"/"slice2d" for intrinsic views; @p productId for a product.
     void sessionRowActivated(const QString &viewTag, const QString &productId);
+
+    /// (#4) A pane-number badge in the tree was clicked → activate that pane (1-based).
+    void sessionPaneBadgeActivated(int paneNumber);
 
 private:
     MainWindow *mainWindow() const;

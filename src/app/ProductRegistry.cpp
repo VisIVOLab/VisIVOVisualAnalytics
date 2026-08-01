@@ -48,6 +48,15 @@ void ProductRegistry::setStatus(const QString &productId, const QString &status,
     emit productUpdated(m_products[i]);
 }
 
+void ProductRegistry::removeProduct(const QString &productId)
+{
+    const int i = indexOf(productId);
+    if (i < 0)
+        return;
+    m_products.removeAt(i);
+    emit productRemoved(productId);
+}
+
 void ProductRegistry::attachWindow(const QString &productId, QWidget *window)
 {
     const int i = indexOf(productId);

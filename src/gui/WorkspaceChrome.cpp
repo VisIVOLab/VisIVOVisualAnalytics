@@ -302,6 +302,9 @@ void WorkspaceChrome::installSessionDock(const QString &datasetKey,
     // showing that view/product the active one (or mount it).
     connect(m_sessionTree, &SessionDataTree::rowActivated, this,
             &WorkspaceChrome::sessionRowActivated);
+    // (#4) A pane-number badge click activates that pane.
+    connect(m_sessionTree, &SessionDataTree::paneBadgeActivated, this,
+            &WorkspaceChrome::sessionPaneBadgeActivated);
 
     // Host for the view/rendering controls (filled by the window via
     // addSessionLayers()). NOTE: no "LAYERS" header here — the flat controls the
@@ -569,6 +572,13 @@ void WorkspaceChrome::selectSessionRowForView(const QString &viewTag, const QStr
 {
     if (m_sessionTree)
         m_sessionTree->selectForView(viewTag, productId);
+}
+
+void WorkspaceChrome::setSessionProductPaneAssignments(
+        const QHash<QString, QList<int>> &assignments)
+{
+    if (m_sessionTree)
+        m_sessionTree->setProductPaneAssignments(assignments);
 }
 
 void WorkspaceChrome::setStatusRailCompact(bool compact)

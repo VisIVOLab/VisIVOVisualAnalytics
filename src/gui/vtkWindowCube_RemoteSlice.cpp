@@ -341,6 +341,9 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
         ui->lineImgRms->setText(fmtStat(rms));
         this->updateLUTCustomizer();
     }
+    // (a) the Inspector's 2-D block follows the active pane — a channel scrub lands here
+    // (not updateInfoStatsPage), so refresh it so the active SLICE's stats stay current.
+    this->updateActiveMapStats();
 
     auto *sliceRenderer = this->sliceWin->GetRenderers()->GetFirstRenderer();
     refitParallelSliceCamera(sliceRenderer, result.imageData, this->sliceWin);

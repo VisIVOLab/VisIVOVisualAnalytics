@@ -202,6 +202,31 @@ public:
         return QObject::eventFilter(obj, ev);
     }
 };
+
+// (c) A spin box that DISPLAYS a compact 6-significant-figure value (45035.2, not
+// 45035.246094) while keeping the full value editable + in the tooltip. No Q_OBJECT —
+// textFromValue/valueFromText are virtual. Applies to the Clip fields for every kind.
+class SigFigSpinBox : public QDoubleSpinBox
+{
+public:
+    using QDoubleSpinBox::QDoubleSpinBox;
+
+protected:
+    QString textFromValue(double v) const override
+    {
+        // Keep the tooltip on the FULL value (const_cast so the display + tooltip stay in
+        // sync even for programmatic setValue under a signal blocker).
+        const_cast<SigFigSpinBox *>(this)->setToolTip(QString::number(v, 'f', 6));
+        return QString::number(v, 'g', 6);
+    }
+    double valueFromText(const QString &text) const override
+    {
+        bool ok = false;
+        const double v = text.toDouble(&ok);
+        return ok ? v : QDoubleSpinBox::valueFromText(text);
+    }
+};
+
 const QString kMomentBackendTooltip =
         QStringLiteral("Moment computation requires a backend-visible dataset. Use File → Open Remote or copy the dataset to the backend host.");
 const QString kPvBackendTooltip =
@@ -1065,11 +1090,14 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         // Tree-selection = pane-selection: activate (or mount) the matching pane.
         connect(this->m_workspaceChrome, &WorkspaceChrome::sessionRowActivated, this,
                 &vtkWindowCube::activateSessionView);
+        // (#4) A pane-number badge click activates that pane (badge is 1-based).
+        connect(this->m_workspaceChrome, &WorkspaceChrome::sessionPaneBadgeActivated, this,
+                [this](int paneNumber) { setActivePane(paneNumber - 1); });
         // Reverse sync: activating a pane by any route highlights its Session-tree row.
         connect(this, &vtkWindowCube::activePaneChanged, this, [this](int) {
             syncSessionTreeToActivePane();
             applyMomentToolGate();   // §5.1b: probe/region/PV disabled while a moment is active
-            updateInspectorMomentStats();   // whole-map stats for the active moment
+            updateActiveMapStats();   // 2D stats block follows the active pane
         });
         // setupInspector()/start() run at the END of the constructor — the
         // Analysis-tab tools reference QActions created later below.
@@ -2283,6 +2311,16 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(this->actionExtractPvDiagram, &QAction::toggled, this,
                      &vtkWindowCube::setPvModeActive);
 
+    // #5: Pin Spectrum — promote the current probe spectrum to a first-class product (SPEC)
+    // that lives in Session Data + any pane's dropdown, not just inside the probe plot.
+    {
+        QAction *pinSpectrum = ui->menuTools->addAction(u"Pin Spectrum"_s);
+        pinSpectrum->setToolTip(
+                u"Promote the current probe spectrum to a product in Session Data"_s);
+        QObject::connect(pinSpectrum, &QAction::triggered, this,
+                         &vtkWindowCube::pinCurrentSpectrum);
+    }
+
     // ANALYSIS: Channel Maps mosaic (N × M grid of consecutive slice panels).
     this->m_actChannelMaps = ui->menuTools->addAction(u"Channel Maps…"_s);
     QAction *actChannelMaps = this->m_actChannelMaps;
@@ -2670,6 +2708,12 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
 vtkWindowCube::~vtkWindowCube()
 {
+    // #5b: drop the transitory live-spectrum entry from the SESSION-WIDE registry (panes are
+    // being torn down anyway — just clear the registry so a closed window leaves nothing).
+    if (!this->m_spectrumLiveId.isEmpty()) {
+        ProductRegistry::instance().removeProduct(this->m_spectrumLiveId);
+        this->m_spectrumLiveId.clear();
+    }
     // Stop the slice animation timer and detach any vtk observer we installed,
     // so we don't fire callbacks after the widget hierarchy starts going away.
     this->sliceAnimationTimer.stop();
@@ -2961,6 +3005,10 @@ void vtkWindowCube::updateInfoStatsPage()
     }
 
     m_uiAssembler->updateInfoStats(d);
+    // (a) the Inspector's 2-D block shows the ACTIVE slice's stats — refresh it whenever the
+    // slice data changes (channel scrub / recompute). Cheap for a moment (cached); a fresh
+    // pass for the slice, which only runs when the slice is the active source.
+    updateActiveMapStats();
 }
 
 void vtkWindowCube::applySliceLutByName(const QString &name)
@@ -6160,6 +6208,11 @@ Pane2DView *vtkWindowCube::activePane2DView() const
         return nullptr;
     if (m_slots[m_activePane].view.kind != ViewId::Product)
         return nullptr;
+    // #5: only an IMAGE product (m_products2d) has a Pane2DView. A spectrum product
+    // (m_products1d) renders a ProfileWidget — return null so the DISPLAY dock / LUT strip
+    // never operate on a stale/empty 2-D view for it.
+    if (!m_products2d.contains(m_slots[m_activePane].view.productId))
+        return nullptr;
     return m_paneViews[m_activePane];
 }
 
@@ -6353,8 +6406,8 @@ void vtkWindowCube::refreshPaneLutStrip(int slot)
     QToolButton *btn = m_slots[slot].lutBtn;
     const PaneView &v = m_slots[slot].view;
     QString cmap;
-    if (v.kind == ViewId::Product && m_paneViews[slot] && viewHasData(v))
-        cmap = m_paneViews[slot]->colorMapName();
+    if (v.kind == ViewId::Product && m_paneViews[slot] && m_products2d.contains(v.productId))
+        cmap = m_paneViews[slot]->colorMapName();   // image product only (a spectrum has no LUT)
     else if (v.kind == ViewId::Slice2D)
         cmap = m_activeSliceLutName;
     const bool show = !cmap.isEmpty();
@@ -6373,7 +6426,8 @@ void vtkWindowCube::showPaneLutStripPopover(int slot)
     // left dock writes (§5.4).
     setActivePane(slot);
     const PaneView &v = m_slots[slot].view;
-    const bool is2dLut = (v.kind == ViewId::Product && viewHasData(v)) || v.kind == ViewId::Slice2D;
+    const bool is2dLut = (v.kind == ViewId::Product && m_products2d.contains(v.productId))
+            || v.kind == ViewId::Slice2D;   // spectrum products have no colormap popover (#5)
     if (!is2dLut)
         return;
 
@@ -6730,7 +6784,7 @@ QWidget *vtkWindowCube::buildPaneDisplayPage()
         l->setStyleSheet(labelCss);
         h->addWidget(l, 0);
         auto mkSpin = [&]() {
-            auto *s = new QDoubleSpinBox(r);
+            auto *s = new SigFigSpinBox(r);   // (c) compact 6-sig-fig display, full value in tooltip
             s->setRange(-1e30, 1e30);
             s->setDecimals(6);   // keep precision; the width fix below is the size policy
             s->setButtonSymbols(QAbstractSpinBox::NoButtons);
@@ -6812,9 +6866,13 @@ void vtkWindowCube::updateDisplaySectionForActivePane()
     const ViewId kind =
             (m_activePane >= 0 && m_activePane < 4) ? m_slots[m_activePane].view.kind : ViewId::None;
     const bool is3d = (kind == ViewId::View3D);
-    // Page 1 (the per-pane controls) drives EITHER a Product pane (its own Pane2DView) or
-    // the 2D Slice (the shared lutSlice/m_sliceScaleMode) via the activeDisplay* dispatch.
-    const bool isPane = (kind == ViewId::Product || kind == ViewId::Slice2D);
+    // Page 1 (the per-pane controls) drives EITHER an IMAGE Product pane (its own Pane2DView)
+    // or the 2D Slice (shared lutSlice) via the activeDisplay* dispatch. A spectrum Product
+    // (#5) has no colormap/range/scale → the page stays disabled for it.
+    const bool activeIsImageProduct =
+            (kind == ViewId::Product && m_activePane >= 0 && m_activePane < 4
+             && m_products2d.contains(m_slots[m_activePane].view.productId));
+    const bool isPane = (activeIsImageProduct || kind == ViewId::Slice2D);
 
     m_displayStack->setCurrentIndex(is3d ? 0 : 1);
     if (auto *p1 = m_displayStack->widget(1))
@@ -6964,12 +7022,11 @@ void vtkWindowCube::activateSessionView(const QString &viewTag, const QString &p
         target = { ViewId::View3D, {} };
     else if (viewTag == u"slice2d"_s)
         target = { ViewId::Slice2D, {} };
-    else if (!productId.isEmpty() && m_products2d.contains(productId))
-        // Only a pane-renderable 2-D product (a moment map, cached in m_products2d) can be
-        // mounted. PV / baseline / channel-map / noise rows open their OWN windows — for
-        // those, a single-click selection just drives Provenance; double-click raises the
-        // window (onActivated). Mounting them would replace the pane with a bogus empty
-        // state, since they have no image in m_products2d.
+    else if (!productId.isEmpty()
+             && (m_products2d.contains(productId) || m_products1d.contains(productId)))
+        // Only a pane-RENDERABLE product — an image in m_products2d (moment/…) or a spectrum
+        // in m_products1d (#5) — can be mounted. PV / baseline / noise rows open their OWN
+        // windows: a single-click just drives Provenance, double-click raises the window.
         target = { ViewId::Product, productId };
     else
         return;
@@ -6993,6 +7050,22 @@ void vtkWindowCube::activateSessionView(const QString &viewTag, const QString &p
     refreshPaneChrome();
     layout2dPane(true);
     setActivePane(slot);
+}
+
+void vtkWindowCube::pushProductPaneBadges()
+{
+    // (#4) Tell the Session tree which VISIBLE pane(s) show each product → pane-number
+    // badges. A product duplicated in two panes lists both; one not on screen lists none.
+    if (!m_workspaceChrome)
+        return;
+    QHash<QString, QList<int>> assignments;
+    for (int i = 0; i < 4; ++i) {
+        if (!m_slots[i].frame || !m_slots[i].frame->isVisible())
+            continue;
+        if (m_slots[i].view.kind == ViewId::Product && !m_slots[i].view.productId.isEmpty())
+            assignments[m_slots[i].view.productId] << (i + 1);   // pane numbers are 1-based
+    }
+    m_workspaceChrome->setSessionProductPaneAssignments(assignments);
 }
 
 void vtkWindowCube::syncSessionTreeToActivePane()
@@ -7120,10 +7193,19 @@ bool vtkWindowCube::eventFilter(QObject *watched, QEvent *event)
     if (rw)
         for (int i = 0; i < 4; ++i) {
             const ViewId k = m_slots[i].view.kind;
-            QWidget *paneW = (k == ViewId::Slice2D) ? static_cast<QWidget *>(ui->vtkImage)
-                    : (k == ViewId::View3D)         ? static_cast<QWidget *>(ui->vtkCube)
-                    : (k == ViewId::Product && m_paneViews[i]) ? m_paneViews[i]->widget()
-                                                               : nullptr;
+            QWidget *paneW = nullptr;
+            if (k == ViewId::Slice2D)
+                paneW = ui->vtkImage;
+            else if (k == ViewId::View3D)
+                paneW = ui->vtkCube;
+            else if (k == ViewId::Product) {
+                // A Product slot renders through its Pane2DView (image) OR its ProfileWidget
+                // (spectrum, #5) — match whichever this product uses.
+                if (m_products1d.contains(m_slots[i].view.productId) && m_paneSpectra[i])
+                    paneW = m_paneSpectra[i];
+                else if (m_paneViews[i])
+                    paneW = m_paneViews[i]->widget();
+            }
             // §5.1b: the 3D view's render surface is EITHER the local VTK widget (ui->vtkCube)
             // or the remote widget (server stream) depending on render mode — activation +
             // swallow must recognise both.
@@ -7190,6 +7272,30 @@ QWidget *vtkWindowCube::viewWidget(const PaneView &v) const
     }
 }
 
+ProfileWidget *vtkWindowCube::ensureSlotSpectrumView(int slot, const QString &xLabel,
+                                                     const QString &yLabel)
+{
+    // #5: a per-slot, display-only ProfileWidget for a 1-D spectrum product (independent of
+    // the shared probePlotWidget, which the live probe / region owns). Instantiated lazily,
+    // one per slot; setupSpectrumPlot runs ONCE here (it insertRow(0)s a title element, so
+    // re-running it per mount would accumulate rows �).
+    if (slot < 0 || slot > 3)
+        return nullptr;
+    if (!m_paneSpectra[slot]) {
+        auto *sp = new ProfileWidget(m_viewParkingLot);
+        // The ProfileWidget ctor sets Qt::Window + WA_DeleteOnClose (standalone dialog). For
+        // an EMBEDDED pane widget clear both, so it never pops a transient top-level window
+        // and a stray close can't delete the cached pointer.
+        sp->setWindowFlags(Qt::Widget);
+        sp->setAttribute(Qt::WA_DeleteOnClose, false);
+        sp->setUsageMode(ProfileWidget::UsageMode::RegionStatic);   // static, non-live display
+        sp->setupSpectrumPlot(xLabel, yLabel);
+        sp->installEventFilter(this);   // click-to-activate (§5.1)
+        m_paneSpectra[slot] = sp;
+    }
+    return m_paneSpectra[slot];
+}
+
 Pane2DView *vtkWindowCube::ensureSlotProductView(int slot)
 {
     if (slot < 0 || slot > 3)
@@ -7205,8 +7311,8 @@ Pane2DView *vtkWindowCube::ensureSlotProductView(int slot)
         };
         ctx.hasCelestial = [this]() { return this->remoteHasCelestialAxes(); };
         ctx.axisTitle = [this](int axis) { return this->remoteOverlayAxisTitle(axis); };
-        ctx.formatCoord = [this](int axis, double value) {
-            return this->formatRemoteOverlayCoordinate(axis, value);
+        ctx.formatCoord = [this](int axis, double value, double axisSpan) {
+            return this->formatRemoteOverlayCoordinate(axis, value, axisSpan);
         };
         pv->setWcsContext(std::move(ctx));
         pv->setWcsAxesVisible(this->showWcsAxes);
@@ -7253,6 +7359,9 @@ QString vtkWindowCube::viewTitle(const PaneView &v) const
         auto it = m_products2d.constFind(v.productId);
         if (it != m_products2d.constEnd())
             return it->label;
+        auto it1 = m_products1d.constFind(v.productId);
+        if (it1 != m_products1d.constEnd())
+            return it1->label;
         const int at = v.productId.indexOf(u'@');
         if (v.productId.startsWith(u"moment"_s) && at > 6)
             return u"Moment "_s + v.productId.mid(6, at - 6);
@@ -7272,11 +7381,12 @@ QList<vtkWindowCube::PaneView> vtkWindowCube::availableViews() const
     out << PaneView{ ViewId::View3D, {} } << PaneView{ ViewId::Slice2D, {} };
     const auto products = ProductRegistry::instance().productsFor(this->datasetPersistKey());
     for (const AnalysisProduct &p : products)
-        // Renderable AND actually cached in THIS window (m_products2d holds the pixels).
-        // The registry is session-wide, so a same-dataset sibling window could register a
-        // product this window never cached — offering it would mount a blank Product pane
+        // Renderable AND actually cached in THIS window (image in m_products2d, spectrum in
+        // m_products1d). The registry is session-wide, so a same-dataset sibling window could
+        // register a product this window never cached — offering it would mount a blank pane
         //. viewHasData() is the same predicate mountView/activateSessionView use.
-        if (!p.renderer.isEmpty() && m_products2d.contains(p.productId))
+        if (!p.renderer.isEmpty()
+            && (m_products2d.contains(p.productId) || m_products1d.contains(p.productId)))
             out << PaneView{ ViewId::Product, p.productId };
     out << PaneView{ ViewId::Spectrum, {} };
     return out;
@@ -7300,9 +7410,140 @@ bool vtkWindowCube::viewHasData(const PaneView &v) const
     case ViewId::View3D:   return true;   // the window exists only once a cube is open
     case ViewId::Slice2D:  return true;   // the slice pipeline is always present
     case ViewId::Spectrum: return this->probePlotWidget != nullptr;    // probed?
-    case ViewId::Product:  return m_products2d.contains(v.productId);   // computed + cached?
+    case ViewId::Product:  return m_products2d.contains(v.productId)
+                                || m_products1d.contains(v.productId);   // image OR spectrum
     default:               return false;
     }
+}
+
+QString vtkWindowCube::productRenderer(const QString &productId) const
+{
+    if (m_products1d.contains(productId))
+        return u"spectrum1d"_s;
+    if (m_products2d.contains(productId))
+        return u"image2d"_s;
+    return QString();
+}
+
+void vtkWindowCube::pinCurrentSpectrum()
+{
+    // #5: promote the current probe spectrum to a first-class 1-D product — it appears in the
+    // Session tree (SPEC), is offered in every pane dropdown, is duplicable, and lands in a
+    // free pane if one is open (else waits in the tree for manual activation).
+    if (m_lastProbeValues.isEmpty()) {
+        this->statusBar()->showMessage(
+                u"Pin Spectrum: probe a pixel in the 2D view first."_s, 3000);
+        return;
+    }
+    const int n = ++m_pinnedSpectrumCount;
+    const QString productId =
+            QStringLiteral("spectrum%1@%2").arg(n).arg(this->datasetPersistKey());
+    const QString label = QStringLiteral("Spectrum %1").arg(n);
+    Spectrum1D s;
+    s.key = m_lastProbeKey;
+    s.values = m_lastProbeValues;
+    s.xLabel = m_lastProbeXLabel;
+    s.yLabel = m_lastProbeYLabel;
+    s.label = label;
+    m_products1d.insert(productId, s);
+
+    QVariantMap params;
+    if (!m_lastProbeContext.isEmpty())
+        params.insert(u"Position"_s, m_lastProbeContext);
+    params.insert(u"Channels"_s, QString::number(m_lastProbeKey.size()));
+    this->registerAnalysisProduct(u"spectrum"_s, label, params, this, productId, u"spectrum1d"_s);
+
+    // No-steal placement: the FIRST free (None) visible pane, else it waits in the tree.
+    auto visible = [&](int i) { return m_slots[i].frame && m_slots[i].frame->isVisible(); };
+    int target = -1;
+    for (int i = 0; i < 4; ++i)
+        if (visible(i) && m_slots[i].view.isNone()) {
+            m_slots[i].view = PaneView{ ViewId::Product, productId };
+            mountView(i);
+            target = i;
+            break;
+        }
+    if (target >= 0)
+        setActivePane(target);
+    refreshPaneChrome();
+    this->statusBar()->showMessage(QStringLiteral("Pinned %1.").arg(label), 3000);
+}
+
+void vtkWindowCube::startLiveSpectrum()
+{
+    // #5b: the live probe preview lives in a PANE, not a floating window. Create a transitory
+    // "Spectrum (live)" product and place it in the FIRST free pane; if none, the active pane
+    // UNLESS it's the source 2D Slice (never steal what the user is hovering) — then hint.
+    if (!m_spectrumLiveId.isEmpty())
+        return;
+    m_spectrumLiveId = QStringLiteral("spectrumlive@%1").arg(this->datasetPersistKey());
+    Spectrum1D s;
+    s.xLabel = this->spectralAxisTitle().isEmpty() ? u"Spectral axis"_s : this->spectralAxisTitle();
+    s.yLabel = u"Intensity"_s;
+    s.label = u"Spectrum (live)"_s;
+    m_products1d.insert(m_spectrumLiveId, s);
+    this->registerAnalysisProduct(u"spectrum"_s, s.label, QVariantMap{}, this, m_spectrumLiveId,
+                                  u"spectrum1d"_s);
+    ProductRegistry::instance().setStatus(m_spectrumLiveId, u"live"_s);   // italic/muted in tree
+
+    // The live spectrum goes in a FREE pane that is NOT the active one — the active pane is
+    // the 2D source the user hovers, and it must stay active + interactive (an idle pane
+    // swallows mouse-move). If there is no free non-active pane, hint instead of stealing the
+    // source.
+    auto visible = [&](int i) { return m_slots[i].frame && m_slots[i].frame->isVisible(); };
+    int target = -1;
+    for (int i = 0; i < 4; ++i)
+        if (i != m_activePane && visible(i) && m_slots[i].view.isNone()) {
+            target = i;
+            break;
+        }
+    if (target >= 0) {
+        m_slots[target].view = PaneView{ ViewId::Product, m_spectrumLiveId };
+        mountView(target);   // NOT setActivePane — the source pane keeps focus for hover
+    } else {
+        this->statusBar()->showMessage(
+                u"Extract Spectrum: no free pane for the live spectrum — add a pane (▥), "
+                u"then hover the slice."_s,
+                6000);
+    }
+    refreshPaneChrome();
+}
+
+void vtkWindowCube::stopLiveSpectrum()
+{
+    if (m_spectrumLiveId.isEmpty())
+        return;
+    const QString id = m_spectrumLiveId;
+    m_spectrumLiveId.clear();
+    m_products1d.remove(id);
+    ProductRegistry::instance().removeProduct(id);   // drops the transitory tree entry
+    // Any pane showing the live spectrum returns to "Pick a view".
+    for (int i = 0; i < 4; ++i)
+        if (m_slots[i].view.kind == ViewId::Product && m_slots[i].view.productId == id) {
+            m_slots[i].view = {};
+            mountView(i);
+        }
+    refreshPaneChrome();
+}
+
+void vtkWindowCube::updateLiveSpectrumPane(const QVector<double> &key,
+                                           const QVector<double> &values,
+                                           const QString &pixelLabel)
+{
+    // #5b: push the current probe spectrum into the live product + its pane (real-time on
+    // hover), unless frozen. The pane header's qualifier shows the current pixel.
+    if (m_spectrumLiveId.isEmpty() || this->probeFrozen)
+        return;
+    Spectrum1D &s = m_products1d[m_spectrumLiveId];
+    s.key = key;
+    s.values = values;
+    for (int i = 0; i < 4; ++i)
+        if (m_slots[i].view.kind == ViewId::Product && m_slots[i].view.productId == m_spectrumLiveId
+            && m_paneSpectra[i]) {
+            m_paneSpectra[i]->updateSpectrumPlot(key, values, u"Spectrum (live)"_s, /*live=*/true);
+            if (m_slots[i].qualifier)
+                m_slots[i].qualifier->setText(pixelLabel);
+        }
 }
 
 QWidget *vtkWindowCube::emptyStateWidget(const PaneView &v)
@@ -7702,7 +7943,18 @@ void vtkWindowCube::mountView(int slot)
     // or the same moment, without a shared-pipeline collision.
     Pane2DView *pv = nullptr;
     QWidget *w = nullptr;
-    if (v.kind == ViewId::Product && viewHasData(v)) {
+    if (v.kind == ViewId::Product && viewHasData(v) && m_products1d.contains(v.productId)) {
+        // #5: a 1-D spectrum product renders into the slot's OWN ProfileWidget (like a moment
+        // uses its own Pane2DView) — so two panes can show two different spectra, or the same
+        // one, independently. Spectra are small → just re-load on every mount.
+        const Spectrum1D &s = m_products1d[v.productId];
+        ProfileWidget *sp = ensureSlotSpectrumView(slot, s.xLabel, s.yLabel);
+        // Call unconditionally: an EMPTY live product clears the plot (so a slot reused from a
+        // previous spectrum doesn't show stale data until the first hover).
+        sp->updateSpectrumPlot(s.key, s.values, s.label, /*live=*/false);
+        m_paneProductId[slot] = v.productId;
+        w = sp;
+    } else if (v.kind == ViewId::Product && viewHasData(v)) {
         pv = ensureSlotProductView(slot);
         const Product2D &p = m_products2d[v.productId];
         // Seed the by-kind default on a FIRST mount OR when this slot is reused for a
@@ -7745,11 +7997,16 @@ void vtkWindowCube::parkView(int slot)
 {
     if (slot < 0 || slot > 3 || !m_viewParkingLot)
         return;
-    // Product panes have no shared singleton (viewWidget → null); their widget is the
-    // slot's own Pane2DView. Park whichever it is.
+    // Product panes have no shared singleton (viewWidget → null); their widget is the slot's
+    // own Pane2DView (image) OR ProfileWidget (spectrum, #5). Park whichever is in the host.
     QWidget *w = viewWidget(m_slots[slot].view);
-    if (!w && m_slots[slot].view.kind == ViewId::Product && m_paneViews[slot])
-        w = m_paneViews[slot]->widget();
+    if (!w && m_slots[slot].view.kind == ViewId::Product) {
+        QWidget *spectrumW = m_paneSpectra[slot];   // ProfileWidget IS-A QWidget (upcast)
+        if (spectrumW && spectrumW->parentWidget() == m_slots[slot].viewHost)
+            w = spectrumW;
+        else if (m_paneViews[slot])
+            w = m_paneViews[slot]->widget();
+    }
     if (!w || !m_slots[slot].viewHost)
         return;
     // Only park a view that actually lives in THIS slot's host — never steal one
@@ -7933,7 +8190,8 @@ void vtkWindowCube::refreshPaneChrome()
     for (int i = 0; i < 4; ++i)
         refreshPaneLutStrip(i);            // §5.4: keep each header strip on its pane's LUT
     m_linkNoReceiverHintShown = false;     // §5.5: pane composition changed → re-arm the hint
-    updateInspectorMomentStats();          // active pane's view may have changed to/from a moment
+    updateActiveMapStats();          // active pane view may have changed → refresh 2D stats
+    pushProductPaneBadges();         // (#4) tree pane-number badges follow the pane layout
 }
 
 void vtkWindowCube::setupPaneChrome()
@@ -8104,23 +8362,18 @@ void vtkWindowCube::setupPaneChrome()
     restoreLayoutSettings();
 }
 
-void vtkWindowCube::ensureMomentStats(Product2D &p)
+vtkWindowCube::MapStats vtkWindowCube::computeMapStats(vtkImageData *img)
 {
-    if (p.statsComputed || !p.imageData)
-        return;
-    p.statsComputed = true;   // compute once; imageData is immutable per product version
-    vtkDataArray *sc =
-            p.imageData->GetPointData() ? p.imageData->GetPointData()->GetScalars() : nullptr;
-    if (!sc) {
-        p.statCount = 0;
-        return;
-    }
+    MapStats s;
+    vtkDataArray *sc = (img && img->GetPointData()) ? img->GetPointData()->GetScalars() : nullptr;
+    if (!sc)
+        return s;   // valid = false
     const vtkIdType n = sc->GetNumberOfTuples();
     std::vector<double> vals;
     vals.reserve(static_cast<size_t>(n));
     double vmin = std::numeric_limits<double>::infinity();
     double vmax = -std::numeric_limits<double>::infinity();
-    double sum = 0.;
+    double sum = 0., sumsq = 0.;
     for (vtkIdType i = 0; i < n; ++i) {
         const double v = sc->GetComponent(i, 0);
         if (!std::isfinite(v))
@@ -8129,73 +8382,112 @@ void vtkWindowCube::ensureMomentStats(Product2D &p)
         vmin = std::min(vmin, v);
         vmax = std::max(vmax, v);
         sum += v;
+        sumsq += v * v;
     }
-    p.statCount = static_cast<long>(vals.size());
+    s.count = static_cast<long>(vals.size());
     if (vals.empty()) {
-        // No finite pixels → the summary stats are UNDEFINED, not zero (rendered as "—").
+        // No finite pixels → summary stats UNDEFINED (rendered "—"), not a misleading 0.
         const double nan = std::numeric_limits<double>::quiet_NaN();
-        p.statMin = p.statMax = p.statMean = p.statMedian = p.statStd = nan;
-        p.statSum = 0.;
-        return;
+        s.min = s.max = s.mean = s.median = s.std = s.rms = nan;
+        return s;   // valid = false, count = 0, sum = 0
     }
+    s.valid = true;
     const double mean = sum / static_cast<double>(vals.size());
-    p.statMin = vmin;
-    p.statMax = vmax;
-    p.statMean = mean;
-    p.statSum = sum;
-    // Population std from a SECOND pass over the deviations (stable — avoids the E[x²]-mean²
-    // cancellation for large-offset moment values).
+    s.min = vmin;
+    s.max = vmax;
+    s.mean = mean;
+    s.sum = sum;
+    s.rms = std::sqrt(sumsq / static_cast<double>(vals.size()));   // sqrt(E[x²]) — no cancellation
+    // Population std from a SECOND pass over the deviations (stable for large-offset values).
     double ss = 0.;
     for (double v : vals) {
         const double d = v - mean;
         ss += d * d;
     }
-    p.statStd = std::sqrt(ss / static_cast<double>(vals.size()));
+    s.std = std::sqrt(ss / static_cast<double>(vals.size()));
     const size_t mid = vals.size() / 2;
     std::nth_element(vals.begin(), vals.begin() + mid, vals.end());
     double median = vals[mid];
     if ((vals.size() & 1u) == 0)   // even count → mean of the two central values
         median = 0.5 * (median + *std::max_element(vals.begin(), vals.begin() + mid));
-    p.statMedian = median;
+    s.median = median;
+    return s;
 }
 
-void vtkWindowCube::updateInspectorMomentStats()
+void vtkWindowCube::ensureMomentStats(Product2D &p)
 {
-    if (!m_momentStatsSection)
+    if (p.statsComputed || !p.imageData)
         return;
-    // Rebuild the block's rows each time the active pane changes.
-    if (QLayout *lay = m_momentStatsSection->layout())
+    p.statsComputed = true;   // compute once; imageData is immutable per product version
+    p.stats = computeMapStats(p.imageData);
+}
+
+void vtkWindowCube::updateActiveMapStats()
+{
+    if (!m_activeMapStatsSection)
+        return;
+    // Rebuild the block each time the active pane's 2-D data changes.
+    if (QLayout *lay = m_activeMapStatsSection->layout())
         while (QLayoutItem *it = lay->takeAt(0)) {
-            if (QWidget *w = it->widget())
+            if (QWidget *w = it->widget()) {
+                w->hide();
                 w->deleteLater();
+            }
             delete it;
         }
-    const bool isMoment = (m_activePane >= 0 && m_activePane < 4
-                           && m_slots[m_activePane].view.kind == ViewId::Product);
-    auto found = isMoment ? m_products2d.find(m_slots[m_activePane].view.productId)
-                          : m_products2d.end();
-    if (!isMoment || found == m_products2d.end() || !found->imageData) {
-        m_momentStatsSection->setVisible(false);   // only meaningful for a computed moment map
+
+    // The block follows the ACTIVE pane and shows ONLY when that pane HAS a 2-D map: a Moment
+    // shows its cached whole-map stats; the 2D Slice shows the live slice's stats. A 3D /
+    // Spectrum / empty pane has no 2-D map → the block hides (truly pane-aware, per (a)/Q3).
+    QString label, unit;
+    MapStats stats;
+    bool have = false;
+    const ViewId kind =
+            (m_activePane >= 0 && m_activePane < 4) ? m_slots[m_activePane].view.kind : ViewId::None;
+    if (kind == ViewId::Product) {
+        auto found = m_products2d.find(m_slots[m_activePane].view.productId);
+        if (found != m_products2d.end() && found->imageData) {
+            ensureMomentStats(*found);
+            stats = found->stats;
+            unit = found->unit;
+            label = found->label.toUpper();
+            have = true;
+        }
+    } else if (kind == ViewId::Slice2D) {
+        vtkImageData *sliceImg =
+                this->remoteSliceDisplaySource
+                        ? vtkImageData::SafeDownCast(
+                                  this->remoteSliceDisplaySource->GetOutputDataObject(0))
+                        : nullptr;
+        if (sliceImg) {
+            stats = computeMapStats(sliceImg);   // recomputed per scrub only while Slice is active
+            label = u"2D SLICE"_s;
+            have = true;   // slice brightness unit not tracked here → left blank
+        }
+    }
+    if (!have) {
+        m_activeMapStatsSection->setVisible(false);
         return;
     }
-    ensureMomentStats(*found);
-    const Product2D &p = *found;
-    auto *lay = qobject_cast<QVBoxLayout *>(m_momentStatsSection->layout());
-    const QString unit = p.unit.isEmpty() ? QString() : (u" "_s + p.unit);
-    // Undefined (all-NaN product) → "—", never a misleading "0 <unit>".
+
+    auto *lay = qobject_cast<QVBoxLayout *>(m_activeMapStatsSection->layout());
+    const QString unitSuffix = unit.isEmpty() ? QString() : (u" "_s + unit);
+    // Gate on stats.valid so a map with no finite pixels (or no scalar array) renders "—",
+    // never a misleading 0 <unit>.
+    const bool ok = stats.valid;
     auto num = [&](double v) {
-        return std::isfinite(v) ? (QString::number(v, 'g', 6) + unit) : u"—"_s;
+        return (ok && std::isfinite(v)) ? (QString::number(v, 'g', 6) + unitSuffix) : u"—"_s;
     };
 
-    auto *cap = new QLabel(QStringLiteral("%1 · WHOLE MAP").arg(p.label.toUpper()),
-                           m_momentStatsSection);
+    // Sub-caption = the pane name (this IS the "2D image" block, now pane-aware).
+    auto *cap = new QLabel(label, m_activeMapStatsSection);
     cap->setStyleSheet(QStringLiteral("QLabel{color:%1; font-family:'Lato'; font-size:10px;"
                                       "font-weight:600; padding:6px 0 1px 0;}")
                                .arg(QLatin1StringView(VisivoTheme::kSecondary())));
     lay->addWidget(cap);
 
     auto addRow = [&](const QString &key, const QString &value) {
-        auto *row = new QWidget(m_momentStatsSection);
+        auto *row = new QWidget(m_activeMapStatsSection);
         auto *h = new QHBoxLayout(row);
         h->setContentsMargins(0, 1, 0, 1);
         h->setSpacing(8);
@@ -8212,14 +8504,15 @@ void vtkWindowCube::updateInspectorMomentStats()
         h->addWidget(val, 0, Qt::AlignRight);
         lay->addWidget(row);
     };
-    addRow(u"Pixels"_s, QString::number(p.statCount));
-    addRow(u"Min"_s, num(p.statMin));
-    addRow(u"Max"_s, num(p.statMax));
-    addRow(u"Mean"_s, num(p.statMean));
-    addRow(u"Median"_s, num(p.statMedian));
-    addRow(u"Std"_s, num(p.statStd));
-    addRow(u"Sum"_s, num(p.statSum));
-    m_momentStatsSection->setVisible(true);
+    addRow(u"Pixels"_s, QString::number(stats.count));
+    addRow(u"Min"_s, num(stats.min));
+    addRow(u"Max"_s, num(stats.max));
+    addRow(u"Mean"_s, num(stats.mean));
+    addRow(u"Median"_s, num(stats.median));
+    addRow(u"Std"_s, num(stats.std));
+    addRow(u"RMS"_s, num(stats.rms));
+    addRow(u"Sum"_s, num(stats.sum));
+    m_activeMapStatsSection->setVisible(true);
 }
 
 void vtkWindowCube::setupInspector()
@@ -8267,27 +8560,23 @@ void vtkWindowCube::setupInspector()
     auto statVal = [&](QWidget *w) { if (w) w->setStyleSheet(statCss); return w; };
 
     panel->addPropertyCaption(u"STATISTICS"_s);
-    panel->addPropertyCaption(u"2D image"_s, /*sub=*/true);
-    panel->addPropertyRow(u"Min"_s,  statVal(ui->lineImgMin));
-    panel->addPropertyRow(u"Max"_s,  statVal(ui->lineImgMax));
-    panel->addPropertyRow(u"Mean"_s, statVal(ui->lineImgMean));
-    panel->addPropertyRow(u"RMS"_s,  statVal(ui->lineImgRms));
+    // (a) ONE authoritative 2-D block that FOLLOWS the active pane (labelled by the pane:
+    // "2D SLICE" / "MOMENT 0") with the full stat set — replaces the old static "2D image"
+    // rows (which showed the last-computed image, not the active pane) and the separate
+    // per-moment block (which duplicated the same numbers). Computed from the active pane's
+    // own pixels; the 3-D cube stats below stay live.
+    m_activeMapStatsSection = new QWidget();
+    auto *statsLay = new QVBoxLayout(m_activeMapStatsSection);
+    statsLay->setContentsMargins(0, 0, 0, 0);
+    statsLay->setSpacing(0);
+    panel->addPropertiesSection(m_activeMapStatsSection);
+    updateActiveMapStats();
+
     panel->addPropertyCaption(u"3D cube"_s, /*sub=*/true);
     panel->addPropertyRow(u"Min"_s,  statVal(ui->lineCubeMin));
     panel->addPropertyRow(u"Max"_s,  statVal(ui->lineCubeMax));
     panel->addPropertyRow(u"Mean"_s, statVal(ui->lineCubeMean));
     panel->addPropertyRow(u"RMS"_s,  statVal(ui->lineCubeRms));
-
-    // Contextual whole-map statistics for the active MOMENT product (hidden otherwise).
-    // A moment is where aperture-style numbers belong — total flux (mom0), mean velocity
-    // (mom1), mean dispersion (mom2) — computed from the product's own pixels.
-    m_momentStatsSection = new QWidget();
-    auto *statsLay = new QVBoxLayout(m_momentStatsSection);
-    statsLay->setContentsMargins(0, 0, 0, 0);
-    statsLay->setSpacing(0);
-    m_momentStatsSection->setVisible(false);
-    panel->addPropertiesSection(m_momentStatsSection);
-    updateInspectorMomentStats();
 
     panel->addPropertyCaption(u"WCS"_s);
     panel->addPropertyRow(u"Status"_s, this->remoteWcsStatus.isEmpty() ? u"—"_s
@@ -8853,8 +9142,13 @@ void vtkWindowCube::applyMomentToolGate()
     // with a reason (never a silent no-op) and re-enable for the 2D Slice / cube (§5.1b).
     static const QString reason =
             u"a moment map is collapsed in velocity — pick the 2D Slice"_s;
-    const bool momentActive = (m_activePane >= 0 && m_activePane < 4
-                               && m_slots[m_activePane].view.kind == ViewId::Product);
+    // Only a collapsed IMAGE product (a moment map) gates the spectral tools. A spectrum
+    // product (#5) is itself a spectral result — it must NOT disable Extract Spectrum (that
+    // would self-cancel the live-preview pane the tool just created).
+    const bool momentActive =
+            (m_activePane >= 0 && m_activePane < 4
+             && m_slots[m_activePane].view.kind == ViewId::Product
+             && m_products2d.contains(m_slots[m_activePane].view.productId));
     const std::array<QAction *, 6> tools{ ui->actionExtractSpectrum,
                                           actionExtractPvDiagram.data(),
                                           actionBoxRegion.data(),
@@ -9460,32 +9754,23 @@ void vtkWindowCube::handle3dPickEvent()
     }
 
     this->probeValid = true;
-    this->probeFrozen = true;  // hold the pick — 2D mouse moves should not overwrite it
-    // updateProbePlot() early-returns if probeModeActive==false; the 3D pick
-    // is an explicit user request to see the spectrum, so flip the flag here
-    // (without calling setProbeModeActive() — that would also flip the 2D
-    // cursor and disable region/PV actions, which is out of scope for 3D pick).
+    // updateProbePlot() early-returns if probeModeActive==false; the 3D pick is an explicit
+    // request to see the spectrum, so flip the flag here (without setProbeModeActive(), which
+    // would also flip the 2D cursor and disable region/PV — out of scope for 3D pick).
     this->probeModeActive = true;
     this->probeVoxel = { voxelX, voxelY, voxelZ };
+    // #5b: render into the live spectrum PANE (create it if the tool wasn't already active),
+    // update it UNFROZEN, THEN freeze so a later 2D hover doesn't overwrite the picked pixel.
+    this->probeFrozen = false;
+    if (m_spectrumLiveId.isEmpty())
+        this->startLiveSpectrum();
     auto *sliceImage =
             vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0));
     if (sliceImage) {
         this->updateProbeReadout(sliceImage);
     }
-    // updateProbePlot() lazily creates/raises the ProfileWidget; making the
-    // pick visible is the whole point of this mode, so we ensure the plot
-    // window is shown + raised even if the user had previously closed it.
-    this->updateProbePlot();
-    // §3.1: when the Spectrum plot is mounted in a pane, don't also pop the floating
-    // window — the pane IS its home.
-    bool spectrumInPane = false;
-    for (const auto &s : m_slots)
-        if (s.view.kind == ViewId::Spectrum && s.frame && s.frame->isVisible())
-            spectrumInPane = true;
-    if (this->probePlotWidget && !spectrumInPane) {
-        this->probePlotWidget->show();
-        this->probePlotWidget->raise();
-    }
+    this->updateProbePlot();     // updates the live pane with the picked voxel's spectrum
+    this->probeFrozen = true;    // hold the pick
     this->refreshProbeOverlay();
     if (this->sliceWin) {
         this->sliceWin->Render();

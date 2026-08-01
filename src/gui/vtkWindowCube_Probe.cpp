@@ -488,70 +488,9 @@ void vtkWindowCube::updateProbePlot()
         values[idx] = cubeImage->GetScalarComponentAsFloat(localX, localY, localZ, 0);
     }
 
-    if (!this->probePlotWidget) {
-        this->probePlotWidget = new ProfileWidget(this);
-        this->probePlotWidget->setBackend(this->remoteBackendUrl, this->remoteBackendToken);
-        const QString xLabel = this->spectralAxisTitle();
-        const QString yLabel = u"Intensity"_s;
-        this->probePlotWidget->setUsageMode(ProfileWidget::UsageMode::ProbeLive,
-                                            u"Spectral Profile"_s);
-        this->probePlotWidget->setupSpectrumPlot(xLabel.isEmpty() ? u"Spectral axis"_s : xLabel,
-                                                 yLabel);
-        this->probePlotWidget->applyPlotTheme(this->m_darkPlots);
-        // The Pin button in the header owns the freeze state from the user's
-        // side — propagate it back to the cube's probeFrozen flag so the
-        // slice click no longer overwrites the pinned spectrum.
-        QObject::connect(this->probePlotWidget, &ProfileWidget::freezeToggled,
-                         this, [this](bool frozen) { this->probeFrozen = frozen; });
-        // §3.1: if a pane is already showing Spectrum, mount the just-created plot
-        // into it (it was empty until the widget existed).
-        for (int i = 0; i < 4; ++i)
-            if (m_slots[i].view.kind == ViewId::Spectrum) {
-                mountView(i);
-                break;
-            }
-        // Capture the action as a QPointer so the destroyed handler is
-        // safe at app-shutdown time: the cube viewer's ui-> members are
-        // wiped in ~vtkWindowCube before QObject::deleteChildren()
-        // destroys this ProfileWidget child, so dereferencing
-        // ui->actionExtractSpectrum from the lambda crashes (use-after-
-        // free on a null'd ui slot). QPointer goes null when the action
-        // is destroyed; we simply skip the click-undo step in that case.
-        QPointer<QAction> actExtract(ui->actionExtractSpectrum);
-        QObject::connect(this->probePlotWidget, &ProfileWidget::destroyed, this,
-                         [this, actExtract]() {
-                             this->probePlotWidget = nullptr;
-                             // §3.1: a Spectrum pane was showing this plot — swap it
-                             // back to the empty state so it doesn't go blank. Deferred
-                             // so the dying widget is fully gone before we re-lay hosts.
-                             QTimer::singleShot(0, this, [this]() {
-                                 for (int i = 0; i < 4; ++i)
-                                     if (m_slots[i].view.kind == ViewId::Spectrum)
-                                         mountView(i);
-                             });
-                             if (actExtract && actExtract->isChecked()) {
-                                 actExtract->setChecked(false);
-                             }
-                             // The same probePlotWidget is reused for Region
-                             // Analysis. If it was originally created by the
-                             // probe path and later switched to RegionStatic
-                             // mode, this is the only destroyed handler that
-                             // gets installed — so it also has to release the
-                             // 2D region overlay when both viewers close.
-                             this->maybeClearRegionAfterDisplay();
-                         });
-    } else {
-        this->probePlotWidget->setUsageMode(ProfileWidget::UsageMode::ProbeLive,
-                                            u"Spectral Profile"_s);
-    }
-
-    // Push current context + freeze status into the header so meta row /
-    // status badge stay in sync with the data this call is about to draw.
-    // Build the WCS label using the same pipeline as the bottom status bar
-    // (remoteVoxelToWcs → convertRemoteCelestialCoordinates →
-    //  formatRemoteOverlayCoordinate) so the format honours the user's
-    //  active sky frame (J2000 / Galactic / Ecliptic) and sexagesimal vs
-    //  decimal choice. Falls back to pixel-axis labels if WCS is missing.
+    // #5b: the live preview is rendered IN A PANE (the "Spectrum (live)" product), never a
+    // floating window that would cover the very slice being hovered. Build the WCS pixel
+    // label for the pane header + provenance, then push the data into the live pane.
     QString wcsLabel;
     {
         QString axis0 = this->remoteFormatAxisCoordinate(0, this->probeVoxel[0]);
@@ -570,29 +509,18 @@ void vtkWindowCube::updateProbePlot()
         wcsLabel = u"%1=%2  %3=%4"_s.arg(this->selectedFrameAxisTitle(0), axis0,
                                          this->selectedFrameAxisTitle(1), axis1);
     }
-    this->probePlotWidget->setSpectrumContext(
-            QFileInfo(this->filepath).fileName(),
-            this->probeVoxel[0], this->probeVoxel[1],
-            wcsLabel);
-    this->probePlotWidget->setSpectrumFrozen(this->probeFrozen);
 
-    // Title element inside the plot: keep it short — the header band now
-    // carries all the context (filename, pixel, WCS, status).
-    this->probePlotWidget->updateSpectrumPlot(
-            spectral, values,
-            u"Spectral Profile"_s,
-            !this->probeFrozen);
+    // Remember this spectrum so "Pin Spectrum" can promote it to a stable product.
+    this->m_lastProbeKey = spectral;
+    this->m_lastProbeValues = values;
+    this->m_lastProbeXLabel = this->spectralAxisTitle().isEmpty() ? u"Spectral axis"_s
+                                                                  : this->spectralAxisTitle();
+    this->m_lastProbeYLabel = u"Intensity"_s;
+    this->m_lastProbeContext = wcsLabel;
 
-    // Draw / refresh the dashed vertical line marking the slice channel
-    // currently shown in the 2D view, so the user can see where their
-    // navigation lands on the spectrum without having to mentally
-    // re-compute the channel→velocity mapping.
-    {
-        bool ok = false;
-        const double sp = this->spectralAxisValue(ui->spinSlice->value() - 1, &ok);
-        this->probePlotWidget->setSpectrumCurrentChannel(
-                ok ? sp : std::numeric_limits<double>::quiet_NaN());
-    }
+    const QString pixelLabel =
+            u"px (%1, %2)"_s.arg(this->probeVoxel[0]).arg(this->probeVoxel[1]);
+    this->updateLiveSpectrumPane(spectral, values, pixelLabel);
 }
 
 void vtkWindowCube::extractSpectrumAtCurrentProbe()
@@ -637,14 +565,14 @@ void vtkWindowCube::setProbeModeActive(bool active)
         this->sliceProbeVerticalActor->VisibilityOff();
         this->momentProbeHorizontalActor->VisibilityOff();
         this->momentProbeVerticalActor->VisibilityOff();
-        if (this->probePlotWidget) {
-            this->probePlotWidget->close();
-        }
+        this->stopLiveSpectrum();   // #5b: drop the transitory live pane + tree entry
         if (this->active2dWin()) {
             this->active2dWin()->Render();
         }
         return;
     }
+
+    this->startLiveSpectrum();   // #5b: place the live spectrum in a pane (not a window)
 
     if (!this->probeValid) {
         auto *imageData = this->viewingSlice()

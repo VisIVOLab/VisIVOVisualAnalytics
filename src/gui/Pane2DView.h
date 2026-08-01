@@ -52,7 +52,9 @@ public:
         std::function<double(int axis, double voxelIndex, bool *ok)> voxelToWcs;
         std::function<bool()> hasCelestial;
         std::function<QString(int axis)> axisTitle;
-        std::function<QString(int axis, double value)> formatCoord;
+        // axisSpan (in the axis' WCS units, e.g. degrees) lets the formatter pick enough
+        // precision that adjacent ticks never print the SAME label on a tiny field ((b)).
+        std::function<QString(int axis, double value, double axisSpan)> formatCoord;
     };
 
     explicit Pane2DView(QObject *parent = nullptr);

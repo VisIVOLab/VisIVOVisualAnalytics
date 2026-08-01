@@ -877,6 +877,29 @@ void vtkWindowCube::analyzeCurrentRegion()
             // incompatible with Mean on a shared Y axis and causes misleading spikes.
             this->probePlotWidget->updateSpectrumPlot(
                     spectral, meanValues, plotTitle, /*live=*/false);
+
+            // #5: register the region spectrum as a first-class 1-D product (SPEC in Session
+            // Data, openable in any pane), so it no longer lives ONLY inside the shared plot.
+            {
+                const int rn = ++this->m_pinnedSpectrumCount;
+                const QString pid =
+                        QStringLiteral("spectrum%1@%2").arg(rn).arg(this->datasetPersistKey());
+                const QString label = QStringLiteral("%1 spectrum").arg(shapeLabel);
+                Spectrum1D sp;
+                sp.key = spectral;
+                sp.values = meanValues;
+                sp.xLabel = this->spectralAxisTitle().isEmpty() ? u"Spectral axis"_s
+                                                                : this->spectralAxisTitle();
+                sp.yLabel = u"Mean value"_s;
+                sp.label = label;
+                this->m_products1d.insert(pid, sp);
+                QVariantMap params;
+                params.insert(u"Region"_s, shapeLabel);
+                params.insert(u"Pixels"_s, QString::number(stats.validCount));
+                this->registerAnalysisProduct(u"spectrum"_s, label, params, this, pid,
+                                              u"spectrum1d"_s);
+                this->refreshPaneChrome();   // tree + pane dropdowns pick it up
+            }
             // Region overlay must persist until the spectrum window closes,
             // not just until the next mouse-release. Hook a one-shot cleanup
             // that fires when the user closes the plot. See refreshRegionOverlay

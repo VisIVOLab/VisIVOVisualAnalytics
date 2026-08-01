@@ -7,8 +7,12 @@
 // from. Double-clicking a product raises its result window. Modelled on
 // VLKBInventoryTree's QStandardItemModel usage.
 
+#include <QHash>
+#include <QList>
+#include <QString>
 #include <QWidget>
 
+class QEvent;
 class QTreeView;
 class QStandardItemModel;
 class QStandardItem;
@@ -35,6 +39,11 @@ public:
     /// step whichever the user drove. @p viewTag "view3d"/"slice2d" or @p productId.
     void selectForView(const QString &viewTag, const QString &productId);
 
+    /// (#4) Which pane(s) currently SHOW each product → small pane-number badges on the
+    /// right of the row (a product duplicated in two panes shows two). Products absent
+    /// from the map get no badge. Repaints the tree.
+    void setProductPaneAssignments(const QHash<QString, QList<int>> &assignments);
+
 signals:
     /// Emitted when the selection lands on a product row (empty string when the
     /// selection is a dataset root or cleared).
@@ -46,9 +55,16 @@ signals:
     /// dataset root (§ tree-selection = pane-selection).
     void rowActivated(const QString &viewTag, const QString &productId);
 
+    /// (#4) A pane-number badge was clicked → the viewer activates that pane (§5.1).
+    void paneBadgeActivated(int paneNumber);
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;   // badge click on the viewport
+
 private slots:
     void onProductAdded(const AnalysisProduct &product);
     void onProductUpdated(const AnalysisProduct &product);
+    void onProductRemoved(const QString &productId);
     void onActivated(const QModelIndex &index);
 
 private:
