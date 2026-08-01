@@ -401,8 +401,19 @@ private:
         bool maskEnabled{ false };
         double thresholdValue{ 0. };
         bool thresholdAuto{ false };
+        QString unit;                                    ///< physical unit (Inspector stats)
+        // §5.1b follow-up: whole-map statistics, computed once from imageData and cached
+        // (a moment is the natural place for aperture-style numbers: total flux on mom0,
+        // mean velocity on mom1, mean dispersion on mom2). Ignores NaN/masked pixels.
+        bool statsComputed{ false };
+        long statCount{ 0 };
+        double statMin{ 0. }, statMax{ 0. }, statMean{ 0. };
+        double statMedian{ 0. }, statStd{ 0. }, statSum{ 0. };
     };
     QHash<QString, Product2D> m_products2d;
+    void ensureMomentStats(Product2D &p);          ///< compute + cache whole-map stats
+    void updateInspectorMomentStats();             ///< active-moment stats → Inspector Properties
+    QPointer<QWidget> m_momentStatsSection;        ///< contextual stats block (hidden off-moment)
 
     struct MomentProvenanceState
     {
@@ -431,6 +442,13 @@ private:
     QPointer<QToolButton> m_paneLinkedBtn;           ///< toolbar Linked chip (synced with m_actLinkViews)
     void setupPaneChrome();                          ///< centre toolbar + per-pane headers (Step 1)
     void setActivePane(int pane);
+    // §5.1b: probe / region / PV act on a spectral cube; a moment map is collapsed in
+    // velocity, so those tools are disabled (with a reason tooltip) while a moment pane is
+    // active, on TOP of their backend-derived enable state. Re-enabled for Slice / cube.
+    void applyMomentToolGate();
+    bool m_momentToolGated{ false };     ///< true while the moment gate is disabling the tools
+    bool m_pvBaselineEnabled{ false };   ///< PV's backend-derived enable (restore target)
+    bool m_cubeActionsEnabled{ false };  ///< probe/region baseline (cube open + usable)
     /// Session-tree row → active pane: if a visible pane already shows the view/product,
     /// make it active; otherwise mount it in the active pane. @p viewTag is
     /// "view3d"/"slice2d"; @p productId targets a derived product (empty for view rows).

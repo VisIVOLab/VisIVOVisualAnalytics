@@ -362,8 +362,35 @@ void RemoteRenderWidget::paintEvent(QPaintEvent * /*event*/)
 
 // ── Input → commands ────────────────────────────────────────────────────────
 
+void RemoteRenderWidget::setInteractive(bool on)
+{
+    if (m_interactive == on)
+        return;
+    m_interactive = on;
+    // §5.1b: if we go inactive MID-DRAG (e.g. a render-mode / pane-layout change lands during
+    // a rotation), finish the gesture cleanly — flush pending deltas and drop the backend's
+    // interactive LOD — so neither the client nor the server latches a stale "dragging" state.
+    if (!on && m_dragActive) {
+        m_dragActive = false;
+        if (m_dragSendTimer && m_dragSendTimer->isActive()) {
+            m_dragSendTimer->stop();
+            flushPendingDrag();
+        }
+        if (m_live) {
+            QJsonObject cmd;
+            cmd[QStringLiteral("type")] = QStringLiteral("set_interactive");
+            cmd[QStringLiteral("value")] = false;
+            sendCommand(QJsonDocument(cmd).toJson(QJsonDocument::Compact));
+        }
+    }
+}
+
 void RemoteRenderWidget::mousePressEvent(QMouseEvent *event)
 {
+    if (!m_interactive) {   // §5.1b: non-active pane takes no input
+        event->ignore();
+        return;
+    }
     qDebug().noquote() << QStringLiteral(
             "[remote-render] mousePressEvent button=%1 live=%2 transport=%3")
             .arg(int(event->button())).arg(m_live ? 1 : 0)
@@ -390,7 +417,7 @@ void RemoteRenderWidget::mousePressEvent(QMouseEvent *event)
 
 void RemoteRenderWidget::mouseMoveEvent(QMouseEvent *event)
 {
-    if (!m_dragActive || !m_live) {
+    if (!m_interactive || !m_dragActive || !m_live) {   // §5.1b: gate on active pane too
         event->ignore();
         return;
     }
@@ -453,6 +480,10 @@ void RemoteRenderWidget::flushPendingDrag()
 
 void RemoteRenderWidget::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (!m_interactive) {   // §5.1b: non-active pane takes no input
+        event->ignore();
+        return;
+    }
     const bool wasDragging = m_dragActive;
     m_dragActive = false;
     // Make sure any in-flight deltas reach the backend before the
@@ -475,7 +506,7 @@ void RemoteRenderWidget::mouseReleaseEvent(QMouseEvent *event)
 
 void RemoteRenderWidget::wheelEvent(QWheelEvent *event)
 {
-    if (!m_live) {
+    if (!m_interactive || !m_live) {   // §5.1b: gate on active pane too
         event->ignore();
         return;
     }

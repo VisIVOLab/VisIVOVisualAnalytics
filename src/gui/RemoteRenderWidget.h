@@ -100,6 +100,13 @@ public:
     /// "loading…" → "ready" UI transitions.
     bool isLive() const { return m_live; }
 
+    /// §5.1b: the same "not active ⇒ no input" gate the VTK interactor gets. When false the
+    /// widget swallows mouse/wheel input (it renders a server stream through its own QWidget
+    /// handlers, so the Qt-level pane swallow alone can't stop it). Driven by
+    /// refreshPaneInteractors() so only the active pane's remote view interacts.
+    void setInteractive(bool on);
+    bool interactive() const { return m_interactive; }
+
 signals:
     /// Emitted on every successful frame draw — exposes the wall-clock
     /// frame interval as observed by the client so the status bar can
@@ -152,6 +159,7 @@ private:
     QImage m_currentFrame;
     QString m_status{ QStringLiteral("Idle") };
     bool m_live{ false };
+    bool m_interactive{ true };   // §5.1b: false on a non-active pane → swallow input
     // Last viewport size we POSTed via the WebRTC "resize" command. We
     // dedupe the double-fire (immediate + 250 ms deferred) against this
     // so a no-op size doesn't restart the NVENC encoder server-side.

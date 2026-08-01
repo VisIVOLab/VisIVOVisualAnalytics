@@ -839,6 +839,10 @@ void vtkWindowCube::setupWorkspaceDocks()
 
     this->m_remoteRenderWidget = new RemoteRenderWidget(this->m_remoteRenderContainer);
     remoteLayout->addWidget(this->m_remoteRenderWidget, 1);
+    // §5.1b: watch the remote 3D surface so a press on it activates its pane and the
+    // activating gesture is swallowed — the same click-to-activate rule the local VTK
+    // widgets get (the filter runs before the widget's own mouse handlers).
+    this->m_remoteRenderWidget->installEventFilter(this);
 
     this->m_renderStack->addWidget(this->m_remoteRenderContainer);  // page 1 — Remote
     this->m_renderStack->setCurrentIndex(0);

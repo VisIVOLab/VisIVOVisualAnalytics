@@ -1066,8 +1066,11 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         connect(this->m_workspaceChrome, &WorkspaceChrome::sessionRowActivated, this,
                 &vtkWindowCube::activateSessionView);
         // Reverse sync: activating a pane by any route highlights its Session-tree row.
-        connect(this, &vtkWindowCube::activePaneChanged, this,
-                [this](int) { syncSessionTreeToActivePane(); });
+        connect(this, &vtkWindowCube::activePaneChanged, this, [this](int) {
+            syncSessionTreeToActivePane();
+            applyMomentToolGate();   // §5.1b: probe/region/PV disabled while a moment is active
+            updateInspectorMomentStats();   // whole-map stats for the active moment
+        });
         // setupInspector()/start() run at the END of the constructor — the
         // Analysis-tab tools reference QActions created later below.
     }
@@ -2269,6 +2272,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(this->actionEstimateNoise, &QAction::triggered,
                      this->noiseController, &NoiseController::startEstimation);
     ui->menuTools->insertAction(ui->actionComputeMoment, this->actionEstimateNoise);
+    // §5.1b: show action tooltips on hover in the Tools menu so a disabled tool states its
+    // reason ("a moment map is collapsed in velocity …"), not just a status-bar tip.
+    ui->menuTools->setToolTipsVisible(true);
 
     // ANALYSIS: Extract PV Diagram goes at the tail of the group (after Stack
     // Spectral Cubes, which is currently the last action defined in .ui).
@@ -7020,6 +7026,19 @@ void vtkWindowCube::refreshPaneInteractors()
     for (int i = 0; i < 4; ++i)
         if (m_paneViews[i])
             m_paneViews[i]->setInteractive(i == m_activePane);
+    // §5.1b: the remote 3D widget renders a server stream through its OWN QWidget mouse
+    // handlers, so the VTK/Qt-level swallow can't reach it — gate it explicitly. Interactive
+    // only when the pane showing the 3D view is the active pane (there is one 3D view).
+    if (m_remoteRenderWidget) {
+        bool active3d = false;
+        for (int i = 0; i < 4; ++i)
+            if (m_slots[i].view.kind == ViewId::View3D && m_slots[i].frame
+                && m_slots[i].frame->isVisible()) {
+                active3d = (i == m_activePane);
+                break;
+            }
+        m_remoteRenderWidget->setInteractive(active3d);
+    }
 }
 
 void vtkWindowCube::refreshPaneActiveStyles()
@@ -7105,7 +7124,13 @@ bool vtkWindowCube::eventFilter(QObject *watched, QEvent *event)
                     : (k == ViewId::View3D)         ? static_cast<QWidget *>(ui->vtkCube)
                     : (k == ViewId::Product && m_paneViews[i]) ? m_paneViews[i]->widget()
                                                                : nullptr;
-            if (paneW && paneW == rw && m_slots[i].frame && m_slots[i].frame->isVisible()) {
+            // §5.1b: the 3D view's render surface is EITHER the local VTK widget (ui->vtkCube)
+            // or the remote widget (server stream) depending on render mode — activation +
+            // swallow must recognise both.
+            const bool is3dRemote = (k == ViewId::View3D && m_remoteRenderWidget
+                                     && rw == m_remoteRenderWidget);
+            if (((paneW && paneW == rw) || is3dRemote) && m_slots[i].frame
+                && m_slots[i].frame->isVisible()) {
                 renderSlot = i;
                 break;
             }
@@ -7908,6 +7933,7 @@ void vtkWindowCube::refreshPaneChrome()
     for (int i = 0; i < 4; ++i)
         refreshPaneLutStrip(i);            // §5.4: keep each header strip on its pane's LUT
     m_linkNoReceiverHintShown = false;     // §5.5: pane composition changed → re-arm the hint
+    updateInspectorMomentStats();          // active pane's view may have changed to/from a moment
 }
 
 void vtkWindowCube::setupPaneChrome()
@@ -8078,6 +8104,124 @@ void vtkWindowCube::setupPaneChrome()
     restoreLayoutSettings();
 }
 
+void vtkWindowCube::ensureMomentStats(Product2D &p)
+{
+    if (p.statsComputed || !p.imageData)
+        return;
+    p.statsComputed = true;   // compute once; imageData is immutable per product version
+    vtkDataArray *sc =
+            p.imageData->GetPointData() ? p.imageData->GetPointData()->GetScalars() : nullptr;
+    if (!sc) {
+        p.statCount = 0;
+        return;
+    }
+    const vtkIdType n = sc->GetNumberOfTuples();
+    std::vector<double> vals;
+    vals.reserve(static_cast<size_t>(n));
+    double vmin = std::numeric_limits<double>::infinity();
+    double vmax = -std::numeric_limits<double>::infinity();
+    double sum = 0.;
+    for (vtkIdType i = 0; i < n; ++i) {
+        const double v = sc->GetComponent(i, 0);
+        if (!std::isfinite(v))
+            continue;   // NaN / masked pixels are ABSENT, not zero
+        vals.push_back(v);
+        vmin = std::min(vmin, v);
+        vmax = std::max(vmax, v);
+        sum += v;
+    }
+    p.statCount = static_cast<long>(vals.size());
+    if (vals.empty()) {
+        // No finite pixels → the summary stats are UNDEFINED, not zero (rendered as "—").
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        p.statMin = p.statMax = p.statMean = p.statMedian = p.statStd = nan;
+        p.statSum = 0.;
+        return;
+    }
+    const double mean = sum / static_cast<double>(vals.size());
+    p.statMin = vmin;
+    p.statMax = vmax;
+    p.statMean = mean;
+    p.statSum = sum;
+    // Population std from a SECOND pass over the deviations (stable — avoids the E[x²]-mean²
+    // cancellation for large-offset moment values).
+    double ss = 0.;
+    for (double v : vals) {
+        const double d = v - mean;
+        ss += d * d;
+    }
+    p.statStd = std::sqrt(ss / static_cast<double>(vals.size()));
+    const size_t mid = vals.size() / 2;
+    std::nth_element(vals.begin(), vals.begin() + mid, vals.end());
+    double median = vals[mid];
+    if ((vals.size() & 1u) == 0)   // even count → mean of the two central values
+        median = 0.5 * (median + *std::max_element(vals.begin(), vals.begin() + mid));
+    p.statMedian = median;
+}
+
+void vtkWindowCube::updateInspectorMomentStats()
+{
+    if (!m_momentStatsSection)
+        return;
+    // Rebuild the block's rows each time the active pane changes.
+    if (QLayout *lay = m_momentStatsSection->layout())
+        while (QLayoutItem *it = lay->takeAt(0)) {
+            if (QWidget *w = it->widget())
+                w->deleteLater();
+            delete it;
+        }
+    const bool isMoment = (m_activePane >= 0 && m_activePane < 4
+                           && m_slots[m_activePane].view.kind == ViewId::Product);
+    auto found = isMoment ? m_products2d.find(m_slots[m_activePane].view.productId)
+                          : m_products2d.end();
+    if (!isMoment || found == m_products2d.end() || !found->imageData) {
+        m_momentStatsSection->setVisible(false);   // only meaningful for a computed moment map
+        return;
+    }
+    ensureMomentStats(*found);
+    const Product2D &p = *found;
+    auto *lay = qobject_cast<QVBoxLayout *>(m_momentStatsSection->layout());
+    const QString unit = p.unit.isEmpty() ? QString() : (u" "_s + p.unit);
+    // Undefined (all-NaN product) → "—", never a misleading "0 <unit>".
+    auto num = [&](double v) {
+        return std::isfinite(v) ? (QString::number(v, 'g', 6) + unit) : u"—"_s;
+    };
+
+    auto *cap = new QLabel(QStringLiteral("%1 · WHOLE MAP").arg(p.label.toUpper()),
+                           m_momentStatsSection);
+    cap->setStyleSheet(QStringLiteral("QLabel{color:%1; font-family:'Lato'; font-size:10px;"
+                                      "font-weight:600; padding:6px 0 1px 0;}")
+                               .arg(QLatin1StringView(VisivoTheme::kSecondary())));
+    lay->addWidget(cap);
+
+    auto addRow = [&](const QString &key, const QString &value) {
+        auto *row = new QWidget(m_momentStatsSection);
+        auto *h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 1, 0, 1);
+        h->setSpacing(8);
+        auto *k = new QLabel(key, row);
+        k->setStyleSheet(QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;")
+                                 .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        h->addWidget(k, 1);
+        auto *val = new QLabel(value, row);
+        val->setStyleSheet(QStringLiteral("color:%1; font-family:'JetBrains Mono','SF Mono',"
+                                          "monospace; font-size:11px;")
+                                   .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
+        val->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        val->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        h->addWidget(val, 0, Qt::AlignRight);
+        lay->addWidget(row);
+    };
+    addRow(u"Pixels"_s, QString::number(p.statCount));
+    addRow(u"Min"_s, num(p.statMin));
+    addRow(u"Max"_s, num(p.statMax));
+    addRow(u"Mean"_s, num(p.statMean));
+    addRow(u"Median"_s, num(p.statMedian));
+    addRow(u"Std"_s, num(p.statStd));
+    addRow(u"Sum"_s, num(p.statSum));
+    m_momentStatsSection->setVisible(true);
+}
+
 void vtkWindowCube::setupInspector()
 {
     if (!this->m_workspaceChrome)
@@ -8133,6 +8277,17 @@ void vtkWindowCube::setupInspector()
     panel->addPropertyRow(u"Max"_s,  statVal(ui->lineCubeMax));
     panel->addPropertyRow(u"Mean"_s, statVal(ui->lineCubeMean));
     panel->addPropertyRow(u"RMS"_s,  statVal(ui->lineCubeRms));
+
+    // Contextual whole-map statistics for the active MOMENT product (hidden otherwise).
+    // A moment is where aperture-style numbers belong — total flux (mom0), mean velocity
+    // (mom1), mean dispersion (mom2) — computed from the product's own pixels.
+    m_momentStatsSection = new QWidget();
+    auto *statsLay = new QVBoxLayout(m_momentStatsSection);
+    statsLay->setContentsMargins(0, 0, 0, 0);
+    statsLay->setSpacing(0);
+    m_momentStatsSection->setVisible(false);
+    panel->addPropertiesSection(m_momentStatsSection);
+    updateInspectorMomentStats();
 
     panel->addPropertyCaption(u"WCS"_s);
     panel->addPropertyRow(u"Status"_s, this->remoteWcsStatus.isEmpty() ? u"—"_s
@@ -8530,6 +8685,12 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
     cached.maskEnabled = result.maskEnabled;
     cached.thresholdValue = result.thresholdValue;
     cached.thresholdAuto = result.thresholdAuto;
+    // Physical unit for the Inspector stats block — taken from the provenance params just
+    // populated for this moment (MomentMapApplyResult itself carries no unit).
+    {
+        const QString u = this->m_momentProvenanceParams.value(u"Unit"_s).toString();
+        cached.unit = (u == u"—"_s) ? QString() : u;
+    }
     this->m_products2d.insert(productId, cached);
     this->m_lastComputedMomentProductId = productId;   // for the Slice/Moment toggle + export fallback
     this->registerAnalysisProduct(u"moment"_s, productLabel, this->m_momentProvenanceParams,
@@ -8579,7 +8740,7 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
 
     // Activate the (first) pane that now shows it so its border/dot read as current.
     setActivePane(target);
-    refreshPaneChrome();
+    refreshPaneChrome();   // also refreshes the active moment's Inspector stats
 
     // Sidebar stats readout — the TRUE data min/max/mean/rms (informational).
     {
@@ -8678,6 +8839,58 @@ void vtkWindowCube::updateBackendDerivedActionsAvailability()
     ui->actionIsosurface->setEnabled(isoEnabled);
     ui->actionIsosurface->setToolTip(available ? QString {} : kIsosurfaceBackendTooltip);
     ui->actionIsosurface->setStatusTip(available ? QString {} : kIsosurfaceBackendTooltip);
+
+    // §5.1b: remember PV's backend baseline, then re-assert the moment gate on top.
+    this->m_pvBaselineEnabled = this->actionExtractPvDiagram
+            ? this->actionExtractPvDiagram->isEnabled() : false;
+    this->applyMomentToolGate();
+}
+
+void vtkWindowCube::applyMomentToolGate()
+{
+    // The active pane being a moment map is one more input to probe / region / PV enablement:
+    // a collapsed-in-velocity map has no spectral axis to trace/slice, so the tools disable
+    // with a reason (never a silent no-op) and re-enable for the 2D Slice / cube (§5.1b).
+    static const QString reason =
+            u"a moment map is collapsed in velocity — pick the 2D Slice"_s;
+    const bool momentActive = (m_activePane >= 0 && m_activePane < 4
+                               && m_slots[m_activePane].view.kind == ViewId::Product);
+    const std::array<QAction *, 6> tools{ ui->actionExtractSpectrum,
+                                          actionExtractPvDiagram.data(),
+                                          actionBoxRegion.data(),
+                                          actionCircleRegion.data(),
+                                          actionPolygonRegion.data(),
+                                          actionAnnulusRegion.data() };
+    if (momentActive) {
+        for (QAction *a : tools) {
+            if (!a)
+                continue;
+            if (a->isCheckable() && a->isChecked())
+                a->setChecked(false);   // un-arm a tool that was active on the now-moment pane
+            a->setEnabled(false);
+            a->setToolTip(reason);
+            a->setStatusTip(reason);
+        }
+    } else {
+        // Restore each tool to its backend / cube-open baseline; clear ONLY the moment reason
+        // (leave a backend tooltip untouched).
+        const QString pvTip = hasBackendVisibleDataset() ? QString() : kPvBackendTooltip;
+        auto restore = [&](QAction *a, bool base, const QString &tip) {
+            if (!a)
+                return;
+            a->setEnabled(base);
+            if (a->toolTip() == reason) {
+                a->setToolTip(tip);
+                a->setStatusTip(tip);
+            }
+        };
+        restore(ui->actionExtractSpectrum, m_cubeActionsEnabled, QString());
+        restore(actionExtractPvDiagram.data(), m_pvBaselineEnabled, pvTip);
+        for (QAction *a : { actionBoxRegion.data(), actionCircleRegion.data(),
+                            actionPolygonRegion.data(), actionAnnulusRegion.data() })
+            restore(a, m_cubeActionsEnabled, QString());
+    }
+    m_momentToolGated = momentActive;
 }
 
 void vtkWindowCube::setCubeOpenActionsEnabled(bool enabled)
@@ -8695,6 +8908,9 @@ void vtkWindowCube::setCubeOpenActionsEnabled(bool enabled)
         }
     }
     ui->actionExtractSpectrum->setEnabled(enabled);
+    // §5.1b: probe / region baseline = "cube open + usable"; re-assert the moment gate.
+    this->m_cubeActionsEnabled = enabled;
+    this->applyMomentToolGate();
 }
 
 void vtkWindowCube::setCubeOpenStateLabel(const QString & /*text*/)
