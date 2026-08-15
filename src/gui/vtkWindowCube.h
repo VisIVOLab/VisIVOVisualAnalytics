@@ -494,6 +494,12 @@ private:
     /// make it active; otherwise mount it in the active pane. @p viewTag is
     /// "view3d"/"slice2d"; @p productId targets a derived product (empty for view rows).
     void activateSessionView(const QString &viewTag, const QString &productId);
+    // Pop-out: the same pane frame moves to its own window; the grid slot shows a placeholder.
+    void detachPane(int slot);
+    void bringBackPane(int slot);
+    bool paneDetached(int slot) const;
+    QWidget *makeDetachPlaceholder(int slot);
+    void refitDetachablePane(int slot);   ///< post-reparent render/refit per view kind
     void syncSessionTreeToActivePane();   ///< reverse sync: highlight the active pane's tree row
     void pushProductPaneBadges();         ///< (#4) which pane(s) show each product → tree badges
     void refreshPaneActiveStyles();
@@ -528,6 +534,12 @@ private:
         QHBoxLayout *controls{ nullptr };   ///< per-view control slot in the header
         QPointer<QToolButton> maxBtn;    ///< ⤢ maximize / ⤡ restore (§3.2)
         QPointer<QToolButton> lutBtn;    ///< §5.4 header LUT strip → colormap popover (2D panes)
+        QPointer<QToolButton> detachBtn; ///< pop-out to its own window / re-attach
+        // Pop-out: the SAME frame (slot/product/LUT/badge preserved) lives temporarily in its
+        // own top-level window; the grid keeps its place with a "Pane N · detached" placeholder
+        // (no layout re-flow). Both null when the pane is docked in the grid.
+        QPointer<QWidget> detachedWindow;
+        QPointer<QWidget> placeholder;
         PaneView view;
     };
     std::array<PaneSlot, 4> m_slots;

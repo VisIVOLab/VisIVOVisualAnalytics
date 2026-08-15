@@ -2714,6 +2714,11 @@ vtkWindowCube::~vtkWindowCube()
         ProductRegistry::instance().removeProduct(this->m_spectrumLiveId);
         this->m_spectrumLiveId.clear();
     }
+    // Pop-out: detach the event filter from any detached-pane window BEFORE teardown (the
+    // window is a child → Qt deletes it, but a stray event must not reach a half-dead cube).
+    for (auto &s : m_slots)
+        if (s.detachedWindow)
+            s.detachedWindow->removeEventFilter(this);
     // Stop the slice animation timer and detach any vtk observer we installed,
     // so we don't fire callbacks after the widget hierarchy starts going away.
     this->sliceAnimationTimer.stop();
@@ -7174,6 +7179,13 @@ void vtkWindowCube::refreshPaneCursors()
 bool vtkWindowCube::eventFilter(QObject *watched, QEvent *event)
 {
     const QEvent::Type et = event->type();
+    // Closing a detached-pane window re-docks the pane into its grid slot (never destroys it).
+    if (et == QEvent::Close)
+        for (int i = 0; i < 4; ++i)
+            if (m_slots[i].detachedWindow && watched == m_slots[i].detachedWindow) {
+                bringBackPane(i);
+                return true;   // we handled the close (reparented the frame out first)
+            }
     if (et == QEvent::MouseButtonPress) {
         for (int i = 0; i < 4; ++i)
             if (m_slots[i].header && watched == m_slots[i].header) {
@@ -7181,6 +7193,16 @@ bool vtkWindowCube::eventFilter(QObject *watched, QEvent *event)
                 break;
             }
     }
+    // Double-click a pane header toggles pop-out (detach / re-attach).
+    if (et == QEvent::MouseButtonDblClick)
+        for (int i = 0; i < 4; ++i)
+            if (m_slots[i].header && watched == m_slots[i].header) {
+                if (paneDetached(i))
+                    bringBackPane(i);
+                else
+                    detachPane(i);
+                return true;
+            }
     // §5.1: ONE activation + idle-input rule for every render pane (2D Slice, local 3D,
     // and each Product Pane2DView). The VTK interactor stays enabled — QVTKOpenGLNativeWidget
     // drives its render through it, so we must NOT disable it. Instead the container
@@ -7837,6 +7859,25 @@ void vtkWindowCube::buildPaneSlots()
                 this->restorePaneMaximize();
         });
         h->addWidget(maxBtn);
+
+        // Pop-out: detach this pane into its own window (for a second screen). Re-attach with
+        // the same button (⤴ / ⤵), the window close, or the placeholder's Bring back.
+        auto *detachBtn = new QToolButton(hdr);
+        detachBtn->setText(u"⤴"_s);
+        detachBtn->setCursor(Qt::PointingHandCursor);
+        detachBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        detachBtn->setToolTip(u"Pop out to a window"_s);
+        detachBtn->setStyleSheet(QStringLiteral("QToolButton{background:transparent;border:none;"
+                                                "color:%1;font-size:13px;}QToolButton:hover{color:%2;}")
+                                         .arg(fgMuted, pri));
+        QObject::connect(detachBtn, &QToolButton::clicked, this, [this, i]() {
+            if (paneDetached(i))
+                bringBackPane(i);
+            else
+                detachPane(i);
+        });
+        h->addWidget(detachBtn);
+        m_slots[i].detachBtn = detachBtn;
 
         v->addWidget(hdr);
 
@@ -8683,6 +8724,189 @@ void vtkWindowCube::parkOrphanDirectChildren()
     }
 }
 
+bool vtkWindowCube::paneDetached(int slot) const
+{
+    return slot >= 0 && slot <= 3 && m_slots[slot].detachedWindow;
+}
+
+QWidget *vtkWindowCube::makeDetachPlaceholder(int slot)
+{
+    // Occupies the grid slot while the pane lives in its own window — SAME chrome as a pane
+    // (paneFrame border + #000004 body + a header bar with the title) so it reads as the
+    // slot's own cell, not naked text. The frame's size behaviour is copied by the caller so
+    // the splitter never re-flows.
+    const QLatin1StringView ink(VisivoTheme::kOnSurfaceVariant());
+    const QLatin1StringView fg(VisivoTheme::kOnSurface());
+    auto *ph = new QFrame();
+    ph->setObjectName(u"paneFrame"_s);
+    ph->setStyleSheet(u"QFrame#paneFrame{border:1px solid #1E2427;}"_s);
+    auto *v = new QVBoxLayout(ph);
+    v->setContentsMargins(1, 1, 1, 1);
+    v->setSpacing(0);
+
+    // Header bar (matches a pane header's height + dot + title).
+    auto *hdr = new QWidget(ph);
+    hdr->setObjectName(u"paneHeader"_s);
+    hdr->setFixedHeight(34);
+    auto *h = new QHBoxLayout(hdr);
+    h->setContentsMargins(10, 0, 6, 0);
+    h->setSpacing(8);
+    auto *dot = new QLabel(u"○"_s, hdr);
+    dot->setStyleSheet(u"font-size:9px; color:#3A4247;"_s);
+    h->addWidget(dot);
+    auto *title = new QLabel(QStringLiteral("Pane %1 · detached").arg(slot + 1), hdr);
+    title->setStyleSheet(QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;"
+                                        "font-weight:700;").arg(fg));
+    h->addWidget(title);
+    h->addStretch(1);
+    v->addWidget(hdr);
+
+    // Body: #000004 canvas + centred Bring back.
+    auto *body = new QWidget(ph);
+    body->setStyleSheet(u"background:#000004;"_s);
+    auto *bv = new QVBoxLayout(body);
+    bv->addStretch(1);
+    auto *sub = new QLabel(u"Open in its own window"_s, body);
+    sub->setAlignment(Qt::AlignCenter);
+    sub->setStyleSheet(QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;").arg(ink));
+    bv->addWidget(sub);
+    auto *row = new QHBoxLayout();
+    row->addStretch(1);
+    auto *btn = new QPushButton(u"Bring back"_s, body);
+    btn->setCursor(Qt::PointingHandCursor);
+    QObject::connect(btn, &QPushButton::clicked, this, [this, slot]() { bringBackPane(slot); });
+    row->addWidget(btn);
+    row->addStretch(1);
+    bv->addSpacing(8);
+    bv->addLayout(row);
+    bv->addStretch(1);
+    v->addWidget(body, 1);
+    return ph;
+}
+
+void vtkWindowCube::refitDetachablePane(int slot)
+{
+    // Post-reparent (detach/bring-back) render + refit, per view kind — a top-level reparent
+    // is an OpenGL-context-sensitive path, so force the paint for every kind, not just the
+    // per-slot Pane2DView.
+    if (slot < 0 || slot > 3)
+        return;
+    const ViewId k = m_slots[slot].view.kind;
+    if (k == ViewId::Product && m_paneViews[slot])
+        m_paneViews[slot]->fit(true);
+    else if (k == ViewId::Slice2D) {
+        layout2dPaneFor(/*slice=*/true, /*force=*/true);
+        if (this->sliceWin)
+            this->sliceWin->Render();
+    } else if (k == ViewId::View3D && ui->vtkCube && ui->vtkCube->renderWindow())
+        ui->vtkCube->renderWindow()->Render();
+}
+
+void vtkWindowCube::detachPane(int slot)
+{
+    if (slot < 0 || slot > 3 || !m_slots[slot].frame || m_slots[slot].detachedWindow)
+        return;
+    if (m_maximizedPane >= 0)
+        return;   // maximize + detach don't compose — ignore while maximized
+    QSplitter *col = (slot == 0 || slot == 2) ? m_leftColumn : m_rightColumn;
+    if (!col)
+        return;
+    const int idx = col->indexOf(m_slots[slot].frame);
+    if (idx < 0)
+        return;
+
+    // Snapshot BOTH splitters' pixel sizes — QSplitter re-negotiates when a widget is
+    // swapped (that is what collapsed the 3D pane), so re-apply them right after the swap.
+    const QList<int> colSizes = col->sizes();
+    const QList<int> mainSizes = m_paneSplitter ? m_paneSplitter->sizes() : QList<int>{};
+
+    // The placeholder must occupy EXACTLY the frame's cell: same sizePolicy + minimumSize +
+    // stretch so the splitter gives it the frame's extent, nothing more.
+    QWidget *ph = makeDetachPlaceholder(slot);
+    ph->setSizePolicy(m_slots[slot].frame->sizePolicy());
+    ph->setMinimumSize(m_slots[slot].frame->minimumSize());
+    ph->setMaximumSize(m_slots[slot].frame->maximumSize());
+    m_slots[slot].placeholder = ph;
+    QWidget *taken = col->replaceWidget(idx, ph);   // == m_slots[slot].frame
+    col->setStretchFactor(idx, 1);
+    if (col->count() == colSizes.size())
+        col->setSizes(colSizes);
+    if (m_paneSplitter && !mainSizes.isEmpty() && m_paneSplitter->count() == mainSizes.size())
+        m_paneSplitter->setSizes(mainSizes);
+
+    // The frame (header + view + colorbar, WITH its active border) moves to a bare top-level
+    // window — no toolbar, no menu, no duplicate controls; the docks stay in the main window.
+    // Child of THIS (Qt::Window) so it's destroyed with the cube (no orphan on close).
+    auto *win = new QWidget(this, Qt::Window);
+    win->setObjectName(u"detachedPane"_s);
+    win->setWindowTitle(viewTitle(m_slots[slot].view));
+    win->setAttribute(Qt::WA_DeleteOnClose, false);
+    auto *wl = new QVBoxLayout(win);
+    wl->setContentsMargins(0, 0, 0, 0);
+    if (taken)
+        wl->addWidget(taken);
+    if (m_slots[slot].frame)
+        m_slots[slot].frame->show();
+    m_slots[slot].detachedWindow = win;
+    win->installEventFilter(this);   // Close → bring back
+    win->resize(640, 560);
+    win->show();
+    win->raise();
+
+    if (m_slots[slot].detachBtn) {
+        m_slots[slot].detachBtn->setText(u"⤵"_s);
+        m_slots[slot].detachBtn->setToolTip(u"Dock back into the grid"_s);
+    }
+    setActivePane(slot);   // the detached pane becomes the single app-wide active pane
+    refreshPaneChrome();
+    QTimer::singleShot(0, this, [this, slot]() { refitDetachablePane(slot); });
+}
+
+void vtkWindowCube::bringBackPane(int slot)
+{
+    if (slot < 0 || slot > 3 || !m_slots[slot].detachedWindow)
+        return;
+    QSplitter *col = (slot == 0 || slot == 2) ? m_leftColumn : m_rightColumn;
+    if (!col)
+        return;
+
+    // Snapshot both splitters' sizes so bring-back is pixel-identical to before the detach.
+    const QList<int> colSizes = col->sizes();
+    const QList<int> mainSizes = m_paneSplitter ? m_paneSplitter->sizes() : QList<int>{};
+    const int idx = m_slots[slot].placeholder ? col->indexOf(m_slots[slot].placeholder) : -1;
+    if (m_slots[slot].frame && idx >= 0) {
+        QWidget *oldPh = col->replaceWidget(idx, m_slots[slot].frame);
+        col->setStretchFactor(idx, 1);
+        if (oldPh)
+            oldPh->deleteLater();
+        m_slots[slot].placeholder = nullptr;
+    } else if (m_slots[slot].frame) {
+        col->addWidget(m_slots[slot].frame);   // fallback: append
+        if (m_slots[slot].placeholder) {
+            m_slots[slot].placeholder->setParent(nullptr);
+            m_slots[slot].placeholder->deleteLater();
+            m_slots[slot].placeholder = nullptr;
+        }
+    }
+    if (col->count() == colSizes.size())
+        col->setSizes(colSizes);
+    if (m_paneSplitter && !mainSizes.isEmpty() && m_paneSplitter->count() == mainSizes.size())
+        m_paneSplitter->setSizes(mainSizes);
+    QWidget *win = m_slots[slot].detachedWindow;
+    m_slots[slot].detachedWindow = nullptr;   // null BEFORE deleting → bring-back is idempotent
+    if (win) {
+        win->removeEventFilter(this);
+        win->hide();
+        win->deleteLater();
+    }
+    if (m_slots[slot].detachBtn) {
+        m_slots[slot].detachBtn->setText(u"⤴"_s);
+        m_slots[slot].detachBtn->setToolTip(u"Pop out to a window"_s);
+    }
+    refreshPaneChrome();
+    QTimer::singleShot(0, this, [this, slot]() { refitDetachablePane(slot); });
+}
+
 void vtkWindowCube::maximizePane(int slot)
 {
     if (slot < 0 || slot > 3 || !m_slots[slot].frame || !m_leftColumn || !m_rightColumn)
@@ -8739,6 +8963,12 @@ void vtkWindowCube::applyPaneLayout(int panes)
 {
     if (!m_leftColumn || !m_rightColumn)
         return;
+    // A layout change re-negotiates the grid; a detached pane's placeholder can't survive
+    // that, so re-dock any detached panes first (they return to their slots, then the new
+    // layout applies).
+    for (int i = 0; i < 4; ++i)
+        if (m_slots[i].detachedWindow)
+            bringBackPane(i);
     // Any explicit layout change (1/2/4 toggle, restore) leaves maximize mode; clear
     // the flag + glyphs so the ⤢ buttons are consistent with the arrangement below.
     if (m_maximizedPane >= 0) {
