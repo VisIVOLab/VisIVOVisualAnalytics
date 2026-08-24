@@ -434,8 +434,25 @@ private:
                                                 const QString &yLabel);   ///< per-slot spectrum view
     /// The renderer a product uses: "spectrum1d" (m_products1d) / "image2d" (m_products2d) / "".
     QString productRenderer(const QString &productId) const;
+    /// True when @p productId is a product this window can mount in a pane — an image
+    /// (m_products2d), a spectrum (m_products1d), or the PV diagram. Centralises the predicate
+    /// used by activateSessionView / showProductInPane / the Show-in menu.
+    bool isPaneRenderableProduct(const QString &productId) const;
     /// #5: capture the current probe spectrum as a pinned 1-D product (Pin Spectrum).
     void pinCurrentSpectrum();
+    /// #5: promote a 2-D generator result (Line-width, …) to a first-class IMAGE product —
+    /// cache it in m_products2d, register it (renderer "image2d"), and mount it in a free pane
+    /// (no-steal), or refresh every visible copy on a recompute of the same stableKey.
+    QString addImageProduct(const QString &kind, const QString &stableKey, const QString &label,
+                            vtkImageData *img, const QString &unit, const QVariantMap &params,
+                            const QString &lutName);
+    /// #5: spectrum1d twin of addImageProduct — promote a 1-D generator result (Stack, …) to a
+    /// first-class SPEC product: cache it in m_products1d, register it (renderer "spectrum1d"),
+    /// mount it in a free pane (no-steal), or refresh every visible copy on a recompute.
+    QString addSpectrumProduct(const QString &kind, const QString &stableKey, const QString &label,
+                               const QVector<double> &key, const QVector<double> &values,
+                               const QString &xLabel, const QString &yLabel,
+                               const QVariantMap &params);
     // #5b: the live Extract-Spectrum preview renders in a PANE (transitory "Spectrum (live)"
     // product), NOT a floating window. Started/stopped with the probe tool; updated on hover.
     QString m_spectrumLiveId;   ///< the transitory live product id (empty when the tool is off)
@@ -448,6 +465,7 @@ private:
     QVector<double> m_lastProbeValues;
     QString m_lastProbeXLabel, m_lastProbeYLabel, m_lastProbeContext;
     int m_pinnedSpectrumCount{ 0 };   ///< suffix for the next Pin Spectrum product id/label
+    int m_stackCount{ 0 };            ///< suffix for the next Stack SPEC product (each is distinct)
 
     void ensureMomentStats(Product2D &p);          ///< compute + cache the product's whole-map stats
     // The STATISTICS › 2D image block follows the ACTIVE 2-D pane (Slice or a Moment),
@@ -494,10 +512,17 @@ private:
     /// make it active; otherwise mount it in the active pane. @p viewTag is
     /// "view3d"/"slice2d"; @p productId targets a derived product (empty for view rows).
     void activateSessionView(const QString &viewTag, const QString &productId);
+    // "Show in ▸": right-click a product in the tree → build a menu of visible panes + New
+    // pane, mount the product there (duplicable). Renderable products only.
+    void showProductContextMenu(const QString &productId, const QPoint &globalPos);
+    void showProductInPane(const QString &productId, int slot);
     // Pop-out: the same pane frame moves to its own window; the grid slot shows a placeholder.
     void detachPane(int slot);
     void bringBackPane(int slot);
     bool paneDetached(int slot) const;
+    // Remember each detached window's geometry (size/position/screen) for the session, so a
+    // bring-back → re-detach re-opens where the user left it.
+    std::array<QByteArray, 4> m_detachedGeom;
     QWidget *makeDetachPlaceholder(int slot);
     void refitDetachablePane(int slot);   ///< post-reparent render/refit per view kind
     void syncSessionTreeToActivePane();   ///< reverse sync: highlight the active pane's tree row
@@ -602,6 +627,7 @@ private:
     bool m_sliceInvert{ false };                ///< slice LUT inverted (Pane2DView tracks its own)
     void propagatePaneLutWithinWindow(int srcSlot);   ///< §5.5 Linked·LUT: same-product panes (full)
     void propagatePaneRangeWithinWindow(int srcSlot); ///< §5.5: range only (cheap, for live drag)
+    void propagate2DCamera(int srcSlot);              ///< Linked 2D: sync pan/zoom to same-WCS image panes
     int m_paneCount{ 1 };                 ///< 1 / 2 / 4 (spec §3.1 default is 1)
     QPointer<QSplitter> m_leftColumn;     ///< slot 0 (top) + slot 2 (bottom)
     QPointer<QSplitter> m_rightColumn;    ///< slot 1 (top) + slot 3 (bottom)
@@ -700,6 +726,11 @@ protected:
     // filter on resize. See ChannelOverlay.h.
     QPointer<ChannelOverlay> channelOverlay;
     QPointer<PvDiagramWidget> pvDiagramWidget;
+    // #5: the PV diagram is a first-class pane product (renderer "pvdiagram") — the single
+    // reused PvDiagramWidget is HOSTED IN a pane (it renders its own position/velocity axes,
+    // which Pane2DView's celestial WCS can't), not shown as a floating window. Non-empty while
+    // a PV product exists; identifies the pv product id in productRenderer / viewHasData.
+    QString m_pvProductId;
     // Active Region Analysis result dialog. Tracked so the 2D region overlay
     // can persist for as long as the user is still inspecting the analysis
     // — see maybeClearRegionAfterDisplay().

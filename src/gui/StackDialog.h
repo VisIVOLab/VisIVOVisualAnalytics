@@ -3,6 +3,8 @@
 #include <QDialog>
 #include <QPointer>
 #include <QStringList>
+#include <QVariantMap>
+#include <QVector>
 #include <vector>
 
 class BackendClient;
@@ -60,6 +62,14 @@ public:
                 const std::vector<DatasetEntry> &datasets,
                 const QString &currentId,
                 QWidget *parent = nullptr);
+
+Q_SIGNALS:
+    /// Emitted when the stacked spectrum is computed, so the caller promotes it to a first-class
+    /// SPEC pane product (#5) instead of a standalone QCustomPlot window. Payload = the stacked
+    /// channel values, a descriptive label (method, N cubes), and a provenance map (method,
+    /// weighting, source cube ids, channel count) so the product carries a real recipe.
+    void spectrumReady(const QVector<double> &values, const QString &label,
+                       const QVariantMap &meta);
 
 private slots:
     void onItemChanged();

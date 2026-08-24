@@ -134,8 +134,10 @@ void VLKBInventoryTree::setupWavelengthGroups()
     m_groups << WavelengthGroup { u"Visible"_s,          0.,     1.e-6  };
     m_groups << WavelengthGroup { u"Near-IR / Mid-IR"_s, 1.e-6,  2.5e-5 };
     m_groups << WavelengthGroup { u"Far-IR"_s,           2.5e-5, 5.e-4  };
-    m_groups << WavelengthGroup { u"Submm"_s,            5.e-4,  3.e-3  };
-    m_groups << WavelengthGroup { u"Radio"_s,            3.e-3,  kMax   };
+    // Legacy 1.7.4: the Submm/Radio split moved 3 mm → 5 mm and the band was relabelled
+    // "Submm / mm" so mm-wave surveys group with sub-mm instead of Radio.
+    m_groups << WavelengthGroup { u"Submm / mm"_s,       5.e-4,  5.e-3  };
+    m_groups << WavelengthGroup { u"Radio"_s,            5.e-3,  kMax   };
 }
 
 void VLKBInventoryTree::setupTopLevels()
@@ -145,7 +147,7 @@ void VLKBInventoryTree::setupTopLevels()
      *   ├─ Visible
      *   ├─ Near-IR / Mid-IR
      *   ├─ Far-IR
-     *   ├─ Submm
+     *   ├─ Submm / mm
      *   └─ Radio
      * Spectroscopy
      *   └─ (same bands)

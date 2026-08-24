@@ -115,6 +115,9 @@ signals:
     /// (#4) A pane-number badge in the tree was clicked → activate that pane (1-based).
     void sessionPaneBadgeActivated(int paneNumber);
 
+    /// Right-click on a product row → the viewer shows the "Show in ▸" menu at globalPos.
+    void sessionProductContextMenu(const QString &productId, const QPoint &globalPos);
+
 private:
     MainWindow *mainWindow() const;
     void poll();

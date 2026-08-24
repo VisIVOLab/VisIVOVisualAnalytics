@@ -94,9 +94,15 @@ public:
     void setInvert(bool on);
     void setRange(double lo, double hi);                   // authoritative TableRange → colorbar
 
+    // Linked 2D: read/write the pan+zoom of the parallel camera (world focal x/y + parallel
+    // scale). setCameraState applies without re-emitting cameraChanged (echo guard).
+    void cameraState(double focalXY[2], double &parallelScale) const;
+    void setCameraState(const double focalXY[2], double parallelScale);
+
 signals:
     void rangeChanged(double lo, double hi);   // pane's range changed (drag or dock) → dock syncs
     void lutChanged();                          // colormap / scale / invert changed → strip + Linked
+    void cameraChanged();                       // pan/zoom via interaction → Linked-2D propagate
 
 private:
     void updateWcsOverlay();                                // EndEvent target; uses m_wcs
@@ -126,6 +132,10 @@ private:
     std::vector<vtkSmartPointer<vtkTextActor>> m_overlayYTicks;
 
     vtkSmartPointer<vtkCallbackCommand> m_endObserver;
+    vtkSmartPointer<vtkCallbackCommand> m_cameraObserver;   // interactor Interaction/EndInteraction
+    unsigned long m_camTagInteract{ 0 };                    // observer tags (removed in dtor)
+    unsigned long m_camTagEnd{ 0 };
+    bool m_applyingCamera{ false };                          // Linked-2D echo guard
 
     WcsContext m_wcs;
     bool m_showWcsAxes{ true };

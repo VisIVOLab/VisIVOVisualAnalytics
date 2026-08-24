@@ -305,6 +305,9 @@ void WorkspaceChrome::installSessionDock(const QString &datasetKey,
     // (#4) A pane-number badge click activates that pane.
     connect(m_sessionTree, &SessionDataTree::paneBadgeActivated, this,
             &WorkspaceChrome::sessionPaneBadgeActivated);
+    // Right-click a product → the viewer builds the "Show in ▸" menu.
+    connect(m_sessionTree, &SessionDataTree::productContextMenuRequested, this,
+            &WorkspaceChrome::sessionProductContextMenu);
 
     // Host for the view/rendering controls (filled by the window via
     // addSessionLayers()). NOTE: no "LAYERS" header here — the flat controls the

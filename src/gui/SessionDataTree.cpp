@@ -161,6 +161,13 @@ SessionDataTree::SessionDataTree(QWidget *parent)
                  QLatin1StringView(VisivoTheme::kOnSurface())));
     m_tree->setItemDelegate(new PaneBadgeDelegate(m_tree));   // (#4) paints pane-number badges
     m_tree->viewport()->installEventFilter(this);             // (#4) badge clicks → activate pane
+    m_tree->setContextMenuPolicy(Qt::CustomContextMenu);      // right-click → Show in ▸ menu
+    connect(m_tree, &QTreeView::customContextMenuRequested, this, [this](const QPoint &pos) {
+        const QModelIndex idx = m_tree->indexAt(pos);
+        const QString pid = idx.data(kProductIdRole).toString();
+        if (!pid.isEmpty())
+            emit productContextMenuRequested(pid, m_tree->viewport()->mapToGlobal(pos));
+    });
     layout->addWidget(m_tree);
 
     connect(m_tree, &QTreeView::doubleClicked, this, &SessionDataTree::onActivated);
@@ -444,6 +451,14 @@ void SessionDataTree::onActivated(const QModelIndex &index)
     if (productId.isEmpty())
         return;   // a dataset root — nothing to focus
     const AnalysisProduct p = ProductRegistry::instance().product(productId);
+    if (!p.renderer.isEmpty()) {
+        // A pane-renderable product (image / spectrum / PV diagram): (re)mount it in a pane
+        // rather than raising a window. Emitting rowActivated forces activation even when the
+        // row is already current — currentChanged wouldn't re-fire, so the parked no-free-pane
+        // product would otherwise be unreachable from its own already-selected row.
+        emit rowActivated(it->data(kViewTagRole).toString(), productId);
+        return;
+    }
     if (p.window) {
         p.window->show();
         p.window->raise();

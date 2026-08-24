@@ -87,6 +87,15 @@ public:
                           int validPixels, int totalPixels,
                           const QString &extraInfo = QString());
 
+    /// Generic (non-region) header line for a 1-D product mounted in a pane (Stack, Pin, …).
+    /// Replaces the region-pixel semantics of setRegionContext so a reused slot does not keep
+    /// showing "Region spectrum" / the previous product's description.
+    void setSpectrumMeta(const QString &metaLine, const QString &extraLine = QString());
+
+    /// Refresh the spectrum axis titles without re-running setupSpectrumPlot (which would
+    /// accumulate title rows). Needed when a slot is reused for a product with different axes.
+    void setSpectrumAxisLabels(const QString &xLabel, const QString &yLabel);
+
     /// Mark a channel as the "current" one (the slice the cube viewer is
     /// displaying). Drawn as a vertical reference line on the spectrum.
     /// Pass spectralValueAtChannel = NaN to clear the marker.

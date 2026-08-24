@@ -58,6 +58,10 @@ signals:
     /// (#4) A pane-number badge was clicked → the viewer activates that pane (§5.1).
     void paneBadgeActivated(int paneNumber);
 
+    /// Right-click on a product row → the viewer builds the "Show in ▸ Pane N / New pane"
+    /// menu at @p globalPos (it knows the pane state + renderability).
+    void productContextMenuRequested(const QString &productId, const QPoint &globalPos);
+
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;   // badge click on the viewport
 

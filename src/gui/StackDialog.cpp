@@ -269,7 +269,7 @@ void StackDialog::onCompute()
     QPointer<StackDialog> self(this);
 
     connect(watcher, &QFutureWatcher<BackendStackResult>::finished,
-            watcher, [self, watcher, method]() {
+            watcher, [self, watcher, method, weightBy, selected]() {
         const auto result = watcher->result();
         watcher->deleteLater();
 
@@ -300,32 +300,25 @@ void StackDialog::onCompute()
         }
         const float *ptr = reinterpret_cast<const float *>(data.constData());
 
-        // ── Show result in a QCustomPlot window ───────────────────────────────
-        auto *plotWin = new QMainWindow(/* parent */ nullptr);
-        plotWin->setAttribute(Qt::WA_DeleteOnClose);
-        plotWin->setWindowTitle(u"Stacked Spectrum"_s);
-        plotWin->resize(800, 400);
+        // #5: promote the stacked spectrum to a first-class SPEC pane product instead of a
+        // standalone QCustomPlot window — hand the channel values + a descriptive label to the
+        // caller (vtkWindowCube::addSpectrumProduct).
+        QVector<double> values(nPts);
+        for (int i = 0; i < nPts; ++i)
+            values[i] = static_cast<double>(ptr[i]);
 
-        auto *plot = new QCustomPlot(plotWin);
-        plotWin->setCentralWidget(plot);
+        const QString label = u"Stacked (%1, N=%2)"_s.arg(method).arg(result.nCubes);
 
-        QVector<double> xData(nPts), yData(nPts);
-        for (int i = 0; i < nPts; ++i) {
-            xData[i] = static_cast<double>(i);
-            yData[i] = static_cast<double>(ptr[i]);
-        }
-
-        plot->addGraph();
-        plot->graph(0)->setData(xData, yData);
-        plot->graph(0)->setName(
-                u"Stacked (%1, N=%2)"_s.arg(method).arg(result.nCubes));
-        plot->xAxis->setLabel(u"Channel"_s);
-        plot->yAxis->setLabel(u"Flux"_s);
-        plot->legend->setVisible(true);
-        plot->rescaleAxes();
-        plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
-
-        plotWin->show();
+        // Provenance for the SPEC product's recipe: method, weighting, source cubes,
+        // channel count. Weighting only applies to weighted_mean.
+        QVariantMap meta;
+        meta.insert(u"Method"_s, method);
+        if (method == u"weighted_mean"_s && !weightBy.isEmpty())
+            meta.insert(u"Weighting"_s, weightBy);
+        meta.insert(u"Cubes"_s, QString::number(result.nCubes));
+        meta.insert(u"Datasets"_s, selected.join(u", "_s));
+        meta.insert(u"Channels"_s, QString::number(nPts));
+        emit self->spectrumReady(values, label, meta);
 
         if (self) {
             self->accept();

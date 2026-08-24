@@ -641,6 +641,32 @@ void ProfileWidget::setRegionContext(const QString &shapeLabel,
     refreshSpectrumHeader();
 }
 
+void ProfileWidget::setSpectrumMeta(const QString &metaLine, const QString &extraLine)
+{
+    // Generic (non-region) header line for a 1-D product mounted in a pane (Stack, Pin, …) —
+    // replaces the region-pixel semantics of setRegionContext so a reused slot's ProfileWidget
+    // does not keep showing "Region spectrum" / a prior product's description.
+    if (m_dialogInProgress) return;
+    m_regionMetaLine  = metaLine;
+    m_regionExtraLine = extraLine;
+    refreshSpectrumHeader();
+}
+
+void ProfileWidget::setSpectrumAxisLabels(const QString &xLabel, const QString &yLabel)
+{
+    // Refresh the spectrum axis titles WITHOUT re-running setupSpectrumPlot (which insertRow(0)s
+    // a title element and would accumulate rows). Lets a slot reused for a different product
+    // (e.g. a channel-axis stack after a velocity-axis pin) show correct labels.
+    if (!ui->plot1) return;
+    ui->plot1->xAxis->setLabel(xLabel.isEmpty() ? u"Spectral axis"_s : xLabel);
+    ui->plot1->yAxis->setLabel(yLabel.isEmpty() ? u"Intensity"_s : yLabel);
+    // Mirror setupSpectrumPlot's CSV-header cache so a reused slot exports the CURRENT product's
+    // axis names, not the first product's.
+    m_lastSpectrumXLabel = xLabel.isEmpty() ? u"spectral_axis"_s : xLabel;
+    m_lastSpectrumYLabel = yLabel.isEmpty() ? u"intensity"_s     : yLabel;
+    ui->plot1->replot();
+}
+
 void ProfileWidget::refreshSpectrumStats(const QVector<double> &spectralKey,
                                          const QVector<double> &values)
 {

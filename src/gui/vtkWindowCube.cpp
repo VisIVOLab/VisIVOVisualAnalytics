@@ -1093,6 +1093,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         // (#4) A pane-number badge click activates that pane (badge is 1-based).
         connect(this->m_workspaceChrome, &WorkspaceChrome::sessionPaneBadgeActivated, this,
                 [this](int paneNumber) { setActivePane(paneNumber - 1); });
+        // "Show in ▸": right-click a product → mount it in a chosen pane.
+        connect(this->m_workspaceChrome, &WorkspaceChrome::sessionProductContextMenu, this,
+                &vtkWindowCube::showProductContextMenu);
         // Reverse sync: activating a pane by any route highlights its Session-tree row.
         connect(this, &vtkWindowCube::activePaneChanged, this, [this](int) {
             syncSessionTreeToActivePane();
@@ -1946,10 +1949,24 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                     qDebug().noquote() << QStringLiteral("[pv] creating PvDiagramWidget");
                     this->pvDiagramWidget = new PvDiagramWidget(this);
                     this->pvDiagramWidget->applyPlotTheme(this->m_darkPlots);
+                    // #5: host the widget IN a pane, not as a floating window — clear the
+                    // Qt::Window flag + WA_DeleteOnClose the ctor set (mirrors ensureSlotSpectrumView
+                    // for ProfileWidget), and click-to-activate the hosting pane (§5.1).
+                    this->pvDiagramWidget->setWindowFlags(Qt::Widget);
+                    this->pvDiagramWidget->setAttribute(Qt::WA_DeleteOnClose, false);
+                    this->pvDiagramWidget->installEventFilter(this);
+                    // Qt event filters are NOT recursive: a click lands on the child QCustomPlot
+                    // (the PV body), not pvDiagramWidget itself, so filter the descendants too or
+                    // a non-active PV pane's body would not click-to-activate. The
+                    // eventFilter's isAncestorOf() check then confirms which slot owns the click.
+                    const auto pvKids = this->pvDiagramWidget->findChildren<QWidget *>();
+                    for (QWidget *kid : pvKids)
+                        kid->installEventFilter(this);
                     QObject::connect(
                             this->pvDiagramWidget, &PvDiagramWidget::destroyed, this,
                             [this]() {
                                 this->pvDiagramWidget = nullptr;
+                                this->m_pvProductId.clear();
                                 // Window closed → remove the path overlay from
                                 // both the slice and moment 2D views.
                                 this->clearPv();
@@ -1990,18 +2007,60 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                                                : result.spatialUnit)
                         : u"Offset Along Path (pixels)"_s;
 
+                // #5: register the PV as a first-class pane product (renderer "pvdiagram") and
+                // host the widget in a pane. Determine the target pane BEFORE setPvData so its
+                // internal show() lands inside a visible pane (not as a stray top-level window):
+                //   • recompute (a visible pane already shows it) → refresh that pane in place,
+                //   • else first FREE visible pane (no-steal),
+                //   • else park it hidden and let the tree row activate it later.
+                this->m_pvProductId =
+                        QStringLiteral("pv@%1").arg(this->datasetPersistKey());
+                this->registerAnalysisProduct(u"pv"_s, u"PV diagram"_s, {},
+                                              this->pvDiagramWidget, this->m_pvProductId,
+                                              u"pvdiagram"_s);
+
+                auto pvVisible = [this](int i) {
+                    return m_slots[i].frame && m_slots[i].frame->isVisible();
+                };
+                int pvTarget = -1;
+                for (int i = 0; i < 4; ++i)
+                    if (pvVisible(i)
+                        && m_slots[i].view == PaneView{ ViewId::Product, this->m_pvProductId }) {
+                        pvTarget = i;   // already mounted somewhere → refresh in place
+                        break;
+                    }
+                if (pvTarget < 0)
+                    for (int i = 0; i < 4; ++i)
+                        if (pvVisible(i) && m_slots[i].view.isNone()) {
+                            m_slots[i].view = PaneView{ ViewId::Product, this->m_pvProductId };
+                            pvTarget = i;
+                            break;
+                        }
+                if (pvTarget >= 0) {
+                    // A hidden slot may still claim PV from a prior layout; drop those (else a
+                    // later layout expansion could re-surface the stale claim and move PV away
+                    // from where recompute placed it).
+                    clearViewFromOtherSlots(pvTarget);
+                    mountView(pvTarget);        // embeds the widget into the pane host
+                    setActivePane(pvTarget);
+                } else {
+                    // No free pane: park the widget hidden (its parent becomes the hidden
+                    // holder) so setPvData's show() can't pop a floating window; the tree row
+                    // waits for manual activation.
+                    this->pvDiagramWidget->setParent(m_viewParkingLot);
+                    if (auto *l = m_viewParkingLot->layout())
+                        l->addWidget(this->pvDiagramWidget);
+                    this->pvDiagramWidget->hide();
+                }
+
                 qDebug().noquote()
-                        << QStringLiteral("[pv] updating widget and requesting show/raise");
+                        << QStringLiteral("[pv] updating widget (hosted in pane)");
                 this->pvDiagramWidget->setPvData(pvPositions, spectral, result.values,
                                                  result.numSamples, result.depth,
                                                  xLabel, yLabel,
                                                  u"PV Diagram (Polyline)"_s, pvInfo);
                 this->clearPersistentStatusMessage();
-                // The PV widget is created once and reused → stable id updates
-                // the same product row; the widget is what we raise on activate.
-                this->registerAnalysisProduct(
-                        u"pv"_s, u"PV diagram"_s, {}, this->pvDiagramWidget,
-                        QStringLiteral("pv@%1").arg(this->datasetPersistKey()));
+                refreshPaneChrome();
             },
             this);
 
@@ -2090,10 +2149,34 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                         this->remoteSpectralAxisUnit,
                                         this);
         dlg->setAttribute(Qt::WA_DeleteOnClose);
+        // #5: the Line-width map is a first-class PANE product now — the dialog emits the raw
+        // float map on completion; build a vtkImageData (same layout as a moment) + register.
+        QObject::connect(dlg, &LinewidthDialog::mapReady, this,
+                         [this](const QByteArray &data, int w, int h, float /*rmin*/,
+                                float /*rmax*/, const QString &label, const QString &unit) {
+                             if (w <= 0 || h <= 0
+                                 || data.size()
+                                         != static_cast<qsizetype>(w) * h
+                                                 * static_cast<qsizetype>(sizeof(float)))
+                                 return;
+                             auto img = vtkSmartPointer<vtkImageData>::New();
+                             img->SetExtent(0, w - 1, 0, h - 1, 0, 0);
+                             img->AllocateScalars(VTK_FLOAT, 1);
+                             std::memcpy(img->GetScalarPointer(), data.constData(),
+                                         static_cast<std::size_t>(w) * h * sizeof(float));
+                             // FWHM and EW are distinct maps → distinct stable ids (a re-run of
+                             // the same method updates its product, like a moment recompute).
+                             const QString key = label.startsWith(u"FWHM"_s) ? u"linewidth_fwhm"_s
+                                                                             : u"linewidth_ew"_s;
+                             QVariantMap params;
+                             params.insert(u"Type"_s, label);
+                             if (!unit.isEmpty())
+                                 params.insert(u"Unit"_s, unit);
+                             // A line-width map is ≥ 0 (a width) → sequential Viridis, like mom2.
+                             addImageProduct(u"linewidth"_s, key, label, img, unit, params,
+                                             u"Viridis"_s);
+                         });
         dlg->show();
-        // NOTE: LinewidthDialog spawns its actual result window (ScienceMapWindow)
-        // only after the user runs it, so registering the product belongs with
-        // that result window — deferred to tappa 4 (dialog→product migration).
     });
 
     // S-03 Baseline subtraction
@@ -2156,14 +2239,30 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              QObject::connect(dlg, &QDialog::finished,
                                               [client](int) { delete client; });
                              dlg->setAttribute(Qt::WA_DeleteOnClose);
+                             // #5: the stacked spectrum becomes a first-class SPEC pane product
+                             // (not a standalone plot window) — same pattern as Line-width for
+                             // images. The stacked channel axis has no shared spectral WCS (the
+                             // inputs are different cubes), so x is channel index.
+                             QObject::connect(
+                                     dlg, &StackDialog::spectrumReady, self,
+                                     [self](const QVector<double> &values, const QString &label,
+                                            const QVariantMap &meta) {
+                                         QVector<double> chan(values.size());
+                                         for (int i = 0; i < values.size(); ++i)
+                                             chan[i] = static_cast<double>(i);
+                                         // Each stack is a DISTINCT product (compare two stacks),
+                                         // so the stableKey carries an incrementing suffix.
+                                         const QString key =
+                                                 u"stack%1"_s.arg(++self->m_stackCount);
+                                         self->addSpectrumProduct(u"stack"_s, key, label, chan,
+                                                                  values, u"Channel"_s, u"Flux"_s,
+                                                                  meta);
+                                     });
                              // Non-modal to stay consistent with the other tool
                              // dialogs (Linewidth, Baseline, LUT customizer); the
                              // long-running compute already shows its own modal
                              // QProgressDialog so the wait is still indicated.
                              dlg->show();
-                             // NOTE: StackDialog creates its result plot window on
-                             // accept and closes itself, so product registration
-                             // belongs with that result window — deferred to tappa 4.
                          });
         watcher->setFuture(QtConcurrent::run([url, token, sessionId]() {
             BackendClient c(url, token);
@@ -4347,7 +4446,11 @@ void vtkWindowCube::exportMomentMapAsFits()
     QString exportId;
     for (int i = 0; i < 4; ++i) {
         const PaneView &pv = m_slots[i].view;
-        if (pv.kind == ViewId::Product && m_slots[i].frame && m_slots[i].frame->isVisible()
+        // Only a MOMENT product carries the export recipe (order/channels/mask). m_products2d
+        // now also holds other image products (line-width, …) with default order/channels —
+        // skip those or the export reads a bogus recipe.
+        if (pv.kind == ViewId::Product && pv.productId.startsWith(u"moment"_s)
+            && m_slots[i].frame && m_slots[i].frame->isVisible()
             && m_products2d.contains(pv.productId)) {
             exportId = pv.productId;
             break;
@@ -5202,10 +5305,14 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
 
     QElapsedTimer cubeFieldsTimer;
     cubeFieldsTimer.start();
-    ui->lineCubeMin->setText(QString::number(this->currentCubeVisibleRange[0]));
-    ui->lineCubeMax->setText(QString::number(this->currentCubeVisibleRange[1]));
-    ui->lineCubeMean->setText(QString::number(result.cubeMean));
-    ui->lineCubeRms->setText(QString::number(result.cubeRms));
+    // Append the brightness unit (BUNIT, e.g. "Jy/beam") so the 3D-cube stats read with units
+    // like the 2D-image block, instead of bare numbers.
+    const QString bu = this->m_brightnessUnit.isEmpty() ? QString()
+                                                        : (u" "_s + this->m_brightnessUnit);
+    ui->lineCubeMin->setText(QString::number(this->currentCubeVisibleRange[0]) + bu);
+    ui->lineCubeMax->setText(QString::number(this->currentCubeVisibleRange[1]) + bu);
+    ui->lineCubeMean->setText(QString::number(result.cubeMean) + bu);
+    ui->lineCubeRms->setText(QString::number(result.cubeRms) + bu);
     ui->lineSpectral->setText(this->formatSpectralAxisValue(clampedSlice));
     this->refreshSpectralAxisUi();
     qDebug().noquote()
@@ -7006,6 +7113,33 @@ void vtkWindowCube::propagatePaneRangeWithinWindow(int srcSlot)
             m_paneViews[j]->setRange(src->rangeMin(), src->rangeMax());
 }
 
+void vtkWindowCube::propagate2DCamera(int srcSlot)
+{
+    // Linked 2D: a pan/zoom on one 2-D IMAGE pane follows every other visible image pane —
+    // they share the same cube spatial grid (same WCS), so the world focal x/y + parallel
+    // scale copy directly. Gated on the Linked master. setCameraState is echo-guarded on the
+    // receiver, and a programmatic Render fires no InteractionEvent, so there is no loop.
+    if (!m_linkViews || srcSlot < 0 || srcSlot > 3)
+        return;
+    Pane2DView *src = m_paneViews[srcSlot];
+    if (!src || m_slots[srcSlot].view.kind != ViewId::Product
+        || !m_products2d.contains(m_slots[srcSlot].view.productId))
+        return;   // only an image product has a 2-D camera to sync (spectra don't)
+    double focal[2] = { 0., 0. };
+    double scale = 0.;
+    src->cameraState(focal, scale);
+    for (int j = 0; j < 4; ++j) {
+        if (j == srcSlot || !m_paneViews[j])
+            continue;
+        if (!m_slots[j].frame || !m_slots[j].frame->isVisible())
+            continue;   // don't render parked/hidden panes (they re-sync when shown)
+        if (m_slots[j].view.kind != ViewId::Product
+            || !m_products2d.contains(m_slots[j].view.productId))
+            continue;
+        m_paneViews[j]->setCameraState(focal, scale);
+    }
+}
+
 void vtkWindowCube::setActivePane(int pane)
 {
     if (pane < 0 || pane > 3)
@@ -7027,11 +7161,10 @@ void vtkWindowCube::activateSessionView(const QString &viewTag, const QString &p
         target = { ViewId::View3D, {} };
     else if (viewTag == u"slice2d"_s)
         target = { ViewId::Slice2D, {} };
-    else if (!productId.isEmpty()
-             && (m_products2d.contains(productId) || m_products1d.contains(productId)))
-        // Only a pane-RENDERABLE product — an image in m_products2d (moment/…) or a spectrum
-        // in m_products1d (#5) — can be mounted. PV / baseline / noise rows open their OWN
-        // windows: a single-click just drives Provenance, double-click raises the window.
+    else if (!productId.isEmpty() && isPaneRenderableProduct(productId))
+        // Only a pane-RENDERABLE product — an image in m_products2d (moment/…), a spectrum in
+        // m_products1d (#5), or the PV diagram — can be mounted. Baseline / noise rows open
+        // their OWN windows: a single-click drives Provenance, double-click raises the window.
         target = { ViewId::Product, productId };
     else
         return;
@@ -7050,6 +7183,86 @@ void vtkWindowCube::activateSessionView(const QString &viewTag, const QString &p
                        : 0;
     m_slots[slot].view = target;
     clearViewFromOtherSlots(slot);
+    mountView(slot);
+    syncPick3d2d();
+    refreshPaneChrome();
+    layout2dPane(true);
+    setActivePane(slot);
+}
+
+void vtkWindowCube::showProductContextMenu(const QString &productId, const QPoint &globalPos)
+{
+    using namespace Qt::StringLiterals;
+    // Only a pane-RENDERABLE product (image, spectrum, or PV diagram) can be shown in a pane;
+    // baseline/noise/etc. open their own window (nothing to offer here).
+    if (!isPaneRenderableProduct(productId))
+        return;
+    QMenu menu;
+    QMenu *showIn = menu.addMenu(u"Show in"_s);
+    // One entry per VISIBLE pane (numbered), marking where it already shows.
+    for (int i = 0; i < 4; ++i) {
+        if (!m_slots[i].frame || !m_slots[i].frame->isVisible())
+            continue;
+        const bool here = (m_slots[i].view.kind == ViewId::Product
+                           && m_slots[i].view.productId == productId);
+        QString label = QStringLiteral("Pane %1").arg(i + 1);
+        if (here)
+            label += u"  ✓"_s;
+        else if (m_slots[i].view.kind == ViewId::Product && !m_slots[i].view.productId.isEmpty())
+            label += u"  (replaces)"_s;
+        QAction *a = showIn->addAction(label);
+        a->setEnabled(!here);
+        const int slot = i;
+        QObject::connect(a, &QAction::triggered, this,
+                         [this, productId, slot]() { showProductInPane(productId, slot); });
+    }
+    if (m_paneCount < 4) {
+        showIn->addSeparator();
+        QObject::connect(showIn->addAction(u"New pane"_s), &QAction::triggered, this,
+                         [this, productId]() { showProductInPane(productId, -1); });
+    }
+    menu.exec(globalPos);
+}
+
+void vtkWindowCube::showProductInPane(const QString &productId, int slot)
+{
+    if (!isPaneRenderableProduct(productId))
+        return;
+    const PaneView target{ ViewId::Product, productId };
+    if (slot < 0) {
+        // New pane: grow the grid, then take a slot that TRANSITIONED hidden→visible (assignViews
+        // seeds the grown slot with a default like Slice2D, so a plain "None" search would find
+        // nothing and must NOT fall back to the active pane — that would replace the user's
+        // content).
+        std::array<bool, 4> wasVisible{};
+        for (int i = 0; i < 4; ++i)
+            wasVisible[i] = m_slots[i].frame && m_slots[i].frame->isVisible();
+        if (m_paneCount == 1)
+            applyPaneLayout(2);
+        else if (m_paneCount == 2)
+            applyPaneLayout(4);
+        slot = -1;
+        for (int i = 0; i < 4; ++i)
+            if (!wasVisible[i] && m_slots[i].frame && m_slots[i].frame->isVisible()) {
+                slot = i;   // the newly-revealed cell
+                break;
+            }
+        if (slot < 0)   // already full / nothing newly visible → first free None, else give up
+            for (int i = 0; i < 4; ++i)
+                if (m_slots[i].frame && m_slots[i].frame->isVisible()
+                    && m_slots[i].view.isNone()) {
+                    slot = i;
+                    break;
+                }
+        if (slot < 0)
+            return;   // don't steal an occupied pane
+    }
+    // A stale explicit target (menu left open across a layout change) must not mount into a
+    // now-hidden slot.
+    if (slot < 0 || slot > 3 || !m_slots[slot].frame || !m_slots[slot].frame->isVisible())
+        return;
+    m_slots[slot].view = target;
+    clearViewFromOtherSlots(slot);   // no-op for a Product (viewWidget==null) → duplication OK
     mountView(slot);
     syncPick3d2d();
     refreshPaneChrome();
@@ -7221,10 +7434,14 @@ bool vtkWindowCube::eventFilter(QObject *watched, QEvent *event)
             else if (k == ViewId::View3D)
                 paneW = ui->vtkCube;
             else if (k == ViewId::Product) {
-                // A Product slot renders through its Pane2DView (image) OR its ProfileWidget
-                // (spectrum, #5) — match whichever this product uses.
+                // A Product slot renders through its Pane2DView (image), its ProfileWidget
+                // (spectrum, #5), or the shared PvDiagramWidget (PV) — match whichever it uses.
                 if (m_products1d.contains(m_slots[i].view.productId) && m_paneSpectra[i])
                     paneW = m_paneSpectra[i];
+                else if (!m_pvProductId.isEmpty() && m_slots[i].view.productId == m_pvProductId
+                         && pvDiagramWidget && rw
+                         && (rw == pvDiagramWidget || pvDiagramWidget->isAncestorOf(rw)))
+                    paneW = rw;   // click landed on the PV widget or one of its children
                 else if (m_paneViews[i])
                     paneW = m_paneViews[i]->widget();
             }
@@ -7359,6 +7576,9 @@ Pane2DView *vtkWindowCube::ensureSlotProductView(int slot)
                 return;
             propagatePaneLutWithinWindow(slot);   // colormap/scale/invert → same-product panes
         });
+        // Linked 2D: a pan/zoom on this pane syncs the same-WCS image panes.
+        QObject::connect(pv, &Pane2DView::cameraChanged, this,
+                         [this, slot]() { propagate2DCamera(slot); });
         m_paneViews[slot] = pv;
     }
     return m_paneViews[slot];
@@ -7404,11 +7624,11 @@ QList<vtkWindowCube::PaneView> vtkWindowCube::availableViews() const
     const auto products = ProductRegistry::instance().productsFor(this->datasetPersistKey());
     for (const AnalysisProduct &p : products)
         // Renderable AND actually cached in THIS window (image in m_products2d, spectrum in
-        // m_products1d). The registry is session-wide, so a same-dataset sibling window could
-        // register a product this window never cached — offering it would mount a blank pane
-        //. viewHasData() is the same predicate mountView/activateSessionView use.
-        if (!p.renderer.isEmpty()
-            && (m_products2d.contains(p.productId) || m_products1d.contains(p.productId)))
+        // m_products1d, or the PV diagram). The registry is session-wide, so a same-dataset
+        // sibling window could register a product this window never cached — offering it would
+        // mount a blank pane. isPaneRenderableProduct() is the same predicate
+        // mountView/activateSessionView use.
+        if (!p.renderer.isEmpty() && isPaneRenderableProduct(p.productId))
             out << PaneView{ ViewId::Product, p.productId };
     out << PaneView{ ViewId::Spectrum, {} };
     return out;
@@ -7433,9 +7653,17 @@ bool vtkWindowCube::viewHasData(const PaneView &v) const
     case ViewId::Slice2D:  return true;   // the slice pipeline is always present
     case ViewId::Spectrum: return this->probePlotWidget != nullptr;    // probed?
     case ViewId::Product:  return m_products2d.contains(v.productId)
-                                || m_products1d.contains(v.productId);   // image OR spectrum
+                                || m_products1d.contains(v.productId)   // image OR spectrum
+                                || (!m_pvProductId.isEmpty() && v.productId == m_pvProductId
+                                    && pvDiagramWidget);                  // OR PV diagram
     default:               return false;
     }
+}
+
+bool vtkWindowCube::isPaneRenderableProduct(const QString &productId) const
+{
+    return m_products2d.contains(productId) || m_products1d.contains(productId)
+            || (!m_pvProductId.isEmpty() && productId == m_pvProductId && pvDiagramWidget);
 }
 
 QString vtkWindowCube::productRenderer(const QString &productId) const
@@ -7444,7 +7672,70 @@ QString vtkWindowCube::productRenderer(const QString &productId) const
         return u"spectrum1d"_s;
     if (m_products2d.contains(productId))
         return u"image2d"_s;
+    if (!m_pvProductId.isEmpty() && productId == m_pvProductId)
+        return u"pvdiagram"_s;
     return QString();
+}
+
+QString vtkWindowCube::addImageProduct(const QString &kind, const QString &stableKey,
+                                       const QString &label, vtkImageData *img,
+                                       const QString &unit, const QVariantMap &params,
+                                       const QString &lutName)
+{
+    if (!img)
+        return QString();
+    const QString productId = QStringLiteral("%1@%2").arg(stableKey, this->datasetPersistKey());
+    const bool recompute = m_products2d.contains(productId);
+
+    Product2D cached;
+    cached.imageData = img;
+    // NaN-safe display range (generator maps have masked pixels) — reuse the stats helper.
+    const MapStats st = computeMapStats(img);
+    if (st.valid)
+        cached.imageRange = { st.min, st.max };
+    else {
+        double range[2] = { 0., 1. };
+        img->GetScalarRange(range);
+        cached.imageRange = { range[0], range[1] };
+    }
+    // A constant / degenerate map gives lo==hi → a broken LUT range; widen it.
+    if (!(cached.imageRange[1] > cached.imageRange[0]))
+        cached.imageRange[1] = cached.imageRange[0] + 1.0;
+    cached.stats = st;
+    cached.statsComputed = true;
+    cached.lutName = lutName.isEmpty() ? u"Inferno"_s : lutName;
+    cached.scaleMode = LutScale::Mode::Linear;
+    cached.gamma = this->m_sliceScaleGamma;
+    cached.label = label;
+    cached.unit = unit;
+    m_products2d.insert(productId, cached);   // replaces on recompute (statsComputed resets)
+    this->registerAnalysisProduct(kind, label, params, this, productId, u"image2d"_s);
+
+    auto visible = [&](int i) { return m_slots[i].frame && m_slots[i].frame->isVisible(); };
+    int target = -1;
+    if (recompute) {
+        // Refresh EVERY visible pane already showing it (duplicated copies), keeping each
+        // pane's own LUT (mountView's same-product path).
+        for (int i = 0; i < 4; ++i)
+            if (visible(i) && m_slots[i].view == PaneView{ ViewId::Product, productId }) {
+                mountView(i);
+                if (target < 0)
+                    target = i;
+            }
+    }
+    if (target < 0)   // first run (or no visible copy): drop into the first free pane, no-steal
+        for (int i = 0; i < 4; ++i)
+            if (visible(i) && m_slots[i].view.isNone()) {
+                m_slots[i].view = PaneView{ ViewId::Product, productId };
+                mountView(i);
+                target = i;
+                break;
+            }
+    if (target >= 0)
+        setActivePane(target);
+    refreshPaneChrome();
+    this->statusBar()->showMessage(QStringLiteral("%1 ready.").arg(label), 4000);
+    return productId;
 }
 
 void vtkWindowCube::pinCurrentSpectrum()
@@ -7489,6 +7780,55 @@ void vtkWindowCube::pinCurrentSpectrum()
         setActivePane(target);
     refreshPaneChrome();
     this->statusBar()->showMessage(QStringLiteral("Pinned %1.").arg(label), 3000);
+}
+
+QString vtkWindowCube::addSpectrumProduct(const QString &kind, const QString &stableKey,
+                                          const QString &label, const QVector<double> &key,
+                                          const QVector<double> &values, const QString &xLabel,
+                                          const QString &yLabel, const QVariantMap &params)
+{
+    // #5: the spectrum1d twin of addImageProduct — promote a 1-D generator result (Stack, …)
+    // to a first-class SPEC product: cache it in m_products1d, register it (renderer
+    // "spectrum1d"), and mount it in a free pane (no-steal), or refresh every visible copy on
+    // a recompute of the same stableKey. Reuse this for any tool that yields a 1-D spectrum.
+    if (values.isEmpty())
+        return QString();
+    const QString productId = QStringLiteral("%1@%2").arg(stableKey, this->datasetPersistKey());
+    const bool recompute = m_products1d.contains(productId);
+
+    Spectrum1D s;
+    s.key = key;
+    s.values = values;
+    s.xLabel = xLabel;
+    s.yLabel = yLabel;
+    s.label = label;
+    m_products1d.insert(productId, s);   // replaces on recompute
+    this->registerAnalysisProduct(kind, label, params, this, productId, u"spectrum1d"_s);
+
+    auto visible = [&](int i) { return m_slots[i].frame && m_slots[i].frame->isVisible(); };
+    int target = -1;
+    if (recompute) {
+        // Refresh EVERY visible pane already showing it (spectra re-load on every mount).
+        for (int i = 0; i < 4; ++i)
+            if (visible(i) && m_slots[i].view == PaneView{ ViewId::Product, productId }) {
+                mountView(i);
+                if (target < 0)
+                    target = i;
+            }
+    }
+    if (target < 0)   // first run (or no visible copy): drop into the first free pane, no-steal
+        for (int i = 0; i < 4; ++i)
+            if (visible(i) && m_slots[i].view.isNone()) {
+                m_slots[i].view = PaneView{ ViewId::Product, productId };
+                mountView(i);
+                target = i;
+                break;
+            }
+    if (target >= 0)
+        setActivePane(target);
+    refreshPaneChrome();
+    this->statusBar()->showMessage(QStringLiteral("%1 ready.").arg(label), 4000);
+    return productId;
 }
 
 void vtkWindowCube::startLiveSpectrum()
@@ -7671,7 +8011,22 @@ void vtkWindowCube::clearViewFromOtherSlots(int keepSlot)
     // collide here and true duplication (Moment 0 ∥ Moment 1) becomes possible.
     if (keepSlot < 0 || keepSlot > 3)
         return;
-    QWidget *w = viewWidget(m_slots[keepSlot].view);
+    const PaneView keep = m_slots[keepSlot].view;
+    // The PV diagram is a SINGLE reused widget (unlike per-slot images/spectra), so it cannot
+    // live in two panes — dedup it by product id, treating it like a singular view.
+    if (keep.kind == ViewId::Product && !m_pvProductId.isEmpty()
+        && keep.productId == m_pvProductId) {
+        for (int j = 0; j < 4; ++j)
+            if (j != keepSlot && m_slots[j].view == keep) {
+                m_slots[j].view = {};
+                // Unlike the per-slot image/spectrum dedup (widget stays put), the SINGLE PV
+                // widget will be reparented to keepSlot, so this slot's host would be left
+                // blank — remount it now to show its None placeholder.
+                mountView(j);
+            }
+        return;
+    }
+    QWidget *w = viewWidget(keep);
     if (!w)
         return;   // None / not-yet-created Spectrum: nothing to deduplicate
     for (int j = 0; j < 4; ++j)
@@ -7990,11 +8345,25 @@ void vtkWindowCube::mountView(int slot)
         // one, independently. Spectra are small → just re-load on every mount.
         const Spectrum1D &s = m_products1d[v.productId];
         ProfileWidget *sp = ensureSlotSpectrumView(slot, s.xLabel, s.yLabel);
+        // A slot's ProfileWidget is created ONCE (with the first product's axes/header). When it
+        // is reused for a DIFFERENT product, refresh the axis titles + header so a channel-axis
+        // stack after a velocity-axis pin doesn't keep stale labels / "Region spectrum".
+        sp->setSpectrumAxisLabels(s.xLabel, s.yLabel);
+        sp->setSpectrumMeta(s.label.isEmpty() ? QString() : s.label);
         // Call unconditionally: an EMPTY live product clears the plot (so a slot reused from a
         // previous spectrum doesn't show stale data until the first hover).
         sp->updateSpectrumPlot(s.key, s.values, s.label, /*live=*/false);
         m_paneProductId[slot] = v.productId;
         w = sp;
+    } else if (v.kind == ViewId::Product && !m_pvProductId.isEmpty()
+               && v.productId == m_pvProductId && pvDiagramWidget) {
+        // #5: the PV diagram is hosted IN the pane (the SINGLE reused widget — PV is not
+        // duplicable, matching its former single-window model). It carries its own
+        // position/velocity axes + header, so we embed it wholesale (like spectrum1d embeds
+        // ProfileWidget). Embed flags are cleared in the fetch handler; nothing to re-load here
+        // — setPvData already filled it.
+        m_paneProductId[slot] = v.productId;
+        w = pvDiagramWidget;
     } else if (v.kind == ViewId::Product && viewHasData(v)) {
         pv = ensureSlotProductView(slot);
         const Product2D &p = m_products2d[v.productId];
@@ -8850,6 +9219,9 @@ void vtkWindowCube::detachPane(int slot)
     m_slots[slot].detachedWindow = win;
     win->installEventFilter(this);   // Close → bring back
     win->resize(640, 560);
+    // Reopen where the user last left this slot's detached window (session memory).
+    if (!m_detachedGeom[slot].isEmpty())
+        win->restoreGeometry(m_detachedGeom[slot]);
     win->show();
     win->raise();
 
@@ -8895,6 +9267,7 @@ void vtkWindowCube::bringBackPane(int slot)
     QWidget *win = m_slots[slot].detachedWindow;
     m_slots[slot].detachedWindow = nullptr;   // null BEFORE deleting → bring-back is idempotent
     if (win) {
+        m_detachedGeom[slot] = win->saveGeometry();   // remember where it was for a re-detach
         win->removeEventFilter(this);
         win->hide();
         win->deleteLater();

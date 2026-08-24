@@ -192,8 +192,22 @@ Pane2DView::Pane2DView(QObject *parent)
     style->getLo = [this]() { return this->rangeMin(); };
     style->getHi = [this]() { return this->rangeMax(); };
     style->setRange = [this](double lo, double hi) { this->setRange(lo, hi); };
-    if (auto *iren = m_window->GetInteractor())
+    if (auto *iren = m_window->GetInteractor()) {
         iren->SetInteractorStyle(style);
+        // Linked 2D: pan/zoom (InteractionEvent) → emit cameraChanged so the viewer can sync
+        // same-WCS peers. Guarded so an applied (synced) camera doesn't echo back.
+        m_cameraObserver = vtkSmartPointer<vtkCallbackCommand>::New();
+        m_cameraObserver->SetClientData(this);
+        m_cameraObserver->SetCallback([](vtkObject *, unsigned long, void *cd, void *) {
+            if (auto *self = static_cast<Pane2DView *>(cd))
+                if (!self->m_applyingCamera)
+                    emit self->cameraChanged();
+        });
+        // InteractionEvent follows live pan/dolly; EndInteractionEvent catches mouse-WHEEL
+        // zoom, which does NOT emit InteractionEvent (same as the 3-D linked-camera path).
+        m_camTagInteract = iren->AddObserver(vtkCommand::InteractionEvent, m_cameraObserver);
+        m_camTagEnd = iren->AddObserver(vtkCommand::EndInteractionEvent, m_cameraObserver);
+    }
 
     // --- display pipeline: source → colors(LUT) → slice mapper → slice actor ----
     m_source = vtkSmartPointer<vtkTrivialProducer>::New();
@@ -282,8 +296,14 @@ Pane2DView::~Pane2DView()
         m_window->RemoveObserver(m_endObserver);
     // §5.2: detach the window/level style FIRST — its getLo/getHi/setRange closures
     // capture `this`, so it must not survive us and fire on a late interactor event.
-    if (m_window && m_window->GetInteractor())
-        m_window->GetInteractor()->SetInteractorStyle(nullptr);
+    if (m_window && m_window->GetInteractor()) {
+        auto *iren = m_window->GetInteractor();
+        if (m_camTagInteract)
+            iren->RemoveObserver(m_camTagInteract);
+        if (m_camTagEnd)
+            iren->RemoveObserver(m_camTagEnd);
+        iren->SetInteractorStyle(nullptr);
+    }
     // m_widget is owned by its Qt parent (whoever mounts it); if never mounted it
     // is parentless — delete it so the render window is released cleanly.
     if (m_widget && !m_widget->parent())
@@ -486,6 +506,39 @@ void Pane2DView::setRange(double lo, double hi)
     m_lut->Modified();
     this->fit(true);
     emit rangeChanged(lo, hi);
+}
+
+void Pane2DView::cameraState(double focalXY[2], double &parallelScale) const
+{
+    auto *cam = m_renderer->GetActiveCamera();
+    double f[3] = { 0., 0., 0. };
+    cam->GetFocalPoint(f);
+    focalXY[0] = f[0];
+    focalXY[1] = f[1];
+    parallelScale = cam->GetParallelScale();
+}
+
+void Pane2DView::setCameraState(const double focalXY[2], double parallelScale)
+{
+    if (!std::isfinite(focalXY[0]) || !std::isfinite(focalXY[1]) || !(parallelScale > 0.))
+        return;
+    m_applyingCamera = true;   // don't echo cameraChanged back out (Linked-2D loop guard)
+    auto *cam = m_renderer->GetActiveCamera();
+    double f[3] = { 0., 0., 0. }, p[3] = { 0., 0., 0. };
+    cam->GetFocalPoint(f);
+    cam->GetPosition(p);
+    // Parallel projection looking straight down Z: pan = move focal + position x/y together;
+    // zoom = parallel scale. Preserve the z components (camera distance/direction).
+    f[0] = focalXY[0];
+    f[1] = focalXY[1];
+    p[0] = focalXY[0];
+    p[1] = focalXY[1];
+    cam->SetFocalPoint(f);
+    cam->SetPosition(p);
+    cam->SetParallelScale(parallelScale);
+    if (m_window)
+        m_window->Render();
+    m_applyingCamera = false;
 }
 
 void Pane2DView::setWcsContext(WcsContext ctx)

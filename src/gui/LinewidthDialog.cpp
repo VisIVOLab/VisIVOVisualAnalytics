@@ -363,14 +363,10 @@ void LinewidthDialog::onCompute()
                 ? u"FWHM"_s + (unit.isEmpty() ? QString() : u" ["_s + unit + u"]"_s)
                 : u"EW"_s   + (unit.isEmpty() ? QString() : u" ["_s + unit + u"]"_s);
 
-        auto *win = new ScienceMapWindow(label,
-                                         frame.data,
-                                         result.width,
-                                         result.height,
-                                         rangeMin,
-                                         rangeMax,
-                                         /* parent */ nullptr);
-        win->show();
+        // #5: the map is a first-class PANE product now, not a standalone window — hand the
+        // raw float map to the caller (vtkWindowCube), which caches + registers + mounts it.
+        emit self->mapReady(frame.data, result.width, result.height, rangeMin, rangeMax, label,
+                            unit);
 
         self->statusBar()->showMessage(
                 u"Done — %1 map: %2 × %3 px"_s.arg(label).arg(result.width).arg(result.height),
