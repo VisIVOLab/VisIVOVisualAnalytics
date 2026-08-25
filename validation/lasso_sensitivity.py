@@ -20,7 +20,11 @@ from astropy.io import fits
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 from app.compute.selection import cube_kinematic_select  # noqa: E402
 
-CUBE = "/Users/fvitello/downloads/DemoData/hgc44_3axes.fits"
+import os  # noqa: E402
+
+# Out-of-repo HI cube; point at it via the env var so the sweep is reproducible anywhere.
+CUBE = os.environ.get(
+    "VISIVO_VALIDATION_CUBE", "/Users/fvitello/downloads/DemoData/hgc44_3axes.fits")
 MASK = str(Path(__file__).resolve().parent / "sofia_out" / "sofia_hgc44_mask.fits")
 OUT = Path(__file__).resolve().parent / "out"
 NSIGMAS = [1.5, 2.0, 2.5, 3.0, 3.5]
@@ -35,6 +39,9 @@ def metrics(lasso, src):
 
 
 def main():
+    for label, path in (("cube (set $VISIVO_VALIDATION_CUBE)", CUBE), ("SoFiA mask", MASK)):
+        if not Path(path).is_file():
+            sys.exit(f"error: {label} not found: {path}")
     OUT.mkdir(exist_ok=True)
     data = np.squeeze(fits.getdata(CUBE)).astype(np.float32)
     sofia = np.squeeze(fits.getdata(MASK)).astype(np.int32)

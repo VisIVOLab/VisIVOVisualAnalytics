@@ -31,7 +31,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "backend"))
 
-DD = "/Users/fvitello/downloads/DemoData"
+# Out-of-repo demo-data directory holding the benchmark cubes; override for reproducibility.
+DD = os.environ.get("VISIVO_DEMODATA", "/Users/fvitello/downloads/DemoData")
 CUBES = [
     ("WALLABY",  f"{DD}/WALLABY.fits"),
     ("cubehi-m31", f"{DD}/cubehi-clean-m31.fits"),

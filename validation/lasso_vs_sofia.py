@@ -17,6 +17,7 @@ Run:  backend/.venv/bin/python validation/lasso_vs_sofia.py
 from __future__ import annotations
 
 import csv
+import os
 import sys
 from pathlib import Path
 
@@ -26,7 +27,12 @@ from astropy.io import fits
 sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "backend"))
 from app.compute.selection import cube_kinematic_select  # noqa: E402
 
-CUBE = "/Users/fvitello/downloads/DemoData/hgc44_3axes.fits"
+# The HGC 44 HI cube. Not shipped in-repo (large); point at it via the env var so the
+# script is reproducible on any machine instead of a hard-coded local path.
+CUBE = os.environ.get(
+    "VISIVO_VALIDATION_CUBE",
+    "/Users/fvitello/downloads/DemoData/hgc44_3axes.fits",
+)
 # Reproducible SoFiA-2 mask from validation/sofia_hgc44.par (see README). Override
 # with argv[1] to compare against another mask (e.g. the pre-existing run5 mask).
 MASK = str(Path(__file__).resolve().parent / "sofia_out" / "sofia_hgc44_mask.fits")
@@ -45,11 +51,18 @@ def beam_area_px(hd) -> float:
 
 
 def main() -> None:
+    # Fail early with an actionable message rather than a cryptic astropy error when the
+    # (out-of-repo) inputs are missing — the paper artifact must be runnable by a co-author.
+    for label, path in (("cube (set $VISIVO_VALIDATION_CUBE)", CUBE), ("SoFiA mask", MASK)):
+        if not Path(path).is_file():
+            sys.exit(f"error: {label} not found: {path}")
+
     OUT.mkdir(exist_ok=True)
     hd = fits.getheader(CUBE)
     data = np.squeeze(fits.getdata(CUBE)).astype(np.float32)
     sofia = np.squeeze(fits.getdata(MASK)).astype(np.int32)
-    assert data.shape == sofia.shape, (data.shape, sofia.shape)
+    if data.shape != sofia.shape:
+        sys.exit(f"error: cube {data.shape} and mask {sofia.shape} differ in shape")
 
     barea = beam_area_px(hd)
     dv = abs(float(hd["CDELT3"])) / 1000.0            # m/s → km/s per channel
@@ -57,6 +70,8 @@ def main() -> None:
     flux = lambda msk: float(data[msk].sum()) * dv / barea
 
     labels, counts = np.unique(sofia[sofia > 0], return_counts=True)
+    if labels.size == 0:
+        sys.exit("error: the SoFiA mask has no labelled sources (all zero).")
     order = np.argsort(counts)[::-1][:N_SOURCES]
 
     rows = []
@@ -68,8 +83,15 @@ def main() -> None:
         lab = int(labels[i])
         src = sofia == lab
         zz, yy, xx = np.where(src)
-        k = int(np.argmax(data[zz, yy, xx]))
-        seed = (int(zz[k]), int(yy[k]), int(xx[k]))       # peak voxel = the click
+        src_vals = data[zz, yy, xx]
+        if not np.isfinite(src_vals).any():
+            # A SoFiA source whose every voxel is NaN has no valid peak to seed on — skip it
+            # (seeding a NaN voxel would just be rejected by the lasso).
+            print(f"[{rank}] SoFiA #{lab}: skipped — no finite voxel in the mask.")
+            continue
+        # Peak voxel = the click. nanargmax so a NaN inside the SoFiA mask can't win the peak.
+        k = int(np.nanargmax(src_vals))
+        seed = (int(zz[k]), int(yy[k]), int(xx[k]))
 
         lasso = cube_kinematic_select(
             data, seed, reach=REACH, lambda_v=LAMBDA_V, sigma=None, nsigma=NSIGMA)
@@ -86,9 +108,10 @@ def main() -> None:
             dice=dice, iou=iou, completeness=completeness, reliability=reliability,
             flux_sofia=fs, flux_lasso=fl, flux_ratio=(fl / fs if fs else float("nan")),
             seed_zyx=seed))
+        ratio_str = f"{fl / fs:.3f}" if fs else "n/a"   # guard a zero SoFiA flux
         print(f"[{rank}] SoFiA #{lab}: Dice={dice:.3f} IoU={iou:.3f} "
               f"compl={completeness:.3f} relia={reliability:.3f} "
-              f"Fsofia={fs:.2f} Flasso={fl:.2f} ratio={fl/fs:.3f}")
+              f"Fsofia={fs:.2f} Flasso={fl:.2f} ratio={ratio_str}")
 
         # ── figures: moment-0 with both mask contours + total-spectrum overlay ──
         z0, z1 = min(zz.min(), np.where(lasso.any((1, 2)))[0].min()), \
@@ -121,6 +144,8 @@ def main() -> None:
         plt.close(fig)
 
     # ── metrics table ──
+    if not rows:
+        sys.exit("error: no SoFiA source could be seeded (all masks empty/NaN).")
     with open(OUT / "metrics.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader(); w.writerows(rows)
@@ -138,7 +163,8 @@ def main() -> None:
                   f"{r['reliability']:.3f} | {r['flux_sofia']:.2f} | "
                   f"{r['flux_lasso']:.2f} | {r['flux_ratio']:.3f} |")
     d = np.array([r["dice"] for r in rows]); fr = np.array([r["flux_ratio"] for r in rows])
-    md.append(f"\n**Median Dice {np.median(d):.3f}, median flux ratio {np.median(fr):.3f}.**")
+    # nanmedian: a source with zero SoFiA flux contributes a NaN ratio (guarded above).
+    md.append(f"\n**Median Dice {np.median(d):.3f}, median flux ratio {np.nanmedian(fr):.3f}.**")
     (OUT / "metrics.md").write_text("\n".join(md) + "\n")
     print("\nWrote", OUT / "metrics.md", "and per-source figures.")
 

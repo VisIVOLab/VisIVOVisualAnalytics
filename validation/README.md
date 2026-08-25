@@ -11,6 +11,16 @@ quantify the agreement (spatial overlap + integrated flux + total spectrum).
 `hgc44_3axes.fits` — HI cube, 158 × 700 × 700 (VELO-HEL, Jy/beam), beam
 0.0147° × 0.0091°, Δv = 8.24 km/s.
 
+The cube is **not shipped in the repo** (large). Point the scripts at it with an
+environment variable so they run on any machine (they default to the author's
+local path and exit with a clear message if it is missing):
+
+```bash
+export VISIVO_VALIDATION_CUBE=/path/to/hgc44_3axes.fits
+export VISIVO_DEMODATA=/path/to/DemoData        # benchmark.py (multiple cubes)
+export VISIVO_VALIDATION_FIELD=/path/to/CF4_velocity.fits   # velocity_field_demo.py
+```
+
 ## 1. Reproduce the SoFiA-2 mask (Docker)
 
 SoFiA-2 v2.7.0 via the official image, parameters in `sofia_hgc44.par`
@@ -19,7 +29,7 @@ SoFiA-2 v2.7.0 via the official image, parameters in `sofia_hgc44.par`
 ```bash
 cp validation/sofia_hgc44.par validation/sofia_out/
 docker run --rm --platform linux/amd64 --entrypoint sofia \
-  -v /Users/fvitello/downloads/DemoData:/data \
+  -v "$(dirname "$VISIVO_VALIDATION_CUBE")":/data \
   -v "$PWD/validation/sofia_out:/out" \
   sofiapipeline/sofia2 /out/sofia_hgc44.par
 # → validation/sofia_out/sofia_hgc44_mask.fits (18 sources)
@@ -35,7 +45,7 @@ not depend on the exact SoFiA parameters.
 backend/.venv/bin/python validation/lasso_vs_sofia.py
 # optional: pass a different mask, e.g. the pre-existing run5 mask
 backend/.venv/bin/python validation/lasso_vs_sofia.py \
-  /Users/fvitello/downloads/DemoData/hgc44-run5_mask.fits
+  "$VISIVO_DEMODATA/hgc44-run5_mask.fits"
 ```
 
 For each of the 5 largest SoFiA sources it seeds the lasso on the source's peak

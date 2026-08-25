@@ -20,11 +20,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 from app.velocity_field import load_velocity_field   # noqa: E402
 from app.velocity_basins import compute_basins        # noqa: E402
 
-FIELD = "/Users/fvitello/Downloads/CF4_new_64-z008_velocity.fits"
+import os  # noqa: E402
+
+# Out-of-repo CosmicFlows-4 velocity field; override via the env var for reproducibility.
+FIELD = os.environ.get(
+    "VISIVO_VALIDATION_FIELD", "/Users/fvitello/Downloads/CF4_new_64-z008_velocity.fits")
 OUT = Path(__file__).resolve().parent / "out"
 
 
 def main():
+    if not Path(FIELD).is_file():
+        sys.exit(f"error: velocity field (set $VISIVO_VALIDATION_FIELD) not found: {FIELD}")
     OUT.mkdir(exist_ok=True)
     field = load_velocity_field(FIELD)
     nz, ny, nx = field.shape
