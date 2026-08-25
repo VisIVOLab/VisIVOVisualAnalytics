@@ -21,6 +21,7 @@
 
 #include <vtkCamera.h>
 #include <vtkCommand.h>
+#include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkImageData.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderWindowInteractor.h>
@@ -393,6 +394,52 @@ void vtkWindowCube::applyLinked2DCamera(const double dataCenterXY[2], double wor
     this->m_linked2DWorldHeight = worldHeight;
     this->m_linked2DValid = true;
     this->applyNormalizedTo2DPanes(dataCenterXY, worldHeight, /*skipSlot=*/-1);
+}
+
+void vtkWindowCube::broadcastLinked2DSliceLut()
+{
+    // STEP6-P4: push this window's 2-D SLICE colour (name + scale + gamma + invert) to linked
+    // peers. Gated by the LUT facet; range is NOT shared (data-dependent), so no grid gate — same
+    // as the 3-D volume-colour path. m_applyingLinkedUpdate blocks re-broadcast from a receiver.
+    if (!this->m_linkViews || !this->m_linkLut || this->m_applyingLinkedUpdate)
+        return;
+    const QString name = this->m_activeSliceLutName;
+    const int mode = static_cast<int>(this->m_sliceScaleMode);
+    const double gamma = this->m_sliceScaleGamma;
+    const bool invert = this->m_sliceInvert;
+    const auto windows = s_cubeWindows;   // snapshot
+    for (const auto &p : windows)
+        if (p && p != this && p->m_linkViews && p->m_linkLut)
+            p->applyLinked2DSliceLut(name, mode, gamma, invert);
+}
+
+void vtkWindowCube::applyLinked2DSliceLut(const QString &name, int scaleMode, double gamma,
+                                          bool invert)
+{
+    if (!this->m_linkViews || !this->m_linkLut)
+        return;
+    const bool same = (name.isEmpty() || name == this->m_activeSliceLutName)
+            && static_cast<int>(this->m_sliceScaleMode) == scaleMode
+            && std::abs(this->m_sliceScaleGamma - gamma) < 1e-9
+            && this->m_sliceInvert == invert;
+    if (same)
+        return;
+    QScopedValueRollback<bool> guard(this->m_applyingLinkedUpdate, true);
+    this->m_sliceScaleMode = static_cast<LutScale::Mode>(scaleMode);
+    this->m_sliceScaleGamma = gamma;
+    this->m_sliceInvert = invert;
+    // Rebuild lutSlice through the (now updated) stretch, KEEPING this cube's own table range.
+    this->applySliceLutByName(name.isEmpty() ? this->m_activeSliceLutName : name);
+    this->updateDisplaySectionForActivePane();   // resync the DISPLAY combo if the slice is active
+    // applySliceLutByName renders only when viewingSlice(); in a multi-pane layout the slice can be
+    // VISIBLE without being the active/global view, so repaint + refresh its LUT strip explicitly
+    // whenever a slice pane is on screen.
+    const int ss = this->sliceSlot();
+    if (ss >= 0) {
+        if (this->sliceWin)
+            this->sliceWin->Render();
+        this->refreshPaneLutStrip(ss);
+    }
 }
 
 void vtkWindowCube::broadcastLinkedBlendMode()

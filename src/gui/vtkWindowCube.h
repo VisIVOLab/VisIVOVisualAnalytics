@@ -741,6 +741,11 @@ protected:
     bool wcsDiagnosticPublished{ false };
 
     QPointer<LUTCustomizerDialog> lutCustomizer;   ///< 2D slice/moment LUT editor
+    // STEP6-P4: the shared LUT customizer edits EITHER lutSlice or lutMoment, decided at init
+    // time. Its lutUpdated callback fires later (non-modal), when viewingSlice() may have changed,
+    // so remember which LUT the dialog actually targets — only a SLICE edit broadcasts the slice
+    // colour to linked peers.
+    bool m_lutCustomizerTargetsSlice{ false };
     QPointer<LUTCustomizerDialog> lutCustomizer3D; ///< 3D volume LUT editor
     QPointer<LUTCustomizerDialog> m_paneLutCustomizer;  ///< §5.2: per-pane (Pane2DView) LUT editor
     QPointer<Pane2DView> m_paneLutTarget;               ///< the pane the dialog is editing
@@ -1318,6 +1323,11 @@ protected:
     // that share the spatial WORLD grid, so it is gated on sameSpatialGrid2D (D1: same-grid only).
     void broadcastLinked2DCamera(const double dataCenterXY[2], double worldHeight);
     void applyLinked2DCamera(const double dataCenterXY[2], double worldHeight);
+    // STEP6-P4: cross-window 2-D SLICE colour sync — colormap name + stretch (scale mode + gamma)
+    // + invert. Like broadcastLinkedColour (the 3-D volume path) the table RANGE is NOT shared
+    // (data-dependent), so this needs no same-grid gate — colormap/stretch transfer to any cube.
+    void broadcastLinked2DSliceLut();
+    void applyLinked2DSliceLut(const QString &name, int scaleMode, double gamma, bool invert);
     // Apply a normalized 2-D view to every visible 2-D pane in THIS window (slice + image
     // products); @p skipSlot excludes the source pane (−1 = none). Shared by the intra-window
     // propagate and the cross-window apply.

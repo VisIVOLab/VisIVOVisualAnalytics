@@ -3146,6 +3146,9 @@ void vtkWindowCube::applySliceLutByName(const QString &name)
     if (this->active2dWin() && this->viewingSlice()) {
         this->active2dWin()->Render();
     }
+    // STEP6-P4: push the slice colour to linked peer windows (no-op during a receiver apply — the
+    // m_applyingLinkedUpdate guard inside broadcastLinked2DSliceLut prevents the echo).
+    this->broadcastLinked2DSliceLut();
 }
 
 void vtkWindowCube::applyMomentLutByName(const QString &name)
@@ -5861,11 +5864,23 @@ void vtkWindowCube::showLUTCustomizer()
                              this->m_sliceScaleGamma = this->lutCustomizer->scaleGamma();
                              // Adopt the colormap the dialog just applied (it renamed the
                              // slice LUT) so the DISPLAY combo + a later scale change don't
-                             // rebuild lutSlice with a stale name.
-                             if (this->viewingSlice() && this->lutSlice) {
+                             // rebuild lutSlice with a stale name. Key on the dialog's
+                             // captured target, not the (non-modal, Product-inclusive)
+                             // viewingSlice() — else a slice-bound Apply after switching panes
+                             // would leave m_activeSliceLutName stale and broadcast the old
+                             // colormap.
+                             if (this->m_lutCustomizerTargetsSlice && this->lutSlice) {
                                  const std::string nm = this->lutSlice->GetObjectName();
                                  if (!nm.empty())
                                      this->m_activeSliceLutName = QString::fromStdString(nm);
+                                 // STEP6-P4: the customizer rebuilt lutSlice via LutScale::build,
+                                 // WITHOUT re-applying m_sliceInvert — re-run applySliceLutByName so
+                                 // the sender's slice LUT matches (scale+gamma+invert) what it
+                                 // broadcasts, and broadcast the slice colour once through it. Only
+                                 // when the dialog actually targets the SLICE (it also edits the
+                                 // moment LUT); the captured target is reliable, viewingSlice() is
+                                 // not (non-modal; true for a Product pane).
+                                 this->applySliceLutByName(this->m_activeSliceLutName);
                              }
                              this->renderImage();
                              updateDisplaySectionForActivePane();   // resync the DISPLAY combo
@@ -5884,7 +5899,10 @@ void vtkWindowCube::updateLUTCustomizer()
         return;
     }
 
-    if (this->viewingSlice()) {
+    // STEP6-P4: capture which LUT the dialog targets NOW (its callback fires later, when
+    // viewingSlice() may differ) so only a genuine slice edit broadcasts to linked peers.
+    this->m_lutCustomizerTargetsSlice = this->viewingSlice();
+    if (this->m_lutCustomizerTargetsSlice) {
         this->lutCustomizer->init(
                 vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0)),
                 this->lutSlice, this->m_sliceScaleMode, this->m_sliceScaleGamma);
