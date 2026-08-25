@@ -7129,9 +7129,13 @@ void vtkWindowCube::propagatePaneLutWithinWindow(int srcSlot)
         }
     }
     // §5.5: with Linked·LUT on but nothing showing the same product, say so once — otherwise
-    // "correct = no effect" reads as broken.
+    // "correct = no effect" reads as broken. (A cross-window peer may still receive it below.)
     if (receivers == 0)
         showLinkNoReceiverHint(srcSlot);
+    // STEP6-P4: also push to linked peer WINDOWS — moment / image products matched by the
+    // window-independent stem (m_products2d stems are deterministic: moment<order>, linewidth_*).
+    this->broadcastLinked2DImageLut(productStem(pid), src->colorMapName(),
+                                    static_cast<int>(src->scale()), src->gamma(), src->invert());
 }
 
 void vtkWindowCube::propagatePaneRangeWithinWindow(int srcSlot)

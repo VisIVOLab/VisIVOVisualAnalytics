@@ -18,11 +18,13 @@
 #include "ChannelOverlay.h"
 #include "CubeUiAssembler.h"
 #include "LutScale.h"
+#include "Pane2DView.h"
 
 #include <vtkCamera.h>
 #include <vtkCommand.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkImageData.h>
+#include <vtkLookupTable.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderWindowInteractor.h>
 #include <vtkRenderer.h>
@@ -440,6 +442,66 @@ void vtkWindowCube::applyLinked2DSliceLut(const QString &name, int scaleMode, do
             this->sliceWin->Render();
         this->refreshPaneLutStrip(ss);
     }
+}
+
+QString vtkWindowCube::productStem(const QString &productId)
+{
+    const int at = productId.indexOf(QLatin1Char('@'));
+    return at > 0 ? productId.left(at) : productId;
+}
+
+void vtkWindowCube::broadcastLinked2DImageLut(const QString &stem, const QString &name,
+                                              int scaleMode, double gamma, bool invert)
+{
+    // STEP6-P4: push a MOMENT / image-product colour to linked peers, matched by the
+    // window-independent stem. Range is NOT shared (like the slice/volume paths), so no grid gate.
+    if (!this->m_linkViews || !this->m_linkLut || this->m_applyingLinkedUpdate || stem.isEmpty())
+        return;
+    const auto windows = s_cubeWindows;   // snapshot
+    for (const auto &p : windows)
+        if (p && p != this && p->m_linkViews && p->m_linkLut)
+            p->applyLinked2DImageLut(stem, name, scaleMode, gamma, invert);
+}
+
+void vtkWindowCube::applyLinked2DImageLut(const QString &stem, const QString &name, int scaleMode,
+                                          double gamma, bool invert)
+{
+    if (!this->m_linkViews || !this->m_linkLut || stem.isEmpty())
+        return;
+    const LutScale::Mode mode = static_cast<LutScale::Mode>(scaleMode);
+    bool touchedActive = false;
+    {
+        // Both guards: m_applyingLinkedUpdate blocks a re-broadcast; m_applyingPaneDisplay blocks
+        // the receiver pane's lutChanged from re-entering propagatePaneLutWithinWindow.
+        QScopedValueRollback<bool> gLink(this->m_applyingLinkedUpdate, true);
+        QScopedValueRollback<bool> gPane(this->m_applyingPaneDisplay, true);
+        // Update the cache for EVERY product with this stem, so a fresh mount adopts the colour.
+        // (Range/invert stay per-pane; the cache holds colormap+scale+gamma.)
+        for (auto it = this->m_products2d.begin(); it != this->m_products2d.end(); ++it)
+            if (productStem(it.key()) == stem) {
+                it->lutName = name;
+                it->scaleMode = mode;
+                it->gamma = gamma;
+            }
+        // Recolour every pane showing a product with this stem — VISIBLE or PARKED (mountView's
+        // same-product path keeps the pane's own LUT, so a parked pane would otherwise re-show its
+        // stale colour; matches the intra-window propagatePaneLutWithinWindow, which also has no
+        // visibility guard).
+        for (int j = 0; j < 4; ++j) {
+            if (!m_paneViews[j] || m_slots[j].view.kind != ViewId::Product
+                || productStem(m_slots[j].view.productId) != stem
+                || !this->m_products2d.contains(m_slots[j].view.productId))
+                continue;
+            m_paneViews[j]->applyLut(name, mode, gamma, invert);
+            this->refreshPaneLutStrip(j);
+            if (j == this->m_activePane)
+                touchedActive = true;
+        }
+    }
+    // If the ACTIVE pane was recoloured from a peer, resync the DISPLAY dock combos so they don't
+    // show the old colormap. Done AFTER the guards release (it manages m_applyingPaneDisplay).
+    if (touchedActive)
+        this->updateDisplaySectionForActivePane();
 }
 
 void vtkWindowCube::broadcastLinkedBlendMode()

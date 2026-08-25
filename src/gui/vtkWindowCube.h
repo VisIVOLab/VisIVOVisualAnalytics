@@ -1328,6 +1328,15 @@ protected:
     // (data-dependent), so this needs no same-grid gate — colormap/stretch transfer to any cube.
     void broadcastLinked2DSliceLut();
     void applyLinked2DSliceLut(const QString &name, int scaleMode, double gamma, bool invert);
+    // STEP6-P4: cross-window MOMENT / image-product colour sync. Product ids are per-window
+    // scoped ("<stem>@<dataset>#<win>"), so peers are matched by the WINDOW-INDEPENDENT stem
+    // (e.g. "moment0", "linewidth_fwhm") — deterministic for moments + line-width. Colormap +
+    // scale + gamma + invert transfer (range is NOT shared, like the slice/volume paths).
+    static QString productStem(const QString &productId);   // the part before '@'
+    void broadcastLinked2DImageLut(const QString &stem, const QString &name, int scaleMode,
+                                   double gamma, bool invert);
+    void applyLinked2DImageLut(const QString &stem, const QString &name, int scaleMode,
+                               double gamma, bool invert);
     // Apply a normalized 2-D view to every visible 2-D pane in THIS window (slice + image
     // products); @p skipSlot excludes the source pane (−1 = none). Shared by the intra-window
     // propagate and the cross-window apply.
