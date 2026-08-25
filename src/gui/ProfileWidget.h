@@ -117,7 +117,33 @@ public:
     void clearPinnedSpectra();
     int  pinnedSpectrumCount() const { return static_cast<int>(m_pinnedGraphs.size()); }
 
+    // ── Pane migration (the spectrum controls move to Inspector › Analysis) ────
+    // When this ProfileWidget is EMBEDDED as a pane product, its own header toolbar /
+    // stats bar / save footer are hidden and the identical controls are driven from the
+    // Inspector via the public methods below. A standalone (probe/region window) widget
+    // keeps its inline chrome. See vtkWindowCube::updateSpectrumInspectorControls().
+
+    /// Hide (true) or show (false) the inline chrome — header toolRow, stats bar, save
+    /// footer — leaving just the plot. No-op before setupSpectrumPlot() built them.
+    void setPaneChromeHidden(bool hidden);
+
+    /// Public action wrappers so the Inspector's Spectrum panel can drive THIS widget.
+    void applySmoothingCode(int code);           ///< set the smoothing kernel (combo data value)
+    int  smoothingCode() const;                  ///< current kernel code (0 = none)
+    void fitGaussianNow();                        ///< run the backend Gaussian fit + overlay
+    void loadLinesFromFile();                     ///< open the Line-ID CSV picker + overlay
+    void clearLines();                            ///< remove the Line-ID overlay
+    void saveSpectrumCsvNow();                     ///< export the raw spectrum as CSV
+    void saveSpectrumPngNow();                     ///< export the plot as PNG
+    bool canFit() const { return !m_backendUrl.isEmpty() && !m_fitInProgress; }   ///< can START a fit
+    bool hasSpectrum() const { return !m_lastSpectrumValues.isEmpty(); }
+    QString statsText() const;                    ///< the current stats-bar text (or empty)
+
 signals:
+    /// Emitted whenever the displayed spectrum / its stats / pin set changes, so an external
+    /// (Inspector) controls panel can refresh its stats readout + enabled/pin state.
+    void spectrumChanged();
+
     /// Emitted when the user toggles the Pin button in the header. The cube
     /// viewer connects this to its probeFrozen state so the spectrum freezes
     /// in place even when the mouse keeps moving over the slice.
@@ -212,6 +238,7 @@ private:
     QToolButton *m_specPinBtn     { nullptr };
     QFrame      *m_specStatsBar   { nullptr };
     QLabel      *m_specStatsLabel { nullptr };
+    QFrame      *m_specFooter     { nullptr };   ///< save-buttons footer (hidden in pane mode)
 
     QString m_fileLabel;
     int     m_pixelX{ 0 };

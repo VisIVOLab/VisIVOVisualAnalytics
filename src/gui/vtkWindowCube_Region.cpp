@@ -391,13 +391,10 @@ void vtkWindowCube::setRegionMode(RegionMode mode, bool active)
         if (this->regionMode == mode) {
             this->regionMode = RegionMode::None;
             this->regionDragging = false;
-            // Keep the overlay visible while the result dialog and / or
-            // spectrum plot for this region are still open — analogous to
-            // how the PV overlay survives until pvDiagramWidget closes.
-            // maybeClearRegionAfterDisplay() will wipe it once both close.
-            const bool keepingForDisplay =
-                    this->m_regionResultDialog || this->probePlotWidget;
-            if (!keepingForDisplay) {
+            // Keep the overlay visible while the region spectrum plot is still open — analogous
+            // to how the PV overlay survives until pvDiagramWidget closes.
+            // maybeClearRegionAfterDisplay() wipes it once that closes.
+            if (!this->probePlotWidget) {
                 this->clearRegion();
             }
             this->setInteractorStyleImage();
@@ -757,6 +754,10 @@ void vtkWindowCube::analyzeCurrentRegion()
     // cubeImage voxel indices using cubeImage geometry.  This is robust to
     // differing origins / spacings between the two datasets.
     auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
+    // True once THIS analysis registers a SPEC product (needs a cube spectrum). The 2D stats
+    // live in that product's Provenance, and its spectrum plot governs the overlay's lifetime —
+    // so the status message + overlay cleanup below both key off it.
+    bool producedProduct = false;
     if (cubeImage && stats.valid) {
         // ── Geometry of the 2D display data (where region voxels live) ─────────
         int extent2d[6];
@@ -882,8 +883,7 @@ void vtkWindowCube::analyzeCurrentRegion()
             // Data, openable in any pane), so it no longer lives ONLY inside the shared plot.
             {
                 const int rn = ++this->m_pinnedSpectrumCount;
-                const QString pid =
-                        QStringLiteral("spectrum%1@%2").arg(rn).arg(this->datasetPersistKey());
+                const QString pid = this->scopedProductId(QStringLiteral("spectrum%1").arg(rn));
                 const QString label = QStringLiteral("%1 spectrum").arg(shapeLabel);
                 Spectrum1D sp;
                 sp.key = spectral;
@@ -893,12 +893,31 @@ void vtkWindowCube::analyzeCurrentRegion()
                 sp.yLabel = u"Mean value"_s;
                 sp.label = label;
                 this->m_products1d.insert(pid, sp);
+                // Fold the 2D region statistics into the product's Provenance (they used to live
+                // in a separate floating ToolResultDialog). registerAnalysisProduct reveals the
+                // Inspector's Provenance tab, so the stats surface there the moment the region is
+                // drawn — no floating window. The spatial stats are the region's mean/min/max/…
+                // on the current slice or moment map; the spectrum (the pane) is the mean per
+                // channel across the full cube.
+                const QString statsScope = this->viewingSlice()
+                        ? u"current 2D slice"_s : u"current moment map"_s;
                 QVariantMap params;
                 params.insert(u"Region"_s, shapeLabel);
-                params.insert(u"Pixels"_s, QString::number(stats.validCount));
+                params.insert(u"2D stats from"_s, statsScope);
+                params.insert(u"Valid pixels"_s,
+                              u"%1 / %2"_s.arg(stats.validCount).arg(stats.totalCount));
+                if (stats.valid) {
+                    params.insert(u"Blanked / NaN"_s, QString::number(stats.blankedCount));
+                    params.insert(u"Min"_s,    fmt(stats.minValue));
+                    params.insert(u"Max"_s,    fmt(stats.maxValue));
+                    params.insert(u"Mean"_s,   fmt(stats.mean));
+                    params.insert(u"Median"_s, fmt(stats.median));
+                    params.insert(u"Std Dev"_s, fmt(stats.stddev));
+                }
                 this->registerAnalysisProduct(u"spectrum"_s, label, params, this, pid,
                                               u"spectrum1d"_s);
                 this->refreshPaneChrome();   // tree + pane dropdowns pick it up
+                producedProduct = true;
             }
             // Region overlay must persist until the spectrum window closes,
             // not just until the next mouse-release. Hook a one-shot cleanup
@@ -919,58 +938,44 @@ void vtkWindowCube::analyzeCurrentRegion()
         }
     }
 
-    // ── Show results in ToolResultDialog ─────────────────────────────────────
-    // The dialog shows 2D global statistics (computed on the current slice or
-    // moment map).  The spectral plot (ProfileWidget) shows the mean per channel
-    // across all channels of the 3D cube — these are complementary views.
-    const QString dataSource = this->viewingSlice()
-            ? u"current 2D slice"_s : u"current moment map"_s;
-
-    auto *dlg = new ToolResultDialog(this);
-    dlg->setTitle(u"Region Analysis"_s);
-    dlg->setSubtitle(
-            u"%1  ·  global 2D statistics from the %2"_s.arg(shapeLabel, dataSource));
-
-    if (!stats.valid) {
-        dlg->addSection(u"Result"_s, {
-            { u"Status"_s, u"No valid pixels in the selected region (all blanked / NaN)"_s },
-        });
+    // The 2D region statistics no longer open a floating ToolResultDialog. When a SPEC product
+    // was produced (the common cube path) the full stats live in its Provenance and its spectrum
+    // plot keeps the overlay alive; the status bar just points there. Otherwise (empty region,
+    // or no cube spectrum) there is NO product and NO plot to own the overlay — report the
+    // outcome inline and wipe the just-drawn overlay so it can't linger under a stale plot.
+    if (producedProduct) {
+        this->statusBar()->showMessage(
+                u"%1 region: mean %2 · median %3 · %4/%5 px — full stats in Inspector › "
+                u"Provenance."_s.arg(shapeLabel, fmt(stats.mean), fmt(stats.median))
+                        .arg(stats.validCount)
+                        .arg(stats.totalCount),
+                6000);
     } else {
-        dlg->addSection(u"2D Statistics"_s, {
-            { u"Region"_s,       shapeLabel },
-            { u"Valid pixels"_s, u"%1 / %2"_s.arg(stats.validCount).arg(stats.totalCount) },
-            { u"Blanked / NaN"_s, QString::number(stats.blankedCount) },
-            { u"Min"_s,          fmt(stats.minValue) },
-            { u"Max"_s,          fmt(stats.maxValue) },
-            { u"Mean"_s,         fmt(stats.mean) },
-            { u"Median"_s,       fmt(stats.median) },
-            { u"Std Dev"_s,      fmt(stats.stddev) },
-        });
-        dlg->addSection(u"Note"_s, {
-            { u"Spectral profile"_s, u"Mean per channel across all cube channels (see plot window)"_s },
-        });
+        if (!stats.valid)
+            this->statusBar()->showMessage(
+                    u"Region Analysis: no valid pixels in the selected region "
+                    u"(all blanked / NaN)."_s,
+                    5000);
+        else
+            this->statusBar()->showMessage(
+                    u"%1 region: mean %2 · median %3 · %4/%5 px (no cube spectrum "
+                    u"to attach)."_s.arg(shapeLabel, fmt(stats.mean), fmt(stats.median))
+                            .arg(stats.validCount)
+                            .arg(stats.totalCount),
+                    6000);
+        // No result to inspect → don't leave an overlay a previous region's still-open plot
+        // would otherwise keep visible; clear it now (a new analysis re-draws its own).
+        this->clearRegion();
+        if (this->active2dWin())
+            this->active2dWin()->Render();
     }
-    // Track the dialog so the region overlay stays visible on the 2D image
-    // for as long as either the result dialog or the spectrum plot is open.
-    // Closing the LAST one triggers maybeClearRegionAfterDisplay() which
-    // wipes the overlay (and resets regionMode if still pending).
-    // Manual null-before-call: see the matching block on probePlotWidget.
-    this->m_regionResultDialog = dlg;
-    QObject::connect(dlg, &QObject::destroyed, this,
-                     [this]() {
-                         this->m_regionResultDialog = nullptr;
-                         this->maybeClearRegionAfterDisplay();
-                     });
-    dlg->show();
 }
 
 void vtkWindowCube::maybeClearRegionAfterDisplay()
 {
-    // Called from the destroyed() signals of the region result dialog and
-    // the region spectrum plot. Both can be open simultaneously; only when
-    // the last one is gone do we wipe the 2D overlay. QPointer auto-nulls
-    // on destruction so the checks below are race-free.
-    if (this->m_regionResultDialog) return;
+    // Called from the region spectrum plot's destroyed() signal (the 2D stats no longer open a
+    // separate window). While the plot is open the overlay stays; once it closes we wipe the 2D
+    // overlay. QPointer auto-nulls on destruction so the check below is race-free.
     if (this->probePlotWidget) return;
     if (this->regionMode != RegionMode::None) return;  // user re-armed a tool
     this->clearRegion();

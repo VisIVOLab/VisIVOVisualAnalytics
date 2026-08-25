@@ -1209,6 +1209,13 @@ void vtkWindowCube::setupSliceRenderer()
                                                  &vtkWindowCube::finalizePvInteraction);
     this->sliceWin->GetInteractor()->AddObserver(vtkCommand::LeftButtonDoubleClickEvent, this,
                                                  &vtkWindowCube::finalizePvInteraction);
+    // STEP6-P1: the 2-D slice participates in the Linked-2D camera. InteractionEvent follows live
+    // pan (drag); EndInteractionEvent catches mouse-wheel zoom (no InteractionEvent). The handler
+    // early-returns unless Linked·camera is on, so this is free otherwise.
+    this->sliceWin->GetInteractor()->AddObserver(vtkCommand::InteractionEvent, this,
+                                                 &vtkWindowCube::onSliceCameraInteraction);
+    this->sliceWin->GetInteractor()->AddObserver(vtkCommand::EndInteractionEvent, this,
+                                                 &vtkWindowCube::onSliceCameraInteraction);
     this->coordinate->SetCoordinateSystemToDisplay();
     this->coordinate->SetViewport(ren);
 

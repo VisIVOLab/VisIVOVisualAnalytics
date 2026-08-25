@@ -99,10 +99,20 @@ public:
     void cameraState(double focalXY[2], double &parallelScale) const;
     void setCameraState(const double focalXY[2], double parallelScale);
 
+    // STEP6-P3: gutter-INDEPENDENT view state — the world point shown at the DATA-AREA centre
+    // and the world height that fills the data area. Unlike the raw focal/scale above, this
+    // cancels each pane's own colorbar gutter, so copying it between panes with different LUT
+    // ranges (hence different gutters) frames the SAME feature at the SAME zoom. Returns false
+    // if the geometry isn't ready (no image / zero data area). setCameraStateNormalized is
+    // echo-guarded like setCameraState.
+    bool cameraStateNormalized(double dataCenterXY[2], double &worldHeight) const;
+    void setCameraStateNormalized(const double dataCenterXY[2], double worldHeight);
+
 signals:
     void rangeChanged(double lo, double hi);   // pane's range changed (drag or dock) → dock syncs
     void lutChanged();                          // colormap / scale / invert changed → strip + Linked
     void cameraChanged();                       // pan/zoom via interaction → Linked-2D propagate
+    void fitted();                              // fit() re-letterboxed → Linked-2D may re-assert
 
 private:
     void updateWcsOverlay();                                // EndEvent target; uses m_wcs

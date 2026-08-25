@@ -107,6 +107,7 @@ void vtkWindowCube::setLinkViews(bool on)
         this->m_actLinkViews->setChecked(on);
     }
     if (!on) {
+        this->m_linked2DValid = false;   // STEP6-P2: drop the shared 2-D camera so a later relink starts fresh
         this->statusBar()->showMessage(u"Linked views: off."_s, 3000);
         return;
     }
@@ -138,6 +139,9 @@ void vtkWindowCube::setLinkViews(bool on)
         if (p && p != this && p->m_linkViews)
             ++peers;
     this->broadcastLinkedCamera();
+    // STEP6-P4: snap same-grid peers to this window's current 2-D view too. propagate2DCamera
+    // no-ops when the active pane isn't a 2-D view, so this is safe to call unconditionally.
+    this->propagate2DCamera(this->m_activePane);
     if (ui->spinSlice) {
         this->m_lastLinkedChannel = ui->spinSlice->value() - 1;
         this->broadcastLinkedChannel(this->m_lastLinkedChannel);
@@ -156,6 +160,8 @@ void vtkWindowCube::onCubeCameraInteraction()
 
 void vtkWindowCube::broadcastLinkedCamera()
 {
+    if (!this->m_linkCamera)   // STEP6-P5: gated by the "camera" facet
+        return;
     auto *rw = ui->vtkCube->renderWindow();
     auto *ren = rw ? rw->GetRenderers()->GetFirstRenderer() : nullptr;
     auto *cam = ren ? ren->GetActiveCamera() : nullptr;
@@ -188,7 +194,8 @@ void vtkWindowCube::broadcastLinkedCamera()
 
     const auto windows = s_cubeWindows;   // snapshot — peer calls may mutate the list
     for (const auto &p : windows)
-        if (p && p != this && p->m_linkViews)
+        // STEP6-P5: a peer with its "camera" facet off has opted out of camera sync.
+        if (p && p != this && p->m_linkViews && p->m_linkCamera)
             p->applyLinkedCamera(dir, up, relOffset, relDist, relScale, angle);
 }
 
@@ -340,6 +347,52 @@ void vtkWindowCube::applyLinkedColour(const QString &name, int scaleMode, double
     // applyColorMapByName rebuilds the volume LUT through the (now updated)
     // stretch, so this applies both colormap and stretch in one go.
     this->applyColorMapByName(name.isEmpty() ? this->m_activeColorMapName : name);
+}
+
+bool vtkWindowCube::sameSpatialGrid2D(const vtkWindowCube *peer) const
+{
+    // STEP6-P4 / D1: a world-coordinate 2-D camera transfers directly only when both cubes share
+    // the spatial world grid — same in-plane dimensions, spacing and origin. (Depth is irrelevant
+    // to the 2-D pan/zoom.) Compares the backend-reported geometry the panes are built from.
+    if (!peer)
+        return false;
+    auto eq = [](double a, double b) { return std::abs(a - b) <= 1e-9 * (1. + std::abs(a)); };
+    return this->remoteDatasetWidth == peer->remoteDatasetWidth
+            && this->remoteDatasetHeight == peer->remoteDatasetHeight
+            && eq(this->remoteDatasetSpacing[0], peer->remoteDatasetSpacing[0])
+            && eq(this->remoteDatasetSpacing[1], peer->remoteDatasetSpacing[1])
+            && eq(this->remoteDatasetOrigin[0], peer->remoteDatasetOrigin[0])
+            && eq(this->remoteDatasetOrigin[1], peer->remoteDatasetOrigin[1]);
+}
+
+void vtkWindowCube::broadcastLinked2DCamera(const double dataCenterXY[2], double worldHeight)
+{
+    // STEP6-P4: push the gutter-independent 2-D view to linked peer windows on the SAME spatial
+    // grid. Guarded by m_applyingLinkedUpdate so a cross-window apply can't re-broadcast.
+    if (!this->m_linkViews || !this->m_linkCamera || this->m_applyingLinkedUpdate)
+        return;
+    if (!(worldHeight > 0.))
+        return;
+    const auto windows = s_cubeWindows;   // snapshot — peers may mutate the list
+    for (const auto &p : windows)
+        if (p && p != this && p->m_linkViews && p->m_linkCamera && this->sameSpatialGrid2D(p))
+            p->applyLinked2DCamera(dataCenterXY, worldHeight);
+}
+
+void vtkWindowCube::applyLinked2DCamera(const double dataCenterXY[2], double worldHeight)
+{
+    // Receiver: adopt the shared 2-D view on every visible 2-D pane. m_applyingLinkedUpdate guards
+    // against re-broadcast; the pane setters are themselves echo-guarded (Pane2DView) or fire no
+    // InteractionEvent (slice programmatic set), so this cannot loop.
+    if (!this->m_linkViews || !this->m_linkCamera || !(worldHeight > 0.))
+        return;
+    QScopedValueRollback<bool> guard(this->m_applyingLinkedUpdate, true);
+    // Remember it so THIS window's own fits re-adopt the shared view too (STEP6-P2).
+    this->m_linked2DCenter[0] = dataCenterXY[0];
+    this->m_linked2DCenter[1] = dataCenterXY[1];
+    this->m_linked2DWorldHeight = worldHeight;
+    this->m_linked2DValid = true;
+    this->applyNormalizedTo2DPanes(dataCenterXY, worldHeight, /*skipSlot=*/-1);
 }
 
 void vtkWindowCube::broadcastLinkedBlendMode()

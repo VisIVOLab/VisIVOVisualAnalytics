@@ -58,7 +58,7 @@ public:
     /// Create the left "Session Data" dock (product tree) and seed it with the
     /// current dataset. @p datasetKey is the stable FITS filepath (parent key).
     void installSessionDock(const QString &datasetKey, const QString &datasetLabel,
-                            const QString &datasetKind);
+                            const QString &datasetKind, const QString &ownerScope = QString());
 
     /// Add a widget to the left column's LAYERS block, below the product tree
     /// (design #1d: the view/rendering controls live here, not in the Inspector).

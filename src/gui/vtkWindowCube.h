@@ -338,6 +338,12 @@ public:
     /// sessions). See AnalysisParamStore.
     QString datasetPersistKey() const { return this->filepath; }
 
+    /// Build a product id scoped to THIS window: "<stem>@<datasetKey>#<windowScope>". The
+    /// parentKey stays datasetPersistKey() (so the tree still nests under the dataset), but the
+    /// id is unique per window so a second viewer on the same dataset never collides in the
+    /// ProductRegistry. Every product-id construction goes through here.
+    QString scopedProductId(const QString &stem) const;
+
     enum class RegionMode
     {
         None,
@@ -432,6 +438,25 @@ private:
     std::array<class ProfileWidget *, 4> m_paneSpectra{ nullptr, nullptr, nullptr, nullptr };
     class ProfileWidget *ensureSlotSpectrumView(int slot, const QString &xLabel,
                                                 const QString &yLabel);   ///< per-slot spectrum view
+
+    // Spectrum controls migrated to Inspector › Analysis (they used to clutter each spectrum
+    // pane). Built once, shown only while the ACTIVE pane is a spectrum product, and driven onto
+    // that pane's chrome-less ProfileWidget. See buildSpectrumInspectorControls() +
+    // updateSpectrumInspectorControls().
+    void buildSpectrumInspectorControls(class InspectorPanel *panel);
+    void updateSpectrumInspectorControls();   ///< retarget/refresh for the active pane
+    QWidget       *m_spectrumInspector { nullptr };   ///< the whole section (hidden when N/A)
+    QLabel        *m_specInspTitle     { nullptr };
+    QLabel        *m_specInspStats     { nullptr };
+    QComboBox     *m_specInspSmooth    { nullptr };
+    QPushButton   *m_specInspFit       { nullptr };
+    QPushButton   *m_specInspLoadLines { nullptr };
+    QPushButton   *m_specInspClearLines{ nullptr };
+    QPushButton   *m_specInspPin       { nullptr };
+    QPushButton   *m_specInspClearPins { nullptr };
+    QPushButton   *m_specInspSaveCsv   { nullptr };
+    QPushButton   *m_specInspSavePng   { nullptr };
+    QPointer<class ProfileWidget> m_specInspTarget;   ///< the pane widget the controls drive
     /// The renderer a product uses: "spectrum1d" (m_products1d) / "image2d" (m_products2d) / "".
     QString productRenderer(const QString &productId) const;
     /// True when @p productId is a product this window can mount in a pane — an image
@@ -731,10 +756,10 @@ protected:
     // which Pane2DView's celestial WCS can't), not shown as a floating window. Non-empty while
     // a PV product exists; identifies the pv product id in productRenderer / viewHasData.
     QString m_pvProductId;
-    // Active Region Analysis result dialog. Tracked so the 2D region overlay
-    // can persist for as long as the user is still inspecting the analysis
-    // — see maybeClearRegionAfterDisplay().
-    QPointer<ToolResultDialog> m_regionResultDialog;
+    // #5: per-window scope token (from ProductRegistry::newOwnerScope) — salts every product id
+    // and tags each product's ownerId, so two viewers on the same dataset never collide and each
+    // Session tree shows only its own products. See scopedProductId().
+    QString m_windowScope;
     QPointer<QLabel> cubeOpenStateLabel;
     QPointer<QLabel> hoverReadoutLabel;
     QPointer<QLabel> momentProvenanceLabel;
@@ -1224,10 +1249,36 @@ protected:
     bool m_linkViews{ false };
     // §5.5: Linked is a MASTER with per-facet toggles rendered as two chips in the header
     // ("channel" · "LUT"). Each gates one propagation kind; both grey out when the master
-    // is off. Camera (zoom/pan) sync is a later facet.
+    // is off.
+    bool m_linkCamera{ true };   // STEP6-P5: gates ALL camera sync (2D panes + 3D, intra + cross)
     bool m_linkChannel{ true };
     bool m_linkLut{ true };
     bool m_linkNoReceiverHintShown{ false };   // "nothing to link" is one-shot per layout
+    // STEP6-P2/P3: the shared Linked-2D view, stored GUTTER-INDEPENDENTLY (world point at the
+    // data-area centre + world height filling it — see Pane2DView::cameraStateNormalized) so
+    // panes with different colorbar gutters stay aligned. A pane that re-fits (range/LUT/resize)
+    // re-adopts THIS instead of resetting to full-frame. Set from the pane last panned/zoomed.
+    double m_linked2DCenter[2]{ 0., 0. };
+    double m_linked2DWorldHeight{ 0. };
+    bool   m_linked2DValid{ false };
+    void reassertLinked2DCamera(int slot);     // re-apply the shared camera after a pane fit()
+    // STEP6-P1: the singular 2-D SLICE viewport (ui->vtkImage) participates in the Linked-2D
+    // camera too — it uses the SAME CubeGeom letterbox, so the gutter-independent math transfers.
+    int  sliceSlot() const;                    // the visible slot showing Slice2D, or -1
+    bool sliceCameraNormalized(double dataCenterXY[2], double &worldHeight) const;
+    void applySliceCameraNormalized(const double dataCenterXY[2], double worldHeight,
+                                    bool render = true);
+    void onSliceCameraInteraction();           // slice interactor pan/zoom → propagate
+    void captureSliceCamPose();                // record the slice camera's pan/zoom as "seen"
+    // STEP6-P1: last-seen slice camera PAN/ZOOM pose (focal x/y + parallel scale). Tracking the
+    // POSE — not the raw MTime — means a window/level LEFT-drag (no pan/zoom) or a bare
+    // ResetCameraClippingRange (kinematic/lasso overlays) does NOT look like a camera move, so
+    // onSliceCameraInteraction only propagates on a real pan/zoom. Seeded by the initial
+    // fit + every programmatic slice-camera set.
+    double m_sliceCamFocalX{ 0. };
+    double m_sliceCamFocalY{ 0. };
+    double m_sliceCamScale{ 0. };
+    QPointer<QToolButton> m_linkCameraChip;    // per-facet toggle (camera)
     QPointer<QToolButton> m_linkChannelChip;   // per-facet toggle
     QPointer<QToolButton> m_linkLutChip;       // per-facet toggle
     void refreshLinkedFacetChips();            // enabled/checked state follows the master
@@ -1262,6 +1313,18 @@ protected:
     // cube is auto-ranged to its own data.
     void broadcastLinkedColour();
     void applyLinkedColour(const QString &name, int scaleMode, double gamma);
+    // STEP6-P4: cross-window 2-D camera sync. The 2-D view is copied GUTTER-INDEPENDENTLY (world
+    // point at the data-area centre + world height, STEP6-P3) — this only makes sense between cubes
+    // that share the spatial WORLD grid, so it is gated on sameSpatialGrid2D (D1: same-grid only).
+    void broadcastLinked2DCamera(const double dataCenterXY[2], double worldHeight);
+    void applyLinked2DCamera(const double dataCenterXY[2], double worldHeight);
+    // Apply a normalized 2-D view to every visible 2-D pane in THIS window (slice + image
+    // products); @p skipSlot excludes the source pane (−1 = none). Shared by the intra-window
+    // propagate and the cross-window apply.
+    void applyNormalizedTo2DPanes(const double dataCenterXY[2], double worldHeight, int skipSlot);
+    // True when @p peer shares this cube's 2-D spatial world grid (dimensions + x/y spacing +
+    // x/y origin), so a world-coordinate camera transfers directly (STEP6-P4 / D1).
+    bool sameSpatialGrid2D(const vtkWindowCube *peer) const;
     // Shared volume blend mode (0=Composite, 1=MIP, 2=MinIP).
     int m_volumeBlendMode{ 0 };
     void broadcastLinkedBlendMode();

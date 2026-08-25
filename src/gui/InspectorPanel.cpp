@@ -216,6 +216,14 @@ QVBoxLayout *InspectorPanel::groupLayout(const QString &caption)
     return boxLayout;
 }
 
+void InspectorPanel::addAnalysisSection(QWidget *section)
+{
+    if (!section)
+        return;
+    section->setParent(m_analysisPage);
+    m_analysisLayout->insertWidget(0, section);   // top of the tab, above the tool groups
+}
+
 void InspectorPanel::addToolGroup(const QString &caption)
 {
     groupLayout(caption);

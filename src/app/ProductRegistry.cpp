@@ -80,3 +80,8 @@ AnalysisProduct ProductRegistry::product(const QString &productId) const
     const int i = indexOf(productId);
     return i >= 0 ? m_products[i] : AnalysisProduct{};
 }
+
+QString ProductRegistry::newOwnerScope()
+{
+    return QStringLiteral("win%1").arg(++m_ownerCounter);
+}

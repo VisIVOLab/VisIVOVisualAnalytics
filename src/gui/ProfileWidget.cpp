@@ -63,9 +63,11 @@ QString tLive()       { return QStringLiteral("#5DA87A"); }   // live badge
 /// The footer is appended to @p widget's existing QVBoxLayout (installed by
 /// setupUi), and the plot rows are given stretch=1 so the footer stays compact.
 static void buildSaveFooter(QWidget *widget, QPushButton *&btn1Out,
-                            QPushButton *&btn2Out, QPushButton *&btnCsvOut)
+                            QPushButton *&btn2Out, QPushButton *&btnCsvOut,
+                            QFrame *&footerOut)
 {
     auto *footer = new QFrame(widget);
+    footerOut = footer;
     footer->setObjectName(u"profileFooter"_s);
     footer->setStyleSheet(
             u"QFrame#profileFooter {"
@@ -111,7 +113,7 @@ ProfileWidget::ProfileWidget(vtkInteractorStyleProfile *style, vtkImageData *dat
     this->setWindowFlag(Qt::Window);
     this->setStyleSheet(u"ProfileWidget { background: %1; }"_s.arg(tBg()));
 
-    buildSaveFooter(this, m_btnSavePlot1, m_btnSavePlot2, m_btnSaveCsv);
+    buildSaveFooter(this, m_btnSavePlot1, m_btnSavePlot2, m_btnSaveCsv, m_specFooter);
     QObject::connect(m_btnSavePlot1, &QPushButton::clicked, this, &ProfileWidget::savePlot1Png);
     QObject::connect(m_btnSavePlot2, &QPushButton::clicked, this, &ProfileWidget::savePlot2Png);
     QObject::connect(m_btnSaveCsv,   &QPushButton::clicked, this, &ProfileWidget::saveSpectrumCsv);
@@ -149,7 +151,7 @@ ProfileWidget::ProfileWidget(QWidget *parent)
     this->setWindowFlag(Qt::Window);
     this->setStyleSheet(u"ProfileWidget { background: %1; }"_s.arg(tBg()));
 
-    buildSaveFooter(this, m_btnSavePlot1, m_btnSavePlot2, m_btnSaveCsv);
+    buildSaveFooter(this, m_btnSavePlot1, m_btnSavePlot2, m_btnSaveCsv, m_specFooter);
     QObject::connect(m_btnSavePlot1, &QPushButton::clicked, this, &ProfileWidget::savePlot1Png);
     QObject::connect(m_btnSavePlot2, &QPushButton::clicked, this, &ProfileWidget::savePlot2Png);
     QObject::connect(m_btnSaveCsv,   &QPushButton::clicked, this, &ProfileWidget::saveSpectrumCsv);
@@ -667,11 +669,48 @@ void ProfileWidget::setSpectrumAxisLabels(const QString &xLabel, const QString &
     ui->plot1->replot();
 }
 
+// ── Pane migration: hide inline chrome + public action wrappers ───────────────
+
+void ProfileWidget::setPaneChromeHidden(bool hidden)
+{
+    // Embedded pane products drive their controls from Inspector › Analysis, so hide the inline
+    // header toolbar, stats bar and save footer, leaving just the plot. Standalone windows keep
+    // them. Built lazily by setupSpectrumPlot() — guard each pointer.
+    if (m_specHeader)   m_specHeader->setVisible(!hidden);
+    if (m_specStatsBar) m_specStatsBar->setVisible(!hidden);
+    if (m_specFooter)   m_specFooter->setVisible(!hidden);
+}
+
+void ProfileWidget::applySmoothingCode(int code)
+{
+    if (!m_smoothCombo) return;
+    const int idx = m_smoothCombo->findData(code);
+    if (idx >= 0)
+        m_smoothCombo->setCurrentIndex(idx);   // → currentIndexChanged → applySmoothAndReplot
+}
+
+int ProfileWidget::smoothingCode() const
+{
+    return m_smoothCombo ? m_smoothCombo->currentData().toInt() : 0;
+}
+
+void ProfileWidget::fitGaussianNow()        { this->requestLineFit(); }
+void ProfileWidget::loadLinesFromFile()     { this->loadLineIdFile(); }
+void ProfileWidget::clearLines()            { this->clearLineIdOverlay(); }
+void ProfileWidget::saveSpectrumCsvNow()    { this->saveSpectrumCsv(); }
+void ProfileWidget::saveSpectrumPngNow()    { this->savePlot1Png(); }
+
+QString ProfileWidget::statsText() const
+{
+    return m_specStatsLabel ? m_specStatsLabel->text() : QString();
+}
+
 void ProfileWidget::refreshSpectrumStats(const QVector<double> &spectralKey,
                                          const QVector<double> &values)
 {
     if (!m_specStatsLabel || values.isEmpty()) {
         if (m_specStatsLabel) m_specStatsLabel->setText(u"—"_s);
+        emit spectrumChanged();
         return;
     }
 
@@ -691,6 +730,7 @@ void ProfileWidget::refreshSpectrumStats(const QVector<double> &spectralKey,
     }
     if (n == 0) {
         m_specStatsLabel->setText(u"N=0 (all NaN)"_s);
+        emit spectrumChanged();
         return;
     }
     const double mean = sum / n;
@@ -729,6 +769,7 @@ void ProfileWidget::refreshSpectrumStats(const QVector<double> &spectralKey,
         text += u"   ∫=%1"_s.arg(fmt(integral));
     }
     m_specStatsLabel->setText(text);
+    emit spectrumChanged();
 }
 
 void ProfileWidget::setSpectrumContext(const QString &fileLabel,
@@ -820,6 +861,7 @@ void ProfileWidget::requestLineFit()
     const int gen = m_spectrumGeneration;
     m_fitInProgress = true;
     if (m_btnFit) m_btnFit->setEnabled(false);
+    emit spectrumChanged();   // Inspector disables its Fit button while the fit runs
     QPointer<ProfileWidget> self(this);
     auto *watcher = new QFutureWatcher<BackendLineFitResult>(this);
     QObject::connect(watcher, &QFutureWatcher<BackendLineFitResult>::finished, this, [self, watcher, gen]() {
@@ -828,6 +870,7 @@ void ProfileWidget::requestLineFit()
         if (!self) return;
         self->m_fitInProgress = false;
         if (self->m_btnFit) self->m_btnFit->setEnabled(!self->m_backendUrl.isEmpty());
+        emit self->spectrumChanged();   // re-enable the Inspector Fit button
         if (self->m_spectrumGeneration != gen) return;  // spectrum changed → stale fit
         if (!fit.valid) {
             QMessageBox::warning(self, u"Line Fit"_s, u"Fit failed:\n%1"_s.arg(fit.error));
@@ -887,6 +930,7 @@ void ProfileWidget::overlayLineFit(const BackendLineFitResult &fit)
                                 .arg(fit.fwhm, 0, 'g', 4).arg(fit.center, 0, 'g', 6));
 
     ui->plot1->replot();
+    emit spectrumChanged();   // push the fit summary into the Inspector's stats readout
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1155,6 +1199,7 @@ void ProfileWidget::refreshPinButtons()
         m_btnClearPins->setText(any ? u"Clear Pins (%1)"_s.arg(m_pinnedGraphs.size())
                                     : u"Clear Pins"_s);
     }
+    emit spectrumChanged();   // Inspector's Spectrum panel mirrors pin count / enabled state
 }
 
 // X-axis (coordinate) range from the actual key values, with a small margin.

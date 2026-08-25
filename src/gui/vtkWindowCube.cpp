@@ -966,6 +966,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
       profileWidget(nullptr),
       level(15)
 {
+    // #5: mint this window's product scope BEFORE any product can be registered — it salts
+    // every product id and tags each product's ownerId (see scopedProductId).
+    this->m_windowScope = ProductRegistry::instance().newOwnerScope();
     ui->setupUi(this);
     this->setupViewerToolbar();
 
@@ -1086,7 +1089,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     if (this->m_workspaceChrome) {
         this->m_workspaceChrome->installStatusRail();
         this->m_workspaceChrome->installSessionDock(
-                this->filepath, QFileInfo(this->filepath).fileName(), u"cube"_s);
+                this->filepath, QFileInfo(this->filepath).fileName(), u"cube"_s,
+                this->m_windowScope);
         // Tree-selection = pane-selection: activate (or mount) the matching pane.
         connect(this->m_workspaceChrome, &WorkspaceChrome::sessionRowActivated, this,
                 &vtkWindowCube::activateSessionView);
@@ -1101,6 +1105,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             syncSessionTreeToActivePane();
             applyMomentToolGate();   // §5.1b: probe/region/PV disabled while a moment is active
             updateActiveMapStats();   // 2D stats block follows the active pane
+            updateSpectrumInspectorControls();   // Spectrum panel follows the active pane
         });
         // setupInspector()/start() run at the END of the constructor — the
         // Analysis-tab tools reference QActions created later below.
@@ -2013,8 +2018,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 //   • recompute (a visible pane already shows it) → refresh that pane in place,
                 //   • else first FREE visible pane (no-steal),
                 //   • else park it hidden and let the tree row activate it later.
-                this->m_pvProductId =
-                        QStringLiteral("pv@%1").arg(this->datasetPersistKey());
+                this->m_pvProductId = this->scopedProductId(u"pv"_s);
                 this->registerAnalysisProduct(u"pv"_s, u"PV diagram"_s, {},
                                               this->pvDiagramWidget, this->m_pvProductId,
                                               u"pvdiagram"_s);
@@ -5933,6 +5937,11 @@ void vtkWindowCube::showLUTCustomizer3D()
     this->lutCustomizer3D->activateWindow();
 }
 
+QString vtkWindowCube::scopedProductId(const QString &stem) const
+{
+    return QStringLiteral("%1@%2#%3").arg(stem, this->datasetPersistKey(), this->m_windowScope);
+}
+
 QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QString &label,
                                                const QVariantMap &params, QWidget *window,
                                                const QString &stableId, const QString &renderer)
@@ -5947,6 +5956,7 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
     p.params = params;
     p.sourceDatasetId = this->remoteDatasetId;
     p.sessionId = this->remoteSessionId;
+    p.ownerId = this->m_windowScope;   // this window owns + renders the product
     p.window = window;
     const QString id = ProductRegistry::instance().registerProduct(std::move(p));
     if (this->m_workspaceChrome) {
@@ -5955,8 +5965,15 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
         // (§3.0b (c)). Also refresh the left rail's product count.
         this->m_workspaceChrome->selectSessionProduct(id);
         this->m_workspaceChrome->revealInspectorTab(2);
-        this->m_workspaceChrome->setSessionRailCount(
-                ProductRegistry::instance().productsFor(this->datasetPersistKey()).size());
+        // Count only THIS window's products (the registry is session-wide; a sibling window on
+        // the same dataset shares parentKey but has a different ownerId).
+        const auto dsProducts =
+                ProductRegistry::instance().productsFor(this->datasetPersistKey());
+        int mine = 0;
+        for (const AnalysisProduct &ap : dsProducts)
+            if (ap.ownerId == this->m_windowScope)
+                ++mine;
+        this->m_workspaceChrome->setSessionRailCount(mine);
     }
     return id;
 }
@@ -6692,6 +6709,11 @@ void vtkWindowCube::refreshLinkedFacetChips()
     // than one pane to link. Off → greyed (disabled) but their checked state is preserved,
     // so re-enabling restores the user's choice.
     const bool master = m_linkViews && m_paneCount > 1;
+    if (m_linkCameraChip) {
+        m_linkCameraChip->setEnabled(master);
+        QSignalBlocker b(m_linkCameraChip);
+        m_linkCameraChip->setChecked(m_linkCamera);
+    }
     if (m_linkChannelChip) {
         m_linkChannelChip->setEnabled(master);
         QSignalBlocker b(m_linkChannelChip);
@@ -7115,29 +7137,183 @@ void vtkWindowCube::propagatePaneRangeWithinWindow(int srcSlot)
 
 void vtkWindowCube::propagate2DCamera(int srcSlot)
 {
-    // Linked 2D: a pan/zoom on one 2-D IMAGE pane follows every other visible image pane —
-    // they share the same cube spatial grid (same WCS), so the world focal x/y + parallel
-    // scale copy directly. Gated on the Linked master. setCameraState is echo-guarded on the
-    // receiver, and a programmatic Render fires no InteractionEvent, so there is no loop.
-    if (!m_linkViews || srcSlot < 0 || srcSlot > 3)
+    // Linked 2D: a pan/zoom on one 2-D view follows every other visible 2-D view — image-product
+    // panes (Pane2DView) AND the 2-D slice (STEP6-P1). They share the same cube spatial grid, and
+    // the view is copied GUTTER-INDEPENDENTLY (data-area centre + world height, STEP6-P3), so panes
+    // with different colorbar gutters frame the same feature at the same zoom. Gated on the Linked
+    // master + camera facet. Receivers apply echo-guarded (or programmatic Render → no
+    // InteractionEvent), so there is no loop.
+    if (!m_linkViews || !m_linkCamera || srcSlot < 0 || srcSlot > 3)
         return;
-    Pane2DView *src = m_paneViews[srcSlot];
-    if (!src || m_slots[srcSlot].view.kind != ViewId::Product
-        || !m_products2d.contains(m_slots[srcSlot].view.productId))
-        return;   // only an image product has a 2-D camera to sync (spectra don't)
-    double focal[2] = { 0., 0. };
-    double scale = 0.;
-    src->cameraState(focal, scale);
+    double center[2] = { 0., 0. };
+    double worldHeight = 0.;
+    bool ok = false;
+    const ViewId sk = m_slots[srcSlot].view.kind;
+    if (sk == ViewId::Slice2D)
+        ok = this->sliceCameraNormalized(center, worldHeight);
+    else if (sk == ViewId::Product && m_paneViews[srcSlot]
+             && m_products2d.contains(m_slots[srcSlot].view.productId))
+        ok = m_paneViews[srcSlot]->cameraStateNormalized(center, worldHeight);
+    if (!ok || !(worldHeight > 0.))
+        return;   // spectra / PV / no geometry → nothing to sync
+    // STEP6-P2: remember the shared view so a later fit() on any linked pane re-adopts it.
+    m_linked2DCenter[0] = center[0];
+    m_linked2DCenter[1] = center[1];
+    m_linked2DWorldHeight = worldHeight;
+    m_linked2DValid = true;
+    this->applyNormalizedTo2DPanes(center, worldHeight, srcSlot);
+    // STEP6-P4: also push to linked peer WINDOWS on the same spatial grid.
+    this->broadcastLinked2DCamera(center, worldHeight);
+}
+
+void vtkWindowCube::applyNormalizedTo2DPanes(const double dataCenterXY[2], double worldHeight,
+                                             int skipSlot)
+{
     for (int j = 0; j < 4; ++j) {
-        if (j == srcSlot || !m_paneViews[j])
+        if (j == skipSlot)
             continue;
         if (!m_slots[j].frame || !m_slots[j].frame->isVisible())
             continue;   // don't render parked/hidden panes (they re-sync when shown)
-        if (m_slots[j].view.kind != ViewId::Product
-            || !m_products2d.contains(m_slots[j].view.productId))
-            continue;
-        m_paneViews[j]->setCameraState(focal, scale);
+        const ViewId jk = m_slots[j].view.kind;
+        if (jk == ViewId::Slice2D)
+            this->applySliceCameraNormalized(dataCenterXY, worldHeight);
+        else if (jk == ViewId::Product && m_paneViews[j]
+                 && m_products2d.contains(m_slots[j].view.productId))
+            m_paneViews[j]->setCameraStateNormalized(dataCenterXY, worldHeight);
     }
+}
+
+void vtkWindowCube::reassertLinked2DCamera(int slot)
+{
+    // STEP6-P2: a pane just re-fitted (range/LUT/resize letterbox), discarding the shared zoom.
+    // If Linked·camera is on and we HAVE a shared 2D camera, re-apply it so the pane rejoins the
+    // group's view instead of snapping back to full-frame. Applies echo-guarded and does not call
+    // fit(), so this can't recurse. First user pan/zoom seeds m_linked2DValid.
+    if (!m_linkViews || !m_linkCamera || !m_linked2DValid || slot < 0 || slot > 3)
+        return;
+    if (!m_slots[slot].frame || !m_slots[slot].frame->isVisible())
+        return;
+    const ViewId k = m_slots[slot].view.kind;
+    if (k == ViewId::Slice2D)
+        this->applySliceCameraNormalized(m_linked2DCenter, m_linked2DWorldHeight);
+    else if (k == ViewId::Product && m_paneViews[slot]
+             && m_products2d.contains(m_slots[slot].view.productId))
+        m_paneViews[slot]->setCameraStateNormalized(m_linked2DCenter, m_linked2DWorldHeight);
+}
+
+int vtkWindowCube::sliceSlot() const
+{
+    for (int i = 0; i < 4; ++i)
+        if (m_slots[i].view.kind == ViewId::Slice2D && m_slots[i].frame
+            && m_slots[i].frame->isVisible())
+            return i;
+    return -1;
+}
+
+bool vtkWindowCube::sliceCameraNormalized(double dataCenterXY[2], double &worldHeight) const
+{
+    // STEP6-P1: the slice viewport's gutter-independent camera — same math as Pane2DView, on the
+    // singular slice renderer + its own gutter (gutter2dFor(slice)).
+    if (!this->sliceWin)
+        return false;
+    auto *rc = this->sliceWin->GetRenderers();
+    auto *renderer = rc ? rc->GetFirstRenderer() : nullptr;
+    if (!renderer)
+        return false;
+    const int *size = renderer->GetSize();
+    if (!size)
+        return false;
+    auto *image = vtkImageData::SafeDownCast(
+            this->remoteSliceDisplaySource->GetOutputDataObject(0));
+    const auto data = CubeGeom::dataAreaFor(size, image, this->gutter2dFor(/*slice=*/true));
+    return CubeGeom::readNormalizedCamera(renderer, data, dataCenterXY, worldHeight);
+}
+
+void vtkWindowCube::applySliceCameraNormalized(const double dataCenterXY[2], double worldHeight,
+                                               bool render)
+{
+    if (!this->sliceWin)
+        return;
+    auto *rc = this->sliceWin->GetRenderers();
+    auto *renderer = rc ? rc->GetFirstRenderer() : nullptr;
+    if (!renderer)
+        return;
+    const int *size = renderer->GetSize();
+    if (!size)
+        return;
+    auto *image = vtkImageData::SafeDownCast(
+            this->remoteSliceDisplaySource->GetOutputDataObject(0));
+    const auto data = CubeGeom::dataAreaFor(size, image, this->gutter2dFor(/*slice=*/true));
+    double focalXY[2] = { 0., 0. }, parScale = 0.;
+    if (!CubeGeom::normalizedToFocalScale(size, data, dataCenterXY, worldHeight, focalXY, parScale))
+        return;
+    auto *cam = renderer->GetActiveCamera();
+    double f[3] = { 0., 0., 0. }, p[3] = { 0., 0., 0. };
+    cam->GetFocalPoint(f);
+    cam->GetPosition(p);
+    f[0] = focalXY[0]; f[1] = focalXY[1];
+    p[0] = focalXY[0]; p[1] = focalXY[1];   // parallel down-Z: keep the z components
+    cam->SetFocalPoint(f);
+    cam->SetPosition(p);
+    cam->SetParallelScale(parScale);
+    // A programmatic camera set + Render fires no InteractionEvent, so onSliceCameraInteraction
+    // won't echo. Record the new pan/zoom pose so a following window/level drag (which does NOT
+    // move the camera) is correctly ignored by onSliceCameraInteraction. Remember this
+    // as the slice's fit baseline so layout2dPaneFor's guard treats the shared zoom as already
+    // fitted and doesn't snap it back.
+    this->captureSliceCamPose();
+    this->m_slice2dFitSize = { size[0], size[1] };
+    this->m_slice2dFitRight = this->gutter2dFor(/*slice=*/true).right;
+    if (render)
+        this->sliceWin->Render();
+}
+
+void vtkWindowCube::captureSliceCamPose()
+{
+    // Record the slice camera's pan/zoom (focal x/y + parallel scale) as the last-seen pose, so
+    // onSliceCameraInteraction can tell a real pan/zoom from a window/level drag or a bare
+    // clipping-range bump. Called after the initial fit + every programmatic slice-camera set.
+    if (!this->sliceWin)
+        return;
+    auto *rc = this->sliceWin->GetRenderers();
+    auto *renderer = rc ? rc->GetFirstRenderer() : nullptr;
+    auto *cam = renderer ? renderer->GetActiveCamera() : nullptr;
+    if (!cam)
+        return;
+    double f[3] = { 0., 0., 0. };
+    cam->GetFocalPoint(f);
+    m_sliceCamFocalX = f[0];
+    m_sliceCamFocalY = f[1];
+    m_sliceCamScale = cam->GetParallelScale();
+}
+
+void vtkWindowCube::onSliceCameraInteraction()
+{
+    // STEP6-P1: the user panned/zoomed the 2-D slice → propagate to the linked image panes. But
+    // vtkInteractorStyleImage also fires InteractionEvent on a window/level LEFT-drag (no pan/zoom),
+    // and overlays bump the camera via ResetCameraClippingRange; compare the actual PAN/ZOOM POSE
+    // (not the MTime) so only a real move propagates. The pose is tracked UNCONDITIONALLY (even
+    // unlinked) so it never goes stale.
+    if (!this->sliceWin)
+        return;
+    auto *rc = this->sliceWin->GetRenderers();
+    auto *renderer = rc ? rc->GetFirstRenderer() : nullptr;
+    auto *cam = renderer ? renderer->GetActiveCamera() : nullptr;
+    if (!cam)
+        return;
+    double f[3] = { 0., 0., 0. };
+    cam->GetFocalPoint(f);
+    const double scale = cam->GetParallelScale();
+    const bool moved = (f[0] != m_sliceCamFocalX || f[1] != m_sliceCamFocalY
+                        || scale != m_sliceCamScale);
+    m_sliceCamFocalX = f[0];
+    m_sliceCamFocalY = f[1];
+    m_sliceCamScale = scale;
+    if (!moved || !m_linkViews || !m_linkCamera)
+        return;   // window/level / clipping-only / not linked → nothing to propagate
+    const int s = this->sliceSlot();
+    if (s >= 0)
+        this->propagate2DCamera(s);
 }
 
 void vtkWindowCube::setActivePane(int pane)
@@ -7436,8 +7612,9 @@ bool vtkWindowCube::eventFilter(QObject *watched, QEvent *event)
             else if (k == ViewId::Product) {
                 // A Product slot renders through its Pane2DView (image), its ProfileWidget
                 // (spectrum, #5), or the shared PvDiagramWidget (PV) — match whichever it uses.
-                if (m_products1d.contains(m_slots[i].view.productId) && m_paneSpectra[i])
-                    paneW = m_paneSpectra[i];
+                if (m_products1d.contains(m_slots[i].view.productId) && m_paneSpectra[i] && rw
+                    && (rw == m_paneSpectra[i] || m_paneSpectra[i]->isAncestorOf(rw)))
+                    paneW = rw;   // click landed on the spectrum widget or its child QCustomPlot
                 else if (!m_pvProductId.isEmpty() && m_slots[i].view.productId == m_pvProductId
                          && pvDiagramWidget && rw
                          && (rw == pvDiagramWidget || pvDiagramWidget->isAncestorOf(rw)))
@@ -7530,6 +7707,22 @@ ProfileWidget *vtkWindowCube::ensureSlotSpectrumView(int slot, const QString &xL
         sp->setUsageMode(ProfileWidget::UsageMode::RegionStatic);   // static, non-live display
         sp->setupSpectrumPlot(xLabel, yLabel);
         sp->installEventFilter(this);   // click-to-activate (§5.1)
+        // Qt event filters are NOT recursive: a click lands on the child QCustomPlot, so filter
+        // the descendants too or a non-active spectrum pane's body won't click-to-activate — then
+        // the Inspector's Spectrum controls would target the wrong pane. Built by
+        // setupSpectrumPlot above, so the children exist now.
+        const auto spKids = sp->findChildren<QWidget *>();
+        for (QWidget *kid : spKids)
+            kid->installEventFilter(this);
+        // The spectrum controls now live in Inspector › Analysis (they drove this widget's
+        // clutter); hide the inline chrome and give it the backend so the Inspector's Fit works.
+        sp->setPaneChromeHidden(true);
+        sp->setBackend(this->remoteBackendUrl, this->remoteBackendToken);
+        // Keep the Inspector's Spectrum panel live when THIS pane is the active target.
+        QObject::connect(sp, &ProfileWidget::spectrumChanged, this, [this, sp]() {
+            if (m_specInspTarget == sp)
+                updateSpectrumInspectorControls();
+        });
         m_paneSpectra[slot] = sp;
     }
     return m_paneSpectra[slot];
@@ -7579,6 +7772,10 @@ Pane2DView *vtkWindowCube::ensureSlotProductView(int slot)
         // Linked 2D: a pan/zoom on this pane syncs the same-WCS image panes.
         QObject::connect(pv, &Pane2DView::cameraChanged, this,
                          [this, slot]() { propagate2DCamera(slot); });
+        // STEP6-P2: after a fit() re-letterboxes this pane, re-adopt the shared Linked-2D camera
+        // (if any) so range/LUT/resize doesn't break the shared zoom.
+        QObject::connect(pv, &Pane2DView::fitted, this,
+                         [this, slot]() { reassertLinked2DCamera(slot); });
         m_paneViews[slot] = pv;
     }
     return m_paneViews[slot];
@@ -7684,7 +7881,7 @@ QString vtkWindowCube::addImageProduct(const QString &kind, const QString &stabl
 {
     if (!img)
         return QString();
-    const QString productId = QStringLiteral("%1@%2").arg(stableKey, this->datasetPersistKey());
+    const QString productId = this->scopedProductId(stableKey);
     const bool recompute = m_products2d.contains(productId);
 
     Product2D cached;
@@ -7749,8 +7946,7 @@ void vtkWindowCube::pinCurrentSpectrum()
         return;
     }
     const int n = ++m_pinnedSpectrumCount;
-    const QString productId =
-            QStringLiteral("spectrum%1@%2").arg(n).arg(this->datasetPersistKey());
+    const QString productId = this->scopedProductId(QStringLiteral("spectrum%1").arg(n));
     const QString label = QStringLiteral("Spectrum %1").arg(n);
     Spectrum1D s;
     s.key = m_lastProbeKey;
@@ -7793,7 +7989,7 @@ QString vtkWindowCube::addSpectrumProduct(const QString &kind, const QString &st
     // a recompute of the same stableKey. Reuse this for any tool that yields a 1-D spectrum.
     if (values.isEmpty())
         return QString();
-    const QString productId = QStringLiteral("%1@%2").arg(stableKey, this->datasetPersistKey());
+    const QString productId = this->scopedProductId(stableKey);
     const bool recompute = m_products1d.contains(productId);
 
     Spectrum1D s;
@@ -7838,7 +8034,7 @@ void vtkWindowCube::startLiveSpectrum()
     // UNLESS it's the source 2D Slice (never steal what the user is hovering) — then hint.
     if (!m_spectrumLiveId.isEmpty())
         return;
-    m_spectrumLiveId = QStringLiteral("spectrumlive@%1").arg(this->datasetPersistKey());
+    m_spectrumLiveId = this->scopedProductId(u"spectrumlive"_s);
     Spectrum1D s;
     s.xLabel = this->spectralAxisTitle().isEmpty() ? u"Spectral axis"_s : this->spectralAxisTitle();
     s.yLabel = u"Intensity"_s;
@@ -8601,6 +8797,7 @@ void vtkWindowCube::refreshPaneChrome()
         refreshPaneLutStrip(i);            // §5.4: keep each header strip on its pane's LUT
     m_linkNoReceiverHintShown = false;     // §5.5: pane composition changed → re-arm the hint
     updateActiveMapStats();          // active pane view may have changed → refresh 2D stats
+    updateSpectrumInspectorControls();   // Spectrum panel follows the active pane's product
     pushProductPaneBadges();         // (#4) tree pane-number badges follow the pane layout
 }
 
@@ -8728,15 +8925,30 @@ void vtkWindowCube::setupPaneChrome()
                                  .arg(fgMuted, pri));
         return c;
     };
+    auto makeFacetSep = [&]() {
+        auto *s = new QLabel(u"·"_s, toolbar);
+        s->setStyleSheet(QStringLiteral("color:%1; font-family:'JetBrains Mono','SF Mono',"
+                                        "monospace; font-size:10px;").arg(fgMuted));
+        return s;
+    };
+    // STEP6-P5: a "camera" facet — camera sync used to be always-on when Linked; now it's a
+    // toggle (gates BOTH 2D-pane and 3D camera, intra- and cross-window).
+    m_linkCameraChip = makeFacetChip(u"camera"_s);
+    m_linkCameraChip->setToolTip(u"Linked: sync pan / zoom / rotation across panes and windows"_s);
+    QObject::connect(m_linkCameraChip, &QToolButton::toggled, this, [this](bool on) {
+        m_linkCamera = on;
+        if (!on)
+            m_linked2DValid = false;   // STEP6-P2: drop the shared 2-D camera so re-enabling
+                                        // camera sync doesn't snap panes back to a stale zoom
+    });
+    tb->addWidget(m_linkCameraChip);
+    tb->addWidget(makeFacetSep());
     m_linkChannelChip = makeFacetChip(u"channel"_s);
     m_linkChannelChip->setToolTip(u"Linked: sync the channel / slice index across panes"_s);
     QObject::connect(m_linkChannelChip, &QToolButton::toggled, this,
                      [this](bool on) { m_linkChannel = on; });
     tb->addWidget(m_linkChannelChip);
-    auto *facetSep = new QLabel(u"·"_s, toolbar);
-    facetSep->setStyleSheet(QStringLiteral("color:%1; font-family:'JetBrains Mono','SF Mono',"
-                                           "monospace; font-size:10px;").arg(fgMuted));
-    tb->addWidget(facetSep);
+    tb->addWidget(makeFacetSep());
     m_linkLutChip = makeFacetChip(u"LUT"_s);
     m_linkLutChip->setToolTip(u"Linked: propagate colour map / range to panes on the same product"_s);
     QObject::connect(m_linkLutChip, &QToolButton::toggled, this,
@@ -9051,6 +9263,10 @@ void vtkWindowCube::setupInspector()
     add(u"Sources & Kinematics"_s, u"Kinematic Lasso"_s, this->m_actKinematicLasso);
     add(u"Sources & Kinematics"_s, u"Kinematic Model Overlay…"_s, this->m_actKinematicModel);
 
+    // Migrated spectrum controls at the TOP of the Analysis tab (shown only while the active
+    // pane is a spectrum product). The pane itself is left chrome-less.
+    this->buildSpectrumInspectorControls(panel);
+
     // (Pane-layout 1/2/4 + Linked now live in the centre toolbar — setupPaneChrome.)
     // Wire the toolbar Linked chip ↔ m_actLinkViews now that the action exists.
     if (this->m_paneLinkedBtn && this->m_actLinkViews) {
@@ -9071,6 +9287,154 @@ void vtkWindowCube::setupInspector()
     // such a widget paints at (0,0) over the docks. Reparent it into the hidden
     // holder so it can never paint. (See vtkWindowCube_Setup.cpp bug-class note.)
     this->parkOrphanDirectChildren();
+}
+
+void vtkWindowCube::buildSpectrumInspectorControls(InspectorPanel *panel)
+{
+    using namespace Qt::StringLiterals;
+    if (!panel)
+        return;
+
+    auto *section = new QWidget();
+    auto *col = new QVBoxLayout(section);
+    col->setContentsMargins(4, 4, 4, 8);
+    col->setSpacing(6);
+
+    const QLatin1StringView fgMuted(VisivoTheme::kOnSurfaceVariant());
+    const QLatin1StringView fg(VisivoTheme::kOnSurface());
+
+    auto *caption = new QLabel(u"SPECTRUM"_s);
+    caption->setStyleSheet(QStringLiteral("color:%1; %2 padding:2px 2px;")
+                                   .arg(fgMuted, VisivoTheme::sectionHeaderCss()));
+    col->addWidget(caption);
+
+    m_specInspTitle = new QLabel(u"—"_s);
+    m_specInspTitle->setStyleSheet(
+            QStringLiteral("color:%1; font-family:'Lato'; font-size:12px; font-weight:600;").arg(fg));
+    m_specInspTitle->setWordWrap(true);
+    col->addWidget(m_specInspTitle);
+
+    // Smoothing row (same kernel codes as ProfileWidget's inline combo).
+    auto *smoothRow = new QHBoxLayout();
+    smoothRow->setSpacing(6);
+    auto *smoothLabel = new QLabel(u"Smooth:"_s);
+    smoothLabel->setStyleSheet(QStringLiteral("color:%1; font-size:11px;").arg(fgMuted));
+    m_specInspSmooth = new QComboBox();
+    m_specInspSmooth->addItem(u"None"_s, 0);
+    m_specInspSmooth->addItem(u"Hanning"_s, 1);
+    m_specInspSmooth->addItem(u"Boxcar 3"_s, 3);
+    m_specInspSmooth->addItem(u"Boxcar 5"_s, 5);
+    m_specInspSmooth->addItem(u"Boxcar 7"_s, 7);
+    m_specInspSmooth->addItem(u"Gaussian σ=1"_s, 10);
+    m_specInspSmooth->addItem(u"Gaussian σ=2"_s, 20);
+    m_specInspSmooth->setToolTip(u"Spectral smoothing kernel (display only; CSV export stays raw)."_s);
+    smoothRow->addWidget(smoothLabel);
+    smoothRow->addWidget(m_specInspSmooth, 1);
+    col->addLayout(smoothRow);
+
+    // Action buttons in a 2-column grid.
+    const QString btnCss = VisivoTheme::sidebarToolButtonStyleSheet();
+    auto mkBtn = [&](const QString &text, const QString &tip) {
+        auto *b = new QPushButton(text);
+        b->setStyleSheet(btnCss);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        if (!tip.isEmpty())
+            b->setToolTip(tip);
+        return b;
+    };
+    m_specInspFit        = mkBtn(u"Fit Gaussian"_s,
+                                 u"Fit a single Gaussian (+ linear baseline) via the backend."_s);
+    m_specInspLoadLines  = mkBtn(u"Load Lines…"_s,
+                                 u"Overlay spectral-line markers from a CSV (frequency,label)."_s);
+    m_specInspClearLines = mkBtn(u"Clear Lines"_s, u"Remove the line-ID overlay."_s);
+    m_specInspPin        = mkBtn(u"Pin Spectrum"_s,
+                                 u"Pin the current curve as a comparison overlay."_s);
+    m_specInspClearPins  = mkBtn(u"Clear Pins"_s, u"Remove all pinned comparison curves."_s);
+    m_specInspSaveCsv    = mkBtn(u"Save CSV…"_s, u"Export the raw spectrum as CSV."_s);
+    m_specInspSavePng    = mkBtn(u"Save PNG…"_s, u"Export the plot as a PNG image."_s);
+
+    auto *grid = new QGridLayout();
+    grid->setHorizontalSpacing(6);
+    grid->setVerticalSpacing(4);
+    grid->addWidget(m_specInspFit,        0, 0);
+    grid->addWidget(m_specInspLoadLines,  0, 1);
+    grid->addWidget(m_specInspClearLines, 1, 0);
+    grid->addWidget(m_specInspPin,        1, 1);
+    grid->addWidget(m_specInspClearPins,  2, 0);
+    grid->addWidget(m_specInspSaveCsv,    2, 1);
+    grid->addWidget(m_specInspSavePng,    3, 0);
+    col->addLayout(grid);
+
+    m_specInspStats = new QLabel(u"—"_s);
+    m_specInspStats->setStyleSheet(
+            QStringLiteral("color:%1; font-size:10px; font-family:'JetBrains Mono','SF Mono',monospace;")
+                    .arg(fg));
+    m_specInspStats->setWordWrap(true);
+    m_specInspStats->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    col->addWidget(m_specInspStats);
+
+    // Wire the controls ONCE to the CURRENT target (m_specInspTarget), so no per-pane rewiring is
+    // needed — retargeting just repoints the pointer + reflects state.
+    QObject::connect(m_specInspSmooth, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                     [this](int) {
+                         if (m_specInspTarget && m_specInspSmooth)
+                             m_specInspTarget->applySmoothingCode(
+                                     m_specInspSmooth->currentData().toInt());
+                     });
+    auto onTarget = [this](void (ProfileWidget::*fn)()) {
+        return [this, fn]() { if (m_specInspTarget) (m_specInspTarget->*fn)(); };
+    };
+    QObject::connect(m_specInspFit,        &QPushButton::clicked, this, onTarget(&ProfileWidget::fitGaussianNow));
+    QObject::connect(m_specInspLoadLines,  &QPushButton::clicked, this, onTarget(&ProfileWidget::loadLinesFromFile));
+    QObject::connect(m_specInspClearLines, &QPushButton::clicked, this, onTarget(&ProfileWidget::clearLines));
+    QObject::connect(m_specInspPin,        &QPushButton::clicked, this,
+                     [this]() { if (m_specInspTarget) m_specInspTarget->pinCurrentSpectrum(); });
+    QObject::connect(m_specInspClearPins,  &QPushButton::clicked, this,
+                     [this]() { if (m_specInspTarget) m_specInspTarget->clearPinnedSpectra(); });
+    QObject::connect(m_specInspSaveCsv,    &QPushButton::clicked, this, onTarget(&ProfileWidget::saveSpectrumCsvNow));
+    QObject::connect(m_specInspSavePng,    &QPushButton::clicked, this, onTarget(&ProfileWidget::saveSpectrumPngNow));
+
+    m_spectrumInspector = section;
+    panel->addAnalysisSection(section);
+    section->setVisible(false);   // shown only when the active pane is a spectrum
+}
+
+void vtkWindowCube::updateSpectrumInspectorControls()
+{
+    using namespace Qt::StringLiterals;
+    if (!m_spectrumInspector)
+        return;
+    // Target = the active pane's spectrum ProfileWidget, if the active pane shows a spectrum.
+    ProfileWidget *sp = nullptr;
+    if (m_activePane >= 0 && m_activePane < 4
+        && m_slots[m_activePane].view.kind == ViewId::Product
+        && m_products1d.contains(m_slots[m_activePane].view.productId))
+        sp = m_paneSpectra[m_activePane];
+    m_specInspTarget = sp;
+    if (!sp) {
+        m_spectrumInspector->setVisible(false);
+        return;
+    }
+    m_spectrumInspector->setVisible(true);
+    m_specInspTitle->setText(m_products1d[m_slots[m_activePane].view.productId].label);
+    {   // reflect the pane's current smoothing without echoing back into it
+        QSignalBlocker b(m_specInspSmooth);
+        const int idx = m_specInspSmooth->findData(sp->smoothingCode());
+        if (idx >= 0)
+            m_specInspSmooth->setCurrentIndex(idx);
+    }
+    const bool haveSpec = sp->hasSpectrum();
+    m_specInspFit->setEnabled(haveSpec && sp->canFit());
+    m_specInspPin->setEnabled(haveSpec);
+    m_specInspClearPins->setEnabled(sp->pinnedSpectrumCount() > 0);
+    m_specInspClearPins->setText(sp->pinnedSpectrumCount() > 0
+                                         ? u"Clear Pins (%1)"_s.arg(sp->pinnedSpectrumCount())
+                                         : u"Clear Pins"_s);
+    m_specInspSaveCsv->setEnabled(haveSpec);
+    m_specInspSavePng->setEnabled(haveSpec);
+    const QString stats = sp->statsText();
+    m_specInspStats->setText(stats.isEmpty() ? u"—"_s : stats);
 }
 
 void vtkWindowCube::parkOrphanDirectChildren()
@@ -9536,7 +9900,7 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
     // once. renderer="moment2d" marks it showable in a pane. A same-order recompute
     // replaces the cache entry (QHash::insert) and re-registers the id (productUpdated).
     const QString productId =
-            QStringLiteral("moment%1@%2").arg(result.order).arg(this->datasetPersistKey());
+            this->scopedProductId(QStringLiteral("moment%1").arg(result.order));
     const QString productLabel = QStringLiteral("Moment %1").arg(result.order);
 
     // Colormap + range default BY KIND, not inherited from the cube (§3.2). A velocity
@@ -9905,7 +10269,7 @@ void vtkWindowCube::changeImageRenderer()
             if (momentId.isEmpty())
                 momentId = m_momentPipelineProductId;
             if (momentId.isEmpty())
-                momentId = QStringLiteral("moment0@%1").arg(this->datasetPersistKey());
+                momentId = this->scopedProductId(u"moment0"_s);
             m_slots[twoDSlot].view = slice ? PaneView{ ViewId::Slice2D, {} }
                                            : PaneView{ ViewId::Product, momentId };
             clearViewFromOtherSlots(twoDSlot);

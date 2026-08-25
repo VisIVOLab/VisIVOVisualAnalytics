@@ -25,6 +25,12 @@ class SessionDataTree : public QWidget
 public:
     explicit SessionDataTree(QWidget *parent = nullptr);
 
+    /// Bind this tree to its owning viewer window's product scope. The ProductRegistry is
+    /// session-wide, so without this a second viewer on the same dataset would show the first's
+    /// products (whose render widgets live in the OTHER window). With it, the tree ignores any
+    /// product whose ownerId differs. Empty scope (default) = show everything (back-compat).
+    void setOwnerScope(const QString &ownerScope) { m_ownerScope = ownerScope; }
+
     /// Ensure a root exists for this dataset (and select it). Safe to call once
     /// per viewer window at startup. @p kind drives the small badge ("CUBE"/…).
     void setCurrentDataset(const QString &parentKey, const QString &label,
@@ -72,6 +78,8 @@ private slots:
     void onActivated(const QModelIndex &index);
 
 private:
+    /// True when @p product belongs to this tree's owner window (or the tree is unscoped).
+    bool ownsProduct(const AnalysisProduct &product) const;
     QStandardItem *datasetItem(const QString &parentKey, const QString &label,
                                const QString &kind, bool createIfMissing);
     void upsertProduct(const AnalysisProduct &product);
@@ -83,6 +91,7 @@ private:
     QTreeView *m_tree = nullptr;
     QStandardItemModel *m_model = nullptr;
     bool m_suppressActivate = false;   ///< true while a programmatic reverse-sync selection runs
+    QString m_ownerScope;              ///< this tree's window scope; empty = unscoped (show all)
 };
 
 #endif // SESSIONDATATREE_H

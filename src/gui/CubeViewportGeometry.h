@@ -92,6 +92,19 @@ bool fitImageInGutter(vtkRenderer *renderer, vtkImageData *image, const ImageGut
 void layoutColorbarInGutter(vtkScalarBarActor *bar, vtkRenderer *renderer,
                             const ImageGutter &g, const ImageRect &dataArea, double dpr = 1.);
 
+/// STEP6-P3: gutter-INDEPENDENT 2-D parallel camera, so a pan/zoom copied between panes with
+/// different gutters (different colorbar widths) frames the SAME feature at the SAME zoom.
+/// readNormalizedCamera reads the renderer's camera as the world point at the DATA-AREA centre
+/// (@p dataCenterXY) plus the world height that fills the data area (@p worldHeight).
+/// normalizedToFocalScale is the pure inverse: given a target pane's viewport @p size + its own
+/// @p dataArea, it produces the focal x/y + parallel scale to reproduce that view. Both return
+/// false on degenerate geometry (invalid data area, zero height, non-positive scale/size).
+bool readNormalizedCamera(vtkRenderer *renderer, const ImageRect &dataArea,
+                          double dataCenterXY[2], double &worldHeight);
+bool normalizedToFocalScale(const int size[2], const ImageRect &dataArea,
+                            const double dataCenterXY[2], double worldHeight,
+                            double focalXY[2], double &parallelScale);
+
 }  // namespace CubeGeom
 
 #endif  // CubeViewportGeometry_h

@@ -51,6 +51,11 @@ public:
     void addToolGroup(const QString &caption);
     void addTool(const QString &groupCaption, const QString &label, QAction *action);
 
+    /// Analysis tab: mount a context section at the TOP of the tab (above the tool groups) —
+    /// used for controls that act on the ACTIVE pane (e.g. the migrated Spectrum controls). The
+    /// caller owns the widget and toggles its visibility as the active pane changes.
+    void addAnalysisSection(QWidget *section);
+
     /// Select / query the active tab (0 Properties, 1 Analysis, 2 Provenance).
     /// Used by the collapsible-rail entries and the auto-expand triggers (§4.1.4).
     void showTab(int index);

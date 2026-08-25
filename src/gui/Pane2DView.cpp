@@ -541,6 +541,44 @@ void Pane2DView::setCameraState(const double focalXY[2], double parallelScale)
     m_applyingCamera = false;
 }
 
+bool Pane2DView::cameraStateNormalized(double dataCenterXY[2], double &worldHeight) const
+{
+    // STEP6-P3: express the view independently of THIS pane's gutter — as the world point at the
+    // data-area centre + the world height filling the data area. Cancels the colorbar-column
+    // offset so a copy between different-gutter panes frames identically.
+    if (!m_window || !m_renderer || !m_source)
+        return false;
+    const int *size = m_renderer->GetSize();
+    if (!size || size[0] <= 0 || size[1] <= 0)
+        return false;
+    auto *image = vtkImageData::SafeDownCast(m_source->GetOutputDataObject(0));
+    const double d = dpr();
+    const auto gutter = computeGutter(m_window, m_lut, m_showWcsAxes, d);
+    const auto data = CubeGeom::dataAreaFor(size, image, gutter);
+    return CubeGeom::readNormalizedCamera(m_renderer, data, dataCenterXY, worldHeight);
+}
+
+void Pane2DView::setCameraStateNormalized(const double dataCenterXY[2], double worldHeight)
+{
+    // STEP6-P3: inverse of cameraStateNormalized — convert the gutter-independent (data-centre,
+    // world-height) view back to THIS pane's own focal + parallel scale using its own gutter.
+    if (!m_window || !m_renderer || !m_source)
+        return;
+    if (!std::isfinite(dataCenterXY[0]) || !std::isfinite(dataCenterXY[1]) || !(worldHeight > 0.))
+        return;
+    const int *size = m_renderer->GetSize();
+    if (!size || size[0] <= 0 || size[1] <= 0)
+        return;
+    auto *image = vtkImageData::SafeDownCast(m_source->GetOutputDataObject(0));
+    const double d = dpr();
+    const auto gutter = computeGutter(m_window, m_lut, m_showWcsAxes, d);
+    const auto data = CubeGeom::dataAreaFor(size, image, gutter);
+    double focalXY[2] = { 0., 0. }, parScale = 0.;
+    if (!CubeGeom::normalizedToFocalScale(size, data, dataCenterXY, worldHeight, focalXY, parScale))
+        return;
+    this->setCameraState(focalXY, parScale);   // reuse the echo-guarded focal/scale setter
+}
+
 void Pane2DView::setWcsContext(WcsContext ctx)
 {
     m_wcs = std::move(ctx);
@@ -586,8 +624,8 @@ void Pane2DView::fit(bool force)
 
     auto *image = vtkImageData::SafeDownCast(m_source->GetOutputDataObject(0));
     CubeGeom::ImageRect dataArea;
-    const bool fitted = CubeGeom::fitImageInGutter(m_renderer, image, gutter, &dataArea);
-    if (fitted) {
+    const bool didFit = CubeGeom::fitImageInGutter(m_renderer, image, gutter, &dataArea);
+    if (didFit) {
         CubeGeom::layoutColorbarInGutter(m_colorbar, m_renderer, gutter, dataArea, d);
         m_fitSize = viewport;
         m_fitRight = gutter.right;
@@ -600,6 +638,11 @@ void Pane2DView::fit(bool force)
                                std::numeric_limits<double>::quiet_NaN() };
     m_overlayViewportSize = { -1, -1 };
     m_window->Render();
+    // STEP6-P2: a fit() re-letterboxes to this pane's own bounds, discarding any shared Linked-2D
+    // zoom/pan. Tell the window so it can re-assert the shared camera on a linked receiver. Guarded
+    // by m_applyingCamera so a re-assert's own fit (if any) can't recurse.
+    if (didFit && !m_applyingCamera)
+        emit this->fitted();
 }
 
 void Pane2DView::updateWcsOverlay()

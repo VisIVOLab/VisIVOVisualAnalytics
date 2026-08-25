@@ -825,6 +825,11 @@ void vtkWindowCube::centerViewOnCatalogueSource(int index, double zoomFactor)
     }
     renderer->ResetCameraClippingRange();
     window->Render();
+    // STEP6-P1: this directly moved the 2-D slice camera. If it's the slice, let the linked image
+    // panes follow the centering AND record the new pan/zoom pose, so a later window/level drag
+    // isn't mistaken for a fresh camera move. onSliceCameraInteraction handles both.
+    if (window == this->sliceWin)
+        this->onSliceCameraInteraction();
 }
 
 void vtkWindowCube::syncCatalogueTableSelection(int index)

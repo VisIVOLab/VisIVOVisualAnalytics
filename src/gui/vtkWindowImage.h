@@ -167,6 +167,8 @@ public:
 private:
     Ui::vtkWindowImage *ui;
     WorkspaceChrome *m_workspaceChrome = nullptr;   ///< shared command-bar + status-rail chrome
+    QString m_windowScope;   ///< per-window product scope so this tree ignores sibling windows'
+                             ///< products in the session-wide registry (see SessionDataTree).
     // Former SidebarPanel pages, migrated into the Inspector's Properties tab
     // (design #1d). Built in setupSidebar(), reparented in setupInspector().
     QPointer<QWidget> m_hiddenPageHolder;  ///< hidden container so no page is a free child of the window

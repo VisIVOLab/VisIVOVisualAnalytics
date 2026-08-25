@@ -273,7 +273,8 @@ void WorkspaceChrome::installStatusRail()
 
 void WorkspaceChrome::installSessionDock(const QString &datasetKey,
                                          const QString &datasetLabel,
-                                         const QString &datasetKind)
+                                         const QString &datasetKind,
+                                         const QString &ownerScope)
 {
     if (!m_window || m_sessionDock)
         return;
@@ -294,6 +295,9 @@ void WorkspaceChrome::installSessionDock(const QString &datasetKey,
     vbox->setSpacing(0);
 
     m_sessionTree = new SessionDataTree(container);
+    // Bind the tree to this window's product scope BEFORE seeding it, so a second viewer on the
+    // same dataset never shows this one's products (session-wide registry).
+    m_sessionTree->setOwnerScope(ownerScope);
     // Tree takes its natural height (flex:none) — NOT the layout stretch, or it
     // leaves a big gap above LAYERS. The stretch goes at the bottom of the panel.
     m_sessionTree->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);

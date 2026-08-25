@@ -308,4 +308,52 @@ void layoutColorbarInGutter(vtkScalarBarActor *bar, vtkRenderer *renderer,
     }
 }
 
+bool readNormalizedCamera(vtkRenderer *renderer, const ImageRect &dataArea,
+                          double dataCenterXY[2], double &worldHeight)
+{
+    if (!renderer || !dataArea.valid || dataArea.height <= 0.) {
+        return false;
+    }
+    const int *size = renderer->GetSize();
+    if (!size || size[0] <= 0 || size[1] <= 0) {
+        return false;
+    }
+    auto *cam = renderer->GetActiveCamera();
+    if (!cam) {
+        return false;
+    }
+    const double parScale = cam->GetParallelScale();
+    if (!(parScale > 0.)) {
+        return false;
+    }
+    double f[3] = { 0., 0., 0. };
+    cam->GetFocalPoint(f);
+    const double wpp = 2. * parScale / static_cast<double>(size[1]);   // world per device px
+    worldHeight = dataArea.height * wpp;
+    const double dataCx = dataArea.x + 0.5 * dataArea.width;
+    const double dataCy = dataArea.y + 0.5 * dataArea.height;
+    dataCenterXY[0] = f[0] + (dataCx - 0.5 * size[0]) * wpp;
+    dataCenterXY[1] = f[1] + (dataCy - 0.5 * size[1]) * wpp;
+    return true;
+}
+
+bool normalizedToFocalScale(const int size[2], const ImageRect &dataArea,
+                            const double dataCenterXY[2], double worldHeight,
+                            double focalXY[2], double &parallelScale)
+{
+    if (!size || size[0] <= 0 || size[1] <= 0 || !dataArea.valid || dataArea.height <= 0.) {
+        return false;
+    }
+    if (!std::isfinite(dataCenterXY[0]) || !std::isfinite(dataCenterXY[1]) || !(worldHeight > 0.)) {
+        return false;
+    }
+    const double wpp = worldHeight / dataArea.height;                  // world per device px
+    parallelScale = wpp * static_cast<double>(size[1]) / 2.;
+    const double dataCx = dataArea.x + 0.5 * dataArea.width;
+    const double dataCy = dataArea.y + 0.5 * dataArea.height;
+    focalXY[0] = dataCenterXY[0] - (dataCx - 0.5 * size[0]) * wpp;
+    focalXY[1] = dataCenterXY[1] - (dataCy - 0.5 * size[1]) * wpp;
+    return true;
+}
+
 }  // namespace CubeGeom

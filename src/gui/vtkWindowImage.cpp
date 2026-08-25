@@ -24,6 +24,7 @@
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
 #include "WorkspaceChrome.h"
+#include "ProductRegistry.h"
 #include "ToolResultDialog.h"
 #include "vtkInteractorStyleProfile.h"
 #include "vtkLegendScaleActorWCS.h"
@@ -1114,6 +1115,9 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
       layers(nullptr),
       importService(std::make_unique<ImageLayerImportService>())
 {
+    // Per-window product scope (session-wide registry): so this image window's Session tree
+    // ignores products a sibling cube/image window registered for the same dataset.
+    this->m_windowScope = ProductRegistry::instance().newOwnerScope();
     ui->setupUi(this);
     this->setupViewerToolbar();
     // setupSidebar() is called later, after all QActions are initialised
@@ -1150,7 +1154,8 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     if (this->m_workspaceChrome) {
         this->m_workspaceChrome->installStatusRail();
         this->m_workspaceChrome->installSessionDock(
-                this->filepath, QFileInfo(this->filepath).fileName(), u"image"_s);
+                this->filepath, QFileInfo(this->filepath).fileName(), u"image"_s,
+                this->m_windowScope);
         // setupInspector()/start() run at the END of the constructor — the
         // Analysis-tab tools reference QActions created later below.
     }

@@ -671,6 +671,19 @@ void vtkWindowCube::layout2dPaneFor(bool slice, bool force)
                                          renderer, gutter, dataArea, this->dprFor(slice));
         lastFit = viewport;   // only remember a viewport we actually fit into
         lastRight = gutter.right;
+        // STEP6-P1/P2: the slice just re-letterboxed to its own bounds, discarding any shared
+        // Linked-2D zoom. If Linked·camera holds a shared view, re-adopt it so the slice rejoins
+        // the group instead of snapping to full-frame. (Only the SLICE viewport; the singular
+        // moment path never participates in the pane camera link.)
+        if (slice && this->m_linkViews && this->m_linkCamera && this->m_linked2DValid)
+            this->applySliceCameraNormalized(this->m_linked2DCenter, this->m_linked2DWorldHeight,
+                                             /*render=*/false);   // win->Render() runs just below
+        // STEP6-P1: a fit / slice reload moves the slice camera WITHOUT going through
+        // applySliceCameraNormalized, so record the post-fit pan/zoom pose here too — otherwise
+        // the first window/level drag after a reset would look like a camera move and spuriously
+        // propagate. Reflects the fit (or the re-assert above).
+        if (slice)
+            this->captureSliceCamPose();
     }
     this->invalidateWcsOverlayCache();   // keep last — makes the next EndEvent recompute
     win->Render();

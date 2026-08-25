@@ -293,7 +293,8 @@ void SessionDataTree::setCurrentDataset(const QString &parentKey, const QString 
     // Load any products already registered for this dataset (e.g. reopened).
     const QList<AnalysisProduct> existing = ProductRegistry::instance().productsFor(parentKey);
     for (const AnalysisProduct &p : existing)
-        upsertProduct(p);
+        if (ownsProduct(p))
+            upsertProduct(p);
     if (ds)
         m_tree->setCurrentIndex(ds->index());
     // Defer once so row heights are realised by the layout before we measure.
@@ -301,8 +302,17 @@ void SessionDataTree::setCurrentDataset(const QString &parentKey, const QString 
     QTimer::singleShot(0, this, [this]() { updateHeightToContents(); });
 }
 
+bool SessionDataTree::ownsProduct(const AnalysisProduct &product) const
+{
+    // Session-wide registry: only surface products this window produced. An empty scope means
+    // the tree was never bound to a window (back-compat) → show everything.
+    return m_ownerScope.isEmpty() || product.ownerId == m_ownerScope;
+}
+
 void SessionDataTree::onProductAdded(const AnalysisProduct &product)
 {
+    if (!ownsProduct(product))
+        return;   // a sibling window's product — its render widgets live over there
     upsertProduct(product);
 }
 
@@ -331,6 +341,8 @@ void SessionDataTree::selectProduct(const QString &productId)
 
 void SessionDataTree::onProductUpdated(const AnalysisProduct &product)
 {
+    if (!ownsProduct(product))
+        return;
     upsertProduct(product);
 }
 
