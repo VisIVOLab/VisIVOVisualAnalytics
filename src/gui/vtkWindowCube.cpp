@@ -9220,7 +9220,19 @@ void vtkWindowCube::setupInspector()
     panel->addPropertyRow(u"Min"_s,  statVal(ui->lineCubeMin));
     panel->addPropertyRow(u"Max"_s,  statVal(ui->lineCubeMax));
     panel->addPropertyRow(u"Mean"_s, statVal(ui->lineCubeMean));
-    panel->addPropertyRow(u"RMS"_s,  statVal(ui->lineCubeRms));
+    // The full 8-row set (Median/Std/Sum added below) is filled from the backend's out-of-core
+    // full-res scan — the ui->lineCube* fields show the fast local preview until it lands.
+    auto *cubeMedian = new QLabel(u"—"_s);
+    auto *cubeStd    = new QLabel(u"—"_s);
+    auto *cubeSum    = new QLabel(u"—"_s);
+    m_cubeStatMedian = cubeMedian;
+    m_cubeStatStd    = cubeStd;
+    m_cubeStatSum    = cubeSum;
+    panel->addPropertyRow(u"Median"_s, statVal(cubeMedian));
+    panel->addPropertyRow(u"Std"_s,    statVal(cubeStd));
+    panel->addPropertyRow(u"RMS"_s,    statVal(ui->lineCubeRms));
+    panel->addPropertyRow(u"Sum"_s,    statVal(cubeSum));
+    this->fetchCubeStatsAsync();   // full-res stats overwrite the 4 preview rows + fill the rest
 
     panel->addPropertyCaption(u"WCS"_s);
     panel->addPropertyRow(u"Status"_s, this->remoteWcsStatus.isEmpty() ? u"—"_s
@@ -9457,6 +9469,47 @@ void vtkWindowCube::updateSpectrumInspectorControls()
     m_specInspSavePng->setEnabled(haveSpec);
     const QString stats = sp->statsText();
     m_specInspStats->setText(stats.isEmpty() ? u"—"_s : stats);
+}
+
+void vtkWindowCube::fetchCubeStatsAsync()
+{
+    // Ask the backend for FULL-resolution whole-cube stats (out-of-core) and overwrite the
+    // local decimated-preview rows when they land + fill Median/Std/Sum. Once per window; a
+    // local-only cube (no backend dataset) keeps the client-computed preview stats.
+    if (m_cubeStatsRequested || this->remoteDatasetId.isEmpty()
+        || this->remoteBackendUrl.isEmpty())
+        return;
+    m_cubeStatsRequested = true;
+    const QString url = this->remoteBackendUrl;
+    const QString token = this->remoteBackendToken;
+    const QString session = this->remoteSessionId;
+    const QString datasetId = this->remoteDatasetId;
+    auto *watcher = new QFutureWatcher<BackendCubeStatsResult>(this);
+    QObject::connect(watcher, &QFutureWatcher<BackendCubeStatsResult>::finished, this,
+                     [this, watcher]() {
+                         const BackendCubeStatsResult s = watcher->result();
+                         watcher->deleteLater();
+                         if (!s.valid)
+                             return;   // keep the preview stats on failure
+                         const QString bu = this->m_brightnessUnit.isEmpty()
+                                 ? QString() : (u" "_s + this->m_brightnessUnit);
+                         auto fmt = [&](double v) { return CubeStats::fmtStat(v) + bu; };
+                         if (ui->lineCubeMin)  ui->lineCubeMin->setText(fmt(s.min));
+                         if (ui->lineCubeMax)  ui->lineCubeMax->setText(fmt(s.max));
+                         if (ui->lineCubeMean) ui->lineCubeMean->setText(fmt(s.mean));
+                         if (ui->lineCubeRms)  ui->lineCubeRms->setText(fmt(s.rms));
+                         if (m_cubeStatMedian)
+                             m_cubeStatMedian->setText(
+                                     fmt(s.median)
+                                     + (s.medianExact ? QString() : u"  (approx)"_s));
+                         if (m_cubeStatStd) m_cubeStatStd->setText(fmt(s.std));
+                         if (m_cubeStatSum) m_cubeStatSum->setText(fmt(s.sum));
+                     });
+    watcher->setFuture(QtConcurrent::run([url, token, session, datasetId]() {
+        BackendClient c(url, token);
+        c.setSessionId(session);
+        return c.fetchCubeStats(datasetId);
+    }));
 }
 
 void vtkWindowCube::parkOrphanDirectChildren()

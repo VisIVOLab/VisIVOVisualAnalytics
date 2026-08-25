@@ -30,6 +30,52 @@ class SkeletonRequest(BaseModel):
     persistence_threshold: float | None = None
 
 
+# ── Full-cube statistics (out-of-core; the client's local stats are only the
+#    decimated preview) ─────────────────────────────────────────────────────────
+# Small in-process cache keyed by (path, size, mtime): the client requests cube
+# stats once per open, and a full-res scan of a large cube is not free.
+_CUBE_STATS_CACHE: dict[tuple[str, int, int], dict] = {}
+_CUBE_STATS_CACHE_MAX = 64
+
+
+@router.get("/v1/analysis/cube-stats/{dataset_id}", tags=["analysis"])
+async def cube_stats(
+    dataset_id: str,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Whole-cube pixel statistics computed on the FULL-resolution data.
+
+    Returns min / max / mean / median / std / rms / sum + finite/blank counts
+    (and ``median_exact``). Streamed out-of-core in z-slab chunks, so it is safe
+    on cubes far larger than RAM. Cached per file (path + size + mtime).
+    """
+    import os  # noqa: PLC0415
+    from ..compute import worker_cube_stats  # noqa: PLC0415
+
+    entry = _require_dataset(session, dataset_id)
+    path = entry["path"]
+    try:
+        st = os.stat(path)
+        key = (path, int(st.st_size), int(st.st_mtime_ns))
+    except OSError:
+        key = None
+    if key is not None and key in _CUBE_STATS_CACHE:
+        return {"valid": True, "error": "", "cached": True, **_CUBE_STATS_CACHE[key]}
+    try:
+        result = await asyncio.to_thread(worker_cube_stats, path)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[cube-stats] failed dataset_id=%s error=%s", dataset_id, exc)
+        raise HTTPException(500, str(exc)) from exc
+    if key is not None:
+        if len(_CUBE_STATS_CACHE) >= _CUBE_STATS_CACHE_MAX:
+            _CUBE_STATS_CACHE.pop(next(iter(_CUBE_STATS_CACHE)))
+        _CUBE_STATS_CACHE[key] = result
+    return {"valid": True, "error": "", "cached": False, **result}
+
+
 async def _compute_skeleton(session: Session, dataset_id: str, request: SkeletonRequest) -> dict:
     from ..compute import worker_skeleton  # noqa: PLC0415
 

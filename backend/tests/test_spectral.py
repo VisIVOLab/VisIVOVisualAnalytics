@@ -840,6 +840,16 @@ class TestSpectralBinaryEndpoints:
         ew_arr, _ = _parse_binary_frame(raw, off)
         assert fwhm_arr.shape == (4, 4)
         assert ew_arr.shape == (4, 4)
+        # The binary path carries the map units out-of-band as response headers, so the
+        # client can label the FWHM/EW products (they share the spectral-axis unit).
+        assert "X-Fwhm-Unit" in resp.headers
+        assert "X-Ew-Unit" in resp.headers
+        # The fixture cube sets CUNIT3 = "km/s"; both maps carry that spectral-axis unit (so the
+        # assertion also rejects an empty/dropped unit).
+        assert resp.headers["X-Fwhm-Unit"] == "km/s"
+        assert resp.headers["X-Ew-Unit"] == "km/s"
+        # Two-frame body → no ambiguous single X-Map-Unit.
+        assert "X-Map-Unit" not in resp.headers
 
     async def test_stack_binary_single_frame(
         self, client, auth_headers, tmp_path

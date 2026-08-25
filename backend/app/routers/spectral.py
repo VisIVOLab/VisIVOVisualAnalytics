@@ -137,6 +137,39 @@ def _array_to_binary(rows: int, cols: int, arr: np.ndarray) -> bytes:
     return header + body
 
 
+def _linewidth_unit_headers(
+    result: dict[str, Any], method: str | None = None
+) -> dict[str, str]:
+    """HTTP headers carrying the line-width map units.
+
+    The binary line-width endpoints return raw float frames with no in-band
+    metadata, so the physical unit (e.g. ``km/s``) is lost unless we surface it
+    out-of-band. The JSON variant already returns ``fwhm_unit``/``ew_unit``; here
+    the same values ride along as response headers so the client can label the
+    map. HTTP header values are latin-1, so units are sanitised to that encoding.
+
+    ``X-Fwhm-Unit`` / ``X-Ew-Unit`` are always set; ``X-Map-Unit`` mirrors the
+    single frame the caller asked for (``method`` ``fwhm``/``ew``), so the
+    single-map GET/POST paths need read only one header.
+    """
+    def _safe(unit: str) -> str:
+        # HTTP header values are latin-1. Canonicalise the common non-latin-1 unit char (Greek mu
+        # / micro sign, e.g. "μm") to ASCII "u" first so a wavelength unit survives readably
+        # instead of becoming "?m".
+        u = (unit or "").replace("μ", "u").replace("µ", "u")
+        return u.encode("latin-1", "replace").decode("latin-1")
+
+    fwhm_u = _safe(str(result.get("fwhm_unit", "")))
+    ew_u = _safe(str(result.get("ew_unit", "")))
+    headers = {"X-Fwhm-Unit": fwhm_u, "X-Ew-Unit": ew_u}
+    # X-Map-Unit is a convenience for the SINGLE-frame variants only — the two-frame default body
+    # carries both maps, so an aliased single unit there would be ambiguous.
+    m = (method or "").lower()
+    if m in ("fwhm", "ew"):
+        headers["X-Map-Unit"] = ew_u if m == "ew" else fwhm_u
+    return headers
+
+
 # Default SNR cutoff for skipping background pixels. Tunable via env in case a
 # specific dataset needs a different threshold; 3σ is the standard radio-astro
 # noise-rejection level and matches the value used in similar VLKB tools.
@@ -392,7 +425,11 @@ async def spectral_linewidth_binary(
         content = _array_to_binary(h, w, fwhm)
     else:
         content = _array_to_binary(h, w, fwhm) + _array_to_binary(h, w, ew)
-    return Response(content=content, media_type="application/octet-stream")
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers=_linewidth_unit_headers(result, method),
+    )
 
 
 @router.get("/v1/spectral/linewidth/{dataset_id}")
@@ -432,7 +469,8 @@ async def spectral_linewidth_get(
         arr = np.frombuffer(base64.b64decode(result["fwhm_base64"]),
                             dtype=np.float32).reshape(h, w)
     return Response(content=_array_to_binary(h, w, arr),
-                    media_type="application/octet-stream")
+                    media_type="application/octet-stream",
+                    headers=_linewidth_unit_headers(result, method))
 
 
 # ── S-03: Polynomial / median baseline subtraction ──────────────────────────

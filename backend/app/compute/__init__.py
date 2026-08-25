@@ -80,6 +80,7 @@ from .photometry import (  # noqa: F401
 from .astrometry import (  # noqa: F401
     _region_mask,
     worker_region_stats,
+    worker_cube_stats,
     worker_reproject,
     worker_crossmatch,
 )
@@ -151,6 +152,7 @@ __all__ = [
     "worker_gauss_fit_2d",
     "_region_mask",
     "worker_region_stats",
+    "worker_cube_stats",
     "worker_reproject",
     "worker_crossmatch",
     "worker_stokes_plane",

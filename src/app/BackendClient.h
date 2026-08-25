@@ -613,6 +613,25 @@ struct BackendLinewidthResult
     QByteArray binaryPayload;
 };
 
+// ── Full-cube statistics (computed out-of-core on the full-res cube) ───────────
+
+struct BackendCubeStatsResult
+{
+    bool valid{ false };
+    QString error;
+    long validCount{ 0 };
+    long blankedCount{ 0 };
+    double min{ 0. };
+    double max{ 0. };
+    double mean{ 0. };
+    double median{ 0. };
+    double std{ 0. };
+    double rms{ 0. };
+    double sum{ 0. };
+    bool medianExact{ false };
+    QString bunit;
+};
+
 // ── S-03: Baseline subtraction ────────────────────────────────────────────────
 
 struct BackendBaselineResult
@@ -1522,6 +1541,12 @@ public:
                                                 bool maskEnabled, float threshold,
                                                 double restFreqHz = 0.0);
 
+    /** GET /v1/analysis/cube-stats/{dataset_id} — whole-cube statistics (min/max/mean/median/
+     *  std/rms/sum + counts) computed on the FULL-resolution cube out-of-core. The desktop
+     *  client only holds a decimated preview, so its own 3-D stats are approximate; this is
+     *  the authoritative set. Cached backend-side per file. */
+    BackendCubeStatsResult fetchCubeStats(const QString &datasetId);
+
     // ── S-03: Baseline subtraction ────────────────────────────────────────────
     /** POST /v1/spectral/baseline/{session_id}/{dataset_id} — subtract a baseline
      *  and register the result as a new session dataset.
@@ -1764,7 +1789,8 @@ private:
     QNetworkRequest buildRequest(const QUrl &url) const;
 
     QByteArray performGet(const QUrl &url, QString &error) const;
-    QByteArray performPost(const QUrl &url, const QJsonDocument &body, QString &error) const;
+    QByteArray performPost(const QUrl &url, const QJsonDocument &body, QString &error,
+                           QMap<QString, QString> *responseHeaders = nullptr) const;
     std::chrono::milliseconds requestTimeoutFor(const QUrl &url) const;
 
     static QByteArray decodePayload(const QJsonObject &object, const QString &base64Field,

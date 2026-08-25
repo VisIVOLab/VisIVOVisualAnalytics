@@ -68,13 +68,18 @@ BackendLinewidthResult BackendClient::fetchLinewidthBinary(const QString &datase
         bodyObj.insert(QStringLiteral("rest_freq_hz"), restFreqHz);
     }
     const QJsonDocument body(bodyObj);
+    QMap<QString, QString> headers;
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/spectral/linewidth/binary")),
-                        body, error);
+                        body, error, &headers);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
     }
+    // The binary frames carry no in-band metadata; the backend surfaces the map units as
+    // response headers (X-Fwhm-Unit / X-Ew-Unit) so the FWHM/EW products can be labelled.
+    result.fwhmUnit = headers.value(QStringLiteral("x-fwhm-unit"));
+    result.ewUnit   = headers.value(QStringLiteral("x-ew-unit"));
     // Parse the two concatenated binary frames (FWHM then EW).
     int offset = 0;
     BinaryArrayResult fwhm, ew;
@@ -90,6 +95,36 @@ BackendLinewidthResult BackendClient::fetchLinewidthBinary(const QString &datase
     result.width  = fwhm.cols;
     result.height = fwhm.rows;
     result.binaryPayload = payload;
+    return result;
+}
+
+BackendCubeStatsResult BackendClient::fetchCubeStats(const QString &datasetId)
+{
+    BackendCubeStatsResult result;
+    QString error;
+    const QUrl url(m_baseUrl + QStringLiteral("/v1/analysis/cube-stats/") + datasetId);
+    const QByteArray raw = performGet(url, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+    if (!obj.value(QStringLiteral("valid")).toBool(true)) {
+        result.error = obj.value(QStringLiteral("error")).toString();
+        return result;
+    }
+    result.valid        = true;
+    result.validCount   = static_cast<long>(obj.value(QStringLiteral("valid_count")).toDouble());
+    result.blankedCount = static_cast<long>(obj.value(QStringLiteral("blanked_count")).toDouble());
+    result.min          = obj.value(QStringLiteral("min")).toDouble();
+    result.max          = obj.value(QStringLiteral("max")).toDouble();
+    result.mean         = obj.value(QStringLiteral("mean")).toDouble();
+    result.median       = obj.value(QStringLiteral("median")).toDouble();
+    result.std          = obj.value(QStringLiteral("std")).toDouble();
+    result.rms          = obj.value(QStringLiteral("rms")).toDouble();
+    result.sum          = obj.value(QStringLiteral("sum")).toDouble();
+    result.medianExact  = obj.value(QStringLiteral("median_exact")).toBool();
+    result.bunit        = obj.value(QStringLiteral("bunit")).toString();
     return result;
 }
 

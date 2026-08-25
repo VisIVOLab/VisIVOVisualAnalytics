@@ -457,6 +457,16 @@ private:
     QPushButton   *m_specInspSaveCsv   { nullptr };
     QPushButton   *m_specInspSavePng   { nullptr };
     QPointer<class ProfileWidget> m_specInspTarget;   ///< the pane widget the controls drive
+
+    // Full-resolution 3-D cube statistics from the backend (the local block is only the decimated
+    // preview). Fetched once per open; the Inspector "3D cube" rows are refreshed when it lands.
+    // (The result type stays in the .cpp so this header remains decoupled from BackendClient.h.)
+    QPointer<QLabel> m_cubeStatMedian;
+    QPointer<QLabel> m_cubeStatStd;
+    QPointer<QLabel> m_cubeStatSum;
+    bool m_cubeStatsRequested{ false };   ///< guard: fetch only once per window
+    void fetchCubeStatsAsync();
+
     /// The renderer a product uses: "spectrum1d" (m_products1d) / "image2d" (m_products2d) / "".
     QString productRenderer(const QString &productId) const;
     /// True when @p productId is a product this window can mount in a pane — an image

@@ -143,6 +143,113 @@ def worker_region_stats(
     return result
 
 
+def worker_cube_stats(path: str) -> dict[str, Any]:
+    """Full-resolution whole-cube pixel statistics, computed OUT-OF-CORE.
+
+    The client only holds a decimated *preview* of a remote cube, so its local
+    3-D stats are approximate and coarse. This streams the FULL-res cube in
+    z-slab chunks from a memmap, accumulating count / sum / sum-of-squares /
+    min / max over the finite voxels in a single pass (bounded memory), plus a
+    strided subsample for a near-exact median + MAD. Returns min, max, mean,
+    median, std, rms, sum and the finite / blank counts.
+
+    ``median_exact`` is True only when every finite voxel was in the median
+    sample (small cubes); for large cubes the median is from a ~4 M uniform
+    strided sample, which is statistically indistinguishable from exact.
+    """
+    import math  # noqa: PLC0415
+
+    dataset = ScientificFitsDataset(path)
+    hdul, raw = dataset.open_memmap()
+    try:
+        cube = ScientificFitsDataset.squeeze_to_3d(np.asarray(raw))
+        if cube.ndim == 2:
+            cube = cube[np.newaxis, ...]
+        if cube.ndim != 3:
+            raise ValueError(f"Unsupported cube dimensionality: {cube.ndim}")
+        nz, ny, nx = (int(cube.shape[0]), int(cube.shape[1]), int(cube.shape[2]))
+        total_px = nz * ny * nx
+
+        # z-chunk sized to ~64 MB of float64 per read → bounded peak memory.
+        plane_bytes = max(1, ny * nx * 8)
+        chunk_z = max(1, (64 * 1024 * 1024) // plane_bytes)
+        # Strided subsample for the median: ~4 M values across the whole cube.
+        sample_target = 4_000_000
+        stride = max(1, total_px // sample_target)
+
+        count = 0
+        vsum = 0.0
+        vsumsq = 0.0
+        vmin = math.inf
+        vmax = -math.inf
+        # Chan's parallel (mean, M2) accumulator for a numerically-stable variance — robust to a
+        # large pedestal + small spread, unlike sumsq/N - mean^2.
+        agg_mean = 0.0
+        agg_m2 = 0.0
+        sample_parts: list[np.ndarray] = []
+        finite_offset = 0  # running index into the concatenated FINITE voxels
+
+        for z0 in range(0, nz, chunk_z):
+            z1 = min(z0 + chunk_z, nz)
+            flat = np.asarray(cube[z0:z1], dtype=np.float64).reshape(-1)
+            finite = flat[np.isfinite(flat)]
+            nb = int(finite.size)
+            if nb:
+                vsum += float(finite.sum())
+                vsumsq += float(np.square(finite).sum())
+                vmin = min(vmin, float(finite.min()))
+                vmax = max(vmax, float(finite.max()))
+                # Combine this chunk into the running (mean, M2) — Chan et al.
+                mean_b = float(finite.mean())
+                m2_b = float(((finite - mean_b) ** 2).sum())
+                delta = mean_b - agg_mean
+                new_count = count + nb
+                agg_mean += delta * nb / new_count
+                agg_m2 += m2_b + delta * delta * count * nb / new_count
+                count = new_count
+                # Strided median sample over the FINITE voxels (not the raw grid), so blank
+                # masks can't alias or starve the sample; phase carried over finite count.
+                if stride == 1:
+                    sub = finite
+                else:
+                    sub = finite[((-finite_offset) % stride)::stride]
+                if sub.size:
+                    sample_parts.append(np.asarray(sub, dtype=np.float64))
+                finite_offset += nb
+
+        if count == 0:
+            raise ValueError("Cube has no finite voxels.")
+
+        mean = agg_mean
+        rms = math.sqrt(max(0.0, vsumsq / count))
+        std = math.sqrt(max(0.0, agg_m2 / count))
+        if sample_parts:
+            sample = np.concatenate(sample_parts)
+            median = float(np.median(sample))
+            mad = float(np.median(np.abs(sample - median)))
+        else:
+            median = float("nan")
+            mad = float("nan")
+
+        return {
+            "total_count": total_px,
+            "valid_count": int(count),
+            "blanked_count": int(total_px - count),
+            "min": float(vmin),
+            "max": float(vmax),
+            "mean": float(mean),
+            "median": median,
+            "std": float(std),
+            "rms": float(rms),
+            "mad_sigma": float(1.4826 * mad) if math.isfinite(mad) else float("nan"),
+            "sum": float(vsum),
+            "bunit": dataset.bunit,
+            "median_exact": bool(stride == 1),
+        }
+    finally:
+        hdul.close()
+
+
 # ── A-03: WCS reprojection ────────────────────────────────────────────────────
 
 

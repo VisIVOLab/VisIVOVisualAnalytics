@@ -320,5 +320,73 @@ class TestRegionStats(unittest.TestCase):
         self.assertEqual(r.status_code, 422)
 
 
+def _make_cube(nz=16, ny=24, nx=24, nan_count=3) -> str:
+    from astropy.io import fits
+    rng = np.random.default_rng(7)
+    data = rng.standard_normal((nz, ny, nx)).astype(np.float32)
+    flat = data.reshape(-1)
+    flat[:nan_count] = np.nan          # a few blank voxels
+    hdr = fits.Header()
+    hdr["BUNIT"] = "Jy/beam"
+    hdr["CTYPE3"] = "FREQ"
+    tmp = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
+    tmp.close()
+    fits.PrimaryHDU(data, hdr).writeto(tmp.name, overwrite=True)
+    return tmp.name
+
+
+class TestCubeStats(unittest.TestCase):
+    """Out-of-core whole-cube statistics endpoint (/v1/analysis/cube-stats)."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("VISIVO_TOKEN", _TEST_TOKEN)
+        from fastapi.testclient import TestClient
+        from app.main import app
+        cls.client = TestClient(app, raise_server_exceptions=True)
+        cls._auth = {"X-Visivo-Token": _TEST_TOKEN}
+        cls.cube = _make_cube()
+        # keep the reference finite data to compare against
+        from astropy.io import fits
+        cls.data = fits.getdata(cls.cube).astype(np.float64)
+        r = cls.client.post("/v1/datasets/open", json={"path": cls.cube}, headers=cls._auth)
+        d = r.json()
+        cls.session_id = d.get("session_id", "")
+        cls.ds = d["dataset_id"]
+
+    @classmethod
+    def tearDownClass(cls):
+        os.unlink(cls.cube)
+
+    def _headers(self):
+        h = dict(self._auth)
+        if self.session_id:
+            h["X-Visivo-Session"] = self.session_id
+        return h
+
+    def test_full_cube_stats_match_numpy(self):
+        r = self.client.get(f"/v1/analysis/cube-stats/{self.ds}", headers=self._headers())
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()
+        self.assertTrue(d["valid"])
+        finite = self.data[np.isfinite(self.data)]
+        self.assertEqual(d["valid_count"], int(finite.size))
+        self.assertEqual(d["blanked_count"], int(self.data.size - finite.size))
+        self.assertAlmostEqual(d["mean"], float(finite.mean()), places=5)
+        self.assertAlmostEqual(d["std"], float(finite.std()), places=5)
+        self.assertAlmostEqual(d["rms"], float(np.sqrt((finite ** 2).mean())), places=5)
+        self.assertAlmostEqual(d["min"], float(finite.min()), places=5)
+        self.assertAlmostEqual(d["max"], float(finite.max()), places=5)
+        self.assertAlmostEqual(d["sum"], float(finite.sum()), places=3)
+        # Small cube → the median sample is the full data, so it's exact.
+        self.assertTrue(d["median_exact"])
+        self.assertAlmostEqual(d["median"], float(np.median(finite)), places=5)
+
+    def test_cube_stats_cached_on_second_call(self):
+        self.client.get(f"/v1/analysis/cube-stats/{self.ds}", headers=self._headers())
+        r2 = self.client.get(f"/v1/analysis/cube-stats/{self.ds}", headers=self._headers())
+        self.assertTrue(r2.json()["cached"])
+
+
 if __name__ == "__main__":
     unittest.main()

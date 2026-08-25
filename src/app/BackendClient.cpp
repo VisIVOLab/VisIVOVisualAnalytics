@@ -2220,7 +2220,10 @@ std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) cons
     // safety net, not the optimisation.
     if (path.endsWith(QStringLiteral("/cube/preview"))
         || path.endsWith(QStringLiteral("/cube/subvolume"))
-        || path.endsWith(QStringLiteral("/cube/subvolume_bin"))) {
+        || path.endsWith(QStringLiteral("/cube/subvolume_bin"))
+        // Whole-cube stats stream the FULL-res cube once out-of-core server-side; on an
+        // SKA-scale cube that single pass can take minutes on slow storage / a tunnel.
+        || path.contains(QStringLiteral("/analysis/cube-stats"))) {
         return std::chrono::milliseconds(600000); // 10 min
     }
     return std::chrono::milliseconds(120000);
@@ -2513,7 +2516,8 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
 }
 
 QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body,
-                                      QString &error) const
+                                      QString &error,
+                                      QMap<QString, QString> *responseHeaders) const
 {
     QElapsedTimer perfTimer;
     perfTimer.start();
@@ -2543,6 +2547,7 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
 
         QEventLoop loop;
         QNetworkReply *reply = nam->post(request, bodyBytes);
+        const bool wantHeaders = (responseHeaders != nullptr);
         QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
         QTimer timeoutTimer;
         timeoutTimer.setSingleShot(true);
@@ -2562,6 +2567,15 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
         timeoutTimer.stop();
 
         const QByteArray data = reply->readAll();
+        // Capture response headers (lower-cased keys) before the reply is deleted, so a caller
+        // that asked for them (line-width binary path reading X-*-Unit) can read them on success.
+        QMap<QString, QString> capturedHeaders;
+        if (wantHeaders) {
+            const auto pairs = reply->rawHeaderPairs();
+            for (const auto &hp : pairs)
+                capturedHeaders.insert(QString::fromLatin1(hp.first).toLower(),
+                                       QString::fromLatin1(hp.second));
+        }
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (attemptError.isEmpty() && reply->error() != QNetworkReply::NoError) {
             attemptError = reply->errorString();
@@ -2595,6 +2609,8 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
                                 .arg(data.size()),
                         {}, this->m_sessionId);
             }
+            if (responseHeaders)
+                *responseHeaders = capturedHeaders;
             return data;
         }
 
