@@ -39,6 +39,25 @@ docker exec -it visivo-copilot-ollama ollama pull qwen2.5:32b
 ```
 Copilot ⚙ → "Your server" → `http://<server>:11434/v1` (leave Key blank).
 
+## Full stack — backend + LLM together (one command)
+If you want the **VisIVO backend and the LLM on the same server**, pre-wired so
+the copilot works with no extra config:
+```bash
+cd deploy/copilot-llm
+cp .env.example .env               # set VLLM_API_KEY and VISIVO_TOKEN
+DATA_DIR=/path/to/fits docker compose -f docker-compose.full.yml up -d --build
+```
+Then point the **VisIVO desktop app** at `http://<this-server-ip>:8080` with the
+`VISIVO_TOKEN` you set. The copilot is already connected to the internal LLM.
+
+**Coexistence:** the LLM uses the GPU; the backend runs **CPU-only** compute
+(moments / spectral / photometry / copilot), so they share the machine fine.
+Server-side *rendering* (the GPU WebRTC path) is **not** enabled in this backend
+image — if you need it, run the backend on the host with the EGL build instead,
+and keep only the LLM in a container. The first `--build` is large (the
+scientific stack: VTK, numba, astropy, dask, …) and the first `up` downloads the
+model — both are one-time.
+
 ## Which model on a single RTX PRO 6000 (96 GB)?
 The default (`Qwen/Qwen2.5-32B-Instruct`) is **ungated, fits in bf16, and does
 tool-calling well** — a safe starting point. To go bigger, edit `.env`:

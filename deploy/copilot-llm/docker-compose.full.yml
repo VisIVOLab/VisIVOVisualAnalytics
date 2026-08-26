@@ -1,0 +1,67 @@
+# Full self-hosted stack: the VisIVO backend AND the copilot LLM, together.
+#
+# The backend is pre-wired to the LLM container (VISIVO_LLM_BASE_URL), so the
+# copilot works with NO extra configuration — the desktop app just connects to
+# the backend. The GPU is used by the LLM; the backend runs CPU-only compute, so
+# the two coexist on one machine (server-side *rendering* is not enabled here).
+#
+# Quick start:
+#   cd deploy/copilot-llm
+#   cp .env.example .env          # set VLLM_API_KEY and VISIVO_TOKEN
+#   DATA_DIR=/path/to/fits docker compose -f docker-compose.full.yml up -d --build
+# Then point the VisIVO desktop app at:  http://<this-server-ip>:8080  (token = VISIVO_TOKEN)
+#
+# Requires on the host: NVIDIA driver + nvidia-container-toolkit + Docker Compose.
+services:
+  copilot-llm:
+    image: vllm/vllm-openai:${VLLM_TAG:-latest}
+    container_name: visivo-copilot-llm
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    env_file: .env
+    volumes:
+      - ./entrypoint.sh:/entrypoint.sh:ro
+      - ${HF_CACHE:-./hf-cache}:/root/.cache/huggingface
+    ipc: host
+    restart: unless-stopped
+    # Not published to the host by default — only the backend talks to it, over
+    # the internal compose network. Uncomment to expose for debugging.
+    # ports:
+    #   - "${LLM_PORT:-8000}:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -qO- http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 30
+      start_period: 900s
+
+  visivo-backend:
+    build:
+      context: ../..                       # repository root
+      dockerfile: deploy/copilot-llm/Dockerfile.backend
+    container_name: visivo-backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8080}:8000"        # the desktop app connects here
+    volumes:
+      - ${DATA_DIR:-./data}:/data:ro        # your FITS cubes / catalogues
+    environment:
+      # Auth token the desktop client must present (set it in .env; change it!).
+      VISIVO_TOKEN: ${VISIVO_TOKEN:-change-me-visivo-token}
+      # Pre-wire the copilot to the LLM container. provider=auto → picks the
+      # self-hosted OpenAI-compatible endpoint because a base_url is set. The
+      # self-hosted key is kept separate from any cloud key (VISIVO_LLM_API_KEY).
+      VISIVO_ASSISTANT_PROVIDER: auto
+      VISIVO_LLM_BASE_URL: http://copilot-llm:8000/v1
+      VISIVO_LLM_API_KEY: ${VLLM_API_KEY:-change-me}
+      VISIVO_ASSISTANT_MODEL: ${SERVED_NAME:-visivo-copilot}
+      VISIVO_WORKERS: ${VISIVO_WORKERS:-4}
+    depends_on:
+      copilot-llm:
+        condition: service_healthy
