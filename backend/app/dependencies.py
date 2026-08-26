@@ -7,6 +7,7 @@ import logging
 import math as _math
 import os
 import struct
+import sys as _sys
 import threading
 import time
 import urllib.error as _urllib_error
@@ -30,6 +31,20 @@ from .sessions import REGISTRY, Session, get_session
 from .tasks import TASKS
 from .schemas import *
 logger = logging.getLogger('visivo.backend')
+
+# Ensure the backend package root (the parent of ``app/``) is on sys.path with an
+# ABSOLUTE path. The ProcessPoolExecutor below uses the 'spawn' start method, and
+# spawn child processes reconstruct sys.path from the PARENT's sys.path at submit
+# time. When the backend is launched from a working directory other than
+# ``backend/`` (e.g. the desktop app spawns it, or uvicorn is run from the repo
+# root), the parent's only reference to ``app`` may be the empty '' (cwd) entry,
+# which resolves to the WRONG directory in the child — so the spawn worker raised
+# ``ModuleNotFoundError: No module named 'app'`` when unpickling a worker
+# function. Inserting the absolute root here (parent import time, before the pool
+# snapshots sys.path) fixes moment/isosurface/etc. tasks regardless of launch cwd.
+_BACKEND_ROOT = str(_Path(__file__).resolve().parents[1])
+if _BACKEND_ROOT not in _sys.path:
+    _sys.path.insert(0, _BACKEND_ROOT)
 
 _WORKERS = int(os.environ.get('VISIVO_WORKERS', '4'))
 # Use 'spawn' instead of the default 'fork' so worker processes start

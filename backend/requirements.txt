@@ -26,6 +26,11 @@ h5py>=3.10            # LOFAR / generic beamformed HDF5 dynamic-spectrum reader
 #dask[distributed]>=2024.1.0
 
 # -- Optional: AI copilot (R-22) --
-# The scientific copilot uses the Anthropic SDK when ANTHROPIC_API_KEY is set;
-# without it the copilot falls back to a null provider (tools still work).
+# The scientific copilot's LLM provider is user-selectable. Install the SDK for
+# whichever back-end(s) you want to enable; without them the copilot falls back
+# to a null provider (the deterministic tools still work). Uncomment as needed:
+#   * Claude:                    anthropic
+#   * ChatGPT / OpenAI cloud:    openai
+#   * Your own server (vLLM/Ollama, OpenAI-compatible): also the `openai` SDK
 # anthropic>=0.40
+# openai>=1.40

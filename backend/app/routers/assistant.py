@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from ..assistant import AssistantEngine, provider_from_env
+from ..assistant.provider import configure as _configure_provider, public_config
 from ..assistant.tools import tool_specs
 from ..auth import verify_token
 from ..dependencies import _require_dataset
@@ -49,9 +50,21 @@ class AssistantQueryRequest(BaseModel):
     dataset_id: str | None = None
 
 
+class AssistantConfigRequest(BaseModel):
+    # User's choice of LLM back-end. Any field omitted is left unchanged; an
+    # empty string clears it. Keys are held in server memory only.
+    provider: str | None = None            # "auto" | "anthropic" | "openai" | "null"
+    anthropic_key: str | None = None       # Claude
+    openai_key: str | None = None          # ChatGPT (OpenAI cloud)
+    base_url: str | None = None            # self-hosted / OpenAI-compatible server URL
+    base_url_key: str | None = None        # key for the self-hosted endpoint (kept
+                                           # separate from openai_key for security)
+    model: str | None = None
+
+
 # Cache the provider at module scope — provider_from_env() otherwise rebuilds an
-# SDK client on every /status and /query call. An env change (e.g. setting the
-# key) takes effect on restart, which is the normal deployment lifecycle.
+# SDK client on every /status and /query call. Invalidated when the config
+# changes via /v1/assistant/config.
 _PROVIDER = None
 
 
@@ -62,14 +75,42 @@ def _get_provider():
     return _PROVIDER
 
 
+def _invalidate_provider() -> None:
+    global _PROVIDER
+    _PROVIDER = None
+
+
 @router.get("/v1/assistant/status", tags=["assistant"])
 async def assistant_status(_: None = _auth) -> dict:
-    """Whether an LLM provider is configured, and which one."""
+    """Which LLM provider is active + the (non-secret) config for the UI."""
     provider = _get_provider()
     return {
         "configured": provider.configured,
         "provider": provider.name,
         "n_tools": len(tool_specs()),
+        "config": public_config(),
+    }
+
+
+@router.post("/v1/assistant/config", tags=["assistant"])
+async def assistant_config(request: AssistantConfigRequest, _: None = _auth) -> dict:
+    """Choose the LLM back-end at runtime — Claude, OpenAI/ChatGPT, or your own
+    server (base_url of an OpenAI-compatible endpoint). Keys are stored in memory
+    only (not persisted, never logged/returned). Rebuilds the active provider."""
+    try:
+        _configure_provider(
+            provider=request.provider, anthropic_key=request.anthropic_key,
+            openai_key=request.openai_key, base_url=request.base_url,
+            base_url_key=request.base_url_key, model=request.model)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    _invalidate_provider()
+    provider = _get_provider()
+    return {
+        "valid": True,
+        "configured": provider.configured,
+        "provider": provider.name,
+        "config": public_config(),
     }
 
 

@@ -404,6 +404,36 @@ BackendAssistantResult BackendClient::assistantQuery(const QString &question,
     return result;
 }
 
+BackendAssistantConfigResult BackendClient::setAssistantConfig(
+        const QString &provider, const QString &anthropicKey, const QString &openaiKey,
+        const QString &baseUrl, const QString &baseUrlKey, const QString &model)
+{
+    BackendAssistantConfigResult result;
+    QString error;
+    QJsonObject body;
+    // Every field is sent (empty string == "clear" server-side) so switching
+    // provider fully resets stale state, including the model. The caller
+    // (AssistantPanel) sets exactly the fields relevant to the chosen provider.
+    if (!provider.isEmpty())
+        body.insert(QStringLiteral("provider"), provider);
+    body.insert(QStringLiteral("anthropic_key"), anthropicKey);
+    body.insert(QStringLiteral("openai_key"), openaiKey);
+    body.insert(QStringLiteral("base_url"), baseUrl);
+    body.insert(QStringLiteral("base_url_key"), baseUrlKey);
+    body.insert(QStringLiteral("model"), model);
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/assistant/config")), QJsonDocument(body), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject o = QJsonDocument::fromJson(payload).object();
+    result.valid = o.value(QStringLiteral("valid")).toBool(false);
+    result.configured = o.value(QStringLiteral("configured")).toBool(false);
+    result.provider = o.value(QStringLiteral("provider")).toString();
+    return result;
+}
+
 BackendFileHeaderResult BackendClient::fileHeader(const QString &path) const
 {
     BackendFileHeaderResult result;

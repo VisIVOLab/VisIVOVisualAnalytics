@@ -143,11 +143,113 @@ def test_engine_surfaces_tool_error_to_model(tmp_path):
     assert res.tool_calls[0].error is not None
 
 
-# ── NullProvider fallback ─────────────────────────────────────────────────────
+# ── Provider selection (Claude / OpenAI / self-hosted / null) ─────────────────
 
-def test_null_provider_is_default_without_key(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    assert isinstance(provider_from_env(), NullProvider)
+def test_null_provider_when_nothing_configured():
+    from app.assistant.provider import configure, provider_from_env as pfe
+    configure(provider="auto", anthropic_key="", openai_key="", base_url="")
+    assert isinstance(pfe(), NullProvider)
+
+
+def test_provider_resolution_auto():
+    from app.assistant import provider as P
+    # base_url (self-hosted) → openai path
+    P.configure(provider="auto", anthropic_key="", openai_key="", base_url="http://gpu:8000/v1")
+    assert P._resolve_provider_name() == "openai"
+    # only anthropic key → anthropic
+    P.configure(provider="auto", anthropic_key="sk-ant", openai_key="", base_url="")
+    assert P._resolve_provider_name() == "anthropic"
+    # explicit choice wins
+    P.configure(provider="null")
+    assert P._resolve_provider_name() == "null"
+    P.configure(provider="auto", anthropic_key="", openai_key="", base_url="")  # reset
+
+
+def test_public_config_hides_secrets():
+    from app.assistant import provider as P
+    P.configure(provider="anthropic", anthropic_key="SECRET123", base_url="")
+    cfg = P.public_config()
+    assert cfg["provider"] == "anthropic"
+    assert cfg["anthropic_key_set"] is True
+    assert "SECRET123" not in str(cfg)          # the key value is never exposed
+    assert "anthropic" in cfg["available"] and "openai" in cfg["available"]
+    P.configure(provider="auto", anthropic_key="", openai_key="", base_url="")
+
+
+def test_openai_message_and_tool_translation():
+    """OpenAIProvider translates the neutral history + tools to OpenAI shape
+    (no SDK needed — the translators are static)."""
+    from app.assistant.provider import OpenAIProvider, ToolCall
+    history = [
+        {"role": "user", "text": "hi"},
+        {"role": "assistant", "tool_calls": [ToolCall(id="t1", name="foo", arguments={"a": 1})]},
+        {"role": "tool", "results": [{"id": "t1", "name": "foo", "content": "{}", "is_error": False}]},
+    ]
+    msgs = OpenAIProvider._to_messages("SYS", history)
+    assert msgs[0] == {"role": "system", "content": "SYS"}
+    assert msgs[1] == {"role": "user", "content": "hi"}
+    assert msgs[2]["role"] == "assistant" and msgs[2]["tool_calls"][0]["function"]["name"] == "foo"
+    assert msgs[2]["tool_calls"][0]["function"]["arguments"] == '{"a": 1}'  # JSON string
+    assert msgs[3] == {"role": "tool", "tool_call_id": "t1", "content": "{}"}
+    otools = OpenAIProvider._to_tools(tool_specs())
+    assert otools[0]["type"] == "function" and "parameters" in otools[0]["function"]
+
+
+def test_base_url_validation_rejects_secrets():
+    import pytest as _pytest
+    from app.assistant import provider as P
+    with _pytest.raises(ValueError):
+        P.configure(base_url="http://user:pass@host:8000/v1")   # embedded creds
+    with _pytest.raises(ValueError):
+        P.configure(base_url="http://host:8000/v1?token=abc")    # query secret
+    with _pytest.raises(ValueError):
+        P.configure(base_url="ftp://host/v1")                    # bad scheme
+    P.configure(base_url="")  # reset
+
+
+def test_key_separation_cloud_key_not_used_for_self_hosted():
+    """SECURITY: a stored CLOUD openai_key must never be paired with a base_url
+    (self-hosted) endpoint — the self-hosted path uses only base_url_key."""
+    from app.assistant import provider as P
+    P.configure(provider="openai", openai_key="CLOUD_SECRET",
+                base_url="http://gpu:8000/v1", base_url_key="LOCAL")
+    assert P._resolve_provider_name() == "openai"
+    # The config keeps them separate; the resolver's self-hosted branch reads
+    # base_url_key, never openai_key.
+    assert P._CONFIG["openai_key"] == "CLOUD_SECRET"
+    assert P._CONFIG["base_url_key"] == "LOCAL"
+    cfg = P.public_config()
+    assert "CLOUD_SECRET" not in str(cfg) and "LOCAL" not in str(cfg)
+    P.configure(provider="auto", openai_key="", base_url="", base_url_key="")
+
+
+def test_config_endpoint_selects_and_hides_secrets():
+    client, auth = _client_and_auth()
+    r = client.post("/v1/assistant/config", json={"provider": "null"}, headers=auth)
+    assert r.status_code == 200 and r.json()["config"]["provider"] == "null"
+    # Self-hosted server with its own key — status reflects the URL, no key leaks.
+    r = client.post("/v1/assistant/config",
+                    json={"provider": "openai", "base_url": "http://gpu:8000/v1",
+                          "base_url_key": "SECRET"}, headers=auth)
+    assert r.status_code == 200
+    assert r.json()["config"]["base_url"] == "http://gpu:8000/v1"
+    assert r.json()["config"]["base_url_key_set"] is True
+    assert "SECRET" not in r.text
+    # A bad base_url is rejected with 422, not stored.
+    r = client.post("/v1/assistant/config",
+                    json={"provider": "openai", "base_url": "http://u:p@gpu/v1"}, headers=auth)
+    assert r.status_code == 422
+    # Reset.
+    client.post("/v1/assistant/config",
+                json={"provider": "auto", "anthropic_key": "", "openai_key": "",
+                      "base_url": "", "base_url_key": ""}, headers=auth)
+
+
+def _client_and_auth():
+    os.environ.setdefault("VISIVO_TOKEN", _TEST_TOKEN)
+    from fastapi.testclient import TestClient
+    from app.main import app
+    return TestClient(app), {"X-Visivo-Token": _TEST_TOKEN}
 
 
 def test_engine_with_null_provider_explains(tmp_path):

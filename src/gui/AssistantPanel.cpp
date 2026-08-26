@@ -2,6 +2,10 @@
 
 #include "app/BackendClient.h"
 
+#include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
 #include <QFuture>
 #include <QFutureWatcher>
 #include <QHBoxLayout>
@@ -44,15 +48,115 @@ AssistantPanel::AssistantPanel(QWidget *parent) : QWidget(parent)
     root->addWidget(m_status);
 
     auto *row = new QHBoxLayout();
+    m_settings = new QPushButton(u"⚙"_s, this);
+    m_settings->setToolTip(u"Choose the AI provider (Claude / OpenAI / your server)"_s);
+    m_settings->setFixedWidth(32);
     m_input = new QLineEdit(this);
     m_input->setPlaceholderText(u"Ask a question…"_s);
     m_send = new QPushButton(u"Send"_s, this);
+    row->addWidget(m_settings);
     row->addWidget(m_input, 1);
     row->addWidget(m_send);
     root->addLayout(row);
 
+    connect(m_settings, &QPushButton::clicked, this, &AssistantPanel::onSettings);
     connect(m_send, &QPushButton::clicked, this, &AssistantPanel::onSend);
     connect(m_input, &QLineEdit::returnPressed, this, &AssistantPanel::onSend);
+}
+
+void AssistantPanel::onSettings()
+{
+    if (m_url.isEmpty()) {
+        appendError(u"No backend connection."_s);
+        return;
+    }
+    QDialog dlg(this);
+    dlg.setWindowTitle(u"AI provider"_s);
+    auto *form = new QFormLayout(&dlg);
+
+    auto *provider = new QComboBox(&dlg);
+    // userData = the backend provider key; index order fixed below.
+    provider->addItem(u"Claude (Anthropic)"_s, u"anthropic"_s);
+    provider->addItem(u"ChatGPT (OpenAI)"_s, u"openai"_s);
+    provider->addItem(u"Your server (OpenAI-compatible)"_s, u"openai"_s);
+    provider->addItem(u"None"_s, u"null"_s);
+
+    auto *key = new QLineEdit(&dlg);
+    key->setEchoMode(QLineEdit::Password);
+    key->setPlaceholderText(u"API key"_s);
+    auto *url = new QLineEdit(&dlg);
+    url->setPlaceholderText(u"http://your-server:8000/v1"_s);
+    auto *model = new QLineEdit(&dlg);
+    model->setPlaceholderText(u"model name (optional)"_s);
+
+    form->addRow(u"Provider"_s, provider);
+    form->addRow(u"API key"_s, key);
+    form->addRow(u"Server URL"_s, url);
+    form->addRow(u"Model"_s, model);
+
+    // Show only the relevant field(s) per provider: cloud → key; own server →
+    // URL (+ optional key); none → nothing.
+    auto refresh = [&]() {
+        const int i = provider->currentIndex();
+        key->setVisible(i == 0 || i == 1 || i == 2);
+        url->setVisible(i == 2);
+        model->setVisible(i != 3);
+        form->labelForField(key)->setVisible(key->isVisible());
+        form->labelForField(url)->setVisible(url->isVisible());
+        form->labelForField(model)->setVisible(model->isVisible());
+    };
+    connect(provider, &QComboBox::currentIndexChanged, &dlg, [&](int) { refresh(); });
+    refresh();
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    form->addRow(buttons);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    // Send the COMPLETE state for the chosen provider; every unselected field is
+    // cleared server-side so switching fully resets stale keys/URL/model. The
+    // self-hosted endpoint key goes to base_url_key (NEVER openai_key) so a
+    // stored cloud key can't be redirected to an arbitrary server.
+    const int idx = provider->currentIndex();
+    const QString prov = provider->currentData().toString();
+    const QString k = key->text();
+    const QString m = model->text().trimmed();
+    QString anthropicKey, openaiKey, baseUrl, baseUrlKey;
+    if (idx == 0)
+        anthropicKey = k;                       // Claude
+    else if (idx == 1)
+        openaiKey = k;                          // ChatGPT (OpenAI cloud)
+    else if (idx == 2) {                         // Your server (self-hosted)
+        baseUrl = url->text().trimmed();
+        baseUrlKey = k;
+    }
+
+    setBusy(true);
+    m_status->setText(u"Applying provider…"_s);
+    const QString url0 = m_url, token0 = m_token;
+    auto *watcher = new QFutureWatcher<BackendAssistantConfigResult>(this);
+    connect(watcher, &QFutureWatcher<BackendAssistantConfigResult>::finished, this,
+            [this, watcher]() {
+                const BackendAssistantConfigResult r = watcher->result();
+                watcher->deleteLater();
+                setBusy(false);
+                if (!r.error.isEmpty()) {
+                    appendError(r.error);
+                    return;
+                }
+                m_status->setText(r.configured
+                        ? u"Provider: %1 (ready)"_s.arg(r.provider)
+                        : u"Provider: %1 (not configured)"_s.arg(r.provider));
+            });
+    watcher->setFuture(QtConcurrent::run(
+            [url0, token0, prov, anthropicKey, openaiKey, baseUrl, baseUrlKey, m]() {
+                BackendClient client(url0, token0);
+                return client.setAssistantConfig(prov, anthropicKey, openaiKey, baseUrl,
+                                                 baseUrlKey, m);
+            }));
 }
 
 void AssistantPanel::setBackend(const QString &url, const QString &token)

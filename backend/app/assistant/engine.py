@@ -93,41 +93,38 @@ class AssistantEngine:
         context = ""
         if dataset_id:
             context = f"\n\n[A dataset is loaded: id={dataset_id}. Tools operate on it.]"
-        messages: list[dict[str, Any]] = [
-            {"role": "user", "content": question + context},
-        ]
+        # NEUTRAL conversation history — provider-agnostic. Each provider
+        # translates it to its own API shape (Anthropic tool_use/tool_result
+        # blocks, OpenAI tool_calls/tool messages), so the engine works
+        # unchanged across Claude / OpenAI / a self-hosted OpenAI-compatible LLM.
+        history: list[dict[str, Any]] = [{"role": "user", "text": question + context}]
         invocations: list[ToolInvocation] = []
         rounds = 0
         final_text: str | None = None
 
         while rounds < _MAX_ROUNDS:
             rounds += 1
-            resp: ProviderResponse = self.provider.complete(SYSTEM_PROMPT, messages, specs)
+            resp: ProviderResponse = self.provider.complete(SYSTEM_PROMPT, history, specs)
             if not resp.tool_calls:
                 final_text = resp.final_text or "(no answer)"
                 break
             # Execute each requested tool against the real workers.
-            tool_result_blocks: list[dict[str, Any]] = []
+            results: list[dict[str, Any]] = []
             for call in resp.tool_calls:
                 inv = self._execute(call, dataset_path)
                 invocations.append(inv)
-                block: dict[str, Any] = {
-                    "type": "tool_result",
-                    "tool_use_id": call.id,
+                results.append({
+                    "id": call.id,
+                    "name": call.name,
                     "content": json.dumps({"error": inv.error} if inv.error else inv.result),
-                }
-                if inv.error:
-                    block["is_error"] = True  # Anthropic tool-error signal
-                tool_result_blocks.append(block)
-            # Append the assistant's tool-use turn + our tool results, then loop.
-            # We deliberately do NOT adopt any text emitted alongside a tool-use
-            # turn as the final answer — only a turn with no tool calls ends the
-            # loop — so an exhausted loop never returns a half-finished sentence.
-            messages.append({"role": "assistant", "content": [
-                {"type": "tool_use", "id": c.id, "name": c.name, "input": c.arguments}
-                for c in resp.tool_calls
-            ]})
-            messages.append({"role": "user", "content": tool_result_blocks})
+                    "is_error": bool(inv.error),
+                })
+            # Record the assistant's tool-request turn + our tool results, then
+            # loop. We deliberately do NOT adopt any text emitted alongside a
+            # tool-use turn as the final answer — only a turn with no tool calls
+            # ends the loop — so an exhausted loop never returns a half sentence.
+            history.append({"role": "assistant", "tool_calls": resp.tool_calls})
+            history.append({"role": "tool", "results": results})
         else:
             final_text = final_text or (
                 "Stopped after the maximum number of tool rounds without a final answer."

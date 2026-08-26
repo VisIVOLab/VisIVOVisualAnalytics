@@ -37,6 +37,7 @@ signals:
 
 private slots:
     void onSend();
+    void onSettings();   ///< choose the LLM provider (Claude / OpenAI / own server)
 
 private:
     void appendUser(const QString &text);
@@ -53,6 +54,7 @@ private:
     QTextBrowser *m_transcript{ nullptr };
     QLineEdit *m_input{ nullptr };
     QPushButton *m_send{ nullptr };
+    QPushButton *m_settings{ nullptr };
     QLabel *m_status{ nullptr };
 };
 

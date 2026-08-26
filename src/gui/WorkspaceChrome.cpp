@@ -371,6 +371,15 @@ void WorkspaceChrome::installCopilot(const QString &url, const QString &token,
     AssistantPanel *panel = m_inspector->ensureCopilotTab();
     panel->setBackend(url, token);
     panel->setDatasetId(datasetId);
+    // Give the collapsed Inspector rail a 4th icon for the Copilot tab so it's
+    // reachable when the dock is railed (matches Properties/Analysis/Provenance).
+    if (m_inspectorRail) {
+        m_inspectorRail->setEntries(
+                { { u":/icons/rail_info.svg"_s, QObject::tr("Properties") },
+                  { u":/icons/rail_stats.svg"_s, QObject::tr("Analysis") },
+                  { u":/icons/rail_provenance.svg"_s, QObject::tr("Provenance") },
+                  { u":/icons/rail_copilot.svg"_s, QObject::tr("Copilot") } });
+    }
 }
 
 InspectorPanel *WorkspaceChrome::installInspectorDock()

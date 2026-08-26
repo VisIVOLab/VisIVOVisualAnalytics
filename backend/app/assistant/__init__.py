@@ -12,5 +12,10 @@ the assistant still exposes its tool catalogue and runs deterministic tool calls
 but cannot reason in natural language. Wiring a key/provider is a deployment step.
 """
 from .engine import AssistantEngine, AssistantResult  # noqa: F401
-from .provider import AssistantProvider, provider_from_env  # noqa: F401
+from .provider import (  # noqa: F401
+    AssistantProvider,
+    provider_from_env,
+    configure,
+    public_config,
+)
 from .tools import TOOLS, AssistantTool  # noqa: F401

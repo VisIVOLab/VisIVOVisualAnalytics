@@ -35,6 +35,7 @@
     "POST /v1/analysis/hi-products/{dataset_id}",
     "POST /v1/analysis/skeleton/{dataset_id}",
     "POST /v1/analysis/skeleton/{dataset_id}/binary",
+    "POST /v1/assistant/config",
     "POST /v1/assistant/query",
     "POST /v1/astrometry/reproject/{dataset_id}",
     "POST /v1/catalogue/open",

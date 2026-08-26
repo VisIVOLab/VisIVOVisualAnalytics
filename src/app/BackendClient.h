@@ -654,6 +654,14 @@ struct BackendAssistantResult
     QList<BackendAssistantToolCall> toolCalls;
 };
 
+struct BackendAssistantConfigResult
+{
+    bool valid{ false };
+    QString error;
+    bool configured{ false };
+    QString provider;             // active provider after the change
+};
+
 // ── S-03: Baseline subtraction ────────────────────────────────────────────────
 
 struct BackendBaselineResult
@@ -1576,6 +1584,15 @@ public:
      *  false but the call still succeeds. ``datasetId`` may be empty. */
     BackendAssistantResult assistantQuery(const QString &question,
                                           const QString &datasetId);
+
+    /** POST /v1/assistant/config — choose the copilot LLM back-end: Claude
+     *  (anthropicKey), ChatGPT/OpenAI (openaiKey), or your own server
+     *  (baseUrl of an OpenAI-compatible endpoint). Empty fields are left
+     *  unchanged server-side; keys are held in server memory only. */
+    BackendAssistantConfigResult setAssistantConfig(
+            const QString &provider, const QString &anthropicKey,
+            const QString &openaiKey, const QString &baseUrl,
+            const QString &baseUrlKey, const QString &model);
 
     // ── S-03: Baseline subtraction ────────────────────────────────────────────
     /** POST /v1/spectral/baseline/{session_id}/{dataset_id} — subtract a baseline
