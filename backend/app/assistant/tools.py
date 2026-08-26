@@ -103,6 +103,21 @@ def _moment_map_summary(path: str | None, params: dict[str, Any]) -> dict[str, A
 _COSMO_MODELS = {"Planck18", "Planck15", "Planck13", "WMAP9"}
 
 
+def _hi_products(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    if not path:
+        raise ValueError("hi_products requires a loaded dataset.")
+    from ..compute import worker_hi_products  # noqa: PLC0415
+    return worker_hi_products(
+        path,
+        int(params.get("channel_start", 0)),
+        int(params.get("channel_end", 0)),
+        params.get("distance_mpc"),
+        bool(params.get("mask_enabled", False)),
+        float(params.get("threshold_value", 0.0)),
+        params.get("rest_freq_hz"),
+    )
+
+
 def _cosmology_distance(_path: str | None, params: dict[str, Any]) -> dict[str, Any]:
     import astropy.cosmology as _cosmo  # noqa: PLC0415
     import astropy.units as u  # noqa: PLC0415
@@ -172,6 +187,28 @@ TOOLS: dict[str, AssistantTool] = {
                 "additionalProperties": False,
             },
             executor=_moment_map_summary,
+        ),
+        AssistantTool(
+            name="hi_products",
+            description=(
+                "Optically-thin HI column density (N_HI, cm^-2) map summary and, "
+                "when distance_mpc is given, the integrated HI mass (M_sun) from "
+                "moment-0. Requires a Jy/beam cube with a known beam and a "
+                "velocity axis (or rest_freq_hz for a frequency axis)."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "channel_start": {"type": "integer"},
+                    "channel_end": {"type": "integer"},
+                    "distance_mpc": {"type": "number"},
+                    "mask_enabled": {"type": "boolean"},
+                    "threshold_value": {"type": "number"},
+                    "rest_freq_hz": {"type": "number"},
+                },
+                "additionalProperties": False,
+            },
+            executor=_hi_products,
         ),
         AssistantTool(
             name="cosmology_distance",

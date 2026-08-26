@@ -34,6 +34,6 @@ async def resolve_target(
     name = request.name.strip()
     if not name:
         return TargetResolveResponse(valid=False, error="Empty target name.")
-    loop = _asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     d = await loop.run_in_executor(None, _resolve_target_sync, name)
     return TargetResolveResponse(**d)

@@ -76,6 +76,45 @@ async def cube_stats(
     return {"valid": True, "error": "", "cached": False, **result}
 
 
+class HiProductsRequest(BaseModel):
+    channel_start: int = 0
+    channel_end: int = 0
+    distance_mpc: float | None = None
+    mask_enabled: bool = False
+    threshold_value: float = 0.0
+    rest_freq_hz: float | None = None
+
+
+@router.post("/v1/analysis/hi-products/{dataset_id}", tags=["analysis"])
+async def hi_products(
+    dataset_id: str,
+    request: HiProductsRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> dict:
+    """HI column density + integrated HI mass from moment-0 (R-19).
+
+    Optically-thin N_HI [cm^-2] map summary and, when a distance is supplied, the
+    integrated HI mass [M_sun]. Requires a Jy/beam cube with a known beam and a
+    velocity spectral axis (or a rest frequency for a frequency axis)."""
+    from ..compute import worker_hi_products  # noqa: PLC0415
+
+    entry = _require_dataset(session, dataset_id)
+    if entry.get("kind") != "cube":
+        raise HTTPException(422, "HI products require a spectral cube dataset.")
+    try:
+        result = await asyncio.to_thread(
+            worker_hi_products, entry["path"], request.channel_start, request.channel_end,
+            request.distance_mpc, request.mask_enabled, request.threshold_value,
+            request.rest_freq_hz)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[hi-products] failed dataset_id=%s error=%s", dataset_id, exc)
+        raise HTTPException(500, str(exc)) from exc
+    return {"valid": True, "error": "", **result}
+
+
 async def _compute_skeleton(session: Session, dataset_id: str, request: SkeletonRequest) -> dict:
     from ..compute import worker_skeleton  # noqa: PLC0415
 

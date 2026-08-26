@@ -32,6 +32,7 @@
     "GET /v1/stokes/{dataset_id}",
     "GET /v1/stokes/{dataset_id}/binary",
     "GET /v1/tasks/{task_id}",
+    "POST /v1/analysis/hi-products/{dataset_id}",
     "POST /v1/analysis/skeleton/{dataset_id}",
     "POST /v1/analysis/skeleton/{dataset_id}/binary",
     "POST /v1/assistant/query",

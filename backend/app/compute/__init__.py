@@ -84,6 +84,9 @@ from .astrometry import (  # noqa: F401
     worker_reproject,
     worker_crossmatch,
 )
+from .hi import (  # noqa: F401
+    worker_hi_products,
+)
 from .polarisation import (  # noqa: F401
     worker_stokes_plane,
     worker_polarisation_pi_pa,
@@ -153,6 +156,7 @@ __all__ = [
     "_region_mask",
     "worker_region_stats",
     "worker_cube_stats",
+    "worker_hi_products",
     "worker_reproject",
     "worker_crossmatch",
     "worker_stokes_plane",

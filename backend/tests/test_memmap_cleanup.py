@@ -273,8 +273,15 @@ def _make_stale_registry(ttl: int = 1) -> SessionRegistry:
 
 
 def _force_stale(session: Session) -> None:
-    """Push ``last_accessed`` into the past so ``idle_seconds() > TTL``."""
-    session.last_accessed = 0.0  # epoch — guaranteed older than any TTL
+    """Push ``last_accessed`` into the past so ``idle_seconds() > TTL``.
+
+    Must be RELATIVE to the current monotonic clock: ``time.monotonic()`` has an
+    arbitrary reference point (often boot/process start), so the old ``= 0.0``
+    only worked where ``monotonic()`` already exceeded the TTL. On a freshly
+    booted CI runner ``monotonic() < TTL`` and the flush never triggered.
+    """
+    import time as _time  # noqa: PLC0415
+    session.last_accessed = _time.monotonic() - 1.0e9
 
 
 def test_anon_flush_releases_vbt_memmap(tmp_path):
