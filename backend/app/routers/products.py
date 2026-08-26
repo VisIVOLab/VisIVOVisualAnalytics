@@ -82,6 +82,8 @@ class MomentSaveFitsRequest(BaseModel):
     mask_enabled: bool = False
     threshold_value: float = 0.0
     threshold_auto: bool = False
+    # R-03: order-2 default is dispersion σ (km/s); True keeps variance σ².
+    moment2_variance: bool = False
     # Workspace Exports filename (basename only). Empty → synthesised
     # from source name + moment order.
     output_basename: str = ""
@@ -132,6 +134,7 @@ async def moment_save_fits(
             bool(request.mask_enabled),
             float(request.threshold_value),
             bool(request.threshold_auto),
+            bool(request.moment2_variance),
         )
     except HTTPException:
         raise

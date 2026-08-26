@@ -18,6 +18,7 @@ class QVBoxLayout;
 class QScrollArea;
 class QAction;
 class QToolButton;
+class AssistantPanel;
 
 class InspectorPanel : public QWidget
 {
@@ -80,6 +81,11 @@ public:
     void showProvenance(const QString &title, const QVariantMap &params);
     void clearProvenance();
 
+    /// Lazily add a "Copilot" tab hosting the scientific-copilot chat panel
+    /// (R-22) and return it, so the host can wire its BackendClient + dataset id.
+    /// Idempotent: repeated calls return the same panel.
+    AssistantPanel *ensureCopilotTab();
+
 private:
     QVBoxLayout *groupLayout(const QString &caption);   ///< find/create an analysis group box
 
@@ -99,6 +105,8 @@ private:
     QLabel *m_provTitle = nullptr;
     QLabel *m_provBody = nullptr;
     QVariantMap m_provParams;
+
+    AssistantPanel *m_copilot = nullptr;   ///< lazily created "Copilot" tab (R-22)
 };
 
 #endif // INSPECTORPANEL_H

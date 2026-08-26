@@ -163,11 +163,16 @@ inline double comovingDistanceMpc(double z)
 {
     if (z <= 0.0)
         return 0.0;
-    constexpr double H0      = 67.74;
-    constexpr double cKms    = 2.998e5;
+    // R-12: Planck 2018 (Planck Collaboration VI 2020, TT,TE,EE+lowE+lensing):
+    // H0 = 67.66, Ωm = 0.3111, ΩΛ = 1 − Ωm (flat). The UI labels this local
+    // integrator "Planck18 (local)", so the constants must actually BE Planck18
+    // — they were Planck 2015 (67.74 / 0.3089), ~1% off, which made the label
+    // disagree with the astropy-backed Planck18 used for other models.
+    constexpr double H0      = 67.66;
+    constexpr double cKms    = 2.99792458e5;
     constexpr double DH      = cKms / H0;
-    constexpr double Omega_m = 0.3089;
-    constexpr double Omega_L = 0.6911;
+    constexpr double Omega_m = 0.3111;
+    constexpr double Omega_L = 1.0 - Omega_m;
     constexpr int    N       = 1000;
 
     auto E_inv = [&](double zp) -> double {

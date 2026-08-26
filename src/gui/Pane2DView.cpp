@@ -5,6 +5,7 @@
 #include "CubeWcsUtil.h"
 
 #include <QDebug>
+#include <QScopedValueRollback>
 #include <QVTKInteractor.h>
 #include <QVTKOpenGLNativeWidget.h>
 
@@ -522,7 +523,10 @@ void Pane2DView::setCameraState(const double focalXY[2], double parallelScale)
 {
     if (!std::isfinite(focalXY[0]) || !std::isfinite(focalXY[1]) || !(parallelScale > 0.))
         return;
-    m_applyingCamera = true;   // don't echo cameraChanged back out (Linked-2D loop guard)
+    // E-07/M7: RAII guard — don't echo cameraChanged back out (Linked-2D loop
+    // guard); a throw during Render() must not wedge the flag true and silence
+    // all future camera-change signals from this pane.
+    QScopedValueRollback<bool> cameraGuard(m_applyingCamera, true);
     auto *cam = m_renderer->GetActiveCamera();
     double f[3] = { 0., 0., 0. }, p[3] = { 0., 0., 0. };
     cam->GetFocalPoint(f);
@@ -538,7 +542,7 @@ void Pane2DView::setCameraState(const double focalXY[2], double parallelScale)
     cam->SetParallelScale(parallelScale);
     if (m_window)
         m_window->Render();
-    m_applyingCamera = false;
+    // cameraGuard restores m_applyingCamera on scope exit (RAII).
 }
 
 bool Pane2DView::cameraStateNormalized(double dataCenterXY[2], double &worldHeight) const

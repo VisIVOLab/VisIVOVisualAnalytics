@@ -91,6 +91,10 @@ class MomentProductRequest(BaseModel):
     # When True (and mask_enabled), the backend derives the mask threshold from
     # the data itself (median + 3·σ via MAD) instead of using threshold_value.
     threshold_auto: bool = False
+    # R-03: for moment order 2 the default output is the velocity dispersion σ
+    # (km/s), matching CASA/CARTA/SoFiA. Set True to return the raw variance σ²
+    # (spectral_unit²) instead. Ignored for other orders.
+    moment2_variance: bool = False
 
 
 class MomentProductResponse(BaseModel):

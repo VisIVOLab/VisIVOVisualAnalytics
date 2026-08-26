@@ -80,15 +80,7 @@
 #include <cmath>
 #include <limits>
 
-// ── libwcs coordinate conversion ──────────────────────────────────────────────
-// wcscon() converts between WCS coordinate systems (FK5/J2000, Galactic, …).
-// Only the declaration is needed here; the function is linked from libwcs.
-extern "C" {
-void wcscon(int sys1, int sys2, double eq1, double eq2,
-            double *dtheta, double *dphi, double epoch);
-}
-static constexpr int kWCS_J2000    = 1;
-static constexpr int kWCS_GALACTIC = 3;
+#include "CatalogueWcsUtil.h"
 
 using namespace Qt::StringLiterals;
 
@@ -251,11 +243,14 @@ void vtkWindowCatalogue3D::setupSidebar()
         sceneLayout->addWidget(this->chkShowShells);
 
         this->comboFrame = new QComboBox(sceneCard);
-        this->comboFrame->addItems({ u"FK5 / J2000"_s, u"Galactic (l, b)"_s });
+        this->comboFrame->addItems(
+                { u"FK5 / J2000"_s, u"Galactic (l, b)"_s, u"Supergalactic (SGL, SGB)"_s });
         this->comboFrame->setToolTip(
                 u"Coordinate frame for 3D scene positions.\n"
                 u"FK5 / J2000: standard equatorial (RA, Dec).\n"
-                u"Galactic (l, b): galactic longitude and latitude."_s);
+                u"Galactic (l, b): galactic longitude and latitude.\n"
+                u"Supergalactic (SGL, SGB): de Vaucouleurs frame of the local "
+                u"supercluster plane — the natural frame for cosmic-flow figures."_s);
         this->comboCosmology = new QComboBox(sceneCard);
         this->comboCosmology->addItems(
                 { u"Planck18"_s, u"Planck15"_s, u"Planck13"_s, u"WMAP9"_s });

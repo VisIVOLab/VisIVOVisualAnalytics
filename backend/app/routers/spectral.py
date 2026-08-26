@@ -245,7 +245,8 @@ def _combine_linewidth_chunks(chunks: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _linewidth_cache_key(path: str, channel_start: int, channel_end: int,
-                          mask_enabled: bool, threshold_value: float) -> tuple[str, str]:
+                          mask_enabled: bool, threshold_value: float,
+                          rest_freq_hz: float | None = None) -> tuple[str, str]:
     """Stable cache key for a linewidth computation."""
     return PRODUCT_CACHE.make_key(path, "linewidth", {
         "channel_start": int(channel_start),
@@ -253,6 +254,9 @@ def _linewidth_cache_key(path: str, channel_start: int, channel_end: int,
         "mask_enabled": bool(mask_enabled),
         "threshold_value": float(threshold_value),
         "snr_threshold": _LINEWIDTH_SNR_THRESHOLD,
+        # Part of the key: a different rest frequency yields km/s maps scaled
+        # differently (or Hz when absent), so cached frames must not be shared.
+        "rest_freq_hz": float(rest_freq_hz) if rest_freq_hz else None,
     })
 
 
@@ -264,6 +268,7 @@ async def _compute_linewidth(
     mask_enabled: bool,
     threshold_value: float,
     cube_height: int,
+    rest_freq_hz: float | None = None,
 ) -> dict[str, Any]:
     """Compute (or retrieve cached) linewidth maps for a cube.
 
@@ -281,7 +286,7 @@ async def _compute_linewidth(
        result, which is then stored in the cache.
     """
     cache_key, param_hash = _linewidth_cache_key(
-        path, channel_start, channel_end, mask_enabled, threshold_value
+        path, channel_start, channel_end, mask_enabled, threshold_value, rest_freq_hz
     )
     cached = PRODUCT_CACHE.get(cache_key)
     if cached is not None:
@@ -318,6 +323,7 @@ async def _compute_linewidth(
                 path, int(channel_start), int(channel_end),
                 bool(mask_enabled), float(threshold_value),
                 _LINEWIDTH_SNR_THRESHOLD, int(y0), int(y1),
+                rest_freq_hz,
             )
             for (y0, y1) in ranges
         ]
@@ -375,6 +381,7 @@ async def spectral_linewidth(
             request.channel_start, request.channel_end,
             request.mask_enabled, request.threshold_value,
             cube_height=int(entry.get("height") or 0),
+            rest_freq_hz=request.rest_freq_hz,
         )
     except HTTPException:
         raise
@@ -409,6 +416,7 @@ async def spectral_linewidth_binary(
             request.channel_start, request.channel_end,
             request.mask_enabled, request.threshold_value,
             cube_height=int(entry.get("height") or 0),
+            rest_freq_hz=request.rest_freq_hz,
         )
     except HTTPException:
         raise
@@ -455,6 +463,7 @@ async def spectral_linewidth_get(
             session, entry["path"],
             channel_start, channel_end, False, 0.0,
             cube_height=int(entry.get("height") or 0),
+            rest_freq_hz=rest_freq_hz,
         )
     except HTTPException:
         raise

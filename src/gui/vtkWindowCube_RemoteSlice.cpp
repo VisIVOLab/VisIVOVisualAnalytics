@@ -4,6 +4,7 @@
 #include "CubeStatsUtil.h"
 
 #include <QByteArray>  // decodeRemoteSlice / fetchRemoteSlice operate on raw bytes
+#include <QScopedValueRollback>
 
 #include "qcustomplot.h"
 #include "ColorMaps.h"
@@ -281,6 +282,10 @@ void vtkWindowCube::requestRemoteSlice(int sliceIndex)
     }
 
     const int requestId = ++this->currentRemoteSliceRequestId;
+    // E-07/M6: remember linked-originated fetches by requestId so the (async)
+    // result can be recognised as linked-driven and not echo-re-broadcast.
+    if (this->m_applyingLinkedUpdate)
+        this->m_linkedRemoteRequestIds.insert(requestId);
     ++this->activeRemoteSliceRequests;
     this->statusBar()->showMessage(u"Loading remote slice..."_s);
     this->startRemoteSliceFetch(sliceIndex, false, requestId);
@@ -321,8 +326,12 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     // Linked views: this is the single convergence where a slice is actually
     // displayed (covers cached scrubbing AND fetched slices). Broadcast the
     // committed channel to linked peers, de-duped so an echoed/own channel is
-    // not re-broadcast. The guard skips linked-driven updates.
-    if (this->m_linkViews && !this->m_applyingLinkedUpdate
+    // not re-broadcast. E-07/M6: suppress the re-broadcast when this result came
+    // from a linked-originated request — via the RAII guard (cached/sync path)
+    // OR the captured token (async fetched path, where the guard has died) — so
+    // a clamped/late index can't ping-pong across ≥3 linked windows.
+    const bool linkedOriginated = this->m_applyingLinkedUpdate || this->m_applyingLinkedResult;
+    if (this->m_linkViews && !linkedOriginated
         && result.index != this->m_lastLinkedChannel) {
         this->m_lastLinkedChannel = result.index;
         this->broadcastLinkedChannel(result.index);
@@ -457,6 +466,9 @@ void vtkWindowCube::startRemoteSliceFetch(int sliceIndex, bool isPrefetch, int r
                      [this, watcher]() {
                          const auto result = watcher->result();
                          const int requestId = watcher->property("requestId").toInt();
+                         // Consume the per-request linked token here (any branch),
+                         // so the set never leaks a dropped/stale request (E-07/M6).
+                         const bool linkedResult = this->m_linkedRemoteRequestIds.remove(requestId);
                          const QString key = watcher->property("sliceKey").toString();
                          const bool isPrefetch = watcher->property("isPrefetch").toBool();
                          this->remoteSliceFetchesInFlight.remove(key);
@@ -488,6 +500,11 @@ void vtkWindowCube::startRemoteSliceFetch(int sliceIndex, bool isPrefetch, int r
                          }
 
                          if (requestedSliceMatches) {
+                             // RAII: mark this synchronous apply as linked-driven
+                             // (only for its own scope) so the echo re-broadcast
+                             // is suppressed for an async linked result too.
+                             QScopedValueRollback<bool> linkedGuard(
+                                     this->m_applyingLinkedResult, linkedResult);
                              this->applyRemoteSliceResult(result);
                              if (!isPrefetch && this->activeRemoteSliceRequests == 0) {
                                  this->clearPersistentStatusMessage();

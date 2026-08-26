@@ -69,6 +69,8 @@ _MOMENT_THREADS = int(_os.environ.get("VISIVO_MOMENT_THREADS", "0"))
 # keep the faster in-memory (GPU/Numba) path.
 _MOMENT_STREAM_BYTES = int(_os.environ.get("VISIVO_MOMENT_STREAM_BYTES", str(2 * 1024 ** 3)))
 _MOMENT_SLAB_CHANNELS = max(1, int(_os.environ.get("VISIVO_MOMENT_SLAB_CHANNELS", "64")))
+# Higher-order moments that the Dask backend supports out-of-core (R-06 fallback).
+_DASK_MOMENT_ORDERS = frozenset({3, 4, 5, 6, 8, 10})
 
 
 def _n_moment_threads() -> int:
@@ -88,6 +90,7 @@ def _n_moment_threads() -> int:
 def _moment1_numba(
     cube: np.ndarray,
     spectral_coords: np.ndarray,
+    spectral_delta: np.ndarray,
     valid_mask: np.ndarray,
 ) -> np.ndarray:
     """Intensity-weighted mean velocity (M1), parallelised over spatial pixels.
@@ -104,12 +107,15 @@ def _moment1_numba(
         for x in range(nx):
             for z in range(nz):
                 if valid_mask[z, y, x]:
-                    w = float(cube[z, y, x])
+                    # R-04: weight by intensity × channel width (I·Δv), matching
+                    # the numpy and Dask paths so M1 is identical across backends
+                    # even on a non-uniform spectral axis.
+                    w = float(cube[z, y, x]) * spectral_delta[z]
                     result[y, x] += w * spectral_coords[z]
                     weight_sum[y, x] += w
     for y in _prange(ny):
         for x in range(nx):
-            if weight_sum[y, x] > 0.0:
+            if weight_sum[y, x] != 0.0:
                 result[y, x] /= weight_sum[y, x]
             else:
                 result[y, x] = np.nan
@@ -120,25 +126,26 @@ def _moment1_numba(
 def _moment2_numba(
     cube: np.ndarray,
     spectral_coords: np.ndarray,
+    spectral_delta: np.ndarray,
     valid_mask: np.ndarray,
 ) -> np.ndarray:
     """Intensity-weighted velocity dispersion (M2), parallelised over spatial pixels."""
     nz = cube.shape[0]
     ny = cube.shape[1]
     nx = cube.shape[2]
-    # First pass: compute M1.
+    # First pass: compute M1. R-04: weight by I·Δv (matches numpy/Dask paths).
     m1 = np.zeros((ny, nx), dtype=np.float64)
     weight_sum = np.zeros((ny, nx), dtype=np.float64)
     for y in _prange(ny):
         for x in range(nx):
             for z in range(nz):
                 if valid_mask[z, y, x]:
-                    w = float(cube[z, y, x])
+                    w = float(cube[z, y, x]) * spectral_delta[z]
                     m1[y, x] += w * spectral_coords[z]
                     weight_sum[y, x] += w
     for y in _prange(ny):
         for x in range(nx):
-            if weight_sum[y, x] > 0.0:
+            if weight_sum[y, x] != 0.0:
                 m1[y, x] /= weight_sum[y, x]
             else:
                 m1[y, x] = np.nan
@@ -146,10 +153,10 @@ def _moment2_numba(
     result = np.zeros((ny, nx), dtype=np.float64)
     for y in _prange(ny):
         for x in range(nx):
-            if weight_sum[y, x] > 0.0:
+            if weight_sum[y, x] != 0.0:
                 for z in range(nz):
                     if valid_mask[z, y, x]:
-                        w = float(cube[z, y, x])
+                        w = float(cube[z, y, x]) * spectral_delta[z]
                         d = spectral_coords[z] - m1[y, x]
                         result[y, x] += w * d * d
                 result[y, x] /= weight_sum[y, x]
@@ -159,6 +166,27 @@ def _moment2_numba(
 
 
 # ── Encoding helpers ──────────────────────────────────────────────────────────
+
+
+def _finalize_moment2(
+    image: "np.ndarray", order: int, moment2_variance: bool,
+    moment_unit: str, spectral_unit: str
+) -> tuple["np.ndarray", str]:
+    """R-03: for order-2, return the intensity-weighted velocity **dispersion**
+    (sigma = sqrt(max(variance, 0))) by default — matching CASA ``immoments``,
+    CARTA and SoFiA — with the unit in the native spectral unit (e.g. km/s).
+
+    When ``moment2_variance`` is set the raw variance sigma^2 is preserved (unit
+    spectral_unit^2). All moment backends funnel their order-2 map through this
+    single function so the two representations never diverge between paths.
+    """
+    if order != 2:
+        return image, moment_unit
+    if moment2_variance:
+        return image, moment_unit  # keep variance + squared unit
+    # NaNs (blanked voxels) propagate through maximum/sqrt and stay NaN.
+    disp = np.sqrt(np.maximum(image, 0.0)).astype(image.dtype, copy=False)
+    return disp, (spectral_unit or "")
 
 
 def _moment_result_unit(order: int, bunit: str, spectral_unit: str) -> str:
@@ -171,7 +199,7 @@ def _moment_result_unit(order: int, bunit: str, spectral_unit: str) -> str:
     if order == 1:
         return spectral_unit
     if order == 2:
-        return f"{spectral_unit}^2" if spectral_unit else ""
+        return _squared_unit(spectral_unit)
     if order == 3:
         return "dimensionless (skewness)"
     if order == 4:
@@ -313,6 +341,7 @@ def _moment_map_from_array(
             result_f64 = _moment1_numba(
                 np.ascontiguousarray(subset_np, dtype=np.float32),
                 np.ascontiguousarray(spectral_values_np, dtype=np.float64),
+                np.ascontiguousarray(spectral_delta_np, dtype=np.float64),
                 np.ascontiguousarray(valid_mask, dtype=np.bool_),
             )
             return result_f64.astype(np.float32)
@@ -334,6 +363,7 @@ def _moment_map_from_array(
             result_f64 = _moment2_numba(
                 np.ascontiguousarray(subset_np, dtype=np.float32),
                 np.ascontiguousarray(spectral_values_np, dtype=np.float64),
+                np.ascontiguousarray(spectral_delta_np, dtype=np.float64),
                 np.ascontiguousarray(valid_mask, dtype=np.bool_),
             )
             return result_f64.astype(np.float32)
@@ -450,12 +480,12 @@ def _moment_map_streaming(
     Matches the in-memory (Numba) path for uniform spacing:
       M0 = Σ I·Δv, blanked where a pixel has no valid voxel;
       M1 = Σ(I·v) / ΣI  (blanked where ΣI ≤ 0);
-      M2 = Σ I·(v − M1)² / ΣI  — a TRUE two-pass (a second slab sweep), not the
-      Σ(I·v²)/ΣI − M1² identity: differencing avoids the ~1e22 cancellation on
-      large-offset (FREQ) axes and needs no non-negativity clamp.
+      M2 = Σ (I·Δv)·(v − M1)² / Σ(I·Δv)  — a TRUE two-pass (a second slab sweep),
+      not the Σ(I·v²)/ΣI − M1² identity: differencing avoids the ~1e22
+      cancellation on large-offset (FREQ) axes and needs no non-negativity clamp.
     Memory is O(slab · ny · nx), independent of nz (M2 does two slab passes).
-    Note: M1/M2 weight by raw intensity (no Δv), matching Numba; on a NON-uniform
-    axis the numpy fallback's Δv-weighting differs — a pre-existing inconsistency.
+    R-04: M1/M2 weight by I·Δv, matching the Numba, numpy and Dask paths on a
+    NON-uniform spectral axis (for a uniform axis the Δv factor cancels).
     """
     sv = np.asarray(spectral_coordinates, dtype=np.float64)
     ny, nx = int(data.shape[1]), int(data.shape[2])
@@ -476,15 +506,16 @@ def _moment_map_streaming(
             inten = np.where(valid, block.astype(np.float64), 0.0)  # invalid → 0 (dropped from sums)
             yield cs, ce, inten, valid
 
-    # Pass 1: M0 (Σ I·Δv), and the M1 weights ΣI, Σ(I·v).
-    s0d = np.zeros((ny, nx), dtype=np.float64)
-    s_i = np.zeros((ny, nx), dtype=np.float64)
-    s_iv = np.zeros((ny, nx), dtype=np.float64)
+    # Pass 1: M0 = Σ(I·Δv), and the M1 weights Σ(I·Δv), Σ(I·Δv·v). R-04: the
+    # weighted-intensity denominator is Σ(I·Δv) (= M0), not the raw ΣI.
+    s0d = np.zeros((ny, nx), dtype=np.float64)      # Σ(I·Δv) — M0 and the M1/M2 weight
+    s_iv = np.zeros((ny, nx), dtype=np.float64)     # Σ(I·Δv·v)
     any_valid = np.zeros((ny, nx), dtype=bool)
     for cs, ce, inten, valid in _slabs():
-        s0d += np.sum(inten * delta[cs:ce][:, None, None], axis=0)
-        s_i += np.sum(inten, axis=0)
-        s_iv += np.sum(inten * sv[cs:ce][:, None, None], axis=0)
+        d_slab = delta[cs:ce][:, None, None]
+        iw = inten * d_slab                          # I·Δv
+        s0d += np.sum(iw, axis=0)
+        s_iv += np.sum(iw * sv[cs:ce][:, None, None], axis=0)
         any_valid |= valid.any(axis=0)
 
     if order == 0:
@@ -492,23 +523,23 @@ def _moment_map_streaming(
         m0[~any_valid] = np.nan   # no valid voxel → undefined, not zero (matches M1/M2 + CARTA)
         return m0
 
-    pos = s_i > 0.0
+    pos = np.isfinite(s0d) & (s0d != 0.0)
     m1 = np.full((ny, nx), np.nan, dtype=np.float64)
-    m1[pos] = s_iv[pos] / s_i[pos]                       # intensity-weighted mean velocity
+    m1[pos] = s_iv[pos] / s0d[pos]                   # intensity-weighted mean velocity
     out = np.full((ny, nx), np.nan, dtype=np.float32)
     if order == 1:
         out[pos] = m1[pos].astype(np.float32)
         return out
     if order == 2:
-        # Pass 2: Σ I·(v − M1)² / ΣI — the Numba two-pass, computed exactly. The
-        # differences are O(channel width), so there is no 1e22-scale cancellation
-        # (unlike the ΣI·v² − M1² identity) and no clamp is needed; signed-weight
-        # variance is returned as-is, matching the in-memory path.
+        # Pass 2: Σ (I·Δv)·(v − M1)² / Σ(I·Δv) — the two-pass, computed exactly.
+        # The differences are O(channel width), so there is no 1e22-scale
+        # cancellation (unlike the ΣI·v² − M1² identity) and no clamp is needed.
         s_num = np.zeros((ny, nx), dtype=np.float64)
         for cs, ce, inten, _valid in _slabs():
+            iw = inten * delta[cs:ce][:, None, None]
             dv = sv[cs:ce][:, None, None] - m1[None, :, :]
-            s_num += np.sum(inten * dv * dv, axis=0)
-        out[pos] = (s_num[pos] / s_i[pos]).astype(np.float32)
+            s_num += np.sum(iw * dv * dv, axis=0)
+        out[pos] = (s_num[pos] / s0d[pos]).astype(np.float32)
         return out
     raise ValueError(f"Streaming moment not supported for order {order}.")
 
@@ -583,6 +614,7 @@ def _moment_map_dask(
     chunk_z: int = 64,
     dist_client: Any = None,
     threshold_auto: bool = False,
+    moment2_variance: bool = False,
 ) -> dict[str, Any]:
     """Out-of-core moment computation via Dask arrays.
 
@@ -690,6 +722,10 @@ def _moment_map_dask(
         ).astype(np.float32)
 
     _apply_position_moment_range_guard(image, order, spectral_values)
+    # R-03: order-2 default → velocity dispersion (sqrt of variance), same as
+    # the in-memory/streaming path so the two never diverge.
+    image, moment_unit = _finalize_moment2(
+        image, order, moment2_variance, moment_unit, str(spectral["axis_unit"]))
 
     if not np.isfinite(image).any():
         raise ValueError("No valid voxels found for the selected moment parameters (dask path).")
@@ -711,6 +747,16 @@ def _moment_map_dask(
     }
 
 
+def _squared_unit(spectral_unit: str) -> str:
+    """Unit of a variance (moment-2 σ²). Parenthesise compound units so a
+    ``km/s`` axis reads as ``(km/s)^2`` (a squared velocity) rather than
+    ``km/s^2`` (which parses as an acceleration)."""
+    su = (spectral_unit or "").strip()
+    if not su:
+        return ""
+    return f"({su})^2" if ("/" in su or " " in su) else f"{su}^2"
+
+
 def _moment_unit(order: int, bunit: str, spectral_unit: str) -> str:
     """Derive the physical unit of a moment map from the FITS header units."""
     if order == 0:
@@ -719,7 +765,7 @@ def _moment_unit(order: int, bunit: str, spectral_unit: str) -> str:
     if order == 1:
         return spectral_unit
     if order == 2:
-        return f"{spectral_unit}^2" if spectral_unit else ""
+        return _squared_unit(spectral_unit)
     # Orders 6, 8, 10 preserve the intensity unit.
     return bunit
 
@@ -732,6 +778,7 @@ def worker_moment(
     mask_enabled: bool,
     threshold_value: float,
     threshold_auto: bool = False,
+    moment2_variance: bool = False,
 ) -> dict[str, Any]:
     """
     Compute a moment map reading only [channel_start:channel_end] planes.
@@ -761,9 +808,23 @@ def worker_moment(
         # materialise to more than the stream threshold, stream slabs from disk
         # instead of loading it all. Small cubes keep the in-memory GPU/Numba path.
         subset_bytes = (z1 - z0 + 1) * int(data.shape[1]) * int(data.shape[2]) * 4
-        if order in (0, 1, 2) and subset_bytes > _MOMENT_STREAM_BYTES:
+        big = subset_bytes > _MOMENT_STREAM_BYTES
+        if order in (0, 1, 2) and big:
             image = _moment_map_streaming(
                 data, z0, z1, order, spectral["coordinates"], mask_enabled, effective_threshold)
+        elif order in _DASK_MOMENT_ORDERS and big and _DASK_OK:
+            # R-06: higher-order moments (3–10) have no bespoke slab streamer;
+            # when the subset would OOM the in-memory path AND Dask is available,
+            # compute them via the local-threaded Dask backend, which reduces the
+            # cube out-of-core (chunked) instead of materialising several
+            # cube-sized float64 temporaries. If Dask is unavailable we fall
+            # through to the in-memory path (correct, but may use more memory).
+            # _moment_map_dask reopens the file itself and returns the full result
+            # dict (range guard + dispersion applied); the finally: closes hdul.
+            return _moment_map_dask(
+                path, order, z0, z1, effective_threshold, mask_enabled,
+                64, None, False, moment2_variance,
+            )
         else:
             subset = np.asarray(data[z0 : z1 + 1, :, :], dtype=np.float32)
             image = _moment_map_from_array(
@@ -778,6 +839,9 @@ def worker_moment(
         _apply_position_moment_range_guard(image, order, spectral["coordinates"])
         bunit = dataset.bunit
         moment_unit = _moment_result_unit(order, bunit, str(spectral["axis_unit"]))
+        # R-03: order-2 default → velocity dispersion (sqrt of variance).
+        image, moment_unit = _finalize_moment2(
+            image, order, moment2_variance, moment_unit, str(spectral["axis_unit"]))
         logger.info(
             "[moment] provenance path=%s bunit=%s beam=(%s,%s,%s)",
             dataset.path,
@@ -818,6 +882,7 @@ def worker_moment_save_fits(
     mask_enabled: bool,
     threshold_value: float,
     threshold_auto: bool = False,
+    moment2_variance: bool = False,
 ) -> dict[str, Any]:
     """Compute a moment map and persist it as a standalone 2-D FITS file at
     ``output_path``.
@@ -840,6 +905,7 @@ def worker_moment_save_fits(
     payload = worker_moment(
         src_path, int(order), int(channel_start), int(channel_end),
         bool(mask_enabled), float(threshold_value), bool(threshold_auto),
+        bool(moment2_variance),
     )
     # The base64 round-trip is unnecessary for the FITS path but keeps a
     # single source of truth — the cost is one float32 array decode, dwarfed

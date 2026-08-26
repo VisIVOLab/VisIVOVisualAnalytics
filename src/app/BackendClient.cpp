@@ -1,4 +1,5 @@
 #include "BackendClient.h"
+#include "BackendHeaders.h"
 #include "DiagnosticsManager.h"
 
 #include <QByteArray>
@@ -15,6 +16,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcessEnvironment>
+#include <QSet>
 #include <QThreadStorage>
 #include <QDebug>
 #include <QStandardPaths>
@@ -30,6 +32,37 @@
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 namespace {
+
+// Names whose absence in a binary-endpoint response means the client/server
+// contract has drifted (not merely an optional field): the geometry that sizes
+// the receive buffers, and the scientific units the client displays. When one
+// of these is entirely absent the client used to read it back as 0/"" silently;
+// visivoHeader() now logs it so the drift is visible (see E-02 / test_contract).
+bool isRequiredVisivoHeader(const char *name)
+{
+    static const QSet<QByteArray> kRequired = {
+        QByteArray(VisivoHeaders::WIDTH),
+        QByteArray(VisivoHeaders::HEIGHT),
+        QByteArray(VisivoHeaders::DEPTH),
+        QByteArray(VisivoHeaders::BUNIT),
+        QByteArray(VisivoHeaders::SPECTRAL_AXIS_UNIT),
+    };
+    return kRequired.contains(QByteArray(name));
+}
+
+// Read a response header by its canonical name (use the VisivoHeaders::*
+// constants so a backend rename tracked by the contract snapshot propagates
+// here automatically). Warns when a *required* header is missing.
+QByteArray visivoHeader(const QMap<QByteArray, QByteArray> &headers, const char *name)
+{
+    const QByteArray value = headers.value(QByteArray(name).toLower());
+    if (value.isNull() && isRequiredVisivoHeader(name)) {
+        qWarning().noquote()
+                << "[BackendClient] backend response missing required header" << name
+                << "— client/server contract drift? Regenerate contract snapshots.";
+    }
+    return value;
+}
 
 QByteArray decodeCompressedPayload(const QByteArray &encoded, const QString &compression,
                                    QString &error)
@@ -332,6 +365,42 @@ BackendDiagnosticsEventsResult BackendClient::pollBackendDiagnostics(qint64 sinc
         ev.operationTag = e.value(QStringLiteral("operation_tag")).toString();
         result.events.push_back(std::move(ev));
     }
+    return result;
+}
+
+BackendAssistantResult BackendClient::assistantQuery(const QString &question,
+                                                     const QString &datasetId)
+{
+    BackendAssistantResult result;
+    QString error;
+    QJsonObject bodyObj{ { QStringLiteral("question"), question } };
+    if (!datasetId.isEmpty())
+        bodyObj.insert(QStringLiteral("dataset_id"), datasetId);
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/assistant/query")), QJsonDocument(bodyObj), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject o = QJsonDocument::fromJson(payload).object();
+    result.answer = o.value(QStringLiteral("answer")).toString();
+    result.provider = o.value(QStringLiteral("provider")).toString();
+    result.configured = o.value(QStringLiteral("configured")).toBool(false);
+    result.toolCallsRecorded = o.value(QStringLiteral("tool_calls_recorded")).toBool(false);
+    result.reproducibilityScript = o.value(QStringLiteral("reproducibility_script")).toString();
+    for (const QJsonValue &v : o.value(QStringLiteral("tool_calls")).toArray()) {
+        const QJsonObject c = v.toObject();
+        BackendAssistantToolCall call;
+        call.name = c.value(QStringLiteral("name")).toString();
+        call.argumentsJson = QString::fromUtf8(
+                QJsonDocument(c.value(QStringLiteral("arguments")).toObject()).toJson(QJsonDocument::Compact));
+        if (c.value(QStringLiteral("result")).isObject())
+            call.resultJson = QString::fromUtf8(
+                    QJsonDocument(c.value(QStringLiteral("result")).toObject()).toJson(QJsonDocument::Compact));
+        call.error = c.value(QStringLiteral("error")).toString();
+        result.toolCalls.push_back(call);
+    }
+    result.valid = !result.answer.isEmpty();
     return result;
 }
 
@@ -1039,17 +1108,17 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
                 return r;
             }
             const auto hget = [&](const char *name) -> QByteArray {
-                return headers.value(QByteArray(name).toLower());
+                return visivoHeader(headers, name);
             };
-            r.width  = hget("X-Visivo-Width").toInt();
-            r.height = hget("X-Visivo-Height").toInt();
-            r.depth  = hget("X-Visivo-Depth").toInt();
-            r.scalarType        = QString::fromUtf8(hget("X-Visivo-Scalar-Type"));
-            r.rangeMin          = hget("X-Visivo-Range-Min").toDouble();
-            r.rangeMax          = hget("X-Visivo-Range-Max").toDouble();
-            r.spectralAxisType  = QString::fromUtf8(hget("X-Visivo-Spectral-Axis-Type"));
-            r.spectralAxisUnit  = QString::fromUtf8(hget("X-Visivo-Spectral-Axis-Unit"));
-            r.bunit             = QString::fromUtf8(hget("X-Visivo-Bunit"));
+            r.width  = hget(VisivoHeaders::WIDTH).toInt();
+            r.height = hget(VisivoHeaders::HEIGHT).toInt();
+            r.depth  = hget(VisivoHeaders::DEPTH).toInt();
+            r.scalarType        = QString::fromUtf8(hget(VisivoHeaders::SCALAR_TYPE));
+            r.rangeMin          = hget(VisivoHeaders::RANGE_MIN).toDouble();
+            r.rangeMax          = hget(VisivoHeaders::RANGE_MAX).toDouble();
+            r.spectralAxisType  = QString::fromUtf8(hget(VisivoHeaders::SPECTRAL_AXIS_TYPE));
+            r.spectralAxisUnit  = QString::fromUtf8(hget(VisivoHeaders::SPECTRAL_AXIS_UNIT));
+            r.bunit             = QString::fromUtf8(hget(VisivoHeaders::BUNIT));
             const qint64 expected =
                     qint64(r.width) * qint64(r.height) * qint64(r.depth)
                     * qint64(sizeof(float));
@@ -1243,30 +1312,30 @@ BackendVelocityGridResult BackendClient::fetchVelocityGrid(const QString &datase
         return r;
     }
     const auto hget = [&](const char *name) -> QByteArray {
-        return headers.value(QByteArray(name).toLower());
+        return visivoHeader(headers, name);
     };
     const auto parse3 = [](const QByteArray &b, double &a, double &c, double &d) {
         const QStringList p = QString::fromUtf8(b).split(QLatin1Char(','));
         if (p.size() == 3) { a = p[0].toDouble(); c = p[1].toDouble(); d = p[2].toDouble(); }
     };
-    r.nx = hget("X-Visivo-Width").toInt();
-    r.ny = hget("X-Visivo-Height").toInt();
-    r.nz = hget("X-Visivo-Depth").toInt();
-    parse3(hget("X-Visivo-Spacing"), r.sx, r.sy, r.sz);
-    parse3(hget("X-Visivo-Origin"), r.ox, r.oy, r.oz);
-    r.speedMin = hget("X-Visivo-Speed-Min").toDouble();
-    r.speedMax = hget("X-Visivo-Speed-Max").toDouble();
+    r.nx = hget(VisivoHeaders::WIDTH).toInt();
+    r.ny = hget(VisivoHeaders::HEIGHT).toInt();
+    r.nz = hget(VisivoHeaders::DEPTH).toInt();
+    parse3(hget(VisivoHeaders::SPACING), r.sx, r.sy, r.sz);
+    parse3(hget(VisivoHeaders::ORIGIN), r.ox, r.oy, r.oz);
+    r.speedMin = hget(VisivoHeaders::SPEED_MIN).toDouble();
+    r.speedMax = hget(VisivoHeaders::SPEED_MAX).toDouble();
     {
-        const QByteArray fmin = hget("X-Visivo-Full-Speed-Min");
-        const QByteArray fmax = hget("X-Visivo-Full-Speed-Max");
+        const QByteArray fmin = hget(VisivoHeaders::FULL_SPEED_MIN);
+        const QByteArray fmax = hget(VisivoHeaders::FULL_SPEED_MAX);
         r.fullSpeedMin = fmin.isEmpty() ? r.speedMin : fmin.toDouble();
         r.fullSpeedMax = fmax.isEmpty() ? r.speedMax : fmax.toDouble();
     }
-    r.unit  = QString::fromUtf8(hget("X-Visivo-Unit"));
-    r.frame = QString::fromUtf8(hget("X-Visivo-Frame"));
-    r.downsampleFactor = std::max(1, hget("X-Visivo-Downsample-Factor").toInt());
+    r.unit  = QString::fromUtf8(hget(VisivoHeaders::UNIT));
+    r.frame = QString::fromUtf8(hget(VisivoHeaders::FRAME));
+    r.downsampleFactor = std::max(1, hget(VisivoHeaders::DOWNSAMPLE_FACTOR).toInt());
     {
-        const QStringList fs = QString::fromUtf8(hget("X-Visivo-Full-Shape")).split(QLatin1Char(','));
+        const QStringList fs = QString::fromUtf8(hget(VisivoHeaders::FULL_SHAPE)).split(QLatin1Char(','));
         if (fs.size() == 3) { r.fullNz = fs[0].toInt(); r.fullNy = fs[1].toInt(); r.fullNx = fs[2].toInt(); }
     }
     const qint64 expected =
@@ -1322,14 +1391,14 @@ BackendKinematicModelResult BackendClient::requestKinematicModel(
         return r;
     }
     const auto hget = [&](const char *name) -> QByteArray {
-        return headers.value(QByteArray(name).toLower());
+        return visivoHeader(headers, name);
     };
-    r.width  = hget("X-Visivo-Width").toInt();
-    r.height = hget("X-Visivo-Height").toInt();
-    r.depth  = hget("X-Visivo-Depth").toInt();
-    r.peak   = hget("X-Visivo-Peak").toDouble();
-    r.spectralAxisUnit = QString::fromUtf8(hget("X-Visivo-Spectral-Axis-Unit"));
-    r.spectralMode     = QString::fromUtf8(hget("X-Visivo-Spectral-Mode"));
+    r.width  = hget(VisivoHeaders::WIDTH).toInt();
+    r.height = hget(VisivoHeaders::HEIGHT).toInt();
+    r.depth  = hget(VisivoHeaders::DEPTH).toInt();
+    r.peak   = hget(VisivoHeaders::PEAK).toDouble();
+    r.spectralAxisUnit = QString::fromUtf8(hget(VisivoHeaders::SPECTRAL_AXIS_UNIT));
+    r.spectralMode     = QString::fromUtf8(hget(VisivoHeaders::SPECTRAL_MODE));
     const qint64 expected =
             qint64(r.width) * qint64(r.height) * qint64(r.depth) * qint64(sizeof(float));
     if (r.width <= 0 || r.height <= 0 || r.depth <= 0 || expected != data.size()) {
@@ -1387,25 +1456,25 @@ BackendKinematicSelectResult BackendClient::kinematicSelect(
         return r;
     }
     const auto hget = [&](const char *name) -> QByteArray {
-        return headers.value(QByteArray(name).toLower());
+        return visivoHeader(headers, name);
     };
-    r.roiWidth  = hget("X-Visivo-Width").toInt();
-    r.roiHeight = hget("X-Visivo-Height").toInt();
-    r.roiDepth  = hget("X-Visivo-Depth").toInt();
-    r.count     = hget("X-Visivo-Selected-Count").toInt();
-    const auto origin = hget("X-Visivo-Origin").split(',');
+    r.roiWidth  = hget(VisivoHeaders::WIDTH).toInt();
+    r.roiHeight = hget(VisivoHeaders::HEIGHT).toInt();
+    r.roiDepth  = hget(VisivoHeaders::DEPTH).toInt();
+    r.count     = hget(VisivoHeaders::SELECTED_COUNT).toInt();
+    const auto origin = hget(VisivoHeaders::ORIGIN).split(',');
     if (origin.size() == 3) {
         r.originX = origin[0].toInt();
         r.originY = origin[1].toInt();
         r.originZ = origin[2].toInt();
     }
-    const auto full = hget("X-Visivo-Full-Shape").split(',');
+    const auto full = hget(VisivoHeaders::FULL_SHAPE).split(',');
     if (full.size() == 3) {
         r.fullWidth  = full[0].toInt();
         r.fullHeight = full[1].toInt();
         r.fullDepth  = full[2].toInt();
     }
-    const auto bb = hget("X-Visivo-Bbox").split(',');
+    const auto bb = hget(VisivoHeaders::BBOX).split(',');
     for (int i = 0; i < 6 && i < bb.size(); ++i) {
         r.bbox[i] = bb[i].toInt();
     }
@@ -1512,16 +1581,16 @@ BackendVelocityGridResult BackendClient::fetchVelocitySubgrid(const QString &dat
         return r;
     }
     const auto hget = [&](const char *name) -> QByteArray {
-        return headers.value(QByteArray(name).toLower());
+        return visivoHeader(headers, name);
     };
-    r.nx = hget("X-Visivo-Width").toInt();
-    r.ny = hget("X-Visivo-Height").toInt();
-    r.nz = hget("X-Visivo-Depth").toInt();
-    r.roiX0 = hget("X-Visivo-Roi-X0").toInt();
-    r.roiY0 = hget("X-Visivo-Roi-Y0").toInt();
-    r.roiZ0 = hget("X-Visivo-Roi-Z0").toInt();
-    r.speedMin = hget("X-Visivo-Speed-Min").toDouble();
-    r.speedMax = hget("X-Visivo-Speed-Max").toDouble();
+    r.nx = hget(VisivoHeaders::WIDTH).toInt();
+    r.ny = hget(VisivoHeaders::HEIGHT).toInt();
+    r.nz = hget(VisivoHeaders::DEPTH).toInt();
+    r.roiX0 = hget(VisivoHeaders::ROI_X0).toInt();
+    r.roiY0 = hget(VisivoHeaders::ROI_Y0).toInt();
+    r.roiZ0 = hget(VisivoHeaders::ROI_Z0).toInt();
+    r.speedMin = hget(VisivoHeaders::SPEED_MIN).toDouble();
+    r.speedMax = hget(VisivoHeaders::SPEED_MAX).toDouble();
     r.downsampleFactor = 1;
     const qint64 expected =
             qint64(r.nx) * qint64(r.ny) * qint64(r.nz) * 3 * qint64(sizeof(float));
@@ -1556,12 +1625,12 @@ BackendVelocityBasinsResult BackendClient::fetchVelocityBasins(const QString &da
         return r;
     }
     const auto hget = [&](const char *name) -> QByteArray {
-        return headers.value(QByteArray(name).toLower());
+        return visivoHeader(headers, name);
     };
-    r.nx = hget("X-Visivo-Width").toInt();
-    r.ny = hget("X-Visivo-Height").toInt();
-    r.nz = hget("X-Visivo-Depth").toInt();
-    r.nBasins = hget("X-Visivo-N-Basins").toInt();
+    r.nx = hget(VisivoHeaders::WIDTH).toInt();
+    r.ny = hget(VisivoHeaders::HEIGHT).toInt();
+    r.nz = hget(VisivoHeaders::DEPTH).toInt();
+    r.nBasins = hget(VisivoHeaders::N_BASINS).toInt();
     const qint64 expected = qint64(r.nx) * qint64(r.ny) * qint64(r.nz) * qint64(sizeof(qint32));
     if (r.nx <= 0 || r.ny <= 0 || r.nz <= 0 || expected != data.size()) {
         r.error = QStringLiteral("bad basins payload: got %1 bytes, expected %2")
@@ -1593,21 +1662,21 @@ BackendVelocityDensityResult BackendClient::fetchVelocityDensity(const QString &
         return r;
     }
     const auto hget = [&](const char *name) -> QByteArray {
-        return headers.value(QByteArray(name).toLower());
+        return visivoHeader(headers, name);
     };
-    r.nx = hget("X-Visivo-Width").toInt();
-    r.ny = hget("X-Visivo-Height").toInt();
-    r.nz = hget("X-Visivo-Depth").toInt();
-    r.divMin = hget("X-Visivo-Div-Min").toDouble();
-    r.divMax = hget("X-Visivo-Div-Max").toDouble();
-    r.unit = QString::fromUtf8(hget("X-Visivo-Unit"));
+    r.nx = hget(VisivoHeaders::WIDTH).toInt();
+    r.ny = hget(VisivoHeaders::HEIGHT).toInt();
+    r.nz = hget(VisivoHeaders::DEPTH).toInt();
+    r.divMin = hget(VisivoHeaders::DIV_MIN).toDouble();
+    r.divMax = hget(VisivoHeaders::DIV_MAX).toDouble();
+    r.unit = QString::fromUtf8(hget(VisivoHeaders::UNIT));
     const auto parse3 = [&](const char *name, double out[3]) {
         const QList<QByteArray> parts = hget(name).split(',');
         for (int i = 0; i < 3 && i < parts.size(); ++i)
             out[i] = parts[i].trimmed().toDouble();
     };
-    parse3("X-Visivo-Spacing", r.spacing);
-    parse3("X-Visivo-Origin", r.origin);
+    parse3(VisivoHeaders::SPACING, r.spacing);
+    parse3(VisivoHeaders::ORIGIN, r.origin);
     const qint64 expected = qint64(r.nx) * qint64(r.ny) * qint64(r.nz) * qint64(sizeof(float));
     if (r.nx <= 0 || r.ny <= 0 || r.nz <= 0 || expected != data.size()) {
         r.error = QStringLiteral("bad density payload: got %1 bytes, expected %2")

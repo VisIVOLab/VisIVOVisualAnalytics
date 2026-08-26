@@ -24,3 +24,8 @@ h5py>=3.10            # LOFAR / generic beamformed HDF5 dynamic-spectrum reader
 # To enable multi-node distributed scaling for CPU-bound tasks,
 # uncomment the line below and set VISIVO_DASK_SCHEDULER environment variable.
 #dask[distributed]>=2024.1.0
+
+# -- Optional: AI copilot (R-22) --
+# The scientific copilot uses the Anthropic SDK when ANTHROPIC_API_KEY is set;
+# without it the copilot falls back to a null provider (tools still work).
+# anthropic>=0.40

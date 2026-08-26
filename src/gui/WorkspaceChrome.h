@@ -72,6 +72,12 @@ public:
     /// The inspector dock (for wiring a show/hide toggle). Null until installed.
     QDockWidget *inspectorDock() const { return m_inspectorDock; }
 
+    /// Add the scientific-copilot ("Copilot") tab to the inspector and wire it
+    /// to the backend endpoint + current dataset (R-22). No-op if the inspector
+    /// dock has not been installed yet.
+    void installCopilot(const QString &url, const QString &token,
+                        const QString &datasetId);
+
     // ── Collapsible rails (§4.1) ──────────────────────────────────────────────
     // Each dock is two-state: full content (272 / 320 px) or a 36 px rail. Never
     // 0, never hidden. Only the user's click, focus mode, or a restored setting

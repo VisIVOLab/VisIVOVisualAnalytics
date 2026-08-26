@@ -19,7 +19,7 @@ back to unit spacing and document it.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -46,6 +46,10 @@ class VelocityField:
     unit: str
     frame: str
     box_known: bool
+    # R-11: non-fatal caveats about the grid's geometry/orientation (assumed
+    # frame, flipped axes, missing WCS). Surfaced so the viewer can flag that a
+    # figure may be mirror-imaged rather than presenting it as ground truth.
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -66,6 +70,7 @@ class VelocityField:
             "unit": self.unit,
             "frame": self.frame,
             "box_known": self.box_known,
+            "warnings": list(self.warnings),
             "speed_min": float(np.nanmin(mag)) if finite.any() else 0.0,
             "speed_max": float(np.nanmax(mag)) if finite.any() else 0.0,
             "speed_mean": float(np.nanmean(mag[finite])) if finite.any() else 0.0,
@@ -90,6 +95,47 @@ def _spacing_origin(n: tuple[int, int, int], box_mpc: float | None):
     return (1.0, 1.0, 1.0), (-0.5 * (nx - 1), -0.5 * (ny - 1), -0.5 * (nz - 1)), False
 
 
+def _geometry_warnings(hdr: "fits.Header", frame: str) -> list[str]:
+    """R-11: non-fatal geometry/orientation caveats for a velocity grid.
+
+    The loader places data[0]→+x, data[1]→+y, data[2]→+z in raw array order and
+    assumes a right-handed supergalactic frame. If the header's CDELT signs say
+    an axis is flipped, or the frame is only assumed, the rendered streamlines /
+    basins / vorticity could be a MIRROR of reality with no other symptom. We
+    do not silently reorient (that risks a wrong "fix"); we warn.
+    """
+    warnings: list[str] = []
+    # Spatial axes are CDELT1..3 (the component axis is 4). A negative CDELT
+    # means that axis decreases with array index — a handedness flip vs the
+    # assumed +x/+y/+z mapping.
+    flipped = [i for i in (1, 2, 3)
+               if _safe_float(hdr.get(f"CDELT{i}")) is not None
+               and _safe_float(hdr.get(f"CDELT{i}")) < 0.0]
+    if flipped:
+        warnings.append(
+            "axes with negative CDELT ("
+            + ", ".join(f"CDELT{i}" for i in flipped)
+            + ") — the velocity field may be mirror-imaged relative to the "
+            "assumed +x/+y/+z orientation; verify handedness."
+        )
+    if "assumed" in frame:
+        warnings.append(
+            "reference frame is assumed supergalactic (no VFRAME header) — "
+            "attractor positions and vorticity sign are only trustworthy if the "
+            "reconstruction really is right-handed supergalactic."
+        )
+    if not any(f"CTYPE{i}" in hdr for i in (1, 2, 3)):
+        warnings.append("no spatial WCS (CTYPE) on the grid; axis order is assumed.")
+    return warnings
+
+
+def _safe_float(v: Any) -> float | None:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def load_multicomponent_fits(path: str, box_mpc: float | None = None) -> VelocityField:
     """Load a single FITS whose component axis (NAXIS4 == 3) holds vx, vy, vz."""
     with fits.open(path, memmap=False) as hdul:
@@ -106,11 +152,14 @@ def load_multicomponent_fits(path: str, box_mpc: float | None = None) -> Velocit
     spacing, origin, box_known = _spacing_origin((nx, ny, nz), box_mpc)
     unit = str(hdr.get("BUNIT", "") or "").strip() or "km/s (assumed)"
     frame = str(hdr.get("VFRAME", "") or "").strip() or "supergalactic (assumed)"
+    warnings = _geometry_warnings(hdr, frame)
+    for w in warnings:
+        logger.warning("[velocityfield] %s: %s", path, w)
     logger.info(
-        "[velocityfield] loaded %s grid=%dx%dx%d box_known=%s unit=%s",
-        path, nx, ny, nz, box_known, unit,
+        "[velocityfield] loaded %s grid=%dx%dx%d box_known=%s unit=%s warnings=%d",
+        path, nx, ny, nz, box_known, unit, len(warnings),
     )
-    return VelocityField(vx, vy, vz, spacing, origin, unit, frame, box_known)
+    return VelocityField(vx, vy, vz, spacing, origin, unit, frame, box_known, warnings)
 
 
 def load_component_fits(
@@ -129,8 +178,12 @@ def load_component_fits(
         )
     nz, ny, nx = vx.shape
     spacing, origin, box_known = _spacing_origin((nx, ny, nz), box_mpc)
-    return VelocityField(vx, vy, vz, spacing, origin, "km/s (assumed)",
-                         "supergalactic (assumed)", box_known)
+    return VelocityField(
+        vx, vy, vz, spacing, origin, "km/s (assumed)",
+        "supergalactic (assumed)", box_known,
+        ["reference frame is assumed supergalactic (three-component load carries "
+         "no frame metadata) — verify handedness before trusting vorticity sign."],
+    )
 
 
 def load_velocity_field(path: str, box_mpc: float | None = None) -> VelocityField:

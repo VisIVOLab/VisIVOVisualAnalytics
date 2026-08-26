@@ -189,7 +189,7 @@ private:
                                double radiusFactor);
 
     // ── Coordinate frame ────────────────────────────────────────────────────
-    enum class CoordFrame { FK5_J2000, Galactic };
+    enum class CoordFrame { FK5_J2000, Galactic, Supergalactic };
     CoordFrame activeFrame{ CoordFrame::FK5_J2000 };
     // Recompute sceneX/Y/Z for all current entries using activeFrame.
     // FK5_J2000: no-op (parser already computes in this frame).

@@ -6,6 +6,7 @@
 
 #include <QHash>
 #include <QHeaderView>
+#include <QScopedValueRollback>
 
 #include <functional>
 #include <QIcon>
@@ -330,9 +331,8 @@ void SessionDataTree::selectProduct(const QString &productId)
                 // Programmatic selection (e.g. registerAnalysisProduct populating
                 // Provenance): drive productSelected but NOT rowActivated — a passive
                 // registration must never mount/steal a pane.
-                m_suppressActivate = true;
+                QScopedValueRollback<bool> guard(m_suppressActivate, true);  // E-07/M7 RAII
                 m_tree->setCurrentIndex(child->index());   // → currentChanged → productSelected
-                m_suppressActivate = false;
                 return;
             }
         }
@@ -427,9 +427,8 @@ void SessionDataTree::selectForView(const QString &viewTag, const QString &produ
     walk(m_model->invisibleRootItem());
     if (!match)
         return;
-    m_suppressActivate = true;
+    QScopedValueRollback<bool> guard(m_suppressActivate, true);  // E-07/M7 RAII
     m_tree->setCurrentIndex(match->index());
-    m_suppressActivate = false;
 }
 
 int SessionDataTree::visibleRowHeight(const QModelIndex &parent) const

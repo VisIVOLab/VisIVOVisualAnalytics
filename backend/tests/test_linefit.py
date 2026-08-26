@@ -48,6 +48,19 @@ class TestLineFit(unittest.TestCase):
         # ∫ amp·exp(...) = amp·σ·√(2π)
         self.assertAlmostEqual(d["integrated_flux"], 5.0 * 3.0 * np.sqrt(2 * np.pi), delta=0.5)
 
+    def test_fit_uncertainties_present(self):
+        """R-08: a noisy line fit must return finite, positive 1-sigma errors."""
+        rng = np.random.default_rng(7)
+        x = np.linspace(-50, 50, 300)
+        y = _gaussian(x, amp=8.0, mu=2.0, sigma=5.0, base=1.0) + rng.normal(0, 0.3, x.size)
+        d = self._fit(y, x).json()
+        self.assertTrue(d["valid"])
+        for k in ("peak_err", "center_err", "sigma_err", "fwhm_err",
+                  "integrated_flux_err"):
+            self.assertIn(k, d)
+            self.assertIsNotNone(d[k], k)
+            self.assertGreater(d[k], 0.0, k)
+
     def test_recovers_absorption_line(self):
         x = np.linspace(0, 100, 200)
         y = _gaussian(x, amp=-6.0, mu=40.0, sigma=5.0, base=10.0)

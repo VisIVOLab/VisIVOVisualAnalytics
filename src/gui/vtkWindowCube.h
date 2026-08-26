@@ -1047,6 +1047,15 @@ protected:
     // slice. Prevents cascading prefetch chains (each prefetched
     // slice triggering its own ±1 prefetches → wavefront expansion).
     bool prefetchAllowedForNextResult{ false };
+    // E-07/M6: request-scoped provenance of linked-originated slice fetches. The
+    // m_applyingLinkedUpdate RAII guard is destroyed before an ASYNC slice
+    // result returns, so we record the requestId of every linked-driven fetch
+    // here and consume it (per request, not a global one-shot) when its result
+    // arrives — robust against a user cached-scrub interleaving between a linked
+    // request and its late result. m_applyingLinkedResult is set (RAII) only for
+    // the synchronous span of applyRemoteSliceResult for such a result.
+    QSet<int> m_linkedRemoteRequestIds;
+    bool m_applyingLinkedResult{ false };
     // Smart prefetch: instead of firing ±1 immediately on every
     // user-initiated slice apply, schedule it for ``idlePrefetchDelayMs``
     // later and CANCEL the timer whenever another slice request

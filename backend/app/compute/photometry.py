@@ -23,6 +23,9 @@ from ._common import (  # noqa: F401
     _b64i32_compressed,
     _finite_range,
     _integrated_spacing,
+    beam_area_pixels,
+    is_per_beam_bunit,
+    covariance_propagate,
 )
 
 
@@ -57,16 +60,21 @@ def worker_aperture_photometry(
 
     dataset = ScientificFitsDataset(path)
     hdul, raw = dataset.open_memmap()
+    # Resolved plane index actually used for the image — also drives the
+    # per-channel beam lookup so image and beam never disagree.
+    resolved_channel: int | None = None
     try:
         if raw.ndim == 2:
             image = np.asarray(raw, dtype=np.float64)
         elif raw.ndim == 3:
             ch = 0 if channel is None else int(channel)
             ch = max(0, min(ch, raw.shape[0] - 1))
+            resolved_channel = ch
             image = np.asarray(raw[ch], dtype=np.float64)
         elif raw.ndim == 4:
             ch = 0 if channel is None else int(channel)
             ch = max(0, min(ch, raw.shape[1] - 1))
+            resolved_channel = ch
             image = np.asarray(raw[0, ch], dtype=np.float64)
         else:
             raise ValueError(f"Unsupported FITS dimensionality: {raw.ndim}")
@@ -98,20 +106,53 @@ def worker_aperture_photometry(
     # Background: median inside annulus
     ann_stats = ApertureStats(image, annulus, sigma_clip=None)
     bkg_per_pix = float(ann_stats.median) if np.isfinite(ann_stats.median) else 0.0
+    # Local noise per pixel from the background annulus (used for the flux error).
+    bkg_rms = float(ann_stats.std) if np.isfinite(ann_stats.std) else 0.0
 
     # Aperture sum
     ap_stats = ApertureStats(image, aperture, sigma_clip=None)
     n_pix = int(ap_stats.sum_aper_area.value) if hasattr(ap_stats.sum_aper_area, "value") else int(np.pi * r_ap ** 2)
     raw_sum = float(ap_stats.sum) if np.isfinite(ap_stats.sum) else float(np.nansum(image))
-    flux = raw_sum - bkg_per_pix * n_pix
+    # Background-subtracted summed brightness. For Jy/beam data this is in
+    # (Jy/beam)·pixel and must be divided by the beam area to become Jy; for
+    # other BUNIT it is a plain sum in BUNIT·pixel.
+    flux_summed = raw_sum - bkg_per_pix * n_pix
 
-    # Simple Poisson-like uncertainty: sqrt(|sum| + n_pix * |bkg|)
-    flux_err = float(np.sqrt(abs(raw_sum) + n_pix * abs(bkg_per_pix)))
+    # R-01: beam-correct to Jy only when the data are per-beam AND the beam is
+    # known. ``flux_jy`` is the physically-meaningful flux (Jy) or None; ``flux``
+    # is ALWAYS the raw summed quantity in ``flux_unit`` (BUNIT·pixel) — never
+    # relabelled Jy. Previously the raw sum was returned mislabeled as ``flux_jy``
+    # (off by the beam area, 10–50×).
+    # R-05: use the per-channel beam when the cube carries a BEAMS table.
+    beam = dataset.beam_for_channel(resolved_channel)
+    beam_area_px = beam_area_pixels(beam.major, beam.minor, pixel_scale_arcsec)
+    per_beam = is_per_beam_bunit(dataset.bunit)
+    flux_jy: float | None = (flux_summed / beam_area_px) if (per_beam and beam_area_px) else None
+    flux_unit = f"{dataset.bunit}*pixel" if dataset.bunit else "pixel_sum"
+
+    # R-09: correlated-noise uncertainty. Pixels within a beam are not
+    # independent (n_beam pixels per beam). The error on the raw summed
+    # brightness is rms·sqrt(n_pix·n_beam); the physical flux error in Jy is that
+    # divided by the beam area, i.e. rms·sqrt(n_pix/n_beam). When the beam is
+    # unknown we fall back to the independent-pixel form (n_beam = 1) for the raw
+    # sum error and leave flux_err_jy = None. This replaces the old
+    # counts/Poisson formula, which is dimensionless-wrong for Jy/beam.
+    n_beam = beam_area_px if beam_area_px else 1.0
+    err_summed = float(bkg_rms * np.sqrt(max(n_pix, 0) * n_beam)) if bkg_rms > 0 else 0.0
+    flux_err_jy = (err_summed / beam_area_px) if (per_beam and beam_area_px) else None
 
     return {
-        "flux_jy": flux,
-        "flux_err_jy": flux_err,
-        "background_jy_per_pix": bkg_per_pix,
+        # Physical flux in Jy (None when not per-beam data or beam unknown).
+        "flux_jy": flux_jy,
+        "flux_err_jy": flux_err_jy,
+        # Raw background-subtracted sum + its honest unit, always available.
+        "flux": flux_summed,
+        "flux_err": err_summed,
+        "flux_unit": flux_unit,
+        "beam_area_pix": beam_area_px,
+        "background_per_pix": bkg_per_pix,
+        "background_rms_per_pix": bkg_rms,
+        "bunit": dataset.bunit,
         "n_pix_aperture": n_pix,
         "channel": channel,
         "pix_x": pix_x,
@@ -194,16 +235,21 @@ def worker_gauss_fit_2d(
 
     dataset = ScientificFitsDataset(path)
     hdul, raw = dataset.open_memmap()
+    # Resolved plane index actually used for the image — also drives the
+    # per-channel beam lookup so image and beam never disagree.
+    resolved_channel: int | None = None
     try:
         if raw.ndim == 2:
             image = np.asarray(raw, dtype=np.float64)
         elif raw.ndim == 3:
             ch = 0 if channel is None else int(channel)
             ch = max(0, min(ch, raw.shape[0] - 1))
+            resolved_channel = ch
             image = np.asarray(raw[ch], dtype=np.float64)
         elif raw.ndim == 4:
             ch = 0 if channel is None else int(channel)
             ch = max(0, min(ch, raw.shape[1] - 1))
+            resolved_channel = ch
             image = np.asarray(raw[0, ch], dtype=np.float64)
         else:
             raise ValueError(f"Unsupported FITS dimensionality: {raw.ndim}")
@@ -265,21 +311,66 @@ def worker_gauss_fit_2d(
         raise RuntimeError(f"2-D Gaussian fit failed: {exc}") from exc
 
     amp_fit, x0_fit, y0_fit, sx_fit, sy_fit, theta_fit, bg_fit = popt
+
+    # R-08: 1-sigma parameter uncertainties from the fit covariance. curve_fit
+    # returns an inf/nan covariance when a parameter is unconstrained; guard so
+    # a bad fit yields None error bars rather than inf. FUL ordering matches p0:
+    # [amp, x0, y0, sigma_x, sigma_y, theta, offset].
+    with np.errstate(invalid="ignore"):
+        perr = np.sqrt(np.diag(pcov))
+    perr = [float(e) if np.isfinite(e) else None for e in perr]
+    amp_err, _x0e, _y0e, sx_err, sy_err, theta_err, _bge = perr
+
     # sigma → FWHM
     fwhm_x_pix = abs(sx_fit) * 2.3548
     fwhm_y_pix = abs(sy_fit) * 2.3548
     # Sort major/minor
     if fwhm_x_pix >= fwhm_y_pix:
         major_pix, minor_pix, pa_rad = fwhm_x_pix, fwhm_y_pix, float(theta_fit)
+        major_sig_err, minor_sig_err = sx_err, sy_err
     else:
         major_pix, minor_pix, pa_rad = fwhm_y_pix, fwhm_x_pix, float(theta_fit) + np.pi / 2
+        major_sig_err, minor_sig_err = sy_err, sx_err
 
     major_arcsec = major_pix * pixel_scale
     minor_arcsec = minor_pix * pixel_scale
     pa_deg = float(np.degrees(pa_rad) % 180.0)
+    major_err_arcsec = (major_sig_err * 2.3548 * pixel_scale) if major_sig_err is not None else None
+    minor_err_arcsec = (minor_sig_err * 2.3548 * pixel_scale) if minor_sig_err is not None else None
+    pa_err_deg = float(np.degrees(theta_err)) if theta_err is not None else None
 
-    # Integrated flux = amplitude × 2π × σx × σy  (Gaussian integral)
-    integrated_flux = float(amp_fit * 2.0 * np.pi * abs(sx_fit) * abs(sy_fit))
+    # Integrated flux = amplitude × 2π × σx × σy  (Gaussian integral), in
+    # (BUNIT)·pixel². For Jy/beam data this becomes Jy after dividing by the beam
+    # area in pixels; otherwise no beam conversion is possible.
+    integrated_raw = float(amp_fit * 2.0 * np.pi * abs(sx_fit) * abs(sy_fit))
+    # Full-covariance error propagation for I = A·2π·σx·σy. Gradients (params
+    # [amp, x0, y0, σx, σy, θ, offset]): dI/dA = I/A, dI/dσx = I/σx, dI/dσy = I/σy
+    # (the sign of the |σ| derivative cancels into I/σ). Keeps the amp–width
+    # covariance a sum-of-independent-terms would drop.
+    integrated_raw_err = (
+        covariance_propagate(
+            pcov, (0, 3, 4),
+            (integrated_raw / amp_fit if amp_fit else 0.0,
+             integrated_raw / sx_fit if sx_fit else 0.0,
+             integrated_raw / sy_fit if sy_fit else 0.0),
+        )
+        if integrated_raw else None
+    )
+
+    beam = dataset.beam_for_channel(resolved_channel)  # R-05: per-channel beam when present
+    beam_area_px = beam_area_pixels(beam.major, beam.minor, pixel_scale)
+    per_beam = is_per_beam_bunit(dataset.bunit)
+    # ``integrated_flux`` is ALWAYS the raw Gaussian integral in
+    # ``integrated_unit`` (BUNIT·pixel²); only ``integrated_flux_jy`` is Jy.
+    integrated_unit = f"{dataset.bunit}*pixel^2" if dataset.bunit else "amplitude*pixel^2"
+    if per_beam and beam_area_px:
+        integrated_flux_jy: float | None = integrated_raw / beam_area_px
+        integrated_flux_err_jy = (
+            integrated_raw_err / beam_area_px if integrated_raw_err is not None else None
+        )
+    else:
+        integrated_flux_jy = None
+        integrated_flux_err_jy = None
 
     # Fit residual RMS
     residuals = sub_fit.ravel() - _gaussian_2d(
@@ -289,10 +380,10 @@ def worker_gauss_fit_2d(
     # Beam deconvolution (optional)
     deconv_major: float | None = None
     deconv_minor: float | None = None
-    if dataset.beam.major is not None and dataset.beam.minor is not None:
-        bm_maj_pix = (dataset.beam.major * 3600.0) / pixel_scale   # deg → arcsec → pix
-        bm_min_pix = (dataset.beam.minor * 3600.0) / pixel_scale
-        bm_pa_rad  = float(np.radians(dataset.beam.pa or 0.0))
+    if beam.major is not None and beam.minor is not None:
+        bm_maj_pix = (beam.major * 3600.0) / pixel_scale   # deg → arcsec → pix
+        bm_min_pix = (beam.minor * 3600.0) / pixel_scale
+        bm_pa_rad  = float(np.radians(beam.pa or 0.0))
         dm, dn, _ = _deconvolve_gaussian_beam(
             major_pix, minor_pix, pa_rad,
             bm_maj_pix, bm_min_pix, bm_pa_rad,
@@ -303,10 +394,22 @@ def worker_gauss_fit_2d(
 
     return {
         "peak_jy_beam": float(amp_fit),
-        "integrated_flux_jy": integrated_flux,
+        "peak_err": amp_err,
+        # Physical integrated flux in Jy (None when not per-beam / beam unknown).
+        "integrated_flux_jy": integrated_flux_jy,
+        "integrated_flux_err_jy": integrated_flux_err_jy,
+        # Raw Gaussian integral + honest unit, always available.
+        "integrated_flux": integrated_raw,
+        "integrated_flux_err": integrated_raw_err,
+        "integrated_flux_unit": integrated_unit,
+        "beam_area_pix": beam_area_px,
+        "bunit": dataset.bunit,
         "major_arcsec": major_arcsec,
         "minor_arcsec": minor_arcsec,
+        "major_err_arcsec": major_err_arcsec,
+        "minor_err_arcsec": minor_err_arcsec,
         "pa_deg": pa_deg,
+        "pa_err_deg": pa_err_deg,
         "deconvolved_major_arcsec": deconv_major,
         "deconvolved_minor_arcsec": deconv_minor,
         "fit_rms": fit_rms,

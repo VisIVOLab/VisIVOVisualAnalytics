@@ -45,9 +45,12 @@ async def aperture_photometry(
 ):
     """Circular-aperture flux with an optional annulus background subtraction.
 
-    Returns ``{valid, flux_jy, flux_err_jy, background_jy_per_pix,
-    n_pix_aperture, channel, pix_x, pix_y, pixel_scale_arcsec}``. Requires
-    ``photutils`` (→503) and celestial WCS (→422).
+    Returns ``{valid, flux_jy, flux_err_jy, flux, flux_err, flux_unit,
+    beam_area_pix, background_per_pix, background_rms_per_pix, bunit,
+    n_pix_aperture, channel, pix_x, pix_y, pixel_scale_arcsec}``. ``flux_jy`` is
+    the beam-corrected physical flux (Jy) and is ``null`` unless the data are
+    Jy/beam with a known beam; ``flux`` is always the raw summed brightness in
+    ``flux_unit``. Requires ``photutils`` (→503) and celestial WCS (→422).
     """
     from ..compute import worker_aperture_photometry  # noqa: PLC0415
 

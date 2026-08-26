@@ -225,9 +225,27 @@ class TestWorkerMomentMetadata:
 
     def test_freq_cube_m2_metadata(self, freq_cube_path):
         from app.compute import worker_moment
+        # R-03: default order-2 output is the dispersion σ (unit = spectral_unit).
         result = worker_moment(str(freq_cube_path), 2, 0, 31, False, 0.0)
-        # M2 unit = spectral_unit^2
-        assert result["moment_unit"] == "Hz^2"
+        assert result["moment_unit"] == "Hz"
+        # Opting into the variance variant restores σ² and the squared unit.
+        var = worker_moment(str(freq_cube_path), 2, 0, 31, False, 0.0,
+                            moment2_variance=True)
+        assert var["moment_unit"] == "Hz^2"
+
+    def test_m2_dispersion_is_sqrt_of_variance(self, freq_cube_path):
+        """R-03: the default dispersion map must equal sqrt(variance) pixel-wise."""
+        import base64
+        from app.compute import worker_moment
+        disp = worker_moment(str(freq_cube_path), 2, 0, 31, False, 0.0)
+        var = worker_moment(str(freq_cube_path), 2, 0, 31, False, 0.0,
+                            moment2_variance=True)
+        d = np.frombuffer(base64.b64decode(disp["data_base64"]), dtype=np.float32)
+        v = np.frombuffer(base64.b64decode(var["data_base64"]), dtype=np.float32)
+        m = np.isfinite(d) & np.isfinite(v)
+        assert m.any()
+        np.testing.assert_allclose(d[m], np.sqrt(np.maximum(v[m], 0.0)),
+                                   rtol=1e-5, atol=1e-4)
 
     @pytest.mark.parametrize("order", [6, 8, 10])
     def test_intensity_moment_unit_equals_bunit(self, freq_cube_path, order):
@@ -245,8 +263,12 @@ class TestWorkerMomentMetadata:
 
     def test_vrad_cube_m2_unit(self, vrad_cube_path):
         from app.compute import worker_moment
+        # R-03: dispersion default → km/s (not km/s^2).
         result = worker_moment(str(vrad_cube_path), 2, 0, 31, False, 0.0)
-        assert result["moment_unit"] == "km/s^2"
+        assert result["moment_unit"] == "km/s"
+        var = worker_moment(str(vrad_cube_path), 2, 0, 31, False, 0.0,
+                            moment2_variance=True)
+        assert var["moment_unit"] == "(km/s)^2"
 
 
 class TestWorkerMomentWCSEdgeCases:
@@ -489,7 +511,7 @@ class TestMomentUnitHelper:
 
     def test_m2(self):
         from app.compute import _moment_unit
-        assert _moment_unit(2, "Jy/beam", "km/s") == "km/s^2"
+        assert _moment_unit(2, "Jy/beam", "km/s") == "(km/s)^2"
 
     def test_m2_no_spectral(self):
         from app.compute import _moment_unit
@@ -618,12 +640,16 @@ def test_moment1_numba_matches_numpy() -> None:
 
     rng = np.random.default_rng(11)
     cube = (rng.standard_normal((16, 24, 24)) * 2 + 5).astype(np.float32)
-    spectral_values = np.linspace(1.0e9, 1.0016e9, 16)
+    # R-04: use a genuinely NON-uniform spectral axis so the I·Δv weighting is
+    # actually exercised (a uniform axis would hide a raw-I vs I·Δv difference).
+    spectral_values = np.sort(rng.uniform(1.0e9, 1.0016e9, 16))
+    delta = _c._integrated_spacing(np.asarray(spectral_values, dtype=np.float64))
     valid_mask = np.isfinite(cube)
 
     numba_result = _c._moment1_numba(
         np.ascontiguousarray(cube, dtype=np.float32),
         np.ascontiguousarray(spectral_values, dtype=np.float64),
+        np.ascontiguousarray(delta, dtype=np.float64),
         np.ascontiguousarray(valid_mask, dtype=np.bool_),
     ).astype(np.float32)
     numpy_result = _numpy_m1(cube, spectral_values, valid_mask)
@@ -645,12 +671,15 @@ def test_moment2_numba_matches_numpy() -> None:
 
     rng = np.random.default_rng(13)
     cube = (rng.standard_normal((16, 24, 24)) * 2 + 5).astype(np.float32)
-    spectral_values = np.linspace(1.0e9, 1.0016e9, 16)
+    # R-04: non-uniform axis to exercise the I·Δv weighting.
+    spectral_values = np.sort(rng.uniform(1.0e9, 1.0016e9, 16))
+    delta = _c._integrated_spacing(np.asarray(spectral_values, dtype=np.float64))
     valid_mask = np.isfinite(cube)
 
     numba_result = _c._moment2_numba(
         np.ascontiguousarray(cube, dtype=np.float32),
         np.ascontiguousarray(spectral_values, dtype=np.float64),
+        np.ascontiguousarray(delta, dtype=np.float64),
         np.ascontiguousarray(valid_mask, dtype=np.bool_),
     ).astype(np.float32)
     numpy_result = _numpy_m2(cube, spectral_values, valid_mask)

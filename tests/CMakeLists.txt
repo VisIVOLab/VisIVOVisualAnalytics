@@ -5,12 +5,32 @@
 #   Qt::Test, Qt::Core, Qt::Network
 #   No VTK, no QtWidgets, no live backend.
 #
-# Build & run:
-#   cmake -B build -DBUILD_TESTING=ON
-#   cmake --build build --target VisIVOTests
-#   ctest --test-dir build -V   (or)   build/tests/VisIVOTests -v2
+# Two ways to build:
+#   1. As part of the main project (opt-in):
+#        cmake -B build -DBUILD_TESTING=ON
+#        cmake --build build --target VisIVOTests
+#        ctest --test-dir build -V
+#   2. Standalone (CI — avoids configuring VTK / Qt-Widgets / libdatachannel):
+#        cmake -S tests -B build-tests
+#        cmake --build build-tests
+#        ctest --test-dir build-tests -V
 
 cmake_minimum_required(VERSION 3.22)
+
+# ── Dual-mode: standalone (CI) vs subdirectory of the main build ────────────
+# The suite deliberately links only Qt Core/Network/Test, so it can be
+# configured on its own without the heavy VTK / Qt-Widgets / WebRTC stack the
+# full application requires. When configured standalone this file becomes the
+# top-level project; VISIVO_ROOT then points back at the repository root so the
+# `${VISIVO_ROOT}/src/...` source paths keep resolving in both modes.
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    project(VisIVOTests LANGUAGES CXX)
+    set(CMAKE_CXX_STANDARD 17)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    get_filename_component(VISIVO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+else()
+    set(VISIVO_ROOT "${PROJECT_SOURCE_DIR}")
+endif()
 
 include(CTest)
 enable_testing()
@@ -21,21 +41,21 @@ find_package(Qt6 REQUIRED COMPONENTS Test Core Network)
 # Compiled once and reused by every test target that needs backend parsing.
 # Does NOT depend on Qt::Widgets, VTK, or any UI component.
 add_library(visivo_test_support STATIC
-    ${PROJECT_SOURCE_DIR}/src/app/BackendClient.cpp
-    ${PROJECT_SOURCE_DIR}/src/app/DiagnosticsManager.cpp
-    ${PROJECT_SOURCE_DIR}/src/AnalysisParamStore.cpp
-    ${PROJECT_SOURCE_DIR}/src/Settings.cpp
-    ${PROJECT_SOURCE_DIR}/src/skava/BackendRouting.cpp
-    ${PROJECT_SOURCE_DIR}/src/vtk/ImageLod.cpp
+    ${VISIVO_ROOT}/src/app/BackendClient.cpp
+    ${VISIVO_ROOT}/src/app/DiagnosticsManager.cpp
+    ${VISIVO_ROOT}/src/AnalysisParamStore.cpp
+    ${VISIVO_ROOT}/src/Settings.cpp
+    ${VISIVO_ROOT}/src/skava/BackendRouting.cpp
+    ${VISIVO_ROOT}/src/vtk/ImageLod.cpp
 )
 set_target_properties(visivo_test_support PROPERTIES AUTOMOC ON)
 target_include_directories(visivo_test_support
     PUBLIC
-        ${PROJECT_SOURCE_DIR}/src
-        ${PROJECT_SOURCE_DIR}/src/app
-        ${PROJECT_SOURCE_DIR}/src/gui
-        ${PROJECT_SOURCE_DIR}/src/skava
-        ${PROJECT_SOURCE_DIR}/src/vtk
+        ${VISIVO_ROOT}/src
+        ${VISIVO_ROOT}/src/app
+        ${VISIVO_ROOT}/src/gui
+        ${VISIVO_ROOT}/src/skava
+        ${VISIVO_ROOT}/src/vtk
         ${PROJECT_BINARY_DIR}      # for generated headers (Version.h etc.)
 )
 target_link_libraries(visivo_test_support
@@ -57,18 +77,24 @@ add_executable(VisIVOTests
     test_image_lod.cpp
     TestAnalysisParamStore.h
     test_analysis_param_store.cpp
+    TestBackendContract.h
+    test_backend_contract.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}    # find TestBackendClient.h etc.
-    ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/app
-    ${PROJECT_SOURCE_DIR}/src/gui
+    ${VISIVO_ROOT}/src
+    ${VISIVO_ROOT}/src/app
+    ${VISIVO_ROOT}/src/gui
     ${PROJECT_BINARY_DIR}
 )
 target_link_libraries(VisIVOTests PRIVATE
     visivo_test_support
     Qt::Test
+)
+# Let the contract test locate the shared header manifest in both build layouts.
+target_compile_definitions(VisIVOTests PRIVATE
+    VISIVO_REPO_ROOT="${VISIVO_ROOT}"
 )
 
 # ── CTest registration ───────────────────────────────────────────────────────

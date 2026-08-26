@@ -8,6 +8,7 @@
 #include "TestBackendRouting.h"
 #include "TestImageLod.h"
 #include "TestAnalysisParamStore.h"
+#include "TestBackendContract.h"
 
 #include <QCoreApplication>
 #include <QTest>
@@ -22,5 +23,6 @@ int main(int argc, char *argv[])
     { TestBackendRouting   t; status |= QTest::qExec(&t, argc, argv); }
     { TestImageLod         t; status |= QTest::qExec(&t, argc, argv); }
     { TestAnalysisParamStore t; status |= QTest::qExec(&t, argc, argv); }
+    { TestBackendContract  t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }

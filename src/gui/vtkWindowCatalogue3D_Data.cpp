@@ -79,16 +79,7 @@
 #include <cmath>
 #include <limits>
 
-// ── libwcs coordinate conversion ──────────────────────────────────────────────
-// wcscon() converts between WCS coordinate systems (FK5/J2000, Galactic, …).
-// Only the declaration is needed here; the function is linked from libwcs.
-extern "C" {
-void wcscon(int sys1, int sys2, double eq1, double eq2,
-            double *dtheta, double *dphi, double epoch);
-}
-static constexpr int kWCS_J2000    = 1;
-static constexpr int kWCS_GALACTIC = 3;
-
+#include "CatalogueWcsUtil.h"
 using namespace Qt::StringLiterals;
 
 // ── Data ──
@@ -136,21 +127,25 @@ void vtkWindowCatalogue3D::applyFrameToEntries()
         return;
     }
 
-    // Galactic (l, b): convert each source's equatorial RA/Dec → galactic
-    // longitude l / latitude b using wcscon(WCS_J2000 → WCS_GALACTIC), then
+    // Galactic (l, b) / Supergalactic (SGL, SGB): convert each source's
+    // equatorial RA/Dec → galactic via wcscon(WCS_J2000 → WCS_GALACTIC); for the
+    // supergalactic frame chain the de Vaucouleurs galactic→SG rotation. Then
     // project onto the same spherical-to-Cartesian formula so the scene scale
-    // (Mpc from redshift/distance) is preserved.
+    // (Mpc from redshift/distance) is preserved. R-13.
     constexpr double pi = 3.14159265358979323846;
+    const bool toSuper = (this->activeFrame == CoordFrame::Supergalactic);
     for (auto &e : this->entries) {
-        double l = e.raDeg;
-        double b = e.decDeg;
-        wcscon(kWCS_J2000, kWCS_GALACTIC, 2000.0, 2000.0, &l, &b, 2000.0);
+        double lon = e.raDeg;
+        double lat = e.decDeg;
+        wcscon(kWCS_J2000, kWCS_GALACTIC, 2000.0, 2000.0, &lon, &lat, 2000.0);
+        if (toSuper)
+            galacticToSupergalactic(lon, lat, lon, lat);
         const double d = Catalogue3DParser::detail::entryDistanceMpc(e, this->schema);
-        const double lRad = l * pi / 180.0;
-        const double bRad = b * pi / 180.0;
-        e.sceneX = d * std::cos(bRad) * std::cos(lRad);
-        e.sceneY = d * std::cos(bRad) * std::sin(lRad);
-        e.sceneZ = d * std::sin(bRad);
+        const double lonRad = lon * pi / 180.0;
+        const double latRad = lat * pi / 180.0;
+        e.sceneX = d * std::cos(latRad) * std::cos(lonRad);
+        e.sceneY = d * std::cos(latRad) * std::sin(lonRad);
+        e.sceneZ = d * std::sin(latRad);
     }
 }
 

@@ -1,5 +1,6 @@
 #include "InspectorPanel.h"
 
+#include "AssistantPanel.h"
 #include "theme/VisivoTheme.h"
 
 #include <QAction>
@@ -328,5 +329,14 @@ void InspectorPanel::clearProvenance()
     m_provParams.clear();
     m_provTitle->setText(u"Select a product in Session Data."_s);
     m_provBody->clear();
+}
+
+AssistantPanel *InspectorPanel::ensureCopilotTab()
+{
+    if (!m_copilot) {
+        m_copilot = new AssistantPanel(this);
+        m_tabs->addTab(m_copilot, u"Copilot"_s);
+    }
+    return m_copilot;
 }
 

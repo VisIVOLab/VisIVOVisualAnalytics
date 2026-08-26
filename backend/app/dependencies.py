@@ -899,6 +899,15 @@ _HEAVY_SLOTS = max(
 )
 _HEAVY_SEM: asyncio.Semaphore | None = None
 
+# E-03: wall-clock ceiling on a single heavy compute. A pathological or
+# abandoned request otherwise wedges a worker (and its heavy-semaphore slot)
+# indefinitely, and with only VISIVO_HEAVY_SLOTS slots a few such tasks starve
+# the pool for everyone. On timeout the awaiting coroutine is cancelled and the
+# slot released, so the server stays responsive; note the underlying
+# ProcessPool subprocess may run to completion (Python cannot cancel it), so the
+# ceiling should be generous. Set VISIVO_HEAVY_TIMEOUT_S=0 to disable.
+_HEAVY_TIMEOUT_S = float(os.environ.get("VISIVO_HEAVY_TIMEOUT_S", "900"))
+
 
 def _heavy_semaphore() -> asyncio.Semaphore:
     """Lazy-init the semaphore so it binds to the running event loop."""
@@ -909,15 +918,61 @@ def _heavy_semaphore() -> asyncio.Semaphore:
 
 
 async def _run_heavy(fn, *args) -> Any:
-    """Like ``_run()``, but throttled by the heavy-task semaphore.
+    """Like ``_run()``, but throttled by the heavy-task semaphore and bounded by
+    a wall-clock timeout (E-03).
 
     Use for long-running scientific compute (moment maps, isosurface, spectral
     linewidth / baseline / stack). Guarantees at least one pool slot remains
-    free for interactive requests dispatched via plain ``_run()``.
+    free for interactive requests dispatched via plain ``_run()``. A task that
+    exceeds ``VISIVO_HEAVY_TIMEOUT_S`` raises HTTP 504 instead of hanging.
     """
     sem = _heavy_semaphore()
-    async with sem:
-        return await _run(fn, *args)
+    if not (_HEAVY_TIMEOUT_S and _HEAVY_TIMEOUT_S > 0):
+        async with sem:
+            return await _run(fn, *args)
+
+    # Timeout path. We acquire/release the semaphore MANUALLY (not via `async
+    # with`) so that on a timeout the slot is held until the underlying work
+    # ACTUALLY finishes — the ProcessPool subprocess keeps running (Python can't
+    # cancel it), and releasing the slot early would let admission control
+    # under-count real worker occupancy and admit unbounded queued heavy work
+    # after repeated 504s. Exactly one release happens per task.
+    await sem.acquire()
+    task = asyncio.ensure_future(_run(fn, *args))
+    _released = False
+
+    def _release_once(_fut: Any = None) -> None:
+        nonlocal _released
+        if not _released:
+            _released = True
+            sem.release()
+
+    try:
+        result = await asyncio.wait_for(asyncio.shield(task), timeout=_HEAVY_TIMEOUT_S)
+        _release_once()
+        return result
+    except asyncio.TimeoutError:
+        # Keep the slot until the shielded task really settles (accurate
+        # admission control); the client gets 504 now.
+        task.add_done_callback(_release_once)
+        fname = getattr(fn, "__name__", str(fn))
+        logger.warning("[heavy] timeout after %.0fs in %s", _HEAVY_TIMEOUT_S, fname)
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=(
+                f"Compute exceeded the {_HEAVY_TIMEOUT_S:.0f}s time limit. "
+                "Try a smaller channel range / region, or raise "
+                "VISIVO_HEAVY_TIMEOUT_S on the server."
+            ),
+        ) from None
+    except BaseException:
+        # The task itself errored/was cancelled before the timeout — release now
+        # (or when it settles) so the slot is never leaked.
+        if task.done():
+            _release_once()
+        else:
+            task.add_done_callback(_release_once)
+        raise
 
 
 async def _run_with_limit(session: Session, fn, *args) -> Any:
@@ -968,6 +1023,8 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
         "mask_enabled": request.mask_enabled,
         "threshold_value": request.threshold_value,
         "threshold_auto": request.threshold_auto,
+        # R-03: dispersion (default) vs variance changes the order-2 output.
+        "moment2_variance": bool(getattr(request, "moment2_variance", False)),
     }
     cache_key, param_hash = PRODUCT_CACHE.make_key(dataset.path, "moment", cache_params)
     cached = PRODUCT_CACHE.get(cache_key)
@@ -999,6 +1056,7 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
             64,                     # chunk_z
             dist_client,            # → distributed cluster
             request.threshold_auto,
+            bool(getattr(request, "moment2_variance", False)),
         )
     elif use_dask:
         # Local threaded dask.array — CPU-heavy. Run it DIRECTLY on the local
@@ -1024,6 +1082,7 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
                 64,       # chunk_z
                 None,     # dist_client → local threaded scheduler
                 request.threshold_auto,
+                bool(getattr(request, "moment2_variance", False)),
             )
     else:
         # Heavy task — throttled so other interactive requests stay responsive.
@@ -1036,6 +1095,7 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
             request.mask_enabled,
             request.threshold_value,
             request.threshold_auto,
+            bool(getattr(request, "moment2_variance", False)),
         )
     PRODUCT_CACHE.put(
         key=cache_key,

@@ -1,11 +1,13 @@
 #!/usr/bin/env python
 """Kinematic Lasso — interactive-parameter sensitivity (nσ, reach).
 
-Shows that the lasso's two interactive controls recover the completeness of faint
-sources that the conservative default (nσ = 2.5) under-selects: lowering nσ (or
-raising reach) grows the selection toward the SoFiA mask. This is the answer to
-the "faint sources have low completeness" caveat — it is a *tunable* default, not
-a limit of the method.
+Reports the completeness–RELIABILITY tradeoff of the lasso's two interactive
+controls, per source. Lowering nσ (or raising reach) grows the selection toward
+the SoFiA mask and raises completeness (∩/SoFiA) — but it also floods into
+noise, which LOWERS reliability (precision, ∩/lasso). Both curves are shown at
+every nσ and reach so the tradeoff is explicit, not just the metric that
+improves (R-18): a completeness gain bought with a reliability collapse is not a
+real recovery. The conservative default (nσ = 2.5) is where the two balance.
 
 Run:  backend/.venv/bin/python validation/lasso_sensitivity.py
 """
@@ -35,7 +37,9 @@ def metrics(lasso, src):
     inter = int(np.count_nonzero(lasso & src))
     a, b = int(lasso.sum()), int(src.sum())
     dice = 2 * inter / (a + b) if a + b else 0.0
-    return dice, (inter / b if b else 0.0)          # Dice, completeness
+    completeness = inter / b if b else 0.0          # ∩ / SoFiA  (recall)
+    reliability = inter / a if a else 0.0           # ∩ / lasso  (precision)
+    return dice, completeness, reliability
 
 
 def main():
@@ -61,26 +65,34 @@ def main():
         seed = (int(zz[k]), int(yy[k]), int(xx[k]))
         tag = f"#{lab} ({'bright' if lab == bright else 'faint'})"
 
-        comp_ns = []
+        comp_ns, rel_ns = [], []
         for ns in NSIGMAS:
             m = cube_kinematic_select(data, seed, reach=8.0, lambda_v=1.0, nsigma=ns)
-            comp_ns.append(metrics(m, src)[1])
-        comp_re = []
+            _, c, r = metrics(m, src)
+            comp_ns.append(c); rel_ns.append(r)
+        comp_re, rel_re = [], []
         for re in REACHES:
             m = cube_kinematic_select(data, seed, reach=re, lambda_v=1.0, nsigma=2.5)
-            comp_re.append(metrics(m, src)[1])
-        print(tag, "completeness vs nσ", [f"{c:.2f}" for c in comp_ns],
-              "vs reach", [f"{c:.2f}" for c in comp_re])
-        ax[0].plot(NSIGMAS, comp_ns, "-o", color=color, label=tag)
-        ax[1].plot(REACHES, comp_re, "-o", color=color, label=tag)
+            _, c, r = metrics(m, src)
+            comp_re.append(c); rel_re.append(r)
+        print(tag,
+              "| nσ: completeness", [f"{c:.2f}" for c in comp_ns],
+              "reliability", [f"{r:.2f}" for r in rel_ns],
+              "| reach: completeness", [f"{c:.2f}" for c in comp_re],
+              "reliability", [f"{r:.2f}" for r in rel_re])
+        # Solid = completeness (recall), dashed = reliability (precision).
+        ax[0].plot(NSIGMAS, comp_ns, "-o", color=color, label=f"{tag} completeness")
+        ax[0].plot(NSIGMAS, rel_ns, "--s", color=color, alpha=0.7, label=f"{tag} reliability")
+        ax[1].plot(REACHES, comp_re, "-o", color=color, label=f"{tag} completeness")
+        ax[1].plot(REACHES, rel_re, "--s", color=color, alpha=0.7, label=f"{tag} reliability")
 
     ax[0].axvline(2.5, ls=":", color="gray")
-    ax[0].set_xlabel("nσ threshold"); ax[0].set_ylabel("completeness (∩ / SoFiA)")
-    ax[0].set_title("vs detection threshold (reach=8)"); ax[0].set_ylim(0, 1.02)
-    ax[0].invert_xaxis(); ax[0].legend()
+    ax[0].set_xlabel("nσ threshold"); ax[0].set_ylabel("completeness / reliability")
+    ax[0].set_title("completeness↑ vs reliability↓ as nσ drops (reach=8)")
+    ax[0].set_ylim(0, 1.02); ax[0].invert_xaxis(); ax[0].legend(fontsize=7)
     ax[1].axvline(8.0, ls=":", color="gray")
-    ax[1].set_xlabel("reach (cost budget)"); ax[1].set_ylabel("completeness (∩ / SoFiA)")
-    ax[1].set_title("vs reach (nσ=2.5)"); ax[1].set_ylim(0, 1.02); ax[1].legend()
+    ax[1].set_xlabel("reach (cost budget)"); ax[1].set_ylabel("completeness / reliability")
+    ax[1].set_title("vs reach (nσ=2.5)"); ax[1].set_ylim(0, 1.02); ax[1].legend(fontsize=7)
     fig.tight_layout()
     fig.savefig(OUT / "sensitivity.png", dpi=130)
     print("Wrote", OUT / "sensitivity.png")

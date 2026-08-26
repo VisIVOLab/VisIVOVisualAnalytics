@@ -302,6 +302,8 @@ set(PROJECT_SOURCES
         src/gui/SessionDataTree.h
         src/gui/InspectorPanel.cpp
         src/gui/InspectorPanel.h
+        src/gui/AssistantPanel.cpp
+        src/gui/AssistantPanel.h
         src/gui/DockRail.cpp
         src/gui/DockRail.h
         src/app/ProductRegistry.cpp

@@ -117,7 +117,11 @@ class TestAperturePhotometry:
             ap_arcsec * 2.0,
         )
         assert result["n_pix_aperture"] > 0
-        assert abs(result["flux_jy"] - analytic) / analytic < 0.05
+        # Raw summed brightness (Jy/beam·pixel) matches the analytic pixel-integral.
+        assert abs(result["flux"] - analytic) / analytic < 0.05
+        # R-01: flux_jy is the beam-corrected physical flux = raw sum / beam area.
+        assert result["beam_area_pix"] > 0
+        assert abs(result["flux_jy"] - result["flux"] / result["beam_area_pix"]) < 1e-6
 
     def test_background_near_zero(self):
         """For a source-only image with no background the annulus estimate should be ~0."""
@@ -129,7 +133,7 @@ class TestAperturePhotometry:
             self.info["ra"], self.info["dec"],
             ap_arcsec, ap_arcsec * 1.5, ap_arcsec * 2.0,
         )
-        assert abs(result["background_jy_per_pix"]) < 0.1
+        assert abs(result["background_per_pix"]) < 0.1
 
     def test_pixel_coords_near_centre(self):
         """The converted pixel coords should be near the image centre."""
@@ -238,6 +242,60 @@ class TestGaussFit2D:
         )
         assert abs(result["major_arcsec"] - expected_fwhm_arcsec) / expected_fwhm_arcsec < 0.05
 
+    def test_integrated_flux_is_beam_corrected(self):
+        """R-01: integrated_flux_jy must be the raw Gaussian integral divided by
+        the beam area (Jy/beam data), not the raw pixel²-integral itself."""
+        from app.compute import worker_gauss_fit_2d
+        pixel_scale_arcsec = self.info["cdelt_deg"] * 3600.0
+        result = worker_gauss_fit_2d(
+            self.path, None,
+            self.info["ra"], self.info["dec"],
+            50.0 * pixel_scale_arcsec,
+        )
+        assert result["beam_area_pix"] > 0
+        # Raw integral ≈ amp · 2π · σ² (pixel units); its unit is BUNIT·pixel²,
+        # NOT Jy — only integrated_flux_jy is the beam-corrected Jy value.
+        analytic_raw = self.info["amp"] * 2.0 * math.pi * self.info["sigma_pix"] ** 2
+        assert abs(result["integrated_flux"] - analytic_raw) / analytic_raw < 0.05
+        assert result["integrated_flux_unit"] == "Jy/beam*pixel^2"
+        assert abs(result["integrated_flux_jy"]
+                   - result["integrated_flux"] / result["beam_area_pix"]) < 1e-6
+
+    def test_fit_uncertainties_present_and_finite(self):
+        """R-08: error bars from the fit covariance should be finite and > 0.
+
+        Uses a *noisy* Gaussian — a perfectly noise-free fit has an undefined
+        covariance (curve_fit warns and returns inf), which correctly maps to
+        None error bars, so we add noise to get an estimable covariance.
+        """
+        from astropy.io import fits
+        from app.compute import worker_gauss_fit_2d
+
+        rng = np.random.default_rng(1234)
+        nx = ny = 64
+        cx = cy = 32.0
+        sigma_pix = 4.0
+        amp = 5.0
+        yy, xx = np.mgrid[0:ny, 0:nx]
+        data = (amp * np.exp(-0.5 * ((xx - cx) ** 2 + (yy - cy) ** 2) / sigma_pix ** 2)
+                + rng.normal(0.0, 0.1 * amp, size=(ny, nx))).astype(np.float32)
+        h = _wcs_image_header(nx=nx, ny=ny)
+        h["BMAJ"] = 0.001
+        h["BMIN"] = 0.0008
+        h["BPA"] = 0.0
+        path = str(self.tmp / "noisy_src.fits")
+        fits.PrimaryHDU(data, header=h).writeto(path, overwrite=True)
+        sky = WCS(h).all_pix2world([[cx, cy]], 0)[0]
+
+        pixel_scale_arcsec = 2.777e-4 * 3600.0
+        result = worker_gauss_fit_2d(
+            path, None, float(sky[0]), float(sky[1]), 50.0 * pixel_scale_arcsec)
+        assert result["peak_err"] is not None and result["peak_err"] > 0
+        assert result["major_err_arcsec"] is not None and result["major_err_arcsec"] > 0
+        assert result["minor_err_arcsec"] is not None and result["minor_err_arcsec"] > 0
+        assert result["integrated_flux_err_jy"] is not None
+        assert result["integrated_flux_err_jy"] > 0
+
 
 # ── A-03: WCS reprojection ────────────────────────────────────────────────────
 
@@ -245,6 +303,65 @@ class TestGaussFit2D:
     not __import__("importlib").util.find_spec("reproject"),
     reason="reproject not installed",
 )
+class TestPerChannelBeam:
+    """R-05: a cube with a CASA BEAMS table exposes per-channel beams and the
+    flux beam-area uses them."""
+
+    def _write_cube_with_beams(self, path, nz=4):
+        rng = np.random.default_rng(0)
+        data = rng.standard_normal((nz, 32, 32)).astype(np.float32)
+        h = fits.Header()
+        h["NAXIS"] = 3; h["NAXIS1"] = 32; h["NAXIS2"] = 32; h["NAXIS3"] = nz
+        h["CTYPE1"] = "RA---SIN"; h["CTYPE2"] = "DEC--SIN"; h["CTYPE3"] = "FREQ"
+        h["CRVAL1"] = 10.0; h["CRVAL2"] = 20.0; h["CRVAL3"] = 1.4e9
+        h["CRPIX1"] = 16.0; h["CRPIX2"] = 16.0; h["CRPIX3"] = 1.0
+        h["CDELT1"] = -2.777e-4; h["CDELT2"] = 2.777e-4; h["CDELT3"] = 1e6
+        h["CUNIT1"] = "deg"; h["CUNIT2"] = "deg"; h["CUNIT3"] = "Hz"
+        h["BUNIT"] = "Jy/beam"
+        primary = fits.PrimaryHDU(data, header=h)
+        # Per-channel beam: BMAJ grows with channel (arcsec).
+        chans = np.arange(nz, dtype=np.int32)
+        bmaj = np.array([3.0 + 0.5 * c for c in range(nz)], dtype=np.float32)
+        bmin = np.array([2.0 + 0.5 * c for c in range(nz)], dtype=np.float32)
+        bpa = np.zeros(nz, dtype=np.float32)
+        cols = fits.ColDefs([
+            fits.Column(name="BMAJ", format="E", unit="arcsec", array=bmaj),
+            fits.Column(name="BMIN", format="E", unit="arcsec", array=bmin),
+            fits.Column(name="BPA", format="E", unit="deg", array=bpa),
+            fits.Column(name="CHAN", format="J", array=chans),
+        ])
+        beams = fits.BinTableHDU.from_columns(cols)
+        beams.header["EXTNAME"] = "BEAMS"
+        fits.HDUList([primary, beams]).writeto(path, overwrite=True)
+
+    def test_beam_for_channel_reads_table(self, tmp_path):
+        from app.fits_dataset import ScientificFitsDataset
+        path = str(tmp_path / "multibeam.fits")
+        self._write_cube_with_beams(path, nz=4)
+        ds = ScientificFitsDataset(path)
+        assert ds.has_per_channel_beam
+        b0 = ds.beam_for_channel(0)
+        b3 = ds.beam_for_channel(3)
+        # arcsec → deg conversion; channel 3 beam is larger than channel 0.
+        assert abs(b0.major - 3.0 / 3600.0) < 1e-9
+        assert b3.major > b0.major
+        # No channel → falls back to primary header beam (absent here → None).
+        assert ds.beam_for_channel(None).major is None
+
+    def test_beam_area_uses_per_channel(self, tmp_path):
+        from app.compute._common import beam_area_pixels
+        from app.fits_dataset import ScientificFitsDataset
+        path = str(tmp_path / "multibeam2.fits")
+        self._write_cube_with_beams(path, nz=4)
+        ds = ScientificFitsDataset(path)
+        pix = ds.spatial_pixel_scale_arcsec()
+        a0 = beam_area_pixels(ds.beam_for_channel(0).major,
+                              ds.beam_for_channel(0).minor, pix)
+        a3 = beam_area_pixels(ds.beam_for_channel(3).major,
+                              ds.beam_for_channel(3).minor, pix)
+        assert a0 and a3 and a3 > a0  # larger beam at higher channel → larger area
+
+
 class TestReproject:
 
     @pytest.fixture(autouse=True)

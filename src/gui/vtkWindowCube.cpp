@@ -7050,7 +7050,9 @@ void vtkWindowCube::updateDisplaySectionForActivePane()
     // via the activeDisplay* dispatch; guard the two-way binding.
     QSignalBlocker bMin(m_paneRangeMin), bMax(m_paneRangeMax), bSym(m_paneSymmetric),
             bScale(m_paneScaleSeg), bLut(m_paneLutCombo);
-    m_applyingPaneDisplay = true;
+    // E-07/M7: RAII guard — a throw mid-repopulate must not leave the flag stuck
+    // true, which would permanently disable propagatePaneLut/RangeWithinWindow.
+    QScopedValueRollback<bool> paneDisplayGuard(m_applyingPaneDisplay, true);
     if (m_paneScaleRow)
         m_paneScaleRow->setVisible(kind == ViewId::Slice2D);   // Scale: 2D Slice only
     // Symmetric-about-0 only makes sense for a SIGNED velocity field (Moment 1). Intensity
@@ -7098,7 +7100,7 @@ void vtkWindowCube::updateDisplaySectionForActivePane()
                                         : sc == LutScale::Mode::Sqrt ? 2
                                                                      : 0);
     }
-    m_applyingPaneDisplay = false;
+    // paneDisplayGuard restores m_applyingPaneDisplay on scope exit (RAII).
 }
 
 void vtkWindowCube::propagatePaneLutWithinWindow(int srcSlot)
@@ -9166,6 +9168,13 @@ void vtkWindowCube::setupInspector()
     InspectorPanel *panel = this->m_workspaceChrome->installInspectorDock();
     if (!panel)
         return;
+
+    // R-22: add the scientific-copilot tab, wired to this window's backend
+    // endpoint + dataset. Only meaningful for a remote (server-backed) dataset.
+    if (!this->remoteBackendUrl.isEmpty()) {
+        this->m_workspaceChrome->installCopilot(
+                this->remoteBackendUrl, this->remoteBackendToken, this->remoteDatasetId);
+    }
 
     // Collapsing/expanding a dock resizes the panes; the gutter fit is size-driven
     // and the QEvent::Resize filter is not reliable when both docks change in the

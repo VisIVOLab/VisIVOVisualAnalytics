@@ -131,6 +131,25 @@ class TestHigherOrderMoments:
         nan_frac = float(np.isnan(result).sum()) / result.size
         assert nan_frac < 0.05, f"Order {order}: {nan_frac:.1%} NaN pixels"
 
+    def test_r06_higher_order_streams_via_dask_when_big(self, monkeypatch):
+        """R-06: when the subset exceeds the stream threshold, order 6 must route
+        through the out-of-core Dask backend and match the in-memory result."""
+        import base64
+        import app.compute.moment as _m
+        from app.compute import worker_moment
+
+        # In-memory reference (huge threshold → never streams).
+        monkeypatch.setattr(_m, "_MOMENT_STREAM_BYTES", 1 << 62)
+        ref = worker_moment(self.cube_path, 6, 0, 31, False, 0.0)
+        # Force the streaming/OOC branch (threshold 0 → any subset is "big").
+        monkeypatch.setattr(_m, "_MOMENT_STREAM_BYTES", 0)
+        ooc = worker_moment(self.cube_path, 6, 0, 31, False, 0.0)
+        a = np.frombuffer(base64.b64decode(ref["data_base64"]), dtype=np.float32)
+        b = np.frombuffer(base64.b64decode(ooc["data_base64"]), dtype=np.float32)
+        m = np.isfinite(a) & np.isfinite(b)
+        assert m.any()
+        np.testing.assert_allclose(a[m], b[m], rtol=1e-4, atol=1e-4)
+
     def test_unsupported_order_raises(self):
         from app.compute import _moment_map_from_array
         with fits.open(self.cube_path) as h:
@@ -267,6 +286,60 @@ class TestLinewidthWorker:
         # astropy converts km/s → SI (m/s); the unit string reflects that
         assert "s" in result["fwhm_unit"]   # e.g. "m.s**-1" or "km/s"
         assert "s" in result["ew_unit"]
+
+
+class TestLinewidthFrequencyConversion:
+    """R-02: a FREQ cube must report widths in Hz unless a rest frequency is
+    supplied, in which case the widths convert to km/s (|Δv| = c·|Δν|/ν₀)."""
+
+    @staticmethod
+    def _write_freq_cube(path, nz=32, ny=4, nx=4, sigma_chan=3.0, dnu_hz=1.0e4,
+                         restfrq=1.4204e9, put_restfrq=False):
+        rng = np.random.default_rng(1)
+        chans = np.arange(nz, dtype=np.float32)
+        gauss = np.exp(-0.5 * ((chans - nz / 2.0) / sigma_chan) ** 2)
+        data = (gauss[:, None, None] * 10.0
+                + rng.standard_normal((nz, ny, nx)).astype(np.float32) * 0.05)
+        hdu = fits.PrimaryHDU(data.astype(np.float32))
+        h = hdu.header
+        h["NAXIS"] = 3; h["NAXIS1"] = nx; h["NAXIS2"] = ny; h["NAXIS3"] = nz
+        h["CTYPE3"] = "FREQ"; h["CRVAL3"] = restfrq; h["CRPIX3"] = nz / 2.0
+        h["CDELT3"] = dnu_hz; h["CUNIT3"] = "Hz"
+        h["BUNIT"] = "Jy/beam"
+        if put_restfrq:
+            h["RESTFRQ"] = restfrq
+        hdu.writeto(path, overwrite=True)
+        return restfrq, dnu_hz
+
+    def test_freq_cube_reports_hz_without_rest_freq(self, tmp_path):
+        from app.compute import worker_linewidth
+        path = str(tmp_path / "freq.fits")
+        self._write_freq_cube(path, put_restfrq=False)
+        result = worker_linewidth(path, 0, 31, False, 0.0, rest_freq_hz=None)
+        # No rest frequency anywhere → widths stay in the native frequency unit.
+        assert result["fwhm_unit"].lower() in ("hz", "")
+        assert result["fwhm_unit"].lower() != "km/s"
+
+    def test_rest_freq_param_converts_to_kms(self, tmp_path):
+        from app.compute import worker_linewidth
+        path = str(tmp_path / "freq2.fits")
+        restfrq, dnu = self._write_freq_cube(path, put_restfrq=False)
+        r_hz = worker_linewidth(path, 0, 31, False, 0.0, rest_freq_hz=None)
+        r_kms = worker_linewidth(path, 0, 31, False, 0.0, rest_freq_hz=restfrq)
+        assert r_kms["fwhm_unit"] == "km/s"
+        fwhm_hz = _decode_f32(r_hz["fwhm_base64"], (r_hz["height"], r_hz["width"]))
+        fwhm_kms = _decode_f32(r_kms["fwhm_base64"], (r_kms["height"], r_kms["width"]))
+        factor = 299792.458 / restfrq
+        m_hz = np.nanmedian(fwhm_hz[np.isfinite(fwhm_hz)])
+        m_kms = np.nanmedian(fwhm_kms[np.isfinite(fwhm_kms)])
+        assert abs(m_kms - m_hz * factor) / (m_hz * factor) < 1e-4
+
+    def test_header_rest_freq_used_when_param_absent(self, tmp_path):
+        from app.compute import worker_linewidth
+        path = str(tmp_path / "freq3.fits")
+        self._write_freq_cube(path, put_restfrq=True)
+        result = worker_linewidth(path, 0, 31, False, 0.0, rest_freq_hz=None)
+        assert result["fwhm_unit"] == "km/s"
 
 
 # ── S-03: Polynomial baseline ──────────────────────────────────────────────────

@@ -36,6 +36,28 @@ def test_load_multicomponent_shape_and_components(tmp_path):
     assert f.spacing == (1.0, 1.0, 1.0)
 
 
+def test_r11_assumed_frame_warns(tmp_path):
+    """R-11: a header with no VFRAME/WCS yields an 'assumed frame' warning."""
+    path, _ = _write_multicomponent(tmp_path, n=8)
+    f = load_velocity_field(path)
+    assert any("assumed supergalactic" in w for w in f.warnings)
+    assert "warnings" in f.summary()
+
+
+def test_r11_flipped_cdelt_warns(tmp_path):
+    """R-11: a negative CDELT (flipped axis) raises a mirror-image warning."""
+    z, y, x = np.mgrid[0:8, 0:8, 0:8].astype(np.float32)
+    data = np.stack([-(y - 3.5), (x - 3.5), 0.1 * (z - 3.5)]).astype(np.float32)
+    hdu = fits.PrimaryHDU(data)
+    hdu.header["CDELT1"] = -1.0   # flipped x axis
+    hdu.header["CDELT2"] = 1.0
+    hdu.header["CDELT3"] = 1.0
+    path = str(tmp_path / "flipped.fits")
+    hdu.writeto(path, overwrite=True)
+    f = load_velocity_field(path)
+    assert any("mirror" in w.lower() and "CDELT1" in w for w in f.warnings)
+
+
 def test_box_mpc_sets_physical_spacing(tmp_path):
     path, _ = _write_multicomponent(tmp_path, n=10)
     f = load_velocity_field(path, box_mpc=1000.0)

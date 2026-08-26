@@ -23,6 +23,8 @@ from ._common import (  # noqa: F401
     _b64i32_compressed,
     _finite_range,
     _integrated_spacing,
+    frequency_width_to_kms,
+    covariance_propagate,
 )
 
 
@@ -40,11 +42,19 @@ def worker_linewidth(
     snr_threshold: float = 3.0,
     iy_start: int | None = None,
     iy_end: int | None = None,
+    rest_freq_hz: float | None = None,
 ) -> dict[str, Any]:
     """Compute per-pixel FWHM (Gaussian fit) and equivalent-width maps.
 
     FWHM  = 2.3548 × σ_gaussian  (spectral units)
     EW    = M0 / peak_brightness  (spectral units)
+
+    R-02: for a frequency axis, when a rest frequency is available (the
+    ``rest_freq_hz`` argument or the header RESTFRQ/RESTFREQ) the FWHM and EW
+    widths are converted from Hz to km/s (|Δv| = c·|Δν|/ν₀) and the returned
+    ``fwhm_unit``/``ew_unit`` become ``km/s``. Without a rest frequency the
+    widths stay in the native axis unit (e.g. Hz) and are labelled as such —
+    never silently reported as km/s.
 
     Both maps are returned as float32 arrays encoded in base64.
 
@@ -151,9 +161,29 @@ def worker_linewidth(
             if np.isfinite(pk) and pk > 0.0 and np.isfinite(m0v):
                 ew_map[iy, ix] = m0v / pk
 
+    # R-02: convert Hz widths to km/s when a rest frequency is known. The rest
+    # frequency comes from the caller (rest_freq_hz) or the FITS header.
+    hdr = dataset.header
+    rf = rest_freq_hz
+    if rf is None:
+        for key in ("RESTFRQ", "RESTFREQ"):
+            if key in hdr:
+                try:
+                    rf = float(hdr[key])
+                    break
+                except (TypeError, ValueError):
+                    pass
+    conv_factor, spectral_unit = frequency_width_to_kms(
+        str(spectral.get("axis_type", "")), str(spectral["axis_unit"]), rf
+    )
+    if conv_factor != 1.0:
+        np.multiply(fwhm_map, np.float32(conv_factor), out=fwhm_map,
+                    where=np.isfinite(fwhm_map))
+        np.multiply(ew_map, np.float32(conv_factor), out=ew_map,
+                    where=np.isfinite(ew_map))
+
     fwhm_range = _finite_range(fwhm_map)
     ew_range = _finite_range(ew_map)
-    spectral_unit = str(spectral["axis_unit"])
     return {
         "width": nx,
         "height": ny,
@@ -611,25 +641,49 @@ def worker_line_fit(
 
     p0 = [amp0, mu0, sigma0, base0, 0.0]
     try:
-        popt, _ = curve_fit(model, x, y, p0=p0, maxfev=20000)
+        popt, pcov = curve_fit(model, x, y, p0=p0, maxfev=20000)
     except Exception as exc:  # noqa: BLE001
         raise ValueError(f"Gaussian line fit did not converge: {exc}") from exc
 
     amp, mu, sigma, a, b = (float(v) for v in popt)
     sigma = abs(sigma)
-    fwhm = 2.0 * np.sqrt(2.0 * np.log(2.0)) * sigma
+    fwhm_factor = 2.0 * np.sqrt(2.0 * np.log(2.0))
+    fwhm = fwhm_factor * sigma
     integrated = amp * sigma * np.sqrt(2.0 * np.pi)
     continuum = (a + b * mu) if with_baseline else 0.0
     ew = float(integrated / continuum) if (with_baseline and continuum) else None
     resid = y - model(x, *popt)
     rms = float(np.std(resid))
 
+    # R-08: 1-sigma parameter uncertainties from the fit covariance. Undefined
+    # (inf) for a perfect fit → reported as None. p order: [amp, mu, sigma, a, b].
+    with np.errstate(invalid="ignore"):
+        perr = np.sqrt(np.diag(pcov))
+    perr = [float(e) if np.isfinite(e) else None for e in perr]
+    amp_err, mu_err, sigma_err, _a_err, _b_err = perr
+    fwhm_err = (sigma_err * fwhm_factor) if sigma_err is not None else None
+    # I = amp·σ·√(2π): full-covariance propagation over params [amp, mu, sigma,
+    # a, b]. dI/dA = I/amp, dI/dσ = I/σ. Keeps the amp–σ covariance.
+    integrated_err = (
+        covariance_propagate(
+            pcov, (0, 2),
+            (integrated / amp if amp else 0.0,
+             integrated / sigma if sigma else 0.0),
+        )
+        if integrated else None
+    )
+
     return {
         "peak": amp,
+        "peak_err": amp_err,
         "center": mu,
+        "center_err": mu_err,
         "sigma": sigma,
+        "sigma_err": sigma_err,
         "fwhm": float(fwhm),
+        "fwhm_err": fwhm_err,
         "integrated_flux": float(integrated),
+        "integrated_flux_err": integrated_err,
         "continuum": float(continuum),
         "equivalent_width": ew,
         "baseline": [a, b],

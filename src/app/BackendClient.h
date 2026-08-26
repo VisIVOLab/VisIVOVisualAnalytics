@@ -632,6 +632,28 @@ struct BackendCubeStatsResult
     QString bunit;
 };
 
+// ── Scientific copilot (R-22) ─────────────────────────────────────────────────
+
+struct BackendAssistantToolCall
+{
+    QString name;
+    QString argumentsJson;   // compact JSON of the arguments
+    QString resultJson;      // compact JSON of the result (or empty)
+    QString error;           // non-empty if the tool call failed
+};
+
+struct BackendAssistantResult
+{
+    bool valid{ false };
+    QString error;
+    QString answer;
+    QString provider;             // "null" / "anthropic" / …
+    bool configured{ false };     // whether an LLM provider is wired
+    bool toolCallsRecorded{ false };  // ≥1 tool call traced (NOT a grounding guarantee)
+    QString reproducibilityScript;
+    QList<BackendAssistantToolCall> toolCalls;
+};
+
 // ── S-03: Baseline subtraction ────────────────────────────────────────────────
 
 struct BackendBaselineResult
@@ -1546,6 +1568,14 @@ public:
      *  client only holds a decimated preview, so its own 3-D stats are approximate; this is
      *  the authoritative set. Cached backend-side per file. */
     BackendCubeStatsResult fetchCubeStats(const QString &datasetId);
+
+    /** POST /v1/assistant/query — ask the scientific copilot a natural-language
+     *  question. Every quantitative claim is backed by a recorded tool call
+     *  (provenance) and a reproducibility script. When no LLM provider is wired
+     *  server-side the answer explains how to enable one; ``configured`` is then
+     *  false but the call still succeeds. ``datasetId`` may be empty. */
+    BackendAssistantResult assistantQuery(const QString &question,
+                                          const QString &datasetId);
 
     // ── S-03: Baseline subtraction ────────────────────────────────────────────
     /** POST /v1/spectral/baseline/{session_id}/{dataset_id} — subtract a baseline

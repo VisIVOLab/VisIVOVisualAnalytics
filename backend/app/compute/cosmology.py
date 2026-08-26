@@ -31,21 +31,28 @@ def worker_angular_power_spectrum(
     channel: int = 0,
     n_bins: int = 64,
 ) -> dict[str, Any]:
-    """Compute the azimuthally averaged angular power spectrum of a 2-D slice.
+    """Azimuthally averaged 2-D power spectrum of a slice — a RELATIVE texture
+    spectrum, NOT a calibrated angular power spectrum Cℓ.
+
+    R-15 — honesty: this is a windowed |FFT|² binned in |k|. The Hann window's
+    power loss IS corrected (divide by ⟨w²⟩), but there is no mask/apodization
+    mode-coupling deconvolution and no beam/pixel-window correction, so the
+    absolute normalisation and the low-ℓ shape are NOT science-grade. Use it to
+    compare the relative structure of two maps, not as a cosmological Cℓ.
 
     Algorithm:
       1. Extract the requested channel plane (or collapse to 2-D if already 2-D).
       2. Replace NaNs with the finite mean so FFT is well-defined.
-      3. Apply a 2-D Hann window to reduce edge ringing.
+      3. Apply a 2-D Hann window to reduce edge ringing; normalise by ⟨w²⟩.
       4. Compute the 2-D real FFT and its power: |FFT|².
       5. Compute the radial wavenumber |k| = sqrt(kx²+ky²) for each bin.
       6. Bin the power azimuthally into `n_bins` logarithmically spaced bins.
-      7. Convert k [pixel⁻¹] → angular multipole ℓ ≈ 2π / (pixel_scale_rad × k).
+      7. Convert k [pixel⁻¹] → angular multipole ℓ ≈ 2π · k / pixel_scale_rad.
 
     Returns:
       k_bins  – 1-D float64 array of bin-centre wavenumbers (pixel⁻¹)
       ell     – 1-D float64 array of corresponding angular multipoles
-      power / cl – 1-D float64 mean power per bin
+      power / cl – 1-D float64 mean power per bin (relative, uncalibrated)
       cl_err  – 1-D float64 standard error of power per bin
     """
     dataset = ScientificFitsDataset(path)
@@ -85,11 +92,15 @@ def worker_angular_power_spectrum(
     # 2-D Hann window
     wy = np.hanning(ny)[:, np.newaxis]
     wx = np.hanning(nx)[np.newaxis, :]
-    windowed = data * wy * wx
+    window = wy * wx
+    windowed = data * window
+    # R-15: correct the window's power loss so the amplitude isn't suppressed by
+    # ⟨w²⟩ (the standard windowed-periodogram normalisation).
+    w2_mean = float(np.mean(window ** 2)) or 1.0
 
     # 2-D real FFT
     fft2 = np.fft.rfft2(windowed)
-    power2d = np.abs(fft2) ** 2          # (ny, nx//2+1)
+    power2d = (np.abs(fft2) ** 2) / w2_mean   # (ny, nx//2+1)
 
     # Wavenumber grids (pixel⁻¹, 0-centred for kx via rfftfreq, ky via fftfreq)
     kx = np.fft.rfftfreq(nx)             # (nx//2+1,) in [0, 0.5]
@@ -138,6 +149,11 @@ def worker_angular_power_spectrum(
         "power": cl_out,
         "k_unit": "pixel^-1",
         "power_unit": "counts^2",
+        # R-15: relative texture spectrum, not a calibrated Cℓ (no mask/beam
+        # deconvolution). Clients must not present it as a cosmological Cℓ.
+        "calibrated": False,
+        "note": ("relative (uncalibrated) power spectrum: Hann-windowed |FFT|² "
+                 "with window-power correction; no mask/beam deconvolution"),
     }
 
 

@@ -3,6 +3,7 @@
 #include "MainWindow.h"
 #include "DiagnosticsWindow.h"
 #include "DockRail.h"
+#include "AssistantPanel.h"
 #include "InspectorPanel.h"
 #include "SessionDataTree.h"
 #include "app/ProductRegistry.h"
@@ -360,6 +361,16 @@ void WorkspaceChrome::addSessionLayers(QWidget *w)
             l->removeWidget(w);
     m_sessionLayersLayout->insertWidget(m_sessionLayersLayout->count() - 1, w);
     w->show();
+}
+
+void WorkspaceChrome::installCopilot(const QString &url, const QString &token,
+                                     const QString &datasetId)
+{
+    if (!m_inspector)
+        return;
+    AssistantPanel *panel = m_inspector->ensureCopilotTab();
+    panel->setBackend(url, token);
+    panel->setDatasetId(datasetId);
 }
 
 InspectorPanel *WorkspaceChrome::installInspectorDock()

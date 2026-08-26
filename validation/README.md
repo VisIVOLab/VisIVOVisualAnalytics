@@ -2,9 +2,12 @@
 
 Reproducible comparison of the VisIVO **Kinematic Lasso** geodesic selection
 against a **SoFiA-2** source mask on a real HI cube (Hickson Compact Group 44),
-for the software paper. Addresses the "is the mask scientifically good?" question:
-we recover the SoFiA sources with a single click and default parameters, and
-quantify the agreement (spatial overlap + integrated flux + total spectrum).
+for the software paper. The lasso is **assisted segmentation**, not blind
+detection: given a seed *on* a source (here SoFiA's own peak voxel), one click
+grows a selection, and we quantify how well that selection agrees with the SoFiA
+mask (spatial overlap + integrated flux + total spectrum). This measures
+segmentation agreement given a correct seed — NOT detection completeness or
+reliability over a survey, which only a blind finder like SoFiA provides.
 
 ## Data
 
@@ -63,26 +66,36 @@ total-spectrum overlay).
 | faint #4 | 0.660 | 0.492 | 0.587 | 0.753 | 0.790 |
 | faint #5 | 0.687 | 0.523 | 0.604 | 0.797 | 0.938 |
 
-**Headline:** on the two main HI galaxies, one click with default parameters
-recovers > 91 % of the SoFiA mask (Dice > 0.83) with integrated flux within 8 %,
-and the total spectrum tracks SoFiA's double-horn profile channel-by-channel.
+**Headline (segmentation given a correct seed):** on the two main HI galaxies,
+one click with default parameters overlaps > 91 % of the SoFiA mask
+(completeness; Dice > 0.83) at reliability ≈ 0.75, with integrated flux within
+8 %, and the total spectrum tracks SoFiA's double-horn profile channel-by-channel.
 Completeness drops for the faintest sources because the lasso's nσ = 2.5 contour
 is more conservative than SoFiA's multi-scale smooth+clip — the interactive
-reach / nσ controls let the user recover them, but the numbers above are the
-strict single-click default.
+reach / nσ controls trade completeness against reliability (below).
 
-## Interactive recovery of faint sources
+**Caveats (paper honesty):** the seed is SoFiA's own peak voxel, so this is
+segmentation agreement, not detection; it is one cube and five sources; and the
+reported flux carries no uncertainty yet. A blind-detection claim is out of
+scope for an assisted tool.
+
+## Completeness–reliability tradeoff
 
 `lasso_sensitivity.py` sweeps the two interactive controls on a bright and a
-faint SoFiA source and measures completeness vs the mask (`out/sensitivity.png`):
+faint SoFiA source and reports BOTH completeness (∩/SoFiA) and reliability
+(∩/lasso) at every nσ and reach (`out/sensitivity.png`), so a completeness gain
+bought by flooding into noise (reliability collapse) is visible, not hidden:
 
 ```bash
 backend/.venv/bin/python validation/lasso_sensitivity.py
 ```
 
-The faint source, only 59 % complete at the default nσ = 2.5, rises to **97 %**
-when the threshold is lowered to nσ = 1.5 — matching the bright source — and to
-88 % by raising *reach* alone. The bright source stays 80–99 % complete across
-the whole range. So the low default completeness of faint sources is a *tunable
-starting point*, not a limit of the method: one slider recovers them.
+The faint source, only 59 % complete at the default nσ = 2.5, rises toward the
+bright source's completeness as nσ is lowered to 1.5 or *reach* is raised — **but
+that completeness is bought with reliability**: lowering nσ floods the selection
+into noise, so ∩/lasso (reliability) falls at the same time. The plot shows both
+curves; the honest reading is a *tunable completeness–reliability tradeoff*, not
+a free recovery. nσ = 2.5 is the default because it balances the two; a user who
+needs more completeness on a faint source can trade reliability for it knowingly.
+(Report the completeness AND reliability at the chosen setting in any figure.)
 

@@ -85,15 +85,7 @@
 #include <cmath>
 #include <limits>
 
-// ── libwcs coordinate conversion ──────────────────────────────────────────────
-// wcscon() converts between WCS coordinate systems (FK5/J2000, Galactic, …).
-// Only the declaration is needed here; the function is linked from libwcs.
-extern "C" {
-void wcscon(int sys1, int sys2, double eq1, double eq2,
-            double *dtheta, double *dphi, double epoch);
-}
-static constexpr int kWCS_J2000    = 1;
-static constexpr int kWCS_GALACTIC = 3;
+#include "CatalogueWcsUtil.h"
 
 using namespace Qt::StringLiterals;
 

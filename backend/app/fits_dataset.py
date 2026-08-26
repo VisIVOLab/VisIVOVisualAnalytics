@@ -56,8 +56,78 @@ class ScientificFitsDataset:
             minor=float(header["BMIN"]) if "BMIN" in header else None,
             pa=float(header["BPA"]) if "BPA" in header else None,
         )
+        # R-05: per-channel beam table (CASA multi-beam cubes carry a binary-table
+        # HDU named "BEAMS" with per-plane BMAJ/BMIN/BPA). Read lazily-safe here so
+        # flux/beam-area is correct channel-to-channel on wideband ALMA/SKA cubes.
+        self._per_channel_beam: dict[int, BeamMetadata] | None = self._read_beams_table()
         self._stokes_planes: dict[str, int] | None = None  # lazy
         self._log_axis_debug()
+
+    def _read_beams_table(self) -> dict[int, BeamMetadata] | None:
+        """Read a CASA per-plane beam table (EXTNAME='BEAMS') if present.
+
+        The table has one row per (channel, pol) with columns BMAJ, BMIN (arcsec)
+        and BPA (deg), plus a CHAN column. We index by channel (collapsing over
+        pol by taking the first row per channel) and store BMAJ/BMIN in **degrees**
+        to match the primary-header convention used everywhere else. Returns None
+        when there is no such table (the common single-beam case).
+        """
+        try:
+            with fits.open(self.path, memmap=True, mode="readonly") as hdul:
+                beams_hdu = None
+                for hdu in hdul[1:]:
+                    if str(hdu.header.get("EXTNAME", "")).strip().upper() == "BEAMS":
+                        beams_hdu = hdu
+                        break
+                if beams_hdu is None:
+                    return None
+                cols = {c.upper(): c for c in beams_hdu.columns.names}
+                if not {"BMAJ", "BMIN"} <= set(cols):
+                    return None
+                data = beams_hdu.data
+                bmaj = np.asarray(data[cols["BMAJ"]], dtype=np.float64)
+                bmin = np.asarray(data[cols["BMIN"]], dtype=np.float64)
+                bpa = (np.asarray(data[cols["BPA"]], dtype=np.float64)
+                       if "BPA" in cols else np.zeros_like(bmaj))
+                chan = (np.asarray(data[cols["CHAN"]], dtype=np.int64)
+                        if "CHAN" in cols else np.arange(bmaj.size, dtype=np.int64))
+                # Convert each size column to degrees using ITS OWN unit (BMAJ and
+                # BMIN can in principle carry different TUNITs). Default arcsec.
+                def _col_to_deg(colname: str) -> float:
+                    raw = beams_hdu.columns[cols[colname]].unit or "arcsec"
+                    try:
+                        return float(u.Unit(raw).to(u.deg))
+                    except Exception:  # noqa: BLE001
+                        return 1.0 / 3600.0  # assume arcsec on an unparsable unit
+                bmaj_to_deg = _col_to_deg("BMAJ")
+                bmin_to_deg = _col_to_deg("BMIN")
+                out: dict[int, BeamMetadata] = {}
+                for i in range(bmaj.size):
+                    ch = int(chan[i])
+                    if ch in out:
+                        continue  # first pol wins
+                    out[ch] = BeamMetadata(
+                        major=float(bmaj[i]) * bmaj_to_deg,
+                        minor=float(bmin[i]) * bmin_to_deg,
+                        pa=float(bpa[i]),
+                    )
+                return out or None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[fits] BEAMS table read failed path=%s: %s", self.path, exc)
+            return None
+
+    def beam_for_channel(self, channel: int | None) -> BeamMetadata:
+        """Beam for a given channel — the per-plane beam when a BEAMS table is
+        present, otherwise the single primary-header beam. R-05."""
+        if channel is not None and self._per_channel_beam:
+            b = self._per_channel_beam.get(int(channel))
+            if b is not None:
+                return b
+        return self.beam
+
+    @property
+    def has_per_channel_beam(self) -> bool:
+        return bool(self._per_channel_beam)
 
     @staticmethod
     def _is_celestial_ctype(ctype: str) -> bool:

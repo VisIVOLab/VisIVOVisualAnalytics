@@ -1,4 +1,5 @@
 #include "BackendClient.h"
+#include "BackendHeaders.h"
 #include "DiagnosticsManager.h"
 
 #include <QByteArray>
@@ -78,8 +79,8 @@ BackendLinewidthResult BackendClient::fetchLinewidthBinary(const QString &datase
     }
     // The binary frames carry no in-band metadata; the backend surfaces the map units as
     // response headers (X-Fwhm-Unit / X-Ew-Unit) so the FWHM/EW products can be labelled.
-    result.fwhmUnit = headers.value(QStringLiteral("x-fwhm-unit"));
-    result.ewUnit   = headers.value(QStringLiteral("x-ew-unit"));
+    result.fwhmUnit = headers.value(QByteArray(VisivoHeaders::FWHM_UNIT).toLower());
+    result.ewUnit   = headers.value(QByteArray(VisivoHeaders::EW_UNIT).toLower());
     // Parse the two concatenated binary frames (FWHM then EW).
     int offset = 0;
     BinaryArrayResult fwhm, ew;
