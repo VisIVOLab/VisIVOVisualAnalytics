@@ -101,3 +101,21 @@ def test_multi_seed_requires_a_seed():
     data = _blob_cube()
     with _pytest.raises(ValueError):
         cube_kinematic_select_multi(data, [], [], reach=6.0)
+
+
+def test_flood_component_matches_ndimage_label():
+    """The seed connected-component step uses skimage.flood instead of ndimage.label
+    (avoids the window-sized int32 label array). Lock in that the flooded region is
+    IDENTICAL to the label-based one for the seed's component, on 6-connectivity."""
+    from scipy import ndimage
+    from skimage.segmentation import flood
+    rng = np.random.default_rng(3)
+    st = ndimage.generate_binary_structure(3, 1)
+    for shape, thr in (((40, 50, 50), 0.55), ((30, 30, 30), 0.5)):
+        cand = rng.random(shape) > thr
+        seed = tuple(s // 2 for s in shape)
+        cand[seed] = True                      # the clicked voxel always seeds it
+        labels, _ = ndimage.label(cand, structure=st)
+        by_label = labels == labels[seed]
+        by_flood = flood(cand, seed, connectivity=1)
+        assert np.array_equal(by_label, by_flood)

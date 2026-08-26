@@ -88,6 +88,7 @@ def cube_kinematic_select(
     from scipy import ndimage                     # noqa: PLC0415
     from scipy.sparse import csr_matrix           # noqa: PLC0415
     from scipy.sparse.csgraph import dijkstra      # noqa: PLC0415
+    from skimage.segmentation import flood         # noqa: PLC0415
 
     if data.ndim != 3:
         raise ValueError("Kinematic selection requires a 3-D cube.")
@@ -118,20 +119,24 @@ def cube_kinematic_select(
     # object. Below that the soft-threshold cost blows up anyway, so seeding the
     # component from ≥nσ both grabs the whole object and keeps the graph small.
     thr = float(nsigma) * sigma
+    # Threshold straight off the memmap (no persistent float32 copy of the window): np.isfinite
+    # and (w > thr) each read pages and yield a bool, so peak memory drops by one window-sized
+    # float array on SKA-scale windows. NaN > thr is False, so NaN is excluded as before.
     finite_w = np.isfinite(w)
-    candidate = finite_w & (np.asarray(w) > thr)
+    candidate = finite_w & (w > thr)
     candidate[lz, ly, lx] = True               # the clicked voxel always seeds it
 
-    # Connected component (6-connectivity) containing the seed → the object.
+    # Connected component (6-connectivity) containing the seed → the object. A seed FLOOD-FILL
+    # returns just the seed's component, avoiding the window-sized int32 label array that
+    # ndimage.label allocates for EVERY component. (flood still returns a window-shaped bool mask
+    # and pads internally, so this trims the CC step's transient memory — it does not by itself
+    # make the peak scale with the object; the peak is the geodesic graph over the component bbox.)
+    # connectivity=1 == the 6-neighbour structure, and since the seed is forced into `candidate`,
+    # the flooded region is exactly the component ndimage.label would tag with the seed's label
+    # (result-identical — see test_flood_component_matches_ndimage_label).
     structure = ndimage.generate_binary_structure(3, 1)
-    labels, _ = ndimage.label(candidate, structure=structure)
-    seed_label = int(labels[lz, ly, lx])
-    if seed_label == 0:                        # seed isolated → nothing to grow
-        mask = np.zeros((nz, ny, nx), dtype=bool)
-        mask[sz, sy, sx] = True
-        return mask
-    comp = labels == seed_label
-    del labels, candidate
+    comp = flood(candidate, (lz, ly, lx), connectivity=1)
+    del candidate
 
     # Include a shell of sub-nσ voxels so ``reach`` / ``lambda_v`` can bleed the grow
     # into the faint margin just beyond the nσ contour (the geodesic then bounds it).
@@ -167,20 +172,28 @@ def cube_kinematic_select(
     y0, y1 = int(yc[0]), int(yc[-1]) + 1
     x0, x1 = int(xc[0]), int(xc[-1]) + 1
     sub = comp[z0:z1, y0:y1, x0:x1]
-    subdata = np.asarray(w[z0:z1, y0:y1, x0:x1], dtype=np.float64)
+    # float32 (not float64) for the component's intensities + costs: over the object bbox this
+    # halves the largest graph-step arrays. The cost is a soft threshold whose only downstream use
+    # is a Dijkstra distance compared against `reach` (≈8); float32 keeps that to ~1e-6, well below
+    # any voxel's cost, so the selection is unchanged (validated lasso-vs-SoFiA on HGC 44 — same
+    # Dice to 3 dp). Node ids are exact in int32 (n_nodes < _MAX_SELECT_NODES = 4M ≪ 2^31).
+    subdata = np.asarray(w[z0:z1, y0:y1, x0:x1], dtype=np.float32)
     dz, dy, dx = sub.shape
 
     # Node ids for component voxels only (−1 elsewhere).
-    idx = np.full(sub.shape, -1, dtype=np.int64)
+    idx = np.full(sub.shape, -1, dtype=np.int32)
     n_nodes = int(sub.sum())
-    idx[sub] = np.arange(n_nodes)
+    idx[sub] = np.arange(n_nodes, dtype=np.int32)
 
     # Per-voxel traversal cost: soft threshold at nσ·σ — a voxel at nσ costs 1,
     # brighter voxels are ~free (the grow flows through the object), fainter ones
     # cost exp((nσ − I)/σ) so ``reach`` controls how far into the near-nσ margin
     # the grow bleeds before stopping.
+    # Keep the scalars as Python floats: numpy's weak-scalar rule keeps the arrays float32 (no
+    # float64 promotion), while sigma/nsigma retain full precision as the scalar operands — this
+    # also avoids a np.float32(sigma) underflow to 0 for a pathologically tiny sigma.
     with np.errstate(over="ignore"):
-        costv = np.exp(float(nsigma) - np.clip(subdata, 0.0, None) / sigma)
+        costv = np.exp(float(nsigma) - np.clip(subdata, 0.0, None) / float(sigma))
     costv = np.minimum(costv, 1.0e6)
 
     rows: list[np.ndarray] = []
