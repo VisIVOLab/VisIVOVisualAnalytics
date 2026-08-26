@@ -124,10 +124,24 @@ def frequency_width_to_kms(
     return _C_KMS * freq_units[au] / float(rest_freq_hz), "km/s"
 
 
+import re as _re
+
+# Jy-per-beam brightness unit in the common FITS/CASA/WSClean spellings:
+# "Jy/beam", "Jy beam-1", "Jy/Beam-1", "JY BEAM-1", "Jy beam^-1". ANCHORED at the
+# start (after stripping whitespace) so a SCALE-PREFIXED unit — "mJy/beam",
+# "uJy/beam" — does NOT match: the flux/N_HI/M_HI constants assume Jy, so
+# silently treating milli/micro-Jy as Jy would be 1000×/1e6× wrong. Such cubes
+# fall through to flux_jy=None with an honest label rather than a wrong number.
+_PER_BEAM_RE = _re.compile(r"^jy/?beam")
+
+
 def is_per_beam_bunit(bunit: str | None) -> bool:
-    """True when the brightness unit is per-beam (Jy/beam), so a summed/integrated
-    quantity must be divided by the beam area (in pixels) to become a flux in Jy."""
-    return bool(bunit) and "jy/beam" in str(bunit).lower()
+    """True when the brightness unit is exactly Jy per beam (not mJy/uJy), so a
+    summed/integrated quantity must be divided by the beam area (in pixels) to
+    become a flux in Jy. Tolerant of the ``Jy beam-1`` / ``Jy/Beam-1`` spellings."""
+    if not bunit:
+        return False
+    return _PER_BEAM_RE.match(str(bunit).lower().replace(" ", "")) is not None
 
 
 def primary_beam_correct(

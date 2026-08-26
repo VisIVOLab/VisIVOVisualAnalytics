@@ -287,6 +287,21 @@ class TestLinewidthWorker:
         assert "s" in result["fwhm_unit"]   # e.g. "m.s**-1" or "km/s"
         assert "s" in result["ew_unit"]
 
+    def test_r07_fast_fwhm_matches_gaussian(self):
+        """R-07: the vectorised (moment-dispersion) fast FWHM should agree with
+        the per-pixel Gaussian-fit FWHM on a clean Gaussian line (within 15%)."""
+        from app.compute import worker_linewidth
+        slow = worker_linewidth(self.cube_path, 0, 31, False, 0.0)
+        fast = worker_linewidth(self.cube_path, 0, 31, False, 0.0, fast=True)
+        fs = _decode_f32(slow["fwhm_base64"], (slow["height"], slow["width"]))
+        ff = _decode_f32(fast["fwhm_base64"], (fast["height"], fast["width"]))
+        ms = float(np.median(fs[np.isfinite(fs)]))
+        mf = float(np.median(ff[np.isfinite(ff)]))
+        assert mf > 0
+        assert abs(mf - ms) / ms < 0.15
+        # Both recover ~ the injected FWHM.
+        assert abs(mf - self.expected_fwhm) / self.expected_fwhm < 0.20
+
 
 class TestLinewidthFrequencyConversion:
     """R-02: a FREQ cube must report widths in Hz unless a rest frequency is

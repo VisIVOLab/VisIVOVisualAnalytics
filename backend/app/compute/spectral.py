@@ -43,6 +43,7 @@ def worker_linewidth(
     iy_start: int | None = None,
     iy_end: int | None = None,
     rest_freq_hz: float | None = None,
+    fast: bool = False,
 ) -> dict[str, Any]:
     """Compute per-pixel FWHM (Gaussian fit) and equivalent-width maps.
 
@@ -120,6 +121,32 @@ def worker_linewidth(
 
     cy = row_hi - row_lo                        # chunk height
     snr_cutoff = max(0.0, float(snr_threshold))
+
+    if fast:
+        # R-07: SKA-scale vectorised FWHM — the intensity-weighted velocity
+        # dispersion (moment 2), FWHM = 2.3548·σ, computed over the whole chunk
+        # at once instead of one scipy curve_fit per pixel (O(cube) vs O(npix)
+        # fits). Less exact than the Gaussian fit for a non-Gaussian profile, but
+        # orders of magnitude faster on dense bright cubes.
+        sv3 = spectral_values[:, None, None]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            nz_m0 = m0_chunk != 0.0
+            m1 = np.where(nz_m0, np.nansum(safe * weights * sv3, axis=0) / m0_chunk, np.nan)
+            diff = sv3 - m1[None, :, :]
+            m2 = np.where(nz_m0,
+                          np.nansum(safe * weights * diff * diff, axis=0) / m0_chunk, np.nan)
+            fwhm_full = (2.3548 * np.sqrt(np.maximum(m2, 0.0))).astype(np.float32)
+            ew_full = np.where(np.isfinite(m0_chunk) & (peak_chunk > 0.0),
+                               m0_chunk / peak_chunk, np.nan).astype(np.float32)
+        # Blank FWHM below the SNR cutoff (the fit path skips those pixels), and
+        # where the weighted M0 ≤ 0 (absorption / mixed-sign noise) — there the
+        # dispersion is undefined and max(m2,0) would spuriously report FWHM=0.
+        # Keep EW everywhere (cheap, no fit) to match the per-pixel path.
+        fwhm_full[(snr_chunk < snr_cutoff) | ~(m0_chunk > 0.0)] = np.nan
+        fwhm_map[row_lo:row_hi, :] = fwhm_full
+        ew_map[row_lo:row_hi, :] = ew_full
+        cy = 0  # skip the per-pixel loop below
+
     for iy_local in range(cy):
         iy = row_lo + iy_local
         for ix in range(nx):

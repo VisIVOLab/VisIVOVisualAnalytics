@@ -101,11 +101,12 @@ class AnthropicProvider(AssistantProvider):
                                       arguments=dict(block.input or {})))
             elif btype == "text":
                 text_parts.append(block.text)
-        return ProviderResponse(
-            tool_calls=calls,
-            final_text=("".join(text_parts) if text_parts and not calls else
-                        ("".join(text_parts) or None)),
-        )
+        text = "".join(text_parts) or None
+        # Surface a truncated answer rather than returning a cut-off sentence as
+        # if it were complete.
+        if text and getattr(resp, "stop_reason", None) == "max_tokens":
+            text += "\n\n[answer truncated at the token limit]"
+        return ProviderResponse(tool_calls=calls, final_text=text)
 
 
 def provider_from_env() -> AssistantProvider:

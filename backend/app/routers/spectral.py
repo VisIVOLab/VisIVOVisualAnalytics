@@ -56,6 +56,9 @@ class LinewidthRequest(BaseModel):
     threshold_value: float = 0.0
     method: str | None = None       # None=both (binary); "fwhm" | "ew" selects one
     rest_freq_hz: float | None = None
+    # R-07: fast vectorised (moment-dispersion) FWHM instead of a per-pixel
+    # Gaussian fit — orders of magnitude faster on dense bright cubes.
+    fast: bool = False
 
 
 class LinewidthResponse(BaseModel):
@@ -246,7 +249,8 @@ def _combine_linewidth_chunks(chunks: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _linewidth_cache_key(path: str, channel_start: int, channel_end: int,
                           mask_enabled: bool, threshold_value: float,
-                          rest_freq_hz: float | None = None) -> tuple[str, str]:
+                          rest_freq_hz: float | None = None,
+                          fast: bool = False) -> tuple[str, str]:
     """Stable cache key for a linewidth computation."""
     return PRODUCT_CACHE.make_key(path, "linewidth", {
         "channel_start": int(channel_start),
@@ -257,6 +261,8 @@ def _linewidth_cache_key(path: str, channel_start: int, channel_end: int,
         # Part of the key: a different rest frequency yields km/s maps scaled
         # differently (or Hz when absent), so cached frames must not be shared.
         "rest_freq_hz": float(rest_freq_hz) if rest_freq_hz else None,
+        # Fast (moment dispersion) vs Gaussian-fit FWHM are different products.
+        "fast": bool(fast),
     })
 
 
@@ -269,6 +275,7 @@ async def _compute_linewidth(
     threshold_value: float,
     cube_height: int,
     rest_freq_hz: float | None = None,
+    fast: bool = False,
 ) -> dict[str, Any]:
     """Compute (or retrieve cached) linewidth maps for a cube.
 
@@ -286,7 +293,7 @@ async def _compute_linewidth(
        result, which is then stored in the cache.
     """
     cache_key, param_hash = _linewidth_cache_key(
-        path, channel_start, channel_end, mask_enabled, threshold_value, rest_freq_hz
+        path, channel_start, channel_end, mask_enabled, threshold_value, rest_freq_hz, fast
     )
     cached = PRODUCT_CACHE.get(cache_key)
     if cached is not None:
@@ -323,7 +330,7 @@ async def _compute_linewidth(
                 path, int(channel_start), int(channel_end),
                 bool(mask_enabled), float(threshold_value),
                 _LINEWIDTH_SNR_THRESHOLD, int(y0), int(y1),
-                rest_freq_hz,
+                rest_freq_hz, fast,
             )
             for (y0, y1) in ranges
         ]
@@ -382,6 +389,7 @@ async def spectral_linewidth(
             request.mask_enabled, request.threshold_value,
             cube_height=int(entry.get("height") or 0),
             rest_freq_hz=request.rest_freq_hz,
+            fast=request.fast,
         )
     except HTTPException:
         raise
@@ -417,6 +425,7 @@ async def spectral_linewidth_binary(
             request.mask_enabled, request.threshold_value,
             cube_height=int(entry.get("height") or 0),
             rest_freq_hz=request.rest_freq_hz,
+            fast=request.fast,
         )
     except HTTPException:
         raise
@@ -447,6 +456,7 @@ async def spectral_linewidth_get(
     session: Session = Depends(get_session),
     method: str = Query(default="fwhm", description='"fwhm" or "ew"'),
     rest_freq_hz: float | None = Query(default=None),
+    fast: bool = Query(default=False),
     channel_start: int = Query(default=0),
     channel_end: int = Query(default=0),
 ) -> Response:
@@ -464,6 +474,7 @@ async def spectral_linewidth_get(
             channel_start, channel_end, False, 0.0,
             cube_height=int(entry.get("height") or 0),
             rest_freq_hz=rest_freq_hz,
+            fast=fast,
         )
     except HTTPException:
         raise

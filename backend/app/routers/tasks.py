@@ -52,6 +52,16 @@ async def create_moment_task(
                 result={"valid": True, "error": "", **result},
                 cache_hit=cache_hit,
             )
+            record_history(  # E-06 — full params so a provenance replay reproduces
+                session, operation="moment", dataset_id=request.dataset_id,
+                endpoint="/v1/tasks/moment",
+                params={"moment_order": request.moment_order,
+                        "channel_start": request.channel_start,
+                        "channel_end": request.channel_end,
+                        "mask_enabled": request.mask_enabled,
+                        "threshold_value": request.threshold_value,
+                        "threshold_auto": getattr(request, "threshold_auto", False),
+                        "moment2_variance": getattr(request, "moment2_variance", False)})
         except asyncio.CancelledError:
             ticker.cancel()
             TASKS.update(task.task_id, status="cancelled", progress=0.0, error="Cancelled by client.")

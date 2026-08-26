@@ -454,6 +454,11 @@ void vtkWindowCube::startRemoteSliceFetch(int sliceIndex, bool isPrefetch, int r
     sliceIndex = this->clampRemoteSliceIndex(sliceIndex);
     const QString key = this->remoteSliceCacheKey(sliceIndex);
     if (this->remoteSliceFetchesInFlight.contains(key)) {
+        // Deduped against an in-flight fetch → no watcher will be created for
+        // this requestId, so consume its linked token now (E-07/M6) to avoid a
+        // slow leak of the QSet; the in-flight fetch's own result handles the
+        // display + any linked broadcast.
+        this->m_linkedRemoteRequestIds.remove(requestId);
         return;
     }
 

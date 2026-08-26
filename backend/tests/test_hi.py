@@ -37,6 +37,43 @@ def test_hi_column_density_positive(tmp_path):
     assert out["hi_mass_msun"] is None  # no distance given
 
 
+def test_is_per_beam_bunit_spellings():
+    from app.compute._common import is_per_beam_bunit
+    for good in ("Jy/beam", "Jy beam-1", "Jy/Beam-1", "JY BEAM-1", "Jy beam^-1",
+                 "Jy/beam km/s"):
+        assert is_per_beam_bunit(good), good
+    # mJy/uJy per-beam must NOT match: the constants assume Jy, so treating
+    # milli/micro-Jy as Jy would be 1000×/1e6× wrong.
+    for bad in ("K", "Jy", "Jy/pixel", "", "mJy/beam", "uJy/beam"):
+        assert not is_per_beam_bunit(bad), bad
+
+
+def test_hi_bunit_jy_beam_dash1_accepted(tmp_path):
+    """R-review: 'Jy beam-1' (FITS spelling) must be accepted, not rejected."""
+    path = str(tmp_path / "hi_dash.fits")
+    _write_hi_cube(path)
+    with fits.open(path, mode="update") as hdul:
+        hdul[0].header["BUNIT"] = "Jy beam-1"
+    out = worker_hi_products(path, 0, 23)   # must not raise
+    assert out["nhi_max"] > 0
+
+
+def test_hi_mask_off_warns_whole_field(tmp_path):
+    """R-review: with no mask the integral is whole-field → a warning + pixel count."""
+    path = str(tmp_path / "hi_mask.fits")
+    _write_hi_cube(path)
+    off = worker_hi_products(path, 0, 23, distance_mpc=10.0, mask_enabled=False)
+    assert off["mask_enabled"] is False
+    assert any("whole-field" in w.lower() for w in off["warnings"])
+    assert off["n_pixels_summed"] > 0
+    on = worker_hi_products(path, 0, 23, distance_mpc=10.0,
+                            mask_enabled=True, threshold_auto=True)
+    assert on["mask_enabled"] is True
+    assert on["warnings"] == []
+    # Masking restricts the integral to fewer pixels.
+    assert on["n_pixels_summed"] <= off["n_pixels_summed"]
+
+
 def test_hi_mass_scales_with_distance_squared(tmp_path):
     path = str(tmp_path / "hi2.fits")
     _write_hi_cube(path)

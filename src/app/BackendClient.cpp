@@ -2295,6 +2295,13 @@ std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) cons
         || path.contains(QStringLiteral("/analysis/cube-stats"))) {
         return std::chrono::milliseconds(600000); // 10 min
     }
+    // Copilot query: the server enforces its own wall-clock budget
+    // (VISIVO_ASSISTANT_TIMEOUT_S, default 120 s) and returns a graceful 504.
+    // Keep the client timeout comfortably ABOVE it so the server's helpful
+    // message wins the race instead of a raw client abort.
+    if (path.contains(QStringLiteral("/assistant/query"))) {
+        return std::chrono::milliseconds(180000); // 3 min > server 120 s budget
+    }
     return std::chrono::milliseconds(120000);
 }
 

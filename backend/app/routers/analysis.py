@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
 from ..auth import verify_token
-from ..dependencies import _require_dataset
+from ..dependencies import _require_dataset, record_history
 from ..sessions import Session, get_session
 from .spectral import _array_to_binary
 
@@ -61,6 +61,8 @@ async def cube_stats(
     except OSError:
         key = None
     if key is not None and key in _CUBE_STATS_CACHE:
+        record_history(session, operation="cube-stats", dataset_id=dataset_id,   # E-06
+                       endpoint="/v1/analysis/cube-stats", params={"cached": True})
         return {"valid": True, "error": "", "cached": True, **_CUBE_STATS_CACHE[key]}
     try:
         result = await asyncio.to_thread(worker_cube_stats, path)
@@ -73,6 +75,8 @@ async def cube_stats(
         if len(_CUBE_STATS_CACHE) >= _CUBE_STATS_CACHE_MAX:
             _CUBE_STATS_CACHE.pop(next(iter(_CUBE_STATS_CACHE)))
         _CUBE_STATS_CACHE[key] = result
+    record_history(session, operation="cube-stats", dataset_id=dataset_id,
+                   endpoint="/v1/analysis/cube-stats")   # E-06
     return {"valid": True, "error": "", "cached": False, **result}
 
 
@@ -82,6 +86,9 @@ class HiProductsRequest(BaseModel):
     distance_mpc: float | None = None
     mask_enabled: bool = False
     threshold_value: float = 0.0
+    # median+3σ MAD auto-threshold (with mask_enabled) so the mass integral is
+    # restricted to real signal rather than the whole noisy field.
+    threshold_auto: bool = False
     rest_freq_hz: float | None = None
 
 
@@ -106,12 +113,22 @@ async def hi_products(
         result = await asyncio.to_thread(
             worker_hi_products, entry["path"], request.channel_start, request.channel_end,
             request.distance_mpc, request.mask_enabled, request.threshold_value,
-            request.rest_freq_hz)
+            request.rest_freq_hz, request.threshold_auto)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.warning("[hi-products] failed dataset_id=%s error=%s", dataset_id, exc)
         raise HTTPException(500, str(exc)) from exc
+    record_history(  # E-06 — full params so a provenance replay reproduces
+        session, operation="hi-products", dataset_id=dataset_id,
+        endpoint="/v1/analysis/hi-products",
+        params={"channel_start": result.get("channel_start"),
+                "channel_end": result.get("channel_end"),
+                "distance_mpc": request.distance_mpc,
+                "mask_enabled": request.mask_enabled,
+                "threshold_value": request.threshold_value,
+                "threshold_auto": request.threshold_auto,
+                "rest_freq_hz": request.rest_freq_hz})
     return {"valid": True, "error": "", **result}
 
 

@@ -524,3 +524,20 @@ class TestCosmologyDistances(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_record_history_appends():
+    """E-06: record_history appends a provenance entry (best-effort, no raise)."""
+    from app.dependencies import record_history
+    from app.sessions import Session
+
+    s = Session("prov-test")
+    assert s.history == []
+    record_history(s, operation="cube-stats", dataset_id="ds1",
+                   endpoint="/v1/analysis/cube-stats", params={"k": 1})
+    assert len(s.history) == 1
+    e = s.history[0]
+    assert e["operation"] == "cube-stats"
+    assert e["dataset_id"] == "ds1"
+    assert e["params"] == {"k": 1}
+    assert e["timestamp"]

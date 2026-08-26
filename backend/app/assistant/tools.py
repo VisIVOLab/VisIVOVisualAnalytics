@@ -115,6 +115,7 @@ def _hi_products(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
         bool(params.get("mask_enabled", False)),
         float(params.get("threshold_value", 0.0)),
         params.get("rest_freq_hz"),
+        bool(params.get("threshold_auto", False)),
     )
 
 
@@ -204,6 +205,7 @@ TOOLS: dict[str, AssistantTool] = {
                     "distance_mpc": {"type": "number"},
                     "mask_enabled": {"type": "boolean"},
                     "threshold_value": {"type": "number"},
+                    "threshold_auto": {"type": "boolean"},
                     "rest_freq_hz": {"type": "number"},
                 },
                 "additionalProperties": False,

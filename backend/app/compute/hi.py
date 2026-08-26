@@ -25,7 +25,8 @@ from ..fits_dataset import ScientificFitsDataset
 from ._common import beam_area_pixels, frequency_width_to_kms, is_per_beam_bunit
 
 # N_HI [cm^-2] = _NHI_CONST · I[Jy/beam·km/s] / (θ_maj·θ_min [arcsec²]) for the
-# 21 cm line, optically thin (1.823e18 · 1.222e6·λ²… collapsed).
+# 21 cm line, optically thin. Collapses N_HI/T_B (1.823e18) × the Jy/beam→K
+# brightness-temperature conversion at ν = 1.4204 GHz (≈6.06e5) into one constant.
 _NHI_CONST = 1.104e24
 # M_HI [M_sun] = _MHI_CONST · D_Mpc² · S_int[Jy·km/s].
 _MHI_CONST = 2.356e5
@@ -39,8 +40,19 @@ def worker_hi_products(
     mask_enabled: bool = False,
     threshold_value: float = 0.0,
     rest_freq_hz: float | None = None,
+    threshold_auto: bool = False,
 ) -> dict[str, Any]:
-    """Column-density map summary + integrated HI mass from moment-0."""
+    """Column-density map summary + integrated HI mass from moment-0.
+
+    IMPORTANT (integration domain): the integrated flux and HI mass sum M0 over
+    every finite pixel in the channel range. With no mask that includes off-
+    source noise, residual continuum and any OTHER sources in the field, so the
+    integrated ``hi_mass_msun`` is a whole-field number, not a single-galaxy mass
+    — quote it only over a masked/region-restricted map. Enable ``mask_enabled``
+    (with ``threshold_auto`` for a median+3σ MAD cut, or an explicit
+    ``threshold_value``) to restrict the integral; the response reports the
+    effective mask state, the number of pixels summed, and a warning when off.
+    """
     from .moment import worker_moment  # noqa: PLC0415
 
     ds = ScientificFitsDataset(path)
@@ -79,13 +91,14 @@ def worker_hi_products(
 
     # M0 over the requested channels, via the validated moment worker.
     m0 = worker_moment(path, 0, int(channel_start), int(channel_end),
-                       bool(mask_enabled), float(threshold_value))
+                       bool(mask_enabled), float(threshold_value), bool(threshold_auto))
     m0_map = np.frombuffer(base64.b64decode(m0["data_base64"]), dtype=np.float32).astype(np.float64)
     spectral_unit = str(m0.get("spectral_axis_unit", ""))
     axis_type = str(m0.get("spectral_axis_type", ""))
 
-    # Convert the integrated intensity to Jy/beam·km/s.
-    su = spectral_unit.strip().lower()
+    # Convert the integrated intensity to Jy/beam·km/s. Normalise whitespace so
+    # astropy's spaced world unit ("m / s") is recognised, not just "m/s".
+    su = spectral_unit.strip().lower().replace(" ", "")
     if su in ("km/s", "kms"):
         to_kms = 1.0
     elif su in ("m/s", "ms"):
@@ -117,12 +130,21 @@ def worker_hi_products(
     nhi[finite] = _NHI_CONST * m0_kms[finite] / (theta_maj_arcsec * theta_min_arcsec)
     nhi_finite = nhi[finite & (nhi > 0)]
 
-    # Integrated flux (Jy·km/s) and HI mass.
+    # Integrated flux (Jy·km/s) and HI mass — summed over the pixels that
+    # survived the (optional) mask. See the domain warning below.
+    n_pixels_summed = int(finite.sum())
     s_int_jy_kms = float(np.nansum(m0_kms[finite]) / beam_area_px)
     m_hi = (
         _MHI_CONST * float(distance_mpc) ** 2 * s_int_jy_kms
         if distance_mpc and distance_mpc > 0 else None
     )
+    warnings: list[str] = []
+    if not mask_enabled:
+        warnings.append(
+            "no mask applied — integrated_flux_jy_kms and hi_mass_msun are a "
+            "WHOLE-FIELD integral (all sources + noise + residual continuum), not "
+            "a single-source mass. Enable mask_enabled/threshold_auto or restrict "
+            "to a source region before quoting the mass.")
 
     return {
         "channel_start": int(channel_start),   # effective (clamped) range used
@@ -130,6 +152,11 @@ def worker_hi_products(
         "n_channels_in_cube": nz,
         "beam_arcsec": [theta_maj_arcsec, theta_min_arcsec],
         "beam_area_pix": beam_area_px,
+        "mask_enabled": bool(mask_enabled),
+        "threshold_auto": bool(threshold_auto),
+        "threshold_used": m0.get("threshold_used"),
+        "n_pixels_summed": n_pixels_summed,
+        "warnings": warnings,
         "nhi_unit": "cm^-2",
         "nhi_min": float(np.nanmin(nhi_finite)) if nhi_finite.size else None,
         "nhi_max": float(np.nanmax(nhi_finite)) if nhi_finite.size else None,

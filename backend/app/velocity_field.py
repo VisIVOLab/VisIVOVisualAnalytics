@@ -19,6 +19,7 @@ back to unit spacing and document it.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,6 +27,13 @@ import numpy as np
 from astropy.io import fits
 
 logger = logging.getLogger("visivo.velocityfield")
+
+# R-16: above this materialised field size, the full-resolution divergence is
+# computed by streaming z-slabs from a memmapped 4-D FITS instead of loading all
+# three components + gradient temporaries into RAM (~4–5× the field). Keeps peak
+# memory O(slab·ny·nx) so 512³ fields don't OOM. Set to 0 to always stream.
+_VELOCITY_STREAM_BYTES = int(os.environ.get("VISIVO_VELOCITY_STREAM_BYTES", str(512 * 1024 ** 2)))
+_VELOCITY_SLAB = max(1, int(os.environ.get("VISIVO_VELOCITY_SLAB", "32")))
 
 
 @dataclass
@@ -118,6 +126,14 @@ def _geometry_warnings(hdr: "fits.Header", frame: str) -> list[str]:
             + ") — the velocity field may be mirror-imaged relative to the "
             "assumed +x/+y/+z orientation; verify handedness."
         )
+    # A parity flip can also be encoded in a CD/PC rotation matrix with positive
+    # (or absent) CDELT — check the sign of the spatial transform determinant.
+    det = _spatial_transform_determinant(hdr)
+    if det is not None and det < 0.0:
+        warnings.append(
+            "the spatial CD/PC transform has a negative determinant — a parity "
+            "flip (mirror) that CDELT signs alone don't reveal; verify handedness."
+        )
     if "assumed" in frame:
         warnings.append(
             "reference frame is assumed supergalactic (no VFRAME header) — "
@@ -134,6 +150,30 @@ def _safe_float(v: Any) -> float | None:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _spatial_transform_determinant(hdr: "fits.Header") -> float | None:
+    """Determinant of the 3×3 spatial CD (or PC·diag(CDELT)) matrix, or None when
+    no such matrix is present. A negative determinant is a parity flip (mirror)
+    that per-axis CDELT signs don't reveal (R-11)."""
+    def _matrix(prefix: str) -> np.ndarray | None:
+        present = any(f"{prefix}{i}_{j}" in hdr for i in (1, 2, 3) for j in (1, 2, 3))
+        if not present:
+            return None
+        m = np.zeros((3, 3), dtype=np.float64)
+        for i in (1, 2, 3):
+            for j in (1, 2, 3):
+                default = 1.0 if i == j else 0.0
+                m[i - 1, j - 1] = _safe_float(hdr.get(f"{prefix}{i}_{j}", default)) or 0.0
+        return m
+    cd = _matrix("CD")
+    if cd is not None:
+        return float(np.linalg.det(cd))
+    pc = _matrix("PC")
+    if pc is not None:
+        cdelt = np.array([_safe_float(hdr.get(f"CDELT{i}", 1.0)) or 1.0 for i in (1, 2, 3)])
+        return float(np.linalg.det(pc * cdelt[None, :]))
+    return None
 
 
 def load_multicomponent_fits(path: str, box_mpc: float | None = None) -> VelocityField:
@@ -345,6 +385,56 @@ def velocity_grid_worker(path: str, box_mpc: float | None = None,
     return payload
 
 
+def _density_streaming(path: str, box_mpc: float | None) -> dict[str, Any] | None:
+    """R-16: full-res divergence by streaming z-slabs from a memmapped 4-D FITS.
+
+    Reads each z-slab of the three components with a ±1-voxel halo so the z
+    gradient (axis 0) is a central difference in the interior and one-sided only
+    at the global boundaries — byte-for-byte identical to the in-memory
+    ``np.gradient`` result. Peak memory is O(slab·ny·nx), not O(nz·ny·nx)·(3+temps).
+
+    Returns None when the file is not a single 4-D (3, nz, ny, nx) cube (the
+    three-file loader path falls back to the in-memory worker).
+    """
+    with fits.open(path, memmap=True, mode="readonly") as hdul:
+        data = hdul[0].data
+        hdr = hdul[0].header
+        if data is None or data.ndim != 4 or data.shape[0] != 3:
+            return None
+        _, nz, ny, nx = (int(d) for d in data.shape)
+        spacing, origin, box_known = _spacing_origin((nx, ny, nz), box_mpc)
+        sx, sy, sz = (float(s) for s in spacing)
+        unit = str(hdr.get("BUNIT", "") or "").strip() or "km/s (assumed)"
+        out = np.empty((nz, ny, nx), dtype="<f4")
+        dmin, dmax = np.inf, -np.inf
+        for z0 in range(0, nz, _VELOCITY_SLAB):
+            z1 = min(z0 + _VELOCITY_SLAB, nz)
+            zlo, zhi = max(0, z0 - 1), min(nz, z1 + 1)
+            vx = np.asarray(data[0, zlo:zhi], dtype=np.float64)
+            vy = np.asarray(data[1, zlo:zhi], dtype=np.float64)
+            vz = np.asarray(data[2, zlo:zhi], dtype=np.float64)
+            div = (np.gradient(vx, sx, axis=2)
+                   + np.gradient(vy, sy, axis=1)
+                   + np.gradient(vz, sz, axis=0))
+            interior = div[z0 - zlo: z0 - zlo + (z1 - z0)]
+            out[z0:z1] = interior.astype("<f4")
+            finite = np.isfinite(interior)
+            if finite.any():
+                dmin = min(dmin, float(interior[finite].min()))
+                dmax = max(dmax, float(interior[finite].max()))
+    if not np.isfinite(dmin):
+        dmin, dmax = 0.0, 0.0
+    per = "Mpc" if box_known else "pixel"
+    return {
+        "raw_bytes": np.ascontiguousarray(out).tobytes(),
+        "nx": nx, "ny": ny, "nz": nz,
+        "spacing": [sx, sy, sz],
+        "origin": [float(o) for o in origin],
+        "div_min": float(dmin), "div_max": float(dmax),
+        "unit": f"{unit}/{per}",
+    }
+
+
 def velocity_density_worker(path: str, box_mpc: float | None = None,
                             max_dim: int = 0) -> dict[str, Any]:
     """Density proxy from the velocity divergence (δ ∝ −∇·v, linear theory).
@@ -355,15 +445,33 @@ def velocity_density_worker(path: str, box_mpc: float | None = None,
     fields, where the display LOD is too coarse to resolve the convergence
     (overdensity) / divergence (void) cores. Convergent flow (∇·v < 0) marks
     overdensities; divergent flow (∇·v > 0) marks voids / repellers.
+
+    R-16: at full resolution (max_dim == 0) a large single-file field is computed
+    out-of-core by streaming z-slabs (see ``_density_streaming``); small fields
+    and the LOD/three-file paths use the in-memory computation.
     """
+    if not (max_dim and max_dim > 0):
+        try:
+            field_bytes = 3 * os.path.getsize(path)
+        except OSError:
+            field_bytes = 0
+        if field_bytes > _VELOCITY_STREAM_BYTES:
+            streamed = _density_streaming(path, box_mpc)
+            if streamed is not None:
+                return streamed
+
     field = load_velocity_field(path, box_mpc)
     if max_dim and max_dim > 0:
         field = downsample(field, max_dim)
     sx, sy, sz = (float(s) for s in field.spacing)
     # Component arrays are indexed [z, y, x]; ∂/∂x is axis 2, ∂/∂y axis 1, ∂/∂z 0.
-    div = (np.gradient(field.vx, sx, axis=2)
-           + np.gradient(field.vy, sy, axis=1)
-           + np.gradient(field.vz, sz, axis=0))
+    # Compute in float64 (components are float32) so this matches the streaming
+    # path bit-for-bit — otherwise the same endpoint would return slightly
+    # different bits depending only on whether the field crossed the stream
+    # threshold (a reproducibility hazard).
+    div = (np.gradient(field.vx.astype(np.float64), sx, axis=2)
+           + np.gradient(field.vy.astype(np.float64), sy, axis=1)
+           + np.gradient(field.vz.astype(np.float64), sz, axis=0))
     # C-contiguous [z, y, x] little-endian float32 == vtkImageData scalar order.
     div = np.ascontiguousarray(div, dtype="<f4")
     nz, ny, nx = div.shape

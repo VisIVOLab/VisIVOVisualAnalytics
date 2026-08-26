@@ -112,7 +112,10 @@ def worker_aperture_photometry(
     # Aperture sum
     ap_stats = ApertureStats(image, aperture, sigma_clip=None)
     n_pix = int(ap_stats.sum_aper_area.value) if hasattr(ap_stats.sum_aper_area, "value") else int(np.pi * r_ap ** 2)
-    raw_sum = float(ap_stats.sum) if np.isfinite(ap_stats.sum) else float(np.nansum(image))
+    # A non-finite aperture sum means blanked/NaN pixels fall inside the aperture.
+    # Report NaN (honest) rather than substituting the WHOLE-IMAGE sum, which
+    # would be an order-of-magnitude-wrong aperture flux.
+    raw_sum = float(ap_stats.sum) if np.isfinite(ap_stats.sum) else float("nan")
     # Background-subtracted summed brightness. For Jy/beam data this is in
     # (Jy/beam)·pixel and must be divided by the beam area to become Jy; for
     # other BUNIT it is a plain sum in BUNIT·pixel.

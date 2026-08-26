@@ -226,6 +226,27 @@ def test_velocity_density_worker_signs(tmp_path):
     assert np.all(idiv < 0)                   # infall → convergent everywhere (overdensity)
 
 
+def test_r16_streaming_density_matches_in_memory(tmp_path, monkeypatch):
+    """R-16: the out-of-core (z-slab) divergence must be byte-identical to the
+    in-memory np.gradient result, and produce the correct ∇·(p)=3 value."""
+    import app.velocity_field as vf
+
+    path = _write_radial(tmp_path, n=20, sign=+1.0)
+    # In-memory (huge threshold → never streams).
+    monkeypatch.setattr(vf, "_VELOCITY_STREAM_BYTES", 1 << 60)
+    ref = vf.velocity_density_worker(path, None, 0)
+    # Force streaming (threshold 0) with a small slab that exercises the halo.
+    monkeypatch.setattr(vf, "_VELOCITY_STREAM_BYTES", 0)
+    monkeypatch.setattr(vf, "_VELOCITY_SLAB", 4)
+    ooc = vf.velocity_density_worker(path, None, 0)
+    assert ooc["nx"] == ref["nx"] and ooc["nz"] == ref["nz"]
+    a = np.frombuffer(ref["raw_bytes"], dtype="<f4")
+    b = np.frombuffer(ooc["raw_bytes"], dtype="<f4")
+    np.testing.assert_array_equal(a, b)          # byte-for-byte identical
+    assert np.allclose(b.reshape(20, 20, 20), 3.0, atol=1e-3)
+    assert ooc["div_min"] == ref["div_min"] and ooc["div_max"] == ref["div_max"]
+
+
 def test_velocity_density_bin_endpoint(tmp_path):
     import os
     os.environ.setdefault("VISIVO_TOKEN", "test-token-visivo-12345")
