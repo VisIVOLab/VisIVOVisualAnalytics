@@ -81,6 +81,8 @@ add_executable(VisIVOTests
     test_backend_contract.cpp
     TestRemoteSliceCache.h
     test_remote_slice_cache.cpp
+    TestLinkedWindowRegistry.h
+    test_linked_window_registry.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

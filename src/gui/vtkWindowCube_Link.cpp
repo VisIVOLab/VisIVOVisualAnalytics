@@ -40,7 +40,7 @@
 using namespace Qt::StringLiterals;
 
 // Registry of every open cube viewer (QPointer auto-nulls on destruction).
-QList<QPointer<vtkWindowCube>> vtkWindowCube::s_cubeWindows;
+LinkedWindowRegistry<vtkWindowCube> vtkWindowCube::s_registry;
 
 namespace {
 // Centre and diagonal of a cube's displayed data bounds. Returns false if the
@@ -136,7 +136,7 @@ void vtkWindowCube::setLinkViews(bool on)
     // Push this viewer's current camera + channel to the other linked viewers so
     // they snap into alignment immediately (colour is left to adopt on the next
     // change, to avoid silently clobbering a peer's chosen colour map).
-    const auto windows = s_cubeWindows;   // snapshot — peers may mutate the list
+    const auto windows = s_registry.snapshot();   // snapshot — peers may mutate the list
     int peers = 0;
     for (const auto &p : windows)
         if (p && p != this && p->m_linkViews)
@@ -195,7 +195,7 @@ void vtkWindowCube::broadcastLinkedCamera()
                                   (foc[2] - center[2]) / diag };
     const double angle = cam->GetViewAngle();
 
-    const auto windows = s_cubeWindows;   // snapshot — peer calls may mutate the list
+    const auto windows = s_registry.snapshot();   // snapshot — peer calls may mutate the list
     for (const auto &p : windows)
         // STEP6-P5: a peer with its "camera" facet off has opted out of camera sync.
         if (p && p != this && p->m_linkViews && p->m_linkCamera)
@@ -247,7 +247,7 @@ void vtkWindowCube::broadcastLinkedChannel(int channel0)
     const int maxIdx = std::max(0, this->remoteSliceCount() - 1);
     const int clamped = std::clamp(channel0, 0, maxIdx);
     const double fraction = maxIdx > 0 ? double(clamped) / double(maxIdx) : 0.0;
-    const auto windows = s_cubeWindows;   // snapshot
+    const auto windows = s_registry.snapshot();   // snapshot
     for (const auto &p : windows)
         // §5.5: a peer with its "channel" facet off has opted out of channel sync.
         if (p && p != this && p->m_linkViews && p->m_linkChannel)
@@ -330,7 +330,7 @@ void vtkWindowCube::broadcastLinkedColour()
     const QString name = this->m_activeColorMapName;
     const int mode = static_cast<int>(this->m_volumeScaleMode);
     const double gamma = this->m_volumeScaleGamma;
-    const auto windows = s_cubeWindows;   // snapshot
+    const auto windows = s_registry.snapshot();   // snapshot
     for (const auto &p : windows)
         // §5.5: a peer with its "LUT" facet off has opted out of colour sync.
         if (p && p != this && p->m_linkViews && p->m_linkLut)
@@ -376,7 +376,7 @@ void vtkWindowCube::broadcastLinked2DCamera(const double dataCenterXY[2], double
         return;
     if (!(worldHeight > 0.))
         return;
-    const auto windows = s_cubeWindows;   // snapshot — peers may mutate the list
+    const auto windows = s_registry.snapshot();   // snapshot — peers may mutate the list
     for (const auto &p : windows)
         if (p && p != this && p->m_linkViews && p->m_linkCamera && this->sameSpatialGrid2D(p))
             p->applyLinked2DCamera(dataCenterXY, worldHeight);
@@ -409,7 +409,7 @@ void vtkWindowCube::broadcastLinked2DSliceLut()
     const int mode = static_cast<int>(this->m_sliceScaleMode);
     const double gamma = this->m_sliceScaleGamma;
     const bool invert = this->m_sliceInvert;
-    const auto windows = s_cubeWindows;   // snapshot
+    const auto windows = s_registry.snapshot();   // snapshot
     for (const auto &p : windows)
         if (p && p != this && p->m_linkViews && p->m_linkLut)
             p->applyLinked2DSliceLut(name, mode, gamma, invert);
@@ -457,7 +457,7 @@ void vtkWindowCube::broadcastLinked2DImageLut(const QString &stem, const QString
     // window-independent stem. Range is NOT shared (like the slice/volume paths), so no grid gate.
     if (!this->m_linkViews || !this->m_linkLut || this->m_applyingLinkedUpdate || stem.isEmpty())
         return;
-    const auto windows = s_cubeWindows;   // snapshot
+    const auto windows = s_registry.snapshot();   // snapshot
     for (const auto &p : windows)
         if (p && p != this && p->m_linkViews && p->m_linkLut)
             p->applyLinked2DImageLut(stem, name, scaleMode, gamma, invert);
@@ -509,7 +509,7 @@ void vtkWindowCube::broadcastLinkedBlendMode()
     if (!this->m_linkViews)
         return;
     const int idx = this->m_volumeBlendMode;
-    const auto windows = s_cubeWindows;   // snapshot
+    const auto windows = s_registry.snapshot();   // snapshot
     for (const auto &p : windows)
         if (p && p != this && p->m_linkViews)
             p->applyLinkedBlendMode(idx);

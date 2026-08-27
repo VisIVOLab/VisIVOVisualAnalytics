@@ -10,6 +10,7 @@
 #include "TestAnalysisParamStore.h"
 #include "TestBackendContract.h"
 #include "TestRemoteSliceCache.h"
+#include "TestLinkedWindowRegistry.h"
 
 #include <QCoreApplication>
 #include <QTest>
@@ -26,5 +27,6 @@ int main(int argc, char *argv[])
     { TestAnalysisParamStore t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendContract  t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteSliceCache t; status |= QTest::qExec(&t, argc, argv); }
+    { TestLinkedWindowRegistry t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }

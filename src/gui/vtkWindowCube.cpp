@@ -2569,7 +2569,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             u"cube viewers that have Link Views enabled — for side-by-side comparison."_s);
     QObject::connect(m_actLinkViews, &QAction::toggled,
                      this, &vtkWindowCube::setLinkViews);
-    vtkWindowCube::s_cubeWindows.append(this);
+    vtkWindowCube::s_registry.add(this);
 
     // REGIONS group
     ui->menuTools->addSeparator();
@@ -2828,7 +2828,7 @@ vtkWindowCube::~vtkWindowCube()
     this->remove3dPickObserver();
     // Leave the linked-views group and drop the camera observer from the exact
     // interactor it was added to (weak ptr → only if still alive).
-    vtkWindowCube::s_cubeWindows.removeAll(this);
+    vtkWindowCube::s_registry.remove(this);
     if (this->m_cubeCameraInteractor) {
         if (this->m_cubeCameraObserverTag != 0)
             this->m_cubeCameraInteractor->RemoveObserver(this->m_cubeCameraObserverTag);

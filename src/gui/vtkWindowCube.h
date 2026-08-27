@@ -4,6 +4,7 @@
 #include "CatalogueOverlayUtils.h"
 #include "CubeOpenPreviewTask.h"
 #include "LutScale.h"
+#include "LinkedWindowRegistry.h"
 #include "RemoteSliceCache.h"
 
 // Forward-declared here; full headers are included in vtkWindowCube.cpp where
@@ -1270,7 +1271,7 @@ protected:
 
     // Linked views (F3): sync camera / channel / colour-scale across all open
     // cube viewers that have "Link views" enabled (vtkWindowCube_Link.cpp).
-    static QList<QPointer<vtkWindowCube>> s_cubeWindows;   // every open cube viewer
+    static LinkedWindowRegistry<vtkWindowCube> s_registry;   // every open cube viewer (E-04 step 2)
     bool m_linkViews{ false };
     // §5.5: Linked is a MASTER with per-facet toggles rendered as two chips in the header
     // ("channel" · "LUT"). Each gates one propagation kind; both grey out when the master
