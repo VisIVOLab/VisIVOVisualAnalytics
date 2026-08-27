@@ -414,37 +414,21 @@ QString vtkWindowCube::remoteSliceCacheKey(int sliceIndex) const
             .arg(this->clampRemoteSliceIndex(sliceIndex));
 }
 
-void vtkWindowCube::touchRemoteSliceCacheKey(const QString &key)
-{
-    this->remoteSliceCacheLru.removeAll(key);
-    this->remoteSliceCacheLru.append(key);
-}
-
 void vtkWindowCube::cacheRemoteSliceResult(const RemoteCubeSliceResult &result)
 {
-    if (!result.valid || !result.imageData) {
-        return;
-    }
-
-    const QString key = this->remoteSliceCacheKey(result.index);
-    this->remoteSliceCache.insert(key, result);
-    this->touchRemoteSliceCacheKey(key);
-    while (this->remoteSliceCacheLru.size() > remoteSliceCacheCapacity) {
-        const QString evictedKey = this->remoteSliceCacheLru.takeFirst();
-        this->remoteSliceCache.remove(evictedKey);
-    }
+    // Delegate to RemoteSliceCache (E-04 step 1): it applies the valid/imageData
+    // guard, refreshes recency, and evicts past capacity — verbatim behaviour.
+    this->remoteSliceCache.insert(this->remoteSliceCacheKey(result.index), result);
 }
 
 bool vtkWindowCube::tryApplyCachedRemoteSlice(int sliceIndex)
 {
     const QString key = this->remoteSliceCacheKey(sliceIndex);
-    const auto it = this->remoteSliceCache.constFind(key);
-    if (it == this->remoteSliceCache.cend()) {
+    const RemoteCubeSliceResult *cached = this->remoteSliceCache.find(key);
+    if (!cached) {
         return false;
     }
-
-    this->touchRemoteSliceCacheKey(key);
-    this->applyRemoteSliceResult(it.value());
+    this->applyRemoteSliceResult(*cached);
     this->clearPersistentStatusMessage();
     return true;
 }

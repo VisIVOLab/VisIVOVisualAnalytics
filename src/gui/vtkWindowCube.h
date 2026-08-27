@@ -4,6 +4,7 @@
 #include "CatalogueOverlayUtils.h"
 #include "CubeOpenPreviewTask.h"
 #include "LutScale.h"
+#include "RemoteSliceCache.h"
 
 // Forward-declared here; full headers are included in vtkWindowCube.cpp where
 // they are constructed and their methods are called.
@@ -1546,16 +1547,17 @@ protected:
                                                          std::numeric_limits<double>::quiet_NaN() };
     std::array<int, 2> lastSliceOverlayViewportSize{ -1, -1 };
     unsigned long lastSliceOverlayCameraMTime{ 0 };   ///< re-run overlay on 2D zoom/pan
-    QHash<QString, RemoteCubeSliceResult> remoteSliceCache;
-    QList<QString> remoteSliceCacheLru;
-    QSet<QString> remoteSliceFetchesInFlight;
+    // LRU cache of decoded remote slices (E-04 step 1: RemoteSliceCache owns the
+    // cache/LRU/capacity that were three inline members). remoteSliceFetchesInFlight
+    // is fetch-orchestration state and deliberately stays on the window.
     static constexpr int remoteSliceCacheCapacity = 8;
+    RemoteSliceCache<RemoteCubeSliceResult> remoteSliceCache{ remoteSliceCacheCapacity };
+    QSet<QString> remoteSliceFetchesInFlight;
     void updateSlice();
     void updateRemoteSliceDragFeedback(int sliceIndex);
     void requestRemoteSlice(int sliceIndex);
     void applyRemoteSliceResult(const RemoteCubeSliceResult &result);
     QString remoteSliceCacheKey(int sliceIndex) const;
-    void touchRemoteSliceCacheKey(const QString &key);
     void cacheRemoteSliceResult(const RemoteCubeSliceResult &result);
     bool tryApplyCachedRemoteSlice(int sliceIndex);
     void startRemoteSliceFetch(int sliceIndex, bool isPrefetch, int requestId = 0);

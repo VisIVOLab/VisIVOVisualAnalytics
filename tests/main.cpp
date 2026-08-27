@@ -9,6 +9,7 @@
 #include "TestImageLod.h"
 #include "TestAnalysisParamStore.h"
 #include "TestBackendContract.h"
+#include "TestRemoteSliceCache.h"
 
 #include <QCoreApplication>
 #include <QTest>
@@ -24,5 +25,6 @@ int main(int argc, char *argv[])
     { TestImageLod         t; status |= QTest::qExec(&t, argc, argv); }
     { TestAnalysisParamStore t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendContract  t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRemoteSliceCache t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }
