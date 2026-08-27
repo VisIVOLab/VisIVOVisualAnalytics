@@ -122,6 +122,7 @@
     "POST /v1/vbt/subset",
     "POST /v1/velocity/basins_bin",
     "POST /v1/velocity/density_bin",
+    "POST /v1/velocity/difference_bin",
     "POST /v1/velocity/grid_bin",
     "POST /v1/velocity/open",
     "POST /v1/velocity/subgrid_bin",

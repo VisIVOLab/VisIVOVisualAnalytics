@@ -10,6 +10,7 @@ Heavy/regenerable outputs are git-ignored; reproduce via the commands below.
 | Benchmark (out-of-core, compute-side) | [BENCHMARK.md](BENCHMARK.md) | `benchmark.py` | `out/benchmark.{md,csv}` |
 | **§5 lasso validation** vs SoFiA-2 | [README.md](README.md) | `lasso_vs_sofia.py` (+ `sofia_hgc44.par` via Docker) | `out/metrics.{md,csv}`, `out/source_NN.png` |
 | §5 lasso faint-source recovery (λv/nσ) | [README.md](README.md#interactive-recovery-of-faint-sources) | `lasso_sensitivity.py` | `out/sensitivity.png` |
+| §5 lasso seed (click) robustness | [README.md](README.md#seed-click-robustness) | `lasso_seed_robustness.py` | `out/seed_robustness.{md,csv,png}` |
 | **Figure 3** panels b/c/e/f (lasso on real HI galaxy) | — | `figure3_lasso_hgc44.py` | `out/figure3_lasso.png` |
 | **Figure 7** (cosmic flows: streamlines + basins) | [velocity_field.md](velocity_field.md) | `velocity_field_demo.py` | `out/velocity_field.png` |
 

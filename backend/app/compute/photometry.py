@@ -128,7 +128,7 @@ def worker_aperture_photometry(
     # (off by the beam area, 10–50×).
     # R-05: use the per-channel beam when the cube carries a BEAMS table.
     beam = dataset.beam_for_channel(resolved_channel)
-    beam_area_px = beam_area_pixels(beam.major, beam.minor, pixel_scale_arcsec)
+    beam_area_px = beam_area_pixels(beam.major, beam.minor, pixel_scale_arcsec, dataset.spatial_pixel_area_arcsec2())
     per_beam = is_per_beam_bunit(dataset.bunit)
     flux_jy: float | None = (flux_summed / beam_area_px) if (per_beam and beam_area_px) else None
     flux_unit = f"{dataset.bunit}*pixel" if dataset.bunit else "pixel_sum"
@@ -194,29 +194,61 @@ def _deconvolve_gaussian_beam(
     major_pix: float, minor_pix: float, pa_rad: float,
     beam_major_pix: float, beam_minor_pix: float, beam_pa_rad: float,
 ) -> tuple[float | None, float | None, float | None]:
-    """Deconvolve a beam from a fitted Gaussian (all sizes in pixels).
+    """Deconvolve a beam from a fitted Gaussian (all FWHM sizes in pixels).
 
-    Returns (deconv_major, deconv_minor, deconv_pa_rad) or (None, None, None)
-    if the source is unresolved.
+    Full PA-aware Gaussian deconvolution (Wild 1970; the AIPS/CASA/miriad
+    formula), NOT a per-axis quadrature subtraction — so when the beam PA differs
+    from the source PA the deconvolved major/minor/PA are correct. Returns
+    (deconv_major_pix, deconv_minor_pix, deconv_pa_rad), or (None, None, None)
+    when the source is unresolved (the beam is at least as large as the source).
     """
-    # Convert to Gaussian standard deviation = FWHM / (2*sqrt(2*ln2))
-    f2s = 1.0 / (2.0 * np.sqrt(2.0 * np.log(2.0)))
-    s_src_maj = major_pix * f2s
-    s_src_min = minor_pix * f2s
-    s_bm_maj  = beam_major_pix * f2s
-    s_bm_min  = beam_minor_pix * f2s
+    # Work directly with FWHM² projected onto x/y (Wild's α, β, γ). Constant
+    # scale factors cancel, so FWHM in, FWHM out.
+    a1c, a1s = major_pix * np.cos(pa_rad), major_pix * np.sin(pa_rad)
+    b1c, b1s = minor_pix * np.cos(pa_rad), minor_pix * np.sin(pa_rad)
+    a2c, a2s = beam_major_pix * np.cos(beam_pa_rad), beam_major_pix * np.sin(beam_pa_rad)
+    b2c, b2s = beam_minor_pix * np.cos(beam_pa_rad), beam_minor_pix * np.sin(beam_pa_rad)
 
-    # Quadratic deconvolution (approximate, Condon 1997)
-    d_maj2 = s_src_maj ** 2 - s_bm_maj ** 2
-    d_min2 = s_src_min ** 2 - s_bm_min ** 2
+    alpha = (a1c ** 2 + b1s ** 2) - (a2c ** 2 + b2s ** 2)
+    beta = (a1s ** 2 + b1c ** 2) - (a2s ** 2 + b2c ** 2)
+    gamma = 2.0 * ((minor_pix ** 2 - major_pix ** 2) * np.sin(pa_rad) * np.cos(pa_rad)
+                   - (beam_minor_pix ** 2 - beam_major_pix ** 2)
+                   * np.sin(beam_pa_rad) * np.cos(beam_pa_rad))
 
-    if d_maj2 < 0 or d_min2 < 0:
-        return None, None, None   # unresolved
+    s = alpha + beta
+    t = float(np.sqrt((alpha - beta) ** 2 + gamma ** 2))
+    if alpha < 0.0 or beta < 0.0 or s <= t:
+        return None, None, None   # unresolved / point source (incl. source == beam)
 
-    deconv_maj_pix = np.sqrt(d_maj2) / f2s
-    deconv_min_pix = np.sqrt(d_min2) / f2s
-    deconv_pa_rad  = pa_rad   # simplified: keep fitted PA
-    return float(deconv_maj_pix), float(deconv_min_pix), float(deconv_pa_rad)
+    deconv_maj_pix = float(np.sqrt(0.5 * (s + t)))
+    deconv_min_pix = float(np.sqrt(0.5 * (s - t)))
+    if abs(gamma) + abs(alpha - beta) == 0.0:
+        deconv_pa_rad = 0.0
+    else:
+        deconv_pa_rad = 0.5 * float(np.arctan2(-gamma, alpha - beta))
+    return deconv_maj_pix, deconv_min_pix, deconv_pa_rad
+
+
+def _beam_pa_in_pixel_frame(celestial, ra_deg: float, dec_deg: float,
+                            bpa_sky_deg: float) -> float:
+    """Convert a beam position angle (BPA, degrees East of North on the sky) to
+    the fitter's PIXEL frame (radians, CCW from +x), using the actual WCS.
+
+    Derives the pixel-space directions of celestial North and East by projecting
+    small sky offsets through the WCS, so it is correct for rotated/skewed/parity-
+    flipped images — not just north-up ones. The fitted source PA is already in
+    this pixel frame, so both go into the deconvolution consistently.
+    """
+    d = 1.0 / 3600.0  # 1-arcsec offsets
+    p0 = celestial.all_world2pix([[ra_deg, dec_deg]], 0)[0]
+    p_n = celestial.all_world2pix([[ra_deg, dec_deg + d]], 0)[0]
+    cosd = max(1e-6, abs(np.cos(np.radians(dec_deg))))
+    p_e = celestial.all_world2pix([[ra_deg + d / cosd, dec_deg]], 0)[0]
+    ang_north = np.arctan2(p_n[1] - p0[1], p_n[0] - p0[0])
+    ang_east = np.arctan2(p_e[1] - p0[1], p_e[0] - p0[0])
+    # Handedness: is East +90° (CCW) or −90° (CW) from North in pixel space?
+    sign = 1.0 if np.sin(ang_east - ang_north) >= 0 else -1.0
+    return float(ang_north + sign * np.radians(bpa_sky_deg))
 
 
 def worker_gauss_fit_2d(
@@ -361,7 +393,7 @@ def worker_gauss_fit_2d(
     )
 
     beam = dataset.beam_for_channel(resolved_channel)  # R-05: per-channel beam when present
-    beam_area_px = beam_area_pixels(beam.major, beam.minor, pixel_scale)
+    beam_area_px = beam_area_pixels(beam.major, beam.minor, pixel_scale, dataset.spatial_pixel_area_arcsec2())
     per_beam = is_per_beam_bunit(dataset.bunit)
     # ``integrated_flux`` is ALWAYS the raw Gaussian integral in
     # ``integrated_unit`` (BUNIT·pixel²); only ``integrated_flux_jy`` is Jy.
@@ -380,20 +412,24 @@ def worker_gauss_fit_2d(
         (xx.ravel(), yy.ravel()), *popt)
     fit_rms = float(np.sqrt(np.mean(residuals ** 2)))
 
-    # Beam deconvolution (optional)
+    # Beam deconvolution (optional) — PA-aware (Wild 1970).
     deconv_major: float | None = None
     deconv_minor: float | None = None
+    deconv_pa_deg: float | None = None
     if beam.major is not None and beam.minor is not None:
         bm_maj_pix = (beam.major * 3600.0) / pixel_scale   # deg → arcsec → pix
         bm_min_pix = (beam.minor * 3600.0) / pixel_scale
-        bm_pa_rad  = float(np.radians(beam.pa or 0.0))
-        dm, dn, _ = _deconvolve_gaussian_beam(
+        # Convert BPA (sky, E of N) into the fitter's pixel frame via the WCS so
+        # it's consistent with the source's fitted PA (both CCW from +x).
+        bm_pa_rad  = _beam_pa_in_pixel_frame(celestial, ra_deg, dec_deg, beam.pa or 0.0)
+        dm, dn, dpa = _deconvolve_gaussian_beam(
             major_pix, minor_pix, pa_rad,
             bm_maj_pix, bm_min_pix, bm_pa_rad,
         )
         if dm is not None:
             deconv_major = dm * pixel_scale
             deconv_minor = dn * pixel_scale
+            deconv_pa_deg = float(np.degrees(dpa) % 180.0)
 
     return {
         "peak_jy_beam": float(amp_fit),
@@ -415,6 +451,7 @@ def worker_gauss_fit_2d(
         "pa_err_deg": pa_err_deg,
         "deconvolved_major_arcsec": deconv_major,
         "deconvolved_minor_arcsec": deconv_minor,
+        "deconvolved_pa_deg": deconv_pa_deg,
         "fit_rms": fit_rms,
         "center_pix_x": float(x0_fit),
         "center_pix_y": float(y0_fit),

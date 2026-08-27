@@ -224,7 +224,17 @@ class ScientificFitsDataset:
     @staticmethod
     def squeeze_to_3d(data: np.ndarray) -> np.ndarray:
         arr = np.squeeze(data)
+        # np.squeeze already dropped all degenerate (size-1) axes. If we still have
+        # >3 dims, a *non-degenerate* extra axis remains (e.g. a real multi-plane
+        # STOKES/FREQ axis): taking arr[0] keeps only plane 0 with no guarantee it
+        # is Stokes I (R-10). Warn loudly rather than silently picking a plane.
         while arr.ndim > 3:
+            logger.warning(
+                "squeeze_to_3d: dropping a non-degenerate leading axis of size %d "
+                "(keeping index 0 only) — remaining shape %s; if this is a STOKES "
+                "axis the plane may not be Stokes I.",
+                arr.shape[0], arr.shape,
+            )
             arr = arr[0]
         return arr
 
@@ -583,11 +593,12 @@ class ScientificFitsDataset:
         }
 
     def spatial_pixel_scale_arcsec(self) -> float:
-        """Return the mean spatial pixel scale in arcseconds.
-
-        Uses astropy.wcs.utils.proj_plane_pixel_scales on the celestial
-        sub-WCS when available (handles rotated and skewed projections).
-        Falls back to |CDELT1| × 3600 in degrees when WCS is not usable.
+        """Representative LINEAR spatial pixel scale in arcseconds (mean of the two
+        celestial axis scales) — for lengths: aperture radii, box sizes, fitted
+        FWHM, PV path length, ℓ. For the pixel SOLID ANGLE (flux / beam-area /
+        N_HI / M_HI) use ``spatial_pixel_area_arcsec2()`` instead, which is exact
+        even for skewed WCS. Uses proj_plane_pixel_scales on the celestial
+        sub-WCS; falls back to |CDELT1| × 3600 when WCS is unusable.
         """
         if self.wcs is not None:
             try:
@@ -595,14 +606,32 @@ class ScientificFitsDataset:
                 celestial = self.wcs.celestial
                 if celestial is not None and celestial.pixel_n_dim >= 2:
                     scales_deg = proj_plane_pixel_scales(celestial)
-                    # proj_plane_pixel_scales returns values in the same units
-                    # as the WCS axes; celestial sub-WCS always has angular units
-                    # (degrees by default from astropy).
                     return float(np.mean(np.abs(scales_deg))) * 3600.0
             except Exception as exc:
                 logger.warning("[fits] proj_plane_pixel_scales failed for path=%s: %s. Using CDELT1 fallback.", self.path, exc)
         cdelt1_deg = abs(float(self.header.get("CDELT1", 1.0)))
         return cdelt1_deg * 3600.0
+
+    def spatial_pixel_area_arcsec2(self) -> float:
+        """EXACT pixel solid angle in arcsec² — the quantity flux/N_HI/M_HI need.
+
+        Uses astropy ``proj_plane_pixel_area`` on the celestial sub-WCS, which is
+        the true parallelogram area (|det| of the local CD matrix) and so is
+        correct for non-square AND skewed/rotated pixels. Falls back to
+        |CDELT1·CDELT2|·3600² from the header when the WCS is unusable.
+        """
+        if self.wcs is not None:
+            try:
+                from astropy.wcs.utils import proj_plane_pixel_area
+                celestial = self.wcs.celestial
+                if celestial is not None and celestial.pixel_n_dim >= 2:
+                    # Returns deg² for angular-unit WCS.
+                    return float(abs(proj_plane_pixel_area(celestial))) * 3600.0 * 3600.0
+            except Exception as exc:
+                logger.warning("[fits] proj_plane_pixel_area failed for path=%s: %s. Using CDELT fallback.", self.path, exc)
+        c1 = abs(float(self.header.get("CDELT1", 1.0)))
+        c2 = abs(float(self.header.get("CDELT2", c1)))
+        return c1 * c2 * 3600.0 * 3600.0
 
     # ── Stokes axis detection ─────────────────────────────────────────────────
 

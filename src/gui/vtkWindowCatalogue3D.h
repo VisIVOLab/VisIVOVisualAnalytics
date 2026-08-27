@@ -202,6 +202,10 @@ private:
     // the local computation), otherwise calls the backend batch endpoint.
     void triggerCosmologyUpdate();
     void onCosmologyFinished();
+    // Recompute every source's scene position from entryDistanceMpc() (which now
+    // honours schema.distanceMode) and rebuild the scene/labels. Does NOT touch the
+    // per-entry distanceMpc overrides — callers clear those first when they must.
+    void recomputeScenePositionsAndRebuild();
 
     // ── Data ────────────────────────────────────────────────────────────────
     Ui::vtkWindowCatalogue3D *ui;
@@ -309,6 +313,7 @@ private:
     QPointer<QComboBox> comboSizeMode;
     QPointer<QComboBox> comboFrame;
     QPointer<QComboBox> comboCosmology;
+    QPointer<QComboBox> comboDistanceMode;     // R-14: real-space vs redshift-space
     QPointer<QCheckBox> chkShowAxes;
     QPointer<QCheckBox> chkShowBoundingBox;
     QPointer<QCheckBox> chkShowShells;

@@ -10,7 +10,9 @@
     "X-Visivo-Bbox",
     "X-Visivo-Bunit",
     "X-Visivo-Byte-Order",
+    "X-Visivo-Calibrated",
     "X-Visivo-Components",
+    "X-Visivo-Density-Factor",
     "X-Visivo-Depth",
     "X-Visivo-Div-Max",
     "X-Visivo-Div-Min",
@@ -40,6 +42,7 @@
     "X-Visivo-Speed-Min",
     "X-Visivo-Token",
     "X-Visivo-Unit",
+    "X-Visivo-Warnings",
     "X-Visivo-Width"
   ]
 }

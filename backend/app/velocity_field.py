@@ -35,6 +35,21 @@ logger = logging.getLogger("visivo.velocityfield")
 _VELOCITY_STREAM_BYTES = int(os.environ.get("VISIVO_VELOCITY_STREAM_BYTES", str(512 * 1024 ** 2)))
 _VELOCITY_SLAB = max(1, int(os.environ.get("VISIVO_VELOCITY_SLAB", "32")))
 
+# Planck18 for the linear-theory density calibration δ ≈ −∇·v / (f·a·H0). At
+# z ≈ 0 (a=1): f = Ωm^0.55 (growth rate), H0 in km/s/Mpc. A client can turn the
+# raw ∇·v [(km/s)/Mpc] grid into a dimensionless overdensity by multiplying by
+# −``linear_density_factor``. We do NOT bake it into the grid (the viewer expects
+# ∇·v), we just expose the factor + mark the grid uncalibrated (R-15-style honesty).
+_PLANCK18_OM = 0.3111
+_PLANCK18_H0 = 67.66
+_GROWTH_F = _PLANCK18_OM ** 0.55
+
+
+def _linear_density_factor(box_known: bool) -> float | None:
+    """1/(f·H0) [Mpc·s/km] so δ ≈ −∇·v · factor. None when the box (hence the
+    Mpc spacing that makes ∇·v physical) is unknown."""
+    return (1.0 / (_GROWTH_F * _PLANCK18_H0)) if box_known else None
+
 
 @dataclass
 class VelocityField:
@@ -359,6 +374,72 @@ def velocity_subgrid_worker(path: str, x0: int, x1: int, y0: int, y1: int,
     return payload
 
 
+def velocity_difference_worker(path_a: str, path_b: str,
+                               box_mpc: float | None = None,
+                               max_dim: int = 0,
+                               box_mpc_b: float | None = None) -> dict[str, Any]:
+    """Multi-field compare (R-20): the magnitude of the vector difference of two
+    velocity fields, |v_a − v_b|, per cell — e.g. CF3 vs CF4, or a reconstruction
+    vs a simulation. Returns a scalar grid (little-endian float32, vtkImageData
+    order) + its range, matching the velocity_density_worker payload shape so the
+    viewer can render it with the existing machinery. The two fields must share a
+    grid shape; ``max_dim`` block-averages both first (LOD). ``box_mpc``/``box_mpc_b``
+    are the two fields' physical box sizes (each may be opened with its own).
+
+    Memory: like velocity_density_worker this loads BOTH full fields (3 components
+    each) plus float64 difference temporaries before any ``max_dim`` block-average,
+    so peak RSS scales with the full grid, not the LOD. For very large (≥256³)
+    reconstructions run it out-of-process (it already does, via the pool) and pass
+    a bounding ``max_dim``; a streaming/slab path is deferred (see R-20 backlog)."""
+    fa = load_velocity_field(path_a, box_mpc)
+    fb = load_velocity_field(path_b, box_mpc_b)
+    if fa.shape != fb.shape:
+        raise ValueError(
+            f"velocity fields have different shapes {fa.shape} vs {fb.shape}; "
+            "compare requires the same grid.")
+    warnings: list[str] = list(fa.warnings) + list(fb.warnings)
+    # The cell-wise diff is index-based, so it is only physically meaningful when
+    # both fields cover the same physical box — a different box_mpc means cell
+    # [i,j,k] sits at a different Mpc position in each field. Warn (don't reject:
+    # a header-less field legitimately falls back to box-unknown).
+    if (box_mpc or None) != (box_mpc_b or None):
+        warnings.append(
+            f"the two fields were opened with different box sizes "
+            f"({box_mpc} vs {box_mpc_b} Mpc); a cell-wise difference compares "
+            "different physical positions.")
+    # A cell-wise |v_a − v_b| is only meaningful if both fields are in the same
+    # velocity unit and frame — warn loudly when they differ (the diff is then a
+    # mix of units/orientations, not a physical velocity difference).
+    if fa.unit != fb.unit:
+        warnings.append(f"the two fields have different units ({fa.unit!r} vs "
+                        f"{fb.unit!r}); the difference mixes units.")
+    if fa.frame != fb.frame:
+        warnings.append(f"the two fields have different frames ({fa.frame!r} vs "
+                        f"{fb.frame!r}); verify they share an orientation.")
+    if max_dim and max_dim > 0:
+        fa = downsample(fa, max_dim)
+        fb = downsample(fb, max_dim)
+    dvx = fa.vx.astype(np.float64) - fb.vx.astype(np.float64)
+    dvy = fa.vy.astype(np.float64) - fb.vy.astype(np.float64)
+    dvz = fa.vz.astype(np.float64) - fb.vz.astype(np.float64)
+    diff = np.sqrt(dvx * dvx + dvy * dvy + dvz * dvz)
+    out = np.ascontiguousarray(diff, dtype="<f4")
+    nz, ny, nx = out.shape
+    finite = np.isfinite(out)
+    dmin = float(out[finite].min()) if finite.any() else 0.0
+    dmax = float(out[finite].max()) if finite.any() else 0.0
+    dmean = float(out[finite].mean()) if finite.any() else 0.0
+    return {
+        "raw_bytes": out.tobytes(),
+        "nx": int(nx), "ny": int(ny), "nz": int(nz),
+        "spacing": list(fa.spacing),
+        "origin": [float(o) for o in fa.origin],
+        "diff_min": dmin, "diff_max": dmax, "diff_mean": dmean,
+        "unit": fa.unit,
+        "warnings": warnings,
+    }
+
+
 def velocity_grid_worker(path: str, box_mpc: float | None = None,
                          max_dim: int = 0) -> dict[str, Any]:
     """Load + return the binary grid payload (for /v1/velocity/grid_bin).
@@ -432,6 +513,10 @@ def _density_streaming(path: str, box_mpc: float | None) -> dict[str, Any] | Non
         "origin": [float(o) for o in origin],
         "div_min": float(dmin), "div_max": float(dmax),
         "unit": f"{unit}/{per}",
+        "calibrated": False,
+        "density_note": ("raw velocity divergence ∇·v; linear-theory overdensity "
+                         "δ ≈ -∇·v · linear_density_factor (Planck18 f·H0)"),
+        "linear_density_factor": _linear_density_factor(box_known),
     }
 
 
@@ -488,6 +573,10 @@ def velocity_density_worker(path: str, box_mpc: float | None = None,
         "div_min": dmin,
         "div_max": dmax,
         "unit": f"{field.unit}/{per}",
+        "calibrated": False,
+        "density_note": ("raw velocity divergence ∇·v; linear-theory overdensity "
+                         "δ ≈ -∇·v · linear_density_factor (Planck18 f·H0)"),
+        "linear_density_factor": _linear_density_factor(field.box_known),
     }
 
 

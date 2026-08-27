@@ -149,6 +149,43 @@ void vtkWindowCatalogue3D::applyFrameToEntries()
     }
 }
 
+void vtkWindowCatalogue3D::recomputeScenePositionsAndRebuild()
+{
+    // Recompute each source's Cartesian scene position from its (mode-aware) radial
+    // distance, then rebuild the scene + labels from scratch. Shared by the local
+    // Planck18 cosmology path and the R-14 distance-mode toggle.
+    constexpr double pi = 3.14159265358979323846;
+    for (auto &e : this->entries) {
+        const double d = Catalogue3DParser::detail::entryDistanceMpc(e, this->schema);
+        const double ra  = e.raDeg  * pi / 180.0;
+        const double dec = e.decDeg * pi / 180.0;
+        e.sceneX = d * std::cos(dec) * std::cos(ra);
+        e.sceneY = d * std::cos(dec) * std::sin(ra);
+        e.sceneZ = d * std::sin(dec);
+    }
+    this->applyFrameToEntries();
+    this->renderer->RemoveAllViewProps();
+    this->morphologyNames.clear();
+    this->morphologyIndexOf.clear();
+    this->labelActors.clear();
+    this->shellActors.clear();
+    this->mappedPositions.clear();
+    this->hoveredIndex  = -1;
+    this->selectedIndex = -1;
+    if (!this->entries.empty()) {
+        this->buildScene();
+        this->buildLabels();
+    }
+    // buildScene() rebuilds the redshift shells hidden; reapply the user's toggle
+    // so a checked "Show shells" survives a cosmology / distance-mode recompute.
+    if (this->chkShowShells && this->chkShowShells->isChecked())
+        this->toggleShells(true);
+    // The table's Distance / X / Y / Z columns derive from the (now recomputed)
+    // positions — refresh it so it doesn't show stale distances after the recompute.
+    this->refreshCatalogueTable();
+    this->renderWindow->Render();
+}
+
 void vtkWindowCatalogue3D::triggerCosmologyUpdate()
 {
     // Cartesian (.speck / XYZ) catalogues have explicit positions — there is no
@@ -163,30 +200,7 @@ void vtkWindowCatalogue3D::triggerCosmologyUpdate()
     if (this->m_cosmologyModel == QStringLiteral("Planck18")) {
         for (auto &e : this->entries)
             e.distanceMpc = 0.0;
-        // Recompute scene positions and rebuild.
-        constexpr double pi = 3.14159265358979323846;
-        for (auto &e : this->entries) {
-            const double d = Catalogue3DParser::detail::entryDistanceMpc(e, this->schema);
-            const double ra  = e.raDeg  * pi / 180.0;
-            const double dec = e.decDeg * pi / 180.0;
-            e.sceneX = d * std::cos(dec) * std::cos(ra);
-            e.sceneY = d * std::cos(dec) * std::sin(ra);
-            e.sceneZ = d * std::sin(dec);
-        }
-        this->applyFrameToEntries();
-        this->renderer->RemoveAllViewProps();
-        this->morphologyNames.clear();
-        this->morphologyIndexOf.clear();
-        this->labelActors.clear();
-        this->shellActors.clear();
-        this->mappedPositions.clear();
-        this->hoveredIndex  = -1;
-        this->selectedIndex = -1;
-        if (!this->entries.empty()) {
-            this->buildScene();
-            this->buildLabels();
-        }
-        this->renderWindow->Render();
+        this->recomputeScenePositionsAndRebuild();
         if (this->filterStatusLabel)
             this->filterStatusLabel->setText(
                     QStringLiteral("Cosmology: Planck18 (local) – %1 sources.").arg(entries.size()));
@@ -273,34 +287,12 @@ void vtkWindowCatalogue3D::onCosmologyFinished()
     // Entries with returned distance 0 keep the catalogue distance field or the
     // 300 Mpc fallback (entryDistanceMpc checks distanceMpc == 0 → auto-compute).
     const int n = static_cast<int>(std::min(this->entries.size(), result.distancesMpc.size()));
-    constexpr double pi = 3.14159265358979323846;
-    for (int i = 0; i < n; ++i) {
-        auto &e = this->entries[static_cast<size_t>(i)];
-        e.distanceMpc = result.distancesMpc[static_cast<size_t>(i)];
-        // Recompute FK5 Cartesian; applyFrameToEntries() will convert if Galactic.
-        const double d = Catalogue3DParser::detail::entryDistanceMpc(e, this->schema);
-        const double ra  = e.raDeg  * pi / 180.0;
-        const double dec = e.decDeg * pi / 180.0;
-        e.sceneX = d * std::cos(dec) * std::cos(ra);
-        e.sceneY = d * std::cos(dec) * std::sin(ra);
-        e.sceneZ = d * std::sin(dec);
-    }
-    // Reapply galactic frame if active (it uses entryDistanceMpc, now updated).
-    this->applyFrameToEntries();
-
-    this->renderer->RemoveAllViewProps();
-    this->morphologyNames.clear();
-    this->morphologyIndexOf.clear();
-    this->labelActors.clear();
-    this->shellActors.clear();
-    this->mappedPositions.clear();
-    this->hoveredIndex  = -1;
-    this->selectedIndex = -1;
-    if (!this->entries.empty()) {
-        this->buildScene();
-        this->buildLabels();
-    }
-    this->renderWindow->Render();
+    for (int i = 0; i < n; ++i)
+        this->entries[static_cast<size_t>(i)].distanceMpc = result.distancesMpc[static_cast<size_t>(i)];
+    // Recompute positions from the applied overrides and rebuild — the shared
+    // helper also reapplies the shells toggle and refreshes the table, so a
+    // backend cosmology change keeps them consistent (R-14 follow-up).
+    this->recomputeScenePositionsAndRebuild();
 
     const QString statusMsg = QStringLiteral("Cosmology: %1 – %2 sources.")
             .arg(result.model)

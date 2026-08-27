@@ -624,6 +624,23 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          this->m_cosmologyModel = this->comboCosmology->currentText();
                          this->triggerCosmologyUpdate();
                      });
+    QObject::connect(this->comboDistanceMode, &QComboBox::currentIndexChanged, this,
+                     [this](int idx) {
+                         // Cartesian catalogues have explicit XYZ positions — no
+                         // redshift to reinterpret, so the mode is a no-op there.
+                         if (this->schema.isCartesian() || this->entries.empty())
+                             return;
+                         this->schema.distanceMode = (idx == 1)
+                                 ? CatalogueDistanceMode::RedshiftSpace
+                                 : CatalogueDistanceMode::Comoving;
+                         this->recomputeScenePositionsAndRebuild();
+                         const QString label = (idx == 1)
+                                 ? QStringLiteral("Redshift-space (cz/H₀) – %1 sources.")
+                                 : QStringLiteral("Real-space (comoving) – %1 sources.");
+                         if (this->filterStatusLabel)
+                             this->filterStatusLabel->setText(label.arg(entries.size()));
+                         ui->labelStatus->setText(label.arg(entries.size()));
+                     });
     QObject::connect(&this->m_cosmologyWatcher, &QFutureWatcher<Catalogue3DCosmologyTaskResult>::finished,
                      this, &vtkWindowCatalogue3D::onCosmologyFinished);
     QObject::connect(this->chkShowAxes, &QCheckBox::toggled, this,

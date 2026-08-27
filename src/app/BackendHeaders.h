@@ -21,7 +21,9 @@ inline constexpr const char *TRUNCATED = "X-Truncated";
 inline constexpr const char *BBOX = "X-Visivo-Bbox";
 inline constexpr const char *BUNIT = "X-Visivo-Bunit";
 inline constexpr const char *BYTEORDER = "X-Visivo-Byte-Order";
+inline constexpr const char *CALIBRATED = "X-Visivo-Calibrated";
 inline constexpr const char *COMPONENTS = "X-Visivo-Components";
+inline constexpr const char *DENSITY_FACTOR = "X-Visivo-Density-Factor";
 inline constexpr const char *DEPTH = "X-Visivo-Depth";
 inline constexpr const char *DIV_MAX = "X-Visivo-Div-Max";
 inline constexpr const char *DIV_MIN = "X-Visivo-Div-Min";
@@ -51,10 +53,11 @@ inline constexpr const char *SPEED_MAX = "X-Visivo-Speed-Max";
 inline constexpr const char *SPEED_MIN = "X-Visivo-Speed-Min";
 inline constexpr const char *TOKEN = "X-Visivo-Token";
 inline constexpr const char *UNIT = "X-Visivo-Unit";
+inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 40> kAll = {
+inline constexpr std::array<const char *, 43> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
@@ -64,7 +67,9 @@ inline constexpr std::array<const char *, 40> kAll = {
     BBOX,
     BUNIT,
     BYTEORDER,
+    CALIBRATED,
     COMPONENTS,
+    DENSITY_FACTOR,
     DEPTH,
     DIV_MAX,
     DIV_MIN,
@@ -94,6 +99,7 @@ inline constexpr std::array<const char *, 40> kAll = {
     SPEED_MIN,
     TOKEN,
     UNIT,
+    WARNINGS,
     WIDTH,
 };
 

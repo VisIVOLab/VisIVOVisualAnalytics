@@ -20,6 +20,18 @@ struct Catalogue3DFieldInfo
     QString type;
 };
 
+// How a source's radial distance is derived from its redshift (R-14). The default
+// places sources at their real-space best estimate; RedshiftSpace places them at
+// the naive Hubble distance cz/H0 (redshift-space). When a source has an
+// INDEPENDENT real-space distance, its displacement between the two modes is the
+// line-of-sight peculiar velocity (the RSD); for a redshift-only source the two
+// modes differ merely by cz/H0 − comoving D_C(z), which is not a peculiar velocity.
+enum class CatalogueDistanceMode
+{
+    Comoving,        // real-space best estimate (measured/model comoving distance)
+    RedshiftSpace,   // naive cz/H0 Hubble distance from redshift alone
+};
+
 struct Catalogue3DSchema
 {
     QStringList headers;
@@ -31,6 +43,11 @@ struct Catalogue3DSchema
     QString xFieldName;
     QString yFieldName;
     QString zFieldName;
+
+    // Runtime display choice (R-14): how redshift → radial distance is derived.
+    // Carried on the schema (not a call-site param) so every entryDistanceMpc()
+    // consumer — scene, hover readout, table, shells — stays mutually consistent.
+    CatalogueDistanceMode distanceMode{ CatalogueDistanceMode::Comoving };
 
     bool isCartesian() const
     {
@@ -188,6 +205,21 @@ inline double comovingDistanceMpc(double z)
     return DH * integral;
 }
 
+// Naive redshift-space (Hubble-law) distance cz/H0 (R-14): the recession velocity
+// v = cz placed at Hubble flow, ignoring peculiar motion and cosmological curvature.
+// This is the *redshift-space* radial coordinate. It differs from an INDEPENDENT
+// real-space distance by the line-of-sight peculiar velocity; from the comoving
+// integral comovingDistanceMpc(z) it differs only by cz/H0 − D_C(z) (the low-z
+// linear approximation vs the exact integral), which is not a peculiar velocity.
+inline double hubbleDistanceMpc(double z)
+{
+    if (z <= 0.0)
+        return 0.0;
+    constexpr double H0   = 67.66;         // must match comovingDistanceMpc (Planck18)
+    constexpr double cKms = 2.99792458e5;
+    return cKms * z / H0;
+}
+
 inline QString detectedNameField(const Catalogue3DSchema &schema)
 {
     QMap<QString, QString> normalizedToActual;
@@ -231,8 +263,25 @@ inline QString detectedDistanceField(const Catalogue3DSchema &schema)
         normalizedToActual[normalizeColName(field.name)] = field.name;
     }
     return firstExistingField(normalizedToActual,
-                              { "DISTANCE", "DIST", "DMPC", "DISTMPC", "DL", "DLMPC",
-                                "LUMINOSITYDISTANCE", "COMOVINGDIST" });
+                              { "COMOVINGDISTANCE", "COMOVINGDIST", "DC", "DCMPC",
+                                "DISTANCE", "DIST", "DMPC", "DISTMPC",
+                                "DL", "DLMPC", "LUMINOSITYDISTANCE",
+                                "DA", "DAMPC", "ANGULARDIAMETERDISTANCE" });
+}
+
+// The KIND of a detected distance column, so a luminosity/angular-diameter
+// distance can be converted to the COMOVING radial coordinate the scene uses.
+enum class DistanceKind { Comoving, Luminosity, AngularDiameter };
+
+inline DistanceKind distanceFieldKind(const QString &fieldName)
+{
+    const QString n = normalizeColName(fieldName);
+    if (n.startsWith(QStringLiteral("DL")) || n == QStringLiteral("LUMINOSITYDISTANCE"))
+        return DistanceKind::Luminosity;
+    if (n.startsWith(QStringLiteral("DA")) || n == QStringLiteral("ANGULARDIAMETERDISTANCE"))
+        return DistanceKind::AngularDiameter;
+    // COMOVINGDISTANCE/DC and the generic DISTANCE/DIST are treated as comoving.
+    return DistanceKind::Comoving;
 }
 
 inline QString detectedMajorAxisField(const Catalogue3DSchema &schema)
@@ -308,6 +357,20 @@ inline double entryDistanceMpc(const Catalogue3DEntry &entry, const Catalogue3DS
         return std::sqrt(entry.sceneX * entry.sceneX + entry.sceneY * entry.sceneY
                          + entry.sceneZ * entry.sceneZ);
     }
+    // Redshift (used for the redshift-space mode, the distance-TYPE conversion, and
+    // as a fallback).
+    const QString redshiftField = detectedRedshiftField(schema);
+    bool okRedshift = false;
+    const double redshift = fieldDouble(entry, schema, redshiftField, &okRedshift);
+    // Redshift-space mode (R-14): place the source at the naive Hubble distance
+    // cz/H0 from its redshift alone — deliberately ignoring measured/model
+    // (real-space) distances and any cosmology-selector override. Against a source
+    // that also has an independent real-space distance, the mode toggle exposes its
+    // line-of-sight peculiar-velocity displacement. Falls through to the real-space
+    // logic when the source has no usable redshift.
+    if (schema.distanceMode == CatalogueDistanceMode::RedshiftSpace
+            && okRedshift && redshift > 0.0)
+        return hubbleDistanceMpc(redshift);
     // Prefer the cosmology-selector override if it has been set.
     if (entry.distanceMpc > 0.0)
         return entry.distanceMpc;
@@ -315,11 +378,19 @@ inline double entryDistanceMpc(const Catalogue3DEntry &entry, const Catalogue3DS
     bool okDistance = false;
     const double distance = fieldDouble(entry, schema, distanceField, &okDistance);
     if (okDistance && distance > 0.0) {
+        // Convert a luminosity/angular-diameter distance to the COMOVING radial
+        // coordinate the scene places sources at (D_L = (1+z)·D_C ⇒ D_C = D_L/(1+z);
+        // D_A = D_C/(1+z) ⇒ D_C = D_A·(1+z)). Without a redshift we can't convert,
+        // so the value is used as-is (the best available). A bare DISTANCE column
+        // is assumed comoving.
+        const DistanceKind kind = distanceFieldKind(distanceField);
+        if (kind != DistanceKind::Comoving && okRedshift && redshift > 0.0) {
+            if (kind == DistanceKind::Luminosity)
+                return distance / (1.0 + redshift);
+            return distance * (1.0 + redshift);   // AngularDiameter → comoving
+        }
         return distance;
     }
-    const QString redshiftField = detectedRedshiftField(schema);
-    bool okRedshift = false;
-    const double redshift = fieldDouble(entry, schema, redshiftField, &okRedshift);
     if (okRedshift && redshift > 0.0) {
         return comovingDistanceMpc(redshift);
     }

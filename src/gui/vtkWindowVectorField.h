@@ -166,6 +166,7 @@ private:
     // Sidebar controls
     QPointer<QCheckBox> chkGlyphs;
     QPointer<QCheckBox> chkStreamlines;
+    QPointer<QCheckBox> chkColorByVorticity;   // R-17: color streamlines by |∇×v|
     QPointer<QSpinBox> spinSeeds;
     QPointer<QSpinBox> spinMaxArrows;
     QPointer<QDoubleSpinBox> spinGlyphScale;

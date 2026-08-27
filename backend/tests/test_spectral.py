@@ -150,6 +150,32 @@ class TestHigherOrderMoments:
         assert m.any()
         np.testing.assert_allclose(a[m], b[m], rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.parametrize("order", [0, 1, 2])
+    def test_r04_backend_parity_streaming_inmemory_dask(self, order, tmp_path, monkeypatch):
+        """R-04 guard: the streaming, in-memory (Numba/numpy) and Dask backends
+        must agree on M0/M1/M2 — a future edit to one weighting path can't
+        silently diverge. Uses nz>64 so the in-memory path is the Numba kernel."""
+        import base64
+        import app.compute.moment as _m
+        from app.compute import worker_moment, _moment_map_dask
+
+        path = str(tmp_path / "parity_cube.fits")
+        _write_gaussian_cube(path, nz=80, ny=6, nx=6, sigma_chan=6.0)
+
+        monkeypatch.setattr(_m, "_MOMENT_STREAM_BYTES", 1 << 62)      # in-memory
+        mem = worker_moment(path, order, 0, 79, False, 0.0)
+        monkeypatch.setattr(_m, "_MOMENT_STREAM_BYTES", 0)            # streaming
+        stream = worker_moment(path, order, 0, 79, False, 0.0)
+        dask = _moment_map_dask(path, order, 0, 79, 0.0, False)      # dask path
+
+        def arr(res):
+            return np.frombuffer(base64.b64decode(res["data_base64"]), dtype=np.float32)
+        a, b, c = arr(mem), arr(stream), arr(dask)
+        m = np.isfinite(a) & np.isfinite(b) & np.isfinite(c)
+        assert m.any()
+        np.testing.assert_allclose(a[m], b[m], rtol=1e-4, atol=1e-4)  # in-memory ≈ streaming
+        np.testing.assert_allclose(a[m], c[m], rtol=1e-4, atol=1e-4)  # in-memory ≈ dask
+
     def test_unsupported_order_raises(self):
         from app.compute import _moment_map_from_array
         with fits.open(self.cube_path) as h:

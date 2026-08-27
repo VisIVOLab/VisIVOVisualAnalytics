@@ -258,10 +258,24 @@ void vtkWindowCatalogue3D::setupSidebar()
                 u"Cosmology model for redshift → comoving distance.\n"
                 u"Distances are computed on the backend via astropy."_s);
 
+        // R-14: real-space (comoving) vs redshift-space (naive cz/H0) placement.
+        this->comboDistanceMode = new QComboBox(sceneCard);
+        this->comboDistanceMode->addItems(
+                { u"Real-space (comoving)"_s, u"Redshift-space (cz/H₀)"_s });
+        this->comboDistanceMode->setToolTip(
+                u"How a source's radial distance is derived from its redshift.\n"
+                u"Real-space: measured / model comoving distance (default).\n"
+                u"Redshift-space: naive Hubble distance cz/H₀ from redshift alone.\n"
+                u"When a source also has an INDEPENDENT real-space distance, the\n"
+                u"shift between the two modes is its line-of-sight peculiar velocity\n"
+                u"(redshift-space distortion). For redshift-only sources the shift\n"
+                u"is just cz/H₀ − comoving D_C(z), not a peculiar velocity."_s);
+
         auto *sceneForm = new QFormLayout;
         sceneForm->setContentsMargins(0, 0, 0, 0);
         sceneForm->addRow(u"Frame"_s,     this->comboFrame);
         sceneForm->addRow(u"Cosmology"_s, this->comboCosmology);
+        sceneForm->addRow(u"Distance"_s,  this->comboDistanceMode);
         sceneLayout->addLayout(sceneForm);
         pageLayout->addWidget(sceneCard);
 

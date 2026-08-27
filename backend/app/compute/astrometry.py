@@ -131,13 +131,15 @@ def worker_region_stats(
         "channel": (0 if channel is None else int(channel)),
     }
 
-    # Integrated flux for Jy/beam data when the beam is known.
+    # Integrated flux for Jy/beam data when the beam is known. Uses the EXACT
+    # pixel solid angle (correct for non-square/skewed pixels), via the shared
+    # beam_area_pixels helper.
+    from ._common import beam_area_pixels, is_per_beam_bunit  # noqa: PLC0415
     bmaj, bmin = dataset.beam.major, dataset.beam.minor
-    pix_arcsec = dataset.spatial_pixel_scale_arcsec()
-    if ("jy/beam" in dataset.bunit.lower() and bmaj and bmin and pix_arcsec > 0):
-        pix_deg = pix_arcsec / 3600.0
-        beam_area_px = (np.pi / (4.0 * np.log(2.0))) * (bmaj * bmin) / (pix_deg * pix_deg)
-        if beam_area_px > 0:
+    if is_per_beam_bunit(dataset.bunit) and bmaj and bmin:
+        beam_area_px = beam_area_pixels(bmaj, bmin, dataset.spatial_pixel_scale_arcsec(),
+                                        dataset.spatial_pixel_area_arcsec2())
+        if beam_area_px and beam_area_px > 0:
             result["flux_jy"] = float(np.sum(finite) / beam_area_px)
             result["beam_area_pix"] = float(beam_area_px)
     return result

@@ -205,6 +205,9 @@ BackendGaussFit2DResult BackendClient::requestGaussFit2D(
                                                    : dmaj.toDouble();
     result.deconvolvedMinorArcsec = dmin.isNull() ? std::numeric_limits<double>::quiet_NaN()
                                                    : dmin.toDouble();
+    const QJsonValue dpa = obj.value(QStringLiteral("deconvolved_pa_deg"));
+    result.deconvolvedPaDeg = dpa.isNull() ? std::numeric_limits<double>::quiet_NaN()
+                                           : dpa.toDouble();
     return result;
 }
 

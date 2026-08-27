@@ -883,6 +883,7 @@ struct BackendGaussFit2DResult
     double paDeg{ 0. };
     double deconvolvedMajorArcsec{ std::numeric_limits<double>::quiet_NaN() };
     double deconvolvedMinorArcsec{ std::numeric_limits<double>::quiet_NaN() };
+    double deconvolvedPaDeg{ std::numeric_limits<double>::quiet_NaN() };
     double fitRms{ 0. };
     double centerPixX{ 0. };
     double centerPixY{ 0. };

@@ -77,7 +77,8 @@ reach / nσ controls trade completeness against reliability (below).
 **Caveats (paper honesty):** the seed is SoFiA's own peak voxel, so this is
 segmentation agreement, not detection; it is one cube and five sources; and the
 reported flux carries no uncertainty yet. A blind-detection claim is out of
-scope for an assisted tool.
+scope for an assisted tool. The peak-seed concern is addressed head-on by the
+seed-robustness analysis below.
 
 ## Completeness–reliability tradeoff
 
@@ -98,4 +99,33 @@ curves; the honest reading is a *tunable completeness–reliability tradeoff*, n
 a free recovery. nσ = 2.5 is the default because it balances the two; a user who
 needs more completeness on a faint source can trade reliability for it knowingly.
 (Report the completeness AND reliability at the chosen setting in any figure.)
+
+## Seed (click) robustness
+
+The vs-SoFiA table seeds each lasso on the SoFiA source's *peak* voxel, so a
+sceptic could argue the agreement is an artifact of clicking exactly where SoFiA
+is most confident. `lasso_seed_robustness.py` perturbs the click and reports how
+much the metrics move, in two separately-reported strata:
+
+- **Interior** (the plausible *correct* click — peak + spatial jitter + random
+  bright interior voxels): drives the headline.
+- **Stress** (a harder test — low-intensity faint interior voxels + a one-voxel
+  dilation ring just outside the source): reported apart.
+
+```bash
+backend/.venv/bin/python validation/lasso_seed_robustness.py
+```
+
+For the bright, well-connected sources the interior result is essentially
+**click-invariant** (Dice std ≈ 0): the object-bounded grow takes the connected
+component *containing the seed*, which is the same component from any interior
+voxel, so the selection does not depend on hitting the peak. The two faint
+sources show genuine placement sensitivity (interior Dice std up to ≈ 0.11, a
+marginal interior click can drop Dice to ≈ 0.38), so for weakly-detected objects
+the result depends more on where the user clicks — reported honestly, not hidden.
+The stress stratum degrades sharply, as expected for a faint / off-source click.
+Output: `out/seed_robustness.{md,csv,png}`. This is a single-cube, five-source
+sanity check: it shows the peak-seed comparison is not driven by exact peak
+clicks for well-connected sources; it does not by itself establish general seed
+robustness across all cubes.
 

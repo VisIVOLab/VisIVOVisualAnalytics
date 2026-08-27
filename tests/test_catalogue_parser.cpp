@@ -222,3 +222,104 @@ void TestCatalogueParser::entryDist_zeroRedshift_fallsBackTo300()
     auto e = makeEntry(s, { { QStringLiteral("z"), QVariant(0.0) } });
     QCOMPARE(Catalogue3DParser::detail::entryDistanceMpc(e, s), 300.0);
 }
+
+// ── distance-type (comoving / luminosity / angular-diameter) ──────────────────
+
+void TestCatalogueParser::distanceKind_DL_isLuminosity()
+{
+    using namespace Catalogue3DParser::detail;
+    QVERIFY(distanceFieldKind(QStringLiteral("DL")) == DistanceKind::Luminosity);
+    QVERIFY(distanceFieldKind(QStringLiteral("LuminosityDistance")) == DistanceKind::Luminosity);
+    QVERIFY(distanceFieldKind(QStringLiteral("DL_Mpc")) == DistanceKind::Luminosity);
+}
+
+void TestCatalogueParser::distanceKind_DA_isAngularDiameter()
+{
+    using namespace Catalogue3DParser::detail;
+    QVERIFY(distanceFieldKind(QStringLiteral("DA")) == DistanceKind::AngularDiameter);
+    QVERIFY(distanceFieldKind(QStringLiteral("AngularDiameterDistance")) == DistanceKind::AngularDiameter);
+}
+
+void TestCatalogueParser::distanceKind_generic_isComoving()
+{
+    using namespace Catalogue3DParser::detail;
+    QVERIFY(distanceFieldKind(QStringLiteral("DISTANCE")) == DistanceKind::Comoving);
+    QVERIFY(distanceFieldKind(QStringLiteral("ComovingDistance")) == DistanceKind::Comoving);
+}
+
+void TestCatalogueParser::entryDist_luminosityConvertedToComoving()
+{
+    // D_L = 220 Mpc at z=0.1 → D_C = D_L/(1+z) = 200 Mpc.
+    const auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"),
+                                QStringLiteral("DL"), QStringLiteral("z") });
+    auto e = makeEntry(s, { { QStringLiteral("DL"), QVariant(220.0) },
+                            { QStringLiteral("z"),  QVariant(0.1)   } });
+    const double d = Catalogue3DParser::detail::entryDistanceMpc(e, s);
+    QVERIFY2(qAbs(d - 200.0) < 1e-6, qPrintable(QStringLiteral("got %1, expected 200").arg(d)));
+}
+
+void TestCatalogueParser::entryDist_angularDiameterConvertedToComoving()
+{
+    // D_A = 200 Mpc at z=0.1 → D_C = D_A*(1+z) = 220 Mpc.
+    const auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"),
+                                QStringLiteral("DA"), QStringLiteral("z") });
+    auto e = makeEntry(s, { { QStringLiteral("DA"), QVariant(200.0) },
+                            { QStringLiteral("z"),  QVariant(0.1)   } });
+    const double d = Catalogue3DParser::detail::entryDistanceMpc(e, s);
+    QVERIFY2(qAbs(d - 220.0) < 1e-6, qPrintable(QStringLiteral("got %1, expected 220").arg(d)));
+}
+
+void TestCatalogueParser::entryDist_luminosityWithoutRedshift_usedAsIs()
+{
+    // No redshift column → can't convert → luminosity distance used as-is.
+    const auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"),
+                                QStringLiteral("DL") });
+    auto e = makeEntry(s, { { QStringLiteral("DL"), QVariant(220.0) } });
+    QCOMPARE(Catalogue3DParser::detail::entryDistanceMpc(e, s), 220.0);
+}
+
+void TestCatalogueParser::redshiftSpaceMode_usesHubbleDistance()
+{
+    // R-14: in redshift-space mode a source is placed at the naive Hubble
+    // distance cz/H0 = 299792.458*0.1/67.66 ≈ 443.1 Mpc — distinct from the
+    // comoving integral (~423 Mpc), which is the whole point of the mode.
+    auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"), QStringLiteral("z") });
+    s.distanceMode = CatalogueDistanceMode::RedshiftSpace;
+    auto e = makeEntry(s, { { QStringLiteral("z"), QVariant(0.1) } });
+    const double d = Catalogue3DParser::detail::entryDistanceMpc(e, s);
+    const double expected = 299792.458 * 0.1 / 67.66;   // cz/H0
+    QVERIFY2(qAbs(d - expected) < 1e-6,
+             qPrintable(QStringLiteral("got %1, expected %2 (cz/H0)").arg(d).arg(expected)));
+    // And it must differ from the comoving placement for the same redshift.
+    s.distanceMode = CatalogueDistanceMode::Comoving;
+    const double dc = Catalogue3DParser::detail::entryDistanceMpc(e, s);
+    QVERIFY2(qAbs(d - dc) > 5.0,
+             qPrintable(QStringLiteral("redshift-space %1 == comoving %2").arg(d).arg(dc)));
+}
+
+void TestCatalogueParser::redshiftSpaceMode_bypassesDistanceOverride()
+{
+    // Redshift-space placement ignores measured/model (real-space) distances and
+    // the cosmology-selector override — it is a function of redshift alone.
+    auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"),
+                          QStringLiteral("distance"), QStringLiteral("z") });
+    s.distanceMode = CatalogueDistanceMode::RedshiftSpace;
+    auto e = makeEntry(s, { { QStringLiteral("distance"), QVariant(500.0) },
+                            { QStringLiteral("z"),        QVariant(0.1)   } });
+    e.distanceMpc = 750.0;   // override that Comoving mode would honour
+    const double d = Catalogue3DParser::detail::entryDistanceMpc(e, s);
+    const double expected = 299792.458 * 0.1 / 67.66;
+    QVERIFY2(qAbs(d - expected) < 1e-6,
+             qPrintable(QStringLiteral("got %1, expected %2 (cz/H0, not override)").arg(d).arg(expected)));
+}
+
+void TestCatalogueParser::redshiftSpaceMode_noRedshift_fallsBackToRealSpace()
+{
+    // Without a usable redshift, redshift-space mode has nothing to place from and
+    // must fall back to the real-space logic (here: the measured distance).
+    auto s = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"),
+                          QStringLiteral("distance") });
+    s.distanceMode = CatalogueDistanceMode::RedshiftSpace;
+    auto e = makeEntry(s, { { QStringLiteral("distance"), QVariant(500.0) } });
+    QCOMPARE(Catalogue3DParser::detail::entryDistanceMpc(e, s), 500.0);
+}

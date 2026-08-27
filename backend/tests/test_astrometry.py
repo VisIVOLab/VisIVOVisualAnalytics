@@ -303,6 +303,42 @@ class TestGaussFit2D:
     not __import__("importlib").util.find_spec("reproject"),
     reason="reproject not installed",
 )
+class TestPaAwareDeconvolution:
+    """PA-aware Gaussian beam deconvolution (Wild 1970)."""
+
+    @staticmethod
+    def _convolve(a1, b1, p1, a2, b2, p2):
+        """Forward Gaussian convolution (FWHM), the addition dual of the deconv."""
+        alpha = ((a1 * math.cos(p1)) ** 2 + (b1 * math.sin(p1)) ** 2
+                 + (a2 * math.cos(p2)) ** 2 + (b2 * math.sin(p2)) ** 2)
+        beta = ((a1 * math.sin(p1)) ** 2 + (b1 * math.cos(p1)) ** 2
+                + (a2 * math.sin(p2)) ** 2 + (b2 * math.cos(p2)) ** 2)
+        gamma = 2.0 * ((b1 ** 2 - a1 ** 2) * math.sin(p1) * math.cos(p1)
+                       + (b2 ** 2 - a2 ** 2) * math.sin(p2) * math.cos(p2))
+        s, t = alpha + beta, math.sqrt((alpha - beta) ** 2 + gamma ** 2)
+        return (math.sqrt(0.5 * (s + t)), math.sqrt(0.5 * (s - t)),
+                0.5 * math.atan2(-gamma, alpha - beta))
+
+    def test_roundtrip_recovers_source(self):
+        from app.compute.photometry import _deconvolve_gaussian_beam
+        # A source at 20° convolved with an ELONGATED beam at 70° (very different
+        # PAs — the case per-axis subtraction gets wrong).
+        src = (10.0, 6.0, math.radians(20.0))
+        beam = (5.0, 3.0, math.radians(70.0))
+        cmaj, cmin, cpa = self._convolve(*src, *beam)
+        dmaj, dmin, dpa = _deconvolve_gaussian_beam(cmaj, cmin, cpa, *beam)
+        assert dmaj is not None
+        assert abs(dmaj - src[0]) < 1e-6
+        assert abs(dmin - src[1]) < 1e-6
+        # PA modulo 180°.
+        assert abs(((math.degrees(dpa) - 20.0 + 90) % 180) - 90) < 1e-4
+
+    def test_source_equals_beam_is_unresolved(self):
+        from app.compute.photometry import _deconvolve_gaussian_beam
+        b = (5.0, 3.0, math.radians(45.0))
+        assert _deconvolve_gaussian_beam(*b, *b) == (None, None, None)
+
+
 class TestPerChannelBeam:
     """R-05: a cube with a CASA BEAMS table exposes per-channel beams and the
     flux beam-area uses them."""

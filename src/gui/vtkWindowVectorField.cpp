@@ -27,6 +27,7 @@
 #include <vtkPolyDataMapper.h>
 #include <vtkProperty.h>
 #include <vtkScalarBarActor.h>
+#include <vtkArrayCalculator.h>
 #include <vtkStreamTracer.h>
 #include <vtkTubeFilter.h>
 
@@ -130,6 +131,22 @@ void vtkWindowVectorField::setupUi()
     this->chkStreamlines = new QCheckBox(side);
     this->chkStreamlines->setChecked(true);
     form->addRow(u"Streamlines"_s, this->chkStreamlines);
+
+    // R-17: colour streamlines by vorticity magnitude |∇×v| (the local rotation
+    // of the flow — shear/curl) instead of speed. Default off (speed colouring).
+    this->chkColorByVorticity = new QCheckBox(side);
+    this->chkColorByVorticity->setChecked(false);
+    this->chkColorByVorticity->setToolTip(
+            u"Colour streamlines by vorticity magnitude |∇×v| (curl) instead of speed"_s);
+    form->addRow(u"Colour by vorticity"_s, this->chkColorByVorticity);
+    QObject::connect(this->chkColorByVorticity, &QCheckBox::toggled, this,
+                     [this](bool) {
+                         // makeStreamActor is shared by the LOD and ROI streams,
+                         // so rebuilding recolours the visible LOD streamlines;
+                         // an existing full-res ROI snapshot recolours next fetch.
+                         this->rebuildLodActors();
+                         if (this->renderWindow) this->renderWindow->Render();
+                     });
 
     this->spinMaxArrows = new QSpinBox(side);
     this->spinMaxArrows->setRange(1000, 500000);
@@ -517,18 +534,46 @@ vtkSmartPointer<vtkActor> vtkWindowVectorField::makeStreamActor(vtkImageData *im
     tracer->SetIntegrationDirectionToBoth();
     tracer->SetMaximumPropagation(2.0 * ext);
     tracer->SetMaximumNumberOfSteps(2000);
-    tracer->SetComputeVorticity(false);
+    // R-17: compute the Vorticity vector along the streamlines when the user
+    // asks to colour by it (the tracer outputs a "Vorticity" point-data array).
+    const bool byVorticity =
+            this->chkColorByVorticity && this->chkColorByVorticity->isChecked();
+    tracer->SetComputeVorticity(byVorticity);
+
+    // When colouring by vorticity, derive its magnitude |∇×v| as a scalar and
+    // splice the calculator into the pipeline before the tube.
+    vtkNew<vtkArrayCalculator> vortMag;
+    double vortRange[2] = { 0.0, 1.0 };
+    vtkAlgorithmOutput *tubeSource = tracer->GetOutputPort();
+    if (byVorticity) {
+        vortMag->SetInputConnection(tracer->GetOutputPort());
+        vortMag->SetAttributeTypeToPointData();
+        vortMag->AddVectorArrayName("Vorticity");
+        vortMag->SetFunction("mag(Vorticity)");
+        vortMag->SetResultArrayName("vorticity_mag");
+        vortMag->Update();
+        if (auto *pd = vtkPolyData::SafeDownCast(vortMag->GetOutput())) {
+            if (auto *arr = pd->GetPointData()->GetArray("vorticity_mag"))
+                arr->GetRange(vortRange);
+        }
+        tubeSource = vortMag->GetOutputPort();
+    }
 
     vtkNew<vtkTubeFilter> tube;
-    tube->SetInputConnection(tracer->GetOutputPort());
+    tube->SetInputConnection(tubeSource);
     tube->SetRadius(0.0025 * ext);
     tube->SetNumberOfSides(4);
 
     vtkNew<vtkPolyDataMapper> mapper;
     mapper->SetInputConnection(tube->GetOutputPort());
     mapper->SetLookupTable(this->lut);
-    mapper->SetScalarRange(m_grid.fullSpeedMin, m_grid.fullSpeedMax);
-    mapper->SelectColorArray("speed");
+    if (byVorticity) {
+        mapper->SetScalarRange(vortRange[0], std::max(vortRange[1], vortRange[0] + 1e-12));
+        mapper->SelectColorArray("vorticity_mag");
+    } else {
+        mapper->SetScalarRange(m_grid.fullSpeedMin, m_grid.fullSpeedMax);
+        mapper->SelectColorArray("speed");
+    }
     mapper->SetScalarModeToUsePointFieldData();
 
     auto actor = vtkSmartPointer<vtkActor>::New();

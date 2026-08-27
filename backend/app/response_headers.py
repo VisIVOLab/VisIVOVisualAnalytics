@@ -58,6 +58,9 @@ X_SELECTED_COUNT = "X-Visivo-Selected-Count"
 X_ROI_X0 = "X-Visivo-Roi-X0"
 X_ROI_Y0 = "X-Visivo-Roi-Y0"
 X_ROI_Z0 = "X-Visivo-Roi-Z0"
+X_CALIBRATED = "X-Visivo-Calibrated"
+X_DENSITY_FACTOR = "X-Visivo-Density-Factor"
+X_WARNINGS = "X-Visivo-Warnings"
 
 # ── Line-width / moment map units (out-of-band because body is binary) ──────
 X_FWHM_UNIT = "X-Fwhm-Unit"

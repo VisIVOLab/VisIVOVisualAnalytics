@@ -53,23 +53,31 @@ def _finite_range(array: np.ndarray) -> tuple[float, float]:
     return float(np.nanmin(array)), float(np.nanmax(array))
 
 def beam_area_pixels(
-    bmaj_deg: float | None, bmin_deg: float | None, pix_arcsec: float | None
+    bmaj_deg: float | None, bmin_deg: float | None, pix_arcsec: float | None,
+    pixel_area_arcsec2: float | None = None,
 ) -> float | None:
     """Number of pixels covered by one synthesized beam (a Gaussian beam).
 
     ``beam_area = (pi / (4 ln2)) * BMAJ * BMIN`` (the Gaussian beam solid angle)
-    divided by the pixel area, all in the same angular units. BMAJ/BMIN are in
-    degrees (as read from the FITS header); ``pix_arcsec`` is the pixel scale.
+    divided by the pixel solid angle. BMAJ/BMIN are in degrees (FITS header).
+    Pass ``pixel_area_arcsec2`` (from ``spatial_pixel_area_arcsec2()``) for the
+    EXACT pixel solid angle — correct for non-square/skewed pixels; otherwise the
+    scalar ``pix_arcsec`` is squared (valid only for square, unskewed pixels).
 
-    Returns ``None`` when the beam or pixel scale is unavailable, so callers can
-    honestly report "no beam correction possible" rather than a wrong number.
-    This is the single source of truth for the conversion that turns a summed
-    Jy/beam quantity into Jy (divide by this).
+    Returns ``None`` when the beam or pixel geometry is unavailable, so callers
+    can honestly report "no beam correction possible" rather than a wrong number.
+    Single source of truth for turning a summed Jy/beam quantity into Jy.
     """
-    if not bmaj_deg or not bmin_deg or not pix_arcsec or pix_arcsec <= 0:
+    if not bmaj_deg or not bmin_deg:
         return None
-    pix_deg = pix_arcsec / 3600.0
-    area = (np.pi / (4.0 * np.log(2.0))) * (bmaj_deg * bmin_deg) / (pix_deg * pix_deg)
+    if pixel_area_arcsec2 and pixel_area_arcsec2 > 0:
+        pix_area_deg2 = pixel_area_arcsec2 / (3600.0 * 3600.0)
+    elif pix_arcsec and pix_arcsec > 0:
+        pix_deg = pix_arcsec / 3600.0
+        pix_area_deg2 = pix_deg * pix_deg
+    else:
+        return None
+    area = (np.pi / (4.0 * np.log(2.0))) * (bmaj_deg * bmin_deg) / pix_area_deg2
     return float(area) if area > 0 else None
 
 

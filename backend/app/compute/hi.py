@@ -85,7 +85,7 @@ def worker_hi_products(
     theta_maj_arcsec = float(beam.major) * 3600.0
     theta_min_arcsec = float(beam.minor) * 3600.0
     pix_arcsec = ds.spatial_pixel_scale_arcsec()
-    beam_area_px = beam_area_pixels(beam.major, beam.minor, pix_arcsec)
+    beam_area_px = beam_area_pixels(beam.major, beam.minor, pix_arcsec, ds.spatial_pixel_area_arcsec2())
     if not beam_area_px:
         raise ValueError("Could not compute the beam area in pixels.")
 

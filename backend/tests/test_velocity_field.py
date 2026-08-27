@@ -247,6 +247,111 @@ def test_r16_streaming_density_matches_in_memory(tmp_path, monkeypatch):
     assert ooc["div_min"] == ref["div_min"] and ooc["div_max"] == ref["div_max"]
 
 
+def test_density_uncalibrated_with_linear_factor(tmp_path):
+    """Density payload is marked uncalibrated and carries the linear-theory
+    factor (Planck18 f·H0) only when the physical box is known."""
+    from app.velocity_field import velocity_density_worker
+
+    # box_mpc given → box_known → factor present.
+    with_box = velocity_density_worker(_write_radial(tmp_path, sign=+1.0), 1000.0, 0)
+    assert with_box["calibrated"] is False
+    assert with_box["linear_density_factor"] is not None
+    assert with_box["linear_density_factor"] > 0
+    # No box → per-pixel spacing, factor undefined.
+    no_box = velocity_density_worker(_write_radial(tmp_path, sign=-1.0), None, 0)
+    assert no_box["linear_density_factor"] is None
+
+
+def test_r20_velocity_difference(tmp_path):
+    """R-20: |v_a − v_b| per cell; identical fields → 0, offset field → known."""
+    from app.velocity_field import velocity_difference_worker
+
+    path_a, data = _write_multicomponent(tmp_path, n=10)
+    # Same field vs itself → zero difference.
+    same = velocity_difference_worker(path_a, path_a)
+    d = np.frombuffer(same["raw_bytes"], dtype="<f4")
+    assert same["diff_max"] == 0.0
+    assert np.all(d == 0.0)
+
+    # A field offset by (+3,+4,0) in every cell → |Δv| = 5 everywhere.
+    off = data.copy()
+    off[0] += 3.0
+    off[1] += 4.0
+    path_b = str(tmp_path / "vel_off.fits")
+    fits.PrimaryHDU(off.astype(np.float32)).writeto(path_b, overwrite=True)
+    diff = velocity_difference_worker(path_a, path_b)
+    dd = np.frombuffer(diff["raw_bytes"], dtype="<f4")
+    assert np.allclose(dd, 5.0, atol=1e-4)
+    assert abs(diff["diff_mean"] - 5.0) < 1e-4
+
+
+def test_r20_difference_shape_mismatch_raises(tmp_path):
+    from app.velocity_field import velocity_difference_worker
+    import pytest as _pytest
+    a = str(tmp_path / "a8.fits")
+    b = str(tmp_path / "b10.fits")
+    fits.PrimaryHDU(np.zeros((3, 8, 8, 8), dtype=np.float32)).writeto(a, overwrite=True)
+    fits.PrimaryHDU(np.zeros((3, 10, 10, 10), dtype=np.float32)).writeto(b, overwrite=True)
+    with _pytest.raises(ValueError, match="same grid"):
+        velocity_difference_worker(a, b)
+
+
+def test_r20_difference_unit_mismatch_warns(tmp_path):
+    """A cell-wise |v_a − v_b| across different BUNITs is a mixed-unit diff — the
+    worker must surface a loud warning rather than silently subtracting."""
+    from app.velocity_field import velocity_difference_worker
+    a = np.zeros((3, 6, 6, 6), dtype=np.float32)
+    b = np.zeros((3, 6, 6, 6), dtype=np.float32)
+    pa = str(tmp_path / "kms.fits")
+    pb = str(tmp_path / "ms.fits")
+    ha = fits.PrimaryHDU(a); ha.header["BUNIT"] = "km/s"; ha.writeto(pa, overwrite=True)
+    hb = fits.PrimaryHDU(b); hb.header["BUNIT"] = "m/s"; hb.writeto(pb, overwrite=True)
+    diff = velocity_difference_worker(pa, pb)
+    assert any("different units" in w for w in diff["warnings"])
+
+
+def test_r20_difference_box_mismatch_warns(tmp_path):
+    """Comparing two fields opened with different physical box sizes compares
+    different physical positions cell-by-cell — warn (don't silently subtract)."""
+    from app.velocity_field import velocity_difference_worker
+    z = np.zeros((3, 6, 6, 6), dtype=np.float32)
+    pa = str(tmp_path / "boxa.fits")
+    pb = str(tmp_path / "boxb.fits")
+    fits.PrimaryHDU(z).writeto(pa, overwrite=True)
+    fits.PrimaryHDU(z).writeto(pb, overwrite=True)
+    diff = velocity_difference_worker(pa, pb, box_mpc=100.0, box_mpc_b=200.0)
+    assert any("different box sizes" in w for w in diff["warnings"])
+    # Same box on both → no box warning.
+    ok = velocity_difference_worker(pa, pb, box_mpc=100.0, box_mpc_b=100.0)
+    assert not any("different box sizes" in w for w in ok["warnings"])
+
+
+def test_r20_difference_bin_endpoint_range_headers(tmp_path):
+    """The HTTP diff route carries generic Range-Min/Max (a scalar magnitude
+    range), not the ∇·v Div headers, and forwards mismatch warnings."""
+    import os
+    os.environ.setdefault("VISIVO_TOKEN", "test-token-visivo-12345")
+    from fastapi.testclient import TestClient
+    from app.main import app
+    auth = {"X-Visivo-Token": "test-token-visivo-12345"}
+    client = TestClient(app, raise_server_exceptions=True)
+    a = np.zeros((3, 8, 8, 8), dtype=np.float32); a[0] += 3.0; a[1] += 4.0
+    b = np.zeros((3, 8, 8, 8), dtype=np.float32)
+    pa = str(tmp_path / "va.fits")
+    pb = str(tmp_path / "vb.fits")
+    ha = fits.PrimaryHDU(a); ha.header["BUNIT"] = "km/s"; ha.writeto(pa, overwrite=True)
+    hb = fits.PrimaryHDU(b); hb.header["BUNIT"] = "m/s"; hb.writeto(pb, overwrite=True)
+    ida = client.post("/v1/velocity/open", json={"path": pa}, headers=auth).json()["dataset_id"]
+    idb = client.post("/v1/velocity/open", json={"path": pb}, headers=auth).json()["dataset_id"]
+    r = client.post("/v1/velocity/difference_bin",
+                    json={"dataset_id_a": ida, "dataset_id_b": idb}, headers=auth)
+    assert r.status_code == 200, r.text
+    assert "X-Visivo-Range-Max" in r.headers
+    assert "X-Visivo-Div-Max" not in r.headers
+    assert float(r.headers["X-Visivo-Range-Max"]) > 0.0
+    assert "different units" in r.headers.get("X-Visivo-Warnings", "")
+
+
 def test_velocity_density_bin_endpoint(tmp_path):
     import os
     os.environ.setdefault("VISIVO_TOKEN", "test-token-visivo-12345")

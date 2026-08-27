@@ -16,6 +16,7 @@ from ..sessions import Session, get_session
 from ..velocity_basins import velocity_basins_worker
 from ..velocity_field import (
     velocity_density_worker,
+    velocity_difference_worker,
     velocity_grid_worker,
     velocity_subgrid_worker,
     velocity_summary_worker,
@@ -66,6 +67,12 @@ class VelocityBasinsRequest(BaseModel):
 class VelocityDensityRequest(BaseModel):
     dataset_id: str
     max_dim: int = 0          # 0 = full-res ∇·v density; >0 block-averages first (LOD)
+
+
+class VelocityDifferenceRequest(BaseModel):
+    dataset_id_a: str
+    dataset_id_b: str
+    max_dim: int = 0          # 0 = full-res |v_a − v_b|; >0 block-averages first (LOD)
 
 
 @router.post("/v1/velocity/open", response_model=VelocityOpenResponse, tags=["velocity"])
@@ -197,8 +204,64 @@ async def velocity_density_bin(
         "X-Visivo-Div-Max": repr(float(payload["div_max"])),
         "X-Visivo-Unit": str(payload["unit"]),
         "X-Visivo-Byte-Order": "little",
+        # Density-calibration honesty (D): the grid is raw ∇·v (uncalibrated); a
+        # client turns it into a linear-theory overdensity δ ≈ -∇·v · factor.
+        "X-Visivo-Calibrated": "0",
         "Content-Length": str(len(raw)),
     }
+    _factor = payload.get("linear_density_factor")
+    if _factor is not None:
+        headers["X-Visivo-Density-Factor"] = repr(float(_factor))
+    return Response(content=raw, media_type="application/octet-stream", headers=headers)
+
+
+@router.post("/v1/velocity/difference_bin", tags=["velocity"])
+async def velocity_difference_bin(
+    request: VelocityDifferenceRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Multi-field compare (R-20): |v_a − v_b| scalar grid for two velocity fields
+    (e.g. CF3 vs CF4, reconstruction vs simulation). Little-endian float32 volume
+    (x fastest). The two fields must share a grid shape (else 422)."""
+    ea = session.datasets.get(request.dataset_id_a)
+    eb = session.datasets.get(request.dataset_id_b)
+    if not ea or ea.get("kind") != "velocity" or not eb or eb.get("kind") != "velocity":
+        return Response(content=b"unknown velocity dataset(s)",
+                        media_type="text/plain", status_code=404)
+    try:
+        payload = await _run(velocity_difference_worker, ea["path"], eb["path"],
+                             ea.get("box_mpc"), request.max_dim, eb.get("box_mpc"))
+    except ValueError as exc:
+        return Response(content=str(exc).encode("utf-8"), media_type="text/plain",
+                        status_code=422)
+    except Exception as exc:  # noqa: BLE001
+        return Response(content=str(exc).encode("utf-8"), media_type="text/plain",
+                        status_code=500)
+    raw: bytes = payload["raw_bytes"]
+    headers = {
+        "X-Visivo-Width": str(payload["nx"]),
+        "X-Visivo-Height": str(payload["ny"]),
+        "X-Visivo-Depth": str(payload["nz"]),
+        "X-Visivo-Components": "1",
+        "X-Visivo-Scalar-Type": "float32",
+        "X-Visivo-Spacing": ",".join(repr(float(s)) for s in payload["spacing"]),
+        "X-Visivo-Origin": ",".join(repr(float(o)) for o in payload["origin"]),
+        # A magnitude difference |v_a − v_b| is a scalar range, not a signed
+        # divergence — use the generic Range headers, not the ∇·v Div headers.
+        "X-Visivo-Range-Min": repr(float(payload["diff_min"])),
+        "X-Visivo-Range-Max": repr(float(payload["diff_max"])),
+        "X-Visivo-Unit": str(payload["unit"]),
+        "X-Visivo-Byte-Order": "little",
+        "Content-Length": str(len(raw)),
+    }
+    # Surface unit/frame-mismatch (and per-field) warnings so a mixed-unit diff is
+    # never silent. HTTP header values are latin-1 single-line: collapse newlines
+    # and drop any non-latin-1 char (e.g. an em-dash) so encoding can't fail.
+    _warnings = payload.get("warnings", [])
+    if _warnings:
+        _joined = "; ".join(_warnings).replace("\r", " ").replace("\n", " ")
+        headers["X-Visivo-Warnings"] = _joined.encode("latin-1", "replace").decode("latin-1")
     return Response(content=raw, media_type="application/octet-stream", headers=headers)
 
 
