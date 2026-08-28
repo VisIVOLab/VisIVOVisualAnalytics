@@ -76,6 +76,12 @@ void vtkWindowCube::setLinkViews(bool on)
         QSignalBlocker b(this->m_actLinkViews);
         this->m_actLinkViews->setChecked(on);
     }
+    // Keep the toolbar "Linked" button in sync too, so toggling via the menu (or a
+    // linked-driven change) reflects on the button and vice-versa.
+    if (this->m_paneLinkedBtn && this->m_paneLinkedBtn->isChecked() != on) {
+        QSignalBlocker b(this->m_paneLinkedBtn);
+        this->m_paneLinkedBtn->setChecked(on);
+    }
     if (!on) {
         this->m_linked2DValid = false;   // STEP6-P2: drop the shared 2-D camera so a later relink starts fresh
         this->statusBar()->showMessage(u"Linked views: off."_s, 3000);
@@ -473,12 +479,12 @@ void vtkWindowCube::applyLinked2DImageLut(const QString &stem, const QString &na
 
 void vtkWindowCube::broadcastLinkedBlendMode()
 {
-    if (!this->m_linkViews)
+    if (!this->m_linkViews || !this->m_linkBlend)   // gated by the "blend" facet
         return;
     const int idx = this->m_volumeBlendMode;
     const auto windows = s_registry.snapshot();   // snapshot
     for (const auto &p : windows)
-        if (p && p != this && p->m_linkViews)
+        if (p && p != this && p->m_linkViews && p->m_linkBlend)
             p->applyLinkedBlendMode(idx);
 }
 
@@ -503,12 +509,12 @@ void vtkWindowCube::applyLinkedBlendMode(int idx)
 
 void vtkWindowCube::broadcastLinkedRenderMode()
 {
-    if (!this->m_linkViews)
+    if (!this->m_linkViews || !this->m_linkRender)   // gated by the "render" facet
         return;
     const bool iso = ui->actionIsosurface && ui->actionIsosurface->isChecked();
     const auto windows = s_registry.snapshot();   // snapshot — peers may mutate the list
     for (const auto &p : windows)
-        if (p && p != this && p->m_linkViews)
+        if (p && p != this && p->m_linkViews && p->m_linkRender)
             p->applyLinkedRenderMode(iso);
 }
 

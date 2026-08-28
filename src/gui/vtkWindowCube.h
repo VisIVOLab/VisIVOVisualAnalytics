@@ -1264,6 +1264,8 @@ protected:
     bool m_linkCamera{ true };   // STEP6-P5: gates ALL camera sync (2D panes + 3D, intra + cross)
     bool m_linkChannel{ true };
     bool m_linkLut{ true };
+    bool m_linkRender{ true };    // gates the Volume↔Isosurface representation sync
+    bool m_linkBlend{ true };     // gates the volume blend-mode (Composite/MIP/MinIP) sync
     bool m_linkNoReceiverHintShown{ false };   // "nothing to link" is one-shot per layout
     // STEP6-P2/P3: the shared Linked-2D view, stored GUTTER-INDEPENDENTLY (world point at the
     // data-area centre + world height filling it — see Pane2DView::cameraStateNormalized) so
@@ -1292,6 +1294,8 @@ protected:
     QPointer<QToolButton> m_linkCameraChip;    // per-facet toggle (camera)
     QPointer<QToolButton> m_linkChannelChip;   // per-facet toggle
     QPointer<QToolButton> m_linkLutChip;       // per-facet toggle
+    QPointer<QToolButton> m_linkRenderChip;    // per-facet toggle (Volume/Isosurface)
+    QPointer<QToolButton> m_linkBlendChip;     // per-facet toggle (blend mode)
     void refreshLinkedFacetChips();            // enabled/checked state follows the master
     void showLinkNoReceiverHint(int srcSlot);  // §5.5 one-shot hint near the chip
     bool m_applyingLinkedUpdate{ false };                  // echo guard

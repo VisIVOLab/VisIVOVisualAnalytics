@@ -2570,6 +2570,12 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(m_actLinkViews, &QAction::toggled,
                      this, &vtkWindowCube::setLinkViews);
     vtkWindowCube::s_registry.add(this);
+    // A new window gives existing linked windows a cross-window peer, so refresh
+    // their facet-chip enabled state (this window's own chips are refreshed at the
+    // end of its toolbar setup). See refreshLinkedFacetChips's `master` gate.
+    for (const auto &w : vtkWindowCube::s_registry.snapshot())
+        if (w && w != this)
+            w->refreshLinkedFacetChips();
 
     // REGIONS group
     ui->menuTools->addSeparator();
@@ -2829,6 +2835,11 @@ vtkWindowCube::~vtkWindowCube()
     // Leave the linked-views group and drop the camera observer from the exact
     // interactor it was added to (weak ptr → only if still alive).
     vtkWindowCube::s_registry.remove(this);
+    // Closing a window removes a cross-window peer, so refresh the remaining
+    // windows' facet chips (self is already out of the registry).
+    for (const auto &w : vtkWindowCube::s_registry.snapshot())
+        if (w)
+            w->refreshLinkedFacetChips();
     if (this->m_cubeCameraInteractor) {
         if (this->m_cubeCameraObserverTag != 0)
             this->m_cubeCameraInteractor->RemoveObserver(this->m_cubeCameraObserverTag);
@@ -6723,25 +6734,29 @@ void vtkWindowCube::flashPaneLutStrip(int slot)
 
 void vtkWindowCube::refreshLinkedFacetChips()
 {
-    // §5.5: the facet toggles are live only when the Linked master is on AND there is more
-    // than one pane to link. Off → greyed (disabled) but their checked state is preserved,
-    // so re-enabling restores the user's choice.
-    const bool master = m_linkViews && m_paneCount > 1;
-    if (m_linkCameraChip) {
-        m_linkCameraChip->setEnabled(master);
-        QSignalBlocker b(m_linkCameraChip);
-        m_linkCameraChip->setChecked(m_linkCamera);
-    }
-    if (m_linkChannelChip) {
-        m_linkChannelChip->setEnabled(master);
-        QSignalBlocker b(m_linkChannelChip);
-        m_linkChannelChip->setChecked(m_linkChannel);
-    }
-    if (m_linkLutChip) {
-        m_linkLutChip->setEnabled(master);
-        QSignalBlocker b(m_linkLutChip);
-        m_linkLutChip->setChecked(m_linkLut);
-    }
+    // The master "Linked" button is ALWAYS clickable (like the Tools ▸ Link Views
+    // menu): it is a persistent preference the user can turn on before any peer
+    // exists — it simply activates once another pane/window appears (setLinkViews
+    // shows a "enable it on another cube" hint meanwhile). The per-facet chips, by
+    // contrast, are live only when the master is on AND there is actually something
+    // to link — >1 pane in this window OR >1 open cube window (cross-window sync).
+    // Disabled chips keep their checked state, so re-enabling restores the choice.
+    if (m_paneLinkedBtn)
+        m_paneLinkedBtn->setEnabled(true);
+    const bool hasLinkTargets = (m_paneCount > 1 || s_registry.size() > 1);
+    const bool master = m_linkViews && hasLinkTargets;
+    const auto setChip = [master](QToolButton *chip, bool checked) {
+        if (!chip)
+            return;
+        chip->setEnabled(master);
+        QSignalBlocker b(chip);
+        chip->setChecked(checked);
+    };
+    setChip(m_linkCameraChip, m_linkCamera);
+    setChip(m_linkChannelChip, m_linkChannel);
+    setChip(m_linkLutChip, m_linkLut);
+    setChip(m_linkRenderChip, m_linkRender);
+    setChip(m_linkBlendChip, m_linkBlend);
 }
 
 void vtkWindowCube::showLinkNoReceiverHint(int srcSlot)
@@ -8942,18 +8957,18 @@ void vtkWindowCube::setupPaneChrome()
         c->setChecked(true);
         c->setCursor(Qt::PointingHandCursor);
         c->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        // Pill affordance: a bordered chip that clearly reads as a toggle. Off =
+        // muted text + faint outline; on = accent text/border + a faint tint; hover
+        // brightens the outline; disabled (Linked off / nothing to link) greys out.
         c->setStyleSheet(QStringLiteral(
-                "QToolButton{background:transparent;border:none;font-family:'JetBrains Mono',"
-                "'SF Mono',monospace;font-size:10px;padding:1px 3px;color:%1;}"
-                "QToolButton:checked{color:%2;}QToolButton:disabled{color:#3A4247;}")
-                                 .arg(fgMuted, pri));
+                "QToolButton{background:transparent;border:1px solid %1;border-radius:4px;"
+                "font-family:'JetBrains Mono','SF Mono',monospace;font-size:10px;"
+                "padding:1px 6px;color:%2;}"
+                "QToolButton:checked{color:%3;border-color:%3;background:rgba(120,170,187,0.14);}"
+                "QToolButton:hover:enabled{border-color:%3;}"
+                "QToolButton:disabled{color:#3A4247;border-color:#2A3237;background:transparent;}")
+                                 .arg(QLatin1StringView(VisivoTheme::kOutline()), fgMuted, pri));
         return c;
-    };
-    auto makeFacetSep = [&]() {
-        auto *s = new QLabel(u"·"_s, toolbar);
-        s->setStyleSheet(QStringLiteral("color:%1; font-family:'JetBrains Mono','SF Mono',"
-                                        "monospace; font-size:10px;").arg(fgMuted));
-        return s;
     };
     // STEP6-P5: a "camera" facet — camera sync used to be always-on when Linked; now it's a
     // toggle (gates BOTH 2D-pane and 3D camera, intra- and cross-window).
@@ -8966,18 +8981,30 @@ void vtkWindowCube::setupPaneChrome()
                                         // camera sync doesn't snap panes back to a stale zoom
     });
     tb->addWidget(m_linkCameraChip);
-    tb->addWidget(makeFacetSep());
+    tb->addSpacing(4);
     m_linkChannelChip = makeFacetChip(u"channel"_s);
     m_linkChannelChip->setToolTip(u"Linked: sync the channel / slice index across panes"_s);
     QObject::connect(m_linkChannelChip, &QToolButton::toggled, this,
                      [this](bool on) { m_linkChannel = on; });
     tb->addWidget(m_linkChannelChip);
-    tb->addWidget(makeFacetSep());
+    tb->addSpacing(4);
     m_linkLutChip = makeFacetChip(u"LUT"_s);
     m_linkLutChip->setToolTip(u"Linked: propagate colour map / range to panes on the same product"_s);
     QObject::connect(m_linkLutChip, &QToolButton::toggled, this,
                      [this](bool on) { m_linkLut = on; });
     tb->addWidget(m_linkLutChip);
+    tb->addSpacing(4);
+    m_linkRenderChip = makeFacetChip(u"render"_s);
+    m_linkRenderChip->setToolTip(u"Linked: sync the 3-D representation (Volume ↔ Isosurface) across windows"_s);
+    QObject::connect(m_linkRenderChip, &QToolButton::toggled, this,
+                     [this](bool on) { m_linkRender = on; });
+    tb->addWidget(m_linkRenderChip);
+    tb->addSpacing(4);
+    m_linkBlendChip = makeFacetChip(u"blend"_s);
+    m_linkBlendChip->setToolTip(u"Linked: sync the volume blend mode (Composite / MIP / MinIP)"_s);
+    QObject::connect(m_linkBlendChip, &QToolButton::toggled, this,
+                     [this](bool on) { m_linkBlend = on; });
+    tb->addWidget(m_linkBlendChip);
     refreshLinkedFacetChips();
     tb->addStretch(1);
 
@@ -9862,9 +9889,9 @@ void vtkWindowCube::applyPaneLayout(int panes)
             m_pick3d2d->setCurrentIndex(m_slots[0].view.kind == ViewId::View3D ? 0 : 1);
         }
     }
-    if (m_paneLinkedBtn)
-        m_paneLinkedBtn->setEnabled(panes > 1);   // nothing to link with a single pane
-    refreshLinkedFacetChips();                     // §5.5: facet toggles follow the master
+    // The master "Linked" button + facet chips' enabled state (pane- AND
+    // cross-window-aware) is set centrally in refreshLinkedFacetChips().
+    refreshLinkedFacetChips();
     if (m_paneCountToggle) {
         QSignalBlocker b(m_paneCountToggle);
         m_paneCountToggle->setCurrentIndex(panes == 1 ? 0 : (panes == 2 ? 1 : 2));
