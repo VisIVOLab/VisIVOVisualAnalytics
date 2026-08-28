@@ -6,6 +6,7 @@
 #include "LutScale.h"
 #include "LinkedWindowRegistry.h"
 #include "RemoteSliceCache.h"
+#include "SpectralAxisTypes.h"
 
 // Forward-declared here; full headers are included in vtkWindowCube.cpp where
 // they are constructed and their methods are called.
@@ -313,26 +314,10 @@ public:
         FullResolution,
     };
 
-    enum class SpectralAxisKind
-    {
-        Channel,
-        Frequency,
-        RadioVelocity,
-        OpticalVelocity,
-        GenericVelocity,
-        GenericSpectral,
-    };
-
-    struct SpectralAxisDescriptor
-    {
-        SpectralAxisKind kind{ SpectralAxisKind::Channel };
-        QString unit;
-        QString label;
-        QString sourceLabel;
-        bool trusted{ false };
-        bool inferred{ false };
-        bool physical{ false };
-    };
+    // Lifted to SpectralAxisTypes.h (E-04); kept accessible as
+    // vtkWindowCube::SpectralAxisKind / ::SpectralAxisDescriptor via these aliases.
+    using SpectralAxisKind = ::SpectralAxisKind;
+    using SpectralAxisDescriptor = ::SpectralAxisDescriptor;
 
 public:
     /// Stable key for persisting per-dataset analysis parameters (the FITS file

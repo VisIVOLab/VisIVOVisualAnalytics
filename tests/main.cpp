@@ -13,6 +13,7 @@
 #include "TestLinkedWindowRegistry.h"
 #include "TestSpectralUnitConvert.h"
 #include "TestCubeRegionGeom.h"
+#include "TestSpectralAxisInfer.h"
 
 #include <QCoreApplication>
 #include <QTest>
@@ -32,5 +33,6 @@ int main(int argc, char *argv[])
     { TestLinkedWindowRegistry t; status |= QTest::qExec(&t, argc, argv); }
     { TestSpectralUnitConvert t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeRegionGeom   t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSpectralAxisInfer t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }

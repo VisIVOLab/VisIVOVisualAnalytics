@@ -2,6 +2,7 @@
 #include "ui_vtkWindowCube.h"
 #include "CubeWcsUtil.h"
 #include "CubeViewportGeometry.h"
+#include "SpectralAxisInfer.h"
 
 #include "qcustomplot.h"
 #include "ColorMaps.h"
@@ -168,90 +169,9 @@ using namespace CubeGeom;
 namespace {
 constexpr int overlayTickCount = 5;  // moved here with the WCS overlay methods
 
-QString cleanAxisUnit(const QString &value);
-QString spectralAxisKindLabel(vtkWindowCube::SpectralAxisKind kind);
-vtkWindowCube::SpectralAxisDescriptor inferSpectralAxisDescriptor(const QString &ctypeRaw,
-                                                                  const QString &unitRaw,
-                                                                  bool hasPhysicalCoordinates);
-
-
-
-QString cleanAxisUnit(const QString &value)
-{
-    return value.trimmed();
-}
-
-QString spectralAxisKindLabel(vtkWindowCube::SpectralAxisKind kind)
-{
-    switch (kind) {
-    case vtkWindowCube::SpectralAxisKind::Frequency:
-        return u"Frequency"_s;
-    case vtkWindowCube::SpectralAxisKind::RadioVelocity:
-        return u"Radio Velocity"_s;
-    case vtkWindowCube::SpectralAxisKind::OpticalVelocity:
-        return u"Optical Velocity"_s;
-    case vtkWindowCube::SpectralAxisKind::GenericVelocity:
-        return u"Velocity"_s;
-    case vtkWindowCube::SpectralAxisKind::GenericSpectral:
-        return u"Spectral Axis"_s;
-    case vtkWindowCube::SpectralAxisKind::Channel:
-    default:
-        return u"Channel"_s;
-    }
-}
-
-vtkWindowCube::SpectralAxisDescriptor inferSpectralAxisDescriptor(const QString &ctypeRaw,
-                                                                  const QString &unitRaw,
-                                                                  bool hasPhysicalCoordinates)
-{
-    vtkWindowCube::SpectralAxisDescriptor descriptor;
-    const QString ctype = upperCtype(ctypeRaw);
-    descriptor.unit = cleanAxisUnit(unitRaw);
-    descriptor.sourceLabel = ctypeRaw.trimmed();
-
-    if (!hasPhysicalCoordinates) {
-        descriptor.kind = vtkWindowCube::SpectralAxisKind::Channel;
-        descriptor.label = u"Channel"_s;
-        descriptor.sourceLabel = u"Channel"_s;
-        return descriptor;
-    }
-
-    descriptor.physical = true;
-    if (ctype.startsWith(u"FREQ"_s)) {
-        descriptor.kind = vtkWindowCube::SpectralAxisKind::Frequency;
-        descriptor.label = u"Frequency"_s;
-        descriptor.trusted = true;
-    } else if (ctype.startsWith(u"VRAD"_s)) {
-        descriptor.kind = vtkWindowCube::SpectralAxisKind::RadioVelocity;
-        descriptor.label = u"Radio Velocity"_s;
-        descriptor.trusted = true;
-    } else if (ctype.startsWith(u"VOPT"_s) || ctype.startsWith(u"FELO"_s)) {
-        descriptor.kind = vtkWindowCube::SpectralAxisKind::OpticalVelocity;
-        descriptor.label = u"Optical Velocity"_s;
-        descriptor.trusted = true;
-    } else if (ctype.startsWith(u"VELO"_s) || ctype.contains(u"VELO"_s)) {
-        descriptor.kind = vtkWindowCube::SpectralAxisKind::GenericVelocity;
-        descriptor.label = u"Velocity"_s;
-        descriptor.inferred = true;
-    } else if (ctype.contains(u"CHAN"_s) || ctype == u"CHANNEL"_s) {
-        descriptor.kind = vtkWindowCube::SpectralAxisKind::Channel;
-        descriptor.label = u"Channel"_s;
-        descriptor.sourceLabel = u"Channel"_s;
-        descriptor.physical = false;
-    } else {
-        descriptor.kind = vtkWindowCube::SpectralAxisKind::GenericSpectral;
-        descriptor.label = ctypeRaw.trimmed().isEmpty() ? u"Spectral Axis"_s : ctypeRaw.trimmed();
-        descriptor.inferred = !ctypeRaw.trimmed().isEmpty();
-    }
-
-    if (descriptor.sourceLabel.isEmpty()) {
-        descriptor.sourceLabel = spectralAxisKindLabel(descriptor.kind);
-    }
-    return descriptor;
-}
-
-
-
+// Spectral-axis inference (inferSpectralAxisDescriptor + its label/clean helpers)
+// now lives in SpectralAxisInfer.h (E-04) so it can be unit-tested; callers below
+// use spectralaxis::inferSpectralAxisDescriptor.
 }  // namespace
 
 vtkWindowCube::SpectralAxisDescriptor vtkWindowCube::spectralAxisDescriptor() const
@@ -260,7 +180,7 @@ vtkWindowCube::SpectralAxisDescriptor vtkWindowCube::spectralAxisDescriptor() co
             || !this->remoteSpectralAxisUnit.trimmed().isEmpty();
     if (hasBackendSpectralMetadata) {
         auto descriptor =
-                inferSpectralAxisDescriptor(this->remoteSpectralAxisType,
+                spectralaxis::inferSpectralAxisDescriptor(this->remoteSpectralAxisType,
                                            !this->remoteSpectralAxisUnit.trimmed().isEmpty()
                                                    ? this->remoteSpectralAxisUnit
                                                    : this->remoteDatasetCunit[2],
@@ -276,7 +196,8 @@ vtkWindowCube::SpectralAxisDescriptor vtkWindowCube::spectralAxisDescriptor() co
         }
         return descriptor;
     }
-    return inferSpectralAxisDescriptor(this->remoteDatasetCtype[2], this->remoteDatasetCunit[2],
+    return spectralaxis::inferSpectralAxisDescriptor(this->remoteDatasetCtype[2],
+                                       this->remoteDatasetCunit[2],
                                        this->remoteHasWcsAxis(2));
 }
 
