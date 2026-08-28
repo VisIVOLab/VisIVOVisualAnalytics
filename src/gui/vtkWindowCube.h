@@ -1354,6 +1354,10 @@ protected:
     int m_volumeBlendMode{ 0 };
     void broadcastLinkedBlendMode();
     void applyLinkedBlendMode(int idx);
+    // Linked 3-D representation (Volume ↔ Isosurface). Like the blend mode this is
+    // gated only by the Link-views master (no per-facet chip).
+    void broadcastLinkedRenderMode();
+    void applyLinkedRenderMode(bool isosurface);
     vtkNew<vtkVolume> volume;
     vtkNew<vtkColorTransferFunction> volumeColorTransferFunction;
     vtkNew<vtkPiecewiseFunction> volumeOpacity;

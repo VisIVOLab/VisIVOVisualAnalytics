@@ -597,6 +597,11 @@ void vtkWindowCube::setupSidebar()
         if (this->m_actionComposite) this->m_actionComposite->setChecked(idx == 0);
         if (this->m_actionMIP)       this->m_actionMIP->setChecked(idx == 1);
         if (this->m_actionMinIP)     this->m_actionMinIP->setChecked(idx == 2);
+        // Linked views: the sidebar path must broadcast the blend mode too — the
+        // menu handler did, but the menu actions above are set under a QSignalBlocker
+        // so blendGroup::triggered never fires here (that was the sync gap).
+        if (this->m_linkViews && !this->m_applyingLinkedUpdate)
+            this->broadcastLinkedBlendMode();
     });
 
     // ── LUT combo → apply 3D volume color map ────────────────────────────────

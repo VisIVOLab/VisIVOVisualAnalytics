@@ -20,6 +20,7 @@
 #include "LutScale.h"
 #include "Pane2DView.h"
 #include "SpectralUnitConvert.h"
+#include "theme/SegmentedToggle.h"
 
 #include <vtkCamera.h>
 #include <vtkCommand.h>
@@ -498,4 +499,45 @@ void vtkWindowCube::applyLinkedBlendMode(int idx)
         QSignalBlocker b(act);
         act->setChecked(true);
     }
+}
+
+void vtkWindowCube::broadcastLinkedRenderMode()
+{
+    if (!this->m_linkViews)
+        return;
+    const bool iso = ui->actionIsosurface && ui->actionIsosurface->isChecked();
+    const auto windows = s_registry.snapshot();   // snapshot — peers may mutate the list
+    for (const auto &p : windows)
+        if (p && p != this && p->m_linkViews)
+            p->applyLinkedRenderMode(iso);
+}
+
+void vtkWindowCube::applyLinkedRenderMode(bool isosurface)
+{
+    // Already in the requested representation → nothing to do (also stops any echo).
+    if (ui->actionIsosurface && ui->actionIsosurface->isChecked() == isosurface)
+        return;
+    QScopedValueRollback<bool> guard(this->m_applyingLinkedUpdate, true);
+    {
+        // Flip the exclusive Volume/Isosurface actions without firing their handler;
+        // changeCubeRender() below reads these to perform the actual switch.
+        QSignalBlocker bIso(ui->actionIsosurface);
+        QSignalBlocker bVol(ui->actionVolume);
+        if (ui->actionIsosurface) ui->actionIsosurface->setChecked(isosurface);
+        if (ui->actionVolume) ui->actionVolume->setChecked(!isosurface);
+    }
+    // The action toggled-handlers we just blocked are what normally keep the sidebar
+    // in sync (the Volume/Iso segment + the volume-mode card visibility), so replicate
+    // their side effects here or the linked peer would render the new mode while its
+    // sidebar still shows the old one.
+    if (this->m_uiAssembler) {
+        if (auto *c = this->m_uiAssembler->renderModeCombo()) {
+            const QSignalBlocker b(c);
+            c->setCurrentIndex(isosurface ? 0 : 1);
+        }
+    }
+    this->updateVolumeModeVisibility(!isosurface);
+    // Perform the same local switch a user toggle would; the guard suppresses the
+    // re-broadcast at the top of changeCubeRender, so linked windows can't ping-pong.
+    this->changeCubeRender();
 }

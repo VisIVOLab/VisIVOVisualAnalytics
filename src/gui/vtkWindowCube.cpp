@@ -10420,6 +10420,10 @@ void vtkWindowCube::changeCubeRender()
     qDebug().noquote()
             << QStringLiteral("[remote-iso] changeCubeRender triggered checked=%1")
                        .arg(ui->actionIsosurface->isChecked());
+    // Linked views: mirror the Volume↔Isosurface choice to linked peers (gated by
+    // the master; suppressed when this switch is itself a linked-driven update).
+    if (this->m_linkViews && !this->m_applyingLinkedUpdate)
+        this->broadcastLinkedRenderMode();
     if (ui->actionIsosurface->isChecked()) {
         this->scheduleIsosurfaceRecompute();
         this->setCubeRenderModeLocally(false);
@@ -10869,6 +10873,12 @@ void vtkWindowCube::setCubeRenderModeLocally(bool isosurfaceMode)
 void vtkWindowCube::applyIsosurfaceResult(const AsyncIsosurfaceResult &result)
 {
     if (!result.mesh || result.mesh->GetNumberOfPoints() == 0 || result.mesh->GetNumberOfPolys() == 0) {
+        return;
+    }
+    // The isosurface fetch is async; if the representation was switched back to
+    // Volume (by the user OR a linked-view update) while it was in flight, discard
+    // the stale result instead of forcing this window back into isosurface mode.
+    if (ui->actionIsosurface && !ui->actionIsosurface->isChecked()) {
         return;
     }
 
