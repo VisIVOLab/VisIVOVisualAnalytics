@@ -85,6 +85,8 @@ add_executable(VisIVOTests
     test_linked_window_registry.cpp
     TestSpectralUnitConvert.h
     test_spectral_unit_convert.cpp
+    TestCubeRegionGeom.h
+    test_cube_region_geom.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

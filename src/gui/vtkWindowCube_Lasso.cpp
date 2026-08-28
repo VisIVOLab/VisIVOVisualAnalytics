@@ -9,6 +9,7 @@
 #include "vtkWindowCube.h"
 #include "ui_vtkWindowCube.h"
 
+#include "CubeRegionGeom.h"
 #include "app/BackendClient.h"
 
 #include <vtkActor.h>
@@ -84,21 +85,11 @@ RemoteKinematicSelectResult fetchKinematicSelect(
     return out;
 }
 
-// Ray-casting point-in-polygon test over integer polygon vertices (x,y).
-bool pointInPolygon(int px, int py, const std::vector<std::array<int, 2>> &poly)
-{
-    bool inside = false;
-    const std::size_t n = poly.size();
-    for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
-        const double xi = poly[i][0], yi = poly[i][1];
-        const double xj = poly[j][0], yj = poly[j][1];
-        const bool crosses = ((yi > py) != (yj > py))
-                && (double(px) < (xj - xi) * (double(py) - yi) / (yj - yi) + xi);
-        if (crosses)
-            inside = !inside;
-    }
-    return inside;
-}
+// (De-duplicated in E-04: the per-channel mask refinement below now uses the
+// shared CubeRegionGeom::pointInPolygon — proven behaviour-equivalent to the old
+// local copy: the +0.5 pixel-centre shift is a uniform translation of point and
+// vertices together, the ≥3-vertex guard is already enforced by the caller, and
+// the horizontal-edge divide is short-circuited by the (yi>py)!=(yj>py) test.)
 
 }  // namespace
 
@@ -915,7 +906,7 @@ void vtkWindowCube::commitLassoEditPolygon()
     qint64 changed = 0;
     for (int y = py0; y <= py1; ++y) {
         for (int x = px0; x <= px1; ++x) {
-            if (pointInPolygon(x, y, this->m_lassoEditVerts)) {
+            if (CubeRegionGeom::pointInPolygon(this->m_lassoEditVerts, x, y)) {
                 const qint64 idx = (qint64(lz) * mh + (y - oy)) * mw + (x - ox);
                 if (mask[idx] != val) { mask[idx] = val; ++changed; }
             }
