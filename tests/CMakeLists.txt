@@ -83,6 +83,8 @@ add_executable(VisIVOTests
     test_remote_slice_cache.cpp
     TestLinkedWindowRegistry.h
     test_linked_window_registry.cpp
+    TestSpectralUnitConvert.h
+    test_spectral_unit_convert.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

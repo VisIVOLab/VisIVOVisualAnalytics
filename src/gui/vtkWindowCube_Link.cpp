@@ -19,6 +19,7 @@
 #include "CubeUiAssembler.h"
 #include "LutScale.h"
 #include "Pane2DView.h"
+#include "SpectralUnitConvert.h"
 
 #include <vtkCamera.h>
 #include <vtkCommand.h>
@@ -61,43 +62,8 @@ bool dataBoundsCenterDiag(vtkImageData *im, double center[3], double &diag)
     return diag > 1e-9;
 }
 
-// Spectral-axis unit → (physical quantity, factor to SI). quantity: 1 = velocity
-// (SI m/s), 2 = frequency (SI Hz). ok=false for unrecognised units. Handles the
-// header and astropy-normalised spellings (km/s, m/s, m.s**-1, Hz/kHz/MHz/GHz).
-struct SpectralUnit { int quantity{ 0 }; double siFactor{ 1.0 }; bool ok{ false }; };
-SpectralUnit parseSpectralUnit(QString u)
-{
-    u = u.trimmed().toLower();
-    u.remove(QLatin1Char(' '));
-    u.remove(QLatin1Char('.'));
-    u.replace(u"**"_s, u""_s);
-    u.remove(QLatin1Char('/'));
-    // frequency (check before velocity: "mhz" must not look like a velocity)
-    if (u == u"hz"_s)  return { 2, 1.0, true };
-    if (u == u"khz"_s) return { 2, 1.0e3, true };
-    if (u == u"mhz"_s) return { 2, 1.0e6, true };
-    if (u == u"ghz"_s) return { 2, 1.0e9, true };
-    // velocity: km/s→"kms", m/s→"ms", m.s**-1→"ms-1", km.s**-1→"kms-1".
-    // Exact normalised matches (not startsWith) so an unrelated "ms…" string is
-    // not mistaken for a velocity.
-    if (u == u"kms"_s || u == u"kms-1"_s) return { 1, 1.0e3, true };
-    if (u == u"ms"_s || u == u"ms-1"_s)   return { 1, 1.0, true };
-    return {};
-}
-
-// Convert a spectral value between two units of the SAME physical quantity.
-// Returns false (no conversion) if either unit is unknown or they differ in
-// quantity (e.g. frequency vs velocity, which needs a rest frequency).
-bool convertSpectralValue(double value, const QString &fromUnit, const QString &toUnit,
-                          double &out)
-{
-    const SpectralUnit f = parseSpectralUnit(fromUnit);
-    const SpectralUnit t = parseSpectralUnit(toUnit);
-    if (!f.ok || !t.ok || f.quantity != t.quantity)
-        return false;
-    out = value * f.siFactor / t.siFactor;
-    return true;
-}
+// Spectral-axis unit parsing + same-quantity value conversion now live in
+// SpectralUnitConvert.h (E-04 shared-helper lift) so they can be unit-tested.
 }  // namespace
 
 void vtkWindowCube::setLinkViews(bool on)
@@ -270,7 +236,7 @@ void vtkWindowCube::applyLinkedChannel(int channel0, double fraction, double spe
         double matchValue = spectralValue;
         bool canMatch = (spectralUnit == myUnit);   // identical unit: no conversion
         if (!canMatch)
-            canMatch = convertSpectralValue(spectralValue, spectralUnit, myUnit, matchValue);
+            canMatch = spectral::convertSpectralValue(spectralValue, spectralUnit, myUnit, matchValue);
 
         bool ok0 = false, okN = false;
         const double v0 = this->spectralAxisValue(0, &ok0);

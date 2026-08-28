@@ -11,6 +11,7 @@
 #include "TestBackendContract.h"
 #include "TestRemoteSliceCache.h"
 #include "TestLinkedWindowRegistry.h"
+#include "TestSpectralUnitConvert.h"
 
 #include <QCoreApplication>
 #include <QTest>
@@ -28,5 +29,6 @@ int main(int argc, char *argv[])
     { TestBackendContract  t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteSliceCache t; status |= QTest::qExec(&t, argc, argv); }
     { TestLinkedWindowRegistry t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSpectralUnitConvert t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }
