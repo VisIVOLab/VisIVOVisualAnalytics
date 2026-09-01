@@ -94,6 +94,95 @@ def test_cosmology_tool():
     assert out["model"] == "Planck18"
 
 
+def test_catalogue_summary_tool(tmp_path):
+    path = tmp_path / "cat.csv"
+    path.write_text("RA,DEC,z\n10.0,-5.0,0.1\n20.0,5.0,0.3\n", encoding="utf-8")
+    out = TOOLS["catalogue_summary"].executor(str(path), {})
+    assert out["kind"] == "catalogue"
+    assert out["num_rows"] == 2
+    assert out["coordinate_fields"]["system"] == "sky"
+    zcol = next(c for c in out["columns"] if c["name"] == "z")
+    assert zcol["min"] == 0.1 and zcol["max"] == 0.3
+
+
+def test_catalogue_summary_rejects_unknown_extension(tmp_path):
+    path = tmp_path / "cat.dat"
+    path.write_text("nope", encoding="utf-8")
+    with pytest.raises(ValueError):
+        TOOLS["catalogue_summary"].executor(str(path), {})
+
+
+def test_catalogue_summary_prefers_cached_dataframe():
+    # Multi-file catalogues are concatenated in-session; the tool must summarise
+    # the CACHED frame (correct row count), not re-read one path. It also reports
+    # finite_count=0 with None stats for an all-NaN numeric column.
+    import numpy as _np
+    import pandas as _pd
+
+    frame = _pd.DataFrame({"RA": [1.0, 2.0, 3.0], "DEC": [0.0, 0.0, 0.0],
+                           "flux": [_np.nan, _np.nan, _np.nan]})
+    context = {"kind": "catalogue", "format": "csv", "path": "/nonexistent.csv",
+               "dataframe": frame}
+    out = TOOLS["catalogue_summary"].executor(None, {}, context)
+    assert out["num_rows"] == 3
+    flux = next(c for c in out["columns"] if c["name"] == "flux")
+    assert flux["finite_count"] == 0
+    assert flux["min"] is None and flux["mean"] is None
+
+
+def test_vbt_summary_tool_reads_memmap():
+    # VBT datasets expose a field-major (field_count, num_rows) array via the
+    # session entry — no filesystem path. vbt_summary must stat it from context.
+    arr = np.array([[1.0, 2.0, 3.0, 4.0], [10.0, np.nan, 30.0, 40.0]], dtype="float64")
+    header = {"field_names": ["x", "flux"], "field_count": 2, "num_rows": 4,
+              "scalar_type": "float64", "kind": "point"}
+    context = {"kind": "vbt", "header": header, "memmap": arr}
+    out = TOOLS["vbt_summary"].executor(None, {}, context)
+    assert out["vbt_kind"] == "point"
+    assert out["num_rows"] == 4
+    flux = next(f for f in out["fields"] if f["name"] == "flux")
+    assert flux["finite_count"] == 3
+    assert flux["min"] == 10.0 and flux["max"] == 40.0
+
+
+def test_vbt_summary_requires_vbt_context():
+    with pytest.raises(ValueError):
+        TOOLS["vbt_summary"].executor(None, {}, {"kind": "catalogue"})
+
+
+class _CatalogueProvider(AssistantProvider):
+    """Fake LLM: calls catalogue_summary once, then answers."""
+
+    name = "scripted"
+    configured = True
+
+    def __init__(self):
+        self._turn = 0
+
+    def complete(self, system, messages, tools):
+        self._turn += 1
+        if self._turn == 1:
+            return ProviderResponse(tool_calls=[
+                ToolCall(id="c1", name="catalogue_summary", arguments={})])
+        return ProviderResponse(final_text="The catalogue has 3 rows.")
+
+
+def test_engine_passes_dataset_entry_to_context_tool():
+    # A wants_context tool must receive the cached session entry (dataframe), so
+    # catalogue_summary reports the in-session row count — not a re-read of path.
+    import pandas as _pd
+
+    frame = _pd.DataFrame({"RA": [1.0, 2.0, 3.0], "DEC": [0.0, 1.0, 2.0]})
+    entry = {"kind": "catalogue", "format": "csv", "path": "/nonexistent.csv",
+             "dataframe": frame}
+    engine = AssistantEngine(_CatalogueProvider())
+    res = engine.run("Describe the catalogue.", "/nonexistent.csv",
+                     dataset_id="cat1", dataset_entry=entry)
+    assert res.tool_calls[0].name == "catalogue_summary"
+    assert res.tool_calls[0].error is None
+    assert res.tool_calls[0].result["num_rows"] == 3
+
+
 # ── Agent loop with a scripted fake provider ──────────────────────────────────
 
 class _ScriptedProvider(AssistantProvider):

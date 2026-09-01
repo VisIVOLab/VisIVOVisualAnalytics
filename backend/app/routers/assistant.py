@@ -136,9 +136,13 @@ async def assistant_query(
         raise HTTPException(422, "A non-empty question is required.")
 
     dataset_path: str | None = None
+    dataset_entry: dict | None = None
     if request.dataset_id:
-        entry = _require_dataset(session, request.dataset_id)
-        dataset_path = entry["path"]
+        dataset_entry = _require_dataset(session, request.dataset_id)
+        # Not every dataset kind carries a filesystem "path" (a VBT is memory-
+        # mapped and exposed via the entry itself), so resolve it defensively —
+        # context-aware tools use the entry directly.
+        dataset_path = dataset_entry.get("path")
 
     # Admission control. A copilot query drives real compute (moment/cube stats),
     # so it counts against BOTH the per-session budget (HTTP 429) AND a dedicated
@@ -171,7 +175,8 @@ async def assistant_query(
 
     engine = AssistantEngine(_get_provider())
     task = asyncio.ensure_future(
-        asyncio.to_thread(engine.run, request.question, dataset_path, request.dataset_id))
+        asyncio.to_thread(engine.run, request.question, dataset_path,
+                          request.dataset_id, dataset_entry))
     try:
         result = await asyncio.wait_for(asyncio.shield(task), timeout=_ASSISTANT_TIMEOUT_S)
         _release_once()

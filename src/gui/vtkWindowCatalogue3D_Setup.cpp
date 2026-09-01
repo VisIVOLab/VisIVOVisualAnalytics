@@ -68,6 +68,7 @@
 #include <QTableView>
 #include <QTextEdit>
 #include <QVBoxLayout>
+#include "AssistantPanel.h"
 #include "SidebarPanel.h"
 #include <QtConcurrent>
 
@@ -364,6 +365,20 @@ void vtkWindowCatalogue3D::setupSidebar()
         pageLayout->addStretch(1);
 
         this->m_sidebar->addPage(u":/icons/rail_filter.svg"_s, u"Filters"_s, pageFilters);
+    }
+
+    // ── Scientific copilot page ───────────────────────────────────────────────
+    // Grounded Q&A over the loaded catalogue (catalogue_summary + cosmology_distance
+    // tools) plus reversible camera control. The dataset id is set later, once the
+    // catalogue open request returns (see the open handlers in the .cpp).
+    {
+        this->m_copilot = new AssistantPanel(this);
+        this->m_copilot->setBackend(this->backendUrl, this->backendToken);
+        connect(this->m_copilot, &AssistantPanel::actionsRequested, this,
+                &vtkWindowCatalogue3D::applyCopilotActions);
+        connect(this->m_copilot, &AssistantPanel::undoRequested, this,
+                &vtkWindowCatalogue3D::undoCopilotActions);
+        this->m_sidebar->addPage(u":/icons/rail_copilot.svg"_s, u"Copilot"_s, this->m_copilot);
     }
 
     this->m_sidebar->finalize(0);

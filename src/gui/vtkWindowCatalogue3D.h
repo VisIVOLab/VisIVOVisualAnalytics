@@ -11,6 +11,8 @@
 #include <QDockWidget>
 #include <QElapsedTimer>
 #include <QFutureWatcher>
+#include <QJsonObject>
+#include <QList>
 #include <QMainWindow>
 #include <QMap>
 #include <QPointer>
@@ -50,6 +52,7 @@ class QTextEdit;
 class QTableView;
 class SidebarPanel;
 class Catalogue3DTableModel;
+class AssistantPanel;
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class vtkWindowCatalogue3D;
@@ -111,6 +114,13 @@ private slots:
     void toggleShells(bool checked);
     void syncTableSelection(int index);
 
+    /// Apply scientific-copilot visualisation directives to this catalogue view.
+    /// Only camera control (reset_camera) applies to a point cloud; other
+    /// directives (colormap/threshold/render mode — cube/image only) are ignored.
+    /// The camera is snapshotted first so undoCopilotActions() can restore it.
+    void applyCopilotActions(const QList<QJsonObject> &actions);
+    void undoCopilotActions();   ///< revert the last copilot camera change
+
 signals:
     void sourceSelectionChanged(int index);
     /// Emitted when a session-expiry error is detected and the user requests
@@ -145,6 +155,19 @@ private:
     SidebarPanel *m_sidebar{ nullptr };
     QPointer<QAction> actionShowControlsSidebar;
     void setupSidebar();
+
+    // ── Scientific copilot ────────────────────────────────────────────────────
+    AssistantPanel *m_copilot{ nullptr };
+    /// Camera pose captured before the copilot last reset the view, so Undo can
+    /// restore it. ``captured`` is false until the first reset_camera directive.
+    struct CopilotCameraUndo
+    {
+        bool captured{ false };
+        double position[3]{ 0, 0, 0 };
+        double focalPoint[3]{ 0, 0, 0 };
+        double viewUp[3]{ 0, 0, 1 };
+        double parallelScale{ 1.0 };
+    } m_copilotUndo;
 
     // ── Setup ──────────────────────────────────────────────────────────────
     void setupRenderer();

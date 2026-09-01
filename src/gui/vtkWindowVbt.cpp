@@ -53,7 +53,9 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
+#include "AssistantPanel.h"
 #include "SidebarPanel.h"
+#include <vtkCamera.h>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStackedWidget>
@@ -344,6 +346,8 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
                          // Session recovered — update IDs and retry load-more.
                          this->openResult.datasetId = result.datasetId;
                          this->sessionId            = result.sessionId;
+                         if (this->m_copilot)
+                             this->m_copilot->setDatasetId(this->openResult.datasetId);
                          if (this->filterStatusLabel)
                              this->filterStatusLabel->setText({});
                          this->loadMoreEntries();
@@ -965,11 +969,23 @@ void vtkWindowVbt::setupSidebarUi()
     pageInfoLayout->addWidget(this->metadataLabel);
     pageInfoLayout->addStretch(1);
 
+    // ── Scientific copilot page ───────────────────────────────────────────────
+    // Grounded Q&A over the loaded VBT (vbt_summary tool) plus reversible colormap
+    // and camera control. The dataset id is known at construction.
+    this->m_copilot = new AssistantPanel(this);
+    this->m_copilot->setBackend(this->backendUrl, this->backendToken);
+    this->m_copilot->setDatasetId(this->openResult.datasetId);
+    connect(this->m_copilot, &AssistantPanel::actionsRequested, this,
+            &vtkWindowVbt::applyCopilotActions);
+    connect(this->m_copilot, &AssistantPanel::undoRequested, this,
+            &vtkWindowVbt::undoCopilotActions);
+
     // ── Wire pages into SidebarPanel ──────────────────────────────────────────
     this->m_sidebar = new SidebarPanel(320, this);
     this->m_sidebar->addPage(u":/icons/rail_display.svg"_s, u"Display"_s,    pageDisplay);
     this->m_sidebar->addPage(u":/icons/rail_filter.svg"_s,  u"Filters"_s,   pageFilters);
     this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,   u"Info / Stats"_s, pageInfo);
+    this->m_sidebar->addPage(u":/icons/rail_copilot.svg"_s, u"Copilot"_s,   this->m_copilot);
     this->m_sidebar->finalize(0);
 }
 
@@ -1604,6 +1620,82 @@ void vtkWindowVbt::resetView()
     this->renderer->ResetCamera();
     this->renderer->ResetCameraClippingRange();
     this->renderWindow->Render();
+}
+
+void vtkWindowVbt::applyCopilotActions(const QList<QJsonObject> &actions)
+{
+    // Which directives can this point/volume view act on? (colormap + camera.)
+    bool batchSetsColormap = false;
+    bool batchResetsCamera = false;
+    for (const QJsonObject &a : actions) {
+        const QString t = a.value(u"type"_s).toString();
+        if (t == u"set_colormap"_s)
+            batchSetsColormap = true;
+        else if (t == u"reset_camera"_s)
+            batchResetsCamera = true;
+    }
+    if (!batchSetsColormap && !batchResetsCamera)
+        return;   // nothing applicable — leave any prior Undo point untouched
+
+    // Fresh snapshot of the affected state BEFORE this batch, so "Undo latest
+    // change" reverts exactly this batch (matching the cube/image model). Only
+    // capture what the batch actually touches, so undo can't clobber the user's
+    // own camera/colormap moves made between two copilot batches.
+    vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
+    this->m_copilotUndo = CopilotUndo{};
+    if (batchSetsColormap && this->comboColormap) {
+        this->m_copilotUndo.colormapName = this->comboColormap->currentText();
+        this->m_copilotUndo.colormapCaptured = true;
+    }
+    if (batchResetsCamera && camera) {
+        camera->GetPosition(this->m_copilotUndo.position);
+        camera->GetFocalPoint(this->m_copilotUndo.focalPoint);
+        camera->GetViewUp(this->m_copilotUndo.viewUp);
+        this->m_copilotUndo.parallelScale = camera->GetParallelScale();
+        this->m_copilotUndo.cameraCaptured = true;
+    }
+
+    for (const QJsonObject &a : actions) {
+        const QString type = a.value(u"type"_s).toString();
+        if (type == u"set_colormap"_s && this->comboColormap) {
+            const QString name = a.value(u"name"_s).toString().trimmed();
+            if (name.isEmpty())
+                continue;
+            // Case-insensitive match against the available colour maps; ignore an
+            // unknown name rather than blanking the current map.
+            int idx = -1;
+            for (int i = 0; i < this->comboColormap->count(); ++i) {
+                if (this->comboColormap->itemText(i).compare(name, Qt::CaseInsensitive) == 0) {
+                    idx = i;
+                    break;
+                }
+            }
+            if (idx >= 0)
+                this->comboColormap->setCurrentIndex(idx);   // triggers updateColorMapping()
+        } else if (type == u"reset_camera"_s && camera) {
+            this->resetView();
+        }
+    }
+}
+
+void vtkWindowVbt::undoCopilotActions()
+{
+    if (this->m_copilotUndo.colormapCaptured && this->comboColormap) {
+        const int idx = this->comboColormap->findText(this->m_copilotUndo.colormapName);
+        if (idx >= 0)
+            this->comboColormap->setCurrentIndex(idx);   // triggers updateColorMapping()
+        this->m_copilotUndo.colormapCaptured = false;
+    }
+    vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
+    if (this->m_copilotUndo.cameraCaptured && camera) {
+        camera->SetPosition(this->m_copilotUndo.position);
+        camera->SetFocalPoint(this->m_copilotUndo.focalPoint);
+        camera->SetViewUp(this->m_copilotUndo.viewUp);
+        camera->SetParallelScale(this->m_copilotUndo.parallelScale);
+        this->m_copilotUndo.cameraCaptured = false;
+        this->renderer->ResetCameraClippingRange();
+        this->renderWindow->Render();
+    }
 }
 
 void vtkWindowVbt::updateSummary()

@@ -21,9 +21,12 @@
 #include <vtkTextActor.h>
 
 #include <QFutureWatcher>
+#include <QJsonObject>
+#include <QList>
 #include <QMainWindow>
 #include <QPointer>
 
+class AssistantPanel;
 class QAction;
 class QCheckBox;
 class QComboBox;
@@ -78,6 +81,15 @@ private:
     void applyBoxActorColors(bool darkBackground);
     void resetView();
     void updateRenderMode();
+
+    /// Apply scientific-copilot visualisation directives to this VBT view.
+    /// A point/volume table supports colormap and camera control: set_colormap
+    /// (recolour by the named map) and reset_camera. Other directives (threshold,
+    /// render/blend mode — cube-only) are ignored. State is snapshotted first so
+    /// undoCopilotActions() can revert it.
+    void applyCopilotActions(const QList<QJsonObject> &actions);
+    void undoCopilotActions();
+
     QString activeColorFieldName() const;
     QString activeColormapName() const;
     void setScalarRange(double minValue, double maxValue);
@@ -153,6 +165,20 @@ private:
     SidebarPanel *m_sidebar{ nullptr };
     QPointer<QAction> actionShowControlsSidebar;
     void setupSidebarUi();
+
+    // ── Scientific copilot ────────────────────────────────────────────────────
+    AssistantPanel *m_copilot{ nullptr };
+    /// State captured before the copilot's last change, so Undo can restore it.
+    struct CopilotUndo
+    {
+        bool cameraCaptured{ false };
+        double position[3]{ 0, 0, 0 };
+        double focalPoint[3]{ 0, 0, 0 };
+        double viewUp[3]{ 0, 0, 1 };
+        double parallelScale{ 1.0 };
+        bool colormapCaptured{ false };
+        QString colormapName;
+    } m_copilotUndo;
     double activeScalarMin{ 0.0 };
     double activeScalarMax{ 1.0 };
     double dataScalarMin{ 0.0 };

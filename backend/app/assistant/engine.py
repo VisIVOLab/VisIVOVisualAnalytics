@@ -23,7 +23,7 @@ SYSTEM_PROMPT = """You are the VisIVO scientific copilot for radio/astro data cu
 
 Hard rules:
 - NEVER state a numeric result (flux, velocity, dispersion, distance, statistic) that did not come from a tool call. If a fact needs a number, call a tool.
-- Always establish units and frame first (call dataset_metadata) before interpreting values.
+- Establish the data's shape first: for a cube/image call dataset_metadata (units/frame/beam); for a point catalogue call catalogue_summary (columns/coordinate system) — before interpreting values.
 - Surface caveats explicitly: moment 2 is the velocity DISPERSION σ by default (not variance); fluxes are only in Jy when beam-corrected; a frequency axis needs a rest frequency for km/s; report uncertainties when available.
 - Be concise. When you state a number, name its unit. If the data can't answer, say so.
 - Prefer calling a tool over guessing. Do not fabricate file paths, beams, or redshifts.
@@ -103,11 +103,21 @@ class AssistantEngine:
         self.provider = provider
 
     def run(self, question: str, dataset_path: str | None,
-            dataset_id: str | None = None) -> AssistantResult:
+            dataset_id: str | None = None,
+            dataset_entry: dict[str, Any] | None = None) -> AssistantResult:
         specs = tool_specs()
         context = ""
         if dataset_id:
-            context = f"\n\n[A dataset is loaded: id={dataset_id}. Tools operate on it.]"
+            kind = (dataset_entry or {}).get("kind")
+            if kind == "catalogue":
+                context = (f"\n\n[A point catalogue is loaded: id={dataset_id}. "
+                           "Call catalogue_summary first; use cosmology_distance "
+                           "for redshift → distance.]")
+            elif kind == "vbt":
+                context = (f"\n\n[A VBT point/volume table is loaded: id={dataset_id}. "
+                           "Call vbt_summary first.]")
+            else:
+                context = f"\n\n[A dataset is loaded: id={dataset_id}. Tools operate on it.]"
         # NEUTRAL conversation history — provider-agnostic. Each provider
         # translates it to its own API shape (Anthropic tool_use/tool_result
         # blocks, OpenAI tool_calls/tool messages), so the engine works
@@ -127,7 +137,7 @@ class AssistantEngine:
             # Execute each requested tool against the real workers.
             results: list[dict[str, Any]] = []
             for call in resp.tool_calls:
-                inv = self._execute(call, dataset_path)
+                inv = self._execute(call, dataset_path, dataset_entry)
                 invocations.append(inv)
                 # Action tools emit a viewer directive rather than data; collect
                 # it for the app to apply (the model still gets the queued ack).
@@ -163,13 +173,17 @@ class AssistantEngine:
             actions=actions,
         )
 
-    def _execute(self, call: ToolCall, dataset_path: str | None) -> ToolInvocation:
+    def _execute(self, call: ToolCall, dataset_path: str | None,
+                 dataset_entry: dict[str, Any] | None = None) -> ToolInvocation:
         tool = TOOLS.get(call.name)
         if tool is None:
             return ToolInvocation(call.name, call.arguments,
                                   error=f"unknown tool {call.name!r}")
         try:
-            result = tool.executor(dataset_path, call.arguments)
+            if tool.wants_context:
+                result = tool.executor(dataset_path, call.arguments, dataset_entry)
+            else:
+                result = tool.executor(dataset_path, call.arguments)
             return ToolInvocation(call.name, call.arguments, result=result)
         except Exception as exc:  # noqa: BLE001 — surfaced to the model, not swallowed
             return ToolInvocation(call.name, call.arguments, error=str(exc))

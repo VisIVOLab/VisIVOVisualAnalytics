@@ -21,6 +21,19 @@ bottom and press **Send**.
 The provider status is shown at the bottom of the panel, e.g.
 `Provider: self-hosted (ready)` or `Provider: null (not configured)`.
 
+The Copilot is available in several viewers, each with the analysis tools and
+reversible actions that make sense for its data:
+
+| Viewer | Grounded analysis tools | Actions it can take |
+| --- | --- | --- |
+| **Cube** (3-D spectral cube) | `dataset_metadata`, `cube_statistics`, `moment_map_summary`, `hi_products` | colormap, threshold, render mode (volume/isosurface), blend mode (composite/MIP/MinIP), go to channel, reset camera, **compute & show a moment map** |
+| **Image** (2-D) | `dataset_metadata`, `cube_statistics` | colormap, reset camera |
+| **Cosmology catalogue** (3-D point cloud — the *Catalogue 3D* window) | `catalogue_summary` (columns, coordinate system, per-column ranges), `cosmology_distance` (redshift → comoving/luminosity/angular-diameter distance) | reset camera |
+| **VBT** (point / volume binary table) | `vbt_summary` (rows, fields, per-field ranges) | colormap, reset camera |
+
+Actions are **display-only and reversible**: after the copilot changes the view
+it logs an **↩ Undo latest change** link that reverts exactly that step.
+
 ## Choosing a provider (⚙)
 
 Natural-language answers need a Large Language Model. The tool catalogue works
@@ -96,6 +109,11 @@ them; it cannot fabricate their outputs.
   moment-0 map to integrate the emission.
 - *"What is the comoving distance at redshift 0.1?"* → `cosmology_distance` with
   the honest (Planck18) constants.
+- *(in the Catalogue 3D window)* *"What columns does this catalogue have, and what
+  is the redshift range?"* → `catalogue_summary`; follow up with *"how far away is
+  the most distant source?"* to chain `cosmology_distance`.
+- *(in the VBT window)* *"How many points are in this table and what fields does it
+  carry?"* → `vbt_summary`; *"colour it by the density field"* recolours the cloud.
 
 ## Privacy
 

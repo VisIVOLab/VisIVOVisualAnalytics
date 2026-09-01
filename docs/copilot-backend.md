@@ -114,11 +114,25 @@ The active provider is **module-cached** (`_get_provider`) so `/status` and
 
 `tools.py` exposes read-only, grounded summaries over the loaded dataset. Each
 `AssistantTool` has a `name`, `description`, a JSON-schema `parameters`, and an
-`executor(path, params)`. Current catalogue: `dataset_metadata`,
-`cube_statistics`, `moment_map_summary`, `hi_products`, `cosmology_distance`.
-`tool_specs()` renders them as `{name, description, input_schema}` for the
-provider. Executors call the same workers the REST API uses, so the numbers are
-identical to the interactive tools.
+`executor(path, params)`. Current read catalogue: `dataset_metadata`,
+`cube_statistics`, `moment_map_summary`, `hi_products`, `cosmology_distance`,
+`catalogue_summary` (cosmology / point catalogues), `vbt_summary` (VBT
+point/volume tables). `tool_specs()` renders them as
+`{name, description, input_schema}` for the provider. Executors call the same
+workers the REST API uses, so the numbers are identical to the interactive tools.
+
+A tool that must operate on the **in-session** data rather than re-reading a file
+sets `wants_context=True`; the engine then passes it the resolved session dataset
+entry as a third argument (`executor(path, params, context)`). `catalogue_summary`
+uses this to read the already-concatenated catalogue DataFrame, and `vbt_summary`
+to read the memory-mapped VBT binary — neither has (or needs) a single file path.
+
+Tools whose description starts with `ACTION:` (`set_colormap`, `set_threshold`,
+`set_render_mode`, `set_blend_mode`, `goto_channel`, `reset_camera`,
+`compute_moment`) don't return data — they emit a viewer directive the desktop
+app applies to the active viewer (display-only and reversible). Which directives
+a given viewer honours depends on its data; see the table in the
+[Scientific Copilot](user-guide/copilot) user guide.
 
 ## HTTP routes & admission control
 

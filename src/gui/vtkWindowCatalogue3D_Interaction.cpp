@@ -368,6 +368,49 @@ void vtkWindowCatalogue3D::resetCamera()
     renderWindow->Render();
 }
 
+void vtkWindowCatalogue3D::applyCopilotActions(const QList<QJsonObject> &actions)
+{
+    // A point catalogue has no colormap/threshold/render-mode/channel — only the
+    // camera is controllable here. Apply the reset_camera directive(s); ignore
+    // the cube/image-only ones the copilot may emit (they harmlessly no-op).
+    vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
+    if (!camera)
+        return;
+
+    bool resetRequested = false;
+    for (const QJsonObject &a : actions) {
+        if (a.value(u"type"_s).toString() == u"reset_camera"_s)
+            resetRequested = true;
+    }
+    if (!resetRequested)
+        return;
+
+    // Snapshot the current pose BEFORE resetting so Undo can restore it.
+    camera->GetPosition(this->m_copilotUndo.position);
+    camera->GetFocalPoint(this->m_copilotUndo.focalPoint);
+    camera->GetViewUp(this->m_copilotUndo.viewUp);
+    this->m_copilotUndo.parallelScale = camera->GetParallelScale();
+    this->m_copilotUndo.captured = true;
+
+    this->resetCamera();
+}
+
+void vtkWindowCatalogue3D::undoCopilotActions()
+{
+    vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
+    if (!camera || !this->m_copilotUndo.captured)
+        return;
+    camera->SetPosition(this->m_copilotUndo.position);
+    camera->SetFocalPoint(this->m_copilotUndo.focalPoint);
+    camera->SetViewUp(this->m_copilotUndo.viewUp);
+    camera->SetParallelScale(this->m_copilotUndo.parallelScale);
+    this->m_copilotUndo.captured = false;
+    if (this->renderer)
+        this->renderer->ResetCameraClippingRange();
+    if (this->renderWindow)
+        this->renderWindow->Render();
+}
+
 void vtkWindowCatalogue3D::updateGeometryMode()
 {
     switch (this->comboGeometry ? this->comboGeometry->currentIndex() : 0) {

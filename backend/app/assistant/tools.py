@@ -22,9 +22,16 @@ class AssistantTool:
     description: str
     # JSON Schema (draft-2020) of the parameters, LLM-tool-call compatible.
     parameters: dict[str, Any]
-    # Executor: (dataset_path, params) -> result dict. ``dataset_path`` may be
-    # None for tools that don't operate on the loaded dataset (e.g. cosmology).
-    executor: Callable[[str | None, dict[str, Any]], dict[str, Any]] = field(repr=False)
+    # Executor: (dataset_path, params) -> result dict, or, when ``wants_context``
+    # is set, (dataset_path, params, context) where ``context`` is the resolved
+    # session dataset entry (kind/format/path and, for catalogues, the already
+    # loaded/concatenated ``dataframe``). ``dataset_path`` may be None for tools
+    # that don't operate on the loaded dataset (e.g. cosmology).
+    executor: Callable[..., dict[str, Any]] = field(repr=False)
+    # When True the engine passes the resolved dataset entry as a third argument,
+    # so the tool operates on the in-session data (correct for multi-file /
+    # already-transformed datasets) rather than re-reading a single path.
+    wants_context: bool = False
     # Action tools do NOT compute a read-only result — they emit a display/analysis
     # DIRECTIVE the desktop app executes on the active viewer. Their executor
     # validates the parameters and returns {"action": <directive>, "status":"queued"};
@@ -143,6 +150,137 @@ def _cosmology_distance(_path: str | None, params: dict[str, Any]) -> dict[str, 
         "luminosity_Mpc": float(cosmo.luminosity_distance(z).to(u.Mpc).value),
         "angular_diameter_Mpc": float(cosmo.angular_diameter_distance(z).to(u.Mpc).value),
         "H0_km_s_Mpc": float(cosmo.H0.value),
+    }
+
+
+# Catalogue-file extension → the format token _catalogue_load_dataframe expects.
+_CATALOGUE_SUFFIX_FMT = {
+    ".csv": "csv",
+    ".vot": "votable",
+    ".votable": "votable",
+    ".xml": "votable",
+    ".fits": "fits",
+    ".fit": "fits",
+    ".speck": "speck",
+    ".tbl": "ipac",
+}
+
+
+def _catalogue_summary(path: str | None, params: dict[str, Any],
+                       context: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Structure + per-column numeric ranges of the loaded point catalogue.
+
+    Operates on the catalogue the desktop opened (CSV / VOTable / FITS-table /
+    Partiview .speck / IPAC .tbl) and returns its columns, types, coordinate
+    system and — for numeric columns — min/max/mean/finite-count. These are the
+    facts a cosmology copilot needs to reason about a redshift / position
+    catalogue. No row data is returned, only aggregate statistics.
+
+    Prefers the DataFrame already cached in the session entry (correct for
+    multi-file catalogues the backend concatenated, and immune to the file
+    changing after open); only if that is absent does it re-read ``path``,
+    inferring the format from the file extension.
+    """
+    from ..dependencies import (  # noqa: PLC0415
+        _catalogue_load_dataframe,
+        _catalogue_metadata_from_dataframe,
+    )
+
+    frame = None
+    fmt = None
+    if context is not None:
+        frame = context.get("dataframe")
+        fmt = context.get("format")
+    if frame is None:
+        if not path:
+            raise ValueError("catalogue_summary requires a loaded catalogue dataset.")
+        from pathlib import Path  # noqa: PLC0415
+
+        p = Path(path)
+        fmt = _CATALOGUE_SUFFIX_FMT.get(p.suffix.lower())
+        if fmt is None:
+            raise ValueError(
+                f"unsupported catalogue extension {p.suffix!r}; expected one of "
+                f"{sorted(set(_CATALOGUE_SUFFIX_FMT))}"
+            )
+        frame = _catalogue_load_dataframe(p, fmt)
+    meta = _catalogue_metadata_from_dataframe(frame, str(fmt or "unknown"))
+    max_cols = max(1, int(params.get("max_columns", 40)))
+    columns: list[dict[str, Any]] = []
+    for info in meta["fields"][:max_cols]:
+        name = info["name"]
+        entry: dict[str, Any] = {"name": name, "type": info["type"]}
+        if info["type"] in ("int", "float"):
+            col = frame[name].to_numpy(dtype="float64", na_value=np.nan)
+            fin = col[np.isfinite(col)]
+            # Always report finite_count so the copilot can tell "numeric but
+            # entirely non-finite" (count 0, stats None) from "not computed".
+            entry["finite_count"] = int(fin.size)
+            entry["min"] = float(fin.min()) if fin.size else None
+            entry["max"] = float(fin.max()) if fin.size else None
+            entry["mean"] = float(fin.mean()) if fin.size else None
+        columns.append(entry)
+    return {
+        "kind": "catalogue",
+        "format": meta["format"],
+        "num_rows": meta["num_rows"],
+        "num_columns": len(meta["fields"]),
+        "coordinate_fields": meta["coordinate_fields"],
+        "columns": columns,
+        "columns_truncated": len(meta["fields"]) > max_cols,
+    }
+
+
+def _vbt_summary(_path: str | None, params: dict[str, Any],
+                 context: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Structure + per-field numeric ranges of the loaded VBT point/volume table.
+
+    Reads the memory-mapped VBT binary already open in the session (no re-read of
+    disk) and returns row count, the VBT kind (point / volume), and per field
+    min/max/mean/finite-count. Row data is never returned, only aggregate stats.
+    """
+    if not context or context.get("kind") != "vbt":
+        raise ValueError("vbt_summary requires a loaded VBT dataset.")
+    header = context["header"]
+    memmap = context["memmap"]  # shape (field_count, num_rows), read-only
+    names = list(header["field_names"])
+    max_fields = max(1, int(params.get("max_fields", 40)))
+    fields: list[dict[str, Any]] = []
+    for i, name in enumerate(names[:max_fields]):
+        # Stream the memmapped row in chunks — never materialise a full-length
+        # float64 promotion of a huge VBT column (out-of-core, bounded RAM).
+        row = memmap[i]
+        n = int(row.shape[0])
+        count = 0
+        total = 0.0
+        vmin: float | None = None
+        vmax: float | None = None
+        step = 1_000_000
+        for start in range(0, n, step):
+            block = np.asarray(row[start:start + step], dtype="float64")
+            block = block[np.isfinite(block)]
+            if block.size:
+                count += int(block.size)
+                total += float(block.sum())
+                bmin = float(block.min())
+                bmax = float(block.max())
+                vmin = bmin if vmin is None else min(vmin, bmin)
+                vmax = bmax if vmax is None else max(vmax, bmax)
+        fields.append({
+            "name": str(name),
+            "finite_count": count,
+            "min": vmin,
+            "max": vmax,
+            "mean": (total / count) if count else None,
+        })
+    return {
+        "kind": "vbt",
+        "vbt_kind": header.get("kind"),   # "point" or "volume"
+        "num_rows": int(header["num_rows"]),
+        "num_fields": int(header["field_count"]),
+        "scalar_type": header.get("scalar_type"),
+        "fields": fields,
+        "fields_truncated": len(names) > max_fields,
     }
 
 
@@ -301,6 +439,43 @@ TOOLS: dict[str, AssistantTool] = {
                 "additionalProperties": False,
             },
             executor=_cosmology_distance,
+        ),
+        AssistantTool(
+            name="catalogue_summary",
+            description=(
+                "Structure of the loaded point catalogue (cosmology / VBT point "
+                "cloud): number of rows, columns with their types, the detected "
+                "coordinate system (RA/DEC or Cartesian X/Y/Z), and per numeric "
+                "column min/max/mean/finite-count. Use this to know what a "
+                "redshift / position catalogue contains before reasoning about it. "
+                "Combine a redshift column's range with cosmology_distance to "
+                "convert to distances."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "max_columns": {"type": "integer"},
+                },
+                "additionalProperties": False,
+            },
+            executor=_catalogue_summary, wants_context=True,
+        ),
+        AssistantTool(
+            name="vbt_summary",
+            description=(
+                "Structure of the loaded VBT (Visual Binary Table) point/volume "
+                "dataset: number of rows, whether it is a point or volume table, "
+                "and per field min/max/mean/finite-count. Use this to know what a "
+                "VBT contains before reasoning about it or recolouring by a field."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "max_fields": {"type": "integer"},
+                },
+                "additionalProperties": False,
+            },
+            executor=_vbt_summary, wants_context=True,
         ),
         # ── Cube visualisation actions (display-only, reversible) ─────────────
         AssistantTool(
