@@ -4487,8 +4487,10 @@ void vtkWindowCube::exportMomentMapAsFits()
                 c.maskEnabled, c.thresholdValue, c.thresholdAuto };
     }
     // The action is only enabled once a moment has been computed, so a
-    // zero-extent config here would be a bug. Defensive guard anyway.
-    if (cfg.channelEnd <= cfg.channelStart) {
+    // zero-extent config here would be a bug. Defensive guard anyway (a valid
+    // single-channel moment has channelEnd == channelStart, so reject only an
+    // inverted range).
+    if (cfg.channelEnd < cfg.channelStart) {
         QMessageBox::warning(this, u"Export Moment as FITS"_s,
                 u"No moment has been computed yet — open Tools → Compute "
                 u"Moment first, then retry the export."_s);
@@ -10571,6 +10573,23 @@ void vtkWindowCube::applyCopilotActions(const QList<QJsonObject> &actions)
             this->requestRemoteSlice(this->clampRemoteSliceIndex(a.value(u"index"_s).toInt()));
         } else if (type == u"reset_camera"_s) {
             this->resetCameraFront();
+        } else if (type == u"compute_moment"_s && this->momentController) {
+            // Compute AND display a moment product (added to Session Data) via the
+            // same worker/registration as the dialog — headless. Not part of the
+            // display Undo (it creates a product the user can remove separately).
+            // Only override a Config default when the directive carries the key,
+            // so an omitted mask/threshold keeps the dialog's defaults.
+            MomentMapController::Config cfg;   // defaults: mask on, auto threshold
+            cfg.order = a.value(u"order"_s).toInt(0);
+            const int depth = std::max(1, this->remoteSliceCount());
+            // Omitted channel bounds → the full cube; explicit bounds are used as
+            // given (a single-channel start==end is respected).
+            cfg.channelStart = a.contains(u"channel_start"_s) ? a.value(u"channel_start"_s).toInt() : 0;
+            cfg.channelEnd = a.contains(u"channel_end"_s) ? a.value(u"channel_end"_s).toInt() : depth - 1;
+            if (a.contains(u"mask_enabled"_s)) cfg.maskEnabled = a.value(u"mask_enabled"_s).toBool();
+            if (a.contains(u"threshold_value"_s)) cfg.thresholdValue = a.value(u"threshold_value"_s).toDouble();
+            if (a.contains(u"threshold_auto"_s)) cfg.thresholdAuto = a.value(u"threshold_auto"_s).toBool();
+            this->momentController->startComputationHeadless(cfg);
         }
     }
     if (ui->vtkCube && ui->vtkCube->renderWindow())

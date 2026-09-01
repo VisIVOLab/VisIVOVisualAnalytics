@@ -105,7 +105,14 @@ public slots:
     // the async computation.  Re-entrancy-safe: no-op if already running.
     void startComputation(int defaultOrder);
 
+    // Compute + display a moment map WITHOUT the dialog, from an explicit Config
+    // (the scientific copilot's compute_moment action). Channels are clamped to
+    // the cube depth; an empty range means the full cube. Same worker + product
+    // registration path as the interactive flow.
+    void startComputationHeadless(Config config);
+
 private:
+    void dispatch(const Config &config);   ///< async compute for a resolved Config (shared)
     bool configureMomentDialog(int defaultOrder, Config &config, bool restoredFromLastSession);
     static QString formatMomentChannelRange(const Config &config);
 

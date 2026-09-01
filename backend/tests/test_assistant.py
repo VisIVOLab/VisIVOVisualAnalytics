@@ -170,6 +170,23 @@ def test_action_tool_validates_params(tmp_path):
         "action": {"type": "goto_channel", "index": 42}, "status": "queued"}
 
 
+def test_compute_moment_action_builds_directive(tmp_path):
+    from app.assistant.tools import TOOLS as _T
+    # full args → all forwarded into the directive
+    out = _T["compute_moment"].executor(None, {
+        "order": 0, "channel_start": 5, "channel_end": 90,
+        "mask_enabled": True, "threshold_auto": True})
+    assert out["status"] == "queued"
+    d = out["action"]
+    assert d == {"type": "compute_moment", "order": 0, "channel_start": 5,
+                 "channel_end": 90, "mask_enabled": True, "threshold_auto": True}
+    # minimal args → just order; a bad order is rejected
+    assert _T["compute_moment"].executor(None, {"order": 2})["action"] == {
+        "type": "compute_moment", "order": 2}
+    with pytest.raises(ValueError):
+        _T["compute_moment"].executor(None, {"order": 7})
+
+
 def test_engine_surfaces_tool_error_to_model(tmp_path):
     class _BadToolProvider(_ScriptedProvider):
         def complete(self, system, messages, tools):

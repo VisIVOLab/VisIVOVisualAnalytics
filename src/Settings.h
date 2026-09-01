@@ -188,6 +188,18 @@ public:
    */
     void setSkavaToken(const QString &token);
 
+    // ── Scientific copilot (LLM provider) ────────────────────────────────────
+    // Persisted so the user configures the provider once. providerChoice mirrors
+    // the panel/dialog combo: 0=Claude, 1=ChatGPT, 2=Your server, 3=None.
+    int getCopilotProvider() const;
+    void setCopilotProvider(int choice);
+    QString getCopilotKey() const;        ///< the single key (cloud key or self-hosted key)
+    void setCopilotKey(const QString &key);
+    QString getCopilotUrl() const;        ///< self-hosted OpenAI-compatible base URL
+    void setCopilotUrl(const QString &url);
+    QString getCopilotModel() const;
+    void setCopilotModel(const QString &model);
+
     // ── Multi-backend registry (distributed VisIVO backend) ──────────────────
     //
     // See docs/distributed-backend-design.md. The desktop holds a list of
@@ -256,6 +268,12 @@ private:
     // SKAVA discovery service
     static const std::pair<QString, QVariant> SkavaUrl;
     static const std::pair<QString, QVariant> SkavaToken;
+
+    // Scientific copilot (LLM provider)
+    static const std::pair<QString, QVariant> CopilotProvider;
+    static const std::pair<QString, QVariant> CopilotKey;
+    static const std::pair<QString, QVariant> CopilotUrl;
+    static const std::pair<QString, QVariant> CopilotModel;
 
     // Multi-backend registry (Backends/nodes is a JSON array of objects,
     // Backends/default is the chosen default backend id).

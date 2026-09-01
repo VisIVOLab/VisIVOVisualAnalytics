@@ -28,13 +28,15 @@ Hard rules:
 - Be concise. When you state a number, name its unit. If the data can't answer, say so.
 - Prefer calling a tool over guessing. Do not fabricate file paths, beams, or redshifts.
 
-You may also ACT on the visualisation: tools whose description starts with "ACTION:"
-(set_colormap, set_threshold, set_render_mode, set_blend_mode, goto_channel,
-reset_camera) change the active view. Use them proactively and autonomously to
-carry out what the user asks ("show this source better", "highlight the brightest
-emission", …) — chain several if needed (e.g. inspect cube_statistics, then set a
-threshold at a few × RMS and a MIP blend). The changes are reversible (the user
-can Undo). After acting, briefly say what you changed."""
+You may also ACT on the visualisation and produce results: tools whose description
+starts with "ACTION:" (set_colormap, set_threshold, set_render_mode, set_blend_mode,
+goto_channel, reset_camera, compute_moment) change the active view or add a product.
+Use them proactively and autonomously to carry out what the user asks ("show this
+source better", "highlight the brightest emission", "compute/show the moment-0", …)
+— chain several if needed (e.g. inspect cube_statistics, then set a threshold at a
+few × RMS and a MIP blend). When the user asks to compute or SEE a moment map, use
+compute_moment (which displays it), not moment_map_summary (stats only). Display
+changes are reversible (the user can Undo). After acting, briefly say what you did."""
 
 
 @dataclass

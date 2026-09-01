@@ -51,6 +51,10 @@ void Settings::resetDefaults()
     this->settings->setValue(Settings::BackendUrl.first, Settings::BackendUrl.second);
     this->settings->setValue(Settings::BackendToken.first, Settings::BackendToken.second);
     this->settings->setValue(Settings::PlotTheme.first, Settings::PlotTheme.second);
+    this->settings->setValue(Settings::CopilotProvider.first, Settings::CopilotProvider.second);
+    this->settings->setValue(Settings::CopilotKey.first, Settings::CopilotKey.second);
+    this->settings->setValue(Settings::CopilotUrl.first, Settings::CopilotUrl.second);
+    this->settings->setValue(Settings::CopilotModel.first, Settings::CopilotModel.second);
 
     emit this->updated();
 }
@@ -255,6 +259,44 @@ const std::pair<QString, QVariant> Settings::SkavaUrl = {
     u"Skava/url"_s, u"http://localhost:8000"_s
 };
 const std::pair<QString, QVariant> Settings::SkavaToken = { u"Skava/token"_s, u""_s };
+const std::pair<QString, QVariant> Settings::CopilotProvider = { u"Copilot/provider"_s, 3 };
+const std::pair<QString, QVariant> Settings::CopilotKey = { u"Copilot/key"_s, u""_s };
+const std::pair<QString, QVariant> Settings::CopilotUrl = { u"Copilot/url"_s, u""_s };
+const std::pair<QString, QVariant> Settings::CopilotModel = { u"Copilot/model"_s, u""_s };
+
+int Settings::getCopilotProvider() const
+{
+    return this->settings->value(Settings::CopilotProvider.first,
+                                 Settings::CopilotProvider.second).toInt();
+}
+void Settings::setCopilotProvider(int choice)
+{
+    this->settings->setValue(Settings::CopilotProvider.first, choice);
+}
+QString Settings::getCopilotKey() const
+{
+    return this->settings->value(Settings::CopilotKey.first, Settings::CopilotKey.second).toString();
+}
+void Settings::setCopilotKey(const QString &key)
+{
+    this->settings->setValue(Settings::CopilotKey.first, key);
+}
+QString Settings::getCopilotUrl() const
+{
+    return this->settings->value(Settings::CopilotUrl.first, Settings::CopilotUrl.second).toString();
+}
+void Settings::setCopilotUrl(const QString &url)
+{
+    this->settings->setValue(Settings::CopilotUrl.first, url);
+}
+QString Settings::getCopilotModel() const
+{
+    return this->settings->value(Settings::CopilotModel.first, Settings::CopilotModel.second).toString();
+}
+void Settings::setCopilotModel(const QString &model)
+{
+    this->settings->setValue(Settings::CopilotModel.first, model);
+}
 
 QString Settings::getSkavaUrl() const
 {

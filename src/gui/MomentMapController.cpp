@@ -120,6 +120,35 @@ void MomentMapController::startComputation(int defaultOrder)
             { u"maskEnabled"_s, config.maskEnabled }, { u"thresholdAuto"_s, config.thresholdAuto },
             { u"thresholdValue"_s, config.thresholdValue } });
 
+    this->dispatch(config);
+}
+
+// Headless compute (no dialog): the scientific copilot builds a Config from its
+// action parameters and computes+displays the moment via the same worker + the
+// same onCompleted product-registration path as the interactive dialog.
+void MomentMapController::startComputationHeadless(Config config)
+{
+    if (m_busy)
+        return;
+    const int maxCh = std::max(0, m_depth - 1);
+    config.channelStart = std::clamp(config.channelStart, 0, maxCh);
+    config.channelEnd = std::clamp(config.channelEnd, 0, maxCh);
+    if (config.channelEnd < config.channelStart) {   // inverted range → full cube (defensive)
+        config.channelStart = 0;
+        config.channelEnd = std::max(1, m_depth) - 1;
+    }
+    m_currentConfig = config;
+    AnalysisParamStore().save(m_filepath, u"moment"_s, {
+            { u"channelStart"_s, config.channelStart }, { u"channelEnd"_s, config.channelEnd },
+            { u"maskEnabled"_s, config.maskEnabled }, { u"thresholdAuto"_s, config.thresholdAuto },
+            { u"thresholdValue"_s, config.thresholdValue } });
+    this->dispatch(config);
+}
+
+// Dispatch the async moment computation for an already-resolved Config. Shared by
+// the interactive startComputation() and the headless copilot path.
+void MomentMapController::dispatch(const Config &config)
+{
     const int requestId = ++m_currentRequestId;
 
     if (auto *win = qobject_cast<QMainWindow *>(m_parentWindow)) {

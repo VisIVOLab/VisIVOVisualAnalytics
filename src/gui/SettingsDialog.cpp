@@ -7,9 +7,14 @@
 
 #include <QBoxLayout>
 #include <QClipboard>
+#include <QComboBox>
 #include <QFileDialog>
+#include <QFormLayout>
+#include <QGroupBox>
 #include <QGuiApplication>
 #include <QIntValidator>
+#include <QLabel>
+#include <QLineEdit>
 #include <QScreen>
 #include <QScrollArea>
 
@@ -82,6 +87,17 @@ SettingsDialog::SettingsDialog(Settings *settings, AuthWrapper *auth, QWidget *p
         }
     }
 
+    // Scientific-copilot LLM provider section (persisted here; the Copilot panel
+    // re-applies it to the backend on Settings::updated).
+    if (auto *box = qobject_cast<QBoxLayout *>(this->layout())) {
+        QWidget *copilot = this->buildCopilotSection();
+        const int buttonBoxIndex = box->indexOf(ui->buttonBox);
+        if (buttonBoxIndex >= 0)
+            box->insertWidget(buttonBoxIndex, copilot);
+        else
+            box->addWidget(copilot);
+    }
+
     // Restore defaults
     QObject::connect(ui->buttonBox, &QDialogButtonBox::clicked, this,
                      [this](QAbstractButton *button) {
@@ -148,7 +164,60 @@ void SettingsDialog::accept()
     if (this->backendsWidget) {
         this->backendsWidget->saveTo(this->settings);
     }
-    QDialog::accept();
+    if (this->m_copilotProvider) {
+        this->settings->setCopilotProvider(this->m_copilotProvider->currentIndex());
+        this->settings->setCopilotKey(this->m_copilotKey->text());
+        this->settings->setCopilotUrl(this->m_copilotUrl->text().trimmed());
+        this->settings->setCopilotModel(this->m_copilotModel->text().trimmed());
+    }
+    QDialog::accept();   // emits accepted → Settings::updated (the Copilot panel re-applies)
+}
+
+QWidget *SettingsDialog::buildCopilotSection()
+{
+    auto *group = new QGroupBox(tr("Scientific Copilot"), this);
+    auto *form = new QFormLayout(group);
+
+    m_copilotProvider = new QComboBox(group);
+    m_copilotProvider->addItem(tr("Claude (Anthropic)"));               // 0
+    m_copilotProvider->addItem(tr("ChatGPT (OpenAI)"));                 // 1
+    m_copilotProvider->addItem(tr("Your server (OpenAI-compatible)"));  // 2
+    m_copilotProvider->addItem(tr("None"));                            // 3
+
+    m_copilotKey = new QLineEdit(group);
+    m_copilotKey->setEchoMode(QLineEdit::Password);
+    m_copilotKey->setPlaceholderText(tr("API key"));
+    m_copilotUrl = new QLineEdit(group);
+    m_copilotUrl->setPlaceholderText(u"http://your-server:8000/v1"_s);
+    m_copilotModel = new QLineEdit(group);
+    m_copilotModel->setPlaceholderText(tr("model name (optional)"));
+
+    form->addRow(tr("Provider"), m_copilotProvider);
+    form->addRow(tr("API key"), m_copilotKey);
+    form->addRow(tr("Server URL"), m_copilotUrl);
+    form->addRow(tr("Model"), m_copilotModel);
+
+    // Show only the relevant field(s) per provider (cloud → key; own server → URL
+    // + key; none → nothing), matching the Copilot panel's ⚙.
+    auto refresh = [this, form]() {
+        const int i = m_copilotProvider->currentIndex();
+        m_copilotKey->setVisible(i == 0 || i == 1 || i == 2);
+        m_copilotUrl->setVisible(i == 2);
+        m_copilotModel->setVisible(i != 3);
+        if (auto *l = form->labelForField(m_copilotKey)) l->setVisible(m_copilotKey->isVisible());
+        if (auto *l = form->labelForField(m_copilotUrl)) l->setVisible(m_copilotUrl->isVisible());
+        if (auto *l = form->labelForField(m_copilotModel)) l->setVisible(m_copilotModel->isVisible());
+    };
+    QObject::connect(m_copilotProvider, &QComboBox::currentIndexChanged, this,
+                     [refresh](int) { refresh(); });
+
+    // Pre-fill from the persisted config.
+    m_copilotProvider->setCurrentIndex(this->settings->getCopilotProvider());
+    m_copilotKey->setText(this->settings->getCopilotKey());
+    m_copilotUrl->setText(this->settings->getCopilotUrl());
+    m_copilotModel->setText(this->settings->getCopilotModel());
+    refresh();
+    return group;
 }
 
 void SettingsDialog::restoreDefaults()

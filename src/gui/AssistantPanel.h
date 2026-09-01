@@ -48,8 +48,12 @@ signals:
 private slots:
     void onSend();
     void onSettings();   ///< choose the LLM provider (Claude / OpenAI / own server)
+    void onSettingsUpdated();   ///< re-apply after the global Settings dialog changes it
 
 private:
+    /// Push the persisted copilot provider config (Settings) to the backend, so
+    /// the user configures the provider once and it auto-applies on every connect.
+    void applyProviderFromSettings();
     void appendUser(const QString &text);
     void appendAssistant(const QString &answer, const QString &provider, bool configured,
                          bool grounded, const QString &repro, const QString &provenanceHtml);
@@ -60,6 +64,7 @@ private:
     QString m_token;
     QString m_datasetId;
     bool m_busy{ false };
+    bool m_providerAutoApplied{ false };   ///< auto-apply the saved config only once
 
     QTextBrowser *m_transcript{ nullptr };
     QLineEdit *m_input{ nullptr };

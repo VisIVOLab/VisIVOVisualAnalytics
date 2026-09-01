@@ -1,6 +1,8 @@
 #include "AssistantPanel.h"
 
+#include "Settings.h"
 #include "app/BackendClient.h"
+#include "app/BackendClientFactory.h"
 
 #include <QComboBox>
 #include <QDialog>
@@ -111,6 +113,13 @@ void AssistantPanel::onSettings()
         form->labelForField(model)->setVisible(model->isVisible());
     };
     connect(provider, &QComboBox::currentIndexChanged, &dlg, [&](int) { refresh(); });
+    // Pre-fill from the persisted config so the user doesn't re-enter it.
+    if (Settings *s = BackendClientFactory::instance()->settings()) {
+        provider->setCurrentIndex(s->getCopilotProvider());
+        key->setText(s->getCopilotKey());
+        url->setText(s->getCopilotUrl());
+        model->setText(s->getCopilotModel());
+    }
     refresh();
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
@@ -129,6 +138,14 @@ void AssistantPanel::onSettings()
     const QString prov = provider->currentData().toString();
     const QString k = key->text();
     const QString m = model->text().trimmed();
+    // Persist the choice so it auto-applies on the next connect (the user asked
+    // not to re-enter it every time).
+    if (Settings *s = BackendClientFactory::instance()->settings()) {
+        s->setCopilotProvider(idx);
+        s->setCopilotKey(k);
+        s->setCopilotUrl(url->text().trimmed());
+        s->setCopilotModel(m);
+    }
     QString anthropicKey, openaiKey, baseUrl, baseUrlKey;
     if (idx == 0)
         anthropicKey = k;                       // Claude
@@ -166,8 +183,61 @@ void AssistantPanel::onSettings()
 
 void AssistantPanel::setBackend(const QString &url, const QString &token)
 {
+    const bool endpointChanged = (url != m_url || token != m_token);
     m_url = url;
     m_token = token;
+    if (endpointChanged)
+        m_providerAutoApplied = false;   // a new endpoint must get the saved provider
+    // Re-apply whenever the user edits the copilot provider in the global Settings
+    // dialog (it persists + emits updated()). A real member slot means
+    // Qt::UniqueConnection actually de-dupes across repeated setBackend() calls.
+    if (Settings *s = BackendClientFactory::instance()->settings())
+        connect(s, &Settings::updated, this, &AssistantPanel::onSettingsUpdated,
+                Qt::UniqueConnection);
+    // Auto-apply the persisted provider so the user never re-enters it.
+    this->applyProviderFromSettings();
+}
+
+void AssistantPanel::onSettingsUpdated()
+{
+    m_providerAutoApplied = false;   // force a re-apply on a settings change
+    this->applyProviderFromSettings();
+}
+
+void AssistantPanel::applyProviderFromSettings()
+{
+    // Auto-apply only once (first connect), so a later manual ⚙ change can't be
+    // overwritten by a repeated/stale connect-time POST.
+    if (m_providerAutoApplied)
+        return;
+    Settings *s = BackendClientFactory::instance()->settings();
+    if (!s || m_url.isEmpty())
+        return;
+    m_providerAutoApplied = true;
+    const int idx = s->getCopilotProvider();
+    const QString key = s->getCopilotKey();
+    const QString model = s->getCopilotModel();
+    // Default "null" so a persisted None explicitly resets the backend provider.
+    QString prov = u"null"_s, anthropicKey, openaiKey, baseUrl, baseUrlKey;
+    if (idx == 0) {
+        prov = u"anthropic"_s;
+        anthropicKey = key;
+    } else if (idx == 1) {
+        prov = u"openai"_s;
+        openaiKey = key;
+    } else if (idx == 2) {
+        prov = u"openai"_s;
+        baseUrl = s->getCopilotUrl();
+        baseUrlKey = key;
+    }
+    // Fire-and-forget: configure the backend in the background; the panel's next
+    // query/status reflects it. Failures are non-fatal (the user can re-open ⚙).
+    const QString url0 = m_url, token0 = m_token;
+    (void)QtConcurrent::run(
+            [url0, token0, prov, anthropicKey, openaiKey, baseUrl, baseUrlKey, model]() {
+                BackendClient client(url0, token0);
+                client.setAssistantConfig(prov, anthropicKey, openaiKey, baseUrl, baseUrlKey, model);
+            });
 }
 
 void AssistantPanel::setDatasetId(const QString &datasetId)

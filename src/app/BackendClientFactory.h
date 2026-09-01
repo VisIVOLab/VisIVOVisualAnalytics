@@ -37,6 +37,11 @@ public:
     /// cache and rebind.
     void setSettings(Settings *settings);
 
+    /// The bound application Settings, or nullptr before setSettings(). Lets
+    /// components without a Settings pointer (e.g. the copilot panel) read/write
+    /// persisted preferences globally.
+    Settings *settings() const { return m_settings; }
+
     /// Returns the ``BackendClient`` for the given backend ``id``. The
     /// instance is cached so callers can rely on its session id surviving
     /// across requests. Returns the ``local`` backend's client when ``id``

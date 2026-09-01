@@ -196,6 +196,22 @@ def _act_reset_camera(_path: str | None, _params: dict[str, Any]) -> dict[str, A
     return _act({"type": "reset_camera"})
 
 
+def _act_compute_moment(_path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    order = int(params.get("order", 0))
+    if order not in (0, 1, 2):
+        raise ValueError("moment order must be 0, 1, or 2")
+    directive: dict[str, Any] = {"type": "compute_moment", "order": order}
+    for k in ("channel_start", "channel_end"):
+        if k in params:
+            directive[k] = int(params[k])
+    for k in ("mask_enabled", "threshold_auto"):
+        if k in params:
+            directive[k] = bool(params[k])
+    if "threshold_value" in params:
+        directive["threshold_value"] = float(params["threshold_value"])
+    return _act(directive)
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 TOOLS: dict[str, AssistantTool] = {
@@ -360,6 +376,31 @@ TOOLS: dict[str, AssistantTool] = {
             ),
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
             executor=_act_reset_camera, is_action=True,
+        ),
+        AssistantTool(
+            name="compute_moment",
+            description=(
+                "ACTION: compute a moment map AND DISPLAY it as a new product in the "
+                "session (added to Session Data / shown in a 2-D pane). order 0 = "
+                "integrated intensity, 1 = velocity field, 2 = velocity dispersion σ. "
+                "Prefer this over moment_map_summary when the user wants to SEE the "
+                "map; use moment_map_summary only to report statistics without "
+                "displaying. Omit the channel range for the full cube."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "order": {"type": "integer", "enum": [0, 1, 2]},
+                    "channel_start": {"type": "integer"},
+                    "channel_end": {"type": "integer"},
+                    "mask_enabled": {"type": "boolean"},
+                    "threshold_value": {"type": "number"},
+                    "threshold_auto": {"type": "boolean"},
+                },
+                "required": ["order"],
+                "additionalProperties": False,
+            },
+            executor=_act_compute_moment, is_action=True,
         ),
     ]
 }
