@@ -25,6 +25,12 @@ class AssistantTool:
     # Executor: (dataset_path, params) -> result dict. ``dataset_path`` may be
     # None for tools that don't operate on the loaded dataset (e.g. cosmology).
     executor: Callable[[str | None, dict[str, Any]], dict[str, Any]] = field(repr=False)
+    # Action tools do NOT compute a read-only result — they emit a display/analysis
+    # DIRECTIVE the desktop app executes on the active viewer. Their executor
+    # validates the parameters and returns {"action": <directive>, "status":"queued"};
+    # the engine collects the directive into the response's ``actions`` list and
+    # feeds the ack back to the model so it can chain further steps.
+    is_action: bool = False
 
     def spec(self) -> dict[str, Any]:
         """Anthropic/OpenAI-style tool spec for a provider to consume."""
@@ -140,6 +146,56 @@ def _cosmology_distance(_path: str | None, params: dict[str, Any]) -> dict[str, 
     }
 
 
+# ── Action executors (emit a viewer directive; the desktop app applies it) ────
+# These do NOT compute a result — they validate the parameters and return an
+# {"action": <directive>, "status": "queued"} envelope. The directive's ``type``
+# routes it, in the app, to the active viewer's copilot-action handler. All are
+# display-only and reversible (the app snapshots state before applying, and
+# offers Undo), so the copilot can regulate the visualisation autonomously.
+
+def _act(directive: dict[str, Any]) -> dict[str, Any]:
+    return {"action": directive, "status": "queued"}
+
+
+def _act_set_colormap(_path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    name = str(params.get("name", "")).strip()
+    if not name:
+        raise ValueError("colormap name must be a non-empty string")
+    return _act({"type": "set_colormap", "name": name})
+
+
+def _act_set_threshold(_path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    value = float(params["value"])
+    if not np.isfinite(value):
+        raise ValueError("threshold must be a finite number")
+    return _act({"type": "set_threshold", "value": value})
+
+
+def _act_set_render_mode(_path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    mode = str(params.get("mode", "")).lower()
+    if mode not in ("volume", "isosurface"):
+        raise ValueError("mode must be 'volume' or 'isosurface'")
+    return _act({"type": "set_render_mode", "mode": mode})
+
+
+def _act_set_blend_mode(_path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    mode = str(params.get("mode", "")).lower()
+    if mode not in ("composite", "mip", "minip"):
+        raise ValueError("mode must be 'composite', 'mip', or 'minip'")
+    return _act({"type": "set_blend_mode", "mode": mode})
+
+
+def _act_goto_channel(_path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    index = int(params["index"])
+    if index < 0:
+        raise ValueError("channel index must be >= 0")
+    return _act({"type": "goto_channel", "index": index})
+
+
+def _act_reset_camera(_path: str | None, _params: dict[str, Any]) -> dict[str, Any]:
+    return _act({"type": "reset_camera"})
+
+
 # ── Registry ─────────────────────────────────────────────────────────────────
 
 TOOLS: dict[str, AssistantTool] = {
@@ -229,6 +285,78 @@ TOOLS: dict[str, AssistantTool] = {
                 "additionalProperties": False,
             },
             executor=_cosmology_distance,
+        ),
+        # ── Cube visualisation actions (display-only, reversible) ─────────────
+        AssistantTool(
+            name="set_colormap",
+            description=(
+                "ACTION: change the cube's colour map to better reveal structure "
+                "(e.g. inferno, viridis, magma, gray, cubehelix). Applies to the "
+                "active view."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"], "additionalProperties": False,
+            },
+            executor=_act_set_colormap, is_action=True,
+        ),
+        AssistantTool(
+            name="set_threshold",
+            description=(
+                "ACTION: set the rendering / isosurface threshold (in the cube's "
+                "BUNIT) to hide noise and emphasise a source. Use cube_statistics "
+                "first to pick a sensible value (e.g. a few × RMS)."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"value": {"type": "number"}},
+                "required": ["value"], "additionalProperties": False,
+            },
+            executor=_act_set_threshold, is_action=True,
+        ),
+        AssistantTool(
+            name="set_render_mode",
+            description="ACTION: switch the 3-D representation between 'volume' and 'isosurface'.",
+            parameters={
+                "type": "object",
+                "properties": {"mode": {"type": "string", "enum": ["volume", "isosurface"]}},
+                "required": ["mode"], "additionalProperties": False,
+            },
+            executor=_act_set_render_mode, is_action=True,
+        ),
+        AssistantTool(
+            name="set_blend_mode",
+            description=(
+                "ACTION: set the volume blend mode — 'composite' (opacity ray-cast), "
+                "'mip' (maximum intensity, good to spot the brightest source), or "
+                "'minip' (minimum intensity)."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"mode": {"type": "string", "enum": ["composite", "mip", "minip"]}},
+                "required": ["mode"], "additionalProperties": False,
+            },
+            executor=_act_set_blend_mode, is_action=True,
+        ),
+        AssistantTool(
+            name="goto_channel",
+            description=(
+                "ACTION: move the spectral slice to a given 0-based channel index "
+                "(e.g. the channel where a source peaks)."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"index": {"type": "integer"}},
+                "required": ["index"], "additionalProperties": False,
+            },
+            executor=_act_goto_channel, is_action=True,
+        ),
+        AssistantTool(
+            name="reset_camera",
+            description="ACTION: reset the 3-D camera to frame the whole cube.",
+            parameters={"type": "object", "properties": {}, "additionalProperties": False},
+            executor=_act_reset_camera, is_action=True,
         ),
     ]
 }

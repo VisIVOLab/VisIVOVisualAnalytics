@@ -363,11 +363,11 @@ void WorkspaceChrome::addSessionLayers(QWidget *w)
     w->show();
 }
 
-void WorkspaceChrome::installCopilot(const QString &url, const QString &token,
-                                     const QString &datasetId)
+AssistantPanel *WorkspaceChrome::installCopilot(const QString &url, const QString &token,
+                                                const QString &datasetId)
 {
     if (!m_inspector)
-        return;
+        return nullptr;
     AssistantPanel *panel = m_inspector->ensureCopilotTab();
     panel->setBackend(url, token);
     panel->setDatasetId(datasetId);
@@ -380,6 +380,7 @@ void WorkspaceChrome::installCopilot(const QString &url, const QString &token,
                   { u":/icons/rail_provenance.svg"_s, QObject::tr("Provenance") },
                   { u":/icons/rail_copilot.svg"_s, QObject::tr("Copilot") } });
     }
+    return panel;
 }
 
 InspectorPanel *WorkspaceChrome::installInspectorDock()

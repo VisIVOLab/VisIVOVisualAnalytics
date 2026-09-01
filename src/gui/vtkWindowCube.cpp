@@ -8,6 +8,7 @@
 #include "qcustomplot.h"
 #include "ColorMaps.h"
 #include "ChannelOverlay.h"
+#include "AssistantPanel.h"
 #include "CubeUiAssembler.h"
 #include "WorkspaceChrome.h"
 #include "InspectorPanel.h"
@@ -9199,8 +9200,14 @@ void vtkWindowCube::setupInspector()
     // R-22: add the scientific-copilot tab, wired to this window's backend
     // endpoint + dataset. Only meaningful for a remote (server-backed) dataset.
     if (!this->remoteBackendUrl.isEmpty()) {
-        this->m_workspaceChrome->installCopilot(
+        AssistantPanel *copilot = this->m_workspaceChrome->installCopilot(
                 this->remoteBackendUrl, this->remoteBackendToken, this->remoteDatasetId);
+        if (copilot) {
+            QObject::connect(copilot, &AssistantPanel::actionsRequested, this,
+                             &vtkWindowCube::applyCopilotActions);
+            QObject::connect(copilot, &AssistantPanel::undoRequested, this,
+                             &vtkWindowCube::undoCopilotActions);
+        }
     }
 
     // Collapsing/expanding a dock resizes the panes; the gutter fit is size-driven
@@ -10463,6 +10470,146 @@ void vtkWindowCube::changeCubeRender()
     this->setCubeRenderModeLocally(false);
     ui->vtkCube->renderWindow()->Render();
     this->updateInfoStatsPage();
+}
+
+// ── Copilot actions ──────────────────────────────────────────────────────────
+
+// Set the Volume/Isosurface actions to `iso` without firing their handlers and
+// run the representation switch (mirrors applyLinkedRenderMode's local part).
+void vtkWindowCube::setCopilotRenderMode(bool iso)
+{
+    if (!ui->actionIsosurface || ui->actionIsosurface->isChecked() == iso)
+        return;
+    {
+        QSignalBlocker bIso(ui->actionIsosurface);
+        QSignalBlocker bVol(ui->actionVolume);
+        ui->actionIsosurface->setChecked(iso);
+        if (ui->actionVolume) ui->actionVolume->setChecked(!iso);
+    }
+    // The blocked actionIso/Volume::toggled handlers normally keep the sidebar in
+    // sync (the Volume/Iso segment + the volume-mode card visibility) — replicate.
+    if (this->m_uiAssembler) {
+        if (auto *c = this->m_uiAssembler->renderModeCombo()) {
+            const QSignalBlocker b(c);
+            c->setCurrentIndex(iso ? 0 : 1);
+        }
+    }
+    this->updateVolumeModeVisibility(!iso);
+    this->changeCubeRender();
+}
+
+void vtkWindowCube::applyCopilotBlendMode(int idx)
+{
+    this->applyVolumeBlendMode(idx);
+    if (this->m_uiAssembler)
+        this->m_uiAssembler->syncVolumeModeSidebar(idx);
+    const QSignalBlocker b1(this->m_actionComposite);
+    const QSignalBlocker b2(this->m_actionMIP);
+    const QSignalBlocker b3(this->m_actionMinIP);
+    if (this->m_actionComposite) this->m_actionComposite->setChecked(idx == 0);
+    if (this->m_actionMIP) this->m_actionMIP->setChecked(idx == 1);
+    if (this->m_actionMinIP) this->m_actionMinIP->setChecked(idx == 2);
+}
+
+void vtkWindowCube::applyCopilotActions(const QList<QJsonObject> &actions)
+{
+    if (actions.isEmpty())
+        return;
+    // Snapshot the affected display state ONCE before the batch, so Undo can
+    // restore it (display-only, reversible).
+    this->m_copilotUndo = CopilotSnapshot{};
+    this->m_copilotUndo.valid = true;
+    this->m_copilotUndo.colormap = this->m_activeColorMapName;
+    this->m_copilotUndo.threshold = ui->lineThreshold ? ui->lineThreshold->text() : QString();
+    this->m_copilotUndo.isosurface = ui->actionIsosurface && ui->actionIsosurface->isChecked();
+    this->m_copilotUndo.blendMode = this->m_volumeBlendMode;
+    this->m_copilotUndo.channel0 = ui->spinSlice ? ui->spinSlice->value() - 1 : 0;
+    // Capture the camera only if this batch resets it, so Undo of a non-camera
+    // batch won't clobber the user's own camera moves.
+    bool batchResetsCamera = false;
+    for (const QJsonObject &a : actions)
+        if (a.value(u"type"_s).toString() == u"reset_camera"_s) { batchResetsCamera = true; break; }
+    if (batchResetsCamera && ui->vtkCube && ui->vtkCube->renderWindow()) {
+        if (auto *ren = ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer()) {
+            if (auto *cam = ren->GetActiveCamera()) {
+                cam->GetPosition(this->m_copilotUndo.camPos);
+                cam->GetFocalPoint(this->m_copilotUndo.camFoc);
+                cam->GetViewUp(this->m_copilotUndo.camUp);
+                this->m_copilotUndo.camScale = cam->GetParallelScale();
+                this->m_copilotUndo.cameraCaptured = true;
+            }
+        }
+    }
+
+    for (const QJsonObject &a : actions) {
+        const QString type = a.value(u"type"_s).toString();
+        if (type == u"set_colormap"_s) {
+            const QString want = a.value(u"name"_s).toString().trimmed();
+            // The backend emits free-form / lowercase names; match the app's
+            // colormap registry case-insensitively.
+            QString matched;
+            for (const std::string &n : ColorMaps::GetColorMapNames()) {
+                const QString qn = QString::fromStdString(n);
+                if (qn.compare(want, Qt::CaseInsensitive) == 0) { matched = qn; break; }
+            }
+            if (!matched.isEmpty())
+                this->applyColorMapByName(matched);
+        } else if (type == u"set_threshold"_s) {
+            const double v = std::clamp(a.value(u"value"_s).toDouble(),
+                                        double(this->lowerBound), double(this->upperBound));
+            if (ui->lineThreshold) {
+                ui->lineThreshold->setText(QString::number(v));
+                this->thresholdLineChanged();
+            }
+        } else if (type == u"set_render_mode"_s) {
+            this->setCopilotRenderMode(a.value(u"mode"_s).toString().compare(
+                    u"isosurface"_s, Qt::CaseInsensitive) == 0);
+        } else if (type == u"set_blend_mode"_s) {
+            const QString m = a.value(u"mode"_s).toString().toLower();
+            this->applyCopilotBlendMode(m == u"mip"_s ? 1 : m == u"minip"_s ? 2 : 0);
+        } else if (type == u"goto_channel"_s) {
+            this->requestRemoteSlice(this->clampRemoteSliceIndex(a.value(u"index"_s).toInt()));
+        } else if (type == u"reset_camera"_s) {
+            this->resetCameraFront();
+        }
+    }
+    if (ui->vtkCube && ui->vtkCube->renderWindow())
+        ui->vtkCube->renderWindow()->Render();
+    this->statusBar()->showMessage(
+            tr("Copilot applied %n visualisation change(s) — Undo available.", "", actions.size()),
+            6000);
+}
+
+void vtkWindowCube::undoCopilotActions()
+{
+    if (!this->m_copilotUndo.valid)
+        return;
+    const CopilotSnapshot s = this->m_copilotUndo;
+    this->m_copilotUndo.valid = false;   // one-shot; a new batch re-snapshots
+
+    this->setCopilotRenderMode(s.isosurface);   // representation first
+    if (!s.colormap.isEmpty())
+        this->applyColorMapByName(s.colormap);
+    if (ui->lineThreshold && !s.threshold.isEmpty()) {
+        ui->lineThreshold->setText(s.threshold);
+        this->thresholdLineChanged();
+    }
+    this->applyCopilotBlendMode(s.blendMode);
+    this->requestRemoteSlice(this->clampRemoteSliceIndex(s.channel0));
+    if (s.cameraCaptured && ui->vtkCube && ui->vtkCube->renderWindow()) {
+        if (auto *ren = ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer()) {
+            if (auto *cam = ren->GetActiveCamera()) {
+                cam->SetPosition(s.camPos[0], s.camPos[1], s.camPos[2]);
+                cam->SetFocalPoint(s.camFoc[0], s.camFoc[1], s.camFoc[2]);
+                cam->SetViewUp(s.camUp[0], s.camUp[1], s.camUp[2]);
+                cam->SetParallelScale(s.camScale);
+                ren->ResetCameraClippingRange();
+            }
+        }
+    }
+    if (ui->vtkCube && ui->vtkCube->renderWindow())
+        ui->vtkCube->renderWindow()->Render();
+    this->statusBar()->showMessage(tr("Reverted the copilot's visualisation changes."), 4000);
 }
 
 void vtkWindowCube::changeCubeColor()

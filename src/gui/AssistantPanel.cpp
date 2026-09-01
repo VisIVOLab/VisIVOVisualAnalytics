@@ -37,6 +37,11 @@ AssistantPanel::AssistantPanel(QWidget *parent) : QWidget(parent)
 
     m_transcript = new QTextBrowser(this);
     m_transcript->setOpenExternalLinks(false);
+    m_transcript->setOpenLinks(false);   // handle the "Undo" anchor ourselves
+    connect(m_transcript, &QTextBrowser::anchorClicked, this, [this](const QUrl &u) {
+        if (u.toString() == u"copilot:undo"_s)
+            emit undoRequested();
+    });
     m_transcript->setPlaceholderText(
             u"Ask about the loaded dataset — units, statistics, a moment map, a "
             "distance. Every number in the answer is backed by a tool call."_s);
@@ -254,6 +259,24 @@ void AssistantPanel::onSend()
                 }
                 appendAssistant(r.answer, r.provider, r.configured, r.toolCallsRecorded,
                                 r.reproducibilityScript, prov);
+                if (!r.actions.isEmpty()) {
+                    // Log what the copilot is about to change, then hand the
+                    // directives to the host viewer to apply (reversible).
+                    QString log;
+                    for (const QJsonObject &a : r.actions) {
+                        QString desc = a.value(u"type"_s).toString();
+                        for (auto it = a.constBegin(); it != a.constEnd(); ++it) {
+                            if (it.key() == u"type"_s)
+                                continue;
+                            desc += u" %1=%2"_s.arg(it.key(), it.value().toVariant().toString());
+                        }
+                        log += u"<div>▸ %1</div>"_s.arg(esc(desc));
+                    }
+                    m_transcript->append(
+                            u"<p style='color:palette(mid)'><i>Applied to the view</i> "
+                            "[<a href='copilot:undo'>↩ Undo latest change</a>]:%1</p>"_s.arg(log));
+                    emit actionsRequested(r.actions);
+                }
             });
     watcher->setFuture(QtConcurrent::run([url, token, question, datasetId]() {
         BackendClient client(url, token);

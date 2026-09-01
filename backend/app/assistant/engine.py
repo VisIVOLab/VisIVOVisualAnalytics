@@ -26,7 +26,15 @@ Hard rules:
 - Always establish units and frame first (call dataset_metadata) before interpreting values.
 - Surface caveats explicitly: moment 2 is the velocity DISPERSION σ by default (not variance); fluxes are only in Jy when beam-corrected; a frequency axis needs a rest frequency for km/s; report uncertainties when available.
 - Be concise. When you state a number, name its unit. If the data can't answer, say so.
-- Prefer calling a tool over guessing. Do not fabricate file paths, beams, or redshifts."""
+- Prefer calling a tool over guessing. Do not fabricate file paths, beams, or redshifts.
+
+You may also ACT on the visualisation: tools whose description starts with "ACTION:"
+(set_colormap, set_threshold, set_render_mode, set_blend_mode, goto_channel,
+reset_camera) change the active view. Use them proactively and autonomously to
+carry out what the user asks ("show this source better", "highlight the brightest
+emission", …) — chain several if needed (e.g. inspect cube_statistics, then set a
+threshold at a few × RMS and a MIP blend). The changes are reversible (the user
+can Undo). After acting, briefly say what you changed."""
 
 
 @dataclass
@@ -50,6 +58,10 @@ class AssistantResult:
     tool_calls: list[ToolInvocation] = field(default_factory=list)
     reproducibility_script: str = ""
     rounds: int = 0
+    # Viewer directives the copilot asked for (from ``is_action`` tools). The
+    # desktop app applies them, in order, to the active viewer — display-only and
+    # reversible. Empty for a pure question/answer turn.
+    actions: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -64,6 +76,7 @@ class AssistantResult:
                 for t in self.tool_calls
             ],
             "reproducibility_script": self.reproducibility_script,
+            "actions": self.actions,
         }
 
 
@@ -99,6 +112,7 @@ class AssistantEngine:
         # unchanged across Claude / OpenAI / a self-hosted OpenAI-compatible LLM.
         history: list[dict[str, Any]] = [{"role": "user", "text": question + context}]
         invocations: list[ToolInvocation] = []
+        actions: list[dict[str, Any]] = []
         rounds = 0
         final_text: str | None = None
 
@@ -113,6 +127,12 @@ class AssistantEngine:
             for call in resp.tool_calls:
                 inv = self._execute(call, dataset_path)
                 invocations.append(inv)
+                # Action tools emit a viewer directive rather than data; collect
+                # it for the app to apply (the model still gets the queued ack).
+                tool = TOOLS.get(call.name)
+                if tool is not None and tool.is_action and inv.result \
+                        and isinstance(inv.result.get("action"), dict):
+                    actions.append(inv.result["action"])
                 results.append({
                     "id": call.id,
                     "name": call.name,
@@ -138,6 +158,7 @@ class AssistantEngine:
             tool_calls=invocations,
             reproducibility_script=_repro_script(dataset_id, invocations),
             rounds=rounds,
+            actions=actions,
         )
 
     def _execute(self, call: ToolCall, dataset_path: str | None) -> ToolInvocation:

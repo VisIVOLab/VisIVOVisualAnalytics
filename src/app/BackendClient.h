@@ -652,6 +652,10 @@ struct BackendAssistantResult
     bool toolCallsRecorded{ false };  // ≥1 tool call traced (NOT a grounding guarantee)
     QString reproducibilityScript;
     QList<BackendAssistantToolCall> toolCalls;
+    // Visualisation directives the copilot asked for (from ACTION: tools). Each
+    // object carries a "type" (set_colormap / set_threshold / goto_channel / …)
+    // plus its parameters; the active viewer applies them in order (reversible).
+    QList<QJsonObject> actions;
 };
 
 struct BackendAssistantConfigResult

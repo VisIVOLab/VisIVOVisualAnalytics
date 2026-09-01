@@ -400,6 +400,11 @@ BackendAssistantResult BackendClient::assistantQuery(const QString &question,
         call.error = c.value(QStringLiteral("error")).toString();
         result.toolCalls.push_back(call);
     }
+    for (const QJsonValue &v : o.value(QStringLiteral("actions")).toArray()) {
+        const QJsonObject a = v.toObject();
+        if (!a.value(QStringLiteral("type")).toString().isEmpty())
+            result.actions.push_back(a);
+    }
     result.valid = !result.answer.isEmpty();
     return result;
 }

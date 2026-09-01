@@ -1,6 +1,8 @@
 #ifndef AssistantPanel_h
 #define AssistantPanel_h
 
+#include <QJsonObject>
+#include <QList>
 #include <QWidget>
 
 class QLineEdit;
@@ -34,6 +36,14 @@ public:
 signals:
     /// Emitted when a query starts / finishes so the host can show busy state.
     void busyChanged(bool busy);
+
+    /// The copilot asked to change the visualisation. The host viewer applies the
+    /// directives (each a {"type":…, …} object) in order; they are reversible.
+    void actionsRequested(const QList<QJsonObject> &actions);
+
+    /// The user clicked "Undo" on an applied-actions log line; the host viewer
+    /// reverts the last copilot visualisation change.
+    void undoRequested();
 
 private slots:
     void onSend();

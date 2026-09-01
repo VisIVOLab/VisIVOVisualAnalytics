@@ -1362,6 +1362,33 @@ protected:
     // gated only by the Link-views master (no per-facet chip).
     void broadcastLinkedRenderMode();
     void applyLinkedRenderMode(bool isosurface);
+
+    // ── Copilot actions ─────────────────────────────────────────────────────
+    // Apply the scientific copilot's visualisation directives (from the Copilot
+    // panel's `actionsRequested` signal) to this viewer, in order. Display-only
+    // and reversible: a snapshot of the affected state is taken before the batch
+    // so undoCopilotActions() can restore it. See docs/copilot-backend.md.
+    void applyCopilotActions(const QList<QJsonObject> &actions);
+    void undoCopilotActions();
+    void setCopilotRenderMode(bool iso);   ///< flip Volume↔Isosurface + resync sidebar/menu
+    void applyCopilotBlendMode(int idx);   ///< blend mode + resync sidebar AND menu actions
+    struct CopilotSnapshot
+    {
+        bool valid{ false };
+        QString colormap;
+        QString threshold;
+        bool isosurface{ false };
+        int blendMode{ 0 };
+        int channel0{ 0 };   // 0-based
+        // Camera is captured/restored only when a batch includes reset_camera, so
+        // Undo reverts a copilot reset without clobbering the user's own moves.
+        bool cameraCaptured{ false };
+        double camPos[3]{ 0, 0, 0 };
+        double camFoc[3]{ 0, 0, 0 };
+        double camUp[3]{ 0, 0, 0 };
+        double camScale{ 1.0 };
+    };
+    CopilotSnapshot m_copilotUndo;
     vtkNew<vtkVolume> volume;
     vtkNew<vtkColorTransferFunction> volumeColorTransferFunction;
     vtkNew<vtkPiecewiseFunction> volumeOpacity;

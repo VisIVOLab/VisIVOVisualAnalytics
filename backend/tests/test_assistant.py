@@ -127,6 +127,49 @@ def test_engine_runs_tool_then_answers(tmp_path):
     assert res.tool_calls_recorded
 
 
+class _ActionProvider(AssistantProvider):
+    """Fake LLM that drives two visualisation actions, then answers."""
+
+    name = "scripted"
+    configured = True
+
+    def __init__(self):
+        self._turn = 0
+
+    def complete(self, system, messages, tools):
+        self._turn += 1
+        if self._turn == 1:
+            return ProviderResponse(tool_calls=[
+                ToolCall(id="a1", name="set_colormap", arguments={"name": "inferno"}),
+                ToolCall(id="a2", name="set_blend_mode", arguments={"mode": "mip"})])
+        return ProviderResponse(final_text="Set inferno + MIP to highlight the source.")
+
+
+def test_engine_collects_visualisation_actions(tmp_path):
+    path = str(tmp_path / "cact.fits")
+    _write_cube(path)
+    res = AssistantEngine(_ActionProvider()).run("show this source better", path, dataset_id="ds1")
+    assert res.actions == [
+        {"type": "set_colormap", "name": "inferno"},
+        {"type": "set_blend_mode", "mode": "mip"},
+    ]
+    # The action ack (not data) is fed back to the model.
+    assert res.tool_calls[0].result == {"action": {"type": "set_colormap", "name": "inferno"},
+                                        "status": "queued"}
+    assert res.to_dict()["actions"] == res.actions
+
+
+def test_action_tool_validates_params(tmp_path):
+    from app.assistant.tools import TOOLS as _T
+    with pytest.raises(ValueError):
+        _T["set_render_mode"].executor(None, {"mode": "bogus"})
+    with pytest.raises(ValueError):
+        _T["set_blend_mode"].executor(None, {"mode": "bogus"})
+    # a valid one returns the queued directive envelope
+    assert _T["goto_channel"].executor(None, {"index": 42}) == {
+        "action": {"type": "goto_channel", "index": 42}, "status": "queued"}
+
+
 def test_engine_surfaces_tool_error_to_model(tmp_path):
     class _BadToolProvider(_ScriptedProvider):
         def complete(self, system, messages, tools):

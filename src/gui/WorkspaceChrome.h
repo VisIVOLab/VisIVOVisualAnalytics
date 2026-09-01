@@ -35,6 +35,7 @@ class QWidget;
 class MainWindow;
 class SessionDataTree;
 class InspectorPanel;
+class AssistantPanel;
 class DockRail;
 
 class WorkspaceChrome : public QObject
@@ -73,10 +74,11 @@ public:
     QDockWidget *inspectorDock() const { return m_inspectorDock; }
 
     /// Add the scientific-copilot ("Copilot") tab to the inspector and wire it
-    /// to the backend endpoint + current dataset (R-22). No-op if the inspector
-    /// dock has not been installed yet.
-    void installCopilot(const QString &url, const QString &token,
-                        const QString &datasetId);
+    /// to the backend endpoint + current dataset (R-22). Returns the panel so the
+    /// host viewer can connect its `actionsRequested` signal; nullptr if the
+    /// inspector dock has not been installed yet.
+    AssistantPanel *installCopilot(const QString &url, const QString &token,
+                                   const QString &datasetId);
 
     // ── Collapsible rails (§4.1) ──────────────────────────────────────────────
     // Each dock is two-state: full content (272 / 320 px) or a 36 px rail. Never
