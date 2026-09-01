@@ -22,6 +22,7 @@
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
 #include "WorkspaceChrome.h"
+#include "AssistantPanel.h"
 #include "InspectorPanel.h"
 #include "ToolResultDialog.h"
 #include "vtkInteractorStyleProfile.h"
@@ -585,6 +586,19 @@ void vtkWindowImage::setupInspector()
     if (this->m_orphanToolsPage) {
         this->m_orphanToolsPage->setParent(panel);
         this->m_orphanToolsPage->hide();
+    }
+
+    // Scientific-copilot tab, wired so its visualisation actions reach this image
+    // viewer (only for a remote/server-backed dataset).
+    if (!this->remoteBackendUrl.isEmpty()) {
+        AssistantPanel *copilot = this->m_workspaceChrome->installCopilot(
+                this->remoteBackendUrl, this->remoteBackendToken, this->remoteDatasetId);
+        if (copilot) {
+            QObject::connect(copilot, &AssistantPanel::actionsRequested, this,
+                             &vtkWindowImage::applyCopilotActions);
+            QObject::connect(copilot, &AssistantPanel::undoRequested, this,
+                             &vtkWindowImage::undoCopilotActions);
+        }
     }
 
     // View → "Inspector Panel" expands/collapses the dock (never setVisible, which

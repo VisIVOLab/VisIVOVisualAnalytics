@@ -2358,6 +2358,107 @@ void vtkWindowImage::changeCurrentColorMap()
     this->vtkRender();
 }
 
+// ── Copilot actions ──────────────────────────────────────────────────────────
+// The image viewer handles the directive types that make sense in 2-D (colour
+// map, camera). Cube-only types (goto_channel, render/blend mode, threshold) are
+// ignored. Display-only and reversible: a snapshot is taken before each batch.
+
+void vtkWindowImage::applyCopilotActions(const QList<QJsonObject> &actions)
+{
+    // Only these directive types apply in 2-D; if the batch has none (all
+    // cube-only), do nothing — don't overwrite the undo slot or claim a change.
+    int applicable = 0;
+    for (const QJsonObject &a : actions) {
+        const QString t = a.value(u"type"_s).toString();
+        if (t == u"set_colormap"_s || t == u"reset_camera"_s)
+            ++applicable;
+    }
+    if (applicable == 0)
+        return;
+
+    auto *renderer = (ui && ui->vtk && ui->vtk->renderWindow())
+            ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
+            : nullptr;
+
+    this->m_copilotUndo = CopilotSnapshot{};
+    this->m_copilotUndo.valid = true;
+    // Snapshot the CURRENT layer's colormap by index, so Undo restores that exact
+    // layer even if the user switches layers before undoing.
+    this->m_copilotUndo.layerIndex = this->currentLayerIndex();
+    if (this->layerController)
+        this->m_copilotUndo.colormap = QString::fromStdString(
+                this->layerController->layerViewState(this->m_copilotUndo.layerIndex).colorMapName);
+    bool batchResetsCamera = false;
+    for (const QJsonObject &a : actions)
+        if (a.value(u"type"_s).toString() == u"reset_camera"_s) { batchResetsCamera = true; break; }
+    if (batchResetsCamera && renderer) {
+        if (auto *cam = renderer->GetActiveCamera()) {
+            cam->GetPosition(this->m_copilotUndo.camPos);
+            cam->GetFocalPoint(this->m_copilotUndo.camFoc);
+            cam->GetViewUp(this->m_copilotUndo.camUp);
+            this->m_copilotUndo.camScale = cam->GetParallelScale();
+            this->m_copilotUndo.cameraCaptured = true;
+        }
+    }
+
+    for (const QJsonObject &a : actions) {
+        const QString type = a.value(u"type"_s).toString();
+        if (type == u"set_colormap"_s) {
+            const QString want = a.value(u"name"_s).toString().trimmed();
+            for (const std::string &n : ColorMaps::GetColorMapNames()) {
+                const QString qn = QString::fromStdString(n);
+                if (qn.compare(want, Qt::CaseInsensitive) == 0) {
+                    if (ui->comboLut) {
+                        const QSignalBlocker b(ui->comboLut);
+                        ui->comboLut->setCurrentText(qn);
+                    }
+                    this->changeCurrentColorMap();
+                    break;
+                }
+            }
+        } else if (type == u"reset_camera"_s && renderer) {
+            renderer->ResetCamera();
+            renderer->ResetCameraClippingRange();
+        }
+        // Cube-only directive types are silently ignored on a 2-D image.
+    }
+    this->vtkRender();
+    this->statusBar()->showMessage(
+            tr("Copilot applied %n visualisation change(s) — Undo available.", "", applicable),
+            6000);
+}
+
+void vtkWindowImage::undoCopilotActions()
+{
+    if (!this->m_copilotUndo.valid)
+        return;
+    const CopilotSnapshot s = this->m_copilotUndo;
+    this->m_copilotUndo.valid = false;
+
+    if (!s.colormap.isEmpty() && this->layerController) {
+        // Restore the captured layer's colormap directly (not the now-current one).
+        this->layerController->setCurrentColorMap(s.layerIndex, s.colormap.toStdString());
+        // Reflect in the combo only if that layer is still selected.
+        if (ui->comboLut && this->currentLayerIndex() == s.layerIndex) {
+            const QSignalBlocker b(ui->comboLut);
+            ui->comboLut->setCurrentText(s.colormap);
+        }
+    }
+    if (s.cameraCaptured && ui && ui->vtk && ui->vtk->renderWindow()) {
+        if (auto *ren = ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()) {
+            if (auto *cam = ren->GetActiveCamera()) {
+                cam->SetPosition(s.camPos[0], s.camPos[1], s.camPos[2]);
+                cam->SetFocalPoint(s.camFoc[0], s.camFoc[1], s.camFoc[2]);
+                cam->SetViewUp(s.camUp[0], s.camUp[1], s.camUp[2]);
+                cam->SetParallelScale(s.camScale);
+                ren->ResetCameraClippingRange();
+            }
+        }
+    }
+    this->vtkRender();
+    this->statusBar()->showMessage(tr("Reverted the copilot's visualisation changes."), 4000);
+}
+
 void vtkWindowImage::changeCurrentColorScale()
 {
     const int index = this->currentLayerIndex();

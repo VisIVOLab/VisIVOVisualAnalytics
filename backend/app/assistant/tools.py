@@ -290,9 +290,9 @@ TOOLS: dict[str, AssistantTool] = {
         AssistantTool(
             name="set_colormap",
             description=(
-                "ACTION: change the cube's colour map to better reveal structure "
-                "(e.g. inferno, viridis, magma, gray, cubehelix). Applies to the "
-                "active view."
+                "ACTION: change the active view's colour map to better reveal "
+                "structure (e.g. inferno, viridis, magma, gray, cubehelix). Works "
+                "for both the 3-D cube and 2-D image viewers."
             ),
             parameters={
                 "type": "object",
@@ -354,7 +354,10 @@ TOOLS: dict[str, AssistantTool] = {
         ),
         AssistantTool(
             name="reset_camera",
-            description="ACTION: reset the 3-D camera to frame the whole cube.",
+            description=(
+                "ACTION: reset the active view's camera to a default framing "
+                "(frames the whole cube; refits the current image view)."
+            ),
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
             executor=_act_reset_camera, is_action=True,
         ),

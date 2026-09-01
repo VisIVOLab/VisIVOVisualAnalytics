@@ -164,7 +164,26 @@ public:
         Angle,
     };
 
+    // Apply the scientific copilot's visualisation directives to this image
+    // viewer (colour map, camera). Display-only and reversible via Undo; cube-only
+    // directive types are ignored. See docs/copilot-backend.md.
+    void applyCopilotActions(const QList<QJsonObject> &actions);
+    void undoCopilotActions();
+
 private:
+    struct CopilotSnapshot
+    {
+        bool valid{ false };
+        QString colormap;
+        int layerIndex{ 0 };   // the layer whose colormap was captured (multi-layer)
+        bool cameraCaptured{ false };
+        double camPos[3]{ 0, 0, 0 };
+        double camFoc[3]{ 0, 0, 0 };
+        double camUp[3]{ 0, 0, 0 };
+        double camScale{ 1.0 };
+    };
+    CopilotSnapshot m_copilotUndo;
+
     Ui::vtkWindowImage *ui;
     WorkspaceChrome *m_workspaceChrome = nullptr;   ///< shared command-bar + status-rail chrome
     QString m_windowScope;   ///< per-window product scope so this tree ignores sibling windows'
