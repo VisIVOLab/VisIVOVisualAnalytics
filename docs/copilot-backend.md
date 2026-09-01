@@ -115,9 +115,10 @@ The active provider is **module-cached** (`_get_provider`) so `/status` and
 `tools.py` exposes read-only, grounded summaries over the loaded dataset. Each
 `AssistantTool` has a `name`, `description`, a JSON-schema `parameters`, and an
 `executor(path, params)`. Current read catalogue: `dataset_metadata`,
-`cube_statistics`, `moment_map_summary`, `hi_products`, `cosmology_distance`,
-`catalogue_summary` (cosmology / point catalogues), `vbt_summary` (VBT
-point/volume tables). `tool_specs()` renders them as
+`cube_statistics`, `moment_map_summary`, `hi_products`, `noise_estimate`,
+`aperture_photometry`, `source_gaussfit`, `angular_power_spectrum`,
+`cosmology_distance`, `catalogue_summary` (cosmology / point catalogues),
+`vbt_summary` (VBT point/volume tables). `tool_specs()` renders them as
 `{name, description, input_schema}` for the provider. Executors call the same
 workers the REST API uses, so the numbers are identical to the interactive tools.
 

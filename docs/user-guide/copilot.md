@@ -26,8 +26,8 @@ reversible actions that make sense for its data:
 
 | Viewer | Grounded analysis tools | Actions it can take |
 | --- | --- | --- |
-| **Cube** (3-D spectral cube) | `dataset_metadata`, `cube_statistics`, `moment_map_summary`, `hi_products` | colormap, threshold, render mode (volume/isosurface), blend mode (composite/MIP/MinIP), go to channel, reset camera, **compute & show a moment map** |
-| **Image** (2-D) | `dataset_metadata`, `cube_statistics` | colormap, reset camera |
+| **Cube** (3-D spectral cube) | `dataset_metadata`, `cube_statistics`, `moment_map_summary`, `hi_products`, `noise_estimate`, `aperture_photometry`, `source_gaussfit` | colormap, threshold, render mode (volume/isosurface), blend mode (composite/MIP/MinIP), go to channel, reset camera, **compute & show a moment map** |
+| **Image** (2-D) | `dataset_metadata`, `cube_statistics`, `aperture_photometry`, `source_gaussfit`, `angular_power_spectrum` | colormap, reset camera |
 | **Cosmology catalogue** (3-D point cloud — the *Catalogue 3D* window) | `catalogue_summary` (columns, coordinate system, per-column ranges), `cosmology_distance` (redshift → comoving/luminosity/angular-diameter distance) | reset camera |
 | **VBT** (point / volume binary table) | `vbt_summary` (rows, fields, per-field ranges) | colormap, reset camera |
 
@@ -107,6 +107,11 @@ them; it cannot fabricate their outputs.
   summarised (units, beam, pixel scale, min/max/mean/median/σ/rms/MAD, pixel counts).
 - *"Are there HI sources?"* → reasons over the statistics and can suggest / run a
   moment-0 map to integrate the emission.
+- *"What's the noise level, and what threshold should I use?"* → `noise_estimate`
+  (per-channel σ), then a `set_threshold` action at a few × σ.
+- *"Measure the flux of the source at RA 10.0 Dec 20.0."* → `aperture_photometry`
+  (raw sum + Jy when beam-corrected); *"and fit it"* → `source_gaussfit` (peak,
+  integrated flux, FWHM, position angle, beam-deconvolved size).
 - *"What is the comoving distance at redshift 0.1?"* → `cosmology_distance` with
   the honest (Planck18) constants.
 - *(in the Catalogue 3D window)* *"What columns does this catalogue have, and what

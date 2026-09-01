@@ -83,6 +83,65 @@ def test_moment_summary_rejects_bad_order(tmp_path):
         TOOLS["moment_map_summary"].executor(path, {"order": 7})
 
 
+def test_noise_estimate_tool(tmp_path):
+    path = str(tmp_path / "cn.fits")
+    _write_cube(path)
+    out = TOOLS["noise_estimate"].executor(path, {})   # full-cube default
+    assert out["bunit"] == "Jy/beam"
+    assert out["num_channels"] == 16
+    assert out["sigma_median"] is not None and out["sigma_median"] > 0
+
+
+def test_aperture_photometry_tool(tmp_path):
+    path = str(tmp_path / "ca.fits")
+    _write_cube(path)
+    # Source sits at the reference sky position (CRVAL 10/20), channel 6-9.
+    out = TOOLS["aperture_photometry"].executor(
+        path, {"ra_deg": 10.0, "dec_deg": 20.0, "aperture_arcsec": 7.0, "channel": 7})
+    assert out["flux_unit"] and out["n_pix_aperture"] > 0
+    assert "flux" in out and out["bunit"] == "Jy/beam"
+
+
+def test_aperture_photometry_requires_positive_aperture(tmp_path):
+    path = str(tmp_path / "ca2.fits")
+    _write_cube(path)
+    with pytest.raises((ValueError, KeyError)):
+        TOOLS["aperture_photometry"].executor(path, {"ra_deg": 10.0, "dec_deg": 20.0})
+
+
+def test_measurement_tools_reject_non_integral_and_bad_params(tmp_path):
+    path = str(tmp_path / "cv.fits")
+    _write_cube(path)
+    # A fractional channel would silently measure a different plane — reject it.
+    with pytest.raises(ValueError):
+        TOOLS["aperture_photometry"].executor(
+            path, {"ra_deg": 10.0, "dec_deg": 20.0, "aperture_arcsec": 7.0, "channel": 7.5})
+    # Annulus must be a proper ring.
+    with pytest.raises(ValueError):
+        TOOLS["aperture_photometry"].executor(
+            path, {"ra_deg": 10.0, "dec_deg": 20.0, "aperture_arcsec": 7.0,
+                   "annulus_inner_arcsec": 9.0, "annulus_outer_arcsec": 8.0})
+    # Non-finite position.
+    with pytest.raises(ValueError):
+        TOOLS["source_gaussfit"].executor(
+            path, {"ra_deg": float("nan"), "dec_deg": 20.0, "box_arcsec": 22.0})
+
+
+def test_source_gaussfit_tool(tmp_path):
+    path = str(tmp_path / "cg.fits")
+    _write_cube(path)
+    out = TOOLS["source_gaussfit"].executor(
+        path, {"ra_deg": 10.0, "dec_deg": 20.0, "box_arcsec": 22.0, "channel": 7})
+    assert "peak_jy_beam" in out and "major_arcsec" in out and "pa_deg" in out
+
+
+def test_angular_power_spectrum_tool(tmp_path):
+    path = str(tmp_path / "cp.fits")
+    _write_cube(path)
+    out = TOOLS["angular_power_spectrum"].executor(path, {"channel": 7, "n_bins": 4})
+    assert isinstance(out, dict) and out
+
+
 def test_cosmology_rejects_bad_redshift():
     with pytest.raises(ValueError):
         TOOLS["cosmology_distance"].executor(None, {"redshift": -2.0})

@@ -284,6 +284,151 @@ def _vbt_summary(_path: str | None, params: dict[str, Any],
     }
 
 
+def _int_param(params: dict[str, Any], key: str, default: int | None = None) -> int:
+    """Coerce a tool argument to int, REJECTING non-integral floats.
+
+    The engine does not JSON-schema-validate arguments, so ``channel=7.9`` or
+    ``n_bins=3.9`` would otherwise silently run a different measurement.
+    """
+    if key not in params or params[key] is None:
+        if default is None:
+            raise ValueError(f"{key} is required.")
+        return default
+    v = params[key]
+    if isinstance(v, bool):
+        raise ValueError(f"{key} must be an integer.")
+    if isinstance(v, float):
+        if not v.is_integer():
+            raise ValueError(f"{key} must be an integer, got {v}.")
+        return int(v)
+    if not isinstance(v, int):
+        raise ValueError(f"{key} must be an integer.")
+    return v
+
+
+def _finite_float(params: dict[str, Any], key: str, *, positive: bool = False) -> float:
+    raw = params[key]
+    if isinstance(raw, bool):   # True/False would coerce to 1.0/0.0 silently
+        raise ValueError(f"{key} must be a number.")
+    v = float(raw)
+    if not np.isfinite(v):
+        raise ValueError(f"{key} must be a finite number.")
+    if positive and not (v > 0):
+        raise ValueError(f"{key} must be > 0.")
+    return v
+
+
+def _noise_estimate(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    """Per-channel noise (MAD + Gaussian σ) over a box, summarised.
+
+    Defaults to the full spatial extent and full spectral depth; a caller can
+    restrict it to an emission-free box / channel range for a cleaner estimate.
+    Returns the median (and range) of the per-channel σ and MAD — the numbers a
+    detection threshold (e.g. 3–5 σ) should be built on.
+    """
+    if not path:
+        raise ValueError("noise_estimate requires a loaded cube.")
+    from ..compute import worker_noise_estimate  # noqa: PLC0415
+    ds = ScientificFitsDataset(path)
+    # worker_noise_estimate reads squeeze_to_3d(raw) as (depth, height, width) —
+    # numpy axis 0 (the channel axis) is the LAST active FITS axis. If the actual
+    # spectral axis isn't that one, "per-channel" noise would be measured along a
+    # spatial axis, so refuse rather than return a wrong number.
+    if ds.active_axes and ds.cube_numpy_spectral_fits_axis() != ds.active_axes[-1]:
+        raise ValueError(
+            "noise_estimate needs the spectral axis to be the cube's last axis "
+            "(e.g. NAXIS3); this cube's spectral axis is elsewhere."
+        )
+    # Mirror the worker's squeeze exactly (squeezed FITS sizes, reversed by numpy).
+    squeezed = [s for s in ds.axis_sizes if s > 1]
+    w = squeezed[0] if squeezed else 1
+    h = squeezed[1] if len(squeezed) > 1 else 1
+    nz = squeezed[2] if len(squeezed) > 2 else 1
+    x0 = max(0, _int_param(params, "x0", 0))
+    x1 = max(0, _int_param(params, "x1", w - 1))
+    y0 = max(0, _int_param(params, "y0", 0))
+    y1 = max(0, _int_param(params, "y1", h - 1))
+    cs = max(0, _int_param(params, "channel_start", 0))
+    ce = max(0, _int_param(params, "channel_end", max(0, nz - 1)))
+    res = worker_noise_estimate(path, x0, x1, y0, y1, cs, ce)
+    sigma = np.asarray(res.get("sigma", []), dtype="float64")
+    mad = np.asarray(res.get("mad", []), dtype="float64")
+    sigma = sigma[np.isfinite(sigma)]
+    mad = mad[np.isfinite(mad)]
+    return {
+        "bunit": ds.bunit,
+        "channel_start": res.get("channel_start"),
+        "channel_end": res.get("channel_end"),
+        "num_channels": res.get("num_channels"),
+        "region": res.get("region"),
+        "blank_fraction": res.get("blank_fraction"),
+        "sigma_median": float(np.median(sigma)) if sigma.size else None,
+        "sigma_min": float(sigma.min()) if sigma.size else None,
+        "sigma_max": float(sigma.max()) if sigma.size else None,
+        "mad_median": float(np.median(mad)) if mad.size else None,
+        "mad_min": float(mad.min()) if mad.size else None,
+        "mad_max": float(mad.max()) if mad.size else None,
+        "note": "σ is the per-channel Gaussian noise (MAD-based); use k×σ for a k-sigma threshold.",
+    }
+
+
+def _aperture_photometry(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    """Background-subtracted aperture flux at a sky position (needs WCS).
+
+    ``ra_deg``/``dec_deg`` and ``aperture_arcsec`` are required; the background
+    annulus defaults to [aperture, 2×aperture] when not given. ``channel`` selects
+    a cube plane (omit for a 2-D image).
+    """
+    if not path:
+        raise ValueError("aperture_photometry requires a loaded image or cube.")
+    from ..compute import worker_aperture_photometry  # noqa: PLC0415
+    ra = _finite_float(params, "ra_deg")
+    dec = _finite_float(params, "dec_deg")
+    ap = _finite_float(params, "aperture_arcsec", positive=True)
+    inner = float(params.get("annulus_inner_arcsec", ap))
+    outer = float(params.get("annulus_outer_arcsec", 2.0 * ap))
+    if not (np.isfinite(inner) and np.isfinite(outer)):
+        raise ValueError("annulus radii must be finite.")
+    if not (0 < inner < outer):
+        raise ValueError("require 0 < annulus_inner_arcsec < annulus_outer_arcsec.")
+    channel = None if params.get("channel") is None else max(0, _int_param(params, "channel"))
+    return worker_aperture_photometry(path, channel, ra, dec, ap, inner, outer)
+
+
+def _source_gaussfit(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    """Fit a 2-D elliptical Gaussian to a source (needs WCS).
+
+    Returns peak, integrated flux (Jy when beam-corrected), fitted and
+    beam-deconvolved FWHMs and position angle — a compact source characterisation.
+    ``ra_deg``/``dec_deg`` and ``box_arcsec`` (the fit cut-out size) are required;
+    ``channel`` selects a cube plane (omit for a 2-D image).
+    """
+    if not path:
+        raise ValueError("source_gaussfit requires a loaded image or cube.")
+    from ..compute import worker_gauss_fit_2d  # noqa: PLC0415
+    ra = _finite_float(params, "ra_deg")
+    dec = _finite_float(params, "dec_deg")
+    box = _finite_float(params, "box_arcsec", positive=True)
+    channel = None if params.get("channel") is None else max(0, _int_param(params, "channel"))
+    return worker_gauss_fit_2d(path, channel, ra, dec, box)
+
+
+def _angular_power_spectrum(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    """Relative (un-calibrated) radial power spectrum of a loaded 2-D map.
+
+    Bins the 2-D Fourier power of the map's pixel grid into ``n_bins`` radial
+    bins (no HEALPix). This is a RELATIVE spectrum — the amplitude is not a
+    calibrated angular C(ℓ); use it to compare structure scales, and quote the
+    worker's own caveat, not an absolute C(ℓ).
+    """
+    if not path:
+        raise ValueError("angular_power_spectrum requires a loaded map.")
+    from ..compute import worker_angular_power_spectrum  # noqa: PLC0415
+    channel = max(0, _int_param(params, "channel", 0))
+    n_bins = max(2, _int_param(params, "n_bins", 64))
+    return worker_angular_power_spectrum(path, channel, n_bins)
+
+
 # ── Action executors (emit a viewer directive; the desktop app applies it) ────
 # These do NOT compute a result — they validate the parameters and return an
 # {"action": <directive>, "status": "queued"} envelope. The directive's ``type``
@@ -421,6 +566,90 @@ TOOLS: dict[str, AssistantTool] = {
                 "additionalProperties": False,
             },
             executor=_hi_products,
+        ),
+        AssistantTool(
+            name="noise_estimate",
+            description=(
+                "Per-channel noise of the cube (Gaussian σ and MAD), summarised "
+                "as the median/min/max σ over a box and channel range. Defaults to "
+                "the whole cube; pass an emission-free x0/x1/y0/y1 box for a cleaner "
+                "estimate. Use this to ground a detection threshold (k×σ)."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "x0": {"type": "integer"}, "x1": {"type": "integer"},
+                    "y0": {"type": "integer"}, "y1": {"type": "integer"},
+                    "channel_start": {"type": "integer"},
+                    "channel_end": {"type": "integer"},
+                },
+                "additionalProperties": False,
+            },
+            executor=_noise_estimate,
+        ),
+        AssistantTool(
+            name="aperture_photometry",
+            description=(
+                "Background-subtracted aperture flux at a sky position (RA/DEC in "
+                "degrees). Requires WCS. Reports the raw sum with its unit and, for "
+                "beam-corrected data, the flux in Jy. Give aperture_arcsec (and "
+                "optionally the background annulus); channel selects a cube plane."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "ra_deg": {"type": "number"},
+                    "dec_deg": {"type": "number"},
+                    "aperture_arcsec": {"type": "number"},
+                    "annulus_inner_arcsec": {"type": "number"},
+                    "annulus_outer_arcsec": {"type": "number"},
+                    "channel": {"type": "integer"},
+                },
+                "required": ["ra_deg", "dec_deg", "aperture_arcsec"],
+                "additionalProperties": False,
+            },
+            executor=_aperture_photometry,
+        ),
+        AssistantTool(
+            name="source_gaussfit",
+            description=(
+                "Fit a 2-D elliptical Gaussian to a source at a sky position "
+                "(RA/DEC in degrees). Requires WCS. Returns peak, integrated flux "
+                "(Jy when beam-corrected), fitted and beam-deconvolved FWHMs and "
+                "position angle. Give box_arcsec (fit cut-out size); channel selects "
+                "a cube plane."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "ra_deg": {"type": "number"},
+                    "dec_deg": {"type": "number"},
+                    "box_arcsec": {"type": "number"},
+                    "channel": {"type": "integer"},
+                },
+                "required": ["ra_deg", "dec_deg", "box_arcsec"],
+                "additionalProperties": False,
+            },
+            executor=_source_gaussfit,
+        ),
+        AssistantTool(
+            name="angular_power_spectrum",
+            description=(
+                "RELATIVE (un-calibrated) radial power spectrum of a loaded 2-D "
+                "map (e.g. a cosmological / CMB-like map), binned into n_bins "
+                "radial bins from the map's Fourier power. NOT a calibrated "
+                "angular C(ℓ) — use it to compare structure scales, and quote the "
+                "worker's caveat. channel selects a plane for a cube."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "integer"},
+                    "n_bins": {"type": "integer"},
+                },
+                "additionalProperties": False,
+            },
+            executor=_angular_power_spectrum,
         ),
         AssistantTool(
             name="cosmology_distance",
