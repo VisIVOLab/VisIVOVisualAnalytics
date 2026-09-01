@@ -10,6 +10,8 @@
 #include <QFileDialog>
 #include <QGuiApplication>
 #include <QIntValidator>
+#include <QScreen>
+#include <QScrollArea>
 
 #include <limits>
 
@@ -95,6 +97,37 @@ SettingsDialog::SettingsDialog(Settings *settings, AuthWrapper *auth, QWidget *p
     // Signal-to-signal connection to notify other classes they need to reload
     // their settings
     QObject::connect(this, &SettingsDialog::accepted, this->settings, &Settings::updated);
+
+    // Make the dialog scrollable: the stacked sections can exceed the window (and
+    // the screen) height, leaving the lower sections / buttons unreachable. Move
+    // every section into a QScrollArea, keeping the button box pinned below it.
+    if (auto *outer = qobject_cast<QVBoxLayout *>(this->layout())) {
+        auto *content = new QWidget;
+        auto *contentLayout = new QVBoxLayout(content);
+        contentLayout->setContentsMargins(0, 0, 0, 0);
+        outer->removeWidget(ui->buttonBox);   // keep the buttons outside the scroll area
+        while (outer->count() > 0) {
+            QLayoutItem *item = outer->takeAt(0);
+            if (QWidget *w = item->widget()) {
+                contentLayout->addWidget(w);  // reparents w to `content`
+                delete item;                  // free the now-empty wrapper (not the widget)
+            } else {
+                contentLayout->addItem(item); // layouts / spacers transfer as-is
+            }
+        }
+        auto *scroll = new QScrollArea(this);
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidget(content);
+        outer->addWidget(scroll);
+        outer->addWidget(ui->buttonBox);
+    }
+    // Open at a height that fits the screen; the scroll area handles any overflow.
+    if (QScreen *scr = this->screen()) {
+        const int fitH = qMin(this->sizeHint().height(),
+                              static_cast<int>(scr->availableGeometry().height() * 0.9));
+        this->resize(this->width(), fitH);
+    }
 }
 
 SettingsDialog::~SettingsDialog()

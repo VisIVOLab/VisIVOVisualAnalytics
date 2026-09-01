@@ -17,6 +17,58 @@ one-command container that serves one. Two flavours:
 - **Docker** with the Compose plugin.
 - Disk for the model cache (a 32–70B model is ~30–70 GB).
 
+## Rootless Podman on RHEL / AlmaLinux — the setup that actually works ⭐
+
+Battle-tested on AlmaLinux 9 + rootless Podman 5 + an RTX PRO 6000 (Blackwell).
+On this stack the Docker Compose path is fragile; use the **direct `podman run`**
+command below. Do these one-time host steps FIRST, then run:
+
+```bash
+# 1) GPU via CDI (root, once) — the Swarm-style compose GPU block is ignored by
+#    podman-compose, so Podman needs a CDI device instead:
+sudo dnf install -y nvidia-container-toolkit
+sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+nvidia-ctk cdi list        # must show nvidia.com/gpu=all
+
+# 2) Keep the container alive after you log out (rootless Podman otherwise KILLS
+#    all your processes when the last SSH session closes — this is the #1 gotcha):
+loginctl enable-linger "$USER"   # no root needed; verify: loginctl show-user "$USER" -p Linger
+
+# 3) Open the API port in the firewall (root, once):
+sudo firewall-cmd --add-port=8000/tcp --permanent && sudo firewall-cmd --reload
+
+# 4) Config + run (from deploy/copilot-llm, with .env set — see below):
+cp .env.example .env      # set VLLM_API_KEY; set HUGGING_FACE_HUB_TOKEN (see note)
+podman run -d --name visivo-copilot-llm --restart unless-stopped \
+  --network=host \                       # avoids the flaky rootless port-forwarder (pasta)
+  --device nvidia.com/gpu=all \          # CDI GPU
+  --security-opt label=disable \         # SELinux would deny the container NVML access
+  --ipc=host \
+  --env-file "$PWD/.env" \
+  -v "$PWD/entrypoint.sh:/entrypoint.sh:ro,Z" \
+  -v "$PWD/hf-cache:/root/.cache/huggingface:Z" \
+  --entrypoint /bin/sh docker.io/vllm/vllm-openai:latest /entrypoint.sh
+#  ^ fully-qualified image name: short-name-mode=enforcing can't prompt over SSH.
+podman logs -f visivo-copilot-llm        # wait for "Application startup complete"
+./validate.sh
+```
+
+Then point the copilot ⚙ → "Your server" at `http://<server-ip>:8000/v1` with your
+`VLLM_API_KEY`.
+
+**Two `.env` notes that bit us:**
+- **`HUGGING_FACE_HUB_TOKEN`** — set it (free HF account → Settings → Access
+  Tokens, `read`). Unauthenticated bulk downloads of a 32B model get rate-limited
+  by HF and **stall** even on a fast link; a token fixes it. (Qwen2.5-32B is
+  ungated, so the token is only for the rate limit.)
+- **No inline comments on value lines** in `.env` — the env-file parser folds them
+  into the value (e.g. `QUANTIZATION=  # note` breaks vLLM's args).
+
+**Startup speed:** the first start compiles CUDA graphs for the GPU, which on a
+brand-new arch (Blackwell) can take 15–20 min and doesn't persist across restarts.
+For a copilot (low throughput) add **`EXTRA_ARGS=--enforce-eager`** to `.env` to
+skip compilation — startup drops to ~2 min with a negligible latency cost.
+
 ## Quick start — vLLM
 ```bash
 cd deploy/copilot-llm
@@ -85,6 +137,18 @@ for Llama 3.x, `mistral` for Mistral) or `tool_choice=auto` won't emit tool call
 ## Troubleshooting
 - **Container unhealthy for a while on first run** — normal: it's downloading the
   model (`start_period` is 15 min). Watch `docker compose logs -f`.
+- **(rootless Podman) container exits within seconds; logs show `acquiring lock N:
+  file exists`** — the SHM lock segment is stale/corrupt. Fix:
+  `rm -f /dev/shm/libpod_rootless_lock_* && podman system renumber`.
+- **(rootless Podman) container dies the moment your SSH session closes** (often
+  seen as an unexplained `SIGTERM` / "terminated" mid-startup) — you didn't enable
+  linger. Run `loginctl enable-linger "$USER"` and restart the container.
+- **External `curl http://host:8000/health` resets the connection, but it works
+  from inside the container** (`podman exec … curl localhost:8000/health`) — the
+  rootless port-forwarder (pasta) is failing. Use `--network=host` (host binds the
+  port directly). Also check the firewall (`firewall-cmd --add-port=8000/tcp`).
+- **Model download stalls at a few MB** despite good bandwidth — HF is rate-limiting
+  the unauthenticated download. Set `HUGGING_FACE_HUB_TOKEN` in `.env`.
 - **OOM / won't load** — lower `MAX_MODEL_LEN`, raise `GPU_UTIL` toward 0.95, or
   pick a smaller/quantized model.
 - **`validate.sh` step 3 warns "no tool_calls"** — fix `TOOL_PARSER` for your

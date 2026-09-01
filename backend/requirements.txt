@@ -33,4 +33,4 @@ h5py>=3.10            # LOFAR / generic beamformed HDF5 dynamic-spectrum reader
 #   * ChatGPT / OpenAI cloud:    openai
 #   * Your own server (vLLM/Ollama, OpenAI-compatible): also the `openai` SDK
 # anthropic>=0.40
-# openai>=1.40
+openai>=1.40

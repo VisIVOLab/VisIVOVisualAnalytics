@@ -1,0 +1,49 @@
+# VisIVO copilot LLM — Podman variant of docker-compose.yml.
+#
+# WHY a separate file: the Docker compose passes the GPU with the Swarm-style
+# `deploy.resources.reservations.devices` block, which podman-compose ignores —
+# the container would then start WITHOUT a GPU and vLLM would fail. Podman passes
+# GPUs through CDI (Container Device Interface) instead, as a plain `devices:`
+# entry (`nvidia.com/gpu=all`). The `:Z` volume suffixes relabel for SELinux.
+#
+# One-time prerequisite on the host (root once): generate the CDI spec so the
+# `nvidia.com/gpu=all` device exists —
+#   sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+#   nvidia-ctk cdi list      # must show nvidia.com/gpu=all (or =0)
+#
+# Quick start (rootless is fine):
+#   cd deploy/copilot-llm
+#   cp .env.example .env      # set VLLM_API_KEY
+#   podman-compose -f docker-compose.podman.yml up -d
+#   podman logs -f visivo-copilot-llm     # wait for "Application startup complete"
+#   ./validate.sh
+# Then VisIVO Copilot ⚙ → "Your server" → http://<server>:8000/v1  key: <VLLM_API_KEY>
+services:
+  copilot-llm:
+    # Fully-qualified image name: rootless Podman with short-name-mode=enforcing
+    # cannot prompt for the registry over a non-interactive session.
+    image: docker.io/vllm/vllm-openai:${VLLM_TAG:-latest}
+    container_name: visivo-copilot-llm
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    env_file: .env
+    ports:
+      - "${LLM_PORT:-8000}:8000"
+    # GPU via CDI (podman): needs `nvidia-ctk cdi generate` done once on the host.
+    devices:
+      - nvidia.com/gpu=all
+    # SELinux-enforcing hosts (RHEL/AlmaLinux) deny the container's NVML access to
+    # the GPU ("Failed to initialize NVML: Insufficient Permissions"); disabling the
+    # container's SELinux label is the standard fix for rootless NVIDIA + Podman.
+    security_opt:
+      - label=disable
+    volumes:
+      - ./entrypoint.sh:/entrypoint.sh:ro,Z
+      - ${HF_CACHE:-./hf-cache}:/root/.cache/huggingface:Z
+    ipc: host                      # vLLM needs a large /dev/shm
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget -qO- http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 30
+      start_period: 900s

@@ -119,6 +119,8 @@ class OpenAIProvider(AssistantProvider):
     is ``base_url`` — both speak the same chat-completions + tools protocol.
     """
 
+    configured = True   # a built OpenAI/self-hosted provider IS configured
+
     def __init__(self, api_key: str | None, base_url: str | None = None,
                  model: str | None = None, name: str = "openai") -> None:
         import openai  # noqa: PLC0415
