@@ -93,6 +93,15 @@ extraction, MAD-based noise.
 SAMP messaging with TOPCAT/Aladin.
 :::
 
+:::{grid-item-card} 🤖 Scientific Copilot
+:link: user-guide/copilot
+:link-type: doc
+
+Ask questions in natural language; every number is computed by a real
+backend tool (never hallucinated), with provenance + a reproducibility
+script. Cloud (Claude / ChatGPT) or your own self-hosted LLM.
+:::
+
 :::{grid-item-card} 🛠️ Troubleshooting
 :link: user-guide/troubleshooting
 :link-type: doc
@@ -154,6 +163,8 @@ user-guide/moment-maps
 user-guide/spectral-tools
 user-guide/region-pv-noise
 user-guide/catalogues-hips
+user-guide/copilot
+user-guide/copilot-self-hosted
 user-guide/glossary
 user-guide/troubleshooting
 ```
@@ -218,6 +229,10 @@ every tool together with the page that documents its scientific use.
   - Slice slider, ▶ Play animation
   - Slice tile + textured 3-D cutting plane
   - [Cube viewer](user-guide/cube-viewer)
+* - Ask the AI copilot about the data
+  - **Inspector → Copilot** tab (natural-language question)
+  - Prose answer grounded in real tool calls + provenance + reproducibility script
+  - [Scientific Copilot](user-guide/copilot)
 * - **EXPLORATION tools** (cube viewer → Tools menu / sidebar)
   -
   -

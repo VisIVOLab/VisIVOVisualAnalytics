@@ -6,8 +6,8 @@ scan together, change the colour map and they all recolour. This is the
 Encube/Fluke comparative-grid idea, implemented by linking the existing separate
 cube viewers (`vtkWindowCube`) rather than building a new multi-pane window.
 
-Toggle **Tools ▸ Link Views (sync camera / channel / colour)** on each viewer
-you want in the group. `src/gui/vtkWindowCube_Link.cpp`.
+Toggle the **Linked** button in the viewer's toolbar (or **Tools ▸ Link Views**)
+on each viewer you want in the group. `src/gui/vtkWindowCube_Link.cpp`.
 
 ---
 
@@ -17,13 +17,28 @@ you want in the group. `src/gui/vtkWindowCube_Link.cpp`.
 |--------|-----------|------------------|
 | **Camera** (3-D view) | `vtkCommand::InteractionEvent` on the cube interactor | shared **relative to each cube's data bounds** (see below), then re-render |
 | **Velocity channel** | `requestRemoteSlice()` (the single convergence for all channel changes) | matched by **spectral value (velocity)** — see below |
-| **Volume colour** | `applyColorMapByName()` / 3-D LUT customizer | colormap **name** + volume **stretch** (scale mode + gamma) |
-| **Volume blend mode** | the Composite/MIP/MinIP toggle | `applyVolumeBlendMode(idx)` |
+| **Volume colour** (LUT) | `applyColorMapByName()` / 3-D LUT customizer | colormap **name** + volume **stretch** (scale mode + gamma) |
+| **Representation** (render) | the Volume ↔ Isosurface toggle (`changeCubeRender()`) | peers switch representation via `applyLinkedRenderMode()` |
+| **Volume blend mode** (blend) | the Composite / MIP / MinIP toggle (menu *and* sidebar) | `applyVolumeBlendMode(idx)` |
 
 Enabling Link Views on a viewer immediately pushes its **camera + channel** to
 the other already-linked viewers so they snap into alignment. The colour map is
 left to adopt on the next change, so linking doesn't silently overwrite a peer's
 chosen colours.
+
+### Per-facet toggles
+
+Next to the **Linked** master button, five chips — **camera · channel · LUT ·
+render · blend** — let you enable or disable each propagation kind
+independently (e.g. sync the camera and channel but keep independent colour
+maps). Each chip is a toggle gated by its own flag (`m_linkCamera`,
+`m_linkChannel`, `m_linkLut`, `m_linkRender`, `m_linkBlend`); a broadcast fires
+only when both the sender **and** the receiving peer have that facet on. The
+chips are live only when there is actually something to link — more than one
+pane in the window **or** more than one open cube window. The **Linked** master
+button itself is always clickable (it is a persistent preference that activates
+as soon as a peer appears), and stays in sync with the *Tools ▸ Link Views* menu
+item.
 
 ### Heterogeneous cubes (different size / spectral axis)
 
@@ -62,8 +77,10 @@ not by raw coordinates/indices:
 
 ## How it works
 
-- A static registry `s_cubeWindows` holds every open cube viewer (added in the
-  constructor, removed in the destructor; `QPointer` auto-nulls on destruction).
+- A static registry (`LinkedWindowRegistry`, `src/gui/LinkedWindowRegistry.h`)
+  holds every open cube viewer (added in the constructor, removed in the
+  destructor; `QPointer` auto-nulls on destruction). Its `snapshot()` returns the
+  peer list by value so a viewer closing mid-broadcast can't invalidate the loop.
 - A change in a linked viewer is **broadcast** to the other linked viewers. Each
   broadcast **snapshots** the registry before iterating, so a viewer closing
   (`WA_DeleteOnClose`) mid-broadcast can't invalidate the loop.

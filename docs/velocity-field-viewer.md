@@ -158,9 +158,13 @@ the matter / where's the emptiness" complement to the flow itself.
   the `speed` scalar.
 - **Streamlines** — `vtkStreamTracer` (RK45, both directions) seeded on a sphere
   at the grid centre, tubed (`vtkTubeFilter`). Bounded by **Seeds** (default
-  200), `MaximumNumberOfSteps = 2000`, propagation `2·extent`, vorticity off.
+  200), `MaximumNumberOfSteps = 2000`, propagation `2·extent`.
 - **Colour** — shared `ColorMaps` LUT over the full-resolution speed range; the
   scalar bar shows `|v|`.
+- **Colour streamlines by vorticity** (sidebar checkbox, default off) — when on,
+  `vtkStreamTracer` computes the vorticity and the streamlines are coloured by
+  its magnitude `|∇×v|` (via `vtkArrayCalculator`) instead of speed, highlighting
+  regions of rotational flow (a cheap cosmic-web / shear indicator).
 
 ## Coordinate model
 
@@ -294,6 +298,17 @@ The open/query/parse runs **off the GUI thread** (`QtConcurrent` +
 `ok=false`) returns the parsed positions + schema, and `onCatalogueOverlayReady()`
 builds the VTK actor on the GUI thread. The button is disabled while a fetch runs
 (re-entry guarded by `isRunning()`). (Still future: multiple overlays.)
+
+## Multi-field compare
+
+Two velocity fields on the same grid (e.g. CF3 vs CF4, or a reconstruction vs a
+simulation) can be differenced cell-by-cell: `POST /v1/velocity/difference_bin`
+returns the magnitude of the vector difference **|v_a − v_b|** as a scalar grid,
+rendered with the same machinery as the divergence density. The two fields must
+share a grid shape (else 422); the worker warns (via `X-Visivo-Warnings`) when
+they differ in **unit**, **frame**, or **box size**, since a cell-wise diff is
+only physical when both cover the same space. The range headers are the generic
+`X-Visivo-Range-Min/Max` (a non-negative magnitude, not a signed divergence).
 
 ## Tests
 
