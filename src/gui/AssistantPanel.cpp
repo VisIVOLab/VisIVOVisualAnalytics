@@ -129,7 +129,14 @@ AssistantPanel::AssistantPanel(QWidget *parent) : QWidget(parent)
     root->addLayout(row);
 
     connect(m_settings, &QPushButton::clicked, this, &AssistantPanel::onSettings);
-    connect(m_send, &QPushButton::clicked, this, &AssistantPanel::onSend);
+    // While a query STREAMS the Send button becomes a Stop button. Other busy
+    // work (e.g. applying a provider) leaves it a disabled Send.
+    connect(m_send, &QPushButton::clicked, this, [this]() {
+        if (m_busy && m_streamReply)
+            stopStream();
+        else if (!m_busy)
+            onSend();
+    });
     connect(m_input, &QLineEdit::returnPressed, this, &AssistantPanel::onSend);
     connect(m_clear, &QPushButton::clicked, this, &AssistantPanel::onClearConversation);
 
@@ -374,8 +381,10 @@ void AssistantPanel::setBusy(bool busy)
     if (m_busy == busy)
         return;
     m_busy = busy;
-    m_send->setEnabled(!busy);
+    refreshSendButton();
     m_input->setEnabled(!busy);
+    if (m_settings)
+        m_settings->setEnabled(!busy);   // no provider change overlapping a live query
     if (m_suggestions)
         m_suggestions->setEnabled(!busy);   // starter chips shouldn't look clickable mid-request
     m_status->setText(busy ? u"Thinking…"_s : QString());
@@ -510,6 +519,7 @@ void AssistantPanel::startStream(const QString &question)
     m_scopeToken = m_token;
     m_streamBuf.clear();
     m_streamGotResult = false;
+    m_userStopped = false;
 
     QJsonObject body{ { u"question"_s, question } };
     if (!m_datasetId.isEmpty())
@@ -523,9 +533,10 @@ void AssistantPanel::startStream(const QString &question)
 
     QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
     m_streamReply = reply;
+    refreshSendButton();   // now that a stream is live, the button offers Stop
     connect(reply, &QNetworkReply::readyRead, this, [this, reply, question]() {
-        if (reply != m_streamReply)
-            return;
+        if (reply != m_streamReply || m_userStopped)
+            return;   // ignore data once the user has cancelled this stream
         m_streamBuf += reply->readAll();
         handleStreamBuffer(question);
     });
@@ -538,13 +549,21 @@ void AssistantPanel::startStream(const QString &question)
         }
         const bool ok = (reply->error() == QNetworkReply::NoError);
         const QString netErr = reply->errorString();
-        // Drain any final bytes that arrived with 'finished' (the last SSE frame,
-        // incl. the result, can land here without a separate readyRead).
-        m_streamBuf += reply->readAll();
-        handleStreamBuffer(question);
+        // Drain any final bytes (the last SSE frame, incl. the result, can land
+        // with 'finished' without a separate readyRead) — but NOT after a Stop,
+        // which must not apply a late result/actions.
+        if (!m_userStopped)
+            m_streamBuf += reply->readAll();
         m_streamReply = nullptr;
         reply->deleteLater();
         setBusy(false);
+        // A user-initiated Stop: drop any buffered bytes, no error banner.
+        if (m_userStopped) {
+            m_streamBuf.clear();
+            m_status->setText(u"Stopped."_s);
+            return;
+        }
+        handleStreamBuffer(question);
         // Surface a network-level failure only if no result/error was delivered
         // and the scope is still current.
         if (m_streamGotResult)
@@ -643,4 +662,22 @@ void AssistantPanel::applyResult(const BackendAssistantResult &r, const QString 
     while (m_turns.size() > 20)
         m_turns.removeFirst();
     renderConversation();
+}
+
+void AssistantPanel::refreshSendButton()
+{
+    const bool streaming = m_busy && m_streamReply != nullptr;
+    m_send->setText(streaming ? u"Stop"_s : u"Send"_s);
+    // Enabled to Stop while streaming, or to Send while idle; disabled for other
+    // busy work (e.g. applying a provider), where there is nothing to cancel.
+    m_send->setEnabled(streaming || !m_busy);
+}
+
+void AssistantPanel::stopStream()
+{
+    if (m_userStopped || !m_streamReply)
+        return;   // nothing streaming to cancel (or already cancelling)
+    m_userStopped = true;
+    m_status->setText(u"Stopping…"_s);
+    m_streamReply->abort();   // → finished fires; the "Stopped." note is shown there
 }

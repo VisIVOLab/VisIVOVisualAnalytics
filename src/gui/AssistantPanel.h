@@ -75,6 +75,8 @@ private:
     void startStream(const QString &question);
     void handleStreamBuffer(const QString &question);   ///< parse complete SSE blocks
     void applyResult(const BackendAssistantResult &r, const QString &question);
+    void stopStream();   ///< user-cancel the in-flight query (aborts the SSE reply)
+    void refreshSendButton();   ///< Send ↔ Stop depending on whether a stream is live
     /// One rendered transcript entry (a chat bubble or an inline system note).
     struct Entry
     {
@@ -113,6 +115,7 @@ private:
     QNetworkReply *m_streamReply{ nullptr };
     QByteArray m_streamBuf;          ///< accumulated SSE bytes, parsed block-by-block
     bool m_streamGotResult{ false }; ///< a final result/error event arrived
+    bool m_userStopped{ false };     ///< the user cancelled this stream (no error banner)
     QString m_scopeDatasetId;        ///< scope captured at send, to guard stale replies
     QString m_scopeUrl;
     QString m_scopeToken;
