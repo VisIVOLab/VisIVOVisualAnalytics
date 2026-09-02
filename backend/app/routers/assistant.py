@@ -7,12 +7,14 @@ configured — the tool catalogue and deterministic tools still work.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..assistant import AssistantEngine, provider_from_env
@@ -207,3 +209,98 @@ async def assistant_query(
         else:
             task.add_done_callback(_release_once)
         raise
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+@router.post("/v1/assistant/stream", tags=["assistant"])
+async def assistant_stream(
+    request: AssistantQueryRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> StreamingResponse:
+    """Server-Sent-Events variant of /query that streams PROGRESS as it runs.
+
+    Emits ``event: tool`` (which analysis is running) and ``event: thinking`` as
+    the agent loops, then a final ``event: result`` carrying the same payload as
+    /query (or ``event: error``). Lets the UI show "Running cube_statistics…"
+    instead of a blank spinner. Admission control mirrors /query exactly.
+    """
+    if not request.question or not request.question.strip():
+        raise HTTPException(422, "A non-empty question is required.")
+
+    dataset_path: str | None = None
+    dataset_entry: dict | None = None
+    if request.dataset_id:
+        dataset_entry = _require_dataset(session, request.dataset_id)
+        dataset_path = dataset_entry.get("path")
+
+    # Same admission control as /query — acquire BEFORE streaming so a rejection
+    # is a normal HTTP error, not a half-open stream.
+    if not session.try_acquire_task_slot():
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Too many concurrent compute tasks for this session.",
+        )
+    sem = _assistant_semaphore()
+    try:
+        await sem.acquire()
+    except BaseException:
+        session.release_task_slot()
+        raise
+
+    _released = False
+
+    def _release_once(_fut: object = None) -> None:
+        nonlocal _released
+        if not _released:
+            _released = True
+            sem.release()
+            session.release_task_slot()
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+    _DONE = object()
+
+    def _progress(event: str, detail: str = "") -> None:
+        # Called from the worker THREAD — hop back to the loop thread-safely.
+        loop.call_soon_threadsafe(queue.put_nowait, (event, detail))
+
+    engine = AssistantEngine(_get_provider())
+    prior_turns = [{"role": t.role, "text": t.text} for t in request.history]
+    task = asyncio.ensure_future(
+        asyncio.to_thread(engine.run, request.question, dataset_path,
+                          request.dataset_id, dataset_entry, prior_turns, _progress))
+    # Release the slots exactly when the WORKER settles — independent of the
+    # generator/client. This is the only release path, so a client that
+    # disconnects before or during streaming can never leak a slot (the compute
+    # keeps the slot only until it actually finishes). _release_once is idempotent.
+    task.add_done_callback(_release_once)
+    task.add_done_callback(lambda _t: loop.call_soon_threadsafe(queue.put_nowait, _DONE))
+
+    async def _gen():
+        deadline = loop.time() + _ASSISTANT_TIMEOUT_S
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                yield _sse("error", {"error": f"Assistant query exceeded the "
+                                              f"{_ASSISTANT_TIMEOUT_S:.0f}s budget."})
+                break
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=remaining)
+            except asyncio.TimeoutError:
+                continue   # re-check the deadline
+            if item is _DONE:
+                if task.cancelled():
+                    yield _sse("error", {"error": "cancelled"})
+                elif task.exception() is not None:
+                    yield _sse("error", {"error": str(task.exception())})
+                else:
+                    yield _sse("result", task.result().to_dict())
+                break
+            event, detail = item
+            yield _sse(event, {"tool": detail} if event == "tool" else {})
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")

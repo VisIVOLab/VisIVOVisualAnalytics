@@ -6,6 +6,7 @@ scripted fake provider), provenance capture, and the NullProvider fallback.
 """
 from __future__ import annotations
 
+import json
 import os
 
 import numpy as np
@@ -365,6 +366,17 @@ def test_provider_to_messages_handles_prior_assistant_text():
     assert any(m.get("role") == "assistant" and m.get("content") == "a" for m in om)
 
 
+def test_engine_emits_progress_events(tmp_path):
+    path = str(tmp_path / "cprog.fits")
+    _write_cube(path)
+    events: list[tuple] = []
+    res = AssistantEngine(_ScriptedProvider()).run(
+        "units?", path, dataset_id="ds1", progress=lambda e, d: events.append((e, d)))
+    assert res.answer  # scripted provider answered
+    assert ("tool", "dataset_metadata") in events   # surfaced the running tool
+    assert any(e[0] == "thinking" for e in events)
+
+
 def test_engine_passes_dataset_entry_to_context_tool():
     # A wants_context tool must receive the cached session entry (dataframe), so
     # catalogue_summary reports the in-session row count — not a re-read of path.
@@ -624,3 +636,20 @@ def test_assistant_endpoints():
     assert r.status_code == 200
     body = r.json()
     assert "answer" in body and "reproducibility_script" in body
+
+
+def test_assistant_stream_endpoint_emits_result():
+    client, auth = _client_and_auth()
+    r = client.post("/v1/assistant/stream", json={"question": "hello"}, headers=auth)
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/event-stream")
+    text = r.text
+    # The stream ends with a final result event carrying the /query payload.
+    assert "event: result" in text
+    payload = None
+    for block in text.split("\n\n"):
+        if block.startswith("event: result"):
+            data_line = block.split("data: ", 1)[1]
+            payload = json.loads(data_line)
+    assert payload is not None
+    assert "answer" in payload and "reproducibility_script" in payload

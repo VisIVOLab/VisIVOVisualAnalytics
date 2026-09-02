@@ -1591,6 +1591,11 @@ public:
                                           const QString &datasetId,
                                           const QJsonArray &history = {});
 
+    /** Parse a /v1/assistant/query (or the streamed ``result`` event) JSON body
+     *  into a BackendAssistantResult. Shared by the blocking and streaming
+     *  paths so both interpret the answer/tool-calls/actions identically. */
+    static BackendAssistantResult parseAssistantResult(const QJsonObject &o);
+
     /** POST /v1/assistant/config — choose the copilot LLM back-end: Claude
      *  (anthropicKey), ChatGPT/OpenAI (openaiKey), or your own server
      *  (baseUrl of an OpenAI-compatible endpoint). Empty fields are left

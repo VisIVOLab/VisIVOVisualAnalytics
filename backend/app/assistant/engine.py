@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from .provider import AssistantProvider, ProviderResponse, ToolCall
 from .tools import TOOLS, tool_specs
@@ -111,7 +111,17 @@ class AssistantEngine:
     def run(self, question: str, dataset_path: str | None,
             dataset_id: str | None = None,
             dataset_entry: dict[str, Any] | None = None,
-            prior_turns: list[dict[str, str]] | None = None) -> AssistantResult:
+            prior_turns: list[dict[str, str]] | None = None,
+            progress: "Callable[[str, str], None] | None" = None) -> AssistantResult:
+        """Run the agent loop. ``progress(event, detail)`` — when given — is called
+        as work happens ("tool", <tool name>) so a streaming caller can show which
+        analysis is running; it must be cheap and non-blocking."""
+        def _emit(event: str, detail: str = "") -> None:
+            if progress is not None:
+                try:
+                    progress(event, detail)
+                except Exception:  # noqa: BLE001 — progress is best-effort telemetry
+                    pass
         specs = tool_specs()
         context = ""
         if dataset_id:
@@ -146,6 +156,7 @@ class AssistantEngine:
 
         while rounds < _MAX_ROUNDS:
             rounds += 1
+            _emit("thinking")
             resp: ProviderResponse = self.provider.complete(SYSTEM_PROMPT, history, specs)
             if not resp.tool_calls:
                 final_text = resp.final_text or "(no answer)"
@@ -153,6 +164,7 @@ class AssistantEngine:
             # Execute each requested tool against the real workers.
             results: list[dict[str, Any]] = []
             for call in resp.tool_calls:
+                _emit("tool", call.name)   # surface which analysis is running
                 inv = self._execute(call, dataset_path, dataset_entry)
                 invocations.append(inv)
                 # Action tools emit a viewer directive rather than data; collect

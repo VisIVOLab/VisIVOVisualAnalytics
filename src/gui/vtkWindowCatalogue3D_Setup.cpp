@@ -374,6 +374,10 @@ void vtkWindowCatalogue3D::setupSidebar()
     {
         this->m_copilot = new AssistantPanel(this);
         this->m_copilot->setBackend(this->backendUrl, this->backendToken);
+        this->m_copilot->setSuggestions({
+                u"What columns does this catalogue have?"_s,
+                u"What's the redshift range?"_s,
+                u"Comoving distance at redshift 0.1?"_s });
         connect(this->m_copilot, &AssistantPanel::actionsRequested, this,
                 &vtkWindowCatalogue3D::applyCopilotActions);
         connect(this->m_copilot, &AssistantPanel::undoRequested, this,

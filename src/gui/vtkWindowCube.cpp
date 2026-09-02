@@ -9212,6 +9212,11 @@ void vtkWindowCube::setupInspector()
                              &vtkWindowCube::applyCopilotActions);
             QObject::connect(copilot, &AssistantPanel::undoRequested, this,
                              &vtkWindowCube::undoCopilotActions);
+            copilot->setSuggestions({
+                    u"What are the statistics of this cube?"_s,
+                    u"What's the noise level and a good threshold?"_s,
+                    u"Compute and show the moment-0 map"_s,
+                    u"Find the sources"_s });
         }
     }
 

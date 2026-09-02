@@ -975,6 +975,9 @@ void vtkWindowVbt::setupSidebarUi()
     this->m_copilot = new AssistantPanel(this);
     this->m_copilot->setBackend(this->backendUrl, this->backendToken);
     this->m_copilot->setDatasetId(this->openResult.datasetId);
+    this->m_copilot->setSuggestions({
+            u"How many points and what fields does this table have?"_s,
+            u"Colour it by the density field"_s });
     connect(this->m_copilot, &AssistantPanel::actionsRequested, this,
             &vtkWindowVbt::applyCopilotActions);
     connect(this->m_copilot, &AssistantPanel::undoRequested, this,

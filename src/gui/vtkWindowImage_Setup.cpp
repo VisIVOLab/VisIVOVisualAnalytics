@@ -598,6 +598,11 @@ void vtkWindowImage::setupInspector()
                              &vtkWindowImage::applyCopilotActions);
             QObject::connect(copilot, &AssistantPanel::undoRequested, this,
                              &vtkWindowImage::undoCopilotActions);
+            copilot->setSuggestions({
+                    u"What are the image statistics?"_s,
+                    u"Measure the flux at RA 10.0 Dec 20.0"_s,
+                    u"Fit the source at RA 10.0 Dec 20.0"_s,
+                    u"Show it in log scale"_s });
         }
     }
 

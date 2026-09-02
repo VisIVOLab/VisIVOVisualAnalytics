@@ -4,15 +4,21 @@
 #include "app/BackendClient.h"
 #include "app/BackendClientFactory.h"
 
+#include <QClipboard>
 #include <QComboBox>
 #include <QDialog>
+#include <QGuiApplication>
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QFuture>
 #include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QJsonDocument>
 #include <QLineEdit>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPalette>
 #include <QPushButton>
 #include <QScrollBar>
@@ -72,14 +78,36 @@ AssistantPanel::AssistantPanel(QWidget *parent) : QWidget(parent)
     m_transcript->setOpenLinks(false);   // handle the "Undo" anchor ourselves
     m_transcript->setFrameShape(QFrame::NoFrame);
     connect(m_transcript, &QTextBrowser::anchorClicked, this, [this](const QUrl &u) {
-        if (u.toString() == u"copilot:undo"_s)
+        const QString s = u.toString();
+        if (s == u"copilot:undo"_s) {
             emit undoRequested();
+        } else if (s.startsWith(u"copilot:copy:"_s) || s.startsWith(u"copilot:copyrepro:"_s)) {
+            const bool repro = s.startsWith(u"copilot:copyrepro:"_s);
+            bool ok = false;
+            const int idx = s.section(u":"_s, -1).toInt(&ok);
+            if (ok && idx >= 0 && idx < m_entries.size()) {
+                const Entry &e = m_entries.at(idx);
+                const QString text = repro ? e.repro : e.text;
+                if (!text.isEmpty()) {
+                    QGuiApplication::clipboard()->setText(text);
+                    m_status->setText(repro ? u"Reproducibility script copied."_s
+                                            : u"Answer copied to clipboard."_s);
+                }
+            }
+        }
     });
     m_transcript->setPlaceholderText(
             u"Ask about the loaded dataset — units, statistics, a moment map, a "
             "distance. Every number in the answer is backed by a tool call.\n\n"
             "Ask follow-up questions freely — the copilot remembers the conversation."_s);
     root->addWidget(m_transcript, 1);
+
+    // Starter-question chips, shown only while the conversation is empty.
+    m_suggestions = new QWidget(this);
+    m_suggestionsLayout = new QVBoxLayout(m_suggestions);
+    m_suggestionsLayout->setContentsMargins(2, 0, 2, 0);
+    m_suggestionsLayout->setSpacing(4);
+    root->addWidget(m_suggestions);
 
     m_status = new QLabel(this);
     m_status->setWordWrap(true);
@@ -104,6 +132,50 @@ AssistantPanel::AssistantPanel(QWidget *parent) : QWidget(parent)
     connect(m_send, &QPushButton::clicked, this, &AssistantPanel::onSend);
     connect(m_input, &QLineEdit::returnPressed, this, &AssistantPanel::onSend);
     connect(m_clear, &QPushButton::clicked, this, &AssistantPanel::onClearConversation);
+
+    // Generic starters; a viewer can replace these with data-specific ones.
+    setSuggestions({ u"Summarise what's loaded"_s,
+                     u"What are the key statistics?"_s,
+                     u"What can you help me with?"_s });
+}
+
+void AssistantPanel::setSuggestions(const QStringList &prompts)
+{
+    m_suggestionPrompts = prompts;
+    rebuildSuggestions();
+}
+
+void AssistantPanel::rebuildSuggestions()
+{
+    if (!m_suggestionsLayout)
+        return;
+    // Clear existing chips.
+    while (QLayoutItem *item = m_suggestionsLayout->takeAt(0)) {
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+    auto *hint = new QLabel(u"Try asking:"_s, m_suggestions);
+    hint->setStyleSheet(u"color: palette(mid); font-size: 11px;"_s);
+    m_suggestionsLayout->addWidget(hint);
+    for (const QString &p : m_suggestionPrompts) {
+        auto *chip = new QPushButton(p, m_suggestions);
+        chip->setCursor(Qt::PointingHandCursor);
+        chip->setStyleSheet(
+                u"QPushButton { text-align: left; padding: 5px 9px; border: 1px solid "
+                "palette(mid); border-radius: 10px; color: palette(text); "
+                "background: palette(base); }"
+                "QPushButton:hover { background: palette(alternate-base); }"_s);
+        connect(chip, &QPushButton::clicked, this, [this, p]() {
+            if (m_busy)
+                return;
+            m_input->setText(p);
+            onSend();
+        });
+        m_suggestionsLayout->addWidget(chip);
+    }
+    // Only meaningful while the conversation is empty.
+    m_suggestions->setVisible(m_entries.isEmpty() && !m_suggestionPrompts.isEmpty());
 }
 
 void AssistantPanel::onSettings()
@@ -304,6 +376,8 @@ void AssistantPanel::setBusy(bool busy)
     m_busy = busy;
     m_send->setEnabled(!busy);
     m_input->setEnabled(!busy);
+    if (m_suggestions)
+        m_suggestions->setEnabled(!busy);   // starter chips shouldn't look clickable mid-request
     m_status->setText(busy ? u"Thinking…"_s : QString());
     emit busyChanged(busy);
 }
@@ -344,7 +418,8 @@ void AssistantPanel::renderConversation()
     };
 
     QString html = u"<div style='font-family:sans-serif;'>"_s;
-    for (const Entry &e : m_entries) {
+    for (int i = 0; i < m_entries.size(); ++i) {
+        const Entry &e = m_entries.at(i);
         if (e.kind == Entry::User) {
             const QString inner =
                     u"<span style='color:%1;font-size:small;'>You</span><br>"
@@ -375,6 +450,15 @@ void AssistantPanel::renderConversation()
                          "Reproducibility</span><pre style='color:%1;font-size:small;margin:2px 0;'>"
                          "%2</pre></div>"_s.arg(t.meta, esc(e.repro));
             }
+            // Copy affordances (handled via anchorClicked, like the Undo link).
+            inner += u"<div style='margin-top:6px;'>"
+                     "<a href='copilot:copy:%1' style='color:%2;font-size:small;'>⧉ Copy</a>"_s
+                             .arg(QString::number(i), t.meta);
+            if (!e.repro.isEmpty())
+                inner += u"&nbsp;&nbsp;<a href='copilot:copyrepro:%1' "
+                         "style='color:%2;font-size:small;'>⧉ Copy script</a>"_s
+                                 .arg(QString::number(i), t.meta);
+            inner += u"</div>"_s;
             html += bubble(/*rightAlign=*/false, t.botBg, inner);
         } else if (e.kind == Entry::ActionLog) {
             html += u"<table width='100%' cellspacing='0' cellpadding='6' style='margin:2px 0;'>"
@@ -393,6 +477,9 @@ void AssistantPanel::renderConversation()
     m_transcript->setHtml(html);
     // Keep the newest message in view.
     m_transcript->verticalScrollBar()->setValue(m_transcript->verticalScrollBar()->maximum());
+    // Starter chips are a discoverability aid — only show them on an empty chat.
+    if (m_suggestions)
+        m_suggestions->setVisible(m_entries.isEmpty() && !m_suggestionPrompts.isEmpty());
 }
 
 void AssistantPanel::onSend()
@@ -410,78 +497,150 @@ void AssistantPanel::onSend()
     renderConversation();
     m_input->clear();
     setBusy(true);
+    startStream(question);
+}
 
-    const QString datasetId = m_datasetId;
-    const QString url = m_url;
-    const QString token = m_token;
-    const QJsonArray history = m_turns;   // prior turns → follow-up context
-    auto *watcher = new QFutureWatcher<BackendAssistantResult>(this);
-    connect(watcher, &QFutureWatcher<BackendAssistantResult>::finished, this,
-            [this, watcher, question, datasetId, url, token]() {
-                const BackendAssistantResult r = watcher->result();
-                watcher->deleteLater();
-                setBusy(false);
-                // Discard a result whose conversation scope changed while it ran
-                // (the dataset OR the backend endpoint was swapped) — it must not
-                // land in the new conversation or its follow-up context.
-                if (m_datasetId != datasetId || m_url != url || m_token != token)
-                    return;
-                if (!r.error.isEmpty()) {
-                    appendError(r.error);
-                    return;
-                }
-                QString prov;
-                for (const BackendAssistantToolCall &c : r.toolCalls) {
-                    const BubbleTheme t = bubbleTheme(this->palette());
-                    prov += u"<div><code>%1(%2)</code>%3</div>"_s.arg(
-                            esc(c.name), esc(c.argumentsJson),
-                            c.error.isEmpty()
-                                    ? u" → <span style='color:%1'>%2</span>"_s.arg(
-                                              t.meta, esc(c.resultJson))
-                                    : u" → <span style='color:%1'>%2</span>"_s.arg(
-                                              t.errFg, esc(c.error)));
-                }
-                Entry a;
-                a.kind = Entry::Assistant;
-                a.text = r.answer;
-                a.provider = r.provider;
-                a.configured = r.configured;
-                a.grounded = r.toolCallsRecorded;
-                a.repro = r.reproducibilityScript;
-                a.provenance = prov;
-                m_entries.push_back(a);
-                if (!r.actions.isEmpty()) {
-                    QString log;
-                    for (const QJsonObject &act : r.actions) {
-                        QString desc = act.value(u"type"_s).toString();
-                        for (auto it = act.constBegin(); it != act.constEnd(); ++it) {
-                            if (it.key() == u"type"_s)
-                                continue;
-                            // Skip bulky payloads (e.g. a pinned spectrum's samples).
-                            if (it.value().isArray() || it.value().isObject())
-                                continue;
-                            desc += u" %1=%2"_s.arg(it.key(), it.value().toVariant().toString());
-                        }
-                        log += u" · %1"_s.arg(esc(desc));
-                    }
-                    Entry le; le.kind = Entry::ActionLog; le.actionLog = log;
-                    m_entries.push_back(le);
-                    emit actionsRequested(r.actions);
-                }
-                // Record this exchange as follow-up context for the next turn.
-                // Clamp each turn's text to the server's per-turn cap (4000) so a
-                // long answer can't make the next follow-up fail validation, and
-                // cap the retained turn count so requests stay bounded.
-                m_turns.push_back(QJsonObject{ { u"role"_s, u"user"_s },
-                                               { u"text"_s, question.left(4000) } });
-                m_turns.push_back(QJsonObject{ { u"role"_s, u"assistant"_s },
-                                               { u"text"_s, r.answer.left(4000) } });
-                while (m_turns.size() > 20)
-                    m_turns.removeFirst();
-                renderConversation();
-            });
-    watcher->setFuture(QtConcurrent::run([url, token, question, datasetId, history]() {
-        BackendClient client(url, token);
-        return client.assistantQuery(question, datasetId, history);
-    }));
+void AssistantPanel::startStream(const QString &question)
+{
+    if (!m_net)
+        m_net = new QNetworkAccessManager(this);
+    // Capture the scope so a reply that outlives a dataset/backend swap is dropped.
+    m_scopeDatasetId = m_datasetId;
+    m_scopeUrl = m_url;
+    m_scopeToken = m_token;
+    m_streamBuf.clear();
+    m_streamGotResult = false;
+
+    QJsonObject body{ { u"question"_s, question } };
+    if (!m_datasetId.isEmpty())
+        body.insert(u"dataset_id"_s, m_datasetId);
+    if (!m_turns.isEmpty())
+        body.insert(u"history"_s, m_turns);   // prior turns → follow-up context
+
+    QNetworkRequest req{ QUrl(m_url + u"/v1/assistant/stream"_s) };
+    req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), m_token.toUtf8());
+    req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
+
+    QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    m_streamReply = reply;
+    connect(reply, &QNetworkReply::readyRead, this, [this, reply, question]() {
+        if (reply != m_streamReply)
+            return;
+        m_streamBuf += reply->readAll();
+        handleStreamBuffer(question);
+    });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, question]() {
+        // A stale reply (a newer stream already started) must not touch current
+        // UI state — just clean it up.
+        if (reply != m_streamReply) {
+            reply->deleteLater();
+            return;
+        }
+        const bool ok = (reply->error() == QNetworkReply::NoError);
+        const QString netErr = reply->errorString();
+        // Drain any final bytes that arrived with 'finished' (the last SSE frame,
+        // incl. the result, can land here without a separate readyRead).
+        m_streamBuf += reply->readAll();
+        handleStreamBuffer(question);
+        m_streamReply = nullptr;
+        reply->deleteLater();
+        setBusy(false);
+        // Surface a network-level failure only if no result/error was delivered
+        // and the scope is still current.
+        if (m_streamGotResult)
+            return;
+        if (m_scopeDatasetId != m_datasetId || m_scopeUrl != m_url || m_scopeToken != m_token)
+            return;
+        appendError(ok ? u"The copilot stream ended without an answer."_s : netErr);
+    });
+}
+
+void AssistantPanel::handleStreamBuffer(const QString &question)
+{
+    // Parse each complete "event: X\ndata: Y\n\n" SSE block.
+    int idx;
+    while ((idx = m_streamBuf.indexOf("\n\n")) >= 0) {
+        const QByteArray block = m_streamBuf.left(idx);
+        m_streamBuf.remove(0, idx + 2);
+        QByteArray event, data;
+        for (const QByteArray &line : block.split('\n')) {
+            if (line.startsWith("event:"))
+                event = line.mid(6).trimmed();
+            else if (line.startsWith("data:"))
+                data = line.mid(5).trimmed();
+        }
+        const QJsonObject obj = QJsonDocument::fromJson(data).object();
+        if (event == "tool") {
+            const QString tool = obj.value(u"tool"_s).toString();
+            m_status->setText(tool.isEmpty() ? u"Thinking…"_s : u"Running %1…"_s.arg(tool));
+        } else if (event == "thinking") {
+            m_status->setText(u"Thinking…"_s);
+        } else if (event == "result") {
+            m_streamGotResult = true;
+            setBusy(false);
+            // Discard a result whose scope changed while it streamed.
+            if (m_scopeDatasetId != m_datasetId || m_scopeUrl != m_url || m_scopeToken != m_token)
+                return;
+            applyResult(BackendClient::parseAssistantResult(obj), question);
+        } else if (event == "error") {
+            m_streamGotResult = true;
+            setBusy(false);
+            if (m_scopeDatasetId == m_datasetId && m_scopeUrl == m_url && m_scopeToken == m_token) {
+                const QString err = obj.value(u"error"_s).toString();
+                appendError(err.isEmpty() ? u"The copilot stream reported an error."_s : err);
+            }
+        }
+    }
+}
+
+void AssistantPanel::applyResult(const BackendAssistantResult &r, const QString &question)
+{
+    if (!r.error.isEmpty()) {
+        appendError(r.error);
+        return;
+    }
+    const BubbleTheme t = bubbleTheme(this->palette());
+    QString prov;
+    for (const BackendAssistantToolCall &c : r.toolCalls) {
+        prov += u"<div><code>%1(%2)</code>%3</div>"_s.arg(
+                esc(c.name), esc(c.argumentsJson),
+                c.error.isEmpty()
+                        ? u" → <span style='color:%1'>%2</span>"_s.arg(t.meta, esc(c.resultJson))
+                        : u" → <span style='color:%1'>%2</span>"_s.arg(t.errFg, esc(c.error)));
+    }
+    Entry a;
+    a.kind = Entry::Assistant;
+    a.text = r.answer;
+    a.provider = r.provider;
+    a.configured = r.configured;
+    a.grounded = r.toolCallsRecorded;
+    a.repro = r.reproducibilityScript;
+    a.provenance = prov;
+    m_entries.push_back(a);
+    if (!r.actions.isEmpty()) {
+        QString log;
+        for (const QJsonObject &act : r.actions) {
+            QString desc = act.value(u"type"_s).toString();
+            for (auto it = act.constBegin(); it != act.constEnd(); ++it) {
+                if (it.key() == u"type"_s)
+                    continue;
+                // Skip bulky payloads (e.g. a pinned spectrum's samples).
+                if (it.value().isArray() || it.value().isObject())
+                    continue;
+                desc += u" %1=%2"_s.arg(it.key(), it.value().toVariant().toString());
+            }
+            log += u" · %1"_s.arg(esc(desc));
+        }
+        Entry le; le.kind = Entry::ActionLog; le.actionLog = log;
+        m_entries.push_back(le);
+        emit actionsRequested(r.actions);
+    }
+    // Record this exchange as follow-up context; clamp each turn to the server's
+    // per-turn cap (4000) and cap the retained turn count so requests stay bounded.
+    m_turns.push_back(QJsonObject{ { u"role"_s, u"user"_s }, { u"text"_s, question.left(4000) } });
+    m_turns.push_back(QJsonObject{ { u"role"_s, u"assistant"_s },
+                                   { u"text"_s, r.answer.left(4000) } });
+    while (m_turns.size() > 20)
+        m_turns.removeFirst();
+    renderConversation();
 }

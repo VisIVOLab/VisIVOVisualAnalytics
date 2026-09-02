@@ -4,12 +4,17 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
+#include <QStringList>
 #include <QWidget>
 
 class QLineEdit;
 class QPushButton;
 class QTextBrowser;
 class QLabel;
+class QVBoxLayout;
+class QNetworkAccessManager;
+class QNetworkReply;
+struct BackendAssistantResult;
 
 /// Scientific copilot chat panel (R-22).
 ///
@@ -33,6 +38,11 @@ public:
     void setBackend(const QString &url, const QString &token);
     /// The dataset the questions are about (may be empty).
     void setDatasetId(const QString &datasetId);
+
+    /// Example starter questions shown as clickable chips while the conversation
+    /// is empty (discoverability). Each viewer passes prompts tailored to its
+    /// data; a generic default is used until then. Clicking a chip sends it.
+    void setSuggestions(const QStringList &prompts);
 
 signals:
     /// Emitted when a query starts / finishes so the host can show busy state.
@@ -59,6 +69,12 @@ private:
     void renderConversation();   ///< rebuild the transcript HTML from m_turns/logs
     void appendError(const QString &text);
     void setBusy(bool busy);
+    /// Stream a query over Server-Sent-Events so the UI can show which tool is
+    /// running as the agent works. Falls through to the same result handling as
+    /// the blocking path once the final ``result`` event arrives.
+    void startStream(const QString &question);
+    void handleStreamBuffer(const QString &question);   ///< parse complete SSE blocks
+    void applyResult(const BackendAssistantResult &r, const QString &question);
     /// One rendered transcript entry (a chat bubble or an inline system note).
     struct Entry
     {
@@ -80,6 +96,8 @@ private:
 
     QList<Entry> m_entries;    ///< everything shown in the transcript, for re-render
     QJsonArray m_turns;        ///< prior user/assistant TEXT turns sent for follow-up context
+    QStringList m_suggestionPrompts;   ///< current starter-question chips
+    void rebuildSuggestions();         ///< (re)create the chip buttons
 
     QTextBrowser *m_transcript{ nullptr };
     QLineEdit *m_input{ nullptr };
@@ -87,6 +105,17 @@ private:
     QPushButton *m_settings{ nullptr };
     QPushButton *m_clear{ nullptr };
     QLabel *m_status{ nullptr };
+    QWidget *m_suggestions{ nullptr };        ///< chip container (shown when empty)
+    QVBoxLayout *m_suggestionsLayout{ nullptr };
+
+    // ── Streaming (Server-Sent-Events) ────────────────────────────────────────
+    QNetworkAccessManager *m_net{ nullptr };
+    QNetworkReply *m_streamReply{ nullptr };
+    QByteArray m_streamBuf;          ///< accumulated SSE bytes, parsed block-by-block
+    bool m_streamGotResult{ false }; ///< a final result/error event arrived
+    QString m_scopeDatasetId;        ///< scope captured at send, to guard stale replies
+    QString m_scopeUrl;
+    QString m_scopeToken;
 };
 
 #endif  // AssistantPanel_h

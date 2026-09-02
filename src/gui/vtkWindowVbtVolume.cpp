@@ -353,6 +353,10 @@ void vtkWindowVbtVolume::setupSidebarUi()
     this->m_copilot = new AssistantPanel(this);
     this->m_copilot->setBackend(this->backendUrl, this->backendToken);
     this->m_copilot->setDatasetId(this->openResult.datasetId);
+    this->m_copilot->setSuggestions({
+            u"How many points and what fields does this table have?"_s,
+            u"Show it in log scale"_s,
+            u"Use MIP blending"_s });
     connect(this->m_copilot, &AssistantPanel::actionsRequested, this,
             &vtkWindowVbtVolume::applyCopilotActions);
     connect(this->m_copilot, &AssistantPanel::undoRequested, this,

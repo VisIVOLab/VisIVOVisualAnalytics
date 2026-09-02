@@ -44,6 +44,15 @@ the right, the copilot on the left), with the tool-call provenance folded under
 each answer. Click **＋ New chat** (top-right) to start a fresh conversation and
 drop the follow-up context.
 
+While the copilot works, the status line shows **which analysis is running live**
+(*"Running cube_statistics…"*, *"Running compute_moment…"*) — streamed from the
+backend as each tool executes — so a multi-step answer isn't a blank spinner.
+
+On an empty conversation the panel shows a few **starter-question chips** tailored
+to the current viewer (a cube offers *"Find the sources"*, an image *"Measure the
+flux at RA … Dec …"*, a catalogue *"What's the redshift range?"*, …) — click one
+to send it and see what the copilot can do.
+
 ## Choosing a provider (⚙)
 
 Natural-language answers need a Large Language Model. The tool catalogue works

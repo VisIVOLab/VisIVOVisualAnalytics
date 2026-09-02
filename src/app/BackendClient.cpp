@@ -385,7 +385,12 @@ BackendAssistantResult BackendClient::assistantQuery(const QString &question,
         result.error = error;
         return result;
     }
-    const QJsonObject o = QJsonDocument::fromJson(payload).object();
+    return parseAssistantResult(QJsonDocument::fromJson(payload).object());
+}
+
+BackendAssistantResult BackendClient::parseAssistantResult(const QJsonObject &o)
+{
+    BackendAssistantResult result;
     result.answer = o.value(QStringLiteral("answer")).toString();
     result.provider = o.value(QStringLiteral("provider")).toString();
     result.configured = o.value(QStringLiteral("configured")).toBool(false);
