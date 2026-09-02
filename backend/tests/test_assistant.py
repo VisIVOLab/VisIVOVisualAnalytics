@@ -652,6 +652,34 @@ def test_key_separation_cloud_key_not_used_for_self_hosted():
     P.configure(provider="auto", openai_key="", base_url="", base_url_key="")
 
 
+def test_per_session_provider_config_isolated():
+    from app.assistant import provider as P
+    a = P.default_config()
+    b = P.default_config()
+    P.configure(a, provider="anthropic", anthropic_key="KEY_A")
+    assert a["provider"] == "anthropic" and a["anthropic_key"] == "KEY_A"
+    assert b["anthropic_key"] is None   # a second session is untouched
+    assert "KEY_A" not in str(P.public_config(a))   # never leaks the key
+
+
+def test_config_endpoint_is_per_session():
+    client, auth = _client_and_auth()
+    hA = {**auth, "X-Visivo-Session": "phase3-sessA"}
+    hB = {**auth, "X-Visivo-Session": "phase3-sessB"}
+    # Session A points the copilot at a self-hosted server.
+    r = client.post("/v1/assistant/config",
+                    json={"provider": "openai", "base_url": "http://gpu:8000/v1",
+                          "base_url_key": "SECRET_A"}, headers=hA)
+    assert r.status_code == 200 and r.json()["config"]["base_url"] == "http://gpu:8000/v1"
+    assert "SECRET_A" not in r.text
+    # Session B sees only its OWN default config — not A's.
+    r = client.get("/v1/assistant/status", headers=hB)
+    assert r.json()["config"]["base_url"] is None
+    # Session A still has its config.
+    r = client.get("/v1/assistant/status", headers=hA)
+    assert r.json()["config"]["base_url"] == "http://gpu:8000/v1"
+
+
 def test_config_endpoint_selects_and_hides_secrets():
     client, auth = _client_and_auth()
     r = client.post("/v1/assistant/config", json={"provider": "null"}, headers=auth)

@@ -196,12 +196,27 @@ QNetworkRequest BackendClient::buildRequest(const QUrl &url) const
         request.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), m_token.toUtf8());
     }
 
-    // R3: Session isolation header.
-    if (!m_sessionId.isEmpty()) {
-        request.setRawHeader(QByteArrayLiteral("X-Visivo-Session"), m_sessionId.toUtf8());
+    // R3: Session isolation header. Prefer this client's own session id; fall back
+    // to the process-wide default so every request from this desktop lands in the
+    // same private session (multi-desktop isolation).
+    const QString session = m_sessionId.isEmpty() ? s_defaultSessionId : m_sessionId;
+    if (!session.isEmpty()) {
+        request.setRawHeader(QByteArrayLiteral("X-Visivo-Session"), session.toUtf8());
     }
 
     return request;
+}
+
+QString BackendClient::s_defaultSessionId;
+
+void BackendClient::setDefaultSessionId(const QString &sessionId)
+{
+    s_defaultSessionId = sessionId;
+}
+
+QString BackendClient::defaultSessionId()
+{
+    return s_defaultSessionId;
 }
 
 // ── API calls ─────────────────────────────────────────────────────────────────

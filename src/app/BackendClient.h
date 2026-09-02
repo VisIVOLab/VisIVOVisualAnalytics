@@ -1241,6 +1241,16 @@ public:
     QString sessionId() const;
     void setSessionId(const QString &sessionId);
 
+    /**
+     * Process-wide default session id, sent as X-Visivo-Session whenever a client
+     * has no per-instance session id of its own. Setting this once at startup to a
+     * unique value scopes ALL of this desktop's datasets (and its copilot) to a
+     * private backend session — so several desktops sharing one backend don't see
+     * each other's data. Empty (the default) means the backend's anonymous session.
+     */
+    static void setDefaultSessionId(const QString &sessionId);
+    static QString defaultSessionId();
+
     // ── Static helpers ────────────────────────────────────────────────────────
 
     /**
@@ -1857,6 +1867,9 @@ private:
     QString m_baseUrl;
     QString m_token;
     QString m_sessionId;
+
+    /// Process-wide fallback session id (see setDefaultSessionId).
+    static QString s_defaultSessionId;
 };
 
 #endif

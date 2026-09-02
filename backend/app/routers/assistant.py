@@ -75,55 +75,63 @@ class AssistantConfigRequest(BaseModel):
     model: str | None = None
 
 
-# Cache the provider at module scope — provider_from_env() otherwise rebuilds an
-# SDK client on every /status and /query call. Invalidated when the config
-# changes via /v1/assistant/config.
-_PROVIDER = None
+# Provider config + built provider are PER SESSION so users sharing one backend
+# configure independent LLM providers/keys. Each is cached on the session and the
+# built provider is invalidated when that session's config changes.
+from ..assistant.provider import default_config as _default_config  # noqa: E402
 
 
-def _get_provider():
-    global _PROVIDER
-    if _PROVIDER is None:
-        _PROVIDER = provider_from_env()
-    return _PROVIDER
+def _session_config(session: Session) -> dict:
+    if session.assistant_config is None:
+        session.assistant_config = _default_config()
+    return session.assistant_config
 
 
-def _invalidate_provider() -> None:
-    global _PROVIDER
-    _PROVIDER = None
+def _get_provider(session: Session):
+    if session.assistant_provider is None:
+        session.assistant_provider = provider_from_env(_session_config(session))
+    return session.assistant_provider
+
+
+def _invalidate_provider(session: Session) -> None:
+    session.assistant_provider = None
 
 
 @router.get("/v1/assistant/status", tags=["assistant"])
-async def assistant_status(_: None = _auth) -> dict:
-    """Which LLM provider is active + the (non-secret) config for the UI."""
-    provider = _get_provider()
+async def assistant_status(_: None = _auth, session: Session = Depends(get_session)) -> dict:
+    """Which LLM provider is active for THIS session + its (non-secret) config."""
+    provider = _get_provider(session)
     return {
         "configured": provider.configured,
         "provider": provider.name,
         "n_tools": len(tool_specs()),
-        "config": public_config(),
+        "config": public_config(_session_config(session)),
     }
 
 
 @router.post("/v1/assistant/config", tags=["assistant"])
-async def assistant_config(request: AssistantConfigRequest, _: None = _auth) -> dict:
-    """Choose the LLM back-end at runtime — Claude, OpenAI/ChatGPT, or your own
-    server (base_url of an OpenAI-compatible endpoint). Keys are stored in memory
-    only (not persisted, never logged/returned). Rebuilds the active provider."""
+async def assistant_config(request: AssistantConfigRequest, _: None = _auth,
+                           session: Session = Depends(get_session)) -> dict:
+    """Choose the LLM back-end at runtime FOR THIS SESSION — Claude, OpenAI/ChatGPT,
+    or your own server (base_url of an OpenAI-compatible endpoint). Keys are stored
+    in memory on the session only (not persisted, never logged/returned). Rebuilds
+    that session's provider."""
+    cfg = _session_config(session)
     try:
         _configure_provider(
+            cfg,
             provider=request.provider, anthropic_key=request.anthropic_key,
             openai_key=request.openai_key, base_url=request.base_url,
             base_url_key=request.base_url_key, model=request.model)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    _invalidate_provider()
-    provider = _get_provider()
+    _invalidate_provider(session)
+    provider = _get_provider(session)
     return {
         "valid": True,
         "configured": provider.configured,
         "provider": provider.name,
-        "config": public_config(),
+        "config": public_config(cfg),
     }
 
 
@@ -186,7 +194,7 @@ async def assistant_query(
             sem.release()
             session.release_task_slot()
 
-    engine = AssistantEngine(_get_provider())
+    engine = AssistantEngine(_get_provider(session))
     prior_turns = [{"role": t.role, "text": t.text} for t in request.history]
     task = asyncio.ensure_future(
         asyncio.to_thread(engine.run, request.question, dataset_path,
@@ -269,7 +277,7 @@ async def assistant_stream(
         # Called from the worker THREAD — hop back to the loop thread-safely.
         loop.call_soon_threadsafe(queue.put_nowait, (event, detail))
 
-    engine = AssistantEngine(_get_provider())
+    engine = AssistantEngine(_get_provider(session))
     prior_turns = [{"role": t.role, "text": t.text} for t in request.history]
     task = asyncio.ensure_future(
         asyncio.to_thread(engine.run, request.question, dataset_path,

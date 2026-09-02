@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "Version.h"
+#include "app/BackendClient.h"
 #include "app/BackendLauncher.h"
 #include "app/ThemeManager.h"
 #include "gui/StartupDialog.h"
@@ -10,6 +11,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QIcon>
+#include <QUuid>
 #include <QLocale>
 #include <QSettings>
 #include <QSurfaceFormat>
@@ -99,6 +101,11 @@ int main(int argc, char *argv[])
     // Set locale to C.UTF-8
     std::setlocale(LC_NUMERIC, "C.UTF-8");
     QLocale::setDefault(QLocale::c());
+
+    // Give this desktop instance a private backend session so several desktops
+    // sharing one backend don't see each other's datasets (or copilot config).
+    // A fresh id per launch is enough for isolation; the backend evicts it on idle.
+    BackendClient::setDefaultSessionId(QUuid::createUuid().toString(QUuid::WithoutBraces));
 
     // Set application info
     QApplication::setApplicationName(u"VisIVO Visual Analytics"_s);

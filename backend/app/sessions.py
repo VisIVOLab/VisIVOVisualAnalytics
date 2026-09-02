@@ -82,6 +82,11 @@ class Session:
         # Per-session concurrency limit (HPC safety)
         self._active_tasks: int = 0
         self._task_lock: threading.Lock = threading.Lock()
+        # Per-session scientific-copilot LLM provider config + built provider, so
+        # users sharing one backend configure independent providers/keys. Lazily
+        # initialised (a fresh env-seeded copy) on first access.
+        self.assistant_config: dict[str, Any] | None = None
+        self.assistant_provider: Any = None
 
     def touch(self) -> None:
         self.last_accessed = time.monotonic()
@@ -138,11 +143,19 @@ class SessionRegistry:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def create(self) -> Session:
-        """Create a new session and register it."""
-        session_id = str(uuid.uuid4())
-        session = Session(session_id)
+    def create(self, session_id: str | None = None) -> Session:
+        """Create a new session and register it. A ``session_id`` may be supplied
+        so a client can ADOPT its own (unguessable) id for isolation — matched
+        against future requests — instead of a server-minted one."""
+        session_id = session_id or str(uuid.uuid4())
         with self._lock:
+            # Idempotent: two concurrent first-requests for the same adopted id
+            # must share one session, not clobber each other's datasets.
+            existing = self._sessions.get(session_id)
+            if existing is not None:
+                existing.touch()
+                return existing
+            session = Session(session_id)
             self._sessions[session_id] = session
         logger.info("[sessions] created session_id=%s", session_id)
         return session
@@ -287,8 +300,9 @@ async def get_session(x_visivo_session: str | None = Header(None)) -> Session:
 
     session = REGISTRY.get(x_visivo_session)
     if session is None:
-        # Session expired or invalid – create a fresh one so the client can
-        # recover by re-opening datasets rather than crashing.
-        logger.warning("[sessions] session_id=%s not found, creating new session.", x_visivo_session)
-        session = REGISTRY.create()
+        # First request from a client that minted its own id (multi-desktop
+        # isolation), or a session that expired: create+register UNDER THAT id so
+        # the client's subsequent requests (datasets, copilot) all land here.
+        logger.info("[sessions] adopting client session_id=%s", x_visivo_session)
+        session = REGISTRY.create(x_visivo_session)
     return session

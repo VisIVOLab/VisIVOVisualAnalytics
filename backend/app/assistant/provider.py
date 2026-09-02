@@ -194,14 +194,21 @@ class OpenAIProvider(AssistantProvider):
 # setting a base_url of their choosing and having a stored cloud OpenAI key sent
 # to it (key exfiltration).
 
-_CONFIG: dict[str, Any] = {
-    "provider": os.environ.get("VISIVO_ASSISTANT_PROVIDER", "auto"),  # auto|anthropic|openai|null
-    "anthropic_key": os.environ.get("ANTHROPIC_API_KEY") or None,
-    "openai_key": os.environ.get("OPENAI_API_KEY") or None,           # CLOUD OpenAI only
-    "base_url": os.environ.get("VISIVO_LLM_BASE_URL") or None,        # self-hosted / OpenAI-compat
-    "base_url_key": os.environ.get("VISIVO_LLM_API_KEY") or None,     # self-hosted endpoint key
-    "model": os.environ.get("VISIVO_ASSISTANT_MODEL") or None,
-}
+def default_config() -> dict[str, Any]:
+    """A fresh provider config seeded from the environment. Each SESSION gets its
+    own copy so users sharing a backend configure independent providers/keys."""
+    return {
+        "provider": os.environ.get("VISIVO_ASSISTANT_PROVIDER", "auto"),  # auto|anthropic|openai|null
+        "anthropic_key": os.environ.get("ANTHROPIC_API_KEY") or None,
+        "openai_key": os.environ.get("OPENAI_API_KEY") or None,           # CLOUD OpenAI only
+        "base_url": os.environ.get("VISIVO_LLM_BASE_URL") or None,        # self-hosted / OpenAI-compat
+        "base_url_key": os.environ.get("VISIVO_LLM_API_KEY") or None,     # self-hosted endpoint key
+        "model": os.environ.get("VISIVO_ASSISTANT_MODEL") or None,
+    }
+
+
+# Process default (env-based). Per-session configs default to a copy of this.
+_CONFIG: dict[str, Any] = default_config()
 
 
 def _sanitize_base_url(url: str) -> str:
@@ -220,64 +227,69 @@ def _sanitize_base_url(url: str) -> str:
     return url.rstrip("/")
 
 
-def configure(**kwargs: Any) -> None:
-    """Update the runtime config; only the keys present (and non-None) change.
-    An empty string clears a value. Secrets are held in memory, never logged."""
+def configure(config: dict[str, Any] | None = None, **kwargs: Any) -> None:
+    """Update a config (the process default, or a per-session one via ``config``);
+    only the keys present (and non-None) change. An empty string clears a value.
+    Secrets are held in memory, never logged."""
+    cfg = _CONFIG if config is None else config
     for k, v in kwargs.items():
-        if k not in _CONFIG or v is None:
+        if k not in cfg or v is None:
             continue
         if v == "":
-            _CONFIG[k] = None
+            cfg[k] = None
         elif k == "base_url":
-            _CONFIG[k] = _sanitize_base_url(str(v))
+            cfg[k] = _sanitize_base_url(str(v))
         else:
-            _CONFIG[k] = v
+            cfg[k] = v
 
 
-def public_config() -> dict[str, Any]:
+def public_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Non-secret view for the UI: which provider, whether keys/url are set. Keys
     are NEVER returned; base_url is sanitised (no embedded credentials)."""
+    cfg = _CONFIG if config is None else config
     return {
-        "provider": _CONFIG["provider"],
-        "anthropic_key_set": bool(_CONFIG["anthropic_key"]),
-        "openai_key_set": bool(_CONFIG["openai_key"]),
-        "base_url": _CONFIG["base_url"],
-        "base_url_key_set": bool(_CONFIG["base_url_key"]),
-        "model": _CONFIG["model"],
+        "provider": cfg["provider"],
+        "anthropic_key_set": bool(cfg["anthropic_key"]),
+        "openai_key_set": bool(cfg["openai_key"]),
+        "base_url": cfg["base_url"],
+        "base_url_key_set": bool(cfg["base_url_key"]),
+        "model": cfg["model"],
         "available": ["anthropic", "openai", "null"],
     }
 
 
-def _resolve_provider_name() -> str:
-    p = (_CONFIG.get("provider") or "auto").lower()
+def _resolve_provider_name(config: dict[str, Any] | None = None) -> str:
+    cfg = _CONFIG if config is None else config
+    p = (cfg.get("provider") or "auto").lower()
     if p != "auto":
         return p
     # Auto: prefer a self-hosted/OpenAI endpoint or key, then Anthropic, else null.
-    if _CONFIG.get("base_url") or _CONFIG.get("openai_key"):
+    if cfg.get("base_url") or cfg.get("openai_key"):
         return "openai"
-    if _CONFIG.get("anthropic_key"):
+    if cfg.get("anthropic_key"):
         return "anthropic"
     return "null"
 
 
-def provider_from_env() -> AssistantProvider:
-    """Build the currently-selected provider, degrading to NullProvider on any
+def provider_from_env(config: dict[str, Any] | None = None) -> AssistantProvider:
+    """Build the selected provider for a config, degrading to NullProvider on any
     missing SDK / bad config (logged distinctly so 'SDK missing' ≠ 'no key')."""
-    name = _resolve_provider_name()
+    cfg = _CONFIG if config is None else config
+    name = _resolve_provider_name(cfg)
     try:
         if name == "anthropic":
-            if not _CONFIG.get("anthropic_key"):
+            if not cfg.get("anthropic_key"):
                 return NullProvider()
-            return AnthropicProvider(_CONFIG["anthropic_key"], _CONFIG.get("model"))
+            return AnthropicProvider(cfg["anthropic_key"], cfg.get("model"))
         if name == "openai":
-            if _CONFIG.get("base_url"):
+            if cfg.get("base_url"):
                 # Self-hosted: use ONLY the dedicated endpoint key, never the
                 # cloud openai_key (which could otherwise be exfiltrated).
-                return OpenAIProvider(_CONFIG.get("base_url_key"), _CONFIG["base_url"],
-                                      _CONFIG.get("model"), name="self-hosted")
-            if _CONFIG.get("openai_key"):
-                return OpenAIProvider(_CONFIG["openai_key"], None,
-                                      _CONFIG.get("model"), name="openai")
+                return OpenAIProvider(cfg.get("base_url_key"), cfg["base_url"],
+                                      cfg.get("model"), name="self-hosted")
+            if cfg.get("openai_key"):
+                return OpenAIProvider(cfg["openai_key"], None,
+                                      cfg.get("model"), name="openai")
             return NullProvider()
     except ImportError:
         logger.warning("[assistant] provider '%s' selected but its SDK is not "

@@ -531,6 +531,11 @@ void AssistantPanel::startStream(const QString &question)
 
     QNetworkRequest req{ QUrl(m_url + u"/v1/assistant/stream"_s) };
     req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), m_token.toUtf8());
+    // Scope the stream to this desktop's private session so it resolves the same
+    // datasets the viewers opened (matches BackendClient's session header).
+    const QString session = BackendClient::defaultSessionId();
+    if (!session.isEmpty())
+        req.setRawHeader(QByteArrayLiteral("X-Visivo-Session"), session.toUtf8());
     req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
 
     QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
