@@ -73,13 +73,37 @@ def _resolve_token() -> str:
 TOKEN: str = _resolve_token()
 
 
+def _resolve_tokens() -> tuple[str, ...]:
+    """The set of ACCEPTED tokens. The primary TOKEN plus any additional
+    per-user tokens in ``VISIVO_TOKENS`` (comma/whitespace-separated). With only
+    the single primary token this is a one-element tuple — unchanged behaviour —
+    but distinct per-user tokens let a shared backend attribute each request to a
+    user and isolate their sessions (see sessions.py owner binding)."""
+    extra = os.environ.get("VISIVO_TOKENS", "")
+    tokens = [TOKEN]
+    for t in extra.replace(",", " ").split():
+        t = t.strip()
+        if t and t not in tokens:
+            tokens.append(t)
+    return tuple(tokens)
+
+
+TOKENS: tuple[str, ...] = _resolve_tokens()
+
+
 async def verify_token(
     x_visivo_token: str | None = Security(_api_key_header),
-) -> None:
-    """FastAPI dependency: raise 401 if the request token is wrong or absent."""
-    if x_visivo_token is None or not secrets.compare_digest(x_visivo_token, TOKEN):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid X-Visivo-Token header.",
-            headers={"WWW-Authenticate": f'ApiKey realm="{_HEADER_NAME}"'},
-        )
+) -> str:
+    """FastAPI dependency: raise 401 if the request token is wrong or absent;
+    otherwise return the MATCHED token (the caller's identity, used to bind and
+    guard session ownership). Checks every accepted token in constant time."""
+    if x_visivo_token is not None:
+        for accepted in TOKENS:
+            if secrets.compare_digest(x_visivo_token, accepted):
+                return accepted
+    # No token matched (or none supplied).
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Missing or invalid X-Visivo-Token header.",
+        headers={"WWW-Authenticate": f'ApiKey realm="{_HEADER_NAME}"'},
+    )

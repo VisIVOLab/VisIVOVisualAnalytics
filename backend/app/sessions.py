@@ -82,6 +82,10 @@ class Session:
         # Per-session concurrency limit (HPC safety)
         self._active_tasks: int = 0
         self._task_lock: threading.Lock = threading.Lock()
+        # The auth token that created this session. When multiple per-user tokens
+        # are configured, a request presenting a DIFFERENT token is denied access
+        # (defence-in-depth over the unguessable session id).
+        self.owner_token: str | None = None
         # Per-session scientific-copilot LLM provider config + built provider, so
         # users sharing one backend configure independent providers/keys. Lazily
         # initialised (a fresh env-seeded copy) on first access.
@@ -143,10 +147,12 @@ class SessionRegistry:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def create(self, session_id: str | None = None) -> Session:
+    def create(self, session_id: str | None = None,
+               owner_token: str | None = None) -> Session:
         """Create a new session and register it. A ``session_id`` may be supplied
         so a client can ADOPT its own (unguessable) id for isolation — matched
-        against future requests — instead of a server-minted one."""
+        against future requests — instead of a server-minted one. ``owner_token``
+        binds the session to the caller's identity for cross-user access control."""
         session_id = session_id or str(uuid.uuid4())
         with self._lock:
             # Idempotent: two concurrent first-requests for the same adopted id
@@ -156,6 +162,7 @@ class SessionRegistry:
                 existing.touch()
                 return existing
             session = Session(session_id)
+            session.owner_token = owner_token
             self._sessions[session_id] = session
         logger.info("[sessions] created session_id=%s", session_id)
         return session
@@ -284,25 +291,37 @@ REGISTRY: SessionRegistry = SessionRegistry()
 
 # ── FastAPI dependency ────────────────────────────────────────────────────────
 
-from fastapi import Header  # noqa: E402 – placed here to avoid circular imports
+import secrets as _secrets  # noqa: E402
+
+from fastapi import Depends, Header, HTTPException, status  # noqa: E402 – avoid circular imports
+
+from .auth import verify_token  # noqa: E402
 
 
-async def get_session(x_visivo_session: str | None = Header(None)) -> Session:
+async def get_session(x_visivo_session: str | None = Header(None),
+                      token: str = Depends(verify_token)) -> Session:
     """
-    FastAPI dependency: resolve (or lazily create) the caller's session.
+    FastAPI dependency: resolve (or lazily create) the caller's session, enforcing
+    session ownership.
 
-    The Qt client should send the session_id received in OpenDatasetResponse
-    as the X-Visivo-Session request header.  If absent the anonymous session
-    is used with a warning.
+    The Qt client sends its private session id in the X-Visivo-Session header. If
+    absent the shared anonymous session is used (single-user / backward compat).
+    A session created by one token can't be accessed by another (multi-user).
     """
     if x_visivo_session is None:
         return REGISTRY.get_or_create_anon()
 
     session = REGISTRY.get(x_visivo_session)
-    if session is None:
-        # First request from a client that minted its own id (multi-desktop
-        # isolation), or a session that expired: create+register UNDER THAT id so
-        # the client's subsequent requests (datasets, copilot) all land here.
-        logger.info("[sessions] adopting client session_id=%s", x_visivo_session)
-        session = REGISTRY.create(x_visivo_session)
-    return session
+    if session is not None:
+        # Deny cross-user access. Report 404 (not 403) so the mere existence of
+        # another user's session isn't confirmable.
+        if session.owner_token is not None \
+                and not _secrets.compare_digest(session.owner_token, token):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found.")
+        return session
+
+    # First request from a client that minted its own id (multi-desktop
+    # isolation), or a session that expired: create+register UNDER THAT id, owned
+    # by this token, so the client's subsequent requests all land here.
+    logger.info("[sessions] adopting client session_id=%s", x_visivo_session)
+    return REGISTRY.create(x_visivo_session, owner_token=token)

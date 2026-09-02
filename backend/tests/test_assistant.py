@@ -662,6 +662,26 @@ def test_per_session_provider_config_isolated():
     assert "KEY_A" not in str(P.public_config(a))   # never leaks the key
 
 
+def test_session_ownership_and_multi_token(monkeypatch):
+    import app.auth as A
+    monkeypatch.setattr(A, "TOKENS", (_TEST_TOKEN, "TOKEN_B_secret_xyz"))
+    client, _ = _client_and_auth()
+    hA = {"X-Visivo-Token": _TEST_TOKEN, "X-Visivo-Session": "own-sess-A1"}
+    hB = {"X-Visivo-Token": "TOKEN_B_secret_xyz", "X-Visivo-Session": "own-sess-A1"}
+    # Token A creates + owns the session.
+    assert client.get("/v1/assistant/status", headers=hA).status_code == 200
+    # Token B is denied access to A's session (reported as 404, not 403).
+    assert client.get("/v1/assistant/status", headers=hB).status_code == 404
+    # A still has access.
+    assert client.get("/v1/assistant/status", headers=hA).status_code == 200
+    # The second token IS accepted for its OWN session.
+    hB_own = {"X-Visivo-Token": "TOKEN_B_secret_xyz", "X-Visivo-Session": "own-sess-B1"}
+    assert client.get("/v1/assistant/status", headers=hB_own).status_code == 200
+    # A wrong token is still rejected everywhere.
+    assert client.get("/v1/assistant/status",
+                      headers={"X-Visivo-Token": "nope"}).status_code == 401
+
+
 def test_config_endpoint_is_per_session():
     client, auth = _client_and_auth()
     hA = {**auth, "X-Visivo-Session": "phase3-sessA"}
