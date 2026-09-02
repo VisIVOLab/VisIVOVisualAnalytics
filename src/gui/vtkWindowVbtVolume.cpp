@@ -36,6 +36,7 @@
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QVBoxLayout>
+#include "AssistantPanel.h"
 #include "SidebarPanel.h"
 #include <QWidget>
 
@@ -348,9 +349,19 @@ void vtkWindowVbtVolume::setupSidebarUi()
     pageInfoLayout->addStretch(1);
 
     // ── Wire pages into SidebarPanel ──────────────────────────────────────────
+    // ── Scientific copilot page ───────────────────────────────────────────────
+    this->m_copilot = new AssistantPanel(this);
+    this->m_copilot->setBackend(this->backendUrl, this->backendToken);
+    this->m_copilot->setDatasetId(this->openResult.datasetId);
+    connect(this->m_copilot, &AssistantPanel::actionsRequested, this,
+            &vtkWindowVbtVolume::applyCopilotActions);
+    connect(this->m_copilot, &AssistantPanel::undoRequested, this,
+            &vtkWindowVbtVolume::undoCopilotActions);
+
     this->m_sidebar = new SidebarPanel(320, this);
     this->m_sidebar->addPage(u":/icons/rail_display.svg"_s,  u"Volume Settings"_s, pageVolume);
     this->m_sidebar->addPage(u":/icons/rail_metadata.svg"_s, u"Info"_s,            pageInfo);
+    this->m_sidebar->addPage(u":/icons/rail_copilot.svg"_s,  u"Copilot"_s,         this->m_copilot);
     this->m_sidebar->finalize(0);
 }
 
@@ -775,6 +786,114 @@ void vtkWindowVbtVolume::resetView()
 {
     this->renderer->ResetCamera();
     this->renderer->ResetCameraClippingRange();
+}
+
+void vtkWindowVbtVolume::applyCopilotActions(const QList<QJsonObject> &actions)
+{
+    // Which directives can this volume view act on?
+    bool batchSetsScale = false, batchSetsBlend = false;
+    bool batchSetsColorField = false, batchResetsCamera = false;
+    for (const QJsonObject &a : actions) {
+        const QString t = a.value(u"type"_s).toString();
+        if (t == u"set_scaling"_s)          batchSetsScale = true;
+        else if (t == u"set_blend_mode"_s)  batchSetsBlend = true;
+        else if (t == u"set_color_field"_s) batchSetsColorField = true;
+        else if (t == u"reset_camera"_s)    batchResetsCamera = true;
+    }
+    if (!batchSetsScale && !batchSetsBlend && !batchSetsColorField && !batchResetsCamera)
+        return;   // nothing applicable — leave any prior Undo point untouched
+
+    // Fresh snapshot of only what this batch touches (per-batch "Undo latest").
+    vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
+    this->m_copilotUndo = CopilotUndo{};
+    if (batchSetsScale && this->comboScaleMode) {
+        this->m_copilotUndo.scaleText = this->comboScaleMode->currentText();
+        this->m_copilotUndo.scaleCaptured = true;
+    }
+    if (batchSetsBlend && this->comboBlendMode) {
+        this->m_copilotUndo.blendIndex = this->comboBlendMode->currentIndex();
+        this->m_copilotUndo.blendCaptured = true;
+    }
+    if (batchSetsColorField && this->comboScalarField) {
+        this->m_copilotUndo.colorFieldIndex = this->comboScalarField->currentIndex();
+        this->m_copilotUndo.colorFieldCaptured = true;
+    }
+    // Capture the camera when the batch resets it OR changes the colour field —
+    // switching field rebuilds the volume and reframes the camera as a side
+    // effect, so Undo must restore the user's pre-copilot view. undo restores the
+    // camera LAST (after the field restore's own reframing) so it wins.
+    if ((batchResetsCamera || batchSetsColorField) && camera) {
+        camera->GetPosition(this->m_copilotUndo.position);
+        camera->GetFocalPoint(this->m_copilotUndo.focalPoint);
+        camera->GetViewUp(this->m_copilotUndo.viewUp);
+        this->m_copilotUndo.parallelScale = camera->GetParallelScale();
+        this->m_copilotUndo.cameraCaptured = true;
+    }
+
+    for (const QJsonObject &a : actions) {
+        const QString type = a.value(u"type"_s).toString();
+        if (type == u"set_scaling"_s && this->comboScaleMode) {
+            const int idx = this->comboScaleMode->findText(
+                    a.value(u"scale"_s).toString().trimmed(), Qt::MatchFixedString);
+            if (idx >= 0)
+                this->comboScaleMode->setCurrentIndex(idx);   // triggers re-render
+        } else if (type == u"set_blend_mode"_s && this->comboBlendMode) {
+            const QString m = a.value(u"mode"_s).toString().trimmed().toLower();
+            const int idx = (m == u"mip"_s) ? 1 : (m == u"minip"_s) ? 2
+                          : (m == u"composite"_s) ? 0 : -1;
+            if (idx >= 0 && idx < this->comboBlendMode->count())
+                this->comboBlendMode->setCurrentIndex(idx);
+        } else if (type == u"set_color_field"_s && this->comboScalarField) {
+            const QString field = a.value(u"field"_s).toString().trimmed();
+            int idx = -1;
+            for (int i = 0; i < this->comboScalarField->count(); ++i) {
+                if (this->comboScalarField->itemText(i).compare(field, Qt::CaseInsensitive) == 0) {
+                    idx = i;
+                    break;
+                }
+            }
+            if (idx >= 0)
+                this->comboScalarField->setCurrentIndex(idx);
+        } else if (type == u"reset_camera"_s && camera) {
+            this->resetView();
+            if (this->renderWindow)
+                this->renderWindow->Render();
+        }
+    }
+}
+
+void vtkWindowVbtVolume::undoCopilotActions()
+{
+    if (this->m_copilotUndo.scaleCaptured && this->comboScaleMode) {
+        const int idx = this->comboScaleMode->findText(this->m_copilotUndo.scaleText,
+                                                       Qt::MatchFixedString);
+        if (idx >= 0)
+            this->comboScaleMode->setCurrentIndex(idx);
+        this->m_copilotUndo.scaleCaptured = false;
+    }
+    if (this->m_copilotUndo.blendCaptured && this->comboBlendMode) {
+        const int idx = this->m_copilotUndo.blendIndex;
+        if (idx >= 0 && idx < this->comboBlendMode->count())
+            this->comboBlendMode->setCurrentIndex(idx);
+        this->m_copilotUndo.blendCaptured = false;
+    }
+    if (this->m_copilotUndo.colorFieldCaptured && this->comboScalarField) {
+        const int idx = this->m_copilotUndo.colorFieldIndex;
+        if (idx >= 0 && idx < this->comboScalarField->count())
+            this->comboScalarField->setCurrentIndex(idx);
+        this->m_copilotUndo.colorFieldCaptured = false;
+    }
+    vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
+    if (camera && this->m_copilotUndo.cameraCaptured) {
+        camera->SetPosition(this->m_copilotUndo.position);
+        camera->SetFocalPoint(this->m_copilotUndo.focalPoint);
+        camera->SetViewUp(this->m_copilotUndo.viewUp);
+        camera->SetParallelScale(this->m_copilotUndo.parallelScale);
+        this->m_copilotUndo.cameraCaptured = false;
+        this->renderer->ResetCameraClippingRange();
+        if (this->renderWindow)
+            this->renderWindow->Render();
+    }
 }
 
 void vtkWindowVbtVolume::applyBackground()

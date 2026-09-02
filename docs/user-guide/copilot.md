@@ -29,7 +29,7 @@ reversible actions that make sense for its data:
 | **Cube** (3-D spectral cube) | `dataset_metadata`, `cube_statistics`, `moment_map_summary`, `hi_products`, `noise_estimate`, `aperture_photometry`, `source_gaussfit`, `fit_line`, `find_sources` (SoFiA-2), `cross_match` | colormap, threshold, render mode (volume/isosurface), blend mode (composite/MIP/MinIP), go to channel, reset camera, **compute & show a moment map**, **show source detections (SoFiA-2 overlay)**, **pin a spectrum panel** |
 | **Image** (2-D) | `dataset_metadata`, `cube_statistics`, `aperture_photometry`, `source_gaussfit`, `angular_power_spectrum`, `cross_match` | colormap, scaling (linear/log/sqrt/square/power), reset camera |
 | **Cosmology catalogue** (3-D point cloud — the *Catalogue 3D* window) | `catalogue_summary` (columns, coordinate system, per-column ranges), `cosmology_distance` (redshift → comoving/luminosity/angular-diameter distance) | colour scale (linear/log/…), colour-by-field, reset camera |
-| **VBT** (point / volume binary table) | `vbt_summary` (rows, fields, per-field ranges) | colormap, colour-by-field, reset camera |
+| **VBT** (point / volume binary table) | `vbt_summary` (rows, fields, per-field ranges) | point view: colormap, colour-by-field, reset camera · volume view: colour scale (linear/log/…), blend mode (composite/MIP/MinIP), colour-by-field, reset camera |
 
 Actions are **display-only and reversible**: after the copilot changes the view
 it logs an **↩ Undo latest change** link that reverts exactly that step.

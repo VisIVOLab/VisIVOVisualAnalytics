@@ -19,9 +19,12 @@
 #include <vtkVolume.h>
 #include <vtkVolumeProperty.h>
 
+#include <QJsonObject>
+#include <QList>
 #include <QMainWindow>
 #include <QPointer>
 
+class AssistantPanel;
 class QAction;
 class QComboBox;
 class QDoubleSpinBox;
@@ -46,6 +49,14 @@ public:
                                 const QString &sessionId,
                                 QWidget *parent = nullptr);
     ~vtkWindowVbtVolume() override = default;
+
+public:
+    /// Apply scientific-copilot visualisation directives to this volume view:
+    /// colour scale (linear/log/…), blend mode (composite/MIP/MinIP), colour
+    /// field, and camera reset. State is snapshotted per batch so Undo reverts
+    /// exactly the last change.
+    void applyCopilotActions(const QList<QJsonObject> &actions);
+    void undoCopilotActions();
 
 private:
     void setupUi();
@@ -88,6 +99,24 @@ private:
     SidebarPanel *m_sidebar{ nullptr };
     QPointer<QAction> actionShowControlsSidebar;
     void setupSidebarUi();
+
+    // ── Scientific copilot ────────────────────────────────────────────────────
+    AssistantPanel *m_copilot{ nullptr };
+    /// State captured before the copilot's last batch, so Undo reverts just it.
+    struct CopilotUndo
+    {
+        bool cameraCaptured{ false };
+        double position[3]{ 0, 0, 0 };
+        double focalPoint[3]{ 0, 0, 0 };
+        double viewUp[3]{ 0, 0, 1 };
+        double parallelScale{ 1.0 };
+        bool scaleCaptured{ false };
+        QString scaleText;
+        bool blendCaptured{ false };
+        int blendIndex{ -1 };
+        bool colorFieldCaptured{ false };
+        int colorFieldIndex{ -1 };
+    } m_copilotUndo;
     double dataScalarMin{ 0.0 };
     double dataScalarMax{ 1.0 };
     double activeColorMin{ 0.0 };
