@@ -1,5 +1,6 @@
 #include "AssistantPanel.h"
 
+#include "CopilotActionRouter.h"
 #include "Settings.h"
 #include "app/BackendClient.h"
 #include "app/BackendClientFactory.h"
@@ -80,7 +81,8 @@ AssistantPanel::AssistantPanel(QWidget *parent) : QWidget(parent)
     connect(m_transcript, &QTextBrowser::anchorClicked, this, [this](const QUrl &u) {
         const QString s = u.toString();
         if (s == u"copilot:undo"_s) {
-            emit undoRequested();
+            // Undo the last copilot change across whichever view(s) it touched.
+            CopilotActionRouter::instance()->undoLast();
         } else if (s.startsWith(u"copilot:copy:"_s) || s.startsWith(u"copilot:copyrepro:"_s)) {
             const bool repro = s.startsWith(u"copilot:copyrepro:"_s);
             bool ok = false;
@@ -652,7 +654,9 @@ void AssistantPanel::applyResult(const BackendAssistantResult &r, const QString 
         }
         Entry le; le.kind = Entry::ActionLog; le.actionLog = log;
         m_entries.push_back(le);
-        emit actionsRequested(r.actions);
+        // Route each directive to its target view (the active one by default) —
+        // the copilot can act across several open views at once (Phase 2).
+        CopilotActionRouter::instance()->dispatch(r.actions, m_datasetId);
     }
     // Record this exchange as follow-up context; clamp each turn to the server's
     // per-turn cap (4000) and cap the retained turn count so requests stay bounded.

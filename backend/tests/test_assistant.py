@@ -366,6 +366,74 @@ def test_provider_to_messages_handles_prior_assistant_text():
     assert any(m.get("role") == "assistant" and m.get("content") == "a" for m in om)
 
 
+def test_list_datasets_tool():
+    ctx = {"_datasets": {
+               "c1": {"kind": "cube", "path": "/data/ngc.fits",
+                      "width": 8, "height": 8, "depth": 16},
+               "i1": {"kind": "image", "path": "/data/cont.fits", "width": 4, "height": 4}},
+           "_active_id": "c1"}
+    out = TOOLS["list_datasets"].executor(None, {}, ctx)
+    assert out["n_datasets"] == 2
+    byid = {d["dataset_id"]: d for d in out["datasets"]}
+    assert byid["c1"]["active"] is True and byid["i1"]["active"] is False
+    assert byid["c1"]["kind"] == "cube" and byid["c1"]["label"] == "ngc.fits"
+    assert byid["c1"]["depth"] == 16 and byid["i1"]["kind"] == "image"
+
+
+class _TargetActionProvider(AssistantProvider):
+    """Fake LLM that recolours ANOTHER open view via a dataset_id argument."""
+
+    name = "scripted"
+    configured = True
+
+    def __init__(self):
+        self._turn = 0
+
+    def complete(self, system, history, tools):
+        self._turn += 1
+        if self._turn == 1:
+            return ProviderResponse(tool_calls=[ToolCall(
+                id="t1", name="set_colormap",
+                arguments={"name": "inferno", "dataset_id": "ds2"})])
+        return ProviderResponse(final_text="Recoloured ds2.")
+
+
+def test_engine_action_targets_other_view(tmp_path):
+    path = str(tmp_path / "c.fits")
+    _write_cube(path)
+    datasets = {"ds1": {"kind": "cube", "path": path},
+                "ds2": {"kind": "cube", "path": path}}
+    res = AssistantEngine(_TargetActionProvider()).run(
+        "colour the other cube", path, dataset_id="ds1", datasets=datasets)
+    assert res.actions and res.actions[0]["type"] == "set_colormap"
+    assert res.actions[0]["target"] == "ds2"   # routed to the targeted view, not ds1
+
+
+class _BadTargetProvider(AssistantProvider):
+    name = "scripted"
+    configured = True
+
+    def __init__(self):
+        self._turn = 0
+
+    def complete(self, system, history, tools):
+        self._turn += 1
+        if self._turn == 1:
+            return ProviderResponse(tool_calls=[ToolCall(
+                id="t1", name="cube_statistics", arguments={"dataset_id": "nope"})])
+        return ProviderResponse(final_text="done")
+
+
+def test_engine_errors_on_unknown_dataset_id(tmp_path):
+    path = str(tmp_path / "c.fits")
+    _write_cube(path)
+    res = AssistantEngine(_BadTargetProvider()).run(
+        "stats of nope", path, dataset_id="ds1", datasets={"ds1": {"kind": "cube", "path": path}})
+    # An explicit unknown id is an error — it must NOT silently run on the active view.
+    assert res.tool_calls[0].error is not None
+    assert "unknown dataset_id" in res.tool_calls[0].error
+
+
 def test_engine_emits_progress_events(tmp_path):
     path = str(tmp_path / "cprog.fits")
     _write_cube(path)
@@ -448,13 +516,15 @@ def test_engine_collects_visualisation_actions(tmp_path):
     path = str(tmp_path / "cact.fits")
     _write_cube(path)
     res = AssistantEngine(_ActionProvider()).run("show this source better", path, dataset_id="ds1")
+    # Directives are tagged with the target view (the active dataset by default).
     assert res.actions == [
-        {"type": "set_colormap", "name": "inferno"},
-        {"type": "set_blend_mode", "mode": "mip"},
+        {"type": "set_colormap", "name": "inferno", "target": "ds1"},
+        {"type": "set_blend_mode", "mode": "mip", "target": "ds1"},
     ]
     # Only a COMPACT ack (not the full directive) is fed back to the model /
     # recorded in provenance — the full arrays live solely in `actions`.
-    assert res.tool_calls[0].result == {"status": "queued", "action": "set_colormap"}
+    assert res.tool_calls[0].result == {"status": "queued", "action": "set_colormap",
+                                        "target": "ds1"}
     assert res.to_dict()["actions"] == res.actions
 
 

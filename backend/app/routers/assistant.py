@@ -190,7 +190,8 @@ async def assistant_query(
     prior_turns = [{"role": t.role, "text": t.text} for t in request.history]
     task = asyncio.ensure_future(
         asyncio.to_thread(engine.run, request.question, dataset_path,
-                          request.dataset_id, dataset_entry, prior_turns))
+                          request.dataset_id, dataset_entry, prior_turns,
+                          datasets=dict(session.datasets)))
     try:
         result = await asyncio.wait_for(asyncio.shield(task), timeout=_ASSISTANT_TIMEOUT_S)
         _release_once()
@@ -272,7 +273,8 @@ async def assistant_stream(
     prior_turns = [{"role": t.role, "text": t.text} for t in request.history]
     task = asyncio.ensure_future(
         asyncio.to_thread(engine.run, request.question, dataset_path,
-                          request.dataset_id, dataset_entry, prior_turns, _progress))
+                          request.dataset_id, dataset_entry, prior_turns, _progress,
+                          dict(session.datasets)))
     # Release the slots exactly when the WORKER settles — independent of the
     # generator/client. This is the only release path, so a client that
     # disconnects before or during streaming can never leak a slot (the compute

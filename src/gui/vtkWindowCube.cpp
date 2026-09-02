@@ -9,6 +9,7 @@
 #include "ColorMaps.h"
 #include "ChannelOverlay.h"
 #include "AssistantPanel.h"
+#include "CopilotActionRouter.h"
 #include "CubeUiAssembler.h"
 #include "WorkspaceChrome.h"
 #include "InspectorPanel.h"
@@ -9208,10 +9209,12 @@ void vtkWindowCube::setupInspector()
         AssistantPanel *copilot = this->m_workspaceChrome->installCopilot(
                 this->remoteBackendUrl, this->remoteBackendToken, this->remoteDatasetId);
         if (copilot) {
-            QObject::connect(copilot, &AssistantPanel::actionsRequested, this,
-                             &vtkWindowCube::applyCopilotActions);
-            QObject::connect(copilot, &AssistantPanel::undoRequested, this,
-                             &vtkWindowCube::undoCopilotActions);
+            // Phase 2: register this cube with the session-level router so the
+            // copilot can target it by dataset id even from another view's panel.
+            CopilotActionRouter::instance()->registerTarget(
+                    this->remoteDatasetId, this,
+                    [this](const QList<QJsonObject> &acts) { this->applyCopilotActions(acts); },
+                    [this]() { this->undoCopilotActions(); });
             copilot->setSuggestions({
                     u"What are the statistics of this cube?"_s,
                     u"What's the noise level and a good threshold?"_s,

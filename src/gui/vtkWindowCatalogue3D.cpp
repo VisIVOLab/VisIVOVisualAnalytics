@@ -6,6 +6,7 @@
 #include "Catalogue3DTableModel.h"
 #include "Catalogue3DParser.h"
 #include "AssistantPanel.h"
+#include "CopilotActionRouter.h"
 #include "theme/VisivoTheme.h"
 
 // ── VTK ──────────────────────────────────────────────────────────────────────
@@ -379,8 +380,15 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          }
                          this->remoteDatasetId = result.datasetId;
                          this->remoteSessionId = result.sessionId;
-                         if (this->m_copilot)
+                         if (this->m_copilot) {
                              this->m_copilot->setDatasetId(this->remoteDatasetId);
+                             CopilotActionRouter::instance()->registerTarget(
+                                     this->remoteDatasetId, this,
+                                     [this](const QList<QJsonObject> &acts) {
+                                         this->applyCopilotActions(acts);
+                                     },
+                                     [this]() { this->undoCopilotActions(); });
+                         }
                          if (this->filterStatusLabel)
                              this->filterStatusLabel->setText({});
                          this->loadMoreEntries();
@@ -397,8 +405,13 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     } else {
         this->remoteDatasetId = opened.datasetId;
         this->remoteSessionId = opened.sessionId;
-        if (this->m_copilot)
+        if (this->m_copilot) {
             this->m_copilot->setDatasetId(this->remoteDatasetId);
+            CopilotActionRouter::instance()->registerTarget(
+                    this->remoteDatasetId, this,
+                    [this](const QList<QJsonObject> &acts) { this->applyCopilotActions(acts); },
+                    [this]() { this->undoCopilotActions(); });
+        }
         this->schema.headers.clear();
         this->schema.fields.clear();
         this->schema.fields.reserve(opened.fields.size());

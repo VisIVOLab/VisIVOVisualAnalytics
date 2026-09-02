@@ -304,6 +304,8 @@ set(PROJECT_SOURCES
         src/gui/InspectorPanel.h
         src/gui/AssistantPanel.cpp
         src/gui/AssistantPanel.h
+        src/gui/CopilotActionRouter.cpp
+        src/gui/CopilotActionRouter.h
         src/gui/DockRail.cpp
         src/gui/DockRail.h
         src/app/ProductRegistry.cpp

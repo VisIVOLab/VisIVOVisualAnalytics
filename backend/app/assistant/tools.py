@@ -38,13 +38,26 @@ class AssistantTool:
     # the engine collects the directive into the response's ``actions`` list and
     # feeds the ack back to the model so it can chain further steps.
     is_action: bool = False
+    # When True an optional ``dataset_id`` argument is advertised so the copilot
+    # can aim this tool at ANY open view (multi-dataset). False for tools that
+    # don't act on a specific dataset (list_datasets, cosmology_distance).
+    targetable: bool = True
 
     def spec(self) -> dict[str, Any]:
         """Anthropic/OpenAI-style tool spec for a provider to consume."""
+        params = self.parameters
+        if self.targetable:
+            props = dict(params.get("properties", {}))
+            props.setdefault("dataset_id", {
+                "type": "string",
+                "description": ("Open dataset id (from list_datasets) to target a "
+                                "specific view; omit to use the active one."),
+            })
+            params = {**params, "properties": props}
         return {
             "name": self.name,
             "description": self.description,
-            "input_schema": self.parameters,
+            "input_schema": params,
         }
 
 
@@ -282,6 +295,41 @@ def _vbt_summary(_path: str | None, params: dict[str, Any],
         "fields": fields,
         "fields_truncated": len(names) > max_fields,
     }
+
+
+def _list_datasets(_path: str | None, _params: dict[str, Any],
+                   context: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Enumerate every dataset/view currently open in the session.
+
+    Returns each open dataset's id, kind (cube/image/catalogue/vbt), a label and
+    a shape hint, flagging the active one — so the copilot can target another view
+    (a tool's ``dataset_id`` argument) to correlate, e.g., a cube with a 2-D image
+    of the same field.
+    """
+    import os  # noqa: PLC0415
+    ctx = context or {}
+    datasets = ctx.get("_datasets") or {}
+    active = ctx.get("_active_id")
+    out: list[dict[str, Any]] = []
+    for did, entry in datasets.items():
+        info: dict[str, Any] = {"dataset_id": did, "kind": entry.get("kind"),
+                                "active": (did == active)}
+        # A VBT entry has no "path"/geometry at top level — it carries head_path/
+        # bin_path and a header dict instead.
+        path = entry.get("path") or entry.get("head_path") or entry.get("bin_path")
+        if path:
+            info["label"] = os.path.basename(path)
+        for k in ("width", "height", "depth", "num_rows"):
+            v = entry.get(k)
+            if v is not None:
+                info[k] = v
+        header = entry.get("header")
+        if isinstance(header, dict):
+            for hk in ("kind", "num_rows", "field_count"):
+                if header.get(hk) is not None:
+                    info.setdefault(hk if hk != "kind" else "vbt_kind", header[hk])
+        out.append(info)
+    return {"n_datasets": len(out), "datasets": out}
 
 
 def _int_param(params: dict[str, Any], key: str, default: int | None = None) -> int:
@@ -713,6 +761,18 @@ def _act_compute_moment(_path: str | None, params: dict[str, Any]) -> dict[str, 
 TOOLS: dict[str, AssistantTool] = {
     t.name: t for t in [
         AssistantTool(
+            name="list_datasets",
+            description=(
+                "List every dataset/view currently open (id, kind, label, shape), "
+                "flagging the active one. Call this when the user refers to another "
+                "view or wants to correlate datasets (e.g. a cube and a 2-D image "
+                "of the same field), then pass a tool's dataset_id argument to "
+                "target a specific one."
+            ),
+            parameters={"type": "object", "properties": {}, "additionalProperties": False},
+            executor=_list_datasets, wants_context=True, targetable=False,
+        ),
+        AssistantTool(
             name="dataset_metadata",
             description=(
                 "Return the loaded cube's metadata: BUNIT, synthesized beam "
@@ -942,7 +1002,7 @@ TOOLS: dict[str, AssistantTool] = {
                 "required": ["redshift"],
                 "additionalProperties": False,
             },
-            executor=_cosmology_distance,
+            executor=_cosmology_distance, targetable=False,
         ),
         AssistantTool(
             name="catalogue_summary",

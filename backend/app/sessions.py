@@ -120,6 +120,12 @@ class Session:
         with self._task_lock:
             self._active_tasks = max(0, self._active_tasks - 1)
 
+    def has_active_tasks(self) -> bool:
+        """True while a compute task (e.g. a copilot run) holds a slot — used to
+        avoid evicting/flushing datasets a running task may still be reading."""
+        with self._task_lock:
+            return self._active_tasks > 0
+
 
 class SessionRegistry:
     """Thread-safe registry of active sessions with background TTL eviction."""
@@ -197,6 +203,11 @@ class SessionRegistry:
             anon = self._sessions.get(_ANON_SESSION_ID)
             if anon is None or anon.idle_seconds() <= self._ttl:
                 return 0
+            # A running compute task (e.g. a copilot run that outlived its request
+            # deadline) may still be reading a VBT memmap in these datasets — never
+            # flush them out from under it.
+            if anon.has_active_tasks():
+                return 0
             # Swap out the datasets dict atomically while holding the lock so
             # concurrent requests cannot acquire a reference to a stale entry.
             evicted = anon.datasets
@@ -235,6 +246,7 @@ class SessionRegistry:
                     sid
                     for sid, s in self._sessions.items()
                     if sid != _ANON_SESSION_ID and s.idle_seconds() > self._ttl
+                    and not s.has_active_tasks()   # don't evict under a running task
                 ]
                 for sid in stale_ids:
                     stale_sessions.append(self._sessions.pop(sid))

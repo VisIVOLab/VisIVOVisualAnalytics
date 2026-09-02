@@ -34,6 +34,17 @@ reversible actions that make sense for its data:
 Actions are **display-only and reversible**: after the copilot changes the view
 it logs an **↩ Undo latest change** link that reverts exactly that step.
 
+## Working across several open views
+
+When more than one dataset is open — say a spectral **cube** and a 2-D **image** of
+the same field — the copilot can reason about and act on **all of them**. Ask it to
+*"list the open datasets"* and it enumerates them (id, kind, shape); then refer to
+another view naturally (*"and what's the noise in the continuum image?"*, *"recolour
+the cube to match"*). Each analysis or visualisation directive is routed to the
+right window automatically — so a single request can, e.g., compute a moment on the
+cube **and** adjust the image. Undo reverts the last change across whichever views
+it touched.
+
 ## Conversations & follow-ups
 
 The copilot is **conversational**: it remembers the current exchange, so you can

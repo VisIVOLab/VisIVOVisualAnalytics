@@ -37,6 +37,7 @@
 #include <QSlider>
 #include <QVBoxLayout>
 #include "AssistantPanel.h"
+#include "CopilotActionRouter.h"
 #include "SidebarPanel.h"
 #include <QWidget>
 
@@ -357,10 +358,10 @@ void vtkWindowVbtVolume::setupSidebarUi()
             u"How many points and what fields does this table have?"_s,
             u"Show it in log scale"_s,
             u"Use MIP blending"_s });
-    connect(this->m_copilot, &AssistantPanel::actionsRequested, this,
-            &vtkWindowVbtVolume::applyCopilotActions);
-    connect(this->m_copilot, &AssistantPanel::undoRequested, this,
-            &vtkWindowVbtVolume::undoCopilotActions);
+    CopilotActionRouter::instance()->registerTarget(
+            this->openResult.datasetId, this,
+            [this](const QList<QJsonObject> &acts) { this->applyCopilotActions(acts); },
+            [this]() { this->undoCopilotActions(); });
 
     this->m_sidebar = new SidebarPanel(320, this);
     this->m_sidebar->addPage(u":/icons/rail_display.svg"_s,  u"Volume Settings"_s, pageVolume);

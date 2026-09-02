@@ -28,6 +28,7 @@ Hard rules:
 - Surface caveats explicitly: moment 2 is the velocity DISPERSION σ by default (not variance); fluxes are only in Jy when beam-corrected; a frequency axis needs a rest frequency for km/s; report uncertainties when available.
 - Be concise. When you state a number, name its unit. If the data can't answer, say so.
 - Prefer calling a tool over guessing. Do not fabricate file paths, beams, or redshifts.
+- MULTIPLE views may be open. Tools act on the ACTIVE dataset by default; to correlate or act on ANOTHER view (e.g. a cube and a 2-D image of the same field), call list_datasets to get their ids and pass a tool's dataset_id argument. Actions are routed to the targeted view.
 
 You may also ACT on the visualisation and produce results: tools whose description
 starts with "ACTION:" (set_colormap, set_scaling, set_color_field, set_threshold,
@@ -112,29 +113,41 @@ class AssistantEngine:
             dataset_id: str | None = None,
             dataset_entry: dict[str, Any] | None = None,
             prior_turns: list[dict[str, str]] | None = None,
-            progress: "Callable[[str, str], None] | None" = None) -> AssistantResult:
+            progress: "Callable[[str, str], None] | None" = None,
+            datasets: dict[str, dict[str, Any]] | None = None) -> AssistantResult:
         """Run the agent loop. ``progress(event, detail)`` — when given — is called
         as work happens ("tool", <tool name>) so a streaming caller can show which
-        analysis is running; it must be cheap and non-blocking."""
+        analysis is running; it must be cheap and non-blocking.
+
+        ``datasets`` maps every OPEN dataset id → its session entry. ``dataset_id``
+        is the ACTIVE view (the default target). A tool call may carry a
+        ``dataset_id`` argument to operate on any other open view instead — so the
+        copilot can correlate a cube with a 2-D image of the same field, etc."""
         def _emit(event: str, detail: str = "") -> None:
             if progress is not None:
                 try:
                     progress(event, detail)
                 except Exception:  # noqa: BLE001 — progress is best-effort telemetry
                     pass
+        datasets = datasets or {}
         specs = tool_specs()
         context = ""
         if dataset_id:
             kind = (dataset_entry or {}).get("kind")
             if kind == "catalogue":
-                context = (f"\n\n[A point catalogue is loaded: id={dataset_id}. "
+                context = (f"\n\n[Active dataset id={dataset_id} is a point catalogue. "
                            "Call catalogue_summary first; use cosmology_distance "
                            "for redshift → distance.]")
             elif kind == "vbt":
-                context = (f"\n\n[A VBT point/volume table is loaded: id={dataset_id}. "
-                           "Call vbt_summary first.]")
+                context = (f"\n\n[Active dataset id={dataset_id} is a VBT point/volume "
+                           "table. Call vbt_summary first.]")
             else:
-                context = f"\n\n[A dataset is loaded: id={dataset_id}. Tools operate on it.]"
+                context = f"\n\n[Active dataset id={dataset_id}. Tools operate on it by default.]"
+        if len(datasets) > 1:
+            context += ("\n\n[Several datasets are open. Call list_datasets to see them, "
+                        "and pass a tool's optional dataset_id argument to target a "
+                        "specific view (e.g. compare a cube with a 2-D image of the same "
+                        "field). Omit dataset_id to use the active view.]")
         # NEUTRAL conversation history — provider-agnostic. Each provider
         # translates it to its own API shape (Anthropic tool_use/tool_result
         # blocks, OpenAI tool_calls/tool messages), so the engine works
@@ -165,7 +178,32 @@ class AssistantEngine:
             results: list[dict[str, Any]] = []
             for call in resp.tool_calls:
                 _emit("tool", call.name)   # surface which analysis is running
-                inv = self._execute(call, dataset_path, dataset_entry)
+                # Resolve which OPEN dataset this call targets — the tool's optional
+                # dataset_id argument selects another view; otherwise the active one.
+                args = call.arguments if isinstance(call.arguments, dict) else {}
+                requested = args.get("dataset_id")
+                # Only an ABSENT / None / empty-string dataset_id falls back to the
+                # active view. Any other explicit value must be a valid open id —
+                # never silently retarget (that could act on the wrong window).
+                if requested not in (None, ""):
+                    if not isinstance(requested, str) or requested not in datasets:
+                        inv = ToolInvocation(
+                            call.name, args,
+                            error=f"unknown dataset_id {requested!r}; call list_datasets "
+                                  "for the open views.")
+                        invocations.append(inv)
+                        results.append({"id": call.id, "name": call.name,
+                                        "content": json.dumps({"error": inv.error}),
+                                        "is_error": True})
+                        continue
+                    target_id = requested
+                    r_entry = datasets[requested]
+                    r_path = r_entry.get("path")
+                else:
+                    target_id = dataset_id
+                    r_entry = dataset_entry
+                    r_path = dataset_path
+                inv = self._execute(call, r_path, r_entry, datasets, dataset_id)
                 invocations.append(inv)
                 # Action tools emit a viewer directive rather than data; collect
                 # it for the app to apply. The FULL directive (which may carry a
@@ -176,9 +214,14 @@ class AssistantEngine:
                 if tool is not None and tool.is_action and inv.result \
                         and isinstance(inv.result.get("action"), dict):
                     action = inv.result["action"]
+                    # Tag the directive with the view it targets so the desktop
+                    # routes it to the right window (default = the active view).
+                    if target_id:
+                        action.setdefault("target", target_id)
                     actions.append(action)
                     inv.result = {"status": inv.result.get("status", "queued"),
-                                  "action": action.get("type")}
+                                  "action": action.get("type"),
+                                  "target": target_id}
                 results.append({
                     "id": call.id,
                     "name": call.name,
@@ -208,14 +251,22 @@ class AssistantEngine:
         )
 
     def _execute(self, call: ToolCall, dataset_path: str | None,
-                 dataset_entry: dict[str, Any] | None = None) -> ToolInvocation:
+                 dataset_entry: dict[str, Any] | None = None,
+                 datasets: dict[str, dict[str, Any]] | None = None,
+                 active_id: str | None = None) -> ToolInvocation:
         tool = TOOLS.get(call.name)
         if tool is None:
             return ToolInvocation(call.name, call.arguments,
                                   error=f"unknown tool {call.name!r}")
         try:
             if tool.wants_context:
-                result = tool.executor(dataset_path, call.arguments, dataset_entry)
+                # The resolved entry, plus the full open-dataset registry so a tool
+                # like list_datasets can enumerate every view (keys prefixed with _
+                # to avoid clashing with entry fields the summary tools read).
+                context = dict(dataset_entry or {})
+                context["_datasets"] = datasets or {}
+                context["_active_id"] = active_id
+                result = tool.executor(dataset_path, call.arguments, context)
             else:
                 result = tool.executor(dataset_path, call.arguments)
             return ToolInvocation(call.name, call.arguments, result=result)

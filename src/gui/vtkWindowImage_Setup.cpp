@@ -23,6 +23,7 @@
 #include "theme/VisivoTheme.h"
 #include "WorkspaceChrome.h"
 #include "AssistantPanel.h"
+#include "CopilotActionRouter.h"
 #include "InspectorPanel.h"
 #include "ToolResultDialog.h"
 #include "vtkInteractorStyleProfile.h"
@@ -594,10 +595,10 @@ void vtkWindowImage::setupInspector()
         AssistantPanel *copilot = this->m_workspaceChrome->installCopilot(
                 this->remoteBackendUrl, this->remoteBackendToken, this->remoteDatasetId);
         if (copilot) {
-            QObject::connect(copilot, &AssistantPanel::actionsRequested, this,
-                             &vtkWindowImage::applyCopilotActions);
-            QObject::connect(copilot, &AssistantPanel::undoRequested, this,
-                             &vtkWindowImage::undoCopilotActions);
+            CopilotActionRouter::instance()->registerTarget(
+                    this->remoteDatasetId, this,
+                    [this](const QList<QJsonObject> &acts) { this->applyCopilotActions(acts); },
+                    [this]() { this->undoCopilotActions(); });
             copilot->setSuggestions({
                     u"What are the image statistics?"_s,
                     u"Measure the flux at RA 10.0 Dec 20.0"_s,

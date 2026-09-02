@@ -69,6 +69,7 @@
 #include <QTextEdit>
 #include <QVBoxLayout>
 #include "AssistantPanel.h"
+#include "CopilotActionRouter.h"
 #include "SidebarPanel.h"
 #include <QtConcurrent>
 
@@ -378,10 +379,7 @@ void vtkWindowCatalogue3D::setupSidebar()
                 u"What columns does this catalogue have?"_s,
                 u"What's the redshift range?"_s,
                 u"Comoving distance at redshift 0.1?"_s });
-        connect(this->m_copilot, &AssistantPanel::actionsRequested, this,
-                &vtkWindowCatalogue3D::applyCopilotActions);
-        connect(this->m_copilot, &AssistantPanel::undoRequested, this,
-                &vtkWindowCatalogue3D::undoCopilotActions);
+        // Router registration happens once the dataset id is known (async open).
         this->m_sidebar->addPage(u":/icons/rail_copilot.svg"_s, u"Copilot"_s, this->m_copilot);
     }
 
