@@ -122,7 +122,8 @@ them; it cannot fabricate their outputs.
 - *"Show me the detections."* → `show_sources` opens SoFiA-2 for the cube and
   overlays the detection mask in the 3-D viewer.
 - *"Plot the spectrum at RA 10.0 Dec 20.0."* → `plot_spectrum` extracts and pins
-  the line profile as a 1-D panel (add `fit` for the Gaussian summary too).
+  the line profile as a 1-D panel; with `fit` it also overlays the fitted Gaussian
+  curve on the profile (use `fit_line` for the numeric fit parameters).
 - *"What is the comoving distance at redshift 0.1?"* → `cosmology_distance` with
   the honest (Planck18) constants.
 - *(in the Catalogue 3D window)* *"What columns does this catalogue have, and what

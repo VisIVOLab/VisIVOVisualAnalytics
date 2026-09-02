@@ -180,7 +180,7 @@ def test_plot_spectrum_action_builds_pin_directive(tmp_path):
     d = out["action"]
     assert d["type"] == "pin_spectrum"
     assert len(d["axis"]) == 16 and len(d["values"]) == 16
-    assert set(d["fit"]) == {"center", "fwhm", "peak", "integrated_flux"}
+    assert d["fit"] is True   # viewer overlays the Gaussian fit
 
 
 def test_plot_spectrum_rejects_off_cube(tmp_path):

@@ -672,12 +672,14 @@ def _act_show_sources(_path: str | None, _params: dict[str, Any]) -> dict[str, A
 def _act_plot_spectrum(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
     """ACTION: extract the spectrum at a position (server-side, so no viewer
     coordinate math) and emit a directive carrying the axis+values for the cube
-    to pin as a 1-D spectrum product. Optionally include the Gaussian fit summary.
+    to pin as a 1-D spectrum panel. With ``fit=true`` the viewer also fits a
+    Gaussian and OVERLAYS the model curve on the profile (use fit_line for the
+    numbers).
     """
     if not path:
         raise ValueError("plot_spectrum requires a loaded cube.")
-    _ds, spec, extraction, radius_pix = _resolve_cube_spectrum(path, params)
-    directive: dict[str, Any] = {
+    _ds, spec, extraction, _radius_pix = _resolve_cube_spectrum(path, params)
+    return _act({
         "type": "pin_spectrum",
         "axis": spec["spectral_axis"],
         "values": spec["values"],
@@ -686,14 +688,8 @@ def _act_plot_spectrum(path: str | None, params: dict[str, Any]) -> dict[str, An
         "extraction": extraction,
         "pixel_x": spec.get("x"),
         "pixel_y": spec.get("y"),
-    }
-    if params.get("fit"):
-        from ..compute import worker_line_fit  # noqa: PLC0415
-        fit = worker_line_fit(spec["values"], spec["spectral_axis"], True)
-        # Compact fit summary for the product label / narration.
-        directive["fit"] = {k: fit.get(k) for k in
-                            ("center", "fwhm", "peak", "integrated_flux")}
-    return _act(directive)
+        "fit": bool(params.get("fit", False)),   # viewer overlays a Gaussian fit
+    })
 
 
 def _act_compute_moment(_path: str | None, params: dict[str, Any]) -> dict[str, Any]:

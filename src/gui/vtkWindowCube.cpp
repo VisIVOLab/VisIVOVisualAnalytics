@@ -10621,11 +10621,30 @@ void vtkWindowCube::applyCopilotActions(const QList<QJsonObject> &actions)
                 const int py = a.value(u"pixel_y"_s).toInt();
                 const QString xLabel = this->spectralAxisTitle().isEmpty()
                         ? u"Spectral axis"_s : this->spectralAxisTitle();
-                this->addSpectrumProduct(
+                const QString pid = this->addSpectrumProduct(
                         u"Copilot Spectrum"_s,
                         QStringLiteral("copilotspec_%1_%2").arg(px).arg(py),
                         QStringLiteral("Spectrum @ (%1, %2)").arg(px).arg(py),
                         key, values, xLabel, u"Intensity"_s, {});
+                // fit=true → overlay a Gaussian fit on the pinned profile, reusing
+                // the ProfileWidget's own backend fit machinery (which draws the
+                // model curve). Fit the VISIBLE pane now showing this product —
+                // prefer the just-activated target, and never a hidden/parked
+                // duplicate (which could hold stale cached data).
+                if (a.value(u"fit"_s).toBool() && !pid.isEmpty()) {
+                    auto paneShowsPid = [&](int i) {
+                        return i >= 0 && i < 4 && m_slots[i].frame
+                                && m_slots[i].frame->isVisible()
+                                && m_slots[i].view.kind == ViewId::Product
+                                && m_slots[i].view.productId == pid && m_paneSpectra[i];
+                    };
+                    int fitSlot = paneShowsPid(m_activePane) ? m_activePane : -1;
+                    if (fitSlot < 0)
+                        for (int i = 0; i < 4; ++i)
+                            if (paneShowsPid(i)) { fitSlot = i; break; }
+                    if (fitSlot >= 0)
+                        m_paneSpectra[fitSlot]->fitGaussianNow();
+                }
             }
         } else if (type == u"compute_moment"_s && this->momentController) {
             // Compute AND display a moment product (added to Session Data) via the
