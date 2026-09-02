@@ -31,8 +31,10 @@ Hard rules:
 
 You may also ACT on the visualisation and produce results: tools whose description
 starts with "ACTION:" (set_colormap, set_scaling, set_color_field, set_threshold,
-set_render_mode, set_blend_mode, goto_channel, reset_camera, compute_moment) change
-the active view or add a product. Pick the one the active viewer supports (e.g.
+set_render_mode, set_blend_mode, goto_channel, reset_camera, compute_moment,
+show_sources, plot_spectrum) change the active view or add a product. To SHOW
+detections in the viewer use show_sources (find_sources just reports numbers); to
+PIN a spectrum panel at a position use plot_spectrum (fit_line just reports the fit). Pick the one the active viewer supports (e.g.
 set_scaling=log to reveal faint image structure; set_color_field to colour a point
 cloud by a field). A directive the active viewer can't apply is safely ignored.
 Use them proactively and autonomously to carry out what the user asks ("show this
@@ -144,11 +146,17 @@ class AssistantEngine:
                 inv = self._execute(call, dataset_path, dataset_entry)
                 invocations.append(inv)
                 # Action tools emit a viewer directive rather than data; collect
-                # it for the app to apply (the model still gets the queued ack).
+                # it for the app to apply. The FULL directive (which may carry a
+                # large payload, e.g. a pinned spectrum's samples) goes only into
+                # ``actions`` for the desktop — the model and the provenance trace
+                # get a compact ack, never the raw arrays.
                 tool = TOOLS.get(call.name)
                 if tool is not None and tool.is_action and inv.result \
                         and isinstance(inv.result.get("action"), dict):
-                    actions.append(inv.result["action"])
+                    action = inv.result["action"]
+                    actions.append(action)
+                    inv.result = {"status": inv.result.get("status", "queued"),
+                                  "action": action.get("type")}
                 results.append({
                     "id": call.id,
                     "name": call.name,

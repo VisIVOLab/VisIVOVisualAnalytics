@@ -3,6 +3,8 @@
 #include <QDialog>
 #include <QPointer>
 
+#include <memory>
+
 class BackendClient;
 class QComboBox;
 class QDialogButtonBox;
@@ -24,7 +26,10 @@ class SourceFindDialog : public QDialog
     Q_OBJECT
 
 public:
-    SourceFindDialog(BackendClient *client,
+    /// The client is shared: the async SoFiA run captures a copy of the
+    /// shared_ptr, so the client outlives an early dialog close (no use-after-
+    /// free) and the dialog needn't block on the run to be destroyed.
+    SourceFindDialog(std::shared_ptr<BackendClient> client,
                      const QString &datasetId,
                      QWidget *parent = nullptr);
 
@@ -41,7 +46,7 @@ private:
     void setUiBusy(bool busy);
     void populateTable(const QVector<QVariantMap> &rows);
 
-    BackendClient           *m_client{ nullptr };
+    std::shared_ptr<BackendClient> m_client;
     QString                  m_datasetId;
 
     // ── Parameters ─────────────────────────────────────────────────────────

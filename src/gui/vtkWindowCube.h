@@ -306,6 +306,12 @@ signals:
     /// @p data   The 2-D vtkImageData (caller retains ownership).
     void contourDataReady(const QString &label, vtkImageData *data);
 
+    /// Emitted when the copilot asks to SHOW source finding for this cube. The
+    /// host (MainWindow) opens the SoFiA-2 dialog for this cube's dataset and
+    /// overlays the resulting mask in 3D — reusing the interactive source-find
+    /// path rather than duplicating it here.
+    void sourceFinderRequested();
+
 public:
     enum class RemoteCubeDisplayState
     {

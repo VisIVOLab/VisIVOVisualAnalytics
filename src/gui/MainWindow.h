@@ -108,6 +108,10 @@ private:
     /// mosaic) in the viewer, using the science backend that computed it.
     void openBackendProductFits(const QString &backendUrl, const QString &backendToken,
                                   const QString &path, const QString &displayName);
+    /// Open the SoFiA-2 source-finding dialog for a dataset and wire its mask-cube
+    /// overlay. Shared by the Science menu action and the copilot's show_sources.
+    void openSourceFinder(const QString &backendUrl, const QString &backendToken,
+                          const QString &sessionId, const QString &datasetId);
     /// Action handlers for the advanced 2-D product use cases.
     void runPublicationFigure();   ///< UC 1.3
     void runImageQuality();        ///< UC 4.2

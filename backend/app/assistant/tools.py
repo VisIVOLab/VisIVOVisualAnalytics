@@ -445,21 +445,15 @@ def _angular_power_spectrum(path: str | None, params: dict[str, Any]) -> dict[st
     return worker_angular_power_spectrum(path, channel, n_bins)
 
 
-def _fit_line(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
-    """Extract a spectrum at a position and fit a Gaussian (+ optional baseline).
+def _resolve_cube_spectrum(path: str, params: dict[str, Any]) -> tuple[Any, dict[str, Any], str, float | None]:
+    """Resolve a cube position and extract its spectrum (probe or aperture).
 
-    Position: give ``ra_deg``/``dec_deg`` (needs WCS) or ``x``/``y`` (pixel). With
-    ``radius_arcsec`` it fits the mean spectrum over a circular aperture; without
-    it, a single-pixel probe. Returns peak/center/σ/FWHM (in the spectral axis
-    unit), integrated flux, continuum, equivalent width and residual RMS.
+    Shared by fit_line and plot_spectrum. Position: ra_deg/dec_deg (needs WCS) or
+    x/y (pixel). ``radius_arcsec`` → mean-spectrum aperture, else single-pixel
+    probe. Guards the CENTRE inside the cube's spatial extent. Returns
+    (dataset, spec, extraction, radius_pix).
     """
-    if not path:
-        raise ValueError("fit_line requires a loaded cube.")
-    from ..compute import (  # noqa: PLC0415
-        worker_line_fit,
-        worker_spectral_aperture,
-        worker_spectral_probe,
-    )
+    from ..compute import worker_spectral_aperture, worker_spectral_probe  # noqa: PLC0415
     ds = ScientificFitsDataset(path)
     if params.get("ra_deg") is not None or params.get("dec_deg") is not None:
         ra = _finite_float(params, "ra_deg")
@@ -473,11 +467,11 @@ def _fit_line(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
         x = _finite_float(params, "x")
         y = _finite_float(params, "y")
     else:
-        raise ValueError("fit_line needs a position: ra_deg+dec_deg or x+y (pixel).")
+        raise ValueError("a position is required: ra_deg+dec_deg or x+y (pixel).")
 
     # Require the CENTRE inside the cube's spatial extent — an aperture whose
-    # centre is outside but whose disc clips the edge would otherwise fit a
-    # lopsided spectrum the copilot couldn't tell apart from a real one.
+    # centre is outside but whose disc clips the edge would otherwise yield a
+    # lopsided spectrum indistinguishable from a real one.
     geom = ds.geometry_metadata()
     w = int(geom.get("width", 0))
     h = int(geom.get("height", 0))
@@ -486,7 +480,7 @@ def _fit_line(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
             f"position (x={x:.1f}, y={y:.1f}) is outside the cube's spatial "
             f"extent ({w}×{h}).")
 
-    radius_pix = None
+    radius_pix: float | None = None
     if params.get("radius_arcsec") is not None:
         r_arcsec = _finite_float(params, "radius_arcsec", positive=True)
         scale = ds.spatial_pixel_scale_arcsec()
@@ -500,13 +494,27 @@ def _fit_line(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
         extraction = "probe"
     if not spec.get("valid", True):
         raise ValueError(spec.get("error", "spectrum extraction failed."))
+    return ds, spec, extraction, radius_pix
 
+
+def _fit_line(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    """Extract a spectrum at a position and fit a Gaussian (+ optional baseline).
+
+    Position: give ``ra_deg``/``dec_deg`` (needs WCS) or ``x``/``y`` (pixel). With
+    ``radius_arcsec`` it fits the mean spectrum over a circular aperture; without
+    it, a single-pixel probe. Returns peak/center/σ/FWHM (in the spectral axis
+    unit), integrated flux, continuum, equivalent width and residual RMS.
+    """
+    if not path:
+        raise ValueError("fit_line requires a loaded cube.")
+    from ..compute import worker_line_fit  # noqa: PLC0415
+    ds, spec, extraction, radius_pix = _resolve_cube_spectrum(path, params)
     fit = worker_line_fit(spec["values"], spec["spectral_axis"],
                           bool(params.get("with_baseline", True)))
     return {
         "extraction": extraction,
-        "pixel_x": spec.get("x", x),
-        "pixel_y": spec.get("y", y),
+        "pixel_x": spec.get("x"),
+        "pixel_y": spec.get("y"),
         "radius_pix": radius_pix,
         "n_pix": spec.get("n_pix", 1),
         "n_channels": len(spec["values"]),
@@ -655,6 +663,37 @@ def _act_set_color_field(_path: str | None, params: dict[str, Any]) -> dict[str,
     if not field:
         raise ValueError("field is required (a column/field name to colour by).")
     return _act({"type": "set_color_field", "field": field})
+
+
+def _act_show_sources(_path: str | None, _params: dict[str, Any]) -> dict[str, Any]:
+    return _act({"type": "show_sources"})
+
+
+def _act_plot_spectrum(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    """ACTION: extract the spectrum at a position (server-side, so no viewer
+    coordinate math) and emit a directive carrying the axis+values for the cube
+    to pin as a 1-D spectrum product. Optionally include the Gaussian fit summary.
+    """
+    if not path:
+        raise ValueError("plot_spectrum requires a loaded cube.")
+    _ds, spec, extraction, radius_pix = _resolve_cube_spectrum(path, params)
+    directive: dict[str, Any] = {
+        "type": "pin_spectrum",
+        "axis": spec["spectral_axis"],
+        "values": spec["values"],
+        "spectral_type": spec.get("spectral_type"),
+        "spectral_unit": spec.get("spectral_unit"),
+        "extraction": extraction,
+        "pixel_x": spec.get("x"),
+        "pixel_y": spec.get("y"),
+    }
+    if params.get("fit"):
+        from ..compute import worker_line_fit  # noqa: PLC0415
+        fit = worker_line_fit(spec["values"], spec["spectral_axis"], True)
+        # Compact fit summary for the product label / narration.
+        directive["fit"] = {k: fit.get(k) for k in
+                            ("center", "fwhm", "peak", "integrated_flux")}
+    return _act(directive)
 
 
 def _act_compute_moment(_path: str | None, params: dict[str, Any]) -> dict[str, Any]:
@@ -1052,6 +1091,41 @@ TOOLS: dict[str, AssistantTool] = {
                 "required": ["field"], "additionalProperties": False,
             },
             executor=_act_set_color_field, is_action=True,
+        ),
+        AssistantTool(
+            name="show_sources",
+            description=(
+                "ACTION: open SoFiA-2 source finding for the current cube and "
+                "overlay the detection mask in the 3-D viewer. Use this when the "
+                "user wants to SEE the detections in the view (use find_sources "
+                "instead to just report the catalogue numbers)."
+            ),
+            parameters={"type": "object", "properties": {}, "additionalProperties": False},
+            executor=_act_show_sources, is_action=True,
+        ),
+        AssistantTool(
+            name="plot_spectrum",
+            description=(
+                "ACTION: extract the spectrum at a position in the cube and PIN it "
+                "as a 1-D spectrum panel in the viewer (so the user sees the line "
+                "profile). Position: ra_deg+dec_deg (needs WCS) or x+y (pixel); "
+                "radius_arcsec → aperture-averaged, else a single-pixel probe. Set "
+                "fit=true to also compute the Gaussian fit summary. Pair it with "
+                "fit_line when the user wants both the numbers and the plot."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "ra_deg": {"type": "number"},
+                    "dec_deg": {"type": "number"},
+                    "x": {"type": "number"},
+                    "y": {"type": "number"},
+                    "radius_arcsec": {"type": "number"},
+                    "fit": {"type": "boolean"},
+                },
+                "additionalProperties": False,
+            },
+            executor=_act_plot_spectrum, is_action=True,
         ),
         AssistantTool(
             name="compute_moment",

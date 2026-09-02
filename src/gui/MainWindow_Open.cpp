@@ -70,6 +70,8 @@
 #include <QUrl>
 #include <QtConcurrent>
 
+#include <memory>
+
 #include <cmath>
 
 #include "app/DiagnosticsManager.h"
@@ -487,6 +489,33 @@ void MainWindow::openBackendProductFits(const QString &backendUrl, const QString
     if (this->recentMgr) this->recentMgr->record(path, displayName, opened.kind);
 }
 
+void MainWindow::openSourceFinder(const QString &backendUrl, const QString &backendToken,
+                                  const QString &sessionId, const QString &datasetId)
+{
+    if (datasetId.isEmpty()) {
+        QMessageBox::information(this, u"Source Finding"_s,
+                u"Open a spectral cube first."_s);
+        return;
+    }
+    // Shared ownership: the dialog's async SoFiA run captures a copy of this
+    // shared_ptr, so the client survives an early dialog close (no use-after-free)
+    // and is freed when the last holder — dialog or in-flight worker — releases it.
+    auto client = std::make_shared<BackendClient>(backendUrl, backendToken);
+    client->setSessionId(sessionId);   // resolve the dataset in the right session
+    auto *dlg = new SourceFindDialog(client, datasetId, this);
+    // Open the SoFiA-2 mask cube in the 3D viewer (mask → 3D inspection of the
+    // detections) on the same node backend that ran the source finder.
+    QObject::connect(dlg, &SourceFindDialog::openMaskCubeRequested, this,
+                     [this, backendUrl, backendToken](const QString &maskPath) {
+                         this->openBackendProductFits(backendUrl, backendToken, maskPath,
+                                                      u"SoFiA mask cube"_s);
+                     });
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->show();   // non-modal — consistent with the other tool dialogs
+    dlg->raise();
+    dlg->activateWindow();
+}
+
 
 void MainWindow::doOpenDataFromUrl(const QString &url, const QString &obsId)
 {
@@ -610,6 +639,18 @@ void MainWindow::openViewerFromOpenedDataset(const QString &path,
         if (this->dataHub) {
             QObject::connect(cubeWin, &vtkWindowCube::workspaceExportsChanged,
                              this->dataHub, &DataHubWidget::refreshWorkspaceExports);
+        }
+        // Copilot "show sources" → open the SoFiA-2 dialog for THIS cube's
+        // dataset/backend and overlay the mask in 3D (reuses the interactive
+        // source-find path). Capture this cube's own url/token/datasetId so it
+        // targets the right dataset even with several cubes open.
+        {
+            const QString sfUrl = client.baseUrl(), sfToken = client.token(),
+                          sfSession = client.sessionId(), sfDataset = opened.datasetId;
+            QObject::connect(cubeWin, &vtkWindowCube::sourceFinderRequested, this,
+                             [this, sfUrl, sfToken, sfSession, sfDataset]() {
+                                 this->openSourceFinder(sfUrl, sfToken, sfSession, sfDataset);
+                             });
         }
         // Cube → Image contour relay: when the cube viewer emits
         // contourDataReady, find the first open image viewer and forward.

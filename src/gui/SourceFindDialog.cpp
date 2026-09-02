@@ -24,11 +24,11 @@ using namespace Qt::StringLiterals;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-SourceFindDialog::SourceFindDialog(BackendClient *client,
+SourceFindDialog::SourceFindDialog(std::shared_ptr<BackendClient> client,
                                    const QString &datasetId,
                                    QWidget *parent)
     : QDialog(parent)
-    , m_client(client)
+    , m_client(std::move(client))
     , m_datasetId(datasetId)
 {
     setWindowTitle(u"SoFiA-2 Source Finding"_s);
@@ -133,7 +133,7 @@ void SourceFindDialog::onRun()
     m_progress->setMinimumDuration(400);
     m_progress->show();
 
-    BackendClient *client = m_client;
+    std::shared_ptr<BackendClient> client = m_client;   // shared with the worker
 
     auto *watcher = new QFutureWatcher<BackendSourceFindResult>(this);
     QPointer<SourceFindDialog> self(this);

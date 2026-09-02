@@ -146,6 +146,7 @@
 #include <QSettings>
 #include <QMessageBox>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -10517,15 +10518,37 @@ void vtkWindowCube::applyCopilotActions(const QList<QJsonObject> &actions)
 {
     if (actions.isEmpty())
         return;
-    // Snapshot the affected display state ONCE before the batch, so Undo can
-    // restore it (display-only, reversible).
-    this->m_copilotUndo = CopilotSnapshot{};
-    this->m_copilotUndo.valid = true;
-    this->m_copilotUndo.colormap = this->m_activeColorMapName;
-    this->m_copilotUndo.threshold = ui->lineThreshold ? ui->lineThreshold->text() : QString();
-    this->m_copilotUndo.isosurface = ui->actionIsosurface && ui->actionIsosurface->isChecked();
-    this->m_copilotUndo.blendMode = this->m_volumeBlendMode;
-    this->m_copilotUndo.channel0 = ui->spinSlice ? ui->spinSlice->value() - 1 : 0;
+    // Distinguish REVERSIBLE display directives (colormap/threshold/render/blend/
+    // channel/camera) from products/hand-offs (compute_moment, show_sources,
+    // pin_spectrum) that create their own removable output. Only snapshot + offer
+    // Undo when the batch actually changes reversible display state, so pinning a
+    // spectrum or opening source-finding can't later revert unrelated manual edits.
+    bool hasReversible = false;
+    for (const QJsonObject &a : actions) {
+        const QString t = a.value(u"type"_s).toString();
+        if (t == u"set_colormap"_s || t == u"set_threshold"_s || t == u"set_render_mode"_s
+            || t == u"set_blend_mode"_s || t == u"goto_channel"_s || t == u"reset_camera"_s) {
+            hasReversible = true;
+            break;
+        }
+    }
+    if (hasReversible) {
+        // Snapshot the affected display state ONCE before the batch, so Undo can
+        // restore it (display-only, reversible).
+        this->m_copilotUndo = CopilotSnapshot{};
+        this->m_copilotUndo.valid = true;
+        this->m_copilotUndo.colormap = this->m_activeColorMapName;
+        this->m_copilotUndo.threshold = ui->lineThreshold ? ui->lineThreshold->text() : QString();
+        this->m_copilotUndo.isosurface = ui->actionIsosurface && ui->actionIsosurface->isChecked();
+        this->m_copilotUndo.blendMode = this->m_volumeBlendMode;
+        this->m_copilotUndo.channel0 = ui->spinSlice ? ui->spinSlice->value() - 1 : 0;
+    } else {
+        // A products/hand-off-only batch (pin_spectrum / show_sources / moment):
+        // invalidate any earlier snapshot so the panel's "Undo latest change"
+        // can't revert an OLDER reversible edit — the latest change isn't one
+        // this mechanism reverts.
+        this->m_copilotUndo = CopilotSnapshot{};
+    }
     // Capture the camera only if this batch resets it, so Undo of a non-camera
     // batch won't clobber the user's own camera moves.
     bool batchResetsCamera = false;
@@ -10573,6 +10596,35 @@ void vtkWindowCube::applyCopilotActions(const QList<QJsonObject> &actions)
             this->requestRemoteSlice(this->clampRemoteSliceIndex(a.value(u"index"_s).toInt()));
         } else if (type == u"reset_camera"_s) {
             this->resetCameraFront();
+        } else if (type == u"show_sources"_s) {
+            // Not a reversible display change: hand off to the host to open the
+            // SoFiA-2 source-find dialog for this cube and overlay the mask in 3D.
+            emit this->sourceFinderRequested();
+        } else if (type == u"pin_spectrum"_s) {
+            // The backend already extracted the spectrum at the position (no
+            // viewer coordinate math): pin the axis+values as a 1-D product.
+            const QJsonArray axis = a.value(u"axis"_s).toArray();
+            const QJsonArray vals = a.value(u"values"_s).toArray();
+            // Require a matching axis (or none); preserve blank channels sent as
+            // JSON null as NaN so the profile shows gaps, not spurious zeros.
+            const bool axisOk = axis.isEmpty() || axis.size() == vals.size();
+            if (!vals.isEmpty() && axisOk) {
+                const double kNaN = std::numeric_limits<double>::quiet_NaN();
+                QVector<double> key, values;
+                key.reserve(axis.size());
+                values.reserve(vals.size());
+                for (const QJsonValue &v : axis) key.append(v.isDouble() ? v.toDouble() : kNaN);
+                for (const QJsonValue &v : vals) values.append(v.isDouble() ? v.toDouble() : kNaN);
+                const int px = a.value(u"pixel_x"_s).toInt();
+                const int py = a.value(u"pixel_y"_s).toInt();
+                const QString xLabel = this->spectralAxisTitle().isEmpty()
+                        ? u"Spectral axis"_s : this->spectralAxisTitle();
+                this->addSpectrumProduct(
+                        u"Copilot Spectrum"_s,
+                        QStringLiteral("copilotspec_%1_%2").arg(px).arg(py),
+                        QStringLiteral("Spectrum @ (%1, %2)").arg(px).arg(py),
+                        key, values, xLabel, u"Intensity"_s, {});
+            }
         } else if (type == u"compute_moment"_s && this->momentController) {
             // Compute AND display a moment product (added to Session Data) via the
             // same worker/registration as the dialog — headless. Not part of the
@@ -10595,7 +10647,10 @@ void vtkWindowCube::applyCopilotActions(const QList<QJsonObject> &actions)
     if (ui->vtkCube && ui->vtkCube->renderWindow())
         ui->vtkCube->renderWindow()->Render();
     this->statusBar()->showMessage(
-            tr("Copilot applied %n visualisation change(s) — Undo available.", "", actions.size()),
+            hasReversible
+                    ? tr("Copilot applied %n visualisation change(s) — Undo available.",
+                         "", actions.size())
+                    : tr("Copilot applied %n change(s).", "", actions.size()),
             6000);
 }
 

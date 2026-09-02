@@ -26,7 +26,7 @@ reversible actions that make sense for its data:
 
 | Viewer | Grounded analysis tools | Actions it can take |
 | --- | --- | --- |
-| **Cube** (3-D spectral cube) | `dataset_metadata`, `cube_statistics`, `moment_map_summary`, `hi_products`, `noise_estimate`, `aperture_photometry`, `source_gaussfit`, `fit_line`, `find_sources` (SoFiA-2), `cross_match` | colormap, threshold, render mode (volume/isosurface), blend mode (composite/MIP/MinIP), go to channel, reset camera, **compute & show a moment map** |
+| **Cube** (3-D spectral cube) | `dataset_metadata`, `cube_statistics`, `moment_map_summary`, `hi_products`, `noise_estimate`, `aperture_photometry`, `source_gaussfit`, `fit_line`, `find_sources` (SoFiA-2), `cross_match` | colormap, threshold, render mode (volume/isosurface), blend mode (composite/MIP/MinIP), go to channel, reset camera, **compute & show a moment map**, **show source detections (SoFiA-2 overlay)**, **pin a spectrum panel** |
 | **Image** (2-D) | `dataset_metadata`, `cube_statistics`, `aperture_photometry`, `source_gaussfit`, `angular_power_spectrum`, `cross_match` | colormap, scaling (linear/log/sqrt/square/power), reset camera |
 | **Cosmology catalogue** (3-D point cloud — the *Catalogue 3D* window) | `catalogue_summary` (columns, coordinate system, per-column ranges), `cosmology_distance` (redshift → comoving/luminosity/angular-diameter distance) | colour scale (linear/log/…), colour-by-field, reset camera |
 | **VBT** (point / volume binary table) | `vbt_summary` (rows, fields, per-field ranges) | colormap, colour-by-field, reset camera |
@@ -119,6 +119,10 @@ them; it cannot fabricate their outputs.
   the detection catalogue (requires the SoFiA-2 binary on the server).
 - *"What known sources are in this field?"* → `cross_match` queries SIMBAD / 2MASS
   / NVSS / FIRST over the footprint and lists the catalogued matches.
+- *"Show me the detections."* → `show_sources` opens SoFiA-2 for the cube and
+  overlays the detection mask in the 3-D viewer.
+- *"Plot the spectrum at RA 10.0 Dec 20.0."* → `plot_spectrum` extracts and pins
+  the line profile as a 1-D panel (add `fit` for the Gaussian summary too).
 - *"What is the comoving distance at redshift 0.1?"* → `cosmology_distance` with
   the honest (Planck18) constants.
 - *(in the Catalogue 3D window)* *"What columns does this catalogue have, and what

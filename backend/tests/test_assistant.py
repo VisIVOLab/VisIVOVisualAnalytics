@@ -117,6 +117,12 @@ def test_set_scaling_action_validates_and_builds_directive():
         TOOLS["set_scaling"].executor(None, {"scale": "rainbow"})
 
 
+def test_show_sources_action_builds_directive():
+    out = TOOLS["show_sources"].executor(None, {})
+    assert out["status"] == "queued"
+    assert out["action"] == {"type": "show_sources"}
+
+
 def test_set_color_field_action_validates_and_builds_directive():
     out = TOOLS["set_color_field"].executor(None, {"field": "density"})
     assert out["action"] == {"type": "set_color_field", "field": "density"}
@@ -164,6 +170,24 @@ def test_fit_line_tool_probe(tmp_path):
     assert out["extraction"] == "probe"
     assert "fwhm" in out and "center" in out and "integrated_flux" in out
     assert out["n_channels"] == 16
+
+
+def test_plot_spectrum_action_builds_pin_directive(tmp_path):
+    path = str(tmp_path / "cps.fits")
+    _write_cube(path)
+    out = TOOLS["plot_spectrum"].executor(path, {"x": 3, "y": 3, "fit": True})
+    assert out["status"] == "queued"
+    d = out["action"]
+    assert d["type"] == "pin_spectrum"
+    assert len(d["axis"]) == 16 and len(d["values"]) == 16
+    assert set(d["fit"]) == {"center", "fwhm", "peak", "integrated_flux"}
+
+
+def test_plot_spectrum_rejects_off_cube(tmp_path):
+    path = str(tmp_path / "cps2.fits")
+    _write_cube(path)
+    with pytest.raises(ValueError, match="outside"):
+        TOOLS["plot_spectrum"].executor(path, {"x": 99, "y": 3})
 
 
 def test_fit_line_requires_position(tmp_path):
@@ -379,9 +403,9 @@ def test_engine_collects_visualisation_actions(tmp_path):
         {"type": "set_colormap", "name": "inferno"},
         {"type": "set_blend_mode", "mode": "mip"},
     ]
-    # The action ack (not data) is fed back to the model.
-    assert res.tool_calls[0].result == {"action": {"type": "set_colormap", "name": "inferno"},
-                                        "status": "queued"}
+    # Only a COMPACT ack (not the full directive) is fed back to the model /
+    # recorded in provenance — the full arrays live solely in `actions`.
+    assert res.tool_calls[0].result == {"status": "queued", "action": "set_colormap"}
     assert res.to_dict()["actions"] == res.actions
 
 
