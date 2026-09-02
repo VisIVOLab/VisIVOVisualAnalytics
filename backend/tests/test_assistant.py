@@ -157,6 +157,46 @@ def test_angular_power_spectrum_tool(tmp_path):
     assert isinstance(out, dict) and out
 
 
+def test_fit_line_tool_probe(tmp_path):
+    path = str(tmp_path / "cfit.fits")
+    _write_cube(path)   # bright blob at x,y 2..5, channels 6..9
+    out = TOOLS["fit_line"].executor(path, {"x": 3, "y": 3})
+    assert out["extraction"] == "probe"
+    assert "fwhm" in out and "center" in out and "integrated_flux" in out
+    assert out["n_channels"] == 16
+
+
+def test_fit_line_requires_position(tmp_path):
+    path = str(tmp_path / "cfit2.fits")
+    _write_cube(path)
+    with pytest.raises(ValueError):
+        TOOLS["fit_line"].executor(path, {})
+
+
+def test_fit_line_radec_without_wcs_falls_back(tmp_path):
+    # ra/dec on the WCS cube resolves to a pixel and fits (source at CRVAL 10/20).
+    path = str(tmp_path / "cfit3.fits")
+    _write_cube(path)
+    out = TOOLS["fit_line"].executor(path, {"ra_deg": 10.0, "dec_deg": 20.0})
+    assert "fwhm" in out
+
+
+def test_fit_line_rejects_off_cube_position(tmp_path):
+    path = str(tmp_path / "cfit4.fits")
+    _write_cube(path)   # 8×8 spatial
+    with pytest.raises(ValueError, match="outside"):
+        TOOLS["fit_line"].executor(path, {"x": 99, "y": 3, "radius_arcsec": 5.0})
+
+
+def test_find_sources_without_sofia_raises(tmp_path, monkeypatch):
+    import app.compute as _compute
+    monkeypatch.setattr(_compute, "resolve_sofia_bin", lambda: None, raising=True)
+    path = str(tmp_path / "csf.fits")
+    _write_cube(path)
+    with pytest.raises(ValueError, match="SoFiA"):
+        TOOLS["find_sources"].executor(path, {})
+
+
 def test_cosmology_rejects_bad_redshift():
     with pytest.raises(ValueError):
         TOOLS["cosmology_distance"].executor(None, {"redshift": -2.0})

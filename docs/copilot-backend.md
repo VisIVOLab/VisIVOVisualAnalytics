@@ -116,7 +116,8 @@ The active provider is **module-cached** (`_get_provider`) so `/status` and
 `AssistantTool` has a `name`, `description`, a JSON-schema `parameters`, and an
 `executor(path, params)`. Current read catalogue: `dataset_metadata`,
 `cube_statistics`, `moment_map_summary`, `hi_products`, `noise_estimate`,
-`aperture_photometry`, `source_gaussfit`, `angular_power_spectrum`,
+`aperture_photometry`, `source_gaussfit`, `fit_line` (spectrum extraction +
+Gaussian fit), `find_sources` (SoFiA-2), `angular_power_spectrum`,
 `cosmology_distance`, `catalogue_summary` (cosmology / point catalogues),
 `vbt_summary` (VBT point/volume tables). `tool_specs()` renders them as
 `{name, description, input_schema}` for the provider. Executors call the same

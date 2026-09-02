@@ -26,7 +26,7 @@ reversible actions that make sense for its data:
 
 | Viewer | Grounded analysis tools | Actions it can take |
 | --- | --- | --- |
-| **Cube** (3-D spectral cube) | `dataset_metadata`, `cube_statistics`, `moment_map_summary`, `hi_products`, `noise_estimate`, `aperture_photometry`, `source_gaussfit` | colormap, threshold, render mode (volume/isosurface), blend mode (composite/MIP/MinIP), go to channel, reset camera, **compute & show a moment map** |
+| **Cube** (3-D spectral cube) | `dataset_metadata`, `cube_statistics`, `moment_map_summary`, `hi_products`, `noise_estimate`, `aperture_photometry`, `source_gaussfit`, `fit_line`, `find_sources` (SoFiA-2) | colormap, threshold, render mode (volume/isosurface), blend mode (composite/MIP/MinIP), go to channel, reset camera, **compute & show a moment map** |
 | **Image** (2-D) | `dataset_metadata`, `cube_statistics`, `aperture_photometry`, `source_gaussfit`, `angular_power_spectrum` | colormap, scaling (linear/log/sqrt/square/power), reset camera |
 | **Cosmology catalogue** (3-D point cloud — the *Catalogue 3D* window) | `catalogue_summary` (columns, coordinate system, per-column ranges), `cosmology_distance` (redshift → comoving/luminosity/angular-diameter distance) | colour scale (linear/log/…), colour-by-field, reset camera |
 | **VBT** (point / volume binary table) | `vbt_summary` (rows, fields, per-field ranges) | colormap, colour-by-field, reset camera |
@@ -112,6 +112,11 @@ them; it cannot fabricate their outputs.
 - *"Measure the flux of the source at RA 10.0 Dec 20.0."* → `aperture_photometry`
   (raw sum + Jy when beam-corrected); *"and fit it"* → `source_gaussfit` (peak,
   integrated flux, FWHM, position angle, beam-deconvolved size).
+- *"Fit the line at RA 10.0 Dec 20.0 over a 5-arcsec aperture."* → `fit_line`
+  extracts the aperture spectrum and fits a Gaussian (center/σ/FWHM in the axis
+  unit, integrated flux, equivalent width).
+- *"Find all the sources in this cube."* → `find_sources` runs SoFiA-2 and reports
+  the detection catalogue (requires the SoFiA-2 binary on the server).
 - *"What is the comoving distance at redshift 0.1?"* → `cosmology_distance` with
   the honest (Planck18) constants.
 - *(in the Catalogue 3D window)* *"What columns does this catalogue have, and what

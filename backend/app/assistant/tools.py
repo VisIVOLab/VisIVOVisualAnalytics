@@ -429,6 +429,130 @@ def _angular_power_spectrum(path: str | None, params: dict[str, Any]) -> dict[st
     return worker_angular_power_spectrum(path, channel, n_bins)
 
 
+def _fit_line(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    """Extract a spectrum at a position and fit a Gaussian (+ optional baseline).
+
+    Position: give ``ra_deg``/``dec_deg`` (needs WCS) or ``x``/``y`` (pixel). With
+    ``radius_arcsec`` it fits the mean spectrum over a circular aperture; without
+    it, a single-pixel probe. Returns peak/center/σ/FWHM (in the spectral axis
+    unit), integrated flux, continuum, equivalent width and residual RMS.
+    """
+    if not path:
+        raise ValueError("fit_line requires a loaded cube.")
+    from ..compute import (  # noqa: PLC0415
+        worker_line_fit,
+        worker_spectral_aperture,
+        worker_spectral_probe,
+    )
+    ds = ScientificFitsDataset(path)
+    if params.get("ra_deg") is not None or params.get("dec_deg") is not None:
+        ra = _finite_float(params, "ra_deg")
+        dec = _finite_float(params, "dec_deg")
+        celestial = ds.wcs.celestial if ds.wcs is not None else None
+        if celestial is None:
+            raise ValueError("no celestial WCS; give pixel x,y instead of ra_deg/dec_deg.")
+        pix = celestial.all_world2pix([[ra, dec]], 0)[0]
+        x, y = float(pix[0]), float(pix[1])
+    elif params.get("x") is not None and params.get("y") is not None:
+        x = _finite_float(params, "x")
+        y = _finite_float(params, "y")
+    else:
+        raise ValueError("fit_line needs a position: ra_deg+dec_deg or x+y (pixel).")
+
+    # Require the CENTRE inside the cube's spatial extent — an aperture whose
+    # centre is outside but whose disc clips the edge would otherwise fit a
+    # lopsided spectrum the copilot couldn't tell apart from a real one.
+    geom = ds.geometry_metadata()
+    w = int(geom.get("width", 0))
+    h = int(geom.get("height", 0))
+    if not (0.0 <= x <= w - 1) or not (0.0 <= y <= h - 1):
+        raise ValueError(
+            f"position (x={x:.1f}, y={y:.1f}) is outside the cube's spatial "
+            f"extent ({w}×{h}).")
+
+    radius_pix = None
+    if params.get("radius_arcsec") is not None:
+        r_arcsec = _finite_float(params, "radius_arcsec", positive=True)
+        scale = ds.spatial_pixel_scale_arcsec()
+        if not (scale > 0):
+            raise ValueError("pixel scale unavailable; pass x/y and omit radius_arcsec.")
+        radius_pix = max(1.0, r_arcsec / scale)
+        spec = worker_spectral_aperture(path, x, y, radius_pix)
+        extraction = "aperture"
+    else:
+        spec = worker_spectral_probe(path, x, y)
+        extraction = "probe"
+    if not spec.get("valid", True):
+        raise ValueError(spec.get("error", "spectrum extraction failed."))
+
+    fit = worker_line_fit(spec["values"], spec["spectral_axis"],
+                          bool(params.get("with_baseline", True)))
+    return {
+        "extraction": extraction,
+        "pixel_x": spec.get("x", x),
+        "pixel_y": spec.get("y", y),
+        "radius_pix": radius_pix,
+        "n_pix": spec.get("n_pix", 1),
+        "n_channels": len(spec["values"]),
+        "spectral_unit": spec.get("spectral_unit"),
+        "spectral_type": spec.get("spectral_type"),
+        "bunit": ds.bunit,
+        **fit,
+    }
+
+
+def _find_sources(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    """Run SoFiA-2 source finding on the cube and return the detection catalogue.
+
+    Requires the SoFiA-2 binary on the server (VISIVO_SOFIA_BIN to override).
+    Runs with SoFiA's defaults and returns the number of detections plus (a
+    capped list of) their catalogue rows. Heavy: this launches the external
+    finder over the whole cube.
+    """
+    if not path:
+        raise ValueError("find_sources requires a loaded cube.")
+    import shutil  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from ..compute import resolve_sofia_bin, worker_sofia  # noqa: PLC0415
+    if not resolve_sofia_bin():
+        raise ValueError(
+            "SoFiA-2 is not installed on the server (looked for 'sofia2'/'sofia'; "
+            "set VISIVO_SOFIA_BIN)."
+        )
+    # Cap the returned rows so a huge requested value can't bloat the next LLM turn.
+    max_sources = min(100, max(1, _int_param(params, "max_sources", 20)))
+    out_dir = tempfile.mkdtemp(prefix="sofia_copilot_")
+    try:
+        # Bound the finder to under the assistant's own request deadline so a slow
+        # SoFiA run can't keep occupying the session/assistant slots afterwards.
+        res = worker_sofia(path, out_dir, None, timeout=100.0)
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)   # copilot only needs the catalogue
+    if not res.get("valid", True):
+        raise ValueError(res.get("error", "source finding failed."))
+    sources = res.get("sources", []) or []
+    n = int(res.get("n_sources", len(sources)))
+
+    # SoFiA catalogue values may be non-finite (nan/inf); JSON serialisation of the
+    # tool result rejects those, so coerce them to None row by row.
+    def _finite_row(row: dict[str, Any]) -> dict[str, Any]:
+        clean: dict[str, Any] = {}
+        for k, v in row.items():
+            if isinstance(v, (float, np.floating)) and not np.isfinite(v):
+                clean[k] = None
+            else:
+                clean[k] = v
+        return clean
+
+    return {
+        "n_sources": n,
+        "sources": [_finite_row(s) if isinstance(s, dict) else s
+                    for s in sources[:max_sources]],
+        "sources_truncated": n > max_sources,
+    }
+
+
 # ── Action executors (emit a viewer directive; the desktop app applies it) ────
 # These do NOT compute a result — they validate the parameters and return an
 # {"action": <directive>, "status": "queued"} envelope. The directive's ``type``
@@ -667,6 +791,47 @@ TOOLS: dict[str, AssistantTool] = {
                 "additionalProperties": False,
             },
             executor=_angular_power_spectrum,
+        ),
+        AssistantTool(
+            name="fit_line",
+            description=(
+                "Extract a 1-D spectrum at a position in the cube and fit a "
+                "Gaussian (+ optional linear baseline). Position: ra_deg+dec_deg "
+                "(needs WCS) or x+y (pixel). With radius_arcsec it uses the mean "
+                "spectrum over a circular aperture, else a single-pixel probe. "
+                "Returns peak, center, σ, FWHM (in the spectral axis unit), "
+                "integrated flux, continuum, equivalent width and residual RMS."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "ra_deg": {"type": "number"},
+                    "dec_deg": {"type": "number"},
+                    "x": {"type": "number"},
+                    "y": {"type": "number"},
+                    "radius_arcsec": {"type": "number"},
+                    "with_baseline": {"type": "boolean"},
+                },
+                "additionalProperties": False,
+            },
+            executor=_fit_line,
+        ),
+        AssistantTool(
+            name="find_sources",
+            description=(
+                "Run SoFiA-2 source finding on the whole cube and return the "
+                "detection catalogue (number of sources + their rows). Requires "
+                "the SoFiA-2 binary on the server. HEAVY — launches the external "
+                "finder over the full cube; call it only when the user asks to "
+                "detect/find sources."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"max_sources": {"type": "integer",
+                                               "minimum": 1, "maximum": 100}},
+                "additionalProperties": False,
+            },
+            executor=_find_sources,
         ),
         AssistantTool(
             name="cosmology_distance",

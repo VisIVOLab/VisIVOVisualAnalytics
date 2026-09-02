@@ -79,11 +79,15 @@ def resolve_sofia_bin() -> str | None:
     return None
 
 
-def worker_sofia(cube_path: str, out_dir: str, sofia_params: dict[str, Any] | None) -> dict[str, Any]:
+def worker_sofia(cube_path: str, out_dir: str, sofia_params: dict[str, Any] | None,
+                 timeout: float | None = None) -> dict[str, Any]:
     """Run SoFiA-2 on ``cube_path``, writing outputs into ``out_dir``.
 
     Returns the catalogue (flat rows), the source count, and the mask-cube path
-    (empty when SoFiA did not write a mask). Raises on non-zero SoFiA exit.
+    (empty when SoFiA did not write a mask). Raises on non-zero SoFiA exit. When
+    ``timeout`` (seconds) is given, the SoFiA child is killed and a clear error
+    raised if it runs longer — so a caller with its own deadline (e.g. the
+    copilot) doesn't leave the finder running unbounded past its response.
     """
     sofia_bin = resolve_sofia_bin() or "sofia2"
     par_lines = [
@@ -99,9 +103,13 @@ def worker_sofia(cube_path: str, out_dir: str, sofia_params: dict[str, Any] | No
     par_path = Path(out_dir) / "sofia.par"
     par_path.write_text("\n".join(par_lines) + "\n")
 
-    proc = subprocess.run(
-        [sofia_bin, str(par_path)], capture_output=True, text=True,
-    )
+    try:
+        proc = subprocess.run(
+            [sofia_bin, str(par_path)], capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"SoFiA-2 exceeded the {timeout:.0f}s time limit and was stopped.") from exc
     if getattr(proc, "returncode", 1) != 0:
         raise RuntimeError(
             f"SoFiA-2 failed (exit {proc.returncode}): "
