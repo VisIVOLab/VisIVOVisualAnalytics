@@ -27,11 +27,11 @@ using namespace Qt::StringLiterals;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-StackDialog::StackDialog(BackendClient *client,
+StackDialog::StackDialog(std::shared_ptr<BackendClient> client,
                          const QString &sessionId,
                          const QStringList &sessionDatasets,
                          QWidget *parent)
-    : StackDialog(client, sessionId,
+    : StackDialog(std::move(client), sessionId,
                   [&sessionDatasets]() {
                       std::vector<DatasetEntry> v;
                       v.reserve(static_cast<std::size_t>(sessionDatasets.size()));
@@ -44,13 +44,13 @@ StackDialog::StackDialog(BackendClient *client,
 {
 }
 
-StackDialog::StackDialog(BackendClient *client,
+StackDialog::StackDialog(std::shared_ptr<BackendClient> client,
                          const QString &sessionId,
                          const std::vector<DatasetEntry> &datasets,
                          const QString &currentId,
                          QWidget *parent)
     : QDialog(parent)
-    , m_client(client)
+    , m_client(std::move(client))
     , m_sessionId(sessionId)
 {
     setWindowTitle(u"Stack spectral cubes"_s);
@@ -262,7 +262,7 @@ void StackDialog::onCompute()
     m_progress->setMinimumDuration(400);
     m_progress->show();
 
-    BackendClient *client = m_client;
+    std::shared_ptr<BackendClient> client = m_client;   // shared with the worker
     client->setSessionId(m_sessionId);  // FIX 5
 
     auto *watcher = new QFutureWatcher<BackendStackResult>(this);

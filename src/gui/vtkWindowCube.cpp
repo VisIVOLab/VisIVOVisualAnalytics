@@ -168,6 +168,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <cstring>
 #include <limits>
 #include <sstream>
@@ -2238,12 +2239,13 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                  entries.push_back({ d.datasetId, d.kind, label,
                                                      d.width, d.height, d.depth });
                              }
-                             auto *client = new BackendClient(url, token);
+                             // Shared ownership: the async stack run captures a copy
+                             // of the shared_ptr, so the client survives an early
+                             // dialog close (no use-after-free).
+                             auto client = std::make_shared<BackendClient>(url, token);
                              client->setSessionId(sessionId);
                              auto *dlg = new StackDialog(client, sessionId, entries,
                                                          currentId, self);
-                             QObject::connect(dlg, &QDialog::finished,
-                                              [client](int) { delete client; });
                              dlg->setAttribute(Qt::WA_DeleteOnClose);
                              // #5: the stacked spectrum becomes a first-class SPEC pane product
                              // (not a standalone plot window) — same pattern as Line-width for

@@ -5,6 +5,8 @@
 #include <QStringList>
 #include <QVariantMap>
 #include <QVector>
+
+#include <memory>
 #include <vector>
 
 class BackendClient;
@@ -45,19 +47,21 @@ public:
      * IDs and assumes they are all stackable. Prefer the @ref DatasetEntry
      * overload so the dialog can filter incompatible cubes.
      */
-    StackDialog(BackendClient *client,
+    StackDialog(std::shared_ptr<BackendClient> client,
                 const QString &sessionId,
                 const QStringList &sessionDatasets,
                 QWidget *parent = nullptr);
 
     /**
-     * @param client      BackendClient instance (not owned).
+     * @param client      Shared BackendClient — the async stack run captures a
+     *                    copy of the shared_ptr, so it survives an early dialog
+     *                    close (no use-after-free).
      * @param sessionId   Backend session identifier — set on client before requests.
      * @param datasets    Datasets currently open in the session (with metadata).
      * @param currentId   Dataset to pre-check on open (empty = none).
      * @param parent      Optional parent widget.
      */
-    StackDialog(BackendClient *client,
+    StackDialog(std::shared_ptr<BackendClient> client,
                 const QString &sessionId,
                 const std::vector<DatasetEntry> &datasets,
                 const QString &currentId,
@@ -79,7 +83,7 @@ private:
     void setUiBusy(bool busy);
     void updateSelectionLabel();
 
-    BackendClient           *m_client{ nullptr };
+    std::shared_ptr<BackendClient> m_client;
     QString                  m_sessionId;
 
     QListWidget             *m_datasetList{ nullptr };
