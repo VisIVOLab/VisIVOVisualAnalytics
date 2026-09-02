@@ -10,6 +10,8 @@ import asyncio
 import logging
 import os
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -43,11 +45,20 @@ def _assistant_semaphore() -> asyncio.Semaphore:
     return _ASSISTANT_SEM
 
 
+class AssistantTurn(BaseModel):
+    # One prior conversation turn (plain text), for follow-up context.
+    role: Literal["user", "assistant"]
+    text: str = Field(max_length=4000)
+
+
 class AssistantQueryRequest(BaseModel):
     # Bounded so an authenticated caller can't send an arbitrarily large prompt
     # (LLM cost-DoS). 4000 chars is ample for a data question.
     question: str = Field(max_length=4000)
     dataset_id: str | None = None
+    # Prior conversation turns so the copilot can answer follow-ups in context.
+    # Capped (20 turns ≈ 10 exchanges) to bound the request + LLM cost.
+    history: list[AssistantTurn] = Field(default_factory=list, max_length=20)
 
 
 class AssistantConfigRequest(BaseModel):
@@ -174,9 +185,10 @@ async def assistant_query(
             session.release_task_slot()
 
     engine = AssistantEngine(_get_provider())
+    prior_turns = [{"role": t.role, "text": t.text} for t in request.history]
     task = asyncio.ensure_future(
         asyncio.to_thread(engine.run, request.question, dataset_path,
-                          request.dataset_id, dataset_entry))
+                          request.dataset_id, dataset_entry, prior_turns))
     try:
         result = await asyncio.wait_for(asyncio.shield(task), timeout=_ASSISTANT_TIMEOUT_S)
         _release_once()

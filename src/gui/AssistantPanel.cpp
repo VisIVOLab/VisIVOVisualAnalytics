@@ -13,7 +13,9 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPalette>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QTextBrowser>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrent>
@@ -25,6 +27,24 @@ QString esc(const QString &s)
 {
     return s.toHtmlEscaped();
 }
+
+/// Chat-bubble colour palette, chosen per light/dark theme. QTextDocument does
+/// not resolve `palette(...)`, so we pick concrete colours from the widget's
+/// actual palette lightness.
+struct BubbleTheme
+{
+    QString userBg, userFg, botBg, botFg, meta, rule, errBg, errFg;
+};
+BubbleTheme bubbleTheme(const QPalette &pal)
+{
+    const bool dark = pal.color(QPalette::Base).lightness() < 128;
+    if (dark) {
+        return { u"#2b4a6f"_s, u"#eaf1fb"_s, u"#2a2d31"_s, u"#e6e6e6"_s,
+                 u"#9aa0a6"_s, u"#3a3d42"_s, u"#4a2626"_s, u"#f3b9b9"_s };
+    }
+    return { u"#dbe8fb"_s, u"#173a63"_s, u"#f1f2f4"_s, u"#1b1c1d"_s,
+             u"#6b7075"_s, u"#e2e4e8"_s, u"#fbe3e3"_s, u"#8a1f1f"_s };
+}
 }  // namespace
 
 AssistantPanel::AssistantPanel(QWidget *parent) : QWidget(parent)
@@ -33,20 +53,32 @@ AssistantPanel::AssistantPanel(QWidget *parent) : QWidget(parent)
     root->setContentsMargins(8, 8, 8, 8);
     root->setSpacing(6);
 
+    auto *titleRow = new QHBoxLayout();
     auto *title = new QLabel(u"Scientific copilot"_s, this);
     title->setStyleSheet(u"font-weight: 600;"_s);
-    root->addWidget(title);
+    m_clear = new QPushButton(u"＋ New chat"_s, this);
+    m_clear->setToolTip(u"Start a fresh conversation (clears the follow-up context)"_s);
+    m_clear->setFlat(true);
+    m_clear->setCursor(Qt::PointingHandCursor);
+    m_clear->setStyleSheet(u"QPushButton { color: palette(mid); border: none; padding: 2px 6px; }"
+                           "QPushButton:hover { color: palette(text); }"_s);
+    titleRow->addWidget(title);
+    titleRow->addStretch(1);
+    titleRow->addWidget(m_clear);
+    root->addLayout(titleRow);
 
     m_transcript = new QTextBrowser(this);
     m_transcript->setOpenExternalLinks(false);
     m_transcript->setOpenLinks(false);   // handle the "Undo" anchor ourselves
+    m_transcript->setFrameShape(QFrame::NoFrame);
     connect(m_transcript, &QTextBrowser::anchorClicked, this, [this](const QUrl &u) {
         if (u.toString() == u"copilot:undo"_s)
             emit undoRequested();
     });
     m_transcript->setPlaceholderText(
             u"Ask about the loaded dataset — units, statistics, a moment map, a "
-            "distance. Every number in the answer is backed by a tool call."_s);
+            "distance. Every number in the answer is backed by a tool call.\n\n"
+            "Ask follow-up questions freely — the copilot remembers the conversation."_s);
     root->addWidget(m_transcript, 1);
 
     m_status = new QLabel(this);
@@ -60,7 +92,9 @@ AssistantPanel::AssistantPanel(QWidget *parent) : QWidget(parent)
     m_settings->setFixedWidth(32);
     m_input = new QLineEdit(this);
     m_input->setPlaceholderText(u"Ask a question…"_s);
+    m_input->setClearButtonEnabled(true);
     m_send = new QPushButton(u"Send"_s, this);
+    m_send->setDefault(true);
     row->addWidget(m_settings);
     row->addWidget(m_input, 1);
     row->addWidget(m_send);
@@ -69,6 +103,7 @@ AssistantPanel::AssistantPanel(QWidget *parent) : QWidget(parent)
     connect(m_settings, &QPushButton::clicked, this, &AssistantPanel::onSettings);
     connect(m_send, &QPushButton::clicked, this, &AssistantPanel::onSend);
     connect(m_input, &QLineEdit::returnPressed, this, &AssistantPanel::onSend);
+    connect(m_clear, &QPushButton::clicked, this, &AssistantPanel::onClearConversation);
 }
 
 void AssistantPanel::onSettings()
@@ -186,8 +221,17 @@ void AssistantPanel::setBackend(const QString &url, const QString &token)
     const bool endpointChanged = (url != m_url || token != m_token);
     m_url = url;
     m_token = token;
-    if (endpointChanged)
+    if (endpointChanged) {
         m_providerAutoApplied = false;   // a new endpoint must get the saved provider
+        // A new backend = a new session/datasets — the follow-up context no longer
+        // applies. (Harmless on the first connect: nothing to clear.)
+        if (!m_turns.isEmpty() || !m_entries.isEmpty()) {
+            m_turns = QJsonArray{};
+            m_entries.clear();
+            if (m_transcript)
+                renderConversation();
+        }
+    }
     // Re-apply whenever the user edits the copilot provider in the global Settings
     // dialog (it persists + emits updated()). A real member slot means
     // Qt::UniqueConnection actually de-dupes across repeated setBackend() calls.
@@ -242,7 +286,15 @@ void AssistantPanel::applyProviderFromSettings()
 
 void AssistantPanel::setDatasetId(const QString &datasetId)
 {
+    if (datasetId == m_datasetId)
+        return;
+    // The conversation is ABOUT a specific dataset — when it changes (e.g. a
+    // session-expiry reopen gives a new id), drop the follow-up context and
+    // transcript so old Q&A can't be replayed against a different dataset.
     m_datasetId = datasetId;
+    m_turns = QJsonArray{};
+    m_entries.clear();
+    renderConversation();
 }
 
 void AssistantPanel::setBusy(bool busy)
@@ -256,37 +308,91 @@ void AssistantPanel::setBusy(bool busy)
     emit busyChanged(busy);
 }
 
-void AssistantPanel::appendUser(const QString &text)
-{
-    m_transcript->append(u"<p><b>You:</b> %1</p>"_s.arg(esc(text)));
-}
-
 void AssistantPanel::appendError(const QString &text)
 {
-    m_transcript->append(u"<p style='color:#c0392b'><b>Error:</b> %1</p>"_s.arg(esc(text)));
+    Entry e;
+    e.kind = Entry::Error;
+    e.text = text;
+    m_entries.push_back(e);
+    renderConversation();
 }
 
-void AssistantPanel::appendAssistant(const QString &answer, const QString &provider,
-                                     bool configured, bool grounded, const QString &repro,
-                                     const QString &provenanceHtml)
+void AssistantPanel::onClearConversation()
 {
-    QString html = u"<p><b>Copilot:</b> %1</p>"_s.arg(esc(answer).replace(u"\n"_s, u"<br>"_s));
-    if (!configured) {
-        html += u"<p style='color:palette(mid)'><i>No LLM provider is configured on "
-                "the server — set ANTHROPIC_API_KEY to enable natural-language "
-                "answers. The analysis tools still work.</i></p>"_s;
+    if (m_busy)
+        return;
+    m_entries.clear();
+    m_turns = QJsonArray{};
+    m_input->clear();
+    renderConversation();
+}
+
+void AssistantPanel::renderConversation()
+{
+    const BubbleTheme t = bubbleTheme(this->palette());
+
+    // A right- or left-aligned chat bubble, laid out with a 2-cell outer table so
+    // alignment renders reliably in QTextDocument (no flexbox / border-radius).
+    auto bubble = [](bool rightAlign, const QString &bg, const QString &inner) {
+        const QString gap = u"<td width='16%'></td>"_s;
+        const QString cell =
+                u"<td width='84%'><table width='100%' cellpadding='8' cellspacing='0' "
+                "bgcolor='%1'><tr><td>%2</td></tr></table></td>"_s.arg(bg, inner);
+        return u"<table width='100%' cellspacing='0' cellpadding='0' "
+               "style='margin:5px 0;'><tr>%1</tr></table>"_s
+                .arg(rightAlign ? (gap + cell) : (cell + gap));
+    };
+
+    QString html = u"<div style='font-family:sans-serif;'>"_s;
+    for (const Entry &e : m_entries) {
+        if (e.kind == Entry::User) {
+            const QString inner =
+                    u"<span style='color:%1;font-size:small;'>You</span><br>"
+                    "<span style='color:%2;'>%3</span>"_s
+                            .arg(t.meta, t.userFg, esc(e.text).replace(u"\n"_s, u"<br>"_s));
+            html += bubble(/*rightAlign=*/true, t.userBg, inner);
+        } else if (e.kind == Entry::Assistant) {
+            QString inner = u"<span style='color:%1;font-size:small;'>Copilot"_s.arg(t.meta);
+            if (!e.provider.isEmpty())
+                inner += u" · %1"_s.arg(esc(e.provider));
+            inner += u"</span><br><span style='color:%1;'>%2</span>"_s
+                             .arg(t.botFg, esc(e.text).replace(u"\n"_s, u"<br>"_s));
+            if (!e.configured) {
+                inner += u"<br><span style='color:%1;font-size:small;'><i>No LLM provider is "
+                         "configured on the server — the analysis tools still work; open ⚙ to "
+                         "enable natural-language answers.</i></span>"_s.arg(t.meta);
+            }
+            if (!e.provenance.isEmpty()) {
+                inner += u"<div style='margin-top:6px;border-top:1px solid %1;padding-top:4px;'>"
+                         "<span style='color:%2;font-size:small;'>%3 · grounded in tool call(s):"
+                         "</span><div style='color:%2;font-size:small;'>%4</div></div>"_s
+                                 .arg(t.rule, t.meta,
+                                      e.grounded ? u"✓ provenance"_s : u"provenance"_s,
+                                      e.provenance);
+            }
+            if (!e.repro.isEmpty()) {
+                inner += u"<div style='margin-top:4px;'><span style='color:%1;font-size:small;'>"
+                         "Reproducibility</span><pre style='color:%1;font-size:small;margin:2px 0;'>"
+                         "%2</pre></div>"_s.arg(t.meta, esc(e.repro));
+            }
+            html += bubble(/*rightAlign=*/false, t.botBg, inner);
+        } else if (e.kind == Entry::ActionLog) {
+            html += u"<table width='100%' cellspacing='0' cellpadding='6' style='margin:2px 0;'>"
+                    "<tr><td><span style='color:%1;font-size:small;'>▸ Applied to the view "
+                    "[<a href='copilot:undo' style='color:%1;'>↩ Undo latest change</a>]</span>"
+                    "<span style='color:%1;font-size:small;'>%2</span></td></tr></table>"_s
+                            .arg(t.meta, e.actionLog);
+        } else {   // Error
+            html += bubble(/*rightAlign=*/false, t.errBg,
+                           u"<span style='color:%1;'><b>Error:</b> %2</span>"_s
+                                   .arg(t.errFg, esc(e.text).replace(u"\n"_s, u"<br>"_s)));
+        }
     }
-    if (!provenanceHtml.isEmpty()) {
-        html += u"<details><summary style='color:palette(mid)'>Provenance (%1) · "
-                "%2 · %3 tool call(s)</summary>%4</details>"_s
-                        .arg(provider, configured ? u"configured"_s : u"not configured"_s,
-                             grounded ? u"with"_s : u"no"_s, provenanceHtml);
-    }
-    if (!repro.isEmpty()) {
-        html += u"<details><summary style='color:palette(mid)'>Reproducibility "
-                "script</summary><pre>%1</pre></details>"_s.arg(esc(repro));
-    }
-    m_transcript->append(html);
+    html += u"</div>"_s;
+
+    m_transcript->setHtml(html);
+    // Keep the newest message in view.
+    m_transcript->verticalScrollBar()->setValue(m_transcript->verticalScrollBar()->maximum());
 }
 
 void AssistantPanel::onSend()
@@ -300,56 +406,82 @@ void AssistantPanel::onSend()
         appendError(u"No backend connection."_s);
         return;
     }
-    appendUser(question);
+    { Entry e; e.kind = Entry::User; e.text = question; m_entries.push_back(e); }
+    renderConversation();
     m_input->clear();
     setBusy(true);
 
     const QString datasetId = m_datasetId;
     const QString url = m_url;
     const QString token = m_token;
+    const QJsonArray history = m_turns;   // prior turns → follow-up context
     auto *watcher = new QFutureWatcher<BackendAssistantResult>(this);
     connect(watcher, &QFutureWatcher<BackendAssistantResult>::finished, this,
-            [this, watcher]() {
+            [this, watcher, question, datasetId, url, token]() {
                 const BackendAssistantResult r = watcher->result();
                 watcher->deleteLater();
                 setBusy(false);
+                // Discard a result whose conversation scope changed while it ran
+                // (the dataset OR the backend endpoint was swapped) — it must not
+                // land in the new conversation or its follow-up context.
+                if (m_datasetId != datasetId || m_url != url || m_token != token)
+                    return;
                 if (!r.error.isEmpty()) {
                     appendError(r.error);
                     return;
                 }
                 QString prov;
                 for (const BackendAssistantToolCall &c : r.toolCalls) {
+                    const BubbleTheme t = bubbleTheme(this->palette());
                     prov += u"<div><code>%1(%2)</code>%3</div>"_s.arg(
                             esc(c.name), esc(c.argumentsJson),
                             c.error.isEmpty()
-                                    ? u" → <span style='color:palette(mid)'>%1</span>"_s.arg(
-                                              esc(c.resultJson))
-                                    : u" → <span style='color:#c0392b'>%1</span>"_s.arg(
-                                              esc(c.error)));
+                                    ? u" → <span style='color:%1'>%2</span>"_s.arg(
+                                              t.meta, esc(c.resultJson))
+                                    : u" → <span style='color:%1'>%2</span>"_s.arg(
+                                              t.errFg, esc(c.error)));
                 }
-                appendAssistant(r.answer, r.provider, r.configured, r.toolCallsRecorded,
-                                r.reproducibilityScript, prov);
+                Entry a;
+                a.kind = Entry::Assistant;
+                a.text = r.answer;
+                a.provider = r.provider;
+                a.configured = r.configured;
+                a.grounded = r.toolCallsRecorded;
+                a.repro = r.reproducibilityScript;
+                a.provenance = prov;
+                m_entries.push_back(a);
                 if (!r.actions.isEmpty()) {
-                    // Log what the copilot is about to change, then hand the
-                    // directives to the host viewer to apply (reversible).
                     QString log;
-                    for (const QJsonObject &a : r.actions) {
-                        QString desc = a.value(u"type"_s).toString();
-                        for (auto it = a.constBegin(); it != a.constEnd(); ++it) {
+                    for (const QJsonObject &act : r.actions) {
+                        QString desc = act.value(u"type"_s).toString();
+                        for (auto it = act.constBegin(); it != act.constEnd(); ++it) {
                             if (it.key() == u"type"_s)
+                                continue;
+                            // Skip bulky payloads (e.g. a pinned spectrum's samples).
+                            if (it.value().isArray() || it.value().isObject())
                                 continue;
                             desc += u" %1=%2"_s.arg(it.key(), it.value().toVariant().toString());
                         }
-                        log += u"<div>▸ %1</div>"_s.arg(esc(desc));
+                        log += u" · %1"_s.arg(esc(desc));
                     }
-                    m_transcript->append(
-                            u"<p style='color:palette(mid)'><i>Applied to the view</i> "
-                            "[<a href='copilot:undo'>↩ Undo latest change</a>]:%1</p>"_s.arg(log));
+                    Entry le; le.kind = Entry::ActionLog; le.actionLog = log;
+                    m_entries.push_back(le);
                     emit actionsRequested(r.actions);
                 }
+                // Record this exchange as follow-up context for the next turn.
+                // Clamp each turn's text to the server's per-turn cap (4000) so a
+                // long answer can't make the next follow-up fail validation, and
+                // cap the retained turn count so requests stay bounded.
+                m_turns.push_back(QJsonObject{ { u"role"_s, u"user"_s },
+                                               { u"text"_s, question.left(4000) } });
+                m_turns.push_back(QJsonObject{ { u"role"_s, u"assistant"_s },
+                                               { u"text"_s, r.answer.left(4000) } });
+                while (m_turns.size() > 20)
+                    m_turns.removeFirst();
+                renderConversation();
             });
-    watcher->setFuture(QtConcurrent::run([url, token, question, datasetId]() {
+    watcher->setFuture(QtConcurrent::run([url, token, question, datasetId, history]() {
         BackendClient client(url, token);
-        return client.assistantQuery(question, datasetId);
+        return client.assistantQuery(question, datasetId, history);
     }));
 }

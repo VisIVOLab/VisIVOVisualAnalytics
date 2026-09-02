@@ -369,13 +369,16 @@ BackendDiagnosticsEventsResult BackendClient::pollBackendDiagnostics(qint64 sinc
 }
 
 BackendAssistantResult BackendClient::assistantQuery(const QString &question,
-                                                     const QString &datasetId)
+                                                     const QString &datasetId,
+                                                     const QJsonArray &history)
 {
     BackendAssistantResult result;
     QString error;
     QJsonObject bodyObj{ { QStringLiteral("question"), question } };
     if (!datasetId.isEmpty())
         bodyObj.insert(QStringLiteral("dataset_id"), datasetId);
+    if (!history.isEmpty())
+        bodyObj.insert(QStringLiteral("history"), history);
     const QByteArray payload = performPost(
             QUrl(m_baseUrl + QStringLiteral("/v1/assistant/query")), QJsonDocument(bodyObj), error);
     if (!error.isEmpty()) {

@@ -81,10 +81,13 @@ class AnthropicProvider(AssistantProvider):
             if role == "user":
                 msgs.append({"role": "user", "content": turn["text"]})
             elif role == "assistant":
-                msgs.append({"role": "assistant", "content": [
-                    {"type": "tool_use", "id": c.id, "name": c.name, "input": c.arguments}
-                    for c in turn["tool_calls"]
-                ]})
+                if "tool_calls" in turn:
+                    msgs.append({"role": "assistant", "content": [
+                        {"type": "tool_use", "id": c.id, "name": c.name, "input": c.arguments}
+                        for c in turn["tool_calls"]
+                    ]})
+                else:   # a prior conversation answer (follow-up context)
+                    msgs.append({"role": "assistant", "content": turn.get("text", "")})
             elif role == "tool":
                 blocks = []
                 for r in turn["results"]:
@@ -139,11 +142,14 @@ class OpenAIProvider(AssistantProvider):
             if role == "user":
                 msgs.append({"role": "user", "content": turn["text"]})
             elif role == "assistant":
-                msgs.append({"role": "assistant", "content": None, "tool_calls": [
-                    {"id": c.id, "type": "function",
-                     "function": {"name": c.name, "arguments": json.dumps(c.arguments)}}
-                    for c in turn["tool_calls"]
-                ]})
+                if "tool_calls" in turn:
+                    msgs.append({"role": "assistant", "content": None, "tool_calls": [
+                        {"id": c.id, "type": "function",
+                         "function": {"name": c.name, "arguments": json.dumps(c.arguments)}}
+                        for c in turn["tool_calls"]
+                    ]})
+                else:   # a prior conversation answer (follow-up context)
+                    msgs.append({"role": "assistant", "content": turn.get("text", "")})
             elif role == "tool":
                 # One tool message per result, keyed by tool_call_id.
                 for r in turn["results"]:

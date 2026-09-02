@@ -1588,7 +1588,8 @@ public:
      *  server-side the answer explains how to enable one; ``configured`` is then
      *  false but the call still succeeds. ``datasetId`` may be empty. */
     BackendAssistantResult assistantQuery(const QString &question,
-                                          const QString &datasetId);
+                                          const QString &datasetId,
+                                          const QJsonArray &history = {});
 
     /** POST /v1/assistant/config — choose the copilot LLM back-end: Claude
      *  (anthropicKey), ChatGPT/OpenAI (openaiKey), or your own server

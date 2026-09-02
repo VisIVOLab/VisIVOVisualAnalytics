@@ -328,6 +328,43 @@ class _CatalogueProvider(AssistantProvider):
         return ProviderResponse(final_text="The catalogue has 3 rows.")
 
 
+class _EchoHistoryProvider(AssistantProvider):
+    """Fake LLM that records the neutral history it is handed, then answers."""
+
+    name = "scripted"
+    configured = True
+
+    def __init__(self):
+        self.seen = None
+
+    def complete(self, system, history, tools):
+        self.seen = list(history)
+        return ProviderResponse(final_text="ok")
+
+
+def test_engine_prepends_prior_turns_for_followup():
+    prov = _EchoHistoryProvider()
+    res = AssistantEngine(prov).run(
+        "and the maximum?", None, dataset_id=None,
+        prior_turns=[{"role": "user", "text": "what is the minimum?"},
+                     {"role": "assistant", "text": "The minimum is 0."}])
+    assert res.answer == "ok"
+    roles = [t["role"] for t in prov.seen]
+    assert roles == ["user", "assistant", "user"]
+    assert prov.seen[0]["text"] == "what is the minimum?"
+    assert prov.seen[-1]["text"].startswith("and the maximum?")
+
+
+def test_provider_to_messages_handles_prior_assistant_text():
+    from app.assistant.provider import AnthropicProvider, OpenAIProvider
+    hist = [{"role": "user", "text": "q"}, {"role": "assistant", "text": "a"},
+            {"role": "user", "text": "q2"}]
+    am = AnthropicProvider._to_messages(hist)
+    assert {"role": "assistant", "content": "a"} in am
+    om = OpenAIProvider._to_messages("sys", hist)
+    assert any(m.get("role") == "assistant" and m.get("content") == "a" for m in om)
+
+
 def test_engine_passes_dataset_entry_to_context_tool():
     # A wants_context tool must receive the cached session entry (dataframe), so
     # catalogue_summary reports the in-session row count — not a re-read of path.

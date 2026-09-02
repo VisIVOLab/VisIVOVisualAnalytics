@@ -34,6 +34,16 @@ reversible actions that make sense for its data:
 Actions are **display-only and reversible**: after the copilot changes the view
 it logs an **↩ Undo latest change** link that reverts exactly that step.
 
+## Conversations & follow-ups
+
+The copilot is **conversational**: it remembers the current exchange, so you can
+ask follow-up questions that build on the previous answer — *"and the maximum?"*,
+*"now show that as a moment map"*, *"fit it with an aperture instead"* — without
+repeating the context. Each message is shown as a chat bubble (your questions on
+the right, the copilot on the left), with the tool-call provenance folded under
+each answer. Click **＋ New chat** (top-right) to start a fresh conversation and
+drop the follow-up context.
+
 ## Choosing a provider (⚙)
 
 Natural-language answers need a Large Language Model. The tool catalogue works

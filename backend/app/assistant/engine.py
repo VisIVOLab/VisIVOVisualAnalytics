@@ -110,7 +110,8 @@ class AssistantEngine:
 
     def run(self, question: str, dataset_path: str | None,
             dataset_id: str | None = None,
-            dataset_entry: dict[str, Any] | None = None) -> AssistantResult:
+            dataset_entry: dict[str, Any] | None = None,
+            prior_turns: list[dict[str, str]] | None = None) -> AssistantResult:
         specs = tool_specs()
         context = ""
         if dataset_id:
@@ -128,7 +129,16 @@ class AssistantEngine:
         # translates it to its own API shape (Anthropic tool_use/tool_result
         # blocks, OpenAI tool_calls/tool messages), so the engine works
         # unchanged across Claude / OpenAI / a self-hosted OpenAI-compatible LLM.
-        history: list[dict[str, Any]] = [{"role": "user", "text": question + context}]
+        # Prior conversation turns (plain user/assistant text) let the copilot
+        # answer FOLLOW-UP questions in context; the tool-call trace of earlier
+        # turns is deliberately NOT replayed (only their final answers).
+        history: list[dict[str, Any]] = []
+        for t in (prior_turns or []):
+            role = t.get("role")
+            text = t.get("text", "")
+            if role in ("user", "assistant") and text:
+                history.append({"role": role, "text": text})
+        history.append({"role": "user", "text": question + context})
         invocations: list[ToolInvocation] = []
         actions: list[dict[str, Any]] = []
         rounds = 0

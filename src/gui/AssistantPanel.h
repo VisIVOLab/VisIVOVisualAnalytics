@@ -1,6 +1,7 @@
 #ifndef AssistantPanel_h
 #define AssistantPanel_h
 
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
 #include <QWidget>
@@ -49,16 +50,27 @@ private slots:
     void onSend();
     void onSettings();   ///< choose the LLM provider (Claude / OpenAI / own server)
     void onSettingsUpdated();   ///< re-apply after the global Settings dialog changes it
+    void onClearConversation();   ///< start a fresh conversation (drops follow-up context)
 
 private:
     /// Push the persisted copilot provider config (Settings) to the backend, so
     /// the user configures the provider once and it auto-applies on every connect.
     void applyProviderFromSettings();
-    void appendUser(const QString &text);
-    void appendAssistant(const QString &answer, const QString &provider, bool configured,
-                         bool grounded, const QString &repro, const QString &provenanceHtml);
+    void renderConversation();   ///< rebuild the transcript HTML from m_turns/logs
     void appendError(const QString &text);
     void setBusy(bool busy);
+    /// One rendered transcript entry (a chat bubble or an inline system note).
+    struct Entry
+    {
+        enum Kind { User, Assistant, Error, ActionLog } kind{ User };
+        QString text;          ///< the message / answer / error text
+        QString provider;      ///< assistant only: provider label
+        bool configured{ true };
+        bool grounded{ false };
+        QString repro;         ///< assistant only: reproducibility script
+        QString provenance;    ///< assistant only: tool-call provenance HTML
+        QString actionLog;     ///< ActionLog only: the applied-directives HTML
+    };
 
     QString m_url;
     QString m_token;
@@ -66,10 +78,14 @@ private:
     bool m_busy{ false };
     bool m_providerAutoApplied{ false };   ///< auto-apply the saved config only once
 
+    QList<Entry> m_entries;    ///< everything shown in the transcript, for re-render
+    QJsonArray m_turns;        ///< prior user/assistant TEXT turns sent for follow-up context
+
     QTextBrowser *m_transcript{ nullptr };
     QLineEdit *m_input{ nullptr };
     QPushButton *m_send{ nullptr };
     QPushButton *m_settings{ nullptr };
+    QPushButton *m_clear{ nullptr };
     QLabel *m_status{ nullptr };
 };
 
