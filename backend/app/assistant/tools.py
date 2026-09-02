@@ -479,6 +479,23 @@ def _act_reset_camera(_path: str | None, _params: dict[str, Any]) -> dict[str, A
     return _act({"type": "reset_camera"})
 
 
+_SCALINGS = ("linear", "log", "sqrt", "square", "power")
+
+
+def _act_set_scaling(_path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    scale = str(params.get("scale", "")).strip().lower()
+    if scale not in _SCALINGS:
+        raise ValueError(f"scale must be one of {list(_SCALINGS)}")
+    return _act({"type": "set_scaling", "scale": scale})
+
+
+def _act_set_color_field(_path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    field = str(params.get("field", "")).strip()
+    if not field:
+        raise ValueError("field is required (a column/field name to colour by).")
+    return _act({"type": "set_color_field", "field": field})
+
+
 def _act_compute_moment(_path: str | None, params: dict[str, Any]) -> dict[str, Any]:
     order = int(params.get("order", 0))
     if order not in (0, 1, 2):
@@ -780,6 +797,38 @@ TOOLS: dict[str, AssistantTool] = {
             ),
             parameters={"type": "object", "properties": {}, "additionalProperties": False},
             executor=_act_reset_camera, is_action=True,
+        ),
+        AssistantTool(
+            name="set_scaling",
+            description=(
+                "ACTION: change the colour-mapping SCALE (transfer function) of the "
+                "active view to reveal faint or high-dynamic-range structure. "
+                "scale ∈ {linear, log, sqrt, square, power}. The 2-D image view "
+                "supports linear/log; the cosmology catalogue supports all five."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"scale": {"type": "string",
+                                         "enum": list(_SCALINGS)}},
+                "required": ["scale"], "additionalProperties": False,
+            },
+            executor=_act_set_scaling, is_action=True,
+        ),
+        AssistantTool(
+            name="set_color_field",
+            description=(
+                "ACTION: colour a point cloud by one of its fields/columns (e.g. "
+                "'density', 'flux', a redshift column) to explore how a quantity "
+                "varies in space. Applies to the VBT and cosmology catalogue point "
+                "viewers. field is the column name (case-insensitive); use the name "
+                "as reported by vbt_summary / catalogue_summary."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"field": {"type": "string"}},
+                "required": ["field"], "additionalProperties": False,
+            },
+            executor=_act_set_color_field, is_action=True,
         ),
         AssistantTool(
             name="compute_moment",

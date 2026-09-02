@@ -1624,17 +1624,21 @@ void vtkWindowVbt::resetView()
 
 void vtkWindowVbt::applyCopilotActions(const QList<QJsonObject> &actions)
 {
-    // Which directives can this point/volume view act on? (colormap + camera.)
+    // Which directives can this point/volume view act on?
+    // (colormap + colour field + camera.)
     bool batchSetsColormap = false;
+    bool batchSetsColorField = false;
     bool batchResetsCamera = false;
     for (const QJsonObject &a : actions) {
         const QString t = a.value(u"type"_s).toString();
         if (t == u"set_colormap"_s)
             batchSetsColormap = true;
+        else if (t == u"set_color_field"_s)
+            batchSetsColorField = true;
         else if (t == u"reset_camera"_s)
             batchResetsCamera = true;
     }
-    if (!batchSetsColormap && !batchResetsCamera)
+    if (!batchSetsColormap && !batchSetsColorField && !batchResetsCamera)
         return;   // nothing applicable — leave any prior Undo point untouched
 
     // Fresh snapshot of the affected state BEFORE this batch, so "Undo latest
@@ -1646,6 +1650,10 @@ void vtkWindowVbt::applyCopilotActions(const QList<QJsonObject> &actions)
     if (batchSetsColormap && this->comboColormap) {
         this->m_copilotUndo.colormapName = this->comboColormap->currentText();
         this->m_copilotUndo.colormapCaptured = true;
+    }
+    if (batchSetsColorField && this->comboColorField) {
+        this->m_copilotUndo.colorFieldIndex = this->comboColorField->currentIndex();
+        this->m_copilotUndo.colorFieldCaptured = true;
     }
     if (batchResetsCamera && camera) {
         camera->GetPosition(this->m_copilotUndo.position);
@@ -1672,6 +1680,31 @@ void vtkWindowVbt::applyCopilotActions(const QList<QJsonObject> &actions)
             }
             if (idx >= 0)
                 this->comboColormap->setCurrentIndex(idx);   // triggers updateColorMapping()
+        } else if (type == u"set_color_field"_s && this->comboColorField) {
+            const QString field = a.value(u"field"_s).toString().trimmed();
+            if (field.isEmpty())
+                continue;
+            // Prefer a real field (item data = field name, non-empty) so a field
+            // named like the "Solid color" sentinel still resolves to the column;
+            // fall back to the display text. Ignore an unknown field.
+            int idx = -1;
+            for (int i = 0; i < this->comboColorField->count(); ++i) {
+                const QString data = this->comboColorField->itemData(i).toString();
+                if (!data.isEmpty() && data.compare(field, Qt::CaseInsensitive) == 0) {
+                    idx = i;
+                    break;
+                }
+            }
+            if (idx < 0) {
+                for (int i = 0; i < this->comboColorField->count(); ++i) {
+                    if (this->comboColorField->itemText(i).compare(field, Qt::CaseInsensitive) == 0) {
+                        idx = i;
+                        break;
+                    }
+                }
+            }
+            if (idx >= 0)
+                this->comboColorField->setCurrentIndex(idx);   // triggers recolour
         } else if (type == u"reset_camera"_s && camera) {
             this->resetView();
         }
@@ -1685,6 +1718,12 @@ void vtkWindowVbt::undoCopilotActions()
         if (idx >= 0)
             this->comboColormap->setCurrentIndex(idx);   // triggers updateColorMapping()
         this->m_copilotUndo.colormapCaptured = false;
+    }
+    if (this->m_copilotUndo.colorFieldCaptured && this->comboColorField) {
+        const int idx = this->m_copilotUndo.colorFieldIndex;
+        if (idx >= 0 && idx < this->comboColorField->count())
+            this->comboColorField->setCurrentIndex(idx);   // triggers recolour
+        this->m_copilotUndo.colorFieldCaptured = false;
     }
     vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
     if (this->m_copilotUndo.cameraCaptured && camera) {

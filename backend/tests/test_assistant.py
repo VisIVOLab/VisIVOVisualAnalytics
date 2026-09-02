@@ -109,6 +109,21 @@ def test_aperture_photometry_requires_positive_aperture(tmp_path):
         TOOLS["aperture_photometry"].executor(path, {"ra_deg": 10.0, "dec_deg": 20.0})
 
 
+def test_set_scaling_action_validates_and_builds_directive():
+    out = TOOLS["set_scaling"].executor(None, {"scale": "LOG"})
+    assert out["status"] == "queued"
+    assert out["action"] == {"type": "set_scaling", "scale": "log"}
+    with pytest.raises(ValueError):
+        TOOLS["set_scaling"].executor(None, {"scale": "rainbow"})
+
+
+def test_set_color_field_action_validates_and_builds_directive():
+    out = TOOLS["set_color_field"].executor(None, {"field": "density"})
+    assert out["action"] == {"type": "set_color_field", "field": "density"}
+    with pytest.raises(ValueError):
+        TOOLS["set_color_field"].executor(None, {"field": "  "})
+
+
 def test_measurement_tools_reject_non_integral_and_bad_params(tmp_path):
     path = str(tmp_path / "cv.fits")
     _write_cube(path)

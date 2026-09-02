@@ -2367,11 +2367,29 @@ void vtkWindowImage::applyCopilotActions(const QList<QJsonObject> &actions)
 {
     // Only these directive types apply in 2-D; if the batch has none (all
     // cube-only), do nothing — don't overwrite the undo slot or claim a change.
+    // Map a scale name to a LutScale::Mode; returns false for an unknown scale.
+    auto parseScale = [](const QString &raw, LutScale::Mode &out) -> bool {
+        const QString s = raw.trimmed().toLower();
+        if (s == u"linear"_s) { out = LutScale::Mode::Linear; return true; }
+        if (s == u"log"_s)    { out = LutScale::Mode::Log;    return true; }
+        if (s == u"sqrt"_s)   { out = LutScale::Mode::Sqrt;   return true; }
+        if (s == u"square"_s) { out = LutScale::Mode::Square; return true; }
+        if (s == u"power"_s)  { out = LutScale::Mode::Power;  return true; }
+        return false;
+    };
+
     int applicable = 0;
+    bool batchSetsColormap = false;
+    bool batchSetsScale = false;
+    bool batchResetsCamera = false;
     for (const QJsonObject &a : actions) {
         const QString t = a.value(u"type"_s).toString();
-        if (t == u"set_colormap"_s || t == u"reset_camera"_s)
-            ++applicable;
+        LutScale::Mode m{};
+        if (t == u"set_colormap"_s) { ++applicable; batchSetsColormap = true; }
+        else if (t == u"reset_camera"_s) { ++applicable; batchResetsCamera = true; }
+        else if (t == u"set_scaling"_s && parseScale(a.value(u"scale"_s).toString(), m)) {
+            ++applicable; batchSetsScale = true;
+        }
     }
     if (applicable == 0)
         return;
@@ -2382,15 +2400,27 @@ void vtkWindowImage::applyCopilotActions(const QList<QJsonObject> &actions)
 
     this->m_copilotUndo = CopilotSnapshot{};
     this->m_copilotUndo.valid = true;
-    // Snapshot the CURRENT layer's colormap by index, so Undo restores that exact
-    // layer even if the user switches layers before undoing.
+    // Snapshot the CURRENT layer index, so Undo restores that exact layer even if
+    // the user switches layers before undoing. Capture only what the batch touches.
     this->m_copilotUndo.layerIndex = this->currentLayerIndex();
-    if (this->layerController)
+    const int idx = this->m_copilotUndo.layerIndex;
+    if (batchSetsColormap && this->layerController) {
         this->m_copilotUndo.colormap = QString::fromStdString(
-                this->layerController->layerViewState(this->m_copilotUndo.layerIndex).colorMapName);
-    bool batchResetsCamera = false;
-    for (const QJsonObject &a : actions)
-        if (a.value(u"type"_s).toString() == u"reset_camera"_s) { batchResetsCamera = true; break; }
+                this->layerController->layerViewState(idx).colorMapName);
+        this->m_copilotUndo.colormapCaptured = true;
+    }
+    if (batchSetsScale && this->layers && idx >= 0 && idx < this->layers->rowCount()) {
+        this->m_copilotUndo.scaleMode = this->layers->scaleMode(idx);
+        this->m_copilotUndo.scaleGamma = this->layers->scaleGamma(idx);
+        // Log clamps the LUT table range to positive; capture it so Undo can put
+        // back a range that spanned negatives (e.g. a linear [-5, 10]).
+        if (auto *lut = this->layers->getLookupTable(idx)) {
+            const double *r = lut->GetTableRange();
+            this->m_copilotUndo.lutRange[0] = r ? r[0] : 0.0;
+            this->m_copilotUndo.lutRange[1] = r ? r[1] : 1.0;
+        }
+        this->m_copilotUndo.scaleCaptured = true;
+    }
     if (batchResetsCamera && renderer) {
         if (auto *cam = renderer->GetActiveCamera()) {
             cam->GetPosition(this->m_copilotUndo.camPos);
@@ -2416,6 +2446,32 @@ void vtkWindowImage::applyCopilotActions(const QList<QJsonObject> &actions)
                     break;
                 }
             }
+        } else if (type == u"set_scaling"_s && this->layers) {
+            LutScale::Mode mode{};
+            if (parseScale(a.value(u"scale"_s).toString(), mode)
+                && idx >= 0 && idx < this->layers->rowCount()) {
+                // Log needs positive values in range; skip (like the LUT editor)
+                // rather than collapse to a degenerate range on an all-≤0 image.
+                bool ok = true;
+                if (mode == LutScale::Mode::Log) {
+                    auto *img = this->layers->getImageData(idx);
+                    const double floor = img
+                            ? sampledPositiveFloor(img, initialAutoscaleTargetSamples)
+                            : 0.0;
+                    if (!(floor > 0.0) || !std::isfinite(floor)) {
+                        ok = false;
+                        this->statusBar()->showMessage(
+                                tr("Log scale needs positive values in the visible range."), 3000);
+                    }
+                }
+                if (ok) {
+                    // Canonical per-layer stretch API (same one the LUT editor
+                    // uses), keeping its gamma. dataChanged re-renders; Undo
+                    // restores mode+gamma+range exactly.
+                    this->layers->setScaleMode(idx, mode, this->layers->scaleGamma(idx));
+                    this->updateLUTCustomizer();
+                }
+            }
         } else if (type == u"reset_camera"_s && renderer) {
             renderer->ResetCamera();
             renderer->ResetCameraClippingRange();
@@ -2435,7 +2491,7 @@ void vtkWindowImage::undoCopilotActions()
     const CopilotSnapshot s = this->m_copilotUndo;
     this->m_copilotUndo.valid = false;
 
-    if (!s.colormap.isEmpty() && this->layerController) {
+    if (s.colormapCaptured && !s.colormap.isEmpty() && this->layerController) {
         // Restore the captured layer's colormap directly (not the now-current one).
         this->layerController->setCurrentColorMap(s.layerIndex, s.colormap.toStdString());
         // Reflect in the combo only if that layer is still selected.
@@ -2443,6 +2499,17 @@ void vtkWindowImage::undoCopilotActions()
             const QSignalBlocker b(ui->comboLut);
             ui->comboLut->setCurrentText(s.colormap);
         }
+    }
+    if (s.scaleCaptured && this->layers && s.layerIndex >= 0
+        && s.layerIndex < this->layers->rowCount()) {
+        // Restore the pre-batch LUT range FIRST (a log stretch clamped it to
+        // positive), so setScaleMode rebuilds from the original range, then
+        // restore the captured stretch (mode + gamma) exactly.
+        if (auto *lut = this->layers->getLookupTable(s.layerIndex))
+            lut->SetTableRange(s.lutRange[0], s.lutRange[1]);
+        this->layers->setScaleMode(s.layerIndex, s.scaleMode, s.scaleGamma);
+        if (this->currentLayerIndex() == s.layerIndex)
+            this->updateLUTCustomizer();
     }
     if (s.cameraCaptured && ui && ui->vtk && ui->vtk->renderWindow()) {
         if (auto *ren = ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()) {

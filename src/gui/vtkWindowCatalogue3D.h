@@ -158,15 +158,19 @@ private:
 
     // ── Scientific copilot ────────────────────────────────────────────────────
     AssistantPanel *m_copilot{ nullptr };
-    /// Camera pose captured before the copilot last reset the view, so Undo can
-    /// restore it. ``captured`` is false until the first reset_camera directive.
-    struct CopilotCameraUndo
+    /// State captured before the copilot's last batch of changes, so Undo can
+    /// restore exactly that batch. Each ``*Captured`` flag guards its own field.
+    struct CopilotUndo
     {
-        bool captured{ false };
+        bool cameraCaptured{ false };
         double position[3]{ 0, 0, 0 };
         double focalPoint[3]{ 0, 0, 0 };
         double viewUp[3]{ 0, 0, 1 };
         double parallelScale{ 1.0 };
+        bool scaleCaptured{ false };
+        QString scaleText;
+        bool colorFieldCaptured{ false };
+        QString colorFieldText;
     } m_copilotUndo;
 
     // ── Setup ──────────────────────────────────────────────────────────────

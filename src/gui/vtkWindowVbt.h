@@ -178,6 +178,8 @@ private:
         double parallelScale{ 1.0 };
         bool colormapCaptured{ false };
         QString colormapName;
+        bool colorFieldCaptured{ false };
+        int colorFieldIndex{ -1 };   // restore by index (a field may be named like the sentinel)
     } m_copilotUndo;
     double activeScalarMin{ 0.0 };
     double activeScalarMax{ 1.0 };

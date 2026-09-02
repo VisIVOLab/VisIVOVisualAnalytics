@@ -11,6 +11,8 @@
 #include <QElapsedTimer>
 #include <QFutureWatcher>
 #include <QHash>
+#include "vtk/LutScale.h"
+
 #include <QMainWindow>
 #include <QPointer>
 #include <QSet>
@@ -174,13 +176,18 @@ private:
     struct CopilotSnapshot
     {
         bool valid{ false };
+        bool colormapCaptured{ false };
         QString colormap;
-        int layerIndex{ 0 };   // the layer whose colormap was captured (multi-layer)
+        int layerIndex{ 0 };   // the layer whose colormap/scale was captured (multi-layer)
         bool cameraCaptured{ false };
         double camPos[3]{ 0, 0, 0 };
         double camFoc[3]{ 0, 0, 0 };
         double camUp[3]{ 0, 0, 0 };
         double camScale{ 1.0 };
+        bool scaleCaptured{ false };
+        LutScale::Mode scaleMode{ LutScale::Mode::Linear };   // full stretch before the batch
+        double scaleGamma{ 1.0 };
+        double lutRange[2]{ 0.0, 1.0 };   // LUT table range before the batch (log clamps it)
     };
     CopilotSnapshot m_copilotUndo;
 

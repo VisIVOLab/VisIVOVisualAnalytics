@@ -368,47 +368,113 @@ void vtkWindowCatalogue3D::resetCamera()
     renderWindow->Render();
 }
 
+// Match a copilot field name against a comboMapColor item. Its item texts are
+// "raw:<HEADER>" for data columns and friendly labels ("Morphology color",
+// "Speed |v|") for the built-ins; accept the header with or without the "raw:"
+// prefix, case-insensitively.
+static int catalogueColorFieldIndex(QComboBox *combo, const QString &field)
+{
+    if (!combo)
+        return -1;
+    // Prefer a real data column ("raw:<HEADER>") so a column named like a built-in
+    // label (e.g. a column literally called "Speed |v|") wins over the sentinel.
+    for (int i = 0; i < combo->count(); ++i) {
+        const QString text = combo->itemText(i);
+        if (text.startsWith(u"raw:"_s, Qt::CaseInsensitive)
+            && text.mid(4).compare(field, Qt::CaseInsensitive) == 0)
+            return i;
+    }
+    // Fall back to a friendly built-in label (or an unprefixed exact match).
+    for (int i = 0; i < combo->count(); ++i) {
+        if (combo->itemText(i).compare(field, Qt::CaseInsensitive) == 0)
+            return i;
+    }
+    return -1;
+}
+
 void vtkWindowCatalogue3D::applyCopilotActions(const QList<QJsonObject> &actions)
 {
-    // A point catalogue has no colormap/threshold/render-mode/channel — only the
-    // camera is controllable here. Apply the reset_camera directive(s); ignore
-    // the cube/image-only ones the copilot may emit (they harmlessly no-op).
-    vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
-    if (!camera)
-        return;
-
-    bool resetRequested = false;
+    // A point catalogue supports colour scale (Linear/Log/…), colour-by-field and
+    // camera control; cube/image-only directives are ignored (harmless no-op).
+    bool batchSetsScale = false;
+    bool batchSetsColorField = false;
+    bool batchResetsCamera = false;
     for (const QJsonObject &a : actions) {
-        if (a.value(u"type"_s).toString() == u"reset_camera"_s)
-            resetRequested = true;
+        const QString t = a.value(u"type"_s).toString();
+        if (t == u"set_scaling"_s)
+            batchSetsScale = true;
+        else if (t == u"set_color_field"_s)
+            batchSetsColorField = true;
+        else if (t == u"reset_camera"_s)
+            batchResetsCamera = true;
     }
-    if (!resetRequested)
-        return;
+    if (!batchSetsScale && !batchSetsColorField && !batchResetsCamera)
+        return;   // nothing applicable — leave any prior Undo point untouched
 
-    // Snapshot the current pose BEFORE resetting so Undo can restore it.
-    camera->GetPosition(this->m_copilotUndo.position);
-    camera->GetFocalPoint(this->m_copilotUndo.focalPoint);
-    camera->GetViewUp(this->m_copilotUndo.viewUp);
-    this->m_copilotUndo.parallelScale = camera->GetParallelScale();
-    this->m_copilotUndo.captured = true;
+    // Fresh snapshot of only what this batch touches (per-batch "Undo latest").
+    vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
+    this->m_copilotUndo = CopilotUndo{};
+    if (batchSetsScale && this->comboColorScale) {
+        this->m_copilotUndo.scaleText = this->comboColorScale->currentText();
+        this->m_copilotUndo.scaleCaptured = true;
+    }
+    if (batchSetsColorField && this->comboMapColor) {
+        this->m_copilotUndo.colorFieldText = this->comboMapColor->currentText();
+        this->m_copilotUndo.colorFieldCaptured = true;
+    }
+    if (batchResetsCamera && camera) {
+        camera->GetPosition(this->m_copilotUndo.position);
+        camera->GetFocalPoint(this->m_copilotUndo.focalPoint);
+        camera->GetViewUp(this->m_copilotUndo.viewUp);
+        this->m_copilotUndo.parallelScale = camera->GetParallelScale();
+        this->m_copilotUndo.cameraCaptured = true;
+    }
 
-    this->resetCamera();
+    for (const QJsonObject &a : actions) {
+        const QString type = a.value(u"type"_s).toString();
+        if (type == u"set_scaling"_s && this->comboColorScale) {
+            const QString scale = a.value(u"scale"_s).toString().trimmed();
+            const int idx = this->comboColorScale->findText(scale, Qt::MatchFixedString);
+            if (idx >= 0)
+                this->comboColorScale->setCurrentIndex(idx);   // triggers recolour
+        } else if (type == u"set_color_field"_s && this->comboMapColor) {
+            const int idx = catalogueColorFieldIndex(
+                    this->comboMapColor, a.value(u"field"_s).toString().trimmed());
+            if (idx >= 0)
+                this->comboMapColor->setCurrentIndex(idx);     // triggers recolour
+        } else if (type == u"reset_camera"_s && camera) {
+            this->resetCamera();
+        }
+    }
 }
 
 void vtkWindowCatalogue3D::undoCopilotActions()
 {
+    if (this->m_copilotUndo.scaleCaptured && this->comboColorScale) {
+        const int idx = this->comboColorScale->findText(this->m_copilotUndo.scaleText,
+                                                        Qt::MatchFixedString);
+        if (idx >= 0)
+            this->comboColorScale->setCurrentIndex(idx);
+        this->m_copilotUndo.scaleCaptured = false;
+    }
+    if (this->m_copilotUndo.colorFieldCaptured && this->comboMapColor) {
+        const int idx = this->comboMapColor->findText(this->m_copilotUndo.colorFieldText);
+        if (idx >= 0)
+            this->comboMapColor->setCurrentIndex(idx);
+        this->m_copilotUndo.colorFieldCaptured = false;
+    }
     vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
-    if (!camera || !this->m_copilotUndo.captured)
-        return;
-    camera->SetPosition(this->m_copilotUndo.position);
-    camera->SetFocalPoint(this->m_copilotUndo.focalPoint);
-    camera->SetViewUp(this->m_copilotUndo.viewUp);
-    camera->SetParallelScale(this->m_copilotUndo.parallelScale);
-    this->m_copilotUndo.captured = false;
-    if (this->renderer)
-        this->renderer->ResetCameraClippingRange();
-    if (this->renderWindow)
-        this->renderWindow->Render();
+    if (camera && this->m_copilotUndo.cameraCaptured) {
+        camera->SetPosition(this->m_copilotUndo.position);
+        camera->SetFocalPoint(this->m_copilotUndo.focalPoint);
+        camera->SetViewUp(this->m_copilotUndo.viewUp);
+        camera->SetParallelScale(this->m_copilotUndo.parallelScale);
+        this->m_copilotUndo.cameraCaptured = false;
+        if (this->renderer)
+            this->renderer->ResetCameraClippingRange();
+        if (this->renderWindow)
+            this->renderWindow->Render();
+    }
 }
 
 void vtkWindowCatalogue3D::updateGeometryMode()
