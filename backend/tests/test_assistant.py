@@ -188,6 +188,29 @@ def test_fit_line_rejects_off_cube_position(tmp_path):
         TOOLS["fit_line"].executor(path, {"x": 99, "y": 3, "radius_arcsec": 5.0})
 
 
+def test_cross_match_rejects_unknown_catalogue(tmp_path):
+    path = str(tmp_path / "cxm.fits")
+    _write_cube(path)
+    with pytest.raises(ValueError, match="catalogue"):
+        TOOLS["cross_match"].executor(path, {"catalogue": "gaia"})
+
+
+def test_cross_match_wraps_worker(tmp_path, monkeypatch):
+    # Avoid the network: stub the worker and check the tool's summary + nan scrub.
+    import app.compute as _compute
+    def _fake(path, radius, catalogue, max_sources):
+        return {"valid": True, "n_sources": 2, "centre_ra_deg": 10.0,
+                "centre_dec_deg": 20.0, "truncated": False,
+                "sources": [{"name": "A", "flux": float("nan")}, {"name": "B", "flux": 1.5}]}
+    monkeypatch.setattr(_compute, "worker_crossmatch", _fake, raising=True)
+    path = str(tmp_path / "cxm2.fits")
+    _write_cube(path)
+    out = TOOLS["cross_match"].executor(path, {"catalogue": "NVSS", "radius_arcsec": 30.0})
+    assert out["catalogue"] == "nvss" and out["n_sources"] == 2
+    assert out["sources"][0]["flux"] is None      # nan scrubbed
+    assert out["sources"][1]["flux"] == 1.5
+
+
 def test_find_sources_without_sofia_raises(tmp_path, monkeypatch):
     import app.compute as _compute
     monkeypatch.setattr(_compute, "resolve_sofia_bin", lambda: None, raising=True)

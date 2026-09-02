@@ -306,6 +306,22 @@ def _int_param(params: dict[str, Any], key: str, default: int | None = None) -> 
     return v
 
 
+def _finite_rows(rows: list[Any], cap: int) -> list[Any]:
+    """Cap a catalogue-row list and coerce non-finite floats to None.
+
+    JSON serialisation of a tool result rejects nan/inf, and external catalogues
+    (SoFiA, SIMBAD/Vizier) can carry them; normalise row by row.
+    """
+    out: list[Any] = []
+    for row in rows[:cap]:
+        if isinstance(row, dict):
+            out.append({k: (None if isinstance(v, (float, np.floating)) and not np.isfinite(v) else v)
+                        for k, v in row.items()})
+        else:
+            out.append(row)
+    return out
+
+
 def _finite_float(params: dict[str, Any], key: str, *, positive: bool = False) -> float:
     raw = params[key]
     if isinstance(raw, bool):   # True/False would coerce to 1.0/0.0 silently
@@ -533,23 +549,44 @@ def _find_sources(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(res.get("error", "source finding failed."))
     sources = res.get("sources", []) or []
     n = int(res.get("n_sources", len(sources)))
-
-    # SoFiA catalogue values may be non-finite (nan/inf); JSON serialisation of the
-    # tool result rejects those, so coerce them to None row by row.
-    def _finite_row(row: dict[str, Any]) -> dict[str, Any]:
-        clean: dict[str, Any] = {}
-        for k, v in row.items():
-            if isinstance(v, (float, np.floating)) and not np.isfinite(v):
-                clean[k] = None
-            else:
-                clean[k] = v
-        return clean
-
     return {
         "n_sources": n,
-        "sources": [_finite_row(s) if isinstance(s, dict) else s
-                    for s in sources[:max_sources]],
+        "sources": _finite_rows(sources, max_sources),   # cap + nan/inf → None
         "sources_truncated": n > max_sources,
+    }
+
+
+_CROSSMATCH_CATALOGUES = ("simbad", "2mass", "nvss", "first")
+
+
+def _cross_match(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    """Cross-match the loaded image/cube footprint against an external catalogue.
+
+    Catalogues: simbad, 2mass, nvss, first (via astroquery). Returns the number
+    of known catalogued sources in the field and their rows — so the copilot can
+    say what is already known at this position. Requires WCS.
+    """
+    if not path:
+        raise ValueError("cross_match requires a loaded image or cube.")
+    from ..compute import worker_crossmatch  # noqa: PLC0415
+    catalogue = str(params.get("catalogue", "simbad")).strip().lower()
+    if catalogue not in _CROSSMATCH_CATALOGUES:
+        raise ValueError(f"catalogue must be one of {list(_CROSSMATCH_CATALOGUES)}")
+    radius = (_finite_float(params, "radius_arcsec", positive=True)
+              if params.get("radius_arcsec") is not None else 60.0)
+    max_sources = min(500, max(1, _int_param(params, "max_sources", 100)))
+    res = worker_crossmatch(path, radius, catalogue, max_sources)
+    if not res.get("valid", True):
+        raise ValueError(res.get("error", "cross-match failed."))
+    sources = res.get("sources", []) or []
+    return {
+        "catalogue": catalogue,
+        "radius_arcsec": radius,
+        "n_sources": int(res.get("n_sources", len(sources))),
+        "centre_ra_deg": res.get("centre_ra_deg"),
+        "centre_dec_deg": res.get("centre_dec_deg"),
+        "sources": _finite_rows(sources, max_sources),
+        "truncated": bool(res.get("truncated", False)),
     }
 
 
@@ -832,6 +869,27 @@ TOOLS: dict[str, AssistantTool] = {
                 "additionalProperties": False,
             },
             executor=_find_sources,
+        ),
+        AssistantTool(
+            name="cross_match",
+            description=(
+                "Cross-match the loaded field's footprint against an external "
+                "catalogue (catalogue ∈ {simbad, 2mass, nvss, first}) within "
+                "radius_arcsec, to report what sources are ALREADY KNOWN here. "
+                "Requires WCS + astroquery on the server. Returns the field centre "
+                "and the matched catalogue rows."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "catalogue": {"type": "string",
+                                  "enum": list(_CROSSMATCH_CATALOGUES)},
+                    "radius_arcsec": {"type": "number"},
+                    "max_sources": {"type": "integer", "minimum": 1, "maximum": 500},
+                },
+                "additionalProperties": False,
+            },
+            executor=_cross_match,
         ),
         AssistantTool(
             name="cosmology_distance",
