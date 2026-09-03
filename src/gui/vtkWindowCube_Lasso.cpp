@@ -85,6 +85,20 @@ RemoteKinematicSelectResult fetchKinematicSelect(
     return out;
 }
 
+// Network-only worker for the geodesic level field (value copies; never touches
+// `this`). Fetched once per seed/λv so the Reach slider can be scrubbed locally.
+BackendKinematicLevelsResult fetchKinematicLevels(
+        QString url, QString token, QString session, QString datasetId,
+        int seedZ, int seedY, int seedX, double reachMax, double lambdaV, int roiRadius,
+        QVector<std::array<int, 3>> addSeeds, QVector<std::array<int, 3>> subSeeds)
+{
+    BackendClient client(url, token);
+    client.setSessionId(session);
+    return client.kinematicLevels(datasetId, seedZ, seedY, seedX, reachMax, lambdaV,
+                                  /*sigma=*/0.0, /*nsigma=*/2.5, roiRadius,
+                                  addSeeds, subSeeds);
+}
+
 // (De-duplicated in E-04: the per-channel mask refinement below now uses the
 // shared CubeRegionGeom::pointInPolygon — proven behaviour-equivalent to the old
 // local copy: the +0.5 pixel-centre shift is a uniform translation of point and
@@ -172,7 +186,8 @@ void vtkWindowCube::showLassoHint(bool on)
 // Selection handler — bound to the LEFT DOUBLE-click (single drag rotates freely).
 void vtkWindowCube::onLassoRelease()
 {
-    if (!this->m_lassoActive || this->m_lassoSelectWatcher.isRunning()) {
+    if (!this->m_lassoActive
+        || this->m_lassoSelectWatcher.isRunning() || this->m_lassoLevelsWatcher.isRunning()) {
         return;
     }
     auto *iren = ui->vtkCube && ui->vtkCube->renderWindow()
@@ -199,9 +214,10 @@ void vtkWindowCube::onLassoRelease()
 
     // Map the displayed-cube voxel → full-resolution cube voxel (the backend
     // selection runs on the full cube). Two display conventions (same as the
-    // kinematic-model overlay): a ROI subvolume has a non-zero image origin +
-    // spacing 1 → world == full-res voxels, so full = origin + ijk; a preview /
-    // full display has origin 0 → full = round(ijk·(full-1)/(ddim-1)).
+    // kinematic-model overlay): a high-res ROI subvolume is spacing-1 with its
+    // image origin at the ROI corner → world == full-res voxels, so
+    // full = origin + ijk; a downsampled preview has origin 0 and fewer voxels →
+    // full = round(ijk·(full-1)/(ddim-1)).
     auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
     if (!cubeImage) {
         return;
@@ -213,7 +229,11 @@ void vtkWindowCube::onLassoRelease()
     const int fullW = std::max(1, this->remoteDatasetWidth);
     const int fullH = std::max(1, this->remoteDatasetHeight);
     const int fullD = std::max(1, this->remoteDatasetDepth);
-    const bool roi = (dorg[0] != 0.0 || dorg[1] != 0.0 || dorg[2] != 0.0);
+    // NOT "origin is nonzero": a ROI whose lower corner is (0,0,0) gets origin 0
+    // from fetchRemoteSubvolume() yet is still spacing-1 full-res, and would be
+    // misread as a downsampled preview. usingHighResCube is the flag the rest of
+    // the class already uses for exactly this distinction.
+    const bool roi = this->usingHighResCube;
 
     const auto toFull = [roi](int dv, double dorg1, int ddim1, int full1) -> int {
         if (roi) return static_cast<int>(std::lround(dorg1)) + dv;   // spacing-1 ROI
@@ -223,14 +243,6 @@ void vtkWindowCube::onLassoRelease()
     const int seedX = std::clamp(toFull(ijk[0], dorg[0], ddim[0], fullW), 0, fullW - 1);
     const int seedY = std::clamp(toFull(ijk[1], dorg[1], ddim[1], fullH), 0, fullH - 1);
     const int seedZ = std::clamp(toFull(ijk[2], dorg[2], ddim[2], fullD), 0, fullD - 1);
-
-    // Snapshot the geometry used for THIS pick so the preview places the mask the
-    // same way even if the display swaps while the request is in flight.
-    this->m_lassoSnapRoi = roi;
-    this->m_lassoSnapOrigin[0] = dorg[0]; this->m_lassoSnapOrigin[1] = dorg[1];
-    this->m_lassoSnapOrigin[2] = dorg[2];
-    this->m_lassoSnapDim[0] = ddim[0]; this->m_lassoSnapDim[1] = ddim[1];
-    this->m_lassoSnapDim[2] = ddim[2];
 
     qDebug().noquote()
             << QStringLiteral("[lasso] pick display ijk=(%1,%2,%3) → full seed=(%4,%5,%6) "
@@ -269,11 +281,13 @@ void vtkWindowCube::requestLassoSelection()
     if (!this->m_lassoHasSeed) {
         return;
     }
-    if (this->m_lassoSelectWatcher.isRunning()) {
+    if (this->m_lassoSelectWatcher.isRunning() || this->m_lassoLevelsWatcher.isRunning()) {
         this->m_lassoPendingRegrow = true;   // honour the latest params once the current grow ends
         return;
     }
     this->m_lassoDiscardResult = false;
+    this->m_lassoLevels = {};   // the seeds changed → the cached field is stale
+    this->m_lassoMaskHandEdited = false;
     // The mask is about to be recomputed → any in-progress 2-D refinement is against
     // a stale mask; tear it down so its observers don't edit the wrong array.
     if (this->m_lassoEditActive) this->setLassoEditActive(false);
@@ -296,12 +310,41 @@ void vtkWindowCube::requestLassoSelection()
     const int seedX = this->m_lassoLastSeed[2];
     const QVector<std::array<int, 3>> addSeeds = this->m_lassoAddSeeds;
     const QVector<std::array<int, 3>> subSeeds = this->m_lassoSubSeeds;
-    this->m_lassoSelectWatcher.setFuture(QtConcurrent::run(
-            &fetchKinematicSelect, url, token, session, dataset,
-            seedZ, seedY, seedX, reach, lambdaV, roiRadius, addSeeds, subSeeds));
+    // One grow covering every budget the slider can reach, so dragging Reach
+    // afterwards is a local threshold instead of a round trip. Falls back to the
+    // single-budget grow if the backend does not serve level fields.
+    const double reachMax = this->m_lassoReachSlider
+            ? double(this->m_lassoReachSlider->maximum())
+            : reach;
+    // Snapshot the identity this fetch is for; the handler tags the cache with
+    // it rather than with whatever the sliders hold by the time it lands.
+    this->m_lassoLevelsReqLambdaV = lambdaV;
+    this->m_lassoLevelsReqSeeds = addSeeds;
+    this->m_lassoLevelsReqSubSeeds = subSeeds;
+    this->m_lassoLevelsReqSeed[0] = seedZ;
+    this->m_lassoLevelsReqSeed[1] = seedY;
+    this->m_lassoLevelsReqSeed[2] = seedX;
+    this->m_lassoLevelsWatcher.setFuture(QtConcurrent::run(
+            &fetchKinematicLevels, url, token, session, dataset,
+            seedZ, seedY, seedX, reachMax, lambdaV, roiRadius, addSeeds, subSeeds));
 }
 
-void vtkWindowCube::placeLassoSeedMarker(const double world[3])
+void vtkWindowCube::requestLassoGrow()
+{
+    if (this->m_lassoSelectWatcher.isRunning()) {
+        this->m_lassoPendingRegrow = true;
+        return;
+    }
+    const QString url = this->remoteBackendUrl, token = this->remoteBackendToken;
+    const QString session = this->remoteSessionId, dataset = this->remoteDatasetId;
+    this->m_lassoSelectWatcher.setFuture(QtConcurrent::run(
+            &fetchKinematicSelect, url, token, session, dataset,
+            this->m_lassoLastSeed[0], this->m_lassoLastSeed[1], this->m_lassoLastSeed[2],
+            this->m_lassoReach, this->m_lassoLambdaV, this->m_lassoRoiRadius,
+            this->m_lassoAddSeeds, this->m_lassoSubSeeds));
+}
+
+void vtkWindowCube::placeLassoSeedMarker(const double world[3], bool render)
 {
     auto *renderer = ui->vtkCube && ui->vtkCube->renderWindow()
             ? ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer() : nullptr;
@@ -329,7 +372,9 @@ void vtkWindowCube::placeLassoSeedMarker(const double world[3])
     this->m_lassoSeedActor->GetProperty()->SetColor(1.0, 0.9, 0.1);   // yellow seed
     this->m_lassoSeedActor->GetProperty()->LightingOff();
     this->m_lassoSeedActor->PickableOff();
-    ui->vtkCube->renderWindow()->Render();
+    if (render) {
+        ui->vtkCube->renderWindow()->Render();
+    }
 }
 
 void vtkWindowCube::onLassoSelectReady()
@@ -352,43 +397,14 @@ void vtkWindowCube::onLassoSelectReady()
         return;
     }
     if (r.count <= 0) {
+        this->clearPresentedLassoSelection(true);
         this->statusBar()->showMessage(
                 u"Kinematic Lasso: nothing selected — click brighter emission."_s, 3000);
         if (pending) this->requestLassoSelection();
         return;
     }
     this->showLassoHint(false);   // a source is selected → the prompt has done its job
-
-    // Keep the EXACT ROI mask (full-res voxel coords) so Apply sends what's shown
-    // and the 2-D channel overlay can slice it per channel.
-    this->m_lassoMaskBytes = r.data;
-    this->m_lassoMaskOrigin[0] = r.originX;
-    this->m_lassoMaskOrigin[1] = r.originY;
-    this->m_lassoMaskOrigin[2] = r.originZ;
-    this->m_lassoMaskDims[0] = r.roiWidth;
-    this->m_lassoMaskDims[1] = r.roiHeight;
-    this->m_lassoMaskDims[2] = r.roiDepth;
-    this->updateLassoMaskOverlay(true);
-
-    // Store the DISPLAY geometry for the ROI mask so the isosurface can be rebuilt
-    // after 2-D edits. ROI display: world == full-res voxels → origin = selection
-    // voxel, spacing 1. Preview/full: world == display voxels → origin = selection·s,
-    // spacing s = (displayDim-1)/(fullDim-1) (same convention as the kinematic model).
-    double sx = 1.0, sy = 1.0, sz = 1.0;
-    double ox = r.originX, oy = r.originY, oz = r.originZ;
-    if (!this->m_lassoSnapRoi) {
-        const auto scale = [](int ddim1, int full1) -> double {
-            return (full1 > 1 && ddim1 > 1) ? double(ddim1 - 1) / double(full1 - 1) : 1.0;
-        };
-        sx = scale(this->m_lassoSnapDim[0], r.fullWidth);
-        sy = scale(this->m_lassoSnapDim[1], r.fullHeight);
-        sz = scale(this->m_lassoSnapDim[2], r.fullDepth);
-        ox = r.originX * sx;  oy = r.originY * sy;  oz = r.originZ * sz;
-    }
-    this->m_lassoDispOrigin[0] = ox; this->m_lassoDispOrigin[1] = oy; this->m_lassoDispOrigin[2] = oz;
-    this->m_lassoDispSpacing[0] = sx; this->m_lassoDispSpacing[1] = sy; this->m_lassoDispSpacing[2] = sz;
-
-    this->rebuildLassoIsosurface(true);
+    this->presentLassoSelection(r);
     if (!(ui->vtkCube && ui->vtkCube->renderWindow()
           && ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer())) {
         return;
@@ -410,6 +426,282 @@ void vtkWindowCube::onLassoSelectReady()
         this->requestLassoSelection();            // a slider moved mid-grow → re-grow now
     else
         this->setLassoApplyEnabled(true);         // the displayed surface is now current
+}
+
+void vtkWindowCube::clearPresentedLassoSelection(bool render)
+{
+    // "Nothing selected" must leave nothing on screen. Both the local threshold
+    // and the backend grow route here so an empty answer cannot leave the previous
+    // surface, its 2-D contour and a non-zero count behind, which would contradict
+    // the status message the user just read.
+    this->m_lassoMaskBytes.clear();
+    this->m_lassoMaskDims[0] = this->m_lassoMaskDims[1] = this->m_lassoMaskDims[2] = 0;
+    this->m_lassoMaskHandEdited = false;
+    // Leave 2-D refinement properly, not just by greying its button: the mode
+    // installs interactor observers, and disabling the toggle would leave them
+    // live with no mask under them. Reachable without any edit having been
+    // committed (edit mode on, then drag Reach to an empty level set), so it
+    // cannot be left to the hand-edited teardown.
+    if (this->m_lassoEditActive) this->setLassoEditActive(false);
+    if (this->m_lassoEditToggle) {
+        QSignalBlocker b(this->m_lassoEditToggle);
+        this->m_lassoEditToggle->setChecked(false);
+    }
+    this->updateLassoMaskOverlay(render);
+    this->rebuildLassoIsosurface(false);
+    this->setLassoApplyEnabled(false);
+    if (this->m_lassoCountLabel) this->m_lassoCountLabel->setText(u"0 voxels selected"_s);
+    if (render && ui->vtkCube && ui->vtkCube->renderWindow()) {
+        ui->vtkCube->renderWindow()->Render();
+    }
+}
+
+bool vtkWindowCube::lassoLevelsUsable() const
+{
+    // lambda_v is part of the COST function, so changing it invalidates the field;
+    // Reach only selects a level set of it, so it does not. Seeds obviously do.
+    return this->m_lassoLevels.valid
+            && qFuzzyCompare(this->m_lassoLevelsLambdaV, this->m_lassoLambdaV)
+            && this->m_lassoLevelsSeed[0] == this->m_lassoLastSeed[0]
+            && this->m_lassoLevelsSeed[1] == this->m_lassoLastSeed[1]
+            && this->m_lassoLevelsSeed[2] == this->m_lassoLastSeed[2]
+            && this->m_lassoLevelsSeeds == this->m_lassoAddSeeds
+            && this->m_lassoLevelsSubSeeds == this->m_lassoSubSeeds;
+}
+
+vtkWindowCube::LassoLevels vtkWindowCube::showLassoSelectionFromLevels(int reach, bool render)
+{
+    if (!this->lassoLevelsUsable()) {
+        return LassoLevels::NoCache;
+    }
+    const BackendKinematicLevelsResult &lv = this->m_lassoLevels;
+    if (reach > lv.reachMax) {
+        return LassoLevels::NoCache;   // past what this field answers for → bigger grow
+    }
+    // Bound each dimension BEFORE multiplying: three ints near INT_MAX overflow
+    // even a qint64 product, so the size check has to come after this, not before.
+    constexpr int kMaxRoiSide = 1 << 20;
+    if (lv.roiWidth <= 0 || lv.roiHeight <= 0 || lv.roiDepth <= 0
+        || lv.roiWidth > kMaxRoiSide || lv.roiHeight > kMaxRoiSide
+        || lv.roiDepth > kMaxRoiSide) {
+        return LassoLevels::NoCache;
+    }
+    const qsizetype n = qsizetype(lv.roiWidth) * lv.roiHeight * lv.roiDepth;
+    if (lv.addLevels.size() != n || lv.subLevels.size() != n) {
+        return LassoLevels::NoCache;
+    }
+    // QByteArray is indexed by qsizetype in Qt6 but the mask below is built with
+    // an int length; refuse a ROI whose float32 image would overflow it rather
+    // than silently truncating into a short buffer.
+    if (n > qsizetype(std::numeric_limits<int>::max()) / qsizetype(sizeof(float))) {
+        return LassoLevels::NoCache;
+    }
+    // A Reach change recomputes the mask from the geodesic field, so any 2-D
+    // hand-refinement on top of it is discarded — the same rule a backend re-grow
+    // already followed. Say so instead of losing the work silently.
+    if (this->m_lassoMaskHandEdited) {
+        this->m_lassoMaskHandEdited = false;
+        if (this->m_lassoEditActive) this->setLassoEditActive(false);
+        if (this->m_lassoEditToggle) {
+            QSignalBlocker b(this->m_lassoEditToggle);
+            this->m_lassoEditToggle->setChecked(false);
+        }
+        this->statusBar()->showMessage(
+                u"Kinematic Lasso: 2-D refinements discarded — Reach regrows the mask."_s, 4000);
+    }
+    // Threshold: add <= r, minus sub <= r. Emitted in the float32 0/1 ROI format
+    // presentLassoSelection() already understands, so the instant path and the
+    // network path share every downstream step.
+    RemoteKinematicSelectResult r;
+    r.valid = true;
+    r.roiWidth = lv.roiWidth; r.roiHeight = lv.roiHeight; r.roiDepth = lv.roiDepth;
+    r.originX = lv.originX; r.originY = lv.originY; r.originZ = lv.originZ;
+    r.fullWidth = lv.fullWidth; r.fullHeight = lv.fullHeight; r.fullDepth = lv.fullDepth;
+    QByteArray mask(int(n) * int(sizeof(float)), Qt::Uninitialized);
+    auto *out = reinterpret_cast<float *>(mask.data());
+    const auto *add = reinterpret_cast<const quint8 *>(lv.addLevels.constData());
+    const auto *sub = reinterpret_cast<const quint8 *>(lv.subLevels.constData());
+    const quint8 thr = quint8(std::clamp(reach, 0, 255));
+    int count = 0;
+    int x0 = lv.roiWidth, x1 = -1, y0 = lv.roiHeight, y1 = -1, z0 = lv.roiDepth, z1 = -1;
+    for (qsizetype i = 0; i < n; ++i) {
+        const bool on = (add[i] <= thr) && !(sub[i] <= thr);
+        out[i] = on ? 1.0f : 0.0f;
+        if (!on) {
+            continue;
+        }
+        ++count;
+        const int x = int(i % lv.roiWidth);
+        const int y = int((i / lv.roiWidth) % lv.roiHeight);
+        const int z = int(i / (qsizetype(lv.roiWidth) * lv.roiHeight));
+        x0 = std::min(x0, x); x1 = std::max(x1, x);
+        y0 = std::min(y0, y); y1 = std::max(y1, y);
+        z0 = std::min(z0, z); z1 = std::max(z1, z);
+    }
+    if (count <= 0) {
+        // Legitimate with a carve seed: the budget can exclude everything the add
+        // seeds reached. Clear rather than leave a stale surface the user could
+        // still Apply.
+        this->clearPresentedLassoSelection(render);
+        return LassoLevels::Empty;
+    }
+    r.count = count;
+    // bbox is in FULL-CUBE voxels, like the backend's, so Apply and the 2-D
+    // overlay read it the same way whichever path produced the selection.
+    r.bbox[0] = lv.originX + x0; r.bbox[1] = lv.originX + x1;
+    r.bbox[2] = lv.originY + y0; r.bbox[3] = lv.originY + y1;
+    r.bbox[4] = lv.originZ + z0; r.bbox[5] = lv.originZ + z1;
+    r.data = mask;
+
+    this->showLassoHint(false);
+    this->presentLassoSelection(r);
+    if (this->m_lassoCountLabel) {
+        this->m_lassoCountLabel->setText(u"%1 voxels selected"_s.arg(count));
+    }
+    this->setLassoApplyEnabled(true);
+    if (render && ui->vtkCube && ui->vtkCube->renderWindow()) {
+        ui->vtkCube->renderWindow()->Render();
+    }
+    return LassoLevels::Shown;
+}
+
+void vtkWindowCube::onLassoLevelsReady()
+{
+    const BackendKinematicLevelsResult lv = this->m_lassoLevelsWatcher.result();
+    if (ui->vtkCube) ui->vtkCube->setCursor(this->m_lassoActive ? Qt::CrossCursor : Qt::ArrowCursor);
+    this->statusBar()->clearMessage();
+    // Read the queued-regrow flag BEFORE anything clears it: dropping it here
+    // would silently lose work the user asked for while the fetch was in flight.
+    const bool pending = this->m_lassoPendingRegrow;
+    this->m_lassoPendingRegrow = false;
+    if (this->m_lassoDiscardResult) {
+        this->m_lassoDiscardResult = false;
+        // Cleared mid-fetch. If the user then re-clicked, that click only managed
+        // to queue itself (a fetch was running), so it is on us to honour it —
+        // otherwise the new seed never gets a selection at all.
+        if (pending) this->requestLassoSelection();
+        return;
+    }
+    if (!lv.valid) {
+        // Not fatal: fall back to the per-step grow, which every backend has.
+        this->m_lassoLevels = {};
+        this->requestLassoGrow();
+        return;
+    }
+    // Tag with the request's identity, not the live one.
+    this->m_lassoLevels = lv;
+    this->m_lassoLevelsLambdaV = this->m_lassoLevelsReqLambdaV;
+    this->m_lassoLevelsSeeds = this->m_lassoLevelsReqSeeds;
+    this->m_lassoLevelsSubSeeds = this->m_lassoLevelsReqSubSeeds;
+    std::copy_n(this->m_lassoLevelsReqSeed, 3, this->m_lassoLevelsSeed);
+    if (!this->lassoLevelsUsable()) {
+        // The seeds or λv moved on while we waited — this field describes a state
+        // the user has left behind. Fetch the current one instead of showing it.
+        // Note this is deliberately NOT gated on `pending`: a queued Reach change
+        // is answered by thresholding the field we just received, and refetching
+        // for it would throw away the whole point of caching the field.
+        this->requestLassoSelection();
+        return;
+    }
+    if (this->showLassoSelectionFromLevels(int(std::lround(this->m_lassoReach))) == LassoLevels::NoCache) {
+        this->statusBar()->showMessage(
+                u"Kinematic Lasso: nothing selected — click brighter emission."_s, 3000);
+    }
+}
+
+void vtkWindowCube::presentLassoSelection(const RemoteKinematicSelectResult &r)
+{
+    // Keep the EXACT ROI mask (full-res voxel coords) so Apply sends what's shown
+    // and the 2-D channel overlay can slice it per channel.
+    this->m_lassoMaskBytes = r.data;
+    this->m_lassoMaskOrigin[0] = r.originX;
+    this->m_lassoMaskOrigin[1] = r.originY;
+    this->m_lassoMaskOrigin[2] = r.originZ;
+    this->m_lassoMaskDims[0] = r.roiWidth;
+    this->m_lassoMaskDims[1] = r.roiHeight;
+    this->m_lassoMaskDims[2] = r.roiDepth;
+    this->updateLassoMaskOverlay(true);
+
+    // Store the DISPLAY geometry for the ROI mask so the isosurface can be rebuilt
+    // after 2-D edits. ROI display: world == full-res voxels → origin = selection
+    // voxel, spacing 1. Preview/full: world == display voxels → origin = selection·s,
+    // spacing s = (displayDim-1)/(fullDim-1) (same convention as the kinematic model).
+    if (!this->updateLassoDisplayPlacement()) {
+        qWarning().noquote()
+                << "[lasso] no cube display image — selection kept, 3-D surface deferred";
+        return;
+    }
+    this->rebuildLassoIsosurface(true);
+}
+
+bool vtkWindowCube::updateLassoDisplayPlacement()
+{
+    // Place the full-res mask against the display that is on screen NOW. Any swap
+    // — preview→full-res, or a new ROI load — changes the mapping, so this is
+    // recomputed both when a selection is presented and when the display changes
+    // underneath one that is already shown. Without a current display image there
+    // is no authoritative placement: report that rather than reusing the last
+    // geometry, which would draw the surface in the wrong place.
+    auto *dispImg = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
+    if (!dispImg) {
+        return false;
+    }
+    int ddim[3];
+    dispImg->GetDimensions(ddim);
+    const int fullW = std::max(1, this->remoteDatasetWidth);
+    const int fullH = std::max(1, this->remoteDatasetHeight);
+    const int fullD = std::max(1, this->remoteDatasetDepth);
+    // ROI display: world == full-res voxels → origin = selection voxel, spacing 1.
+    // Preview: world == display voxels → origin = selection·s, spacing
+    // s = (displayDim-1)/(fullDim-1) (same convention as the kinematic model).
+    double sx = 1.0, sy = 1.0, sz = 1.0;
+    double ox = this->m_lassoMaskOrigin[0];
+    double oy = this->m_lassoMaskOrigin[1];
+    double oz = this->m_lassoMaskOrigin[2];
+    if (!this->usingHighResCube) {
+        const auto scale = [](int ddim1, int full1) -> double {
+            return (full1 > 1 && ddim1 > 1) ? double(ddim1 - 1) / double(full1 - 1) : 1.0;
+        };
+        sx = scale(ddim[0], fullW);
+        sy = scale(ddim[1], fullH);
+        sz = scale(ddim[2], fullD);
+        ox *= sx;  oy *= sy;  oz *= sz;
+    }
+    this->m_lassoDispOrigin[0] = ox; this->m_lassoDispOrigin[1] = oy; this->m_lassoDispOrigin[2] = oz;
+    this->m_lassoDispSpacing[0] = sx; this->m_lassoDispSpacing[1] = sy; this->m_lassoDispSpacing[2] = sz;
+    return true;
+}
+
+void vtkWindowCube::refreshLassoAfterDisplaySwap()
+{
+    // The cube on screen was replaced. The mask bytes are in full-res voxels and
+    // stay valid (2-D hand refinements included, which is why this re-places the
+    // EXISTING mask instead of re-thresholding the level field), but the mapping
+    // from those voxels to world coordinates has changed.
+    if (this->m_lassoMaskBytes.isEmpty()) {
+        return;
+    }
+    if (!this->updateLassoDisplayPlacement()) {
+        return;
+    }
+    // render=false throughout: the caller swaps the cube and then defers the first
+    // Render() by a tick precisely because that render carries the GPU volume
+    // upload. Painting here would pull that stall forward and undo the deferral;
+    // the corrected placement is picked up by the deferred render instead.
+    this->rebuildLassoIsosurface(false);
+    this->updateLassoMaskOverlay(false);
+    // The yellow seed marker was placed in the OLD display's world coordinates.
+    // The seed itself is a full-res voxel, so re-derive its world position with
+    // the mapping we just recomputed (spacing 1 on a ROI display, the preview
+    // scale otherwise) rather than leaving it behind where the click landed.
+    if (this->m_lassoHasSeed && this->m_lassoSeedActor) {
+        const double world[3] = {
+            double(this->m_lassoLastSeed[2]) * this->m_lassoDispSpacing[0],
+            double(this->m_lassoLastSeed[1]) * this->m_lassoDispSpacing[1],
+            double(this->m_lassoLastSeed[0]) * this->m_lassoDispSpacing[2],
+        };
+        this->placeLassoSeedMarker(world, /*render=*/false);
+    }
 }
 
 void vtkWindowCube::setLassoApplyEnabled(bool on)
@@ -441,10 +733,14 @@ void vtkWindowCube::ensureLassoPanel()
     auto *form = new QFormLayout();
     form->setSpacing(6);
 
-    // Reach: slider 1..40 → reach value.
+    // Reach: slider 1..64 → reach value. The upper bound comes from the two-cube
+    // validation: on a large, low-surface-brightness source the best Dice sat at
+    // 32 and useful budgets ran past 40, which the old cap could not express.
+    // It doubles as the level field's reach_max, so the whole range is scrubbable
+    // from one grow.
     m_lassoReachSlider = new QSlider(Qt::Horizontal, body);
-    m_lassoReachSlider->setRange(1, 40);
-    m_lassoReachSlider->setValue(std::clamp(int(std::lround(m_lassoReach)), 1, 40));
+    m_lassoReachSlider->setRange(1, 64);
+    m_lassoReachSlider->setValue(std::clamp(int(std::lround(m_lassoReach)), 1, 64));
     m_lassoReachValue = new QLabel(QString::number(m_lassoReach, 'f', 0), body);
     auto *reachRow = new QWidget(body);
     auto *reachLay = new QHBoxLayout(reachRow);
@@ -543,11 +839,22 @@ void vtkWindowCube::ensureLassoPanel()
     QObject::connect(m_lassoReachSlider, &QSlider::valueChanged, this, [this](int v) {
         this->m_lassoReach = double(v);
         if (this->m_lassoReachValue) this->m_lassoReachValue->setText(QString::number(v));
+        // Instant: Reach only picks a level set of the cached geodesic field, so
+        // the surface follows the drag with no backend call. When there is no
+        // usable field yet the release handler below does a grow instead.
+        this->showLassoSelectionFromLevels(v);
     });
-    QObject::connect(m_lassoReachSlider, &QSlider::sliderReleased, this,
-                     [this]() { this->requestLassoSelection(); });
+    QObject::connect(m_lassoReachSlider, &QSlider::sliderReleased, this, [this]() {
+        // Only a MISSING field falls back to the network; an empty selection is a
+        // real answer and has already been shown.
+        if (this->showLassoSelectionFromLevels(int(std::lround(this->m_lassoReach)))
+            == LassoLevels::NoCache) {
+            this->requestLassoSelection();
+        }
+    });
     QObject::connect(m_lassoLambdaSlider, &QSlider::valueChanged, this, [this](int v) {
         this->m_lassoLambdaV = double(v) / 100.0;
+        this->m_lassoLevels = {};   // λv changes the cost function → field is stale
         if (this->m_lassoLambdaValue)
             this->m_lassoLambdaValue->setText(QString::number(this->m_lassoLambdaV, 'f', 2));
     });
@@ -915,6 +1222,10 @@ void vtkWindowCube::commitLassoEditPolygon()
     this->m_lassoEditVerts.clear();
     this->refreshLassoEditPreview();
     if (changed > 0) {
+        // The displayed mask is no longer the geodesic field's level set, so a
+        // later Reach change would overwrite this work; flag it so that path can
+        // say so rather than discarding it silently.
+        this->m_lassoMaskHandEdited = true;
         this->rebuildLassoIsosurface(true);
         this->updateLassoMaskOverlay(true);
     }
@@ -928,10 +1239,12 @@ void vtkWindowCube::clearKinematicLassoSelection()
 {
     // If a grow is in flight, discard its result so it doesn't re-add a selection
     // the user just cleared.
-    if (this->m_lassoSelectWatcher.isRunning()) {
+    if (this->m_lassoSelectWatcher.isRunning() || this->m_lassoLevelsWatcher.isRunning()) {
         this->m_lassoDiscardResult = true;
     }
     this->m_lassoPendingRegrow = false;
+    this->m_lassoLevels = {};   // no selection → no field to scrub
+    this->m_lassoMaskHandEdited = false;
     auto *renderer = ui->vtkCube && ui->vtkCube->renderWindow()
             ? ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer() : nullptr;
     if (renderer) {

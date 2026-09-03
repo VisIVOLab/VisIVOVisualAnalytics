@@ -1193,6 +1193,28 @@ struct BackendKinematicSelectResult
     QByteArray data;
 };
 
+/// Geodesic LEVEL FIELDS for the Kinematic Lasso's Reach slider —
+/// /v1/cube/kinematic_levels_bin.
+///
+/// One grow up to ``reachMax`` instead of one per slider step: ``addLevels`` and
+/// ``subLevels`` are uint8 over the same ROI, and the selection at an integer
+/// budget r is ``add <= r`` minus ``sub <= r``. That threshold is EXACT, not an
+/// approximation of the per-step grow — levels are ceil(distance), and for
+/// integer r, ceil(d) <= r ⟺ d <= r — so the preview cannot drift from what
+/// Apply writes out, provided Apply passes the same ``reachMax``.
+struct BackendKinematicLevelsResult
+{
+    bool valid = false;
+    QString error;
+    int roiWidth = 0, roiHeight = 0, roiDepth = 0;
+    int originX = 0, originY = 0, originZ = 0;
+    int fullWidth = 0, fullHeight = 0, fullDepth = 0;
+    int reachMax = 0;              ///< highest budget this field can answer for
+    int unreachable = 255;         ///< level meaning "beyond the budget"
+    QByteArray addLevels;          ///< uint8, roiW*roiH*roiD, x-fastest
+    QByteArray subLevels;          ///< uint8, same geometry (all-sentinel if no carve)
+};
+
 /// Gravitational-basin (watershed) label volume — /v1/velocity/basins_bin.
 /// `labels` is little-endian int32 (npts, x-fastest): 0 = unassigned, 1..nBasins.
 struct BackendVelocityBasinsResult
@@ -1463,6 +1485,15 @@ public:
      *  kinematics-aware selection from the seed voxel (z,y,x) and returns the
      *  selection's bounding-box binary mask + its origin. @p reach is the cost
      *  budget, @p lambdaV the velocity-axis weight (the kinematic knob). */
+    /// Fetch the geodesic level fields once so the Reach slider can be scrubbed
+    /// without a round trip per step. ``reachMax`` should be the slider's maximum.
+    BackendKinematicLevelsResult kinematicLevels(const QString &datasetId,
+                                                 int seedZ, int seedY, int seedX,
+                                                 double reachMax, double lambdaV,
+                                                 double sigma, double nsigma, int roiRadius,
+                                                 const QVector<std::array<int, 3>> &addSeeds,
+                                                 const QVector<std::array<int, 3>> &subSeeds) const;
+
     BackendKinematicSelectResult kinematicSelect(const QString &datasetId,
                                                  int seedZ, int seedY, int seedX,
                                                  double reach, double lambdaV,

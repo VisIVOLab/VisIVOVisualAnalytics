@@ -2485,6 +2485,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(&m_lassoSelectWatcher,
                      &QFutureWatcher<RemoteKinematicSelectResult>::finished,
                      this, &vtkWindowCube::onLassoSelectReady);
+    QObject::connect(&this->m_lassoLevelsWatcher, &QFutureWatcher<BackendKinematicLevelsResult>::finished,
+                     this, &vtkWindowCube::onLassoLevelsReady);
 
     m_actExportChannel2d = ui->menuTools->addAction(
             u"Export Current Channel as 2-D FITS…"_s);
@@ -5291,6 +5293,8 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     this->cubeDisplaySource->SetOutput(result.cubeImageData);
     this->cubeDisplaySource->Modified();
     result.cubeImageData->Modified();
+    // A lasso selection on screen was placed against the display we just replaced.
+    this->refreshLassoAfterDisplaySwap();
     this->remoteIsosurfaceReady = false;
     this->setCubeRenderModeLocally(false);
     if (result.momentImageData) {

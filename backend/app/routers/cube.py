@@ -486,6 +486,10 @@ class CubeKinematicSelectRequest(BaseModel):
     sigma: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)     # 0 → robust auto
     nsigma: float = Field(default=2.5, gt=0.0, allow_inf_nan=False)    # soft threshold (σ units)
     roi_radius: int = Field(default=0, ge=0, le=256)                   # 0 = object-bounded (grab whole connected source); >0 = hard half-box around the seed
+    # Interactive-slider budget: when > 0 the caller wants a LEVEL FIELD valid for
+    # every integer budget up to this, not a single mask. Capped at 254, the
+    # largest level a uint8 field can carry alongside the unreachable sentinel.
+    reach_max: float = Field(default=0.0, ge=0.0, le=254.0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def _check_seeds(self) -> "CubeKinematicSelectRequest":
@@ -493,6 +497,61 @@ class CubeKinematicSelectRequest(BaseModel):
             if len(s) != 3:
                 raise ValueError("each add/sub seed must be [z, y, x]")
         return self
+
+
+@router.post("/v1/cube/kinematic_levels_bin", tags=["cube"])
+async def cube_kinematic_levels_bin(
+    request: CubeKinematicSelectRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Geodesic LEVEL FIELDS for the interactive Reach slider.
+
+    One grow up to ``reach_max`` instead of one grow per slider step: the body is
+    two uint8 fields (add, then sub) over a shared bounding box, and the client
+    selects at any integer budget r with ``add <= r`` minus ``sub <= r``. Validation
+    showed the useful reach depends on the source's surface brightness and cannot
+    be defaulted from the header, so dragging it has to be cheap.
+    """
+    from ..compute import worker_cube_kinematic_levels  # noqa: PLC0415
+    try:
+        path = _require_cube_path(session, request.dataset_id)
+        budget = request.reach_max if request.reach_max > 0.0 else request.reach
+        seeds = [[request.seed_z, request.seed_y, request.seed_x],
+                 *[list(s) for s in request.add_seeds]]
+        subs = [list(s) for s in request.sub_seeds]
+        result = await _run_heavy_with_limit(
+            session,
+            worker_cube_kinematic_levels,
+            path, seeds, subs, budget,
+            request.lambda_v, request.sigma, request.roi_radius, request.nsigma,
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        return Response(content=str(exc).encode("utf-8"),
+                        media_type="text/plain", status_code=422)
+    except Exception as exc:
+        return Response(content=str(exc).encode("utf-8"),
+                        media_type="text/plain", status_code=500)
+
+    return Response(
+        content=result["raw_bytes"],
+        media_type="application/octet-stream",
+        headers={
+            # ROI dims + origin: the payload is TWO fields of this size, add then sub.
+            "X-Visivo-Width": str(result["roi_width"]),
+            "X-Visivo-Height": str(result["roi_height"]),
+            "X-Visivo-Depth": str(result["roi_depth"]),
+            "X-Visivo-Origin": f"{result['origin_x']},{result['origin_y']},{result['origin_z']}",
+            "X-Visivo-Full-Shape":
+                f"{result['full_width']},{result['full_height']},{result['full_depth']}",
+            "X-Visivo-Scalar-Type": "uint8",
+            "X-Visivo-Components": "2",          # add levels, then sub levels
+            "X-Visivo-Range-Max": str(result["reach_max"]),      # highest usable budget
+            "X-Visivo-Peak": str(result["unreachable"]),         # sentinel level
+        },
+    )
 
 
 @router.post("/v1/cube/kinematic_select_bin", tags=["cube"])
@@ -513,6 +572,7 @@ async def cube_kinematic_select_bin(
             seeds, subs,
             request.reach, request.lambda_v, request.sigma,
             request.roi_radius, request.nsigma,
+            request.reach_max if request.reach_max > 0.0 else None,
         )
     except HTTPException:
         raise
@@ -584,6 +644,7 @@ async def cube_mask_selection(
             seeds, subs,
             request.reach, request.lambda_v, request.sigma,
             request.roi_radius, request.nsigma, request.mode,
+            request.reach_max if request.reach_max > 0.0 else None,
         )
     except HTTPException:
         raise

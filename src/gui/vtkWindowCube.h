@@ -1,6 +1,7 @@
 #ifndef vtkWindowCube_H
 #define vtkWindowCube_H
 
+#include "BackendClient.h"
 #include "CatalogueOverlayUtils.h"
 #include "CubeOpenPreviewTask.h"
 #include "LutScale.h"
@@ -891,13 +892,6 @@ protected:
     double m_lassoReach{ 8.0 };       ///< geodesic cost budget (selection reach)
     double m_lassoLambdaV{ 1.0 };     ///< velocity-axis weight (the kinematic knob)
     int m_lassoRoiRadius{ 0 };   ///< 0 = object-bounded grow (whole connected source)
-    // Display geometry snapshot at the moment of the pick, so the preview places
-    // the selection with the SAME mapping used to derive the seed (robust to the
-    // display swapping mid-fetch). ROI displays have a non-zero origin + spacing 1
-    // (world == full-res voxels); preview/full have origin 0 (world == display voxels).
-    bool m_lassoSnapRoi{ false };
-    double m_lassoSnapOrigin[3]{ 0., 0., 0. };
-    int m_lassoSnapDim[3]{ 0, 0, 0 };
     QFutureWatcher<RemoteKinematicSelectResult> m_lassoSelectWatcher;
     vtkSmartPointer<vtkActor> m_lassoActor;
     vtkSmartPointer<vtkImageData> m_lassoImage;
@@ -954,8 +948,62 @@ protected:
     void onLassoRelease();                        ///< selection handler (bound to the left double-click)
     void onLassoSelectReady();
     void requestLassoSelection();                 ///< (re)grow from the current seeds
+    void requestLassoGrow();                      ///< single-budget grow (level-field fallback)
+
+    // ── Instant Reach scrubbing ──────────────────────────────────────────────
+    // The lasso validation on two cubes showed the useful Reach depends on the
+    // source's surface brightness, cannot be derived from the header, and so has
+    // to stay a control the user drags (validation/README.md). Dragging it used
+    // to cost one backend grow per step. Instead we fetch the geodesic LEVEL
+    // FIELD once per seed/λv and threshold it locally: `add <= r` minus
+    // `sub <= r`, which is exactly the voxel set a grow at r would return.
+    BackendKinematicLevelsResult m_lassoLevels;   ///< cached field (invalid = none)
+    // Identity the cache answers for. Tagged from the SNAPSHOT taken when the
+    // request went out, never from the live members: the user can move a slider
+    // or re-click while the fetch is in flight, and tagging with the live values
+    // would label a stale field as current.
+    double m_lassoLevelsLambdaV{ 0.0 };           ///< λv the cache was computed for
+    QVector<std::array<int, 3>> m_lassoLevelsSeeds;      ///< seeds it was computed for
+    QVector<std::array<int, 3>> m_lassoLevelsSubSeeds;
+    int m_lassoLevelsSeed[3]{ -1, -1, -1 };       ///< primary seed it was computed for
+    // The same three, snapshotted at request time and carried to the handler.
+    double m_lassoLevelsReqLambdaV{ 0.0 };
+    QVector<std::array<int, 3>> m_lassoLevelsReqSeeds;
+    QVector<std::array<int, 3>> m_lassoLevelsReqSubSeeds;
+    int m_lassoLevelsReqSeed[3]{ -1, -1, -1 };
+    QFutureWatcher<BackendKinematicLevelsResult> m_lassoLevelsWatcher;
+    /// Drop a displayed selection: mask bytes, 3-D surface, 2-D contour, 2-D edit
+    /// mode, count label and Apply. Shared by the local and the backend "nothing
+    /// selected" paths so an empty answer looks the same however it was reached.
+    void clearPresentedLassoSelection(bool render);
+    /// True when the cache answers for the CURRENT seeds and λv, so a Reach change
+    /// needs no network round trip. λv changes the cost function itself, so it
+    /// invalidates; Reach does not.
+    bool lassoLevelsUsable() const;
+    /// True when a hand-refined mask is on screen, so a Reach change would throw
+    /// the user's 2-D edits away.
+    bool m_lassoMaskHandEdited{ false };
+    /// Outcome of a local threshold. ``Empty`` is NOT a failure: with a carve
+    /// seed, ``(add <= r) & ~(sub <= r)`` can legitimately select nothing, and
+    /// conflating that with ``NoCache`` would leave the previous surface on
+    /// screen — and applyable — while the slider says otherwise.
+    enum class LassoLevels { Shown, Empty, NoCache };
+    /// Threshold the cached field at `reach` and show it.
+    LassoLevels showLassoSelectionFromLevels(int reach, bool render = true);
+    void onLassoLevelsReady();
+    /// Shared tail of a grow and a local threshold: store the ROI mask, place it
+    /// in display space, rebuild the isosurface. Extracted so the instant path and
+    /// the network path can never diverge in how they present a selection.
+    void presentLassoSelection(const RemoteKinematicSelectResult &r);
+    /// Recompute the ROI mask's world placement from the CURRENT cube display.
+    /// False when there is no display image to place it against.
+    bool updateLassoDisplayPlacement();
+    /// Re-place and redraw an already-shown selection after the cube display is
+    /// swapped (preview ↔ full-res ↔ ROI). Re-places the existing mask rather than
+    /// re-thresholding the level field, so 2-D hand refinements survive.
+    void refreshLassoAfterDisplaySwap();
     void ensureLassoPanel();
-    void placeLassoSeedMarker(const double world[3]);
+    void placeLassoSeedMarker(const double world[3], bool render = true);
     void applyLassoMask(const QString &mode);     ///< isolate/remove the selection → new cube
     // Moment computation is delegated to MomentMapController.
     MomentMapController *momentController{ nullptr };

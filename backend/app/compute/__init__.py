@@ -53,8 +53,11 @@ from .pv_iso import (  # noqa: F401
     worker_pv,
 )
 from .selection import (  # noqa: F401
+    cube_kinematic_levels,
     cube_kinematic_select,
     cube_kinematic_select_multi,
+    levels_to_mask,
+    worker_cube_kinematic_levels,
     worker_cube_kinematic_select,
     worker_cube_mask_selection,
     worker_cube_mask_apply,
@@ -134,8 +137,11 @@ __all__ = [
     "_sample_polyline",
     "_local_normal",
     "worker_pv",
+    "cube_kinematic_levels",
     "cube_kinematic_select",
     "cube_kinematic_select_multi",
+    "levels_to_mask",
+    "worker_cube_kinematic_levels",
     "worker_cube_kinematic_select",
     "worker_cube_mask_selection",
     "worker_cube_mask_apply",

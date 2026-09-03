@@ -46,6 +46,7 @@
     "POST /v1/cosmology/distance",
     "POST /v1/cosmology/distance/batch",
     "POST /v1/cosmology/skeleton/{dataset_id}",
+    "POST /v1/cube/kinematic_levels_bin",
     "POST /v1/cube/kinematic_model_bin",
     "POST /v1/cube/kinematic_select_bin",
     "POST /v1/cube/mask",

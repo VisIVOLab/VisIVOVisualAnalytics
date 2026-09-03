@@ -1706,6 +1706,94 @@ static QJsonArray seedsToJson(const QVector<std::array<int, 3>> &seeds)
     return arr;
 }
 
+BackendKinematicLevelsResult BackendClient::kinematicLevels(
+        const QString &datasetId, int seedZ, int seedY, int seedX,
+        double reachMax, double lambdaV, double sigma, double nsigma, int roiRadius,
+        const QVector<std::array<int, 3>> &addSeeds,
+        const QVector<std::array<int, 3>> &subSeeds) const
+{
+    BackendKinematicLevelsResult r;
+    QJsonObject bodyObj{
+            { QStringLiteral("dataset_id"), datasetId },
+            { QStringLiteral("seed_z"), seedZ }, { QStringLiteral("seed_y"), seedY },
+            { QStringLiteral("seed_x"), seedX },
+            { QStringLiteral("reach"), reachMax }, { QStringLiteral("reach_max"), reachMax },
+            { QStringLiteral("lambda_v"), lambdaV },
+            { QStringLiteral("sigma"), sigma }, { QStringLiteral("nsigma"), nsigma },
+            { QStringLiteral("roi_radius"), roiRadius } };
+    if (!addSeeds.isEmpty()) bodyObj.insert(QStringLiteral("add_seeds"), seedsToJson(addSeeds));
+    if (!subSeeds.isEmpty()) bodyObj.insert(QStringLiteral("sub_seeds"), seedsToJson(subSeeds));
+    const QJsonDocument body(bodyObj);
+    QNetworkRequest req =
+            buildRequest(QUrl(m_baseUrl + QStringLiteral("/v1/cube/kinematic_levels_bin")));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    QNetworkAccessManager *nam = getThreadLocalNam();
+    QMap<QByteArray, QByteArray> headers;
+    QString err;
+    int status = 0;
+    const QByteArray data = performBinaryPost(
+            nam, req, body.toJson(QJsonDocument::Compact), 120000, status, headers, err);
+    if (status != 200) {
+        const QString reason = !data.isEmpty() ? QString::fromUtf8(data)
+                             : (err.isEmpty() ? QString() : err);
+        r.error = reason.isEmpty()
+                          ? QStringLiteral("HTTP %1 on kinematic_levels_bin").arg(status)
+                          : QStringLiteral("HTTP %1: %2").arg(status).arg(reason);
+        return r;
+    }
+    const auto hget = [&](const char *name) -> QByteArray {
+        return visivoHeader(headers, name);
+    };
+    r.roiWidth  = hget(VisivoHeaders::WIDTH).toInt();
+    r.roiHeight = hget(VisivoHeaders::HEIGHT).toInt();
+    r.roiDepth  = hget(VisivoHeaders::DEPTH).toInt();
+    r.reachMax  = hget(VisivoHeaders::RANGE_MAX).toInt();
+    const int sentinel = hget(VisivoHeaders::PEAK).toInt();
+    if (sentinel > 0 && sentinel <= 255) r.unreachable = sentinel;
+    const auto origin = hget(VisivoHeaders::ORIGIN).split(',');
+    if (origin.size() == 3) {
+        r.originX = origin[0].toInt();
+        r.originY = origin[1].toInt();
+        r.originZ = origin[2].toInt();
+    }
+    const auto full = hget(VisivoHeaders::FULL_SHAPE).split(',');
+    if (full.size() == 3) {
+        r.fullWidth  = full[0].toInt();
+        r.fullHeight = full[1].toInt();
+        r.fullDepth  = full[2].toInt();
+    }
+    // Two uint8 fields of identical geometry, add first — reject anything else
+    // rather than indexing past the end while thresholding.
+    // Dimensions come from response headers, so bound each side BEFORE the
+    // multiply: three values near INT_MAX overflow the qint64 product and the
+    // size check below would then pass on a nonsense payload.
+    constexpr int kMaxRoiSide = 1 << 20;
+    if (r.roiWidth <= 0 || r.roiHeight <= 0 || r.roiDepth <= 0
+        || r.roiWidth > kMaxRoiSide || r.roiHeight > kMaxRoiSide || r.roiDepth > kMaxRoiSide) {
+        r.error = QStringLiteral("kinematic level ROI dimension out of range: %1x%2x%3")
+                          .arg(r.roiWidth).arg(r.roiHeight).arg(r.roiDepth);
+        return r;
+    }
+    const qint64 one = qint64(r.roiWidth) * qint64(r.roiHeight) * qint64(r.roiDepth);
+    if (data.size() != 2 * one) {
+        r.error = QStringLiteral("bad kinematic level payload: got %1 bytes, expected %2")
+                          .arg(data.size()).arg(2 * one);
+        return r;
+    }
+    // The split below and the float32 mask the caller builds from these fields are
+    // both int-indexed; refuse an oversized ROI here rather than truncating it into
+    // a short buffer downstream. A single field this large is >2 GB — a backend
+    // bug or a hostile response, not a real selection.
+    if (one > qint64(std::numeric_limits<int>::max()) / qint64(sizeof(float))) {
+        r.error = QStringLiteral("kinematic level ROI too large: %1 voxels").arg(one);
+        return r;
+    }
+    r.addLevels = data.left(qsizetype(one));
+    r.subLevels = data.mid(qsizetype(one));
+    r.valid = true;
+    return r;
+}
+
 BackendKinematicSelectResult BackendClient::kinematicSelect(
         const QString &datasetId, int seedZ, int seedY, int seedX,
         double reach, double lambdaV, double sigma, double nsigma, int roiRadius,

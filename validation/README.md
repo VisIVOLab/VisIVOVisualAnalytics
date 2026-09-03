@@ -149,9 +149,48 @@ interactively — recovers most of it, with a well-defined optimum
 
 So on the largest source of each cube the method transfers across instrument,
 projection and spectral convention: best Dice **0.86** (HGC 44) and **0.76**
-(WALLABY). What does *not* transfer is the default value of `reach` — it should
-be read as a user-facing scale control, and any figure should state the value
-used. Making it default to a beam/channel-derived scale is the obvious follow-up.
+(WALLABY). What does *not* transfer is the default value of `reach`.
+
+**`reach` cannot be defaulted from the header, and that is not a gap to close.**
+The obvious follow-up — derive it from the beam and the channel width — was
+tested and does not work: the two cubes have near-identical beams (6.6 vs 5.0 px)
+while their best reach differs eightfold, and within a single cube the optimum
+varies 4 → 16 between sources of similar extent. The reason is in the cost
+function: a voxel costs `exp(nσ − I/σ)`, so traversing bright material is nearly
+free and traversing near-threshold material costs ≈ 1 per step. The useful budget
+therefore tracks the source's **surface brightness relative to the noise**, which
+is neither in the header nor known before the click.
+
+Two self-contained automatic rules were measured against the ground-truth optimum
+over all 10 sources of both cubes, and both are *worse* than simply leaving the
+default alone (mean Dice lost, lower is better):
+
+| rule | mean Dice lost | worst |
+|---|---|---|
+| growth-curve knee (Kneedle on log N vs log reach) | 0.301 | 0.607 |
+| stop when the added shell falls below nσ | 0.190 | 0.438 |
+| **fixed default reach = 8** | **0.116** | 0.318 |
+
+Retuning the fixed default does not help either: the per-cube optima are 8
+(HGC 44, mean loss 0.022) and 32 (WALLABY, 0.018), and the global compromise of
+16 is worse than each cube's own choice for that cube (0.078 and 0.111). One
+number cannot serve both.
+
+The honest conclusion is that `reach` is irreducibly an **interactive** control —
+which is the premise of the tool, not an embarrassment: a human looking at the
+rendering supplies exactly the surface-brightness judgement the header lacks.
+What follows is a UI obligation rather than an algorithmic one, and it is now
+implemented: `POST /v1/cube/kinematic_levels_bin` returns the geodesic **level
+field** once per click, and the Reach slider thresholds it locally, so the
+surface follows the drag with no backend call per step. The threshold is exact
+rather than an approximation — levels are `ceil(distance)`, and for integer `r`,
+`ceil(d) ≤ r ⟺ d ≤ r` — so what the slider shows is the same voxel set a grow at
+that budget returns. One field also costs *less* than one old single-budget grow
+(0.30 s vs 0.44 s on HGC 44), because it is bounded by the object instead of
+allocating a cube-sized mask. The slider now runs to 64, since the old cap of 40
+could not express the budgets this cube needs.
+
+Published figures should still state the reach used.
 
 **2. Sources detectable only after multi-scale smoothing are out of scope.**
 WALLABY #4/#10/#11/#12 are ~10³-voxel sources that SoFiA finds by smoothing with

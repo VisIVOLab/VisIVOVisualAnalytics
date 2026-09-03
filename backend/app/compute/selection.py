@@ -65,8 +65,59 @@ def cube_kinematic_select(
     sigma: float | None = None,
     roi_radius: int = 0,
     nsigma: float = 2.5,
+    margin_reach: float | None = None,
 ) -> np.ndarray:
     """Geodesic, kinematics-aware region grow from ``seed_zyx`` (z=velocity).
+
+    Thin wrapper over :func:`_geodesic_distance`: the selection at budget
+    ``reach`` is just the sub-``reach`` level set of the geodesic distance from
+    the seed. Keeping the distance field separate is what lets the front end
+    re-threshold a single computed field while the user drags the Reach slider
+    (see :func:`cube_kinematic_levels`) instead of re-running Dijkstra per step.
+    """
+    dist, (dz0, dy0, dx0) = _geodesic_distance(
+        data, seed_zyx, reach, lambda_v, sigma, roi_radius, nsigma, margin_reach)
+    mask = np.zeros(data.shape, dtype=bool)
+    sel = dist <= float(reach)
+    mask[dz0:dz0 + dist.shape[0], dy0:dy0 + dist.shape[1], dx0:dx0 + dist.shape[2]] = sel
+    return mask
+
+
+def _geodesic_distance(
+    data: np.ndarray,
+    seed_zyx: tuple[int, int, int],
+    reach: float = 8.0,
+    lambda_v: float = 1.0,
+    sigma: float | None = None,
+    roi_radius: int = 0,
+    nsigma: float = 2.5,
+    margin_reach: float | None = None,
+) -> tuple[np.ndarray, tuple[int, int, int]]:
+    """Geodesic cost from ``seed_zyx``, over the object's bounding box only.
+
+    Returns ``(dist, origin)``: ``dist`` is **float64** over the component bbox
+    (``inf`` where unreachable within the budget) and ``origin`` is that box's
+    ``(z, y, x)`` offset in cube voxels. The array is bounded by the OBJECT, never
+    by the cube. The width is deliberate and must not be "optimised" to float32 to
+    match the cost array — see the note at the scatter below: narrowing SciPy's
+    distances moves values sitting within an ulp of a budget across the threshold.
+
+    ``reach`` still matters here even though no thresholding happens: it bounds
+    Dijkstra's exploration (and sizes the faint-margin shell), so asking for a
+    larger budget costs more work. Distances returned are exact for every value
+    up to ``reach``.
+
+    ``margin_reach`` sizes the faint-margin shell independently of ``reach``.
+    That knob exists because the shell is grown from the budget, so two runs at
+    different budgets do not even build the same graph. Usually a larger shell
+    only ADDS candidate voxels and can only lower distances — but not always: a
+    shell large enough to cross ``_MAX_SELECT_NODES`` triggers the trimming below,
+    which REMOVES nodes. So the level set of a big-budget run is not reliably a
+    superset of a small-budget one, and the relation must not be assumed. Passing
+    the same ``margin_reach`` to both sidesteps the question entirely: identical
+    graph, and Dijkstra with a larger limit cannot change any node whose shortest
+    distance is already ``<= r``. That is what keeps the interactive slider
+    (:func:`cube_kinematic_levels`) and the apply that follows it in agreement.
 
     The grow is bounded by the OBJECT, not a fixed box: we take the connected
     component of the ~nσ emission that contains the seed (so the whole galaxy /
@@ -83,7 +134,9 @@ def cube_kinematic_select(
     @param sigma      intensity scale for the cost; None → robust noise (MAD).
     @param roi_radius optional hard half-box (voxels) around the seed the grow is
                       confined to; ``<= 0`` = object-bounded (no box).
-    @returns boolean mask of shape ``data.shape`` (True = selected).
+    @param margin_reach shell budget; see above.
+    @returns ``(dist, origin)`` — see the opening paragraph. This function does NOT
+             return a mask; :func:`cube_kinematic_select` thresholds it into one.
     """
     from scipy import ndimage                     # noqa: PLC0415
     from scipy.sparse import csr_matrix           # noqa: PLC0415
@@ -144,7 +197,8 @@ def cube_kinematic_select(
     # (×1/min(lambda_v,1) when velocity steps are cheap) — size the shell for that so
     # the faint outskirts are never clipped before dijkstra decides.
     denom = min(float(lambda_v), 1.0)
-    margin = 1 + int(math.ceil(float(reach) / denom)) if denom > 0.0 else 49
+    shell_budget = float(reach if margin_reach is None else margin_reach)
+    margin = 1 + int(math.ceil(shell_budget / denom)) if denom > 0.0 else 49
     margin = max(1, min(margin, 48))
     comp = ndimage.binary_dilation(comp, structure=structure, iterations=margin)
     comp &= finite_w                           # NaN stays a hard barrier
@@ -219,9 +273,7 @@ def cube_kinematic_select(
 
     seed_node = int(idx[lz - z0, ly - y0, lx - x0])
     if not rows or not any(r.size for r in rows):   # single-voxel component
-        mask = np.zeros((nz, ny, nx), dtype=bool)
-        mask[sz, sy, sx] = True
-        return mask
+        return np.zeros((1, 1, 1), dtype=np.float64), (sz, sy, sx)
 
     graph = csr_matrix(
         (np.concatenate(wts), (np.concatenate(rows), np.concatenate(cols))),
@@ -230,14 +282,137 @@ def cube_kinematic_select(
     # limit prunes nodes past the budget → bounded work; unreachable → inf.
     dist = dijkstra(graph, directed=True, indices=seed_node, limit=float(reach))
 
-    sel_sub = np.zeros(sub.shape, dtype=bool)
-    reached = np.asarray(dist <= float(reach))
-    node_zyx = np.where(sub)
-    sel_sub[node_zyx] = reached
+    # Scatter the node distances back onto the bbox; non-component voxels stay
+    # inf so a caller thresholding at ANY budget excludes them.
+    #
+    # float64, deliberately, even though the cost array above is float32: SciPy
+    # returns float64 distances and the OLD code compared those directly against
+    # ``reach``. Narrowing them here would move values sitting within a float32
+    # ulp of the budget (or of an integer level) across the boundary, so the
+    # refactor would no longer be behaviour-preserving. This array is bounded by
+    # the object bbox and is smaller than the cube-shaped bool mask the caller
+    # used to allocate, so the width costs nothing that matters.
+    dist_sub = np.full(sub.shape, np.inf, dtype=np.float64)
+    dist_sub[np.where(sub)] = dist
+    return dist_sub, (wz0 + z0, wy0 + y0, wx0 + x0)
 
-    # Map the window-local bbox selection back to full-cube coordinates.
-    mask = np.zeros((nz, ny, nx), dtype=bool)
-    mask[wz0 + z0:wz0 + z1, wy0 + y0:wy0 + y1, wx0 + x0:wx0 + x1] = sel_sub
+
+# Sentinel level for "not reachable within the requested budget". uint8 gives us
+# 0..254 as real levels, which is why the budget is capped just below it.
+_LEVEL_UNREACHABLE = 255
+MAX_LEVEL_REACH = 254
+
+
+def cube_kinematic_levels(
+    data: np.ndarray,
+    seeds: list[tuple[int, int, int]],
+    sub_seeds: list[tuple[int, int, int]],
+    reach_max: float,
+    lambda_v: float = 1.0,
+    sigma: float | None = None,
+    roi_radius: int = 0,
+    nsigma: float = 2.5,
+) -> dict[str, Any]:
+    """Geodesic level fields for an INTERACTIVE reach slider.
+
+    The validation found that the useful ``reach`` is a property of the source's
+    surface brightness, not of the instrument, so it cannot be defaulted from the
+    header and has to stay a control the user drags (validation/README.md). This
+    makes dragging it cheap: one Dijkstra pass up to ``reach_max`` produces a
+    level field, and every budget below it is a THRESHOLD on that field — the
+    front end re-thresholds locally instead of asking the backend per step.
+
+    Levels are ``ceil(distance)`` in uint8. That quantisation is exact rather than
+    approximate for the slider, because for an INTEGER budget r
+    ``ceil(d) <= r  ⟺  d <= r`` — so a preview thresholded at level r is the same
+    voxel set the exact float path would apply, and preview and apply cannot drift.
+
+    Multiple seeds need no extra fields: a union of level sets is the level set of
+    the pointwise minimum, so one ``add`` field (min over ``seeds``) and one
+    ``sub`` field (min over ``sub_seeds``) describe every combination. The
+    selection at budget r is ``add <= r`` minus ``sub <= r``.
+
+    Returns the two fields over their shared bounding box plus that box's origin.
+    """
+    if not seeds:
+        raise ValueError("At least one selection seed is required.")
+    budget = float(reach_max)
+    if not np.isfinite(budget) or budget <= 0.0:
+        raise ValueError("reach_max must be a positive, finite budget.")
+    if budget > MAX_LEVEL_REACH:
+        raise ValueError(
+            f"reach_max {budget:g} exceeds the {MAX_LEVEL_REACH} the uint8 level "
+            f"field can represent; request a smaller budget.")
+
+    def fields(points: list[tuple[int, int, int]], *, tolerate_blank: bool
+               ) -> list[tuple[np.ndarray, tuple[int, int, int]]]:
+        out = []
+        for pt in points:
+            try:
+                out.append(_geodesic_distance(
+                    data, pt, budget, lambda_v, sigma, roi_radius, nsigma,
+                    margin_reach=budget))
+            except ValueError:
+                # Only a SUB seed may land on blank sky and be ignored (⌥-clicking
+                # empty space removes nothing). An add seed that cannot grow is an
+                # error, exactly as in cube_kinematic_select_multi() — tolerating it
+                # here would let a bad primary seed produce a plausible-looking
+                # field built from the other seeds alone.
+                if not tolerate_blank:
+                    raise
+                continue
+        return out
+
+    add = fields(list(seeds), tolerate_blank=False)
+    sub = fields(list(sub_seeds), tolerate_blank=True)
+
+    # Union bbox of every contributing field, so both outputs share one grid.
+    def bounds(fs):
+        for d, (z, y, x) in fs:
+            yield (z, y, x, z + d.shape[0], y + d.shape[1], x + d.shape[2])
+    allb = list(bounds(add)) + list(bounds(sub))
+    z0 = min(b[0] for b in allb); y0 = min(b[1] for b in allb); x0 = min(b[2] for b in allb)
+    z1 = max(b[3] for b in allb); y1 = max(b[4] for b in allb); x1 = max(b[5] for b in allb)
+    shape = (z1 - z0, y1 - y0, x1 - x0)
+
+    def merge(fs: list[tuple[np.ndarray, tuple[int, int, int]]]) -> np.ndarray:
+        # float64 like _geodesic_distance(): narrowing here would move a distance
+        # sitting just above an integer budget down onto it before ceil(), which
+        # is exactly the boundary flip the direct path was fixed to avoid.
+        acc = np.full(shape, np.inf, dtype=np.float64)
+        for d, (dz, dy, dx) in fs:
+            view = acc[dz - z0:dz - z0 + d.shape[0],
+                       dy - y0:dy - y0 + d.shape[1],
+                       dx - x0:dx - x0 + d.shape[2]]
+            np.minimum(view, d, out=view)
+        return acc
+
+    def quantise(f: np.ndarray) -> np.ndarray:
+        lv = np.full(f.shape, _LEVEL_UNREACHABLE, dtype=np.uint8)
+        ok = np.isfinite(f) & (f <= budget)
+        # ceil, not round: level r must mean "reachable within a budget of r".
+        lv[ok] = np.ceil(f[ok]).astype(np.uint8)
+        return lv
+
+    add_lv = quantise(merge(add))
+    sub_lv = (quantise(merge(sub)) if sub
+              else np.full(shape, _LEVEL_UNREACHABLE, dtype=np.uint8))
+    return {
+        "add_levels": add_lv, "sub_levels": sub_lv,
+        "origin": (z0, y0, x0), "shape": shape,
+        "reach_max": int(math.floor(budget)),
+        "unreachable": _LEVEL_UNREACHABLE,
+    }
+
+
+def levels_to_mask(levels: dict[str, Any], reach: int, cube_shape: tuple[int, int, int]) -> np.ndarray:
+    """Threshold a :func:`cube_kinematic_levels` result at an integer budget —
+    the reference implementation of what the front end does locally."""
+    z0, y0, x0 = levels["origin"]
+    dz, dy, dx = levels["shape"]
+    sel = (levels["add_levels"] <= reach) & ~(levels["sub_levels"] <= reach)
+    mask = np.zeros(cube_shape, dtype=bool)
+    mask[z0:z0 + dz, y0:y0 + dy, x0:x0 + dx] = sel
     return mask
 
 
@@ -250,6 +425,7 @@ def cube_kinematic_select_multi(
     sigma: float | None = None,
     roi_radius: int = 0,
     nsigma: float = 2.5,
+    margin_reach: float | None = None,
 ) -> np.ndarray:
     """Union of the geodesic selections grown from each seed in ``seeds``, minus
     the selections grown from each seed in ``sub_seeds`` — so the user can ⇧-click
@@ -259,12 +435,14 @@ def cube_kinematic_select_multi(
         raise ValueError("At least one selection seed is required.")
     mask: np.ndarray | None = None
     for s in seeds:
-        m = cube_kinematic_select(data, s, reach, lambda_v, sigma, roi_radius, nsigma)
+        m = cube_kinematic_select(data, s, reach, lambda_v, sigma, roi_radius, nsigma,
+                                  margin_reach)
         mask = m if mask is None else (mask | m)
     assert mask is not None
     for s in sub_seeds:
         try:
-            m = cube_kinematic_select(data, s, reach, lambda_v, sigma, roi_radius, nsigma)
+            m = cube_kinematic_select(data, s, reach, lambda_v, sigma, roi_radius, nsigma,
+                                      margin_reach)
         except ValueError:
             continue    # sub-seed on blank emission → nothing to remove
         mask &= ~m
@@ -280,6 +458,7 @@ def worker_cube_kinematic_select(
     sigma: float,
     roi_radius: int,
     nsigma: float = 2.5,
+    margin_reach: float | None = None,
 ) -> dict[str, Any]:
     """Top-level worker (picklable). Loads the cube, runs the geodesic selection,
     and serialises the mask as little-endian float32 (0/1, x-fastest = vtkImageData
@@ -303,6 +482,7 @@ def worker_cube_kinematic_select(
             reach=float(reach), lambda_v=float(lambda_v),
             sigma=float(sigma) if sigma and sigma > 0 else None,
             roi_radius=int(roi_radius), nsigma=float(nsigma),
+            margin_reach=(float(margin_reach) if margin_reach else None),
         )
     finally:
         hdul.close()
@@ -330,6 +510,55 @@ def worker_cube_kinematic_select(
     }
 
 
+def worker_cube_kinematic_levels(
+    path: str,
+    seeds: list[tuple[int, int, int]],
+    sub_seeds: list[tuple[int, int, int]],
+    reach_max: float,
+    lambda_v: float,
+    sigma: float,
+    roi_radius: int,
+    nsigma: float = 2.5,
+) -> dict[str, Any]:
+    """Top-level worker (picklable) for the interactive reach slider: computes the
+    geodesic level fields ONCE up to ``reach_max`` so the front end can re-threshold
+    them per slider step instead of asking for a new grow each time.
+
+    The payload is the two uint8 fields concatenated (add, then sub) over their
+    shared bounding box — half the bytes of one float32 mask ROI of the same box,
+    for every budget instead of one.
+    """
+    from ..fits_dataset import ScientificFitsDataset  # noqa: PLC0415
+
+    dataset = ScientificFitsDataset(path)
+    hdul, raw = dataset.open_memmap()
+    try:
+        data = ScientificFitsDataset.squeeze_to_3d(raw)
+        if data.ndim != 3:
+            raise ValueError("Kinematic selection requires a 3-D cube dataset.")
+        lv = cube_kinematic_levels(
+            data, list(seeds), list(sub_seeds), reach_max=float(reach_max),
+            lambda_v=float(lambda_v),
+            sigma=float(sigma) if sigma and sigma > 0 else None,
+            roi_radius=int(roi_radius), nsigma=float(nsigma),
+        )
+        nz, ny, nx = data.shape
+    finally:
+        hdul.close()
+
+    z0, y0, x0 = lv["origin"]
+    dz, dy, dx = lv["shape"]
+    payload = (np.ascontiguousarray(lv["add_levels"]).tobytes()
+               + np.ascontiguousarray(lv["sub_levels"]).tobytes())
+    return {
+        "raw_bytes": payload,
+        "roi_width": int(dx), "roi_height": int(dy), "roi_depth": int(dz),
+        "origin_x": int(x0), "origin_y": int(y0), "origin_z": int(z0),
+        "full_width": int(nx), "full_height": int(ny), "full_depth": int(nz),
+        "reach_max": int(lv["reach_max"]), "unreachable": int(lv["unreachable"]),
+    }
+
+
 def worker_cube_mask_selection(
     path: str,
     output_path: str,
@@ -341,6 +570,7 @@ def worker_cube_mask_selection(
     roi_radius: int,
     nsigma: float,
     mode: str,
+    margin_reach: float | None = None,
 ) -> dict[str, Any]:
     """Apply a Kinematic Lasso selection to the cube: blank the voxels INSIDE the
     selection (mode="blank_inside", remove the object) or OUTSIDE it
@@ -364,7 +594,10 @@ def worker_cube_mask_selection(
             data, list(seeds), list(sub_seeds),
             reach=float(reach), lambda_v=float(lambda_v),
             sigma=float(sigma) if sigma and sigma > 0 else None,
-            roi_radius=int(roi_radius), nsigma=float(nsigma))
+            roi_radius=int(roi_radius), nsigma=float(nsigma),
+            # Match the shell the preview's level field used, so what the user
+            # saw on screen is exactly what gets written out.
+            margin_reach=(float(margin_reach) if margin_reach else None))
     finally:
         hdul.close()
     if not mask.any():
