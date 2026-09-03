@@ -10,6 +10,7 @@
 #include "ui_vtkWindowCube.h"
 
 #include "CubeRegionGeom.h"
+#include "KinematicLevelField.h"
 #include "app/BackendClient.h"
 
 #include <vtkActor.h>
@@ -478,22 +479,15 @@ vtkWindowCube::LassoLevels vtkWindowCube::showLassoSelectionFromLevels(int reach
     if (reach > lv.reachMax) {
         return LassoLevels::NoCache;   // past what this field answers for → bigger grow
     }
-    // Bound each dimension BEFORE multiplying: three ints near INT_MAX overflow
-    // even a qint64 product, so the size check has to come after this, not before.
-    constexpr int kMaxRoiSide = 1 << 20;
-    if (lv.roiWidth <= 0 || lv.roiHeight <= 0 || lv.roiDepth <= 0
-        || lv.roiWidth > kMaxRoiSide || lv.roiHeight > kMaxRoiSide
-        || lv.roiDepth > kMaxRoiSide) {
-        return LassoLevels::NoCache;
-    }
-    const qsizetype n = qsizetype(lv.roiWidth) * lv.roiHeight * lv.roiDepth;
-    if (lv.addLevels.size() != n || lv.subLevels.size() != n) {
-        return LassoLevels::NoCache;
-    }
-    // QByteArray is indexed by qsizetype in Qt6 but the mask below is built with
-    // an int length; refuse a ROI whose float32 image would overflow it rather
-    // than silently truncating into a short buffer.
-    if (n > qsizetype(std::numeric_limits<int>::max()) / qsizetype(sizeof(float))) {
+    // The threshold itself lives in KinematicLevelField so it can be unit-tested
+    // without VTK/QtWidgets; a malformed field is reported as NoCache so the
+    // caller falls back to a backend grow rather than showing nothing.
+    const KinematicLevelField::Input in{
+        lv.addLevels, lv.subLevels, lv.roiWidth, lv.roiHeight, lv.roiDepth,
+        lv.originX, lv.originY, lv.originZ,
+        lv.fullWidth, lv.fullHeight, lv.fullDepth };
+    const KinematicLevelField::Result sel = KinematicLevelField::thresholdAt(in, reach);
+    if (!sel.valid) {
         return LassoLevels::NoCache;
     }
     // A Reach change recomputes the mask from the geodesic field, so any 2-D
@@ -509,54 +503,27 @@ vtkWindowCube::LassoLevels vtkWindowCube::showLassoSelectionFromLevels(int reach
         this->statusBar()->showMessage(
                 u"Kinematic Lasso: 2-D refinements discarded — Reach regrows the mask."_s, 4000);
     }
-    // Threshold: add <= r, minus sub <= r. Emitted in the float32 0/1 ROI format
-    // presentLassoSelection() already understands, so the instant path and the
-    // network path share every downstream step.
-    RemoteKinematicSelectResult r;
-    r.valid = true;
-    r.roiWidth = lv.roiWidth; r.roiHeight = lv.roiHeight; r.roiDepth = lv.roiDepth;
-    r.originX = lv.originX; r.originY = lv.originY; r.originZ = lv.originZ;
-    r.fullWidth = lv.fullWidth; r.fullHeight = lv.fullHeight; r.fullDepth = lv.fullDepth;
-    QByteArray mask(int(n) * int(sizeof(float)), Qt::Uninitialized);
-    auto *out = reinterpret_cast<float *>(mask.data());
-    const auto *add = reinterpret_cast<const quint8 *>(lv.addLevels.constData());
-    const auto *sub = reinterpret_cast<const quint8 *>(lv.subLevels.constData());
-    const quint8 thr = quint8(std::clamp(reach, 0, 255));
-    int count = 0;
-    int x0 = lv.roiWidth, x1 = -1, y0 = lv.roiHeight, y1 = -1, z0 = lv.roiDepth, z1 = -1;
-    for (qsizetype i = 0; i < n; ++i) {
-        const bool on = (add[i] <= thr) && !(sub[i] <= thr);
-        out[i] = on ? 1.0f : 0.0f;
-        if (!on) {
-            continue;
-        }
-        ++count;
-        const int x = int(i % lv.roiWidth);
-        const int y = int((i / lv.roiWidth) % lv.roiHeight);
-        const int z = int(i / (qsizetype(lv.roiWidth) * lv.roiHeight));
-        x0 = std::min(x0, x); x1 = std::max(x1, x);
-        y0 = std::min(y0, y); y1 = std::max(y1, y);
-        z0 = std::min(z0, z); z1 = std::max(z1, z);
-    }
-    if (count <= 0) {
+    if (sel.count <= 0) {
         // Legitimate with a carve seed: the budget can exclude everything the add
         // seeds reached. Clear rather than leave a stale surface the user could
         // still Apply.
         this->clearPresentedLassoSelection(render);
         return LassoLevels::Empty;
     }
-    r.count = count;
-    // bbox is in FULL-CUBE voxels, like the backend's, so Apply and the 2-D
-    // overlay read it the same way whichever path produced the selection.
-    r.bbox[0] = lv.originX + x0; r.bbox[1] = lv.originX + x1;
-    r.bbox[2] = lv.originY + y0; r.bbox[3] = lv.originY + y1;
-    r.bbox[4] = lv.originZ + z0; r.bbox[5] = lv.originZ + z1;
-    r.data = mask;
+
+    RemoteKinematicSelectResult r;
+    r.valid = true;
+    r.roiWidth = lv.roiWidth; r.roiHeight = lv.roiHeight; r.roiDepth = lv.roiDepth;
+    r.originX = lv.originX; r.originY = lv.originY; r.originZ = lv.originZ;
+    r.fullWidth = lv.fullWidth; r.fullHeight = lv.fullHeight; r.fullDepth = lv.fullDepth;
+    r.count = sel.count;
+    std::copy(sel.bbox.begin(), sel.bbox.end(), r.bbox);
+    r.data = sel.mask;
 
     this->showLassoHint(false);
     this->presentLassoSelection(r);
     if (this->m_lassoCountLabel) {
-        this->m_lassoCountLabel->setText(u"%1 voxels selected"_s.arg(count));
+        this->m_lassoCountLabel->setText(u"%1 voxels selected"_s.arg(sel.count));
     }
     this->setLassoApplyEnabled(true);
     if (render && ui->vtkCube && ui->vtkCube->renderWindow()) {

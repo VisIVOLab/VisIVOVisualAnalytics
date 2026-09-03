@@ -89,6 +89,8 @@ add_executable(VisIVOTests
     test_cube_region_geom.cpp
     TestSpectralAxisInfer.h
     test_spectral_axis_infer.cpp
+    TestKinematicLevelField.h
+    test_kinematic_level_field.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE
