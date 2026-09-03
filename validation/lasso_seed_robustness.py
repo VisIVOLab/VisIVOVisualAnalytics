@@ -24,8 +24,8 @@ Run:  backend/.venv/bin/python validation/lasso_seed_robustness.py
 """
 from __future__ import annotations
 
+import argparse
 import csv
-import os
 import sys
 from pathlib import Path
 
@@ -36,12 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "backend"))
 from app.compute.selection import cube_kinematic_select  # noqa: E402
 
 # Out-of-repo HI cube; point at it via the env var so the script is reproducible anywhere.
-CUBE = os.environ.get(
-    "VISIVO_VALIDATION_CUBE", "/Users/fvitello/downloads/DemoData/hgc44_3axes.fits")
-MASK = str(Path(__file__).resolve().parent / "sofia_out" / "sofia_hgc44_mask.fits")
-if len(sys.argv) > 1:
-    MASK = sys.argv[1]
-OUT = Path(__file__).resolve().parent / "out"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from datasets import OUT, add_dataset_arg, resolve  # noqa: E402
 
 N_SOURCES = 5                        # perturb the N largest SoFiA sources
 REACH, LAMBDA_V, NSIGMA = 8.0, 1.0, 2.5   # lasso defaults (as a user would click)
@@ -142,7 +138,14 @@ def eval_seeds(data, src, seeds):
 
 
 def main() -> None:
-    for label, path in (("cube (set $VISIVO_VALIDATION_CUBE)", CUBE), ("SoFiA mask", MASK)):
+    ap = argparse.ArgumentParser(description=__doc__)
+    add_dataset_arg(ap)
+    ap.add_argument("mask", nargs="?", help="override the reference SoFiA mask")
+    args = ap.parse_args()
+    dset = resolve(args.dataset)
+    CUBE = dset.cube
+    MASK = args.mask or str(dset.mask_path)
+    for label, path in (("cube", CUBE), ("SoFiA mask", MASK)):
         if not Path(path).is_file():
             sys.exit(f"error: {label} not found: {path}")
     OUT.mkdir(exist_ok=True)
@@ -227,9 +230,9 @@ def main() -> None:
     ax[1].set_title("interior metric spread (lower = more click-robust)")
     ax[1].legend(fontsize=8)
     fig.tight_layout()
-    fig.savefig(OUT / "seed_robustness.png", dpi=130)
+    fig.savefig(dset.out("seed_robustness", "png"), dpi=130)
 
-    with open(OUT / "seed_robustness.csv", "w", newline="") as f:
+    with open(dset.out("seed_robustness", "csv"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader(); w.writerows(rows)
 
@@ -270,8 +273,8 @@ def main() -> None:
         f"_Scope: a single-cube, {len(rows)}-source sanity check — it shows the peak-seed "
         "comparison is not driven by exact peak clicks for well-connected sources; it does "
         "not by itself establish general seed robustness across all cubes._")
-    (OUT / "seed_robustness.md").write_text("\n".join(md) + "\n")
-    print("\nWrote", OUT / "seed_robustness.md", "and", OUT / "seed_robustness.png")
+    (dset.out("seed_robustness", "md")).write_text("\n".join(md) + "\n")
+    print("\nWrote", dset.out("seed_robustness", "md"), "and", dset.out("seed_robustness", "png"))
 
 
 if __name__ == "__main__":

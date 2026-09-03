@@ -2,9 +2,9 @@
 """Kinematic Lasso vs SoFiA-2 — scientific validation on a real HI cube.
 
 Compares the VisIVO Kinematic-Lasso geodesic selection against a SoFiA-2 source
-mask on the same cube (Hickson Compact Group 44 HI observation). For each of the
-main SoFiA-detected galaxies we seed the lasso on the source's peak voxel, grow
-the selection with default parameters, and measure:
+mask on the same cube. For each of the main SoFiA-detected galaxies we seed the
+lasso on the source's peak voxel, grow the selection with default parameters,
+and measure:
 
   - spatial agreement: Dice, IoU, completeness (∩/SoFiA), reliability (∩/lasso)
   - integrated HI flux (Jy·km/s) — lasso vs SoFiA, and their ratio
@@ -12,12 +12,12 @@ the selection with default parameters, and measure:
 
 Outputs a metrics table (markdown + CSV) and per-source figures under out/.
 
-Run:  backend/.venv/bin/python validation/lasso_vs_sofia.py
+Run:  backend/.venv/bin/python validation/lasso_vs_sofia.py [--dataset NAME] [MASK]
 """
 from __future__ import annotations
 
+import argparse
 import csv
-import os
 import sys
 from pathlib import Path
 
@@ -25,20 +25,10 @@ import numpy as np
 from astropy.io import fits
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent / "backend"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from app.compute.selection import cube_kinematic_select  # noqa: E402
+from datasets import OUT, add_dataset_arg, resolve  # noqa: E402
 
-# The HGC 44 HI cube. Not shipped in-repo (large); point at it via the env var so the
-# script is reproducible on any machine instead of a hard-coded local path.
-CUBE = os.environ.get(
-    "VISIVO_VALIDATION_CUBE",
-    "/Users/fvitello/downloads/DemoData/hgc44_3axes.fits",
-)
-# Reproducible SoFiA-2 mask from validation/sofia_hgc44.par (see README). Override
-# with argv[1] to compare against another mask (e.g. the pre-existing run5 mask).
-MASK = str(Path(__file__).resolve().parent / "sofia_out" / "sofia_hgc44_mask.fits")
-if len(sys.argv) > 1:
-    MASK = sys.argv[1]
-OUT = Path(__file__).resolve().parent / "out"
 N_SOURCES = 5                 # compare the N largest SoFiA sources
 REACH, LAMBDA_V, NSIGMA = 8.0, 1.0, 2.5   # lasso defaults (as a user would click)
 
@@ -51,11 +41,18 @@ def beam_area_px(hd) -> float:
 
 
 def main() -> None:
-    # Fail early with an actionable message rather than a cryptic astropy error when the
-    # (out-of-repo) inputs are missing — the paper artifact must be runnable by a co-author.
-    for label, path in (("cube (set $VISIVO_VALIDATION_CUBE)", CUBE), ("SoFiA mask", MASK)):
-        if not Path(path).is_file():
-            sys.exit(f"error: {label} not found: {path}")
+    ap = argparse.ArgumentParser(description=__doc__)
+    add_dataset_arg(ap)
+    ap.add_argument("mask", nargs="?", help="override the reference SoFiA mask "
+                                            "(e.g. a differently-parameterised run)")
+    args = ap.parse_args()
+    # resolve() fails early with an actionable message rather than a cryptic astropy
+    # error: the paper artifact must be runnable by a co-author who has only cloned.
+    ds = resolve(args.dataset)
+    CUBE = ds.cube
+    MASK = args.mask or str(ds.mask_path)
+    if args.mask and not Path(MASK).is_file():
+        sys.exit(f"error: SoFiA mask not found: {MASK}")
 
     OUT.mkdir(exist_ok=True)
     hd = fits.getheader(CUBE)
@@ -140,17 +137,18 @@ def main() -> None:
         ax[1].set_xlabel("channel"); ax[1].set_ylabel("flux (Jy·km/s)")
         ax[1].set_title("total spectrum"); ax[1].legend()
         fig.tight_layout()
-        fig.savefig(OUT / f"source_{lab:02d}.png", dpi=130)
+        fig.savefig(ds.out(f"source_{lab:02d}", "png"), dpi=130)
         plt.close(fig)
 
     # ── metrics table ──
     if not rows:
         sys.exit("error: no SoFiA source could be seeded (all masks empty/NaN).")
-    with open(OUT / "metrics.csv", "w", newline="") as f:
+    with open(ds.out("metrics", "csv"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader(); w.writerows(rows)
 
-    md = ["# Kinematic Lasso vs SoFiA-2 — HGC 44 HI cube",
+    md = [f"# Kinematic Lasso vs SoFiA-2 — {ds.title} ({ds.instrument})",
+          f"\n{ds.note}.\n",
           f"\nCube `{Path(CUBE).name}` {data.shape}, beam {barea:.1f} px, "
           f"Δv {dv:.2f} km/s. Lasso defaults reach={REACH}, λv={LAMBDA_V}, nσ={NSIGMA}. "
           f"Seed = each SoFiA source's peak voxel.\n",
@@ -165,8 +163,8 @@ def main() -> None:
     d = np.array([r["dice"] for r in rows]); fr = np.array([r["flux_ratio"] for r in rows])
     # nanmedian: a source with zero SoFiA flux contributes a NaN ratio (guarded above).
     md.append(f"\n**Median Dice {np.median(d):.3f}, median flux ratio {np.nanmedian(fr):.3f}.**")
-    (OUT / "metrics.md").write_text("\n".join(md) + "\n")
-    print("\nWrote", OUT / "metrics.md", "and per-source figures.")
+    ds.out("metrics", "md").write_text("\n".join(md) + "\n")
+    print("\nWrote", ds.out("metrics", "md"), "and per-source figures.")
 
 
 if __name__ == "__main__":
