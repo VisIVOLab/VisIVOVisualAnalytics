@@ -2,6 +2,10 @@
 #define BackendClient_h
 
 #include <QByteArray>
+#include <QHash>
+#include <QSet>
+#include <QMutex>
+#include <QWaitCondition>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
@@ -1251,6 +1255,59 @@ public:
     static void setDefaultSessionId(const QString &sessionId);
     static QString defaultSessionId();
 
+    /**
+     * Ask this backend to MINT a session for us (POST /v1/sessions/new) and
+     * remember it for that base URL. Server-minted ids are required by a backend
+     * running with VISIVO_STRICT_SESSIONS (the default once per-user tokens are
+     * configured), which refuses to adopt an id the client invented.
+     *
+     * Idempotent per base URL and best-effort: if the endpoint is missing (older
+     * backend) or unreachable we keep using the locally generated default id, so
+     * a single-user backend behaves exactly as before. Each backend gets its OWN
+     * minted id — a shared default can't work once ids come from the server.
+     */
+    /// Outcome of ensureSessionMinted(): the backend gave us a session, the
+    /// backend has no such route (keep the local default id), or we could not
+    /// reach it this time (a caller building a request by hand should not send
+    /// yet — a strict backend would reject it).
+    enum class SessionMint { Ready, Unsupported, Deferred };
+    SessionMint ensureSessionMinted() const;
+
+    /// The session id to send to @p baseUrl: the id that backend minted for us if
+    /// there is one, else the process-wide local default. Use this when building a
+    /// request by hand (e.g. the copilot's SSE stream) instead of BackendClient.
+    static QString sessionIdForUrl(const QString &baseUrl, const QString &token);
+
+    /// True once @p baseUrl has minted a session for @p token (or we know it never
+    /// will, because that backend has no such route). Lets a caller that builds a
+    /// request by hand decide whether it must run ensureSessionMinted() first —
+    /// off the GUI thread, since that performs a network round-trip.
+    static bool sessionResolvedForUrl(const QString &baseUrl, const QString &token);
+    /// Blocking convenience for hand-built requests: ensure a session and report
+    /// the identity that actually authenticated. ``effectiveToken`` / ``sessionId``
+    /// are what such a caller must put on the wire — the mint may have adopted a
+    /// refreshed token, in which case the caller's original one is stale.
+    /// The token an alias-aware lookup would actually authenticate with: follows
+    /// a rotation the mint recorded (old token → refreshed one) for *baseUrl*.
+    /// applySessionHeaders() does this internally; call it directly only when the
+    /// token goes somewhere that is not a request header — a WebSocket query
+    /// string, say — where the stale one would fail auth on its own.
+    static QString effectiveToken(const QString &baseUrl, const QString &token);
+
+    /// Stamp the auth + session headers on a request built by hand — the direct
+    /// QNetworkAccessManager paths (remote render, WebRTC signalling, SAMP) that
+    /// do not go through buildRequest(). Without the session header those land in
+    /// a DIFFERENT backend session than the rest of the client's traffic, which
+    /// under multi-user mode means they cannot see the client's datasets at all.
+    /// Pass ``sessionOverride`` when the caller already holds a session id.
+    static void applySessionHeaders(QNetworkRequest &request, const QString &baseUrl,
+                                    const QString &token,
+                                    const QString &sessionOverride = QString());
+
+    static SessionMint ensureSessionFor(const QString &baseUrl, const QString &token,
+                                        QString *effectiveToken = nullptr,
+                                        QString *sessionId = nullptr);
+
     // ── Static helpers ────────────────────────────────────────────────────────
 
     /**
@@ -1858,7 +1915,8 @@ private:
 
     QByteArray performGet(const QUrl &url, QString &error) const;
     QByteArray performPost(const QUrl &url, const QJsonDocument &body, QString &error,
-                           QMap<QString, QString> *responseHeaders = nullptr) const;
+                           QMap<QString, QString> *responseHeaders = nullptr,
+                           int *statusOut = nullptr) const;
     std::chrono::milliseconds requestTimeoutFor(const QUrl &url) const;
 
     static QByteArray decodePayload(const QJsonObject &object, const QString &base64Field,
@@ -1868,8 +1926,34 @@ private:
     QString m_token;
     QString m_sessionId;
 
-    /// Process-wide fallback session id (see setDefaultSessionId).
     static QString s_defaultSessionId;
+    /// Minted sessions are cached per (base URL + token): a session belongs to one
+    /// identity, so a token rotation must mint again.
+    static QHash<QString, QString> s_minted;      ///< key → session id
+    /// Identities (mintKey) that answered but gave us no session — 401, 429, 5xx.
+    /// Once a backend has ANSWERED we pin THAT identity to the locally generated
+    /// default id for the rest of the run: silently switching session ids later
+    /// would split the user's datasets across two backend sessions. Scoped per
+    /// identity so one token's 401/429 does not disable minting for another.
+    /// A backend that never answered is NOT pinned — nothing was stored there.
+    static QSet<QString> s_mintPinnedToDefault;
+    /// Base URLs whose /v1/sessions/new does not exist (404/405) — an older
+    /// backend. That verdict is a property of the server, so it IS base-wide.
+    static QSet<QString> s_mintUnsupportedBase;
+    /// Old-token → effective-token aliases per base URL, recorded when the mint's
+    /// POST had to fall back to a refreshed token. Without it a caller still
+    /// holding the old token misses the cache and mints a spare session on every
+    /// request. Key is mintKey(baseUrl, oldToken); value is the effective token.
+    static QHash<QString, QString> s_tokenAlias;
+    /// Follows s_tokenAlias to the identity a lookup should really use.
+    /// Caller must hold s_sessionMutex.
+    static QString resolvedToken(const QString &baseUrl, const QString &token);
+    static QMutex s_sessionMutex;                 ///< guards the maps above
+    /// Serialises minting so concurrent callers make ONE request and then find the
+    /// cached id. Held only across a single HTTP call, which is already bounded by
+    /// the client's request timeout — hence no claim/reclaim bookkeeping.
+    static QMutex s_mintMutex;
+    static QString mintKey(const QString &baseUrl, const QString &token);
 };
 
 #endif

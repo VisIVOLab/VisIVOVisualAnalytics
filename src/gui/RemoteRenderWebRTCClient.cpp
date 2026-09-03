@@ -1,5 +1,7 @@
 #include "RemoteRenderWebRTCClient.h"
 
+#include "BackendClient.h"
+
 #include <QDebug>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -430,7 +432,9 @@ void RemoteRenderWebRTCClient::postSdpOffer(const QString &offerSdp)
 
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_qs);
-    req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), m_token.toUtf8());
+    // m_sessionId is the RENDER session (in the path); the backend session comes
+    // from the client-wide mint so signalling shares it with the rest of the app.
+    BackendClient::applySessionHeaders(req, m_baseUrl, m_token);
 
     QJsonObject body;
     body[u"sdp"_qs]  = offerSdp;
@@ -489,7 +493,9 @@ void RemoteRenderWebRTCClient::postIceCandidate(const QString &candidate,
 
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_qs);
-    req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), m_token.toUtf8());
+    // m_sessionId is the RENDER session (in the path); the backend session comes
+    // from the client-wide mint so signalling shares it with the rest of the app.
+    BackendClient::applySessionHeaders(req, m_baseUrl, m_token);
 
     QJsonObject body;
     body[u"candidate"_qs] = candidate;

@@ -46,6 +46,12 @@ logger = logging.getLogger("visivo.sessions")
 
 _TTL_SECONDS = int(os.environ.get("VISIVO_SESSION_TTL", "1800"))
 _ANON_SESSION_ID = "anonymous"
+# Strict sessions: refuse to ADOPT a client-invented id — clients must ask the
+# server to mint one (POST /v1/sessions/new). This makes ids fully
+# non-enumerable: an unknown id and someone else's id both answer 404, whereas
+# adoption answers 200 for unknown ids. Defaults ON once per-user tokens exist;
+# VISIVO_STRICT_SESSIONS=0/1 overrides either way.
+_STRICT_SESSIONS_ENV = os.environ.get("VISIVO_STRICT_SESSIONS", "").strip()
 # Cap live sessions per auth token so one caller can't spam adopted ids.
 _MAX_SESSIONS_PER_TOKEN = int(os.environ.get("VISIVO_MAX_SESSIONS_PER_TOKEN", "32"))
 
@@ -61,6 +67,15 @@ def _id_is_high_entropy(session_id: str) -> bool:
     its owner's first request (session fixation), so we refuse those outright."""
     return (len(session_id) >= _MIN_ADOPTABLE_ID_LEN
             and all(c in _ADOPTABLE_ID_CHARS for c in session_id))
+
+
+def strict_sessions() -> bool:
+    """Whether client-invented session ids are refused (see _STRICT_SESSIONS_ENV)."""
+    env = os.environ.get("VISIVO_STRICT_SESSIONS", _STRICT_SESSIONS_ENV).strip()
+    if env:
+        return env not in ("0", "false", "False", "no")
+    from .auth import multi_user_mode
+    return multi_user_mode()
 
 
 def _redact(session_id: str) -> str:
@@ -164,13 +179,29 @@ class Session:
 class SessionRegistry:
     """Thread-safe registry of active sessions with background TTL eviction."""
 
-    def __init__(self, ttl_seconds: int = _TTL_SECONDS) -> None:
+    def __init__(self, ttl_seconds: int = _TTL_SECONDS,
+                 start_eviction: bool = True) -> None:
         self._sessions: dict[str, Session] = {}
         self._lock = threading.Lock()
         self._ttl = ttl_seconds
-        self._start_eviction_thread()
+        # Tests build registries with a tiny TTL to exercise flushing; leaving the
+        # background thread running would race their explicit flush call.
+        if start_eviction:
+            self._start_eviction_thread()
 
     # ── Public API ────────────────────────────────────────────────────────────
+
+    def _enforce_quota_locked(self, owner_token: str | None) -> None:
+        """Raise SessionQuotaExceeded if ``owner_token`` is at its session cap.
+        Caller must hold ``self._lock``."""
+        if owner_token is None:
+            return
+        mine = sum(1 for x in self._sessions.values()
+                   if x.owner_token is not None
+                   and _secrets.compare_digest(x.owner_token, owner_token))
+        if mine >= _MAX_SESSIONS_PER_TOKEN:
+            raise SessionQuotaExceeded(
+                f"Too many live sessions for this token ({_MAX_SESSIONS_PER_TOKEN}).")
 
     def create(self, session_id: str | None = None,
                owner_token: str | None = None) -> Session:
@@ -186,6 +217,7 @@ class SessionRegistry:
             if existing is not None:
                 existing.touch()
                 return existing
+            self._enforce_quota_locked(owner_token)
             session = Session(session_id)
             session.owner_token = owner_token
             self._sessions[session_id] = session
@@ -193,7 +225,8 @@ class SessionRegistry:
         return session
 
     def get_or_adopt(self, session_id: str, owner_token: str | None,
-                     require_owned: bool = False) -> Session | None:
+                     require_owned: bool = False,
+                     allow_create: bool = True) -> Session | None:
         """Atomically resolve a client-supplied session id, enforcing ownership.
 
         Under a SINGLE lock acquisition (so two users racing the same brand-new id
@@ -216,14 +249,12 @@ class SessionRegistry:
                     return None          # another user's session
                 existing.touch()
                 return existing
-            if owner_token is not None:
-                mine = sum(1 for x in self._sessions.values()
-                           if x.owner_token is not None
-                           and _secrets.compare_digest(x.owner_token, owner_token))
-                if mine >= _MAX_SESSIONS_PER_TOKEN:
-                    raise SessionQuotaExceeded(
-                        f"Too many live sessions for this token "
-                        f"({_MAX_SESSIONS_PER_TOKEN}).")
+            if not allow_create:
+                # Strict mode: unknown ids are NOT adopted, and answer exactly
+                # like someone else's id (None → 404), so ids stay unguessable
+                # AND non-enumerable.
+                return None
+            self._enforce_quota_locked(owner_token)
             session = Session(session_id)
             session.owner_token = owner_token
             self._sessions[session_id] = session
@@ -420,7 +451,8 @@ async def get_session(x_visivo_session: str | None = Header(None),
         )
     try:
         session = REGISTRY.get_or_adopt(x_visivo_session, owner_token=token,
-                                        require_owned=multi_user_mode())
+                                        require_owned=multi_user_mode(),
+                                        allow_create=not strict_sessions())
     except SessionQuotaExceeded as exc:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc)) from exc
     if session is None:

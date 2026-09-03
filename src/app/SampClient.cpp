@@ -35,14 +35,22 @@
 
 namespace {
 
-/// Build a QNetworkRequest for the VisIVO backend (adds X-Visivo-Token).
+/// Build a QNetworkRequest for the VisIVO backend (auth + session headers).
+/// The session header matters: SAMP hand-offs address datasets by id, and under
+/// multi-user mode a request without it resolves to a different session that
+/// holds none of them. The base URL is reconstructed from *url* so it matches
+/// the key BackendClient minted the session under.
 QNetworkRequest buildBackendRequest(const QUrl &url, const QString &token)
 {
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader,
                   QByteArrayLiteral("application/json"));
-    if (!token.isEmpty())
-        req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), token.toUtf8());
+    // Strip only the API path, keeping any reverse-proxy prefix (a backend may
+    // live under /visivo): scheme://authority alone would miss the mint key.
+    QString baseUrl = url.toString(QUrl::RemoveQuery | QUrl::RemoveFragment);
+    if (const int api = baseUrl.indexOf(QStringLiteral("/v1/")); api > 0)
+        baseUrl.truncate(api);
+    BackendClient::applySessionHeaders(req, baseUrl, token);
     return req;
 }
 

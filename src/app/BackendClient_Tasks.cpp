@@ -187,7 +187,9 @@ BackendWorkspaceDeleteResult BackendClient::deleteExport(const QString &filename
             QUrl::toPercentEncoding(filename, "", "/"));
     QNetworkRequest req(QUrl(m_baseUrl
                              + QStringLiteral("/v1/exports/") + safeSeg));
-    req.setRawHeader("X-Visivo-Token", m_token.toUtf8());
+    // Hand-built (QNAM has no delete-with-body helper we can reuse), so stamp
+    // the headers explicitly rather than letting it send an unnormalised token.
+    BackendClient::applySessionHeaders(req, m_baseUrl, m_token, m_sessionId);
     auto *nam = getThreadLocalNam();
     auto *reply = nam->sendCustomRequest(req, "DELETE");
     QEventLoop loop;

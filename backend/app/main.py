@@ -65,6 +65,14 @@ _render_mounted = False
 
 @contextlib.asynccontextmanager
 async def _lifespan(_app: "FastAPI"):
+    # Multi-user mode fails closed on filesystem access. Say so at boot rather
+    # than letting the operator discover it as an unexplained 404 per request.
+    from .dependencies import data_roots  # noqa: PLC0415 – avoids an import cycle
+    if data_roots() is None:
+        logging.getLogger("visivo.backend").warning(
+            "[startup] VISIVO_TOKENS is set but VISIVO_DATA_ROOTS is not: "
+            "path-based endpoints (file browser, dataset open, overlays) are "
+            "DISABLED. Declare the directories this backend may share.")
     yield
     if _render_mounted:
         # Release all open EGL contexts cleanly on uvicorn shutdown. Without this
@@ -113,6 +121,21 @@ async def attach_request_id(request: Request, call_next):
 # handler that echoes str(exc)/a traceback) exposes filesystem paths and internals
 # to the client. HTTPException is intentionally NOT caught here — FastAPI's own
 # handler renders those (they carry deliberate, safe messages).
+# A client-supplied path outside VISIVO_DATA_ROOTS raises PermissionError from
+# _normalize_path(). Routes that build a ``valid=False`` envelope catch it
+# themselves; this handler covers the rest so a refusal is a uniform 404 rather
+# than a 500. 404 (not 403) on purpose: a denied path and an absent one must be
+# indistinguishable, or the error code alone would confirm the path exists.
+@app.exception_handler(PermissionError)
+async def _permission_denied_handler(request: Request, exc: PermissionError) -> JSONResponse:
+    logger.warning("[path-denied] method=%s path=%s: %s",
+                   request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=404,
+        content={"error": "Path not found.", "error_code": "path_not_found"},
+    )
+
+
 @app.exception_handler(Exception)
 async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     request_id = getattr(request.state, "request_id", None) or str(uuid.uuid4())

@@ -73,6 +73,7 @@ private:
     /// running as the agent works. Falls through to the same result handling as
     /// the blocking path once the final ``result`` event arrives.
     void startStream(const QString &question);
+    void sendStreamRequest(const QString &question);   ///< the actual SSE POST
     void handleStreamBuffer(const QString &question);   ///< parse complete SSE blocks
     void applyResult(const BackendAssistantResult &r, const QString &question);
     void stopStream();   ///< user-cancel the in-flight query (aborts the SSE reply)

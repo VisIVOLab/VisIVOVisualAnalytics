@@ -177,6 +177,7 @@ user-guide/troubleshooting
 architecture-note
 backend-api
 copilot-backend
+multi-user-backend
 async-patterns
 service-mapping-note
 catalogue3d-viewer

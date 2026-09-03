@@ -24,7 +24,7 @@ from astropy.io import fits
 from astropy.table import Table
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
-from .auth import verify_token
+from .auth import verify_token, multi_user_mode
 from .fits_dataset import ScientificFitsDataset
 from .product_cache import PRODUCT_CACHE
 from .sessions import REGISTRY, Session, get_session
@@ -381,7 +381,7 @@ __all__ = [
     "_RA_CANDIDATES", "_DEC_CANDIDATES",
     "_default_worker_count", "_pool_initializer", "_error",
     "_apply_tabular_query",
-    "_normalize_path", "_parse_vbt_header", "_is_fits", "_is_supported_dataset",
+    "data_roots", "hide_hidden_entries", "_normalize_path", "_parse_vbt_header", "_is_fits", "_is_supported_dataset",
     "_normalize_catalogue_field", "_catalogue_field_type",
     "_catalogue_metadata_from_dataframe", "_catalogue_csv_metadata",
     "_catalogue_load_dataframe", "_catalogue_metadata",
@@ -507,10 +507,57 @@ def _apply_tabular_query(
     return df, total
 
 
+def data_roots() -> list[Path] | None:
+    """Directories the path-based endpoints may touch.
+
+    Three outcomes, and the distinction between the last two matters:
+
+    * a non-empty list — confined to exactly those roots. Set
+      ``VISIVO_DATA_ROOTS`` (os.pathsep-separated) and this holds in both modes.
+    * ``[]`` — unconfined. Only when a single token is accepted: the backend then
+      acts on behalf of the one person running it, and browsing their own
+      filesystem is the point of a remote backend.
+    * ``None`` — DENY. Multi-user mode with no roots configured. Failing closed
+      is deliberate: the tokens belong to different people, and a default of, say,
+      the service account's home would silently share whatever happens to live
+      there. The operator must state what is shareable.
+
+    Re-read per call so a deployment can change it without a restart, matching
+    ``accepted_tokens()``.
+    """
+    raw = os.environ.get("VISIVO_DATA_ROOTS", "").strip()
+    roots = [Path(part).expanduser().resolve()
+             for part in raw.split(os.pathsep) if part.strip()]
+    if roots:
+        return roots
+    return None if multi_user_mode() else []
+
+
+def hide_hidden_entries() -> bool:
+    """True when dot-entries must be invisible: they hold credentials
+    (``~/.visivo_token``, ``~/.ssh``) and are never scientific data."""
+    return multi_user_mode()
+
+
 def _normalize_path(raw: str) -> Path:
-    if not raw:
-        return Path.home()
-    return Path(raw).expanduser().resolve()
+    """Resolve a client-supplied path, confined to :func:`data_roots`.
+
+    Raises ``PermissionError`` for anything outside them. Callers wrap this in
+    the ``valid=False`` envelope, which keeps the refusal non-enumerable: a
+    denied path and a missing one look the same to the client.
+    """
+    roots = data_roots()
+    if roots is None:
+        raise PermissionError(
+            "Path-based access is disabled: a shared backend (VISIVO_TOKENS) must "
+            "declare VISIVO_DATA_ROOTS before any filesystem path is served.")
+    path = Path.home() if not raw else Path(raw).expanduser().resolve()
+    if roots and not any(path == root or root in path.parents for root in roots):
+        raise PermissionError("Path is outside the backend's allowed data roots.")
+    if hide_hidden_entries() and any(
+            part.startswith(".") and part not in (".", "..") for part in path.parts):
+        raise PermissionError("Hidden paths are not accessible.")
+    return path
 
 
 def _parse_vbt_header(head_path: Path) -> dict:
@@ -1495,7 +1542,9 @@ def _catalogue_overlay_sync(
     ra_field: str, dec_field: str, max_sources: int,
 ) -> dict:
     try:
-        df = _load_overlay_csv(path)
+        # Client-supplied path: confine it like every other filesystem read
+        # (data_roots), or a shared backend would serve any readable CSV.
+        df = _load_overlay_csv(str(_normalize_path(path)))
     except Exception as exc:
         return {"valid": False, "error": f"Cannot read CSV '{path}': {exc}",
                 "sources": [], "total_in_view": 0, "truncated": False}

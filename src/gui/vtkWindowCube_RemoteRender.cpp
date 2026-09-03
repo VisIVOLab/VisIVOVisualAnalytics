@@ -1,4 +1,6 @@
 #include "vtkWindowCube.h"
+
+#include "BackendClient.h"
 #include "ui_vtkWindowCube.h"
 #include "CubeViewportGeometry.h"
 
@@ -177,10 +179,8 @@ void vtkWindowCube::requestRemoteRenderSession()
         QUrl diagUrl(this->remoteBackendUrl);
         diagUrl.setPath(u"/v1/render/diagnostics"_s);
         QNetworkRequest diagReq(diagUrl);
-        if (!this->remoteBackendToken.isEmpty()) {
-            diagReq.setRawHeader(QByteArrayLiteral("X-Visivo-Token"),
-                                 this->remoteBackendToken.toUtf8());
-        }
+        BackendClient::applySessionHeaders(diagReq, this->remoteBackendUrl,
+                                           this->remoteBackendToken, this->remoteSessionId);
         QNetworkReply *diagReply = this->m_renderNam->get(diagReq);
         QObject::connect(diagReply, &QNetworkReply::finished, this,
                          [this, diagReply]() {
@@ -214,10 +214,11 @@ void vtkWindowCube::requestRemoteRenderSession()
     url.setPath(u"/v1/render/create_session"_s);
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
-    if (!this->remoteBackendToken.isEmpty()) {
-        req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"),
-                         this->remoteBackendToken.toUtf8());
-    }
+    // create_session is state-bearing and the backend resolves it through
+    // get_session: without the session header it lands in a different session
+    // and cannot see this client's dataset at all under multi-user mode.
+    BackendClient::applySessionHeaders(req, this->remoteBackendUrl,
+                                       this->remoteBackendToken, this->remoteSessionId);
     QJsonObject body;
     body[u"dataset_id"_s] = this->remoteDatasetId;
     const QByteArray payload = QJsonDocument(body).toJson(QJsonDocument::Compact);
@@ -303,10 +304,8 @@ void vtkWindowCube::releaseRemoteRenderSession()
     QUrl url(this->remoteBackendUrl);
     url.setPath(u"/v1/render/"_s + this->m_renderSessionId);
     QNetworkRequest req(url);
-    if (!this->remoteBackendToken.isEmpty()) {
-        req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"),
-                         this->remoteBackendToken.toUtf8());
-    }
+    BackendClient::applySessionHeaders(req, this->remoteBackendUrl,
+                                       this->remoteBackendToken, this->remoteSessionId);
     qDebug().noquote() << "[remote-render] DELETE" << url.toString();
     QNetworkReply *reply = this->m_renderNam->deleteResource(req);
     QObject::connect(reply, &QNetworkReply::finished, reply, &QNetworkReply::deleteLater);

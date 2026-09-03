@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel
 
 from ..auth import verify_token
-from ..dependencies import _run
+from ..dependencies import _normalize_path, _run
 from ..sessions import Session, get_session
 from ..velocity_basins import velocity_basins_worker
 from ..velocity_field import (
@@ -82,17 +82,23 @@ async def velocity_open(
     session: Session = Depends(get_session),
 ) -> VelocityOpenResponse:
     try:
-        summary = await _run(velocity_summary_worker, request.path, request.box_mpc)
+        # Client-supplied path: confine it like every other filesystem read
+        # before it is opened AND before it is stored in the session.
+        path = str(_normalize_path(request.path))
+    except PermissionError:
+        return VelocityOpenResponse(valid=False, error="Velocity file not found.")
+    try:
+        summary = await _run(velocity_summary_worker, path, request.box_mpc)
     except Exception as exc:
         return VelocityOpenResponse(valid=False, error=str(exc))
     dataset_id = f"vf_{uuid.uuid4().hex[:12]}"
     session.datasets[dataset_id] = {
-        "path": request.path,
+        "path": path,
         "kind": "velocity",
         "box_mpc": request.box_mpc,
     }
     logger.info("[velocity] session=%s dataset_id=%s path=%s",
-                session.session_id[:8] + "…", dataset_id, request.path)
+                session.session_id[:8] + "…", dataset_id, path)
     return VelocityOpenResponse(
         valid=True, dataset_id=dataset_id, session_id=session.session_id, summary=summary
     )

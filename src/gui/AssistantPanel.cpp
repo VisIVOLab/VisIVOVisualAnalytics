@@ -523,6 +523,58 @@ void AssistantPanel::startStream(const QString &question)
     m_streamGotResult = false;
     m_userStopped = false;
 
+    // A strict backend refuses a client-invented session id, so the stream must
+    // not go out before this backend has minted one. The mint is a network call:
+    // run it on a worker thread and send afterwards, rather than freezing the UI.
+    if (!BackendClient::sessionResolvedForUrl(m_url, m_token)) {
+        const QString url = m_url, token = m_token;
+        using Mint = BackendClient::SessionMint;
+        struct MintOutcome
+        {
+            Mint mint{ Mint::Deferred };
+            QString token;      ///< identity that actually authenticated
+        };
+        auto *watcher = new QFutureWatcher<MintOutcome>(this);
+        connect(watcher, &QFutureWatcher<MintOutcome>::finished, this,
+                [this, watcher, question, url, token]() {
+                    const MintOutcome res = watcher->result();
+                    const Mint outcome = res.mint;
+                    watcher->deleteLater();
+                    // Drop it if the conversation scope changed while we waited.
+                    if (m_url != url || m_token != token) {
+                        setBusy(false);
+                        return;
+                    }
+                    // The mint may have fallen back to a refreshed token; adopt it
+                    // so our hand-built request sends a matching auth + session.
+                    if (!res.token.isEmpty() && res.token != m_token) {
+                        m_token = res.token;
+                        m_scopeToken = res.token;
+                    }
+                    if (outcome == Mint::Deferred) {
+                        // We could not obtain a session; a strict backend would
+                        // reject the stream, so say so instead of failing oddly.
+                        setBusy(false);
+                        appendError(u"Could not establish a session with the backend — "
+                                    "check the connection and try again."_s);
+                        return;
+                    }
+                    sendStreamRequest(question);
+                });
+        watcher->setFuture(QtConcurrent::run([url, token]() {
+            MintOutcome out;
+            QString effective;
+            out.mint = BackendClient::ensureSessionFor(url, token, &effective);
+            out.token = effective;
+            return out;
+        }));
+        return;
+    }
+    sendStreamRequest(question);
+}
+
+void AssistantPanel::sendStreamRequest(const QString &question)
+{
     QJsonObject body{ { u"question"_s, question } };
     if (!m_datasetId.isEmpty())
         body.insert(u"dataset_id"_s, m_datasetId);
@@ -530,12 +582,12 @@ void AssistantPanel::startStream(const QString &question)
         body.insert(u"history"_s, m_turns);   // prior turns → follow-up context
 
     QNetworkRequest req{ QUrl(m_url + u"/v1/assistant/stream"_s) };
-    req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), m_token.toUtf8());
     // Scope the stream to this desktop's private session so it resolves the same
-    // datasets the viewers opened (matches BackendClient's session header).
-    const QString session = BackendClient::defaultSessionId();
-    if (!session.isEmpty())
-        req.setRawHeader(QByteArrayLiteral("X-Visivo-Session"), session.toUtf8());
+    // datasets the viewers opened. The stamper also normalises the token through
+    // any rotation the mint recorded — on the fast path (session already
+    // resolved) we never ran ensureSessionFor(), so m_token may be the old one
+    // and the pair on the wire would not match.
+    BackendClient::applySessionHeaders(req, m_url, m_token);
     req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
 
     QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));

@@ -667,21 +667,49 @@ def test_session_ownership_and_multi_token(monkeypatch):
     monkeypatch.setattr(A, "accepted_tokens",
                         lambda: (_TEST_TOKEN, "TOKEN_B_secret_xyz"))
     client, _ = _client_and_auth()
-    hA = {"X-Visivo-Token": _TEST_TOKEN, "X-Visivo-Session": "own-sess-A1-0123456789abcdef0123456789"}
-    hB = {"X-Visivo-Token": "TOKEN_B_secret_xyz", "X-Visivo-Session": "own-sess-A1-0123456789abcdef0123456789"}
-    # Token A creates + owns the session.
+    tokA = {"X-Visivo-Token": _TEST_TOKEN}
+    tokB = {"X-Visivo-Token": "TOKEN_B_secret_xyz"}
+    # With per-user tokens the backend is strict: a client cannot invent an id,
+    # it asks the server to mint one.
+    sid = client.post("/v1/sessions/new", headers=tokA).json()["session_id"]
+    hA = {**tokA, "X-Visivo-Session": sid}
+    hB = {**tokB, "X-Visivo-Session": sid}
     assert client.get("/v1/assistant/status", headers=hA).status_code == 200
-    # Token B is denied access to A's session (reported as 404, not 403).
+    # Token B is denied A's session (404, not 403).
     assert client.get("/v1/assistant/status", headers=hB).status_code == 404
-    # A still has access.
     assert client.get("/v1/assistant/status", headers=hA).status_code == 200
-    # The second token IS accepted for its OWN session.
-    hB_own = {"X-Visivo-Token": "TOKEN_B_secret_xyz", "X-Visivo-Session": "own-sess-B1-0123456789abcdef0123456789"}
-    assert client.get("/v1/assistant/status", headers=hB_own).status_code == 200
+    # B is accepted for its OWN minted session.
+    sid_b = client.post("/v1/sessions/new", headers=tokB).json()["session_id"]
+    assert client.get("/v1/assistant/status",
+                      headers={**tokB, "X-Visivo-Session": sid_b}).status_code == 200
     # A wrong token is still rejected everywhere.
     assert client.get("/v1/assistant/status",
                       headers={"X-Visivo-Token": "nope"}).status_code == 401
 
+
+def test_strict_mode_makes_ids_non_enumerable(monkeypatch):
+    """In strict mode an UNKNOWN id and someone else's id answer identically
+    (404), so a prober can't tell which ids exist."""
+    import app.auth as A
+    monkeypatch.setattr(A, "accepted_tokens",
+                        lambda: (_TEST_TOKEN, "TOKEN_B_secret_xyz"))
+    client, auth = _client_and_auth()
+    unknown = "never-minted-but-high-entropy-0000000"
+    assert client.get("/v1/assistant/status",
+                      headers={**auth, "X-Visivo-Session": unknown}).status_code == 404
+    other = client.post("/v1/sessions/new",
+                        headers={"X-Visivo-Token": "TOKEN_B_secret_xyz"}).json()["session_id"]
+    assert client.get("/v1/assistant/status",
+                      headers={**auth, "X-Visivo-Session": other}).status_code == 404
+
+
+def test_single_user_still_adopts_client_ids():
+    """Default single-token backend keeps adopting client-minted ids (the shipped
+    desktop mints its own UUID), so nothing regresses there."""
+    client, auth = _client_and_auth()
+    sid = "desktop-minted-id-0123456789abcdef01"
+    assert client.get("/v1/assistant/status",
+                      headers={**auth, "X-Visivo-Session": sid}).status_code == 200
 
 def test_anonymous_session_refused_in_multi_user_mode(monkeypatch):
     """With >1 token configured, omitting X-Visivo-Session must NOT drop the
@@ -695,9 +723,10 @@ def test_anonymous_session_refused_in_multi_user_mode(monkeypatch):
                         lambda: (_TEST_TOKEN, "TOKEN_B_secret_xyz"))
     r = client.get("/v1/assistant/status", headers=auth)
     assert r.status_code == 400 and "X-Visivo-Session" in r.text
-    # ...but a request WITH a session header is fine.
+    # ...but a server-minted session works.
+    sid = client.post("/v1/sessions/new", headers=auth).json()["session_id"]
     assert client.get("/v1/assistant/status",
-                      headers={**auth, "X-Visivo-Session": "mm-sess-1-0123456789abcdef0123456789ab"}).status_code == 200
+                      headers={**auth, "X-Visivo-Session": sid}).status_code == 200
 
 
 def test_anonymous_by_name_and_weak_ids(monkeypatch):

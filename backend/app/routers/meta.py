@@ -48,6 +48,24 @@ async def health(token: str = _auth) -> dict:
         "timestamp": datetime.now(tz=timezone.utc).isoformat(),
     }
 
+@router.post("/v1/sessions/new", tags=["meta"])
+async def session_new(token: str = _auth) -> dict:
+    """Mint a fresh session owned by the caller and return its id.
+
+    Clients should call this once and send the id as ``X-Visivo-Session`` on
+    every subsequent request. A server-minted id is what makes ids fully
+    non-enumerable: with VISIVO_STRICT_SESSIONS on (the default once per-user
+    tokens exist) the backend refuses to adopt ids a client invented, so an
+    unknown id and another user's id are indistinguishable (both 404).
+    """
+    from ..sessions import SessionQuotaExceeded
+    try:
+        session = REGISTRY.create(owner_token=token)
+    except SessionQuotaExceeded as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    return {"valid": True, "session_id": session.session_id}
+
+
 @router.get("/v1/sessions", tags=["meta"])
 async def session_stats(token: str = _auth) -> dict:
     """Expose session registry statistics (admin endpoint).

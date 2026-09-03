@@ -1,5 +1,7 @@
 #include "RemoteRenderWidget.h"
 
+#include "BackendClient.h"
+
 #include <QDebug>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -181,7 +183,11 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
     wsUrl.setScheme(scheme);
     wsUrl.setPath(QStringLiteral("/v1/render/") + sessionId + QStringLiteral("/ws"));
     QUrlQuery q;
-    q.addQueryItem(QStringLiteral("token"), token);
+    // Auth rides the query string here, so applySessionHeaders() cannot help:
+    // resolve the rotation ourselves, or the render session created with the
+    // refreshed token would reject this socket's stale one.
+    q.addQueryItem(QStringLiteral("token"),
+                   BackendClient::effectiveToken(baseUrl, token));
     wsUrl.setQuery(q);
 
     m_ws = new QWebSocket(QString(), QWebSocketProtocol::VersionLatest, this);

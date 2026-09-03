@@ -107,6 +107,7 @@
     "POST /v1/samp/send-catalogue",
     "POST /v1/samp/send-fits",
     "POST /v1/samp/upload-file",
+    "POST /v1/sessions/new",
     "POST /v1/sourcefind/{dataset_id}",
     "POST /v1/spectral/aperture",
     "POST /v1/spectral/baseline/{session_id}/{dataset_id}",

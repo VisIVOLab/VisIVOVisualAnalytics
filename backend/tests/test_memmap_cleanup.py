@@ -269,7 +269,9 @@ def test_fd_count_does_not_grow_after_close(tmp_path):
 def _make_stale_registry(ttl: int = 1) -> SessionRegistry:
     """Return a registry with an extremely short TTL so tests can mark sessions
     stale by advancing ``last_accessed`` directly, without sleeping."""
-    return SessionRegistry(ttl_seconds=ttl)
+    # No background eviction thread: these tests flush explicitly and the
+    # daemon would race them (flaky 'flushed == 0').
+    return SessionRegistry(ttl_seconds=ttl, start_eviction=False)
 
 
 def _force_stale(session: Session) -> None:

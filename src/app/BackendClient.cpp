@@ -1,4 +1,9 @@
 #include "BackendClient.h"
+
+#include <optional>
+
+#include <QDateTime>
+#include <QThread>
 #include "BackendHeaders.h"
 #include "DiagnosticsManager.h"
 
@@ -186,8 +191,29 @@ QString BackendClient::readTokenFile()
 
 // ── Request builder ───────────────────────────────────────────────────────────
 
+/// Paths that may go out before this client has a backend session: the mint
+/// route itself, and readiness polling (both stateless). Everything else is
+/// held back while the session is unresolved — see the guard in perform*().
+static bool _isSessionExemptPath(const QString &path)
+{
+    return path.endsWith(QStringLiteral("/v1/sessions/new"))
+            || path.endsWith(QStringLiteral("/v1/health"))
+            || path.endsWith(QStringLiteral("/v1/version"));
+}
+
+/// Mint outcome of the request buildRequest() built most recently on THIS
+/// thread. The hand-rolled binary paths build and send on the same thread, so
+/// this lets performBinaryPost() refuse to put state under an unresolved
+/// session without each of its eight callers repeating the check.
+static thread_local BackendClient::SessionMint t_lastMint = BackendClient::SessionMint::Ready;
+
+
 QNetworkRequest BackendClient::buildRequest(const QUrl &url) const
 {
+    // Mint before any header is set: the mint may refresh m_token, and the auth
+    // header and the session id must come from the SAME identity.
+    t_lastMint = this->ensureSessionMinted();
+
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
@@ -199,7 +225,12 @@ QNetworkRequest BackendClient::buildRequest(const QUrl &url) const
     // R3: Session isolation header. Prefer this client's own session id; fall back
     // to the process-wide default so every request from this desktop lands in the
     // same private session (multi-desktop isolation).
-    const QString session = m_sessionId.isEmpty() ? s_defaultSessionId : m_sessionId;
+    QString session = m_sessionId;
+    if (session.isEmpty()) {
+        QMutexLocker lock(&s_sessionMutex);
+        session = s_minted.value(mintKey(m_baseUrl, resolvedToken(m_baseUrl, m_token)),
+                                 s_defaultSessionId);
+    }
     if (!session.isEmpty()) {
         request.setRawHeader(QByteArrayLiteral("X-Visivo-Session"), session.toUtf8());
     }
@@ -208,6 +239,179 @@ QNetworkRequest BackendClient::buildRequest(const QUrl &url) const
 }
 
 QString BackendClient::s_defaultSessionId;
+QHash<QString, QString> BackendClient::s_minted;
+QSet<QString> BackendClient::s_mintPinnedToDefault;
+QSet<QString> BackendClient::s_mintUnsupportedBase;
+QHash<QString, QString> BackendClient::s_tokenAlias;
+QMutex BackendClient::s_sessionMutex;
+QMutex BackendClient::s_mintMutex;
+
+/// Set while THIS thread is performing the mint request itself, so the request
+/// re-entering buildRequest() does not try to mint again (and cannot deadlock on
+/// s_mintMutex). Thread-local because the mint runs on whichever thread asked.
+static thread_local bool t_mintInFlight = false;
+
+/// Minted sessions are per (backend, token) — see the header.
+QString BackendClient::mintKey(const QString &baseUrl, const QString &token)
+{
+    return baseUrl + QLatin1Char('\n') + token;
+}
+
+QString BackendClient::resolvedToken(const QString &baseUrl, const QString &token)
+{
+    // Alias chains are one hop in practice (old token → refreshed token); the
+    // bound just keeps a pathological rotation loop from spinning here.
+    QString t = token;
+    for (int hops = 0; hops < 4; ++hops) {
+        const auto it = s_tokenAlias.constFind(mintKey(baseUrl, t));
+        if (it == s_tokenAlias.constEnd() || *it == t)
+            break;
+        t = *it;
+    }
+    return t;
+}
+
+QString BackendClient::sessionIdForUrl(const QString &baseUrl, const QString &token)
+{
+    QMutexLocker lock(&s_sessionMutex);
+    return s_minted.value(mintKey(baseUrl, resolvedToken(baseUrl, token)), s_defaultSessionId);
+}
+
+bool BackendClient::sessionResolvedForUrl(const QString &baseUrl, const QString &token)
+{
+    QMutexLocker lock(&s_sessionMutex);
+    const QString key = mintKey(baseUrl, resolvedToken(baseUrl, token));
+    return s_minted.contains(key) || s_mintPinnedToDefault.contains(key)
+            || s_mintUnsupportedBase.contains(baseUrl);
+}
+
+BackendClient::SessionMint BackendClient::ensureSessionFor(const QString &baseUrl,
+                                                           const QString &token,
+                                                           QString *effectiveToken,
+                                                           QString *sessionId)
+{
+    BackendClient client(baseUrl, token);
+    const SessionMint outcome = client.ensureSessionMinted();
+    // The mint may have adopted a refreshed token; hand both back so a caller
+    // building its own request puts the matching pair on the wire.
+    // performPost() reassigns m_token when it had to fall back to a refreshed
+    // one, so token() is now the identity that actually authenticated.
+    if (effectiveToken)
+        *effectiveToken = client.token();
+    if (sessionId)
+        *sessionId = sessionIdForUrl(baseUrl, client.token());
+    return outcome;
+}
+
+BackendClient::SessionMint BackendClient::ensureSessionMinted() const
+{
+    if (m_baseUrl.isEmpty())
+        return SessionMint::Deferred;
+    if (t_mintInFlight)
+        return SessionMint::Deferred;   // our own mint request needs no session
+
+    auto cached = [this]() -> std::optional<SessionMint> {
+        QMutexLocker lock(&s_sessionMutex);
+        const QString eff = resolvedToken(m_baseUrl, m_token);
+        if (eff != m_token) {
+            // A previous mint learned our token had been rotated. Adopt the
+            // effective one HERE, before any header is built, so the auth token
+            // and the session id on the wire are the same identity — and so the
+            // token-candidate list in perform*() starts from the live token
+            // instead of burning an attempt on a 401.
+            const_cast<BackendClient *>(this)->m_token = eff;
+        }
+        const QString key = mintKey(m_baseUrl, eff);
+        if (s_minted.contains(key))
+            return SessionMint::Ready;
+        if (s_mintPinnedToDefault.contains(key) || s_mintUnsupportedBase.contains(m_baseUrl))
+            return SessionMint::Unsupported;
+        return std::nullopt;
+    };
+    if (const auto hit = cached())
+        return *hit;
+
+    // One mint at a time: a concurrent caller blocks here and then finds the
+    // cached id below. The wait is bounded by the client's request timeout.
+    QMutexLocker mintLock(&s_mintMutex);
+    if (const auto hit = cached())
+        return *hit;
+
+    QString error;
+    int status = 0;
+    const QString startToken = m_token;   // performPost() may adopt a refreshed one
+    t_mintInFlight = true;
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/sessions/new")), QJsonDocument(QJsonObject{}),
+            error, nullptr, &status);
+    t_mintInFlight = false;
+
+    const QString minted = error.isEmpty()
+            ? QJsonDocument::fromJson(payload).object()
+                      .value(QStringLiteral("session_id")).toString()
+            : QString();
+
+    QMutexLocker lock(&s_sessionMutex);
+    // Record the rotation so callers still holding the old token hit the cache
+    // instead of minting a spare session on every request.
+    if (m_token != startToken)
+        s_tokenAlias.insert(mintKey(m_baseUrl, startToken), m_token);
+    if (!minted.isEmpty()) {
+        // performPost() adopts a refreshed token when the first is rejected, so
+        // m_token is now the identity that actually authenticated — file the
+        // session under THAT key. Never REPLACE an id already in use for that
+        // identity: another caller may already be storing datasets under it.
+        const QString effKey = mintKey(m_baseUrl, m_token);
+        if (!s_minted.contains(effKey))
+            s_minted.insert(effKey, minted);
+        return SessionMint::Ready;
+    }
+    if (status == 0) {
+        // The backend never answered (still starting, network down). Nothing was
+        // stored anywhere, so a later retry is safe — do NOT pin.
+        return SessionMint::Deferred;
+    }
+    // It answered but gave us no session. Either way we pin to the locally
+    // generated default id for the rest of the run: retrying could hand us a
+    // session id later and split the datasets between the two. A strict backend
+    // rejects the default with a clear "Session not found" rather than failing
+    // silently. Scope matters, though:
+    if (status == 404 || status == 405) {
+        // The route does not exist — a property of the SERVER, so base-wide.
+        s_mintUnsupportedBase.insert(m_baseUrl);
+    } else {
+        // 401 / 429 / 5xx are about this caller or this moment; pinning them
+        // base-wide would disable minting for every other token on the backend.
+        s_mintPinnedToDefault.insert(mintKey(m_baseUrl, m_token));
+    }
+    return SessionMint::Unsupported;
+}
+
+QString BackendClient::effectiveToken(const QString &baseUrl, const QString &token)
+{
+    QMutexLocker lock(&s_sessionMutex);
+    return resolvedToken(baseUrl, token);
+}
+
+void BackendClient::applySessionHeaders(QNetworkRequest &request, const QString &baseUrl,
+                                        const QString &token, const QString &sessionOverride)
+{
+    QString identity = token;
+    {
+        QMutexLocker lock(&s_sessionMutex);
+        identity = resolvedToken(baseUrl, token);
+    }
+    if (!identity.isEmpty())
+        request.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), identity.toUtf8());
+    // Non-blocking on purpose: these callers run on the GUI thread. By the time a
+    // viewer opens, the dataset load has already minted the session; if it has
+    // not, we send the process-wide default exactly as buildRequest() would.
+    const QString session = !sessionOverride.isEmpty()
+            ? sessionOverride
+            : sessionIdForUrl(baseUrl, identity);
+    if (!session.isEmpty())
+        request.setRawHeader(QByteArrayLiteral("X-Visivo-Session"), session.toUtf8());
+}
 
 void BackendClient::setDefaultSessionId(const QString &sessionId)
 {
@@ -1007,6 +1211,10 @@ BackendCubeSliceResult BackendClient::requestSlice(const QString &datasetId, con
 // Returns the body; ``statusOut`` is the HTTP status code (0 on transport
 // error), ``headersOut`` is a snapshot of the response headers (lowercased
 // names → raw values), ``error`` is set on transport/timeout failures.
+/// POST a binary body and return the raw reply. Refuses to send when the
+/// session is still unresolved because the backend never answered — putting
+/// state under the fallback id would let a later successful mint split this
+/// client's datasets across two sessions (see performPost()).
 static QByteArray performBinaryPost(QNetworkAccessManager *nam,
                                     const QNetworkRequest &reqTemplate,
                                     const QByteArray &bodyBytes,
@@ -1017,6 +1225,12 @@ static QByteArray performBinaryPost(QNetworkAccessManager *nam,
 {
     statusOut = 0;
     headersOut.clear();
+    if (t_lastMint == BackendClient::SessionMint::Deferred
+        && !_isSessionExemptPath(reqTemplate.url().path())) {
+        error = QStringLiteral("Backend session not established yet: %1 is unreachable.")
+                        .arg(reqTemplate.url().host());
+        return {};
+    }
     QNetworkRequest request = reqTemplate;
     // Default to JSON, but preserve a content type the caller already set (e.g.
     // application/octet-stream for a raw binary body like the mask-apply payload).
@@ -1093,8 +1307,16 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
         const QUrl binUrl(m_baseUrl + QStringLiteral("/v1/cube/subvolume_bin"));
         const int timeoutMs =
                 static_cast<int>(this->requestTimeoutFor(binUrl).count());
+        // Resolve exactly like buildRequest(): own id → this backend's minted id
+        // → the process-wide default. Sending nothing here would put these slab
+        // requests in a different session than the rest of the client's traffic.
+        // The mint may adopt a refreshed token, so capture the token AFTER it:
+        // the auth header and the session id must come from the same identity.
+        const SessionMint mint = this->ensureSessionMinted();
         const QString token = this->m_token;
-        const QString sessionId = this->m_sessionId;
+        const QString sessionId = !this->m_sessionId.isEmpty()
+                ? this->m_sessionId
+                : BackendClient::sessionIdForUrl(this->m_baseUrl, token);
         const QString baseUrl = m_baseUrl;
 
         // Split [z0, z1] in N slabs. Sub-Z-axis chunks are concatenated
@@ -1128,9 +1350,14 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
         // Worker lambda: fetch a single slab through its own thread-local
         // QNAM. Captures by value the small POD-ish state it needs so the
         // lambda is safely runnable from a worker thread.
-        auto fetchSlab = [baseUrl, token, sessionId, timeoutMs, datasetId,
+        auto fetchSlab = [baseUrl, token, sessionId, timeoutMs, datasetId, mint,
                           x0, x1, y0, y1](int sz0, int sz1) -> SlabResult {
             SlabResult r;
+            // performBinaryPost() reads t_lastMint, which buildRequest() would
+            // have set — but we build the request by hand on a worker thread,
+            // where that thread_local is still at its default. Carry the
+            // parent's verdict across so the guard applies here too.
+            t_lastMint = mint;
             const QJsonDocument body(QJsonObject{
                     { QStringLiteral("dataset_id"), datasetId },
                     { QStringLiteral("x0"), x0 }, { QStringLiteral("x1"), x1 },
@@ -2542,6 +2769,18 @@ static bool _isDiagnosticsQuietPath(const QString &path)
 
 QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
 {
+    // R3 consistency: when the backend never answered the mint we have no
+    // session, and sending state-bearing traffic under the fallback id would let
+    // a later successful mint split this client's datasets across two sessions.
+    // Such a request would almost certainly fail anyway (the backend is
+    // unreachable), so refuse it here and let the caller retry once minting
+    // works. Readiness polling stays exempt so callers can wait for the backend.
+    if (!m_baseUrl.isEmpty() && !_isSessionExemptPath(url.path())
+        && ensureSessionMinted() == SessionMint::Deferred) {
+        error = QStringLiteral("Backend session not established yet: %1 is unreachable.")
+                        .arg(m_baseUrl);
+        return {};
+    }
     QElapsedTimer perfTimer;
     perfTimer.start();
     QNetworkAccessManager *nam = getThreadLocalNam();
@@ -2651,8 +2890,23 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
 
 QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body,
                                       QString &error,
-                                      QMap<QString, QString> *responseHeaders) const
+                                      QMap<QString, QString> *responseHeaders,
+                                      int *statusOut) const
 {
+    if (statusOut)
+        *statusOut = 0;
+    // R3 consistency: when the backend never answered the mint we have no
+    // session, and sending state-bearing traffic under the fallback id would let
+    // a later successful mint split this client's datasets across two sessions.
+    // Such a request would almost certainly fail anyway (the backend is
+    // unreachable), so refuse it here and let the caller retry once minting
+    // works. Readiness polling stays exempt so callers can wait for the backend.
+    if (!m_baseUrl.isEmpty() && !_isSessionExemptPath(url.path())
+        && ensureSessionMinted() == SessionMint::Deferred) {
+        error = QStringLiteral("Backend session not established yet: %1 is unreachable.")
+                        .arg(m_baseUrl);
+        return {};
+    }
     QElapsedTimer perfTimer;
     perfTimer.start();
     QNetworkAccessManager *nam = getThreadLocalNam();
@@ -2711,6 +2965,8 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
                                        QString::fromLatin1(hp.second));
         }
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (statusOut)
+            *statusOut = status;   // 0 = transport failure
         if (attemptError.isEmpty() && reply->error() != QNetworkReply::NoError) {
             attemptError = reply->errorString();
         } else if (attemptError.isEmpty() && status >= 400) {
