@@ -7,7 +7,8 @@ lasso on the source's peak voxel, grow the selection with default parameters,
 and measure:
 
   - spatial agreement: Dice, IoU, completeness (∩/SoFiA), reliability (∩/lasso)
-  - integrated HI flux (Jy·km/s) — lasso vs SoFiA, and their ratio
+  - integrated HI flux (Jy·km/s) — lasso vs SoFiA, their ratio, and the
+    significance of their difference (R-18d)
   - the total (spatially-integrated) spectrum per channel, overlaid
 
 Outputs a metrics table (markdown + CSV) and per-source figures under out/.
@@ -31,6 +32,45 @@ from datasets import OUT, add_dataset_arg, resolve  # noqa: E402
 
 N_SOURCES = 5                 # compare the N largest SoFiA sources
 REACH, LAMBDA_V, NSIGMA = 8.0, 1.0, 2.5   # lasso defaults (as a user would click)
+
+
+def robust_sigma(data: np.ndarray) -> float:
+    """Noise scale (1.4826·MAD) from a strided sample — the same robust estimator
+    the selection uses, so the reported uncertainty is on the same footing as the
+    nσ contour that produced the mask."""
+    step = max(1, int(round((data.size / 3_000_000) ** (1.0 / 3.0)))) if data.size > 3_000_000 else 1
+    sample = np.asarray(data[::step, ::step, ::step], dtype=np.float64)
+    finite = sample[np.isfinite(sample)]
+    if finite.size == 0:
+        return 0.0
+    return float(1.4826 * np.median(np.abs(finite - np.median(finite))))
+
+
+def spectral_correlation_factor(data: np.ndarray, mask: np.ndarray, max_lag: int = 5) -> float:
+    """Effective-sample-size penalty for noise correlated ALONG THE SPECTRAL AXIS.
+
+    Summing N channels of independent noise gives √N; if adjacent channels are
+    correlated (Hanning smoothing, or any spectral taper) the sum accumulates
+    faster and the naive error is too small by √F, with
+    ``F = 1 + 2·Σ_k ρ_k`` over the positive lags.
+
+    Measured, not assumed: ρ_k is the lag-k autocorrelation of emission-free
+    voxels (outside every SoFiA source) along z. It matters — HGC 44 comes out at
+    ρ₁ ≈ 0.74 (F ≈ 3.1, so σ was understated 1.8×) while the WALLABY field is
+    essentially uncorrelated (ρ₁ ≈ 0.03).
+    """
+    empty = (mask == 0) & np.isfinite(data)
+    total = 1.0
+    for lag in range(1, max_lag + 1):
+        both = empty[:-lag] & empty[lag:]
+        if int(both.sum()) < 1000:
+            break
+        a, b = data[:-lag][both], data[lag:][both]
+        rho = float(np.corrcoef(a, b)[0, 1])
+        if not np.isfinite(rho) or rho <= 0.02:
+            break            # noise floor: stop before summing estimator scatter
+        total += 2.0 * rho
+    return max(total, 1.0)
 
 
 def beam_area_px(hd) -> float:
@@ -65,6 +105,17 @@ def main() -> None:
     dv = abs(float(hd["CDELT3"])) / 1000.0            # m/s → km/s per channel
     # Jy·km/s over a boolean voxel mask.
     flux = lambda msk: float(data[msk].sum()) * dv / barea
+    # R-18(d) / R-09: correlated-noise uncertainty on an integrated flux. Voxels
+    # inside a beam are not independent, so N voxels carry only N/beam_area
+    # independent samples: σ_F = rms·√(N/B)·Δv. Same formula the backend uses for
+    # aperture photometry, so a number in the paper and a number in the app mean
+    # the same thing.
+    sigma_rms = robust_sigma(data)
+    # Spatial correlation (the beam) is not the only one: measure the SPECTRAL
+    # correlation too and fold it in, or the error is optimistic on any cube whose
+    # channels have been smoothed.
+    f_chan = spectral_correlation_factor(data, sofia)
+    flux_err = lambda n: sigma_rms * np.sqrt(max(int(n), 0) * f_chan / barea) * dv
 
     labels, counts = np.unique(sofia[sofia > 0], return_counts=True)
     if labels.size == 0:
@@ -100,15 +151,28 @@ def main() -> None:
         completeness = inter / b if b else 0.0            # fraction of SoFiA recovered
         reliability = inter / a if a else 0.0             # fraction of lasso that is real
         fl, fs = flux(lasso), flux(src)
+        efl, efs = flux_err(a), flux_err(b)
+        # The two masks share their intersection, so their errors are almost
+        # entirely common-mode: propagating the ratio as if they were independent
+        # would badly overstate it. The honest uncertainty on the DIFFERENCE comes
+        # from the symmetric difference alone — the voxels where they disagree.
+        n_symdiff = int(np.count_nonzero(src ^ lasso))
+        d_flux = fl - fs
+        e_diff = flux_err(n_symdiff)
+        nsig = abs(d_flux) / e_diff if e_diff > 0 else float("nan")
         rows.append(dict(
             rank=rank, sofia_id=lab, sofia_vox=b, lasso_vox=a, inter=inter,
             dice=dice, iou=iou, completeness=completeness, reliability=reliability,
-            flux_sofia=fs, flux_lasso=fl, flux_ratio=(fl / fs if fs else float("nan")),
+            flux_sofia=fs, flux_sofia_err=efs, flux_lasso=fl, flux_lasso_err=efl,
+            flux_ratio=(fl / fs if fs else float("nan")),
+            symdiff_vox=n_symdiff, flux_diff=d_flux, flux_diff_err=e_diff,
+            flux_diff_nsigma=nsig, rms=sigma_rms, spectral_corr_factor=f_chan,
             seed_zyx=seed))
         ratio_str = f"{fl / fs:.3f}" if fs else "n/a"   # guard a zero SoFiA flux
         print(f"[{rank}] SoFiA #{lab}: Dice={dice:.3f} IoU={iou:.3f} "
               f"compl={completeness:.3f} relia={reliability:.3f} "
-              f"Fsofia={fs:.2f} Flasso={fl:.2f} ratio={ratio_str}")
+              f"Fsofia={fs:.2f}±{efs:.2f} Flasso={fl:.2f}±{efl:.2f} "
+              f"ratio={ratio_str} Δ={d_flux:+.2f}±{e_diff:.2f} ({nsig:.1f}σ)")
 
         # ── figures: moment-0 with both mask contours + total-spectrum overlay ──
         z0, z1 = min(zz.min(), np.where(lasso.any((1, 2)))[0].min()), \
@@ -150,19 +214,32 @@ def main() -> None:
     md = [f"# Kinematic Lasso vs SoFiA-2 — {ds.title} ({ds.instrument})",
           f"\n{ds.note}.\n",
           f"\nCube `{Path(CUBE).name}` {data.shape}, beam {barea:.1f} px, "
-          f"Δv {dv:.2f} km/s. Lasso defaults reach={REACH}, λv={LAMBDA_V}, nσ={NSIGMA}. "
+          f"Δv {dv:.2f} km/s, rms {sigma_rms:.4g} (1.4826·MAD), "
+          f"spectral correlation factor F = {f_chan:.2f}. "
+          f"Lasso defaults reach={REACH}, λv={LAMBDA_V}, nσ={NSIGMA}. "
           f"Seed = each SoFiA source's peak voxel.\n",
+          "\nFlux errors are σ_F = rms·√(N·F/B)·Δv: N voxels inside a beam of B "
+          "pixels carry only N/B independent spatial samples, and F is the measured "
+          "spectral-correlation penalty (1 + 2·Σρ_k over emission-free voxels). "
+          "The Δ column is the flux DIFFERENCE with the uncertainty of the "
+          "SYMMETRIC DIFFERENCE alone — the shared intersection cancels exactly in "
+          "the difference, so this is exact rather than an approximation.\n",
           "| SoFiA id | SoFiA vox | Lasso vox | Dice | IoU | Compl. | Relia. | "
-          "F_SoFiA | F_Lasso | ratio |",
-          "|---|---|---|---|---|---|---|---|---|---|"]
+          "F_SoFiA | F_Lasso | ratio | Δflux | σ_Δ | n_σ |",
+          "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         md.append(f"| {r['sofia_id']} | {r['sofia_vox']} | {r['lasso_vox']} | "
                   f"{r['dice']:.3f} | {r['iou']:.3f} | {r['completeness']:.3f} | "
-                  f"{r['reliability']:.3f} | {r['flux_sofia']:.2f} | "
-                  f"{r['flux_lasso']:.2f} | {r['flux_ratio']:.3f} |")
+                  f"{r['reliability']:.3f} | "
+                  f"{r['flux_sofia']:.2f} ± {r['flux_sofia_err']:.2f} | "
+                  f"{r['flux_lasso']:.2f} ± {r['flux_lasso_err']:.2f} | "
+                  f"{r['flux_ratio']:.3f} | {r['flux_diff']:+.2f} | "
+                  f"{r['flux_diff_err']:.2f} | {r['flux_diff_nsigma']:.1f} |")
     d = np.array([r["dice"] for r in rows]); fr = np.array([r["flux_ratio"] for r in rows])
+    ns = np.array([r["flux_diff_nsigma"] for r in rows])
     # nanmedian: a source with zero SoFiA flux contributes a NaN ratio (guarded above).
-    md.append(f"\n**Median Dice {np.median(d):.3f}, median flux ratio {np.nanmedian(fr):.3f}.**")
+    md.append(f"\n**Median Dice {np.median(d):.3f}, median flux ratio "
+              f"{np.nanmedian(fr):.3f}, median |Δflux| {np.nanmedian(ns):.1f}σ.**")
     ds.out("metrics", "md").write_text("\n".join(md) + "\n")
     print("\nWrote", ds.out("metrics", "md"), "and per-source figures.")
 

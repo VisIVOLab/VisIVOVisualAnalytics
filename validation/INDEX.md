@@ -22,6 +22,12 @@ Heavy/regenerable outputs are git-ignored; reproduce via the commands below.
 - **Lasso vs SoFiA — HGC 44:** one click, default params → Dice > 0.83,
   completeness > 0.91 at reliability ≈ 0.75, integrated flux within 8 % on the
   main galaxies; the total spectrum tracks SoFiA's double-horn profile.
+- **Flux differences are mostly significant, not noise:** σ_F = rms·√(N·F/B)·Δv,
+  with F the MEASURED spectral-correlation penalty (HGC 44 has ρ₁ ≈ 0.74, F = 3.45
+  — omitting it would understate σ by 1.9×). Four of five HGC 44 sources differ at
+  3.6–7.0 σ and the faintest at 1.2 σ; all five WALLABY sources at 3.7–38.8 σ. So
+  the flux comparison measures which voxels each method includes: quote it as
+  segmentation agreement, not as consistency within errors.
 - **Lasso vs SoFiA — WALLABY (second cube, same SoFiA parameters):** the largest
   source reaches Dice 0.76 once `reach` is raised to 32 (0.61 at the default 8) —
   `reach` is a voxel budget, so its default does not transfer between cubes. The

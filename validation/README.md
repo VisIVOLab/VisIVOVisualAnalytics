@@ -91,27 +91,61 @@ figures and the SoFiA masks are regenerable and git-ignored.
 
 ## Result (vs the reproducible mask)
 
-| SoFiA id | Dice | IoU | Completeness | Reliability | F_Lasso/F_SoFiA |
-|---|---|---|---|---|---|
-| bright #1 | 0.844 | 0.731 | 0.909 | 0.788 | 1.046 |
-| bright #2 | 0.826 | 0.704 | 0.917 | 0.752 | 1.088 |
-| #3 | 0.737 | 0.584 | 0.772 | 0.705 | 1.120 |
-| faint #4 | 0.660 | 0.492 | 0.587 | 0.753 | 0.790 |
-| faint #5 | 0.687 | 0.523 | 0.604 | 0.797 | 0.938 |
+| SoFiA id | Dice | IoU | Completeness | Reliability | F_Lasso/F_SoFiA | Δflux (Jy·km/s) | n_σ |
+|---|---|---|---|---|---|---|---|
+| bright #1 | 0.844 | 0.731 | 0.909 | 0.788 | 1.046 | +0.27 ± 0.04 | 6.9 |
+| bright #2 | 0.826 | 0.704 | 0.917 | 0.752 | 1.088 | +0.25 ± 0.04 | 7.0 |
+| #3 | 0.737 | 0.584 | 0.772 | 0.705 | 1.120 | +0.12 ± 0.03 | 3.6 |
+| faint #4 | 0.660 | 0.492 | 0.587 | 0.753 | 0.790 | −0.18 ± 0.03 | 5.4 |
+| faint #5 | 0.687 | 0.523 | 0.604 | 0.797 | 0.938 | −0.03 ± 0.03 | 1.2 |
 
 **Headline (segmentation given a correct seed):** on the two main HI galaxies,
 one click with default parameters overlaps > 91 % of the SoFiA mask
 (completeness; Dice > 0.83) at reliability ≈ 0.75, with integrated flux within
-8 %, and the total spectrum tracks SoFiA's double-horn profile channel-by-channel.
+8 % (a *segmentation* difference, not consistency within errors — see below), and
+the total spectrum tracks SoFiA's double-horn profile channel-by-channel.
 Completeness drops for the faintest sources because the lasso's nσ = 2.5 contour
 is more conservative than SoFiA's multi-scale smooth+clip — the interactive
 reach / nσ controls trade completeness against reliability (below).
 
+### What the flux uncertainty says — and it is not what you would hope
+
+σ_F = rms·√(N·F/B)·Δv. Two correlations, both of which have to be in there:
+
+- **spatial** — N voxels inside a beam of B pixels carry only N/B independent
+  samples. This part matches the formula the backend uses for aperture
+  photometry, so a number in the paper and a number in the app mean the same.
+- **spectral** — F = 1 + 2·Σ_k ρ_k, the effective-sample-size penalty for noise
+  correlated between channels, with ρ_k measured from emission-free voxels rather
+  than assumed. This is not a formality: **HGC 44 has ρ₁ ≈ 0.74** (F = 3.45, so
+  omitting it understates σ by 1.9×), while the WALLABY field is essentially
+  uncorrelated (ρ₁ ≈ 0.03, F = 1.09). A cube whose channels have been smoothed
+  will quietly make any spectral integral look more precise than it is.
+
+The Δ column is the flux DIFFERENCE with the uncertainty of the **symmetric
+difference** alone. That is exact, not an approximation: the shared intersection
+contributes identically to both fluxes and cancels in the difference, so only the
+voxels where the two masks disagree carry noise.
+
+The result: **four of the five HGC 44 sources differ significantly (3.6–7.0 σ);
+the faintest is consistent with noise (1.2 σ).** On WALLABY every source differs
+significantly (3.7–38.8 σ). So "integrated flux within 8 %" is true about the
+magnitude and misleading about the cause — for the sources where it is
+significant, the residual is not measurement error but a real difference in which
+voxels each method includes. That demarcation is the whole job of the
+uncertainty, and it is why the number is worth computing at all.
+
+Quote the flux agreement as a *segmentation* agreement, never as consistency
+within errors — except for the one source where it genuinely is.
+
+The local rms around each source was checked against the global estimate and
+agrees within 2 % on both cubes, so a single cube-wide rms is not hiding an
+elevated-noise region.
+
 **Caveats (paper honesty):** the seed is SoFiA's own peak voxel, so this is
-segmentation agreement, not detection; it is one cube and five sources; and the
-reported flux carries no uncertainty yet. A blind-detection claim is out of
-scope for an assisted tool. The peak-seed concern is addressed head-on by the
-seed-robustness analysis below.
+segmentation agreement, not detection; five sources per cube. A blind-detection
+claim is out of scope for an assisted tool. The peak-seed concern is addressed
+head-on by the seed-robustness analysis below.
 
 ## Second cube (WALLABY / ASKAP) — where the method holds and where it does not
 
