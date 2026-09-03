@@ -664,10 +664,11 @@ def test_per_session_provider_config_isolated():
 
 def test_session_ownership_and_multi_token(monkeypatch):
     import app.auth as A
-    monkeypatch.setattr(A, "TOKENS", (_TEST_TOKEN, "TOKEN_B_secret_xyz"))
+    monkeypatch.setattr(A, "accepted_tokens",
+                        lambda: (_TEST_TOKEN, "TOKEN_B_secret_xyz"))
     client, _ = _client_and_auth()
-    hA = {"X-Visivo-Token": _TEST_TOKEN, "X-Visivo-Session": "own-sess-A1"}
-    hB = {"X-Visivo-Token": "TOKEN_B_secret_xyz", "X-Visivo-Session": "own-sess-A1"}
+    hA = {"X-Visivo-Token": _TEST_TOKEN, "X-Visivo-Session": "own-sess-A1-0123456789abcdef0123456789"}
+    hB = {"X-Visivo-Token": "TOKEN_B_secret_xyz", "X-Visivo-Session": "own-sess-A1-0123456789abcdef0123456789"}
     # Token A creates + owns the session.
     assert client.get("/v1/assistant/status", headers=hA).status_code == 200
     # Token B is denied access to A's session (reported as 404, not 403).
@@ -675,17 +676,105 @@ def test_session_ownership_and_multi_token(monkeypatch):
     # A still has access.
     assert client.get("/v1/assistant/status", headers=hA).status_code == 200
     # The second token IS accepted for its OWN session.
-    hB_own = {"X-Visivo-Token": "TOKEN_B_secret_xyz", "X-Visivo-Session": "own-sess-B1"}
+    hB_own = {"X-Visivo-Token": "TOKEN_B_secret_xyz", "X-Visivo-Session": "own-sess-B1-0123456789abcdef0123456789"}
     assert client.get("/v1/assistant/status", headers=hB_own).status_code == 200
     # A wrong token is still rejected everywhere.
     assert client.get("/v1/assistant/status",
                       headers={"X-Visivo-Token": "nope"}).status_code == 401
 
 
+def test_anonymous_session_refused_in_multi_user_mode(monkeypatch):
+    """With >1 token configured, omitting X-Visivo-Session must NOT drop the
+    caller into the shared anonymous bucket (that would defeat isolation)."""
+    import app.auth as A
+    client, auth = _client_and_auth()
+    # Single-token (default): the anonymous fallback still works.
+    assert client.get("/v1/assistant/status", headers=auth).status_code == 200
+    # Multi-token: the session header becomes mandatory.
+    monkeypatch.setattr(A, "accepted_tokens",
+                        lambda: (_TEST_TOKEN, "TOKEN_B_secret_xyz"))
+    r = client.get("/v1/assistant/status", headers=auth)
+    assert r.status_code == 400 and "X-Visivo-Session" in r.text
+    # ...but a request WITH a session header is fine.
+    assert client.get("/v1/assistant/status",
+                      headers={**auth, "X-Visivo-Session": "mm-sess-1-0123456789abcdef0123456789ab"}).status_code == 200
+
+
+def test_anonymous_by_name_and_weak_ids(monkeypatch):
+    """The shared anonymous session must not be reachable BY NAME once several
+    tokens exist, and a guessable id is never adoptable (session fixation)."""
+    import app.auth as A
+    client, auth = _client_and_auth()
+    anon = {**auth, "X-Visivo-Session": "anonymous"}
+    # Single-token: the server hands "anonymous" back to header-less clients, so
+    # echoing it must keep working.
+    assert client.get("/v1/assistant/status", headers=anon).status_code == 200
+    # A short, guessable id is refused even in single-token mode.
+    assert client.get("/v1/assistant/status",
+                      headers={**auth, "X-Visivo-Session": "sess1"}).status_code == 400
+    # Multi-token: the shared bucket is closed off by name too.
+    monkeypatch.setattr(A, "accepted_tokens",
+                        lambda: (_TEST_TOKEN, "TOKEN_B_secret_xyz"))
+    assert client.get("/v1/assistant/status", headers=anon).status_code == 400
+
+
+def test_server_wide_ops_endpoints_are_operator_only(monkeypatch):
+    """Server-wide ops data (all sessions, all log lines) mixes every user's
+    activity, so with per-user tokens only the operator (primary) may read it."""
+    import app.auth as A
+    client, auth = _client_and_auth()
+    # Single-token: everyone is the operator — unchanged behaviour.
+    assert client.get("/v1/sessions", headers=auth).status_code == 200
+    assert client.get("/v1/diagnostics/events", headers=auth).status_code == 200
+
+    monkeypatch.setattr(A, "accepted_tokens",
+                        lambda: (_TEST_TOKEN, "TOKEN_B_secret_xyz"))
+    monkeypatch.setattr(A, "primary_token", lambda: _TEST_TOKEN)
+    userb = {"X-Visivo-Token": "TOKEN_B_secret_xyz"}
+    assert client.get("/v1/sessions", headers=userb).status_code == 403
+    assert client.get("/v1/diagnostics/events", headers=userb).status_code == 403
+    # The operator still gets through.
+    assert client.get("/v1/sessions", headers=auth).status_code == 200
+
+
+def test_session_stats_never_returns_usable_session_ids():
+    client, auth = _client_and_auth()
+    r = client.get("/v1/sessions", headers=auth)
+    assert r.status_code == 200
+    for entry in r.json().get("sessions", []):
+        # Redacted to an 8-char prefix — never a usable (bearer-like) id.
+        assert entry["session_id"].endswith("…") or len(entry["session_id"]) <= 9
+
+
+def test_session_quota_per_token(monkeypatch):
+    """A valid token must not be able to spam adopted session ids until TTL."""
+    import app.sessions as S
+    client, auth = _client_and_auth()
+    owned = sum(1 for x in S.REGISTRY._sessions.values()
+                if x.owner_token == _TEST_TOKEN)
+    monkeypatch.setattr(S, "_MAX_SESSIONS_PER_TOKEN", owned + 1)
+    base = "quota-sess-padding-000000000000000"   # >= 32 chars
+    assert client.get("/v1/assistant/status",
+                      headers={**auth, "X-Visivo-Session": base + "a"}).status_code == 200
+    r = client.get("/v1/assistant/status",
+                   headers={**auth, "X-Visivo-Session": base + "b"})
+    assert r.status_code == 429
+
+
+def test_diagnostics_scrubber_hides_session_ids():
+    from app.diagnostics_buffer import _scrub_secrets
+    uuid_id = "3f2b1c8a-9d4e-4f10-9b77-1a2b3c4d5e6f"
+    urlsafe_id = "A" * 32
+    assert uuid_id not in _scrub_secrets(f"[open] session={uuid_id} ds=1")
+    assert urlsafe_id not in _scrub_secrets(f"session={urlsafe_id}")
+    # Ordinary short identifiers survive — diagnostics stay useful.
+    assert "ds_12" in _scrub_secrets("dataset ds_12 opened")
+
+
 def test_config_endpoint_is_per_session():
     client, auth = _client_and_auth()
-    hA = {**auth, "X-Visivo-Session": "phase3-sessA"}
-    hB = {**auth, "X-Visivo-Session": "phase3-sessB"}
+    hA = {**auth, "X-Visivo-Session": "phase3-sessA-0123456789abcdef0123456789"}
+    hB = {**auth, "X-Visivo-Session": "phase3-sessB-0123456789abcdef0123456789"}
     # Session A points the copilot at a self-hosted server.
     r = client.post("/v1/assistant/config",
                     json={"provider": "openai", "base_url": "http://gpu:8000/v1",

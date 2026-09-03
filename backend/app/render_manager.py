@@ -71,7 +71,8 @@ class RenderManager:
             except Exception:
                 logger.exception("[render-manager] close on shutdown raised")
 
-    async def create_session(self, dataset_path: str) -> RenderSession:
+    async def create_session(self, dataset_path: str,
+                             owner_token: str | None = None) -> RenderSession:
         """Spin up a new session for ``dataset_path``. Returns it, ready to use.
 
         Raises :class:`RuntimeError` when the max-sessions cap is hit so the
@@ -85,6 +86,9 @@ class RenderManager:
                 )
             sid = uuid.uuid4().hex
             sess = RenderSession(session_id=sid, dataset_path=dataset_path)
+            # Bind the render session to the caller so another token holding
+            # the id can't close, WebRTC-connect to or drive this stream.
+            sess.owner_token = owner_token
             self._sessions[sid] = sess
         # Initialise OUTSIDE the lock — VTK setup can take seconds for a
         # large cube; holding the manager lock would block new
@@ -96,7 +100,7 @@ class RenderManager:
             raise
         logger.info(
             "[render-manager] new session %s for %s (%d/%d active)",
-            sid, dataset_path, len(self._sessions), self._max_sessions,
+            sid[:8] + "…", dataset_path, len(self._sessions), self._max_sessions,
         )
         return sess
 
@@ -114,10 +118,35 @@ class RenderManager:
 
     # ── Telemetry helpers, surfaced by /v1/render/diagnostics ────────────
 
+    async def snapshot_for_owner(self, token: str | None,
+                                 multi_user: bool) -> dict[str, Any]:
+        """Snapshot restricted to the render sessions ``token`` owns.
+
+        Done inside the manager (under its own lock) rather than by poking at
+        ``_sessions`` from a route. Unowned sessions stay visible only on a
+        single-user backend, where there is nothing to isolate.
+        """
+        import secrets as _sec
+
+        async with self._lock:
+            mine = []
+            for sess in list(self._sessions.values()):
+                owner = getattr(sess, "owner_token", None)
+                if owner is None:
+                    if not multi_user:
+                        mine.append(sess)
+                elif token is not None and _sec.compare_digest(owner, token):
+                    mine.append(sess)
+        return self._render_snapshot(mine)
+
     async def snapshot(self) -> dict[str, Any]:
         """Return a snapshot summary for ops dashboards / health checks."""
         async with self._lock:
             sessions = list(self._sessions.values())
+        return self._render_snapshot(sessions)
+
+    def _render_snapshot(self, sessions: list[Any]) -> dict[str, Any]:
+        """Build the snapshot payload for a (possibly filtered) session list."""
         return {
             "active_sessions": len(sessions),
             "capacity": self._max_sessions,
@@ -148,7 +177,7 @@ class RenderManager:
         try:
             await sess.close()
         except Exception:
-            logger.exception("[render-manager] close raised for %s", session_id)
+            logger.exception("[render-manager] close raised for %s", session_id[:8] + "…")
         logger.info(
             "[render-manager] closed session %s — %d frames rendered, %.1f MB sent",
             session_id, sess.stats.frames_rendered,

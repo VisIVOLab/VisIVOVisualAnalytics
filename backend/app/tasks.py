@@ -30,6 +30,9 @@ class TaskRecord:
     result: dict[str, Any] | None = None
     error: str = ""
     cache_hit: bool = False
+    # The auth token that created this task; another user holding the task_id
+    # must not be able to read its result or cancel it.
+    owner_token: str | None = None
     last_touched_monotonic: float = field(default_factory=time.monotonic, repr=False)
     # Stored by the task runner so callers can request cancellation.
     asyncio_handle: asyncio.Task | None = field(default=None, repr=False, compare=False)
@@ -58,12 +61,19 @@ class TaskRegistry:
             )
         return len(expired_task_ids)
 
-    def create(self, operation: str) -> TaskRecord:
-        record = TaskRecord(task_id=f"task_{uuid.uuid4().hex[:16]}", operation=operation)
+    def create(self, operation: str, owner_token: str | None = None) -> TaskRecord:
+        record = TaskRecord(task_id=f"task_{uuid.uuid4().hex[:16]}", operation=operation,
+                            owner_token=owner_token)
         with self._lock:
             self._evict_expired_locked()
             self._tasks[record.task_id] = record
         return record
+
+    def peek(self, task_id: str) -> TaskRecord | None:
+        """Look a task up WITHOUT refreshing its retention timer — used by the
+        ownership check so probing a stranger's task_id can't keep it alive."""
+        with self._lock:
+            return self._tasks.get(task_id)
 
     def get(self, task_id: str) -> TaskRecord | None:
         with self._lock:

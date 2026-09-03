@@ -116,7 +116,7 @@ async def open_dataset(
     session.datasets[dataset_id] = {"path": registered_path, "kind": kind, **geometry}
     logger.info(
         "[open] session=%s dataset_id=%s kind=%s path=%s",
-        session.session_id, dataset_id, kind, path,
+        session.session_id[:8] + "…", dataset_id, kind, path,
     )
     return _build_open_response(dataset_id, session.session_id, kind, geometry)
 
@@ -249,7 +249,7 @@ async def open_dataset_from_url(
     }
     logger.info(
         "[open_url] session=%s dataset_id=%s kind=%s cache=%s",
-        session.session_id, dataset_id, kind, cached_path,
+        session.session_id[:8] + "…", dataset_id, kind, cached_path,
     )
     return _build_open_response(dataset_id, session.session_id, kind, geometry)
 
@@ -336,7 +336,7 @@ async def open_dataset_from_skava(
     }
     logger.info(
         "[open_skava] session=%s dataset_id=%s kind=%s obs_id=%s path=%s",
-        session.session_id, dataset_id, kind, obs_id, path,
+        session.session_id[:8] + "…", dataset_id, kind, obs_id, path,
     )
     return _build_open_response(dataset_id, session.session_id, kind, geometry)
 

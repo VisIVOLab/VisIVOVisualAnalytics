@@ -29,7 +29,7 @@ from pydantic import BaseModel
 import pandas as pd
 from astropy.table import Table
 
-from ..auth import verify_token
+from ..auth import require_operator, verify_token
 from ..samp_bridge import (
     MTYPE_COORD_POINT_SKY,
     MTYPE_IMAGE_LOAD_FITS,
@@ -131,12 +131,15 @@ class SAMPCatalogueRequest(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 _auth = Depends(verify_token)
+# SAMP is a machine-wide hub shared by every caller; with per-user tokens
+# configured only the operator may drive it.
+_operator = Depends(require_operator)
 
 
 @router.post("/v1/samp/send", response_model=SAMPSendResponse, tags=["samp"])
 async def samp_send(
     request: SAMPSendRequest,
-    _: None = _auth,
+    _: str = _operator,
 ) -> SAMPSendResponse:
     """Enqueue a SAMP message for dispatch.
 
@@ -165,7 +168,7 @@ async def samp_send(
 @router.post("/v1/samp/receive", response_model=SAMPReceiveResponse, tags=["samp"])
 async def samp_receive(
     request: SAMPReceiveRequest,
-    _: None = _auth,
+    _: str = _operator,
 ) -> SAMPReceiveResponse:
     """Accept an inbound SAMP message forwarded by the Qt client.
 
@@ -189,7 +192,7 @@ async def samp_receive(
 
 @router.get("/v1/samp/pending", tags=["samp"])
 async def samp_pending(
-    _: None = _auth,
+    _: str = _operator,
 ) -> dict:
     """Return and drain the outbound SAMP message queue.
 
@@ -204,7 +207,7 @@ async def samp_pending(
 async def samp_inbox(
     limit: int = Query(32, ge=1, le=256),
     drain: bool = Query(False),
-    _: None = _auth,
+    _: str = _operator,
 ) -> dict:
     """Inspect (or drain) the inbound SAMP message inbox.
 
@@ -222,7 +225,7 @@ async def samp_inbox(
 
 
 @router.get("/v1/samp/status", tags=["samp"])
-async def samp_status(_: None = _auth) -> dict:
+async def samp_status(_: str = _operator) -> dict:
     """Return the current SAMP bridge status."""
     return SAMP.hub_status()
 
@@ -230,7 +233,7 @@ async def samp_status(_: None = _auth) -> dict:
 @router.post("/v1/samp/hub-status", tags=["samp"])
 async def samp_hub_status_report(
     report: SAMPHubStatusReport,
-    _: None = _auth,
+    _: str = _operator,
 ) -> dict:
     """Qt client reports its current Hub connection state.
 
@@ -250,7 +253,7 @@ async def samp_hub_status_report(
 @router.post("/v1/samp/connect", tags=["samp"])
 async def samp_connect(
     request: SAMPConnectRequest,
-    _: None = _auth,
+    _: str = _operator,
 ) -> dict:
     """Connect or disconnect the backend's direct astropy Hub connection.
 
@@ -269,7 +272,7 @@ async def samp_connect(
 @router.post("/v1/samp/files/register", response_model=SAMPFitsResponse, tags=["samp"])
 async def samp_register_file(
     request: SAMPFitsRequest,
-    _: None = _auth,
+    _: str = _operator,
 ) -> SAMPFitsResponse:
     """Register an existing backend file path for SAMP URL sharing.
 
@@ -295,7 +298,7 @@ async def samp_register_file(
 @router.post("/v1/samp/import-url", response_model=SAMPImportResponse, tags=["samp"])
 async def samp_import_url(
     request: SAMPImportUrlRequest,
-    _: None = _auth,
+    _: str = _operator,
 ) -> SAMPImportResponse:
     """Download a remote URL into the backend SAMP temp store."""
     try:
@@ -320,7 +323,7 @@ async def samp_import_url(
 @router.post("/v1/samp/upload-file", response_model=SAMPImportResponse, tags=["samp"])
 async def samp_upload_file(
     request: SAMPUploadFileRequest,
-    _: None = _auth,
+    _: str = _operator,
 ) -> SAMPImportResponse:
     """Stage a client-local file on the backend SAMP temp store."""
     try:
@@ -370,7 +373,7 @@ async def samp_serve_file(
 async def samp_send_fits(
     request: SAMPFitsRequest,
     target_id: str | None = Query(None),
-    _: None = _auth,
+    _: str = _operator,
 ) -> SAMPSendResponse:
     """Register a FITS file and immediately enqueue an image.load.fits message.
 
@@ -405,7 +408,7 @@ async def samp_send_fits(
 async def samp_send_catalogue(
     request: SAMPCatalogueRequest,
     target_id: str | None = Query(None),
-    _: None = _auth,
+    _: str = _operator,
 ) -> SAMPSendResponse:
     """Stage a catalogue and enqueue a SAMP table.load message."""
     src = Path(request.path)

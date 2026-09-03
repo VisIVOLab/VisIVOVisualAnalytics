@@ -59,6 +59,27 @@ logger = logging.getLogger("visivo.render")
 _auth = Depends(verify_token)
 
 
+async def _owned_render_session(session_id: str, token: str | None):
+    """Look up a render session, enforcing that it belongs to ``token``.
+
+    Returns None when it is missing OR owned by a different token, so callers
+    answer 404 either way and can't be used to probe another user's session.
+    """
+    import secrets as _sec
+
+    from ..auth import multi_user_mode as _multi
+    sess = await get_render_manager().get_session(session_id)
+    if sess is None:
+        return None
+    owner = getattr(sess, "owner_token", None)
+    if owner is None:
+        # Unowned (legacy/internal): shareable only on a single-user backend.
+        return None if _multi() else sess
+    if token is None or not _sec.compare_digest(owner, token):
+        return None
+    return sess
+
+
 # ── REST: session lifecycle ──────────────────────────────────────────────────
 
 
@@ -78,7 +99,7 @@ class CreateRenderSessionResponse(BaseModel):
 @router.post("/create_session", response_model=CreateRenderSessionResponse)
 async def create_session(
     request: CreateRenderSessionRequest,
-    _: None = _auth,
+    token: str = _auth,
     session: VisivoSession = Depends(get_session),
 ) -> CreateRenderSessionResponse:
     """Create a server-side render session for an already-opened dataset.
@@ -99,7 +120,8 @@ async def create_session(
     manager = get_render_manager()
     await manager.start()   # idempotent — reaper coroutine
     try:
-        sess = await manager.create_session(dataset_path=str(entry["path"]))
+        sess = await manager.create_session(dataset_path=str(entry["path"]),
+                                            owner_token=token)
     except RuntimeError as e:
         # Capacity reached.
         raise HTTPException(503, str(e))
@@ -119,7 +141,9 @@ async def create_session(
 
 
 @router.delete("/{session_id}")
-async def close_session(session_id: str, _: None = _auth) -> dict[str, Any]:
+async def close_session(session_id: str, token: str = _auth) -> dict[str, Any]:
+    if await _owned_render_session(session_id, token) is None:
+        raise HTTPException(404, "Unknown render session_id.")
     closed = await get_render_manager().close_session(session_id)
     if not closed:
         raise HTTPException(404, "Unknown render session_id.")
@@ -127,9 +151,14 @@ async def close_session(session_id: str, _: None = _auth) -> dict[str, Any]:
 
 
 @router.get("/diagnostics")
-async def diagnostics(_: None = _auth) -> dict[str, Any]:
-    """Snapshot of active render sessions — for ops dashboards + tests."""
-    snap = await get_render_manager().snapshot()
+async def diagnostics(token: str = _auth) -> dict[str, Any]:
+    """Snapshot of the CALLER'S active render sessions — ops dashboards + tests.
+
+    Session ids and dataset paths are per-user data, so the listing is filtered to
+    the sessions this token owns (unowned ones stay visible only in single-token
+    mode, where there is nothing to isolate)."""
+    from ..auth import multi_user_mode as _multi
+    snap = await get_render_manager().snapshot_for_owner(token, _multi())
     # Surface which transports this backend can serve so the client
     # picks the best path: ``jpeg-ws`` is always on; ``h265-webrtc``
     # only when the optional Stage 6 H.265 build was applied.
@@ -170,7 +199,7 @@ class _IceCandidate(BaseModel):
 async def webrtc_offer(
     session_id: str,
     offer: _SdpExchange,
-    _: None = _auth,
+    token: str = _auth,
 ) -> _SdpExchange:
     """Establish a WebRTC peer connection for a render session.
 
@@ -193,7 +222,7 @@ async def webrtc_offer(
     if not webrtc_available():
         raise HTTPException(503, "WebRTC transport disabled (no NVENC).")
 
-    sess = await get_render_manager().get_session(session_id)
+    sess = await _owned_render_session(session_id, token)
     if sess is None:
         raise HTTPException(404, "Unknown render session_id.")
 
@@ -227,7 +256,7 @@ async def webrtc_offer(
 async def webrtc_ice(
     session_id: str,
     cand: _IceCandidate,
-    _: None = _auth,
+    token: str = _auth,
 ) -> dict[str, Any]:
     """Accept a trickled ICE candidate from the client.
 
@@ -246,6 +275,11 @@ async def webrtc_ice(
         from ..webrtc_session import get_active_webrtc_session
     except ImportError:
         raise HTTPException(503, "WebRTC transport not built in this backend.")
+
+    # Owner-checked: only the token that created the render session may trickle
+    # candidates into its PeerConnection.
+    if await _owned_render_session(session_id, token) is None:
+        raise HTTPException(404, "Unknown render session_id.")
 
     webrtc = get_active_webrtc_session(session_id)
     if webrtc is None:
@@ -283,22 +317,30 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
     # Manual auth — the verify_token Depends() doesn't apply to WS.
     token_qp = websocket.query_params.get("token", "")
     token_hd = websocket.headers.get("x-visivo-token", "")
-    from ..auth import TOKEN as _SERVER_TOKEN
+    from ..auth import accepted_tokens as _accepted_tokens
     import secrets as _secrets
     supplied = token_qp or token_hd
-    if not supplied or not _secrets.compare_digest(supplied, _SERVER_TOKEN):
+    matched: str | None = None
+    if supplied:
+        # Every per-user token is accepted (not just the primary one); the loop
+        # does not short-circuit, so a match position isn't timing-observable.
+        for _accepted in _accepted_tokens():
+            if _secrets.compare_digest(supplied, _accepted):
+                matched = _accepted
+    if matched is None:
         # Close with policy code 1008 — "policy violation".
         await websocket.close(code=1008, reason="invalid token")
         return
 
-    manager = get_render_manager()
-    sess = await manager.get_session(session_id)
+    # Owner-checked: another valid token holding this id must not be able to
+    # drive someone else's render stream.
+    sess = await _owned_render_session(session_id, matched)
     if sess is None:
         await websocket.close(code=1011, reason="unknown session_id")
         return
 
     await websocket.accept()
-    logger.info("[render-ws] %s connected", session_id)
+    logger.info("[render-ws] %s connected", session_id[:8] + "…")
 
     # Inner loop. Pattern: receive a JSON command; if it's request_frame,
     # render and send a JPEG; otherwise apply and continue (the next
@@ -325,9 +367,9 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
             else:
                 await sess.apply_command(command)
     except WebSocketDisconnect:
-        logger.info("[render-ws] %s disconnected", session_id)
+        logger.info("[render-ws] %s disconnected", session_id[:8] + "…")
     except Exception:
-        logger.exception("[render-ws] %s error — closing", session_id)
+        logger.exception("[render-ws] %s error — closing", session_id[:8] + "…")
         try:
             await websocket.close(code=1011, reason="server error")
         except RuntimeError:

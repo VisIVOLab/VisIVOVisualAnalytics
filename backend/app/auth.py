@@ -18,7 +18,7 @@ import os
 import secrets
 from pathlib import Path
 
-from fastapi import HTTPException, Security, status
+from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import APIKeyHeader
 
 logger = logging.getLogger("visivo.auth")
@@ -74,13 +74,20 @@ TOKEN: str = _resolve_token()
 
 
 def _resolve_tokens() -> tuple[str, ...]:
-    """The set of ACCEPTED tokens. The primary TOKEN plus any additional
-    per-user tokens in ``VISIVO_TOKENS`` (comma/whitespace-separated). With only
-    the single primary token this is a one-element tuple — unchanged behaviour —
-    but distinct per-user tokens let a shared backend attribute each request to a
-    user and isolate their sessions (see sessions.py owner binding)."""
+    """The set of ACCEPTED tokens: the primary TOKEN plus any additional per-user
+    tokens in ``VISIVO_TOKENS`` (comma/whitespace-separated).
+
+    Re-read from the environment on every call so an operator can revoke (or add)
+    a per-user token without restarting the process. With only the single primary
+    token this is a one-element tuple — unchanged behaviour — but distinct
+    per-user tokens let a shared backend attribute each request to a user and
+    isolate their sessions (see sessions.py owner binding).
+    """
+    # The primary token is re-read too, so rotating VISIVO_TOKEN takes effect
+    # without a restart; when it is unset we keep the id generated at startup.
+    primary = os.environ.get("VISIVO_TOKEN", "").strip() or TOKEN
     extra = os.environ.get("VISIVO_TOKENS", "")
-    tokens = [TOKEN]
+    tokens = [primary]
     for t in extra.replace(",", " ").split():
         t = t.strip()
         if t and t not in tokens:
@@ -88,6 +95,33 @@ def _resolve_tokens() -> tuple[str, ...]:
     return tuple(tokens)
 
 
+def accepted_tokens() -> tuple[str, ...]:
+    """Currently accepted tokens (live). Tests may monkeypatch this."""
+    return _resolve_tokens()
+
+
+def multi_user_mode() -> bool:
+    """True when more than one token is accepted — the backend is shared by
+    distinct users, so per-user isolation must be enforced strictly."""
+    return len(accepted_tokens()) > 1
+
+
+def primary_token() -> str:
+    """The operator/admin token: the primary VISIVO_TOKEN (live) or, when unset,
+    the id generated at startup."""
+    return os.environ.get("VISIVO_TOKEN", "").strip() or TOKEN
+
+
+def is_admin_token(token: str | None) -> bool:
+    """True for the operator. With a single token everyone is the operator (the
+    single-user backend has nothing to separate); once per-user tokens exist only
+    the PRIMARY one may read server-wide ops data (all sessions, all log lines)."""
+    if not multi_user_mode():
+        return True
+    return token is not None and secrets.compare_digest(token, primary_token())
+
+
+# Import-time snapshot kept for introspection/back-compat; prefer accepted_tokens().
 TOKENS: tuple[str, ...] = _resolve_tokens()
 
 
@@ -96,14 +130,36 @@ async def verify_token(
 ) -> str:
     """FastAPI dependency: raise 401 if the request token is wrong or absent;
     otherwise return the MATCHED token (the caller's identity, used to bind and
-    guard session ownership). Checks every accepted token in constant time."""
+    guard session ownership).
+
+    Every accepted token is compared with ``secrets.compare_digest`` and the loop
+    does NOT short-circuit on a match, so neither the matching position nor the
+    number of configured tokens is observable through response timing.
+    """
+    matched: str | None = None
     if x_visivo_token is not None:
-        for accepted in TOKENS:
+        for accepted in accepted_tokens():
             if secrets.compare_digest(x_visivo_token, accepted):
-                return accepted
-    # No token matched (or none supplied).
+                matched = accepted   # keep looping: same work whether or not it hit
+    if matched is not None:
+        return matched
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Missing or invalid X-Visivo-Token header.",
         headers={"WWW-Authenticate": f'ApiKey realm="{_HEADER_NAME}"'},
     )
+
+
+async def require_operator(token: str = Depends(verify_token)) -> str:
+    """Dependency for SERVER-WIDE resources (all sessions, the shared log buffer,
+    the machine-wide SAMP hub, the shared Workspace Exports folder).
+
+    On a single-token backend everyone is the operator, so behaviour is unchanged;
+    once per-user tokens are configured only the PRIMARY token may reach them.
+    """
+    if not is_admin_token(token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Operator token required for this server-wide resource.",
+        )
+    return token

@@ -82,7 +82,7 @@ async def vbt_open(
     }
     logger.info(
         "[vbt-open] session=%s dataset_id=%s kind=%s fields=%d rows=%d path=%s (memmap)",
-        session.session_id,
+        session.session_id[:8] + "…",
         dataset_id,
         header["kind"],
         header["field_count"],

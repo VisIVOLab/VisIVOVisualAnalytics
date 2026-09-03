@@ -92,7 +92,7 @@ async def velocity_open(
         "box_mpc": request.box_mpc,
     }
     logger.info("[velocity] session=%s dataset_id=%s path=%s",
-                session.session_id, dataset_id, request.path)
+                session.session_id[:8] + "…", dataset_id, request.path)
     return VelocityOpenResponse(
         valid=True, dataset_id=dataset_id, session_id=session.session_id, summary=summary
     )

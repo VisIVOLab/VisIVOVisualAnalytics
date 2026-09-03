@@ -27,7 +27,7 @@ _auth = Depends(verify_token)
 @router.post("/v1/tasks/moment", response_model=TaskCreateResponse, tags=["tasks"])
 async def create_moment_task(
     request: MomentProductRequest,
-    _: None = _auth,
+    token: str = _auth,
     session: Session = Depends(get_session),
 ) -> TaskCreateResponse:
     try:
@@ -37,7 +37,7 @@ async def create_moment_task(
     except HTTPException:
         raise
 
-    task = TASKS.create("moment")
+    task = TASKS.create("moment", owner_token=token)
     TASKS.update(task.task_id, status="running", progress=0.05)
 
     async def _runner() -> None:
@@ -76,7 +76,7 @@ async def create_moment_task(
 @router.post("/v1/tasks/pv", response_model=TaskCreateResponse, tags=["tasks"])
 async def create_pv_task(
     request: CubePvRequest,
-    _: None = _auth,
+    token: str = _auth,
     session: Session = Depends(get_session),
 ) -> TaskCreateResponse:
     try:
@@ -86,7 +86,7 @@ async def create_pv_task(
     except HTTPException:
         raise
 
-    task = TASKS.create("pv")
+    task = TASKS.create("pv", owner_token=token)
     TASKS.update(task.task_id, status="running", progress=0.05)
 
     async def _runner() -> None:
@@ -112,9 +112,27 @@ async def create_pv_task(
     TASKS.update(task.task_id, asyncio_handle=handle)
     return TaskCreateResponse(valid=True, error="", task_id=task.task_id, status="running", cache_hit=False)
 
+
+def _owned_task(task_id: str, token: str):
+    """Fetch a task only if it belongs to ``token``. Missing and not-yours are
+    indistinguishable (both None → 404) so task ids can't be probed."""
+    import secrets as _sec
+
+    from ..auth import multi_user_mode as _multi
+    task = TASKS.peek(task_id)          # no TTL refresh while checking ownership
+    if task is None:
+        return None
+    owner = getattr(task, "owner_token", None)
+    if owner is None:
+        return None if _multi() else task
+    if token is None or not _sec.compare_digest(owner, token):
+        return None
+    return task
+
+
 @router.get("/v1/tasks/{task_id}", response_model=TaskStatusResponse, tags=["tasks"])
-async def task_status(task_id: str, _: None = _auth) -> TaskStatusResponse:
-    task = TASKS.get(task_id)
+async def task_status(task_id: str, token: str = _auth) -> TaskStatusResponse:
+    task = _owned_task(task_id, token)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Unknown task_id '{task_id}'.")
     return TaskStatusResponse(
@@ -131,7 +149,7 @@ async def task_status(task_id: str, _: None = _auth) -> TaskStatusResponse:
     )
 
 @router.delete("/v1/tasks/{task_id}", tags=["tasks"])
-async def cancel_task(task_id: str, _: None = _auth) -> dict:
+async def cancel_task(task_id: str, token: str = _auth) -> dict:
     """Request cancellation of a running or pending task.
 
     Returns 200 with ``{"cancelled": true}`` if the cancellation was accepted,
@@ -139,7 +157,7 @@ async def cancel_task(task_id: str, _: None = _auth) -> dict:
     A cancellation request is best-effort: the task may still complete before
     the asyncio cancellation propagates to the worker future.
     """
-    task = TASKS.get(task_id)
+    task = _owned_task(task_id, token)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Unknown task_id '{task_id}'.")
     if task.status not in ("pending", "running"):

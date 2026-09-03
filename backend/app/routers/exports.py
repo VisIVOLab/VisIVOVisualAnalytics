@@ -27,7 +27,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from ..auth import verify_token
+from ..auth import require_operator, verify_token
+from ..sessions import Session, get_session
 from ..dependencies import (
     get_exports_dir,
     resolve_workspace_path,
@@ -36,6 +37,9 @@ from ..dependencies import (
 router = APIRouter(tags=["exports"])
 logger = logging.getLogger("visivo.backend")
 _auth = Depends(verify_token)
+# The Workspace Exports directory is one shared folder on the server; with
+# per-user tokens configured only the operator may list/fetch/delete it.
+_operator = Depends(require_operator)
 
 
 class WorkspaceExportEntry(BaseModel):
@@ -69,7 +73,7 @@ class ExportsDeleteResponse(BaseModel):
 
 @router.get("/v1/exports/list",
             response_model=ExportsListResponse, tags=["exports"])
-async def exports_list(_: None = _auth) -> ExportsListResponse:
+async def exports_list(_: str = _operator) -> ExportsListResponse:
     """Enumerate every regular file currently in the Workspace Exports
     directory, sorted by mtime (most-recent first)."""
     try:
@@ -101,7 +105,7 @@ async def exports_list(_: None = _auth) -> ExportsListResponse:
 @router.get("/v1/exports/download", tags=["exports"])
 async def exports_download(
     filename: str = Query(..., description="Workspace-relative filename"),
-    _: None = _auth,
+    _: str = _operator,
 ) -> FileResponse:
     """Stream one workspace artefact back to the client so the user can
     persist it anywhere on their local filesystem."""
@@ -137,20 +141,18 @@ class ExportsCopyResponse(BaseModel):
 async def exports_copy_dataset(
     request: ExportsCopyRequest,
     _: None = _auth,
+    session: Session = Depends(get_session),
 ) -> ExportsCopyResponse:
     """Copy the source FITS file of an opened dataset into the Workspace
     Exports directory (useful for 2-D images that don't have a dedicated
     crop/moment export path)."""
     import shutil
 
-    from ..sessions import REGISTRY
-    # Find the dataset path across all sessions.
-    src_path = None
-    for session in REGISTRY.values():
-        entry = session.datasets.get(request.dataset_id)
-        if entry:
-            src_path = entry.get("path")
-            break
+    # Resolve the dataset in the CALLER'S session only — scanning every session
+    # would both leak other users' files and depend on a registry API that does
+    # not exist (the previous REGISTRY.values() call raised AttributeError).
+    entry = session.datasets.get(request.dataset_id)
+    src_path = entry.get("path") if entry else None
     if not src_path:
         return ExportsCopyResponse(valid=False,
                                    error=f"Dataset '{request.dataset_id}' not found.")
@@ -178,7 +180,7 @@ async def exports_copy_dataset(
                response_model=ExportsDeleteResponse, tags=["exports"])
 async def exports_delete(
     filename: str,
-    _: None = _auth,
+    _: str = _operator,
 ) -> ExportsDeleteResponse:
     """Remove one workspace artefact. Idempotent: returns 200 with
     ``valid=false`` if the file does not exist (no exception)."""

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets as _secrets
 import threading
 import time
 import uuid
@@ -45,6 +46,30 @@ logger = logging.getLogger("visivo.sessions")
 
 _TTL_SECONDS = int(os.environ.get("VISIVO_SESSION_TTL", "1800"))
 _ANON_SESSION_ID = "anonymous"
+# Cap live sessions per auth token so one caller can't spam adopted ids.
+_MAX_SESSIONS_PER_TOKEN = int(os.environ.get("VISIVO_MAX_SESSIONS_PER_TOKEN", "32"))
+
+
+_MIN_ADOPTABLE_ID_LEN = 32
+_ADOPTABLE_ID_CHARS = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+
+
+def _id_is_high_entropy(session_id: str) -> bool:
+    """A client may only ADOPT an id that is long and random-looking (a UUID or
+    equivalent). A short/guessable id could be PRE-CLAIMED by another user before
+    its owner's first request (session fixation), so we refuse those outright."""
+    return (len(session_id) >= _MIN_ADOPTABLE_ID_LEN
+            and all(c in _ADOPTABLE_ID_CHARS for c in session_id))
+
+
+def _redact(session_id: str) -> str:
+    """Session ids are bearer-like secrets — log only a short, non-reusable prefix."""
+    return f"{session_id[:8]}…" if len(session_id) > 8 else "…"
+
+
+class SessionQuotaExceeded(RuntimeError):
+    """Raised when a token already holds the maximum number of live sessions."""
 
 
 def _safe_close_memmap(arr: object) -> None:
@@ -113,7 +138,7 @@ class Session:
                     logger.debug(
                         "[sessions] closed memmap dataset_id=%s session_id=%s",
                         dataset_id,
-                        self.session_id,
+                        _redact(self.session_id),
                     )
 
     def try_acquire_task_slot(self) -> bool:
@@ -164,8 +189,53 @@ class SessionRegistry:
             session = Session(session_id)
             session.owner_token = owner_token
             self._sessions[session_id] = session
-        logger.info("[sessions] created session_id=%s", session_id)
+        logger.info("[sessions] created session_id=%s", _redact(session_id))
         return session
+
+    def get_or_adopt(self, session_id: str, owner_token: str | None,
+                     require_owned: bool = False) -> Session | None:
+        """Atomically resolve a client-supplied session id, enforcing ownership.
+
+        Under a SINGLE lock acquisition (so two users racing the same brand-new id
+        cannot end up sharing one session): returns the existing session when it is
+        unowned or owned by ``owner_token``; returns ``None`` when it belongs to a
+        DIFFERENT token (caller reports 404); otherwise creates + registers it
+        owned by ``owner_token``.
+        """
+        with self._lock:
+            existing = self._sessions.get(session_id)
+            if existing is not None:
+                if existing.owner_token is None:
+                    # Unowned (anonymous / legacy). Shareable only in single-user
+                    # mode; with several tokens configured it must not be a
+                    # back door into someone else's datasets.
+                    if require_owned:
+                        return None
+                elif owner_token is None or not _secrets.compare_digest(
+                        existing.owner_token, owner_token):
+                    return None          # another user's session
+                existing.touch()
+                return existing
+            if owner_token is not None:
+                mine = sum(1 for x in self._sessions.values()
+                           if x.owner_token is not None
+                           and _secrets.compare_digest(x.owner_token, owner_token))
+                if mine >= _MAX_SESSIONS_PER_TOKEN:
+                    raise SessionQuotaExceeded(
+                        f"Too many live sessions for this token "
+                        f"({_MAX_SESSIONS_PER_TOKEN}).")
+            session = Session(session_id)
+            session.owner_token = owner_token
+            self._sessions[session_id] = session
+        logger.info("[sessions] adopted client session_id=%s", _redact(session_id))
+        return session
+
+    def peek(self, session_id: str) -> Session | None:
+        """Look a session up WITHOUT touching its idle timer — used by
+        ownership checks so a stranger holding a leaked id can't keep another
+        user's session alive just by probing it."""
+        with self._lock:
+            return self._sessions.get(session_id)
 
     def get(self, session_id: str) -> Session | None:
         """Return the session or None if it does not exist / has been evicted."""
@@ -195,7 +265,10 @@ class SessionRegistry:
                 "ttl_seconds": self._ttl,
                 "sessions": [
                     {
-                        "session_id": s.session_id,
+                        # Redacted: a session id is bearer-like (it grants access
+                        # to that session's datasets), so diagnostics must not
+                        # hand out usable ids.
+                        "session_id": _redact(s.session_id),
                         "datasets": len(s.datasets),
                         "idle_seconds": round(s.idle_seconds()),
                     }
@@ -274,7 +347,7 @@ class SessionRegistry:
             # Close resources outside the lock.
             for session in stale_sessions:
                 session.close()
-                logger.info("[sessions] evicted stale session_id=%s", session.session_id)
+                logger.info("[sessions] evicted stale session_id=%s", _redact(session.session_id))
 
             # Anonymous session: flush stale datasets (FD fix — M3).
             # The session itself stays in the registry.
@@ -291,11 +364,9 @@ REGISTRY: SessionRegistry = SessionRegistry()
 
 # ── FastAPI dependency ────────────────────────────────────────────────────────
 
-import secrets as _secrets  # noqa: E402
-
 from fastapi import Depends, Header, HTTPException, status  # noqa: E402 – avoid circular imports
 
-from .auth import verify_token  # noqa: E402
+from .auth import multi_user_mode, verify_token  # noqa: E402
 
 
 async def get_session(x_visivo_session: str | None = Header(None),
@@ -304,24 +375,74 @@ async def get_session(x_visivo_session: str | None = Header(None),
     FastAPI dependency: resolve (or lazily create) the caller's session, enforcing
     session ownership.
 
-    The Qt client sends its private session id in the X-Visivo-Session header. If
-    absent the shared anonymous session is used (single-user / backward compat).
-    A session created by one token can't be accessed by another (multi-user).
+    The Qt client sends its private session id in the X-Visivo-Session header.
+    With a SINGLE token (the default, single-user backend) an absent header falls
+    back to the shared anonymous session for backward compatibility. As soon as
+    several per-user tokens are configured that shared bucket would defeat
+    isolation — any user could simply omit the header and reach everyone's
+    datasets — so the header becomes mandatory.
+
+    A session created by one token is invisible to another (404, not 403, so the
+    existence of someone else's session can't be probed).
     """
     if x_visivo_session is None:
+        if multi_user_mode():
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "X-Visivo-Session header is required when multiple tokens are "
+                "configured (the shared anonymous session is disabled).",
+            )
         return REGISTRY.get_or_create_anon()
 
-    session = REGISTRY.get(x_visivo_session)
-    if session is not None:
-        # Deny cross-user access. Report 404 (not 403) so the mere existence of
-        # another user's session isn't confirmable.
-        if session.owner_token is not None \
-                and not _secrets.compare_digest(session.owner_token, token):
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found.")
-        return session
+    # Atomic: resolve-or-adopt under one lock, with the ownership check inside, so
+    # two users racing the same brand-new id can't end up sharing a session.
+    # The backend hands back "anonymous" as the session id to clients that opened
+    # without a header, and they echo it — so it stays valid in single-user mode.
+    # With several tokens configured that shared bucket is a cross-user back door,
+    # so it is refused there (as is omitting the header entirely).
+    if x_visivo_session == _ANON_SESSION_ID:
+        if multi_user_mode():
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "The shared anonymous session is disabled when multiple tokens "
+                "are configured; send your own X-Visivo-Session id.",
+            )
+        return REGISTRY.get_or_create_anon()
 
-    # First request from a client that minted its own id (multi-desktop
-    # isolation), or a session that expired: create+register UNDER THAT id, owned
-    # by this token, so the client's subsequent requests all land here.
-    logger.info("[sessions] adopting client session_id=%s", x_visivo_session)
-    return REGISTRY.create(x_visivo_session, owner_token=token)
+    # Reject any other guessable id BEFORE a lookup: a short id could be
+    # pre-claimed by another user (session fixation), and answering identically
+    # whether or not it exists keeps the response from confirming a session.
+    if not _id_is_high_entropy(x_visivo_session):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "X-Visivo-Session must be a high-entropy id (>= 32 URL-safe chars), "
+            "e.g. a UUID.",
+        )
+    try:
+        session = REGISTRY.get_or_adopt(x_visivo_session, owner_token=token,
+                                        require_owned=multi_user_mode())
+    except SessionQuotaExceeded as exc:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc)) from exc
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found.")
+    return session
+
+
+def session_for_owner(session_id: str, token: str) -> Session | None:
+    """Owner-checked lookup for endpoints that resolve a session id from the PATH
+    (rather than the header). Returns None when the session is missing OR is not
+    this token's, so callers answer 404 without leaking existence.
+
+    Deliberately a NO-TOUCH peek: probing must not refresh another user's idle
+    timer. An UNOWNED session (the shared anonymous one, or a legacy session) is
+    only visible while the backend is single-user.
+    """
+    session = REGISTRY.peek(session_id)
+    if session is None:
+        return None
+    if session.owner_token is None:
+        return None if multi_user_mode() else session
+    if token is None or not _secrets.compare_digest(session.owner_token, token):
+        return None
+    session.touch()
+    return session

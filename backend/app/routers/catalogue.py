@@ -62,7 +62,7 @@ async def open_catalogue(
     session.datasets[dataset_id] = {"path": str(path), "dataframe": dataframe, **metadata}
     logger.info(
         "[catalogue-open] session=%s dataset_id=%s rows=%d cols=%d path=%s",
-        session.session_id,
+        session.session_id[:8] + "…",
         dataset_id,
         len(dataframe),
         len(dataframe.columns),
