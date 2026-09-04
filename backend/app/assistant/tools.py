@@ -1241,5 +1241,20 @@ TOOLS: dict[str, AssistantTool] = {
 }
 
 
-def tool_specs() -> list[dict[str, Any]]:
-    return [t.spec() for t in TOOLS.values()]
+def tool_specs(names: list[str] | None = None) -> list[dict[str, Any]]:
+    """Render the registry as provider-ready tool specs.
+
+    ``names=None`` renders the whole catalogue (the long-standing behaviour).
+    A list renders only those tools, in the order given, so a DIFFERENT
+    application can expose its own subset instead of the full scientific
+    catalogue. Unknown names are an explicit error rather than a silent
+    omission -- a silently dropped tool would surface much later as the model
+    simply never calling it.
+    """
+    if names is None:
+        return [t.spec() for t in TOOLS.values()]
+    unknown = sorted({n for n in names if n not in TOOLS})
+    if unknown:
+        raise ValueError(
+            f"unknown tool name(s): {unknown}. Registered: {sorted(TOOLS)}")
+    return [TOOLS[n].spec() for n in names]
