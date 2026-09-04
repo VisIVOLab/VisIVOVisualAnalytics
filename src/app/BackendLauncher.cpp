@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QUrl>
 #include <QtConcurrentRun>
@@ -44,6 +45,141 @@ QString findBackendDir(QStringList &searchedOut)
             return c;
     }
     return {};
+}
+
+/**
+ * Minimum interpreter the backend is supported on.
+ *
+ * Not a stylistic floor: several dependencies (numpy 2, numba, the FastAPI
+ * stack) have no wheels below this, so an older interpreter fails deep inside
+ * pip with an unreadable error. It has to be checked up front and reported
+ * plainly, because the default interpreter on a Mac is 3.9 and on many Linux
+ * distributions 3.9 or 3.10 — a user who has "python3" does not necessarily
+ * have a usable one.
+ */
+constexpr int kMinPythonMajor = 3;
+constexpr int kMinPythonMinor = 11;
+
+/** Runs @p exe with @p args and returns trimmed stdout, or {} on any failure. */
+QString runCapture(const QString &exe, const QStringList &args, int timeoutMs = 8000)
+{
+    QProcess p;
+    p.setProcessChannelMode(QProcess::MergedChannels);
+    p.start(exe, args);
+    if (!p.waitForFinished(timeoutMs)) {
+        p.kill();
+        p.waitForFinished(1000);
+        return {};
+    }
+    return QString::fromLocal8Bit(p.readAll()).trimmed();
+}
+
+/** ``(major, minor)`` of @p exe, or ``{0, 0}`` if it cannot be determined. */
+QPair<int, int> pythonVersion(const QString &exe)
+{
+    const QString out = runCapture(
+            exe, { u"-c"_s, u"import sys;print('%d.%d'%sys.version_info[:2])"_s });
+    const QStringList parts = out.split(u'.');
+    if (parts.size() < 2)
+        return { 0, 0 };
+    bool okMaj = false, okMin = false;
+    const int maj = parts.at(0).toInt(&okMaj);
+    const int min = parts.at(1).toInt(&okMin);
+    return (okMaj && okMin) ? QPair<int, int>{ maj, min } : QPair<int, int>{ 0, 0 };
+}
+
+bool pythonVersionOk(const QPair<int, int> &v)
+{
+    return v.first > kMinPythonMajor
+            || (v.first == kMinPythonMajor && v.second >= kMinPythonMinor);
+}
+
+/** True when @p exe can actually import what the backend needs to boot. */
+bool hasBackendDeps(const QString &exe)
+{
+    QProcess p;
+    p.start(exe, { u"-c"_s, u"import fastapi, uvicorn, astropy, numpy"_s });
+    if (!p.waitForFinished(20000)) {
+        p.kill();
+        p.waitForFinished(1000);
+        return false;
+    }
+    return p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0;
+}
+
+/**
+ * The user-data virtual environment — the one the setup_backend scripts create
+ * and the one the resolution chain looks for.
+ *
+ * Per-user writable storage, never inside the application. On macOS the backend
+ * ships in ``VisIVO.app/Contents/Resources``; writing a venv there would
+ * invalidate the code signature, be refused outright under /Applications, and
+ * be lost on every upgrade. An AppImage is read-only outright.
+ *
+ * Defined once because two things depend on it agreeing: candidate 3b of the
+ * resolution chain, and the first-run bootstrap that creates it. Keep in sync
+ * with scripts/setup_backend.{sh,command,bat}, which produce the same paths.
+ */
+QString userDataVenvDir()
+{
+#if defined(Q_OS_MACOS)
+    return QDir::cleanPath(QDir::homePath()
+                           + u"/Library/Application Support/VisIVO/.venv"_s);
+#elif defined(Q_OS_WIN)
+    const QString appData = qEnvironmentVariable("APPDATA");
+    return appData.isEmpty() ? QString()
+                             : QDir::cleanPath(appData + u"/VisIVO/.venv"_s);
+#else
+    const QString xdgDataHome =
+            qEnvironmentVariable("XDG_DATA_HOME", QDir::homePath() + u"/.local/share"_s);
+    return QDir::cleanPath(xdgDataHome + u"/VisIVO/.venv"_s);
+#endif
+}
+
+/** Interpreter inside a venv directory, per platform. */
+QString venvPythonPath(const QString &venvDir)
+{
+    if (venvDir.isEmpty())
+        return {};
+#if defined(Q_OS_WIN)
+    return QDir::cleanPath(venvDir + u"/Scripts/python.exe"_s);
+#else
+    return QDir::cleanPath(venvDir + u"/bin/python"_s);
+#endif
+}
+
+/**
+ * Wait for @p proc while keeping the event loop running.
+ *
+ * The bootstrap runs on the GUI thread, so a bare waitForFinished() would block
+ * every repaint and every queued signal — including the progress messages the
+ * dialog is supposed to show. @p timeoutMs < 0 waits indefinitely.
+ */
+bool waitForProcessPumpingEvents(QProcess &proc, int timeoutMs)
+{
+    if (proc.state() == QProcess::NotRunning)
+        return proc.exitStatus() == QProcess::NormalExit;
+
+    QEventLoop loop;
+    QObject::connect(&proc, &QProcess::finished, &loop, &QEventLoop::quit);
+    QObject::connect(&proc, &QProcess::errorOccurred, &loop, &QEventLoop::quit);
+    QTimer timeout;
+    bool timedOut = false;
+    if (timeoutMs >= 0) {
+        timeout.setSingleShot(true);
+        QObject::connect(&timeout, &QTimer::timeout, &loop, [&]() {
+            timedOut = true;
+            loop.quit();
+        });
+        timeout.start(timeoutMs);
+    }
+    loop.exec();
+    if (timedOut) {
+        proc.kill();
+        proc.waitForFinished(2000);
+        return false;
+    }
+    return proc.state() == QProcess::NotRunning;
 }
 
 /** Returns true if @p path points to an existing, executable file. */
@@ -125,35 +261,16 @@ PythonResolution resolvePythonExe(const QString &settingsPython,
         }
     }
 
-    // ── 3b. User-data venv (created by the setup_backend script) ─────────────
-    //  Released bundles (DMG / AppImage) ship a setup script that creates a
-    //  venv in a writable user-data location, so the signed app bundle / read-
-    //  only AppImage stays untouched. Keep these paths in sync with the
-    //  setup_backend.command (macOS) and setup_backend.sh (Linux) scripts.
+    // ── 3b. User-data venv ───────────────────────────────────────────────────
+    //  Created either by scripts/setup_backend.{sh,command,bat} or by the
+    //  first-run bootstrap below. Lives in writable user storage so a signed
+    //  bundle / read-only AppImage stays untouched. The path comes from
+    //  userDataVenvDir() so the chain and the bootstrap cannot disagree.
     {
-#if defined(Q_OS_MACOS)
-        const QString userVenvDir =
-                QDir::homePath() + u"/Library/Application Support/VisIVO/.venv"_s;
-        const QString userVenvPython =
-                QDir::cleanPath(userVenvDir + u"/bin/python"_s);
-#elif defined(Q_OS_WIN)
-        const QString appData = qEnvironmentVariable("APPDATA");
-        const QString userVenvDir = appData.isEmpty()
-                ? QString()
-                : QDir::cleanPath(appData + u"/VisIVO/.venv"_s);
-        const QString userVenvPython = userVenvDir.isEmpty()
-                ? QString()
-                : QDir::cleanPath(userVenvDir + u"/Scripts/python.exe"_s);
-#else
-        const QString xdgDataHome = qEnvironmentVariable(
-                "XDG_DATA_HOME", QDir::homePath() + u"/.local/share"_s);
-        const QString userVenvDir = xdgDataHome + u"/VisIVO/.venv"_s;
-        const QString userVenvPython =
-                QDir::cleanPath(userVenvDir + u"/bin/python"_s);
-#endif
+        const QString userVenvPython = venvPythonPath(userDataVenvDir());
         if (!userVenvPython.isEmpty() && isValidPythonExe(userVenvPython)) {
             logOut << u"[launcher] Python (user-data venv): %1"_s.arg(userVenvPython);
-            return { userVenvPython, u"user-data venv (setup_backend script)"_s };
+            return { userVenvPython, u"user-data venv"_s };
         }
     }
 
@@ -290,6 +407,105 @@ void BackendLauncher::onInitialHealthDone()
 }
 
 // ---------------------------------------------------------------------------
+// First-run bootstrap — create the backend's virtual environment
+// ---------------------------------------------------------------------------
+
+/**
+ * Create ``<backendDir>/../.venv`` and install the backend's requirements.
+ *
+ * Runs once, on a machine that has a supported Python but has never run the
+ * backend. It is deliberately synchronous with progress reported through
+ * messageChanged(): the install is hundreds of megabytes and several minutes,
+ * and a silent wait of that length reads as a hang.
+ *
+ * @returns true on success. On failure it has already emitted failed() with
+ *          what pip actually said, so the caller just returns.
+ */
+bool BackendLauncher::bootstrapEnvironment(const QString &backendDir, const QString &pythonExe)
+{
+    const QString venvDir = userDataVenvDir();
+    const QString requirements = backendDir + u"/requirements.txt"_s;
+    appendLog(u"[launcher] Managed venv : %1"_s.arg(venvDir));
+
+    if (venvDir.isEmpty()) {
+        emit failed(u"Cannot determine where to create the backend environment "
+                    u"(no writable application-data directory)."_s);
+        return false;
+    }
+    if (!QFileInfo::exists(requirements)) {
+        emit failed(u"Cannot set up the backend: %1 is missing."_s.arg(requirements));
+        return false;
+    }
+
+    // ── 1. the virtual environment ───────────────────────────────────────────
+    if (!QFileInfo::exists(venvDir)) {
+        emit messageChanged(u"Preparing the backend environment…"_s);
+        appendLog(u"[launcher] Creating venv at %1"_s.arg(venvDir));
+        QProcess venv;
+        venv.setProcessChannelMode(QProcess::MergedChannels);
+        venv.start(pythonExe, { u"-m"_s, u"venv"_s, venvDir });
+        if (!waitForProcessPumpingEvents(venv, 120000) || venv.exitCode() != 0) {
+            const QString out = QString::fromLocal8Bit(venv.readAll()).trimmed();
+            appendLog(out);
+            emit failed(u"Could not create the backend environment at %1.\n\n%2\n\n"
+                        u"On Debian and Ubuntu this usually means the python3-venv "
+                        u"package is not installed."_s.arg(venvDir, out));
+            return false;
+        }
+    }
+
+    const QString venvPython = venvPythonPath(venvDir);
+    if (!isValidPythonExe(venvPython)) {
+        emit failed(u"The backend environment was created but has no interpreter "
+                    u"at %1."_s.arg(venvPython));
+        return false;
+    }
+
+    // ── 2. the dependencies ──────────────────────────────────────────────────
+    emit messageChanged(u"Installing backend dependencies — this takes a few "
+                        u"minutes the first time…"_s);
+    appendLog(u"[launcher] pip install -r %1"_s.arg(requirements));
+
+    QProcess pip;
+    pip.setProcessChannelMode(QProcess::MergedChannels);
+    pip.setWorkingDirectory(backendDir);
+    QObject::connect(&pip, &QProcess::readyReadStandardOutput, this, [this, &pip]() {
+        const QString chunk = QString::fromLocal8Bit(pip.readAllStandardOutput());
+        for (const QString &line : chunk.split(u'\n', Qt::SkipEmptyParts)) {
+            const QString t = line.trimmed();
+            appendLog(t);
+            // Surface only the package-level lines; pip's per-file chatter would
+            // flicker the dialog without telling anyone anything.
+            if (t.startsWith(u"Collecting "_s) || t.startsWith(u"Installing collected"_s))
+                emit messageChanged(t);
+        }
+    });
+    pip.start(venvPython, { u"-m"_s, u"pip"_s, u"install"_s, u"--upgrade"_s,
+                            u"-r"_s, requirements });
+    // No timeout: a cold install of this dependency set over a slow link
+    // legitimately runs for many minutes, and killing it half-way leaves an
+    // environment that looks present and is not. Events are pumped while we
+    // wait — this runs on the GUI thread (launchProcess() is reached from a
+    // QFutureWatcher::finished handler), so a plain waitForFinished() would
+    // freeze the startup dialog for the whole install and none of the progress
+    // messages below would ever be painted.
+    waitForProcessPumpingEvents(pip, -1);
+
+    if (pip.exitStatus() != QProcess::NormalExit || pip.exitCode() != 0) {
+        emit failed(u"Installing the backend dependencies failed.\n\n"
+                    u"The Diagnostics log has pip's output. A common cause is no "
+                    u"network access; you can also prepare the environment by hand:\n\n"
+                    u"  %1 -m venv %2\n  %3 -m pip install -r %4"_s
+                            .arg(pythonExe, venvDir, venvPython, requirements));
+        return false;
+    }
+
+    emit messageChanged(u"Backend environment ready."_s);
+    appendLog(u"[launcher] Bootstrap complete"_s);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Step 2 — launch backend process
 // ---------------------------------------------------------------------------
 
@@ -311,8 +527,11 @@ void BackendLauncher::launchProcess()
 
     // ── Resolve Python interpreter (priority chain) ───────────────────────────
     QStringList resolutionLog;
-    const auto [pythonExe, pythonSource] =
-            resolvePythonExe(m_pythonExe, backendDir, resolutionLog);
+    // Not a structured binding: the bootstrap below may replace the interpreter
+    // with the one it just created, so these have to be assignable.
+    const PythonResolution resolved = resolvePythonExe(m_pythonExe, backendDir, resolutionLog);
+    QString pythonExe = resolved.exe;
+    QString pythonSource = resolved.source;
     for (const QString &line : std::as_const(resolutionLog))
         appendLog(line);
 
@@ -323,6 +542,51 @@ void BackendLauncher::launchProcess()
         return;
     }
     appendLog(u"[launcher] Using Python: %1  (%2)"_s.arg(pythonExe, pythonSource));
+
+    // ── Is this interpreter usable, and does it have the backend's deps? ─────
+    //
+    // Both questions have to be asked here rather than left to uvicorn. A Mac's
+    // /usr/bin/python3 is 3.9 and will be found by the PATH fallback; letting it
+    // through produces a pip resolution failure pages long, or an ImportError
+    // from inside the server, neither of which tells the user what to install.
+    const auto version = pythonVersion(pythonExe);
+    const QString versionText = version.first
+            ? u"%1.%2"_s.arg(version.first).arg(version.second)
+            : u"unknown"_s;
+    appendLog(u"[launcher] Python ver : %1"_s.arg(versionText));
+
+    if (!pythonVersionOk(version)) {
+        emit failed(
+                u"VisIVO needs Python %1.%2 or newer, and the interpreter it found "
+                u"is %3.\n\n%4\n\nInstall a newer Python, then either put it first "
+                u"on your PATH or point VisIVO at it with the "
+                u"VISIVO_BACKEND_PYTHON environment variable."_s
+                        .arg(kMinPythonMajor).arg(kMinPythonMinor)
+                        .arg(versionText, pythonExe));
+        return;
+    }
+
+    if (!hasBackendDeps(pythonExe)) {
+        appendLog(u"[launcher] Backend dependencies missing — bootstrapping"_s);
+        if (!bootstrapEnvironment(backendDir, pythonExe))
+            return;   // bootstrapEnvironment() has already emitted failed()
+        // The bootstrap creates backendDir/../.venv, which is candidate 3 of the
+        // resolution chain, so re-resolving now picks it up.
+        QStringList reLog;
+        const PythonResolution reResolved = resolvePythonExe(m_pythonExe, backendDir, reLog);
+        const QString venvExe = reResolved.exe;
+        const QString venvSource = reResolved.source;
+        for (const QString &line : std::as_const(reLog))
+            appendLog(line);
+        if (venvExe.isEmpty() || !hasBackendDeps(venvExe)) {
+            emit failed(u"The backend environment was created but its dependencies "
+                        u"are still missing. See the log for what pip reported."_s);
+            return;
+        }
+        pythonExe = venvExe;
+        pythonSource = venvSource;
+        appendLog(u"[launcher] Using Python: %1  (%2)"_s.arg(pythonExe, pythonSource));
+    }
 
     // ── Extract host and port from the backend URL ────────────────────────────
     const QUrl parsedUrl(m_backendUrl);

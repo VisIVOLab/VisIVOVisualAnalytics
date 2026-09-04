@@ -11,7 +11,7 @@ about five minutes.
 | **Compiler** | Apple Clang 15+, GCC 11+, or MSVC 2022. C++17. |
 | **Qt** | 6.5 or newer (Core, Gui, Widgets, OpenGL, OpenGLWidgets, Concurrent, Network, NetworkAuth, Svg, PrintSupport). |
 | **VTK** | 9.5 or newer, built with Qt 6 support. |
-| **Python** | 3.12+ for the backend (FastAPI, NumPy, Astropy, SciPy). |
+| **Python** | **3.11 or newer** for the backend. The client checks this and says so if the interpreter it finds is older — note that macOS ships 3.9 and several Linux distributions ship 3.9 or 3.10, so a system `python3` is often not enough. |
 | **GPU** | Any Apple-Silicon GPU or a modern desktop GPU. Volume rendering uses `vtkGPUVolumeRayCastMapper`. |
 
 For full build flags and dependency notes see the repository
@@ -25,9 +25,33 @@ queries, …). The desktop client always talks to a backend instance —
 either one it starts itself (the default), or one you started by hand
 on the same machine or on a remote node.
 
+### Letting the client do it
+
+If you have Python 3.11 or newer, you do not have to do anything: start the
+client and it will find the backend that ships with it, create a virtual
+environment on first run, install the dependencies, and launch the server. The
+startup window reports progress.
+
+That first run downloads several hundred megabytes and takes a few minutes.
+Afterwards it is instant, because the environment is reused.
+
+```{note}
+The client needs to *find* a suitable interpreter. It looks, in order, at
+`VISIVO_BACKEND_PYTHON`, an active virtual environment, the project's own
+`.venv`, a Python shipped next to the application, and finally your `PATH`. If
+your 3.11+ is installed somewhere unusual, point at it explicitly:
+
+    export VISIVO_BACKEND_PYTHON=/opt/python3.12/bin/python3
+```
+
+### Doing it by hand
+
+Useful when the backend runs on another machine, or when you want to watch its
+log:
+
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate
+python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
@@ -45,9 +69,9 @@ You don't normally need to copy it: the desktop client reads
 either keep the file or set the env var.
 
 :::{tip}
-You can skip the manual backend launch entirely. When the client starts and
-no backend is reachable on the configured URL, it auto-spawns one for you
-(see `BackendLauncher` and the *Settings* dialog).
+A backend you started by hand always wins: the client probes the configured URL
+first and connects to whatever is already listening, rather than starting a
+second one (see `BackendLauncher` and the *Settings* dialog).
 :::
 
 ## Launching the client

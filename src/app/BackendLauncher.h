@@ -72,6 +72,12 @@ signals:
     void failed(const QString &error);
 
 private:
+    /// First-run setup: create the backend's virtual environment and install
+    /// its requirements, reporting progress through messageChanged(). Returns
+    /// false after emitting failed(). Only called when a supported interpreter
+    /// was found but cannot import the backend's dependencies.
+    bool bootstrapEnvironment(const QString &backendDir, const QString &pythonExe);
+
     void doInitialHealthCheck();
     void onInitialHealthDone();
     void launchProcess();

@@ -736,6 +736,50 @@ install(TARGETS ${PROJECT_NAME}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
+# ── Ship the backend with the application ───────────────────────────────────
+#
+# BackendLauncher looks for a directory containing app/main.py, and its FIRST
+# candidate on macOS is <app>.app/Contents/Resources/backend. Nothing used to
+# put it there, so an installed application could not start a backend at all:
+# it only ever worked when a developer had already started uvicorn by hand and
+# the launcher found the running instance.
+#
+# The .venv and the caches are excluded deliberately — a virtual environment is
+# not relocatable, and this one is 1.3 GB. The launcher creates or finds an
+# interpreter at run time instead.
+if (APPLE)
+    set(_visivo_backend_dest "${PROJECT_NAME}.app/Contents/Resources")
+else()
+    set(_visivo_backend_dest "${CMAKE_INSTALL_BINDIR}")
+endif()
+
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/backend/"
+        DESTINATION "${_visivo_backend_dest}/backend"
+        USE_SOURCE_PERMISSIONS
+        PATTERN ".venv"        EXCLUDE
+        PATTERN "__pycache__"  EXCLUDE
+        PATTERN ".pytest_cache" EXCLUDE
+        PATTERN "tests"        EXCLUDE
+        PATTERN "*.pyc"        EXCLUDE
+)
+
+# The same directory, next to the build output, so the launcher's dev-tree
+# candidates resolve when running straight from the build directory. A symlink
+# on Unix keeps it live; Windows copies.
+if (WIN32)
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/backend/app"
+                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>/backend/app"
+            COMMENT "Copying backend next to the executable")
+else()
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E create_symlink
+                    "${CMAKE_CURRENT_SOURCE_DIR}/backend"
+                    "${CMAKE_BINARY_DIR}/backend"
+            COMMENT "Linking backend/ into the build tree for the launcher")
+endif()
+
 qt_generate_deploy_app_script(
         TARGET ${PROJECT_NAME}
         OUTPUT_SCRIPT deploy_script
