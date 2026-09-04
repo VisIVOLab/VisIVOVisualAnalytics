@@ -466,6 +466,14 @@ def _source_gaussfit(path: str | None, params: dict[str, Any]) -> dict[str, Any]
     beam-deconvolved FWHMs and position angle — a compact source characterisation.
     ``ra_deg``/``dec_deg`` and ``box_arcsec`` (the fit cut-out size) are required;
     ``channel`` selects a cube plane (omit for a 2-D image).
+
+    Uncertainties: ``error_method`` says how they were obtained. "empirical" means
+    measured by injecting the fitted model at source-free positions and refitting,
+    which is correct for beam-correlated noise. "covariance" means no clean
+    positions were available (a crowded or small field), and then the ``*_err``
+    values are **null** on purpose — the raw curve_fit figures survive under
+    ``diagnostic_covariance_err`` but are 3–8x optimistic on interferometric data
+    and must not be quoted as uncertainties. Say which case applies.
     """
     if not path:
         raise ValueError("source_gaussfit requires a loaded image or cube.")
@@ -893,7 +901,10 @@ TOOLS: dict[str, AssistantTool] = {
             name="source_gaussfit",
             description=(
                 "Fit a 2-D elliptical Gaussian to a source at a sky position "
-                "(RA/DEC in degrees). Requires WCS. Returns peak, integrated flux "
+                "(RA/DEC in degrees). Requires WCS. Uncertainties are null when "
+                "error_method is 'covariance' (no clean sky to measure them on) — "
+                "report that rather than quoting the diagnostic figures. "
+                "Returns peak, integrated flux "
                 "(Jy when beam-corrected), fitted and beam-deconvolved FWHMs and "
                 "position angle. Give box_arcsec (fit cut-out size); channel selects "
                 "a cube plane."

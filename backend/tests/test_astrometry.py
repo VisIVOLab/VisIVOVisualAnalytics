@@ -262,11 +262,11 @@ class TestGaussFit2D:
                    - result["integrated_flux"] / result["beam_area_pix"]) < 1e-6
 
     def test_fit_uncertainties_present_and_finite(self):
-        """R-08: error bars from the fit covariance should be finite and > 0.
+        """R-08/R-24: the fit must report error bars, or say why it cannot.
 
         Uses a *noisy* Gaussian — a perfectly noise-free fit has an undefined
         covariance (curve_fit warns and returns inf), which correctly maps to
-        None error bars, so we add noise to get an estimable covariance.
+        None error bars, so we add noise to get an estimable one.
         """
         from astropy.io import fits
         from app.compute import worker_gauss_fit_2d
@@ -290,11 +290,29 @@ class TestGaussFit2D:
         pixel_scale_arcsec = 2.777e-4 * 3600.0
         result = worker_gauss_fit_2d(
             path, None, float(sky[0]), float(sky[1]), 50.0 * pixel_scale_arcsec)
-        assert result["peak_err"] is not None and result["peak_err"] > 0
-        assert result["major_err_arcsec"] is not None and result["major_err_arcsec"] > 0
-        assert result["minor_err_arcsec"] is not None and result["minor_err_arcsec"] > 0
-        assert result["integrated_flux_err_jy"] is not None
-        assert result["integrated_flux_err_jy"] > 0
+        # R-24 changed this contract deliberately. Error bars are now MEASURED by
+        # injecting the fitted model at source-free positions, because the
+        # curve_fit covariance is 3-8x optimistic on beam-correlated data. A 64x64
+        # image with a source in the middle has too little clean space for that
+        # (7 usable placements here, against a 20 minimum), so the honest answer is
+        # no calibrated error rather than an optimistic one. Both outcomes are
+        # valid; what must hold is that the caller can tell which it got, and that
+        # the numbers behind a "covariance" verdict are not passed off as
+        # calibrated uncertainties.
+        assert result["error_method"] in ("empirical", "covariance")
+        if result["error_method"] == "empirical":
+            assert result["peak_err"] is not None and result["peak_err"] > 0
+            assert result["major_err_arcsec"] is not None and result["major_err_arcsec"] > 0
+            assert result["minor_err_arcsec"] is not None and result["minor_err_arcsec"] > 0
+            assert result["integrated_flux_err_jy"] is not None
+            assert result["integrated_flux_err_jy"] > 0
+        else:
+            assert result["peak_err"] is None
+            assert result["integrated_flux_err_jy"] is None
+            # ...but the raw covariance figures remain available, under a name that
+            # cannot be mistaken for a calibrated error.
+            diag = result["diagnostic_covariance_err"]
+            assert diag is not None and diag[0] is not None and diag[0] > 0
 
 
 # ── A-03: WCS reprojection ────────────────────────────────────────────────────
