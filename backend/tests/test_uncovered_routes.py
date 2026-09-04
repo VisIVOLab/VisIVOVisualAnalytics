@@ -213,6 +213,53 @@ async def test_vbt_round_trip(client: AsyncClient, auth_headers: dict, tmp_path)
         np.testing.assert_allclose(got, written[:10].astype(np.float64), rtol=1e-6)
 
 
+@pytest.mark.asyncio
+async def test_vbt_query_filters_rows(client: AsyncClient, auth_headers: dict, tmp_path) -> None:
+    """VBT shares the tabular query model with the catalogue, but on a different
+    backing store — so the filter path needs exercising here too."""
+    n = 32
+    head = tmp_path / "q.bin.head"
+    head.write_text(f"float\n2\n{n}\nlittle\nA\nB\n")
+    a = np.arange(n, dtype="<f4")
+    b = (np.arange(n, dtype="<f4") * -1.0)
+    (tmp_path / "q.bin").write_bytes(a.tobytes() + b.tobytes())
+
+    opened = await client.post("/v1/vbt/open", json={"path": str(head)},
+                               headers=auth_headers)
+    assert opened.status_code == 200, opened.text
+    body = opened.json()
+    assert body["valid"] is True, body.get("error")
+    headers = dict(auth_headers)
+    if body.get("session_id"):
+        headers["X-Visivo-Session"] = body["session_id"]
+
+    resp = await client.post(
+        "/v1/vbt/query",
+        json={"dataset_id": body["dataset_id"], "limit": 100,
+              "filters": [{"field": "A", "op": ">=", "value": "24"}]},
+        headers=headers)
+    assert resp.status_code == 200, resp.text
+    q = resp.json()
+    assert q["valid"] is True, q.get("error")
+    # num_rows is set separately from returned_rows and is the one the Qt client
+    # reads, so pin all three rather than assuming they agree.
+    assert q["total_rows"] == q["returned_rows"] == q["num_rows"] == 8, (
+        "A >= 24 selects rows 24..31")
+    # The VALUES, because a count alone survives a row-index or column-read slip.
+    # Note the shape: VBT answers in `columns` (base64 float64-LE) and leaves the
+    # shared model's `rows` as an empty list — a trap for any client that reads
+    # `rows` and concludes the query matched nothing.
+    assert q["rows"] == [], "VBT returns columns, not rows — pinned so it is visible"
+    import base64
+    got_a = np.frombuffer(base64.b64decode(q["columns"]["A"]), dtype="<f8")
+    got_b = np.frombuffer(base64.b64decode(q["columns"]["B"]), dtype="<f8")
+    # Compare PAIRED, not each column sorted on its own: independent sorting would
+    # hide a row-index slip where A and B come from different rows (the filtered
+    # columns and the lazily-read ones travel different paths in the router).
+    np.testing.assert_allclose(got_a, np.arange(24, 32, dtype=float))
+    np.testing.assert_allclose(got_b, -got_a)
+
+
 # ── cube write paths ─────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -411,3 +458,218 @@ async def test_moment_fits_writes_a_2d_map(client: AsyncClient, opened_cube: dic
     from astropy.io import fits
     with fits.open(out) as hdul:
         assert np.squeeze(hdul[0].data).ndim == 2
+
+
+# ── the binary subvolume path the desktop loads slabs through ────────────────
+
+@pytest.mark.asyncio
+async def test_subvolume_bin_returns_the_requested_box(
+        client: AsyncClient, opened_cube: dict, synthetic_fits_cube) -> None:
+    """The parallel slab loader's route. It carries geometry in headers and raw
+    voxels in the body, so a wrong dtype or an off-by-one in the extent shows up
+    as a garbled render rather than an error — worth pinning."""
+    resp = await client.post(
+        "/v1/cube/subvolume_bin",
+        json={"dataset_id": opened_cube["dataset_id"],
+              "x0": 4, "x1": 19, "y0": 8, "y1": 23, "z0": 2, "z1": 9},
+        headers=opened_cube["headers"])
+    assert resp.status_code == 200, resp.text
+    w = int(resp.headers["X-Visivo-Width"])
+    h = int(resp.headers["X-Visivo-Height"])
+    d = int(resp.headers["X-Visivo-Depth"])
+    assert (w, h, d) == (16, 16, 8), "bounds are inclusive"
+    # float32 specifically, not "whatever the header says": the desktop's parallel
+    # slab loader sizes its buffers with sizeof(float), so a switch to float64 with
+    # matching headers would satisfy a flexible check and break the fast path.
+    assert resp.headers["X-Visivo-Scalar-Type"] == "float32"
+    assert len(resp.content) == w * h * d * 4
+    dtype = "float32"
+    # The declared range must actually bracket the data it describes.
+    lo = float(resp.headers["X-Visivo-Range-Min"])
+    hi = float(resp.headers["X-Visivo-Range-Max"])
+    arr = np.frombuffer(resp.content, dtype=np.dtype(dtype).newbyteorder("<"))
+    finite = arr[np.isfinite(arr)]
+    if finite.size:
+        assert lo <= float(finite.min()) and float(finite.max()) <= hi
+
+    # ...and that it is the box that was ASKED FOR. Shape plus a self-consistent
+    # range would be satisfied by any same-sized slab from anywhere in the cube,
+    # which is exactly the regression this route could suffer.
+    from astropy.io import fits
+    with fits.open(str(synthetic_fits_cube)) as hdul:
+        source = np.squeeze(hdul[0].data)
+    expected = source[2:10, 8:24, 4:20].astype(arr.dtype)
+    np.testing.assert_allclose(arr.reshape(d, h, w), expected, rtol=1e-6, equal_nan=True)
+
+
+@pytest.mark.asyncio
+async def test_subvolume_bin_clamps_a_partly_out_of_range_box(
+        client: AsyncClient, opened_cube: dict) -> None:
+    resp = await client.post(
+        "/v1/cube/subvolume_bin",
+        json={"dataset_id": opened_cube["dataset_id"],
+              "x0": 0, "x1": 9999, "y0": 0, "y1": 4, "z0": 0, "z1": 4},
+        headers=opened_cube["headers"])
+    # The worker CLAMPS partial overreach rather than refusing, so pin that
+    # explicitly: accepting "422 or 200" characterised the code instead of
+    # constraining it, and would have passed whatever it did.
+    assert resp.status_code == 200, resp.text
+    w = int(resp.headers["X-Visivo-Width"])
+    h = int(resp.headers["X-Visivo-Height"])
+    d = int(resp.headers["X-Visivo-Depth"])
+    assert (w, h, d) == (64, 5, 5), "x is clamped to the cube's 64 columns"
+    assert resp.headers["X-Visivo-Scalar-Type"] == "float32"
+    assert len(resp.content) == w * h * d * 4, (
+        "the body must match the declared extent exactly, not merely cover it")
+
+
+@pytest.mark.asyncio
+async def test_subvolume_bin_refuses_a_wholly_outside_box(
+        client: AsyncClient, opened_cube: dict) -> None:
+    """Partial overreach clamps; a box entirely outside the cube is a different
+    contract. It is bad user input, so it must not surface as a server error."""
+    resp = await client.post(
+        "/v1/cube/subvolume_bin",
+        json={"dataset_id": opened_cube["dataset_id"],
+              "x0": 9999, "x1": 10000, "y0": 0, "y1": 4, "z0": 0, "z1": 4},
+        headers=opened_cube["headers"])
+    assert resp.status_code == 422, (
+        f"a ROI outside the cube must be a 4xx, got {resp.status_code}: {resp.text[:200]}")
+
+
+# ── HI products, baseline, workspace copy ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_hi_products_needs_a_beam(client: AsyncClient, opened_cube: dict) -> None:
+    """The shared fixture cube carries no BMAJ/BMIN, and HI masses are per-beam
+    quantities — refusing is right, and worth pinning so it cannot silently start
+    inventing a beam."""
+    resp = await client.post(
+        f"/v1/analysis/hi-products/{opened_cube['dataset_id']}",
+        json={"channel_start": 0, "channel_end": 15, "distance_mpc": 10.0},
+        headers=opened_cube["headers"])
+    assert resp.status_code == 422
+    assert "beam" in resp.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_hi_products_with_a_beam(client: AsyncClient, auth_headers: dict, tmp_path) -> None:
+    from astropy.io import fits
+    rng = np.random.default_rng(19)
+    data = (rng.normal(0.0, 0.05, (16, 32, 32))
+            + 2.0 * np.exp(-(((np.mgrid[0:16, 0:32, 0:32][2] - 16) ** 2
+                              + (np.mgrid[0:16, 0:32, 0:32][1] - 16) ** 2) / 32.0))
+            ).astype(np.float32)
+    hdr = fits.Header()
+    hdr["CTYPE1"], hdr["CTYPE2"], hdr["CTYPE3"] = "RA---SIN", "DEC--SIN", "VELO-HEL"
+    hdr["CRVAL1"], hdr["CRVAL2"], hdr["CRVAL3"] = 150.0, 2.0, 0.0
+    hdr["CRPIX1"] = hdr["CRPIX2"] = 16.0
+    hdr["CRPIX3"] = 1.0
+    hdr["CDELT1"], hdr["CDELT2"], hdr["CDELT3"] = -0.001, 0.001, 5000.0
+    hdr["CUNIT3"] = "m/s"
+    hdr["BUNIT"] = "Jy/beam"
+    hdr["BMAJ"] = hdr["BMIN"] = 0.003
+    hdr["BPA"] = 0.0
+    path = str(tmp_path / "hi.fits")
+    fits.PrimaryHDU(data, hdr).writeto(path)
+
+    opened = await client.post("/v1/datasets/open", json={"path": path},
+                               headers=auth_headers)
+    assert opened.status_code == 200, opened.text
+    ds = opened.json()
+    headers = dict(auth_headers)
+    if ds.get("session_id"):
+        headers["X-Visivo-Session"] = ds["session_id"]
+
+    resp = await client.post(
+        f"/v1/analysis/hi-products/{ds['dataset_id']}",
+        json={"channel_start": 0, "channel_end": 15, "distance_mpc": 10.0},
+        headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["valid"] is True, body.get("error")
+    # Name the key rather than scanning for one containing "mass": a scan makes
+    # the assertion optional, so a renamed or absent field would pass silently.
+    mass = body["hi_mass_msun"]
+    assert mass is not None and np.isfinite(mass) and mass > 0.0
+
+
+@pytest.mark.asyncio
+async def test_spectral_baseline_subtracts_a_pedestal(
+        client: AsyncClient, opened_cube: dict) -> None:
+    """A polynomial baseline fit over the cube; the route registers a new dataset
+    whose rms after subtraction should not exceed the rms before."""
+    resp = await client.post(
+        f"/v1/spectral/baseline/{opened_cube['session_id']}/{opened_cube['dataset_id']}",
+        json={"session_id": opened_cube["session_id"],
+              "dataset_id": opened_cube["dataset_id"],
+              "channel_start": 0, "channel_end": 31,
+              "poly_order": 1, "method": "polynomial",
+              # Required, and rightly so: fitting over channels that contain the
+              # line would subtract the signal with the pedestal. The fixture's
+              # emission is at channels 14-17, so these ranges must avoid it —
+              # my first attempt used [12, 15], which overlapped the line and
+              # could have "improved" the rms by eating the signal.
+              "line_free_channels": [[0, 10], [22, 31]]},
+        headers=opened_cube["headers"])
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["valid"] is True, body.get("error")
+    # Unconditional: the response model defaults these to 0.0, so a truthiness
+    # guard would skip the whole behavioural check on a response that reported
+    # nothing.
+    before, after = body["rms_before"], body["rms_after"]
+    assert np.isfinite(before) and np.isfinite(after)
+    assert before > 0.0, "the fixture cube has noise, so a pre-fit rms is expected"
+    assert after <= before * 1.05, (
+        f"baseline subtraction made the rms worse: {before:.4g} → {after:.4g}")
+
+    # The route's contract is not the metrics but the REGISTRATION: it writes a
+    # baseline-subtracted cube and hands back an id the session can use.
+    new_id = body["new_dataset_id"]
+    assert new_id, "the route must register the subtracted cube"
+    assert os.path.isfile(body["output_path"])
+    listed = await client.get(f"/v1/sessions/{opened_cube['session_id']}/datasets",
+                              headers=opened_cube["headers"])
+    assert listed.status_code == 200, listed.text
+    assert any(d.get("dataset_id") == new_id for d in listed.json().get("datasets", [])), (
+        "the new id must be resolvable in the session that created it")
+
+
+@pytest.mark.asyncio
+async def test_exports_copy_dataset_lands_in_the_workspace(
+        client: AsyncClient, opened_cube: dict, _isolated_exports) -> None:
+    """Copies an opened dataset into Workspace Exports — and thanks to the autouse
+    isolation that workspace is a tmpdir, not the user's home."""
+    resp = await client.post(
+        "/v1/exports/copy_dataset",
+        json={"dataset_id": opened_cube["dataset_id"],
+              "output_basename": "copied_cube.fits"},
+        headers=opened_cube["headers"])
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["valid"] is True, body.get("error")
+    assert (_isolated_exports / "copied_cube.fits").is_file(), (
+        "the copy must land in the redirected workspace, not the real one")
+
+
+@pytest.mark.asyncio
+async def test_samp_upload_file_round_trip(client: AsyncClient, auth_headers: dict) -> None:
+    """upload-file stores a payload and hands back a token the files route serves.
+    No hub involved, so the body path is testable even though the send paths are
+    not."""
+    import base64
+    resp = await client.post(
+        "/v1/samp/upload-file",
+        json={"filename": "probe.txt", "content_base64": base64.b64encode(b"hello").decode()},
+        headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body.get("valid") is True, body.get("error")
+    # Always fetch. Guarding the fetch behind `if token` meant a response that
+    # omitted the token would pass without proving anything was stored.
+    token = body["token"]
+    assert token, "upload must return a token"
+    served = await client.get(f"/v1/samp/files/{token}", headers=auth_headers)
+    assert served.status_code == 200
+    assert served.content == b"hello", "what comes back must be what went in"

@@ -145,6 +145,13 @@ async def cube_subvolume_bin(
         )
     except HTTPException:
         raise
+    except ValueError as exc:
+        # Bad user input — a ROI wholly outside the cube, or inverted after
+        # clamping — is 422, not a server error. The worker raises ValueError for
+        # exactly those, and the other binary cube routes already answer this way;
+        # this one was returning 500 for "Invalid subvolume ROI."
+        return Response(content=str(exc).encode("utf-8"),
+                        media_type="text/plain", status_code=422)
     except Exception as exc:
         return Response(
             content=str(exc).encode("utf-8"),
