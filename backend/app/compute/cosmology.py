@@ -40,6 +40,18 @@ def worker_angular_power_spectrum(
     absolute normalisation and the low-ℓ shape are NOT science-grade. Use it to
     compare the relative structure of two maps, not as a cosmological Cℓ.
 
+    The ERROR BAR does account for mode coupling, which the Cℓ values themselves
+    do not: the modes inside a |k| bin are correlated by the window, so the naive
+    std/√N counts more independent samples than exist. Measured over Gaussian
+    random fields it was ~2x too small, matching √(⟨w⁴⟩/⟨w²⟩²) = 1.94 for this
+    window, and that factor is now applied. The correction is derived from the
+    window array itself rather than hard-coded, but it is an ASYMPTOTIC
+    populated-bin result: the exact band-power variance depends on the bin and the
+    window kernel, so it is not a guarantee for every binning. Measured at the
+    default binning it holds to 0.5–1.6x on bins with more than 8 modes and
+    0.3–2.0x on sparser ones — hence ``n_modes`` alongside every error, and a null
+    error for a bin with fewer than 3 modes.
+
     Algorithm:
       1. Extract the requested channel plane (or collapse to 2-D if already 2-D).
       2. Replace NaNs with the finite mean so FFT is well-defined.
@@ -53,7 +65,17 @@ def worker_angular_power_spectrum(
       k_bins  – 1-D float64 array of bin-centre wavenumbers (pixel⁻¹)
       ell     – 1-D float64 array of corresponding angular multipoles
       power / cl – 1-D float64 mean power per bin (relative, uncalibrated)
-      cl_err  – 1-D float64 standard error of power per bin
+      cl_err  – standard error of power per bin, corrected for the window's mode
+                coupling (the modes in a bin are not independent; see the note
+                below). NULL for a bin holding fewer than 3 modes, where no
+                standard error is estimable.
+      n_modes – unique Fourier modes per bin, so a caller can see how well
+                determined each error is
+      mode_coupling – the window's effective-mode penalty. A bin's EFFECTIVE mode
+                count is ``n_modes / mode_coupling**2``, which is far smaller than
+                the raw count suggests: with this window's 1.94, eight raw modes
+                are only about two effective ones. Judge a bin by that, not by
+                n_modes.
     """
     dataset = ScientificFitsDataset(path)
     hdul, raw = dataset.open_memmap()
@@ -106,8 +128,15 @@ def worker_angular_power_spectrum(
     kx = np.fft.rfftfreq(nx)             # (nx//2+1,) in [0, 0.5]
     ky = np.fft.fftfreq(ny)              # (ny,) in [-0.5, 0.5)
     KX, KY = np.meshgrid(kx, ky)
-    K = np.sqrt(KX**2 + KY**2).ravel()
-    P = power2d.ravel()
+    # rfft2 keeps only half the plane, but the kx = 0 column — and, for even nx,
+    # the Nyquist column — still hold BOTH members of each Hermitian pair, so
+    # (0, ky) and (0, -ky) are the same mode twice. Counting them twice inflates
+    # the mode count and shrinks the error; drop the negative-ky half of those
+    # columns. Everywhere else rfft2's modes are already unique.
+    duplicate = (KY < 0) & ((KX == 0.0) | (np.isclose(KX, 0.5) if nx % 2 == 0 else False))
+    keep = ~duplicate.ravel()
+    K = np.sqrt(KX**2 + KY**2).ravel()[keep]
+    P = power2d.ravel()[keep]
 
     # Azimuthal binning: log-spaced bins from k_min to 0.5 (Nyquist)
     k_min = max(1.0 / max(ny, nx), 1e-6)
@@ -115,23 +144,47 @@ def worker_angular_power_spectrum(
     bins = np.logspace(np.log10(k_min), np.log10(k_max), n_bins + 1)
     bin_centres = 0.5 * (bins[:-1] + bins[1:])
 
+    # Effective-mode penalty from the window's own shape rather than a hard-coded
+    # constant: sqrt of ⟨w⁴⟩/⟨w²⟩², clipped at 1 (an unwindowed map gives exactly
+    # 1 and no correction). Asymptotic and populated-bin — the exact band-power
+    # variance is bin- and kernel-dependent, so this is not a guarantee for an
+    # arbitrary window or binning; see the docstring for the measured range.
+    mode_coupling = float(np.sqrt(max(
+        np.mean(window ** 4) / max(np.mean(window ** 2) ** 2, 1e-30), 1.0)))
+
     k_bins_out: list[float] = []
     ell_out: list[float] = []
     cl_out: list[float] = []
-    cl_err_out: list[float] = []
+    cl_err_out: list[float | None] = []
+    n_modes_out: list[int] = []
     for i in range(n_bins):
         mask = (K >= bins[i]) & (K < bins[i + 1])
         if mask.any():
             p_bin = P[mask]
             k_c = float(bin_centres[i])
             cl_mean = float(np.mean(p_bin))
-            cl_std = float(np.std(p_bin) / np.sqrt(len(p_bin))) if len(p_bin) > 1 else 0.0
+            # Standard error of the bin mean, corrected for the fact that the
+            # Fourier modes in a bin are NOT independent samples: the Hann window
+            # couples neighbouring ones. The effective count is reduced by
+            # ⟨w⁴⟩/⟨w²⟩² — 1.94² for a separable 2-D Hann — so the naive
+            # std/√N understates the error by ~1.94x. Measured over 40 Gaussian
+            # random fields of both white and red spectra, the uncorrected value
+            # came out 1.7–2.5x too small, matching that factor (see
+            # tests/test_power_spectrum_errors.py).
+            # Below three modes the sample standard deviation estimates nothing —
+            # a 2-point std carries ~50 % uncertainty itself — so report null
+            # rather than a number the correction cannot rescue. Measured, these
+            # are exactly the bins that came out worst (ratio ~2 against a median
+            # of ~1), and they are always the sparse ones; `n_modes` says which.
+            cl_std = (float(np.std(p_bin) / np.sqrt(len(p_bin))) * mode_coupling
+                      if len(p_bin) >= 3 else None)
             # ℓ ≈ 2π * k_pixel / pixel_scale_rad  (angular multipole)
             ell = float(2.0 * np.pi * k_c / pixel_scale_rad) if pixel_scale_rad > 0 else k_c
             k_bins_out.append(k_c)
             ell_out.append(ell)
             cl_out.append(cl_mean)
             cl_err_out.append(cl_std)
+            n_modes_out.append(int(len(p_bin)))
 
     if not k_bins_out:
         raise ValueError("No valid wavenumber bins – image too small?")
@@ -145,6 +198,15 @@ def worker_angular_power_spectrum(
         "ell": ell_out,
         "cl": cl_out,
         "cl_err": cl_err_out,
+        # Unique Fourier modes per bin. The mode-coupling correction below is an
+        # asymptotic, populated-bin result; a bin holding a handful of modes has a
+        # poorly determined error whatever scalar is applied, so the count is
+        # returned rather than left for the caller to guess at.
+        "n_modes": n_modes_out,
+        # The window's effective-mode penalty. A bin's EFFECTIVE mode count is
+        # n_modes / mode_coupling² — which is much smaller than it looks: with the
+        # Hann window's 1.94, eight raw modes are only about two effective ones.
+        "mode_coupling": mode_coupling,
         # Legacy aliases kept for backward compatibility
         "power": cl_out,
         "k_unit": "pixel^-1",

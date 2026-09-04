@@ -40,8 +40,15 @@ async def cosmology_angular_power(
 
     Restored after a router refactor dropped the route; the compute
     (``worker_angular_power_spectrum``) was never removed. Returns
-    ``{valid, channel, width, height, n_bins, k_bins, ell, cl, cl_err, power,
+    ``{valid, channel, width, height, n_bins, k_bins, ell, cl, cl_err, n_modes,
+    mode_coupling, power,
     k_unit, power_unit}`` (``power`` is the legacy alias for ``cl``).
+
+    ``cl_err`` is the uncertainty of THIS windowed relative estimator, not of a
+    calibrated cosmological Cℓ, and is null for a bin with fewer than 3 modes,
+    where no standard error is estimable. Judge a bin by its EFFECTIVE mode count,
+    ``n_modes / mode_coupling**2`` — with the Hann window's 1.94, eight raw modes
+    are only about two effective ones.
     """
     from ..compute import worker_angular_power_spectrum  # noqa: PLC0415
 
