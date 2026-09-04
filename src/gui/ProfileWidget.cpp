@@ -913,12 +913,42 @@ void ProfileWidget::overlayLineFit(const BackendLineFitResult &fit)
     m_fitGraph->setData(fx, fy);
     m_fitGraph->removeFromLegend();
 
-    const QString summary =
+    // Show the 1-sigma uncertainties the backend computes. Without them a fitted
+    // FWHM reads as exact, which it never is; a negative value means the backend
+    // could not determine one, and then no "±" is printed rather than a fake 0.
+    const auto pm = [](double value, double err, int prec) {
+        return err >= 0.0 ? u"%1 ± %2"_s.arg(value, 0, 'g', prec).arg(err, 0, 'g', 2)
+                          : QString::number(value, 'g', prec);
+    };
+    QString summary =
             u"Gaussian fit · peak %1 · centre %2 · FWHM %3 · ∫ %4 · rms %5"_s
-                    .arg(fit.peak, 0, 'g', 4).arg(fit.center, 0, 'g', 6)
-                    .arg(fit.fwhm, 0, 'g', 4).arg(fit.integratedFlux, 0, 'g', 4)
+                    .arg(pm(fit.peak, fit.peakErr, 4))
+                    .arg(pm(fit.center, fit.centerErr, 6))
+                    .arg(pm(fit.fwhm, fit.fwhmErr, 4))
+                    .arg(pm(fit.integratedFlux, fit.integratedFluxErr, 4))
                     .arg(fit.rms, 0, 'g', 3);
-    if (m_specStatsLabel) m_specStatsLabel->setText(summary);
+    QString caveat = fit.spectralCorrelationNote;
+    // Gate on the DISPLAYED inflation, not on F: √1.01 rounds to 1.0, so a factor
+    // just above the old threshold printed "errors ×1.0", which says nothing.
+    const double inflation = fit.spectralCorrelationFactor > 0.0
+            ? std::sqrt(fit.spectralCorrelationFactor)
+            : 0.0;
+    if (inflation >= 1.05) {
+        summary += u" · errors ×%1 for correlated channels"_s.arg(inflation, 0, 'f', 1);
+    } else if (fit.spectralCorrelationFactor <= 0.0 && fit.fwhmErr >= 0.0) {
+        // Errors but no factor: an older backend. Say the uncertainties are
+        // uncorrected rather than let them read as fully accounted for.
+        summary += u" · uncorrected"_s;
+        caveat = u"This backend does not report a spectral-correlation factor, so "
+                 u"the uncertainties are not corrected for correlated channels and "
+                 u"may be optimistic on spectrally smoothed data."_s;
+    }
+    if (m_specStatsLabel) {
+        m_specStatsLabel->setText(summary);
+        // The caveat is long and only sometimes present — a tooltip keeps it out
+        // of the status line without hiding it.
+        m_specStatsLabel->setToolTip(caveat);
+    }
 
     m_fitLabel = new QCPItemText(ui->plot1);
     m_fitLabel->setPositionAlignment(Qt::AlignTop | Qt::AlignRight);
@@ -927,7 +957,8 @@ void ProfileWidget::overlayLineFit(const BackendLineFitResult &fit)
     m_fitLabel->setColor(QColor(255, 140, 0));
     m_fitLabel->setTextAlignment(Qt::AlignRight);
     m_fitLabel->setText(u"FWHM %1\ncentre %2"_s
-                                .arg(fit.fwhm, 0, 'g', 4).arg(fit.center, 0, 'g', 6));
+                                .arg(pm(fit.fwhm, fit.fwhmErr, 4))
+                                .arg(pm(fit.center, fit.centerErr, 6)));
 
     ui->plot1->replot();
     emit spectrumChanged();   // push the fit summary into the Inspector's stats readout

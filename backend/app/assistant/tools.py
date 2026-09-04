@@ -550,8 +550,14 @@ def _fit_line(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
 
     Position: give ``ra_deg``/``dec_deg`` (needs WCS) or ``x``/``y`` (pixel). With
     ``radius_arcsec`` it fits the mean spectrum over a circular aperture; without
-    it, a single-pixel probe. Returns peak/center/σ/FWHM (in the spectral axis
-    unit), integrated flux, continuum, equivalent width and residual RMS.
+    it, a single-pixel probe. Returns peak, center, σ and FWHM (in the spectral
+    axis unit) and integrated flux, EACH with a 1-sigma uncertainty (``*_err``,
+    null when the fit covariance was undefined), plus continuum, equivalent width
+    and residual RMS, which carry no uncertainty.
+    ``spectral_correlation_factor`` is the effective-sample factor the errors were
+    inflated by for correlated channels (1 = independent); when
+    ``spectral_correlation_note`` is non-empty, repeat its caveat — a large factor
+    can equally mean the single-Gaussian model is wrong.
     """
     if not path:
         raise ValueError("fit_line requires a loaded cube.")
@@ -932,7 +938,10 @@ TOOLS: dict[str, AssistantTool] = {
                 "(needs WCS) or x+y (pixel). With radius_arcsec it uses the mean "
                 "spectrum over a circular aperture, else a single-pixel probe. "
                 "Returns peak, center, σ, FWHM (in the spectral axis unit), "
-                "integrated flux, continuum, equivalent width and residual RMS."
+                "integrated flux — those five with 1-sigma uncertainties — plus "
+                "continuum, equivalent width and residual RMS, which have none. "
+                "Report the uncertainties, and pass on spectral_correlation_note "
+                "when it is present."
             ),
             parameters={
                 "type": "object",

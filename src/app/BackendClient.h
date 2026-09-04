@@ -1105,6 +1105,24 @@ struct BackendLineFitResult
     double rms{ 0.0 };
     double baselineIntercept{ 0.0 };  ///< baseline a in (a + b·x)
     double baselineSlope{ 0.0 };      ///< baseline b in (a + b·x)
+    // 1-sigma fit uncertainties. Negative = the backend could not determine one
+    // (a perfect fit gives an infinite covariance), so a caller must check before
+    // printing "±". These are inflated for spectrally correlated channels; see
+    // spectralCorrelationFactor.
+    double peakErr{ -1.0 };
+    double centerErr{ -1.0 };
+    double sigmaErr{ -1.0 };
+    double fwhmErr{ -1.0 };
+    double integratedFluxErr{ -1.0 };
+    /// Effective-sample factor F the errors were inflated by (√F on each error).
+    /// 1 = measured, channels independent. 0 = the backend did not report it at
+    /// all (older than the correction), so the errors are UNCORRECTED — a
+    /// different situation, and not one to render as "no correlation".
+    double spectralCorrelationFactor{ 0.0 };
+    /// Set when F is large enough to matter: the same signature comes from
+    /// correlated channels OR from a model that does not fit, and the backend
+    /// cannot tell them apart. Shown to the user rather than swallowed.
+    QString spectralCorrelationNote;
 };
 
 class QJsonDocument;

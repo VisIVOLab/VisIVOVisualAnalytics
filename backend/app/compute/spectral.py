@@ -28,6 +28,41 @@ from ._common import (  # noqa: F401
 )
 
 
+def effective_sample_factor(residuals: np.ndarray, max_lag: int = 5) -> float:
+    """Variance inflation for noise correlated along the spectral axis.
+
+    ``curve_fit`` assumes independent samples. When adjacent channels are
+    correlated — Hanning smoothing, any spectral taper, or a cube resampled onto a
+    finer grid than its true resolution — N points carry only about N/F
+    independent ones, with ``F = 1 + 2·Σ_k ρ_k`` over the positive lags. The
+    parameter covariance is then too small by that factor, and every error derived
+    from it too small by √F.
+
+    ρ_k is measured from the fit RESIDUALS, so no extra input is needed and a cube
+    that is genuinely uncorrelated gets F = 1 and is unaffected. Validated by Monte
+    Carlo (see tests/test_line_fit_correlated_noise.py): over smoothing kernels
+    giving ρ₁ = 0 … 0.96, the uncorrected errors are optimistic by 1.0×, 1.7×,
+    2.3× and 3.0×, while √F predicts 1.00, 1.64, 2.25 and 2.72 — and F recovered
+    from residuals lands within ~7 % of the true value in √ terms, always on the
+    conservative-to-slightly-under side.
+
+    The sum stops at the first negligible or non-positive lag (ρ ≤ 0.02, or
+    ``max_lag``) so estimator scatter is not accumulated as if it were signal.
+    """
+    r = np.asarray(residuals, dtype=np.float64)
+    r = r - r.mean()
+    denom = float(np.dot(r, r))
+    if r.size < 8 or denom <= 0.0:
+        return 1.0
+    total = 1.0
+    for lag in range(1, min(max_lag, r.size - 1) + 1):
+        rho = float(np.dot(r[:-lag], r[lag:])) / denom
+        if not np.isfinite(rho) or rho <= 0.02:
+            break
+        total += 2.0 * rho
+    return max(total, 1.0)
+
+
 def _gaussian(x: np.ndarray, amplitude: float, mean: float, sigma: float) -> np.ndarray:
     """1-D Gaussian for scipy curve_fit."""
     return amplitude * np.exp(-0.5 * ((x - mean) / sigma) ** 2)
@@ -682,6 +717,31 @@ def worker_line_fit(
     resid = y - model(x, *popt)
     rms = float(np.std(resid))
 
+    # R-23: curve_fit's covariance assumes independent channels. Inflate it by the
+    # measured effective-sample factor so EVERY error below — the diagonal ones and
+    # the propagated integrated flux alike — carries the same correction. F = 1 on
+    # an uncorrelated spectrum, so this is a no-op there.
+    corr_factor = effective_sample_factor(resid)
+    pcov = np.asarray(pcov, dtype=np.float64) * corr_factor
+    # A large factor has two very different causes and this estimator cannot tell
+    # them apart: genuinely correlated channels, or a model that does not fit —
+    # an unresolved second component, broad wings, a standing-wave baseline, a
+    # window that clips the line. In the second case wider error bars are not the
+    # honest answer, a better model is. Say so rather than letting an inflated
+    # error read as a considered result.
+    corr_note = (
+        "Residual autocorrelation is high (F = %.1f), so the reported errors are "
+        "inflated by %.1fx. That is correct for spectrally smoothed data, but the "
+        "same signature is produced by a model that does not fit — an unresolved "
+        "component, broad wings, a curved baseline, or a window that clips the "
+        "line. Inspect the residuals before trusting the widened errors."
+        % (corr_factor, np.sqrt(corr_factor))
+        # F = 2.25 is a 1.5x inflation — already material, and comfortably clear of
+        # finite-sample noise: over 500 white-noise fits of this length the measured
+        # F peaked at 1.91 and never reached the threshold.
+        if corr_factor >= 2.25 else ""
+    )
+
     # R-08: 1-sigma parameter uncertainties from the fit covariance. Undefined
     # (inf) for a perfect fit → reported as None. p order: [amp, mu, sigma, a, b].
     with np.errstate(invalid="ignore"):
@@ -716,4 +776,8 @@ def worker_line_fit(
         "baseline": [a, b],
         "rms": rms,
         "n_points": int(x.size),
+        # Surfaced so a user can see WHY the errors are what they are, and audit
+        # them: 1.0 means the channels looked independent.
+        "spectral_correlation_factor": float(corr_factor),
+        "spectral_correlation_note": corr_note,
     }

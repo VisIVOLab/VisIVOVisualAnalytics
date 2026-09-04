@@ -384,6 +384,25 @@ BackendLineFitResult BackendClient::fitSpectralLine(const QVector<double> &value
     result.integratedFlux = obj.value(QStringLiteral("integrated_flux")).toDouble();
     result.continuum      = obj.value(QStringLiteral("continuum")).toDouble();
     result.rms            = obj.value(QStringLiteral("rms")).toDouble();
+    // Errors are null when the covariance was undefined; keep the -1 sentinel so
+    // the caller can tell "no uncertainty available" from "uncertainty of zero".
+    const auto err = [&obj](const char *key) -> double {
+        const QJsonValue v = obj.value(QLatin1String(key));
+        return v.isDouble() ? v.toDouble() : -1.0;
+    };
+    result.peakErr           = err("peak_err");
+    result.centerErr         = err("center_err");
+    result.sigmaErr          = err("sigma_err");
+    result.fwhmErr           = err("fwhm_err");
+    result.integratedFluxErr = err("integrated_flux_err");
+    // 0 = the field is ABSENT (a backend older than this correction), which is not
+    // the same as 1 = "measured, and the channels are independent". The caller
+    // needs to tell those apart: in the first case the errors it received are
+    // uncorrected and it cannot know by how much.
+    result.spectralCorrelationFactor =
+            obj.value(QStringLiteral("spectral_correlation_factor")).toDouble(0.0);
+    result.spectralCorrelationNote =
+            obj.value(QStringLiteral("spectral_correlation_note")).toString();
     const QJsonArray baseline = obj.value(QStringLiteral("baseline")).toArray();
     if (baseline.size() >= 2) {
         result.baselineIntercept = baseline.at(0).toDouble();
