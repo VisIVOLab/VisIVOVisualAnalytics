@@ -117,10 +117,26 @@ heavier compute, in this order:
   - Box / Circle / Polygon / Annulus
   - Draw a shape on the slice → instant region statistics + per-region
     spectral profile. See [Regions, PV, noise](region-pv-noise).
+* - **SOURCES & KINEMATICS**
+  - **Kinematic Lasso**, Kinematic Model Overlay, Mask 3-D Region
+  - Pick out one object and work with it. See
+    [Kinematic Lasso](kinematic-lasso) for click-to-select segmentation, and
+    *Kinematic Model Overlay* to draw a tilted-ring model over the data.
 * - **CATALOGUE**
   - Load / Show / Show Labels / Clear Catalogue Overlay
   - Manage source overlays drawn on top of the slice / moment.
     See [Catalogues](catalogues-hips#catalogue-overlay-on-cubes--images).
+* - **SHARING & OUTPUT**
+  - Import / Export Region (CRTF/DS9), Export Movie, Link Views
+  - Getting results out, and keeping several views in step. See
+    [Figures, movies and linked views](publication-output).
+```
+
+```{note}
+*Kinematic Model Overlay…* **draws** a tilted-ring model over the cube from
+parameters you supply — inclination, position angle, rotation curve. It does
+not fit them. Use it to test whether a model you already have is consistent
+with the data, not to derive one.
 ```
 
 Every entry is available both in the menu bar **and** as a tool button on

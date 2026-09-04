@@ -159,10 +159,16 @@ operations.
 user-guide/getting-started
 user-guide/cube-viewer
 user-guide/image-viewer
+user-guide/vbt-viewer
+user-guide/velocity-fields
 user-guide/moment-maps
 user-guide/spectral-tools
 user-guide/region-pv-noise
+user-guide/kinematic-lasso
+user-guide/source-finding
 user-guide/catalogues-hips
+user-guide/skava-discovery
+user-guide/publication-output
 user-guide/copilot
 user-guide/copilot-self-hosted
 user-guide/glossary
