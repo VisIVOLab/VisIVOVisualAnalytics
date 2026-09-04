@@ -530,6 +530,9 @@ struct BackendCosmologyBatchResult
     bool valid{ false };
     QString error;
     QString model;
+    // distancesMpc carries NaN where the backend reported null — a redshift it
+    // refused (negative or non-finite). NOT 0.0: that is a real distance, and the
+    // catalogue viewer already treats 0.0 as "no override".
     QVector<double> distancesMpc; // same order as the submitted redshifts
 };
 

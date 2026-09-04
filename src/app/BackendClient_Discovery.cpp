@@ -148,8 +148,13 @@ BackendCosmologyBatchResult BackendClient::requestCosmologyDistanceBatch(
     result.valid = obj.value(QStringLiteral("valid")).toBool();
     result.error = obj.value(QStringLiteral("error")).toString();
     result.model = obj.value(QStringLiteral("model")).toString();
+    // The backend sends JSON null for a redshift it could not use (negative or
+    // non-finite). toDouble() would turn that into 0.0 — a real distance, and one
+    // the catalogue viewer already reads as "no override" — so it becomes NaN and
+    // the caller can tell the three cases apart.
     for (const QJsonValue &v : obj.value(QStringLiteral("distances_Mpc")).toArray())
-        result.distancesMpc.append(v.toDouble());
+        result.distancesMpc.append(v.isDouble() ? v.toDouble()
+                                                : std::numeric_limits<double>::quiet_NaN());
     return result;
 }
 

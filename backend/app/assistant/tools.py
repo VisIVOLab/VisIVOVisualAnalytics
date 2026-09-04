@@ -492,6 +492,13 @@ def _angular_power_spectrum(path: str | None, params: dict[str, Any]) -> dict[st
     bins (no HEALPix). This is a RELATIVE spectrum — the amplitude is not a
     calibrated angular C(ℓ); use it to compare structure scales, and quote the
     worker's own caveat, not an absolute C(ℓ).
+
+    ``cl_err`` is the uncertainty of THIS windowed relative estimator and is
+    **null** for a bin with fewer than 3 modes, where none is estimable — report
+    the null, do not treat it as zero. Judge a bin by its EFFECTIVE mode count,
+    ``n_modes / mode_coupling**2``: with the Hann window's 1.94, eight raw modes
+    are only about two effective ones, so a bin can look populated and still be
+    poorly determined.
     """
     if not path:
         raise ValueError("angular_power_spectrum requires a loaded map.")
@@ -929,7 +936,9 @@ TOOLS: dict[str, AssistantTool] = {
                 "map (e.g. a cosmological / CMB-like map), binned into n_bins "
                 "radial bins from the map's Fourier power. NOT a calibrated "
                 "angular C(ℓ) — use it to compare structure scales, and quote the "
-                "worker's caveat. channel selects a plane for a cube."
+                "worker's caveat. cl_err is null for a bin with fewer than 3 modes "
+                "(no error is estimable there) — say so rather than reading it as "
+                "zero. channel selects a plane for a cube."
             ),
             parameters={
                 "type": "object",

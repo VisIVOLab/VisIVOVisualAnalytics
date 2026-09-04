@@ -199,7 +199,7 @@ void vtkWindowCatalogue3D::triggerCosmologyUpdate()
     // just clear overrides so entryDistanceMpc() falls back to local values.
     if (this->m_cosmologyModel == QStringLiteral("Planck18")) {
         for (auto &e : this->entries)
-            e.distanceMpc = 0.0;
+            e.distanceMpc = std::numeric_limits<double>::quiet_NaN();
         this->recomputeScenePositionsAndRebuild();
         if (this->filterStatusLabel)
             this->filterStatusLabel->setText(
@@ -224,16 +224,20 @@ void vtkWindowCatalogue3D::triggerCosmologyUpdate()
     const QString model        = this->m_cosmologyModel;
     const Catalogue3DSchema schema = this->schema;
 
-    // Collect per-entry redshifts (use 0.0 when absent/invalid – the backend
-    // will return 0.0 distance for those and entryDistanceMpc will then fall
-    // back to the direct distance field or the 300 Mpc default).
+    // Collect per-entry redshifts using the SAME convention as the parser: a
+    // catalogue z of 0 means "not measured" (see entryDistanceMpc), so only z > 0
+    // goes out as a measurement. Everything else — absent, unparseable, zero,
+    // negative, non-finite — is sent as −1, which the backend refuses and answers
+    // null for, and that is what makes an unusable row identifiable on the way
+    // back. Substituting 0, as this did, made the backend see a valid z = 0 and
+    // return 0 Mpc, which would place an unmeasured source at the scene origin.
     QVector<double> redshifts;
     redshifts.reserve(static_cast<int>(this->entries.size()));
     for (const auto &e : this->entries) {
         bool ok = false;
         const double z = Catalogue3DParser::detail::fieldDouble(
                 e, schema, Catalogue3DParser::detail::detectedRedshiftField(schema), &ok);
-        redshifts.append((ok && z > 0.0) ? z : 0.0);
+        redshifts.append((ok && std::isfinite(z) && z > 0.0) ? z : -1.0);
     }
 
     this->m_cosmologyWatcher.setFuture(QtConcurrent::run(
@@ -284,19 +288,40 @@ void vtkWindowCatalogue3D::onCosmologyFinished()
     }
 
     // Apply computed distances: override entryDistanceMpc() via e.distanceMpc.
-    // Entries with returned distance 0 keep the catalogue distance field or the
-    // 300 Mpc fallback (entryDistanceMpc checks distanceMpc == 0 → auto-compute).
+    // The "no override" sentinel is NaN, not 0.0: this field holds a distance the
+    // backend COMPUTED, and 0.0 is a legitimate output of that computation, so it
+    // cannot double as "unset". (A raw catalogue z of 0 is a different question —
+    // there zero does mean "not measured", and the parser treats it that way.)
     const int n = static_cast<int>(std::min(this->entries.size(), result.distancesMpc.size()));
-    for (int i = 0; i < n; ++i)
-        this->entries[static_cast<size_t>(i)].distanceMpc = result.distancesMpc[static_cast<size_t>(i)];
+    int refused = 0;
+    for (int i = 0; i < n; ++i) {
+        const double d = result.distancesMpc[static_cast<size_t>(i)];
+        // NaN = the backend refused that redshift, i.e. this row has no usable one.
+        // CLEAR the override rather than skipping: leaving the previous value would
+        // keep a stale distance from an earlier model, when what this row should do
+        // is fall back to its catalogue distance, or to the 300 Mpc default.
+        if (!std::isfinite(d)) {
+            ++refused;
+            this->entries[static_cast<size_t>(i)].distanceMpc =
+                    std::numeric_limits<double>::quiet_NaN();
+            continue;
+        }
+        this->entries[static_cast<size_t>(i)].distanceMpc = d;
+    }
     // Recompute positions from the applied overrides and rebuild — the shared
     // helper also reapplies the shells toggle and refreshes the table, so a
     // backend cosmology change keeps them consistent (R-14 follow-up).
     this->recomputeScenePositionsAndRebuild();
 
-    const QString statusMsg = QStringLiteral("Cosmology: %1 – %2 sources.")
+    // One status line, written once. An earlier version set the refused-count
+    // message here and then had it overwritten by this one two lines later.
+    QString statusMsg = QStringLiteral("Cosmology: %1 – %2 sources.")
             .arg(result.model)
             .arg(this->entries.size());
+    if (refused > 0) {
+        statusMsg += u" %1 with no usable redshift kept their catalogue distance."_s
+                             .arg(refused);
+    }
     ui->labelStatus->setText(statusMsg);
     if (this->filterStatusLabel)
         this->filterStatusLabel->setText(statusMsg);

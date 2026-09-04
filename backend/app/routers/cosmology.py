@@ -193,7 +193,10 @@ async def cosmology_distance_batch(
     """Compute comoving distances (Mpc) for a list of redshifts in one call.
 
     Accepts up to 100 000 redshift values.  Returns an array of comoving distances
-    in the same order.  Negative or non-finite values are replaced with 0.0.
+    in the same order.  A negative or non-finite entry yields **null** at its
+    position rather than a number: bulk input is tolerated (one bad row does not
+    fail the request) but never silently turned into a distance of 0 Mpc, which
+    would be indistinguishable from a genuine z = 0.
     """
     models = _load_cosmology_models()
     if not models:
@@ -218,11 +221,18 @@ async def cosmology_distance_batch(
         valid_mask = _np.isfinite(zs) & (zs >= 0.0)
         if valid_mask.any():
             distances[valid_mask] = cosmo.comoving_distance(zs[valid_mask]).to("Mpc").value
+        # NULL for an invalid entry, not 0.0 — which is what the response model has
+        # always documented and what the single-redshift endpoint does (it answers
+        # "Redshift z must be >= 0"). Substituting 0.0 made an unphysical input
+        # indistinguishable from a genuine z = 0 at the observer's own position.
+        out: list[float | None] = [
+            (float(d) if ok else None) for d, ok in zip(distances.tolist(), valid_mask.tolist())
+        ]
         return CosmologyBatchResponse(
             valid=True,
             error="",
             model=request.model,
-            distances_Mpc=distances.tolist(),
+            distances_Mpc=out,
         )
     except Exception as exc:
         return CosmologyBatchResponse(valid=False, error=str(exc))

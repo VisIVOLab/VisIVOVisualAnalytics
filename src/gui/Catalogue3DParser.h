@@ -93,9 +93,13 @@ struct Catalogue3DEntry
     double sceneX{ 0.0 };
     double sceneY{ 0.0 };
     double sceneZ{ 0.0 };
-    // Override distance (Mpc) set by the cosmology selector.  When 0.0, the
-    // parser falls back to computing the distance from the catalogue fields.
-    double distanceMpc{ 0.0 };
+    // Override distance (Mpc) set by the cosmology selector. NaN = no override,
+    // so the parser computes from the catalogue fields.
+    //
+    // NOT 0.0, which this used to be: a source at redshift zero has a genuine
+    // comoving distance of 0 Mpc, and overloading that value as "unset" sent such
+    // a row through the fallback chain to the 300 Mpc default instead.
+    double distanceMpc{ std::numeric_limits<double>::quiet_NaN() };
 };
 
 struct Catalogue3DParseResult
@@ -368,11 +372,18 @@ inline double entryDistanceMpc(const Catalogue3DEntry &entry, const Catalogue3DS
     // that also has an independent real-space distance, the mode toggle exposes its
     // line-of-sight peculiar-velocity displacement. Falls through to the real-space
     // logic when the source has no usable redshift.
+    // z > 0, deliberately: a redshift column holding 0.0 means "not measured" in
+    // essentially every real catalogue, and a source genuinely AT z = 0 would sit
+    // at the observer's own position, which no catalogue entry does. So zero
+    // falls through to the distance column and then to the default, and
+    // TestCatalogueParser::entryDist_zeroRedshift_fallsBackTo300 pins that.
+    // (Reviewed and briefly "fixed" to >= 0 on the reasoning that zero is a
+    // measurement; it is not, for this column.)
     if (schema.distanceMode == CatalogueDistanceMode::RedshiftSpace
             && okRedshift && redshift > 0.0)
         return hubbleDistanceMpc(redshift);
     // Prefer the cosmology-selector override if it has been set.
-    if (entry.distanceMpc > 0.0)
+    if (std::isfinite(entry.distanceMpc))
         return entry.distanceMpc;
     const QString distanceField = detectedDistanceField(schema);
     bool okDistance = false;
@@ -391,7 +402,7 @@ inline double entryDistanceMpc(const Catalogue3DEntry &entry, const Catalogue3DS
         }
         return distance;
     }
-    if (okRedshift && redshift > 0.0) {
+    if (okRedshift && redshift > 0.0) {      // 0.0 = "not measured"; see above
         return comovingDistanceMpc(redshift);
     }
     return 300.0;
