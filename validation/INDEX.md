@@ -22,21 +22,17 @@ Heavy/regenerable outputs are git-ignored; reproduce via the commands below.
 - **Lasso vs SoFiA — HGC 44:** one click, default params → Dice > 0.83,
   completeness > 0.91 at reliability ≈ 0.75, integrated flux within 8 % on the
   main galaxies; the total spectrum tracks SoFiA's double-horn profile.
-- **Flux differences are mostly significant, not noise:** σ_F = rms·√(N·F/B)·Δv,
-  with F the MEASURED spectral-correlation penalty (HGC 44 has ρ₁ ≈ 0.74, F = 3.45
-  — omitting it would understate σ by 1.9×). Four of five HGC 44 sources differ at
-  3.6–7.0 σ and the faintest at 1.2 σ; all five WALLABY sources at 3.7–38.8 σ. So
-  the flux comparison measures which voxels each method includes: quote it as
-  segmentation agreement, not as consistency within errors.
-- **Lasso vs SoFiA — WALLABY (second cube, same SoFiA parameters):** the largest
-  source reaches Dice 0.76 once `reach` is raised to 32 (0.61 at the default 8) —
-  `reach` is a voxel budget, so its default does not transfer between cubes. The
-  smoothing-limited faint sources do **not** segment at any setting (best Dice
-  0.30): the lasso works on voxel-level structure, and a blind multi-scale finder
-  is still needed below that.
-- **Faint-source tuning is a tradeoff, not a recovery:** lowering nσ raises
-  completeness and lowers reliability together (HGC 44 faint source:
-  completeness 0.59 → 0.97 while reliability 0.75 → 0.41). Quote both.
+- **Flux differences are segmentation, not noise:** uncertainties are estimated empirically —
+  the mask's stencil (signed, for the comparison) dropped at up to 200 FULLY
+  source-free positions — because the analytic rms·√(N·F/B)·Δv model overestimates
+  σ_Δ by ~1.3–2.3× wherever it can be checked (the disagreeing voxels share a mask
+  boundary, so the signed sum cancels much of their noise) and cannot be checked at
+  all on the one stencil that spans the field.
+  Differences are 1.9–15.4 noise-equivalent σ on HGC 44 and 4.8–6.3 on the four
+  measurable WALLABY sources; the fifth spans the field, so its stencil cannot be
+  placed on empty sky at all and is reported without a σ.
+  `n_σ` is a fixed-mask noise contrast, NOT a p-value: both masks were selected on
+  the data they are integrated over. Quote as segmentation agreement.
 - **Velocity field (CF4):** flow streamlines + 15 gravitational basins of
   attraction, via the real backend pipeline.
 

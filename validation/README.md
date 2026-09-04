@@ -91,13 +91,13 @@ figures and the SoFiA masks are regenerable and git-ignored.
 
 ## Result (vs the reproducible mask)
 
-| SoFiA id | Dice | IoU | Completeness | Reliability | F_Lasso/F_SoFiA | Δflux (Jy·km/s) | n_σ |
+| SoFiA id | Dice | IoU | Completeness | Reliability | F_Lasso/F_SoFiA | Δflux (Jy·km/s) | noise-equiv. n_σ |
 |---|---|---|---|---|---|---|---|
-| bright #1 | 0.844 | 0.731 | 0.909 | 0.788 | 1.046 | +0.27 ± 0.04 | 6.9 |
-| bright #2 | 0.826 | 0.704 | 0.917 | 0.752 | 1.088 | +0.25 ± 0.04 | 7.0 |
-| #3 | 0.737 | 0.584 | 0.772 | 0.705 | 1.120 | +0.12 ± 0.03 | 3.6 |
-| faint #4 | 0.660 | 0.492 | 0.587 | 0.753 | 0.790 | −0.18 ± 0.03 | 5.4 |
-| faint #5 | 0.687 | 0.523 | 0.604 | 0.797 | 0.938 | −0.03 ± 0.03 | 1.2 |
+| bright #1 | 0.844 | 0.731 | 0.909 | 0.788 | 1.046 | +0.27 ± 0.02 | 15.1 |
+| bright #2 | 0.826 | 0.704 | 0.917 | 0.752 | 1.088 | +0.25 ± 0.02 | 15.4 |
+| #3 | 0.737 | 0.584 | 0.772 | 0.705 | 1.120 | +0.12 ± 0.02 | 7.0 |
+| faint #4 | 0.660 | 0.492 | 0.587 | 0.753 | 0.790 | −0.18 ± 0.02 | 8.7 |
+| faint #5 | 0.687 | 0.523 | 0.604 | 0.797 | 0.938 | −0.03 ± 0.02 | 1.9 |
 
 **Headline (segmentation given a correct seed):** on the two main HI galaxies,
 one click with default parameters overlaps > 91 % of the SoFiA mask
@@ -110,37 +110,69 @@ reach / nσ controls trade completeness against reliability (below).
 
 ### What the flux uncertainty says — and it is not what you would hope
 
-σ_F = rms·√(N·F/B)·Δv. Two correlations, both of which have to be in there:
+The uncertainty is **empirically estimated**, not modelled. The mask's own stencil — and, for
+the comparison, the SIGNED stencil (+1 where only the lasso selects, −1 where only
+SoFiA does) — is dropped at up to 200 positions lying **fully** outside a dilated
+SoFiA mask, and σ is the scatter of the resulting weighted sums. It is the standard
+empty-aperture error, and it assumes those off-source placements represent the
+noise and covariance at the source's own position and channel range. The mask is
+dilated by 2 voxels, roughly one beam sigma on both cubes; varying that between 0
+and 5 moves the measurable σ_Δ negligibly.
 
-- **spatial** — N voxels inside a beam of B pixels carry only N/B independent
-  samples. This part matches the formula the backend uses for aperture
-  photometry, so a number in the paper and a number in the app mean the same.
-- **spectral** — F = 1 + 2·Σ_k ρ_k, the effective-sample-size penalty for noise
-  correlated between channels, with ρ_k measured from emission-free voxels rather
-  than assumed. This is not a formality: **HGC 44 has ρ₁ ≈ 0.74** (F = 3.45, so
-  omitting it understates σ by 1.9×), while the WALLABY field is essentially
-  uncorrelated (ρ₁ ≈ 0.03, F = 1.09). A cube whose channels have been smoothed
-  will quietly make any spectral integral look more precise than it is.
+That was not the first approach. The obvious analytic form,
+σ_F = rms·√(N·F/B)·Δv with a beam-correlation term and a measured
+spectral-correlation penalty F = 1 + 2Σρ_k, needs three assumptions that do not
+survive contact with these data:
 
-The Δ column is the flux DIFFERENCE with the uncertainty of the **symmetric
-difference** alone. That is exact, not an approximation: the shared intersection
-contributes identically to both fluxes and cancels in the difference, so only the
-voxels where the two masks disagree carry noise.
+- **the mask is many beams across** — the faint WALLABY masks are 32–159 voxels
+  against a 28.5-pixel beam, i.e. a handful of beam elements;
+- **one cube-wide spectral factor describes an irregular 3-D mask** — a finite sum
+  needs lag weights (1 − k/N) and the mask's own channel overlap, and the measured
+  ρ_k itself depends on the estimator (raw ρ sits near 0.04–0.05 out to lag 20 on
+  HGC 44, which a per-pixel baseline removes past lag 3);
+- **an unsigned voxel count describes the variance of a DIFFERENCE** — it does
+  not. The intersection cancels in the *value*, but the variance is a covariance
+  double sum over signed weights, and the two disagreeing sets sit on a shared
+  boundary where their noise partly cancels too.
 
-The result: **four of the five HGC 44 sources differ significantly (3.6–7.0 σ);
-the faintest is consistent with noise (1.2 σ).** On WALLABY every source differs
-significantly (3.7–38.8 σ). So "integrated flux within 8 %" is true about the
-magnitude and misleading about the cause — for the sources where it is
-significant, the residual is not measurement error but a real difference in which
-voxels each method includes. That demarcation is the whole job of the
-uncertainty, and it is why the number is worth computing at all.
+The `σ_Δ analytic` column shows how badly that matters. For every stencil whose
+scatter can actually be measured, the model overestimates σ_Δ — by ~1.6–2.3×
+on HGC 44 and ~1.3× on WALLABY — because it counts the disagreeing voxels as
+independent contributors when in fact they lie on a shared mask boundary, where
+the signed sum cancels much of their noise. The one stencil where the model could
+have been optimistic instead, WALLABY #1, is exactly the one that cannot be
+checked empirically. So the model is not "conservative": it is unvalidated in the
+regime where it would matter most, which is why it is shown for comparison and
+never used as the reported number. Ratios are quoted coarsely on purpose — with
+200 placements the measured σ itself carries a ~5 % Monte-Carlo error.
 
-Quote the flux agreement as a *segmentation* agreement, never as consistency
-within errors — except for the one source where it genuinely is.
+**Result: HGC 44 differences are 1.9–15.4 noise-equivalent σ; the four measurable
+WALLABY sources are 4.8–6.3.** So "integrated flux within 8 %" is true about the
+magnitude and misleading about the cause: the residual is not measurement scatter
+but a real difference in which voxels each method includes. Quote it as a
+*segmentation* agreement.
 
-The local rms around each source was checked against the global estimate and
-agrees within 2 % on both cubes, so a single cube-wide rms is not hiding an
-elevated-noise region.
+**One source has no measurable uncertainty at all.** WALLABY #1 spans most of the
+field, so there is nowhere in that cube to place its stencil fully on empty sky —
+zero clean placements out of 1600 draws. Its flux difference (−17.6 Jy·km/s, a
+13 % shortfall) is reported without a σ rather than backed by the analytic model,
+which the other rows show overestimates σ_Δ by up to a factor of two — and which
+is untested in exactly this regime.
+Placements must be **fully** source-free for exactly this reason: an earlier
+version accepted ≥ 98 % and then summed every finite voxel, letting real emission
+into the "empty sky" sum and inflating the scatter by ~8 % on that same stencil —
+larger than the ~5 % Monte-Carlo error of the estimate itself.
+
+**What `n_σ` is not.** It is a fixed-mask, noise-only contrast — the scatter you
+would get from dropping *these* stencils on empty sky. It is **not a p-value for
+segmentation disagreement**, because both masks were selected using the same noisy
+data they are then integrated over, so their boundary voxels carry a selection
+(Eddington-type) bias this does not model. A formal test would need injected
+sources or masks derived from independent data. The honest sentence is: *these
+realized segmentations differ in measured flux by many noise-equivalent sigmas.*
+
+The rms is estimated from emission-free voxels only, and local rms around each
+source agrees with the global estimate within 2 % on both cubes.
 
 **Caveats (paper honesty):** the seed is SoFiA's own peak voxel, so this is
 segmentation agreement, not detection; five sources per cube. A blind-detection
