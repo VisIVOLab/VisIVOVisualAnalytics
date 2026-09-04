@@ -706,6 +706,24 @@ qt_add_executable(test_remote_render
         tools/test_remote_render.cpp
         src/gui/RemoteRenderWidget.cpp
         src/gui/RemoteRenderWidget.h
+        # RemoteRenderWidget and the WebRTC client stamp the backend session
+        # headers on the requests they build by hand, so this harness needs
+        # BackendClient. Same minimal set the unit-test support library links
+        # (tests/CMakeLists.txt) — keep the two in step.
+        src/app/BackendClient.cpp
+        src/app/DiagnosticsManager.cpp
+        src/AnalysisParamStore.cpp
+        src/Settings.cpp
+        src/skava/BackendRouting.cpp
+        src/vtk/ImageLod.cpp
+)
+target_include_directories(test_remote_render PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/gui
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/skava
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/vtk
+        ${PROJECT_BINARY_DIR}
 )
 target_link_libraries(test_remote_render PRIVATE
         Qt::Widgets
