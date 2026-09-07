@@ -96,8 +96,8 @@ void apply(vtkLookupTable *lut, Mode mode, double min, double max, double gamma)
         const double flooredMax = (max > 0.0 && std::isfinite(max)) ? max : positiveFloor(max);
         const double flooredMin =
                 (min > 0.0 && std::isfinite(min)) ? min : positiveFloor(flooredMax);
+        lut->SetTableRange(flooredMin, flooredMax);   // before the scale — see setRange()
         lut->SetScaleToLog10();
-        lut->SetTableRange(flooredMin, flooredMax);
         lut->Build();
         return;
     }
@@ -113,6 +113,46 @@ void apply(vtkLookupTable *lut, Mode mode, double min, double max, double gamma)
     }
 }
 
+std::array<double, 2> rangeFor(Mode mode, double min, double max)
+{
+    if (mode != Mode::Log) {
+        return { min, max };
+    }
+    const double flooredMax = (max > 0.0 && std::isfinite(max)) ? max : positiveFloor(max);
+    const double flooredMin = (min > 0.0 && std::isfinite(min)) ? min : positiveFloor(flooredMax);
+    return { flooredMin, flooredMax };
+}
+
+void setRange(vtkLookupTable *lut, Mode mode, double min, double max)
+{
+    if (!lut) {
+        return;
+    }
+    // The native scale is set as well as the range. SetTableRange validates
+    // against whatever scale the table is in RIGHT NOW, so a caller switching
+    // to Linear and then pushing a range would still be rejected while the
+    // table remained in log from the previous mode. Setting both together
+    // means the two cannot be out of step, whichever order the caller works in.
+    if (mode == Mode::Log) {
+        const std::array<double, 2> r = rangeFor(mode, min, max);
+        const double flooredMin = r[0], flooredMax = r[1];
+        // Range BEFORE scale on the way into log. SetScaleToLog10() validates the
+        // range the table is already holding, so switching a linear table that
+        // holds a signed range produces the same complaint the floor exists to
+        // prevent — the mapping ends up right, but VTK has already adjusted and
+        // logged. Installing the floored range first leaves nothing to object to.
+        lut->SetTableRange(flooredMin, flooredMax);
+        lut->SetScaleToLog10();
+        return;
+    }
+    // Scale BEFORE range on the way out: a signed range cannot be installed
+    // while the table is still logarithmic. Sqrt/Square/Power keep a linear
+    // value->index map, the curve living in the colour entries, which this
+    // function deliberately does not touch.
+    lut->SetScaleToLinear();
+    lut->SetTableRange(min, max);
+}
+
 void applyGenerated(vtkLookupTable *lut, Mode mode, double min, double max, double gamma)
 {
     if (!lut) {
@@ -125,8 +165,8 @@ void applyGenerated(vtkLookupTable *lut, Mode mode, double min, double max, doub
         const double flooredMax = (max > 0.0 && std::isfinite(max)) ? max : positiveFloor(max);
         const double flooredMin =
                 (min > 0.0 && std::isfinite(min)) ? min : positiveFloor(flooredMax);
+        lut->SetTableRange(flooredMin, flooredMax);   // before the scale — see setRange()
         lut->SetScaleToLog10();
-        lut->SetTableRange(flooredMin, flooredMax);
         lut->ForceBuild();
         return;
     }

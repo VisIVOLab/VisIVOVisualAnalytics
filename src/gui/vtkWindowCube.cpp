@@ -4435,7 +4435,7 @@ void vtkWindowCube::showSliceHistogramPanel()
                 double hi = highLinePtr->start->coords().x();
                 if (lo > hi) std::swap(lo, hi);
                 if (hi > lo && self->lutSlice) {
-                    self->lutSlice->SetTableRange(lo, hi);
+                    LutScale::setRange(self->lutSlice, self->m_sliceScaleMode, lo, hi);
                     self->lutSlice->Build();
                     // A range change can widen the colorbar labels → re-fit only if
                     // the gutter width actually changed (else the zoom is preserved).
@@ -5300,7 +5300,8 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     if (result.momentImageData) {
         this->momentDisplaySource->SetOutput(result.momentImageData);
         this->momentDisplaySource->Modified();
-        this->lutMoment->SetTableRange(result.momentRange[0], result.momentRange[1]);
+        LutScale::setRange(this->lutMoment, this->m_sliceScaleMode,
+                           result.momentRange[0], result.momentRange[1]);
         // Moment range changed → its colorbar labels may widen the gutter; re-fit
         // only if it actually changed (§3.0b).
         this->layout2dPaneFor(/*slice=*/false, /*force=*/false);
@@ -6488,7 +6489,7 @@ void vtkWindowCube::setActiveDisplayRange(double lo, double hi)
     if (activePaneIsSlice() && this->lutSlice) {
         if (!std::isfinite(lo) || !std::isfinite(hi) || hi <= lo)
             return;
-        this->lutSlice->SetTableRange(lo, hi);
+        LutScale::setRange(this->lutSlice, this->m_sliceScaleMode, lo, hi);
         this->lutSlice->Build();
         this->layout2dPaneFor(/*slice=*/true, /*force=*/false);
         if (this->sliceWin)
@@ -6563,7 +6564,7 @@ void vtkWindowCube::resetActiveDisplayLut()
             double range[2] = { 0., 0. };
             img->GetScalarRange(range);
             if (std::isfinite(range[0]) && std::isfinite(range[1]) && range[1] > range[0])
-                this->lutSlice->SetTableRange(range[0], range[1]);
+                LutScale::setRange(this->lutSlice, this->m_sliceScaleMode, range[0], range[1]);
         }
         applySliceLutByName(this->m_activeSliceLutName);
         this->layout2dPaneFor(/*slice=*/true, /*force=*/false);
@@ -6915,6 +6916,19 @@ QWidget *vtkWindowCube::buildPaneDisplayPage()
 
     // Range: CARTA percentile presets + manual clip min/max (§5.2, user-chosen).
     {
+        // Bare numbers in a grid are a guess unless you already know CARTA, where
+        // this control comes from. Name the row, and give each button the
+        // percentiles it actually clips at — "99.5" meaning 0.25 to 99.75 is not
+        // something to work out from the caption.
+        auto *presetHdr = new QLabel(u"Percentile clip"_s);
+        presetHdr->setStyleSheet(labelCss);
+        presetHdr->setToolTip(
+                u"Set the display range from the distribution of pixel values, keeping "
+                u"the central N% and clipping the tails at each end.\n\n"
+                u"Lower percentages bring out faint structure by saturating the "
+                u"brightest pixels; 100 uses the full min–max of the data."_s);
+        lay->addWidget(presetHdr);
+
         auto *presets = new QWidget();
         auto *pg = new QGridLayout(presets);
         pg->setContentsMargins(0, 0, 0, 0);
@@ -6931,6 +6945,17 @@ QWidget *vtkWindowCube::buildPaneDisplayPage()
             auto *b = new QToolButton(presets);
             b->setText(QString::fromUtf16(pr.txt));
             b->setCursor(Qt::PointingHandCursor);
+            if (pr.pct >= 100.) {
+                b->setToolTip(u"Full range: the minimum and maximum of the finite pixels, "
+                              u"nothing clipped."_s);
+            } else {
+                const double tail = (100. - pr.pct) / 2.;
+                b->setToolTip(u"Keep the central %1% of pixel values: clip below the "
+                              u"%2 percentile and above the %3 percentile."_s
+                                      .arg(QString::number(pr.pct))
+                                      .arg(QString::number(tail, 'g', 4))
+                                      .arg(QString::number(100. - tail, 'g', 6)));
+            }
             b->setStyleSheet(QStringLiteral(
                     "QToolButton{background:%1;border:1px solid %2;border-radius:4px;"
                     "color:%3;font-size:10px;padding:3px 4px;}QToolButton:hover{border-color:%4;}")
@@ -6968,6 +6993,9 @@ QWidget *vtkWindowCube::buildPaneDisplayPage()
         h->setSpacing(6);
         auto *l = new QLabel(u"Clip"_s, r);
         l->setStyleSheet(labelCss);
+        l->setToolTip(u"The display range in data units: pixels at or below the first "
+                      u"value take the bottom colour, at or above the second the top. "
+                      u"The percentile buttons above fill these in; type to override."_s);
         h->addWidget(l, 0);
         auto mkSpin = [&]() {
             auto *s = new SigFigSpinBox(r);   // (c) compact 6-sig-fig display, full value in tooltip
@@ -8626,7 +8654,7 @@ void vtkWindowCube::mountView(int slot)
         // (lutInitialized alone can't tell those apart — it's per-slot, not per-product).
         const bool sameProduct = pv->lutInitialized() && (m_paneProductId[slot] == v.productId);
         if (!sameProduct) {
-            pv->setImageData(p.imageData, p.imageRange[0], p.imageRange[1]);
+            pv->setImageData(p.imageData, p.imageRange[0], p.imageRange[1], p.scaleMode);
             pv->setColorMap(p.lutName, p.scaleMode, p.gamma, p.clampOutliers);
             m_paneProductId[slot] = v.productId;
         } else {

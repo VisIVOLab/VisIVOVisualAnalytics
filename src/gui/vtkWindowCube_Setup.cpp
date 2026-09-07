@@ -1030,7 +1030,7 @@ void vtkWindowCube::setupCubeRenderer()
     const auto cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
     const double cubeRange[2] = { this->currentCubeVisibleRange[0], this->currentCubeVisibleRange[1] };
     vtkNew<vtkLookupTable> lutVolume;
-    lutVolume->SetTableRange(cubeRange);
+    LutScale::setRange(lutVolume, this->m_volumeScaleMode, cubeRange[0], cubeRange[1]);
     ColorMaps::SetColorMap(lutVolume);
     ColorMaps::SetColorTransferFunction(lutVolume, this->volumeColorTransferFunction);
     this->volumeColorTransferFunction->SetObjectName(lutVolume->GetObjectName());
@@ -1492,7 +1492,8 @@ void vtkWindowCube::setupMomentRenderer()
     const auto momentImage =
             vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
     if (momentImage) {
-        this->lutMoment->SetTableRange(momentImage->GetScalarRange());
+        const double *mr = momentImage->GetScalarRange();
+        LutScale::setRange(this->lutMoment, this->m_sliceScaleMode, mr[0], mr[1]);
     } else {
         this->lutMoment->SetTableRange(0., 0.);
     }

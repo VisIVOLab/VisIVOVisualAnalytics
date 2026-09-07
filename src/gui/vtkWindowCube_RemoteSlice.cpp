@@ -1,4 +1,6 @@
 #include "vtkWindowCube.h"
+
+#include "vtk/LutScale.h"
 #include "ui_vtkWindowCube.h"
 #include "CubeViewportGeometry.h"
 #include "CubeStatsUtil.h"
@@ -306,7 +308,11 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
         qWarning() << "[vtk] Expected vtkImageData for remote slice colors but got null";
         return;
     }
-    this->lutSlice->SetTableRange(result.imageRange[0], result.imageRange[1]);
+    // Through LutScale, not SetTableRange: on a log stretch the raw range of a
+    // radio slice is negative at the low end, VTK rejects it and quietly swaps
+    // in [1, 10].
+    LutScale::setRange(this->lutSlice, this->m_sliceScaleMode,
+                       result.imageRange[0], result.imageRange[1]);
 
     {
         const QSignalBlocker blockSlider(ui->sliderSlice);

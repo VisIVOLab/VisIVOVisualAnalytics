@@ -61,7 +61,13 @@ public:
     ~Pane2DView() override;
 
     QVTKOpenGLNativeWidget *widget() const;                 // the mountable Qt widget
-    void setImageData(vtkImageData *img, double lo, double hi);
+    // `destScale` is the mode the pane is ABOUT to be put in, when the caller
+    // follows this with setColorMap(). It matters because the range is installed
+    // here and read back by rebuildLut(): installed under the pane's OLD mode, a
+    // negative minimum would be floored away before the new (linear) product
+    // ever saw it. Omit it when only the pixels change.
+    void setImageData(vtkImageData *img, double lo, double hi,
+                      std::optional<LutScale::Mode> destScale = std::nullopt);
     void setColorMap(const QString &name, LutScale::Mode mode, double gamma,
                      bool clampOutliersTransparent);
     void setWcsContext(WcsContext ctx);

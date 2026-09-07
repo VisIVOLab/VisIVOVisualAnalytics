@@ -361,7 +361,8 @@ void Pane2DView::setOverlayVisible(bool visible)
             a->SetVisibility(visible);
 }
 
-void Pane2DView::setImageData(vtkImageData *img, double lo, double hi)
+void Pane2DView::setImageData(vtkImageData *img, double lo, double hi,
+                              std::optional<LutScale::Mode> destScale)
 {
     // Point the pipeline at the caller's image; a null image keeps the placeholder
     // so nothing downstream ever sees a null input.
@@ -370,7 +371,7 @@ void Pane2DView::setImageData(vtkImageData *img, double lo, double hi)
     else
         m_source->SetOutput(makePlaceholderImage());
     m_colors->SetInputConnection(m_source->GetOutputPort());
-    m_lut->SetTableRange(lo, hi);
+    LutScale::setRange(m_lut, destScale.value_or(m_scale), lo, hi);
     m_lut->Modified();
     // Do NOT fit here — the caller calls fit() once it has set the colormap.
 }
@@ -499,14 +500,19 @@ void Pane2DView::setRange(double lo, double hi)
 {
     if (!std::isfinite(lo) || !std::isfinite(hi) || !(hi > lo))
         return;   // ignore non-finite / degenerate / inverted input (drag can overshoot)
+    // Compare — and emit — the range that will actually be installed. Under a log
+    // stretch of signed data the requested low end is floored, so testing the
+    // request against the table would never match: the guard would never fire and
+    // two linked panes would echo the same change at each other forever.
+    const std::array<double, 2> eff = LutScale::rangeFor(m_scale, lo, hi);
     double cur[2] = { 0., 0. };
     m_lut->GetTableRange(cur);
-    if (std::fabs(cur[0] - lo) < 1e-12 && std::fabs(cur[1] - hi) < 1e-12)
+    if (std::fabs(cur[0] - eff[0]) < 1e-12 && std::fabs(cur[1] - eff[1]) < 1e-12)
         return;
-    m_lut->SetTableRange(lo, hi);   // authoritative range — the mapper + colorbar honor THIS
+    LutScale::setRange(m_lut, m_scale, lo, hi);   // authoritative — mapper + colorbar honor THIS
     m_lut->Modified();
     this->fit(true);
-    emit rangeChanged(lo, hi);
+    emit rangeChanged(eff[0], eff[1]);
 }
 
 void Pane2DView::cameraState(double focalXY[2], double &parallelScale) const

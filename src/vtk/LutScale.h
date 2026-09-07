@@ -60,6 +60,29 @@ void apply(vtkLookupTable *lut, Mode mode, double min, double max, double gamma 
 void build(vtkLookupTable *lut, const std::string &colorMapName, Mode mode, double min,
            double max, double gamma = 2.0);
 
+// Set ONLY the table range, honouring the current mode's constraints, without
+// touching the colour entries.
+//
+// For everything but Log this is a plain SetTableRange. For Log it applies the
+// same positive floor apply()/build() use — which is the whole point: VTK
+// refuses a log range whose endpoints are not positive, and silently
+// substitutes [1, 10]. Radio data is negative wherever there is only noise, so
+// a viewer that pushed a fresh scalar range straight at a log-scaled table got
+// a colour mapping with no relation to the data and one line on stderr:
+//   vtkLookupTable 'Inferno': Bad table range for log scale: [-0.0078, 0.0387],
+//   adjusting to [1, 10]
+// Use this wherever new data arrives and only the range changes; use build()
+// when the colormap or the mode itself changes.
+void setRange(vtkLookupTable *lut, Mode mode, double min, double max);
+
+// The range setRange()/apply()/build() would actually install for `mode` — the
+// input unchanged except under Log, where non-positive endpoints are floored.
+// Callers that compare against the current table range, or that echo the range
+// onward (linked panes, colorbars), need the installed values rather than the
+// requested ones: on a log stretch of signed data those differ, and treating
+// them as equal makes a "did it change?" guard never fire.
+std::array<double, 2> rangeFor(Mode mode, double min, double max);
+
 // Idempotent variant for procedurally-generated LUTs (HSV ramps via
 // SetHueRange/SetSaturationRange/…) that are NOT filled from a named colormap:
 // regenerates the base table with ForceBuild() before applying the stretch.

@@ -1,4 +1,6 @@
 #include "vtkWindowImage.h"
+
+#include "vtk/LutScale.h"
 #include "ui_vtkWindowImage.h"
 #include "CubeViewportGeometry.h"
 
@@ -421,9 +423,12 @@ void vtkWindowImage::showHistogramPanel()
                 double hi = highLinePtr->start->coords().x();
                 if (lo > hi) std::swap(lo, hi);
                 if (hi > lo) {
-                    auto *lut2 = self->layers->getLookupTable(self->layers->getMasterIndex());
+                    const int master = self->layers->getMasterIndex();
+                    auto *lut2 = self->layers->getLookupTable(master);
                     if (lut2) {
-                        lut2->SetTableRange(lo, hi);
+                        // Through LutScale: dragging the cursors across zero on a
+                        // log stretch would otherwise hand VTK a range it rejects.
+                        LutScale::setRange(lut2, self->layers->scaleMode(master), lo, hi);
                         lut2->Build();
                         self->markDisplayStateAdjusted("histogram drag");
                         self->vtkRender();

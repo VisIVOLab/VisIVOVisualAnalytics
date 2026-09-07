@@ -2505,8 +2505,14 @@ void vtkWindowImage::undoCopilotActions()
         // Restore the pre-batch LUT range FIRST (a log stretch clamped it to
         // positive), so setScaleMode rebuilds from the original range, then
         // restore the captured stretch (mode + gamma) exactly.
+        //
+        // Forced linear for that one call: the saved range is the unclamped one
+        // and the table may still be logarithmic from the batch, in which case a
+        // plain SetTableRange is refused and the restore silently does nothing —
+        // setScaleMode would then rebuild from the clamped range this is trying
+        // to undo. setScaleMode installs the real mode immediately after.
         if (auto *lut = this->layers->getLookupTable(s.layerIndex))
-            lut->SetTableRange(s.lutRange[0], s.lutRange[1]);
+            LutScale::setRange(lut, LutScale::Mode::Linear, s.lutRange[0], s.lutRange[1]);
         this->layers->setScaleMode(s.layerIndex, s.scaleMode, s.scaleGamma);
         if (this->currentLayerIndex() == s.layerIndex)
             this->updateLUTCustomizer();
@@ -2609,7 +2615,10 @@ void vtkWindowImage::changeCurrentColorScale()
     } else if (lut->UsingLogScale()) {
         const auto saved = this->savedLinearDisplayRanges[static_cast<std::size_t>(index)];
         if (std::isfinite(saved[0]) && std::isfinite(saved[1]) && saved[0] < saved[1]) {
-            lut->SetTableRange(saved[0], saved[1]);
+            // The table is still logarithmic here — that is the branch condition —
+            // and the saved range is the signed one from before log was turned on,
+            // so it has to go in as linear or VTK refuses it.
+            LutScale::setRange(lut, LutScale::Mode::Linear, saved[0], saved[1]);
             lut->Build();
             qDebug().noquote()
                     << QStringLiteral("[image] linear scale restore index=%1 restored=%2..%3")
