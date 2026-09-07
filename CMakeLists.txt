@@ -865,18 +865,43 @@ if (APPLE AND VISIVO_HAS_WEBRTC)
             "/usr/local/lib"
             "/usr/local/opt/ffmpeg/lib"
     )
+    # $ENV{DESTDIR} because this runs on the installed tree directly rather
+    # than through install(TARGETS), which prepends it for us. Without it a
+    # `DESTDIR=/tmp/stage cmake --install` bundles the wrong directory.
     install(CODE "
         include(BundleUtilities)
         set(BU_CHMOD_BUNDLE_ITEMS ON)
         fixup_bundle(
-            \"\${CMAKE_INSTALL_PREFIX}/${PROJECT_NAME}.app\"
+            \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${PROJECT_NAME}.app\"
             \"\"
             \"${_visivo_macos_dirs}\"
         )
-    " COMPONENT Runtime)
+    ")
     message(STATUS
         "Mac bundling: fixup_bundle search dirs = ${_visivo_macos_dirs}"
     )
+endif ()
+
+# ── macOS: repair the plugins, then re-sign the whole bundle ─────────────
+#
+# The installed .app does not start at all without this — two faults, both
+# measured on a staging tree. The reasoning lives next to the code, in
+# cmake/MacBundleRepair.cmake.in, which is a separate file because it is real
+# logic (it probes each plugin and fails loudly) rather than the two-liner an
+# install(CODE) string can carry legibly.
+#
+# No COMPONENT, deliberately: install(TARGETS) above, the backend, and Qt's
+# deploy script are all in the default component, so putting the repair in
+# `Runtime` would let `--component Runtime` try to sign a bundle that the same
+# invocation never installed.
+if (APPLE)
+    set(VISIVO_CODESIGN_ID "-" CACHE STRING
+            "Identity for the post-install codesign pass ('-' = ad hoc)")
+    configure_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MacBundleRepair.cmake.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/MacBundleRepair.cmake"
+            @ONLY)
+    install(SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/MacBundleRepair.cmake")
 endif ()
 
 # ── Windows runtime DLL deployment ───────────────────────────────────────────

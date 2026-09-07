@@ -1,0 +1,153 @@
+# Repair the installed macOS bundle, then sign it.
+#
+# Runs as the last install step (see the install(SCRIPT) that pulls this in).
+# Without it the installed .app does not start at all. Two separate faults,
+# both measured on a `cmake --install` staging tree:
+#
+#   1. Qt's plugins are copied verbatim from the Qt SDK, keeping the SDK's own
+#      rpath `@loader_path/../../lib`. Inside the bundle that resolves to
+#      Contents/lib, which does not exist — the frameworks are in
+#      Contents/Frameworks. libqcocoa.dylib therefore cannot load QtGui, and
+#      the app dies with "Could not load the Qt platform plugin cocoa ...
+#      even though it was found". Adding the bundle-relative rpath fixes every
+#      plugin at once; the SDK rpath is left in place, because a candidate that
+#      resolves to nothing costs one failed stat and nothing else.
+#
+#   2. fixup_bundle rewrites load commands *after* Qt's deploy step has signed
+#      the bundle, which invalidates that signature. On Apple Silicon an
+#      invalid signature is fatal: the process is killed on exec (exit 137,
+#      "Killed: 9") with no diagnostic at all. Signing again is therefore the
+#      last thing the install may do.
+#
+# `codesign --deep` is enough for an ad-hoc build handed to testers, and that
+# is all this is for. It is NOT a foundation for Developer ID: notarisation
+# needs the hardened runtime and per-object entitlements — Qt WebEngine's
+# helper especially — so switching VISIVO_CODESIGN_ID to a real identity is a
+# starting point for that work, not the whole of it.
+
+# ${CMAKE_INSTALL_PREFIX} unsubstituted on purpose: configure_file would
+# freeze it to whatever the prefix was at configure time, so a later
+# `cmake --install --prefix ...` would repair a directory it never wrote.
+# The install script defines it, and DESTDIR, at install time.
+set(_prefix "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}")
+set(_app "${_prefix}/@PROJECT_NAME@.app")
+
+if (NOT IS_DIRECTORY "${_app}")
+    message(FATAL_ERROR
+            "no bundle at ${_app} to repair. If this was `cmake --install "
+            "--component ...`, note that the app, the backend and Qt's deploy "
+            "step are all in the default component: repairing and signing on "
+            "their own cannot produce a working bundle.")
+endif ()
+
+# ── 1. The plugin rpath ──────────────────────────────────────────────────────
+#
+# Every failure here is fatal. An earlier revision passed ERROR_QUIET and
+# ignored the result, on the grounds that install_name_tool refuses a duplicate
+# rpath when the install is re-run over the same prefix. That also swallowed a
+# missing install_name_tool, a non-Mach-O file, and a binary with no room left
+# for another load command — and since codesign does not check rpaths, the
+# install would then sign the still-broken bundle and report success. Asking
+# first, and treating an actual failure as fatal, distinguishes the two.
+
+file(GLOB_RECURSE _plugins "${_app}/Contents/PlugIns/*.dylib")
+list(LENGTH _plugins _n_plugins)
+
+# Named explicitly rather than counting: a partial deploy that lands the image
+# formats but not platforms/ passes any count check, repairs cleanly, signs,
+# verifies — and then cannot open a window. The one plugin without which
+# nothing starts is worth asserting by name.
+if (NOT EXISTS "${_app}/Contents/PlugIns/platforms/libqcocoa.dylib")
+    message(FATAL_ERROR
+            "${_app} has no platforms/libqcocoa.dylib (${_n_plugins} plugin(s) "
+            "present). Qt's deploy step did not run, or ran partially. Without "
+            "the cocoa platform plugin the app cannot start, so signing it "
+            "would only hide that.")
+endif ()
+
+set(_bundle_rpath "@loader_path/../../Frameworks")
+set(_n_repaired 0)
+
+foreach (_plugin IN LISTS _plugins)
+    execute_process(
+            COMMAND otool -l "${_plugin}"
+            OUTPUT_VARIABLE _load_commands
+            ERROR_VARIABLE _otool_err
+            RESULT_VARIABLE _otool_rc)
+    if (NOT _otool_rc EQUAL 0)
+        message(FATAL_ERROR "otool could not read ${_plugin}: ${_otool_err}")
+    endif ()
+
+    # Per slice, not per file. otool prints the load commands of every
+    # architecture in a fat binary, so a plain substring test cannot tell
+    # "both slices already have it" from "only one does" — and the second is
+    # unfixable by -add_rpath, which refuses as soon as ANY slice carries the
+    # path. Counting the matches against the slice count separates the three
+    # cases, and the mixed one is reported rather than skipped.
+    execute_process(
+            COMMAND lipo -archs "${_plugin}"
+            OUTPUT_VARIABLE _archs
+            ERROR_VARIABLE _lipo_err
+            RESULT_VARIABLE _lipo_rc)
+    if (NOT _lipo_rc EQUAL 0)
+        message(FATAL_ERROR "lipo could not read ${_plugin}: ${_lipo_err}")
+    endif ()
+    string(STRIP "${_archs}" _archs)
+    separate_arguments(_archs)
+    list(LENGTH _archs _n_slices)
+
+    # otool's exact spelling: `path <rpath> (offset N)`. Anchoring on the
+    # trailing " (offset" keeps a longer path that merely starts the same way
+    # from matching.
+    string(REGEX MATCHALL
+           "path @loader_path/\\.\\./\\.\\./Frameworks \\(offset"
+           _hits "${_load_commands}")
+    list(LENGTH _hits _n_hits)
+
+    if (_n_hits EQUAL _n_slices)
+        continue ()          # already correct, in every slice
+    elseif (NOT _n_hits EQUAL 0)
+        message(FATAL_ERROR
+                "${_plugin} carries the bundle rpath in ${_n_hits} of "
+                "${_n_slices} slice(s). install_name_tool cannot repair a "
+                "partially patched fat binary; delete the bundle and install "
+                "again.")
+    endif ()
+
+    execute_process(
+            COMMAND install_name_tool -add_rpath "${_bundle_rpath}" "${_plugin}"
+            ERROR_VARIABLE _int_err
+            RESULT_VARIABLE _int_rc)
+    if (NOT _int_rc EQUAL 0)
+        message(FATAL_ERROR
+                "could not add the bundle rpath to ${_plugin}: ${_int_err}")
+    endif ()
+    math(EXPR _n_repaired "${_n_repaired} + 1")
+endforeach ()
+
+message(STATUS
+        "Bundle repair: ${_n_repaired} of ${_n_plugins} Qt plugin(s) needed the "
+        "bundle rpath")
+
+# ── 2. The signature ─────────────────────────────────────────────────────────
+
+execute_process(
+        COMMAND codesign --force --deep --sign "@VISIVO_CODESIGN_ID@" "${_app}"
+        ERROR_VARIABLE _sign_err
+        RESULT_VARIABLE _sign_rc)
+if (NOT _sign_rc EQUAL 0)
+    message(FATAL_ERROR
+            "codesign failed: ${_sign_err}\n"
+            "An unsigned or half-signed bundle is killed on launch, so this "
+            "install is not reported as successful.")
+endif ()
+
+execute_process(
+        COMMAND codesign --verify --deep "${_app}"
+        ERROR_VARIABLE _verify_err
+        RESULT_VARIABLE _verify_rc)
+if (NOT _verify_rc EQUAL 0)
+    message(FATAL_ERROR "the re-signed bundle does not verify: ${_verify_err}")
+endif ()
+
+message(STATUS "Bundle repair: ${_app} signed and verified")
