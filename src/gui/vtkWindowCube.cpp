@@ -6032,22 +6032,30 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     rootLay->setSpacing(0);
 
     const QString hdrCss = QStringLiteral(
-            "QToolButton{background:transparent;border:none;color:%1;%2"
+            "QPushButton{background:transparent;border:none;color:%1;%2"
             "padding:8px 14px;text-align:left;}")
             .arg(fgMuted, VisivoTheme::sectionHeaderCss());
 
     // Collapsible flat section: header (▼/▶) + content. A full-width rule is drawn
     // only when @p divider — a section reads from the weight of its header, so the
     // collapsible ▶ sections (INTERACTION / SLICE ANIMATION) carry no line (§3.0c).
+    // QPushButton, not QToolButton: Qt's stylesheet `text-align` is honoured by
+    // QPushButton and silently ignored by QToolButton, which always centres its
+    // label. The headers had carried `text-align:left` all along and still came
+    // out centred, out of line with every control underneath them.
     auto addSection = [&](const QString &title, bool expanded, bool divider = true,
-                          QToolButton **outHdr = nullptr) -> QVBoxLayout * {
-        auto *hdr = new QToolButton(root);
+                          QPushButton **outHdr = nullptr) -> QVBoxLayout * {
+        auto *hdr = new QPushButton(root);
         if (outHdr)
             *outHdr = hdr;
         hdr->setCheckable(true);
         hdr->setChecked(expanded);
         hdr->setCursor(Qt::PointingHandCursor);
-        hdr->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        hdr->setFlat(true);
+        // TabFocus is what QToolButton set for itself, so the headers stay
+        // reachable by keyboard exactly as before; QPushButton's own default
+        // (StrongFocus) would additionally take focus on a click.
+        hdr->setFocusPolicy(Qt::TabFocus);
         hdr->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         hdr->setStyleSheet(hdrCss);
         auto setTxt = [hdr, title](bool on) { hdr->setText((on ? u"▼  "_s : u"▶  "_s) + title); };
@@ -6059,7 +6067,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         cl->setSpacing(6);   // rows are fixed 28 → step ≈ 34 (§3.0c density)
         content->setVisible(expanded);
         rootLay->addWidget(content);
-        QObject::connect(hdr, &QToolButton::toggled, content,
+        QObject::connect(hdr, &QPushButton::toggled, content,
                          [content, setTxt](bool on) { setTxt(on); content->setVisible(on); });
         if (divider) {
             auto *rule = new QFrame(root);
@@ -6082,7 +6090,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     // ── DISPLAY — <active pane> (§5.2): a stacked section. Page 0 = the 3D controls
     // (unchanged). Page 1 = the 2D/Moment pane page driving the active Pane2DView. The
     // header text + current page follow the active pane via activePaneChanged.
-    QToolButton *dispHdr = nullptr;
+    QPushButton *dispHdr = nullptr;
     QVBoxLayout *disp = addSection(u"DISPLAY — 3D"_s, true, true, &dispHdr);
     m_displayHeaderBtn = dispHdr;
     auto *dispStack = new QStackedWidget(root);
@@ -6223,7 +6231,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     QObject::connect(this, &vtkWindowCube::activePaneChanged, root,
                      [this](int) { updateDisplaySectionForActivePane(); });
     if (m_displayHeaderBtn)
-        QObject::connect(m_displayHeaderBtn, &QToolButton::toggled, root,
+        QObject::connect(m_displayHeaderBtn, &QPushButton::toggled, root,
                          [this](bool) { updateDisplaySectionForActivePane(); });
     updateDisplaySectionForActivePane();
 

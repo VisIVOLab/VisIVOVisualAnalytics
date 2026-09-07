@@ -149,17 +149,30 @@ SessionDataTree::SessionDataTree(QWidget *parent)
             "  color: %2;"
             "}"
             // Themed branch chevron — the default triangle stays black in dark mode
-            // (§3.2). Same baked SVG the combos use (§3.0c), not the system indicator.
+            // (§3.2), so a QSS image replaces the system indicator.
+            //
+            // Its own icon rather than the shared chevron_*.svg the combo boxes
+            // use: Qt draws a ::branch image at the SVG's intrinsic size and
+            // ignores width/height on the sub-control (measured), so the combo
+            // glyph — 12x8 at stroke-width 2, sized for a drop-down — came out
+            // heavy against these 34 px thumbnail rows. The tree pair is 9x6 at
+            // stroke-width 1.4, in the muted foreground rather than near-white.
             "QTreeView::branch:has-children:!has-siblings:closed,"
             "QTreeView::branch:closed:has-children:has-siblings {"
-            "  image: url(:/icons/chevron_right.svg);"
+            "  image: url(:/icons/tree_chevron_right%3.svg);"
             "}"
             "QTreeView::branch:open:has-children:!has-siblings,"
             "QTreeView::branch:open:has-children:has-siblings {"
-            "  image: url(:/icons/chevron_down.svg);"
+            "  image: url(:/icons/tree_chevron_down%3.svg);"
             "}")
             .arg(QLatin1StringView(VisivoTheme::kPrimary()),
-                 QLatin1StringView(VisivoTheme::kOnSurface())));
+                 QLatin1StringView(VisivoTheme::kOnSurface()),
+                 // A QSS `image:` is a resource URL, so it cannot carry a
+                 // colour — the stroke is baked into the file and the pair has
+                 // to be chosen here. The dark stroke (#9FA6AC) sits at ~2.4:1
+                 // on the light panel, which is not a visible glyph.
+                 VisivoTheme::isDark() ? QLatin1StringView("")
+                                       : QLatin1StringView("_light")));
     m_tree->setItemDelegate(new PaneBadgeDelegate(m_tree));   // (#4) paints pane-number badges
     m_tree->viewport()->installEventFilter(this);             // (#4) badge clicks → activate pane
     m_tree->setContextMenuPolicy(Qt::CustomContextMenu);      // right-click → Show in ▸ menu

@@ -467,20 +467,15 @@ QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
     hbox->setContentsMargins(10, 6, 10, 6);
     hbox->setSpacing(8);
 
-    // ── VisIVO app mark: 8×8 accent square + brand wordmark + divider ─────────
+    // ── VisIVO app mark: the brand logo + divider ───────────────────────
+    //
+    // The same mark the Data Hub and the startup dialog show, so the app is
+    // identified one way throughout rather than by an accent square and a
+    // typeset word here and the logo everywhere else. 18 px keeps it inside the
+    // bar's 6 px vertical margins without enlarging the row.
     {
-        auto *square = new QLabel(bar);
-        square->setFixedSize(8, 8);
-        square->setStyleSheet(
-                QStringLiteral("background-color: %1; border-radius: 2px;")
-                        .arg(QLatin1StringView(kPrimary())));
-        hbox->addWidget(square);
-        auto *mark = new QLabel(QStringLiteral("VisIVO"), bar);
-        mark->setStyleSheet(
-                QStringLiteral("color: %1; font-family: '%2'; font-size: 13px; font-weight: 900;")
-                        .arg(QLatin1StringView(kOnSurface()),
-                             QLatin1StringView(kBrandFamily)));
-        hbox->addWidget(mark);
+        if (auto *logo = createVisivoLogoLabel(18, bar))
+            hbox->addWidget(logo, 0, Qt::AlignVCenter);
         auto *divider = new QFrame(bar);
         divider->setFrameShape(QFrame::VLine);
         divider->setFixedWidth(1);
@@ -596,10 +591,11 @@ QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
     if (out) out->remoteChip = remoteChip;
 
     // ── Theme toggle (◐) ─────────────────────────────────────────────────────
-    auto *themeBtn = makeGlyphButton(QStringLiteral("◐"), bar);
-    themeBtn->setToolTip(QStringLiteral("Toggle dark / light theme"));
-    hbox->addWidget(themeBtn);
-    if (out) out->theme = themeBtn;
+    // No dark/light toggle here. Flipping the theme at run time only restyles
+    // the widgets that subscribe to ThemeManager::themeChanged; the many that
+    // bake theme tokens into their stylesheet at construction keep the old
+    // palette, so the window ended up half in one theme and half in the other.
+    // The choice lives in Settings → Theme, which takes effect on restart.
 
     return bar;
 }
@@ -1048,10 +1044,23 @@ QLabel *createVisivoLogoLabel(int height, QWidget *parent)
         const int w = (svgSize.height() > 0)
                 ? qRound(svgSize.width() * static_cast<double>(height) / svgSize.height())
                 : height * 2;
-        QPixmap pm(w, height);
+        // Rasterise at the device pixel ratio, not at logical size: a w x height
+        // bitmap gets scaled up on a Retina display and the mark goes soft,
+        // which defeats starting from an SVG at all.
+        const qreal dpr = parent ? parent->devicePixelRatioF()
+                                 : qApp->devicePixelRatio();
+        QPixmap pm(qRound(w * dpr), qRound(height * dpr));
+        pm.setDevicePixelRatio(dpr);
         pm.fill(Qt::transparent);
         QPainter painter(&pm);
-        renderer.render(&painter);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        // Explicit LOGICAL bounds. render(painter) with no rect falls back to
+        // the paint device's own size, which is in device pixels, while the
+        // painter already carries the DPR scale — so at DPR 2 the mark comes
+        // out twice too big and clipped to its top-left quarter. Measured: with
+        // the rect, the DPR-2 raster matches the DPR-1 geometry; without it,
+        // nothing like it.
+        renderer.render(&painter, QRectF(0, 0, w, height));
         painter.end();
 
         auto *lbl = new QLabel(parent);

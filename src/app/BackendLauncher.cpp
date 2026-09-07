@@ -1,11 +1,20 @@
 #include "BackendLauncher.h"
 
+#include "BackendClient.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QEventLoop>
+#include <QFile>
 #include <QFileInfo>
+#include <QProcessEnvironment>
+#include <QStandardPaths>
+#include <QRandomGenerator>
 #include <QUrl>
 #include <QtConcurrentRun>
+
+#include <optional>
+#include <utility>
 
 using namespace Qt::StringLiterals;
 
@@ -60,13 +69,36 @@ QString findBackendDir(QStringList &searchedOut)
 constexpr int kMinPythonMajor = 3;
 constexpr int kMinPythonMinor = 11;
 
-/** Runs @p exe with @p args and returns trimmed stdout, or {} on any failure. */
-QString runCapture(const QString &exe, const QStringList &args, int timeoutMs = 8000)
+/**
+ * Highest minor version the PATH search will look for by name.
+ *
+ * Only a search bound, not a support claim: interpreters are still accepted on
+ * the >= kMinPythonMinor test, so an unlisted newer one found as plain
+ * "python3" is used all the same. Raise it when a release exists and the
+ * scientific stack has wheels for it — being first to a new minor usually means
+ * numba or numpy have not caught up.
+ */
+constexpr int kMaxProbedPythonMinor = 14;
+
+/// Defined below, next to the other process helpers.
+bool waitForProcessPumpingEvents(QProcess &proc, int timeoutMs);
+
+/**
+ * Runs @p exe with @p args and returns trimmed stdout, or {} on any failure.
+ *
+ * Pumps the event loop while waiting. launchProcess() runs on the GUI thread,
+ * from a QFutureWatcher::finished handler, and the resolution chain probes each
+ * candidate in turn — so a plain waitForFinished() freezes repainting and Quit
+ * for as long as the slowest interpreter takes to start. The default timeout is
+ * short for the same reason: `python -c` answers in well under a second, and a
+ * candidate that cannot manage that in three is not one to wait on.
+ */
+QString runCapture(const QString &exe, const QStringList &args, int timeoutMs = 3000)
 {
     QProcess p;
     p.setProcessChannelMode(QProcess::MergedChannels);
     p.start(exe, args);
-    if (!p.waitForFinished(timeoutMs)) {
+    if (!waitForProcessPumpingEvents(p, timeoutMs)) {
         p.kill();
         p.waitForFinished(1000);
         return {};
@@ -94,12 +126,83 @@ bool pythonVersionOk(const QPair<int, int> &v)
             || (v.first == kMinPythonMajor && v.second >= kMinPythonMinor);
 }
 
+/**
+ * The child's environment, with VISIVO_TOKEN pinned.
+ *
+ * Left to itself the backend mints a token at import time and writes it to
+ * ~/.visivo_token. That is fine for an operator starting uvicorn by hand and
+ * wrong for a backend we spawn: BackendClient caches the token when it is
+ * constructed, which is BEFORE the child runs, so the file it read is the
+ * previous run's. The app then talks to its own backend for a few seconds —
+ * until the child rewrites the file — and every request after that comes back
+ * 401 "Host requires authentication", with a status bar reading "offline" and
+ * nothing to suggest the two ever agreed.
+ *
+ * Pinning the value removes the race rather than narrowing it. The order is
+ * BackendClient::readTokenFile()'s own — VISIVO_TOKEN, then ~/.visivo_token —
+ * so the launcher and the client cannot pick differently. Only when neither
+ * exists is one generated, and it is written to the file first, so a client
+ * that re-reads still finds the same string.
+ */
+QProcessEnvironment backendEnvironment()
+{
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    if (!env.value(u"VISIVO_TOKEN"_s).trimmed().isEmpty())
+        return env;   // already pinned by the shell; the client reads it too
+
+    const QString existing = BackendClient::readTokenFile().trimmed();
+    if (!existing.isEmpty()) {
+        env.insert(u"VISIVO_TOKEN"_s, existing);
+        return env;
+    }
+
+    // 32 bytes from the system CSPRNG, base64url. QUuid would have been 122
+    // bits of entropy in a 36-character string, which is fine in practice but
+    // makes the security property something the reader has to work out; this
+    // says it outright and matches what the backend generates for itself.
+    QByteArray raw(32, Qt::Uninitialized);
+    QRandomGenerator::system()->generate(reinterpret_cast<quint32 *>(raw.data()),
+                                         reinterpret_cast<quint32 *>(raw.data() + raw.size()));
+    const QString token = QString::fromLatin1(
+            raw.toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
+
+    // Persist it BEFORE pinning it. A token the child accepts and no client can
+    // discover is worse than no token at all: the backend would come up, every
+    // request would 401, and nothing would say why. If the file cannot be
+    // written, leave the environment alone and let the backend mint and print
+    // its own — no better, but no worse than before this function existed.
+    const QString path = QDir(QStandardPaths::writableLocation(
+                                      QStandardPaths::HomeLocation))
+                                 .absoluteFilePath(u".visivo_token"_s);
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+        return env;
+    // Tighten the mode while the file is still empty: under the usual 022 umask
+    // it is created world-readable, and chmod-after-write leaves a window in
+    // which the token is on disk and readable by any local user.
+    if (!f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
+        f.close();
+        QFile::remove(path);
+        return env;
+    }
+    if (f.write(token.toUtf8() + '\n') < 0) {
+        f.close();
+        QFile::remove(path);
+        return env;
+    }
+    f.close();
+    env.insert(u"VISIVO_TOKEN"_s, token);
+    return env;
+}
+
 /** True when @p exe can actually import what the backend needs to boot. */
 bool hasBackendDeps(const QString &exe)
 {
     QProcess p;
     p.start(exe, { u"-c"_s, u"import fastapi, uvicorn, astropy, numpy"_s });
-    if (!p.waitForFinished(20000)) {
+    // Pumped, like runCapture: importing astropy and numpy is seconds, not
+    // milliseconds, and this also runs on the GUI thread.
+    if (!waitForProcessPumpingEvents(p, 20000)) {
         p.kill();
         p.waitForFinished(1000);
         return false;
@@ -198,9 +301,20 @@ bool isValidPythonExe(const QString &path)
  *  1. VISIVO_BACKEND_PYTHON env var — explicit override, highest priority.
  *  2. $VIRTUAL_ENV/bin/python       — active venv in the calling shell.
  *  3. <backendDir>/../.venv/bin/python — project .venv in dev tree.
+ *  3b. The user-data venv, created by setup_backend or the first-run bootstrap.
  *  4. Bundled Python alongside the app executable.
  *  5. @p settingsPython (detected at app startup via PATH).
- *  6. Hard "python3" / "python" — last resort, may not have uvicorn.
+ *  6. Version-named interpreters on PATH — python3.13 down to python3.11.
+ *  7. Bare "python3" / "python" from PATH — last resort.
+ *
+ * A candidate is only accepted when it is BOTH executable AND new enough. That
+ * matters more than it sounds: macOS ships 3.9 as /usr/bin/python3, so on a
+ * stock Mac with Homebrew's python@3.11 installed, step 5 finds the 3.9 first.
+ * Checking the version once, after picking, made the launcher give up with
+ * "VisIVO needs Python 3.11" while a perfectly good 3.11 sat at
+ * /opt/homebrew/bin/python3.11 — which is exactly how Homebrew installs it,
+ * under a version-named binary that step 7 never looks for. Hence both the
+ * per-candidate gate and step 6.
  *
  * @param settingsPython  Value from Settings::getPythonLocation() (may be empty).
  * @param backendDir      Resolved backend directory (used for .venv search).
@@ -208,102 +322,135 @@ bool isValidPythonExe(const QString &path)
  */
 struct PythonResolution
 {
-    QString exe;     // resolved interpreter path (or name for PATH lookup)
-    QString source;  // human-readable description for logging
+    QString exe;      // resolved interpreter path (empty when none qualified)
+    QString source;   // human-readable description for logging
+    QStringList rejected;  // "path (3.9)" for each candidate that was too old
 };
 
 PythonResolution resolvePythonExe(const QString &settingsPython,
                                    const QString &backendDir,
                                    QStringList   &logOut)
 {
+    QStringList rejected;
+
+    // Accept a candidate only if it exists, runs, and is new enough. Anything
+    // that fails is logged and the search continues to the next candidate.
+    const auto accept = [&](const QString &exe, const QString &what)
+            -> std::optional<PythonResolution> {
+        if (exe.isEmpty() || !isValidPythonExe(exe))
+            return std::nullopt;
+        const QPair<int, int> v = pythonVersion(exe);
+        if (!pythonVersionOk(v)) {
+            const QString ver = v.first ? u"%1.%2"_s.arg(v.first).arg(v.second)
+                                        : u"no version"_s;
+            logOut << u"[launcher] %1: %2 is %3 — too old, continuing"_s
+                              .arg(what, exe, ver);
+            rejected << u"%1 (%2)"_s.arg(exe, ver);
+            return std::nullopt;
+        }
+        logOut << u"[launcher] Python (%1): %2  [%3.%4]"_s
+                          .arg(what, exe).arg(v.first).arg(v.second);
+        return PythonResolution{ exe, what, {} };
+    };
+
     // ── 1. Explicit override ─────────────────────────────────────────────────
     const QString envOverride = qEnvironmentVariable("VISIVO_BACKEND_PYTHON");
     if (!envOverride.isEmpty()) {
-        if (isValidPythonExe(envOverride)) {
-            logOut << u"[launcher] Python (VISIVO_BACKEND_PYTHON): %1"_s.arg(envOverride);
-            return { envOverride, u"VISIVO_BACKEND_PYTHON env var"_s };
-        }
-        logOut << u"[launcher] VISIVO_BACKEND_PYTHON=%1 — not executable, skipping"_s
-                          .arg(envOverride);
+        if (auto r = accept(envOverride, u"VISIVO_BACKEND_PYTHON env var"_s))
+            return *r;
+        if (!isValidPythonExe(envOverride))
+            logOut << u"[launcher] VISIVO_BACKEND_PYTHON=%1 — not executable, skipping"_s
+                              .arg(envOverride);
     }
 
     // ── 2. Active virtual environment ────────────────────────────────────────
     const QString virtualEnv = qEnvironmentVariable("VIRTUAL_ENV");
     if (!virtualEnv.isEmpty()) {
-#if defined(Q_OS_WIN)
-        const QString venvPython = QDir::cleanPath(virtualEnv + u"/Scripts/python.exe"_s);
-#else
-        const QString venvPython = QDir::cleanPath(virtualEnv + u"/bin/python"_s);
-#endif
-        if (isValidPythonExe(venvPython)) {
-            logOut << u"[launcher] Python (active venv, $VIRTUAL_ENV=%1): %2"_s
-                              .arg(virtualEnv, venvPython);
-            return { venvPython, u"active virtual environment ($VIRTUAL_ENV)"_s };
-        }
-        logOut << u"[launcher] VIRTUAL_ENV set but %1 not found, skipping"_s.arg(venvPython);
+        const QString venvPython = venvPythonPath(virtualEnv);
+        if (auto r = accept(venvPython, u"active venv ($VIRTUAL_ENV)"_s))
+            return *r;
+        if (!isValidPythonExe(venvPython))
+            logOut << u"[launcher] VIRTUAL_ENV set but %1 not found, skipping"_s
+                              .arg(venvPython);
     }
 
     // ── 3. Project .venv in dev tree ─────────────────────────────────────────
-    //  Look for <backendDir>/../.venv/bin/python, which is the standard layout
-    //  when the developer runs:  python -m venv .venv && source .venv/bin/activate
-    //  from the repository root next to backend/.
+    //  Both layouts a developer actually produces: `python -m venv .venv` run
+    //  from the repository root, and the same run from inside backend/. Only
+    //  the first was checked, and this repository uses the second — so the
+    //  working 3.11 environment sitting right next to the code was invisible.
     if (!backendDir.isEmpty()) {
-#if defined(Q_OS_WIN)
-        const QString devVenvPython =
-                QDir::cleanPath(backendDir + u"/../.venv/Scripts/python.exe"_s);
-#else
-        const QString devVenvPython =
-                QDir::cleanPath(backendDir + u"/../.venv/bin/python"_s);
-#endif
-        if (isValidPythonExe(devVenvPython)) {
-            logOut << u"[launcher] Python (project .venv): %1"_s.arg(devVenvPython);
-            return { devVenvPython, u"project .venv (dev tree)"_s };
+        const QString repoRoot = QDir::cleanPath(backendDir + u"/.."_s);
+        for (const auto &c : { std::pair{ backendDir + u"/.venv"_s,
+                                          u"backend/.venv (dev tree)"_s },
+                               std::pair{ repoRoot + u"/.venv"_s,
+                                          u"project .venv (dev tree)"_s } }) {
+            if (auto r = accept(venvPythonPath(c.first), c.second))
+                return *r;
         }
     }
 
     // ── 3b. User-data venv ───────────────────────────────────────────────────
     //  Created either by scripts/setup_backend.{sh,command,bat} or by the
-    //  first-run bootstrap below. Lives in writable user storage so a signed
-    //  bundle / read-only AppImage stays untouched. The path comes from
+    //  first-run bootstrap. Lives in writable user storage so a signed bundle
+    //  or a read-only AppImage stays untouched. The path comes from
     //  userDataVenvDir() so the chain and the bootstrap cannot disagree.
-    {
-        const QString userVenvPython = venvPythonPath(userDataVenvDir());
-        if (!userVenvPython.isEmpty() && isValidPythonExe(userVenvPython)) {
-            logOut << u"[launcher] Python (user-data venv): %1"_s.arg(userVenvPython);
-            return { userVenvPython, u"user-data venv"_s };
-        }
-    }
+    if (auto r = accept(venvPythonPath(userDataVenvDir()), u"user-data venv"_s))
+        return *r;
 
     // ── 4. Bundled Python alongside the executable ───────────────────────────
     const QString appDir = QCoreApplication::applicationDirPath();
-    const QStringList bundledCandidates = {
-#if defined(Q_OS_MACOS)
-        // <app>.app/Contents/MacOS/python3  (thin wrapper bundled by pyinstaller etc.)
-        QDir::cleanPath(appDir + u"/python3"_s),
-#endif
-        QDir::cleanPath(appDir + u"/python3"_s),
-        QDir::cleanPath(appDir + u"/python"_s),
-    };
-    for (const QString &c : bundledCandidates) {
-        if (isValidPythonExe(c)) {
-            logOut << u"[launcher] Python (bundled runtime): %1"_s.arg(c);
-            return { c, u"bundled backend runtime"_s };
-        }
+    for (const QString &c : { QDir::cleanPath(appDir + u"/python3"_s),
+                              QDir::cleanPath(appDir + u"/python"_s) }) {
+        if (auto r = accept(c, u"bundled backend runtime"_s))
+            return *r;
     }
 
     // ── 5. Settings / PATH-detected python ───────────────────────────────────
-    if (isValidPythonExe(settingsPython)) {
-        logOut << u"[launcher] Python (system, via Settings): %1"_s.arg(settingsPython);
-        logOut << u"[launcher] NOTE: using system Python — ensure uvicorn and dependencies "
-                  u"are installed in this environment."_s;
-        return { settingsPython, u"system Python (application settings)"_s };
+    if (auto r = accept(settingsPython, u"system Python (application settings)"_s))
+        return *r;
+
+    // ── 6/7. PATH, version-named first ───────────────────────────────────────
+    //  Newest first, then the unversioned names. Homebrew, pyenv, deadsnakes
+    //  and the python.org installers all provide pythonX.Y; on macOS the bare
+    //  python3 is very often Apple's 3.9, so it must be looked at last.
+    QStringList pathNames;
+    for (int minor = kMaxProbedPythonMinor; minor >= kMinPythonMinor; --minor)
+        pathNames << u"python%1.%2"_s.arg(kMinPythonMajor).arg(minor);
+    pathNames << u"python3"_s << u"python"_s;
+
+    // findExecutable() searches the PATH this process inherited, and a bundle
+    // opened from the Finder inherits the launchd PATH — /usr/bin:/bin:/usr/sbin
+    // :/sbin — not the shell's. Homebrew and MacPorts would be invisible to a
+    // tester who double-clicks the app, which is precisely how a tester starts
+    // it. Naming the standard prefixes costs a stat each.
+    const QStringList extraDirs = {
+#if defined(Q_OS_MACOS)
+        u"/opt/homebrew/bin"_s,      // Homebrew, Apple silicon
+        u"/usr/local/bin"_s,         // Homebrew, Intel
+        u"/opt/local/bin"_s,         // MacPorts
+        u"/Library/Frameworks/Python.framework/Versions/Current/bin"_s,  // python.org
+#else
+        u"/usr/local/bin"_s,
+#endif
+    };
+    for (const QString &name : std::as_const(pathNames)) {
+        const QString found = QStandardPaths::findExecutable(name);
+        if (!found.isEmpty()) {
+            if (auto r = accept(found, u"%1 on PATH"_s.arg(name)))
+                return *r;
+        }
+        for (const QString &dir : extraDirs) {
+            const QString candidate = dir + u'/' + name;
+            if (candidate == found)
+                continue;   // already tried above
+            if (auto r = accept(candidate, u"%1 in %2"_s.arg(name, dir)))
+                return *r;
+        }
     }
 
-    // ── 6. Hard fallback — let the OS resolve from PATH ──────────────────────
-    logOut << u"[launcher] WARNING: no validated Python found, falling back to 'python3' on PATH."_s;
-    logOut << u"[launcher] If the backend fails to start, install uvicorn: "
-              u"pip install uvicorn fastapi"_s;
-    return { u"python3"_s, u"system PATH fallback (python3)"_s };
+    logOut << u"[launcher] No interpreter met the minimum version."_s;
+    return { {}, {}, rejected };
 }
 
 } // namespace
@@ -535,56 +682,42 @@ void BackendLauncher::launchProcess()
     for (const QString &line : std::as_const(resolutionLog))
         appendLog(line);
 
+    // The chain only returns an interpreter that is already new enough, so an
+    // empty result means every candidate was missing or too old. Naming the
+    // ones that were rejected is the difference between a user who installs
+    // Python 3.11 and one who reinstalls the 3.9 they already have.
     if (pythonExe.isEmpty()) {
+        QString detail;
+        if (!resolved.rejected.isEmpty())
+            detail = u"\n\nToo old:\n  %1"_s.arg(resolved.rejected.join(u"\n  "_s));
         emit failed(
-                u"Python interpreter not found.\n\n"
-                u"Install Python 3 and restart the application."_s);
+                u"VisIVO needs Python %1.%2 or newer and could not find one.%3\n\n"
+                u"Install a newer Python — on macOS, `brew install python@%1.%2` — "
+                u"then restart VisIVO, or point it at an interpreter with the "
+                u"VISIVO_BACKEND_PYTHON environment variable."_s
+                        .arg(kMinPythonMajor).arg(kMinPythonMinor).arg(detail));
         return;
     }
     appendLog(u"[launcher] Using Python: %1  (%2)"_s.arg(pythonExe, pythonSource));
-
-    // ── Is this interpreter usable, and does it have the backend's deps? ─────
-    //
-    // Both questions have to be asked here rather than left to uvicorn. A Mac's
-    // /usr/bin/python3 is 3.9 and will be found by the PATH fallback; letting it
-    // through produces a pip resolution failure pages long, or an ImportError
-    // from inside the server, neither of which tells the user what to install.
-    const auto version = pythonVersion(pythonExe);
-    const QString versionText = version.first
-            ? u"%1.%2"_s.arg(version.first).arg(version.second)
-            : u"unknown"_s;
-    appendLog(u"[launcher] Python ver : %1"_s.arg(versionText));
-
-    if (!pythonVersionOk(version)) {
-        emit failed(
-                u"VisIVO needs Python %1.%2 or newer, and the interpreter it found "
-                u"is %3.\n\n%4\n\nInstall a newer Python, then either put it first "
-                u"on your PATH or point VisIVO at it with the "
-                u"VISIVO_BACKEND_PYTHON environment variable."_s
-                        .arg(kMinPythonMajor).arg(kMinPythonMinor)
-                        .arg(versionText, pythonExe));
-        return;
-    }
 
     if (!hasBackendDeps(pythonExe)) {
         appendLog(u"[launcher] Backend dependencies missing — bootstrapping"_s);
         if (!bootstrapEnvironment(backendDir, pythonExe))
             return;   // bootstrapEnvironment() has already emitted failed()
-        // The bootstrap creates backendDir/../.venv, which is candidate 3 of the
-        // resolution chain, so re-resolving now picks it up.
-        QStringList reLog;
-        const PythonResolution reResolved = resolvePythonExe(m_pythonExe, backendDir, reLog);
-        const QString venvExe = reResolved.exe;
-        const QString venvSource = reResolved.source;
-        for (const QString &line : std::as_const(reLog))
-            appendLog(line);
-        if (venvExe.isEmpty() || !hasBackendDeps(venvExe)) {
+        // Go straight to the venv the bootstrap just built, rather than running
+        // the chain again. Re-resolving would restart from the top and could
+        // hand back the very interpreter whose missing dependencies triggered
+        // the bootstrap — an earlier candidate that is new enough but bare, say
+        // a backend/.venv or a $VIRTUAL_ENV — and then fail, reporting that the
+        // install did not take when in fact it went somewhere else.
+        const QString venvExe = venvPythonPath(userDataVenvDir());
+        if (venvExe.isEmpty() || !isValidPythonExe(venvExe) || !hasBackendDeps(venvExe)) {
             emit failed(u"The backend environment was created but its dependencies "
                         u"are still missing. See the log for what pip reported."_s);
             return;
         }
         pythonExe = venvExe;
-        pythonSource = venvSource;
+        pythonSource = u"user-data venv (just bootstrapped)"_s;
         appendLog(u"[launcher] Using Python: %1  (%2)"_s.arg(pythonExe, pythonSource));
     }
 
@@ -603,6 +736,7 @@ void BackendLauncher::launchProcess()
 
     m_process = new QProcess(this);
     m_process->setWorkingDirectory(backendDir);
+    m_process->setProcessEnvironment(backendEnvironment());
 
     // Capture stdout + stderr as they arrive.
     QObject::connect(m_process, &QProcess::readyReadStandardOutput, this, [this]() {

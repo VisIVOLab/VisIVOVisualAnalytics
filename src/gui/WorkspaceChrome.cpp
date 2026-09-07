@@ -214,13 +214,6 @@ void WorkspaceChrome::attachCommandBar(const VisivoTheme::ViewerToolbarWidgets &
         });
     }
 
-    // ◐ — toggle dark / light theme.
-    if (w.theme) {
-        connect(w.theme, &QToolButton::clicked, this, [this]() {
-            if (auto *mw = mainWindow())
-                mw->toggleColorScheme();
-        });
-    }
 }
 
 void WorkspaceChrome::installStatusRail()
@@ -247,9 +240,13 @@ void WorkspaceChrome::installStatusRail()
     sb->addPermanentWidget(makeRailSep(sb));
     sb->addPermanentWidget(m_sessionSlot);
 
-    // ⌥J — jobs / diagnostics panel (button + global shortcut).
+    // ⌥J — the diagnostics log (button + global shortcut). Labelled "Logs"
+    // because that is what it opens: a filterable table of log records. It used
+    // to say "Jobs", which promised the running/queued task list that actually
+    // lives in the queue slot a few widgets to the left.
     auto *jobsBtn = new QToolButton(sb);
-    jobsBtn->setText(u"Jobs ⌥J"_s);
+    jobsBtn->setText(u"Logs ⌥J"_s);
+    jobsBtn->setToolTip(u"Open the diagnostics log (⌥J)"_s);
     jobsBtn->setCursor(Qt::PointingHandCursor);
     jobsBtn->setToolButtonStyle(Qt::ToolButtonTextOnly);
     styleJobsButton(jobsBtn);

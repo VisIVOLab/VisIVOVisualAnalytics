@@ -541,6 +541,10 @@ qt_add_resources(${PROJECT_NAME} rail_icons
         resources/icons/chevron_down.svg
         resources/icons/chevron_up.svg
         resources/icons/chevron_right.svg
+        resources/icons/tree_chevron_down.svg
+        resources/icons/tree_chevron_right.svg
+        resources/icons/tree_chevron_down_light.svg
+        resources/icons/tree_chevron_right_light.svg
         resources/icons/pane_1.svg
         resources/icons/pane_2.svg
         resources/icons/pane_2_rows.svg

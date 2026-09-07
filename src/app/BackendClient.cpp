@@ -169,10 +169,17 @@ void BackendClient::setSessionId(const QString &sessionId)
 QString BackendClient::readTokenFile()
 {
     // Priority 1: environment variable (set by launch script or user shell).
+    //
+    // Trimmed BEFORE the emptiness test, not after. A VISIVO_TOKEN of " " used
+    // to be accepted here and returned as an empty token, so the file was never
+    // consulted — while BackendLauncher, which trims first, treated the same
+    // value as absent and pinned a real token in the child. The two disagreed
+    // and every request came back 401.
     const QString envToken =
-            QProcessEnvironment::systemEnvironment().value(QStringLiteral("VISIVO_TOKEN"));
+            QProcessEnvironment::systemEnvironment()
+                    .value(QStringLiteral("VISIVO_TOKEN")).trimmed();
     if (!envToken.isEmpty()) {
-        return envToken.trimmed();
+        return envToken;
     }
 
     // Priority 2: ~/.visivo_token written by the Python backend at startup.

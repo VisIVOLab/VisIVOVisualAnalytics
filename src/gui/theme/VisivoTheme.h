@@ -258,15 +258,14 @@ struct ViewerToolbarWidgets
     QToolButton *exportBtn = nullptr;
     QToolButton *primaryTag = nullptr;     // "CUBE · …" clickable (FITS header)
     QToolButton *datasetSwitch = nullptr;  // "▼" recent-dataset switcher
-    QToolButton *theme = nullptr;          // "◐/◑" dark/light toggle
     QLabel      *remoteChip = nullptr;     // live "host · N running" health chip
 };
 
 // Returns a fully built QWidget for placement at the top of a viewer's central
 // area. `out` (optional) receives handles to the action widgets so the caller
 // can wire them — Find / Command / Export, the clickable "CUBE · …" primary
-// tag (e.g. opens the FITS header dialog), the dataset switcher, the theme
-// toggle, and the live remote/health chip.
+// tag (e.g. opens the FITS header dialog), the dataset switcher, and the live
+// remote/health chip.
 QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
                            ViewerToolbarWidgets *out = nullptr,
                            QWidget *parent = nullptr);

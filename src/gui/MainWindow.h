@@ -45,9 +45,6 @@ public:
     RecentDatasetsManager *recentDatasetsManager() const { return recentMgr; }
 
 public slots:
-    /// Flip the persisted colour scheme dark ⇄ light and re-apply the theme.
-    /// Wired to the viewer command-bar theme toggle (WorkspaceChrome).
-    void toggleColorScheme();
     /// Reopen a previously opened dataset (dataset switcher / Recent panel).
     void reopenDataset(const RecentDataset &dataset);
 

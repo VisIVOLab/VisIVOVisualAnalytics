@@ -52,6 +52,18 @@ EffectiveTheme ThemeManager::resolve(Qt::ColorScheme scheme)
 
 void ThemeManager::apply(Qt::ColorScheme scheme, QApplication *app)
 {
+    // Restart-only, deliberately. Re-applying mid-session restyles the global
+    // QSS and notifies the handful of widgets that subscribe to themeChanged(),
+    // but every widget that bakes a theme token into an inline stylesheet at
+    // construction — most of the chrome — keeps the palette it was built with.
+    // The window then sits half in each theme, which is worse than not
+    // switching at all. The preference is still persisted by Settings and is
+    // picked up by the next launch; the second apply here would only ever be
+    // the Settings dialog or an OS dark-mode flip in "follow the system" mode.
+    if (m_applied)
+        return;
+    m_applied = true;
+
     m_userScheme = scheme;
     const EffectiveTheme next = resolve(scheme);
     const bool changed = (next != m_effective);

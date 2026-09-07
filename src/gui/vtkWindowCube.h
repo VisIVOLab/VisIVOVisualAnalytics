@@ -616,7 +616,7 @@ private:
     // §5.2: the DISPLAY dock section follows the active pane. Page 0 = the 3D controls
     // (unchanged, holds m_uiAssembler/ui singletons); page 1 = the 2D/Moment pane page
     // (colormap + CARTA range presets + scale/symmetric) driving the active Pane2DView.
-    QPointer<QToolButton> m_displayHeaderBtn;
+    QPointer<QPushButton> m_displayHeaderBtn;
     QPointer<QStackedWidget> m_displayStack;
     QPointer<QComboBox> m_paneLutCombo;
     QPointer<QDoubleSpinBox> m_paneRangeMin;
