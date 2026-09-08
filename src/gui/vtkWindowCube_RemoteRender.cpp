@@ -523,6 +523,15 @@ void vtkWindowCube::pushRenderStateToRemote()
         m[u"mode"_s] = iso ? u"isosurface"_s : u"volume"_s;
         this->sendRemoteRenderStateCommand(m);
     }
+    {
+        // Order does not matter for the end state — the backend resolves mode,
+        // this flag and the interactive LOD in one place — but sending it last
+        // keeps the bootstrap reading in the order the scene is built up.
+        QVariantMap m;
+        m[u"type"_s] = u"set_show_rendering"_s;
+        m[u"visible"_s] = m_show3dRendering;
+        this->sendRemoteRenderStateCommand(m);
+    }
 }
 
 void vtkWindowCube::updateRenderModeBadges()

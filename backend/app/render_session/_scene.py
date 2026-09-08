@@ -393,15 +393,15 @@ class SceneMixin:
         mapper.ScalarVisibilityOn()
         actor = vtk.vtkActor()
         actor.SetMapper(mapper)
-        actor.SetVisibility(1 if self.view.cube_render_mode == "isosurface" else 0)
         self._iso_filter = flying
         self._iso_mapper = mapper
         self._iso_actor  = actor
         self._renderer.AddActor(actor)
-        # And start the volume in the right visibility too.
-        if self._volume is not None:
-            self._volume.SetVisibility(
-                    1 if self.view.cube_render_mode == "volume" else 0)
+        # Through the shared applier rather than deciding here: this runs during
+        # construction and used to overwrite whatever visibility the client had
+        # already asked for, so a session told to hide the rendering got it back
+        # the moment the isosurface finished building.
+        self._apply_cube_render_mode_on_thread(self.view.cube_render_mode)
 
     def _rebuild_isosurface_value_on_thread(self) -> None:
         """Push the current threshold into BOTH the full and LOD iso filters."""

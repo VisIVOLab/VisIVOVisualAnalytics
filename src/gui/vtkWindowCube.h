@@ -617,6 +617,18 @@ private:
     // (unchanged, holds m_uiAssembler/ui singletons); page 1 = the 2D/Moment pane page
     // (colormap + CARTA range presets + scale/symmetric) driving the active Pane2DView.
     QPointer<QPushButton> m_displayHeaderBtn;
+
+    // LAYERS rows kept so updateDisplaySectionForActivePane() can show only the
+    // ones that act on the pane in front of the user.
+    QPointer<QWidget> m_layerRowVolume;
+
+    /// LAYERS \u25b8 3D rendering: hides the volume/isosurface without touching
+    /// the Isosurface/Volume mode. Applied by apply3dRenderingVisibility().
+    bool m_show3dRendering{ true };
+    QPointer<QWidget> m_layerRowCuttingPlane;
+    QPointer<QWidget> m_layerRowCuttingPlaneOpacity;   ///< indented, follows the checkbox
+    QPointer<QWidget> m_layerRowContours;
+    QPointer<QWidget> m_layerRow3dWcsAxes;
     QPointer<QStackedWidget> m_displayStack;
     QPointer<QComboBox> m_paneLutCombo;
     QPointer<QDoubleSpinBox> m_paneRangeMin;
@@ -633,6 +645,12 @@ private:
     /// Mode::Log. False when the image has no positive values, in which case the
     /// caller must not change the mode. See the definition.
     bool anchorSliceLogFloor(LutScale::Mode mode);
+
+    /// Push m_show3dRendering onto both 3-D props and repaint.
+    void apply3dRenderingVisibility();
+
+    /// Show the indented Opacity row only on the 3-D pane with the plane on.
+    void updateCuttingPlaneOpacityRowVisibility();
     void showPaneLUTCustomizer();          ///< Edit → the active pane's own LUT
     Pane2DView *activePane2DView() const;  ///< m_paneViews[m_activePane] if it's a Product pane
     // §5.4 follow-up: the DISPLAY page drives EITHER a Product pane (its own Pane2DView) or

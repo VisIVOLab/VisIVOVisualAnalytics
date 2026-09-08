@@ -43,6 +43,7 @@ class PipelineMixin:
                                           "slice_index": int}`` — partial; any subset
         ``{"type": "set_show_outline",   "visible": bool}``
         ``{"type": "set_show_axes",      "visible": bool}``
+        ``{"type": "set_show_rendering",  "visible": bool}``    — volume/iso on/off
 
         Viewport / encoding:
 
@@ -187,6 +188,12 @@ class PipelineMixin:
             self.view.show_outline = bool(command.get("visible", True))
             if self._outline_actor is not None:
                 self._outline_actor.SetVisibility(1 if self.view.show_outline else 0)
+        elif ctype == "set_show_rendering":
+            self.view.show_rendering = bool(command.get("visible", True))
+            # Through the mode applier, so the flag and cube_render_mode are
+            # resolved in one place rather than two that can disagree.
+            self._apply_cube_render_mode_on_thread(self.view.cube_render_mode)
+            self.request_idr()
         elif ctype == "set_show_axes":
             self.view.show_axes = bool(command.get("visible", True))
             if self._axes_actor is not None:
@@ -348,8 +355,12 @@ class PipelineMixin:
                     self._vtk_intensity_array.Modified()
                 self._last_modified_wall = time.time()
                 self._pending_modified = False
-                if self._volume is not None:
-                    self._volume.SetVisibility(1)
+                # Resolve against the flag and the mode rather than showing the
+                # volume outright. A client that hid the rendering before the
+                # cube finished streaming — or attached to a session still
+                # loading — would otherwise have it appear on its own at the
+                # 25 % mark, with the checkbox still clear.
+                self._apply_cube_render_mode_on_thread(self.view.cube_render_mode)
                 self._volume_revealed = True
                 logger.info(
                     "[render-session %s] volume revealed at %d/%d chunks "

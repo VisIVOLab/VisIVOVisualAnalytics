@@ -59,10 +59,7 @@ class ModesMixin:
         still frame at the right orientation immediately.
         """
         if interactive:
-            if self._volume is not None:
-                self._volume.SetVisibility(0)
-            if self._iso_actor is not None:
-                self._iso_actor.SetVisibility(0)
+            self._apply_cube_render_mode_on_thread(self.view.cube_render_mode)
             if self._cutting_plane_actor is not None:
                 self._cutting_plane_actor.SetVisibility(0)
             # Bright outline so the cube box reads against the dark
@@ -72,10 +69,6 @@ class ModesMixin:
                 prop = self._outline_actor.GetProperty()
                 prop.SetColor(1.0, 1.0, 1.0)
                 prop.SetLineWidth(2.0)
-            # Galaxy wireframe (low-poly iso) — gives spatial context
-            # without the cost of the full iso mesh.
-            if self._iso_lod_actor is not None:
-                self._iso_lod_actor.SetVisibility(1)
             # Hide axes triad to save the extra renderer pass.
             if self._axes_renderer is not None:
                 self._axes_renderer.SetDraw(0)
@@ -99,8 +92,6 @@ class ModesMixin:
                 prop = self._outline_actor.GetProperty()
                 prop.SetColor(0.85, 0.85, 0.85)
                 prop.SetLineWidth(1.5)
-            if self._iso_lod_actor is not None:
-                self._iso_lod_actor.SetVisibility(0)
             if self._axes_renderer is not None:
                 self._axes_renderer.SetDraw(1 if self.view.show_axes else 0)
             if self._render_window is not None and self._lod_prev_size is not None:
@@ -109,22 +100,40 @@ class ModesMixin:
                 self.view.width = w
                 self.view.height = h
                 self._lod_prev_size = None
-            is_iso = (self.view.cube_render_mode == "isosurface")
-            if self._volume is not None:
-                self._volume.SetVisibility(0 if is_iso else 1)
-            if self._iso_actor is not None:
-                self._iso_actor.SetVisibility(1 if is_iso else 0)
+            # Through the applier, not a second copy of its rule. This branch
+            # used to reinstate the mode's own visibility directly, which meant
+            # releasing a drag brought back a rendering the user had switched
+            # off — checkbox still clear, rendering back on screen.
+            self._apply_cube_render_mode_on_thread(self.view.cube_render_mode)
             if self._cutting_plane_actor is not None:
                 self._cutting_plane_actor.SetVisibility(
                     1 if self.view.cutting_plane_visible else 0)
 
     def _apply_cube_render_mode_on_thread(self, mode: str) -> None:
-        """Toggle between volume and isosurface actors atomically."""
+        """Resolve which of the three rendering props is on screen.
+
+        The single owner of that rule, so the callers below cannot drift from
+        each other. Three inputs decide it:
+
+        * ``mode`` — WHICH representation, volume or isosurface.
+        * ``show_rendering`` — WHETHER either is drawn at all. Without this the
+          mode switch would quietly bring back a rendering the user had hidden.
+        * ``interactive`` — during a drag the low-poly LOD wireframe stands in
+          for the full actors, so exactly one of the three is ever visible.
+          Resolving it here rather than only on the interaction transitions is
+          what lets the flag change mid-drag: applied without it, hiding the
+          rendering left the wireframe on, and showing it put the full actor up
+          alongside the wireframe.
+        """
         is_iso = (mode == "isosurface")
+        shown = self.view.show_rendering
+        lod = self.view.interactive
         if self._volume is not None:
-            self._volume.SetVisibility(0 if is_iso else 1)
+            self._volume.SetVisibility(1 if (shown and not is_iso and not lod) else 0)
         if self._iso_actor is not None:
-            self._iso_actor.SetVisibility(1 if is_iso else 0)
+            self._iso_actor.SetVisibility(1 if (shown and is_iso and not lod) else 0)
+        if self._iso_lod_actor is not None:
+            self._iso_lod_actor.SetVisibility(1 if (shown and lod) else 0)
 
     def _apply_blend_mode_on_thread(self, blend_mode: int) -> None:
         """Set the volume mapper's blend mode (0=Composite, 1=MIP, 2=MinIP)."""

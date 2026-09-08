@@ -2754,8 +2754,18 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // checkbox; the existing checkStateChanged handler above continues to
     // own the visibility update logic.
     if (m_uiAssembler && m_uiAssembler->contoursButton()) {
-        QObject::connect(m_uiAssembler->contoursButton(), &QToolButton::toggled,
-                         ui->checkContours, &QCheckBox::setChecked);
+        auto *btn = m_uiAssembler->contoursButton();
+        QObject::connect(btn, &QToolButton::toggled, ui->checkContours, &QCheckBox::setChecked);
+        // And back. The link used to be one-way, which was invisible while the
+        // button was the only way in — but the LAYERS row now writes the same
+        // checkbox, and without this the button kept showing the old state:
+        // turn contours on from LAYERS and "Show Contours" stayed unchecked, so
+        // the first click on it did nothing visible and the second turned them
+        // off. Blocked, or the two would drive each other.
+        QObject::connect(ui->checkContours, &QCheckBox::toggled, btn, [btn](bool on) {
+            QSignalBlocker b(btn);
+            btn->setChecked(on);
+        });
     }
     QObject::connect(ui->lineLevel, &QLineEdit::editingFinished, this,
                      &vtkWindowCube::updateContours);
@@ -6236,10 +6246,11 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
                          [this](bool) { updateDisplaySectionForActivePane(); });
     updateDisplaySectionForActivePane();
 
-    // ── LAYERS — five fixed visibility rows (stable regardless of load) ───────
+    // ── LAYERS — visibility rows, filtered to the active pane ─────────────────
     QVBoxLayout *lay = addSection(u"LAYERS"_s, true, /*divider=*/false);
+    // Returns the row so the caller can keep it for pane-dependent visibility.
     auto layerCheck = [&](const QString &label, QAction *act, const QString &disabledReason,
-                          QWidget *trailing) {
+                          QWidget *trailing) -> QWidget * {
         auto *row = new QWidget();
         auto *h = new QHBoxLayout(row);
         h->setContentsMargins(0, 0, 0, 0);
@@ -6249,11 +6260,25 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         if (act) {
             cb->setChecked(act->isChecked());
             cb->setEnabled(act->isEnabled());
+            // The reason applies to an action-backed box too. An action can be
+            // disabled for a good reason — no catalogue loaded yet, say — and a
+            // grey box with no tooltip is indistinguishable from a broken one.
+            const auto syncReason = [cb, act, disabledReason]() {
+                // Only while it IS disabled: left in place, "Load a catalogue
+                // first" would still be sitting there after one was loaded.
+                cb->setToolTip(act->isEnabled() ? QString() : disabledReason);
+            };
+            if (!disabledReason.isEmpty())
+                syncReason();
             QObject::connect(cb, &QCheckBox::clicked, act, [act]() { act->trigger(); });
             QObject::connect(act, &QAction::toggled, cb,
                              [cb](bool on) { QSignalBlocker b(cb); cb->setChecked(on); });
             QObject::connect(act, &QAction::changed, cb,
-                             [cb, act]() { cb->setEnabled(act->isEnabled()); });
+                             [cb, act, disabledReason, syncReason]() {
+                                 cb->setEnabled(act->isEnabled());
+                                 if (!disabledReason.isEmpty())
+                                     syncReason();
+                             });
         } else {
             cb->setEnabled(false);
             cb->setToolTip(disabledReason);
@@ -6261,35 +6286,105 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         h->addWidget(cb, 1);
         if (trailing) { rehost(trailing); trailing->setParent(row); trailing->setMaximumWidth(96); h->addWidget(trailing, 0); }
         lay->addWidget(row);
+        return row;
     };
-    // Volume row is custom: it mirrors the render mode (source = the segmented
-    // control, which is not blocked), not the exclusive actionVolume directly.
+    // A visibility layer, not a second render-mode control.
+    //
+    // It used to mirror the Isosurface/Volume segmented control, so clearing it
+    // just switched to Isosurface — which the selector two rows above already
+    // does, and which left the user with no way to say "show me the cube box and
+    // the slice, without the rendering on top". That is what a LAYERS entry is
+    // for, so this now hides whichever of the two is mounted and leaves the mode
+    // alone. Hence the label: "Volume" named one of the two things it governs.
     {
         auto *row = new QWidget();
         auto *h = new QHBoxLayout(row);
         h->setContentsMargins(0, 0, 0, 0);
         h->setSpacing(8);
-        auto *cb = new QCheckBox(u"Volume"_s, row);
+        auto *cb = new QCheckBox(u"3D rendering"_s, row);
         cb->setStyleSheet(QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;").arg(fg));
-        if (modeCombo) {
-            cb->setChecked(modeCombo->currentIndex() == 1);
-            QObject::connect(cb, &QCheckBox::clicked, modeCombo,
-                             [modeCombo](bool on) { modeCombo->setCurrentIndex(on ? 1 : 0); });
-            QObject::connect(modeCombo, &SegmentedToggle::currentIndexChanged, cb,
-                             [cb](int i) { QSignalBlocker b(cb); cb->setChecked(i == 1); });
-        }
-        // Follow the View-menu path too (combo is set under a blocker there).
-        if (ui->actionVolume)
-            QObject::connect(ui->actionVolume, &QAction::toggled, cb,
-                             [cb](bool on) { QSignalBlocker b(cb); cb->setChecked(on); });
+        cb->setToolTip(u"Show the volume or isosurface. Clear it to leave just the "
+                       u"cube outline, the cutting plane and any overlays — the "
+                       u"Isosurface / Volume selector above chooses which of the "
+                       u"two is drawn when this is on."_s);
+        cb->setChecked(m_show3dRendering);
+        QObject::connect(cb, &QCheckBox::clicked, this, [this](bool on) {
+            m_show3dRendering = on;
+            apply3dRenderingVisibility();
+        });
         h->addWidget(cb, 1);
         lay->addWidget(row);
+        m_layerRowVolume = row;
     }
-    layerCheck(u"Cutting plane"_s, actionShowCuttingPlane, QString(),
-               m_cuttingPlaneOpacitySlider);
-    layerCheck(u"Contours"_s, nullptr, u"No contours computed for this cube yet."_s, nullptr);
-    layerCheck(u"Catalogue sources"_s, actionShowCatalogueOverlay, QString(), nullptr);
-    layerCheck(u"3D WCS axes"_s, actionShow3dWcsAxes, QString(), nullptr);
+    m_layerRowCuttingPlane = layerCheck(u"Cutting plane"_s, actionShowCuttingPlane, QString(),
+                                        nullptr);
+
+    // The opacity slider gets its own labelled row, indented under the checkbox
+    // it belongs to. Trailing the checkbox it was a bare slider with nothing to
+    // say what it did — of the several things one might expect a slider next to
+    // "Cutting plane" to move, position is the obvious guess and opacity is the
+    // answer. It also follows the checkbox: a control for a layer that is off is
+    // not worth the row.
+    if (m_cuttingPlaneOpacitySlider) {
+        auto *row = new QWidget();
+        auto *h = new QHBoxLayout(row);
+        h->setContentsMargins(20, 0, 0, 0);   // indent: it belongs to the row above
+        h->setSpacing(8);
+        auto *l = new QLabel(u"Opacity"_s, row);
+        l->setStyleSheet(labelCss);
+        h->addWidget(l, 0);
+        rehost(m_cuttingPlaneOpacitySlider);
+        m_cuttingPlaneOpacitySlider->setParent(row);
+        m_cuttingPlaneOpacitySlider->setToolTip(u"Opacity of the cutting plane."_s);
+        h->addWidget(m_cuttingPlaneOpacitySlider, 1);
+        lay->addWidget(row);
+        m_layerRowCuttingPlaneOpacity = row;
+
+        // One predicate, shared with the pane filter. An earlier version asked
+        // m_layerRowCuttingPlane->isVisible(), which is false while LAYERS is
+        // merely collapsed — so toggling the plane from the View menu with the
+        // section shut hid this row, and expanding the section did not bring it
+        // back, because expanding shows the parent without re-running the filter.
+        if (actionShowCuttingPlane)
+            QObject::connect(actionShowCuttingPlane, &QAction::toggled, row,
+                             [this](bool) { updateCuttingPlaneOpacityRowVisibility(); });
+        updateCuttingPlaneOpacityRowVisibility();
+    }
+
+    // Contours mirror ui->checkContours, the canonical state the CONTOURS card's
+    // "Show Contours" button already drives. This row used to be built with a
+    // null action, which left it disabled for the life of the window under a
+    // tooltip claiming the contours had not been computed — they are not
+    // computed, they are switched on, and the switch was three sections away.
+    {
+        auto *row = new QWidget();
+        auto *h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(8);
+        auto *cb = new QCheckBox(u"Contours"_s, row);
+        cb->setStyleSheet(QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;").arg(fg));
+        if (ui->checkContours) {
+            cb->setChecked(ui->checkContours->isChecked());
+            QObject::connect(cb, &QCheckBox::clicked, ui->checkContours,
+                             [this](bool on) { ui->checkContours->setChecked(on); });
+            QObject::connect(ui->checkContours, &QCheckBox::toggled, cb,
+                             [cb](bool on) { QSignalBlocker b(cb); cb->setChecked(on); });
+        } else {
+            cb->setEnabled(false);
+        }
+        h->addWidget(cb, 1);
+        lay->addWidget(row);
+        m_layerRowContours = row;
+    }
+
+    layerCheck(u"Catalogue sources"_s, actionShowCatalogueOverlay,
+               u"Load a catalogue first: Tools \u25b8 Load Catalogue Overlay."_s, nullptr);
+    m_layerRow3dWcsAxes = layerCheck(u"3D WCS axes"_s, actionShow3dWcsAxes, QString(), nullptr);
+
+    // Again, now that the rows exist. The call above runs while building the
+    // DISPLAY section, before any of these are constructed, so it set nothing —
+    // and every row would have stayed visible until the first pane change.
+    updateDisplaySectionForActivePane();
 
     // ── INTERACTION ▶ (collapsed) ─────────────────────────────────────────────
     QVBoxLayout *inter = addSection(u"INTERACTION"_s, false, /*divider=*/false);
@@ -7147,6 +7242,25 @@ void vtkWindowCube::updateDisplaySectionForActivePane()
     const bool open = m_displayHeaderBtn->isChecked();
     m_displayHeaderBtn->setText((open ? u"▼  "_s : u"▶  "_s) + u"DISPLAY — "_s + title);
 
+    // LAYERS follows the active pane. Volume, the cutting plane and the WCS axes
+    // are 3-D actors; contours are drawn into the slice renderer. Showing all of
+    // them at once meant half the section was inert whichever pane you were on,
+    // and a checkbox you cannot press because you are looking elsewhere is noise
+    // rather than information. Catalogue sources stays: it applies to both, and
+    // its own tooltip explains the one reason it greys out.
+    //
+    // ABOVE the isPane guard, deliberately. isPane means "has the DISPLAY page's
+    // colormap/range controls", which is true for the slice and image products
+    // and false for the 3-D view — the very pane three of these four rows exist
+    // for. Below the return, opening in 3-D left every row showing and switching
+    // slice → 3-D left the 3-D rows hidden.
+    const bool isSlice = (kind == ViewId::Slice2D);
+    if (m_layerRowVolume)        m_layerRowVolume->setVisible(is3d);
+    if (m_layerRowCuttingPlane)  m_layerRowCuttingPlane->setVisible(is3d);
+    updateCuttingPlaneOpacityRowVisibility();
+    if (m_layerRow3dWcsAxes)     m_layerRow3dWcsAxes->setVisible(is3d);
+    if (m_layerRowContours)      m_layerRowContours->setVisible(isSlice);
+
     if (!isPane)
         return;
 
@@ -7159,6 +7273,7 @@ void vtkWindowCube::updateDisplaySectionForActivePane()
     QScopedValueRollback<bool> paneDisplayGuard(m_applyingPaneDisplay, true);
     if (m_paneScaleRow)
         m_paneScaleRow->setVisible(kind == ViewId::Slice2D);   // Scale: 2D Slice only
+
     // Symmetric-about-0 only makes sense for a SIGNED velocity field (Moment 1). Intensity
     // (Moment 0) and width (Moment 2) are ≥ 0, so hide it there — showing it on Moment 0
     // reads as a no-op control.
@@ -11209,6 +11324,35 @@ void vtkWindowCube::handle3dPickEvent()
             3000);
 }
 
+void vtkWindowCube::updateCuttingPlaneOpacityRowVisibility()
+{
+    if (!m_layerRowCuttingPlaneOpacity)
+        return;
+    const ViewId kind =
+            (m_activePane >= 0 && m_activePane < 4) ? m_slots[m_activePane].view.kind : ViewId::None;
+    m_layerRowCuttingPlaneOpacity->setVisible(kind == ViewId::View3D && actionShowCuttingPlane
+                                              && actionShowCuttingPlane->isChecked());
+}
+
+void vtkWindowCube::apply3dRenderingVisibility()
+{
+    // Applied to BOTH props, not just the mounted one: the mode can change while
+    // the layer is off, and the newly mounted prop has to come up hidden too.
+    this->volume->SetVisibility(m_show3dRendering ? 1 : 0);
+    if (this->currentIsosurfaceActor)
+        this->currentIsosurfaceActor->SetVisibility(m_show3dRendering ? 1 : 0);
+    if (ui->vtkCube && ui->vtkCube->renderWindow())
+        ui->vtkCube->renderWindow()->Render();
+
+    // And the server, when it is the one drawing. Hiding only the local props
+    // would leave the remote stream showing the rendering the user just turned
+    // off, with no clue that the toggle had gone nowhere.
+    QVariantMap m;
+    m[u"type"_s] = u"set_show_rendering"_s;
+    m[u"visible"_s] = m_show3dRendering;
+    this->sendRemoteRenderStateCommand(m);
+}
+
 void vtkWindowCube::setCubeRenderModeLocally(bool isosurfaceMode)
 {
     auto *renderer = ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer();
@@ -11357,6 +11501,7 @@ void vtkWindowCube::applyIsosurfaceResult(const AsyncIsosurfaceResult &result)
     }
 
     this->currentIsosurfaceActor = newActor;
+    apply3dRenderingVisibility();   // a fresh isosurface must honour the layer toggle
     this->remoteIsosurfaceReady = true;
     qDebug().noquote()
             << QStringLiteral("[perf][isosurface] actor creation+swap: %1 ms")

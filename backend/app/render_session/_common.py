@@ -284,6 +284,10 @@ class SessionViewState:
     # ── Scene chrome (matches the local cube view) ────────────────
     show_outline: bool = True       # cube bounding-box wireframe
     show_axes:    bool = True       # XYZ orientation marker
+    # The volume / isosurface itself, independent of WHICH of the two
+    # cube_render_mode selects. Clearing it leaves the outline, the cutting
+    # plane and the overlays — the desktop's LAYERS > "3D rendering" row.
+    show_rendering: bool = True
     # Matches ``vtkWindowCube::setupCubeRenderer`` line 1
     # ``ren->SetBackground(0.21, 0.23, 0.25)`` — the same warm-cool
     # gray the desktop renderer uses. Pure black makes the chrome
