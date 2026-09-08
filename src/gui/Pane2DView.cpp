@@ -371,7 +371,52 @@ void Pane2DView::setImageData(vtkImageData *img, double lo, double hi,
     else
         m_source->SetOutput(makePlaceholderImage());
     m_colors->SetInputConnection(m_source->GetOutputPort());
-    LutScale::setRange(m_lut, destScale.value_or(m_scale), lo, hi);
+    // The range is installed here and read back by rebuildLut(), so a log
+    // destination has to be resolved NOW rather than later, when the transition
+    // guard may decide nothing changed.
+    //
+    // `destScale` also says WHICH kind of mount this is, and the two want
+    // opposite things. Given (a fresh product adopting its saved stretch) the
+    // floor should come from the data. Omitted, the caller is re-mounting the
+    // same product — a recompute, or a layout change — and deliberately passing
+    // this pane's own range back in; anchoring there would throw away a lower
+    // bound the user set by hand every time the layout changed.
+    const LutScale::Mode dest = destScale.value_or(m_scale);
+    double floorValue = 0.;
+    if (dest != LutScale::Mode::Log) {
+        LutScale::setRange(m_lut, dest, lo, hi);
+    } else if (!logFloor(floorValue)) {
+        // Log is impossible for these pixels. Commit the demotion here: the
+        // same-product path never reaches setColorMap(), so nothing downstream
+        // would, and the pane would sit with m_scale saying Log over a linear
+        // table — controls offering a switch that returns immediately, and the
+        // next colormap edit quietly rebuilding a logarithmic one.
+        //
+        // And the range has to come from the NEW image, not from `lo`/`hi`: on
+        // the same-product path those are the pane's existing range, which under
+        // log is entirely positive. Keeping it while demoting an image that has
+        // gone all-negative would put every pixel below the bottom of the table
+        // — one flat colour, or nothing at all with outlier clamping on.
+        double raw[2] = { lo, hi };
+        if (auto *newImg = vtkImageData::SafeDownCast(m_source->GetOutputDataObject(0))) {
+            double sr[2] = { 0., 0. };
+            newImg->GetScalarRange(sr);
+            if (std::isfinite(sr[0]) && std::isfinite(sr[1]) && sr[1] > sr[0]) {
+                raw[0] = sr[0];
+                raw[1] = sr[1];
+            }
+        }
+        LutScale::setRange(m_lut, LutScale::Mode::Linear, raw[0], raw[1]);
+        if (m_scale == LutScale::Mode::Log) {
+            m_scale = LutScale::Mode::Linear;
+            emit logScaleUnavailable();
+        }
+    } else if (destScale.has_value()) {
+        LutScale::setRange(m_lut, dest, floorValue,
+                           std::max(hi, floorValue * (1.0 + 1e-6)));
+    } else {
+        LutScale::setRange(m_lut, dest, lo, hi);   // the pane's own range, kept
+    }
     m_lut->Modified();
     // Do NOT fit here — the caller calls fit() once it has set the colormap.
 }
@@ -379,6 +424,15 @@ void Pane2DView::setImageData(vtkImageData *img, double lo, double hi,
 void Pane2DView::setColorMap(const QString &name, LutScale::Mode mode, double gamma,
                              bool clampOutliersTransparent)
 {
+    // force: both callers are a slot adopting a product's saved state, so the
+    // image is new even when the mode is not.
+    if (!anchorLogFloor(mode, /*force=*/true)) {
+        // Log is not viable for this image. Adopt everything else rather than
+        // bailing out — returning here left the pane holding the previous
+        // product's colormap over the new pixels, and (because setImageData had
+        // already switched the table) a logarithmic LUT under a linear m_scale.
+        mode = (m_scale == LutScale::Mode::Log) ? LutScale::Mode::Linear : m_scale;
+    }
     // §5.3: remember the state on the pane (authoritative), don't discard it.
     m_colorMapName = name;
     m_scale = mode;
@@ -452,9 +506,57 @@ void Pane2DView::setColorMapName(const QString &name)
     emit lutChanged();
 }
 
+// Entering log: take the floor from the data rather than leaving LutScale to
+// fall back on max x 1e-6, six fixed decades that spend most of the ramp below
+// anything the image contains. rebuildLut() builds at the CURRENT table range,
+// so the floor has to be in place before it runs.
+//
+// Returns false when log was asked for and the image has no positive values —
+// the caller must then leave the scale alone.
+//
+// Called from the paths that can put the pane INTO log carrying a mode but no
+// range: setScale(), applyLut() (how a linked pane adopts a stretch) and
+// setColorMap() (how a slot adopts a newly mounted product). Not from
+// adoptLutState(), which only records what LUTCustomizerDialog has already
+// built — it derives its own positive floor, and re-anchoring would overwrite
+// the range the user just chose in it.
+//
+// Only on the TRANSITION into log. Anchoring on every applyLut() would reset a
+// lower bound the user had adjusted by hand whenever an unrelated colormap,
+// gamma or invert change propagated in from a linked window.
+bool Pane2DView::logFloor(double &floorOut) const
+{
+    auto *img = vtkImageData::SafeDownCast(m_source->GetOutputDataObject(0));
+    floorOut = LutScale::sampledPositiveFloor(img);
+    return floorOut > 0.0;
+}
+
+bool Pane2DView::anchorLogFloor(LutScale::Mode mode, bool force)
+{
+    if (mode != LutScale::Mode::Log)
+        return true;
+    // `force` is for the paths where the DATA changed rather than the mode: a
+    // slot mounting a different product into a pane that is already logarithmic
+    // needs a floor for the new image, and the transition guard alone would skip
+    // it, leaving the blind fallback setImageData had to install.
+    if (!force && m_scale == LutScale::Mode::Log)
+        return true;
+    double floorValue = 0.;
+    if (!logFloor(floorValue)) {
+        emit logScaleUnavailable();
+        return false;
+    }
+    double cur[2] = { 0., 0. };
+    m_lut->GetTableRange(cur);
+    m_lut->SetTableRange(floorValue, std::max(cur[1], floorValue * (1.0 + 1e-6)));
+    return true;
+}
+
 void Pane2DView::setScale(LutScale::Mode mode)
 {
     if (mode == m_scale)
+        return;
+    if (!anchorLogFloor(mode))
         return;
     m_scale = mode;
     rebuildLut();
@@ -464,6 +566,8 @@ void Pane2DView::setScale(LutScale::Mode mode)
 
 void Pane2DView::applyLut(const QString &name, LutScale::Mode scale, double gamma, bool invert)
 {
+    if (!anchorLogFloor(scale))
+        return;
     if (!name.isEmpty())
         m_colorMapName = name;
     m_scale = scale;

@@ -400,7 +400,21 @@ void vtkWindowCube::applyLinked2DSliceLut(const QString &name, int scaleMode, do
     if (same)
         return;
     QScopedValueRollback<bool> guard(this->m_applyingLinkedUpdate, true);
-    this->m_sliceScaleMode = static_cast<LutScale::Mode>(scaleMode);
+    // The receiver anchors against ITS OWN slice: the peer's floor belongs to the
+    // peer's pixels. Without this, switching one window to log left every linked
+    // window on the blind fallback — or in log with nothing positive to show.
+    // A refusal keeps this window's current stretch; the rest of the peer's LUT
+    // state (colormap, gamma, invert) is adopted either way, so the two windows
+    // stay as close as this one's data allows.
+    const auto wanted = static_cast<LutScale::Mode>(scaleMode);
+    if (anchorSliceLogFloor(wanted)) {
+        this->m_sliceScaleMode = wanted;
+    } else {
+        this->statusBar()->showMessage(
+                u"Linked window switched to log, but this image has no positive "
+                u"values — keeping its current scale."_s,
+                4000);
+    }
     this->m_sliceScaleGamma = gamma;
     this->m_sliceInvert = invert;
     // Rebuild lutSlice through the (now updated) stretch, KEEPING this cube's own table range.

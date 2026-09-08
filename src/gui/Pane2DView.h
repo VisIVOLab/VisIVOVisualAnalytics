@@ -115,7 +115,12 @@ public:
     void setCameraStateNormalized(const double dataCenterXY[2], double worldHeight);
 
 signals:
-    void rangeChanged(double lo, double hi);   // pane's range changed (drag or dock) → dock syncs
+    void rangeChanged(double lo, double hi);
+
+    /// Emitted instead of switching when a log stretch was asked for on an image
+    /// with no positive values. The pane keeps its current scale; the window
+    /// decides how to tell the user.
+    void logScaleUnavailable();   // pane's range changed (drag or dock) → dock syncs
     void lutChanged();                          // colormap / scale / invert changed → strip + Linked
     void cameraChanged();                       // pan/zoom via interaction → Linked-2D propagate
     void fitted();                              // fit() re-letterboxed → Linked-2D may re-assert
@@ -160,6 +165,16 @@ private:
     // §5.2/§5.3: per-pane LUT state (authoritative on the pane, not re-read from the
     // shared product cache on every mount — so two panes on the same product can differ).
     QString m_colorMapName;
+    /// Anchors the log floor from the data before a switch to Mode::Log; false
+    /// when the image has no positive values, in which case the caller must
+    /// leave the scale as it is. See the definition for why every path that
+    /// assigns m_scale goes through it.
+    bool anchorLogFloor(LutScale::Mode mode, bool force = false);
+
+    /// The sampled log floor for the image currently in the pipeline; false when
+    /// the image has no positive values and a log stretch is meaningless.
+    bool logFloor(double &floorOut) const;
+
     LutScale::Mode m_scale{ LutScale::Mode::Linear };
     double m_gamma{ 2.0 };
     bool m_clampOutliers{ false };

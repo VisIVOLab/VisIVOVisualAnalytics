@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <vtkColorTransferFunction.h>
+#include <vtkImageData.h>
 #include <vtkLookupTable.h>
 
 #include "ColorMaps.h"
@@ -111,6 +112,70 @@ void apply(vtkLookupTable *lut, Mode mode, double min, double max, double gamma)
     if (isResampled(mode)) {
         resampleEntries(lut, exponent(mode, gamma));
     }
+}
+
+double sampledPositiveFloor(vtkImageData *image, int targetSamples)
+{
+    if (!image) {
+        return 0.0;
+    }
+    int extent[6] = { 0, -1, 0, -1, 0, -1 };
+    image->GetExtent(extent);
+    const long long nx = static_cast<long long>(extent[1]) - extent[0] + 1;
+    const long long ny = static_cast<long long>(extent[3]) - extent[2] + 1;
+    const long long nz = static_cast<long long>(extent[5]) - extent[4] + 1;
+    if (nx <= 0 || ny <= 0 || nz <= 0) {
+        return 0.0;
+    }
+    const long long voxels = nx * ny * nz;
+    const int target = std::max(1, targetSamples);
+
+    // One stride for every axis, but the root taken over the number of axes that
+    // actually have extent. A cube root on a 2-D image under-strides: on a
+    // 2048x2048 map it asks for 20000 samples and takes 116000, measurably the
+    // slowest case in the set. The square root there gives what was asked for.
+    const int dims = (nx > 1 ? 1 : 0) + (ny > 1 ? 1 : 0) + (nz > 1 ? 1 : 0);
+    const double ratio = std::max(1.0, static_cast<double>(voxels) / static_cast<double>(target));
+    const int stride = (dims <= 0)
+            ? 1
+            : std::max(1, static_cast<int>(std::ceil(std::pow(ratio, 1.0 / dims))));
+
+    std::vector<double> positives;
+    positives.reserve(static_cast<std::size_t>(target));
+    for (int z = extent[4]; z <= extent[5]; z += stride) {
+        for (int y = extent[2]; y <= extent[3]; y += stride) {
+            for (int x = extent[0]; x <= extent[1]; x += stride) {
+                const double v = image->GetScalarComponentAsDouble(x, y, z, 0);
+                if (std::isfinite(v) && v > 0.0) {
+                    positives.push_back(v);
+                }
+            }
+        }
+    }
+    if (positives.empty()) {
+        // An empty sample is not proof that the image has none: the lattice
+        // steps over pixels, so a compact positive source in a mostly-blank or
+        // masked product can fall entirely between sampled coordinates. Ask the
+        // image for its actual maximum — VTK caches it, so this is not a second
+        // pass — and only then say there is nothing to stretch.
+        double range[2] = { 0., 0. };
+        image->GetScalarRange(range);
+        if (!(range[1] > 0.0) || !std::isfinite(range[1])) {
+            return 0.0;   // genuinely nothing positive
+        }
+        // Positives exist but the sample missed them. Six decades below the peak
+        // is a poor floor, which is the whole reason this function exists — but
+        // it is a working one, and better than refusing a stretch of an image
+        // that does have signal in it.
+        return std::max(1e-12, range[1] * 1e-6);
+    }
+    std::sort(positives.begin(), positives.end());
+    // 1st percentile: low enough to keep the faint end, high enough that a
+    // single hot-adjacent pixel or a residual near zero does not set the floor.
+    const std::size_t idx = static_cast<std::size_t>(
+            std::clamp<double>(0.01 * static_cast<double>(positives.size() - 1), 0.0,
+                               static_cast<double>(positives.size() - 1)));
+    return std::max(1e-12, positives[idx]);
 }
 
 std::array<double, 2> rangeFor(Mode mode, double min, double max)

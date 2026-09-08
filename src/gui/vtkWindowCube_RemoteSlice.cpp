@@ -311,8 +311,23 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     // Through LutScale, not SetTableRange: on a log stretch the raw range of a
     // radio slice is negative at the low end, VTK rejects it and quietly swaps
     // in [1, 10].
-    LutScale::setRange(this->lutSlice, this->m_sliceScaleMode,
-                       result.imageRange[0], result.imageRange[1]);
+    //
+    // Under log the low end is recomputed from the new pixels rather than left
+    // to LutScale's blind fallback. Handing it result.imageRange[0], which is
+    // negative on any slice with noise in it, would floor at max x 1e-6 and undo
+    // the sampled floor on the very next channel — the linear path already
+    // follows the data slice by slice, so the log path does too. A slice with no
+    // positive values keeps the floor already in force.
+    if (this->m_sliceScaleMode == LutScale::Mode::Log) {
+        const double floorValue = LutScale::sampledPositiveFloor(img);
+        const double lo = (floorValue > 0.0) ? floorValue
+                                             : this->lutSlice->GetTableRange()[0];
+        LutScale::setRange(this->lutSlice, this->m_sliceScaleMode, lo,
+                           std::max(result.imageRange[1], lo * (1.0 + 1e-6)));
+    } else {
+        LutScale::setRange(this->lutSlice, this->m_sliceScaleMode,
+                           result.imageRange[0], result.imageRange[1]);
+    }
 
     {
         const QSignalBlocker blockSlider(ui->sliderSlice);

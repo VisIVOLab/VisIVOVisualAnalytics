@@ -628,6 +628,11 @@ private:
     bool m_applyingPaneDisplay{ false };   ///< guard dock↔pane two-way binding
     QWidget *buildPaneDisplayPage();       ///< the 2D/Moment DISPLAY page (page 1)
     void updateDisplaySectionForActivePane();   ///< header + page + field values
+
+    /// Install a data-derived log floor on lutSlice before a switch into
+    /// Mode::Log. False when the image has no positive values, in which case the
+    /// caller must not change the mode. See the definition.
+    bool anchorSliceLogFloor(LutScale::Mode mode);
     void showPaneLUTCustomizer();          ///< Edit → the active pane's own LUT
     Pane2DView *activePane2DView() const;  ///< m_paneViews[m_activePane] if it's a Product pane
     // §5.4 follow-up: the DISPLAY page drives EITHER a Product pane (its own Pane2DView) or

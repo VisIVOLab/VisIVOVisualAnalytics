@@ -6,6 +6,7 @@
 
 class vtkLookupTable;
 class vtkColorTransferFunction;
+class vtkImageData;
 
 // ---------------------------------------------------------------------------
 // LutScale — shared colour-scale stretches for every VisIVO viewer.
@@ -82,6 +83,28 @@ void setRange(vtkLookupTable *lut, Mode mode, double min, double max);
 // requested ones: on a log stretch of signed data those differ, and treating
 // them as equal makes a "did it change?" guard never fire.
 std::array<double, 2> rangeFor(Mode mode, double min, double max);
+
+// A log-stretch floor taken FROM THE DATA: the 1st percentile of the positive
+// finite samples, or 0.0 when the image has no positive values at all.
+//
+// The percentile is a display heuristic, not a noise threshold — for zero-mean
+// Gaussian noise it lands near 0.013 sigma, so some colour still goes to
+// sub-noise values. It is the rule the image viewer already uses, kept here so
+// the two agree.
+//
+// Worth the sampling pass, because the fallback the functions above use when a
+// caller supplies nothing better — max x 1e-6, six fixed decades — is a shape,
+// not a measurement. On a radio map whose real dynamic range is two or three
+// decades it spends most of the colour ramp on values that are not there: with
+// a six-decade floor, everything in the brightest decade is squeezed into the
+// top sixth of the colours. Anchoring the bottom near the noise instead gives
+// the ramp back to the range the data occupies.
+//
+// A return of 0.0 means "log is not meaningful for this image" and the caller
+// should say so rather than stretch anyway; it is not a usable floor. That
+// verdict is taken from the image's own scalar maximum, not from the sample
+// coming back empty — a strided sample can step over a compact source.
+double sampledPositiveFloor(vtkImageData *image, int targetSamples = 20000);
 
 // Idempotent variant for procedurally-generated LUTs (HSV ramps via
 // SetHueRange/SetSaturationRange/…) that are NOT filled from a named colormap:

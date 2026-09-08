@@ -6466,6 +6466,42 @@ void vtkWindowCube::setActiveDisplayColorMap(const QString &name)
     }
 }
 
+// Anchor the slice LUT's log floor at the data's own faint end, rather than
+// letting LutScale fall back to max x 1e-6 — six fixed decades on a map with two
+// or three of real dynamic range leaves the whole bright end crammed into the
+// top of the ramp.
+//
+// Returns false when log was asked for and the image has no positive values; the
+// caller must then leave m_sliceScaleMode alone and tell the user. Only on the
+// transition into log: re-anchoring while already logarithmic would discard a
+// lower bound the user had set by hand.
+bool vtkWindowCube::anchorSliceLogFloor(LutScale::Mode mode)
+{
+    if (mode != LutScale::Mode::Log || this->m_sliceScaleMode == mode || !this->lutSlice)
+        return true;
+    // The SLICE, not activeDisplayImageData(): this is called for a linked update
+    // too, which has no active-pane restriction, and that accessor answers with
+    // whatever pane has focus — a moment map, a product, or nothing at all when
+    // the 3-D view is active. Anchoring lutSlice against another pane's pixels
+    // would accept log for a slice with nothing positive in it, or refuse a good
+    // slice because the focus happened to be elsewhere.
+    auto *sliceImg = vtkImageData::SafeDownCast(
+            this->remoteSliceDisplaySource->GetOutputDataObject(0));
+    // No slice yet is not the same as a slice with nothing positive. A linked
+    // window can be told to go logarithmic before its first channel has arrived,
+    // and refusing there would drop the request for good — the peer would stay
+    // in log and this window in linear until some later, unrelated LUT edit.
+    // Accept it; applyRemoteSliceResult() samples the floor when the pixels land.
+    if (!sliceImg || sliceImg->GetNumberOfPoints() <= 1)
+        return true;
+    const double floorValue = LutScale::sampledPositiveFloor(sliceImg);
+    if (!(floorValue > 0.0))
+        return false;
+    const double *cur = this->lutSlice->GetTableRange();
+    this->lutSlice->SetTableRange(floorValue, std::max(cur[1], floorValue * (1.0 + 1e-6)));
+    return true;
+}
+
 void vtkWindowCube::setActiveDisplayScale(LutScale::Mode mode)
 {
     if (Pane2DView *pv = activePane2DView()) {
@@ -6473,6 +6509,12 @@ void vtkWindowCube::setActiveDisplayScale(LutScale::Mode mode)
         return;
     }
     if (activePaneIsSlice()) {
+        if (!anchorSliceLogFloor(mode)) {
+            this->statusBar()->showMessage(
+                    u"Log scale needs positive values, and this image has none."_s, 4000);
+            updateDisplaySectionForActivePane();   // control back on the real scale
+            return;
+        }
         this->m_sliceScaleMode = mode;
         applySliceLutByName(this->m_activeSliceLutName);   // re-apply the stretch at range
         if (this->sliceWin)
@@ -7854,6 +7896,20 @@ Pane2DView *vtkWindowCube::ensureSlotProductView(int slot)
             if (m_applyingPaneDisplay)
                 return;
             propagatePaneLutWithinWindow(slot);   // colormap/scale/invert → same-product panes
+        });
+        // A refused log stretch has to say so: the pane keeps its current scale,
+        // and without this the control would simply snap back with no explanation.
+        QObject::connect(pv, &Pane2DView::logScaleUnavailable, this, [this, slot]() {
+            this->statusBar()->showMessage(
+                    u"Log scale needs positive values, and this image has none."_s, 4000);
+            refreshPaneLutStrip(slot);
+            // And put the DISPLAY section back on the scale still in force.
+            // refreshPaneLutStrip() only touches the header strip's colormap
+            // button; without this the segmented control sits on Log while the
+            // LUT is still linear, which is the one state the control must never
+            // show.
+            if (slot == m_activePane)
+                updateDisplaySectionForActivePane();
         });
         // Linked 2D: a pan/zoom on this pane syncs the same-WCS image panes.
         QObject::connect(pv, &Pane2DView::cameraChanged, this,
