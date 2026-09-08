@@ -6231,6 +6231,19 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         surfRow->setFixedHeight(28);   // deterministic row step (§3.0c density)
         disp3d->addWidget(surfRow);
     }
+    {
+        // Slack goes to the bottom, not into the controls.
+        //
+        // The stack is as tall as its TALLEST page, so the 3-D page usually has
+        // spare height — and a QVBoxLayout with nowhere to put it grows whatever
+        // children can grow. Every row here is height-pinned except the
+        // Isosurface/Volume selector, so the selector absorbed the lot: measured
+        // at 164 px in a 300 px page and 364 px in a 500 px one, against its
+        // natural 28. That is the "sometimes it changes size" this started from
+        // — the amount of slack varies with which page is taller and what is
+        // visible, so the selector was a different height on different days.
+        disp3d->addStretch(1);
+    }
     // Volume-mode / surface-color rows follow the render mode. Drive off the
     // segmented control's OWN signal — the render-mode combo updates actionVolume
     // under a QSignalBlocker, so actionVolume::toggled would miss these changes.
@@ -7175,6 +7188,7 @@ QWidget *vtkWindowCube::buildPaneDisplayPage()
         QObject::connect(m_paneRangeMax, &QDoubleSpinBox::editingFinished, this,
                          [this]() { applyPaneDisplayRange(false); });
     }
+    lay->addStretch(1);   // same reason as the 3-D page: slack at the bottom
     return page;
 }
 
