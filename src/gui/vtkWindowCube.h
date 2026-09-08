@@ -98,6 +98,7 @@ class vtkCellArray;
 class vtkPolyData;
 class vtkRegularPolygonSource;
 class vtkRenderer;
+class vtkSphereSource;
 class vtkTextActor;
 class vtkTexture;
 class vtkTrivialProducer;
@@ -648,6 +649,19 @@ private:
 
     /// Push m_show3dRendering onto both 3-D props and repaint.
     void apply3dRenderingVisibility();
+
+    /// Cube channel containing world Z, or -1 when outside / unavailable.
+    int channelAtWorldZ(double worldZ) const;
+
+    /// Place / hide the sphere marking the last 3-D pick.
+    void showPick3dMarker(const double world[3]);
+    void hidePick3dMarker();
+
+    /// March the click ray through the cube and return the voxel that produced
+    /// the pixel, using the criterion implied by the current blend mode.
+    /// False when the ray misses the cube or finds nothing above threshold.
+    bool pickVolumeAlongRay(vtkRenderer *renderer, const int displayPos[2],
+                            double worldOut[3], int &channelOut) const;
 
     /// Show the indented Opacity row only on the 3-D pane with the plane on.
     void updateCuttingPlaneOpacityRowVisibility();
@@ -1284,6 +1298,8 @@ protected:
     vtkNew<vtkFlyingEdges3D> isosurfaceFilter;
     vtkNew<vtkActor> isosurface;
     vtkSmartPointer<vtkActor> currentIsosurfaceActor;
+    vtkSmartPointer<vtkActor> m_pick3dMarkerActor;        ///< where the last 3-D pick landed
+    vtkSmartPointer<vtkSphereSource> m_pick3dMarkerSource;
     // Kinematic-model overlay (F2). The contoured tilted-ring model actor added
     // over the cube renderer; null when no overlay is shown.
     vtkSmartPointer<vtkActor> m_kinematicModelActor;

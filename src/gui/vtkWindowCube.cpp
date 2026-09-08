@@ -1,6 +1,7 @@
 #include "vtkWindowCube.h"
 #include "ui_vtkWindowCube.h"
 #include "CubeWcsUtil.h"
+#include "vtk/RayVoxelPick.h"
 #include "CubeViewportGeometry.h"
 #include "Pane2DView.h"
 #include "CubeStatsUtil.h"
@@ -82,6 +83,7 @@
 #include <vtkPoints.h>
 #include <vtkPolyData.h>
 #include <vtkPolyDataMapper.h>
+#include <vtkSphereSource.h>
 #include <vtkProperty.h>
 #include <vtkProperty2D.h>
 #include <vtkRegularPolygonSource.h>
@@ -505,8 +507,20 @@ SanitizedCubeStats sanitizeCubeScalarsInPlace(vtkImageData *image)
     }
 
     const double range = rangeMax - rangeMin;
-    const float invisibleSentinel =
+    float invisibleSentinel =
             static_cast<float>(range > 0.0 ? (rangeMin - 0.01 * range) : (rangeMin - 1.0));
+    // Strictly below the minimum once narrowed to float, guaranteed. On a cube
+    // whose values are large — a range of [1e10, 1e10 + 1024], say — one per
+    // cent of the span is smaller than the gap between neighbouring floats up
+    // there, so the subtraction rounds straight back to rangeMin and the
+    // sentinel stops being distinguishable from real data. Anything that later
+    // asks "is this a blank?" by comparing against the minimum then answers no
+    // — the 3-D picker's MinIP would return a blank.
+    {
+        const float rangeMinF = static_cast<float>(rangeMin);
+        if (!(invisibleSentinel < rangeMinF))
+            invisibleSentinel = std::nextafter(rangeMinF, -std::numeric_limits<float>::infinity());
+    }
 
     qsizetype replaced = 0;
     for (qsizetype i = 0; i < voxelCount; ++i) {
@@ -597,8 +611,20 @@ SanitizedCubeFullStats sanitizeAndStatsCubeInPlace(vtkImageData *image)
     }
 
     const double range = rangeMax - rangeMin;
-    const float invisibleSentinel =
+    float invisibleSentinel =
             static_cast<float>(range > 0.0 ? (rangeMin - 0.01 * range) : (rangeMin - 1.0));
+    // Strictly below the minimum once narrowed to float, guaranteed. On a cube
+    // whose values are large — a range of [1e10, 1e10 + 1024], say — one per
+    // cent of the span is smaller than the gap between neighbouring floats up
+    // there, so the subtraction rounds straight back to rangeMin and the
+    // sentinel stops being distinguishable from real data. Anything that later
+    // asks "is this a blank?" by comparing against the minimum then answers no
+    // — the 3-D picker's MinIP would return a blank.
+    {
+        const float rangeMinF = static_cast<float>(rangeMin);
+        if (!(invisibleSentinel < rangeMinF))
+            invisibleSentinel = std::nextafter(rangeMinF, -std::numeric_limits<float>::infinity());
+    }
 
     qsizetype replaced = 0;
     for (qsizetype i = 0; i < voxelCount; ++i) {
@@ -1367,20 +1393,29 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     ui->menuView->addAction(this->actionPickSpectrum3d);
     QObject::connect(this->actionPickSpectrum3d, &QAction::toggled, this, [this](bool checked) {
         if (checked) {
+            // Give the 3-D pane the focus first. Otherwise the pane container
+            // swallows the activating press and the user has to click twice —
+            // which reads as the tool ignoring the first click.
+            for (int i = 0; i < 4; ++i)
+                if (m_slots[i].view.kind == ViewId::View3D && m_slots[i].frame
+                    && m_slots[i].frame->isVisible()) {
+                    this->setActivePane(i);
+                    break;
+                }
             this->install3dPickObserver();
-            // Make the picking mode obvious: cross cursor on the 3D widget and
-            // a status hint. Without this the toggle does nothing visible until
-            // the user happens to click on the plane.
             ui->vtkCube->setCursor(Qt::CrossCursor);
             this->statusBar()->showMessage(
-                    u"3D pick: click the cutting plane to extract its spectral profile. "
-                    u"Click off-plane to rotate as usual."_s,
-                    5000);
+                    u"3D pick armed: click the volume, the isosurface or the cutting "
+                    u"plane. The blend mode decides which voxel along the ray you "
+                    u"get — MIP the brightest, Composite the front surface."_s,
+                    6000);
         } else {
             this->remove3dPickObserver();
             ui->vtkCube->unsetCursor();
+            this->hidePick3dMarker();
             this->statusBar()->clearMessage();
         }
+        this->refreshPaneActiveStyles();   // paint / clear the armed border
     });
 
     this->updateDataStatePanel();
@@ -6416,7 +6451,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     // ── INTERACTION ▶ (collapsed) ─────────────────────────────────────────────
     QVBoxLayout *inter = addSection(u"INTERACTION"_s, false, /*divider=*/false);
     {
-        auto *cb = new QCheckBox(u"Pick spectrum on plane click"_s);
+        auto *cb = new QCheckBox(u"Pick spectrum on cutting plane"_s);
         cb->setStyleSheet(QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;").arg(fg));
         if (actionPickSpectrum3d) {
             cb->setChecked(actionPickSpectrum3d->isChecked());
@@ -6424,6 +6459,18 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
                              [this]() { actionPickSpectrum3d->trigger(); });
             QObject::connect(actionPickSpectrum3d, &QAction::toggled, cb,
                              [cb](bool on) { QSignalBlocker b(cb); cb->setChecked(on); });
+
+            // No longer gated on the cutting plane. It once picked only that
+            // plane, so the plane was a prerequisite; now it reads the volume and
+            // the isosurface too, and requiring the plane would block the case
+            // the tool exists for — a feature you can see in the rendering and
+            // in no single channel.
+            cb->setToolTip(
+                    u"Click the 3D view to plot the spectrum at what you clicked. "
+                    u"Which voxel that is follows the blend mode: MIP gives the "
+                    u"brightest sample along the ray, Composite the front surface, "
+                    u"the isosurface and the cutting plane the point you hit. The "
+                    u"status bar names the channel and its velocity."_s);
         } else {
             cb->setEnabled(false);
         }
@@ -7592,6 +7639,16 @@ void vtkWindowCube::setActivePane(int pane)
     if (pane < 0 || pane > 3)
         return;
     const bool changed = (m_activePane != pane);
+    // Moving to another pane disarms the 3-D picker. It only ever listened to
+    // the 3-D view, so leaving it armed while the user works in the 2-D slice
+    // means a crosshair over a pane where clicking does nothing — the state the
+    // tool was hardest to understand in.
+    if (changed && m_slots[pane].view.kind != ViewId::View3D && actionPickSpectrum3d
+        && actionPickSpectrum3d->isChecked()) {
+        actionPickSpectrum3d->trigger();
+        this->statusBar()->showMessage(
+                u"3D pick disarmed — it acts on the 3D view only."_s, 3000);
+    }
     m_activePane = pane;
     refreshPaneActiveStyles();   // also re-gates interactors (§5.1)
     if (changed)
@@ -7788,12 +7845,23 @@ void vtkWindowCube::refreshPaneActiveStyles()
     // straight off the pane rather than the changelog.
     static constexpr QLatin1StringView kInactiveBorder("#1E2427");
     static constexpr QLatin1StringView kInactiveDot("#3A4247");
+    // While the 3-D spectral picker is armed, the 3-D pane wears a thicker amber
+    // border. The picker listens to ONE view and silently ignores clicks in any
+    // other, which is unreadable without a mark saying where it is listening.
+    // Set here rather than alongside the toggle because this function rewrites
+    // every pane frame and would otherwise paint over it.
+    const bool picking = actionPickSpectrum3d && actionPickSpectrum3d->isChecked();
+    const QLatin1StringView armed(VisivoTheme::kWarning());
     for (int i = 0; i < 4; ++i) {
         const bool active = (m_activePane == i);
+        const bool armedHere = picking && (m_slots[i].view.kind == ViewId::View3D);
         if (m_slots[i].frame)
             m_slots[i].frame->setStyleSheet(
-                    QStringLiteral("QFrame#paneFrame { border: 1px solid %1; }")
-                            .arg(active ? pri : kInactiveBorder));
+                    armedHere
+                            ? QStringLiteral("QFrame#paneFrame { border: 2px solid %1; }")
+                                      .arg(armed)
+                            : QStringLiteral("QFrame#paneFrame { border: 1px solid %1; }")
+                                      .arg(active ? pri : kInactiveBorder));
         if (m_slots[i].dot)
             m_slots[i].dot->setStyleSheet(
                     QStringLiteral("font-size:9px; color:%1;").arg(active ? pri : kInactiveDot));
@@ -11280,6 +11348,158 @@ void vtkWindowCube::remove3dPickObserver()
     this->cube3dPickObserverTag = 0;
 }
 
+void vtkWindowCube::showPick3dMarker(const double world[3])
+{
+    auto *renderer = ui->vtkCube->renderWindow()
+            ? ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer()
+            : nullptr;
+    if (!renderer)
+        return;
+
+    if (!m_pick3dMarkerActor) {
+        // A sphere rather than a crosshair: the pick can land anywhere in the
+        // volume, at any orientation, and a flat cross drawn in world space
+        // disappears the moment you rotate away from it.
+        auto sphere = vtkSmartPointer<vtkSphereSource>::New();
+        sphere->SetThetaResolution(16);
+        sphere->SetPhiResolution(16);
+        auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+        mapper->SetInputConnection(sphere->GetOutputPort());
+        m_pick3dMarkerSource = sphere;
+        m_pick3dMarkerActor = vtkSmartPointer<vtkActor>::New();
+        m_pick3dMarkerActor->SetMapper(mapper);
+        // Not pickable: it sits exactly where the user just clicked, so the very
+        // next click would hit the marker instead of the data under it.
+        m_pick3dMarkerActor->PickableOff();
+        auto *prop = m_pick3dMarkerActor->GetProperty();
+        prop->SetColor(0.02, 0.54, 0.75);      // brand blue, as the rest of the chrome
+        prop->SetAmbient(0.9);                 // readable against a dark volume
+        prop->SetDiffuse(0.2);
+        renderer->AddActor(m_pick3dMarkerActor);
+    }
+
+    // Size it from the cube, not in absolute units: a marker fixed at N world
+    // units is invisible on a big cube and swallows a small one.
+    double radius = 1.0;
+    if (auto *img = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0))) {
+        double b[6];
+        img->GetBounds(b);
+        const double diag = std::sqrt((b[1] - b[0]) * (b[1] - b[0])
+                                      + (b[3] - b[2]) * (b[3] - b[2])
+                                      + (b[5] - b[4]) * (b[5] - b[4]));
+        if (diag > 0.)
+            radius = 0.012 * diag;
+    }
+    m_pick3dMarkerSource->SetRadius(radius);
+    m_pick3dMarkerSource->SetCenter(world[0], world[1], world[2]);
+    m_pick3dMarkerSource->Modified();
+    m_pick3dMarkerActor->VisibilityOn();
+    ui->vtkCube->renderWindow()->Render();
+}
+
+void vtkWindowCube::hidePick3dMarker()
+{
+    if (m_pick3dMarkerActor) {
+        m_pick3dMarkerActor->VisibilityOff();
+        if (ui->vtkCube && ui->vtkCube->renderWindow())
+            ui->vtkCube->renderWindow()->Render();
+    }
+}
+
+int vtkWindowCube::channelAtWorldZ(double worldZ) const
+{
+    auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
+    if (!cubeImage)
+        return -1;
+    int extent[6];
+    double origin[3], spacing[3];
+    cubeImage->GetExtent(extent);
+    cubeImage->GetOrigin(origin);
+    cubeImage->GetSpacing(spacing);
+    if (!(std::fabs(spacing[2]) > 0.))
+        return -1;
+    const int z = static_cast<int>(std::lround(extent[4] + (worldZ - origin[2]) / spacing[2]));
+    return (z < extent[4] || z > extent[5]) ? -1 : z;
+}
+
+bool vtkWindowCube::pickVolumeAlongRay(vtkRenderer *renderer, const int displayPos[2],
+                                       double worldOut[3], int &channelOut) const
+{
+    // Resolve a click on the rendering to a voxel along the view ray.
+    //
+    // What makes a 3-D pick worth having is not sensitivity — MIP takes a
+    // maximum and Composite blends, neither integrates, so neither beats the
+    // channel maps on signal-to-noise. It is that a position-position-velocity
+    // rendering makes COHERENT STRUCTURE ACROSS CHANNELS recognisable: a tail or
+    // a warp is a connected tilted feature in (x, y, v) and a scatter of
+    // unrelated blobs in any single channel. Having spotted one, the user should
+    // be able to go straight from it to a spectrum.
+    //
+    // The criterion is read off the blend mode rather than invented. For MIP and
+    // MinIP that IS the sample the pixel shows; Composite has no single
+    // producing voxel, so there it is a stated convention — the front surface.
+    // The walk lives in RayVoxelPick, free of VTK so it can be tested.
+    //
+    // The third axis is velocity, not depth, so what a ray crosses depends on
+    // the camera: down the spectral axis it crosses channels and the maximum is
+    // the line peak at that sky position; side-on it crosses sky positions at
+    // roughly fixed velocity. Hence channelOut — the spectrum is always the full
+    // spectrum at the hit (x, y), but which channel was hit is what lets the
+    // user read it.
+    auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
+    if (!renderer || !cubeImage)
+        return false;
+
+    RayVoxelPick::Grid grid;
+    cubeImage->GetExtent(grid.extent);
+    cubeImage->GetOrigin(grid.origin);
+    cubeImage->GetSpacing(grid.spacing);
+    if (!grid.valid())
+        return false;
+
+    // The ray: near-plane to far-plane through the clicked pixel.
+    double near4[4], far4[4];
+    renderer->SetDisplayPoint(displayPos[0], displayPos[1], 0.);
+    renderer->DisplayToWorld();
+    renderer->GetWorldPoint(near4);
+    renderer->SetDisplayPoint(displayPos[0], displayPos[1], 1.);
+    renderer->DisplayToWorld();
+    renderer->GetWorldPoint(far4);
+    if (!(std::fabs(near4[3]) > 0.) || !(std::fabs(far4[3]) > 0.))
+        return false;
+    double p0[3], p1[3];
+    for (int a = 0; a < 3; ++a) {
+        p0[a] = near4[a] / near4[3];
+        p1[a] = far4[a] / far4[3];
+    }
+
+    using C = RayVoxelPick::Criterion;
+    const C criterion = (this->m_volumeBlendMode == 1)   ? C::Maximum
+                      : (this->m_volumeBlendMode == 2)   ? C::Minimum
+                                                         : C::FirstAboveThreshold;
+    // The threshold the OPACITY RAMP uses, not lowerBound — lowerBound is the
+    // bottom of the data range, so it would stop the walk on the first voxel of
+    // anything, including material the user has thresholded into invisibility.
+    const double threshold = ui->lineThreshold->text().toDouble();
+
+    // Blanks arrive here as a finite sentinel below the visible minimum, put
+    // there when the cube was sanitised. isfinite() lets them through, and for
+    // MinIP they are the smallest thing on any ray that crosses one.
+    const double visibleMin = this->currentCubeVisibleRange[0];
+
+    const auto res = RayVoxelPick::along(
+            grid, p0, p1, criterion, threshold,
+            [cubeImage](int x, int y, int z) {
+                return cubeImage->GetScalarComponentAsDouble(x, y, z, 0);
+            },
+            [visibleMin](double v) { return v < visibleMin; });
+    if (!res.hit)
+        return false;
+    std::copy(res.world, res.world + 3, worldOut);
+    channelOut = res.voxel[2];
+    return true;
+}
+
 void vtkWindowCube::handle3dPickEvent()
 {
     auto *iren = ui->vtkCube->renderWindow()
@@ -11295,15 +11515,35 @@ void vtkWindowCube::handle3dPickEvent()
     int pos[2];
     iren->GetEventPosition(pos);
     auto picker = vtkSmartPointer<vtkPropPicker>::New();
-    if (picker->Pick(pos[0], pos[1], 0., renderer) == 0) {
-        return;
-    }
-    if (picker->GetViewProp() != this->remoteCuttingPlaneActor.GetPointer()) {
-        return; // User clicked on volume / outline / axes — ignore.
+    const bool hitProp = (picker->Pick(pos[0], pos[1], 0., renderer) != 0);
+
+    double world[3] = { 0., 0., 0. };
+    bool haveWorld = false;
+    int rayChannel = -1;   // the channel the ray was picked AT, when it came from the volume
+
+    if (hitProp && picker->GetViewProp() == this->remoteCuttingPlaneActor.GetPointer()) {
+        // Clicked the cutting plane itself: the voxel is on the displayed slice.
+        picker->GetPickPosition(world);
+        haveWorld = true;
+    } else if (hitProp && this->currentIsosurfaceActor
+               && picker->GetViewProp() == this->currentIsosurfaceActor.GetPointer()) {
+        // Clicked the isosurface: the surface point IS the feature, exactly.
+        picker->GetPickPosition(world);
+        haveWorld = true;
+        rayChannel = channelAtWorldZ(world[2]);
+    } else if (m_show3dRendering && this->volume && this->volume->GetVisibility()
+               && renderer->HasViewProp(this->volume)
+               && pickVolumeAlongRay(renderer, pos, world, rayChannel)) {
+        // Clicked the volume — and only when the volume is actually the thing on
+        // screen. Marching unconditionally meant that in isosurface mode, or with
+        // the 3D rendering layer switched off, a click on empty space inside the
+        // cube still returned a spectrum out of data nobody was being shown.
+        haveWorld = true;
     }
 
-    double world[3];
-    picker->GetPickPosition(world);
+    if (!haveWorld) {
+        return;   // outline, axes, or empty space — nothing to pick
+    }
 
     // Map world XY (in cube-image coords) → voxel index on the current slice.
     auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
@@ -11315,11 +11555,32 @@ void vtkWindowCube::handle3dPickEvent()
     cubeImage->GetExtent(extent);
     cubeImage->GetOrigin(origin);
     cubeImage->GetSpacing(spacing);
-    const int voxelX = std::lround(extent[0] + (world[0] - origin[0]) / spacing[0]);
-    const int voxelY = std::lround(extent[2] + (world[1] - origin[1]) / spacing[1]);
-    const int voxelZ = this->clampRemoteSliceIndex(ui->spinSlice->value() - 1);
-    if (voxelX < extent[0] || voxelX > extent[1]
-        || voxelY < extent[2] || voxelY > extent[3]) {
+    if (!(std::fabs(spacing[0]) > 0.) || !(std::fabs(spacing[1]) > 0.)
+        || !(std::fabs(spacing[2]) > 0.)) {
+        return;
+    }
+    // DATASET voxels, not image-local ones. A ROI subvolume is built with its
+    // extent starting at zero and its ORIGIN set to the ROI's first voxel, so
+    // the world coordinate already IS the dataset index — while
+    // extent[0] + (world - origin)/spacing gives the index within the ROI. On a
+    // ROI starting at channel 100, a hit seven planes in was being reported as
+    // channel 8, with channel 8's velocity.
+    const int voxelX = static_cast<int>(std::lround(world[0] / spacing[0]));
+    const int voxelY = static_cast<int>(std::lround(world[1] / spacing[1]));
+    // The channel the ray actually hit, when it hit the volume or the isosurface.
+    // Falling back to the displayed slice would be a lie for a volume pick: the
+    // feature you clicked may live nowhere near the channel currently on the
+    // cutting plane, which is the whole reason for picking in 3-D.
+    const int voxelZ = (rayChannel >= 0)
+            ? this->clampRemoteSliceIndex(static_cast<int>(std::lround(world[2] / spacing[2])))
+            : this->clampRemoteSliceIndex(ui->spinSlice->value() - 1);
+    // Bounds are checked against the DATASET, since the indices are now dataset
+    // ones: origin + extent gives the ROI's span in dataset voxels.
+    const int dsX0 = static_cast<int>(std::lround(origin[0] / spacing[0])) + extent[0];
+    const int dsX1 = static_cast<int>(std::lround(origin[0] / spacing[0])) + extent[1];
+    const int dsY0 = static_cast<int>(std::lround(origin[1] / spacing[1])) + extent[2];
+    const int dsY1 = static_cast<int>(std::lround(origin[1] / spacing[1])) + extent[3];
+    if (voxelX < dsX0 || voxelX > dsX1 || voxelY < dsY0 || voxelY > dsY1) {
         this->statusBar()->showMessage(u"Pick outside cube bounds."_s, 1500);
         return;
     }
@@ -11346,10 +11607,18 @@ void vtkWindowCube::handle3dPickEvent()
     if (this->sliceWin) {
         this->sliceWin->Render();
     }
-    this->statusBar()->showMessage(
-            u"Spectrum extracted at voxel (%1, %2) — slice %3"_s
-                    .arg(voxelX).arg(voxelY).arg(voxelZ + 1),
-            3000);
+    // Name the channel and its velocity. Which channel the ray hit is not
+    // incidental: with the camera down the spectral axis it is the line peak at
+    // that sky position, side-on it is wherever the ray crossed. The user has to
+    // be told which, or the spectrum cannot be read.
+    const QString where = (rayChannel >= 0)
+            ? u"Spectrum at voxel (%1, %2); the ray hit channel %3 (%4)"_s
+                      .arg(voxelX).arg(voxelY).arg(voxelZ + 1)
+                      .arg(this->formatSpectralAxisValue(voxelZ))
+            : u"Spectrum extracted at voxel (%1, %2) — slice %3"_s
+                      .arg(voxelX).arg(voxelY).arg(voxelZ + 1);
+    this->statusBar()->showMessage(where, 6000);
+    this->showPick3dMarker(world);   // mark WHERE the click landed, in the 3-D view
 }
 
 void vtkWindowCube::updateCuttingPlaneOpacityRowVisibility()

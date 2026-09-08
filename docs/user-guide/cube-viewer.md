@@ -165,11 +165,86 @@ line of sight, drawn in a *Spectral Profile* window.
    unpin and resume live updates."*
 4. **Click again** → unpins, live mode resumes.
 
-You can also pick a spectrum directly from the **3-D view**: enable
-*View → Pick Spectrum on Plane Click* (or the **3D INTERACTION** toggle
-button in the *3-D View Settings* sidebar). Clicking on the textured
-cutting plane extracts the spectral profile at that (RA, Dec) position
-and raises the *Spectral Profile* window automatically.
+### Picking a spectrum from the 3-D view
+
+*Pick spectrum on cutting plane*, in the **INTERACTION** section of the left
+dock (or *View → Pick Spectrum on Plane Click*), arms a picker on the 3-D view.
+While it is armed the 3-D pane carries an amber border, so it is clear which
+view is listening; moving to another pane disarms it.
+
+This is not a second way of doing what *Extract Spectrum* does on the 2-D slice.
+It exists because a position–position–velocity rendering makes **coherent
+structure across channels** recognisable, and a single channel map does not. A
+tidal tail, extraplanar gas, the outer turn of a warp: in the cube these are
+connected, tilted features in (RA, Dec, velocity), and in any one channel they
+are a scatter of disconnected blobs you would not group by eye. When you have
+spotted such a structure in the rendering, this lets you go straight from it to
+a spectrum, instead of hunting for the right channel first.
+
+```{note}
+The gain is in **recognising the structure**, not in sensitivity. MIP takes the
+largest sample along the ray; Composite accumulates weighted contributions through a non-linear opacity map.
+Neither is a scientific integration over channels, and no sensitivity or
+signal-to-noise gain is implied.
+```
+
+So the pick reads the volume, not just the plane. Click the rendering and you
+get the spectrum at the position of the voxel the click resolves to — and which
+voxel that is follows the blend mode you are looking through, rather than being
+a separate rule to remember:
+
+```{list-table}
+:header-rows: 1
+:widths: 26 36 38
+
+* - Blend mode
+  - What the pixel shows
+  - What the click returns
+* - **MIP**
+  - the brightest sample along the ray
+  - that maximum
+* - **MinIP**
+  - the faintest sample
+  - that minimum
+* - **Composite**
+  - a weighted blend of everything along the ray
+  - by convention, the first voxel at or above the opacity threshold — the front
+    surface, not something brighter hidden behind it
+* - **Isosurface**
+  - the surface
+  - where the ray meets it
+* - *(cutting plane)*
+  - the displayed channel
+  - the voxel under the click, as before
+```
+
+All three are picking conventions over **voxel values**. The renderer samples
+the volume with linear interpolation, so the extremum along the interpolated ray
+is not always the extremum of the voxels it crosses; MIP and MinIP return the
+brightest and faintest *voxel* on the ray, which is the same thing except in
+marginal cases. Composite has no single producing voxel at all — the pixel is a
+weighted sum — so there the rule is a convention outright, chosen because the
+front surface is what you were looking at.
+
+A sphere marks where the click landed, so you can see what you hit and rotate
+around it.
+
+```{caution}
+The third axis is **velocity, not depth**, so what a ray crosses depends on
+where the camera is. Looking down the spectral axis, the ray crosses channels
+and the maximum is the line peak at that position on the sky. Looking side-on,
+it crosses sky positions at roughly fixed velocity, and the maximum identifies
+a *position* rather than a peak.
+
+The status bar therefore names the channel the ray hit and its spectral value,
+e.g. *"the ray hit channel 74 (1310661.63 m/s)"*. The plotted spectrum is
+always the full profile at the hit (RA, Dec); the reported channel tells you
+where along that profile the thing you clicked lives. Read the two together.
+```
+
+The picker acts on the 3-D view only, and only on what is actually being drawn:
+with the **3D rendering** layer switched off, or in isosurface mode, a click on
+empty space returns nothing rather than a spectrum out of hidden data.
 
 **What the Spectral Profile window shows:**
 
