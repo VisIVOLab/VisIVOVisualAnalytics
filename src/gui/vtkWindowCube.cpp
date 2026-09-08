@@ -6125,10 +6125,24 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         volRow = new QWidget();
         auto *h = new QHBoxLayout(volRow);
         h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(8);
+        // Labelled, like the "Surface color" row it swaps with. Bare, it was a
+        // second full-width segmented bar sitting directly under the
+        // Isosurface/Volume one and looking exactly like it — so switching mode,
+        // which replaces this row with the sparser surface-colour row, read as
+        // the mode selector itself changing size. (It does not: measured at
+        // 252 px in both modes.) A word in front makes them two controls
+        // instead of twins.
+        auto *l = new QLabel(u"Blend"_s, volRow);
+        l->setStyleSheet(labelCss);
+        h->addWidget(l, 0);
         rehost(v);
         v->setMinimumWidth(0);
         v->setParent(volRow);
         h->addWidget(v, 1);
+        // Same fixed step as surfRow, so the block below the selector keeps its
+        // height across the swap.
+        volRow->setFixedHeight(28);
         disp3d->addWidget(volRow);
     }
     {   // Threshold: label + mono value, then the slider full-width.
