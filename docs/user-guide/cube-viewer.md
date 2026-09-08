@@ -53,11 +53,16 @@ volume behind, higher opacity to emphasise the slice.
 Auto-advance the slice axis as a movie — useful for spotting coherent
 structures across velocity channels:
 
-- **Play / Pause** — *View → Play Slice Animation* (or <kbd>Space</kbd>),
-  or the **SLICE ANIMATION** section in the *2-D View Settings* sidebar.
+- **Play / Pause** — the **SLICE ANIMATION** section of the left dock, or
+  *View → Play Slice Animation* (or <kbd>Space</kbd>).
 - **Speed** — preset only: 2, 5, 10, 15, 30 fps (picked from the dropdown
   to stay in sync with *View → Animation Speed*).
 - **Mode** — *Loop*, *Bounce* (back and forth), or *Stop at End*.
+
+All three sit together in the left dock's **SLICE ANIMATION** section, and
+mirror the *View* menu entries either way you set them. This is animation, not
+the channel scrubber below the 2-D view: the scrubber steps channels by hand,
+these play them.
 
 ## 3-D rendering modes
 

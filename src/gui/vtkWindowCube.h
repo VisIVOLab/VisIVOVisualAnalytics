@@ -515,6 +515,9 @@ private:
     WorkspaceChrome *m_workspaceChrome = nullptr;   ///< shared command-bar + status-rail chrome
     QPointer<QSplitter> m_paneSplitter;             ///< central 3D+2D pane container (design #1d)
     QPointer<QSlider> m_cuttingPlaneOpacitySlider;  ///< re-hosted into the flat LAYERS section
+    QPointer<QPushButton> m_animPlayBtn;    ///< re-hosted into SLICE ANIMATION
+    QPointer<QComboBox>   m_animFpsCombo;
+    QPointer<QComboBox>   m_animModeCombo;
     // Step 1 — centre toolbar + per-pane headers.
     QPointer<QFrame> m_pane3dFrame;                  ///< [header + 3D view] wrapper (active border)
     QPointer<QFrame> m_pane2dFrame;                  ///< [header + 2D view] wrapper

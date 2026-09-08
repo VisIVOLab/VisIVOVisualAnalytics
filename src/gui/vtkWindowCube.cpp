@@ -6480,10 +6480,49 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     // ── SLICE ANIMATION ▶ (collapsed) ─────────────────────────────────────────
     QVBoxLayout *anim = addSection(u"SLICE ANIMATION"_s, false, /*divider=*/false);
     {
-        auto *ph = new QLabel(u"Use the channel scrubber below the 2D view."_s);
-        ph->setWordWrap(true);
-        ph->setStyleSheet(labelCss);
-        anim->addWidget(ph);
+        // The real controls, re-hosted. This section used to hold one line of
+        // text sending the reader to the channel scrubber — which steps channels
+        // by hand and is not what animation means. Play, Speed and Mode existed
+        // all along, built and wired, on a page that is added to a hidden holder
+        // and never shown; only the View menu could reach them.
+        // Compact padding to go with the 28 px row step. The global theme gives
+        // these controls a 13 px font and 8 px of vertical padding, which needs
+        // more than 28 px — pinning the height alone would clip the ▶/⏸ glyph.
+        const QString compactCss =
+                QStringLiteral("font-family:'Lato'; font-size:11px; padding:2px 8px;");
+        if (m_animPlayBtn) {
+            rehost(m_animPlayBtn);
+            m_animPlayBtn->setParent(nullptr);
+            m_animPlayBtn->setStyleSheet(compactCss);
+            m_animPlayBtn->setFixedHeight(28);
+            anim->addWidget(m_animPlayBtn);
+        }
+        const auto labelled = [&](const QString &text, QWidget *w) {
+            if (!w)
+                return;
+            auto *row = new QWidget();
+            auto *h = new QHBoxLayout(row);
+            h->setContentsMargins(0, 0, 0, 0);
+            h->setSpacing(8);
+            auto *l = new QLabel(text, row);
+            l->setStyleSheet(labelCss);
+            h->addWidget(l, 0);
+            rehost(w);
+            w->setParent(row);
+            w->setMinimumWidth(0);
+            w->setStyleSheet(compactCss);
+            h->addWidget(w, 1);
+            row->setFixedHeight(28);   // the same row step as the rest of the dock
+            anim->addWidget(row);
+        };
+        labelled(u"Speed"_s, m_animFpsCombo);
+        labelled(u"Mode"_s, m_animModeCombo);
+        if (!m_animPlayBtn && !m_animFpsCombo && !m_animModeCombo) {
+            auto *ph = new QLabel(u"Animation controls are unavailable for this cube."_s);
+            ph->setWordWrap(true);
+            ph->setStyleSheet(labelCss);
+            anim->addWidget(ph);
+        }
     }
 
     rootLay->addStretch(1);   // stretch at the BOTTOM — sections stay flex:none
@@ -11236,7 +11275,24 @@ void vtkWindowCube::advanceSliceAnimation()
         this->animationDirection = +1;
         next = minIndex + 1;
     }
-    ui->spinSlice->setValue(std::clamp(next, minIndex, maxIndex));
+    const int target = std::clamp(next, minIndex, maxIndex);
+    ui->spinSlice->setValue(target);
+
+    // Fetch NOW, past the debounce. setValue() lands in updateSlice(), which
+    // moves the cutting plane straight away but defers the fetch by 300 ms — and
+    // restarts that timer on every change. At anything above ~3 fps the next
+    // tick re-arms it before it fires, so the timer never fires at all: the
+    // plane slid through the cube in the 3-D view while the 2-D slice and the
+    // texture on the plane stayed on the frame where playback started.
+    // updateSlice()'s own comment says the animation tick is one of the paths
+    // that should bypass the debounce; it just was not doing it.
+    //
+    // Safe to call every tick: requestRemoteSlice() applies a cached slice
+    // immediately and drops a request for one already in flight, so a fast
+    // animation over a cached range costs nothing and over an uncached one
+    // issues each fetch once.
+    this->remoteSliceDebounceTimer.stop();
+    this->requestRemoteSlice(target - 1);
 }
 
 // ── 3D WCS axes (vtkCubeAxesActor) ──────────────────────────────────────────

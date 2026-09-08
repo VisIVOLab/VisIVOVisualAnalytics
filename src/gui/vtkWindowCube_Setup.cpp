@@ -425,6 +425,14 @@ void vtkWindowCube::setupSidebar()
         modeRow->addWidget(modeCombo, /*stretch=*/1);
         cl->addLayout(modeRow);
         appendToPage(page2dSettings, hdr, card);
+        // Kept so the flat left dock can re-host them. This card is appended to
+        // page2dSettings, which ends up inside a hidden holder — the controls
+        // were fully built and wired and reachable from nowhere but the View
+        // menu, while the dock's SLICE ANIMATION section held a line of text
+        // pointing at the channel scrubber.
+        this->m_animPlayBtn = playBtn;
+        this->m_animFpsCombo = fpsCombo;
+        this->m_animModeCombo = modeCombo;
     }
 
     // The three checkable toggles (Show cutting plane, Show 3D WCS axes,
