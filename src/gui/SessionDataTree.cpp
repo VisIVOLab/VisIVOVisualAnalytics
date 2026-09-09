@@ -260,8 +260,14 @@ void SessionDataTree::upsertProduct(const AnalysisProduct &p)
         QFont f = item->font();
         f.setItalic(live);
         item->setFont(f);
-        item->setForeground(live ? QBrush(QColor(QString::fromLatin1(VisivoTheme::kOnSurfaceVariant())))
-                                 : QBrush());
+        // Both branches must name a real colour. A default-constructed QBrush is
+        // an INVALID brush, and the model stores it as a set ForegroundRole all
+        // the same — the delegate then installs it over the palette's Text
+        // entry and paints the row black, which on the dark panel is an
+        // unreadable product name (measured on MOM0 / SPEC rows). The dataset
+        // rows above them looked right only because they set no brush at all.
+        item->setForeground(QBrush(QColor(QString::fromLatin1(
+                live ? VisivoTheme::kOnSurfaceVariant() : VisivoTheme::kOnSurface()))));
     };
     for (int i = 0; i < ds->rowCount(); ++i) {
         QStandardItem *child = ds->child(i);

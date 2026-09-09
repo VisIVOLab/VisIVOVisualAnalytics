@@ -87,6 +87,8 @@ add_executable(VisIVOTests
     test_spectral_unit_convert.cpp
     TestCubeRegionGeom.h
     test_cube_region_geom.cpp
+    TestCubeToolGate.h
+    test_cube_tool_gate.cpp
     TestSpectralAxisInfer.h
     test_spectral_axis_infer.cpp
     TestKinematicLevelField.h

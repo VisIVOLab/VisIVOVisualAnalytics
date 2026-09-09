@@ -487,6 +487,11 @@ private:
     // #5b: the live Extract-Spectrum preview renders in a PANE (transitory "Spectrum (live)"
     // product), NOT a floating window. Started/stopped with the probe tool; updated on hover.
     QString m_spectrumLiveId;   ///< the transitory live product id (empty when the tool is off)
+    /// The live product took over a pane's fixed Spectrum view, so stopping the
+    /// tool puts that view back instead of leaving a "Pick a view" hole. NOT a
+    /// slot index: a 4→1 collapse swaps pane views between slots, so the pane is
+    /// found by the live product id at restore time.
+    bool m_liveSpectrumTookSpectrumView{ false };
     void startLiveSpectrum();   ///< place a live spectrum pane + tree entry
     void stopLiveSpectrum();    ///< drop the live pane + tree entry
     void updateLiveSpectrumPane(const QVector<double> &key, const QVector<double> &values,
@@ -540,6 +545,9 @@ private:
     // active, on TOP of their backend-derived enable state. Re-enabled for Slice / cube.
     void applyMomentToolGate();
     bool m_momentToolGated{ false };     ///< true while the moment gate is disabling the tools
+    /// Re-entrancy guard: the gate un-arms checkable tools, whose toggled()
+    /// handlers reset region / probe state and call the gate right back.
+    bool m_inToolGate{ false };
     bool m_pvBaselineEnabled{ false };   ///< PV's backend-derived enable (restore target)
     bool m_cubeActionsEnabled{ false };  ///< probe/region baseline (cube open + usable)
     /// Session-tree row → active pane: if a visible pane already shows the view/product,
@@ -667,9 +675,11 @@ private:
 
     // Two Tools entries were created as locals; kept so cubeTools() can list
     // them alongside the rest.
-    /// Tooltips of the 3-D-only tools as first seen, so the pane gate can put
-    /// them back instead of clearing them.
-    QHash<QAction *, QString> m_tool3dTooltips;
+    /// Tooltips of every gated tool as first seen, so the pane gate can put them
+    /// back instead of clearing them (the 3-D-only tools, Pin Spectrum, Export
+    /// Region, Send Slice to Image Viewer, Link Views — each carries an
+    /// explanatory sentence the gate temporarily replaces with its reason).
+    QHash<QAction *, QString> m_toolBaseTooltips;
 
     QPointer<QAction> m_actPinSpectrum;
     QPointer<QAction> m_actOpenInVR;
@@ -784,6 +794,10 @@ private:
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;   ///< pane-header click → active
+    /// Window activation is when the set of OTHER open windows can have changed
+    /// unnoticed (an image viewer opened or closed), which gates Send Slice to
+    /// Image Viewer — so the tool gate is re-run here rather than going stale.
+    void changeEvent(QEvent *event) override;
     // Former SidebarPanel pages, migrated into the Inspector's Properties tab
     // (design #1d — no separate rail in the central widget). Built in
     // setupSidebar(), reparented in setupInspector().

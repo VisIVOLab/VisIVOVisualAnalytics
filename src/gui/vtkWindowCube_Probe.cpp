@@ -511,12 +511,18 @@ void vtkWindowCube::updateProbePlot()
     }
 
     // Remember this spectrum so "Pin Spectrum" can promote it to a stable product.
+    const bool hadProbeSpectrum = !this->m_lastProbeValues.isEmpty();
     this->m_lastProbeKey = spectral;
     this->m_lastProbeValues = values;
     this->m_lastProbeXLabel = this->spectralAxisTitle().isEmpty() ? u"Spectral axis"_s
                                                                   : this->spectralAxisTitle();
     this->m_lastProbeYLabel = u"Intensity"_s;
     this->m_lastProbeContext = wcsLabel;
+
+    // Pin Spectrum is gated on there BEING a probed spectrum; re-gate only when
+    // that flipped, since this runs on every probe update (2-D moves and 3-D picks).
+    if (hadProbeSpectrum != !this->m_lastProbeValues.isEmpty())
+        this->applyMomentToolGate();
 
     const QString pixelLabel =
             u"px (%1, %2)"_s.arg(this->probeVoxel[0]).arg(this->probeVoxel[1]);

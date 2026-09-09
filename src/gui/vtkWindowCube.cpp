@@ -5,6 +5,7 @@
 #include "CubeViewportGeometry.h"
 #include "Pane2DView.h"
 #include "CubeStatsUtil.h"
+#include "CubeToolGate.h"
 
 #include "qcustomplot.h"
 #include "ColorMaps.h"
@@ -104,6 +105,8 @@
 
 #include <QFileInfo>
 #include <QActionGroup>
+#include <QScopeGuard>
+#include <QSet>
 #include <QAction>
 #include <QAbstractItemView>
 #include <QApplication>
@@ -2568,6 +2571,24 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 : nullptr;
         if (!output || output->GetNumberOfPoints() == 0) {
             statusBar()->showMessage(u"No 2-D slice data available."_s, 2000);
+            return;
+        }
+        // The signal is relayed by MainWindow to the FIRST open image viewer; with
+        // none open it went nowhere and the click did nothing at all. The tool gate
+        // disables the action in that case — this covers the window between a
+        // viewer closing and the next gate pass.
+        bool haveViewer = false;
+        for (QWidget *w : QApplication::topLevelWidgets())
+            if (w && w->inherits("vtkWindowImage")) {
+                haveViewer = true;
+                break;
+            }
+        if (!haveViewer) {
+            statusBar()->showMessage(
+                    u"No image viewer open — open a 2-D FITS image first; the slice "
+                    u"overlays there as contours."_s,
+                    5000);
+            this->applyMomentToolGate();
             return;
         }
         const int ch = ui->sliderSlice->value();
@@ -7160,16 +7181,16 @@ void vtkWindowCube::flashPaneLutStrip(int slot)
 
 void vtkWindowCube::refreshLinkedFacetChips()
 {
-    // The master "Linked" button is ALWAYS clickable (like the Tools ▸ Link Views
-    // menu): it is a persistent preference the user can turn on before any peer
-    // exists — it simply activates once another pane/window appears (setLinkViews
-    // shows a "enable it on another cube" hint meanwhile). The per-facet chips, by
-    // contrast, are live only when the master is on AND there is actually something
-    // to link — >1 pane in this window OR >1 open cube window (cross-window sync).
+    // Linking needs something to link to: >1 pane in this window OR >1 open cube
+    // window (cross-window sync). The master used to stay clickable regardless,
+    // as a preference armable before any peer existed — but then it reads as an
+    // available tool whose only effect is a "enable it on another cube" hint, so
+    // it is gated on real targets now (the Tools ▸ Link Views action is gated
+    // with it, in applyMomentToolGate, and states the reason).
     // Disabled chips keep their checked state, so re-enabling restores the choice.
-    if (m_paneLinkedBtn)
-        m_paneLinkedBtn->setEnabled(true);
     const bool hasLinkTargets = (m_paneCount > 1 || s_registry.size() > 1);
+    if (m_paneLinkedBtn)
+        m_paneLinkedBtn->setEnabled(hasLinkTargets);
     const bool master = m_linkViews && hasLinkTargets;
     const auto setChip = [master](QToolButton *chip, bool checked) {
         if (!chip)
@@ -7183,6 +7204,10 @@ void vtkWindowCube::refreshLinkedFacetChips()
     setChip(m_linkLutChip, m_linkLut);
     setChip(m_linkRenderChip, m_linkRender);
     setChip(m_linkBlendChip, m_linkBlend);
+    // Every call site of this function is exactly a moment when the link-target
+    // count can have changed (pane layout, a window opening or closing), so it
+    // is also where the Link Views ACTION — menu + dock + Inspector — is re-gated.
+    applyMomentToolGate();
 }
 
 void vtkWindowCube::showLinkNoReceiverHint(int srcSlot)
@@ -8040,16 +8065,28 @@ void vtkWindowCube::refreshPaneActiveStyles()
     // straight off the pane rather than the changelog.
     static constexpr QLatin1StringView kInactiveBorder("#1E2427");
     static constexpr QLatin1StringView kInactiveDot("#3A4247");
-    // While the 3-D spectral picker is armed, the 3-D pane wears a thicker amber
-    // border. The picker listens to ONE view and silently ignores clicks in any
-    // other, which is unreadable without a mark saying where it is listening.
-    // Set here rather than alongside the toggle because this function rewrites
+    // While an interaction tool is armed, the pane it LISTENS TO wears a thicker
+    // amber border. Every one of these tools installs its observer on a single
+    // view and silently ignores clicks in any other, which is unreadable without
+    // a mark saying where it is listening — it was previously marked for the 3-D
+    // picker only, so the six 2-D tools armed invisibly.
+    // Set here rather than alongside each toggle because this function rewrites
     // every pane frame and would otherwise paint over it.
-    const bool picking = actionPickSpectrum3d && actionPickSpectrum3d->isChecked();
+    const auto armedNow = [](const QAction *a) { return a && a->isChecked(); };
+    const bool armed3d = armedNow(actionPickSpectrum3d.data())
+            || armedNow(m_actKinematicLasso.data());
+    // Extract Spectrum (probe), PV path and the four region shapes all draw on
+    // the 2-D slice interactor. They are gated OFF on a moment / spectrum / PV
+    // pane (applyMomentToolGate), so an armed one always means the slice.
+    const bool armed2d = armedNow(ui->actionExtractSpectrum)
+            || armedNow(actionExtractPvDiagram.data()) || armedNow(actionBoxRegion.data())
+            || armedNow(actionCircleRegion.data()) || armedNow(actionPolygonRegion.data())
+            || armedNow(actionAnnulusRegion.data());
     const QLatin1StringView armed(VisivoTheme::kWarning());
     for (int i = 0; i < 4; ++i) {
         const bool active = (m_activePane == i);
-        const bool armedHere = picking && (m_slots[i].view.kind == ViewId::View3D);
+        const bool armedHere = (armed3d && m_slots[i].view.kind == ViewId::View3D)
+                || (armed2d && m_slots[i].view.kind == ViewId::Slice2D);
         if (m_slots[i].frame)
             m_slots[i].frame->setStyleSheet(
                     armedHere
@@ -8097,6 +8134,18 @@ void vtkWindowCube::refreshPaneCursors()
             m_paneViews[i]->widget()->setCursor(Qt::ArrowCursor);
         }
     }
+}
+
+void vtkWindowCube::changeEvent(QEvent *event)
+{
+    QMainWindow::changeEvent(event);
+    // Whether an image viewer is open gates "Send Slice to Image Viewer", and this
+    // window is not told when another window appears or closes. Activation is the
+    // moment before the user can reach for the tool, so it is a sufficient — and
+    // cheap — place to recheck. (Ditto for the cross-window link peers, which the
+    // registry already refreshes, but a re-run costs nothing.)
+    if (event && event->type() == QEvent::ActivationChange && this->isActiveWindow())
+        this->applyMomentToolGate();
 }
 
 bool vtkWindowCube::eventFilter(QObject *watched, QEvent *event)
@@ -8592,17 +8641,33 @@ void vtkWindowCube::startLiveSpectrum()
                                   u"spectrum1d"_s);
     ProductRegistry::instance().setStatus(m_spectrumLiveId, u"live"_s);   // italic/muted in tree
 
-    // The live spectrum goes in a FREE pane that is NOT the active one — the active pane is
+    // The live spectrum goes in a pane that is NOT the active one — the active pane is
     // the 2D source the user hovers, and it must stay active + interactive (an idle pane
-    // swallows mouse-move). If there is no free non-active pane, hint instead of stealing the
+    // swallows mouse-move). If there is no such pane, hint instead of stealing the
     // source.
     auto visible = [&](int i) { return m_slots[i].frame && m_slots[i].frame->isVisible(); };
     int target = -1;
+    m_liveSpectrumTookSpectrumView = false;
+    // FIRST choice: a pane already showing the fixed Spectrum view. That view is
+    // the declared home of a traced spectrum — its own empty state reads "Click a
+    // pixel in the 2D view to trace its spectrum" — and it is filled only by the
+    // REGION spectrum path (probePlotWidget), so a pixel probe used to leave it
+    // sitting on that instruction while the live product went looking for a free
+    // pane and, in a full 2×2 layout, found none: the spectrum then existed only
+    // as a row in Session Data.
     for (int i = 0; i < 4; ++i)
-        if (i != m_activePane && visible(i) && m_slots[i].view.isNone()) {
+        if (i != m_activePane && visible(i) && m_slots[i].view.kind == ViewId::Spectrum) {
             target = i;
+            m_liveSpectrumTookSpectrumView = true;
             break;
         }
+    // Otherwise a free pane.
+    if (target < 0)
+        for (int i = 0; i < 4; ++i)
+            if (i != m_activePane && visible(i) && m_slots[i].view.isNone()) {
+                target = i;
+                break;
+            }
     if (target >= 0) {
         m_slots[target].view = PaneView{ ViewId::Product, m_spectrumLiveId };
         mountView(target);   // NOT setActivePane — the source pane keeps focus for hover
@@ -8621,14 +8686,28 @@ void vtkWindowCube::stopLiveSpectrum()
         return;
     const QString id = m_spectrumLiveId;
     m_spectrumLiveId.clear();
+    bool restoreSpectrumView = m_liveSpectrumTookSpectrumView;
+    m_liveSpectrumTookSpectrumView = false;
     m_products1d.remove(id);
     ProductRegistry::instance().removeProduct(id);   // drops the transitory tree entry
-    // Any pane showing the live spectrum returns to "Pick a view".
-    for (int i = 0; i < 4; ++i)
-        if (m_slots[i].view.kind == ViewId::Product && m_slots[i].view.productId == id) {
-            m_slots[i].view = {};
-            mountView(i);
-        }
+    // Any pane showing the live spectrum returns to "Pick a view" — or, if the live
+    // product had taken over the fixed Spectrum view, back to that view. Located by
+    // PRODUCT ID, not by the slot it started in: a 4→1 collapse moves pane views
+    // between slots. And only if no other pane has meanwhile been pointed at the
+    // Spectrum view — it is a singleton widget, so restoring a second claim on it
+    // would reparent it out of that pane and leave one of the two blank.
+    for (int i = 0; i < 4; ++i) {
+        if (m_slots[i].view.kind != ViewId::Product || m_slots[i].view.productId != id)
+            continue;
+        bool spectrumShownElsewhere = false;
+        for (int j = 0; j < 4; ++j)
+            if (j != i && m_slots[j].view.kind == ViewId::Spectrum)
+                spectrumShownElsewhere = true;
+        const bool restoreHere = restoreSpectrumView && !spectrumShownElsewhere;
+        restoreSpectrumView = false;   // one pane gets the view back, never two
+        m_slots[i].view = restoreHere ? PaneView{ ViewId::Spectrum, QString() } : PaneView{};
+        mountView(i);
+    }
     refreshPaneChrome();
 }
 
@@ -9859,6 +9938,19 @@ void vtkWindowCube::setupInspector()
     // And the menu itself, regrouped from the same table.
     regroupToolsMenu();
 
+    // Armed-pane border: every interaction tool listens to ONE view, and the
+    // amber frame says which. Wired here, once, for all of them — by this point
+    // every action exists — rather than in each toggle handler (three of which
+    // have early-return branches that would silently skip it).
+    for (QAction *a : { ui->actionExtractSpectrum, actionExtractPvDiagram.data(),
+                        actionBoxRegion.data(), actionCircleRegion.data(),
+                        actionPolygonRegion.data(), actionAnnulusRegion.data(),
+                        m_actKinematicLasso.data(), actionPickSpectrum3d.data() }) {
+        if (a)
+            QObject::connect(a, &QAction::toggled, this,
+                             [this]() { this->refreshPaneActiveStyles(); });
+    }
+
     // Migrated spectrum controls at the TOP of the Analysis tab (shown only while the active
     // pane is a spectrum product). The pane itself is left chrome-less.
     this->buildSpectrumInspectorControls(panel);
@@ -10741,9 +10833,20 @@ void vtkWindowCube::updateBackendDerivedActionsAvailability()
 
 void vtkWindowCube::applyMomentToolGate()
 {
-    // The active pane being a moment map is one more input to probe / region / PV enablement:
-    // a collapsed-in-velocity map has no spectral axis to trace/slice, so the tools disable
-    // with a reason (never a silent no-op) and re-enable for the 2D Slice / cube (§5.1b).
+    // Availability of every pane- or state-dependent tool, from ONE table
+    // (CubeToolGate, unit-tested) applied to the QActions the Tools menu, the
+    // left dock and Inspector ▸ Analysis are all built from. A tool that cannot
+    // act says why in its tooltip; it never sits enabled and does nothing.
+    //
+    // Re-entrancy: disabling a checkable tool un-arms it, and those toggled()
+    // handlers (setProbeModeActive, setRegionMode, …) drop region / probe state
+    // and call back here. One pass is enough — the second would run against
+    // half-updated state.
+    if (this->m_inToolGate)
+        return;
+    this->m_inToolGate = true;
+    const auto guard = qScopeGuard([this] { this->m_inToolGate = false; });
+
     static const QString reasonMoment =
             u"a moment map is collapsed in velocity — pick the 2D Slice"_s;
     static const QString reason3d =
@@ -10752,125 +10855,171 @@ void vtkWindowCube::applyMomentToolGate()
             u"acts on the 2D Slice — this pane is a derived product"_s;
     static const QString reasonNot3d =
             u"acts on the 3D view — pick that pane"_s;
-    // Only a collapsed IMAGE product (a moment map) gates the spectral tools. A spectrum
-    // product (#5) is itself a spectral result — it must NOT disable Extract Spectrum (that
-    // would self-cancel the live-preview pane the tool just created).
+    static const QString reasonNoProbe =
+            u"probe a pixel first (Extract Spectrum, or Pick Spectrum on the 3D plane)"_s;
+    static const QString reasonNoRegion =
+            u"draw or import a region first (Box / Circle / Polygon / Annulus)"_s;
+    static const QString reasonNoImageView =
+            u"open a 2D image viewer first — the slice overlays there as contours"_s;
+    static const QString reasonNoLinkTargets =
+            u"nothing to link yet — split into 2 panes or open a second cube viewer"_s;
+    // Every reason this function writes, so a tooltip of ours is never mistaken
+    // for the tool's own sentence and cached over it.
+    static const QSet<QString> ourReasons{ reasonMoment,       reason3d,
+                                           reasonSpectrum,     reasonNot3d,
+                                           reasonNoProbe,      reasonNoRegion,
+                                           reasonNoImageView,  reasonNoLinkTargets };
+
+    // ── What is in front, as the pure table's vocabulary ──────────────────────
     const ViewId activeKind = (m_activePane >= 0 && m_activePane < 4)
             ? m_slots[m_activePane].view.kind
             : ViewId::None;
     const QString activeProduct = (m_activePane >= 0 && m_activePane < 4)
             ? m_slots[m_activePane].view.productId
             : QString();
-    const bool momentActive =
-            (activeKind == ViewId::Product && m_products2d.contains(activeProduct));
     // A spectrum pane is ViewId::Product with an entry in m_products1d — NOT
     // ViewId::Spectrum, which is the fixed singleton view. Testing the enum
-    // alone matched nothing a user can actually select, so live, pinned and
-    // generated spectra all took the restore branch and re-enabled everything.
-    const bool spectrumActive =
-            (activeKind == ViewId::Spectrum)
-            || (activeKind == ViewId::Product && m_products1d.contains(activeProduct));
-    // A PV diagram is a renderable Product too, held in neither cache — it has
-    // its own id — so without this it took the restore branch and re-enabled the
-    // six slice tools, which is reachable simply by letting a PV run finish,
-    // because completion activates its output pane.
-    const bool pvActive = (activeKind == ViewId::Product && !m_pvProductId.isEmpty()
-                           && activeProduct == m_pvProductId);
+    // alone matched nothing a user can actually select. A moment map is a
+    // Product in m_products2d, and a PV diagram is a Product in neither cache
+    // (it has its own id), so all three need naming explicitly — otherwise they
+    // fall through to "some other pane" and re-enable the slice tools, which a
+    // finished PV run reaches on its own by activating its output pane.
+    CubeToolGate::Inputs in;
+    if (activeKind == ViewId::View3D)
+        in.pane = CubeToolGate::Pane::View3D;
+    else if (activeKind == ViewId::Slice2D)
+        in.pane = CubeToolGate::Pane::Slice2D;
+    else if (activeKind == ViewId::Spectrum)
+        in.pane = CubeToolGate::Pane::Spectrum;
+    else if (activeKind == ViewId::Product && m_products2d.contains(activeProduct))
+        in.pane = CubeToolGate::Pane::Moment;
+    else if (activeKind == ViewId::Product && m_products1d.contains(activeProduct))
+        in.pane = CubeToolGate::Pane::Spectrum;
+    else if (activeKind == ViewId::Product && !m_pvProductId.isEmpty()
+             && activeProduct == m_pvProductId)
+        in.pane = CubeToolGate::Pane::Pv;
+    else if (activeKind == ViewId::Product)
+        in.pane = CubeToolGate::Pane::OtherProduct;
+    else
+        in.pane = CubeToolGate::Pane::None;
     // The ONE case where Extract Spectrum must be left alone: the pane in front
     // is the live preview the tool itself is driving. Un-arming it there calls
     // stopLiveSpectrum() and deletes what the user is looking at. A pinned or
     // generated spectrum is not that — it is a finished product, and the tool
-    // gates on it like everything else. Skipping unconditionally also left the
-    // action carrying whatever enablement and tooltip the PREVIOUS pane had.
-    const bool liveSpectrumActive = !m_spectrumLiveId.isEmpty()
-            && activeKind == ViewId::Product && activeProduct == m_spectrumLiveId;
+    // gates on it like everything else.
+    in.liveSpectrumPane = !m_spectrumLiveId.isEmpty() && activeKind == ViewId::Product
+            && activeProduct == m_spectrumLiveId;
+    const CubeToolGate::Decision d = CubeToolGate::evaluate(in);
 
-    // The same argument as the moment case, widened. These tools draw on and
-    // measure the 2-D slice, so they are inert on the 3-D view and on a spectrum
-    // pane exactly as they are on a moment map, and the user should see that
-    // rather than click and get nothing.
-    const QString reason = momentActive                    ? reasonMoment
-                         : (activeKind == ViewId::View3D)  ? reason3d
-                         : (spectrumActive || pvActive)    ? reasonSpectrum
-                                                           : QString();
-    const bool gated = !reason.isEmpty();
-    const std::array<QAction *, 6> tools{ ui->actionExtractSpectrum,
-                                          actionExtractPvDiagram.data(),
-                                          actionBoxRegion.data(),
-                                          actionCircleRegion.data(),
-                                          actionPolygonRegion.data(),
-                                          actionAnnulusRegion.data() };
-    if (gated) {
-        for (QAction *a : tools) {
-            if (!a)
-                continue;
-            if (liveSpectrumActive && a == ui->actionExtractSpectrum)
-                continue;   // see liveSpectrumActive above
+    // ── Apply ─────────────────────────────────────────────────────────────────
+    // enabled=false with a reason disables + explains; otherwise the action goes
+    // back to its own baseline and its own tooltip.
+    auto applyGate = [this](QAction *a, bool enabled, const QString &reason) {
+        if (!a)
+            return;
+        // Adopt the real tooltip on EVERY pass where it is not one of ours,
+        // rather than caching once: this gate first runs during construction,
+        // from setupPaneChrome() -> applyPaneLayout() -> refreshPaneChrome(),
+        // which is BEFORE some of these tooltips are assigned — a cache-once
+        // would have stored QAction's fallback text and then restored that over
+        // the real sentence. Re-adopting also keeps up with anything that
+        // legitimately rewrites a tooltip later (PV's backend tip).
+        const bool showingOurReason = ourReasons.contains(a->toolTip());
+        if (!showingOurReason)
+            m_toolBaseTooltips.insert(a, a->toolTip());
+        if (!enabled && !reason.isEmpty()) {
             if (a->isCheckable() && a->isChecked())
-                a->setChecked(false);   // un-arm a tool that was active on this pane
+                a->setChecked(false);   // un-arm a tool armed on a pane it cannot act on
             a->setEnabled(false);
             a->setToolTip(reason);
             a->setStatusTip(reason);
+            return;
         }
-    } else {
-        // Restore each tool to its backend / cube-open baseline; clear ONLY a
-        // reason this function wrote (leave a backend tooltip untouched).
-        const QString pvTip = hasBackendVisibleDataset() ? QString() : kPvBackendTooltip;
-        auto restore = [&](QAction *a, bool base, const QString &tip) {
-            if (!a)
-                return;
-            a->setEnabled(base);
-            if (a->toolTip() == reasonMoment || a->toolTip() == reason3d
-                || a->toolTip() == reasonSpectrum) {
-                a->setToolTip(tip);
-                a->setStatusTip(tip);
-            }
-        };
-        restore(ui->actionExtractSpectrum, m_cubeActionsEnabled, QString());
-        restore(actionExtractPvDiagram.data(), m_pvBaselineEnabled, pvTip);
-        for (QAction *a : { actionBoxRegion.data(), actionCircleRegion.data(),
-                            actionPolygonRegion.data(), actionAnnulusRegion.data() })
-            restore(a, m_cubeActionsEnabled, QString());
+        a->setEnabled(enabled);
+        if (showingOurReason) {
+            const QString base = m_toolBaseTooltips.value(a);
+            a->setToolTip(base);
+            a->setStatusTip(base);
+        }
+    };
+
+    const QString sliceReasonText =
+            d.sliceReason == CubeToolGate::SliceReason::Moment          ? reasonMoment
+          : d.sliceReason == CubeToolGate::SliceReason::View3D          ? reason3d
+          : d.sliceReason == CubeToolGate::SliceReason::DerivedProduct  ? reasonSpectrum
+                                                                        : QString();
+    // The slice family. Import Region belongs here too: it draws the parsed
+    // region onto the active 2-D view and runs the region analysis on it, so on
+    // a 3-D / moment / spectrum pane it is the same no-op as drawing one by hand.
+    const std::array<QAction *, 7> sliceTools{ ui->actionExtractSpectrum,
+                                               actionExtractPvDiagram.data(),
+                                               actionBoxRegion.data(),
+                                               actionCircleRegion.data(),
+                                               actionPolygonRegion.data(),
+                                               actionAnnulusRegion.data(),
+                                               m_actImportCubeRegion.data() };
+    for (QAction *a : sliceTools) {
+        if (!a)
+            continue;
+        if (d.keepExtractSpectrumArmed && a == ui->actionExtractSpectrum)
+            continue;   // see Inputs::liveSpectrumPane above
+        // PV additionally carries a backend baseline (dataset visible, no run in
+        // flight); the rest share the cube-open baseline.
+        const bool baseline = (a == actionExtractPvDiagram.data()) ? m_pvBaselineEnabled
+                                                                   : m_cubeActionsEnabled;
+        applyGate(a, baseline && d.slice2dTools, sliceReasonText);
     }
-    m_momentToolGated = gated;
+    m_momentToolGated = !d.slice2dTools;
 
     // The mirror image: tools that act on the 3-D VIEW, inert everywhere else.
     // The lasso installs its double-click observer on the 3-D interactor and the
     // spectral picker its own — arming either from the 2-D slice puts a crosshair
     // on a view that is not in front and waits for a click that will not come.
-    // Neither had any enablement management at all, so both sat permanently
-    // available while the six slice tools correctly greyed out around them.
-    const bool is3dActive = (activeKind == ViewId::View3D);
-    for (QAction *a : { m_actKinematicLasso.data(), actionPickSpectrum3d.data() }) {
-        if (!a)
-            continue;
-        // Remember the real tooltip before overwriting it — both carry an
-        // explanatory sentence, and restoring to an empty string would throw it
-        // away the first time the user left the 3-D pane and came back.
-        //
-        // Adopt it on EVERY pass where it is not our own reason, rather than
-        // caching once. This gate first runs during construction, from
-        // setupPaneChrome() -> applyPaneLayout() -> refreshPaneChrome(), which
-        // is BEFORE the picker's tooltip is assigned — a cache-once would have
-        // stored QAction's fallback text and then restored that over the real
-        // sentence. Re-adopting also keeps up with anything that legitimately
-        // rewrites a tooltip later.
-        if (a->toolTip() != reasonNot3d)
-            m_tool3dTooltips.insert(a, a->toolTip());
-        if (!is3dActive) {
-            if (a->isCheckable() && a->isChecked())
-                a->setChecked(false);   // disarms the observer through its handler
-            a->setEnabled(false);
-            a->setToolTip(reasonNot3d);
-            a->setStatusTip(reasonNot3d);
-        } else {
-            a->setEnabled(m_cubeActionsEnabled);
-            if (a->toolTip() == reasonNot3d) {
-                a->setToolTip(m_tool3dTooltips.value(a));
-                a->setStatusTip(QString());
-            }
+    for (QAction *a : { m_actKinematicLasso.data(), actionPickSpectrum3d.data() })
+        applyGate(a, m_cubeActionsEnabled && d.view3dTools, reasonNot3d);
+
+    // State gates: the tool is fine on this pane, but there is nothing yet for
+    // it to act on. Each of these used to be enabled always and answer a click
+    // with a modal "draw a region first" / a transient status line — a dialog
+    // doing the job of a disabled button.
+    //
+    // Read the state HERE, not with the pane inputs above: the un-arming just
+    // done runs the tools' own toggled() handlers, and those change exactly this
+    // state — dropping an unfinished polygon through setRegionMode() ->
+    // clearRegion(), whose own gate call this pass suppresses. Deciding from the
+    // earlier snapshot left Export Region enabled with no region behind it.
+    CubeToolGate::Inputs stateIn = in;
+    // Pin Spectrum promotes the LAST probed spectrum, which the 2-D probe and the
+    // 3-D plane pick both feed (updateProbePlot is the single writer) — so this is
+    // a state gate, not a pane gate.
+    stateIn.haveProbeSpectrum = !m_lastProbeValues.isEmpty();
+    // Region export serialises the live shape, or the last finalised one after
+    // analysis reset regionMode (same fallback exportRegionsToFile() uses).
+    stateIn.haveRegion = this->regionValid
+            && (this->regionMode != RegionMode::None
+                || this->m_exportableRegionShape != RegionMode::None);
+    // "Send Slice to Image Viewer" emits contourDataReady, which MainWindow
+    // relays to the first open image viewer — with none open the click did
+    // nothing at all, no message, no window. Checked by class name so this file
+    // need not pull in the image viewer's header.
+    stateIn.imageViewerOpen = false;
+    for (QWidget *w : QApplication::topLevelWidgets()) {
+        if (w && w->inherits("vtkWindowImage")) {
+            stateIn.imageViewerOpen = true;
+            break;
         }
     }
+    // Same test refreshLinkedFacetChips() uses for the facet chips: >1 pane here
+    // (intra-window sync) or >1 open cube window (cross-window sync).
+    stateIn.haveLinkTargets = (m_paneCount > 1 || s_registry.size() > 1);
+    const CubeToolGate::Decision sd = CubeToolGate::evaluate(stateIn);
+
+    applyGate(m_actPinSpectrum.data(), m_cubeActionsEnabled && sd.pinSpectrum, reasonNoProbe);
+    applyGate(m_actExportCubeRegion.data(), m_cubeActionsEnabled && sd.exportRegion,
+              reasonNoRegion);
+    applyGate(m_actSendSliceToImage.data(), m_cubeActionsEnabled && sd.sendSliceToImageViewer,
+              reasonNoImageView);
+    applyGate(m_actLinkViews.data(), sd.linkViews, reasonNoLinkTargets);
 }
 
 void vtkWindowCube::setCubeOpenActionsEnabled(bool enabled)

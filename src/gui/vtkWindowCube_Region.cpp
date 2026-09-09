@@ -725,6 +725,9 @@ void vtkWindowCube::clearRegion()
     this->momentRegionAnnulusFillActor->VisibilityOff();
     this->momentRegionPolygonActor->VisibilityOff();
     this->momentRegionPolygonFillActor->VisibilityOff();
+    // There is no region any more — "Export Region (CRTF/DS9)" has nothing to
+    // serialise and says so instead of answering the click with a dialog.
+    this->applyMomentToolGate();
 }
 
 void vtkWindowCube::analyzeCurrentRegion()
@@ -736,6 +739,7 @@ void vtkWindowCube::analyzeCurrentRegion()
     // regionMode goes back to None (geometry stays for display), but Region IO
     // export still needs to know what shape to serialise.
     this->m_exportableRegionShape = this->regionMode;
+    this->applyMomentToolGate();   // a region now exists → Export Region opens up
 
     auto *imageData = this->viewingSlice()
             ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
