@@ -94,48 +94,65 @@ volume rendering and the slice view.
   *2-D View Settings* sidebar. Both editors are non-modal: keep them open
   while you scrub through slices to fine-tune in real time.
 
-## Tools menu
+## Tools
 
-The cube viewer's *Tools* menu (and the matching *Tools* sidebar tab) is
-organised in four groups that go from cheap interactive lookups down to
-heavier compute, in this order:
+Every tool is reachable from three places, all fed by one list in the code, so
+they cannot drift apart:
+
+- the **Tools menu**, one submenu per group;
+- the left dock's **TOOLS** section (collapsed by default — it is there for
+  reach, not for permanent display);
+- the Inspector's **Analysis** tab on the right.
+
+Wherever you reach a tool, it is the same action: a toggle switched on in one
+place shows as on in the other two, and one that is unavailable is greyed out in
+all three with the same explanation.
 
 ```{list-table}
 :header-rows: 1
-:widths: 18 36 46
+:widths: 22 40 38
 
 * - Group
   - Tools
   - When you reach for them
-* - **EXPLORATION**
-  - Extract Spectrum, Open in VR
-  - Cheap, interactive — look at one spectrum, immerse in the cube.
-* - **ANALYSIS**
-  - Estimate Noise, Compute Moment, Line-width Map, Baseline Subtraction,
-    Stack Spectral Cubes, Extract PV Diagram, **Channel Maps**,
-    Export Sub-Cube as FITS, Export Current Channel as 2-D FITS,
-    Export Moment Map as FITS, Pixel Histogram (current slice)
-  - Compute-on-cube tools that produce a derived map / cube / spectrum.
-    All run on the backend with the heavy-task throttle, so the viewer
-    stays interactive.
-* - **REGIONS**
-  - Box / Circle / Polygon / Annulus
-  - Draw a shape on the slice → instant region statistics + per-region
-    spectral profile. See [Regions, PV, noise](region-pv-noise).
-* - **SOURCES & KINEMATICS**
-  - **Kinematic Lasso**, Kinematic Model Overlay, Mask 3-D Region
+* - **Spectral**
+  - Extract Spectrum, Pin Spectrum, Extract PV Diagram, Line-Width Map,
+    Baseline Subtraction, Stack Spectral Cubes
+  - Anything along the velocity axis, from a single line of sight to a stack.
+* - **Maps**
+  - Compute Moment Map, Channel Maps
+  - Collapse the cube to a 2-D map you can measure.
+* - **Statistics**
+  - Estimate Noise, Pixel Histogram (current slice)
+  - What the numbers in this cube look like before you trust them.
+* - **Regions**
+  - Box / Circle / Polygon / Annulus Region Analysis, Mask 3-D Region,
+    Import / Export Region (CRTF/DS9)
+  - Draw a shape and measure inside it, or exchange one with CASA / DS9. See
+    [Regions, PV, noise](region-pv-noise).
+* - **Sources & Kinematics**
+  - Kinematic Lasso, Kinematic Model Overlay
   - Pick out one object and work with it. See
     [Kinematic Lasso](kinematic-lasso) for click-to-select segmentation, and
     *Kinematic Model Overlay* to draw a tilted-ring model over the data.
-* - **CATALOGUE**
+* - **Catalogue**
   - Load / Show / Show Labels / Clear Catalogue Overlay
-  - Manage source overlays drawn on top of the slice / moment.
-    See [Catalogues](catalogues-hips#catalogue-overlay-on-cubes--images).
-* - **SHARING & OUTPUT**
-  - Import / Export Region (CRTF/DS9), Export Movie, Link Views
-  - Getting results out, and keeping several views in step. See
+  - Source overlays drawn on the slice or the moment map. See
+    [Catalogues](catalogues-hips#catalogue-overlay-on-cubes--images).
+* - **Export**
+  - Export Sub-Cube as FITS, Export Current Channel as 2-D FITS,
+    Export Moment Map as FITS, Export Movie
+  - Getting results out. See
     [Figures, movies and linked views](publication-output).
+* - **Views**
+  - Send Slice to Image Viewer, Link Views, Open in VR
+  - Move the data to another view, or keep several in step.
 ```
+
+Everything in the Tools menu also answers to the command palette
+(<kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd>), which lists the active window's whole menu
+bar under *This window ·* — so a tool you half-remember is faster to type than
+to find.
 
 ```{note}
 *Kinematic Model Overlay…* **draws** a tilted-ring model over the cube from

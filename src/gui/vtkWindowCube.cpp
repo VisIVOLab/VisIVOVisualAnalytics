@@ -2435,6 +2435,11 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         } else {
             ui->menuTools->addAction(actOpenInVR);
         }
+        // Outside the branch: the .ui supplies a separator, so construction takes
+        // the insertAction path and recording it only in the else left the member
+        // null — cubeTools() then skipped it and the regroup dropped it from the
+        // menu too, so "Open in VR" vanished from all three lists at once.
+        this->m_actOpenInVR = actOpenInVR;
     }
 
     // ANALYSIS: Estimate Noise goes at the head of the group (before Compute
@@ -2458,6 +2463,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // that lives in Session Data + any pane's dropdown, not just inside the probe plot.
     {
         QAction *pinSpectrum = ui->menuTools->addAction(u"Pin Spectrum"_s);
+        this->m_actPinSpectrum = pinSpectrum;   // listed in cubeTools()
         pinSpectrum->setToolTip(
                 u"Promote the current probe spectrum to a product in Session Data"_s);
         QObject::connect(pinSpectrum, &QAction::triggered, this,
@@ -2604,7 +2610,12 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
     // Linked views (F3): sync camera / channel / colour-scale with other open
     // cube viewers that also have linking enabled.
-    m_actLinkViews = ui->menuTools->addAction(u"Link Views (sync camera / channel / colour)"_s);
+    // "Link Views", with the rest in the tooltip. Measured at 258 px against the
+    // 236 the left dock's tool buttons have — the only one of the thirty that
+    // does not fit — and shortening the ACTION rather than overriding the button
+    // is what makes it stick: QToolButton re-reads its text from the action on
+    // every change, so a per-button override would be undone by the first click.
+    m_actLinkViews = ui->menuTools->addAction(u"Link Views"_s);
     m_actLinkViews->setCheckable(true);
     m_actLinkViews->setToolTip(
             u"Synchronise camera, velocity channel and colour map across all open "
@@ -6064,6 +6075,137 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
     return id;
 }
 
+QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
+{
+    // Grouped by what the astronomer is trying to DO, not by which part of the
+    // code owns the action. The Tools menu used to list all of these in one run
+    // of thirty-one entries broken by two separators, which is a list you read
+    // top to bottom every time instead of going where you meant to.
+    const auto *self = this;
+    QVector<CubeTool> t;
+    // No label: the QAction carries its own text, and every surface now reads it
+    // from there. A second copy here would be one more thing to keep in step.
+    const auto add = [&t](const QString &g, QAction *a) {
+        if (a)
+            t.append({ g, a });
+    };
+
+    add(u"Spectral"_s, ui->actionExtractSpectrum);
+    add(u"Spectral"_s, self->m_actPinSpectrum);
+    add(u"Spectral"_s, self->actionExtractPvDiagram);
+    add(u"Spectral"_s, ui->actionLinewidthMap);
+    add(u"Spectral"_s, ui->actionBaselineSubtract);
+    add(u"Spectral"_s, ui->actionStackCubes);
+
+    add(u"Maps"_s, ui->actionComputeMoment);
+    add(u"Maps"_s, self->m_actChannelMaps);
+
+    add(u"Statistics"_s, self->actionEstimateNoise);
+    add(u"Statistics"_s, self->m_actSliceHistogram);
+
+    add(u"Regions"_s, self->actionBoxRegion);
+    add(u"Regions"_s, self->actionCircleRegion);
+    add(u"Regions"_s, self->actionPolygonRegion);
+    add(u"Regions"_s, self->actionAnnulusRegion);
+    add(u"Regions"_s, self->m_actMaskRegion);
+    add(u"Regions"_s, self->m_actImportCubeRegion);
+    add(u"Regions"_s, self->m_actExportCubeRegion);
+
+    add(u"Sources & Kinematics"_s, self->m_actKinematicLasso);
+    add(u"Sources & Kinematics"_s, self->m_actKinematicModel);
+
+    add(u"Catalogue"_s, self->actionLoadCatalogueOverlay);
+    add(u"Catalogue"_s, self->actionShowCatalogueOverlay);
+    add(u"Catalogue"_s, self->actionShowCatalogueLabels);
+    add(u"Catalogue"_s, self->actionClearCatalogueOverlay);
+
+    add(u"Export"_s, self->m_actExportSubCube);
+    add(u"Export"_s, self->m_actExportChannel2d);
+    add(u"Export"_s, self->m_actExportMomentFits);
+    add(u"Export"_s, self->m_actExportMovie);
+
+    add(u"Views"_s, self->m_actSendSliceToImage);
+    add(u"Views"_s, self->m_actLinkViews);
+    add(u"Views"_s, self->m_actOpenInVR);
+    return t;
+}
+
+void vtkWindowCube::regroupToolsMenu()
+{
+    if (!ui->menuTools)
+        return;
+    // Rebuild rather than reorder: the actions were added to the menu from a
+    // dozen places as they were created, so their order is construction order.
+    //
+    // NOT via QMenu::clear(). Most of these were created by
+    // menu->addAction("text"), which parents them to the MENU — and clear()
+    // deletes the actions it owns. It spares one that is currently shown in
+    // another widget, which would have made this look fine as long as the
+    // Inspector and the left dock happened to be built first, and turn into
+    // dangling QActions the day that order changed. Reparent to the window
+    // first, then detach one by one.
+    const auto tools = cubeTools();
+    const auto existing = ui->menuTools->actions();
+    for (QAction *a : existing) {
+        if (!a)
+            continue;
+        if (a->parent() == ui->menuTools)
+            a->setParent(this);
+        ui->menuTools->removeAction(a);
+    }
+
+    QString current;
+    QMenu *sub = nullptr;
+    for (const CubeTool &t : tools) {
+        if (!t.action)
+            continue;
+        if (t.group != current) {
+            current = t.group;
+            sub = ui->menuTools->addMenu(current);
+            // Not inherited from the parent menu: without this the "why is this
+            // greyed out" tooltips that menuTools shows would stop appearing the
+            // moment the entries moved into submenus.
+            if (sub)
+                sub->setToolTipsVisible(ui->menuTools->toolTipsVisible());
+        }
+        if (sub)
+            sub->addAction(t.action);
+    }
+}
+
+void vtkWindowCube::buildToolsInto(QVBoxLayout *lay, const QString &labelCss)
+{
+    if (!lay)
+        return;
+    const auto tools = cubeTools();
+    QString current;
+    for (const CubeTool &t : tools) {
+        if (!t.action)
+            continue;
+        if (t.group != current) {
+            current = t.group;
+            auto *hdr = new QLabel(current.toUpper());
+            hdr->setStyleSheet(labelCss);
+            lay->addWidget(hdr);
+        }
+        auto *btn = new QToolButton();
+        btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        btn->setCursor(Qt::PointingHandCursor);
+        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btn->setStyleSheet(VisivoTheme::sidebarToolButtonStyleSheet());
+        // Bound to the QAction, so enabled state and checkability track the
+        // menu entry without a second wiring to keep in step.
+        // No setText() override after this. QToolButton re-reads text, tooltip
+        // and checked state from its default action on every ActionChanged, so
+        // an override applied once here survives until the first time the action
+        // changes — for a checkable tool, the first click. Where a label was too
+        // long for the dock it is the ACTION that was shortened (see the Link
+        // Views note in cubeTools()), which keeps all three surfaces agreeing.
+        btn->setDefaultAction(t.action);
+        lay->addWidget(btn);
+    }
+}
+
 QWidget *vtkWindowCube::buildFlatLeftDockControls()
 {
     const QLatin1StringView fgMuted(VisivoTheme::kOnSurfaceVariant());
@@ -6447,6 +6589,15 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     // DISPLAY section, before any of these are constructed, so it set nothing —
     // and every row would have stayed visible until the first pane change.
     updateDisplaySectionForActivePane();
+
+    // ── TOOLS ▶ (collapsed) ───────────────────────────────────────────────────
+    // The same tools as the menu and the Inspector's Analysis tab, from the same
+    // table. Collapsed by default: it is long, and it is here for reach, not for
+    // permanent display.
+    {
+        QVBoxLayout *toolsLay = addSection(u"TOOLS"_s, false, /*divider=*/false);
+        buildToolsInto(toolsLay, labelCss);
+    }
 
     // ── INTERACTION ▶ (collapsed) ─────────────────────────────────────────────
     QVBoxLayout *inter = addSection(u"INTERACTION"_s, false, /*divider=*/false);
@@ -9687,17 +9838,14 @@ void vtkWindowCube::setupInspector()
     const auto add = [panel](const QString &grp, const QString &label, QAction *a) {
         if (a) panel->addTool(grp, label, a);
     };
-    add(u"Statistics"_s, u"Estimate Noise…"_s, this->actionEstimateNoise);
-    add(u"Statistics"_s, u"Slice Histogram…"_s, this->m_actSliceHistogram);
-    add(u"Spectral"_s, u"Extract Spectrum"_s, ui->actionExtractSpectrum);
-    add(u"Spectral"_s, u"Position–Velocity Diagram…"_s, this->actionExtractPvDiagram);
-    add(u"Spectral"_s, u"Line-Width Map…"_s, ui->actionLinewidthMap);
-    add(u"Spectral"_s, u"Baseline Subtraction…"_s, ui->actionBaselineSubtract);
-    add(u"Spectral"_s, u"Stack Spectral Cubes…"_s, ui->actionStackCubes);
-    add(u"Maps"_s, u"Compute Moment…"_s, ui->actionComputeMoment);
-    add(u"Maps"_s, u"Channel Maps…"_s, this->m_actChannelMaps);
-    add(u"Sources & Kinematics"_s, u"Kinematic Lasso"_s, this->m_actKinematicLasso);
-    add(u"Sources & Kinematics"_s, u"Kinematic Model Overlay…"_s, this->m_actKinematicModel);
+    // Every tool, from the one table. This used to be eleven entries chosen by
+    // hand out of thirty-one, so two thirds of the window's tools existed only
+    // in the menu.
+    for (const CubeTool &t : cubeTools())
+        add(t.group, t.action->text().remove(u'&'), t.action);
+
+    // And the menu itself, regrouped from the same table.
+    regroupToolsMenu();
 
     // Migrated spectrum controls at the TOP of the Analysis tab (shown only while the active
     // pane is a spectrum product). The pane itself is left chrome-less.

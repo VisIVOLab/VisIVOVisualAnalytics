@@ -55,6 +55,7 @@ class QSlider;
 class QSplitter;
 class SegmentedToggle;
 class QHBoxLayout;
+class QVBoxLayout;
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
@@ -649,6 +650,31 @@ private:
     /// Mode::Log. False when the image has no positive values, in which case the
     /// caller must not change the mode. See the definition.
     bool anchorSliceLogFloor(LutScale::Mode mode);
+
+    /// One tool, as it appears everywhere the tools are offered.
+    struct CubeTool
+    {
+        QString group;
+        QPointer<QAction> action;   ///< carries its own text, tooltip and state
+    };
+
+    /// THE list of this window's tools, grouped. One table feeding three
+    /// places — the Tools menu, the Inspector's Analysis tab and the left
+    /// dock's TOOLS section — because they were three hand-written lists that
+    /// had already drifted: the menu carried 31 entries in a flat run and the
+    /// Analysis tab 11 of them. Add a tool here and it appears in all three.
+    QVector<CubeTool> cubeTools() const;
+
+    // Two Tools entries were created as locals; kept so cubeTools() can list
+    // them alongside the rest.
+    QPointer<QAction> m_actPinSpectrum;
+    QPointer<QAction> m_actOpenInVR;
+
+    /// Rebuild the Tools menu from cubeTools(), one submenu per group.
+    void regroupToolsMenu();
+
+    /// Fill a layout with the tools, small group headings and one button each.
+    void buildToolsInto(QVBoxLayout *lay, const QString &labelCss);
 
     /// Push m_show3dRendering onto both 3-D props and repaint.
     void apply3dRenderingVisibility();

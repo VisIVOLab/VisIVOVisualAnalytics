@@ -73,8 +73,19 @@ void vtkWindowCube::setLinkViews(bool on)
     this->m_linkNoReceiverHintShown = false;   // §5.5: toggling the master re-arms the hint
     this->refreshLinkedFacetChips();           // §5.5: grey/enable the per-facet toggles
     if (this->m_actLinkViews && this->m_actLinkViews->isChecked() != on) {
-        QSignalBlocker b(this->m_actLinkViews);
-        this->m_actLinkViews->setChecked(on);
+        {
+            // Blocked so setChecked() cannot re-enter this function through
+            // toggled(); the action is the source of that signal.
+            QSignalBlocker b(this->m_actLinkViews);
+            this->m_actLinkViews->setChecked(on);
+        }
+        // But changed() must still go out. Widgets bound to the action — the
+        // Inspector's Analysis button, the left dock's tool button — refresh
+        // from it, and blocking swallowed that too: switching linking on from
+        // the toolbar left the Inspector's toggle looking off, so the next click
+        // on it turned linking OFF while appearing to turn it on. changed() does
+        // not re-enter here; only toggled() is wired to setLinkViews().
+        emit this->m_actLinkViews->changed();
     }
     // Keep the toolbar "Linked" button in sync too, so toggling via the menu (or a
     // linked-driven change) reflects on the button and vice-versa.

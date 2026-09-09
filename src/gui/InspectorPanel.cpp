@@ -1,5 +1,10 @@
 #include "InspectorPanel.h"
 
+#include <QPointer>
+#include <QSignalBlocker>
+
+#include <functional>
+
 #include "AssistantPanel.h"
 #include "theme/VisivoTheme.h"
 
@@ -230,10 +235,47 @@ void InspectorPanel::addToolGroup(const QString &caption)
     groupLayout(caption);
 }
 
+namespace {
+
+/// A tool button that announces itself BEFORE its default action runs.
+///
+/// QAbstractButton emits clicked() only after nextCheckState() has already
+/// triggered the action — so with a default action, a connection on clicked()
+/// arrives after a modal dialog has opened AND closed. The Inspector needs to
+/// expand onto its Analysis tab first (§4.1.4), which is the whole reason the
+/// notification exists, so it has to go out from inside nextCheckState().
+class ToolLaunchButton : public QToolButton
+{
+public:
+    ToolLaunchButton(std::function<void()> announce, QWidget *parent)
+        : QToolButton(parent), m_announce(std::move(announce))
+    {
+    }
+
+protected:
+    void nextCheckState() override
+    {
+        // Guarded: the announcement runs a slot synchronously, and if a future
+        // one ever deletes this button the base call below would run on a dead
+        // object. Qt's own guard wraps the click, not the inside of an override.
+        QPointer<ToolLaunchButton> alive(this);
+        if (m_announce)
+            m_announce();
+        if (!alive)
+            return;
+        QToolButton::nextCheckState();   // triggers the default action
+    }
+
+private:
+    std::function<void()> m_announce;
+};
+
+}  // namespace
+
 void InspectorPanel::addTool(const QString &groupCaption, const QString &label, QAction *action)
 {
     QVBoxLayout *g = groupLayout(groupCaption);
-    auto *btn = new QToolButton(m_analysisPage);
+    auto *btn = new ToolLaunchButton([this]() { emit toolLaunched(); }, m_analysisPage);
     btn->setText(label);
     btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
     btn->setCursor(Qt::PointingHandCursor);
@@ -242,13 +284,22 @@ void InspectorPanel::addTool(const QString &groupCaption, const QString &label, 
     btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     btn->setStyleSheet(VisivoTheme::sidebarToolButtonStyleSheet());
     if (action) {
-        btn->setEnabled(action->isEnabled());
-        // Emit BEFORE triggering the action: the tool may open a modal dialog, and
-        // we want the Inspector to expand onto Analysis first (§4.1.4).
-        connect(btn, &QToolButton::clicked, this, &InspectorPanel::toolLaunched);
-        connect(btn, &QToolButton::clicked, action, &QAction::trigger);
-        connect(action, &QAction::changed, btn,
-                [btn, action]() { btn->setEnabled(action->isEnabled()); });
+        // setDefaultAction, not a hand-rolled connect(changed).
+        //
+        // The button has to mirror enabled AND checked state now that this tab
+        // carries every tool rather than a hand-picked set of dialogs — and a
+        // manual connection to QAction::changed() misses every place that
+        // updates an action under a QSignalBlocker, of which this codebase has
+        // several: clearing a catalogue overlay, cancelling PV Width, the linked
+        // blend mode. Qt delivers QEvent::ActionChanged to a default-action
+        // button regardless of blocked SIGNALS, so this tracks all of them
+        // without a patch at each site.
+        //
+        // The trade is that the action owns the text; `label` is honoured only
+        // when there is no action to take it from.
+        btn->setDefaultAction(action);
+        // The announcement comes from ToolLaunchButton, before the trigger —
+        // see the note there for why clicked() is too late.
     }
     g->addWidget(btn);
 }

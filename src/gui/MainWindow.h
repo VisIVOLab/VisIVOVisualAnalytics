@@ -5,6 +5,7 @@
 
 #include <QMainWindow>
 #include <QPointer>
+#include <QStringList>
 #include <QString>
 #include <QTimer>
 
@@ -143,6 +144,10 @@ private:
     // distinguish it from genuinely-disposable tabs in the close handler.
     QPointer<QWidget>                m_vlkbPanel;
     QPointer<CommandPalette>         m_commandPalette;
+    /// Palette groups contributed by the active viewer's menus. Cleared and
+    /// rebuilt on every open, so a viewer that has been closed since leaves
+    /// nothing behind in the list.
+    QStringList                      m_paletteWindowGroups;
 
     // Backend diagnostics mirror — polls /v1/diagnostics/events every few
     // seconds and re-publishes each new entry into DiagnosticsManager, so

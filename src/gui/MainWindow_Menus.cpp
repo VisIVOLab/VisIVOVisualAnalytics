@@ -1,4 +1,6 @@
 #include "MainWindow.h"
+#include <QHash>
+#include <functional>
 #include "ui_MainWindow.h"
 
 #include "AboutDialog.h"
@@ -101,7 +103,10 @@ void MainWindow::rebuildCommandPalette()
     if (!s_staticAdded) {
         // ── File ────────────────────────────────────────────────────────────
         this->m_commandPalette->addAction(
-                {u"⌘"_s, u"Open Remote Dataset…"_s,
+                // ▣ and not ⌘: the Command symbol reads as a keyboard modifier,
+                // and the shortcut column two inches to the right is full of
+                // real ones. Same reason ⌥ is gone from Spectral Stacking.
+                {u"▣"_s, u"Open Remote Dataset…"_s,
                  u"File · backend filesystem · FITS"_s, u"⌘O"_s, u"File"_s,
                  [this]() { this->openData(); }});
         this->m_commandPalette->addAction(
@@ -162,7 +167,7 @@ void MainWindow::rebuildCommandPalette()
                      if (this->m_actBaseline) this->m_actBaseline->trigger();
                  }});
         this->m_commandPalette->addAction(
-                {u"⌥"_s, u"Spectral Stacking…"_s,
+                {u"≡"_s, u"Spectral Stacking…"_s,
                  u"Science · stack multiple session cubes into 1-D spectrum"_s,
                  QString(), u"Science"_s, [this]() {
                      if (this->m_actStack) this->m_actStack->trigger();
@@ -205,6 +210,104 @@ void MainWindow::rebuildCommandPalette()
                  }});
 
         s_staticAdded = true;
+    }
+
+    // ── The active window's own menus (dynamic) ─────────────────────────────
+    //
+    // ⌘K from a viewer forwards here, so before this the palette answered with
+    // MainWindow's commands only: pressing it in the cube viewer offered "Open
+    // Remote Dataset" and nothing you could actually do to the cube. Everything
+    // that window can do already exists, in its menu bar — so read it, rather
+    // than curate a second list that would drift the first time someone adds a
+    // menu item and forgets the palette.
+    //
+    // The source is whatever window is active when the palette is asked for.
+    // This runs from a queued invocation, before the palette is shown, so the
+    // viewer that invoked it is still the active window.
+    for (const QString &g : std::as_const(this->m_paletteWindowGroups))
+        this->m_commandPalette->clearGroup(g);
+    this->m_paletteWindowGroups.clear();
+
+    if (auto *src = qobject_cast<QMainWindow *>(QApplication::activeWindow())) {
+        if (src != this && src->menuBar()) {
+            // A glyph per menu, so the viewer's entries read as a list rather
+            // than eighty rows of the same "›" fallback next to the curated
+            // entries that all have one. Keyed on the menu title, with "›" for
+            // anything a future menu adds. Every character here was checked
+            // against the app font — none falls back to a substitute family,
+            // which is what makes a glyph column line up.
+            static const QHash<QString, QString> kMenuGlyph{
+                { u"Camera"_s, u"\u25ce"_s },   // ◎
+                { u"Edit"_s,   u"\u270e"_s },   // ✎
+                { u"View"_s,   u"\u25f1"_s },   // ◱
+                { u"WCS"_s,    u"\u2295"_s },   // ⊕
+                { u"Tools"_s,  u"\u2692"_s },   // ⚒
+                { u"File"_s,   u"\u25a3"_s },   // ▣
+                { u"Data"_s,   u"\u25a3"_s },
+            };
+            // Depth-first over the menu tree; only leaves become commands, and a
+            // submenu's title joins the group so "Camera ▸ Presets" stays legible.
+            const std::function<void(QMenu *, const QString &)> walk =
+                    [&](QMenu *menu, const QString &group) {
+                        if (!menu)
+                            return;
+                        const auto acts = menu->actions();
+                        for (QAction *a : acts) {
+                            if (!a || a->isSeparator())
+                                continue;
+                            if (a->menu()) {
+                                walk(a->menu(), group + u" \u25b8 "_s + a->menu()->title()
+                                                                 .remove(u'&'));
+                                continue;
+                            }
+                            const QString label = a->text().remove(u'&');
+                            if (label.isEmpty())
+                                continue;
+                            // Checkable entries say which way the command will
+                            // flip them; a bare "Show Cutting Plane" in a list is
+                            // ambiguous about what pressing it does. A disabled
+                            // one says so rather than looking available and doing
+                            // nothing when chosen. And QAction::toolTip() falls
+                            // back to the action's own text, so an entry with no
+                            // tooltip would otherwise print its label twice.
+                            QString subtitle;
+                            if (!a->isEnabled())
+                                subtitle = u"Unavailable right now"_s;
+                            else if (a->isCheckable())
+                                subtitle = a->isChecked() ? u"On \u2014 select to turn off"_s
+                                                          : u"Off \u2014 select to turn on"_s;
+                            else {
+                                const QString tip = a->toolTip().remove(u'&');
+                                if (tip != label)
+                                    subtitle = tip;
+                            }
+                            if (!this->m_paletteWindowGroups.contains(group))
+                                this->m_paletteWindowGroups.append(group);
+                            // The top-level menu's glyph, not the submenu's:
+                            // "View ▸ Animation Speed" belongs to View.
+                            const QString glyph = kMenuGlyph.value(
+                                    group.section(u" \u25b8 "_s, 0, 0)
+                                            .section(u" \u00b7 "_s, -1));
+                            this->m_commandPalette->addAction(
+                                    { glyph, label, subtitle,
+                                      a->shortcut().toString(QKeySequence::NativeText), group,
+                                      [a]() { if (a && a->isEnabled()) a->trigger(); } });
+                        }
+                    };
+            // Prefixed, and not by decoration: the viewer's menu titles collide
+            // with the curated groups — a cube contributes "View", an image
+            // viewer "File" and "View" — and the cleanup below clears groups BY
+            // NAME. Opening the palette from a viewer and reopening it therefore
+            // deleted the permanent "Open Diagnostics Window" and the File
+            // commands, with s_staticAdded making sure they never came back.
+            // The prefix also says what the reader needs to know: these act on
+            // the window in front of them, not on the application.
+            const auto top = src->menuBar()->actions();
+            for (QAction *a : top)
+                if (a->menu())
+                    walk(a->menu(),
+                         u"This window \u00b7 "_s + a->menu()->title().remove(u'&'));
+        }
     }
 
     // ── Recent datasets (dynamic) ───────────────────────────────────────────
