@@ -238,6 +238,33 @@ QString vtkWindowCube::spectralAxisTitle() const
     return u"%1 (%2)"_s.arg(descriptor.label, descriptor.unit);
 }
 
+void vtkWindowCube::pushSpectralAxisContext(ProfileWidget *plot) const
+{
+    if (!plot)
+        return;
+    // The CTYPE, not the pretty label: the line overlay has to know the velocity
+    // CONVENTION (VOPT vs VRAD vs VELO), and "Optical Velocity" is a label, not a
+    // convention. The unit is the descriptor's, which is what the plotted values
+    // are in (remoteVoxelToWcs returns header units).
+    const auto d = this->spectralAxisDescriptor();
+    QString ctype = d.sourceLabel.trimmed();
+    if (ctype.isEmpty())
+        ctype = this->remoteSpectralAxisType.trimmed();
+    if (ctype.isEmpty())
+        ctype = this->remoteDatasetCtype[2].trimmed();
+    plot->setSpectralAxisContext(ctype, d.unit, this->m_restFreqHz);
+}
+
+void vtkWindowCube::setRestFrequency(double restFreqHz)
+{
+    this->m_restFreqHz = restFreqHz > 0.0 ? restFreqHz : 0.0;
+    // Widgets built before this arrives (MainWindow sets it right after the
+    // constructor) get the value now.
+    for (const auto &sp : this->m_paneSpectra)
+        this->pushSpectralAxisContext(sp);
+    this->pushSpectralAxisContext(this->probePlotWidget);
+}
+
 QString vtkWindowCube::spectralAxisTooltip() const
 {
     const auto descriptor = this->spectralAxisDescriptor();

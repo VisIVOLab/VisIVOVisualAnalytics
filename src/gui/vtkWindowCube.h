@@ -239,6 +239,11 @@ public:
     /// Raw BUNIT (brightness value unit, e.g. "Jy/beam") from the FITS header.
     /// Set once by MainWindow after construction; shown in the cursor readout.
     void setBrightnessUnit(const QString &unit) { m_brightnessUnit = unit; }
+
+    /// The cube's rest frequency in Hz (header RESTFRQ/RESTFREQ; 0 when absent),
+    /// handed to every spectrum plot so a REST-frame line list can be placed on
+    /// a velocity axis — impossible without it.
+    void setRestFrequency(double restFreqHz);
     /// Provide beam metadata (BMAJ/BMIN in degrees, BPA in degrees E of N).
     /// Call after construction; the beam ellipse is drawn in the 2D slice
     /// renderer's bottom-left corner. Pass NaN major to hide the indicator.
@@ -446,6 +451,7 @@ private:
     QLabel        *m_specInspStats     { nullptr };
     QComboBox     *m_specInspSmooth    { nullptr };
     QPushButton   *m_specInspFit       { nullptr };
+    QPushButton   *m_specInspClearFit  { nullptr };   ///< remove the fitted-curve overlay
     QPushButton   *m_specInspLoadLines { nullptr };
     QPushButton   *m_specInspClearLines{ nullptr };
     QPushButton   *m_specInspPin       { nullptr };
@@ -491,6 +497,10 @@ private:
     /// explicit "Pin Spectrum", so ending the tool must not register it again.
     /// Cleared whenever updateProbePlot() writes a NEW curve.
     bool m_lastProbeSpectrumPinned{ false };
+    /// Label of that product ("Spectrum 2"), so the pane can SAY the curve is
+    /// already saved. Without it, ending the tool on an already-saved curve
+    /// looked like the spectrum being thrown away.
+    QString m_lastProbeSpectrumProduct;
     /// Write the live spectrum pane's state + the two ways out of the tool into
     /// its header (hover tracks / click pins / click again resumes).
     void updateLiveSpectrumHeader();
@@ -1622,6 +1632,10 @@ protected:
     double spectralAxisValue(double datasetVoxelIndex, bool *ok = nullptr) const;
     QString formatSpectralAxisValue(double datasetVoxelIndex) const;
     QString spectralAxisTitle() const;
+    /// Give @p plot the spectral-axis context the line overlay needs (CTYPE,
+    /// unit, rest frequency).
+    void pushSpectralAxisContext(ProfileWidget *plot) const;
+    double m_restFreqHz{ 0.0 };
     QString spectralAxisTooltip() const;
     void refreshSpectralAxisUi();
     bool remoteHasWcsAxis(int axis) const;

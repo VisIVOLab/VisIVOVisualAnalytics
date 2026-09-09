@@ -726,6 +726,8 @@ static BackendOpenDatasetResult parseOpenDatasetObject(const QJsonObject &object
     }
     result.spectralAxisType = object.value(QStringLiteral("spectral_axis_type")).toString();
     result.spectralAxisUnit = object.value(QStringLiteral("spectral_axis_unit")).toString();
+    // null (absent header card) → 0.0, which every consumer reads as "unknown".
+    result.restFreqHz = object.value(QStringLiteral("rest_freq_hz")).toDouble(0.0);
     result.bunit = object.value(QStringLiteral("bunit")).toString();
 
     const QJsonArray spacing = object.value(QStringLiteral("spacing")).toArray();
@@ -907,6 +909,8 @@ BackendOpenDatasetResult BackendClient::openSkavaDataset(const QString &obsId,
     }
     result.spectralAxisType = object.value(QStringLiteral("spectral_axis_type")).toString();
     result.spectralAxisUnit = object.value(QStringLiteral("spectral_axis_unit")).toString();
+    // null (absent header card) → 0.0, which every consumer reads as "unknown".
+    result.restFreqHz = object.value(QStringLiteral("rest_freq_hz")).toDouble(0.0);
     result.bunit = object.value(QStringLiteral("bunit")).toString();
 
     const QJsonArray spacing = object.value(QStringLiteral("spacing")).toArray();

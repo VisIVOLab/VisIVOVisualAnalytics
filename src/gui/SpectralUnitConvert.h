@@ -63,6 +63,84 @@ inline bool convertSpectralValue(double value, const QString &fromUnit, const QS
     return true;
 }
 
+/// ── Cross-quantity: placing a rest-frame line on an observed axis ───────────
+///
+/// A spectral-line list carries REST frequencies. To draw one on a spectrum two
+/// things have to happen, and skipping either puts the marker in the wrong place
+/// (or off-plot entirely, which is how the first version of the line overlay
+/// behaved): the line must be redshifted to the observed frame of the source, and
+/// the observed frequency must be expressed in the axis's own quantity and
+/// velocity convention. The convention is not a detail — optical and radio
+/// velocities of the same line differ by ~v²/c, which at 1000 km/s is already
+/// 3 km/s, several channels of an HI cube.
+constexpr double kCLightMs = 299792458.0;
+
+/// Spectral-axis flavour, from the FITS CTYPE of the spectral axis.
+enum class AxisKind { Unknown, Frequency, VelocityOptical, VelocityRadio, VelocityRelativistic };
+
+/// Classify a spectral CTYPE ("FREQ", "VOPT", "VRAD", "VELO", "FELO-HEL", …).
+/// The trailing frame code (-LSR, -HEL, -BAR) does not change the arithmetic
+/// here, so it is ignored; an unknown or non-spectral CTYPE gives Unknown.
+inline AxisKind axisKindFromCtype(QString ctype)
+{
+    ctype = ctype.trimmed().toUpper();
+    const int dash = ctype.indexOf(QLatin1Char('-'));
+    const QString base = dash > 0 ? ctype.left(dash) : ctype;
+    if (base == QStringLiteral("FREQ"))
+        return AxisKind::Frequency;
+    if (base == QStringLiteral("VOPT") || base == QStringLiteral("FELO"))
+        return AxisKind::VelocityOptical;
+    if (base == QStringLiteral("VRAD"))
+        return AxisKind::VelocityRadio;
+    // "VELO" alone is the apparent radial velocity; the FITS standard reads it as
+    // relativistic, and AIPS-era files use it for optical. Relativistic is the
+    // standard's meaning, and the difference only shows in the third digit.
+    if (base == QStringLiteral("VELO"))
+        return AxisKind::VelocityRelativistic;
+    return AxisKind::Unknown;
+}
+
+/// Observed frequency of a line of rest frequency @p restHz at redshift @p z.
+inline double observedFrequencyHz(double restHz, double z)
+{
+    return (1.0 + z) > 0.0 ? restHz / (1.0 + z) : 0.0;
+}
+
+/// Redshift equivalent of an optical systemic velocity in m/s (z = v/c). The
+/// optical convention is what source catalogues quote, which is why it is the
+/// one exposed for user input.
+inline double redshiftFromOpticalVelocity(double vMs) { return vMs / kCLightMs; }
+
+/// Where an observed frequency @p fObsHz lands on an axis of @p kind whose own
+/// rest frequency is @p axisRestHz — in SI (Hz for a frequency axis, m/s for a
+/// velocity one). False when the axis kind is unknown, or when a velocity axis
+/// has no rest frequency to convert against (no RESTFRQ in the header).
+inline bool axisValueForFrequency(double fObsHz, AxisKind kind, double axisRestHz, double &outSi)
+{
+    if (!(fObsHz > 0.0))
+        return false;
+    if (kind == AxisKind::Frequency) {
+        outSi = fObsHz;
+        return true;
+    }
+    if (!(axisRestHz > 0.0))
+        return false;
+    const double r = axisRestHz;
+    switch (kind) {
+    case AxisKind::VelocityOptical:
+        outSi = kCLightMs * (r / fObsHz - 1.0);
+        return true;
+    case AxisKind::VelocityRadio:
+        outSi = kCLightMs * (1.0 - fObsHz / r);
+        return true;
+    case AxisKind::VelocityRelativistic:
+        outSi = kCLightMs * (r * r - fObsHz * fObsHz) / (r * r + fObsHz * fObsHz);
+        return true;
+    default:
+        return false;
+    }
+}
+
 }  // namespace spectral
 
 #endif  // SPECTRAL_UNIT_CONVERT_H

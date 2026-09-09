@@ -531,8 +531,9 @@ void vtkWindowCube::updateProbePlot()
     const bool hadProbeSpectrum = !this->m_lastProbeValues.isEmpty();
     this->m_lastProbeKey = spectral;
     this->m_lastProbeValues = values;
-    // A NEW curve: whatever was pinned before does not cover this one.
+    // A NEW curve: whatever was saved before does not cover this one.
     this->m_lastProbeSpectrumPinned = false;
+    this->m_lastProbeSpectrumProduct.clear();
     this->m_lastProbeXLabel = this->spectralAxisTitle().isEmpty() ? u"Spectral axis"_s
                                                                   : this->spectralAxisTitle();
     this->m_lastProbeYLabel = u"Intensity"_s;

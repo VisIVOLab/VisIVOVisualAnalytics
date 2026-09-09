@@ -126,6 +126,9 @@ struct BackendOpenDatasetResult
     QList<int> wcsSanitizedAxes;
     QString spectralAxisType;
     QString spectralAxisUnit;
+    /// Header RESTFRQ/RESTFREQ in Hz; 0 when the header carries neither. Needed
+    /// to place a spectral-line list on a velocity axis (rest freq ↔ velocity).
+    double restFreqHz{ 0.0 };
     std::array<double, 3> spacing{ 1.0, 1.0, 1.0 };
     std::array<double, 3> origin{ 0.0, 0.0, 0.0 };
     QString bunit;   ///< raw BUNIT from the FITS header (physical value unit)

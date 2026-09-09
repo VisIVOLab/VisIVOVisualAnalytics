@@ -68,6 +68,30 @@ def freq_cube(tmp_path_factory) -> Path:
 
 
 @pytest.fixture(scope="module")
+def restfrq_cube(tmp_path_factory) -> Path:
+    """Cube carrying the FITS-standard RESTFRQ card (HI 21 cm)."""
+    p = tmp_path_factory.mktemp("ds") / "restfrq_cube.fits"
+    rng = np.random.default_rng(7)
+    data = rng.standard_normal((32, 64, 64)).astype(np.float32)
+    h = _base_cube_header()
+    h["RESTFRQ"] = 1.420405751786e9
+    _write_fits(p, data, h)
+    return p
+
+
+@pytest.fixture(scope="module")
+def restfreq_cube(tmp_path_factory) -> Path:
+    """Same, spelled the older AIPS way (RESTFREQ)."""
+    p = tmp_path_factory.mktemp("ds") / "restfreq_cube.fits"
+    rng = np.random.default_rng(8)
+    data = rng.standard_normal((32, 64, 64)).astype(np.float32)
+    h = _base_cube_header()
+    h["RESTFREQ"] = 1.420405751786e9
+    _write_fits(p, data, h)
+    return p
+
+
+@pytest.fixture(scope="module")
 def pc_cube(tmp_path_factory) -> Path:
     """Cube with a PC rotation matrix (off-diagonal terms)."""
     p = tmp_path_factory.mktemp("ds") / "pc_cube.fits"
@@ -303,6 +327,12 @@ class TestFreqCubeBaseline:
         meta = ds.spectral_axis_metadata(0, 31)
         assert meta["axis_unit"] in ("Hz", "Hz")
 
+    def test_rest_freq_absent_is_none(self, freq_cube):
+        # No RESTFRQ card → None, never 0.0: a client must be able to tell
+        # "no rest frequency" from a rest frequency it would divide by.
+        ds = _load(freq_cube)
+        assert ds.geometry_metadata()["rest_freq_hz"] is None
+
     def test_no_beam(self, freq_cube):
         ds = _load(freq_cube)
         assert ds.beam.major is None
@@ -516,3 +546,17 @@ class TestSpectralChannelClamping:
         full = ds.spectral_axis_metadata(0, 31)["coordinates"]
         ch5 = ds.spectral_axis_metadata(5, 5)["coordinates"][0]
         np.testing.assert_allclose(full[5], ch5, rtol=1e-9)
+
+
+# ── Rest frequency (needed to place a line list on a velocity axis) ──────────
+
+
+class TestRestFrequency:
+    def test_restfrq_card_is_reported(self, restfrq_cube):
+        ds = _load(restfrq_cube)
+        assert ds.geometry_metadata()["rest_freq_hz"] == pytest.approx(1.420405751786e9)
+
+    def test_older_restfreq_spelling_is_reported(self, restfreq_cube):
+        # Both spellings are in the wild; a client cannot be asked to care.
+        ds = _load(restfreq_cube)
+        assert ds.geometry_metadata()["rest_freq_hz"] == pytest.approx(1.420405751786e9)

@@ -131,6 +131,13 @@ public:
     void applySmoothingCode(int code);           ///< set the smoothing kernel (combo data value)
     int  smoothingCode() const;                  ///< current kernel code (0 = none)
     void fitGaussianNow();                        ///< run the backend Gaussian fit + overlay
+    void clearFitNow();                           ///< remove the fitted-curve overlay + its label
+    /// Spectral-axis context for the line overlay: the axis CTYPE (FREQ / VOPT /
+    /// VRAD / VELO), the unit its values are in, and the cube's own rest
+    /// frequency in Hz (0 when the header has no RESTFRQ). Without these a rest
+    /// -frequency line list cannot be placed on the axis at all.
+    void setSpectralAxisContext(const QString &ctype, const QString &unit, double restFreqHz);
+    bool hasFit() const { return m_fitGraph != nullptr; }   ///< a fit is currently overlaid
     void loadLinesFromFile();                     ///< open the Line-ID CSV picker + overlay
     void clearLines();                            ///< remove the Line-ID overlay
     void saveSpectrumCsvNow();                     ///< export the raw spectrum as CSV
@@ -257,17 +264,32 @@ private:
     /// pinned curve matches exactly what was on screen when it was pinned.
     QVector<double> displayedSpectrumValues() const;
 
-    // Line identification overlay — vertical annotated lines at known
-    // spectral frequencies loaded from a user CSV (rest_freq, label).
+    // Line identification overlay — vertical annotated markers at known spectral
+    // lines read from a file. What the file carries is REST frequencies; what is
+    // stored here is the position on THIS axis, after the redshift shift and the
+    // unit / velocity-convention conversion (see loadLineIdFile).
     struct SpectralLine {
         double frequency;   // in the same unit as the X axis
         QString label;
     };
     QVector<SpectralLine> m_lineIds;
+    QString m_axisCtype;         ///< spectral CTYPE of the plotted axis
+    QString m_axisUnit;          ///< unit of the plotted axis values
+    double  m_axisRestFreqHz{ 0.0 };   ///< cube RESTFRQ in Hz (0 = unknown)
     QVector<QCPItemLine*> m_lineIdMarkers;
     QVector<QCPItemText*> m_lineIdLabels;
     void loadLineIdFile();
     void drawLineIdOverlay();
+    /// A line read from the file, before any conversion.
+    struct RestLine {
+        double value{ 0.0 };   ///< in the file's own unit
+        QString label;
+    };
+    /// Parse a line list: a 2-column `value,label` CSV, or a catalogue export
+    /// (Splatalogue / CDMS style) whose header row names the columns. Returns the
+    /// rows plus, when the file says so, a unit hint ("GHz").
+    static QVector<RestLine> parseLineListFile(const QString &text, QString &unitHint,
+                                               QString &formatNote);
     void clearLineIdOverlay();
     // Region-mode header text. Populated by setRegionContext(); used by
     // refreshSpectrumHeader() when usageMode == RegionStatic so the meta

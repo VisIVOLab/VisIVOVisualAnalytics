@@ -633,6 +633,7 @@ void MainWindow::openViewerFromOpenedDataset(const QString &path,
         cubeWin->setBeamInfo(opened.beamMajorDeg, opened.beamMinorDeg,
                              opened.beamPaDeg);
         cubeWin->setBrightnessUnit(opened.bunit);
+        cubeWin->setRestFrequency(opened.restFreqHz);
         // Live refresh: when this cube viewer pushes a new FITS into the
         // Workspace Exports, the Data Hub panel updates within frames of
         // the operation instead of on the next backend health tick.

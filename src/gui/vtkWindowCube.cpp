@@ -8327,6 +8327,7 @@ ProfileWidget *vtkWindowCube::ensureSlotSpectrumView(int slot, const QString &xL
         // clutter); hide the inline chrome and give it the backend so the Inspector's Fit works.
         sp->setPaneChromeHidden(true);
         sp->setBackend(this->remoteBackendUrl, this->remoteBackendToken);
+        pushSpectralAxisContext(sp);   // CTYPE + unit + RESTFRQ, for "Load Lines…"
         // Keep the Inspector's Spectrum panel live when THIS pane is the active target.
         QObject::connect(sp, &ProfileWidget::spectrumChanged, this, [this, sp]() {
             if (m_specInspTarget == sp)
@@ -8573,9 +8574,10 @@ void vtkWindowCube::pinCurrentSpectrum()
         return;
     }
     const int n = ++m_pinnedSpectrumCount;
-    m_lastProbeSpectrumPinned = true;   // this curve is a product now; do not promote it twice
     const QString productId = this->scopedProductId(QStringLiteral("spectrum%1").arg(n));
     const QString label = QStringLiteral("Spectrum %1").arg(n);
+    m_lastProbeSpectrumPinned = true;   // this curve is a product now; do not promote it twice
+    m_lastProbeSpectrumProduct = label;   // …and the pane says so, by name
     Spectrum1D s;
     s.key = m_lastProbeKey;
     s.values = m_lastProbeValues;
@@ -8944,11 +8946,17 @@ void vtkWindowCube::updateLiveSpectrumHeader()
     // ways OUT of it go in the meta line — otherwise the whole interaction is
     // undiscoverable: hover tracks, one click pins, a second click resumes, and
     // nothing on screen said any of that, so the tool read as "never finishes".
-    const QString hint = this->probeFrozen
-            ? u"\U0001F512 Pinned — click the slice again to resume tracking  ·  "
+    // Three states, each with its own next step — the one that was missing is
+    // "already saved": ending the tool then removes the live row and adds
+    // nothing, which read as losing the spectrum rather than as it being safe.
+    const QString hint = !this->probeFrozen
+            ? u"\U0001F7E2 Live — hover the slice to track, click a pixel to pin its spectrum"_s
+            : m_lastProbeSpectrumPinned
+            ? u"\U0001F4BE Saved as \u201C%1\u201D in Session Data  ·  click the slice "
+              u"again to resume tracking"_s.arg(m_lastProbeSpectrumProduct)
+            : u"\U0001F512 Pinned — click the slice again to resume tracking  ·  "
               u"ending the tool (Extract Spectrum / Esc) keeps this spectrum in "
-              u"Session Data  ·  \u201CPin Spectrum\u201D keeps it now"_s
-            : u"\U0001F7E2 Live — hover the slice to track, click a pixel to pin its spectrum"_s;
+              u"Session Data  ·  \u201CPin Spectrum\u201D keeps it now"_s;
     for (int i = 0; i < 4; ++i)
         if (m_slots[i].view.kind == ViewId::Product
             && m_slots[i].view.productId == m_spectrumLiveId && m_paneSpectra[i]) {
@@ -8960,9 +8968,12 @@ void vtkWindowCube::updateLiveSpectrumHeader()
             m_paneSpectra[i]->setSpectrumMeta(parts.join(u"  \u00B7  "_s), hint);
             if (m_slots[i].qualifier)
                 m_slots[i].qualifier->setText(
-                        this->probeFrozen
-                                ? px + u"  \u00B7  \U0001F512 pinned \u2014 click again to resume"_s
-                                : px + u"  \u00B7  \U0001F7E2 live"_s);
+                        !this->probeFrozen
+                                ? px + u"  \u00B7  \U0001F7E2 live"_s
+                                : m_lastProbeSpectrumPinned
+                                ? px + u"  \u00B7  \U0001F4BE saved as %1"_s
+                                          .arg(m_lastProbeSpectrumProduct)
+                                : px + u"  \u00B7  \U0001F512 pinned \u2014 click again to resume"_s);
         }
 }
 
@@ -10297,25 +10308,37 @@ void vtkWindowCube::buildSpectrumInspectorControls(InspectorPanel *panel)
     };
     m_specInspFit        = mkBtn(u"Fit Gaussian"_s,
                                  u"Fit a single Gaussian (+ linear baseline) via the backend."_s);
+    m_specInspClearFit   = mkBtn(u"Clear Fit"_s,
+                                 u"Remove the fitted Gaussian overlay and its summary."_s);
     m_specInspLoadLines  = mkBtn(u"Load Lines…"_s,
                                  u"Overlay spectral-line markers from a CSV (frequency,label)."_s);
     m_specInspClearLines = mkBtn(u"Clear Lines"_s, u"Remove the line-ID overlay."_s);
-    m_specInspPin        = mkBtn(u"Pin Spectrum"_s,
-                                 u"Pin the current curve as a comparison overlay."_s);
-    m_specInspClearPins  = mkBtn(u"Clear Pins"_s, u"Remove all pinned comparison curves."_s);
+    // "Compare", not "Pin Spectrum" — SPECTRAL ▸ Pin Spectrum in the tool list
+    // above saves the curve as a product in Session Data, and this one only lays
+    // it on the plot for comparison. One label for both was the reason a user
+    // pinned a spectrum and then could not find it in Session Data.
+    m_specInspPin        = mkBtn(u"Compare"_s,
+                                 u"Keep the current curve on this plot as a comparison "
+                                 u"overlay — display only, NOT saved as a product "
+                                 u"(that is Tools ▸ Pin Spectrum)."_s);
+    m_specInspClearPins  = mkBtn(u"Clear Overlays"_s,
+                                 u"Remove all comparison curves from this plot."_s);
     m_specInspSaveCsv    = mkBtn(u"Save CSV…"_s, u"Export the raw spectrum as CSV."_s);
     m_specInspSavePng    = mkBtn(u"Save PNG…"_s, u"Export the plot as a PNG image."_s);
 
     auto *grid = new QGridLayout();
     grid->setHorizontalSpacing(6);
     grid->setVerticalSpacing(4);
+    // One row per action, with its own "clear" beside it — the pairing is the
+    // point: every overlay this panel can add, it can also take away.
     grid->addWidget(m_specInspFit,        0, 0);
-    grid->addWidget(m_specInspLoadLines,  0, 1);
-    grid->addWidget(m_specInspClearLines, 1, 0);
-    grid->addWidget(m_specInspPin,        1, 1);
-    grid->addWidget(m_specInspClearPins,  2, 0);
-    grid->addWidget(m_specInspSaveCsv,    2, 1);
-    grid->addWidget(m_specInspSavePng,    3, 0);
+    grid->addWidget(m_specInspClearFit,   0, 1);
+    grid->addWidget(m_specInspLoadLines,  1, 0);
+    grid->addWidget(m_specInspClearLines, 1, 1);
+    grid->addWidget(m_specInspPin,        2, 0);
+    grid->addWidget(m_specInspClearPins,  2, 1);
+    grid->addWidget(m_specInspSaveCsv,    3, 0);
+    grid->addWidget(m_specInspSavePng,    3, 1);
     col->addLayout(grid);
 
     m_specInspStats = new QLabel(u"—"_s);
@@ -10338,6 +10361,7 @@ void vtkWindowCube::buildSpectrumInspectorControls(InspectorPanel *panel)
         return [this, fn]() { if (m_specInspTarget) (m_specInspTarget->*fn)(); };
     };
     QObject::connect(m_specInspFit,        &QPushButton::clicked, this, onTarget(&ProfileWidget::fitGaussianNow));
+    QObject::connect(m_specInspClearFit,   &QPushButton::clicked, this, onTarget(&ProfileWidget::clearFitNow));
     QObject::connect(m_specInspLoadLines,  &QPushButton::clicked, this, onTarget(&ProfileWidget::loadLinesFromFile));
     QObject::connect(m_specInspClearLines, &QPushButton::clicked, this, onTarget(&ProfileWidget::clearLines));
     QObject::connect(m_specInspPin,        &QPushButton::clicked, this,
@@ -10357,12 +10381,16 @@ void vtkWindowCube::updateSpectrumInspectorControls()
     using namespace Qt::StringLiterals;
     if (!m_spectrumInspector)
         return;
-    // Target: the SPECTRUM ON SCREEN being worked on, not "whatever the focused
-    // pane happens to be". Same principle as the tool gate — a spectrum's controls
-    // must not appear only after clicking its plot and vanish again when the user
-    // clicks the 3-D view. Order: the active pane if it IS a spectrum, else the
-    // live probe preview (the one a just-armed Extract Spectrum is driving), else
-    // the first spectrum pane on screen.
+    // Target: the spectrum the user is working on — the SELECTED pane, or, while a
+    // probe tool is running, the live preview that tool is driving.
+    //
+    // Those are the only two answers that mean anything. Selection alone made the
+    // controls appear only after clicking the plot and vanish again on a click in
+    // the 3-D view (the tool was running the whole time). But "any spectrum pane
+    // on screen" is equally wrong the other way: with the tool closed there is no
+    // current spectrum, only products, so a panel of fit / pin / export controls
+    // aimed at whichever one happens to be mounted is aimed at nothing the user
+    // pointed at. No spectrum selected and no tool running → no panel.
     auto spectrumSlot = [this]() {
         auto isSpectrum = [this](int i) {
             return m_slots[i].view.kind == ViewId::Product
@@ -10371,13 +10399,10 @@ void vtkWindowCube::updateSpectrumInspectorControls()
         };
         if (m_activePane >= 0 && m_activePane < 4 && isSpectrum(m_activePane))
             return m_activePane;
-        if (!m_spectrumLiveId.isEmpty())
+        if (!m_spectrumLiveId.isEmpty())   // a probe tool is armed and drawing
             for (int i = 0; i < 4; ++i)
                 if (isSpectrum(i) && m_slots[i].view.productId == m_spectrumLiveId)
                     return i;
-        for (int i = 0; i < 4; ++i)
-            if (isSpectrum(i))
-                return i;
         return -1;
     };
     const int slot = spectrumSlot();
@@ -10397,11 +10422,12 @@ void vtkWindowCube::updateSpectrumInspectorControls()
     }
     const bool haveSpec = sp->hasSpectrum();
     m_specInspFit->setEnabled(haveSpec && sp->canFit());
+    m_specInspClearFit->setEnabled(sp->hasFit());
     m_specInspPin->setEnabled(haveSpec);
     m_specInspClearPins->setEnabled(sp->pinnedSpectrumCount() > 0);
     m_specInspClearPins->setText(sp->pinnedSpectrumCount() > 0
-                                         ? u"Clear Pins (%1)"_s.arg(sp->pinnedSpectrumCount())
-                                         : u"Clear Pins"_s);
+                                         ? u"Clear Overlays (%1)"_s.arg(sp->pinnedSpectrumCount())
+                                         : u"Clear Overlays"_s);
     m_specInspSaveCsv->setEnabled(haveSpec);
     m_specInspSavePng->setEnabled(haveSpec);
     const QString stats = sp->statsText();

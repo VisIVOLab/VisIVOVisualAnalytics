@@ -25,4 +25,11 @@ private slots:
     void convert_sameUnitIsIdentity();
     void convert_crossQuantityFails();
     void convert_unknownUnitFails();
+
+    void axisKind_fromCtypeSpellings();
+    void observedFrequency_redshiftsTheLine();
+    void axisValue_frequencyAxisIsIdentity();
+    void axisValue_opticalRadioAndRelativisticDiffer();
+    void axisValue_hiLineAtRestSitsAtZeroVelocity();
+    void axisValue_needsARestFrequencyOnAVelocityAxis();
 };

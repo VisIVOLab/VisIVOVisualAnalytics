@@ -865,6 +865,7 @@ void vtkWindowCube::analyzeCurrentRegion()
                 this->probePlotWidget->setupSpectrumPlot(
                         this->spectralAxisTitle(), u"Mean value"_s);
                 this->probePlotWidget->applyPlotTheme(this->m_darkPlots);
+                this->pushSpectralAxisContext(this->probePlotWidget);
             } else {
                 this->probePlotWidget->setUsageMode(
                         ProfileWidget::UsageMode::RegionStatic, plotTitle);

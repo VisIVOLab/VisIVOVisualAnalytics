@@ -55,6 +55,7 @@ class OpenDatasetResponse(BaseModel):
     wcs_sanitized_axes: list[int] = []
     spectral_axis_type: str = ""
     spectral_axis_unit: str = ""
+    rest_freq_hz: float | None = None   # header RESTFRQ/RESTFREQ, Hz (None = absent)
     spacing: list[float] = [1.0, 1.0, 1.0]
     origin: list[float] = [0.0, 0.0, 0.0]
     bunit: str = ""

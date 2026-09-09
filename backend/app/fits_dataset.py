@@ -251,6 +251,26 @@ class ScientificFitsDataset:
             entries.append(label)
         return f"Collapsed axes: {', '.join(entries)}" if entries else ""
 
+    def _rest_freq_hz(self) -> float | None:
+        """RESTFRQ / RESTFREQ in Hz, or None when the header carries neither.
+
+        Both spellings are in the wild (RESTFRQ is the FITS standard, RESTFREQ
+        the older AIPS form). A non-positive value means "not set" as surely as
+        a missing card, so it is reported as None rather than passed on to a
+        client that would divide by it.
+        """
+        for key in ("RESTFRQ", "RESTFREQ"):
+            value = self.header.get(key)
+            if value is None:
+                continue
+            try:
+                hz = float(value)
+            except (TypeError, ValueError):
+                continue
+            if hz > 0.0:
+                return hz
+        return None
+
     def _axis_float(self, key: str, default: float = 0.0) -> float:
         return float(self.header.get(key, default))
 
@@ -403,6 +423,11 @@ class ScientificFitsDataset:
             "wcs_sanitized_axes": list(self.wcs_sanitized_axes),
             "spectral_axis_type": spectral_axis_type,
             "spectral_axis_unit": spectral_axis_unit,
+            # Rest frequency of the observed transition, in Hz. Already read from
+            # the header by the line-fit path (compute/spectral.py); exposed here
+            # so a client can place a spectral-line list on a VELOCITY axis, which
+            # is impossible without it.
+            "rest_freq_hz": self._rest_freq_hz(),
             "width": width,
             "height": height,
             "depth": depth,
