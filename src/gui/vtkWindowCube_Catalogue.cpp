@@ -295,7 +295,7 @@ void vtkWindowCube::loadCatalogueOverlay()
     }
     if (this->actionShowCatalogueLabels) {
         this->actionShowCatalogueLabels->setEnabled(true);
-        this->actionShowCatalogueLabels->setChecked(true);
+        this->actionShowCatalogueLabels->setChecked(true);   // labels on by default
     }
     if (this->actionClearCatalogueOverlay) {
         this->actionClearCatalogueOverlay->setEnabled(true);
@@ -362,7 +362,11 @@ void vtkWindowCube::clearCatalogueOverlay()
     }
     if (this->actionShowCatalogueLabels) {
         const QSignalBlocker blocker(this->actionShowCatalogueLabels);
-        this->actionShowCatalogueLabels->setChecked(true);
+        // Unchecked, not checked. With the catalogue gone there are no labels to
+        // show, and leaving it on gave a disabled toggle that reads as active —
+        // the same state the constructor was fixed for, reintroduced on every
+        // clear. loadCatalogueOverlay() re-checks it when one arrives.
+        this->actionShowCatalogueLabels->setChecked(false);
         this->actionShowCatalogueLabels->setEnabled(false);
     }
     if (this->actionClearCatalogueOverlay) {

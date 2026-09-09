@@ -276,7 +276,27 @@ QString sidebarToolButtonStyleSheet()
             "QToolButton:hover { background-color: rgba(4,138,191,0.12);"
             "                    border: 1px solid rgba(4,138,191,0.25); }"
             "QToolButton:checked { background-color: rgba(4,138,191,0.20);"
-            "                      border: 1px solid rgba(4,138,191,0.40); }");
+            "                      border: 1px solid rgba(4,138,191,0.40); }"
+            // A disabled button has to LOOK disabled. Measured before adding
+            // this: the mean luminance of an enabled and a disabled button under
+            // this sheet was identical to 0.1, so a tool correctly greyed out in
+            // the Tools menu appeared perfectly normal in the sidebars built
+            // from the same QAction. The application stylesheet gives
+            // QToolButton an explicit colour, and an explicit colour applies in
+            // every state until a more specific rule says otherwise — the menu
+            // escaped because that sheet does carry a QMenu::item:disabled rule
+            // and this one carried no equivalent.
+            "QToolButton:disabled { color: %1;"
+            // Background and border reset too, not just the text. A checkable
+            // tool can be disabled while still checked, and the :checked fill
+            // would otherwise keep it looking armed.
+            "                       background-color: transparent;"
+            "                       border: 1px solid transparent; }"
+            // And it must not light up under the pointer — hover feedback on
+            // something that cannot be pressed says the opposite.
+            "QToolButton:disabled:hover { background-color: transparent;"
+            "                             border: 1px solid transparent; }")
+            .arg(QLatin1StringView(kSecondary()));
 }
 
 namespace {

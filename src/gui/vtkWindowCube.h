@@ -667,6 +667,10 @@ private:
 
     // Two Tools entries were created as locals; kept so cubeTools() can list
     // them alongside the rest.
+    /// Tooltips of the 3-D-only tools as first seen, so the pane gate can put
+    /// them back instead of clearing them.
+    QHash<QAction *, QString> m_tool3dTooltips;
+
     QPointer<QAction> m_actPinSpectrum;
     QPointer<QAction> m_actOpenInVR;
 
