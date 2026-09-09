@@ -1,17 +1,180 @@
 # Spectral analysis tools
 
-Three tools live under **Tools → Spectral Analysis** in the main window and
-in the cube viewer:
+Tools that work along the velocity axis. Three of them compute something from
+the whole cube; two work on a spectrum you already have on screen.
 
 | Tool | What it does | Output |
 |------|--------------|--------|
+| [Line identification](#line-identification-overlaying-a-line-list) | Overlay a rest-frame line list on a spectrum, shifted to the source | Markers on the plot |
+| [Gaussian line fit](#gaussian-line-fit) | Single Gaussian + linear baseline, with uncertainties | Fitted curve + summary |
 | [Line-width map](#line-width-maps-s-02) | Per-pixel FWHM (Gaussian fit) + equivalent width | Two 2-D maps |
 | [Baseline subtraction](#baseline-subtraction-s-03) | Polynomial / median baseline fit and subtract | New cube dataset |
 | [Spectral stacking](#spectral-stacking-s-04) | Combine N cubes into a single spectrum / cube | 1-D spectrum |
 
-All three are non-modal — you can keep interacting with viewers while they
-run — and gated by the backend's heavy-task throttle so they don't block
-slice scrolling.
+The three cube-wide tools are non-modal — you can keep interacting with viewers
+while they run — and gated by the backend's heavy-task throttle so they don't
+block slice scrolling.
+
+How to *get* a spectrum on screen in the first place (probe a pixel, a region
+mean, a 3-D pick) is in [Cube viewer → Extract
+Spectrum](cube-viewer#extract-spectrum-probe-a-single-pixel).
+
+---
+
+## Line identification (overlaying a line list)
+
+**Inspector ▸ Analysis ▸ SPECTRUM ▸ Load Lines…**, with any spectrum pane
+selected. Draws each transition of a line list as a vertical dashed amber
+marker with a rotated label, so you can see at once whether a peak sits where a
+species predicts.
+
+### The two things a line list cannot tell you
+
+A line list carries **rest** frequencies. Two conversions stand between that
+and a position on your plot, and both are asked for in the dialog because
+guessing either puts every marker in the wrong place:
+
+1. **The unit.** A bare number is not a frequency. The dialog pre-selects the
+   unit when the file declares one — a `# unit = GHz` comment, or a column
+   named like Splatalogue's `Freq-GHz(rest frame)` — and otherwise asks.
+2. **The frame.** Rest frequencies must be redshifted to the frame of *your*
+   source: `f_obs = f_rest / (1 + z)`. Give either a **systemic velocity in
+   km/s** (read as an optical velocity, which is what source catalogues quote,
+   so `z = v/c`), or **z** directly, or say the values are **already in the
+   observed frame** if your list is pre-shifted.
+
+The dialog states what it has to work with, e.g. *"This axis: VOPT in m/s ·
+cube rest frequency 1420.4058 MHz"*, or *"no RESTFRQ in the header"* when the
+cube does not carry one.
+
+### Velocity conventions are not a detail
+
+Placing a line on a **velocity** axis needs the cube's own rest frequency
+(header `RESTFRQ`/`RESTFREQ`) *and* the axis's velocity convention, taken from
+its `CTYPE`:
+
+```{list-table}
+:header-rows: 1
+:widths: 18 34 48
+
+* - CTYPE
+  - Convention
+  - Axis coordinate of an observed frequency *f*
+* - `VOPT`, `FELO`
+  - Optical
+  - `v = c (f_rest/f − 1)`
+* - `VRAD`
+  - Radio
+  - `v = c (1 − f/f_rest)`
+* - `VELO`
+  - Relativistic (the FITS standard reading)
+  - `v = c (f_rest² − f²)/(f_rest² + f²)`
+* - `FREQ`
+  - —
+  - the observed frequency itself, converted to the axis unit
+```
+
+Optical and radio velocities of the same line differ by about `v²/c`: already
+**3.3 km/s at 1000 km/s**, which is several channels of a typical HI cube. This
+is why the convention is read from the header rather than assumed — and why a
+marker drawn by an older version of this tool, which used the file's number as
+a plot coordinate directly, could be off by channels or off-plot entirely.
+
+### Where the lines come from
+
+- **Common radio / mm lines (bundled)** — the default, and it works with no
+  network: HI 21 cm, the four OH ground-state lines, the CH₃OH 6.7 GHz and
+  H₂O 22 GHz masers, NH₃ (1,1)/(2,2)/(3,3), HCN / HCO⁺ / HNC / N₂H⁺ / CS 1–0,
+  the CO, ¹³CO and C¹⁸O ladders up to 3–2, H₂CO 218 GHz and C I 492 GHz.
+- **A file** — either a two-column `value,label` list (`#` for comments), or a
+  **catalogue export**: the loader reads the header row and recognises the
+  frequency column (skipping error columns), the species / chemical-name
+  column, and the quantum-number column, which it appends to the label so a
+  marker reads *"CO 2-1"*. Comma, tab, semicolon and colon separators are all
+  handled, and quoted fields are unquoted.
+
+```{caution}
+The bundled list is a **convenience**, rounded to the kHz from the public
+CDMS / JPL values as distributed through Splatalogue. For a line
+identification that goes into a paper, export the transition from
+CDMS / JPL / Splatalogue yourself and load that file — the loader reads such
+an export directly. The bundled file is
+`resources/spectral_lines/common_lines.csv` in the source tree if you want to
+extend it.
+```
+
+There is deliberately **no online catalogue query**. The value it would add over
+"export the CSV once and load it" is small, the query interfaces of the public
+services change without notice, and the backend is routinely deployed on compute
+nodes with no outbound internet — a demo that hangs on a network call is worse
+than one extra step.
+
+### When nothing appears
+
+A list in the wrong unit, or drawn unshifted, converts perfectly well and lands
+entirely outside the plotted band, where you would see nothing and conclude the
+feature is broken. So the tool checks and says so:
+
+- *"3 lines placed, but none falls inside the plotted range (9e+05 – 1.31e+06
+  m/s) — check the unit and the systemic velocity / redshift"*;
+- *"None of the 12 lines could be placed on this axis: this cube's header has
+  no RESTFRQ, so a frequency list cannot be converted to its velocity axis"* —
+  in that case load a list in the axis's own unit instead;
+- a velocity list on a frequency axis is refused with the same kind of message.
+
+**Clear Lines** removes the overlay. It is also dropped automatically when the
+pane is re-used for a product on a **different spectral axis**: the markers are
+stored as coordinates on the axis they were computed for, and keeping them
+across an axis change would draw them at meaningless positions.
+
+### Worked example (HI, WALLABY cube)
+
+The demo cube has `CTYPE3 = VOPT`, `CUNIT3 = m/s`,
+`RESTFRQ = 1420405751.79`, covering roughly 900–1310 km/s.
+
+1. Probe a pixel on a source so a spectrum pane is on screen, and select it.
+2. **Load Lines…** → keep *Common radio / mm lines (bundled)*; the unit shows
+   **GHz**.
+3. Set *Systemic velocity* to the source's velocity — say **1100** km/s.
+4. The **HI 21 cm** marker lands at exactly 1.1 × 10⁶ m/s: for the cube's own
+   transition the axis coordinate *is* the systemic velocity, which makes this a
+   good sanity check of the whole chain. Every other line in the bundled list is
+   far outside the band, and the dialog says so rather than drawing nothing.
+
+---
+
+## Gaussian line fit
+
+**Inspector ▸ Analysis ▸ SPECTRUM ▸ Fit Gaussian** fits a single Gaussian plus
+a **linear baseline** to the displayed spectrum, through the backend, and
+overlays the model as an orange dashed curve. The stats bar is replaced by the
+fit summary:
+
+> `Gaussian fit · peak 0.0243 ± 0.0011 · centre 1.1013e+06 ± 420 · FWHM 8.4e+04 ± 3.1e+03 · ∫ 2.18 · rms 0.0021`
+
+- Uncertainties are the backend's 1 σ values. Where one cannot be determined no
+  `±` is printed rather than a fake zero.
+- **Correlated channels**: a spectrum smoothed by the instrument (or by the
+  display kernel) has fewer independent samples than channels, so naïve
+  least-squares errors are too small. When the backend can quantify it, the
+  summary says `errors ×1.4 for correlated channels`; when it cannot, it says
+  the uncertainties are uncorrected. Either way, do not quote them as if the
+  channels were independent.
+- Only finite channels are sent: region spectra contain NaN channels where the
+  region falls outside valid data, and at least 4 finite channels are required.
+- **Clear Fit** removes the curve and its summary and puts the spectrum's own
+  statistics back. A fit still in flight is invalidated too, so a clear is not
+  undone a moment later by a late reply.
+
+```{caution}
+One Gaussian plus a line is a *model*, and a poor one for a rotating disk's
+double-horned HI profile, for self-absorbed lines, or for blended components.
+The residual is not shown: judge the fit by eye against the data, and treat the
+FWHM of a non-Gaussian profile as a summary number, not a line width. For a
+per-pixel width over the whole cube use the [line-width
+map](#line-width-maps-s-02), which reports the model-free equivalent width
+beside the fitted FWHM for exactly this reason.
+```
 
 ---
 

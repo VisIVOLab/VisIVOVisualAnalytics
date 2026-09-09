@@ -44,6 +44,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # GitHub's Ubuntu images ship third-party apt sources (Google Chrome,
+      # Microsoft) that nothing here installs from. When one of them serves a
+      # stale index, every `apt-get update` on the runner fails with "Hash Sum
+      # mismatch" — including the one inside install-qt-action — and takes this
+      # job down for a reason that has nothing to do with the repository. Drop
+      # those lists first so only the Ubuntu archive is consulted.
+      - name: Drop unused third-party apt sources
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*google-chrome* \
+                     /etc/apt/sources.list.d/*microsoft* \
+                     /etc/apt/sources.list.d/*azure-cli* || true
+
       # The unit suite links only Qt Core/Network/Test (no VTK, no Widgets, no
       # WebRTC), so it configures standalone from tests/ and needs only a base
       # Qt6. This deliberately avoids the heavy full-app configure.

@@ -247,8 +247,16 @@ every tool together with the page that documents its scientific use.
   -
 * - Extract a spectrum at a pixel
   - **Tools → Extract Spectrum** (Probe), or *Pick Spectrum on Plane Click* (3-D)
-  - Spectral profile window
+  - Live spectrum in a pane; a pixel you click is kept as a SPEC product
   - [Cube viewer · Extract Spectrum](user-guide/cube-viewer#extract-spectrum-probe-a-single-pixel)
+* - Identify lines on a spectrum
+  - **Inspector ▸ Analysis ▸ SPECTRUM ▸ Load Lines…** (bundled list, or a catalogue export)
+  - Rest-frame list shifted by v_sys / z and converted to the axis convention
+  - [Spectral tools · Line identification](user-guide/spectral-tools#line-identification-overlaying-a-line-list)
+* - Fit a Gaussian to a line
+  - **Inspector ▸ Analysis ▸ SPECTRUM ▸ Fit Gaussian** (**Clear Fit** to remove)
+  - Gaussian + linear baseline, peak / centre / FWHM / ∫ with 1σ errors
+  - [Spectral tools · Gaussian line fit](user-guide/spectral-tools#gaussian-line-fit)
 * - Open the cube in a VR headset (Windows / Linux, opt-in build)
   - **Tools → Open in VR**
   - OpenXR stereo render — LUT / threshold / opacity TF synced live

@@ -1783,55 +1783,32 @@ QVector<ProfileWidget::RestLine> ProfileWidget::parseLineListFile(const QString 
 void ProfileWidget::loadLineIdFile()
 {
     using namespace Qt::StringLiterals;
-    const QString path = QFileDialog::getOpenFileName(
-            this, u"Load spectral line list"_s, QString(),
-            u"Line lists (*.csv *.txt *.tsv);;All files (*)"_s);
-    if (path.isEmpty()) return;
-
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, u"Load Lines"_s, u"Could not open:\n%1"_s.arg(path));
-        return;
-    }
-    const QString text = QString::fromUtf8(file.readAll());
-    file.close();
-
-    QString unitHint, formatNote;
-    const QVector<RestLine> lines = parseLineListFile(text, unitHint, formatNote);
-    if (lines.isEmpty()) {
-        QMessageBox::information(
-                this, u"Load Lines"_s,
-                u"No usable lines in this file%1.\n\n"
-                u"Accepted: a two-column list “value,label” (one per line, "
-                u"# for comments), or a catalogue export (Splatalogue / CDMS style) "
-                u"whose header row names a frequency column."_s
-                        .arg(formatNote.isEmpty() ? QString() : u" — %1"_s.arg(formatNote)));
-        return;
-    }
-
-    // ── Ask for the two things the file cannot tell us ───────────────────────
-    // The unit (a bare number is not a frequency) and the source's redshift: a
-    // line list is in the REST frame, and drawing it unshifted puts every marker
-    // in the wrong place — silently, which is how this feature used to behave.
-    const spectral::AxisKind axisKind = spectral::axisKindFromCtype(m_axisCtype);
+    // ── One dialog for the whole thing ───────────────────────────────────────
+    // Where the lines come from, plus the two things no line list can tell us:
+    // the unit its numbers are in, and the source's redshift (a list is in the
+    // REST frame — drawn unshifted every marker is in the wrong place).
     const spectral::SpectralUnit axisUnit = spectral::parseSpectralUnit(m_axisUnit);
+    QVector<RestLine> lines;
+    QString unitHint, formatNote;
+
     QDialog dlg(this);
     dlg.setWindowTitle(u"Spectral lines"_s);
     auto *form = new QFormLayout(&dlg);
-    auto *intro = new QLabel(
-            u"%1 line%2 read (%3)."_s.arg(lines.size()).arg(lines.size() == 1 ? u""_s : u"s"_s)
-                    .arg(formatNote),
-            &dlg);
+
+    auto *sourceCombo = new QComboBox(&dlg);
+    sourceCombo->addItem(u"Common radio / mm lines (bundled)"_s, 0);
+    sourceCombo->addItem(u"File…"_s, 1);
+    auto *browse = new QPushButton(u"Choose file…"_s, &dlg);
+    browse->setVisible(false);
+    form->addRow(u"Lines from:"_s, sourceCombo);
+    form->addRow(QString(), browse);
+
+    auto *intro = new QLabel(&dlg);
     intro->setWordWrap(true);
     form->addRow(intro);
 
     auto *unitCombo = new QComboBox(&dlg);
     unitCombo->addItems({ u"GHz"_s, u"MHz"_s, u"kHz"_s, u"Hz"_s, u"km/s"_s, u"m/s"_s });
-    if (!unitHint.isEmpty()) {
-        const int idx = unitCombo->findText(unitHint, Qt::MatchFixedString);
-        if (idx >= 0)
-            unitCombo->setCurrentIndex(idx);
-    }
     form->addRow(u"Values are in:"_s, unitCombo);
 
     auto *shiftCombo = new QComboBox(&dlg);
@@ -1846,10 +1823,7 @@ void ProfileWidget::loadLineIdFile()
                      [shiftValue](int i) { shiftValue->setEnabled(i != 2); });
 
     // What the conversion has to work with, stated rather than assumed.
-    QString axisNote = u"This axis: %1"_s.arg(m_lastSpectrumTitle.isEmpty()
-                                                      ? (m_axisCtype.isEmpty() ? u"unknown"_s
-                                                                               : m_axisCtype)
-                                                      : m_axisCtype);
+    QString axisNote = u"This axis: %1"_s.arg(m_axisCtype.isEmpty() ? u"unknown"_s : m_axisCtype);
     if (!m_axisUnit.isEmpty())
         axisNote += u" in %1"_s.arg(m_axisUnit);
     axisNote += m_axisRestFreqHz > 0.0
@@ -1863,11 +1837,91 @@ void ProfileWidget::loadLineIdFile()
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     form->addRow(buttons);
-    if (dlg.exec() != QDialog::Accepted)
-        return;
 
-    const spectral::SpectralUnit fileUnit =
-            spectral::parseSpectralUnit(unitCombo->currentText());
+    // Load a source into `lines` and reflect it in the dialog. The bundled list
+    // is parsed by the SAME parser as a user file, so there is one format to
+    // maintain and the bundled path exercises it.
+    auto load = [&](const QString &text, const QString &origin) {
+        lines = parseLineListFile(text, unitHint, formatNote);
+        if (!unitHint.isEmpty()) {
+            const int idx = unitCombo->findText(unitHint, Qt::MatchFixedString);
+            if (idx >= 0)
+                unitCombo->setCurrentIndex(idx);
+        }
+        intro->setText(lines.isEmpty()
+                               ? u"No usable lines in %1%2.\n\nAccepted: a two-column list "
+                                 u"“value,label” (# for comments), or a catalogue export "
+                                 u"(Splatalogue / CDMS style) whose header row names a "
+                                 u"frequency column."_s
+                                         .arg(origin)
+                                         .arg(formatNote.isEmpty() ? QString()
+                                                                   : u" — %1"_s.arg(formatNote))
+                               : u"%1: %2 line%3 (%4)."_s.arg(origin)
+                                         .arg(lines.size())
+                                         .arg(lines.size() == 1 ? u""_s : u"s"_s)
+                                         .arg(formatNote));
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(!lines.isEmpty());
+    };
+    auto loadBundled = [&]() {
+        QFile f(u":/spectral_lines/common_lines.csv"_s);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            intro->setText(u"The bundled line list is missing from this build."_s);
+            buttons->button(QDialogButtonBox::Ok)->setEnabled(false);
+            lines.clear();
+            return;
+        }
+        load(QString::fromUtf8(f.readAll()),
+             u"Bundled list (rounded to kHz — verify against CDMS / JPL before publishing)"_s);
+    };
+    auto loadFromFile = [&]() {
+        const QString path = QFileDialog::getOpenFileName(
+                &dlg, u"Load spectral line list"_s, QString(),
+                u"Line lists (*.csv *.txt *.tsv);;All files (*)"_s);
+        if (path.isEmpty())
+            return;
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            intro->setText(u"Could not open %1."_s.arg(path));
+            buttons->button(QDialogButtonBox::Ok)->setEnabled(false);
+            lines.clear();
+            return;
+        }
+        load(QString::fromUtf8(f.readAll()), QFileInfo(path).fileName());
+    };
+    QObject::connect(sourceCombo, qOverload<int>(&QComboBox::currentIndexChanged), &dlg,
+                     [&](int i) {
+                         browse->setVisible(i == 1);
+                         if (i == 0) {
+                             loadBundled();
+                         } else {
+                             lines.clear();
+                             intro->setText(u"Choose a line list file."_s);
+                             buttons->button(QDialogButtonBox::Ok)->setEnabled(false);
+                             loadFromFile();
+                         }
+                     });
+    QObject::connect(browse, &QPushButton::clicked, &dlg, [&]() { loadFromFile(); });
+    loadBundled();   // the offline default, so the dialog opens with something usable
+
+    if (dlg.exec() != QDialog::Accepted || lines.isEmpty())
+        return;
+    if (!axisUnit.ok) {
+        QMessageBox::warning(this, u"Load Lines"_s,
+                             u"Cannot place lines on this axis: its unit (“%1”) is not "
+                             u"one this build can convert."_s.arg(m_axisUnit));
+        return;
+    }
+    applyLineList(lines, unitCombo->currentText(), shiftCombo->currentData().toInt(),
+                  shiftValue->text().toDouble());
+}
+
+void ProfileWidget::applyLineList(const QVector<RestLine> &lines, const QString &unitText,
+                                  int mode, double shift)
+{
+    using namespace Qt::StringLiterals;
+    const spectral::AxisKind axisKind = spectral::axisKindFromCtype(m_axisCtype);
+    const spectral::SpectralUnit axisUnit = spectral::parseSpectralUnit(m_axisUnit);
+    const spectral::SpectralUnit fileUnit = spectral::parseSpectralUnit(unitText);
     if (!fileUnit.ok || !axisUnit.ok) {
         QMessageBox::warning(this, u"Load Lines"_s,
                              u"Cannot place lines on this axis: its unit (“%1”) is not "
@@ -1875,8 +1929,6 @@ void ProfileWidget::loadLineIdFile()
         return;
     }
     double z = 0.0;
-    const int mode = shiftCombo->currentData().toInt();
-    const double shift = shiftValue->text().toDouble();
     if (mode == 0)
         z = spectral::redshiftFromOpticalVelocity(shift * 1.0e3);
     else if (mode == 1)

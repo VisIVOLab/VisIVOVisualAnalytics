@@ -149,10 +149,65 @@ single click, which is reserved for camera rotation).
 If even the double-click does nothing:
 
 - Make sure the toggle is on (cursor should be a cross-hair over the
-  3-D view).
+  3-D view, and its pane should carry the amber armed border). Selecting
+  another pane does **not** disarm it any more, so the border is the thing to
+  check.
 - The cutting plane must be visible. Lower its opacity to make sure you
   see it.
 - Click *on the plane itself*, not on the volume rendering behind it.
+
+### A tool in the Analysis list is greyed out
+
+Hover it: every disabled tool in this app states its own reason, and the
+tooltip is the answer.
+
+- *"acts on the 2D Slice — show it in a pane"* / *"acts on the 3D view — …"*:
+  the tool is bound to a view, and that view is not currently in any pane. Pick
+  it from a pane's ▾ menu (a tool does **not** need its pane to be the selected
+  one — see [Cube viewer](cube-viewer#when-a-tool-is-available-and-where-it-acts)).
+- *"probe a pixel first"* (Pin Spectrum), *"draw or import a region first"*
+  (Export Region), *"open a 2D image viewer first"* (Send Slice to Image
+  Viewer), *"nothing to link yet"* (Link Views): the tool works on something
+  that does not exist yet.
+- *Export Moment Map as FITS* stays disabled until a moment map has actually
+  been computed; *Open in VR* until a VR runtime is available.
+
+### I armed a tool and cannot switch it off
+
+<kbd>Esc</kbd> disarms whatever is armed. The pane an armed tool listens to
+wears a **thicker amber border** — that border, not the blue selection border,
+is what says "this tool is live here". Clicking the tool's own entry a second
+time also disarms it.
+
+### My spectrum disappeared when I closed Extract Spectrum
+
+Only a **live** curve — one still following the cursor — goes with the tool. If
+you had **clicked** a pixel (header: *🔒 pinned*), ending the tool keeps that
+spectrum as a SPEC product in Session Data. Once it is saved the header says
+*💾 saved as "Spectrum N"*, and ending the tool then removes only the live row,
+because the curve is already safe. To keep one and carry on exploring, use
+*Tools ▸ Pin Spectrum* at any moment.
+
+Note that *Compare* in the Inspector's SPECTRUM panel does **not** save
+anything: it lays the curve on the plot for comparison. That distinction used to
+be invisible — both buttons were called *Pin Spectrum*.
+
+### "Load Lines…" drew nothing (or nothing where I expected)
+
+The tool tells you which of the two happened.
+
+- *"none falls inside the plotted range"*: the numbers converted fine but land
+  outside the band. Almost always the **unit** or the **systemic velocity / z**
+  — a rest-frame list drawn unshifted sits outside the observed band by
+  construction.
+- *"this cube's header has no RESTFRQ"*: a frequency list cannot be converted to
+  a velocity axis without the cube's rest frequency. Load a list in the axis's
+  own unit instead.
+- The markers vanished after you changed what the pane shows: they are stored as
+  coordinates on the axis they were computed for, so they are dropped when the
+  pane moves to a product on a **different** spectral axis. Load them again.
+
+See [Line identification](spectral-tools#line-identification-overlaying-a-line-list).
 
 ### "Stack Spectral Cubes" shows only one cube
 

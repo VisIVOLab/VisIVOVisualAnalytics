@@ -6,31 +6,71 @@ QTest-based headless unit suite under `tests/`. No VTK, no Qt::Widgets, no live 
 
 ```
 tests/
-  CMakeLists.txt          # visivo_test_support + VisIVOTests
-  main.cpp                # QCoreApplication + QTest::qExec for each class
-  TestBackendClient.h     # Q_OBJECT test class declaration
-  test_backendclient.cpp  # 30 tests (incl. image-tile parsing)
-  TestCatalogueParser.h
-  test_catalogue_parser.cpp  # 26 tests
-  TestBackendRouting.h
-  test_backend_routing.cpp   # 13 tests — Settings backend registry + SKAVA routing
-  TestImageLod.h
-  test_image_lod.cpp         # 12 tests — viewport LOD math (level select + visible tiles)
+  CMakeLists.txt              # visivo_test_support + VisIVOTests
+  main.cpp                    # QCoreApplication + QTest::qExec for each class
+  Test<Name>.h                # Q_OBJECT test class declaration (one per area)
+  test_backendclient.cpp        # 30 — result parsing, open response, image tiles
+  test_catalogue_parser.cpp     # 35 — redshift/distance field detection, distances
+  test_backend_routing.cpp      # 13 — Settings backend registry + SKAVA routing
+  test_image_lod.cpp            # 21 — viewport LOD math (level select + visible tiles)
+  test_analysis_param_store.cpp #  8 — per-dataset dialog parameter persistence
+  test_backend_contract.cpp     #  4 — shared header manifest ↔ client constants
+  test_remote_slice_cache.cpp   # 11 — slice cache keying + eviction
+  test_linked_window_registry.cpp #  8 — linked-views registry lifetime
+  test_spectral_unit_convert.cpp  # 22 — unit parsing + rest-frame → axis placement
+  test_cube_region_geom.cpp     # 17 — ROI hit-testers (box/circle/polygon/annulus)
+  test_cube_tool_gate.cpp       # 11 — CubeToolGate: which tools may act, and why not
+  test_spectral_axis_infer.cpp  # 16 — spectral-axis descriptor inference
+  test_kinematic_level_field.cpp # 19 — kinematic-lasso level field
+  test_ray_voxel_pick.cpp       # 18 — 3-D ray → voxel picking
 ```
 
-Total: **81 tests**.
+Total: **233 tests** in one binary (`ctest -V` prints the per-class totals).
+
+What belongs here: pure logic lifted out of the GUI classes so it can be
+checked without a display — parsers, geometry, unit conversions, and decision
+tables such as `CubeToolGate` (which tools may act on what is on screen) or
+`SpectralUnitConvert` (where a rest-frame line lands on a given spectral axis).
+Both of those were extracted precisely because the only previous way to check
+them was to open the app and look at thirty buttons.
 
 ---
 
 ## Build
 
 ```bash
+# Standalone — what CI runs. Needs only a base Qt6 (Core/Network/Test):
+# no VTK, no Qt::Widgets, no WebRTC, so it configures in seconds.
+cmake -S tests -B build-tests
+cmake --build build-tests
+ctest --test-dir build-tests -V
+
+# Or as part of the main project:
 cmake -B build -DBUILD_TESTING=ON   # off by default
 cmake --build build --target VisIVOTests
 ctest --test-dir build -V
-# or run directly:
-build/tests/VisIVOTests -v2
 ```
+
+---
+
+## CI (`.github/workflows/tests.yml`)
+
+Two jobs: **backend (pytest)** over `backend/tests/`, and **C++ unit tests
+(ctest)** which configures the standalone `tests/` project against
+`jurplel/install-qt-action`.
+
+```{note}
+Both Linux jobs first delete the runner image's unused third-party apt sources
+(Google Chrome, Microsoft). GitHub's Ubuntu images ship them, nothing here
+installs from them, and when one serves a stale index **every** `apt-get update`
+on the runner fails with *"Hash Sum mismatch"* — including the one inside
+`install-qt-action` — which fails the job for a reason that has nothing to do
+with the repository. `release.yml` carries the same guard.
+```
+
+Running the backend suite locally needs `pip install -r
+backend/requirements-dev.txt` (numpy / astropy / pytest); the C++ suite needs
+nothing but Qt.
 
 ---
 

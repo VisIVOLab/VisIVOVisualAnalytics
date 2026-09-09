@@ -501,6 +501,16 @@ qt_add_resources(${PROJECT_NAME} assets
         FILES ${PROJECT_ASSETS}
 )
 
+# Bundled reference list of common radio / mm spectral lines, compiled in so
+# "Load Lines…" has something to offer offline (a compute node usually has no
+# outbound internet). Accessible as :/spectral_lines/common_lines.csv.
+qt_add_resources(${PROJECT_NAME} bundled_spectral_lines
+        PREFIX "/spectral_lines"
+        BASE "resources/spectral_lines"
+        FILES
+            resources/spectral_lines/common_lines.csv
+)
+
 # Compile bundled Lato fonts into the binary so they load on all platforms
 # without requiring system font installation.
 # Accessible at runtime as :/fonts/Lato-Regular.ttf etc.

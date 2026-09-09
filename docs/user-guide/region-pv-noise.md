@@ -36,38 +36,33 @@ actions (Box / Circle / Polygon / Annulus) are an exclusive group in
 both the menu and the sidebar (`ExclusiveOptional`: at most one
 checked, or none). Clicking the currently-active shape again unchecks
 it and disarms region drawing entirely. The region overlay drawn on
-the 2-D view **persists until you close BOTH the Region Analysis
-result dialog and the Region Spectral Profile window** — closing only
-one keeps the overlay alive (the result dialog might still be on
-screen while you inspect the spectrum, or vice versa). Closing the
-last one wipes it.
+the 2-D view **persists while its spectrum is still on screen**, so the shape
+you measured stays visible next to the curve it produced; it is wiped when the
+spectrum plot goes away, or when you arm another region shape.
 ```
 
-### Region Spectral Profile (per-channel mean over the region)
+### Region spectrum (per-channel mean over the region)
 
-Releasing the region triggers two things at once:
-
-1. A **Region Analysis** result dialog appears on the right edge of the
-   cube viewer (width and height derived from the content, no scrolling
-   for the standard 8-row report).
-2. A **Region Spectral Profile** window opens — the same
-   [*Spectral Profile*](cube-viewer#extract-spectrum-probe-a-single-pixel)
-   widget as the pixel probe, but in **region mode**: the Live / Pinned
-   status badge is hidden (the spectrum is one-shot, not live), and the
-   header reads e.g. *"Circle region · 195 / 195 valid pixels · 2D
-   stats: current slice · spectrum: full cube"* in place of the pixel
-   hint.
+Releasing the region produces a **SPEC product**: it appears in Session Data
+and is placed in a pane straight away — a free one, or by growing the layout,
+and if there is no room the status bar says where to find it (a pane's ▾ menu).
+The 2-D statistics of the region are **not** a separate window: they are the
+product's Provenance, so selecting the row in Session Data and opening
+Inspector ▸ Provenance shows the region shape, the valid-pixel count and
+min / max / mean / median / σ, while the status bar reports the headline numbers.
 
 The plot itself is **mean per channel over the region** across **all
 cube channels** (not just the current slice). The stats bar
 (`N / Min / Max / Mean / RMS / ∫`), channel marker, theme, and CSV
-export all work identically to pixel-probe mode.
+export all work identically to pixel-probe mode; so do
+[line identification](spectral-tools#line-identification-overlaying-a-line-list)
+and the [Gaussian fit](spectral-tools#gaussian-line-fit).
 
-To **compare several regions**, click **Pin Spectrum** in the plot header
-before drawing the next region: the current mean spectrum is kept as a
+To **compare several regions**, click **Compare** in the Inspector's SPECTRUM
+panel before drawing the next region: the current mean spectrum is kept as a
 colour-coded comparison curve and the next region's spectrum overlays on
 the same axes with a legend. See
-[Comparing regions (pinned spectra)](cube-viewer#comparing-regions-pinned-spectra).
+[Comparing regions (overlaid spectra)](cube-viewer#comparing-regions-overlaid-spectra).
 
 ### Statistics shown
 

@@ -70,6 +70,12 @@ jobs:
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
         run: |
+          # Same guard as tests.yml: the runner image's Chrome / Microsoft apt
+          # sources are unused here and a stale index on either aborts the
+          # update (Hash Sum mismatch), failing the release for no local reason.
+          sudo rm -f /etc/apt/sources.list.d/*google-chrome* \
+                     /etc/apt/sources.list.d/*microsoft* \
+                     /etc/apt/sources.list.d/*azure-cli* || true
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build pkg-config \

@@ -265,6 +265,85 @@ child windows do not need to link against `MainWindow` to trigger it.
 
 ---
 
+## Cube viewer — tool availability and where results land
+
+Two rules govern the ~30 cube tools. Both were per-pane heuristics scattered
+through `vtkWindowCube`; both are now single, stated mechanisms.
+
+### `CubeToolGate` — a tool binds to a VIEW, not to the focused pane
+
+`src/gui/CubeToolGate.h` is a pure, Qt-free decision table
+(`evaluate(Inputs) -> Decision`), unit-tested in `tests/test_cube_tool_gate.cpp`,
+applied by `vtkWindowCube::applyMomentToolGate()` to the `QAction`s that the
+Tools menu, the left dock and Inspector ▸ Analysis are all built from:
+
+- **view gates** — the seven slice tools need `Slice2D` mounted in a visible
+  pane, the two 3-D tools need `View3D`. Gating on the *active* pane instead
+  (the first implementation) forced the user to keep switching: select the
+  spectrum pane to reach its controls and the slice tools greyed out.
+- **state gates** — Pin Spectrum needs a probed spectrum (`m_lastProbeValues`,
+  written by `updateProbePlot()`, which both the 2-D probe and the 3-D pick
+  feed), Export Region a region, Send Slice to Image Viewer an open
+  `vtkWindowImage`, Link Views a link target (>1 pane or >1 cube window).
+- a disabled action always carries the **reason** as its tooltip/status tip, and
+  `m_toolBaseTooltips` restores its own text when the gate lifts.
+
+Consequences encoded in the code (each was a real defect):
+
+- a **reason** un-arms a checkable tool, a **baseline** denial only greys it out
+  — PV drops its baseline the moment an extraction starts, and un-arming there
+  ran `clearPv()` under the controller;
+- the gate un-arms actions whose `toggled()` handlers mutate region/probe state
+  and call back, so `m_inToolGate` guards re-entry and the **state** inputs are
+  re-read *after* the un-arming pass;
+- a maximize hides pane frames without unassigning views: keeping an **already
+  armed** tool alive uses `viewAssigned()`, while arming a new one still
+  requires real visibility;
+- every tool `toggled` re-runs the gate.
+
+Input routing follows the same rule: `paneIsArmedTarget(slot)` makes the armed
+pane keep mouse events (and its crosshair) even when it is not
+`m_activePane` — honoured in `eventFilter`'s idle-pane swallow,
+`refreshPaneInteractors()` and `refreshPaneCursors()` — and
+`refreshPaneActiveStyles()` paints its amber border and arms the <kbd>Esc</kbd>
+shortcut (`disarmArmedTools()` first, maximize-restore second).
+
+### `acquirePaneForProduct()` — free, then grow, then borrow
+
+Placing a result "if a pane happens to be free" meant that in a full 2×2 layout
+a tool answered with a Session Data row and a status line, which reads as the
+tool doing nothing. One helper now owns placement:
+
+1. a **free** visible pane (skipping the active one for a live preview, whose
+   active pane is the slice being hovered — `avoidActivePane`);
+2. else **grow** the layout `1 → 2 → 4` (`assignViews()` auto-fills only the
+   cube's intrinsic views, so a grown pane normally comes up free);
+3. else, for a **transient** result only (`mayBorrow`), borrow the least
+   relevant pane — never `Slice2D`, never the active one, never one already
+   lent — preferring a duplicate of a view that stays on screen, then a derived
+   product, then a primary view. `m_borrowedPanes` records the displaced
+   `PaneView` **keyed by the borrower's product id** (a 4→1 collapse swaps views
+   between slots, so a slot key goes stale), and `releaseBorrowedPane()` hands it
+   back when the tool ends.
+
+Permanent products (pinned/kept spectra, region spectra) may grow but never
+borrow. The live probe spectrum is the transient case: `startLiveSpectrum()`
+borrows, `stopLiveSpectrum()` releases and — when the probe was **frozen** on a
+deliberately clicked pixel and not already saved (`m_lastProbeSpectrumPinned`)
+— promotes the curve to a permanent SPEC product before dropping the live one.
+
+### Spectral-axis context for the line overlay
+
+`rest_freq_hz` (header `RESTFRQ`/`RESTFREQ`) travels
+`fits_dataset.geometry_metadata()` → `OpenDatasetResponse` →
+`OpenDatasetResult::restFreqHz` → `vtkWindowCube::setRestFrequency()` →
+`pushSpectralAxisContext()` → each `ProfileWidget`. Together with the axis
+`CTYPE` and unit it is what lets `spectral::axisValueForFrequency()` place a
+rest-frame line list on a velocity axis in the axis's own convention
+(`SpectralUnitConvert.h`, tested).
+
+---
+
 ## Cube viewer (`vtkWindowCube`) — interactive extras
 
 In addition to the volume / isosurface / slice / moment / PV / noise pipelines,
@@ -680,15 +759,28 @@ QTest-based headless suite; no VTK, no Qt::Widgets, no live backend.
 
 | File | Tests | What it covers |
 |------|-------|----------------|
-| `test_backendclient.cpp` | 14 | `parseMomentResultObject`, `parsePvResultObject`, `parseNoiseResultObject` |
-| `test_catalogue_parser.cpp` | 24 | `detectedRedshiftField`, `detectedDistanceField`, `comovingDistanceMpc`, `entryDistanceMpc` |
+| `test_backendclient.cpp` | 30 | `parseMomentResultObject`, `parsePvResultObject`, `parseNoiseResultObject`, open-response parsing |
+| `test_catalogue_parser.cpp` | 35 | `detectedRedshiftField`, `detectedDistanceField`, `comovingDistanceMpc`, `entryDistanceMpc` |
+| `test_backend_routing.cpp` | 13 | `skava::BackendRouting` endpoint selection |
+| `test_image_lod.cpp` | 21 | tile pyramid / level-of-detail arithmetic |
+| `test_analysis_param_store.cpp` | 8 | per-dataset dialog parameter persistence |
+| `test_backend_contract.cpp` | 4 | shared header manifest ↔ client constants |
+| `test_remote_slice_cache.cpp` | 11 | slice cache keying + eviction |
+| `test_linked_window_registry.cpp` | 8 | linked-views registry lifetime |
+| `test_spectral_unit_convert.cpp` | 22 | unit parsing/conversion **and** rest-frame → axis placement (`axisKindFromCtype`, `observedFrequencyHz`, `axisValueForFrequency` for VOPT/VRAD/VELO/FREQ) |
+| `test_cube_region_geom.cpp` | 17 | pure ROI hit-testers (box / circle / polygon / annulus) |
+| `test_cube_tool_gate.cpp` | 11 | `CubeToolGate` — which tools may act, view gates vs state gates |
+| `test_spectral_axis_infer.cpp` | 16 | spectral-axis descriptor inference from CTYPE/CUNIT |
+| `test_kinematic_level_field.cpp` | 19 | kinematic-lasso level field |
+| `test_ray_voxel_pick.cpp` | 18 | 3-D ray → voxel picking |
 
-Build:
+Build (standalone — this is what CI runs; no VTK, no Qt::Widgets):
 ```
-cmake -B build -DBUILD_TESTING=ON
-cmake --build build --target VisIVOTests
-ctest --test-dir build -V
+cmake -S tests -B build-tests
+cmake --build build-tests
+ctest --test-dir build-tests -V
 ```
+or as part of the main project with `-DBUILD_TESTING=ON`.
 
 Static library `visivo_test_support` (BackendClient + DiagnosticsManager) is shared across test executables without pulling in Qt::Widgets or VTK.
 

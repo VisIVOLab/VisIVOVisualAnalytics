@@ -108,6 +108,28 @@ Wherever you reach a tool, it is the same action: a toggle switched on in one
 place shows as on in the other two, and one that is unavailable is greyed out in
 all three with the same explanation.
 
+#### When a tool is available, and where it acts
+
+A tool is bound to a **view**, not to the pane you happen to have selected:
+
+- the seven slice tools (Extract Spectrum, Extract PV Diagram, the four region
+  shapes, Import Region) are available whenever the **2D Slice** view is shown
+  in some pane; the two 3-D tools (Kinematic Lasso, *Pick spectrum on cutting
+  plane*) whenever the **3D View** is. If the view is not on screen the tool is
+  greyed out and its tooltip says so — *"acts on the 2D Slice — show it in a
+  pane (the pane's ▾ menu)"*.
+- While a tool is armed, the pane showing the view it listens to wears a
+  **thicker amber border** and **keeps taking the mouse** even when another pane
+  is selected. So you can arm *Extract Spectrum*, click the spectrum pane to
+  reach its controls in the Inspector, and go on clicking pixels on the slice —
+  selecting a pane no longer switches the tool off under you.
+- **<kbd>Esc</kbd>** disarms whatever is armed (and, with nothing armed, restores
+  a maximized pane).
+- A few tools are gated on **state** rather than on a view, and again say why:
+  *Pin Spectrum* needs a probed spectrum, *Export Region* a drawn region, *Send
+  Slice to Image Viewer* an open image viewer to send contours to, *Link Views*
+  something to link to (a second pane or a second cube window).
+
 ```{list-table}
 :header-rows: 1
 :widths: 22 40 38
@@ -175,24 +197,43 @@ line of sight, drawn in a *Spectral Profile* window.
 
 **How to use it:**
 
-1. **Tools → Extract Spectrum** in the cube viewer (or the *Data Probe*
-   sidebar button, or the probe icon in the 2-D toolbar). The cursor
-   becomes a cross-hair on the slice.
-2. **Hover** the slice → the profile updates live to whichever pixel is
-   under the cursor. The header status badge says **🟢 Live** in this
-   mode.
-3. **Click** a pixel → that spectrum gets **pinned** (frozen). Moving the
-   mouse afterwards no longer overwrites it. The badge switches to **🔒
-   Pinned** and the meta row hint changes to *"Click the slice again to
-   unpin and resume live updates."*
-4. **Click again** → unpins, live mode resumes.
+1. **Tools → Extract Spectrum** (menu, left dock, or Inspector ▸ Analysis).
+   Arming it gives the 2D Slice pane the focus, puts a cross-hair on it, and
+   opens a *Spectrum (live)* pane — in a free pane, or by growing the layout
+   (1 → 2 → 4), or, when the grid is full, by **borrowing** the least relevant
+   pane and saying so. A borrowed pane goes back to what it was showing when
+   the tool ends.
+2. **Hover** the slice → the curve follows the cursor. The pane header reads
+   *pixel (83, 116) · 🟢 live*.
+3. **Click** a pixel → the spectrum freezes there; moving the mouse no longer
+   overwrites it. The header becomes *🔒 pinned — click again to resume*.
+4. **Click again** → resumes tracking and moves to the new pixel. (This is why
+   a second click "changes" the spectrum you had just fixed.)
+5. **Ending the tool keeps a frozen spectrum.** Switch *Extract Spectrum* off
+   (or press <kbd>Esc</kbd>) and the spectrum you deliberately picked is
+   promoted to a permanent **SPEC** product in Session Data, with its pixel in
+   the Provenance tab; once it is saved the header says *💾 saved as "Spectrum
+   2"*. A curve that was still tracking the cursor is a preview and goes with
+   the tool — otherwise every arm/disarm would leave a row nobody asked for.
+   **Tools ▸ Pin Spectrum** does the same saving at any moment, so you can keep
+   one and carry on exploring.
+
+```{note}
+Two different things used to be called *Pin Spectrum*. **Tools ▸ Pin Spectrum**
+saves the curve as a product in Session Data. The button in the Inspector's
+SPECTRUM panel is now called **Compare** (with **Clear Overlays**): it keeps the
+curve *on the plot* as a comparison overlay, display only, nothing saved.
+```
 
 ### Picking a spectrum from the 3-D view
 
 *Pick spectrum on cutting plane*, in the **INTERACTION** section of the left
 dock (or *View → Pick Spectrum on Plane Click*), arms a picker on the 3-D view.
 While it is armed the 3-D pane carries an amber border, so it is clear which
-view is listening; moving to another pane disarms it.
+view is listening, and it keeps taking clicks even if you select another pane —
+selecting the spectrum it just produced no longer switches the picker off.
+<kbd>Esc</kbd>, or the toggle itself, disarms it; a spectrum you picked is kept
+the same way as one probed on the slice.
 
 This is not a second way of doing what *Extract Spectrum* does on the 2-D slice.
 It exists because a position–position–velocity rendering makes **coherent
@@ -268,7 +309,9 @@ The picker acts on the 3-D view only, and only on what is actually being drawn:
 with the **3D rendering** layer switched off, or in isosurface mode, a click on
 empty space returns nothing rather than a spectrum out of hidden data.
 
-**What the Spectral Profile window shows:**
+**What the spectrum pane shows** (the plot is embedded in a pane; its controls
+live in Inspector ▸ Analysis ▸ SPECTRUM, which follows the selected spectrum
+pane — or, while a probe tool is armed, the live one it is driving):
 
 ```{list-table}
 :header-rows: 1
@@ -276,11 +319,12 @@ empty space returns nothing rather than a spectrum out of hidden data.
 
 * - Area
   - Content
-* - **Header band**
-  - File name · pixel coords *(x, y)* · WCS coords (RA/Dec or l/b,
-    formatted in the active sky frame, sexagesimal or decimal as set in
-    the cube viewer). Plus the live / pinned status badge and a one-line
-    interaction hint.
+* - **Pane header**
+  - The product name, plus the probe state and the pixel it belongs to:
+    *pixel (83, 116) · 🟢 live*, *· 🔒 pinned — click again to resume*, or
+    *· 💾 saved as "Spectrum 2"* once the curve is a product. (In a standalone
+    profile window the same information appears in the plot's own header band,
+    with the file name and the WCS coordinates.)
 * - **Plot**
   - Intensity vs spectral axis (velocity / frequency / channel — picked
     from the cube WCS, with BUNIT on the Y axis). Drag and scroll-wheel
@@ -293,12 +337,15 @@ empty space returns nothing rather than a spectrum out of hidden data.
     (integrated value over the visible spectrum, ≈ flux density × `Δv`,
     a quick column-density / line-flux proxy). All recomputed on every
     new probe.
-* - **Footer**
-  - *Save spectrum as PNG…* exports the plot as an image; *Save spectrum
-    as CSV…* exports the actual data (two columns: spectral axis +
-    intensity), prefaced by `#` comment lines carrying the dataset name,
-    pixel + WCS coords, and sample count — so the file is self-
-    documenting and parses straight into pandas / astropy / TOPCAT.
+* - **Export (Inspector)**
+  - *Save PNG…* exports the plot as an image; *Save CSV…* exports the actual
+    data (two columns: spectral axis + intensity), prefaced by `#` comment lines
+    carrying the dataset name, pixel + WCS coords, and sample count — so the
+    file is self-documenting and parses straight into pandas / astropy / TOPCAT.
+* - **Analysis (Inspector)**
+  - Smoothing kernel, *Fit Gaussian* / *Clear Fit*, *Load Lines…* /
+    *Clear Lines*, *Compare* / *Clear Overlays* — see [Spectral
+    tools](spectral-tools#line-identification-overlaying-a-line-list).
 ```
 
 #### Spectral smoothing
@@ -329,22 +376,16 @@ original channel values.
 
 #### Line identification overlay
 
-The **Load Lines…** button in the spectrum header lets you overlay
-expected spectral-line positions on the plot:
+**Load Lines…** overlays a line list on the plot — the bundled list of common
+radio / mm transitions, or a file of your own, including a catalogue export.
+The dialog asks for the unit and for the source's systemic velocity (or z),
+because a line list is in the **rest** frame, and it converts to this axis using
+the cube's `RESTFRQ` and the axis's velocity convention. **Clear Lines** removes
+the markers.
 
-1. Click **Load Lines…** and select a CSV (or tab-separated) text file
-   with two columns: `frequency,label` (e.g. `115.271,CO(1-0)`). Lines
-   starting with `#` are ignored.
-2. Each entry is drawn as a **vertical dashed amber line** at the given
-   frequency, with a **rotated label** alongside it.
-3. Click **Clear Lines** to remove all markers.
-
-```{note}
-Frequencies in the file must be in the **same unit as the plot's X
-axis**. If the spectrum is displayed in velocity, convert your rest
-frequencies to velocity first (or switch the cube's spectral axis to
-frequency). No automatic unit conversion is performed.
-```
+The conventions, the file formats, the diagnostics when nothing lands in the
+band, and a worked HI example are in [Spectral tools → Line
+identification](spectral-tools#line-identification-overlaying-a-line-list).
 
 **Why it matters scientifically:** moment maps and region statistics
 average away the per-channel detail. The single-pixel spectrum is what
@@ -359,37 +400,36 @@ provenance preamble in the file and your future self will know exactly
 which pixel of which cube that spectrum came from.
 
 ```{note}
-The same window is reused as the **Region Spectral Profile** when you
-draw a Box / Circle / Polygon / Annulus region (see
-[Regions, PV, noise](region-pv-noise)). In that mode the Live / Pinned
-status badge is hidden (the spectrum is a one-shot mean over the region,
-not a live probe) and the header shows the region descriptor instead of
-the pixel hint — e.g. *"Circle region · 195 / 195 valid pixels · 2D
-stats: current slice · spectrum: full cube"*. Plot, stats bar, channel
-marker and CSV export behave identically.
+A region spectrum (Box / Circle / Polygon / Annulus — see [Regions, PV,
+noise](region-pv-noise)) is the same plot, in the same kind of pane, but it is a
+**one-shot mean over the region** rather than a live probe: there is no
+live / pinned state, and its region descriptor and 2-D statistics live in the
+product's Provenance. Plot, stats bar, channel marker, smoothing, fit, line
+overlay and CSV export behave identically.
 ```
 
-#### Comparing regions (pinned spectra)
+#### Comparing regions (overlaid spectra)
 
-The **Pin Spectrum** button in the spectrum header keeps the current
+The **Compare** button in the Inspector's SPECTRUM panel keeps the current
 profile on the plot as a persistent comparison curve, so you can overlay
 several regions' spectra on the same axes:
 
 1. Draw a region (Box / Circle / Polygon / Annulus) → its mean-per-channel
    spectrum appears as the live **Current** curve (brand blue).
-2. Click **Pin Spectrum** → the current curve is frozen in place with its
+2. Click **Compare** → the current curve is frozen in place with its
    own colour and a **legend** entry labelled from its title (e.g.
    *"1. Mean per channel — Circle region"*).
 3. Draw another region → its spectrum becomes the new **Current** curve
-   while the pinned one stays overlaid. Repeat to accumulate more.
-4. **Clear Pins (N)** removes all pinned curves and hides the legend.
+   while the compared one stays overlaid. Repeat to accumulate more.
+4. **Clear Overlays (N)** removes all comparison curves and hides the legend.
 
 The Y axis rescales to include every curve, so faint and bright regions
 stay visible together. Each pin captures the curve **as displayed** — if a
 smoothing kernel is active, the pinned curve is smoothed to match (CSV
-export still saves the raw *Current* spectrum only). Pinning also works on
+export still saves the raw *Current* spectrum only). It also works on
 the live single-pixel probe spectrum, so you can compare spectra from
-different lines of sight.
+different lines of sight. These overlays live on the plot and are **not**
+products: to keep a curve in Session Data use *Tools ▸ Pin Spectrum*.
 
 **Why it matters scientifically:** overlaying the mean spectra of several
 regions is the quickest way to compare line profiles across a source —

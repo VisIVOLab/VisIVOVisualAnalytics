@@ -290,6 +290,11 @@ private:
     /// rows plus, when the file says so, a unit hint ("GHz").
     static QVector<RestLine> parseLineListFile(const QString &text, QString &unitHint,
                                                QString &formatNote);
+    /// Shift the rest-frame @p lines to the observed frame and convert them to
+    /// this plot's axis, then draw them. @p mode: 0 = systemic velocity in km/s
+    /// (optical), 1 = redshift z, 2 = the values are already observed.
+    void applyLineList(const QVector<RestLine> &lines, const QString &unitText, int mode,
+                       double shift);
     void clearLineIdOverlay();
     // Region-mode header text. Populated by setRegionContext(); used by
     // refreshSpectrumHeader() when usageMode == RegionStatic so the meta
