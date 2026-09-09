@@ -1417,6 +1417,26 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             ui->vtkCube->unsetCursor();
             this->hidePick3dMarker();
             this->statusBar()->clearMessage();
+            // The picker STARTS the live spectrum when nothing else has (see
+            // handle3dPickEvent), so it must end it too — otherwise the live
+            // product outlives the tool and, now that placement may borrow a
+            // pane, keeps that pane lent for good.
+            //
+            // The owner test is the ACTION, not probeModeActive: a successful
+            // pick sets that flag itself (handle3dPickEvent, deliberately, so
+            // updateProbePlot does not early-return), so it is true here even
+            // when Extract Spectrum was never armed.
+            if (!ui->actionExtractSpectrum->isChecked()) {
+                this->probeModeActive = false;   // the pick's own flag, undone with it
+                this->stopLiveSpectrum();
+                // …and the crosshairs it drew: the overlay is drawn on the probe
+                // flag, so clearing the flag without a redraw leaves a marker on
+                // the slice for a probe that is no longer running.
+                this->probeFrozen = false;
+                this->refreshProbeOverlay();
+                if (auto *win = this->active2dWin())
+                    win->Render();
+            }
         }
         this->refreshPaneActiveStyles();   // paint / clear the armed border
     });
@@ -4800,6 +4820,10 @@ bool vtkWindowCube::viewingSlice() const
     // on screen, so the global Slice/Moment action alone can't say which one probe /
     // resize / overlays should target. Fall back to the action when the active pane
     // is not a 2-D view (≤2 panes, or the active pane is 3D/Spectrum).
+    // The slice view mounted anywhere visible settles it: tools bind to that view,
+    // not to the focused pane (the shared moment window below is never shown).
+    if (slice2dVisible())
+        return true;
     if (m_activePane >= 0 && m_activePane < 4) {
         const ViewId k = m_slots[m_activePane].view.kind;
         if (k == ViewId::Slice2D)
@@ -6067,7 +6091,8 @@ QString vtkWindowCube::scopedProductId(const QString &stem) const
 
 QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QString &label,
                                                const QVariantMap &params, QWidget *window,
-                                               const QString &stableId, const QString &renderer)
+                                               const QString &stableId, const QString &renderer,
+                                               bool revealProvenance)
 {
     AnalysisProduct p;
     p.productId = stableId;
@@ -6087,7 +6112,8 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
         // the Inspector onto Provenance (§4.1.4) — otherwise the tab reveals empty
         // (§3.0b (c)). Also refresh the left rail's product count.
         this->m_workspaceChrome->selectSessionProduct(id);
-        this->m_workspaceChrome->revealInspectorTab(2);
+        if (revealProvenance)
+            this->m_workspaceChrome->revealInspectorTab(2);
         // Count only THIS window's products (the registry is session-wide; a sibling window on
         // the same dataset shares parentKey but has a different ownerId).
         const auto dsProducts =
@@ -7859,16 +7885,11 @@ void vtkWindowCube::setActivePane(int pane)
     if (pane < 0 || pane > 3)
         return;
     const bool changed = (m_activePane != pane);
-    // Moving to another pane disarms the 3-D picker. It only ever listened to
-    // the 3-D view, so leaving it armed while the user works in the 2-D slice
-    // means a crosshair over a pane where clicking does nothing — the state the
-    // tool was hardest to understand in.
-    if (changed && m_slots[pane].view.kind != ViewId::View3D && actionPickSpectrum3d
-        && actionPickSpectrum3d->isChecked()) {
-        actionPickSpectrum3d->trigger();
-        this->statusBar()->showMessage(
-                u"3D pick disarmed — it acts on the 3D view only."_s, 3000);
-    }
+    // Moving the focus does NOT disarm the 3-D picker any more. It listens to the
+    // 3-D view and that view keeps its input while armed (paneIsArmedTarget), so
+    // selecting another pane — the picker's own live spectrum, typically, to reach
+    // its controls — used to stop the tool and delete the preview the user had
+    // just made. The amber border says where it is listening; Esc ends it.
     m_activePane = pane;
     refreshPaneActiveStyles();   // also re-gates interactors (§5.1)
     if (changed)
@@ -8040,7 +8061,7 @@ void vtkWindowCube::refreshPaneInteractors()
     // the activation slot has one place to notify the (currently no-op) views.
     for (int i = 0; i < 4; ++i)
         if (m_paneViews[i])
-            m_paneViews[i]->setInteractive(i == m_activePane);
+            m_paneViews[i]->setInteractive(i == m_activePane || paneIsArmedTarget(i));
     // §5.1b: the remote 3D widget renders a server stream through its OWN QWidget mouse
     // handlers, so the VTK/Qt-level swallow can't reach it — gate it explicitly. Interactive
     // only when the pane showing the 3D view is the active pane (there is one 3D view).
@@ -8049,7 +8070,7 @@ void vtkWindowCube::refreshPaneInteractors()
         for (int i = 0; i < 4; ++i)
             if (m_slots[i].view.kind == ViewId::View3D && m_slots[i].frame
                 && m_slots[i].frame->isVisible()) {
-                active3d = (i == m_activePane);
+                active3d = (i == m_activePane) || paneIsArmedTarget(i);
                 break;
             }
         m_remoteRenderWidget->setInteractive(active3d);
@@ -8072,16 +8093,13 @@ void vtkWindowCube::refreshPaneActiveStyles()
     // picker only, so the six 2-D tools armed invisibly.
     // Set here rather than alongside each toggle because this function rewrites
     // every pane frame and would otherwise paint over it.
-    const auto armedNow = [](const QAction *a) { return a && a->isChecked(); };
-    const bool armed3d = armedNow(actionPickSpectrum3d.data())
-            || armedNow(m_actKinematicLasso.data());
-    // Extract Spectrum (probe), PV path and the four region shapes all draw on
-    // the 2-D slice interactor. They are gated OFF on a moment / spectrum / PV
-    // pane (applyMomentToolGate), so an armed one always means the slice.
-    const bool armed2d = armedNow(ui->actionExtractSpectrum)
-            || armedNow(actionExtractPvDiagram.data()) || armedNow(actionBoxRegion.data())
-            || armedNow(actionCircleRegion.data()) || armedNow(actionPolygonRegion.data())
-            || armedNow(actionAnnulusRegion.data());
+    const bool armed3d = anyTool3dArmed();
+    const bool armed2d = anyTool2dArmed();
+    // Esc is the way out of an armed tool ("how do I deselect this?"). The
+    // shortcut is otherwise the maximized-pane restore, and stays disabled while
+    // neither applies so an idle Esc never steals the key from a focused child.
+    if (m_escRestoreShortcut)
+        m_escRestoreShortcut->setEnabled(armed2d || armed3d || m_maximizedPane >= 0);
     const QLatin1StringView armed(VisivoTheme::kWarning());
     for (int i = 0; i < 4; ++i) {
         const bool active = (m_activePane == i);
@@ -8126,8 +8144,11 @@ void vtkWindowCube::refreshPaneCursors()
     for (int i = 0; i < 4; ++i) {
         const ViewId k = m_slots[i].view.kind;
         if (k == ViewId::Slice2D) {
+            // …and an ARMED slice pane keeps the crosshair even when the focus is
+            // elsewhere, because it still takes the tool's input.
             if (QWidget *w = viewWidget(m_slots[i].view))
-                w->setCursor((m_activePane == i) ? Qt::CrossCursor : Qt::ArrowCursor);
+                w->setCursor((m_activePane == i || paneIsArmedTarget(i)) ? Qt::CrossCursor
+                                                                        : Qt::ArrowCursor);
         } else if (k == ViewId::Product && m_paneViews[i] && m_paneViews[i]->widget()) {
             // Display-only: always the plain arrow, never a crosshair — a moment pane
             // takes no probe/region/PV (those act on the 2-D Slice). §3.2 B3.
@@ -8217,7 +8238,12 @@ bool vtkWindowCube::eventFilter(QObject *watched, QEvent *event)
             }
         }
     if (renderSlot >= 0) {
-        const bool nonActive = (m_activePane != renderSlot);
+        // A pane showing the view an armed tool listens to keeps its input even
+        // when the focus is elsewhere. Without this, selecting another pane — to
+        // reach its controls in the Inspector, say — made the armed tool inert
+        // with no sign of it: the amber border still said "listening here" while
+        // every hover and click was being swallowed.
+        const bool nonActive = (m_activePane != renderSlot) && !paneIsArmedTarget(renderSlot);
         if (et == QEvent::MouseButtonPress) {
             if (nonActive) {
                 setActivePane(renderSlot);
@@ -8424,7 +8450,11 @@ QList<vtkWindowCube::PaneView> vtkWindowCube::availableViews() const
         // mountView/activateSessionView use.
         if (!p.renderer.isEmpty() && isPaneRenderableProduct(p.productId))
             out << PaneView{ ViewId::Product, p.productId };
-    out << PaneView{ ViewId::Spectrum, {} };
+    // NO fixed "Spectrum" entry. It was a placeholder for a RESULT, not a view of
+    // the dataset: selectable at any time, empty until some tool happened to fill
+    // it, and duplicating the SPEC products that already appear above the moment a
+    // spectrum exists. A spectrum now shows up the way every other result does —
+    // as a product, placed in a pane by the tool that computed it (user request).
     return out;
 }
 
@@ -8543,6 +8573,7 @@ void vtkWindowCube::pinCurrentSpectrum()
         return;
     }
     const int n = ++m_pinnedSpectrumCount;
+    m_lastProbeSpectrumPinned = true;   // this curve is a product now; do not promote it twice
     const QString productId = this->scopedProductId(QStringLiteral("spectrum%1").arg(n));
     const QString label = QStringLiteral("Spectrum %1").arg(n);
     Spectrum1D s;
@@ -8559,20 +8590,21 @@ void vtkWindowCube::pinCurrentSpectrum()
     params.insert(u"Channels"_s, QString::number(m_lastProbeKey.size()));
     this->registerAnalysisProduct(u"spectrum"_s, label, params, this, productId, u"spectrum1d"_s);
 
-    // No-steal placement: the FIRST free (None) visible pane, else it waits in the tree.
-    auto visible = [&](int i) { return m_slots[i].frame && m_slots[i].frame->isVisible(); };
-    int target = -1;
-    for (int i = 0; i < 4; ++i)
-        if (visible(i) && m_slots[i].view.isNone()) {
-            m_slots[i].view = PaneView{ ViewId::Product, productId };
-            mountView(i);
-            target = i;
-            break;
-        }
+    // A pin is PERMANENT, so it may grow the layout but never borrow: a borrowed
+    // pane is given back when a tool ends, and this product has no end.
+    const int target = acquirePaneForProduct(productId, /*mayBorrow=*/false,
+                                             /*avoidActivePane=*/false);
     if (target >= 0)
         setActivePane(target);
     refreshPaneChrome();
-    this->statusBar()->showMessage(QStringLiteral("Pinned %1.").arg(label), 3000);
+    // Where it went, always — a pinned spectrum that lands in no pane used to be
+    // announced as "Pinned Spectrum 1." with nothing visibly happening.
+    this->statusBar()->showMessage(
+            target >= 0
+                    ? QStringLiteral("Pinned %1 into pane %2.").arg(label).arg(target + 1)
+                    : QStringLiteral("Pinned %1 — no free pane: pick it from a pane's "
+                                     "\u25BE menu or from Session Data.").arg(label),
+            6000);
 }
 
 QString vtkWindowCube::addSpectrumProduct(const QString &kind, const QString &stableKey,
@@ -8624,6 +8656,192 @@ QString vtkWindowCube::addSpectrumProduct(const QString &kind, const QString &st
     return productId;
 }
 
+bool vtkWindowCube::viewAssigned(ViewId kind) const
+{
+    // Assigned to a slot, visible or not. Only used to tell "hidden by a maximize"
+    // apart from "not in the layout at all": a parked view (a 4→1 collapse keeps
+    // the other slots' views) must NOT count as showable, or maximizing any pane
+    // would let a tool arm against a view nobody can see.
+    for (int i = 0; i < 4; ++i)
+        if (m_slots[i].view.kind == kind)
+            return true;
+    return false;
+}
+
+bool vtkWindowCube::slice2dVisible() const
+{
+    for (int i = 0; i < 4; ++i)
+        if (m_slots[i].view.kind == ViewId::Slice2D && m_slots[i].frame
+            && m_slots[i].frame->isVisible())
+            return true;
+    return false;
+}
+
+bool vtkWindowCube::view3dVisible() const
+{
+    for (int i = 0; i < 4; ++i)
+        if (m_slots[i].view.kind == ViewId::View3D && m_slots[i].frame
+            && m_slots[i].frame->isVisible())
+            return true;
+    return false;
+}
+
+bool vtkWindowCube::anyTool2dArmed() const
+{
+    const auto armed = [](const QAction *a) { return a && a->isChecked(); };
+    return armed(ui->actionExtractSpectrum) || armed(actionExtractPvDiagram.data())
+            || armed(actionBoxRegion.data()) || armed(actionCircleRegion.data())
+            || armed(actionPolygonRegion.data()) || armed(actionAnnulusRegion.data());
+}
+
+bool vtkWindowCube::anyTool3dArmed() const
+{
+    const auto armed = [](const QAction *a) { return a && a->isChecked(); };
+    return armed(m_actKinematicLasso.data()) || armed(actionPickSpectrum3d.data());
+}
+
+bool vtkWindowCube::paneIsArmedTarget(int slot) const
+{
+    if (slot < 0 || slot > 3)
+        return false;
+    const ViewId k = m_slots[slot].view.kind;
+    if (k == ViewId::Slice2D)
+        return anyTool2dArmed();
+    if (k == ViewId::View3D)
+        return anyTool3dArmed();
+    return false;
+}
+
+bool vtkWindowCube::disarmArmedTools()
+{
+    bool any = false;
+    for (QAction *a : { ui->actionExtractSpectrum, actionExtractPvDiagram.data(),
+                        actionBoxRegion.data(), actionCircleRegion.data(),
+                        actionPolygonRegion.data(), actionAnnulusRegion.data(),
+                        m_actKinematicLasso.data(), actionPickSpectrum3d.data() }) {
+        if (a && a->isChecked()) {
+            a->setChecked(false);   // its own toggled() handler tears the tool down
+            any = true;
+        }
+    }
+    if (any)
+        this->statusBar()->showMessage(u"Tool disarmed."_s, 2000);
+    return any;
+}
+
+int vtkWindowCube::acquirePaneForProduct(const QString &productId, bool mayBorrow,
+                                         bool avoidActivePane)
+{
+    // A result the user asked for has to become VISIBLE. Placing it only "if a pane
+    // happens to be free" meant that in a full layout the tool answered with a row
+    // in Session Data and a status line, which reads as the tool doing nothing.
+    if (productId.isEmpty())
+        return -1;
+    auto visible = [this](int i) { return m_slots[i].frame && m_slots[i].frame->isVisible(); };
+    for (int i = 0; i < 4; ++i)
+        if (visible(i) && m_slots[i].view.kind == ViewId::Product
+            && m_slots[i].view.productId == productId)
+            return i;   // already on screen
+    // For a live preview, not the active pane: that is the slice being hovered.
+    // For a finished product the exclusion is wrong — the pane the tool just
+    // vacated is usually the active one, and skipping it sent the kept spectrum
+    // into Session Data with an empty pane sitting right there.
+    auto firstFree = [&]() {
+        for (int i = 0; i < 4; ++i)
+            if ((!avoidActivePane || i != m_activePane) && visible(i)
+                && m_slots[i].view.isNone())
+                return i;
+        return -1;
+    };
+    int slot = firstFree();
+    // Grow before taking anything: 1 → 2 → 4. assignViews() auto-fills only the
+    // cube's intrinsic views (3-D, 2-D slice) and only when they are not already on
+    // screen, so a grown pane normally comes up free; when it does not (the slice
+    // lands in it), grow once more.
+    while (slot < 0 && m_paneCount < 4) {
+        applyPaneLayout(m_paneCount == 1 ? 2 : 4);
+        slot = firstFree();
+    }
+    if (slot < 0 && mayBorrow)
+        slot = borrowPaneSlot(productId);
+    if (slot < 0)
+        return -1;
+    m_slots[slot].view = PaneView{ ViewId::Product, productId };
+    mountView(slot);
+    return slot;
+}
+
+int vtkWindowCube::borrowPaneSlot(const QString &productId)
+{
+    auto visible = [this](int i) { return m_slots[i].frame && m_slots[i].frame->isVisible(); };
+    auto duplicateOnScreen = [&](int i) {
+        for (int j = 0; j < 4; ++j)
+            if (j != i && visible(j) && m_slots[j].view == m_slots[i].view)
+                return true;
+        return false;
+    };
+    int best = -1, bestScore = 0;
+    for (int i = 0; i < 4; ++i) {
+        if (!visible(i) || i == m_activePane)
+            continue;
+        if (m_slots[i].view.kind == ViewId::Slice2D)
+            continue;   // the source of every 2-D tool — taking it breaks the tool
+        if (paneIsLent(i))
+            continue;   // already lent out to something else
+        // Cheapest to displace first: a duplicate of a view that stays on screen
+        // anyway, then a derived product (recomputable, still in Session Data),
+        // then a primary view like the 3-D render.
+        const int score = duplicateOnScreen(i)                    ? 3
+                        : (m_slots[i].view.kind == ViewId::Product) ? 2
+                                                                    : 1;
+        if (score > bestScore) {
+            bestScore = score;
+            best = i;
+        }
+    }
+    if (best < 0)
+        return -1;
+    m_borrowedPanes.insert(productId, m_slots[best].view);
+    this->statusBar()->showMessage(
+            u"Borrowed pane %1 (was %2) — it comes back when the tool ends."_s
+                    .arg(best + 1)
+                    .arg(viewTitle(m_slots[best].view)),
+            6000);
+    return best;
+}
+
+bool vtkWindowCube::paneIsLent(int slot) const
+{
+    return slot >= 0 && slot <= 3 && m_slots[slot].view.kind == ViewId::Product
+            && m_borrowedPanes.contains(m_slots[slot].view.productId);
+}
+
+void vtkWindowCube::releaseBorrowedPane(const QString &productId)
+{
+    const auto it = m_borrowedPanes.constFind(productId);
+    if (it == m_borrowedPanes.constEnd())
+        return;
+    const PaneView displaced = it.value();
+    m_borrowedPanes.remove(productId);
+    // Find the pane by PRODUCT, not by the slot it was lent from: a 4→1 collapse
+    // swaps views between slots.
+    for (int slot = 0; slot < 4; ++slot) {
+        if (m_slots[slot].view.kind != ViewId::Product
+            || m_slots[slot].view.productId != productId)
+            continue;
+        // Never hand back a view that has meanwhile been mounted elsewhere — the
+        // fixed views are singleton widgets, so two slots claiming one leaves the
+        // other blank.
+        bool elsewhere = false;
+        for (int j = 0; j < 4; ++j)
+            if (j != slot && !displaced.isNone() && m_slots[j].view == displaced)
+                elsewhere = true;
+        m_slots[slot].view = elsewhere ? PaneView{} : displaced;
+        mountView(slot);
+        return;
+    }
+}
+
 void vtkWindowCube::startLiveSpectrum()
 {
     // #5b: the live probe preview lives in a PANE, not a floating window. Create a transitory
@@ -8637,44 +8855,24 @@ void vtkWindowCube::startLiveSpectrum()
     s.yLabel = u"Intensity"_s;
     s.label = u"Spectrum (live)"_s;
     m_products1d.insert(m_spectrumLiveId, s);
+    // No Provenance reveal: this product exists because the user just ARMED a tool
+    // in Inspector ▸ Analysis, and jumping the panel to an empty Provenance page
+    // ("No recorded parameters") took the tool list out from under them.
     this->registerAnalysisProduct(u"spectrum"_s, s.label, QVariantMap{}, this, m_spectrumLiveId,
-                                  u"spectrum1d"_s);
+                                  u"spectrum1d"_s, /*revealProvenance=*/false);
     ProductRegistry::instance().setStatus(m_spectrumLiveId, u"live"_s);   // italic/muted in tree
 
-    // The live spectrum goes in a pane that is NOT the active one — the active pane is
-    // the 2D source the user hovers, and it must stay active + interactive (an idle pane
-    // swallows mouse-move). If there is no such pane, hint instead of stealing the
-    // source.
-    auto visible = [&](int i) { return m_slots[i].frame && m_slots[i].frame->isVisible(); };
-    int target = -1;
-    m_liveSpectrumTookSpectrumView = false;
-    // FIRST choice: a pane already showing the fixed Spectrum view. That view is
-    // the declared home of a traced spectrum — its own empty state reads "Click a
-    // pixel in the 2D view to trace its spectrum" — and it is filled only by the
-    // REGION spectrum path (probePlotWidget), so a pixel probe used to leave it
-    // sitting on that instruction while the live product went looking for a free
-    // pane and, in a full 2×2 layout, found none: the spectrum then existed only
-    // as a row in Session Data.
-    for (int i = 0; i < 4; ++i)
-        if (i != m_activePane && visible(i) && m_slots[i].view.kind == ViewId::Spectrum) {
-            target = i;
-            m_liveSpectrumTookSpectrumView = true;
-            break;
-        }
-    // Otherwise a free pane.
-    if (target < 0)
-        for (int i = 0; i < 4; ++i)
-            if (i != m_activePane && visible(i) && m_slots[i].view.isNone()) {
-                target = i;
-                break;
-            }
+    // The live preview is transient, so it MAY borrow a pane and give it back when
+    // the tool ends — the one placement that is allowed to displace something.
+    const int target = acquirePaneForProduct(m_spectrumLiveId, /*mayBorrow=*/true);
     if (target >= 0) {
-        m_slots[target].view = PaneView{ ViewId::Product, m_spectrumLiveId };
-        mountView(target);   // NOT setActivePane — the source pane keeps focus for hover
+        // NOT setActivePane — the source pane keeps focus for hover.
+        this->updateLiveSpectrumHeader();   // mountView writes the product label; this the state
     } else {
         this->statusBar()->showMessage(
-                u"Extract Spectrum: no free pane for the live spectrum — add a pane (▥), "
-                u"then hover the slice."_s,
+                u"Extract Spectrum: no pane could be freed for the live spectrum — "
+                u"close a pane's view, or pick \u201CSpectrum (live)\u201D from a pane's "
+                u"\u25BE menu."_s,
                 6000);
     }
     refreshPaneChrome();
@@ -8686,28 +8884,30 @@ void vtkWindowCube::stopLiveSpectrum()
         return;
     const QString id = m_spectrumLiveId;
     m_spectrumLiveId.clear();
-    bool restoreSpectrumView = m_liveSpectrumTookSpectrumView;
-    m_liveSpectrumTookSpectrumView = false;
+    // A spectrum the user PICKED (clicked a pixel, so the probe is frozen) is a
+    // result and survives the tool: it is promoted to a permanent SPEC product,
+    // there in Session Data to come back to. A spectrum that was still tracking
+    // the cursor is a preview and goes with the tool — otherwise every arm/disarm
+    // would leave a row nobody asked for.
+    const bool promote = this->probeFrozen && !m_lastProbeValues.isEmpty()
+            && !m_lastProbeSpectrumPinned;
     m_products1d.remove(id);
     ProductRegistry::instance().removeProduct(id);   // drops the transitory tree entry
-    // Any pane showing the live spectrum returns to "Pick a view" — or, if the live
-    // product had taken over the fixed Spectrum view, back to that view. Located by
-    // PRODUCT ID, not by the slot it started in: a 4→1 collapse moves pane views
-    // between slots. And only if no other pane has meanwhile been pointed at the
-    // Spectrum view — it is a singleton widget, so restoring a second claim on it
-    // would reparent it out of that pane and leave one of the two blank.
-    for (int i = 0; i < 4; ++i) {
-        if (m_slots[i].view.kind != ViewId::Product || m_slots[i].view.productId != id)
-            continue;
-        bool spectrumShownElsewhere = false;
-        for (int j = 0; j < 4; ++j)
-            if (j != i && m_slots[j].view.kind == ViewId::Spectrum)
-                spectrumShownElsewhere = true;
-        const bool restoreHere = restoreSpectrumView && !spectrumShownElsewhere;
-        restoreSpectrumView = false;   // one pane gets the view back, never two
-        m_slots[i].view = restoreHere ? PaneView{ ViewId::Spectrum, QString() } : PaneView{};
-        mountView(i);
-    }
+    // A borrowed pane goes back to what it was showing (this also un-mounts the
+    // live product from it).
+    releaseBorrowedPane(id);
+    // Any pane still showing the live spectrum (i.e. not a borrowed one) returns
+    // to "Pick a view" — the product is gone.
+    for (int i = 0; i < 4; ++i)
+        if (m_slots[i].view.kind == ViewId::Product && m_slots[i].view.productId == id) {
+            m_slots[i].view = {};
+            mountView(i);
+        }
+    // AFTER the live product is gone, so the pane it just vacated is the free one
+    // the promoted product lands in (pinCurrentSpectrum registers it from
+    // m_lastProbe*, with the pixel in its Provenance, and places it).
+    if (promote)
+        this->pinCurrentSpectrum();
     refreshPaneChrome();
 }
 
@@ -8726,8 +8926,43 @@ void vtkWindowCube::updateLiveSpectrumPane(const QVector<double> &key,
         if (m_slots[i].view.kind == ViewId::Product && m_slots[i].view.productId == m_spectrumLiveId
             && m_paneSpectra[i]) {
             m_paneSpectra[i]->updateSpectrumPlot(key, values, u"Spectrum (live)"_s, /*live=*/true);
+        }
+    Q_UNUSED(pixelLabel);   // the pane header owns the pixel line (updateLiveSpectrumHeader)
+    this->updateLiveSpectrumHeader();
+}
+
+void vtkWindowCube::updateLiveSpectrumHeader()
+{
+    if (m_spectrumLiveId.isEmpty())
+        return;
+    const QString px = u"pixel (%1, %2)"_s.arg(this->probeVoxel[0]).arg(this->probeVoxel[1]);
+    QStringList parts{ u"Spectrum (live)"_s, px };
+    if (!m_lastProbeContext.isEmpty())
+        parts << m_lastProbeContext;
+    // A pane's ProfileWidget runs in RegionStatic mode (its Live/Pinned pill and
+    // click-to-pin hint are suppressed by design), so the tool's state and the
+    // ways OUT of it go in the meta line — otherwise the whole interaction is
+    // undiscoverable: hover tracks, one click pins, a second click resumes, and
+    // nothing on screen said any of that, so the tool read as "never finishes".
+    const QString hint = this->probeFrozen
+            ? u"\U0001F512 Pinned — click the slice again to resume tracking  ·  "
+              u"ending the tool (Extract Spectrum / Esc) keeps this spectrum in "
+              u"Session Data  ·  \u201CPin Spectrum\u201D keeps it now"_s
+            : u"\U0001F7E2 Live — hover the slice to track, click a pixel to pin its spectrum"_s;
+    for (int i = 0; i < 4; ++i)
+        if (m_slots[i].view.kind == ViewId::Product
+            && m_slots[i].view.productId == m_spectrumLiveId && m_paneSpectra[i]) {
+            // The meta line is set for a standalone ProfileWidget only — an EMBEDDED
+            // pane one runs with setPaneChromeHidden(true), which hides m_specHeader
+            // and with it that label. The visible surface is the pane's own header
+            // row, so the state chip goes in its qualifier (the instructions are in
+            // the status bar, where there is room for them).
+            m_paneSpectra[i]->setSpectrumMeta(parts.join(u"  \u00B7  "_s), hint);
             if (m_slots[i].qualifier)
-                m_slots[i].qualifier->setText(pixelLabel);
+                m_slots[i].qualifier->setText(
+                        this->probeFrozen
+                                ? px + u"  \u00B7  \U0001F512 pinned \u2014 click again to resume"_s
+                                : px + u"  \u00B7  \U0001F7E2 live"_s);
         }
 }
 
@@ -9087,6 +9322,10 @@ void vtkWindowCube::buildPaneSlots()
     m_escRestoreShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     m_escRestoreShortcut->setEnabled(false);
     QObject::connect(m_escRestoreShortcut, &QShortcut::activated, this, [this]() {
+        // An armed tool first: it is the more recent, more modal state, and the
+        // amber border it paints is the thing the user is trying to get rid of.
+        if (disarmArmedTools())
+            return;
         if (m_maximizedPane >= 0)
             restorePaneMaximize();
     });
@@ -9173,11 +9412,22 @@ void vtkWindowCube::mountView(int slot)
         // stack after a velocity-axis pin doesn't keep stale labels / "Region spectrum".
         sp->setSpectrumAxisLabels(s.xLabel, s.yLabel);
         sp->setSpectrumMeta(s.label.isEmpty() ? QString() : s.label);
+        // …except for the LIVE product, whose header carries the tool's state and
+        // the ways out of it. Every remount (a pane swap, a layout change, a
+        // 4→1 collapse) would otherwise reduce it back to "Spectrum (live)" —
+        // and while the probe is frozen no hover comes to write it again.
+        const bool isLiveProduct = !m_spectrumLiveId.isEmpty() && v.productId == m_spectrumLiveId;
         // Call unconditionally: an EMPTY live product clears the plot (so a slot reused from a
         // previous spectrum doesn't show stale data until the first hover).
         sp->updateSpectrumPlot(s.key, s.values, s.label, /*live=*/false);
         m_paneProductId[slot] = v.productId;
         w = sp;
+        if (isLiveProduct) {
+            // After the assignment below, so the header helper finds this slot
+            // mounted; deferred because mountView() is mid-flight.
+            QMetaObject::invokeMethod(this, [this]() { this->updateLiveSpectrumHeader(); },
+                                      Qt::QueuedConnection);
+        }
     } else if (v.kind == ViewId::Product && !m_pvProductId.isEmpty()
                && v.productId == m_pvProductId && pvDiagramWidget) {
         // #5: the PV diagram is hosted IN the pane (the SINGLE reused widget — PV is not
@@ -9414,7 +9664,8 @@ void vtkWindowCube::refreshPaneChrome()
             if (old)
                 old->deleteLater();
         }
-        // Qualifier: only the 3D view carries one ("volume") for now.
+        // Qualifier: the 3D view carries one ("volume"), and the live spectrum its
+        // probe state — written back below, since this loop clears every other one.
         if (s.qualifier)
             s.qualifier->setText(s.view.kind == ViewId::View3D ? u"volume"_s : QString());
         // Per-view controls: only the 3D view has one now (Auto/Local/Remote).
@@ -9433,6 +9684,10 @@ void vtkWindowCube::refreshPaneChrome()
     updateActiveMapStats();          // active pane view may have changed → refresh 2D stats
     updateSpectrumInspectorControls();   // Spectrum panel follows the active pane's product
     pushProductPaneBadges();         // (#4) tree pane-number badges follow the pane layout
+    // The live spectrum's "pixel (x, y) · pinned" state, cleared by the qualifier
+    // reset above. Nothing else rewrites it while the probe is frozen — no hover
+    // comes — so pinning a spectrum used to blank the live pane's status.
+    updateLiveSpectrumHeader();
 }
 
 void vtkWindowCube::setupPaneChrome()
@@ -9947,8 +10202,17 @@ void vtkWindowCube::setupInspector()
                         actionPolygonRegion.data(), actionAnnulusRegion.data(),
                         m_actKinematicLasso.data(), actionPickSpectrum3d.data() }) {
         if (a)
-            QObject::connect(a, &QAction::toggled, this,
-                             [this]() { this->refreshPaneActiveStyles(); });
+            QObject::connect(a, &QAction::toggled, this, [this]() {
+                this->refreshPaneActiveStyles();   // amber armed border + Esc availability
+                // …and re-gate: disarming a tool can change what may arm next. A
+                // tool armed before a pane was maximized keeps its enabled state
+                // while it runs (see keepArmedSlice / keepArmed3d), so once it is
+                // switched off the gate has to run again or the action stays
+                // enabled and can re-arm against the still-hidden view.
+                // Re-entrant calls from the gate's own un-arming are suppressed by
+                // m_inToolGate, and the outer pass finishes the job.
+                this->applyMomentToolGate();
+            });
     }
 
     // Migrated spectrum controls at the TOP of the Analysis tab (shown only while the active
@@ -10093,19 +10357,38 @@ void vtkWindowCube::updateSpectrumInspectorControls()
     using namespace Qt::StringLiterals;
     if (!m_spectrumInspector)
         return;
-    // Target = the active pane's spectrum ProfileWidget, if the active pane shows a spectrum.
-    ProfileWidget *sp = nullptr;
-    if (m_activePane >= 0 && m_activePane < 4
-        && m_slots[m_activePane].view.kind == ViewId::Product
-        && m_products1d.contains(m_slots[m_activePane].view.productId))
-        sp = m_paneSpectra[m_activePane];
+    // Target: the SPECTRUM ON SCREEN being worked on, not "whatever the focused
+    // pane happens to be". Same principle as the tool gate — a spectrum's controls
+    // must not appear only after clicking its plot and vanish again when the user
+    // clicks the 3-D view. Order: the active pane if it IS a spectrum, else the
+    // live probe preview (the one a just-armed Extract Spectrum is driving), else
+    // the first spectrum pane on screen.
+    auto spectrumSlot = [this]() {
+        auto isSpectrum = [this](int i) {
+            return m_slots[i].view.kind == ViewId::Product
+                    && m_products1d.contains(m_slots[i].view.productId) && m_paneSpectra[i]
+                    && m_slots[i].frame && m_slots[i].frame->isVisible();
+        };
+        if (m_activePane >= 0 && m_activePane < 4 && isSpectrum(m_activePane))
+            return m_activePane;
+        if (!m_spectrumLiveId.isEmpty())
+            for (int i = 0; i < 4; ++i)
+                if (isSpectrum(i) && m_slots[i].view.productId == m_spectrumLiveId)
+                    return i;
+        for (int i = 0; i < 4; ++i)
+            if (isSpectrum(i))
+                return i;
+        return -1;
+    };
+    const int slot = spectrumSlot();
+    ProfileWidget *sp = (slot >= 0) ? m_paneSpectra[slot] : nullptr;
     m_specInspTarget = sp;
     if (!sp) {
         m_spectrumInspector->setVisible(false);
         return;
     }
     m_spectrumInspector->setVisible(true);
-    m_specInspTitle->setText(m_products1d[m_slots[m_activePane].view.productId].label);
+    m_specInspTitle->setText(m_products1d[m_slots[slot].view.productId].label);
     {   // reflect the pane's current smoothing without echoing back into it
         QSignalBlocker b(m_specInspSmooth);
         const int idx = m_specInspSmooth->findData(sp->smoothingCode());
@@ -10421,7 +10704,7 @@ void vtkWindowCube::restorePaneMaximize()
     m_maximizedPane = -1;
     m_activePane = wasActive;
     if (m_escRestoreShortcut)
-        m_escRestoreShortcut->setEnabled(false);
+        m_escRestoreShortcut->setEnabled(anyTool2dArmed() || anyTool3dArmed());
     applyPaneLayout(m_preMaxPaneCount);     // re-applies frame/column visibility + fits
 }
 
@@ -10833,7 +11116,7 @@ void vtkWindowCube::updateBackendDerivedActionsAvailability()
 
 void vtkWindowCube::applyMomentToolGate()
 {
-    // Availability of every pane- or state-dependent tool, from ONE table
+    // Availability of every view- or state-dependent tool, from ONE table
     // (CubeToolGate, unit-tested) applied to the QActions the Tools menu, the
     // left dock and Inspector ▸ Analysis are all built from. A tool that cannot
     // act says why in its tooltip; it never sits enabled and does nothing.
@@ -10847,14 +11130,10 @@ void vtkWindowCube::applyMomentToolGate()
     this->m_inToolGate = true;
     const auto guard = qScopeGuard([this] { this->m_inToolGate = false; });
 
-    static const QString reasonMoment =
-            u"a moment map is collapsed in velocity — pick the 2D Slice"_s;
-    static const QString reason3d =
-            u"acts on the 2D Slice — pick that pane"_s;
-    static const QString reasonSpectrum =
-            u"acts on the 2D Slice — this pane is a derived product"_s;
-    static const QString reasonNot3d =
-            u"acts on the 3D view — pick that pane"_s;
+    static const QString reasonNoSlice =
+            u"acts on the 2D Slice — show it in a pane (the pane's ▾ menu)"_s;
+    static const QString reasonNo3d =
+            u"acts on the 3D view — show it in a pane (the pane's ▾ menu)"_s;
     static const QString reasonNoProbe =
             u"probe a pixel first (Extract Spectrum, or Pick Spectrum on the 3D plane)"_s;
     static const QString reasonNoRegion =
@@ -10865,53 +11144,10 @@ void vtkWindowCube::applyMomentToolGate()
             u"nothing to link yet — split into 2 panes or open a second cube viewer"_s;
     // Every reason this function writes, so a tooltip of ours is never mistaken
     // for the tool's own sentence and cached over it.
-    static const QSet<QString> ourReasons{ reasonMoment,       reason3d,
-                                           reasonSpectrum,     reasonNot3d,
+    static const QSet<QString> ourReasons{ reasonNoSlice,      reasonNo3d,
                                            reasonNoProbe,      reasonNoRegion,
                                            reasonNoImageView,  reasonNoLinkTargets };
 
-    // ── What is in front, as the pure table's vocabulary ──────────────────────
-    const ViewId activeKind = (m_activePane >= 0 && m_activePane < 4)
-            ? m_slots[m_activePane].view.kind
-            : ViewId::None;
-    const QString activeProduct = (m_activePane >= 0 && m_activePane < 4)
-            ? m_slots[m_activePane].view.productId
-            : QString();
-    // A spectrum pane is ViewId::Product with an entry in m_products1d — NOT
-    // ViewId::Spectrum, which is the fixed singleton view. Testing the enum
-    // alone matched nothing a user can actually select. A moment map is a
-    // Product in m_products2d, and a PV diagram is a Product in neither cache
-    // (it has its own id), so all three need naming explicitly — otherwise they
-    // fall through to "some other pane" and re-enable the slice tools, which a
-    // finished PV run reaches on its own by activating its output pane.
-    CubeToolGate::Inputs in;
-    if (activeKind == ViewId::View3D)
-        in.pane = CubeToolGate::Pane::View3D;
-    else if (activeKind == ViewId::Slice2D)
-        in.pane = CubeToolGate::Pane::Slice2D;
-    else if (activeKind == ViewId::Spectrum)
-        in.pane = CubeToolGate::Pane::Spectrum;
-    else if (activeKind == ViewId::Product && m_products2d.contains(activeProduct))
-        in.pane = CubeToolGate::Pane::Moment;
-    else if (activeKind == ViewId::Product && m_products1d.contains(activeProduct))
-        in.pane = CubeToolGate::Pane::Spectrum;
-    else if (activeKind == ViewId::Product && !m_pvProductId.isEmpty()
-             && activeProduct == m_pvProductId)
-        in.pane = CubeToolGate::Pane::Pv;
-    else if (activeKind == ViewId::Product)
-        in.pane = CubeToolGate::Pane::OtherProduct;
-    else
-        in.pane = CubeToolGate::Pane::None;
-    // The ONE case where Extract Spectrum must be left alone: the pane in front
-    // is the live preview the tool itself is driving. Un-arming it there calls
-    // stopLiveSpectrum() and deletes what the user is looking at. A pinned or
-    // generated spectrum is not that — it is a finished product, and the tool
-    // gates on it like everything else.
-    in.liveSpectrumPane = !m_spectrumLiveId.isEmpty() && activeKind == ViewId::Product
-            && activeProduct == m_spectrumLiveId;
-    const CubeToolGate::Decision d = CubeToolGate::evaluate(in);
-
-    // ── Apply ─────────────────────────────────────────────────────────────────
     // enabled=false with a reason disables + explains; otherwise the action goes
     // back to its own baseline and its own tooltip.
     auto applyGate = [this](QAction *a, bool enabled, const QString &reason) {
@@ -10929,7 +11165,7 @@ void vtkWindowCube::applyMomentToolGate()
             m_toolBaseTooltips.insert(a, a->toolTip());
         if (!enabled && !reason.isEmpty()) {
             if (a->isCheckable() && a->isChecked())
-                a->setChecked(false);   // un-arm a tool armed on a pane it cannot act on
+                a->setChecked(false);   // un-arm a tool whose view left the layout
             a->setEnabled(false);
             a->setToolTip(reason);
             a->setStatusTip(reason);
@@ -10943,14 +11179,22 @@ void vtkWindowCube::applyMomentToolGate()
         }
     };
 
-    const QString sliceReasonText =
-            d.sliceReason == CubeToolGate::SliceReason::Moment          ? reasonMoment
-          : d.sliceReason == CubeToolGate::SliceReason::View3D          ? reason3d
-          : d.sliceReason == CubeToolGate::SliceReason::DerivedProduct  ? reasonSpectrum
-                                                                        : QString();
+    CubeToolGate::Inputs in;
+    in.slice2dVisible = slice2dVisible();
+    in.view3dVisible = view3dVisible();
+    const CubeToolGate::Decision d = CubeToolGate::evaluate(in);
+    // Preserving a RUNNING tool is a different question from letting a new one
+    // start. While a pane is maximized the other frames are hidden but
+    // their views are still assigned, so a tool already armed on one of them
+    // survives the zoom untouched — its pane comes back on Esc. Nothing new may
+    // arm against a view that cannot be seen.
+    const bool zoomed = (m_maximizedPane >= 0);
+    const bool keepArmedSlice = !d.slice2dTools && zoomed && viewAssigned(ViewId::Slice2D);
+    const bool keepArmed3d = !d.view3dTools && zoomed && viewAssigned(ViewId::View3D);
+
     // The slice family. Import Region belongs here too: it draws the parsed
-    // region onto the active 2-D view and runs the region analysis on it, so on
-    // a 3-D / moment / spectrum pane it is the same no-op as drawing one by hand.
+    // region onto the 2-D view and runs the region analysis on it, so without
+    // that view on screen it is the same no-op as drawing one by hand.
     const std::array<QAction *, 7> sliceTools{ ui->actionExtractSpectrum,
                                                actionExtractPvDiagram.data(),
                                                actionBoxRegion.data(),
@@ -10961,37 +11205,53 @@ void vtkWindowCube::applyMomentToolGate()
     for (QAction *a : sliceTools) {
         if (!a)
             continue;
-        if (d.keepExtractSpectrumArmed && a == ui->actionExtractSpectrum)
-            continue;   // see Inputs::liveSpectrumPane above
         // PV additionally carries a backend baseline (dataset visible, no run in
         // flight); the rest share the cube-open baseline.
         const bool baseline = (a == actionExtractPvDiagram.data()) ? m_pvBaselineEnabled
                                                                    : m_cubeActionsEnabled;
-        applyGate(a, baseline && d.slice2dTools, sliceReasonText);
+        // A REASON un-arms; a baseline denial only greys out. PV drops its
+        // baseline the moment an extraction starts, and un-arming there runs
+        // clearPv() while the controller is still reading the path it was handed
+        // — the first extraction then submits an empty polyline.
+        if (!d.slice2dTools) {
+            if (keepArmedSlice && a->isChecked())
+                continue;   // running, and its pane is only hidden by the zoom
+            applyGate(a, false, reasonNoSlice);
+        } else {
+            applyGate(a, baseline, QString());
+        }
     }
     m_momentToolGated = !d.slice2dTools;
 
-    // The mirror image: tools that act on the 3-D VIEW, inert everywhere else.
-    // The lasso installs its double-click observer on the 3-D interactor and the
-    // spectral picker its own — arming either from the 2-D slice puts a crosshair
-    // on a view that is not in front and waits for a click that will not come.
-    for (QAction *a : { m_actKinematicLasso.data(), actionPickSpectrum3d.data() })
-        applyGate(a, m_cubeActionsEnabled && d.view3dTools, reasonNot3d);
+    // The mirror image: the tools that act on the 3-D VIEW. The lasso installs
+    // its double-click observer on the 3-D interactor and the spectral picker
+    // its own, so with no 3-D pane on screen they wait for a click that cannot
+    // come.
+    for (QAction *a : { m_actKinematicLasso.data(), actionPickSpectrum3d.data() }) {
+        if (!a)
+            continue;
+        if (!d.view3dTools) {
+            if (keepArmed3d && a->isChecked())
+                continue;                        // running; only hidden by the zoom
+            applyGate(a, false, reasonNo3d);     // un-arms: its view is not on screen
+        } else {
+            applyGate(a, m_cubeActionsEnabled, QString());
+        }
+    }
 
-    // State gates: the tool is fine on this pane, but there is nothing yet for
+    // State gates: the tool is fine on this layout, but there is nothing yet for
     // it to act on. Each of these used to be enabled always and answer a click
     // with a modal "draw a region first" / a transient status line — a dialog
     // doing the job of a disabled button.
     //
-    // Read the state HERE, not with the pane inputs above: the un-arming just
+    // Read the state HERE, not with the view inputs above: the un-arming just
     // done runs the tools' own toggled() handlers, and those change exactly this
     // state — dropping an unfinished polygon through setRegionMode() ->
-    // clearRegion(), whose own gate call this pass suppresses. Deciding from the
+    // clearRegion(), whose own gate call this pass suppresses. Deciding from an
     // earlier snapshot left Export Region enabled with no region behind it.
     CubeToolGate::Inputs stateIn = in;
     // Pin Spectrum promotes the LAST probed spectrum, which the 2-D probe and the
-    // 3-D plane pick both feed (updateProbePlot is the single writer) — so this is
-    // a state gate, not a pane gate.
+    // 3-D plane pick both feed (updateProbePlot is the single writer).
     stateIn.haveProbeSpectrum = !m_lastProbeValues.isEmpty();
     // Region export serialises the live shape, or the last finalised one after
     // analysis reset regionMode (same fallback exportRegionsToFile() uses).
@@ -12050,6 +12310,9 @@ void vtkWindowCube::handle3dPickEvent()
     }
     this->updateProbePlot();     // updates the live pane with the picked voxel's spectrum
     this->probeFrozen = true;    // hold the pick
+    // The header was written by updateProbePlot() while still unfrozen, so it read
+    // "Live — hover the slice to track" over a pick that is in fact held.
+    this->updateLiveSpectrumHeader();
     this->refreshProbeOverlay();
     if (this->sliceWin) {
         this->sliceWin->Render();

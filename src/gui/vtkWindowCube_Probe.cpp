@@ -291,6 +291,23 @@ void vtkWindowCube::toggleProbeFreeze()
     if (this->probePlotWidget) {
         this->probePlotWidget->setSpectrumFrozen(this->probeFrozen);
     }
+    // Same for the live spectrum PANE, which is where the pixel probe actually
+    // draws (probePlotWidget belongs to the region path and is usually null
+    // here) — and say out loud what pinning means and how the tool ends, since
+    // "it keeps changing and I can't finish it" is the whole failure mode.
+    this->updateLiveSpectrumHeader();
+    if (this->probeFrozen) {
+        this->statusBar()->showMessage(
+                u"Spectrum pinned at pixel (%1, %2) — click the slice again to resume "
+                u"tracking. Ending the tool keeps this spectrum in Session Data; "
+                u"\u201CPin Spectrum\u201D keeps it now."_s
+                        .arg(this->probeVoxel[0])
+                        .arg(this->probeVoxel[1]),
+                10000);
+    } else {
+        this->statusBar()->showMessage(
+                u"Live spectrum tracking resumed — click a pixel to pin it again."_s, 4000);
+    }
 }
 
 bool vtkWindowCube::updateProbeFromDisplayPosition(int displayX, int displayY)
@@ -514,6 +531,8 @@ void vtkWindowCube::updateProbePlot()
     const bool hadProbeSpectrum = !this->m_lastProbeValues.isEmpty();
     this->m_lastProbeKey = spectral;
     this->m_lastProbeValues = values;
+    // A NEW curve: whatever was pinned before does not cover this one.
+    this->m_lastProbeSpectrumPinned = false;
     this->m_lastProbeXLabel = this->spectralAxisTitle().isEmpty() ? u"Spectral axis"_s
                                                                   : this->spectralAxisTitle();
     this->m_lastProbeYLabel = u"Intensity"_s;
@@ -547,6 +566,16 @@ void vtkWindowCube::setProbeModeActive(bool active)
 {
     this->probeModeActive = active;
     if (active) {
+        // Give the 2-D Slice pane the focus first, exactly as the 3-D picker does
+        // for its own view: otherwise the pane container swallows the activating
+        // press and the user has to click the slice once just to wake it, which
+        // reads as "the tool did nothing".
+        for (int i = 0; i < 4; ++i)
+            if (m_slots[i].view.kind == ViewId::Slice2D && m_slots[i].frame
+                && m_slots[i].frame->isVisible()) {
+                this->setActivePane(i);
+                break;
+            }
         if (this->actionExtractPvDiagram && this->actionExtractPvDiagram->isChecked()) {
             this->actionExtractPvDiagram->setChecked(false);
         }
@@ -564,7 +593,10 @@ void vtkWindowCube::setProbeModeActive(bool active)
         }
     }
     if (auto *w2d = this->active2dWidget()) w2d->setCursor(active ? Qt::CrossCursor : Qt::ArrowCursor);
-    this->probeFrozen = false;
+    // NOT cleared before the teardown below: stopLiveSpectrum() reads probeFrozen
+    // to decide whether the spectrum was a deliberate pick worth keeping.
+    if (active)
+        this->probeFrozen = false;
 
     if (!active) {
         this->sliceProbeHorizontalActor->VisibilityOff();
@@ -572,6 +604,7 @@ void vtkWindowCube::setProbeModeActive(bool active)
         this->momentProbeHorizontalActor->VisibilityOff();
         this->momentProbeVerticalActor->VisibilityOff();
         this->stopLiveSpectrum();   // #5b: drop the transitory live pane + tree entry
+        this->probeFrozen = false;
         if (this->active2dWin()) {
             this->active2dWin()->Render();
         }

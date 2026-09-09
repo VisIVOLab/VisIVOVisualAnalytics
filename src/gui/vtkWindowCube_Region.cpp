@@ -762,6 +762,7 @@ void vtkWindowCube::analyzeCurrentRegion()
     // live in that product's Provenance, and its spectrum plot governs the overlay's lifetime —
     // so the status message + overlay cleanup below both key off it.
     bool producedProduct = false;
+    int regionSpectrumPane = -1;   // where the SPEC product landed (-1 = no room)
     if (cubeImage && stats.valid) {
         // ── Geometry of the 2D display data (where region voxels live) ─────────
         int extent2d[6];
@@ -920,6 +921,13 @@ void vtkWindowCube::analyzeCurrentRegion()
                 }
                 this->registerAnalysisProduct(u"spectrum"_s, label, params, this, pid,
                                               u"spectrum1d"_s);
+                // SHOW it. The region spectrum used to be visible only by hand — via
+                // the fixed "Spectrum" pane entry (which drew the shared plot above,
+                // not this product) or by picking the SPEC row in a pane's ▾ menu. It
+                // is a result the user just asked for, so it is placed like any other:
+                // free pane → grow the layout → else it waits in Session Data. Never
+                // borrowed: a region spectrum is a permanent product.
+                regionSpectrumPane = this->acquirePaneForProduct(pid, /*mayBorrow=*/false);
                 this->refreshPaneChrome();   // tree + pane dropdowns pick it up
                 producedProduct = true;
             }
@@ -949,10 +957,17 @@ void vtkWindowCube::analyzeCurrentRegion()
     // outcome inline and wipe the just-drawn overlay so it can't linger under a stale plot.
     if (producedProduct) {
         this->statusBar()->showMessage(
-                u"%1 region: mean %2 · median %3 · %4/%5 px — full stats in Inspector › "
-                u"Provenance."_s.arg(shapeLabel, fmt(stats.mean), fmt(stats.median))
+                (regionSpectrumPane >= 0
+                         ? u"%1 region: mean %2 · median %3 · %4/%5 px — spectrum in pane %6, "
+                           u"full stats in Inspector › Provenance."_s
+                         : u"%1 region: mean %2 · median %3 · %4/%5 px — no free pane for the "
+                           u"spectrum (pick it from a pane's ▾ menu); full stats in "
+                           u"Inspector › Provenance.%6"_s)
+                        .arg(shapeLabel, fmt(stats.mean), fmt(stats.median))
                         .arg(stats.validCount)
-                        .arg(stats.totalCount),
+                        .arg(stats.totalCount)
+                        .arg(regionSpectrumPane >= 0 ? QString::number(regionSpectrumPane + 1)
+                                                     : QString()),
                 6000);
     } else {
         if (!stats.valid)

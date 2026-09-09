@@ -487,11 +487,13 @@ private:
     // #5b: the live Extract-Spectrum preview renders in a PANE (transitory "Spectrum (live)"
     // product), NOT a floating window. Started/stopped with the probe tool; updated on hover.
     QString m_spectrumLiveId;   ///< the transitory live product id (empty when the tool is off)
-    /// The live product took over a pane's fixed Spectrum view, so stopping the
-    /// tool puts that view back instead of leaving a "Pick a view" hole. NOT a
-    /// slot index: a 4→1 collapse swaps pane views between slots, so the pane is
-    /// found by the live product id at restore time.
-    bool m_liveSpectrumTookSpectrumView{ false };
+    /// The current probed curve has already been promoted to a SPEC product by an
+    /// explicit "Pin Spectrum", so ending the tool must not register it again.
+    /// Cleared whenever updateProbePlot() writes a NEW curve.
+    bool m_lastProbeSpectrumPinned{ false };
+    /// Write the live spectrum pane's state + the two ways out of the tool into
+    /// its header (hover tracks / click pins / click again resumes).
+    void updateLiveSpectrumHeader();
     void startLiveSpectrum();   ///< place a live spectrum pane + tree entry
     void stopLiveSpectrum();    ///< drop the live pane + tree entry
     void updateLiveSpectrumPane(const QVector<double> &key, const QVector<double> &values,
@@ -610,6 +612,45 @@ private:
         PaneView view;
     };
     std::array<PaneSlot, 4> m_slots;
+
+    /// Views displaced by a transient tool result, keyed by the BORROWER's product
+    /// id — never by slot index: a 4→1 collapse moves pane views between slots, so
+    /// a slot key goes stale and the displaced view is lost.
+    QHash<QString, PaneView> m_borrowedPanes;
+    /// True while this pane holds a product that displaced another view.
+    bool paneIsLent(int slot) const;
+    /// Put @p productId where it can be SEEN: a free pane, else grow the layout
+    /// (1→2→4), else — only when @p mayBorrow — borrow the least relevant pane and
+    /// remember what it showed. Returns the slot, or -1 when there is no room (the
+    /// product then waits in Session Data). Mounts the view itself.
+    /// @p avoidActivePane keeps the focused pane out of the candidates — right for
+    /// a live tool preview (the focused pane is the source being hovered), wrong
+    /// for a finished product, which may perfectly well fill the empty pane the
+    /// user is looking at.
+    int acquirePaneForProduct(const QString &productId, bool mayBorrow,
+                              bool avoidActivePane = true);
+    /// Pick the pane cheapest to displace, recording its view. -1 if none may go.
+    int borrowPaneSlot(const QString &productId);
+    /// Give back every pane borrowed for @p productId.
+    void releaseBorrowedPane(const QString &productId);
+
+    /// The fixed 2-D slice / 3-D view is mounted in a VISIBLE pane. A tool binds
+    /// to its view, so this — not which pane has the focus — is what gates it.
+    bool slice2dVisible() const;
+    bool view3dVisible() const;
+    /// A view of @p kind is assigned to a slot, visible or not — the difference
+    /// between "hidden by a maximize" and "not in the layout".
+    bool viewAssigned(ViewId kind) const;
+    /// A tool that draws on the 2-D slice / listens to the 3-D interactor is armed.
+    bool anyTool2dArmed() const;
+    bool anyTool3dArmed() const;
+    /// This pane shows the view an armed tool is listening to. Such a pane keeps
+    /// taking mouse input even when it is not the active pane — otherwise the
+    /// user cannot select another pane (to reach its controls) without silently
+    /// making the armed tool inert.
+    bool paneIsArmedTarget(int slot) const;
+    /// Un-arm every armed interaction tool. True if any was armed (Esc).
+    bool disarmArmedTools();
     // §3.2 B3: each pane that shows a Product gets its OWN display-only Pane2DView
     // (independent camera / LUT / colorbar / WCS overlay), reading the shared per-product
     // imageData from m_products2d — so Moment 0 ∥ Moment 1 (and the same product twice)
@@ -1825,10 +1866,15 @@ protected:
     /// @p stableId is non-empty it is used as the product id, so re-computing an
     /// in-place product (e.g. the moment map) updates its row instead of adding
     /// a duplicate. Returns the assigned product id.
+    /// @p revealProvenance auto-switches the Inspector to Provenance (the default:
+    /// a finished result's parameters are what the user wants next). Pass false
+    /// for a transient product created BY arming a tool — the user is working in
+    /// the Analysis tab and must not be thrown out of it.
     QString registerAnalysisProduct(const QString &kind, const QString &label,
                                     const QVariantMap &params, QWidget *window,
                                     const QString &stableId = QString(),
-                                    const QString &renderer = QString());
+                                    const QString &renderer = QString(),
+                                    bool revealProvenance = true);
 
     /// Populate the right Inspector shell (Properties/Analysis tabs) and wire the
     /// pane-layout + Linked controls. Tools trigger the existing dialog QActions.
