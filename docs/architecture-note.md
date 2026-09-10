@@ -265,6 +265,39 @@ child windows do not need to link against `MainWindow` to trigger it.
 
 ---
 
+## Session Data tree (`SessionDataTree`) — selection is passive
+
+The tree is the table of contents for the dataset's views (`view3d`, `slice2d`)
+and its registered products. Its contract, worth stating because breaking it is
+invisible until someone loses a pane:
+
+| Gesture | Signal | Effect |
+|---------|--------|--------|
+| select (any button) | `productSelected(productId)` | Inspector ▸ Properties / Provenance follow. **Nothing is mounted.** |
+| double-click | `rowActivated(viewTag, productId)` | `activateSessionView()` mounts the row (free pane → grow), or raises the product's own window when it has no pane renderer |
+| right-click | `rowContextMenuRequested(viewTag, productId, pos)` | the viewer builds "Show in ▸ Pane N" (and "Bring window to front" for a window-only product) |
+| pane-badge click | `paneBadgeActivated(pane)` | activates the pane that already shows the row |
+
+`currentChanged` used to emit **both** `productSelected` and `rowActivated`, so
+selection *was* activation. Two consequences: clicking a row to read its
+provenance replaced whatever the active pane was showing, and — because Qt makes
+the pressed row current on any button — a right-click mounted the product before
+its own "Show in ▸" menu opened, which made that menu unreachable in practice.
+Selection is now inspection only; mounting is explicit.
+
+Two things follow from the change and must not be re-broken:
+
+- `onActivated()` handles the intrinsic **view** rows as well as products. They
+  used to arrive in a pane only through the selection side effect, so
+  double-click did nothing for them.
+- The `m_suppressActivate` flag (with its RAII guards around `selectProduct()` /
+  `selectForView()`) existed solely to stop a *programmatic* selection from
+  mounting a pane. With selection passive it guards nothing and is gone — if
+  activation is ever put back on `currentChanged`, that guard has to come back
+  with it, and so does the right-click problem.
+
+---
+
 ## Cube viewer — tool availability and where results land
 
 Two rules govern the ~30 cube tools. Both were per-pane heuristics scattered
