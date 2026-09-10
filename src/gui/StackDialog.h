@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QCloseEvent>
 #include <QDialog>
 #include <QPointer>
 #include <QStringList>
@@ -79,8 +80,15 @@ private slots:
     void onItemChanged();
     void onCompute();
 
+protected:
+    /// Ask before abandoning a running computation (ToolDialogClose.h).
+    void closeEvent(QCloseEvent *event) override;
+
 private:
     void setUiBusy(bool busy);
+    /// True while a compute is in flight. Set in setUiBusy, the single place
+    /// that already knew — closeEvent needs it to warn instead of discarding.
+    bool m_busy{ false };
     void updateSelectionLabel();
 
     std::shared_ptr<BackendClient> m_client;

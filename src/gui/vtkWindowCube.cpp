@@ -7212,7 +7212,7 @@ void vtkWindowCube::showMoreColorMapsDialog()
     // mode, not a colormap). Scrollable, swatches, current pre-selected. Applies to the
     // active display target (the pane the popover / combo was opened for).
     QDialog dlg(this);
-    dlg.setWindowTitle(u"Colour maps"_s);
+    dlg.setWindowTitle(u"Color Maps"_s);
     auto *lay = new QVBoxLayout(&dlg);
     auto *list = new QListWidget(&dlg);
     list->setIconSize(QSize(64, 12));

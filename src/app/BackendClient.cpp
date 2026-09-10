@@ -30,6 +30,7 @@
 #include <QFuture>
 #include <QFutureSynchronizer>
 #include <QUrl>
+#include <QRegularExpression>
 #include <QUrlQuery>
 
 #include <limits>
@@ -2101,7 +2102,7 @@ BackendCubePvResult BackendClient::requestPv(const QString &datasetId,
                                           { QStringLiteral("vertices"), vertexArray },
                                           { QStringLiteral("width_pixels"), widthPixels } });
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/pv")), body, error);
+            performPostRetryingBackpressure(QUrl(m_baseUrl + QStringLiteral("/v1/cube/pv")), body, error);
     if (!error.isEmpty()) {
         BackendCubePvResult result;
         result.error = error;
@@ -2662,6 +2663,57 @@ bool BackendClient::parseBinaryFrame(const QByteArray &payload, int &offset,
 
 // ── Low-level HTTP ────────────────────────────────────────────────────────────
 
+namespace {
+/// Endpoints that go through the backend's heavy-task machinery. One list, two
+/// consumers: the long client timeout (see requestTimeoutFor) and the in-flight
+/// counter the status bar shows.
+const QStringList &heavyComputePaths()
+{
+    static const QStringList paths{
+        QStringLiteral("/spectral/linewidth"), QStringLiteral("/spectral/stack"),
+        QStringLiteral("/spectral/baseline"),  QStringLiteral("/products/isosurface"),
+        QStringLiteral("/products/moment"),    QStringLiteral("/products/map_math"),
+        QStringLiteral("/products/mosaic"),    QStringLiteral("/products/publication_figure"),
+        QStringLiteral("/products/image_quality"), QStringLiteral("/cube/pv"),
+        QStringLiteral("/cube/noise"),         QStringLiteral("/cube/mask"),
+        QStringLiteral("/velocity/"),          QStringLiteral("/kinematic"),
+    };
+    return paths;
+}
+
+bool isHeavyComputePath(const QString &path)
+{
+    for (const QString &fragment : heavyComputePaths())
+        if (path.contains(fragment))
+            return true;
+    return false;
+}
+
+/// Atomic: requests run from worker threads (each with its own QNAM).
+std::atomic<int> g_heavyInFlight{ 0 };
+
+/// RAII counter, so an early return or an exception cannot leak a count.
+struct HeavyRequestScope
+{
+    const bool counted;
+    explicit HeavyRequestScope(const QString &path) : counted(isHeavyComputePath(path))
+    {
+        if (counted)
+            ++g_heavyInFlight;
+    }
+    ~HeavyRequestScope()
+    {
+        if (counted)
+            --g_heavyInFlight;
+    }
+};
+}   // namespace
+
+int BackendClient::heavyRequestsInFlight()
+{
+    return g_heavyInFlight.load();
+}
+
 std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) const
 {
     const QString path = url.path();
@@ -2679,8 +2731,20 @@ std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) cons
     if (path.endsWith(QStringLiteral("/cube/slice")) || path.endsWith(QStringLiteral("/image/preview"))) {
         return std::chrono::milliseconds(30000);
     }
-    if (path.endsWith(QStringLiteral("/vlkb/fetch_cutout"))) {
-        return std::chrono::milliseconds(300000); // FITS downloads can be large
+    // Server-side downloads: both of these stream a remote FITS through an
+    // urlopen(timeout=600) on the backend, so 300 s here had the client abort
+    // while the server was still allowed five more minutes — the same mismatch
+    // that broke the line-width map, in two more places (audit).
+    if (path.endsWith(QStringLiteral("/vlkb/fetch_cutout"))
+        || path.endsWith(QStringLiteral("/datasets/open_url"))) {
+        return std::chrono::milliseconds(660000); // 11 min > server 600 s
+    }
+    // Source finding runs SoFiA-2 as a child process on the backend; on a
+    // multi-GB cube that is minutes. It fell through to the generic 120 s below,
+    // and the server had NO ceiling at all until this audit gave it one
+    // (VISIVO_SOFIA_TIMEOUT_S, 900 s) — so the client stays above that.
+    if (path.startsWith(QStringLiteral("/v1/sourcefind/"))) {
+        return std::chrono::milliseconds(960000); // 16 min > server 900 s
     }
     // Cube preview + subvolume can transfer multi-GB float32 payloads on
     // SKA-scale datasets (10+ GB cubes, ROI crops up to a few GB). Even
@@ -2705,6 +2769,20 @@ std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) cons
     if (path.contains(QStringLiteral("/assistant/query"))) {
         return std::chrono::milliseconds(180000); // 3 min > server 120 s budget
     }
+    // ── Heavy scientific compute ─────────────────────────────────────────────
+    // Same rule as the copilot endpoint above, which was the only place that
+    // followed it: the client timeout must sit ABOVE the server's own ceiling,
+    // so the server's answer (a result, or its graceful 504) wins the race.
+    //
+    // These endpoints go through the backend's `_run_heavy*`, bounded by
+    // VISIVO_HEAVY_TIMEOUT_S — 900 s by default. The generic 120 s below meant
+    // the client aborted a line-width map on a 1.5 GB cube after two minutes
+    // while the backend went on computing for up to fifteen, holding a session
+    // compute slot the whole time (which is then one of the three that answer
+    // 429 to the next tool). Measured on a 1046×952×398 cube: the client gave
+    // up, the work did not.
+    if (isHeavyComputePath(path))
+        return std::chrono::milliseconds(960000);   // 16 min > server 900 s
     return std::chrono::milliseconds(120000);
 }
 
@@ -2879,14 +2957,81 @@ BackendWorkspaceDeleteResult BackendClient::parseExportsDeleteObject(const QJson
 // Suppress publish-on-success for paths we don't want to flood the diagnostics
 // table with: the diagnostics poll itself (would loop), and the DataHub
 // health heartbeat (every few seconds). Failures are always logged.
+/// Short operation tag for the Diagnostics "Operation" column, derived from the
+/// path rather than from a table: "/v1/spectral/linewidth/binary" →
+/// "spectral/linewidth". Until now the column was filled ONLY by the async task
+/// poller, so it was blank for every synchronous compute — which is most of them
+/// (user report).
+QString BackendClient::operationTagForPath(const QString &path)
+{
+    QString p = path;
+    if (p.startsWith(QStringLiteral("/v1/")))
+        p = p.mid(4);
+    // Transport suffixes are not operations.
+    for (const QString &suffix : { QStringLiteral("/binary"), QStringLiteral("/bin"),
+                                   QStringLiteral("_bin") })
+        if (p.endsWith(suffix))
+            p.chop(suffix.size());
+    const QStringList parts = p.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    if (parts.isEmpty())
+        return {};
+    // Two segments read best ("products/isosurface"); a trailing id is noise, so
+    // a segment that is not a word is dropped.
+    QStringList keep;
+    for (const QString &seg : parts) {
+        static const QRegularExpression word(QStringLiteral("^[a-z][a-z0-9_\\-]*$"));
+        if (!word.match(seg).hasMatch())
+            break;
+        keep << seg;
+        if (keep.size() == 2)
+            break;
+    }
+    return keep.join(QLatin1Char('/'));
+}
+
+/// The dataset a request is about, for the "Context" column: from the JSON body
+/// of a POST, or the query string of a GET. Every call site passed an empty
+/// datasetId, so Context showed nothing but the session id.
+static QString _datasetIdForRequest(const QJsonDocument &body, const QUrl &url)
+{
+    if (body.isObject()) {
+        const QString id = body.object().value(QStringLiteral("dataset_id")).toString();
+        if (!id.isEmpty())
+            return id;
+    }
+    const QUrlQuery query(url);
+    return query.queryItemValue(QStringLiteral("dataset_id"));
+}
+
 static bool _isDiagnosticsQuietPath(const QString &path)
 {
+    // Anything the UI POLLS on a timer. One line per poll per window drowns the
+    // Diagnostics log in traffic nobody asked about: with the Data Hub open,
+    // /v1/exports/list alone is every 4 s, and during a multi-minute compute
+    // that was the only thing on screen — the compute's own two lines scrolled
+    // out of sight (user report). The requests still happen and still show up
+    // in the qWarning stream on failure; they just stop narrating success.
     return path.startsWith(QStringLiteral("/v1/diagnostics/"))
-        || path == QStringLiteral("/v1/health");
+        || path == QStringLiteral("/v1/health")
+        || path == QStringLiteral("/v1/exports/list");
 }
 
 QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
 {
+    // Counted while it runs (RAII), so the status bar can say "N running" for a
+    // synchronous compute — and announced when it STARTS, not only when it ends:
+    // the log used to be silent for the whole of a multi-minute job (user report).
+    const HeavyRequestScope heavyScope(url.path());
+    if (heavyScope.counted) {
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Info, DiagnosticsCategory::Backend,
+                QStringLiteral("BackendClient"),
+                QStringLiteral("%1 %2 started — this can take minutes on a large cube")
+                        .arg(QStringLiteral("GET"), url.path()),
+                _datasetIdForRequest(QJsonDocument(), url),
+                this->m_sessionId, BackendClient::operationTagForPath(url.path()));
+    }
+
     // R3 consistency: when the backend never answered the mint we have no
     // session, and sending state-bearing traffic under the fallback id would let
     // a later successful mint split this client's datasets across two sessions.
@@ -2936,7 +3081,9 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
             qWarning().noquote() << attemptError;
             DiagnosticsManager::instance()->publish(
                     DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
-                    QStringLiteral("BackendClient"), attemptError, {}, this->m_sessionId);
+                    QStringLiteral("BackendClient"), attemptError,
+                    _datasetIdForRequest(QJsonDocument(), url), this->m_sessionId,
+                    BackendClient::operationTagForPath(url.path()));
             reply->abort();
             loop.quit();
         });
@@ -2976,7 +3123,8 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
                                 .arg(status > 0 ? status : 200)
                                 .arg(perfTimer.elapsed())
                                 .arg(data.size()),
-                        {}, this->m_sessionId);
+                        _datasetIdForRequest(QJsonDocument(), url), this->m_sessionId,
+                        BackendClient::operationTagForPath(url.path()));
             }
             return data;
         }
@@ -3016,7 +3164,8 @@ QByteArray BackendClient::performPostRetryingBackpressure(const QUrl &url,
     for (int attempt = 1;; ++attempt) {
         int status = 0;
         error.clear();
-        const QByteArray data = performPost(url, body, error, responseHeaders, &status);
+        const QByteArray data = performPost(url, body, error, responseHeaders, &status,
+                                            /*announceStart=*/attempt == 1);
         if (status != 429)
             return data;   // success, or a failure that retrying cannot fix
         if (attempt >= std::max(1, attempts)) {
@@ -3047,8 +3196,22 @@ QByteArray BackendClient::performPostRetryingBackpressure(const QUrl &url,
 QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body,
                                       QString &error,
                                       QMap<QString, QString> *responseHeaders,
-                                      int *statusOut) const
+                                      int *statusOut, bool announceStart) const
 {
+    // Counted while it runs (RAII), so the status bar can say "N running" for a
+    // synchronous compute — and announced when it STARTS, not only when it ends:
+    // the log used to be silent for the whole of a multi-minute job (user report).
+    const HeavyRequestScope heavyScope(url.path());
+    if (heavyScope.counted && announceStart) {
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Info, DiagnosticsCategory::Backend,
+                QStringLiteral("BackendClient"),
+                QStringLiteral("%1 %2 started — this can take minutes on a large cube")
+                        .arg(QStringLiteral("POST"), url.path()),
+                _datasetIdForRequest(body, url),
+                this->m_sessionId, BackendClient::operationTagForPath(url.path()));
+    }
+
     if (statusOut)
         *statusOut = 0;
     // R3 consistency: when the backend never answered the mint we have no
@@ -3102,7 +3265,9 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
             qWarning().noquote() << attemptError;
             DiagnosticsManager::instance()->publish(
                     DiagnosticsLevel::Error, DiagnosticsCategory::Backend,
-                    QStringLiteral("BackendClient"), attemptError, {}, this->m_sessionId);
+                    QStringLiteral("BackendClient"), attemptError,
+                    _datasetIdForRequest(body, url), this->m_sessionId,
+                    BackendClient::operationTagForPath(url.path()));
             reply->abort();
             loop.quit();
         });
@@ -3153,7 +3318,8 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
                                 .arg(status > 0 ? status : 200)
                                 .arg(perfTimer.elapsed())
                                 .arg(data.size()),
-                        {}, this->m_sessionId);
+                        _datasetIdForRequest(body, url), this->m_sessionId,
+                        BackendClient::operationTagForPath(url.path()));
             }
             if (responseHeaders)
                 *responseHeaders = capturedHeaders;

@@ -257,6 +257,7 @@ void vtkWindowCube::pushSpectralAxisContext(ProfileWidget *plot) const
     if (ctype.isEmpty())
         ctype = this->remoteDatasetCtype[2].trimmed();
     plot->setSpectralAxisContext(ctype, d.unit, this->m_restFreqHz);
+    plot->setDatasetPersistKey(this->datasetPersistKey());
 }
 
 QString vtkWindowCube::settingsIniPath()

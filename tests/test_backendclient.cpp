@@ -474,3 +474,49 @@ void TestBackendClient::parseImageTile_missingFields_defaults()
     QCOMPARE(r.numLevels, 1);
     QCOMPARE(r.level, 0);
 }
+
+// ── Diagnostics operation tag ────────────────────────────────────────────────
+// The Diagnostics window's Operation column was blank for every synchronous
+// compute because only the async task poller ever set it. It is now derived
+// from the request path in one place, so the derivation is worth pinning.
+
+void TestBackendClient::operationTag_stripsVersionAndTransportSuffix()
+{
+    QCOMPARE(BackendClient::operationTagForPath(QStringLiteral("/v1/spectral/linewidth/binary")),
+             QStringLiteral("spectral/linewidth"));
+    QCOMPARE(BackendClient::operationTagForPath(QStringLiteral("/v1/cube/subvolume_bin")),
+             QStringLiteral("cube/subvolume"));
+    QCOMPARE(BackendClient::operationTagForPath(QStringLiteral("/v1/velocity/grid_bin")),
+             QStringLiteral("velocity/grid"));
+}
+
+void TestBackendClient::operationTag_keepsTwoSegments()
+{
+    QCOMPARE(BackendClient::operationTagForPath(QStringLiteral("/v1/products/isosurface")),
+             QStringLiteral("products/isosurface"));
+    QCOMPARE(BackendClient::operationTagForPath(QStringLiteral("/v1/cube/pv")),
+             QStringLiteral("cube/pv"));
+    QCOMPARE(BackendClient::operationTagForPath(QStringLiteral("/v1/health")),
+             QStringLiteral("health"));
+}
+
+void TestBackendClient::operationTag_dropsIdsAndOddSegments()
+{
+    // A trailing id is noise in a column: stop at the first segment that is not
+    // a plain lowercase word.
+    QCOMPARE(BackendClient::operationTagForPath(
+                     QStringLiteral("/v1/render/9d65b8db-1f2e-4c3a-bb01-5f6a7b8c9d0e")),
+             QStringLiteral("render"));
+    QCOMPARE(BackendClient::operationTagForPath(QStringLiteral("/v1/datasets/AB12/close")),
+             QStringLiteral("datasets"));
+}
+
+void TestBackendClient::operationTag_edgeCases()
+{
+    QCOMPARE(BackendClient::operationTagForPath(QString()), QString());
+    QCOMPARE(BackendClient::operationTagForPath(QStringLiteral("/v1/")), QString());
+    QCOMPARE(BackendClient::operationTagForPath(QStringLiteral("/")), QString());
+    // No /v1 prefix: still usable.
+    QCOMPARE(BackendClient::operationTagForPath(QStringLiteral("/cube/slice")),
+             QStringLiteral("cube/slice"));
+}

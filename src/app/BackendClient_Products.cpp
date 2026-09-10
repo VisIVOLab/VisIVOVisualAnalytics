@@ -63,7 +63,7 @@ BackendProductFitsResult BackendClient::mapMath(const QString &datasetId, const 
     if (freqB > 0.0)           body[QStringLiteral("freq_b")] = freqB;
     QString error;
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/map_math")),
+            performPostRetryingBackpressure(QUrl(m_baseUrl + QStringLiteral("/v1/products/map_math")),
                         QJsonDocument(body), error);
     return parseProductFits(payload, error);
 }
@@ -79,7 +79,7 @@ BackendProductFitsResult BackendClient::mosaic(const QStringList &datasetIds,
     };
     QString error;
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/mosaic")),
+            performPostRetryingBackpressure(QUrl(m_baseUrl + QStringLiteral("/v1/products/mosaic")),
                         QJsonDocument(body), error);
     return parseProductFits(payload, error);
 }
@@ -99,7 +99,7 @@ BackendPublicationFigureResult BackendClient::publicationFigure(
     };
     QString error;
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/publication_figure")),
+            performPostRetryingBackpressure(QUrl(m_baseUrl + QStringLiteral("/v1/products/publication_figure")),
                         QJsonDocument(body), error);
     BackendPublicationFigureResult r;
     if (!error.isEmpty()) { r.error = error; return r; }
@@ -118,7 +118,7 @@ BackendImageQualityResult BackendClient::imageQuality(const QString &datasetId) 
     QJsonObject body{ { QStringLiteral("dataset_id"), datasetId } };
     QString error;
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/image_quality")),
+            performPostRetryingBackpressure(QUrl(m_baseUrl + QStringLiteral("/v1/products/image_quality")),
                         QJsonDocument(body), error);
     BackendImageQualityResult r;
     if (!error.isEmpty()) { r.error = error; return r; }

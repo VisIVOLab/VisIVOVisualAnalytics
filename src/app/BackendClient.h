@@ -1664,6 +1664,21 @@ public:
     static BackendMomentResult    parseMomentResultObject(const QJsonObject &object);
     static BackendCubePvResult    parsePvResultObject(const QJsonObject &object);
     static BackendCubeNoiseResult parseNoiseResultObject(const QJsonObject &object);
+
+    /// Short operation tag for the Diagnostics "Operation" column, derived from a
+    /// request path: "/v1/spectral/linewidth/binary" → "spectral/linewidth".
+    /// Public + static because it is pure string logic and unit-tested.
+    static QString operationTagForPath(const QString &path);
+
+    /// How many HEAVY compute requests this client currently has in flight.
+    ///
+    /// The status bar's "N running" came only from the backend's task registry,
+    /// which holds the ASYNC tasks (moment, PV) — so it read "0 running" for the
+    /// whole of a line-width map, an isosurface or a stack, all of which are
+    /// synchronous POSTs (user report). The client knows about its own requests,
+    /// so it counts them: heavy is decided by the same path list that gives those
+    /// endpoints their long timeout.
+    static int heavyRequestsInFlight();
     /// Parse a /v1/image/tile JSON object into a tile result (metadata only;
     /// data_base64 must still be decoded via decodePayload by the caller).
     static BackendImageTileResult parseImageTileObject(const QJsonObject &object);
@@ -1993,7 +2008,10 @@ private:
 
     QByteArray performPost(const QUrl &url, const QJsonDocument &body, QString &error,
                            QMap<QString, QString> *responseHeaders = nullptr,
-                           int *statusOut = nullptr) const;
+                           int *statusOut = nullptr,
+                           /// False on a 429 retry: the "started" line belongs to the
+                           /// attempt the user triggered, not to each retry of it.
+                           bool announceStart = true) const;
     std::chrono::milliseconds requestTimeoutFor(const QUrl &url) const;
 
     static QByteArray decodePayload(const QJsonObject &object, const QString &base64Field,

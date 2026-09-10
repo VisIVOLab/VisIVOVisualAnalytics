@@ -222,6 +222,17 @@ The tool tells you which of the two happened.
 
 See [Line identification](spectral-tools#line-identification-overlaying-a-line-list).
 
+### I closed a tool window while it was computing
+
+The computation **keeps running on the backend** — it cannot be cancelled (these
+requests have no cancel route, and the backend cannot kill a running compute
+child) — and its result is discarded when the window that asked for it is gone.
+So the dialogs ask first: *Close and Discard* / *Keep Waiting*.
+
+If you close anyway, watch the status bar: "N running" counts it until it
+finishes, and Diagnostics has the line where it started. Until it does, it holds
+one of the session's compute slots, so another heavy tool may have to wait.
+
 ### "Too many concurrent compute tasks" / the backend is busy
 
 The backend admits a limited number of concurrent computations **per session**

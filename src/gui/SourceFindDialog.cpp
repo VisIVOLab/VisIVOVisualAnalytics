@@ -11,6 +11,8 @@
 #include <QFutureWatcher>
 #include <QHeaderView>
 #include <QLabel>
+#include "ToolDialogClose.h"
+
 #include <QMessageBox>
 #include <QProgressDialog>
 #include <QPushButton>
@@ -254,8 +256,20 @@ void SourceFindDialog::populateTable(const QVector<QVariantMap> &rows)
     m_table->resizeColumnsToContents();
 }
 
+void SourceFindDialog::closeEvent(QCloseEvent *event)
+{
+    // See ToolDialogClose.h: a compute in flight cannot be cancelled, so the
+    // choice is between waiting and discarding the result — said out loud.
+    if (m_busy && !visivo::confirmAbandonRunningCompute(this, u"Source Finder"_s, u"The SoFiA-2 source finder"_s)) {
+        event->ignore();
+        return;
+    }
+    event->accept();
+}
+
 void SourceFindDialog::setUiBusy(bool busy)
 {
+    m_busy = busy;
     m_thresholdSpin->setEnabled(!busy);
     m_kernelXSpin->setEnabled(!busy);
     m_kernelYSpin->setEnabled(!busy);

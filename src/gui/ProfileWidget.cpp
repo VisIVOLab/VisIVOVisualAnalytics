@@ -6,6 +6,7 @@
 
 #include <vtkImageData.h>
 
+#include "AnalysisParamStore.h"
 #include "SpectralUnitConvert.h"
 
 #include <QApplication>
@@ -1910,7 +1911,7 @@ void ProfileWidget::loadLineIdFile()
     QString unitHint, formatNote;
 
     QDialog dlg(this);
-    dlg.setWindowTitle(u"Spectral lines"_s);
+    dlg.setWindowTitle(u"Spectral Lines"_s);
     auto *form = new QFormLayout(&dlg);
 
     auto *sourceCombo = new QComboBox(&dlg);
@@ -1925,15 +1926,36 @@ void ProfileWidget::loadLineIdFile()
     intro->setWordWrap(true);
     form->addRow(intro);
 
+    // What was used last time for THIS cube (the other parameter dialogs all
+    // restore themselves; this one asked for the systemic velocity again on
+    // every single use).
+    const QVariantMap saved = m_datasetPersistKey.isEmpty()
+            ? QVariantMap()
+            : AnalysisParamStore().load(m_datasetPersistKey, u"spectral_lines"_s);
+
     auto *unitCombo = new QComboBox(&dlg);
     unitCombo->addItems({ u"GHz"_s, u"MHz"_s, u"kHz"_s, u"Hz"_s, u"km/s"_s, u"m/s"_s });
+    if (saved.contains(u"unit"_s)) {
+        const int idx = unitCombo->findText(saved.value(u"unit"_s).toString(),
+                                            Qt::MatchFixedString);
+        if (idx >= 0)
+            unitCombo->setCurrentIndex(idx);
+    }
     form->addRow(u"Values are in:"_s, unitCombo);
 
     auto *shiftCombo = new QComboBox(&dlg);
     shiftCombo->addItem(u"Systemic velocity (km/s, optical)"_s, 0);
     shiftCombo->addItem(u"Redshift z"_s, 1);
     shiftCombo->addItem(u"Already in the observed frame"_s, 2);
-    auto *shiftValue = new QLineEdit(u"0"_s, &dlg);
+    if (saved.contains(u"shiftMode"_s)) {
+        const int i = shiftCombo->findData(saved.value(u"shiftMode"_s).toInt());
+        if (i >= 0)
+            shiftCombo->setCurrentIndex(i);
+    }
+    auto *shiftValue = new QLineEdit(saved.contains(u"shiftValue"_s)
+                                             ? saved.value(u"shiftValue"_s).toString()
+                                             : u"0"_s,
+                                     &dlg);
     shiftValue->setValidator(new QDoubleValidator(&dlg));
     form->addRow(u"Rest frame → observed:"_s, shiftCombo);
     form->addRow(u"Value:"_s, shiftValue);
@@ -2061,6 +2083,12 @@ void ProfileWidget::loadLineIdFile()
                                  u"km/s, or the redshift z."_s.arg(shiftValue->text()));
             return;
         }
+    }
+    if (!m_datasetPersistKey.isEmpty()) {
+        AnalysisParamStore().save(m_datasetPersistKey, u"spectral_lines"_s,
+                                  { { u"unit"_s, unitCombo->currentText() },
+                                    { u"shiftMode"_s, mode },
+                                    { u"shiftValue"_s, shiftValue->text() } });
     }
     applyLineList(lines, unitCombo->currentText(), mode, shift);
 }

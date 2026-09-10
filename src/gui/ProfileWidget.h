@@ -137,6 +137,10 @@ public:
     /// frequency in Hz (0 when the header has no RESTFRQ). Without these a rest
     /// -frequency line list cannot be placed on the axis at all.
     void setSpectralAxisContext(const QString &ctype, const QString &unit, double restFreqHz);
+    /// Dataset key for parameter persistence (AnalysisParamStore), so the line
+    /// list's unit and systemic velocity are remembered per cube — every other
+    /// parameter dialog in the app does this, this one made you retype them.
+    void setDatasetPersistKey(const QString &key) { m_datasetPersistKey = key; }
     bool hasFit() const { return m_fitGraph != nullptr; }   ///< a fit is currently overlaid
     void loadLinesFromFile();                     ///< open the Line-ID CSV picker + overlay
     void clearLines();                            ///< remove the Line-ID overlay
@@ -276,6 +280,7 @@ private:
     QString m_axisCtype;         ///< spectral CTYPE of the plotted axis
     QString m_axisUnit;          ///< unit of the plotted axis values
     double  m_axisRestFreqHz{ 0.0 };   ///< cube RESTFRQ in Hz (0 = unknown)
+    QString m_datasetPersistKey;       ///< for AnalysisParamStore (may be empty)
     QVector<QCPItemLine*> m_lineIdMarkers;
     QVector<QCPItemText*> m_lineIdLabels;
     void loadLineIdFile();

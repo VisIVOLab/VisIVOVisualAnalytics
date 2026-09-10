@@ -685,13 +685,21 @@ void WorkspaceChrome::onPollFinished()
     }
     if (m_queueSlot) {
         const int queued = std::max(0, s.registryEntries - s.runningTasks);
-        m_queueSlot->setText(
-                QStringLiteral("%1 running · %2 queued").arg(s.runningTasks).arg(queued));
+        // The backend's figure counts its task REGISTRY (the async moment / PV
+        // jobs). Every other compute — line-width, isosurface, stacking, noise,
+        // baseline — is a synchronous POST that appears nowhere in it, so this
+        // read "0 running" for minutes while one was in flight (user report).
+        // The client knows about its own, so add them.
+        const int local = BackendClient::heavyRequestsInFlight();
+        m_queueSlot->setText(QStringLiteral("%1 running · %2 queued")
+                                     .arg(s.runningTasks + local)
+                                     .arg(queued));
     }
     // Right rail count reuses the running-task figure the poll already computed
-    // (§4.1.4 — do not add a second poll).
+    // (§4.1.4 — do not add a second poll), including this client's own
+    // synchronous computes for the same reason as the status slot above.
     if (m_inspectorRail)
-        m_inspectorRail->setCount(s.runningTasks);
+        m_inspectorRail->setCount(s.runningTasks + BackendClient::heavyRequestsInFlight());
     if (m_cacheSlot) {
         m_cacheSlot->setText(
                 QStringLiteral("cache %1/%2").arg(s.cacheEntries).arg(s.cacheCapacity));

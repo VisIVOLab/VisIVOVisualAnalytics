@@ -308,6 +308,75 @@ served by a different backend, which is a different cube.
 
 ---
 
+## Timeouts: the client must outlast the server
+
+`BackendClient::requestTimeoutFor()` is a per-endpoint table. The rule, which
+the copilot entry documented and nothing else followed, is that the **client
+timeout sits above the server's own ceiling**, so the server's answer — a result
+or its graceful 504 — wins the race.
+
+Heavy scientific compute goes through the backend's `_run_heavy*`, bounded by
+`VISIVO_HEAVY_TIMEOUT_S` (900 s). Those endpoints were falling through to the
+generic **120 s**, so a line-width map on a 1.5 GB cube was aborted by the client
+after two minutes while the backend went on computing for up to fifteen — still
+holding a per-session compute slot, which is then one of the three that answer
+429 to the next tool. They now get **960 s**, from the same
+`heavyComputePaths()` list that feeds the in-flight counter below.
+
+## Knowing what the app is doing
+
+Three fixes to the same complaint ("the log tells me nothing while a tool runs"):
+
+- **`N running · M queued`** counted only the backend's task REGISTRY, which
+  holds the async moment / PV jobs. Every other compute is a synchronous POST and
+  appeared nowhere, so the status bar read *0 running* for the whole of a
+  line-width map. `BackendClient::heavyRequestsInFlight()` counts the client's
+  own heavy requests (RAII-scoped, atomic, since they run on worker threads) and
+  the status slot and Inspector rail add it in.
+- **The Diagnostics *Operation* column** was filled only by the async task
+  poller; *Context* needs a `datasetId`, which every call site passed empty. Both
+  are now derived in the one place that knows: `operationTagForPath()` (pure,
+  unit-tested — `"/v1/spectral/linewidth/binary"` → `spectral/linewidth`) and the
+  request's own body/query.
+- **The log was drowned** by polls: `/v1/exports/list`, every 4 s per open Data
+  Hub, was the only thing on screen during a multi-minute compute. It joined
+  `_isDiagnosticsQuietPath` (which gates only the SUCCESS lines — a failing poll
+  is still reported), and a heavy request now announces itself when it **starts**
+  ("…started — this can take minutes on a large cube") rather than only on
+  completion. The announcement is suppressed on a 429 retry, so the line belongs
+  to the attempt the user triggered.
+
+### Closing a tool window while it computes
+
+Every compute dialog had the same `closeEvent`: `event->accept()`, with a comment
+noting that the worker finishes on the thread pool and the `finished` handler
+discards the result because its `QPointer` to the dialog is null. All accurate,
+and entirely silent. What actually happens:
+
+- the computation **keeps running**, on the backend to completion, holding one of
+  the session's compute slots, and its result is thrown away;
+- it **cannot be cancelled**: these are synchronous POSTs with no cancel route,
+  and the backend's process-pool children cannot be killed from Python (the note
+  in `dependencies.py`). Nothing leaks as an OS zombie — the work finishes
+  unobserved;
+- while it runs it is now visible in "N running" and in Diagnostics.
+
+`ToolDialogClose.h` holds that explanation once, and `LinewidthDialog`,
+`BaselineDialog`, `StackDialog` and `SourceFindDialog` ask before discarding
+("Close and Discard" / "Keep Waiting", the latter the default). The two that had
+no `closeEvent` at all also had no busy flag; `setUiBusy()` — the one place that
+already knew — now sets one.
+
+The real fix, deferred: hand the request to something that outlives the dialog,
+so closing it yields the map instead of wasting the compute. The result already
+opens in its own window, so nothing but ownership stands in the way.
+
+Still missing too: per-chunk progress from the backend for the chunked computes
+(line-width dispatches N chunks and reports none of them), which needs a channel
+back to the dialog, not just a log line.
+
+---
+
 ## Compute admission control (429s, and why they should be rare)
 
 Two independent limits gate scientific compute:
@@ -912,16 +981,37 @@ Key capabilities:
 
 ---
 
-## Tool dialogs (uniform modality)
+## Tool dialogs — two families, and which is which
 
-All "tool" dialogs launched from menus or the Tools sidebar are now opened
-**non-modal** (`QDialog::show()`), so the user can keep interacting with the
-viewers, panels, and other tools while a long compute is running. The list
-covers `LinewidthDialog`, `BaselineDialog`, `StackDialog`, `SourceFindDialog`,
-`LUTCustomizerDialog` (2D + 3D), the FITS header viewer, and the moment
-description popup. Long-running operations show their own scoped progress
-indicator inside the dialog (a `QProgressDialog` window-modal to the dialog
-itself, not to the application) so the "busy" state is still clear.
+There are **two** kinds, and the difference is deliberate (this section used to
+claim every tool dialog was non-modal, which was never true of half of them):
+
+**Compute dialogs — non-modal** (`QDialog::show()`), because they own a job that
+can run for minutes and the user must keep working meanwhile:
+`LinewidthDialog`, `BaselineDialog`, `StackDialog`, `SourceFindDialog`,
+`ChannelMapsDialog`, `LUTCustomizerDialog` (2D + 3D), the FITS header viewer and
+the moment description popup. They use `VisivoTheme::makePrimaryButton` /
+`makeSecondaryButton`, and their primary carries the **verb** — *Compute*,
+*Stack*, *Generate* — with *Close* beside it. Long operations show a progress
+indicator scoped to the dialog (window-modal to it, not to the application).
+
+**Parameter pickers — modal** (`exec()`), because they answer one question and
+return: Moment Map Settings (`MomentMapController`), the noise region
+(`NoiseRegionDialog`), the tilted-ring model, Export Movie, Export Sub-Cube,
+Spectral Lines, Color Maps. These are built inline where they are used and still
+use a bare `QDialogButtonBox`; two of them relabel the primary (*Export…*,
+*Overlay*) and the rest read *OK*. **Known incoherence**, not yet unified: they
+should take the theme's primary/secondary buttons and a verb label like the
+family above.
+
+Window titles are Title Case throughout ("Stack Spectral Cubes", "Color Maps",
+"Spectral Lines" were the three that were not, and are now).
+
+Parameters are remembered per dataset through `AnalysisParamStore` by the moment,
+noise, kinematic-model and spectral-lines dialogs. Channel Maps, Export Movie,
+Export Sub-Cube, Line-Width, Baseline and Stack still forget — the same known
+gap, and the reason the spectral-lines one was fixed first (it asked for the
+systemic velocity again on every use).
 
 `StackDialog` is built around an explicit `DatasetEntry` list:
 

@@ -10,6 +10,12 @@ class TestBackendClient : public QObject
     Q_OBJECT
 
 private slots:
+    // Diagnostics "Operation" column — derived from the request path.
+    void operationTag_stripsVersionAndTransportSuffix();
+    void operationTag_keepsTwoSegments();
+    void operationTag_dropsIdsAndOddSegments();
+    void operationTag_edgeCases();
+
     // ── parseMomentResultObject ───────────────────────────────────────────────
     void parseMoment_happyPath();
     void parseMoment_errorResponse();

@@ -190,6 +190,11 @@ _LINEWIDTH_SNR_THRESHOLD = float(os.environ.get("VISIVO_LINEWIDTH_SNR", "3.0"))
 #
 # Override with ``VISIVO_LINEWIDTH_CHUNKS=N`` if you want to constrain the
 # chunk count independently from the heavy-task semaphore.
+# Wall-clock ceiling for a SoFiA-2 run, mirroring VISIVO_HEAVY_TIMEOUT_S in
+# spirit: the child process is killed and the caller gets a clear error rather
+# than a thread wedged for the lifetime of the server. 0 disables it.
+_SOFIA_TIMEOUT_S = float(os.environ.get("VISIVO_SOFIA_TIMEOUT_S", "900")) or None
+
 _LINEWIDTH_PARALLEL_CHUNKS = max(
     1,
     int(os.environ.get(
@@ -667,8 +672,13 @@ async def sourcefind(
 
     out_dir = tempfile.mkdtemp(prefix="sofia_")
     try:
+        # A ceiling, which this endpoint had none of: worker_sofia already
+        # supports one (and carries the message for it), but the call left it at
+        # None, so an abandoned or pathological SoFiA-2 run held a thread for
+        # ever while the client gave up after its own timeout (audit).
         return await asyncio.to_thread(
-            worker_sofia, entry["path"], out_dir, request.sofia_params)
+            worker_sofia, entry["path"], out_dir, request.sofia_params,
+            _SOFIA_TIMEOUT_S)
     except HTTPException:
         raise
     except Exception as exc:

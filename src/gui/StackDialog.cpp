@@ -14,6 +14,8 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QMainWindow>
+#include "ToolDialogClose.h"
+
 #include <QMessageBox>
 #include <QProgressDialog>
 #include <QPushButton>
@@ -53,7 +55,7 @@ StackDialog::StackDialog(std::shared_ptr<BackendClient> client,
     , m_client(std::move(client))
     , m_sessionId(sessionId)
 {
-    setWindowTitle(u"Stack spectral cubes"_s);
+    setWindowTitle(u"Stack Spectral Cubes"_s);
     setMinimumWidth(540);
     resize(540, 520);
     // Shared input theme — see ToolDialogStyle.
@@ -331,8 +333,20 @@ void StackDialog::onCompute()
             }));
 }
 
+void StackDialog::closeEvent(QCloseEvent *event)
+{
+    // See ToolDialogClose.h: a compute in flight cannot be cancelled, so the
+    // choice is between waiting and discarding the result — said out loud.
+    if (m_busy && !visivo::confirmAbandonRunningCompute(this, u"Stack Spectral Cubes"_s, u"The spectral stacking"_s)) {
+        event->ignore();
+        return;
+    }
+    event->accept();
+}
+
 void StackDialog::setUiBusy(bool busy)
 {
+    m_busy = busy;
     m_datasetList->setEnabled(!busy);
     m_methodCombo->setEnabled(!busy);
     m_weightByCombo->setEnabled(!busy && m_methodCombo->currentData().toString() == u"weighted_mean"_s);

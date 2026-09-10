@@ -13,6 +13,8 @@
 #include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QLabel>
+#include "ToolDialogClose.h"
+
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSpinBox>
@@ -194,9 +196,14 @@ LinewidthDialog::LinewidthDialog(const QString &backendUrl,
 
 void LinewidthDialog::closeEvent(QCloseEvent *event)
 {
-    // Accept immediately.  If a worker is in-flight it completes on the thread
-    // pool, but the finished() handler checks QPointer<LinewidthDialog> and
-    // returns without touching any UI once this object is gone.
+    // A worker in flight completes on the thread pool and its finished() handler
+    // discards the result (the QPointer to this dialog is null by then). That is
+    // correct but used to be silent — see ToolDialogClose.h for what the user is
+    // now told, and why "cancel" is not among the options.
+    if (m_busy && !visivo::confirmAbandonRunningCompute(this, u"Line-Width Map"_s, u"The line-width map"_s)) {
+        event->ignore();
+        return;
+    }
     event->accept();
 }
 
