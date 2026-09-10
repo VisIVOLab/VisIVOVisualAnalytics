@@ -553,6 +553,23 @@ void MainWindow::doOpenDataFromUrl(const QString &url, const QString &obsId)
 }
 
 
+void MainWindow::openDatasetPath(const QString &path)
+{
+    // Entry point for the desktop (Finder / file manager / command line). The
+    // backend opens the file by PATH, so it has to be a readable local file;
+    // saying so here is better than the backend's generic "could not open".
+    const QFileInfo info(path);
+    if (!info.exists() || !info.isFile() || !info.isReadable()) {
+        QMessageBox::warning(this, u"Cannot open file"_s,
+                             u"“%1” is not a readable file."_s.arg(path));
+        return;
+    }
+    this->show();
+    this->raise();
+    this->activateWindow();
+    this->doOpenDataPath(info.absoluteFilePath());
+}
+
 void MainWindow::doOpenDataPath(const QString &path)
 {
     this->setActiveBackendBadge(this->settings->getLocalBackend());
@@ -634,6 +651,7 @@ void MainWindow::openViewerFromOpenedDataset(const QString &path,
                              opened.beamPaDeg);
         cubeWin->setBrightnessUnit(opened.bunit);
         cubeWin->setRestFrequency(opened.restFreqHz);
+        cubeWin->setServerSideRenderingAvailable(opened.serverSideRenderingAvailable);
         // Live refresh: when this cube viewer pushes a new FITS into the
         // Workspace Exports, the Data Hub panel updates within frames of
         // the operation instead of on the next backend health tick.

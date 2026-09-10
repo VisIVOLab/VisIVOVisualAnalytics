@@ -116,6 +116,55 @@ the backend-side filesystem:
 You can also drag-and-drop a local FITS file onto the Data Hub — it will
 be staged on the backend automatically.
 
+### From the desktop: double-click a FITS file
+
+VisIVO registers itself as a FITS viewer, so a `.fits` (`.fit`, `.fts`, `.fz`)
+file can be opened from the file manager or the command line:
+
+```bash
+VisIVOVisualAnalytics /data/WALLABY.fits      # also works with several paths
+open -a "VisIVO Visual Analytics" cube.fits    # macOS
+```
+
+If VisIVO is not running the startup sequence happens first — backend, then
+authentication — and the file opens as soon as the main window appears. If it is
+already running the file opens **in that same instance**, in a new viewer
+window: on macOS the double-click reaches the running app directly, and on
+Linux / Windows (where the desktop starts a new process for every double-click)
+the new process hands the file over and exits. A launch with no file always
+starts its own instance, so running two VisIVOs against two backends is still
+possible. Several files opened at once are opened one after another, never on
+top of each other's dialogs.
+
+```{note}
+**macOS**: the bundle claims FITS with handler rank *Alternate*, on purpose.
+It appears in *Open With* and macOS will pick it when nothing else claims the
+type, but it does not take the association away from DS9 / CARTA / QFitsView on
+a machine where one of those is installed. To make it the default: select a FITS
+file, ⌘I, *Open With* ▸ *VisIVO Visual Analytics* ▸ *Change All…*. After
+installing a new build, launch it once so LaunchServices re-reads the bundle
+(or run `lsregister -f /Applications/VisIVOVisualAnalytics.app`).
+
+**Linux**: install the association from `deploy/linux/`:
+
+```bash
+xdg-mime install --novendor visivo-fits-mime.xml
+xdg-desktop-menu install --novendor visivo-visual-analytics.desktop
+update-mime-database ~/.local/share/mime
+```
+
+The `.desktop` file expects `VisIVOVisualAnalytics` on `PATH`; edit its `Exec=`
+line if the binary lives elsewhere.
+```
+
+```{caution}
+The file is opened **by path, through the backend** — the same route as *Open
+Remote Dataset*. A double-clicked file therefore has to be readable by the
+backend process: with a local auto-started backend that is anything you can
+read, but with a remote backend the path must exist *there*. Use the Data Hub's
+drag-and-drop instead, which stages the file server-side.
+```
+
 ## The ⌘K Command Palette
 
 Almost every action in the app is searchable from a single launcher.

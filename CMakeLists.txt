@@ -710,6 +710,12 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
         MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
         MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION}
         MACOSX_BUNDLE TRUE
+        # Our own Info.plist template: Qt's generated one has nowhere to declare
+        # CFBundleDocumentTypes, and without that Finder cannot hand a
+        # double-clicked FITS file to the app at all. The template is Qt's plus
+        # the FITS association (see deploy/macos/Info.plist.in for why the
+        # handler rank is Alternate).
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/deploy/macos/Info.plist.in"
 )
 
 # ── Standalone tool: SSR/RemoteRenderWidget test harness ────────────────────

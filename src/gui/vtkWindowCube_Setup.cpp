@@ -786,17 +786,34 @@ void vtkWindowCube::setupWorkspaceDocks()
     recLayout->setSpacing(8);
     this->m_localRecommendRemoteLabel =
             new QLabel(u""_s, this->m_localRecommendRemoteBanner);
+    // Wrap instead of being clipped: the banner is one row with two buttons in
+    // it, and a narrow window (or a long sentence) otherwise cut the text off
+    // mid-word with no indication that anything was missing (user report).
+    this->m_localRecommendRemoteLabel->setWordWrap(true);
     recLayout->addWidget(this->m_localRecommendRemoteLabel, 1);
+    // On a LOCAL backend the first thing to offer is not "render it elsewhere"
+    // (there is no elsewhere — same GPU, same mapper, plus a per-frame encode)
+    // but "load it here at full resolution", which is what the threshold is
+    // actually holding back. Created for every cube and shown only when the
+    // backend is local, since on a remote one the download is the expensive
+    // part and the remote recommendation stands.
+    this->m_localRecommendLoadFullBtn = new QPushButton(
+            u"Load full resolution"_s, this->m_localRecommendRemoteBanner);
+    this->m_localRecommendLoadFullBtn->setToolTip(
+            u"Fetch the whole cube and render it on this machine's GPU, as the "
+            u"full grid rather than a decimated proxy. It needs the full volume "
+            u"resident in GPU memory."_s);
+    this->m_localRecommendLoadFullBtn->setVisible(false);
+    recLayout->addWidget(this->m_localRecommendLoadFullBtn);
     this->m_localRecommendRemoteSwitchBtn = new QPushButton(
             u"Switch to Remote"_s, this->m_localRecommendRemoteBanner);
     this->m_localRecommendRemoteSwitchBtn->setToolTip(
-            u"Render the cube on the backend GPU and stream it here — "
-            u"full quality without downloading the full data."_s);
+            u"Render the cube on the backend GPU and stream frames here."_s);
     recLayout->addWidget(this->m_localRecommendRemoteSwitchBtn);
     auto *dismissBtn =
             new QToolButton(this->m_localRecommendRemoteBanner);
     dismissBtn->setText(u"✕"_s);
-    dismissBtn->setToolTip(u"Dismiss this suggestion"_s);
+    dismissBtn->setToolTip(u"Dismiss — and stop suggesting this for this cube"_s);
     recLayout->addWidget(dismissBtn);
     this->m_localRecommendRemoteBanner->setVisible(false);
     localLayout->addWidget(this->m_localRecommendRemoteBanner);
@@ -806,8 +823,16 @@ void vtkWindowCube::setupWorkspaceDocks()
                      &QPushButton::clicked, this, [this]() {
         this->applyRenderMode(RenderMode::Remote, true);
     });
+    QObject::connect(this->m_localRecommendLoadFullBtn, &QPushButton::clicked, this, [this]() {
+        this->m_localRecommendRemoteBanner->setVisible(false);
+        this->startFullResolutionLoad();
+    });
     QObject::connect(dismissBtn, &QToolButton::clicked, this, [this]() {
         this->m_localRecommendRemoteBanner->setVisible(false);
+        // Remembered per dataset. Hiding it for this window only meant the
+        // suggestion came back on every single open of the same cube, which is
+        // what made it read as nagging (user report).
+        vtkWindowCube::dismissRemoteRecommend(this->remoteRecommendKey());
     });
 
     this->m_renderStack->addWidget(localContainer);   // page 0 — Local
@@ -896,6 +921,134 @@ void vtkWindowCube::resetWorkspaceLayout()
     this->m_paneSplitter->setSizes({ w / 2, w / 2 });
 }
 
+void vtkWindowCube::refreshRemoteRecommendBanner()
+{
+    // Soft recommendation — DO NOT auto-switch. The local preview is
+    // already useful and the user might be happy with it; we just
+    // surface the option to switch to remote via a non-intrusive
+    // banner on the Local page. The banner exposes a button that does
+    // the actual mode change when the user decides. This trades a
+    // 150-ms auto-switch (used to feel pushy on medium cubes) for a
+    // calmer, opt-in flow that respects whatever the user is already
+    // looking at.
+    // Raw QSettings, not Settings: this function is called again when the
+    // backend's capability arrives, and that constructor launches python3 with
+    // 30-second synchronous waits to find an interpreter — twice would be two of
+    // them. Default and clamp mirror Settings::getLocalFullThresholdMb.
+    const int thresholdMb = [] {
+        QSettings raw(vtkWindowCube::settingsIniPath(), QSettings::IniFormat);
+        const int v = raw.value(QStringLiteral("Cube/local_full_threshold_mb"), 256).toInt();
+        return std::clamp(v, 16, 16384);
+    }();
+    const double cubeFullMb = (static_cast<double>(this->remoteDatasetWidth)
+                               * static_cast<double>(this->remoteDatasetHeight)
+                               * static_cast<double>(this->remoteDatasetDepth)
+                               * 4.0) / (1024.0 * 1024.0);
+    const bool   sizeWantsRemote = cubeFullMb > static_cast<double>(thresholdMb);
+    const bool   backendWantsRemote =
+            (this->recommendedLoadMode == QLatin1String("preview_only"));
+    qDebug().noquote() << QStringLiteral(
+            "[remote-render] auto-decision cube=%1MB threshold=%2MB "
+            "backend_hint=%3 -> recommendRemote=%4")
+                                  .arg(cubeFullMb, 0, 'f', 1)
+                                  .arg(thresholdMb)
+                                  .arg(this->recommendedLoadMode)
+                                  .arg((sizeWantsRemote || backendWantsRemote) ? "yes" : "no");
+    const bool dismissedForThisCube =
+            vtkWindowCube::remoteRecommendDismissed().contains(this->remoteRecommendKey());
+    if ((sizeWantsRemote || backendWantsRemote)
+        && !dismissedForThisCube
+        && !this->remoteBackendUrl.isEmpty()
+        && this->m_localRecommendRemoteBanner
+        && this->m_localRecommendRemoteLabel) {
+        const double sizeGb = cubeFullMb / 1024.0;
+        QString reason;
+        if (backendWantsRemote) {
+            reason = u"backend tagged this cube as too large for a local "
+                     "full-resolution load."_s;
+        } else {
+            reason = QStringLiteral(
+                    "cube is %1 GB at full resolution (threshold %2 MB).")
+                     .arg(sizeGb, 0, 'f', 2)
+                     .arg(thresholdMb);
+        }
+        // What switching buys depends on WHERE the backend is, and the banner
+        // used to claim the same thing either way.
+        //
+        // Not a memory argument, whatever it may look like: the backend's render
+        // session feeds the WHOLE cube to vtkGPUVolumeRayCastMapper exactly as
+        // the desktop does (render_session/_scene.py), so it is not out-of-core
+        // and on this machine it is the same GPU . With
+        // a local backend the honest gain is RESOLUTION — the full grid instead
+        // of the decimated proxy this view is limited to — paid for with a
+        // per-frame encode. With a remote one the transfer is the point.
+        // SHORT. One line, next to two buttons, in a window that may not be
+        // wide — the previous three-clause sentence was simply cut off on a
+        // full-screen 3024-px display (user report). The reasoning goes in the
+        // tooltip, where there is room for it.
+        const bool local = this->backendIsLocal();
+        const bool canRemote = this->m_serverSideRenderingAvailable;
+        const QString offer =
+                local ? u" The backend is on this machine, so nothing is transferred."_s
+                      : canRemote ? u" Rendering it on the backend avoids the transfer."_s
+                                  : u" This backend cannot render server-side, so loading it "
+                                    "here is the only way to the full grid."_s;
+        QString why;
+        if (local && canRemote) {
+            why = QStringLiteral(
+                    "This view is capped at a decimated proxy above the %1 MB threshold.\n\n"
+                    "• Load full resolution — fetch the whole cube and render it here. It "
+                    "needs ~%2 GB resident, in RAM and as a 3-D GPU texture.\n"
+                    "• Switch to Remote — render it in the backend process instead. Same "
+                    "machine and the same GPU, so this only moves where the cube lives, and "
+                    "adds a per-frame encode.\n\n"
+                    "Raise Cube/local_full_threshold_mb in Settings.ini to stop being asked.")
+                          .arg(thresholdMb)
+                          .arg(sizeGb, 0, 'f', 1);
+        } else if (local) {
+            why = QStringLiteral(
+                    "This view is capped at a decimated proxy above the %1 MB threshold, and "
+                    "this backend cannot render server-side (no EGL context — a CPU-only or "
+                    "macOS backend), so loading it here is the only way to the full grid. It "
+                    "needs ~%2 GB resident, in RAM and as a 3-D GPU texture.\n\n"
+                    "Raise Cube/local_full_threshold_mb in Settings.ini to stop being asked.")
+                          .arg(thresholdMb)
+                          .arg(sizeGb, 0, 'f', 1);
+        } else if (canRemote) {
+            why = QStringLiteral(
+                    "Loading it here would pull %1 GB across the link and keep it resident. "
+                    "Rendering on the backend streams frames instead — the cube stays where "
+                    "it is.")
+                          .arg(sizeGb, 0, 'f', 2);
+        } else {
+            why = QStringLiteral(
+                    "This backend cannot render server-side (no EGL context — a CPU-only or "
+                    "macOS backend), so there is no streaming alternative: loading the full "
+                    "grid means pulling %1 GB across the link and keeping it resident here. "
+                    "For a region only, use View ▸ Crop Full Resolution.")
+                          .arg(sizeGb, 0, 'f', 2);
+        }
+        this->m_localRecommendRemoteLabel->setText(
+                ((local || !canRemote) ? u"Full resolution is held back — "_s
+                                       : u"Remote rendering recommended — "_s)
+                + reason + offer);
+        this->m_localRecommendRemoteLabel->setToolTip(why);
+        this->m_localRecommendRemoteBanner->setToolTip(why);
+        // Loading here is offered on a local backend, and is the ONLY option
+        // when the backend cannot render server-side.
+        if (this->m_localRecommendLoadFullBtn)
+            this->m_localRecommendLoadFullBtn->setVisible(local || !canRemote);
+        if (this->m_localRecommendRemoteSwitchBtn)
+            this->m_localRecommendRemoteSwitchBtn->setVisible(canRemote);
+        this->m_localRecommendRemoteBanner->setVisible(true);
+    } else if (this->m_localRecommendRemoteBanner) {
+        // The other direction, which was missing: a dismissal recorded elsewhere,
+        // or a threshold raised between two refreshes, must take an already
+        // visible banner away.
+        this->m_localRecommendRemoteBanner->setVisible(false);
+    }
+}
+
 void vtkWindowCube::setupRenderModeUi()
 {
     // Status-bar pill — created here so updateRenderModeBadges() can rely
@@ -965,51 +1118,7 @@ void vtkWindowCube::setupRenderModeUi()
                          this, &vtkWindowCube::onRemoteRenderConnectionStateChanged);
     }
 
-    // Soft recommendation — DO NOT auto-switch. The local preview is
-    // already useful and the user might be happy with it; we just
-    // surface the option to switch to remote via a non-intrusive
-    // banner on the Local page. The banner exposes a button that does
-    // the actual mode change when the user decides. This trades a
-    // 150-ms auto-switch (used to feel pushy on medium cubes) for a
-    // calmer, opt-in flow that respects whatever the user is already
-    // looking at.
-    const QString autoWorkDir = QDir::home().absoluteFilePath(qApp->applicationName());
-    Settings autoSettings(autoWorkDir);
-    const double cubeFullMb = (static_cast<double>(this->remoteDatasetWidth)
-                               * static_cast<double>(this->remoteDatasetHeight)
-                               * static_cast<double>(this->remoteDatasetDepth)
-                               * 4.0) / (1024.0 * 1024.0);
-    const int    thresholdMb = autoSettings.getLocalFullThresholdMb();
-    const bool   sizeWantsRemote = cubeFullMb > static_cast<double>(thresholdMb);
-    const bool   backendWantsRemote =
-            (this->recommendedLoadMode == QLatin1String("preview_only"));
-    qDebug().noquote() << QStringLiteral(
-            "[remote-render] auto-decision cube=%1MB threshold=%2MB "
-            "backend_hint=%3 -> recommendRemote=%4")
-                                  .arg(cubeFullMb, 0, 'f', 1)
-                                  .arg(thresholdMb)
-                                  .arg(this->recommendedLoadMode)
-                                  .arg((sizeWantsRemote || backendWantsRemote) ? "yes" : "no");
-    if ((sizeWantsRemote || backendWantsRemote)
-        && !this->remoteBackendUrl.isEmpty()
-        && this->m_localRecommendRemoteBanner
-        && this->m_localRecommendRemoteLabel) {
-        const double sizeGb = cubeFullMb / 1024.0;
-        QString reason;
-        if (backendWantsRemote) {
-            reason = u"backend tagged this cube as too large for a local "
-                     "full-resolution load."_s;
-        } else {
-            reason = QStringLiteral(
-                    "cube is %1 GB at full resolution (threshold %2 MB).")
-                     .arg(sizeGb, 0, 'f', 2)
-                     .arg(thresholdMb);
-        }
-        this->m_localRecommendRemoteLabel->setText(
-                u"Remote rendering recommended — " + reason
-                + u" Click ⮕ for full-quality interactive 3D without the transfer."_s);
-        this->m_localRecommendRemoteBanner->setVisible(true);
-    }
+    this->refreshRemoteRecommendBanner();
 
     this->updateRenderModeBadges();
 }

@@ -386,6 +386,7 @@ __all__ = [
     "_catalogue_metadata_from_dataframe", "_catalogue_csv_metadata",
     "_catalogue_load_dataframe", "_catalogue_metadata",
     "_get_dask_client", "_run", "_run_interactive", "_run_with_limit",
+    "acquire_task_slot", "task_slot_busy_error",
     "_run_heavy", "_run_heavy_with_limit",
     "_moment_product_payload", "_pv_product_payload",
     "_require_dataset", "_require_cube_path", "_fits_metadata", "record_history",
@@ -1037,16 +1038,53 @@ async def _run_heavy(fn, *args) -> Any:
         raise
 
 
+# How long a request waits for a per-session compute slot before giving up with
+# 429. The slot limit is admission control, not a quota to be enforced to the
+# millisecond: a user who clicks Isosurface while the cube's own stats pass is
+# still running should have it accepted, not refused. Note that a heavy task
+# QUEUEING on the heavy-task semaphore also holds a session slot, so on a big
+# cube the slots can all be held by tasks that are not computing yet — refusing
+# instantly turned that into a hard "too many requests" on a single click.
+# Set VISIVO_TASK_SLOT_WAIT_S=0 for the old fail-fast behaviour.
+_TASK_SLOT_WAIT_S = float(os.environ.get("VISIVO_TASK_SLOT_WAIT_S", "15"))
+_MAX_CONCURRENT_TASKS_HINT = int(os.environ.get("VISIVO_MAX_CONCURRENT_TASKS", "3"))
+
+
+async def acquire_task_slot(session: Session) -> bool:
+    """Take a per-session compute slot, waiting up to ``VISIVO_TASK_SLOT_WAIT_S``.
+
+    Polling rather than a condition variable: ``Session`` guards its counter with
+    a threading lock (it is touched from worker threads too), and awaiting here
+    must not block the event loop.
+    """
+    if session.try_acquire_task_slot():
+        return True
+    if _TASK_SLOT_WAIT_S <= 0:
+        return False
+    deadline = time.monotonic() + _TASK_SLOT_WAIT_S
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0.2)
+        if session.try_acquire_task_slot():
+            return True
+    return False
+
+
+def task_slot_busy_error() -> HTTPException:
+    """The 429 to raise when no slot came free. Says what was tried, so the
+    client can report backpressure rather than a bare 'too many requests'."""
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=(
+            f"All {_MAX_CONCURRENT_TASKS_HINT} compute slots for this session are busy "
+            f"(waited {_TASK_SLOT_WAIT_S:.0f}s). Let a running computation finish, then retry."
+        ),
+    )
+
+
 async def _run_with_limit(session: Session, fn, *args) -> Any:
     """Like _run(), but enforces per-session concurrent task limit (HTTP 429 on overflow)."""
-    if not session.try_acquire_task_slot():
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=(
-                "Too many concurrent compute tasks for this session. "
-                "Wait for a running task to finish before submitting another."
-            ),
-        )
+    if not await acquire_task_slot(session):
+        raise task_slot_busy_error()
     try:
         return await _run(fn, *args)
     finally:
@@ -1060,14 +1098,8 @@ async def _run_heavy_with_limit(session: Session, fn, *args) -> Any:
     heavy-task throttle that leaves at least one pool slot free for interactive
     requests. Use for moment / isosurface / spectral compute endpoints.
     """
-    if not session.try_acquire_task_slot():
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=(
-                "Too many concurrent compute tasks for this session. "
-                "Wait for a running task to finish before submitting another."
-            ),
-        )
+    if not await acquire_task_slot(session):
+        raise task_slot_busy_error()
     try:
         return await _run_heavy(fn, *args)
     finally:

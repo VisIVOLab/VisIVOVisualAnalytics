@@ -265,6 +265,182 @@ child windows do not need to link against `MainWindow` to trigger it.
 
 ---
 
+## The remote-render recommendation, and what it is worth locally
+
+`render_session/_scene.py` feeds the **whole cube** to `vtkGPUVolumeRayCastMapper`
+— the same mapper the desktop uses — from a shared-memory buffer. Server-side
+rendering is therefore *not* out-of-core, which has a consequence worth writing
+down because the UI claimed the opposite twice (banner and Load-Full-Resolution
+dialog, both corrected):
+
+| | remote backend | backend on this machine |
+|---|---|---|
+| Transfer | avoided: frames instead of GB of voxels | none either way (loopback) |
+| GPU memory | the *backend's* GPU | the **same** GPU, same volume |
+| Extra cost | frame encode/decode | frame encode/decode |
+| Real gain | not moving the data | only the **full grid** vs the client's decimated proxy |
+
+A prior question, which the client used to skip entirely: **can this backend do
+it?** `server_side_rendering_available` has been in the dataset-open response all
+along (`routers/datasets.py` → the EGL probe in `render_session/__init__.py`) and
+nothing read it, so the UI offered server-side rendering on backends that refuse
+it at `/v1/render/*` — every macOS backend among them, since there is no EGL
+there. It is now parsed into `OpenDatasetResult::serverSideRenderingAvailable`,
+handed to the window by `setServerSideRenderingAvailable()`, and gates the
+*Remote* mode action (disabled, with the reason as its tooltip), the banner's
+Switch button, and the Load-Full-Resolution dialog's remote option. It defaults
+to **true** so a backend predating the field keeps the old behaviour.
+
+So on a local backend the honest first offer is *Load full resolution*
+(`startFullResolutionLoad()`, the tail of View ▸ Load Full Resolution without its
+warning dialog), which is what `Cube/local_full_threshold_mb` is holding back;
+switching to remote remains second, worth it mainly to keep the cube out of the
+viewer process. `backendIsLocal()` decides, from the loopback spellings plus a
+comparison against the URL the app calls its local backend (read raw from
+`Settings.ini` — the `Settings` constructor launches python with 30-second waits
+and must not be on a UI path).
+
+The suggestion's dismissal is persisted per dataset AND backend
+(`Cube/remote_recommend_dismissed`, keys `host:port|path`, bounded to 64
+entries): hiding the banner in one window meant it came back on every open of
+the same cube, and keying on the path alone would have silenced the same path
+served by a different backend, which is a different cube.
+
+---
+
+## Compute admission control (429s, and why they should be rare)
+
+Two independent limits gate scientific compute:
+
+| Limit | Scope | Effect |
+|-------|-------|--------|
+| `VISIVO_MAX_CONCURRENT_TASKS` (3) | per **session** | `Session.try_acquire_task_slot()`; HTTP 429 when exhausted |
+| `VISIVO_HEAVY_SLOTS` (`workers − 1`) | per **process** | `_run_heavy()`'s semaphore; queues rather than refusing, leaving a pool slot for interactive requests |
+
+The interaction between them is the part that bites: `_run_heavy_with_limit()`
+takes the **session slot first** and then queues on the heavy semaphore, so a
+task that is merely *waiting for a worker* still occupies a slot. On a large cube
+— where opening the dataset already launches the full-resolution load and the
+whole-cube statistics — three such waiters exhausted the session and one click on
+Isosurface came back as "Too many concurrent compute tasks".
+
+Two changes make that path behave like backpressure instead of a failure:
+
+- **The server waits before refusing.** `acquire_task_slot()` polls for up to
+  `VISIVO_TASK_SLOT_WAIT_S` (default 15 s, `0` restores fail-fast) — admission
+  control is not a quota to enforce to the millisecond — and the 429 detail then
+  says how many slots there are and how long it waited.
+- **The client treats 429 as "come back".** `BackendClient::performPostRetryingBackpressure()`
+  retries with exponential backoff (5 attempts: sleeps of 0.5 / 1 / 2 / 4 s,
+  ~7.5 s in total) and only then reports, replacing the server's JSON body with a sentence a user can act on.
+  It is used for the heavy endpoints — isosurface, moment, noise, line-width,
+  stacking — and, because the wait is a plain sleep, only from the worker threads
+  those requests already run on.
+
+Not addressed on purpose: hoisting the heavy-semaphore acquisition out of
+`_run_heavy()` so a queued task holds no session slot at all. That would be the
+structural fix, but the release logic there is deliberately tied to the task's
+real completion (a timed-out ProcessPool job keeps its slot until it actually
+ends, so admission control does not under-count), and rearranging it for a
+symptom the wait + retry already covers is not worth the risk.
+
+---
+
+## Opening a file from the desktop
+
+A double-clicked FITS file reaches the app in two entirely different ways, which
+is why there is a relay rather than a line in `main()`:
+
+- **macOS** sends an Apple Event; Qt turns it into `QEvent::FileOpen` on the
+  application object. It is **not** in `argv`, and it can arrive within
+  milliseconds of `QApplication` being constructed — long before `MainWindow`
+  exists, because `StartupDialog` runs the backend + auth sequence first.
+- **Linux / Windows** pass the path in `argv` (`Exec=… %F`, or the registry
+  association).
+
+`DesktopOpenRelay` (in `src/main.cpp`) is installed as an application event
+filter immediately after `QApplication`, queues both sources, and flushes into
+`MainWindow::openDatasetPath()` once the window exists — then keeps forwarding.
+Three properties of the flush are load-bearing:
+
+- **Queued, not direct.** It can run from inside the event filter, and opening a
+  dataset shows dialogs and spins a nested event loop.
+- **One at a time** (`m_busy`, and the next flush from the completion of the
+  previous). `doOpenDataPath()` makes synchronous backend calls that spin nested
+  loops, so two independent queued opens interleave: the second one's dialog
+  suspends the first one's health request until its own timeout fires, and a
+  reachable backend is reported unavailable.
+- **Never on top of a modal dialog** (`QApplication::activeModalWidget()` → retry
+  in 250 ms), which also covers a file arriving during the startup sequence.
+
+Because argv is how Linux and Windows deliver a double-click, a second *launch*
+carrying files is not a second app: `forwardToRunningInstance()` sends the paths
+over a per-account `QLocalServer` socket and exits, so the file opens in the
+window the user is looking at instead of booting a second instance with its own
+backend session. A launch with no files always starts its own instance — two
+VisIVOs against two backends stays possible.
+
+The handover is small but every part of it is there for a reason (all found in
+review):
+
+- **A QDataStream-serialised `QStringList`, not newline-separated text.** A Unix
+  filename may contain a newline or end in a space, and `readyRead` delivers
+  arbitrary fragments — half a path, or half a UTF-8 character. The receiver
+  reads inside a stream transaction, so a partial frame stays in the buffer.
+- **Two phases, and both acknowledgements matter.** The primary writes `RDY` on
+  connection and the sender writes nothing before seeing it — so a primary that
+  is not reading receives nothing at all, and the sender's local fallback cannot
+  duplicate a late delivery. After committing the frame the primary writes
+  `DONE`, and the sender waits for *that* before exiting: `RDY` plus a drained
+  write buffer only proves the bytes were transported, and a primary dying in
+  between would have lost the files silently. On a `DONE` timeout the sender
+  opens them itself — a file opening twice is visible and recoverable, a file
+  that silently never opens is not.
+- **A `QLockFile` in `TempLocation`, not the socket, decides who is primary.**
+  Only the lock holder removes a leftover socket and listens, which closes both
+  the probe-and-replace race between two simultaneous launches and the Windows
+  case where several `QLocalServer`s may listen on one pipe name (so `listen()`
+  succeeding proves nothing about ownership). The relay's destructor closes the
+  server *before* releasing the lock — members die before `~QObject` deletes its
+  children, so the reverse order left a window in which a new primary could take
+  the lock and then have its socket unlinked by the old one.
+- **A secondary keeps an eye on the seat.** A bare second instance polls the lock
+  every 5 s and takes over when the primary exits, so the surviving window
+  receives the next double-click instead of a third instance being started.
+- **The name is a SHA-256 digest of the home path.** Not `$USER` (unset in a
+  Finder/launchd-started macOS app, and `$USERNAME` is not unique across Windows
+  accounts) and not `qHash` (its algorithm is not stable across Qt versions);
+  truncating the digest keeps the name inside the ~104-byte Unix-socket path
+  limit.
+
+Two loss paths are accepted rather than engineered away, and are worth knowing:
+quitting at the startup dialog discards files queued for that instance (the user
+asked not to run it), and a primary that dies after accepting a frame but before
+opening it loses those files — the sender has already been told `DONE`.
+
+The wire protocol was checked cross-process with a throwaway two-process harness:
+the `RDY`/`DONE` handshake, a frame split into two fragments (one partial frame
+held in the buffer, then committed), and paths containing an interior space, an
+embedded newline and a trailing space, all round-tripping byte-identical.
+
+Packaging carries the other half:
+
+| File | What it declares |
+|------|------------------|
+| `deploy/macos/Info.plist.in` | `CFBundleDocumentTypes` + an imported `org.fits.image` UTI (extensions fits/fit/fts/fz, MIME image/fits). Set as `MACOSX_BUNDLE_INFO_PLIST`; Qt's generated template has nowhere to put this. `LSHandlerRank` is **Alternate** — VisIVO must not take FITS away from DS9 / CARTA. |
+| `deploy/linux/visivo-visual-analytics.desktop` | `MimeType=image/fits;application/fits;` and `Exec=… %F` (paths, not URLs). |
+| `deploy/linux/visivo-fits-mime.xml` | `image/fits` with globs and the `SIMPLE  =                    T` magic, for desktops whose shared-mime-info lacks it. |
+
+`MainWindow::openDatasetPath()` is the only public entry point for this: it
+validates that the path is a readable file (the backend would otherwise answer
+with a generic failure), raises the window — the request comes from outside, so
+the app may not be in front — and hands over to `doOpenDataPath()`. Note the
+consequence of opening **by path through the backend**: a remote backend must be
+able to see that path, and the Data Hub's drag-and-drop (which stages the file)
+is the route that always works.
+
+---
+
 ## Session Data tree (`SessionDataTree`) — selection is passive
 
 The tree is the table of contents for the dataset's views (`view3d`, `slice2d`)

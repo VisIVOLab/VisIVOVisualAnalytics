@@ -71,7 +71,7 @@ BackendLinewidthResult BackendClient::fetchLinewidthBinary(const QString &datase
     const QJsonDocument body(bodyObj);
     QMap<QString, QString> headers;
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/spectral/linewidth/binary")),
+            performPostRetryingBackpressure(QUrl(m_baseUrl + QStringLiteral("/v1/spectral/linewidth/binary")),
                         body, error, &headers);
     if (!error.isEmpty()) {
         result.error = error;
@@ -306,7 +306,7 @@ BackendStackResult BackendClient::fetchStackBinary(const QStringList &datasetIds
             { QStringLiteral("weights"),     wArray },
             { QStringLiteral("weight_by"),   weightBy } });
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/spectral/stack/binary")),
+            performPostRetryingBackpressure(QUrl(m_baseUrl + QStringLiteral("/v1/spectral/stack/binary")),
                         body, error);
     if (!error.isEmpty()) {
         result.error = error;

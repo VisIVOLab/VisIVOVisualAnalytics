@@ -156,6 +156,19 @@ If even the double-click does nothing:
   see it.
 - Click *on the plane itself*, not on the volume rendering behind it.
 
+### "Switch to Remote" is missing, or *View → Remote* is greyed out
+
+The backend told us it cannot render server-side. It reports that in the
+dataset-open response (`server_side_rendering_available`), and it is false for a
+CPU-only backend and for **any backend running on macOS** — server-side
+rendering needs an EGL context, which macOS does not provide. The tooltip on the
+disabled *Remote* mode says so.
+
+This is not a limitation of your cube: rendering simply happens in this process.
+For a cube above the local-load threshold, use **Load full resolution** (in the
+banner, or *View → Load Full Resolution*) and watch the memory — the whole volume
+becomes resident, in RAM and as a 3-D GPU texture.
+
 ### A tool in the Analysis list is greyed out
 
 Hover it: every disabled tool in this app states its own reason, and the
@@ -208,6 +221,27 @@ The tool tells you which of the two happened.
   pane moves to a product on a **different** spectral axis. Load them again.
 
 See [Line identification](spectral-tools#line-identification-overlaying-a-line-list).
+
+### "Too many concurrent compute tasks" / the backend is busy
+
+The backend admits a limited number of concurrent computations **per session**
+(`VISIVO_MAX_CONCURRENT_TASKS`, default 3) and answers HTTP 429 beyond that.
+This is deliberate backpressure, not an error — it keeps a long compute from
+starving slice scrolling — but you should rarely see it:
+
+- the server now **waits** up to `VISIVO_TASK_SLOT_WAIT_S` (default 15 s) for a
+  slot before refusing, and
+- the client **retries** a refused heavy request (isosurface, moment, noise,
+  line-width, stacking) with backoff before reporting it.
+
+If you still get it, something long is genuinely running. It is most likely on a
+large cube, where opening the dataset itself launches heavy work — the
+full-resolution load and the whole-cube statistics — and a heavy request that is
+merely *queued* for a worker also holds a session slot. Check the
+*Diagnostics* panel (the status bar shows `N running · M queued`), let the
+running computation finish, and retry. Raising
+`VISIVO_MAX_CONCURRENT_TASKS` / `VISIVO_HEAVY_SLOTS` on the server trades
+interactive responsiveness for throughput.
 
 ### "Stack Spectral Cubes" shows only one cube
 

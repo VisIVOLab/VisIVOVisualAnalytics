@@ -244,6 +244,15 @@ public:
     /// handed to every spectrum plot so a REST-frame line list can be placed on
     /// a velocity axis — impossible without it.
     void setRestFrequency(double restFreqHz);
+    /// Whether the backend can render server-side at all (its EGL probe). A
+    /// CPU-only or macOS backend cannot, and then offering "Switch to Remote"
+    /// sends the user into a request the backend refuses.
+    void setServerSideRenderingAvailable(bool available);
+    /// (Re)compose the "full resolution is held back" banner: whether to show
+    /// it at all, its text, its tooltip and which of its two actions apply.
+    /// Called at setup AND whenever the backend's capability arrives, since the
+    /// setter lands after the constructor has already composed it once.
+    void refreshRemoteRecommendBanner();
     /// Provide beam metadata (BMAJ/BMIN in degrees, BPA in degrees E of N).
     /// Call after construction; the beam ellipse is drawn in the 2D slice
     /// renderer's bottom-left corner. Pass NaN major to hide the indicator.
@@ -864,6 +873,35 @@ protected:
     QPointer<QWidget> m_orphanToolsPage;   ///< kept alive, not shown (Analysis tab supersedes it)
     const QString filepath;
     const QString remoteBackendUrl;
+    /// The backend is on THIS machine (loopback host). It changes what a
+    /// recommendation to render remotely actually buys: no transfer is saved,
+    /// only the client's own GPU memory.
+    bool backendIsLocal() const;
+    /// Path of the app's Settings.ini, for cheap raw QSettings reads/writes.
+    /// NOT via Settings: that constructor launches python3 with 30-second
+    /// synchronous waits to locate an interpreter, which must not happen on a
+    /// UI path (main.cpp avoids it the same way for the theme).
+    static QString settingsIniPath();
+    /// Datasets for which the user dismissed the remote-rendering suggestion.
+    static QStringList remoteRecommendDismissed();
+    static void dismissRemoteRecommend(const QString &datasetKey);
+    /// Key for the persisted dismissal: the dataset path is not enough, because
+    /// the list is application-wide and the same path on two backends is two
+    /// different cubes.
+    QString remoteRecommendKey() const;
+    /// Fetch the whole cube at full resolution (the tail of View ▸ Load Full
+    /// Resolution, without its warning dialog — callers that have already told
+    /// the user the cost use this).
+    void startFullResolutionLoad();
+    /// Undo a half-started switch to remote rendering (guard, ticker, buttons,
+    /// mode badge) and say why in the banner.
+    void abortRemoteSwitch(const QString &reason);
+    /// True only across the connectToSession() call, whose internal reset emits
+    /// a Disconnected that is not a failure.
+    bool m_ignoreSyntheticDisconnect{ false };
+    /// Bumped whenever a switch to remote rendering is cancelled or times out,
+    /// so a create_session reply that lands afterwards knows it is stale.
+    quint64 m_remoteSwitchGeneration{ 0 };
     const QString remoteDatasetId;
     const QString remoteSessionId;
     const QString remoteBackendToken;
@@ -1641,6 +1679,10 @@ protected:
     /// unit, rest frequency).
     void pushSpectralAxisContext(ProfileWidget *plot) const;
     double m_restFreqHz{ 0.0 };
+    /// Backend-declared server-side rendering capability. Defaults to TRUE so a
+    /// backend that predates the flag keeps the old behaviour (offer it, and let
+    /// the request fail with its own message) rather than losing the option.
+    bool m_serverSideRenderingAvailable{ true };
     QString spectralAxisTooltip() const;
     void refreshSpectralAxisUi();
     bool remoteHasWcsAxis(int axis) const;
@@ -1935,6 +1977,9 @@ protected:
     // flag (the flag was correct but invisible; users couldn't tell
     // the click had registered and kept clicking).
     QPushButton          *m_localRecommendRemoteSwitchBtn{ nullptr };
+    /// Local-backend action: load the full grid here instead of switching to
+    /// server-side rendering, which on one machine buys only the resolution.
+    QPushButton *m_localRecommendLoadFullBtn{ nullptr };
     // Reentrancy guard for ``applyRenderMode(Remote)``. The user can
     // rapid-click the "Switch to Remote" button during the 3-5 s
     // WebRTC negotiation; without this flag each click would issue

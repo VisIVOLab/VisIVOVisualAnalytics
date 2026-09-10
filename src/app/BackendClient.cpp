@@ -728,6 +728,14 @@ static BackendOpenDatasetResult parseOpenDatasetObject(const QJsonObject &object
     result.spectralAxisUnit = object.value(QStringLiteral("spectral_axis_unit")).toString();
     // null (absent header card) → 0.0, which every consumer reads as "unknown".
     result.restFreqHz = object.value(QStringLiteral("rest_freq_hz")).toDouble(0.0);
+    // ABSENT means "a backend older than this field", and that one may well be
+    // able to render: default to capable so it keeps the option. Present-and-
+    // false is an explicit no.
+    {
+        const QJsonValue ssr = object.value(QStringLiteral("server_side_rendering_available"));
+        result.serverSideRenderingAvailable =
+                (ssr.isUndefined() || ssr.isNull()) ? true : ssr.toBool(false);
+    }
     result.bunit = object.value(QStringLiteral("bunit")).toString();
 
     const QJsonArray spacing = object.value(QStringLiteral("spacing")).toArray();
@@ -911,6 +919,14 @@ BackendOpenDatasetResult BackendClient::openSkavaDataset(const QString &obsId,
     result.spectralAxisUnit = object.value(QStringLiteral("spectral_axis_unit")).toString();
     // null (absent header card) → 0.0, which every consumer reads as "unknown".
     result.restFreqHz = object.value(QStringLiteral("rest_freq_hz")).toDouble(0.0);
+    // ABSENT means "a backend older than this field", and that one may well be
+    // able to render: default to capable so it keeps the option. Present-and-
+    // false is an explicit no.
+    {
+        const QJsonValue ssr = object.value(QStringLiteral("server_side_rendering_available"));
+        result.serverSideRenderingAvailable =
+                (ssr.isUndefined() || ssr.isNull()) ? true : ssr.toBool(false);
+    }
     result.bunit = object.value(QStringLiteral("bunit")).toString();
 
     const QJsonArray spacing = object.value(QStringLiteral("spacing")).toArray();
@@ -2108,7 +2124,8 @@ BackendCubeNoiseResult BackendClient::requestNoise(const QString &datasetId, int
                                           { QStringLiteral("channel_start"), channelStart },
                                           { QStringLiteral("channel_end"), channelEnd } });
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/noise")), body, error);
+            performPostRetryingBackpressure(QUrl(m_baseUrl + QStringLiteral("/v1/cube/noise")),
+                                            body, error);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
@@ -2448,7 +2465,8 @@ BackendIsosurfaceResult BackendClient::requestIsosurface(const QString &datasetI
     const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
                                           { QStringLiteral("threshold"), threshold } });
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/isosurface")), body, error);
+            performPostRetryingBackpressure(
+                    QUrl(m_baseUrl + QStringLiteral("/v1/products/isosurface")), body, error);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
@@ -2485,7 +2503,8 @@ BackendMomentResult BackendClient::requestMoment(const QString &datasetId, int o
                          { QStringLiteral("threshold_value"), thresholdValue },
                          { QStringLiteral("threshold_auto"), thresholdAuto } });
     const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/moment")), body, error);
+            performPostRetryingBackpressure(
+                    QUrl(m_baseUrl + QStringLiteral("/v1/products/moment")), body, error);
     if (!error.isEmpty()) {
         BackendMomentResult result;
         result.error = error;
@@ -2985,6 +3004,44 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
                 this->m_sessionId);
     }
     return finalData;
+}
+
+QByteArray BackendClient::performPostRetryingBackpressure(const QUrl &url,
+                                                          const QJsonDocument &body,
+                                                          QString &error,
+                                                          QMap<QString, QString> *responseHeaders,
+                                                          int attempts, int firstDelayMs) const
+{
+    int delay = std::max(50, firstDelayMs);
+    for (int attempt = 1;; ++attempt) {
+        int status = 0;
+        error.clear();
+        const QByteArray data = performPost(url, body, error, responseHeaders, &status);
+        if (status != 429)
+            return data;   // success, or a failure that retrying cannot fix
+        if (attempt >= std::max(1, attempts)) {
+            // Out of attempts: say what happened in words, not as the server's
+            // JSON body — this is what the user reads.
+            error = QStringLiteral(
+                            "The backend is busy: every compute slot for this session is in "
+                            "use, and %1 was still refused after %2 attempts. Wait for the "
+                            "running computation to finish and try again.")
+                            .arg(url.path())
+                            .arg(attempt);
+            qWarning().noquote() << QStringLiteral("[backpressure] %1 gave up after %2 attempts")
+                                            .arg(url.path())
+                                            .arg(attempt);
+            return data;
+        }
+        qWarning().noquote()
+                << QStringLiteral("[backpressure] %1 → 429, retry %2/%3 in %4 ms")
+                           .arg(url.path())
+                           .arg(attempt + 1)
+                           .arg(attempts)
+                           .arg(delay);
+        QThread::msleep(static_cast<unsigned long>(delay));
+        delay = std::min(delay * 2, 4000);
+    }
 }
 
 QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body,

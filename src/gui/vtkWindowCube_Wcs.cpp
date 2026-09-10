@@ -91,6 +91,10 @@
 #include <vtkVolume.h>
 #include <vtkVolumeProperty.h>
 
+#include <QDir>
+#include <QHostAddress>
+#include <QSettings>
+#include <QUrl>
 #include <QFileInfo>
 #include <QActionGroup>
 #include <QAction>
@@ -253,6 +257,107 @@ void vtkWindowCube::pushSpectralAxisContext(ProfileWidget *plot) const
     if (ctype.isEmpty())
         ctype = this->remoteDatasetCtype[2].trimmed();
     plot->setSpectralAxisContext(ctype, d.unit, this->m_restFreqHz);
+}
+
+QString vtkWindowCube::settingsIniPath()
+{
+    return QDir(QDir::home().absoluteFilePath(qApp->applicationName()))
+            .absoluteFilePath(QStringLiteral("Settings.ini"));
+}
+
+QStringList vtkWindowCube::remoteRecommendDismissed()
+{
+    QSettings raw(settingsIniPath(), QSettings::IniFormat);
+    return raw.value(QStringLiteral("Cube/remote_recommend_dismissed")).toStringList();
+}
+
+void vtkWindowCube::dismissRemoteRecommend(const QString &datasetKey)
+{
+    if (datasetKey.isEmpty())
+        return;
+    QSettings raw(settingsIniPath(), QSettings::IniFormat);
+    QStringList all =
+            raw.value(QStringLiteral("Cube/remote_recommend_dismissed")).toStringList();
+    if (all.contains(datasetKey))
+        return;
+    all << datasetKey;
+    // Bounded: this is a convenience list, not a history.
+    while (all.size() > 64)
+        all.removeFirst();
+    raw.setValue(QStringLiteral("Cube/remote_recommend_dismissed"), all);
+}
+
+QString vtkWindowCube::remoteRecommendKey() const
+{
+    const QUrl url(this->remoteBackendUrl);
+    // Scheme-aware default, so "https://host" and "https://host:443" are the
+    // same backend and not two keys.
+    const int defaultPort =
+            url.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0 ? 443 : 80;
+    const QString backend = url.host().isEmpty()
+            ? this->remoteBackendUrl
+            : QStringLiteral("%1:%2").arg(url.host().toLower()).arg(url.port(defaultPort));
+    return backend + QLatin1Char('|') + this->datasetPersistKey();
+}
+
+bool vtkWindowCube::backendIsLocal() const
+{
+    const QUrl url(this->remoteBackendUrl);
+    const QString host = url.host().toLower();
+    if (host.isEmpty())
+        return false;
+    if (host == QStringLiteral("localhost"))
+        return true;
+    // 127.0.0.0/8 and ::1, whatever spelling the user typed (QUrl::host()
+    // already strips the brackets of an IPv6 literal). QHostAddress parses
+    // numeric addresses only — it does NOT resolve names.
+    const QHostAddress addr(host);
+    if (!addr.isNull() && addr.isLoopback())
+        return true;
+    // …which leaves a hosts-file alias for 127.0.0.1. Rather than
+    // resolve a name on a UI path, compare against the URL the app calls its
+    // LOCAL backend — the authoritative answer.
+    //
+    // Read raw with QSettings, NOT through Settings: that constructor launches
+    // python3 (and possibly python) with 30-second synchronous waits to locate
+    // an interpreter, which is not something to do while composing a banner.
+    const QString iniPath =
+            QDir(QDir::home().absoluteFilePath(qApp->applicationName()))
+                    .absoluteFilePath(QStringLiteral("Settings.ini"));
+    QSettings raw(iniPath, QSettings::IniFormat);
+    const QUrl localUrl(raw.value(QStringLiteral("Backend/url"),
+                                  QStringLiteral("http://127.0.0.1:8000"))
+                                .toString());
+    // Scheme-aware default port, so an implicit https URL and an explicit :443
+    // are the same endpoint.
+    const auto portOf = [](const QUrl &u) {
+        return u.port(u.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0 ? 443
+                                                                                            : 80);
+    };
+    return !localUrl.host().isEmpty() && localUrl.host().toLower() == host
+            && portOf(localUrl) == portOf(url);
+}
+
+void vtkWindowCube::setServerSideRenderingAvailable(bool available)
+{
+    this->m_serverSideRenderingAvailable = available;
+    // The render-mode choice is a capability, not a preference: with no EGL on
+    // the backend, Remote cannot start and the menu entry must say so instead of
+    // failing on click.
+    if (this->m_actionRenderRemote) {
+        this->m_actionRenderRemote->setEnabled(available);
+        if (!available) {
+            const QString why =
+                    u"This backend cannot render server-side (no EGL context — a CPU-only "
+                    u"or macOS backend). Rendering happens here."_s;
+            this->m_actionRenderRemote->setToolTip(why);
+            this->m_actionRenderRemote->setStatusTip(why);
+        }
+    }
+    // Re-compose the banner: the constructor built it with the default (capable)
+    // before this arrived, so a backend without EGL was left showing a Switch
+    // button — or, on a remote one, neither action at all.
+    this->refreshRemoteRecommendBanner();
 }
 
 void vtkWindowCube::setRestFrequency(double restFreqHz)

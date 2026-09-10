@@ -37,7 +37,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 
 from ..auth import verify_token
-from ..dependencies import _run_heavy, _require_dataset, _run_heavy_with_limit
+from ..dependencies import (_run_heavy, _require_dataset, _run_heavy_with_limit,
+                            acquire_task_slot, task_slot_busy_error)
 from ..product_cache import PRODUCT_CACHE
 from ..sessions import Session, get_session
 
@@ -299,11 +300,12 @@ async def _compute_linewidth(
     if cached is not None:
         return dict(cached.payload)
 
-    if not session.try_acquire_task_slot():
-        raise HTTPException(
-            status_code=429,
-            detail="Too many concurrent compute tasks for this session.",
-        )
+    # The shared bounded wait, not an instant refusal: this endpoint held the
+    # only fail-fast path left, so a line-width request was refused within
+    # milliseconds while every other compute waited 15 s for a slot — and the
+    # client's retry budget (~7.5 s of backoff) could not bridge that either.
+    if not await acquire_task_slot(session):
+        raise task_slot_busy_error()
     try:
         from ..compute import worker_linewidth  # noqa: PLC0415
 

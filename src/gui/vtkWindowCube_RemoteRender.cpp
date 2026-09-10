@@ -1,5 +1,7 @@
 #include "vtkWindowCube.h"
 
+#include <QScopedValueRollback>
+
 #include "BackendClient.h"
 #include "ui_vtkWindowCube.h"
 #include "CubeViewportGeometry.h"
@@ -225,9 +227,17 @@ void vtkWindowCube::requestRemoteRenderSession()
 
     qDebug().noquote() << "[remote-render] POST" << url.toString();
     QNetworkReply *reply = this->m_renderNam->post(req, payload);
-    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+    const quint64 generation = this->m_remoteSwitchGeneration;
+    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, generation]() {
         reply->deleteLater();
         this->m_renderBackendProbed = true;
+        if (generation != this->m_remoteSwitchGeneration) {
+            // The user went back to Local, or the watchdog gave up, while this
+            // was in flight. Answering now would reconnect and flip to Remote
+            // behind their back.
+            qDebug().noquote() << "[remote-render] discarding a stale create_session reply";
+            return;
+        }
         if (reply->error() != QNetworkReply::NoError) {
             const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             qWarning().noquote()
@@ -240,14 +250,18 @@ void vtkWindowCube::requestRemoteRenderSession()
                         u"Remote rendering unavailable on this backend — staying local"_s,
                         5000);
             }
-            this->m_effectiveRenderMode = RenderMode::Local;
-            this->updateRenderModeBadges();
+            this->abortRemoteSwitch(
+                    u"Remote rendering unavailable on this backend (HTTP %1) — staying local."_s
+                            .arg(code));
             return;
         }
         const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
         const QString sid = doc.object().value(u"session_id"_s).toString();
         if (sid.isEmpty()) {
             qWarning() << "[remote-render] create_session returned no session_id";
+            this->abortRemoteSwitch(
+                    u"The backend accepted the request but returned no render session — "
+                    "staying local."_s);
             return;
         }
         this->m_renderSessionId = sid;
@@ -265,8 +279,64 @@ void vtkWindowCube::requestRemoteRenderSession()
     });
 }
 
+void vtkWindowCube::abortRemoteSwitch(const QString &reason)
+{
+    // Undo the "Connecting…" state as a unit. The create_session failure paths
+    // each returned early without clearing the guard, stopping the ticker or
+    // re-arming the buttons, so a backend that answered with an error (or no
+    // session_id) left the banner frozen on "Connecting…" with both actions
+    // disabled — the user could neither retry nor load locally.
+    this->m_remoteSwitchInProgress = false;
+    ++this->m_remoteSwitchGeneration;   // a reply landing later is stale
+    // …and stop the transport itself. The generation check only guards the HTTP
+    // completion: a negotiation already under way could still reach Live, hide
+    // this very banner and stream on behind the Local page. Its own
+    // Disconnected is ours, so it must not overwrite the reason below.
+    if (this->m_remoteRenderWidget) {
+        const QScopedValueRollback<bool> quiet(this->m_ignoreSyntheticDisconnect, true);
+        this->m_remoteRenderWidget->disconnectFromSession();
+    }
+    if (this->m_remoteSwitchProgressTimer)
+        this->m_remoteSwitchProgressTimer->stop();
+    // Back to the Local page: the badge alone said "Local" while the stack could
+    // still be showing the (frameless) remote page.
+    if (this->m_renderStack)
+        this->m_renderStack->setCurrentIndex(0);
+    // …and the channel slider with it. It is reparented onto whichever render
+    // widget is visible, so a negotiation that reconnected a retained session
+    // moved it onto the remote widget; aborting without moving it back left the
+    // slider stranded on the hidden page and the user without the cutting-plane
+    // channel control. Same steps as applyRenderMode's Local branch.
+    if (this->channelOverlay && ui->vtkCube
+        && this->channelOverlay->parentWidget() != ui->vtkCube) {
+        if (QWidget *current = this->channelOverlay->parentWidget())
+            current->removeEventFilter(this->channelOverlay);
+        this->channelOverlay->setParent(ui->vtkCube);
+        ui->vtkCube->installEventFilter(this->channelOverlay);
+        this->channelOverlay->show();
+        // A synthetic resize is what makes the overlay re-position over its new
+        // parent (repositionOverParent() is private).
+        QResizeEvent ev(ui->vtkCube->size(), ui->vtkCube->size());
+        QApplication::sendEvent(ui->vtkCube, &ev);
+    }
+    if (this->m_localRecommendRemoteSwitchBtn) {
+        this->m_localRecommendRemoteSwitchBtn->setEnabled(true);
+        this->m_localRecommendRemoteSwitchBtn->setText(u"Switch to Remote"_s);
+    }
+    if (this->m_localRecommendLoadFullBtn)
+        this->m_localRecommendLoadFullBtn->setEnabled(true);
+    if (this->m_localRecommendRemoteBanner && this->m_localRecommendRemoteLabel) {
+        this->m_localRecommendRemoteLabel->setText(reason);
+        this->m_localRecommendRemoteBanner->setVisible(true);
+    }
+    this->m_effectiveRenderMode = RenderMode::Local;
+    this->updateRenderModeBadges();
+}
+
 void vtkWindowCube::connectRemoteRenderWidgetWithTransport(const QString &sessionId)
 {
+    // The reset inside connectToSession() emits Disconnected; ignore only that.
+    const QScopedValueRollback<bool> guard(this->m_ignoreSyntheticDisconnect, true);
     // Pick the best transport based on backend capability. The
     // policy ("H.265 always when available") was set during the Phase
     // 3 architecture sign-off — see project_h265_backend_e2e.md. If
@@ -292,6 +362,14 @@ void vtkWindowCube::connectRemoteRenderWidgetWithTransport(const QString &sessio
 
 void vtkWindowCube::releaseRemoteRenderSession()
 {
+    // Release cancels any switch still negotiating too: a create_session reply
+    // that lands afterwards would reconnect a session this call is tearing down
+    // — and if the close it came from is then declined (a compute still busy),
+    // the surviving window ends up streaming a session it had released.
+    this->m_remoteSwitchInProgress = false;
+    ++this->m_remoteSwitchGeneration;
+    if (this->m_remoteSwitchProgressTimer)
+        this->m_remoteSwitchProgressTimer->stop();
     if (this->m_remoteRenderWidget) {
         this->m_remoteRenderWidget->disconnectFromSession();
     }
@@ -328,6 +406,15 @@ void vtkWindowCube::onRemoteRenderConnectionStateChanged(const QString &state)
     // negotiation broke (network blip, backend error, timeout). Also
     // surface the failure reason in the recommendation banner so the
     // user gets honest feedback instead of a frozen "Connecting…".
+    // One Disconnected is synthetic: connectToSession() begins with
+    // disconnectFromSession(), and that reached here and re-armed both buttons
+    // before the connection had even been attempted. Suppress exactly THAT one
+    // — a window opened around the call — and nothing else: WebRTC reports
+    // Failed, Closed and Disconnected all as "Disconnected", so ignoring every
+    // Disconnected "while negotiating" swallowed genuine failures and left the
+    // banner stuck on Connecting… for good.
+    if (this->m_ignoreSyntheticDisconnect && state == QLatin1String("Disconnected"))
+        return;
     if (state == QLatin1String("Disconnected")
         || state.startsWith(QLatin1String("Error"))) {
         this->m_remoteSwitchInProgress = false;
@@ -344,6 +431,8 @@ void vtkWindowCube::onRemoteRenderConnectionStateChanged(const QString &state)
         if (this->m_localRecommendRemoteSwitchBtn) {
             this->m_localRecommendRemoteSwitchBtn->setEnabled(true);
             this->m_localRecommendRemoteSwitchBtn->setText(u"Switch to Remote"_s);
+            if (this->m_localRecommendLoadFullBtn)
+                this->m_localRecommendLoadFullBtn->setEnabled(true);
         }
     }
     // When the WebSocket turns Live (first frame received), the server
@@ -375,6 +464,8 @@ void vtkWindowCube::onRemoteRenderConnectionStateChanged(const QString &state)
         if (this->m_localRecommendRemoteSwitchBtn) {
             this->m_localRecommendRemoteSwitchBtn->setEnabled(true);
             this->m_localRecommendRemoteSwitchBtn->setText(u"Switch to Remote"_s);
+            if (this->m_localRecommendLoadFullBtn)
+                this->m_localRecommendLoadFullBtn->setEnabled(true);
         }
         this->pushRenderStateToRemote();
 

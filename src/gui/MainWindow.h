@@ -46,6 +46,12 @@ public:
     RecentDatasetsManager *recentDatasetsManager() const { return recentMgr; }
 
 public slots:
+    /// Open a local dataset the DESKTOP asked for: a double-clicked FITS file, a
+    /// drop on the Dock icon, a path on the command line. Public because the
+    /// request arrives outside the UI (main()'s FileOpen relay). Raises the
+    /// window first — the app may not be in front — and reports an unreadable
+    /// path itself rather than failing silently.
+    void openDatasetPath(const QString &path);
     /// Reopen a previously opened dataset (dataset switcher / Recent panel).
     void reopenDataset(const RecentDataset &dataset);
 

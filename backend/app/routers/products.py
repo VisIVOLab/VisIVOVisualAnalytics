@@ -37,11 +37,11 @@ async def moment_product(
     # concurrency slot and 429s when the session is already at capacity. This
     # mirrors the spectral linewidth endpoint and lets the desktop client fall
     # back gracefully instead of piling unbounded work on the worker pool.
-    if not session.try_acquire_task_slot():
-        raise HTTPException(
-            status_code=429,
-            detail="Too many concurrent compute tasks for this session.",
-        )
+    # Waits briefly for a slot rather than refusing on the spot — see
+    # dependencies.acquire_task_slot for why an instant 429 turned a single
+    # click into a hard failure on a large cube.
+    if not await acquire_task_slot(session):
+        raise task_slot_busy_error()
     try:
         result, _ = await _moment_product_payload(entry, request)
     except HTTPException:

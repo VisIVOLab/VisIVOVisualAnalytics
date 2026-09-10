@@ -82,6 +82,59 @@ Pick between two complementary 3-D views from the top-right viewer toolbar:
 You can switch render mode at any time. The colour map is shared between
 volume rendering and the slice view.
 
+### Where the rendering happens: Auto / Local / Remote
+
+Independently of *what* is rendered, there is a choice of *where* — the toolbar
+segment above the 3-D pane:
+
+- **Local** — the cube is loaded into this machine's GPU through VTK's volume
+  mapper. Full interactivity, and the whole volume has to fit in GPU memory as a
+  3-D texture (roughly `width × height × depth × 4` bytes).
+- **Remote** — the backend renders with EGL and streams frames over a
+  WebSocket. **Only if the backend has it**: the dataset-open response carries
+  `server_side_rendering_available`, and a CPU-only backend — or any backend on
+  **macOS**, where there is no EGL — reports false. The mode entry is then
+  disabled with that reason and the recommendation banner does not offer the
+  switch, because `/v1/render/*` would refuse the request. It uses the *same* mapper on the whole cube (it is **not**
+  out-of-core), so the memory has to exist there instead of here; what you gain
+  is that the backend loads the full grid where the client would fall back to a
+  decimated proxy, and that a large cube never crosses the network. The cost is
+  an encode/decode round trip per frame.
+- **Auto** — starts local and lets the recommendation below appear.
+
+A cube whose full resolution exceeds `Cube/local_full_threshold_mb`
+(`~/VisIVO Visual Analytics/Settings.ini`, default **256 MB**), or one the
+backend has tagged `preview_only`, is shown as a **decimated preview proxy**
+locally — the status bar says so — and a banner offers to switch to remote
+rendering.
+
+```{note}
+What that switch buys depends on **where the backend is**, and the banner says
+which case you are in:
+
+- a **remote** backend: the full-resolution cube never crosses the network — the
+  frames do, and they are the same size whatever the cube is;
+- a **local** backend (`127.0.0.1`): there is no elsewhere. Same machine, same
+  GPU, the same whole volume in memory — just held by the backend process
+  instead of this one — plus a per-frame encode. The only thing it gains you is
+  the **full grid** instead of the decimated proxy, and that is a limit this
+  client imposes on itself, not a property of the data.
+
+So on a local backend the banner leads with **Load full resolution**, which is
+what the threshold is actually holding back, and keeps *Switch to Remote* as the
+second option **when the backend can do it at all** (on a local macOS backend it
+cannot, and the button is not shown) — worth taking when you would rather not have the cube resident in
+the viewer process. Dismissing the banner with ✕ is remembered for that cube, and
+raising `Cube/local_full_threshold_mb` stops it being raised at all.
+
+```{tip}
+Server-side rendering earns its keep when the backend is on **another** machine:
+a GPU node with 80 GB of VRAM, or a cube on a filesystem you do not want to pull
+several GB across. On your own laptop, against your own backend, it is mostly a
+way around this client's threshold.
+```
+```
+
 ## Color maps and transfer function
 
 - The active **color map** is picked from the *3-D View Settings* sidebar

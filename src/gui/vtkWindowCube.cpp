@@ -1283,27 +1283,67 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             const int warnThreshold = warnSettings.getLocalFullThresholdMb();
             if (warnCubeMb > static_cast<double>(warnThreshold)
                 && !this->remoteBackendUrl.isEmpty()) {
+                // Two different situations, and this dialog used to describe
+                // only the remote one — "without the transfer" and "downloading
+                // to this desktop" are both meaningless when the backend is a
+                // process on this machine, where the honest cost is memory and
+                // the honest default is to load it (user).
+                const bool localBackend = this->backendIsLocal();
                 QMessageBox box(this);
                 box.setIcon(QMessageBox::Warning);
-                box.setWindowTitle(u"Large cube — remote rendering recommended"_s);
-                box.setText(QStringLiteral(
-                        "This cube is %1 GB at full resolution, well above the "
-                        "%2 MB local-load threshold.\n\nDownloading the full "
-                        "cube to this desktop will use the full size in RAM "
-                        "and may take a long time.\n\nRemote rendering "
-                        "(GPU on the backend) is already configured and will "
-                        "give you full-quality, fully interactive 3D without "
-                        "the transfer.")
-                                       .arg(warnCubeMb / 1024.0, 0, 'f', 2)
-                                       .arg(warnThreshold));
-                auto *btnRemote = box.addButton(
-                        u"Use Remote Rendering"_s, QMessageBox::AcceptRole);
+                box.setWindowTitle(
+                        (localBackend || !this->m_serverSideRenderingAvailable)
+                                ? u"Large cube — this needs the whole volume in memory"_s
+                                : u"Large cube — remote rendering recommended"_s);
+                box.setText(localBackend
+                        ? QStringLiteral(
+                                  "This cube is %1 GB at full resolution, above the %2 MB "
+                                  "local-load threshold.\n\nThe backend is on this machine, so "
+                                  "nothing is downloaded over a network — but the whole volume "
+                                  "has to be resident here, in RAM and as a 3-D GPU texture.\n\n"
+                                  "%3")
+                                  .arg(warnCubeMb / 1024.0, 0, 'f', 2)
+                                  .arg(warnThreshold)
+                                  .arg(this->m_serverSideRenderingAvailable
+                                               ? u"Rendering it in the backend process instead "
+                                                 "uses the same GPU for the same volume and "
+                                                 "adds a per-frame encode; what it avoids is "
+                                                 "holding the cube in THIS process."_s
+                                               : u"This backend cannot render server-side (no "
+                                                 "EGL context), so loading it here is the only "
+                                                 "way to the full grid."_s)
+                        : QStringLiteral(
+                                  "This cube is %1 GB at full resolution, well above the "
+                                  "%2 MB local-load threshold.\n\nDownloading the full "
+                                  "cube to this desktop will use the full size in RAM "
+                                  "and may take a long time.\n\n%3")
+                                  .arg(warnCubeMb / 1024.0, 0, 'f', 2)
+                                  .arg(warnThreshold)
+                                  .arg(this->m_serverSideRenderingAvailable
+                                               ? u"Remote rendering (GPU on the backend) is "
+                                                 "already configured and will give you "
+                                                 "full-quality, fully interactive 3D without "
+                                                 "the transfer."_s
+                                               : u"This backend cannot render server-side (no "
+                                                 "EGL context), so there is no alternative to "
+                                                 "the download — consider Crop Full Resolution "
+                                                 "for a region instead."_s));
+                // Only when the backend can actually do it: with no EGL there,
+                // this button led straight into a refused request (verified —
+                // the probe returns false on macOS).
+                QPushButton *btnRemote =
+                        this->m_serverSideRenderingAvailable
+                                ? box.addButton(u"Use Remote Rendering"_s,
+                                                QMessageBox::AcceptRole)
+                                : nullptr;
                 auto *btnLocal = box.addButton(
-                        u"Download Locally Anyway"_s, QMessageBox::DestructiveRole);
+                        localBackend ? u"Load It Here"_s : u"Download Locally Anyway"_s,
+                        localBackend ? QMessageBox::AcceptRole
+                                     : QMessageBox::DestructiveRole);
                 box.addButton(QMessageBox::Cancel);
-                box.setDefaultButton(btnRemote);
+                box.setDefaultButton((localBackend || !btnRemote) ? btnLocal : btnRemote);
                 box.exec();
-                if (box.clickedButton() == btnRemote) {
+                if (btnRemote && box.clickedButton() == btnRemote) {
                     this->applyRenderMode(RenderMode::Remote, true);
                     return;
                 }
@@ -1312,16 +1352,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 }
                 // Falls through to the local fetch path below.
             }
-            this->userForcedFullResolution = true;
-            this->statusBar()->showMessage(
-                    u"Loading full-resolution cube from backend…"_s, 4000);
-            if (!this->requestHighResCube()) {
-                this->setRemoteCubeDisplayState(
-                        this->usingHighResCube
-                                ? RemoteCubeDisplayState::FullResolution
-                                : RemoteCubeDisplayState::Preview);
-                this->clearPersistentStatusMessage();
-            }
+            this->startFullResolutionLoad();
         });
 
         auto *cropFullAction =
@@ -3477,11 +3508,15 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
                                   * 4.0) / (1024.0 * 1024.0);
     const bool rmSizeWantsRemote =
             rmCubeFullMb > static_cast<double>(rmSettings.getLocalFullThresholdMb());
-    const bool wantRemote = (requested == RenderMode::Remote)
-            || (requested == RenderMode::Auto
-                && (this->recommendedLoadMode == QLatin1String("preview_only")
-                    || rmSizeWantsRemote)
-                && !this->remoteBackendUrl.isEmpty());
+    // A backend that cannot render server-side is not a candidate, for Auto or
+    // for an explicit request: /v1/render/* refuses it, and Auto would have gone
+    // looking for it on every large cube.
+    const bool wantRemote = this->m_serverSideRenderingAvailable
+            && ((requested == RenderMode::Remote)
+                || (requested == RenderMode::Auto
+                    && (this->recommendedLoadMode == QLatin1String("preview_only")
+                        || rmSizeWantsRemote)
+                    && !this->remoteBackendUrl.isEmpty()));
 
     if (wantRemote) {
         // Mark switch in progress so further clicks are ignored until
@@ -3514,6 +3549,12 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
             this->m_localRecommendRemoteSwitchBtn->setEnabled(false);
             this->m_localRecommendRemoteSwitchBtn->setText(u"Connecting…"_s);
         }
+        // …and the local alternative with it. The local page stays visible while
+        // the session negotiates, so this button was still clickable — and a
+        // full-volume fetch started there would have both processes allocating
+        // the same cube on the same machine.
+        if (this->m_localRecommendLoadFullBtn)
+            this->m_localRecommendLoadFullBtn->setEnabled(false);
         if (this->m_remoteRenderBannerLabel) {
             this->m_remoteRenderBannerLabel->setText(
                     u"Connecting to remote rendering…"_s);
@@ -3528,6 +3569,21 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
                     return;
                 }
                 const qint64 secs = this->m_remoteSwitchElapsed.elapsed() / 1000;
+                // Watchdog. The ticker used to narrate an unbounded wait: if the
+                // negotiation never reaches Live and never reports a failure —
+                // a dropped connection, a wedged backend — the banner counted
+                // seconds for ever with both actions disabled. Generous,
+                // because a multi-GB cube legitimately takes minutes to land in
+                // the backend's GPU.
+                constexpr qint64 kSwitchTimeoutS = 300;
+                if (secs >= kSwitchTimeoutS) {
+                    this->abortRemoteSwitch(
+                            QStringLiteral("Remote rendering did not start within %1 s — "
+                                           "staying local. Check the backend's GPU / EGL "
+                                           "support in Diagnostics, then retry.")
+                                    .arg(kSwitchTimeoutS));
+                    return;
+                }
                 QString msg;
                 if (secs < 5) {
                     msg = QStringLiteral(
@@ -3573,6 +3629,22 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
             // live image again without paying for EGL warm-up.
             if (this->m_remoteRenderWidget && !this->m_remoteRenderWidget->isLive()) {
                 this->connectRemoteRenderWidgetWithTransport(this->m_renderSessionId);
+            } else if (this->m_remoteSwitchInProgress) {
+                // Already streaming: no connection is attempted, so no Live
+                // signal will arrive to clear the guard — and the watchdog would
+                // have aborted a perfectly good stream 300 s later.
+                // Nothing to wait for, so end the switch here.
+                this->m_remoteSwitchInProgress = false;
+                if (this->m_remoteSwitchProgressTimer)
+                    this->m_remoteSwitchProgressTimer->stop();
+                if (this->m_localRecommendRemoteBanner)
+                    this->m_localRecommendRemoteBanner->setVisible(false);
+                if (this->m_localRecommendRemoteSwitchBtn) {
+                    this->m_localRecommendRemoteSwitchBtn->setEnabled(true);
+                    this->m_localRecommendRemoteSwitchBtn->setText(u"Switch to Remote"_s);
+                }
+                if (this->m_localRecommendLoadFullBtn)
+                    this->m_localRecommendLoadFullBtn->setEnabled(true);
             }
         }
     } else {
@@ -3580,6 +3652,27 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
             this->m_renderStack->setCurrentIndex(0);
         }
         this->m_effectiveRenderMode = RenderMode::Local;
+        // Going back to Local CANCELS a switch that was still negotiating —
+        // BEFORE the disconnect below, which emits Disconnected synchronously
+        // and whose handler clears this very flag, so anything gated on it
+        // afterwards never ran. Says so itself rather than relying on a
+        // signal: otherwise the guard stayed set and both banner buttons stayed
+        // disabled, with no way to retry.
+        if (this->m_remoteSwitchInProgress) {
+            this->m_remoteSwitchInProgress = false;
+            // Invalidate any create_session reply still in flight: it used to
+            // reconnect and flip to Remote regardless, undoing the very
+            // cancellation the user just asked for.
+            ++this->m_remoteSwitchGeneration;
+            if (this->m_remoteSwitchProgressTimer)
+                this->m_remoteSwitchProgressTimer->stop();
+            if (this->m_localRecommendRemoteSwitchBtn) {
+                this->m_localRecommendRemoteSwitchBtn->setEnabled(true);
+                this->m_localRecommendRemoteSwitchBtn->setText(u"Switch to Remote"_s);
+            }
+            if (this->m_localRecommendLoadFullBtn)
+                this->m_localRecommendLoadFullBtn->setEnabled(true);
+        }
         // For explicit Local clicks, disconnect the WebSocket so we stop
         // burning frames behind a hidden page. We KEEP the session alive
         // on the backend so a flip back to Remote is instant — the TTL
@@ -11161,6 +11254,21 @@ void vtkWindowCube::updateBackendDerivedActionsAvailability()
     this->m_pvBaselineEnabled = this->actionExtractPvDiagram
             ? this->actionExtractPvDiagram->isEnabled() : false;
     this->applyMomentToolGate();
+}
+
+void vtkWindowCube::startFullResolutionLoad()
+{
+    // The tail of View ▸ Load Full Resolution, without its warning dialog: the
+    // recommendation banner offers this on a LOCAL backend, where it has already
+    // said what the cost is (GPU memory) and there is no download to warn about.
+    this->userForcedFullResolution = true;
+    this->statusBar()->showMessage(u"Loading full-resolution cube from backend…"_s, 4000);
+    if (!this->requestHighResCube()) {
+        this->setRemoteCubeDisplayState(this->usingHighResCube
+                                                ? RemoteCubeDisplayState::FullResolution
+                                                : RemoteCubeDisplayState::Preview);
+        this->clearPersistentStatusMessage();
+    }
 }
 
 void vtkWindowCube::applyMomentToolGate()

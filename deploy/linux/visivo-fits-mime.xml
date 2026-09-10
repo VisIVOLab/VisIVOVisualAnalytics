@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FITS MIME type, for desktops whose shared-mime-info is too old to carry it.
+  Most current distributions already define image/fits; installing this is
+  harmless there (identical definition) and is what makes the .desktop file's
+  MimeType= line resolve on the ones that do not. See docs/user-guide for the
+  xdg-mime / xdg-desktop-menu commands (they cannot be written here: an XML
+  comment may not contain a double hyphen, and every one of those flags has one).
+-->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="image/fits">
+    <comment>FITS image or spectral cube</comment>
+    <acronym>FITS</acronym>
+    <expanded-acronym>Flexible Image Transport System</expanded-acronym>
+    <glob pattern="*.fits"/>
+    <glob pattern="*.fit"/>
+    <glob pattern="*.fts"/>
+    <glob pattern="*.fz"/>
+    <!-- Every conforming FITS file starts with this 30-byte card. -->
+    <magic priority="60">
+      <match type="string" offset="0" value="SIMPLE  =                    T"/>
+    </magic>
+  </mime-type>
+</mime-info>

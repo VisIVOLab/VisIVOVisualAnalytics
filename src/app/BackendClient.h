@@ -129,6 +129,10 @@ struct BackendOpenDatasetResult
     /// Header RESTFRQ/RESTFREQ in Hz; 0 when the header carries neither. Needed
     /// to place a spectral-line list on a velocity axis (rest freq ↔ velocity).
     double restFreqHz{ 0.0 };
+    /// The backend can render server-side (it probed an EGL context). False on
+    /// a CPU-only or macOS backend, where "Switch to Remote" cannot work at all
+    /// — /v1/render/* refuses it.
+    bool serverSideRenderingAvailable{ false };
     std::array<double, 3> spacing{ 1.0, 1.0, 1.0 };
     std::array<double, 3> origin{ 0.0, 0.0, 0.0 };
     QString bunit;   ///< raw BUNIT from the FITS header (physical value unit)
@@ -1969,6 +1973,24 @@ private:
     QNetworkRequest buildRequest(const QUrl &url) const;
 
     QByteArray performGet(const QUrl &url, QString &error) const;
+    /// performPost, retrying while the backend answers 429 (5 attempts, 4 sleeps
+    /// of 0.5 / 1 / 2 / 4 s — about 7.5 s of backoff on top of the server's own
+    /// bounded wait for a compute slot).
+    ///
+    /// A 429 from this backend is admission control — "all this session's
+    /// compute slots are busy" — not a failure: the server itself already waits
+    /// for a slot, and the tasks holding them finish. Treating it as fatal
+    /// turned one click on Isosurface over a large cube into "too many
+    /// requests". Callers on a worker thread use this for the heavy compute
+    /// endpoints; the wait is a plain sleep, so it must NOT be called on the GUI
+    /// thread. On the last attempt the raw JSON body is replaced with a sentence
+    /// that says the backend is busy.
+    QByteArray performPostRetryingBackpressure(const QUrl &url, const QJsonDocument &body,
+                                               QString &error,
+                                               QMap<QString, QString> *responseHeaders = nullptr,
+                                               int attempts = 5,
+                                               int firstDelayMs = 500) const;
+
     QByteArray performPost(const QUrl &url, const QJsonDocument &body, QString &error,
                            QMap<QString, QString> *responseHeaders = nullptr,
                            int *statusOut = nullptr) const;
