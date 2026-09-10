@@ -32,4 +32,8 @@ private slots:
     void axisValue_opticalRadioAndRelativisticDiffer();
     void axisValue_hiLineAtRestSitsAtZeroVelocity();
     void axisValue_needsARestFrequencyOnAVelocityAxis();
+
+    void frequencyForAxisValue_roundTripsEveryConvention();
+    void frequencyForAxisValue_matchesTheConventionNotJustZTimesC();
+    void frequencyForAxisValue_needsARestFrequencyToo();
 };

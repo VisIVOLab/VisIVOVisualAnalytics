@@ -108,6 +108,29 @@ Wherever you reach a tool, it is the same action: a toggle switched on in one
 place shows as on in the other two, and one that is unavailable is greyed out in
 all three with the same explanation.
 
+#### Session Data: selecting vs showing
+
+The left panel's tree is a **table of contents**, and the two gestures do
+different things:
+
+- **Click** a row — the dataset's views (*3D Volume*, *2D Slice*) or any product
+  — to *inspect* it: the Inspector's Properties / Provenance follow the
+  selection. Nothing moves in the panes.
+- **Double-click** to *show* it: the row is mounted in a pane (a free one, else
+  the layout grows). A product with no pane renderer — a baseline-subtracted
+  cube, a noise estimate — raises its own window instead.
+- **Right-click ▸ Show in ▸** to choose the pane, with each entry naming what it
+  would replace.
+- The small **pane number** badge on a row says which pane already shows it;
+  clicking the badge activates that pane.
+
+```{note}
+Selecting a row used to mount it straight away. That replaced whatever the
+active pane was showing just because you clicked a row to read its provenance —
+and, since a right-click also makes a row current, it mounted the product before
+its own *Show in ▸* menu could open, which made that menu pointless.
+```
+
 #### When a tool is available, and where it acts
 
 A tool is bound to a **view**, not to the pane you happen to have selected:

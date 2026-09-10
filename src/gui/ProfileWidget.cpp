@@ -28,6 +28,7 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QScopeGuard>
+#include <QSet>
 #include <QTimer>
 #include <QStandardPaths>
 #include <QTextStream>
@@ -684,8 +685,18 @@ void ProfileWidget::setSpectrumAxisLabels(const QString &xLabel, const QString &
     // keep drawing them at meaningless positions. Drop them rather than lie.
     const QString prevX = ui->plot1->xAxis->label();
     const QString newX = xLabel.isEmpty() ? u"Spectral axis"_s : xLabel;
-    if (!m_lineIds.isEmpty() && !prevX.isEmpty() && prevX != newX)
+    if (!prevX.isEmpty() && prevX != newX) {
         clearLineIdOverlay();
+        // …and the axis CONTEXT with them. Keeping the cube's CTYPE / unit /
+        // RESTFRQ after the pane moved to a product on another axis (a stacked
+        // spectrum in channels, say) made a fresh Load Lines convert to the
+        // cube's velocity numbers and draw them as channel indices. The
+        // owner re-supplies the context when it applies; until then the loader
+        // refuses rather than inventing positions.
+        m_axisCtype.clear();
+        m_axisUnit.clear();
+        m_axisRestFreqHz = 0.0;
+    }
     ui->plot1->xAxis->setLabel(newX);
     ui->plot1->yAxis->setLabel(yLabel.isEmpty() ? u"Intensity"_s : yLabel);
     // Mirror setupSpectrumPlot's CSV-header cache so a reused slot exports the CURRENT product's
@@ -1661,35 +1672,81 @@ QString unitHintIn(const QString &text)
 
 /// Split on the separator the file actually uses. Catalogue exports are comma-
 /// or colon-separated (Splatalogue offers both), hand-made lists tab-separated.
-QStringList splitRow(const QString &row)
+/// Split one row on @p sep, honouring double quotes ("" inside a quoted field is
+/// a literal quote) and dropping the quotes from the result. A catalogue export
+/// quotes any field that contains the separator — a chemical name with a comma
+/// in it — and splitting blindly shifts every later column, which silently
+/// discarded the row.
+QStringList splitRow(const QString &row, QChar sep, bool *malformed = nullptr)
 {
-    QStringList out{ row };
+    QStringList out;
+    QString field;
+    bool inQuotes = false;
+    if (malformed)
+        *malformed = false;
+    for (int i = 0; i < row.size(); ++i) {
+        const QChar c = row.at(i);
+        if (inQuotes) {
+            if (c == QLatin1Char('"')) {
+                if (i + 1 < row.size() && row.at(i + 1) == QLatin1Char('"')) {
+                    field.append(QLatin1Char('"'));
+                    ++i;
+                } else {
+                    inQuotes = false;
+                }
+            } else {
+                field.append(c);
+            }
+        } else if (c == QLatin1Char('"')) {
+            inQuotes = true;
+        } else if (c == sep) {
+            out << field.trimmed();
+            field.clear();
+        } else {
+            field.append(c);
+        }
+    }
+    out << field.trimmed();
+    // An unterminated quote means the row is not the CSV it claims to be. Say so
+    // instead of returning a field that happens to parse.
+    if (inQuotes && malformed)
+        *malformed = true;
+    return out;
+}
+
+/// The separator of the WHOLE file, decided once from its first data row and
+/// looked for OUTSIDE quotes. Deciding per row let a tab-separated catalogue
+/// switch to commas on any row whose quantum numbers contained one.
+QChar detectSeparator(const QString &row)
+{
+    bool inQuotes = false;
+    QSet<QChar> seen;
+    for (const QChar c : row) {
+        if (c == QLatin1Char('"'))
+            inQuotes = !inQuotes;
+        else if (!inQuotes)
+            seen.insert(c);
+    }
     for (const QChar sep : { QLatin1Char(','), QLatin1Char('\t'), QLatin1Char(';'),
                              QLatin1Char(':') })
-        if (row.contains(sep)) {
-            out = row.split(sep);
-            break;
-        }
-    // Catalogue exports quote fields (a species name can contain a comma), and a
-    // quoted number does not parse — so strip the quotes rather than drop the row.
-    for (QString &field : out) {
-        field = field.trimmed();
-        if (field.size() >= 2 && field.startsWith(QLatin1Char('"'))
-            && field.endsWith(QLatin1Char('"')))
-            field = field.mid(1, field.size() - 2);
-    }
-    return out;
+        if (seen.contains(sep))
+            return sep;
+    return QLatin1Char(',');   // single-column file: any separator does
 }
 
 }   // namespace
 
 QVector<ProfileWidget::RestLine> ProfileWidget::parseLineListFile(const QString &text,
                                                                  QString &unitHint,
-                                                                 QString &formatNote)
+                                                                 QString &formatNote,
+                                                                 bool allowHeader,
+                                                                 bool *retryAsTwoColumn)
 {
     QVector<RestLine> out;
     unitHint.clear();
     formatNote.clear();
+    if (retryAsTwoColumn)
+        *retryAsTwoColumn = false;
     QStringList rows = text.split(QLatin1Char('\n'));
     // Comments can declare the unit ("# unit = GHz"), which spares the user a
     // guess in the dialog.
@@ -1710,13 +1767,56 @@ QVector<ProfileWidget::RestLine> ProfileWidget::parseLineListFile(const QString 
 
     // Header row? A catalogue export starts with column names, a hand-made list
     // with a number. That single test is what lets one code path read both.
-    const QStringList first = splitRow(data.first());
+    const QChar sep = detectSeparator(data.first());
+    bool firstMalformed = false;
+    const QStringList first = splitRow(data.first(), sep, &firstMalformed);
     bool firstIsNumber = false;
     if (!first.isEmpty())
         first.first().trimmed().toDouble(&firstIsNumber);
+    if (firstMalformed) {
+        // Its columns cannot be trusted, and guessing them mis-selected the
+        // frequency column for every row that followed.
+        formatNote = QStringLiteral("the first row is malformed (unterminated quote)");
+        return out;
+    }
+    // Is the first row a header? Two rules that took three attempts to get right
+    //, because both a header and a data row can begin with a number and
+    // either can contain the word "frequency":
+    //
+    //  (a) a field NAMES a value column ("Freq-GHz", "Velocity") and is not
+    //      itself a number — a hypothesis, which is then VERIFIED against the
+    //      next row: the same column there must parse as a number. That keeps
+    //      `Index,Species,Freq-GHz` a header while leaving the data row
+    //      `115.271,CO frequency reference` alone, whose column 1 is a label in
+    //      every row.
+    //  (b) failing that, no numeric first field — the classic "all names" row.
+    int nameValueCol = -1;
+    for (int i = 0; i < first.size(); ++i) {
+        const QString f = first.at(i).trimmed();
+        const QString n = f.toLower();
+        if (!(n.contains(QStringLiteral("freq")) || n.contains(QStringLiteral("velocity"))))
+            continue;
+        if (n.contains(QStringLiteral("err")))
+            continue;   // an uncertainty column is not the value
+        bool numeric = false;
+        f.toDouble(&numeric);
+        if (!numeric) {
+            nameValueCol = i;
+            break;
+        }
+    }
+    bool namesValueColumn = false;
+    if (nameValueCol >= 0 && data.size() >= 2) {
+        const QStringList second = splitRow(data.at(1), sep);
+        if (second.size() > nameValueCol) {
+            bool numeric = false;
+            second.at(nameValueCol).trimmed().toDouble(&numeric);
+            namesValueColumn = numeric;
+        }
+    }
     int valueCol = 0, labelCol = 1, qnCol = -1;
     int startRow = 0;
-    if (!firstIsNumber && first.size() >= 2) {
+    if (allowHeader && (namesValueColumn || !firstIsNumber) && first.size() >= 2) {
         startRow = 1;
         valueCol = -1;
         labelCol = -1;
@@ -1728,8 +1828,11 @@ QVector<ProfileWidget::RestLine> ProfileWidget::parseLineListFile(const QString 
             if (valueCol < 0 && name.contains(QStringLiteral("freq"))
                 && !name.contains(QStringLiteral("err")))
                 valueCol = i;
-            // …or a velocity column, for a list already in the observed frame.
-            if (valueCol < 0
+            // …or a velocity column, for a list already in the observed frame —
+            // and with the SAME uncertainty exclusion. Without it
+            // `Species,Velocity Err,Velocity` selected the error column and
+            // imported the uncertainties as the line positions.
+            if (valueCol < 0 && !name.contains(QStringLiteral("err"))
                 && (name.contains(QStringLiteral("velocity")) || name == QStringLiteral("v")))
                 valueCol = i;
             if (labelCol < 0
@@ -1759,8 +1862,14 @@ QVector<ProfileWidget::RestLine> ProfileWidget::parseLineListFile(const QString 
         formatNote = QStringLiteral("two-column list (value, label)");
     }
 
+    int malformedRows = 0;   // the first row is handled above, never counted twice
     for (int r = startRow; r < data.size(); ++r) {
-        const QStringList parts = splitRow(data.at(r));
+        bool malformed = false;
+        const QStringList parts = splitRow(data.at(r), sep, &malformed);
+        if (malformed) {
+            ++malformedRows;
+            continue;
+        }
         if (parts.size() <= valueCol)
             continue;
         bool ok = false;
@@ -1777,6 +1886,15 @@ QVector<ProfileWidget::RestLine> ProfileWidget::parseLineListFile(const QString 
             label = QString::number(value, 'g', 8);
         out.append({ value, label });
     }
+    // Worth a two-column re-read only when the file's ONE row was taken for a
+    // header: a header with no data rows under it is not a header at all. With
+    // real data rows present the rejection stands.
+    if (retryAsTwoColumn && out.isEmpty() && startRow == 1 && data.size() == 1)
+        *retryAsTwoColumn = true;
+    if (malformedRows > 0)
+        formatNote += QStringLiteral("; %1 malformed row%2 skipped (unterminated quote)")
+                              .arg(malformedRows)
+                              .arg(malformedRows == 1 ? "" : "s");
     return out;
 }
 
@@ -1842,7 +1960,22 @@ void ProfileWidget::loadLineIdFile()
     // is parsed by the SAME parser as a user file, so there is one format to
     // maintain and the bundled path exercises it.
     auto load = [&](const QString &text, const QString &origin) {
-        lines = parseLineListFile(text, unitHint, formatNote);
+        bool retryAsTwoColumn = false;
+        lines = parseLineListFile(text, unitHint, formatNote, /*allowHeader=*/true,
+                                  &retryAsTwoColumn);
+        // A single-row file whose row was taken for a header is a two-column list
+        // whose only entry happened to contain a column-ish word. Re-read it as
+        // data; a real catalogue header with unusable rows stays rejected.
+        if (retryAsTwoColumn) {
+            QString unit2, note2;
+            const QVector<RestLine> retry =
+                    parseLineListFile(text, unit2, note2, /*allowHeader=*/false);
+            if (!retry.isEmpty()) {
+                lines = retry;
+                unitHint = unit2;
+                formatNote = note2;
+            }
+        }
         if (!unitHint.isEmpty()) {
             const int idx = unitCombo->findText(unitHint, Qt::MatchFixedString);
             if (idx >= 0)
@@ -1911,8 +2044,25 @@ void ProfileWidget::loadLineIdFile()
                              u"one this build can convert."_s.arg(m_axisUnit));
         return;
     }
-    applyLineList(lines, unitCombo->currentText(), shiftCombo->currentData().toInt(),
-                  shiftValue->text().toDouble());
+    // The validator accepts the SYSTEM locale's decimal separator ("0,01" on an
+    // Italian desktop) while QString::toDouble() only parses C-locale syntax —
+    // and its success flag was ignored, so a perfectly valid entry silently
+    // became a zero redshift. Try the system locale first, then C.
+    const int mode = shiftCombo->currentData().toInt();
+    double shift = 0.0;
+    if (mode != 2) {
+        bool ok = false;
+        shift = QLocale::system().toDouble(shiftValue->text(), &ok);
+        if (!ok)
+            shift = QLocale::c().toDouble(shiftValue->text(), &ok);
+        if (!ok) {
+            QMessageBox::warning(this, u"Load Lines"_s,
+                                 u"“%1” is not a number — give the systemic velocity in "
+                                 u"km/s, or the redshift z."_s.arg(shiftValue->text()));
+            return;
+        }
+    }
+    applyLineList(lines, unitCombo->currentText(), mode, shift);
 }
 
 void ProfileWidget::applyLineList(const QVector<RestLine> &lines, const QString &unitText,
@@ -1955,12 +2105,49 @@ void ProfileWidget::applyLineList(const QVector<RestLine> &lines, const QString 
                             : u"this cube's header has no RESTFRQ, so a frequency list cannot "
                               u"be converted to its velocity axis"_s;
             }
-        } else {   // a velocity list: already an observed-frame coordinate
-            if (axisUnit.quantity == 1) {
-                axisSi = (mode == 2) ? si : si + z * spectral::kCLightMs;
+        } else {   // a velocity list
+            if (axisUnit.quantity != 1) {
+                if (skipReason.isEmpty())
+                    skipReason = u"the axis is a frequency axis — load the list in "
+                                 u"Hz / MHz / GHz"_s;
+            } else if (mode == 2) {
+                // Already observed: the value IS the axis coordinate.
+                axisSi = si;
                 ok = true;
-            } else if (skipReason.isEmpty()) {
-                skipReason = u"the axis is a frequency axis — load the list in Hz / MHz / GHz"_s;
+            } else {
+                // A shift is a REDSHIFT, and a redshift acts on frequency. Take
+                // the velocity back to a frequency in this axis's own convention,
+                // redshift it there, and convert forward again — adding z·c to a
+                // velocity is only right for the optical convention, and wrong by
+                // ~v²/c on a VRAD or VELO axis.
+                // Three different reasons a shift can fail, and the user needs the
+                // right one: no rest frequency, an axis convention we cannot
+                // invert, or a value/redshift outside the physical domain
+                // (|v| ≥ c, z ≤ −1). Reporting "unsupported axis" for a valid
+                // VRAD axis fed a superluminal value sends the user to fix the
+                // wrong thing.
+                if (!(m_axisRestFreqHz > 0.0)) {
+                    if (skipReason.isEmpty())
+                        skipReason = u"this cube's header has no RESTFRQ, so a velocity list "
+                                     u"cannot be redshifted in this axis's convention — load it "
+                                     u"already in the observed frame"_s;
+                } else if (axisKind == spectral::AxisKind::Unknown) {
+                    if (skipReason.isEmpty())
+                        skipReason = u"the axis type (%1) is not one a shifted velocity list can "
+                                     u"be placed on"_s
+                                             .arg(m_axisCtype.isEmpty() ? u"unknown"_s
+                                                                        : m_axisCtype);
+                } else {
+                    double fRest = 0.0;
+                    if (spectral::frequencyForAxisValue(si, axisKind, m_axisRestFreqHz, fRest))
+                        ok = spectral::axisValueForFrequency(
+                                spectral::observedFrequencyHz(fRest, z), axisKind,
+                                m_axisRestFreqHz, axisSi);
+                    if (!ok && skipReason.isEmpty())
+                        skipReason = u"a velocity at or beyond the speed of light (or a redshift "
+                                     u"z ≤ −1) has no observed frequency — check the values and "
+                                     u"the shift"_s;
+                }
             }
         }
         if (!ok) {

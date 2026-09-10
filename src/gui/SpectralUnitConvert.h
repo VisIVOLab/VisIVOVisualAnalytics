@@ -4,6 +4,8 @@
 #include <QLatin1Char>
 #include <QString>
 
+#include <cmath>
+
 /// Spectral-axis unit parsing + same-quantity value conversion.
 ///
 /// Extracted verbatim from the anonymous namespace of vtkWindowCube_Link.cpp
@@ -135,6 +137,44 @@ inline bool axisValueForFrequency(double fObsHz, AxisKind kind, double axisRestH
         return true;
     case AxisKind::VelocityRelativistic:
         outSi = kCLightMs * (r * r - fObsHz * fObsHz) / (r * r + fObsHz * fObsHz);
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// The inverse of axisValueForFrequency: the frequency an axis coordinate
+/// (SI: Hz on a frequency axis, m/s on a velocity one) corresponds to. Needed
+/// to shift a list given in VELOCITY: a redshift acts on frequency, so the
+/// value has to be taken back to a frequency in the axis's own convention,
+/// redshifted there, and converted forward again. Adding `z·c` to a velocity
+/// instead is only right for the optical convention, and wrong by ~v²/c on a
+/// radio or relativistic axis.
+inline bool frequencyForAxisValue(double axisSi, AxisKind kind, double axisRestHz, double &outHz)
+{
+    if (kind == AxisKind::Frequency) {
+        if (!(axisSi > 0.0))
+            return false;
+        outHz = axisSi;
+        return true;
+    }
+    if (!(axisRestHz > 0.0))
+        return false;
+    const double r = axisRestHz;
+    const double beta = axisSi / kCLightMs;
+    switch (kind) {
+    case AxisKind::VelocityOptical:
+        if (!(1.0 + beta > 0.0))
+            return false;
+        outHz = r / (1.0 + beta);
+        return true;
+    case AxisKind::VelocityRadio:
+        outHz = r * (1.0 - beta);
+        return outHz > 0.0;
+    case AxisKind::VelocityRelativistic:
+        if (!(1.0 + beta > 0.0) || !(1.0 - beta > 0.0))
+            return false;
+        outHz = r * std::sqrt((1.0 - beta) / (1.0 + beta));
         return true;
     default:
         return false;

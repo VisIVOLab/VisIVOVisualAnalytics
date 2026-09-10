@@ -66,7 +66,13 @@ signals:
 
     /// Right-click on a product row → the viewer builds the "Show in ▸ Pane N / New pane"
     /// menu at @p globalPos (it knows the pane state + renderability).
-    void productContextMenuRequested(const QString &productId, const QPoint &globalPos);
+    /// Right-click on any actionable row: an intrinsic view (@p viewTag
+    /// "view3d"/"slice2d", @p productId empty) or a product (@p productId set).
+    /// The dataset root emits nothing. Both are offered a "Show in ▸" menu — a
+    /// view is as mountable as a product, and used to be the one row you could
+    /// not place from here.
+    void rowContextMenuRequested(const QString &viewTag, const QString &productId,
+                                 const QPoint &globalPos);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;   // badge click on the viewport
@@ -90,7 +96,6 @@ private:
 
     QTreeView *m_tree = nullptr;
     QStandardItemModel *m_model = nullptr;
-    bool m_suppressActivate = false;   ///< true while a programmatic reverse-sync selection runs
     QString m_ownerScope;              ///< this tree's window scope; empty = unscoped (show all)
 };
 

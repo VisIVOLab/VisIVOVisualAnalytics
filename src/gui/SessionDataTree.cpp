@@ -6,7 +6,6 @@
 
 #include <QHash>
 #include <QHeaderView>
-#include <QScopedValueRollback>
 
 #include <functional>
 #include <QIcon>
@@ -179,8 +178,9 @@ SessionDataTree::SessionDataTree(QWidget *parent)
     connect(m_tree, &QTreeView::customContextMenuRequested, this, [this](const QPoint &pos) {
         const QModelIndex idx = m_tree->indexAt(pos);
         const QString pid = idx.data(kProductIdRole).toString();
-        if (!pid.isEmpty())
-            emit productContextMenuRequested(pid, m_tree->viewport()->mapToGlobal(pos));
+        const QString viewTag = idx.data(kViewTagRole).toString();
+        if (!pid.isEmpty() || !viewTag.isEmpty())
+            emit rowContextMenuRequested(viewTag, pid, m_tree->viewport()->mapToGlobal(pos));
     });
     layout->addWidget(m_tree);
 
@@ -193,14 +193,19 @@ SessionDataTree::SessionDataTree(QWidget *parent)
             [this]() { updateHeightToContents(); });
     connect(m_model, &QStandardItemModel::rowsRemoved, this,
             [this]() { updateHeightToContents(); });
+    // Selecting a row INSPECTS it; it does not move anything. Mounting is the
+    // explicit gesture: double-click (onActivated), or right-click ▸ Show in.
+    //
+    // Selection used to mount into the active pane, which had two consequences.
+    // It replaced whatever that pane was showing just because the user clicked a
+    // row to read its provenance — and since Qt makes the pressed row current on
+    // ANY button, a RIGHT-click mounted the product before its own "Show in ▸"
+    // menu had even opened, which made the menu pointless (user report).
     connect(m_tree->selectionModel(), &QItemSelectionModel::currentChanged, this,
             [this](const QModelIndex &cur, const QModelIndex &) {
                 QStandardItem *it = m_model->itemFromIndex(cur);
                 const QString productId = it ? it->data(kProductIdRole).toString() : QString();
-                const QString viewTag = it ? it->data(kViewTagRole).toString() : QString();
                 emit productSelected(productId);                 // → Inspector › Provenance
-                if (!m_suppressActivate)
-                    emit rowActivated(viewTag, productId);       // → viewer activates the pane
             });
 
     ProductRegistry &reg = ProductRegistry::instance();
@@ -238,6 +243,8 @@ QStandardItem *SessionDataTree::datasetItem(const QString &parentKey, const QStr
         auto addViewRow = [&](const QString &text, const QString &tag) {
             auto *v = new QStandardItem(text);
             v->setData(tag, kViewTagRole);
+            v->setToolTip(QStringLiteral("Double-click to show it in a pane, "
+                                         "right-click for “Show in ▸”"));
             it->appendRow(v);
         };
         addViewRow(u"3D Volume"_s, u"view3d"_s);
@@ -279,7 +286,9 @@ void SessionDataTree::upsertProduct(const AnalysisProduct &p)
     }
     auto *child = new QStandardItem(productText(p));
     child->setData(p.productId, kProductIdRole);
-    child->setToolTip(p.kind);
+    // Selecting a row only inspects it, so the row itself says how to show it.
+    child->setToolTip(QStringLiteral("%1 — double-click to show it in a pane, "
+                                     "right-click for “Show in ▸”").arg(p.kind));
     styleItem(child);
     ds->appendRow(child);
     m_tree->expand(ds->index());
@@ -350,7 +359,6 @@ void SessionDataTree::selectProduct(const QString &productId)
                 // Programmatic selection (e.g. registerAnalysisProduct populating
                 // Provenance): drive productSelected but NOT rowActivated — a passive
                 // registration must never mount/steal a pane.
-                QScopedValueRollback<bool> guard(m_suppressActivate, true);  // E-07/M7 RAII
                 m_tree->setCurrentIndex(child->index());   // → currentChanged → productSelected
                 return;
             }
@@ -446,8 +454,7 @@ void SessionDataTree::selectForView(const QString &viewTag, const QString &produ
     walk(m_model->invisibleRootItem());
     if (!match)
         return;
-    QScopedValueRollback<bool> guard(m_suppressActivate, true);  // E-07/M7 RAII
-    m_tree->setCurrentIndex(match->index());
+    m_tree->setCurrentIndex(match->index());   // passive: selection no longer mounts
 }
 
 int SessionDataTree::visibleRowHeight(const QModelIndex &parent) const
@@ -478,15 +485,23 @@ void SessionDataTree::onActivated(const QModelIndex &index)
     if (!it)
         return;
     const QString productId = it->data(kProductIdRole).toString();
-    if (productId.isEmpty())
-        return;   // a dataset root — nothing to focus
+    const QString viewTag = it->data(kViewTagRole).toString();
+    if (productId.isEmpty()) {
+        // An intrinsic view row (3D Volume / 2D Slice): mount it. These used to
+        // arrive in a pane through the selection side effect, so double-click did
+        // nothing for them; with selection made passive they need the same
+        // explicit path as a product.
+        if (!viewTag.isEmpty())
+            emit rowActivated(viewTag, QString());
+        return;   // else a dataset root — nothing to focus
+    }
     const AnalysisProduct p = ProductRegistry::instance().product(productId);
     if (!p.renderer.isEmpty()) {
         // A pane-renderable product (image / spectrum / PV diagram): (re)mount it in a pane
         // rather than raising a window. Emitting rowActivated forces activation even when the
         // row is already current — currentChanged wouldn't re-fire, so the parked no-free-pane
         // product would otherwise be unreachable from its own already-selected row.
-        emit rowActivated(it->data(kViewTagRole).toString(), productId);
+        emit rowActivated(viewTag, productId);
         return;
     }
     if (p.window) {

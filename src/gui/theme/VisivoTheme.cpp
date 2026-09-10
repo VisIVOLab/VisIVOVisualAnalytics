@@ -705,6 +705,20 @@ QString darkStyleSheet()
             "  background-color: rgba(4, 138, 191, 0.20);"
             "  margin: 4px 8px;"
             "}"
+            // Submenu arrow. Qt draws the default indicator scaled to the item
+            // rect, and this sheet's 8 px vertical item padding makes that rect
+            // tall — so a "Show in ▸" arrow came out as a large chevron next to
+            // 12 px text. An explicit image with an explicit size caps it; the
+            // tree's square-viewBox chevron is reused (see its own note on why a
+            // square box is what keeps a QSS image from growing to fill).
+            "QMenu::right-arrow {"
+            "  image: url(:/icons/tree_chevron_right.svg);"
+            "  width: 9px;"
+            "  height: 9px;"
+            "  subcontrol-position: right center;"
+            "  subcontrol-origin: padding;"
+            "  right: 10px;"
+            "}"
 
             // ── Toolbar ────────────────────────────────────────────────────
             "QToolBar {"
@@ -1252,6 +1266,20 @@ QString lightStyleSheet()
             "  height: 1px;"
             "  background-color: rgba(3, 103, 166, 0.15);"
             "  margin: 4px 8px;"
+            "}"
+            // Submenu arrow. Qt draws the default indicator scaled to the item
+            // rect, and this sheet's 8 px vertical item padding makes that rect
+            // tall — so a "Show in ▸" arrow came out as a large chevron next to
+            // 12 px text. An explicit image with an explicit size caps it; the
+            // tree's square-viewBox chevron is reused (see its own note on why a
+            // square box is what keeps a QSS image from growing to fill).
+            "QMenu::right-arrow {"
+            "  image: url(:/icons/tree_chevron_right_light.svg);"
+            "  width: 9px;"
+            "  height: 9px;"
+            "  subcontrol-position: right center;"
+            "  subcontrol-origin: padding;"
+            "  right: 10px;"
             "}"
 
             // ── Toolbar ────────────────────────────────────────────────────────

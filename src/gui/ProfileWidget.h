@@ -288,8 +288,15 @@ private:
     /// Parse a line list: a 2-column `value,label` CSV, or a catalogue export
     /// (Splatalogue / CDMS style) whose header row names the columns. Returns the
     /// rows plus, when the file says so, a unit hint ("GHz").
+    /// @p allowHeader false forces the two-column reading. @p retryAsTwoColumn is
+    /// set when the result is empty ONLY because the file's single row was read
+    /// as a header — the caller then re-reads with @p allowHeader false. A real
+    /// catalogue header followed by unusable data rows does NOT set it: those
+    /// rows must stay rejected, not be reinterpreted (a row index read as a
+    /// frequency invents a line at 1 GHz).
     static QVector<RestLine> parseLineListFile(const QString &text, QString &unitHint,
-                                               QString &formatNote);
+                                               QString &formatNote, bool allowHeader = true,
+                                               bool *retryAsTwoColumn = nullptr);
     /// Shift the rest-frame @p lines to the observed frame and convert them to
     /// this plot's axis, then draw them. @p mode: 0 = systemic velocity in km/s
     /// (optical), 1 = redshift z, 2 = the values are already observed.

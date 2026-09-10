@@ -568,7 +568,9 @@ private:
     void activateSessionView(const QString &viewTag, const QString &productId);
     // "Show in ▸": right-click a product in the tree → build a menu of visible panes + New
     // pane, mount the product there (duplicable). Renderable products only.
-    void showProductContextMenu(const QString &productId, const QPoint &globalPos);
+    /// "Show in ▸" for any Session Data row: an intrinsic view or a product.
+    void showSessionRowContextMenu(const QString &viewTag, const QString &productId,
+                                   const QPoint &globalPos);
     void showProductInPane(const QString &productId, int slot);
     // Pop-out: the same pane frame moves to its own window; the grid slot shows a placeholder.
     void detachPane(int slot);
@@ -622,6 +624,10 @@ private:
         PaneView view;
     };
     std::array<PaneSlot, 4> m_slots;
+
+    /// Mount @p view in @p slot, or in a new pane when @p slot < 0 (grows the
+    /// layout rather than stealing an occupied pane).
+    void showViewInPane(const PaneView &view, int slot);
 
     /// Views displaced by a transient tool result, keyed by the BORROWER's product
     /// id — never by slot index: a 4→1 collapse moves pane views between slots, so

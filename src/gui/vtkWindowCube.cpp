@@ -1131,8 +1131,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         connect(this->m_workspaceChrome, &WorkspaceChrome::sessionPaneBadgeActivated, this,
                 [this](int paneNumber) { setActivePane(paneNumber - 1); });
         // "Show in ▸": right-click a product → mount it in a chosen pane.
-        connect(this->m_workspaceChrome, &WorkspaceChrome::sessionProductContextMenu, this,
-                &vtkWindowCube::showProductContextMenu);
+        connect(this->m_workspaceChrome, &WorkspaceChrome::sessionRowContextMenu, this,
+                &vtkWindowCube::showSessionRowContextMenu);
         // Reverse sync: activating a pane by any route highlights its Session-tree row.
         connect(this, &vtkWindowCube::activePaneChanged, this, [this](int) {
             syncSessionTreeToActivePane();
@@ -7935,36 +7935,63 @@ void vtkWindowCube::activateSessionView(const QString &viewTag, const QString &p
     setActivePane(slot);
 }
 
-void vtkWindowCube::showProductContextMenu(const QString &productId, const QPoint &globalPos)
+void vtkWindowCube::showSessionRowContextMenu(const QString &viewTag, const QString &productId,
+                                              const QPoint &globalPos)
 {
     using namespace Qt::StringLiterals;
-    // Only a pane-RENDERABLE product (image, spectrum, or PV diagram) can be shown in a pane;
-    // baseline/noise/etc. open their own window (nothing to offer here).
-    if (!isPaneRenderableProduct(productId))
-        return;
+    // What the row stands for. An intrinsic view (3D Volume / 2D Slice) is as
+    // mountable as a product and used to be the one row with no menu at all.
+    PaneView target;
+    if (viewTag == u"view3d"_s)
+        target = PaneView{ ViewId::View3D, {} };
+    else if (viewTag == u"slice2d"_s)
+        target = PaneView{ ViewId::Slice2D, {} };
+    else if (!productId.isEmpty() && isPaneRenderableProduct(productId))
+        target = PaneView{ ViewId::Product, productId };
+
     QMenu menu;
+    if (target.isNone()) {
+        // A product that has no pane renderer (baseline, noise, channel maps, …)
+        // lives in its own window. Say so, and offer the one thing that applies,
+        // rather than showing nothing at all on right-click.
+        const AnalysisProduct p = ProductRegistry::instance().product(productId);
+        QAction *note = menu.addAction(u"Opens in its own window"_s);
+        note->setEnabled(false);
+        if (p.window) {
+            QObject::connect(menu.addAction(u"Bring window to front"_s), &QAction::triggered,
+                             this, [win = QPointer<QWidget>(p.window)]() {
+                                 if (win) {
+                                     win->show();
+                                     win->raise();
+                                     win->activateWindow();
+                                 }
+                             });
+        }
+        menu.exec(globalPos);
+        return;
+    }
+
     QMenu *showIn = menu.addMenu(u"Show in"_s);
     // One entry per VISIBLE pane (numbered), marking where it already shows.
     for (int i = 0; i < 4; ++i) {
         if (!m_slots[i].frame || !m_slots[i].frame->isVisible())
             continue;
-        const bool here = (m_slots[i].view.kind == ViewId::Product
-                           && m_slots[i].view.productId == productId);
+        const bool here = (m_slots[i].view == target);
         QString label = QStringLiteral("Pane %1").arg(i + 1);
         if (here)
             label += u"  ✓"_s;
-        else if (m_slots[i].view.kind == ViewId::Product && !m_slots[i].view.productId.isEmpty())
-            label += u"  (replaces)"_s;
+        else if (!m_slots[i].view.isNone())
+            label += u"  (replaces %1)"_s.arg(viewTitle(m_slots[i].view));
         QAction *a = showIn->addAction(label);
         a->setEnabled(!here);
         const int slot = i;
         QObject::connect(a, &QAction::triggered, this,
-                         [this, productId, slot]() { showProductInPane(productId, slot); });
+                         [this, target, slot]() { showViewInPane(target, slot); });
     }
     if (m_paneCount < 4) {
         showIn->addSeparator();
         QObject::connect(showIn->addAction(u"New pane"_s), &QAction::triggered, this,
-                         [this, productId]() { showProductInPane(productId, -1); });
+                         [this, target]() { showViewInPane(target, -1); });
     }
     menu.exec(globalPos);
 }
@@ -7973,7 +8000,13 @@ void vtkWindowCube::showProductInPane(const QString &productId, int slot)
 {
     if (!isPaneRenderableProduct(productId))
         return;
-    const PaneView target{ ViewId::Product, productId };
+    showViewInPane(PaneView{ ViewId::Product, productId }, slot);
+}
+
+void vtkWindowCube::showViewInPane(const PaneView &target, int slot)
+{
+    if (target.isNone())
+        return;
     if (slot < 0) {
         // New pane: grow the grid, then take a slot that TRANSITIONED hidden→visible (assignViews
         // seeds the grown slot with a default like Slice2D, so a plain "None" search would find
@@ -8327,7 +8360,11 @@ ProfileWidget *vtkWindowCube::ensureSlotSpectrumView(int slot, const QString &xL
         // clutter); hide the inline chrome and give it the backend so the Inspector's Fit works.
         sp->setPaneChromeHidden(true);
         sp->setBackend(this->remoteBackendUrl, this->remoteBackendToken);
-        pushSpectralAxisContext(sp);   // CTYPE + unit + RESTFRQ, for "Load Lines…"
+        // NOT the axis context here: this slot's FIRST product may be on another
+        // axis (a channel-axis stack), and pushing the cube's CTYPE / unit /
+        // RESTFRQ unconditionally left "Load Lines…" converting to velocity and
+        // drawing the numbers as channel indices. mountView decides,
+        // both ways, on every mount.
         // Keep the Inspector's Spectrum panel live when THIS pane is the active target.
         QObject::connect(sp, &ProfileWidget::spectrumChanged, this, [this, sp]() {
             if (m_specInspTarget == sp)
@@ -9099,8 +9136,15 @@ void vtkWindowCube::clearViewFromOtherSlots(int keepSlot)
     if (!w)
         return;   // None / not-yet-created Spectrum: nothing to deduplicate
     for (int j = 0; j < 4; ++j)
-        if (j != keepSlot && viewWidget(m_slots[j].view) == w)
+        if (j != keepSlot && viewWidget(m_slots[j].view) == w) {
             m_slots[j].view = {};
+            // The singular widget is about to be reparented into keepSlot, so
+            // this slot's host is left empty — remount it to show its "Pick a
+            // view" placeholder. Harmless before "Show in ▸" learned to move a
+            // fixed view (only products reached here, and they return above),
+            // and a blank pane the moment it did.
+            mountView(j);
+        }
 }
 
 // A robust, symmetric display range for a signed field (a velocity moment): centre on
@@ -9422,6 +9466,17 @@ void vtkWindowCube::mountView(int slot)
         // is reused for a DIFFERENT product, refresh the axis titles + header so a channel-axis
         // stack after a velocity-axis pin doesn't keep stale labels / "Region spectrum".
         sp->setSpectrumAxisLabels(s.xLabel, s.yLabel);
+        // The spectral-axis context follows the PRODUCT's axis, and is set both
+        // ways on every mount: supplied for a product on the cube's own axis
+        // (probe / region / live spectrum), explicitly cleared for one on another
+        // axis (a channel-axis stack), so a line list is refused there instead of
+        // being placed with the cube's velocity numbers. Setting it only one way
+        // left a re-mount of the same channel product carrying stale context
+        // (setSpectrumAxisLabels sees no label change, so it clears nothing).
+        if (s.xLabel.isEmpty() || s.xLabel == spectralAxisTitle())
+            pushSpectralAxisContext(sp);
+        else
+            sp->setSpectralAxisContext(QString(), QString(), 0.0);
         sp->setSpectrumMeta(s.label.isEmpty() ? QString() : s.label);
         // …except for the LIVE product, whose header carries the tool's state and
         // the ways out of it. Every remount (a pane swap, a layout change, a

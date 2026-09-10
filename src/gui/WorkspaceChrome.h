@@ -124,7 +124,8 @@ signals:
     void sessionPaneBadgeActivated(int paneNumber);
 
     /// Right-click on a product row → the viewer shows the "Show in ▸" menu at globalPos.
-    void sessionProductContextMenu(const QString &productId, const QPoint &globalPos);
+    void sessionRowContextMenu(const QString &viewTag, const QString &productId,
+                               const QPoint &globalPos);
 
 private:
     MainWindow *mainWindow() const;

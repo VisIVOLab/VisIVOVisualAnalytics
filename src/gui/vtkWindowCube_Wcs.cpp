@@ -259,9 +259,27 @@ void vtkWindowCube::setRestFrequency(double restFreqHz)
 {
     this->m_restFreqHz = restFreqHz > 0.0 ? restFreqHz : 0.0;
     // Widgets built before this arrives (MainWindow sets it right after the
-    // constructor) get the value now.
-    for (const auto &sp : this->m_paneSpectra)
-        this->pushSpectralAxisContext(sp);
+    // constructor) get the value now — but only those actually showing a product
+    // on the cube's own spectral axis. A blanket push handed the cube's CTYPE /
+    // unit / RESTFRQ to a channel-axis product too, and "Load Lines…" then
+    // converted to velocity and drew the result as channel indices.
+    for (int i = 0; i < 4; ++i) {
+        if (!this->m_paneSpectra[i])
+            continue;
+        const PaneView &v = this->m_slots[i].view;
+        const auto it = (v.kind == ViewId::Product) ? this->m_products1d.constFind(v.productId)
+                                                    : this->m_products1d.constEnd();
+        // No product in this slot (a parked widget) → CLEAR. Treating "unknown"
+        // as "the cube's axis" contaminated widgets that show nothing, and the
+        // next product mounted there would inherit it.
+        const bool onCubeAxis = (it != this->m_products1d.constEnd())
+                && (it->xLabel.isEmpty() || it->xLabel == this->spectralAxisTitle());
+        if (onCubeAxis)
+            this->pushSpectralAxisContext(this->m_paneSpectra[i]);
+        else
+            this->m_paneSpectra[i]->setSpectralAxisContext(QString(), QString(), 0.0);
+    }
+    // The region spectrum is always on the cube's own axis.
     this->pushSpectralAxisContext(this->probePlotWidget);
 }
 

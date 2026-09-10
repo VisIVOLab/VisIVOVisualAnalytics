@@ -214,3 +214,63 @@ void TestSpectralUnitConvert::axisValue_needsARestFrequencyOnAVelocityAxis()
     QVERIFY(!axisValueForFrequency(1.4e9, AxisKind::Unknown, 1.42e9, out));
     QVERIFY(!axisValueForFrequency(0.0, AxisKind::Frequency, 0.0, out));
 }
+
+// ── The inverse: shifting a list that is given in VELOCITY ───────────────────
+// A redshift acts on frequency, so a velocity list has to go back to a frequency
+// in the axis's own convention before it can be shifted. "v + z·c" is only the
+// optical case, and wrong by ~v²/c elsewhere.
+
+void TestSpectralUnitConvert::frequencyForAxisValue_roundTripsEveryConvention()
+{
+    using namespace spectral;
+    const double rest = 1.420405751786e9;
+    for (const AxisKind k : { AxisKind::VelocityOptical, AxisKind::VelocityRadio,
+                              AxisKind::VelocityRelativistic }) {
+        for (const double v : { -3.0e5, 0.0, 1.0e6, 5.0e6 }) {
+            double f = 0.0, back = 0.0;
+            QVERIFY(frequencyForAxisValue(v, k, rest, f));
+            QVERIFY(f > 0.0);
+            QVERIFY(axisValueForFrequency(f, k, rest, back));
+            QVERIFY(std::abs(back - v) < 1e-3);   // sub-mm/s closure
+        }
+    }
+    // A frequency axis passes the value through untouched.
+    double f = 0.0;
+    QVERIFY(frequencyForAxisValue(1.4e9, AxisKind::Frequency, 0.0, f));
+    QCOMPARE(f, 1.4e9);
+}
+
+void TestSpectralUnitConvert::frequencyForAxisValue_matchesTheConventionNotJustZTimesC()
+{
+    using namespace spectral;
+    const double rest = 1.420405751786e9;
+    const double vSys = 1000.0e3;                       // 1000 km/s, optical
+    const double z = redshiftFromOpticalVelocity(vSys);
+    // A line at rest (0 velocity on the axis) shifted to that systemic velocity.
+    for (const AxisKind k : { AxisKind::VelocityOptical, AxisKind::VelocityRadio }) {
+        double fRest = 0.0, placed = 0.0;
+        QVERIFY(frequencyForAxisValue(0.0, k, rest, fRest));
+        QCOMPARE(fRest, rest);                          // 0 velocity ⇒ the rest frequency
+        QVERIFY(axisValueForFrequency(observedFrequencyHz(fRest, z), k, rest, placed));
+        if (k == AxisKind::VelocityOptical) {
+            QVERIFY(std::abs(placed - vSys) < 1.0);     // optical: exactly v_sys
+        } else {
+            // Radio: lower by ≈ v²/c (3.3 km/s), i.e. ~996.7 km/s — several
+            // channels away from where "v + z·c" would have drawn it.
+            QVERIFY(placed < vSys);
+            const double expectedGap = vSys * vSys / kCLightMs;
+            QVERIFY(std::abs((vSys - placed) - expectedGap) < 0.05 * expectedGap);
+        }
+    }
+}
+
+void TestSpectralUnitConvert::frequencyForAxisValue_needsARestFrequencyToo()
+{
+    using namespace spectral;
+    double f = 0.0;
+    QVERIFY(!frequencyForAxisValue(1.0e6, AxisKind::VelocityOptical, 0.0, f));
+    QVERIFY(!frequencyForAxisValue(1.0e6, AxisKind::Unknown, 1.42e9, f));
+    // Beyond c the conversion has no solution rather than a silly one.
+    QVERIFY(!frequencyForAxisValue(-2.0 * kCLightMs, AxisKind::VelocityOptical, 1.42e9, f));
+    QVERIFY(!frequencyForAxisValue(2.0 * kCLightMs, AxisKind::VelocityRadio, 1.42e9, f));
+}
