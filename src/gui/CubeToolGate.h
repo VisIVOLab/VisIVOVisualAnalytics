@@ -23,9 +23,8 @@
 // paneIsArmedTarget).
 //
 // The caller maps a decision onto QActions (enabled state + a tooltip that says
-// WHY, never a silent no-op) and keeps every surface — Tools menu, left dock,
-// Inspector ▸ Analysis — in step, because all three are built from the same
-// actions.
+// WHY, never a silent no-op) and keeps both surfaces — the Tools menu and
+// Inspector ▸ Analysis — in step, because they are built from the same actions.
 
 namespace CubeToolGate {
 

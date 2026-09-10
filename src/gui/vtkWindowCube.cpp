@@ -2651,11 +2651,12 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
     // Linked views (F3): sync camera / channel / colour-scale with other open
     // cube viewers that also have linking enabled.
-    // "Link Views", with the rest in the tooltip. Measured at 258 px against the
-    // 236 the left dock's tool buttons have — the only one of the thirty that
-    // does not fit — and shortening the ACTION rather than overriding the button
-    // is what makes it stick: QToolButton re-reads its text from the action on
-    // every change, so a per-button override would be undone by the first click.
+    // "Link Views", with the rest in the tooltip. The full sentence measured
+    // 258 px against the ~236 px a tool button in the Inspector's Analysis list
+    // has — the only one of the thirty that did not fit — and shortening the
+    // ACTION rather than overriding the button is what makes it stick:
+    // QToolButton re-reads its text from the action on every change, so a
+    // per-button override would be undone by the first click.
     m_actLinkViews = ui->menuTools->addAction(u"Link Views"_s);
     m_actLinkViews->setCheckable(true);
     m_actLinkViews->setToolTip(
@@ -6193,8 +6194,8 @@ void vtkWindowCube::regroupToolsMenu()
     // menu->addAction("text"), which parents them to the MENU — and clear()
     // deletes the actions it owns. It spares one that is currently shown in
     // another widget, which would have made this look fine as long as the
-    // Inspector and the left dock happened to be built first, and turn into
-    // dangling QActions the day that order changed. Reparent to the window
+    // Inspector happened to be built first, and turn into dangling QActions the
+    // day that order changed. Reparent to the window
     // first, then detach one by one.
     const auto tools = cubeTools();
     const auto existing = ui->menuTools->actions();
@@ -6222,39 +6223,6 @@ void vtkWindowCube::regroupToolsMenu()
         }
         if (sub)
             sub->addAction(t.action);
-    }
-}
-
-void vtkWindowCube::buildToolsInto(QVBoxLayout *lay, const QString &labelCss)
-{
-    if (!lay)
-        return;
-    const auto tools = cubeTools();
-    QString current;
-    for (const CubeTool &t : tools) {
-        if (!t.action)
-            continue;
-        if (t.group != current) {
-            current = t.group;
-            auto *hdr = new QLabel(current.toUpper());
-            hdr->setStyleSheet(labelCss);
-            lay->addWidget(hdr);
-        }
-        auto *btn = new QToolButton();
-        btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        btn->setCursor(Qt::PointingHandCursor);
-        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        btn->setStyleSheet(VisivoTheme::sidebarToolButtonStyleSheet());
-        // Bound to the QAction, so enabled state and checkability track the
-        // menu entry without a second wiring to keep in step.
-        // No setText() override after this. QToolButton re-reads text, tooltip
-        // and checked state from its default action on every ActionChanged, so
-        // an override applied once here survives until the first time the action
-        // changes — for a checkable tool, the first click. Where a label was too
-        // long for the dock it is the ACTION that was shortened (see the Link
-        // Views note in cubeTools()), which keeps all three surfaces agreeing.
-        btn->setDefaultAction(t.action);
-        lay->addWidget(btn);
     }
 }
 
@@ -6642,14 +6610,14 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     // and every row would have stayed visible until the first pane change.
     updateDisplaySectionForActivePane();
 
-    // ── TOOLS ▶ (collapsed) ───────────────────────────────────────────────────
-    // The same tools as the menu and the Inspector's Analysis tab, from the same
-    // table. Collapsed by default: it is long, and it is here for reach, not for
-    // permanent display.
-    {
-        QVBoxLayout *toolsLay = addSection(u"TOOLS"_s, false, /*divider=*/false);
-        buildToolsInto(toolsLay, labelCss);
-    }
+    // NO tools section here. The left dock answers "how is this view drawn" —
+    // colour map, scale, clip, layers, slice animation — and the tool list
+    // answers "what can I compute", which is Inspector ▸ Analysis's question. A
+    // second copy of the same thirty actions in this panel had no authority
+    // (which one is canonical?) and sat away from the state that belongs to it:
+    // the gating tooltips and the SPECTRUM controls of the product a tool just
+    // produced both live in the Inspector. Reach is covered by the Tools menu
+    // and ⌘K, and the Inspector's rail expands in one click (user request).
 
     // ── INTERACTION ▶ (collapsed) ─────────────────────────────────────────────
     QVBoxLayout *inter = addSection(u"INTERACTION"_s, false, /*divider=*/false);
@@ -11198,8 +11166,8 @@ void vtkWindowCube::updateBackendDerivedActionsAvailability()
 void vtkWindowCube::applyMomentToolGate()
 {
     // Availability of every view- or state-dependent tool, from ONE table
-    // (CubeToolGate, unit-tested) applied to the QActions the Tools menu, the
-    // left dock and Inspector ▸ Analysis are all built from. A tool that cannot
+    // (CubeToolGate, unit-tested) applied to the QActions the Tools menu and
+    // Inspector ▸ Analysis are both built from. A tool that cannot
     // act says why in its tooltip; it never sits enabled and does nothing.
     //
     // Re-entrancy: disabling a checkable tool un-arms it, and those toggled()

@@ -96,17 +96,25 @@ volume rendering and the slice view.
 
 ## Tools
 
-Every tool is reachable from three places, all fed by one list in the code, so
+Every tool is reachable from two places, both fed by one list in the code, so
 they cannot drift apart:
 
 - the **Tools menu**, one submenu per group;
-- the left dock's **TOOLS** section (collapsed by default — it is there for
-  reach, not for permanent display);
 - the Inspector's **Analysis** tab on the right.
 
 Wherever you reach a tool, it is the same action: a toggle switched on in one
-place shows as on in the other two, and one that is unavailable is greyed out in
-all three with the same explanation.
+place shows as on in the other, and one that is unavailable is greyed out in
+both with the same explanation.
+
+```{note}
+The tool list is **not** in the left dock. That panel answers "how is this view
+drawn" — colour map, scale, clip, layers, slice animation — while the tools
+answer "what can I compute", which is the Inspector's question, and it is where
+the state that goes with a tool lives: the reason a disabled tool gives, and the
+SPECTRUM controls of the product it just produced. The Tools menu and
+<kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd> cover the case where the Inspector is
+collapsed.
+```
 
 #### Session Data: selecting vs showing
 
@@ -220,7 +228,7 @@ line of sight, drawn in a *Spectral Profile* window.
 
 **How to use it:**
 
-1. **Tools → Extract Spectrum** (menu, left dock, or Inspector ▸ Analysis).
+1. **Tools → Extract Spectrum** (menu bar, Inspector ▸ Analysis, or ⌘K).
    Arming it gives the 2D Slice pane the focus, puts a cross-hair on it, and
    opens a *Spectrum (live)* pane — in a free pane, or by growing the layout
    (1 → 2 → 4), or, when the grid is full, by **borrowing** the least relevant

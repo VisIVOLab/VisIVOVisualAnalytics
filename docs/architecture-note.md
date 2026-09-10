@@ -308,7 +308,7 @@ through `vtkWindowCube`; both are now single, stated mechanisms.
 `src/gui/CubeToolGate.h` is a pure, Qt-free decision table
 (`evaluate(Inputs) -> Decision`), unit-tested in `tests/test_cube_tool_gate.cpp`,
 applied by `vtkWindowCube::applyMomentToolGate()` to the `QAction`s that the
-Tools menu, the left dock and Inspector ▸ Analysis are all built from:
+Tools menu and Inspector ▸ Analysis are both built from:
 
 - **view gates** — the seven slice tools need `Slice2D` mounted in a visible
   pane, the two 3-D tools need `View3D`. Gating on the *active* pane instead

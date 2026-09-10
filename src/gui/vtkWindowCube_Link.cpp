@@ -80,8 +80,8 @@ void vtkWindowCube::setLinkViews(bool on)
             this->m_actLinkViews->setChecked(on);
         }
         // But changed() must still go out. Widgets bound to the action — the
-        // Inspector's Analysis button, the left dock's tool button — refresh
-        // from it, and blocking swallowed that too: switching linking on from
+        // Inspector's Analysis button, the toolbar's Linked chip — refresh from
+        // it, and blocking swallowed that too: switching linking on from
         // the toolbar left the Inspector's toggle looking off, so the next click
         // on it turned linking OFF while appearing to turn it on. changed() does
         // not re-enter here; only toggled() is wired to setLinkViews().

@@ -723,11 +723,12 @@ private:
         QPointer<QAction> action;   ///< carries its own text, tooltip and state
     };
 
-    /// THE list of this window's tools, grouped. One table feeding three
-    /// places — the Tools menu, the Inspector's Analysis tab and the left
-    /// dock's TOOLS section — because they were three hand-written lists that
-    /// had already drifted: the menu carried 31 entries in a flat run and the
-    /// Analysis tab 11 of them. Add a tool here and it appears in all three.
+    /// THE list of this window's tools, grouped. One table feeding two places —
+    /// the Tools menu and the Inspector's Analysis tab — because they were
+    /// hand-written lists that had already drifted: the menu carried 31 entries
+    /// in a flat run and the Analysis tab 11 of them. Add a tool here and it
+    /// appears in both. (A third copy lived in the left dock; it was removed —
+    /// that panel is for how a view is DRAWN, not for what can be computed.)
     QVector<CubeTool> cubeTools() const;
 
     // Two Tools entries were created as locals; kept so cubeTools() can list
@@ -744,8 +745,6 @@ private:
     /// Rebuild the Tools menu from cubeTools(), one submenu per group.
     void regroupToolsMenu();
 
-    /// Fill a layout with the tools, small group headings and one button each.
-    void buildToolsInto(QVBoxLayout *lay, const QString &labelCss);
 
     /// Push m_show3dRendering onto both 3-D props and repaint.
     void apply3dRenderingVisibility();
