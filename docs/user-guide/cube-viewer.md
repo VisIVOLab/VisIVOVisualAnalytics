@@ -251,7 +251,7 @@ A tool is bound to a **view**, not to the pane you happen to have selected:
   - Getting results out. See
     [Figures, movies and linked views](publication-output).
 * - **Views**
-  - Send Slice to Image Viewer, Link Views, Open in VR
+  - Overlay Slice on an Open Image, Link Views, Open in VR
   - Move the data to another view, or keep several in step.
 ```
 
@@ -709,7 +709,7 @@ with the ``VISIVO_EXPORTS_DIR`` environment variable):
 - **Tools → Export Moment Map as FITS…** — persist the moment currently
   on screen as a 2-D FITS (celestial WCS, ``BUNIT`` derived from the
   cube). Disabled until a moment has been computed.
-- **Tools → Send Slice to Image Viewer…** — send the current 2-D slice
+- **Tools → Overlay Slice on an Open Image…** — draw the current 2-D slice
   to the first open image viewer as a contour overlay. No FITS
   round-trip required — the data travels in memory via the
   ``contourDataReady`` signal. Useful for quick radio + optical

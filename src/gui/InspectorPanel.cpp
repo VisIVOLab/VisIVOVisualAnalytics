@@ -300,6 +300,27 @@ void InspectorPanel::addTool(const QString &groupCaption, const QString &label, 
         btn->setDefaultAction(action);
         // The announcement comes from ToolLaunchButton, before the trigger —
         // see the note there for why clicked() is too late.
+
+        // A DISABLED tool must still be able to say why. Qt does not deliver
+        // QEvent::ToolTip to a disabled widget, so the gate's carefully written
+        // reasons ("open a 2D image viewer first - the slice overlays there as
+        // contours") were invisible exactly when they were needed, and a greyed
+        // entry in this list was mute (user report: "why isn't Send Slice to
+        // Image Viewer clickable?"). Mouse events over a disabled child go to
+        // its parent, so the reason is mirrored onto a wrapper that stays
+        // enabled, and kept in step with the action.
+        auto *slot = new QWidget(m_analysisPage);
+        auto *slotLayout = new QVBoxLayout(slot);
+        slotLayout->setContentsMargins(0, 0, 0, 0);
+        slotLayout->setSpacing(0);
+        slotLayout->addWidget(btn);
+        const auto mirrorTip = [slot, action]() {
+            slot->setToolTip(action->toolTip());
+        };
+        mirrorTip();
+        QObject::connect(action, &QAction::changed, slot, mirrorTip);
+        g->addWidget(slot);
+        return;
     }
     g->addWidget(btn);
 }

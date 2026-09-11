@@ -179,9 +179,10 @@ tooltip is the answer.
   it from a pane's ▾ menu (a tool does **not** need its pane to be the selected
   one — see [Cube viewer](cube-viewer#when-a-tool-is-available-and-where-it-acts)).
 - *"probe a pixel first"* (Pin Spectrum), *"draw or import a region first"*
-  (Export Region), *"open a 2D image viewer first"* (Send Slice to Image
-  Viewer), *"nothing to link yet"* (Link Views): the tool works on something
-  that does not exist yet.
+  (Export Region), *"open a 2D image viewer first"* (Overlay Slice on an Open
+  Image), *"nothing to link yet"* (Link Views): the tool works on something that
+  does not exist yet. **Hover the greyed entry to read the reason** — it is on
+  the row in Inspector ▸ Analysis as well as in the Tools menu.
 - *Export Moment Map as FITS* stays disabled until a moment map has actually
   been computed; *Open in VR* until a VR runtime is available.
 

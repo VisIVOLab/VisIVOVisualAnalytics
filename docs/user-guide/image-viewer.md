@@ -140,7 +140,7 @@ Iso-contour lines can be drawn on top of the image from two sources:
 - **Clear All Contours** removes every contour layer.
 
 - **Cube → Image direct** — if a cube viewer is open, use
-  *Tools → Send Slice to Image Viewer…* in the cube window. The
+  *Tools → Overlay Slice on an Open Image…* in the cube window. The
   current 2-D slice is sent to the first open image viewer as a
   contour overlay without requiring a FITS export round-trip.
 

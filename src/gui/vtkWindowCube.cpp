@@ -2702,9 +2702,14 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                      this, &vtkWindowCube::exportMomentMapAsFits);
 
     // Send current slice / moment to an open image viewer as contour overlay
-    m_actSendSliceToImage = ui->menuTools->addAction(u"Send Slice to Image Viewer…"_s);
+    // "Send Slice to Image Viewer" read as "open this slice in an image viewer",
+    // so its needing a viewer ALREADY open looked like a bug rather than the
+    // point of the tool (user report). The name says what it does now.
+    m_actSendSliceToImage = ui->menuTools->addAction(u"Overlay Slice on an Open Image…"_s);
     m_actSendSliceToImage->setToolTip(
-            u"Overlay the current 2-D slice as contours on any open image viewer."_s);
+            u"Draw the current 2-D slice as contours over an image that is already "
+            u"open in an image viewer, to compare the two. It does not open a "
+            u"viewer of its own: open the image first, then come back here."_s);
     QObject::connect(m_actSendSliceToImage, &QAction::triggered, this, [this]() {
         auto *output = this->remoteSliceDisplaySource
                 ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
