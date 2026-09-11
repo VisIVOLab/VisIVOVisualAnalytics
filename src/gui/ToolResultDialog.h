@@ -36,6 +36,33 @@ public:
 
     /// Append a labeled section of key-value rows to the body.
     /// Sections are stacked vertically in the order they are added.
+    /// Build the whole window from a RECORD: the exact recipe of a result
+    /// window, as a plain QVariantMap that can be stored on a product and
+    /// replayed later.
+    ///
+    /// This exists so that reopening a result from its Session Data row gives
+    /// back the SAME window, not a reconstruction that resembles it. Deriving
+    /// the layout from the product's provenance parameters instead produced a
+    /// visibly different window — one flat list where there had been a Sigma
+    /// and a MAD section, keys reading "σ mean" instead of "Mean", and the
+    /// product's label in place of the tool's title (user report). One record,
+    /// one code path, no second opinion.
+    ///
+    /// Shape:
+    /// @code
+    /// { "title": "Noise Estimation",
+    ///   "subtitle": "Channels 0..397 …",
+    ///   "sections": [ { "title": "Sigma",
+    ///                   "rows": [ ["Mean", "0.0034779168"], … ] }, … ] }
+    /// @endcode
+    void applyRecord(const QVariantMap &record);
+
+    /// Assemble a record. Sections are given in display order; each row is a
+    /// label/value pair, also in display order (a QVariantMap would sort them).
+    static QVariantMap makeRecord(
+            const QString &title, const QString &subtitle,
+            const QList<QPair<QString, QList<QPair<QString, QString>>>> &sections);
+
     void addSection(const QString &sectionTitle,
                     const QList<QPair<QString, QString>> &rows);
 

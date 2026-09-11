@@ -652,7 +652,7 @@ legitimate:
 | `renderer` | Row means | Tools |
 |---|---|---|
 | `moment2d` / `image2d` / `spectrum1d` / `pvdiagram` | mountable in a pane | Moment, Line-Width, PV, Extract/Pin Spectrum, region spectra, Stack |
-| *(empty)* | a **measurement**: the numbers live in Provenance | Estimate Noise, region 2-D statistics |
+| *(empty)* | a **measurement**: the numbers live in Provenance, and the row re-opens them as a result window | Estimate Noise, region 2-D statistics |
 | *(empty, with `window`)* | its own window, raised on activation | Channel Maps |
 | *(empty, with an `Output path` param)* | a file, reopenable via the row menu | Baseline-subtracted cube |
 
@@ -664,6 +664,36 @@ region tools had already been moved off that pattern (their statistics are
 folded into the product's Provenance) and noise now follows, keyed by
 region+channel range so a re-run of the same selection updates its row while a
 different selection adds one.
+
+**Every row must do something when you open it.** A measurement has no file and
+no pane, so `reopenProductFromFile` puts its result window back on screen.
+Without it the noise row was inert: selecting it filled Provenance, but
+double-clicking did nothing and the popup the user had closed was gone for good
+(user report). The row menu says so explicitly ("Show the Numbers Again"),
+because an action reachable only by double-click is an action nobody finds.
+
+**Reopening replays a record; it does not re-derive a layout.** The first cut
+rebuilt the window from the product's provenance parameters, and the result only
+resembled the original: one flat list where there had been a *Sigma* and a *MAD*
+section, keys reading "σ mean" instead of "Mean", rows in alphabetical order
+(max, mean, median, min), and the product's label in place of the tool's title
+(user report, with both windows side by side). Two renderings of the same numbers
+will always drift.
+
+So a result window is described ONCE, as a plain `QVariantMap`
+(`ToolResultDialog::makeRecord` → `{title, subtitle, sections:[{title, rows}]}`),
+and that single description is both shown (`applyRecord`) and stored on the
+product (`AnalysisProduct::resultView`). Reopening replays it through the same
+method, so the two windows cannot differ. `params` stays flat and unchanged for
+the Provenance panel, which renders key/value pairs and would choke on a nested
+structure. The generic params-derived layout survives only as a fallback, for a
+product that never showed a result window.
+
+The alternative — keeping measurements OUT of Session Data because they render
+nothing — is the option this design rejects. σ is the most reused number in the
+session (moment thresholds, isosurface levels, mask cut-offs); dropping the row
+would put it back where it started, alive only inside a window the user is about
+to close.
 
 The **exports** are the deliberate exception: Export Sub-Cube / Channel 2-D /
 Moment FITS / Mask 3-D Region write real files and belong to *Workspace

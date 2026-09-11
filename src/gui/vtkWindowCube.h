@@ -43,6 +43,7 @@ class PvController;
 
 class QAction;
 class QProgressDialog;
+struct AnalysisProduct;
 class QActionGroup;
 class QMenu;
 class QShortcut;
@@ -913,6 +914,10 @@ protected:
     /// be reopened from Session Data.
     /// Double-click on a product with no window: reopen the FITS it left behind.
     void reopenProductFromFile(const QString &productId);
+    /// Put a measurement's recorded numbers back on screen, rebuilt from the
+    /// product's params. A statistics product has no file and no pane, so this
+    /// is what "open" means for it.
+    void showRecordedResult(const AnalysisProduct &product);
     void completeBaselineProduct(const QString &productId, const QString &newDatasetId,
                                  const QString &outputPath, const QString &summary);
     /// Undo a half-started switch to remote rendering (guard, ticker, buttons,
@@ -1136,6 +1141,9 @@ protected:
     /// The two 3-D-box tool windows, one each, re-raised rather than duplicated,
     /// with a busy flag that lives HERE so closing and reopening a window cannot
     /// start a second run of the same tool.
+    /// The statistics product registered most recently, so the result-window
+    /// recipe that arrives immediately after can be attached to it.
+    QString m_lastStatisticsProductId;
     QPointer<QDialog> m_subCubeDialog;
     QPointer<QDialog> m_maskRegionDialog;
     bool m_subCubeBusy{ false };

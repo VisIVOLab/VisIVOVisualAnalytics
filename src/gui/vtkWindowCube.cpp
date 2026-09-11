@@ -2036,11 +2036,20 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(this->noiseController, &NoiseController::noiseProvenanceReady, this,
                      [this](const QString &stableKey, const QString &label,
                             const QVariantMap &params) {
-                         this->registerAnalysisProduct(u"noise"_s, label, params,
-                                                       /*window=*/nullptr,
-                                                       this->scopedProductId(stableKey),
-                                                       /*renderer=*/QString(),
-                                                       /*revealProvenance=*/false);
+                         m_lastStatisticsProductId = this->registerAnalysisProduct(
+                                 u"noise"_s, label, params,
+                                 /*window=*/nullptr,
+                                 this->scopedProductId(stableKey),
+                                 /*renderer=*/QString(),
+                                 /*revealProvenance=*/false);
+                     });
+    // …and the recipe of the window that reported it, emitted right after, so
+    // reopening the row shows that window again rather than a reconstruction.
+    QObject::connect(this->noiseController, &NoiseController::noiseResultViewReady, this,
+                     [this](const QVariantMap &record) {
+                         if (!m_lastStatisticsProductId.isEmpty())
+                             ProductRegistry::instance().setResultView(
+                                     m_lastStatisticsProductId, record);
                      });
 
     // ── PV diagram backend fetch – delegated to PvController ─────────────────
@@ -8176,8 +8185,23 @@ void vtkWindowCube::showSessionRowContextMenu(const QString &viewTag, const QStr
             });
             menu.addSeparator();
         }
-        QAction *note = menu.addAction(fitsPath.isEmpty() ? u"Opens in its own window"_s
-                                                          : u"Stored on the backend"_s);
+        // A MEASUREMENT (no renderer, no file, no window) still has something to
+        // open: the numbers it recorded. Double-click does it too, but a
+        // double-click nobody guesses is the same as no action at all, which is
+        // how this row felt (user report).
+        const bool isMeasurement = fitsPath.isEmpty() && !p.window && !p.params.isEmpty();
+        if (isMeasurement) {
+            QObject::connect(menu.addAction(u"Show the Numbers Again"_s), &QAction::triggered,
+                             this, [this, pid = p.productId]() {
+                                 this->showRecordedResult(
+                                         ProductRegistry::instance().product(pid));
+                             });
+            menu.addSeparator();
+        }
+        QAction *note = menu.addAction(
+                !fitsPath.isEmpty()  ? u"Stored on the backend"_s
+                : isMeasurement      ? u"A measurement: its numbers are in Provenance"_s
+                                     : u"Opens in its own window"_s);
         note->setEnabled(false);
         if (p.window) {
             QObject::connect(menu.addAction(u"Bring window to front"_s), &QAction::triggered,
@@ -11438,11 +11462,101 @@ void vtkWindowCube::reopenProductFromFile(const QString &productId)
         emit this->openBackendFitsRequested(fitsPath, p.label);
         return;
     }
+    // A MEASUREMENT has no file and no pane to mount: what it has is the numbers
+    // it recorded, and "open" means putting them back on screen in the result
+    // window they came from. Without this the row was inert — selecting it filled
+    // Inspector ▸ Provenance, but double-clicking did nothing at all and the
+    // popup the user had closed was unrecoverable (user report).
+    if (!p.params.isEmpty()) {
+        this->showRecordedResult(p);
+        return;
+    }
     this->statusBar()->showMessage(
             p.label.isEmpty()
-                    ? u"This product has no window and no stored file to reopen."_s
-                    : u"“%1” has no window and no stored file to reopen."_s.arg(p.label),
+                    ? u"This product recorded nothing to reopen."_s
+                    : u"“%1” recorded nothing to reopen."_s.arg(p.label),
             5000);
+}
+
+void vtkWindowCube::showRecordedResult(const AnalysisProduct &product)
+{
+    using namespace Qt::StringLiterals;
+    // Rebuilt from the product's own recorded parameters, so it survives the
+    // tool, the dialog and anything else: the registry IS the record.
+    // One window per product: double-clicking the row three times used to stack
+    // three identical result windows.
+    const QString slot = u"recorded-result:"_s + product.productId;
+    if (auto *existing = this->findChild<ToolResultDialog *>(slot)) {
+        existing->show();
+        existing->raise();
+        existing->activateWindow();
+        return;
+    }
+    auto *dlg = new ToolResultDialog(this);
+    dlg->setObjectName(slot);
+
+    // The recorded window, replayed. Same record the tool showed, same code
+    // path, so the two cannot drift apart.
+    if (!product.resultView.isEmpty()) {
+        dlg->applyRecord(product.resultView);
+        dlg->show();
+        dlg->raise();
+        dlg->activateWindow();
+        return;
+    }
+
+    // No recipe (an older product, or a tool that never showed a result window):
+    // fall back to laying out whatever it recorded in Provenance.
+    dlg->setTitle(product.label.isEmpty() ? u"Result"_s : product.label);
+
+    // Keys that describe WHERE/OVER WHAT the measurement was taken read as a
+    // subtitle; the rest are the measurement itself. Insertion order is not
+    // preserved by QVariantMap, so the context keys are named explicitly and the
+    // remainder follows in the map's own (alphabetical) order.
+    static const QStringList kContextKeys{ u"Region"_s, u"Channels"_s, u"Position"_s,
+                                           u"2D stats from"_s, u"Valid pixels"_s,
+                                           u"Storage"_s, u"Status"_s };
+    QStringList context;
+    for (const QString &key : kContextKeys) {
+        const QString v = product.params.value(key).toString();
+        if (!v.isEmpty())
+            context << u"%1: %2"_s.arg(key, v);
+    }
+    if (!context.isEmpty())
+        dlg->setSubtitle(context.join(u"  ·  "_s));
+
+    QList<QPair<QString, QString>> rows;
+    for (auto it = product.params.cbegin(); it != product.params.cend(); ++it) {
+        if (kContextKeys.contains(it.key()))
+            continue;
+        rows.append({ it.key(), it.value().toString() });
+    }
+    // QVariantMap iterates in KEY order, which lists a statistic as max, mean,
+    // median, min — alphabetical, and not how anyone reads it. Group by the
+    // quantity (the key up to its last word) and order the summary within a
+    // group the way the tools present it.
+    static const QStringList kStatOrder{ u"mean"_s, u"median"_s, u"min"_s, u"max"_s };
+    std::stable_sort(rows.begin(), rows.end(),
+                     [](const QPair<QString, QString> &a, const QPair<QString, QString> &b) {
+                         const QString qa = a.first.section(u' ', 0, -2);
+                         const QString qb = b.first.section(u' ', 0, -2);
+                         if (qa != qb)
+                             return qa < qb;
+                         const int ia = kStatOrder.indexOf(a.first.section(u' ', -1).toLower());
+                         const int ib = kStatOrder.indexOf(b.first.section(u' ', -1).toLower());
+                         if (ia < 0 || ib < 0)
+                             return a.first < b.first;
+                         return ia < ib;
+                     });
+    if (rows.isEmpty()) {
+        // Everything it recorded was context; show that rather than an empty box.
+        for (const QString &line : context)
+            rows.append({ line.section(u": "_s, 0, 0), line.section(u": "_s, 1) });
+    }
+    dlg->addSection(u"Recorded"_s, rows);
+    dlg->show();
+    dlg->raise();
+    dlg->activateWindow();
 }
 
 void vtkWindowCube::completeBaselineProduct(const QString &productId,

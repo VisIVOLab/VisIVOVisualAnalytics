@@ -110,9 +110,6 @@ signals:
     /// what requestMomentMode() and setMomentOrder() used to do, and why the
     /// Computing card and the start diagnostics stopped happening.
     void computationStarted(const MomentMapController::Config &config);
-    /// The settings window was closed without ever starting one. The 2-D mode
-    /// toggle uses this to fall back to Slice.
-    void dialogDismissed();
 
 public slots:
     // Opens the dialog with defaultOrder pre-selected; if accepted, dispatches
@@ -156,9 +153,6 @@ private:
     /// The settings window, kept alive between runs (WA_DeleteOnClose clears
     /// this QPointer when the user closes it).
     QPointer<QDialog> m_configDialog;
-    /// Whether the open settings window has started at least one computation,
-    /// so closing it can tell "cancelled" from "done".
-    bool m_startedFromDialog{ false };
     QString m_lastError;
 };
 

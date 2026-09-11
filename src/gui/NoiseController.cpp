@@ -227,9 +227,10 @@ void NoiseController::runEstimate(NoiseRegionDialog *dialog)
     const QString backendToken = m_backendToken;
 
     QPointer<NoiseController> self(this);
+    QPointer<NoiseRegionDialog> runDialog(dialog);
     auto *watcher = new QFutureWatcher<CubeNoiseEstimateResult>();
     QObject::connect(watcher, &QFutureWatcher<CubeNoiseEstimateResult>::finished,
-                     watcher, [self, watcher, datasetId, sessionId]() {
+                     watcher, [self, watcher, datasetId, sessionId, runDialog]() {
         const auto result = watcher->result();
         watcher->deleteLater();
 
@@ -239,7 +240,11 @@ void NoiseController::runEstimate(NoiseRegionDialog *dialog)
 
         self->m_busy = false;
         visivo::closeToolProgressSheet(self->m_progressSheet);
-        if (self->m_regionDialog)
+        // Only the window this run belongs to. The user can close the settings
+        // window mid-run and open a new one: m_regionDialog would then be a
+        // DIFFERENT window, possibly running its own estimate, and un-busying it
+        // here would re-arm its Estimate button under it.
+        if (self->m_regionDialog && self->m_regionDialog == runDialog)
             self->m_regionDialog->setBusy(false);
 
         if (!result.valid) {
@@ -371,21 +376,24 @@ void NoiseController::showResult(const CubeNoiseEstimateResult &result)
                 params);
     }
 
+    // Described ONCE, then shown and recorded from the same description, so the
+    // window the Session Data row reopens is this window and not something that
+    // resembles it (user report: a flat "Recorded" list where there had been a
+    // Sigma and a MAD section, the product's label instead of the tool's title).
+    const QVariantMap record = ToolResultDialog::makeRecord(
+            u"Noise Estimation"_s, subtitle,
+            { { u"Sigma"_s, { { u"Mean"_s,   fmt(sigmaStats[0]) },
+                              { u"Median"_s, fmt(sigmaStats[1]) },
+                              { u"Min"_s,    fmt(sigmaStats[2]) },
+                              { u"Max"_s,    fmt(sigmaStats[3]) } } },
+              { u"MAD"_s,   { { u"Mean"_s,   fmt(madStats[0]) },
+                              { u"Median"_s, fmt(madStats[1]) },
+                              { u"Min"_s,    fmt(madStats[2]) },
+                              { u"Max"_s,    fmt(madStats[3]) } } } });
+    emit this->noiseResultViewReady(record);
+
     auto *dlg = new ToolResultDialog(m_parentWindow);
-    dlg->setTitle(u"Noise Estimation"_s);
-    dlg->setSubtitle(subtitle);
-    dlg->addSection(u"Sigma"_s, {
-        { u"Mean"_s,   fmt(sigmaStats[0]) },
-        { u"Median"_s, fmt(sigmaStats[1]) },
-        { u"Min"_s,    fmt(sigmaStats[2]) },
-        { u"Max"_s,    fmt(sigmaStats[3]) },
-    });
-    dlg->addSection(u"MAD"_s, {
-        { u"Mean"_s,   fmt(madStats[0]) },
-        { u"Median"_s, fmt(madStats[1]) },
-        { u"Min"_s,    fmt(madStats[2]) },
-        { u"Max"_s,    fmt(madStats[3]) },
-    });
+    dlg->applyRecord(record);
 
     // Tear down the noise-region preview overlays (2D rect + 3D box) when
     // the user closes the result dialog. QObject::destroyed fires after

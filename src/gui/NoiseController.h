@@ -84,6 +84,11 @@ signals:
     void noiseProvenanceReady(const QString &stableKey, const QString &label,
                               const QVariantMap &params);
 
+    /// The recipe of the result window just shown, so the product can put the
+    /// same window back on screen later (ToolResultDialog::makeRecord). Emitted
+    /// immediately before noiseProvenanceReady's product is registered.
+    void noiseResultViewReady(const QVariantMap &record);
+
 public slots:
     // Triggered by QAction::triggered from vtkWindowCube.
     // Opens the region dialog; if accepted, launches the async estimation.

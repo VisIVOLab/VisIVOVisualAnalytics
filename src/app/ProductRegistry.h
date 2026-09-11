@@ -40,6 +40,10 @@ struct AnalysisProduct
                              ///< product ids never collide and each window's tree shows only its
                              ///< own products (their render caches/widgets are per-window).
     QPointer<QWidget> window;///< result window to raise() on activation (optional)
+    /// The exact recipe of the result window this product came from
+    /// (ToolResultDialog::makeRecord), so the row can put it back on screen
+    /// unchanged. Empty for products whose result is a pane or a file.
+    QVariantMap resultView;
 };
 
 class ProductRegistry : public QObject
@@ -63,6 +67,9 @@ public:
     /// registers its row when it STARTS — so the user sees it running — and only
     /// learns the recipe / output location when the result lands.
     void setParams(const QString &productId, const QVariantMap &params);
+
+    /// Attach the result-window recipe (emits productUpdated).
+    void setResultView(const QString &productId, const QVariantMap &record);
 
     /// Associate a result window with a product (for focus-on-activate).
     void attachWindow(const QString &productId, QWidget *window);

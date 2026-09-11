@@ -523,18 +523,8 @@ void MomentMapController::openMomentDialog(int defaultOrder, Config config,
         // sheet is window-modal, which also blocks the controls underneath it
         // for the duration, so nothing else needs disabling.
         m_progressSheet = visivo::showToolProgressSheet(dlg, u"Computing the moment map"_s);
-        m_startedFromDialog = true;
         emit this->computationStarted(config);
         this->dispatch(config);
-    });
-
-    // Closing the window without ever pressing Compute is a decision too: the
-    // 2-D mode toggle has to fall back to Slice, which it used to do from the
-    // exec() return value.
-    m_startedFromDialog = false;
-    QObject::connect(dlg, &QObject::destroyed, this, [this]() {
-        if (!m_startedFromDialog)
-            emit this->dialogDismissed();
     });
 
     dlg->show();

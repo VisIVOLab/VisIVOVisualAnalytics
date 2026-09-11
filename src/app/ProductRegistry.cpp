@@ -59,6 +59,15 @@ void ProductRegistry::setParams(const QString &productId, const QVariantMap &par
     }
 }
 
+void ProductRegistry::setResultView(const QString &productId, const QVariantMap &record)
+{
+    const int i = indexOf(productId);
+    if (i < 0)
+        return;
+    m_products[i].resultView = record;
+    emit productUpdated(m_products[i]);
+}
+
 void ProductRegistry::removeProduct(const QString &productId)
 {
     const int i = indexOf(productId);

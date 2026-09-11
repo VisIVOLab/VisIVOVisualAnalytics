@@ -222,3 +222,40 @@ void ToolResultDialog::addSection(const QString &sectionTitle,
 
     m_bodyLayout->insertWidget(insertIdx, box);
 }
+
+QVariantMap ToolResultDialog::makeRecord(
+        const QString &title, const QString &subtitle,
+        const QList<QPair<QString, QList<QPair<QString, QString>>>> &sections)
+{
+    QVariantList sectionList;
+    for (const auto &section : sections) {
+        QVariantList rows;
+        for (const auto &row : section.second)
+            rows.append(QVariantList{ row.first, row.second });
+        sectionList.append(QVariantMap{ { QStringLiteral("title"), section.first },
+                                        { QStringLiteral("rows"), rows } });
+    }
+    return { { QStringLiteral("title"), title },
+             { QStringLiteral("subtitle"), subtitle },
+             { QStringLiteral("sections"), sectionList } };
+}
+
+void ToolResultDialog::applyRecord(const QVariantMap &record)
+{
+    setTitle(record.value(QStringLiteral("title")).toString());
+    const QString subtitle = record.value(QStringLiteral("subtitle")).toString();
+    if (!subtitle.isEmpty())
+        setSubtitle(subtitle);
+    const QVariantList sections = record.value(QStringLiteral("sections")).toList();
+    for (const QVariant &sectionVar : sections) {
+        const QVariantMap section = sectionVar.toMap();
+        QList<QPair<QString, QString>> rows;
+        const QVariantList rowList = section.value(QStringLiteral("rows")).toList();
+        for (const QVariant &rowVar : rowList) {
+            const QVariantList row = rowVar.toList();
+            if (row.size() == 2)
+                rows.append({ row.at(0).toString(), row.at(1).toString() });
+        }
+        addSection(section.value(QStringLiteral("title")).toString(), rows);
+    }
+}

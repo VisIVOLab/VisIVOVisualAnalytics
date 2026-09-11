@@ -203,6 +203,10 @@ region and channel range.
    level, the mask cut-off — so closing the panel no longer loses it. Re-running
    the *same* region updates that row in place; a different region adds its own,
    so two noise regions can be compared side by side.
+   **Double-click that row (or right-click ▸ Show the Numbers Again) to bring the
+   result panel back** exactly as it was: it is rebuilt from what the product
+   recorded, so it outlives the panel you closed, the tool window and anything
+   else you do in between.
 
 ### Live preview overlays
 
