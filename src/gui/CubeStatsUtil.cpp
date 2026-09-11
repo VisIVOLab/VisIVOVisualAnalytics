@@ -38,7 +38,7 @@ void computeImageStats(vtkImageData *img, double &meanOut, double &rmsOut)
 
 QString fmtStat(double v)
 {
-    return std::isfinite(v) ? QString::number(v, 'g', 6) : u"\u2014"_s;
+    return std::isfinite(v) ? QString::number(v, 'g', 6) : u"-"_s;
 }
 
 }  // namespace CubeStats

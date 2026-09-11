@@ -465,8 +465,8 @@ void RemoteRenderWebRTCClient::postSdpOffer(const QString &offerSdp)
                 }
             }
             qWarning().noquote() << QStringLiteral(
-                    "[webrtc] SDP offer HTTP %1 -%2").arg(code).arg(detail);
-            setStatus(QStringLiteral("Error: SDP offer HTTP %1 -%2")
+                    "[webrtc] SDP offer HTTP %1 - %2").arg(code).arg(detail);
+            setStatus(QStringLiteral("Error: SDP offer HTTP %1 - %2")
                               .arg(code).arg(detail));
             return;
         }

@@ -9,7 +9,7 @@ the whole cube; two work on a spectrum you already have on screen.
 | [Gaussian line fit](#gaussian-line-fit) | Single Gaussian + linear baseline, with uncertainties | Fitted curve + summary |
 | [Line-width map](#line-width-maps-s-02) | Per-pixel FWHM (Gaussian fit) + equivalent width | Two 2-D maps |
 | [Baseline subtraction](#baseline-subtraction-s-03) | Polynomial / median baseline fit and subtract | New cube dataset |
-| [Spectral stacking](#spectral-stacking-s-04) | Combine N cubes into a single spectrum / cube | 1-D spectrum |
+| [Stack cubes to a spectrum](#stack-cubes-to-a-spectrum-s-04) | Mean spectrum of each cube, then combine those into ONE spectrum (not a merged cube) | 1-D spectrum |
 
 The three cube-wide tools are non-modal — you can keep interacting with viewers
 while they run — and gated by the backend's heavy-task throttle so they don't
@@ -274,13 +274,41 @@ baseline-subtracted data; it's registered on the backend with a fresh
      `[5, 6, 7, 80, 81]` or a list of ranges `[[5, 7], [80, 90]]`. These
      must NOT contain emission lines, otherwise the fit absorbs your
      signal.
-3. Click **Compute**. On success the dialog shows:
-   - **RMS before / after** — the residual RMS in the line-free channels
-     before and after subtraction. After should be similar to or below
-     before (otherwise the fit is too rigid).
-   - **Fit channels** — how many channels actually contributed.
-   - **New dataset ID** — click it to open the subtracted cube in a new
-     cube viewer.
+3. Click **Compute**. A progress sheet appears on the dialog while the cube is
+   processed (the same sheet every long-running tool uses). On success you get:
+   - **RMS before / after**, the residual RMS in the line-free channels before
+     and after subtraction. After should be similar to or below before,
+     otherwise the fit is too rigid.
+   - **Fit channels**, how many channels actually contributed.
+   - **New dataset ID**, the subtracted cube registered in the session.
+   - A **caveat line** at the top of the summary when the fit deserves one, see
+     [Limits & caveats](#limits-caveats) below.
+
+### Where the subtracted cube goes, and how to keep it
+
+The result appears in **Session Data** as a `BASE` row under the parent cube,
+and its Provenance carries the new dataset id, the output path and the summary.
+Two things about it are worth knowing, because both have surprised users:
+
+- **Double-click opens it in its own cube viewer window.** That is deliberate:
+  it is a *different dataset*, so loading it into the current window would evict
+  the cube you just derived it from. Keeping both open is usually what you want,
+  and **Link Views** then syncs camera, channel and colour map so you can
+  compare before and after channel by channel.
+- **The file is TEMPORARY.** It is written into the backend's temp directory,
+  which is *not* Workspace Exports, and the operating system may clear it. To
+  keep it, right-click the `BASE` row and choose **Save a Permanent Copy
+  (Workspace Exports)**: one click, and the cube lands in Workspace Exports
+  where it survives the session. The row menu also offers **Open as a New Cube**
+  and **Copy File Path**.
+
+```{note}
+The output is written as a 3-D cube even when the input was stored as 4-D with a
+degenerate Stokes axis, and the fourth axis's WCS keywords (`CTYPE4`, `CRVAL4`,
+`CDELT4`, `CRPIX4`) are dropped along with it, as is `BLANK` (FITS defines it
+only for integer data). An earlier version kept them, producing a header that
+said `NAXIS = 3` while still describing a Stokes axis.
+```
 
 ```{tip}
 Estimate the noise once first ([Noise tool](region-pv-noise#noise-estimation))
@@ -341,25 +369,50 @@ the standard first step in spectral-line analysis.
 
 ---
 
-## Spectral stacking (S-04)
+## Stack cubes to a spectrum (S-04)
 
-Combine N spectral cubes opened in the same backend session into a single
-1-D combined spectrum (or, in upcoming versions, a stacked cube). Useful
-when you have several pointings or several sources of the same type and
+```{admonition} This produces ONE spectrum, not a merged cube
+:class: important
+
+"Stacking" here is the population technique. Each selected cube is collapsed to
+**its own mean spectrum** (averaged over all its pixels), and those N spectra are
+then combined by the chosen method into a **single 1-D spectrum**, so a line too
+faint to see in any one cube can rise above the noise in their average. You do
+not get a bigger or deeper cube out of it.
+
+The order matters for *Median*: the median is taken **across cubes, per channel,
+of the already spatially-averaged spectra**, not pixel by pixel. Those are not
+the same number.
+
+If what you want is to **combine overlapping observations**, that is
+*mosaicking*: **Combine → Mosaic (noise-weighted)…** on the Data Hub, which
+reprojects and co-adds onto a common grid. Note that it produces a **2-D
+mosaic** even from cube inputs, because the backend takes the first plane of
+anything with more than two axes (`POST /v1/products/mosaic`) — there is no
+cube-to-cube mosaic in VisIVO today. The tool on this page was previously called
+"Stack Spectral Cubes", which read as "merge these cubes" and surprised people
+with a 1-D result.
+```
+
+Useful when you have several pointings, or several sources of the same type, and
 want their average / median spectrum for population-level analysis.
 
 ### How to use it
 
 1. Open **two or more cubes** in the session. Each `Open Remote Dataset`
    from the same client instance shares the same session.
-2. **Tools → Stack Spectral Cubes…** The dialog lists all the cubes
+2. **Tools → Stack Cubes to a Spectrum…** The dialog lists the cubes
    currently open in the session, each labelled with the file basename and
    shape `(W × H × D)`:
    - The cube of the window from which you opened the dialog is
-     pre-selected.
+     pre-selected, and the selection counter reflects that immediately.
    - Cubes whose `(W × H × D)` differs from the reference cube are listed
-     but **greyed out** with a tooltip — they can't be stacked because
-     the spectral grid and spatial shape must match.
+     but **greyed out** with a tooltip: the spectral grid and spatial shape
+     must match.
+   - One row per *file*. A cube can be registered in the session more than
+     once (a baseline run registers its output, and opening that output
+     registers it again), and stacking a cube with itself is not useful, so
+     duplicates are collapsed.
 3. Tick the cubes you want to include (≥ 2 required).
 4. Choose:
    - **Method**: *Mean*, *Median*, or *Weighted mean*.
@@ -395,13 +448,19 @@ want their average / median spectrum for population-level analysis.
 
 ### Caveats
 
-- The stacking does NOT align cubes spatially — pixel `(i, j)` in cube A
-  is averaged with pixel `(i, j)` in cube B. If your cubes are not on the
-  same spatial grid (same WCS, same pixel size), reproject them first.
+- The stacking does NOT align cubes spatially. Each cube is averaged over its
+  own pixels, so if the cubes are not on the same spatial grid (same WCS, same
+  pixel size) you are averaging different sky, and nothing warns you. Bring them
+  onto a common grid first — but **not** with *Combine → Mosaic*, which collapses
+  cubes to their first plane and would leave you with a 2-D image instead of
+  cubes to stack. VisIVO has no cube reprojection today: use the backend's
+  `POST /v1/astrometry/reproject/{dataset_id}` per plane, or reproject
+  externally (CASA `imregrid`, `reproject` in Python) before opening the cubes.
 - Same goes for the spectral axis: same number of channels, same
   resolution, same reference frame.
-- Output is currently a 1-D spectrum (spatially averaged across the
-  selected cubes). Pixel-by-pixel stacked cubes are a planned addition.
+- The output is a 1-D spectrum (spatially averaged across the selected
+  cubes), and that is the operation, not a stepping stone to a cube: see the
+  note at the top of this section for combining cubes into a cube.
 
 ---
 

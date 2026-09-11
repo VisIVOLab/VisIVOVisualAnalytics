@@ -22,6 +22,8 @@
 // thread. Closing the window during a build is safe.
 
 #include "vtkWindowCube.h"
+
+#include "ToolProgressSheet.h"
 #include "ui_vtkWindowCube.h"
 
 #include "AnalysisParamStore.h"
@@ -220,8 +222,18 @@ void vtkWindowCube::showKinematicModelDialog()
         this->statusBar()->showMessage(u"A kinematic model is already being built…"_s, 4000);
         return;
     }
-
-    QDialog dlg(this);
+    // The settings window stays open across the build, carries its own progress
+    // sheet and is ready for the next set of rings — like every other tool.
+    if (m_kinematicDialog) {
+        m_kinematicDialog->show();
+        m_kinematicDialog->raise();
+        m_kinematicDialog->activateWindow();
+        return;
+    }
+    auto *dlgPtr = new QDialog(this);
+    m_kinematicDialog = dlgPtr;
+    dlgPtr->setAttribute(Qt::WA_DeleteOnClose);
+    QDialog &dlg = *dlgPtr;
     dlg.setWindowTitle(u"Tilted-Ring Kinematic Model"_s);
     auto *form = new QFormLayout(&dlg);
 
@@ -342,23 +354,33 @@ void vtkWindowCube::showKinematicModelDialog()
         if (row >= 0) ringTable->removeRow(row);
     });
 
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Close, &dlg);
     buttons->button(QDialogButtonBox::Ok)->setText(u"Overlay"_s);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::close);
     form->addRow(buttons);
 
-    if (dlg.exec() != QDialog::Accepted)
+    QObject::connect(buttons, &QDialogButtonBox::accepted, this,
+                     [this, dlgPtr, nx, ny, nz, perRingCheck, ringTable, spinX0, spinY0,
+                      spinPa, spinIncl, spinRmax, spinVsys, spinVrot, spinSig]() {
+    // isRunning() is false as soon as the WORKER ends, while `finished` is still
+    // queued for the GUI thread. A second click in that window replaced the
+    // member watcher's future and overwrote m_kinematicSheet, so the first
+    // sheet stayed on screen forever and its result was dropped (
+    // reproduced in a Qt harness). The flag is held until the result has been
+    // HANDLED, not until the worker stops.
+    if (this->m_kinematicBusy)
         return;
+    this->m_kinematicBusy = true;
 
     // Build the per-ring profile from the table (empty → scalar model). Validate
     // each cell so a stray non-numeric entry doesn't silently become 0.
     QVector<std::array<double, 4>> rings;
     if (perRingCheck->isChecked()) {
         if (ringTable->rowCount() == 0) {
-            QMessageBox::warning(this, u"Kinematic Model"_s,
+            QMessageBox::warning(dlgPtr, u"Kinematic Model"_s,
                                  u"Per-ring profile is enabled but the ring table is empty. "
                                  u"Add at least one ring, or disable per-ring mode."_s);
+            this->m_kinematicBusy = false;
             return;
         }
         for (int row = 0; row < ringTable->rowCount(); ++row) {
@@ -368,20 +390,23 @@ void vtkWindowCube::showKinematicModelDialog()
                 bool ok = false;
                 vals[c] = it ? it->text().trimmed().toDouble(&ok) : 0.0;
                 if (!ok || !std::isfinite(vals[c])) {
-                    QMessageBox::warning(this, u"Kinematic Model"_s,
+                    QMessageBox::warning(dlgPtr, u"Kinematic Model"_s,
                                          u"Ring %1 has a non-numeric value, fix the table or "
                                          u"disable per-ring mode."_s.arg(row + 1));
+                    this->m_kinematicBusy = false;
                     return;
                 }
             }
             if (vals[0] <= 0.0) {
-                QMessageBox::warning(this, u"Kinematic Model"_s,
+                QMessageBox::warning(dlgPtr, u"Kinematic Model"_s,
                                      u"Ring %1: radius must be > 0."_s.arg(row + 1));
+                this->m_kinematicBusy = false;
                 return;
             }
             if (vals[2] < 0.0 || vals[2] > 90.0) {
-                QMessageBox::warning(this, u"Kinematic Model"_s,
+                QMessageBox::warning(dlgPtr, u"Kinematic Model"_s,
                                      u"Ring %1: inclination must be between 0 and 90°."_s.arg(row + 1));
+                this->m_kinematicBusy = false;
                 return;
             }
             rings.append({ vals[0], vals[1], vals[2], vals[3] });
@@ -391,8 +416,9 @@ void vtkWindowCube::showKinematicModelDialog()
         for (const auto &ring : rings) radii.append(ring[0]);
         std::sort(radii.begin(), radii.end());
         if (std::adjacent_find(radii.begin(), radii.end()) != radii.end()) {
-            QMessageBox::warning(this, u"Kinematic Model"_s,
+            QMessageBox::warning(dlgPtr, u"Kinematic Model"_s,
                                  u"Ring radii must be distinct."_s);
+            this->m_kinematicBusy = false;
             return;
         }
     }
@@ -420,6 +446,8 @@ void vtkWindowCube::showKinematicModelDialog()
     if (this->m_actKinematicModel)
         this->m_actKinematicModel->setEnabled(false);
     this->statusBar()->showMessage(u"Building tilted-ring kinematic model…"_s);
+    this->m_kinematicSheet = visivo::showToolProgressSheet(
+            dlgPtr, u"Building the tilted-ring model"_s);
     this->m_kinematicWatcher.setFuture(QtConcurrent::run(
             &fetchKinematicModelWorker, this->remoteBackendUrl, this->remoteBackendToken,
             this->remoteSessionId, this->remoteDatasetId, nx, ny, nz,
@@ -427,6 +455,11 @@ void vtkWindowCube::showKinematicModelDialog()
             spinX0->value(), spinY0->value(), spinPa->value(), spinIncl->value(),
             spinVsys->value(), spinVrot->value(), spinRmax->value(), spinSig->value(),
             rings));
+    });   // ← Overlay handler
+
+    dlgPtr->show();
+    dlgPtr->raise();
+    dlgPtr->activateWindow();
 }
 
 void vtkWindowCube::onKinematicModelReady()
@@ -434,6 +467,8 @@ void vtkWindowCube::onKinematicModelReady()
     if (this->m_actKinematicModel)
         this->m_actKinematicModel->setEnabled(true);
 
+    this->m_kinematicBusy = false;
+    visivo::closeToolProgressSheet(this->m_kinematicSheet);
     const RemoteKinematicModelResult result = this->m_kinematicWatcher.result();
     this->statusBar()->clearMessage();
 

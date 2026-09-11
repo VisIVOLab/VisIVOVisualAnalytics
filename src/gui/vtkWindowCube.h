@@ -42,6 +42,7 @@ class PvController;
 #include <vector>
 
 class QAction;
+class QProgressDialog;
 class QActionGroup;
 class QMenu;
 class QShortcut;
@@ -1124,6 +1125,24 @@ protected:
     vtkSmartPointer<vtkActor> m_lassoSeedActor;   ///< marker at the clicked seed
     vtkSmartPointer<vtkTextActor> m_lassoHintActor;  ///< in-viewport "click a source" prompt
     void showLassoHint(bool on);                  ///< show/hide the call-to-action overlay
+    /// SoFiA-2 source finding, requested from the host (which holds this
+    /// window's backend context). Was reachable only from the Data Hub.
+    /// The tilted-ring settings window and its progress sheet, kept alive across
+    /// the build so the tool behaves like the rest.
+    /// Held from the moment Overlay is pressed until the result has been
+    /// HANDLED. QFutureWatcher::isRunning() goes false when the worker ends,
+    /// which is earlier, and a click in between started a second run.
+    bool m_kinematicBusy{ false };
+    /// The two 3-D-box tool windows, one each, re-raised rather than duplicated,
+    /// with a busy flag that lives HERE so closing and reopening a window cannot
+    /// start a second run of the same tool.
+    QPointer<QDialog> m_subCubeDialog;
+    QPointer<QDialog> m_maskRegionDialog;
+    bool m_subCubeBusy{ false };
+    bool m_maskRegionBusy{ false };
+    QPointer<QDialog> m_kinematicDialog;
+    QPointer<QProgressDialog> m_kinematicSheet;
+    QPointer<QAction> m_actSourceFind;
     QPointer<QAction> m_actKinematicLasso;
     int m_lassoLastSeed[3]{ -1, -1, -1 };         ///< primary picked full-res seed (z,y,x)
     bool m_lassoHasSeed{ false };

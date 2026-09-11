@@ -247,7 +247,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     this->buildSampMenu();
 
     // ── Science menu ──────────────────────────────────────────────────────────
-    this->buildScienceMenu();
+    this->buildCombineMenu();
 
     // ── Setup Menu About ──────────────────────────────────────────────────────
     QObject::connect(ui->actionAbout, &QAction::triggered, this, &MainWindow::openAboutDialog);

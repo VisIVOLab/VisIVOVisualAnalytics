@@ -15,8 +15,11 @@
 #include <QListWidget>
 #include <QMainWindow>
 #include "ToolDialogClose.h"
+#include "ToolProgressSheet.h"
 
 #include <QMessageBox>
+#include <QFileInfo>
+#include <QHash>
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QVBoxLayout>
@@ -72,9 +75,10 @@ StackDialog::StackDialog(std::shared_ptr<BackendClient> client,
     // (user report) — which is fair, because the word "stack" only means
     // co-adding spectra if you already know the technique.
     auto *infoLabel = new QLabel(
-            u"Co-adds the selected cubes pixel-by-pixel into a SINGLE 1-D "
-            u"spectrum, so a signal too faint in any one cube can show up in "
-            u"their average. The cubes are not merged into a larger cube.\n\n"
+            u"Each selected cube is collapsed to its own mean spectrum (averaged "
+            u"over all its pixels), and those spectra are then combined into a "
+            u"SINGLE 1-D spectrum, so a signal too faint in any one cube can show "
+            u"up in their average. The cubes are not merged into a larger cube.\n\n"
             u"Select two or more. All must share the same spectral grid and "
             u"spatial shape (incompatible cubes are listed as disabled below)."_s, this);
     infoLabel->setStyleSheet(ToolDialogStyle::helperCss());
@@ -89,6 +93,39 @@ StackDialog::StackDialog(std::shared_ptr<BackendClient> client,
     m_datasetList = new QListWidget(this);
     m_datasetList->setSelectionMode(QAbstractItemView::NoSelection);
 
+    // One row per FILE. The same path can be registered in a session more than
+    // once — a baseline run registers its output, and opening that output from
+    // its Session Data row registers it again under a second id — and the cube
+    // then appeared twice, identical and indistinguishable (user report).
+    // Stacking a cube with itself is not a thing anyone wants.
+    //
+    // Which registration survives matters: keeping the FIRST would drop the id
+    // the caller passed as currentId when the user opened this dialog from the
+    // re-opened cube's own window, so nothing would be pre-checked and the
+    // reference shape could come from an unrelated cube instead.
+    std::vector<DatasetEntry> unique;
+    unique.reserve(datasets.size());
+    {
+        QHash<QString, size_t> indexByPath;   // canonical path → slot in `unique`
+        for (const auto &e : datasets) {
+            const QString canonical = e.path.isEmpty()
+                    ? QString() : QFileInfo(e.path).canonicalFilePath();
+            const QString key = canonical.isEmpty() ? e.path : canonical;
+            if (key.isEmpty()) {            // unknown path: cannot be a duplicate
+                unique.push_back(e);
+                continue;
+            }
+            const auto it = indexByPath.constFind(key);
+            if (it == indexByPath.cend()) {
+                indexByPath.insert(key, unique.size());
+                unique.push_back(e);
+            } else if (e.datasetId == currentId) {
+                unique[it.value()] = e;     // the current cube wins its group
+            }
+        }
+    }
+    const std::vector<DatasetEntry> &entries = unique;
+
     // Resolve the reference shape from currentId (when known) — used to grey
     // out cubes that cannot be stacked together. If currentId is empty or its
     // shape is zero we fall back to the first cube with a non-zero shape.
@@ -98,15 +135,15 @@ StackDialog::StackDialog(std::shared_ptr<BackendClient> client,
             refW = e.width; refH = e.height; refD = e.depth;
         }
     };
-    for (const auto &e : datasets) {
+    for (const auto &e : entries) {
         if (e.datasetId == currentId) adoptShape(e);
     }
     if (refW == 0) {
-        for (const auto &e : datasets) adoptShape(e);
+        for (const auto &e : entries) adoptShape(e);
     }
 
     int cubeCount = 0;
-    for (const auto &e : datasets) {
+    for (const auto &e : entries) {
         // Only cube datasets can be stacked. Skip "image" / unknown kinds so
         // the list stays focused on what the operator can actually use.
         if (!e.kind.isEmpty() && e.kind != QStringLiteral("cube")) {
@@ -190,9 +227,9 @@ StackDialog::StackDialog(std::shared_ptr<BackendClient> client,
     mainLayout->addWidget(divider);
 
     auto *methodologyLabel = new QLabel(
-            u"Stacking is spatial pixel-by-pixel · cubes must share the same "
-            u"WCS / shape · output is a 1-D combined spectrum, which lands in "
-            u"Session Data as a SPEC product."_s, this);
+            u"Spatial mean per cube, then Method across cubes · cubes must share "
+            u"the same WCS / shape · output is a 1-D combined spectrum, which "
+            u"lands in Session Data as a SPEC product."_s, this);
     methodologyLabel->setStyleSheet(ToolDialogStyle::helperCss());
     methodologyLabel->setWordWrap(true);
     mainLayout->addWidget(methodologyLabel);
@@ -273,10 +310,7 @@ void StackDialog::onCompute()
 
     setUiBusy(true);
 
-    m_progress = new QProgressDialog(u"Stacking spectra…"_s, QString(), 0, 0, this);
-    m_progress->setWindowModality(Qt::WindowModal);
-    m_progress->setMinimumDuration(400);
-    m_progress->show();
+    m_progress = visivo::showToolProgressSheet(this, u"Stacking the spectra"_s);
 
     std::shared_ptr<BackendClient> client = m_client;   // shared with the worker
     client->setSessionId(m_sessionId);  // FIX 5
@@ -292,10 +326,7 @@ void StackDialog::onCompute()
         if (!self) {
             return;
         }
-        if (self->m_progress) {
-            self->m_progress->close();
-            self->m_progress->deleteLater();
-        }
+        visivo::closeToolProgressSheet(self->m_progress);
         self->setUiBusy(false);
 
         if (!result.valid) {
@@ -351,7 +382,7 @@ void StackDialog::closeEvent(QCloseEvent *event)
 {
     // See ToolDialogClose.h: a compute in flight cannot be cancelled, so the
     // choice is between waiting and discarding the result — said out loud.
-    if (m_busy && !visivo::confirmAbandonRunningCompute(this, u"Stack Spectral Cubes"_s, u"The spectral stacking"_s)) {
+    if (m_busy && !visivo::confirmAbandonRunningCompute(this, u"Stack Cubes to a Spectrum"_s, u"The spectral stacking"_s)) {
         event->ignore();
         return;
     }

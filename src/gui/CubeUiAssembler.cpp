@@ -659,7 +659,7 @@ QWidget *CubeUiAssembler::buildToolsPage()
         m_btnMomentMap     = makeSidebarToolButton(u"Moment Map\u2026"_s);
         m_btnLineWidth     = makeSidebarToolButton(u"Line-width Map\u2026"_s);
         m_btnBaselineSub   = makeSidebarToolButton(u"Baseline Subtraction\u2026"_s);
-        m_btnStackCubes    = makeSidebarToolButton(u"Stack Spectral Cubes\u2026"_s);
+        m_btnStackCubes    = makeSidebarToolButton(u"Stack Cubes to a Spectrum\u2026"_s);
         m_btnPvDiagram     = makeSidebarToolButton(u"PV Diagram"_s);
         m_btnChannelMaps   = makeSidebarToolButton(u"Channel Maps\u2026"_s);
         cl->addWidget(m_btnEstimateNoise);
@@ -799,7 +799,7 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
         m_infoDsLoadState = makeVal(u"Preview"_s);
         m_infoRenderMode  = makeVal(u"Isosurface"_s);
         m_info2dMode      = makeVal(u"Slice"_s);
-        m_infoMomentState = makeVal(u"\u2014"_s);
+        m_infoMomentState = makeVal(u"-"_s);
 
         m_infoDsLoadState->setToolTip(u"Preview, loading full resolution, or full resolution."_s);
         m_infoRenderMode->setToolTip(u"Current 3D rendering mode (Isosurface or Volume Rendering)."_s);

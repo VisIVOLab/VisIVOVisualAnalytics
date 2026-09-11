@@ -675,7 +675,7 @@
   </action>
   <action name="actionStackCubes">
    <property name="text"><string>Stack Cubes to a Spectrum…</string></property>
-   <property name="toolTip"><string>Co-add several cubes pixel-by-pixel into ONE 1-D spectrum, to pull a population's average signal out from under the noise of the individual cubes. This does not merge the cubes into a bigger cube (that is mosaicking).</string></property>
+   <property name="toolTip"><string>Collapse each selected cube to its own mean spectrum, then combine those into ONE 1-D spectrum, to pull a population's average signal out from under the noise of the individual cubes. This does not merge the cubes into a bigger cube.</string></property>
   </action>
   <action name="actionGalactic">
    <property name="checkable"><bool>true</bool></property>

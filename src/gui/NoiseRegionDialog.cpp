@@ -22,7 +22,13 @@ NoiseRegionDialog::NoiseRegionDialog(int width, int height, int depth, QWidget *
     , m_depth(depth)
 {
     setWindowTitle(u"Noise Estimation, Select Region"_s);
-    setModal(true);
+    // NOT modal. This window now stays open across the estimate and past it, and
+    // an application-modal settings window blocks the very result window it
+    // produces: ToolResultDialog is a non-modal sibling parented to the cube, so
+    // the numbers appeared behind a window the user could not dismiss without
+    // losing them (reproduced in a Qt harness). The progress sheet
+    // supplies the blocking that the run itself needs, and only while it runs.
+    setModal(false);
     // Shared input theme — see ToolDialogStyle.
     setStyleSheet(ToolDialogStyle::inputCss());
 
@@ -136,7 +142,10 @@ NoiseRegionDialog::NoiseRegionDialog(int width, int height, int depth, QWidget *
     btnRow->addWidget(m_okBtn);
     root->addLayout(btnRow);
 
-    QObject::connect(m_okBtn,   &QPushButton::clicked, this, &QDialog::accept);
+    // Estimate does NOT accept: the window stays open across the compute, carries
+    // the progress sheet and is ready for the next region, like every other tool
+    // dialog. The controller listens for this.
+    QObject::connect(m_okBtn,   &QPushButton::clicked, this, &NoiseRegionDialog::estimateRequested);
     QObject::connect(closeBtn,  &QPushButton::clicked, this, &QDialog::reject);
     QObject::connect(resetBtn,  &QPushButton::clicked, this, &NoiseRegionDialog::resetToFullExtent);
 
@@ -174,7 +183,8 @@ void NoiseRegionDialog::validate()
     const int y0 = m_y0Spin->value(), y1 = m_y1Spin->value();
     const int c0 = m_chStartSpin->value(), c1 = m_chEndSpin->value();
     const bool xOk = (x0 <= x1), yOk = (y0 <= y1), cOk = (c0 <= c1);
-    m_okBtn->setEnabled(xOk && yOk && cOk);
+    // Never available while an estimate is in flight, whatever the bounds say.
+    m_okBtn->setEnabled(xOk && yOk && cOk && !m_busy);
 
     // Spatial hint: pixel count + "ratio of footprint" + range warning.
     if (m_spatialHint) {
@@ -244,4 +254,14 @@ void NoiseRegionDialog::setRegion(int x0, int x1, int y0, int y1, int chStart, i
     if (m_restoredHint) {
         m_restoredHint->show();   // called only when restoring a saved region
     }
+}
+
+void NoiseRegionDialog::setBusy(bool busy)
+{
+    // Estimate is available only when NOT busy AND the region is valid. Setting
+    // it straight from `busy` made completion re-enable the button over invalid
+    // bounds, and validate() firing during a run re-enabled it mid-compute
+    //. The two conditions live in one place: validate().
+    m_busy = busy;
+    validate();
 }

@@ -112,26 +112,11 @@ void MomentMapController::startComputation(int defaultOrder)
         config.channelStart = 0;
         config.channelEnd = totalChannels - 1;
     }
-    if (!configureMomentDialog(defaultOrder, config, restoredFromLastSession)) {
-        return;
-    }
-    m_currentConfig = config;
-    // Persist for the next session.
-    AnalysisParamStore().save(m_filepath, u"moment"_s, {
-            { u"channelStart"_s, config.channelStart }, { u"channelEnd"_s, config.channelEnd },
-            { u"maskEnabled"_s, config.maskEnabled }, { u"thresholdAuto"_s, config.thresholdAuto },
-            { u"thresholdValue"_s, config.thresholdValue } });
-
-    // The interactive path only: the moment dialog has already closed by now, so
-    // without this the sole sign of a minutes-long compute was a line in the
-    // CUBE window's status bar, bottom-left, away from where the user was just
-    // working (user report). dispatch() is also the copilot's entry point, and
-    // an agent-driven compute must not put a modal sheet in anyone's way — so
-    // the sheet is created HERE and dispatch() merely closes whatever it finds.
-    if (m_parentWindow)
-        m_progressSheet = visivo::showToolProgressSheet(
-                m_parentWindow, u"Computing the moment map"_s);
-    this->dispatch(config);
+    // The window owns the run from here: it validates, persists, raises its own
+    // progress sheet and dispatches, and stays open afterwards. dispatch() is
+    // also the copilot's entry point, so it creates no sheet of its own — an
+    // agent-driven compute must not put a modal sheet in anyone's way.
+    this->openMomentDialog(defaultOrder, config, restoredFromLastSession);
 }
 
 // Headless compute (no dialog): the scientific copilot builds a Config from its
@@ -239,7 +224,7 @@ void MomentMapController::dispatch(const Config &config)
                            ? u"auto (≈ 3σ)"_s
                            : u">= %1"_s.arg(config.thresholdValue, 0, 'g', 8))
                 : u"none"_s;
-        const QString unitLabel = result.momentUnit.isEmpty() ? u"\u2014"_s : result.momentUnit;
+        const QString unitLabel = result.momentUnit.isEmpty() ? u"-"_s : result.momentUnit;
 
         const QString summary =
                 u"Moment map: %1 | Unit: %2 | Ch: %3 | Mask: %4 | Scope: %5"_s
@@ -264,10 +249,10 @@ void MomentMapController::dispatch(const Config &config)
                 u"Source scope: %9"_s
                         .arg(describeMomentOrder(config.order))
                         .arg(unitLabel)
-                        .arg(result.bunit.isEmpty() ? u"\u2014"_s : result.bunit)
-                        .arg(result.spectralAxisType.isEmpty() ? u"\u2014"_s
+                        .arg(result.bunit.isEmpty() ? u"-"_s : result.bunit)
+                        .arg(result.spectralAxisType.isEmpty() ? u"-"_s
                                                                : result.spectralAxisType)
-                        .arg(result.spectralAxisUnit.isEmpty() ? u"\u2014"_s
+                        .arg(result.spectralAxisUnit.isEmpty() ? u"-"_s
                                                                : result.spectralAxisUnit)
                         .arg(formatMomentChannelRange(config))
                         .arg(config.maskEnabled ? u"enabled"_s : u"none"_s)
@@ -302,36 +287,52 @@ void MomentMapController::dispatch(const Config &config)
 // Dialog – moved verbatim from vtkWindowCube::configureMomentRequest()
 // ─────────────────────────────────────────────────────────────────────────────
 
-bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config,
-                                                bool restoredFromLastSession)
+void MomentMapController::openMomentDialog(int defaultOrder, Config config,
+                                           bool restoredFromLastSession)
 {
+    // The settings window STAYS OPEN across the compute, like every other tool
+    // dialog: Compute does not close it, the progress sheet is window-modal on
+    // IT (not on the cube window), and when the result lands the same window is
+    // there to run again with different parameters. It used to be a modal
+    // QDialog::exec() that closed on Accept, so the compute it started had no
+    // window of its own and the sheet had to go on the viewer, which is not
+    // where the user was looking (user report).
+    if (m_configDialog) {
+        m_configDialog->show();
+        m_configDialog->raise();
+        m_configDialog->activateWindow();
+        return;
+    }
+
     // Shared visual chrome (input theming + section headers + helper text)
     // is in ToolDialogStyle so every parameter dialog looks the same.
     const QString tBorder = QString::fromLatin1(VisivoTheme::kOutline());
     const QString tMuted  = QString::fromLatin1(VisivoTheme::kOnSurfaceVariant());
 
-    QDialog dialog(m_parentWindow);
-    dialog.setWindowTitle(u"Moment Map Settings"_s);
-    dialog.setMinimumWidth(580);
-    dialog.setStyleSheet(ToolDialogStyle::inputCss());
-    auto *layout = new QVBoxLayout(&dialog);
+    auto *dlg = new QDialog(m_parentWindow);
+    m_configDialog = dlg;
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowTitle(u"Moment Map Settings"_s);
+    dlg->setMinimumWidth(580);
+    dlg->setStyleSheet(ToolDialogStyle::inputCss());
+    auto *layout = new QVBoxLayout(dlg);
     layout->setContentsMargins(16, 14, 16, 14);
     layout->setSpacing(10);
-    layout->addWidget(ToolDialogStyle::makeBreadcrumb(&dialog, u"Compute Moment"_s));
+    layout->addWidget(ToolDialogStyle::makeBreadcrumb(dlg, u"Compute Moment"_s));
 
     if (restoredFromLastSession) {
         auto *restoredHint = new QLabel(
                 u"↺ Channel range and mask restored from your last session for this cube."_s,
-                &dialog);
+                dlg);
         restoredHint->setStyleSheet(QStringLiteral("color: %1; font-style: italic;").arg(tMuted));
         restoredHint->setWordWrap(true);
         layout->addWidget(restoredHint);
     }
 
     // ── COMPUTE: moment order + per-order helper text ──────────────────────
-    auto *computeForm = ToolDialogStyle::addSection(layout, u"Compute"_s, &dialog);
+    auto *computeForm = ToolDialogStyle::addSection(layout, u"Compute"_s, dlg);
 
-    auto *momentCombo = new QComboBox(&dialog);
+    auto *momentCombo = new QComboBox(dlg);
     const std::array<std::pair<int, QString>, 9> orders = {
             std::pair{ 0,  u"Moment 0: Integrated intensity (M0)"_s },
             std::pair{ 1,  u"Moment 1: Intensity-weighted coordinate (M1)"_s },
@@ -369,7 +370,7 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
     }
     momentCombo->setCurrentIndex(defaultIndex);
 
-    auto *orderHintLabel = new QLabel(orderHint(defaultOrder), &dialog);
+    auto *orderHintLabel = new QLabel(orderHint(defaultOrder), dlg);
     orderHintLabel->setStyleSheet(ToolDialogStyle::helperCss());
     orderHintLabel->setWordWrap(true);
     QObject::connect(momentCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -381,11 +382,11 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
     computeForm->addRow(QString(), orderHintLabel);
 
     // ── CHANNEL RANGE: start/end on one row + range size hint ──────────────
-    auto *rangeForm = ToolDialogStyle::addSection(layout, u"Channel range"_s, &dialog);
+    auto *rangeForm = ToolDialogStyle::addSection(layout, u"Channel range"_s, dlg);
 
     const int totalChannels = std::max(1, m_depth);
-    auto *channelStartSpin = new QSpinBox(&dialog);
-    auto *channelEndSpin   = new QSpinBox(&dialog);
+    auto *channelStartSpin = new QSpinBox(dlg);
+    auto *channelEndSpin   = new QSpinBox(dlg);
     channelStartSpin->setRange(1, totalChannels);
     channelEndSpin->setRange(1, totalChannels);
     channelStartSpin->setValue(std::clamp(config.channelStart + 1, 1, totalChannels));
@@ -394,7 +395,7 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
 
     // Put both spinboxes on the same row with a tiny "to" separator so the
     // form is more compact and the relationship between the two is clear.
-    auto *rangeRow = new QWidget(&dialog);
+    auto *rangeRow = new QWidget(dlg);
     auto *rangeLay = new QHBoxLayout(rangeRow);
     rangeLay->setContentsMargins(0, 0, 0, 0);
     rangeLay->setSpacing(8);
@@ -404,7 +405,7 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
     rangeLay->addWidget(toLbl);
     rangeLay->addWidget(channelEndSpin, 1);
 
-    auto *rangeHintLabel = new QLabel(&dialog);
+    auto *rangeHintLabel = new QLabel(dlg);
     rangeHintLabel->setStyleSheet(ToolDialogStyle::helperCss());
     rangeHintLabel->setWordWrap(true);
     auto refreshRangeHint = [rangeHintLabel, channelStartSpin, channelEndSpin, totalChannels]() {
@@ -417,24 +418,24 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
         rangeHintLabel->setText(u"%1 of %2 channels selected%3"_s
                                         .arg(n).arg(totalChannels).arg(warn));
     };
-    QObject::connect(channelStartSpin, &QSpinBox::valueChanged, &dialog, refreshRangeHint);
-    QObject::connect(channelEndSpin,   &QSpinBox::valueChanged, &dialog, refreshRangeHint);
+    QObject::connect(channelStartSpin, &QSpinBox::valueChanged, dlg, refreshRangeHint);
+    QObject::connect(channelEndSpin,   &QSpinBox::valueChanged, dlg, refreshRangeHint);
     refreshRangeHint();
 
     rangeForm->addRow(u"Start → End"_s, rangeRow);
     rangeForm->addRow(QString(), rangeHintLabel);
 
     // ── MASKING: checkbox + threshold value ────────────────────────────────
-    auto *maskForm = ToolDialogStyle::addSection(layout, u"Masking"_s, &dialog);
+    auto *maskForm = ToolDialogStyle::addSection(layout, u"Masking"_s, dlg);
 
-    auto *maskCheck = new QCheckBox(u"Enable threshold mask"_s, &dialog);
+    auto *maskCheck = new QCheckBox(u"Enable threshold mask"_s, dlg);
     maskCheck->setChecked(config.maskEnabled);
 
-    auto *autoCheck = new QCheckBox(u"Auto threshold (≈ 3σ from MAD)"_s, &dialog);
+    auto *autoCheck = new QCheckBox(u"Auto threshold (≈ 3σ from MAD)"_s, dlg);
     autoCheck->setChecked(config.thresholdAuto);
     autoCheck->setEnabled(config.maskEnabled);
 
-    auto *thresholdSpin = new QDoubleSpinBox(&dialog);
+    auto *thresholdSpin = new QDoubleSpinBox(dlg);
     thresholdSpin->setRange(-1.0e30, 1.0e30);
     thresholdSpin->setDecimals(6);
     thresholdSpin->setValue(config.thresholdValue);
@@ -446,16 +447,16 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
         autoCheck->setEnabled(on);
         thresholdSpin->setEnabled(on && !autoCheck->isChecked());
     };
-    QObject::connect(maskCheck, &QCheckBox::toggled, &dialog,
+    QObject::connect(maskCheck, &QCheckBox::toggled, dlg,
                      [updateThresholdEnabled](bool) { updateThresholdEnabled(); });
-    QObject::connect(autoCheck, &QCheckBox::toggled, &dialog,
+    QObject::connect(autoCheck, &QCheckBox::toggled, dlg,
                      [updateThresholdEnabled](bool) { updateThresholdEnabled(); });
 
     auto *maskHintLabel = new QLabel(
             u"Only voxels above the threshold contribute to the moment - this "
             u"cleans up M1/M2. With Auto, the backend derives the threshold "
             u"from the noise (median + 3·σ via MAD); untick it to set a value "
-            u"by hand."_s, &dialog);
+            u"by hand."_s, dlg);
     maskHintLabel->setStyleSheet(ToolDialogStyle::helperCss());
     maskHintLabel->setWordWrap(true);
 
@@ -467,51 +468,78 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
     // ── FOOTER: combined NaN/blanking + source-scope info ──────────────────
     // The old two-row form was visually noisy for two static facts. One
     // compact muted line keeps the same information density without
-    // dominating the dialog.
-    auto *divider = new QFrame(&dialog);
+    // dominating the dlg->
+    auto *divider = new QFrame(dlg);
     divider->setFrameShape(QFrame::HLine);
     divider->setStyleSheet(QStringLiteral("color: %1;").arg(tBorder));
     layout->addWidget(divider);
 
     auto *contextLabel = new QLabel(
             u"NaN / blanked voxels are excluded automatically · %1"_s
-                    .arg(describeMomentScope()), &dialog);
+                    .arg(describeMomentScope()), dlg);
     contextLabel->setStyleSheet(ToolDialogStyle::helperCss());
     contextLabel->setWordWrap(true);
     layout->addWidget(contextLabel);
 
     // ── BUTTONS: Close (secondary) + Compute (primary brand-blue),
-    // styled via VisivoTheme so they match every other tool dialog. ─────
+    // styled via VisivoTheme so they match every other tool dlg-> ─────
     auto *btnRow = new QHBoxLayout();
     btnRow->addStretch();
-    auto *closeBtn = VisivoTheme::makeSecondaryButton(u"Close"_s, &dialog);
-    auto *okBtn    = VisivoTheme::makePrimaryButton(u"Compute"_s, &dialog);
+    auto *closeBtn = VisivoTheme::makeSecondaryButton(u"Close"_s, dlg);
+    auto *okBtn    = VisivoTheme::makePrimaryButton(u"Compute"_s, dlg);
     okBtn->setDefault(true);
     btnRow->addWidget(closeBtn);
     btnRow->addWidget(okBtn);
     layout->addLayout(btnRow);
-    QObject::connect(okBtn,    &QPushButton::clicked, &dialog, &QDialog::accept);
-    QObject::connect(closeBtn, &QPushButton::clicked, &dialog, &QDialog::reject);
+    QObject::connect(closeBtn, &QPushButton::clicked, dlg, &QDialog::close);
+    QObject::connect(okBtn, &QPushButton::clicked, this,
+                     [this, dlg, config, momentCombo, channelStartSpin, channelEndSpin,
+                      maskCheck, autoCheck, thresholdSpin]() mutable {
+        if (m_busy)
+            return;   // the sheet blocks the dialog, but be explicit
+        const int channelStart = channelStartSpin->value() - 1;
+        const int channelEnd   = channelEndSpin->value() - 1;
+        if (channelStart > channelEnd) {
+            QMessageBox::warning(dlg, u"Moment Map"_s,
+                                 u"Start channel must be less than or equal to end channel."_s);
+            return;
+        }
+        config.order          = momentCombo->currentData().toInt();
+        config.channelStart   = channelStart;
+        config.channelEnd     = channelEnd;
+        config.maskEnabled    = maskCheck->isChecked();
+        config.thresholdAuto  = autoCheck->isChecked();
+        config.thresholdValue = thresholdSpin->value();
 
-    if (dialog.exec() != QDialog::Accepted) {
-        return false;
-    }
+        m_currentConfig = config;
+        AnalysisParamStore().save(m_filepath, u"moment"_s, {
+                { u"channelStart"_s, config.channelStart },
+                { u"channelEnd"_s, config.channelEnd },
+                { u"maskEnabled"_s, config.maskEnabled },
+                { u"thresholdAuto"_s, config.thresholdAuto },
+                { u"thresholdValue"_s, config.thresholdValue } });
 
-    const int channelStart = channelStartSpin->value() - 1;
-    const int channelEnd = channelEndSpin->value() - 1;
-    if (channelStart > channelEnd) {
-        QMessageBox::warning(m_parentWindow, u"Moment Map"_s,
-                             u"Start channel must be less than or equal to end channel."_s);
-        return false;
-    }
+        // On the DIALOG, so the work is reported where it was asked for. The
+        // sheet is window-modal, which also blocks the controls underneath it
+        // for the duration, so nothing else needs disabling.
+        m_progressSheet = visivo::showToolProgressSheet(dlg, u"Computing the moment map"_s);
+        m_startedFromDialog = true;
+        emit this->computationStarted(config);
+        this->dispatch(config);
+    });
 
-    config.order = momentCombo->currentData().toInt();
-    config.channelStart = channelStart;
-    config.channelEnd = channelEnd;
-    config.maskEnabled = maskCheck->isChecked();
-    config.thresholdAuto = autoCheck->isChecked();
-    config.thresholdValue = thresholdSpin->value();
-    return true;
+    // Closing the window without ever pressing Compute is a decision too: the
+    // 2-D mode toggle has to fall back to Slice, which it used to do from the
+    // exec() return value.
+    m_startedFromDialog = false;
+    QObject::connect(dlg, &QObject::destroyed, this, [this]() {
+        if (!m_startedFromDialog)
+            emit this->dialogDismissed();
+    });
+
+    dlg->show();
+    dlg->raise();
+    dlg->activateWindow();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -23,7 +23,7 @@ causes:
 
 ### "Session not found."
 
-You've requested an action (e.g. *Stack Spectral Cubes*) referencing a
+You've requested an action (e.g. *Stack Cubes to a Spectrum*) referencing a
 `session_id` that the backend no longer has — usually because the
 backend was restarted after the cube was opened.
 
@@ -254,7 +254,7 @@ running computation finish, and retry. Raising
 `VISIVO_MAX_CONCURRENT_TASKS` / `VISIVO_HEAVY_SLOTS` on the server trades
 interactive responsiveness for throughput.
 
-### "Stack Spectral Cubes" shows only one cube
+### "Stack Cubes to a Spectrum" shows only one cube
 
 You only have one cube open in the current backend session. Open the
 other cubes first (via *Data Hub → Open Remote Dataset*). The dialog
@@ -265,6 +265,10 @@ If you have multiple cubes open but only one appears in the list:
 - Their shapes are different. The dialog disables incompatible cubes
   (different `width × height × depth`); hover the disabled rows to read
   the tooltip with the actual shape.
+- They are the same file. The list shows one row per *file*, and a cube can be
+  registered in a session twice (a baseline run registers its output, and
+  opening that output from its Session Data row registers it again), so the
+  duplicate is collapsed rather than offered as a second cube to stack.
 
 ### Moment dialog says "Computing…" forever
 

@@ -78,10 +78,17 @@ using namespace Qt::StringLiterals;
 
 // ── MainWindow: Science (extracted from MainWindow.cpp) ──
 
-void MainWindow::runPublicationFigure()
+void MainWindow::runPublicationFigure(const QString &backendUrl, const QString &backendToken,
+                                      const QString &sessionId, const QString &datasetId)
 {
-    if (m_sciDatasetId.isEmpty()) {
-        QMessageBox::information(this, u"Publication Figure"_s, u"Open a dataset first."_s);
+    // Context passed in, not read from "the last dataset opened": these are
+    // tools OF A VIEW, and the view that asks knows which dataset it shows.
+    // Sharing one sticky global meant that with two images open the figure was
+    // rendered from whichever had been opened last (user report: the Science
+    // menu answering "Open a dataset first" even with a cube on screen).
+    if (datasetId.isEmpty()) {
+        QMessageBox::information(this, u"Publication Figure"_s,
+                                 u"No dataset to render: open an image or a cube first."_s);
         return;
     }
     QDialog dlg(this);
@@ -106,8 +113,7 @@ void MainWindow::runPublicationFigure()
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     if (dlg.exec() != QDialog::Accepted) return;
 
-    const QString url = m_sciBackendUrl, token = m_sciToken, ds = m_sciDatasetId;
-    const QString sessionId = m_sciSessionId;
+    const QString url = backendUrl, token = backendToken, ds = datasetId;
     const QString s = stretch->currentText(), cm = cmap->currentText(), t = title->text();
     const bool g = grid->isChecked(), c = cbar->isChecked();
     auto *watcher = new QFutureWatcher<BackendPublicationFigureResult>(this);
@@ -138,14 +144,15 @@ void MainWindow::runPublicationFigure()
 }
 
 
-void MainWindow::runImageQuality()
+void MainWindow::runImageQuality(const QString &backendUrl, const QString &backendToken,
+                                 const QString &sessionId, const QString &datasetId)
 {
-    if (m_sciDatasetId.isEmpty()) {
-        QMessageBox::information(this, u"Image Quality"_s, u"Open a dataset first."_s);
+    if (datasetId.isEmpty()) {
+        QMessageBox::information(this, u"Image Quality"_s,
+                                 u"No dataset to measure: open an image or a cube first."_s);
         return;
     }
-    const QString url = m_sciBackendUrl, token = m_sciToken, ds = m_sciDatasetId;
-    const QString sessionId = m_sciSessionId;
+    const QString url = backendUrl, token = backendToken, ds = datasetId;
     auto *watcher = new QFutureWatcher<BackendImageQualityResult>(this);
     QObject::connect(watcher, &QFutureWatcher<BackendImageQualityResult>::finished, this,
                      [this, watcher]() {

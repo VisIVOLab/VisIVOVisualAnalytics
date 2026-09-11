@@ -282,9 +282,9 @@ every tool together with the page that documents its scientific use.
   - New cube dataset (registered in the session)
   - [Spectral tools · Baseline](user-guide/spectral-tools#baseline-subtraction-s-03)
 * - Stack multiple cubes
-  - **Tools → Stack Spectral Cubes…**
+  - **Tools → Stack Cubes to a Spectrum…**
   - 1-D stacked spectrum
-  - [Spectral tools · Stacking](user-guide/spectral-tools#spectral-stacking-s-04)
+  - [Spectral tools · Stack cubes to a spectrum](user-guide/spectral-tools#stack-cubes-to-a-spectrum-s-04)
 * - Position-velocity diagram
   - **Tools → Extract PV Diagram** + polyline on the slice
   - 2-D PV map

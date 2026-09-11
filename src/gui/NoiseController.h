@@ -30,11 +30,14 @@
 #include "CubeNoiseTypes.h"
 
 #include <QObject>
+#include <QPointer>
 
 #include <functional>
 
 // Forward declarations
 class QWidget;
+class NoiseRegionDialog;
+class QProgressDialog;
 
 // ---------------------------------------------------------------------------
 
@@ -87,6 +90,13 @@ public slots:
     void startEstimation();
 
 private:
+    /// Run one estimate for the region currently set in @p dialog. The dialog
+    /// stays open throughout and owns the progress sheet.
+    void runEstimate(NoiseRegionDialog *dialog);
+    /// Clear the cube's region overlay only if @p generation is still the one on
+    /// screen. Both the settings window and each result window can outlive the
+    /// estimate that drew the overlay, so neither may clear it unconditionally.
+    void clearPreviewIfCurrent(quint64 generation);
     void showResult(const CubeNoiseEstimateResult &result);
 
     const QString m_backendUrl;
@@ -100,6 +110,13 @@ private:
     std::function<void()> m_onRunFinished;
 
     bool m_busy{ false };
+    /// Bumped by every estimate; whoever wants to clear the overlay must still
+    /// hold the current value.
+    quint64 m_previewGeneration{ 0 };
+    /// The region window, kept alive between estimates (WA_DeleteOnClose clears
+    /// this QPointer when the user closes it), and its progress sheet.
+    QPointer<NoiseRegionDialog> m_regionDialog;
+    QPointer<QProgressDialog> m_progressSheet;
 };
 
 #endif // NoiseController_h

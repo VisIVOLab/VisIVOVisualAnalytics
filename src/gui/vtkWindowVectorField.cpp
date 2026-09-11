@@ -68,7 +68,7 @@ vtkWindowVectorField::vtkWindowVectorField(const QString &path, BackendVelocityG
     : QMainWindow(parent), m_path(path), m_grid(std::move(grid)), m_datasetId(datasetId),
       m_backendUrl(backendUrl), m_backendToken(backendToken), m_sessionId(sessionId)
 {
-    this->setWindowTitle(u"Velocity Field -%1"_s.arg(QFileInfo(path).fileName()));
+    this->setWindowTitle(u"Velocity Field - %1"_s.arg(QFileInfo(path).fileName()));
     this->lut = vtkSmartPointer<vtkLookupTable>::New();
     this->axesWidget = vtkSmartPointer<vtkOrientationMarkerWidget>::New();
     this->scalarBar = vtkSmartPointer<vtkScalarBarActor>::New();
@@ -283,7 +283,7 @@ void vtkWindowVectorField::setupUi()
     this->comboGalaxyShape->setEnabled(false);
     this->comboGalaxyShape->setToolTip(
             u"Draw galaxies as points, or, when the catalogue carries vx/vy/vz, as "
-            u"velocity arrows (each galaxy's peculiar velocity), or - with a field "
+            u"velocity arrows (each galaxy's peculiar velocity), or, with a field "
             u"loaded, residual arrows (v_galaxy − v_field: the unexplained motion). "
             u"Both arrow modes share one physical scale, so they're comparable."_s);
     overlayForm->addRow(u"Galaxy shape"_s, this->comboGalaxyShape);

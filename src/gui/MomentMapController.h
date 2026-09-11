@@ -39,6 +39,7 @@
 
 class QWidget;
 class QProgressDialog;
+class QDialog;
 
 class MomentMapController : public QObject
 {
@@ -102,6 +103,17 @@ public:
     static QString describeMomentOrder(int order);
     static QString describeMomentScope();
 
+signals:
+    /// A computation has actually STARTED (Compute pressed and validated), with
+    /// the accepted config. The settings window is non-modal now, so the caller
+    /// cannot learn this by checking isBusy() right after opening it — which is
+    /// what requestMomentMode() and setMomentOrder() used to do, and why the
+    /// Computing card and the start diagnostics stopped happening.
+    void computationStarted(const MomentMapController::Config &config);
+    /// The settings window was closed without ever starting one. The 2-D mode
+    /// toggle uses this to fall back to Slice.
+    void dialogDismissed();
+
 public slots:
     // Opens the dialog with defaultOrder pre-selected; if accepted, dispatches
     // the async computation.  Re-entrancy-safe: no-op if already running.
@@ -115,7 +127,11 @@ public slots:
 
 private:
     void dispatch(const Config &config);   ///< async compute for a resolved Config (shared)
-    bool configureMomentDialog(int defaultOrder, Config &config, bool restoredFromLastSession);
+    /// Open (or raise) the persistent Moment Map Settings window. Compute runs
+    /// from inside it: the window stays open across the run, carries its own
+    /// progress sheet and is ready for the next set of parameters, which is how
+    /// every other tool dialog behaves.
+    void openMomentDialog(int defaultOrder, Config config, bool restoredFromLastSession);
     static QString formatMomentChannelRange(const Config &config);
 
     const QString m_filepath;
@@ -137,6 +153,12 @@ private:
     /// The window-modal progress sheet for the INTERACTIVE path only (the
     /// copilot's headless dispatch leaves it null). See ToolProgressSheet.h.
     QPointer<QProgressDialog> m_progressSheet;
+    /// The settings window, kept alive between runs (WA_DeleteOnClose clears
+    /// this QPointer when the user closes it).
+    QPointer<QDialog> m_configDialog;
+    /// Whether the open settings window has started at least one computation,
+    /// so closing it can tell "cancelled" from "done".
+    bool m_startedFromDialog{ false };
     QString m_lastError;
 };
 

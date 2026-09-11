@@ -223,7 +223,7 @@ A tool is bound to a **view**, not to the pane you happen to have selected:
   - When you reach for them
 * - **Spectral**
   - Extract Spectrum, Pin Spectrum, Extract PV Diagram, Line-Width Map,
-    Baseline Subtraction, Stack Spectral Cubes
+    Baseline Subtraction, Stack Cubes to a Spectrum
   - Anything along the velocity axis, from a single line of sight to a stack.
 * - **Maps**
   - Compute Moment Map, Channel Maps
@@ -237,7 +237,7 @@ A tool is bound to a **view**, not to the pane you happen to have selected:
   - Draw a shape and measure inside it, or exchange one with CASA / DS9. See
     [Regions, PV, noise](region-pv-noise).
 * - **Sources & Kinematics**
-  - Kinematic Lasso, Kinematic Model Overlay
+  - Source Finding (SoFiA-2), Kinematic Lasso, Kinematic Model Overlay
   - Pick out one object and work with it. See
     [Kinematic Lasso](kinematic-lasso) for click-to-select segmentation, and
     *Kinematic Model Overlay* to draw a tilted-ring model over the data.

@@ -41,6 +41,7 @@ public:
         int width{ 0 };
         int height{ 0 };
         int depth{ 0 };
+        QString path;     ///< backend file path; identity for de-duplication
     };
 
     /**

@@ -1,5 +1,7 @@
 #include "SourceFindDialog.h"
 
+#include "ToolProgressSheet.h"
+
 #include "BackendClient.h"
 #include "theme/ToolDialogStyle.h"
 #include "theme/VisivoTheme.h"
@@ -129,11 +131,7 @@ void SourceFindDialog::onRun()
     const QString datasetId = m_datasetId;
     setUiBusy(true);
 
-    m_progress = new QProgressDialog(u"Running SoFiA-2 source finder…"_s,
-                                     QString(), 0, 0, this);
-    m_progress->setWindowModality(Qt::WindowModal);
-    m_progress->setMinimumDuration(400);
-    m_progress->show();
+    m_progress = visivo::showToolProgressSheet(this, u"Running the SoFiA-2 source finder"_s);
 
     std::shared_ptr<BackendClient> client = m_client;   // shared with the worker
 
@@ -148,10 +146,7 @@ void SourceFindDialog::onRun()
         if (!self) {
             return;
         }
-        if (self->m_progress) {
-            self->m_progress->close();
-            self->m_progress->deleteLater();
-        }
+        visivo::closeToolProgressSheet(self->m_progress);
         self->setUiBusy(false);
 
         if (!result.valid) {

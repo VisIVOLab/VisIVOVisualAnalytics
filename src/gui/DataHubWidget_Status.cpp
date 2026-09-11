@@ -327,7 +327,7 @@ void DataHubWidget::refreshStatus()
         }
         if (this->statusBarSanity) this->statusBarSanity->setVisible(false);
         qDebug().noquote()
-                << QStringLiteral("[DataHub] backend unreachable -%1").arg(health.error);
+                << QStringLiteral("[DataHub] backend unreachable - %1").arg(health.error);
     }
 
     if (this->btnCheckConnection) {

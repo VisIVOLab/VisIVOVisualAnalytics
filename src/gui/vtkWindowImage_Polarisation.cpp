@@ -581,7 +581,7 @@ void vtkWindowImage::computeSpectralIndex()
             QStringLiteral("α (%1↔%2 GHz)").arg(nuA, 0, 'f', 2).arg(nuB, 0, 'f', 2),
             StokesRole::DerivedAlpha, u"Spectrum"_s, -2.5, 1.5);
     statusBar()->showMessage(
-            QStringLiteral("Spectral index: %1 valid pixels, range %2 -%3")
+            QStringLiteral("Spectral index: %1 valid pixels, range %2 - %3")
                     .arg(nValid).arg(aMin, 0, 'f', 2).arg(aMax, 0, 'f', 2),
             5000);
 }
@@ -805,7 +805,7 @@ void vtkWindowImage::addDerivedLayer(vtkSmartPointer<vtkImageData> data,
     }
     this->vtkRender();
     statusBar()->showMessage(
-            QStringLiteral("Derived map added: %1 (range %2 -%3)")
+            QStringLiteral("Derived map added: %1 (range %2 - %3)")
                     .arg(name)
                     .arg(rangeMin, 0, 'g', 4)
                     .arg(rangeMax, 0, 'g', 4),

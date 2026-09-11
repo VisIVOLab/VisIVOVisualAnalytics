@@ -33,6 +33,8 @@
 #include "StackDialog.h"
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
+#include "theme/ToolDialogStyle.h"
+#include "ToolProgressSheet.h"
 #include "ToolResultDialog.h"
 #include "ProfileWidget.h"
 #include "PvController.h"
@@ -2003,6 +2005,30 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             this,
             [this]() { this->updateBackendDerivedActionsAvailability(); },
             this);
+    // One place that reacts to a moment computation actually STARTING, for both
+    // entry points (the 2-D mode toggle and the moment-order actions).
+    QObject::connect(this->momentController, &MomentMapController::computationStarted, this,
+                     [this](const MomentMapController::Config &cfg) {
+                         QString detail = u"Moment %1 · channels %2–%3"_s
+                                                  .arg(cfg.order)
+                                                  .arg(cfg.channelStart + 1)
+                                                  .arg(cfg.channelEnd + 1);
+                         if (cfg.maskEnabled) {
+                             detail += cfg.thresholdAuto
+                                     ? u" · mask auto (\u2248 3\u03c3)"_s
+                                     : u" · mask \u2265 %1"_s.arg(cfg.thresholdValue, 0, 'g', 4);
+                         }
+                         this->setMomentCardState(MomentCardState::Computing, detail);
+                         DiagnosticsManager::instance()->publish(
+                                 DiagnosticsLevel::Info,
+                                 DiagnosticsCategory::Scientific,
+                                 QStringLiteral("MomentMap"),
+                                 QStringLiteral("Moment computation started: ") + detail,
+                                 this->remoteDatasetId,
+                                 this->remoteSessionId,
+                                 QStringLiteral("moment"));
+                     });
+
     // The estimate is a product like any other: a statistics row in Session Data
     // whose Provenance holds σ/MAD. No renderer — there is nothing to draw in a
     // pane — and no Provenance reveal, because the tool's own result dialog is
@@ -2359,30 +2385,16 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              }
                              std::vector<StackDialog::DatasetEntry> entries;
                              entries.reserve(listing.datasets.size());
-                             // One row per FILE, not per dataset id. The same path can be
-                             // registered in a session more than once — a baseline run
-                             // registers its output, and opening that output (the product
-                             // row's double-click) registers it again under a second id —
-                             // and the cube then appeared twice in this list, identical
-                             // and indistinguishable (user report). Stacking a cube with
-                             // itself is not a thing anyone wants, so the duplicates go.
-                             QSet<QString> seenPaths;
                              for (const auto &d : listing.datasets) {
-                                 const QString canonical = d.path.isEmpty()
-                                         ? QString()
-                                         : QFileInfo(d.path).canonicalFilePath();
-                                 const QString key = canonical.isEmpty() ? d.path : canonical;
-                                 if (!key.isEmpty() && seenPaths.contains(key))
-                                     continue;
-                                 if (!key.isEmpty())
-                                     seenPaths.insert(key);
                                  // Use the file basename as the human label so the user can
                                  // tell the cubes apart; fall back to the dataset id when
-                                 // the backend did not report a path.
+                                 // the backend did not report a path. The path travels too,
+                                 // so StackDialog can collapse the rows that are the same
+                                 // FILE registered twice.
                                  const QString fileName = QFileInfo(d.path).fileName();
                                  const QString label = fileName.isEmpty() ? d.datasetId : fileName;
                                  entries.push_back({ d.datasetId, d.kind, label,
-                                                     d.width, d.height, d.depth });
+                                                     d.width, d.height, d.depth, d.path });
                              }
                              // Shared ownership: the async stack run captures a copy
                              // of the shared_ptr, so the client survives an early
@@ -2624,6 +2636,19 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(m_actMaskRegion, &QAction::triggered,
                      this, &vtkWindowCube::maskCubeRegion3d);
 
+    // SoFiA-2 source finding. It existed only in the Data Hub's Science menu,
+    // where it ran against "the last dataset opened" — a cube tool reachable
+    // only from the one place that does not know which cube you are looking at.
+    // The host already had the request signal (the copilot's show_sources uses
+    // it) and captures this window's own dataset, so the tool just needed to be
+    // in the list.
+    m_actSourceFind = ui->menuTools->addAction(u"Source Finding (SoFiA-2)…"_s);
+    m_actSourceFind->setToolTip(
+            u"Run the SoFiA-2 source finder over this cube and overlay the "
+            u"detections; needs sofia2 on the backend's PATH."_s);
+    QObject::connect(m_actSourceFind, &QAction::triggered, this,
+                     [this]() { emit this->sourceFinderRequested(); });
+
     m_actKinematicLasso = ui->menuTools->addAction(u"Kinematic Lasso (click to select)"_s);
     m_actKinematicLasso->setCheckable(true);
     m_actKinematicLasso->setToolTip(
@@ -2730,8 +2755,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // Movie export (F3): channel scan / camera orbit → MP4 (or PNG frames).
     m_actExportMovie = ui->menuTools->addAction(u"Export Movie…"_s);
     m_actExportMovie->setToolTip(
-            u"Export an animation - a velocity channel scan or a 3-D camera "
-            u"orbit, as an MP4 video (or a PNG frame sequence)."_s);
+            u"Export an animation (a velocity channel scan, or a 3-D camera "
+            u"orbit) as an MP4 video, or as a PNG frame sequence."_s);
     QObject::connect(m_actExportMovie, &QAction::triggered,
                      this, &vtkWindowCube::showExportMovieDialog);
 
@@ -2958,10 +2983,10 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     ui->lineCubeMax->clear();
     ui->lineCubeMean->clear();
     ui->lineCubeRms->clear();
-    ui->lineImgMin->setText(u"\u2014"_s);
-    ui->lineImgMax->setText(u"\u2014"_s);
-    ui->lineImgMean->setText(u"\u2014"_s);
-    ui->lineImgRms->setText(u"\u2014"_s);
+    ui->lineImgMin->setText(u"-"_s);
+    ui->lineImgMax->setText(u"-"_s);
+    ui->lineImgMean->setText(u"-"_s);
+    ui->lineImgRms->setText(u"-"_s);
     this->setCubeOpenActionsEnabled(false);
     ui->actionIsosurface->setChecked(false);
     ui->actionVolume->setChecked(true);
@@ -3065,7 +3090,7 @@ void vtkWindowCube::showFitsHeaderDialog()
     auto *dlg = new QDialog(this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
     dlg->setWindowModality(Qt::NonModal);
-    dlg->setWindowTitle(u"FITS Header -%1"_s.arg(QFileInfo(this->filepath).fileName()));
+    dlg->setWindowTitle(u"FITS Header - %1"_s.arg(QFileInfo(this->filepath).fileName()));
     dlg->resize(620, 480);
 
     auto *vbox = new QVBoxLayout(dlg);
@@ -3302,7 +3327,7 @@ void vtkWindowCube::updateInfoStatsPage()
     d.imageModeText  = this->viewingSlice() ? u"Slice"_s : u"Moment Map"_s;
     switch (m_momentCardState) {
     case MomentCardState::NoMoment:
-        d.momentStateText        = u"\u2014"_s;
+        d.momentStateText        = u"-"_s;
         d.momentStateStyleSheet  = u"QLabel { font-size: 9px; color: #AABBCC; }"_s;
         break;
     case MomentCardState::Computing:
@@ -3406,8 +3431,10 @@ void vtkWindowCube::requestMomentMode()
     }
 
     // ── Case C: no moment yet — show the configuration dialog ────────────
-    // startComputation() shows the dialog synchronously, then either returns
-    // immediately (cancelled) or starts async computation and sets m_busy = true.
+    // The window is non-modal and stays open across the run, so nothing here can
+    // know whether a computation started. It does not need to: the view stays on
+    // Slice either way (below) until a result arrives, and the Computing card
+    // and start diagnostics hang off MomentMapController::computationStarted.
     DiagnosticsManager::instance()->publish(
             DiagnosticsLevel::Info,
             DiagnosticsCategory::Scientific,
@@ -3418,42 +3445,6 @@ void vtkWindowCube::requestMomentMode()
             QStringLiteral("moment"));
 
     this->momentController->startComputation(0);
-
-    if (!this->momentController->isBusy()) {
-        // Dialog was cancelled or failed before async start — revert to Slice.
-        const QSignalBlocker b1(ui->actionSlice);
-        const QSignalBlocker b2(ui->actionMomentMap);
-        ui->actionSlice->setChecked(true);
-        ui->actionMomentMap->setChecked(false);
-        m_uiAssembler->sync2dModeSidebar(true);
-        this->update2dModeVisibility(true);
-        return;
-    }
-
-    // Computation is now in flight. Build a compact summary of what was requested.
-    {
-        const auto &cfg = this->momentController->lastAcceptedConfig();
-        QString detail = u"Moment %1 · channels %2–%3"_s
-                                 .arg(cfg.order)
-                                 .arg(cfg.channelStart + 1)
-                                 .arg(cfg.channelEnd + 1);
-        if (cfg.maskEnabled) {
-            detail += cfg.thresholdAuto
-                    ? u" · mask auto (\u2248 3\u03c3)"_s
-                    : u" · mask \u2265 %1"_s.arg(cfg.thresholdValue, 0, 'g', 4);
-        }
-        this->setMomentCardState(MomentCardState::Computing, detail);
-
-        // Diagnostics — start.
-        DiagnosticsManager::instance()->publish(
-                DiagnosticsLevel::Info,
-                DiagnosticsCategory::Scientific,
-                QStringLiteral("MomentMap"),
-                QStringLiteral("Moment computation started: ") + detail,
-                this->remoteDatasetId,
-                this->remoteSessionId,
-                QStringLiteral("moment"));
-    }
 
     // Keep the UI in Slice view while computing — applyMomentMapResult() will
     // switch to Moment automatically when the result arrives.
@@ -4184,89 +4175,130 @@ void vtkWindowCube::clearPv()
 // callback dereferencing a dead this.
 
 namespace {
-// Build a small modal dialog asking for X/Y/Z bounds for sub-cube export.
-// Defaults to the full extent of the cube; pre-fills with the region
-// bounds if one is currently drawn on the slice. Returns true if the
-// user accepted; bounds are written into the inclusive 0-indexed *out
-// arguments.
-bool runSubCubeBoundsDialog(QWidget *parent,
-                            int fullWidth, int fullHeight, int fullDepth,
-                            int defaultX0, int defaultX1,
-                            int defaultY0, int defaultY1,
-                            int defaultZ0, int defaultZ1,
-                            int &outX0, int &outX1,
-                            int &outY0, int &outY1,
-                            int &outZ0, int &outZ1)
+/// The parameter window shared by the two tools that act on a 3-D box:
+/// Export Sub-Cube as FITS and Mask 3-D Region.
+///
+/// It behaves like every other tool dialog and for the same reasons: the window
+/// STAYS OPEN across the run, its action button starts the work instead of
+/// closing it, and the caller puts a window-modal progress sheet on THIS window
+/// so the work is reported where it was asked for. It also carries the tool's
+/// one extra parameter (the export basename, the mask mode), because the two
+/// tools used to ask for it in a SECOND modal prompt after this one closed, and
+/// a tool that interrogates you twice before starting is not a settings window.
+///
+/// The two tools also used to share this dialog verbatim, so Mask 3-D Region
+/// opened a window titled "Export Sub-Cube as FITS" that described exporting.
+/// Title, hint and action verb are per-tool now.
+///
+/// No Q_OBJECT: everything is wired with lambdas, so the class can live here
+/// next to its only two users instead of in a header of its own.
+class CubeBoxToolDialog : public QDialog
 {
-    using namespace Qt::StringLiterals;
-    QDialog dlg(parent);
-    dlg.setWindowTitle(u"Export Sub-Cube as FITS"_s);
-    dlg.setModal(true);
+public:
+    CubeBoxToolDialog(QWidget *parent, const QString &title, const QString &hint,
+                      const QString &actionText,
+                      int fullWidth, int fullHeight, int fullDepth,
+                      int defaultX0, int defaultX1, int defaultY0, int defaultY1,
+                      int defaultZ0, int defaultZ1,
+                      const QString &extraLabel, QWidget *extraWidget)
+        : QDialog(parent)
+    {
+        using namespace Qt::StringLiterals;
+        setWindowTitle(title);
+        setAttribute(Qt::WA_DeleteOnClose);
+        setStyleSheet(ToolDialogStyle::inputCss());
 
-    auto *root = new QVBoxLayout(&dlg);
-    root->setContentsMargins(16, 14, 16, 14);
-    root->setSpacing(10);
+        auto *root = new QVBoxLayout(this);
+        root->setContentsMargins(16, 14, 16, 14);
+        root->setSpacing(10);
+        root->addWidget(ToolDialogStyle::makeBreadcrumb(this, title));
 
-    auto *hint = new QLabel(
-            u"Crop the current cube to a spatial + spectral ROI and save it "
-            u"as a standalone FITS file. WCS is preserved (CRPIX shifted) "
-            u"so coordinates of every pixel match the source."_s,
-            &dlg);
-    hint->setWordWrap(true);
-    root->addWidget(hint);
+        auto *hintLabel = new QLabel(hint, this);
+        hintLabel->setStyleSheet(ToolDialogStyle::helperCss());
+        hintLabel->setWordWrap(true);
+        root->addWidget(hintLabel);
 
-    auto *form = new QFormLayout();
-    form->setHorizontalSpacing(12);
-    form->setVerticalSpacing(6);
+        auto *form = new QFormLayout();
+        form->setHorizontalSpacing(12);
+        form->setVerticalSpacing(6);
 
-    auto makeSpin = [&dlg](int lo, int hi, int val) {
-        auto *sb = new QSpinBox(&dlg);
-        sb->setRange(lo, hi);
-        sb->setValue(std::clamp(val, lo, hi));
-        sb->setAlignment(Qt::AlignRight);
-        return sb;
-    };
-    const int xMax = std::max(0, fullWidth  - 1);
-    const int yMax = std::max(0, fullHeight - 1);
-    const int zMax = std::max(0, fullDepth  - 1);
-    auto *spX0 = makeSpin(0, xMax, defaultX0);
-    auto *spX1 = makeSpin(0, xMax, defaultX1);
-    auto *spY0 = makeSpin(0, yMax, defaultY0);
-    auto *spY1 = makeSpin(0, yMax, defaultY1);
-    auto *spZ0 = makeSpin(0, zMax, defaultZ0);
-    auto *spZ1 = makeSpin(0, zMax, defaultZ1);
-    auto makeRow = [&dlg](QSpinBox *lo, QSpinBox *hi) {
-        auto *w = new QWidget(&dlg);
-        auto *h = new QHBoxLayout(w);
-        h->setContentsMargins(0, 0, 0, 0);
-        h->setSpacing(8);
-        h->addWidget(lo, 1);
-        h->addWidget(new QLabel(u"→"_s, w));
-        h->addWidget(hi, 1);
-        return w;
-    };
-    form->addRow(u"X (columns)"_s,  makeRow(spX0, spX1));
-    form->addRow(u"Y (rows)"_s,     makeRow(spY0, spY1));
-    form->addRow(u"Z (channels)"_s, makeRow(spZ0, spZ1));
-    root->addLayout(form);
+        auto makeSpin = [this](int lo, int hi, int val) {
+            auto *sb = new QSpinBox(this);
+            sb->setRange(lo, hi);
+            sb->setValue(std::clamp(val, lo, hi));
+            sb->setAlignment(Qt::AlignRight);
+            return sb;
+        };
+        const int xMax = std::max(0, fullWidth  - 1);
+        const int yMax = std::max(0, fullHeight - 1);
+        const int zMax = std::max(0, fullDepth  - 1);
+        m_spX0 = makeSpin(0, xMax, defaultX0);
+        m_spX1 = makeSpin(0, xMax, defaultX1);
+        m_spY0 = makeSpin(0, yMax, defaultY0);
+        m_spY1 = makeSpin(0, yMax, defaultY1);
+        m_spZ0 = makeSpin(0, zMax, defaultZ0);
+        m_spZ1 = makeSpin(0, zMax, defaultZ1);
+        auto makeRow = [this](QSpinBox *lo, QSpinBox *hi) {
+            auto *w = new QWidget(this);
+            auto *h = new QHBoxLayout(w);
+            h->setContentsMargins(0, 0, 0, 0);
+            h->setSpacing(8);
+            h->addWidget(lo, 1);
+            h->addWidget(new QLabel(u"→"_s, w));
+            h->addWidget(hi, 1);
+            return w;
+        };
+        form->addRow(u"X (columns)"_s,  makeRow(m_spX0, m_spX1));
+        form->addRow(u"Y (rows)"_s,     makeRow(m_spY0, m_spY1));
+        form->addRow(u"Z (channels)"_s, makeRow(m_spZ0, m_spZ1));
+        if (extraWidget) {
+            extraWidget->setParent(this);
+            form->addRow(extraLabel, extraWidget);
+        }
+        root->addLayout(form);
 
-    auto *btnBox = new QDialogButtonBox(
-            QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    btnBox->button(QDialogButtonBox::Ok)->setText(u"Export"_s);
-    root->addWidget(btnBox);
-    QObject::connect(btnBox, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    QObject::connect(btnBox, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+        auto *btnRow = new QHBoxLayout();
+        btnRow->addStretch();
+        auto *closeBtn = VisivoTheme::makeSecondaryButton(u"Close"_s, this);
+        m_actionBtn = VisivoTheme::makePrimaryButton(actionText, this);
+        m_actionBtn->setDefault(true);
+        btnRow->addWidget(closeBtn);
+        btnRow->addWidget(m_actionBtn);
+        root->addLayout(btnRow);
+        QObject::connect(closeBtn, &QPushButton::clicked, this, &QDialog::close);
+    }
 
-    if (dlg.exec() != QDialog::Accepted) return false;
-    // Normalise so the user can type the values in any order.
-    outX0 = std::min(spX0->value(), spX1->value());
-    outX1 = std::max(spX0->value(), spX1->value());
-    outY0 = std::min(spY0->value(), spY1->value());
-    outY1 = std::max(spY0->value(), spY1->value());
-    outZ0 = std::min(spZ0->value(), spZ1->value());
-    outZ1 = std::max(spZ0->value(), spZ1->value());
-    return true;
-}
+    /// Inclusive 0-indexed bounds, normalised so the user may type them in any
+    /// order: {x0, x1, y0, y1, z0, z1}.
+    std::array<int, 6> bounds() const
+    {
+        return { std::min(m_spX0->value(), m_spX1->value()),
+                 std::max(m_spX0->value(), m_spX1->value()),
+                 std::min(m_spY0->value(), m_spY1->value()),
+                 std::max(m_spY0->value(), m_spY1->value()),
+                 std::min(m_spZ0->value(), m_spZ1->value()),
+                 std::max(m_spZ0->value(), m_spZ1->value()) };
+    }
+
+    /// Runs @p onRun with this dialog as the owner of the run.
+    void onAction(const std::function<void()> &handler)
+    {
+        QObject::connect(m_actionBtn, &QPushButton::clicked, this, handler);
+    }
+
+    /// The progress sheet is window-modal on this dialog and already blocks it;
+    /// greying the action button makes the state visible as well as felt.
+    void setBusy(bool busy) { if (m_actionBtn) m_actionBtn->setEnabled(!busy); }
+
+private:
+    QSpinBox *m_spX0{ nullptr };
+    QSpinBox *m_spX1{ nullptr };
+    QSpinBox *m_spY0{ nullptr };
+    QSpinBox *m_spY1{ nullptr };
+    QSpinBox *m_spZ0{ nullptr };
+    QSpinBox *m_spZ1{ nullptr };
+    QPushButton *m_actionBtn{ nullptr };
+};
 } // namespace
 
 void vtkWindowCube::exportSubCubeAsFits()
@@ -4289,74 +4321,99 @@ void vtkWindowCube::exportSubCubeAsFits()
         defY1 = std::clamp(bounds[3], defY0, std::max(0, this->remoteDatasetHeight - 1));
     }
 
-    int x0 = 0, x1 = 0, y0 = 0, y1 = 0, z0 = 0, z1 = 0;
-    if (!runSubCubeBoundsDialog(this,
-                                this->remoteDatasetWidth,
-                                this->remoteDatasetHeight,
-                                this->remoteDatasetDepth,
-                                defX0, defX1, defY0, defY1, defZ0, defZ1,
-                                x0, x1, y0, y1, z0, z1)) {
+    // One window with every parameter in it, kept open across the run. The
+    // basename used to be a SECOND modal prompt after the bounds dialog closed.
+    const QFileInfo srcInfo(this->filepath);
+    auto *nameEdit = new QLineEdit();
+    nameEdit->setPlaceholderText(u"leave empty to let the backend name it"_s);
+    nameEdit->setText(u"%1_subcube_x%2-%3_y%4-%5_z%6-%7.fits"_s
+                              .arg(srcInfo.completeBaseName())
+                              .arg(defX0).arg(defX1).arg(defY0).arg(defY1).arg(defZ0).arg(defZ1));
+    // One window per tool, re-raised rather than duplicated: a second window
+    // could start a second run while the first was still going, and disabling
+    // one window's button does nothing for the other.
+    if (m_subCubeDialog) {
+        m_subCubeDialog->show();
+        m_subCubeDialog->raise();
+        m_subCubeDialog->activateWindow();
         return;
     }
-
-    // Ask for the basename to save under in the **Workspace Exports**.
-    // Empty input → backend synthesises a name from source + crop range.
-    // The artefact stays on the backend; the user can browse / download /
-    // delete it later from the DataHub "Workspace Exports" panel.
-    const QFileInfo srcInfo(this->filepath);
-    const QString defaultName =
-            u"%1_subcube_x%2-%3_y%4-%5_z%6-%7.fits"_s
-            .arg(srcInfo.completeBaseName())
-            .arg(x0).arg(x1).arg(y0).arg(y1).arg(z0).arg(z1);
-    bool ok = false;
-    const QString basename = QInputDialog::getText(
+    auto *dlg = new CubeBoxToolDialog(
             this, u"Export Sub-Cube as FITS"_s,
-            u"Save in Workspace Exports as (.fits will be appended if missing;\n"
-            u"existing names get a _1, _2 suffix):"_s,
-            QLineEdit::Normal, defaultName, &ok);
-    if (!ok) return;   // user cancelled
+            u"Crop the current cube to a spatial + spectral ROI and save it as a "
+            u"standalone FITS in the Workspace Exports. WCS is preserved (CRPIX "
+            u"shifted) so the coordinates of every pixel match the source. An "
+            u"existing name gets a _1, _2 suffix."_s,
+            u"Export"_s,
+            this->remoteDatasetWidth, this->remoteDatasetHeight, this->remoteDatasetDepth,
+            defX0, defX1, defY0, defY1, defZ0, defZ1,
+            u"Save as"_s, nameEdit);
+    m_subCubeDialog = dlg;
 
-    const QString url       = this->remoteBackendUrl;
-    const QString token     = this->remoteBackendToken;
-    const QString sessionId = this->remoteSessionId;
-    const QString datasetId = this->remoteDatasetId;
-
-    this->statusBar()->showMessage(u"Exporting sub-cube to workspace…"_s, 0);
-
-    auto *watcher = new QFutureWatcher<BackendSaveSubregionResult>(this);
     QPointer<vtkWindowCube> self(this);
-    QObject::connect(watcher, &QFutureWatcher<BackendSaveSubregionResult>::finished, this,
-                     [self, watcher]() {
-                         const auto r = watcher->result();
-                         watcher->deleteLater();
-                         if (!self) return;
-                         self->statusBar()->clearMessage();
-                         if (!r.valid) {
-                             QMessageBox::warning(self, u"Export Sub-Cube"_s,
-                                     u"Sub-cube export failed:\n\n%1"_s.arg(r.error));
-                             return;
-                         }
-                         emit self->workspaceExportsChanged();
-                         const QString msg =
-                                 u"Sub-cube saved to the Workspace Exports.\n\n"
-                                 u"Filename: %1\n"
-                                 u"Path: %2\n"
-                                 u"Shape: %3 × %4 × %5 (W × H × channels)\n\n"
-                                 u"Browse / download / delete from the\n"
-                                 u"Workspace Exports panel in the Data Hub.\n"
-                                 u"This sub-cube is also available in the current\n"
-                                 u"session as dataset '%6'."_s
-                                 .arg(r.workspaceFilename, r.outputPath)
-                                 .arg(r.width).arg(r.height).arg(r.depth)
-                                 .arg(r.newDatasetId);
-                         QMessageBox::information(self, u"Export Sub-Cube"_s, msg);
-                     });
-    watcher->setFuture(QtConcurrent::run(
-            [url, token, sessionId, datasetId, x0, x1, y0, y1, z0, z1, basename]() {
-                BackendClient c(url, token);
-                c.setSessionId(sessionId);
-                return c.saveCubeSubregion(datasetId, x0, x1, y0, y1, z0, z1, basename);
-            }));
+    dlg->onAction([this, self, dlg, nameEdit]() {
+        // The flag lives on the WINDOW, not in the dialog, so closing and
+        // reopening the dialog mid-run cannot start a second export.
+        if (!self || m_subCubeBusy) return;
+        m_subCubeBusy = true;
+        const auto b = dlg->bounds();
+        const QString basename  = nameEdit->text();
+        const QString url       = this->remoteBackendUrl;
+        const QString token     = this->remoteBackendToken;
+        const QString sessionId = this->remoteSessionId;
+        const QString datasetId = this->remoteDatasetId;
+
+        this->statusBar()->showMessage(u"Exporting sub-cube to workspace…"_s, 0);
+        dlg->setBusy(true);
+        auto *sheet = visivo::showToolProgressSheet(dlg, u"Exporting the sub-cube"_s);
+        QPointer<QProgressDialog> sheetPtr(sheet);
+        QPointer<CubeBoxToolDialog> dlgPtr(dlg);
+
+        auto *watcher = new QFutureWatcher<BackendSaveSubregionResult>(this);
+        QObject::connect(watcher, &QFutureWatcher<BackendSaveSubregionResult>::finished, this,
+                         [self, watcher, sheetPtr, dlgPtr]() mutable {
+                             const auto r = watcher->result();
+                             watcher->deleteLater();
+                             visivo::closeToolProgressSheet(sheetPtr);
+                             if (dlgPtr) dlgPtr->setBusy(false);
+                             if (self) self->m_subCubeBusy = false;
+                             if (!self) return;
+                             self->statusBar()->clearMessage();
+                             if (!r.valid) {
+                                 QMessageBox::warning(dlgPtr ? static_cast<QWidget *>(dlgPtr)
+                                                             : static_cast<QWidget *>(self),
+                                         u"Export Sub-Cube"_s,
+                                         u"Sub-cube export failed:\n\n%1"_s.arg(r.error));
+                                 return;
+                             }
+                             emit self->workspaceExportsChanged();
+                             const QString msg =
+                                     u"Sub-cube saved to the Workspace Exports.\n\n"
+                                     u"Filename: %1\n"
+                                     u"Path: %2\n"
+                                     u"Shape: %3 × %4 × %5 (W × H × channels)\n\n"
+                                     u"Browse / download / delete from the\n"
+                                     u"Workspace Exports panel in the Data Hub.\n"
+                                     u"This sub-cube is also available in the current\n"
+                                     u"session as dataset '%6'."_s
+                                     .arg(r.workspaceFilename, r.outputPath)
+                                     .arg(r.width).arg(r.height).arg(r.depth)
+                                     .arg(r.newDatasetId);
+                             QMessageBox::information(dlgPtr ? static_cast<QWidget *>(dlgPtr)
+                                                             : static_cast<QWidget *>(self),
+                                                      u"Export Sub-Cube"_s, msg);
+                         });
+        watcher->setFuture(QtConcurrent::run(
+                [url, token, sessionId, datasetId, b, basename]() {
+                    BackendClient c(url, token);
+                    c.setSessionId(sessionId);
+                    return c.saveCubeSubregion(datasetId, b[0], b[1], b[2], b[3], b[4], b[5],
+                                               basename);
+                }));
+    });
+    dlg->show();
+    dlg->raise();
+    dlg->activateWindow();
 }
 
 void vtkWindowCube::maskCubeRegion3d()
@@ -4375,66 +4432,98 @@ void vtkWindowCube::maskCubeRegion3d()
         defY1 = std::clamp(bounds[3], defY0, std::max(0, this->remoteDatasetHeight - 1));
     }
 
-    int x0 = 0, x1 = 0, y0 = 0, y1 = 0, z0 = 0, z1 = 0;
-    if (!runSubCubeBoundsDialog(this, this->remoteDatasetWidth, this->remoteDatasetHeight,
-                                this->remoteDatasetDepth, defX0, defX1, defY0, defY1, defZ0, defZ1,
-                                x0, x1, y0, y1, z0, z1)) {
+    // One window, with the mask mode in it. This tool used to borrow the
+    // Export Sub-Cube dialog verbatim — so it opened a window titled "Export
+    // Sub-Cube as FITS" that described exporting — and then asked for the mode
+    // in a second modal prompt once that had closed.
+    auto *modeCombo = new QComboBox();
+    modeCombo->addItem(u"Isolate box (blank everything OUTSIDE)"_s, u"blank_outside"_s);
+    modeCombo->addItem(u"Remove box (blank everything INSIDE)"_s,   u"blank_inside"_s);
+    if (m_maskRegionDialog) {
+        m_maskRegionDialog->show();
+        m_maskRegionDialog->raise();
+        m_maskRegionDialog->activateWindow();
         return;
     }
-
-    // Choose what to blank.
-    const QStringList modes{ u"Isolate box (blank everything OUTSIDE)"_s,
-                             u"Remove box (blank everything INSIDE)"_s };
-    bool ok = false;
-    const QString choice = QInputDialog::getItem(
+    auto *dlg = new CubeBoxToolDialog(
             this, u"Mask 3-D Region"_s,
-            u"How should the selected box be masked?"_s, modes, 0, false, &ok);
-    if (!ok) return;
-    const QString mode = (choice == modes.at(1)) ? u"blank_inside"_s : u"blank_outside"_s;
+            u"Blank the voxels inside or outside a 3-D box, keeping the cube's full "
+            u"dimensions and WCS. The masked cube is saved to the Workspace Exports "
+            u"and registered in this session, so you can moment-map or profile just "
+            u"the selection."_s,
+            u"Mask"_s,
+            this->remoteDatasetWidth, this->remoteDatasetHeight, this->remoteDatasetDepth,
+            defX0, defX1, defY0, defY1, defZ0, defZ1,
+            u"Mode"_s, modeCombo);
+    m_maskRegionDialog = dlg;
 
-    // Show the selected box in the 3-D volume while the mask computes (reuses the
-    // noise-region 3-D box preview — cleared when the result arrives).
-    this->setNoiseRegionPreview(x0, x1, y0, y1, z0, z1);
-    if (m_actMaskRegion) m_actMaskRegion->setEnabled(false);   // no concurrent masks
-
-    const QString url       = this->remoteBackendUrl;
-    const QString token     = this->remoteBackendToken;
-    const QString sessionId = this->remoteSessionId;
-    const QString datasetId = this->remoteDatasetId;
-    this->statusBar()->showMessage(u"Masking cube region…"_s, 0);
-
-    auto *watcher = new QFutureWatcher<BackendSaveSubregionResult>(this);
     QPointer<vtkWindowCube> self(this);
-    QObject::connect(watcher, &QFutureWatcher<BackendSaveSubregionResult>::finished, this,
-                     [self, watcher]() {
-                         const auto r = watcher->result();
-                         watcher->deleteLater();
-                         if (!self) return;
-                         self->statusBar()->clearMessage();
-                         self->clearNoiseRegionPreview();
-                         if (self->m_actMaskRegion) self->m_actMaskRegion->setEnabled(true);
-                         if (!r.valid) {
-                             QMessageBox::warning(self, u"Mask 3-D Region"_s,
-                                     u"Masking failed:\n\n%1"_s.arg(r.error));
-                             return;
-                         }
-                         emit self->workspaceExportsChanged();
-                         QMessageBox::information(self, u"Mask 3-D Region"_s,
-                             u"Masked cube saved to the Workspace Exports and registered "
-                             u"in this session as '%1'.\n\n"
-                             u"Filename: %2\n"
-                             u"Shape: %3 × %4 × %5 (W × H × channels)\n\n"
-                             u"Open it from the Workspace Exports panel in the Data Hub to "
-                             u"volume-render, moment-map or profile just the selection."_s
-                             .arg(r.newDatasetId, r.workspaceFilename)
-                             .arg(r.width).arg(r.height).arg(r.depth));
-                     });
-    watcher->setFuture(QtConcurrent::run(
-            [url, token, sessionId, datasetId, x0, x1, y0, y1, z0, z1, mode]() {
-                BackendClient c(url, token);
-                c.setSessionId(sessionId);
-                return c.maskCubeRegion(datasetId, x0, x1, y0, y1, z0, z1, mode);
-            }));
+    dlg->onAction([this, self, dlg, modeCombo]() {
+        // As above: no concurrent masks, whatever happens to the window. The
+        // shared 3-D preview and the status line belong to one run at a time.
+        if (!self || m_maskRegionBusy) return;
+        m_maskRegionBusy = true;
+        if (m_actMaskRegion) m_actMaskRegion->setEnabled(false);
+        const auto b = dlg->bounds();
+        const QString mode = modeCombo->currentData().toString();
+
+        // Show the selected box in the 3-D volume while the mask computes
+        // (reuses the noise-region 3-D box preview, cleared when it lands).
+        this->setNoiseRegionPreview(b[0], b[1], b[2], b[3], b[4], b[5]);
+
+        const QString url       = this->remoteBackendUrl;
+        const QString token     = this->remoteBackendToken;
+        const QString sessionId = this->remoteSessionId;
+        const QString datasetId = this->remoteDatasetId;
+        this->statusBar()->showMessage(u"Masking cube region…"_s, 0);
+        dlg->setBusy(true);
+        auto *sheet = visivo::showToolProgressSheet(dlg, u"Masking the region"_s);
+        QPointer<QProgressDialog> sheetPtr(sheet);
+        QPointer<CubeBoxToolDialog> dlgPtr(dlg);
+
+        auto *watcher = new QFutureWatcher<BackendSaveSubregionResult>(this);
+        QObject::connect(watcher, &QFutureWatcher<BackendSaveSubregionResult>::finished, this,
+                         [self, watcher, sheetPtr, dlgPtr]() mutable {
+                             const auto r = watcher->result();
+                             watcher->deleteLater();
+                             visivo::closeToolProgressSheet(sheetPtr);
+                             if (dlgPtr) dlgPtr->setBusy(false);
+                             if (self) {
+                                 self->m_maskRegionBusy = false;
+                                 if (self->m_actMaskRegion)
+                                     self->m_actMaskRegion->setEnabled(true);
+                             }
+                             if (!self) return;
+                             self->statusBar()->clearMessage();
+                             self->clearNoiseRegionPreview();
+                             QWidget *owner = dlgPtr ? static_cast<QWidget *>(dlgPtr)
+                                                     : static_cast<QWidget *>(self);
+                             if (!r.valid) {
+                                 QMessageBox::warning(owner, u"Mask 3-D Region"_s,
+                                         u"Masking failed:\n\n%1"_s.arg(r.error));
+                                 return;
+                             }
+                             emit self->workspaceExportsChanged();
+                             QMessageBox::information(owner, u"Mask 3-D Region"_s,
+                                 u"Masked cube saved to the Workspace Exports and registered "
+                                 u"in this session as '%1'.\n\n"
+                                 u"Filename: %2\n"
+                                 u"Shape: %3 × %4 × %5 (W × H × channels)\n\n"
+                                 u"Open it from the Workspace Exports panel in the Data Hub to "
+                                 u"volume-render, moment-map or profile just the selection."_s
+                                 .arg(r.newDatasetId, r.workspaceFilename)
+                                 .arg(r.width).arg(r.height).arg(r.depth));
+                         });
+        watcher->setFuture(QtConcurrent::run(
+                [url, token, sessionId, datasetId, b, mode]() {
+                    BackendClient c(url, token);
+                    c.setSessionId(sessionId);
+                    return c.maskCubeRegion(datasetId, b[0], b[1], b[2], b[3], b[4], b[5], mode);
+                }));
+    });
+    dlg->show();
+    dlg->raise();
+    dlg->activateWindow();
 }
 
 void vtkWindowCube::exportCurrentChannelAs2dFits()
@@ -5992,31 +6081,11 @@ void vtkWindowCube::setMomentOrder(int order)
     if (this->isBusy()) {
         return;
     }
+    // The card transition and the start diagnostics are driven by
+    // MomentMapController::computationStarted: the settings window is non-modal,
+    // so isBusy() right here is false (Compute has not been pressed yet) and
+    // both used to be skipped entirely.
     this->momentController->startComputation(order);
-
-    // If the dialog was accepted and computation started, transition the card
-    // to Computing and publish start diagnostics (mirrors requestMomentMode()).
-    if (this->momentController->isBusy()) {
-        const auto &cfg = this->momentController->lastAcceptedConfig();
-        QString detail = u"Moment %1 · channels %2–%3"_s
-                                 .arg(cfg.order)
-                                 .arg(cfg.channelStart + 1)
-                                 .arg(cfg.channelEnd + 1);
-        if (cfg.maskEnabled) {
-            detail += cfg.thresholdAuto
-                    ? u" · mask auto (\u2248 3\u03c3)"_s
-                    : u" · mask \u2265 %1"_s.arg(cfg.thresholdValue, 0, 'g', 4);
-        }
-        this->setMomentCardState(MomentCardState::Computing, detail);
-        DiagnosticsManager::instance()->publish(
-                DiagnosticsLevel::Info,
-                DiagnosticsCategory::Scientific,
-                QStringLiteral("MomentMap"),
-                QStringLiteral("Moment computation started: ") + detail,
-                this->remoteDatasetId,
-                this->remoteSessionId,
-                QStringLiteral("moment"));
-    }
 }
 
 void vtkWindowCube::showPersistentStatusMessage(const QString &text, int minDurationMs)
@@ -6312,6 +6381,7 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Regions"_s, self->m_actImportCubeRegion);
     add(u"Regions"_s, self->m_actExportCubeRegion);
 
+    add(u"Sources & Kinematics"_s, self->m_actSourceFind);
     add(u"Sources & Kinematics"_s, self->m_actKinematicLasso);
     add(u"Sources & Kinematics"_s, self->m_actKinematicModel);
 
@@ -9162,7 +9232,7 @@ void vtkWindowCube::updateLiveSpectrumHeader()
                                 : m_lastProbeSpectrumPinned
                                 ? px + u"  \u00B7  \U0001F4BE saved as %1"_s
                                           .arg(m_lastProbeSpectrumProduct)
-                                : px + u"  \u00B7  \U0001F512 pinned \u2014 click again to resume"_s);
+                                : px + u"  \u00B7  \U0001F512 pinned, click again to resume"_s);
         }
 }
 
@@ -11304,6 +11374,16 @@ void vtkWindowCube::setMomentActionsEnabled(bool enabled)
     ui->actionLinewidthMap->setEnabled(spectralEnabled);
     ui->actionBaselineSubtract->setEnabled(spectralEnabled);
     ui->actionStackCubes->setEnabled(available);   // stacking is never "busy"
+    // Source finding runs entirely on the backend over this window's cube, so
+    // it follows the same rule. (In the Data Hub it was gated on "a dataset was
+    // opened at some point", which is not the same question.)
+    if (this->m_actSourceFind) {
+        this->m_actSourceFind->setEnabled(spectralEnabled);
+        this->m_actSourceFind->setToolTip(
+                available ? u"Run the SoFiA-2 source finder over this cube and overlay "
+                            u"the detections; needs sofia2 on the backend's PATH."_s
+                          : kMomentBackendTooltip);
+    }
 }
 
 bool vtkWindowCube::hasBackendVisibleDataset() const
@@ -11387,6 +11467,13 @@ void vtkWindowCube::completeBaselineProduct(const QString &productId,
         params.insert(u"Summary"_s, summary);
     ProductRegistry::instance().setParams(productId, params);
     ProductRegistry::instance().setStatus(productId, u"ready"_s);
+    // Hand the row back its FILE. The product's window pointer is the Baseline
+    // dialog, and activation prefers a window over a path, so while that dialog
+    // was still open a double-click on the finished row raised the tool again
+    // instead of opening the cube it had just produced. The dialog is
+    // the tool, not the product; the cube is the product.
+    if (!outputPath.isEmpty())
+        ProductRegistry::instance().attachWindow(productId, nullptr);
 }
 
 void vtkWindowCube::saveProductCopyToWorkspace(const QString &backendDatasetId,

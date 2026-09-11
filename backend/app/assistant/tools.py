@@ -909,7 +909,7 @@ TOOLS: dict[str, AssistantTool] = {
             description=(
                 "Fit a 2-D elliptical Gaussian to a source at a sky position "
                 "(RA/DEC in degrees). Requires WCS. Uncertainties are null when "
-                "error_method is 'covariance' (no clean sky to measure them on) -"
+                "error_method is 'covariance' (no clean sky to measure them on), "
                 "report that rather than quoting the diagnostic figures. "
                 "Returns peak, integrated flux "
                 "(Jy when beam-corrected), fitted and beam-deconvolved FWHMs and "

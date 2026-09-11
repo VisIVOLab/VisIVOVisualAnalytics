@@ -75,7 +75,13 @@ private slots:
 private:
     void buildDataMenu();
     void buildSampMenu();
-    void buildScienceMenu();
+    /// Builds the Data Hub's "Combine" menu: the operations that take SEVERAL
+    /// of the session's datasets and produce a new one, and so have no owning
+    /// viewer window. Single-view tools live in the viewers (see the comment on
+    /// the implementation for what moved where).
+    void buildCombineMenu();
+    /// Enable/disable Combine's entries from what the session actually holds.
+    void refreshCombineMenuState();
     void syncDataHubSettings();
     void syncSampSettings();
     void updateSampActions();
@@ -117,8 +123,10 @@ private:
     void openSourceFinder(const QString &backendUrl, const QString &backendToken,
                           const QString &sessionId, const QString &datasetId);
     /// Action handlers for the advanced 2-D product use cases.
-    void runPublicationFigure();   ///< UC 1.3
-    void runImageQuality();        ///< UC 4.2
+    void runPublicationFigure(const QString &backendUrl, const QString &backendToken,
+                               const QString &sessionId, const QString &datasetId);   ///< UC 1.3
+    void runImageQuality(const QString &backendUrl, const QString &backendToken,
+                          const QString &sessionId, const QString &datasetId);        ///< UC 4.2
     void runPixelMath();           ///< UC 3.2
     void runMosaic();              ///< UC 3.3
     /// Shared viewer-creation logic used by both ``doOpenDataPath`` (local
@@ -126,6 +134,18 @@ private:
     /// the *display* identifier — window title, Recent Datasets entry,
     /// SAMP metadata — and may be a SKAVA obs_id rather than a real file
     /// path when the dataset came in through ``openDatasetFromUrl``.
+    /// Connect an image viewer's product requests (Publication Figure, Image
+    /// Quality) to this window, binding them to THAT viewer's dataset. Every
+    /// path that creates a vtkWindowImage must call it.
+    void wireImageViewerProducts(vtkWindowImage *window,
+                                 const QString &backendUrl, const QString &backendToken,
+                                 const QString &sessionId, const QString &datasetId);
+    /// Record the backend session a newly opened dataset belongs to, and refresh
+    /// the Combine menu from it.
+    void adoptSessionContext(const QString &backendUrl, const QString &backendToken,
+                             const QString &sessionId, const QString &datasetId,
+                             int depth, const QString &spectralAxisType,
+                             const QString &spectralAxisUnit);
     void openViewerFromOpenedDataset(const QString &path,
                                        const struct BackendOpenDatasetResult &opened,
                                        const class BackendClient &client);
@@ -191,12 +211,11 @@ private:
     QString  m_sciSpectralAxisUnit;  ///< Backend CUNIT3, e.g. "km/s", "GHz".
 
     QPointer<QMenu>   m_scienceMenu;
-    QPointer<QAction> m_actLinewidth;
-    QPointer<QAction> m_actBaseline;
-    QPointer<QAction> m_actStack;
-    QPointer<QAction> m_actSourceFind;
-    QPointer<QAction> m_actPubFigure;     ///< UC 1.3 publication figure
-    QPointer<QAction> m_actImageQuality;  ///< UC 4.2 image quality / artifacts
+    // Line-Width, Baseline, Stack, Source Finding, Publication Figure and
+    // Image Quality used to be Data-Hub actions here. They are tools of a
+    // single view and now live in the viewer that owns the data (the cube's and
+    // the image's Analysis lists), which is the only place that knows which
+    // dataset the user means.
     QPointer<QAction> m_actPixelMath;     ///< UC 3.2 pixel math / spectral index
     QPointer<QAction> m_actMosaic;        ///< UC 3.3 noise-weighted mosaic
     QPointer<QMenu>   m_sampMenu;

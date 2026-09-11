@@ -69,7 +69,7 @@ ChannelMapsWindow::ChannelMapsWindow(
 {
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowFlag(Qt::Window);
-    setWindowTitle(u"Channel Maps -%1"_s
+    setWindowTitle(u"Channel Maps - %1"_s
             .arg(QFileInfo(filepath).fileName()));
     resize(1200, 800);
 

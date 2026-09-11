@@ -5,6 +5,8 @@
 
 #include "NoiseController.h"
 
+#include "ToolProgressSheet.h"
+
 #include "AnalysisParamStore.h"
 #include "CubeNoiseTypes.h"
 #include "NoiseRegionDialog.h"
@@ -24,6 +26,8 @@
 #include <QtConcurrent>
 
 #include <algorithm>
+
+#include <QMessageBox>
 #include <array>
 #include <cmath>
 #include <limits>
@@ -107,7 +111,19 @@ void NoiseController::startEstimation()
         return; // guard against re-entrancy
     }
 
-    NoiseRegionDialog dlg(m_width, m_height, m_depth, m_parentWindow);
+    // The window STAYS OPEN across the estimate, like every other tool dialog:
+    // Estimate does not close it, the progress sheet is window-modal on IT, and
+    // when the numbers land the same window is there to sample another region.
+    if (m_regionDialog) {
+        m_regionDialog->show();
+        m_regionDialog->raise();
+        m_regionDialog->activateWindow();
+        return;
+    }
+    auto *dlgPtr = new NoiseRegionDialog(m_width, m_height, m_depth, m_parentWindow);
+    m_regionDialog = dlgPtr;
+    dlgPtr->setAttribute(Qt::WA_DeleteOnClose);
+    NoiseRegionDialog &dlg = *dlgPtr;
 
     // Live preview overlays (amber rectangle on the 2D slice + amber semi-
     // transparent box inside the 3D volume): connect the dialog's
@@ -134,24 +150,45 @@ void NoiseController::startEstimation()
         }
     }
 
-    const int rc = dlg.exec();
+    // Closing the window clears the preview overlays; running an estimate keeps
+    // them, because the user is still looking at the region they sampled.
+    QObject::connect(dlgPtr, &QObject::destroyed, this, [this]() {
+        // Only if nothing newer owns the overlay. With a non-modal settings
+        // window the user can run an estimate, close the window, and still have
+        // a result window showing the region it sampled.
+        this->clearPreviewIfCurrent(m_previewGeneration);
+    });
+    QObject::connect(dlgPtr, &NoiseRegionDialog::estimateRequested, this,
+                     [this, dlgPtr]() { this->runEstimate(dlgPtr); });
+    dlgPtr->show();
+    dlgPtr->raise();
+    dlgPtr->activateWindow();
+}
 
-    if (rc != QDialog::Accepted) {
-        // User cancelled — clear immediately so the slice/volume look pristine.
-        if (cube) cube->clearNoiseRegionPreview();
+void NoiseController::runEstimate(NoiseRegionDialog *dialog)
+{
+    using namespace Qt::StringLiterals;
+    if (!dialog || m_busy)
+        return;
+    auto *cube = qobject_cast<vtkWindowCube *>(m_parentWindow);
+    NoiseRegionDialog &dlg = *dialog;
+
+    // Normalise here rather than trusting the widgets' order, and refuse an
+    // inverted range outright: the dialog's own Estimate button is gated on
+    // validity, but this is the function that PERSISTS the region and sends it
+    // to the backend, so it does its own checking.
+    const int x0 = std::min(dlg.x0(), dlg.x1());
+    const int x1 = std::max(dlg.x0(), dlg.x1());
+    const int y0 = std::min(dlg.y0(), dlg.y1());
+    const int y1 = std::max(dlg.y0(), dlg.y1());
+    const int channelStart = std::min(dlg.channelStart(), dlg.channelEnd());
+    const int channelEnd   = std::max(dlg.channelStart(), dlg.channelEnd());
+    if (x0 > x1 || y0 > y1 || channelStart > channelEnd) {
+        QMessageBox::warning(dialog, u"Estimate Noise"_s,
+                             u"The selected region is empty. Check the X, Y and channel "
+                             u"ranges."_s);
         return;
     }
-    // On Accept the overlay stays VISIBLE: the user just told us which
-    // region to sample, so we keep showing it through the async compute
-    // and the result dialog. It gets cleared when the result dialog is
-    // closed (see ToolResultDialog wiring in showResult()).
-
-    const int x0           = dlg.x0();
-    const int x1           = dlg.x1();
-    const int y0           = dlg.y0();
-    const int y1           = dlg.y1();
-    const int channelStart = dlg.channelStart();
-    const int channelEnd   = dlg.channelEnd();
 
     // Remember this region for the dataset so the dialog re-opens pre-filled.
     if (cube) {
@@ -171,6 +208,10 @@ void NoiseController::startEstimation()
     if (auto *win = qobject_cast<QMainWindow *>(m_parentWindow)) {
         win->statusBar()->showMessage(u"Estimating backend noise..."_s, 2000);
     }
+    ++m_previewGeneration;   // this run now owns the overlay
+    // On the dialog the user pressed Estimate in, not on the viewer behind it.
+    m_progressSheet = visivo::showToolProgressSheet(dialog, u"Estimating the noise"_s);
+    dialog->setBusy(true);
 
     m_busy = true;
 
@@ -197,6 +238,9 @@ void NoiseController::startEstimation()
         }
 
         self->m_busy = false;
+        visivo::closeToolProgressSheet(self->m_progressSheet);
+        if (self->m_regionDialog)
+            self->m_regionDialog->setBusy(false);
 
         if (!result.valid) {
             DiagnosticsManager::instance()->publish(
@@ -347,11 +391,12 @@ void NoiseController::showResult(const CubeNoiseEstimateResult &result)
     // the user closes the result dialog. QObject::destroyed fires after
     // close() because ToolResultDialog uses WA_DeleteOnClose; using a
     // QPointer guards against the cube viewer being destroyed first.
-    if (auto *cube = qobject_cast<vtkWindowCube *>(m_parentWindow)) {
-        QPointer<vtkWindowCube> cubePtr(cube);
-        QObject::connect(dlg, &QObject::destroyed, cube, [cubePtr]() {
-            if (cubePtr) cubePtr->clearNoiseRegionPreview();
-        });
+    {
+        // Tied to the generation this result belongs to: an older result window
+        // closing must not wipe the overlay of a newer estimate.
+        const quint64 generation = m_previewGeneration;
+        QObject::connect(dlg, &QObject::destroyed, this,
+                         [this, generation]() { this->clearPreviewIfCurrent(generation); });
     }
 
     dlg->show();
@@ -359,4 +404,12 @@ void NoiseController::showResult(const CubeNoiseEstimateResult &result)
     if (auto *win = qobject_cast<QMainWindow *>(m_parentWindow)) {
         win->statusBar()->showMessage(u"Noise estimation completed."_s, 3000);
     }
+}
+
+void NoiseController::clearPreviewIfCurrent(quint64 generation)
+{
+    if (generation != m_previewGeneration)
+        return;   // something newer drew over it
+    if (auto *cube = qobject_cast<vtkWindowCube *>(m_parentWindow))
+        cube->clearNoiseRegionPreview();
 }

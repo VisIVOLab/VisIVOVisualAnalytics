@@ -688,6 +688,106 @@ class TestBaselineWorker:
                             0, 31, 1, self._LF_32)
         assert r["warning"] == ""
 
+    def test_output_header_describes_the_output(self):
+        """A 4-D input with a degenerate Stokes axis yields a 3-D cube, so the
+        fourth axis's WCS must not survive in the header.
+
+        astropy rewrites NAXIS/NAXIS1..3 from the data but nothing else, so the
+        output said NAXIS = 3 while still carrying CRPIX4/CDELT4/CRVAL4/
+        CTYPE4='STOKES' and WCSAXES=4: readers that trust NAXIS ignore the axis,
+        readers that scan CTYPEn find a Stokes axis in a 3-D cube, and astropy
+        warns about the dimensionality mismatch (user report).
+        """
+        from astropy.wcs import WCS
+        from app.compute import worker_baseline
+        path = str(self.tmp_path / "four_d.fits")
+        data = np.zeros((1, 32, 6, 6), dtype=np.float32)
+        data[0] = np.arange(32, dtype=np.float32)[:, None, None] * 0.05
+        hdr = fits.Header()
+        hdr["CTYPE1"], hdr["CTYPE2"] = "RA---SIN", "DEC--SIN"
+        hdr["CTYPE3"], hdr["CTYPE4"] = "VELO-HEL", "STOKES"
+        for axis, (crval, cdelt) in enumerate(
+                [(150.0, -0.001), (2.0, 0.001), (1000.0, 10.0), (1.0, 1.0)], start=1):
+            hdr[f"CRPIX{axis}"] = 1.0
+            hdr[f"CRVAL{axis}"] = crval
+            hdr[f"CDELT{axis}"] = cdelt
+        hdr["CUNIT1"] = hdr["CUNIT2"] = "deg"
+        hdr["WCSAXES"] = 4
+        hdr["PC004004"] = 1.0        # the legacy fixed-width matrix form
+        hdr["PC003003"] = 1.0
+        hdr["PV2_1"] = 0.5           # axis 2: must be KEPT
+        hdr["BLANK"] = -1            # undefined for float data
+        hdr["DATAMIN"], hdr["DATAMAX"] = -99.0, 99.0
+        fits.PrimaryHDU(data, hdr).writeto(path, output_verify="ignore")
+
+        out_path = str(self.tmp_path / "four_d_out.fits")
+        worker_baseline(path, out_path, 0, 31, 1, self._LF_32)
+        with fits.open(out_path) as h:
+            out = h[0].header
+            assert h[0].data.ndim == 3
+
+        assert out["NAXIS"] == 3
+        for key in ("CTYPE4", "CRVAL4", "CDELT4", "CRPIX4", "NAXIS4", "PC004004"):
+            assert key not in out, f"{key} describes an axis the output does not have"
+        assert out["WCSAXES"] == 3
+        # Axes that DO exist keep their description.
+        assert out["CTYPE3"] == "VELO-HEL"
+        assert out["PC003003"] == 1.0
+        assert out["PV2_1"] == 0.5
+        # BLANK is integer-only; the extrema are the input's, not the output's.
+        assert "BLANK" not in out
+        assert "DATAMIN" not in out and "DATAMAX" not in out
+        # And the whole point: a WCS library can read it.
+        assert WCS(out).naxis == 3
+
+    def test_malformed_celestial_units_are_repaired_in_the_output(self):
+        """The reader repairs a celestial CUNIT that is not an angular unit so it
+        can build a WCS at all, but products copied the ORIGINAL header, so the
+        output was unreadable: astropy raises InvalidTransformError on
+        CUNIT1='km/s' over an RA axis (reproduced on fornax.fits).
+        """
+        from astropy.wcs import WCS
+        from app.compute import worker_baseline
+        path = str(self.tmp_path / "bad_units.fits")
+        data = (np.arange(32, dtype=np.float32)[:, None, None] * 0.05).repeat(6, 1).repeat(6, 2)
+        hdr = fits.Header()
+        hdr["CTYPE1"], hdr["CTYPE2"], hdr["CTYPE3"] = "RA---NCP", "DEC--NCP", "VELO-HEL"
+        for axis, (crval, cdelt) in enumerate([(54.6, -0.0055), (-35.4, 0.0055), (166450.0, 6590.0)], start=1):
+            hdr[f"CRPIX{axis}"] = 1.0
+            hdr[f"CRVAL{axis}"] = crval
+            hdr[f"CDELT{axis}"] = cdelt
+        hdr["CUNIT1"] = hdr["CUNIT2"] = "km/s"       # the real file's own bug
+        fits.PrimaryHDU(data, hdr).writeto(path, output_verify="ignore")
+
+        out_path = str(self.tmp_path / "bad_units_out.fits")
+        worker_baseline(path, out_path, 0, 31, 1, self._LF_32)
+        with fits.open(out_path) as h:
+            out = h[0].header
+        assert out["CUNIT1"] == "deg" and out["CUNIT2"] == "deg"
+        assert any("CUNIT1" in str(line) for line in out.get("HISTORY", [])), \
+            "the correction must be recorded in HISTORY, not applied silently"
+        assert WCS(out).naxis == 3        # would raise InvalidTransformError before
+
+    def test_a_cropped_output_shifts_the_miriad_axis_description_too(self):
+        """Miriad writes its own spectral-axis description next to the FITS one.
+        Cropping shifted CRPIX3 and left LSTART describing the uncropped cube."""
+        from app.compute import worker_baseline
+        path = str(self.tmp_path / "miriad.fits")
+        data = (np.arange(32, dtype=np.float32)[:, None, None] * 0.05).repeat(6, 1).repeat(6, 2)
+        hdr = fits.Header()
+        hdr["CTYPE3"] = "VELO-HEL"
+        hdr["CRPIX3"], hdr["CRVAL3"], hdr["CDELT3"] = 1.0, 166450.0, 6590.0
+        hdr["LTYPE"] = "velocity"
+        hdr["LSTART"], hdr["LSTEP"] = 166.45, 6.59
+        fits.PrimaryHDU(data, hdr).writeto(path, output_verify="ignore")
+
+        out_path = str(self.tmp_path / "miriad_out.fits")
+        worker_baseline(path, out_path, 4, 31, 1, [[0, 6], [20, 27]])
+        with fits.open(out_path) as h:
+            out = h[0].header
+        assert out["CRPIX3"] == pytest.approx(1.0 - 4)
+        assert out["LSTART"] == pytest.approx(166.45 + 4 * 6.59)
+
     def test_line_free_channels(self):
         """Fitting on selected channels should still work."""
         from app.compute import worker_baseline

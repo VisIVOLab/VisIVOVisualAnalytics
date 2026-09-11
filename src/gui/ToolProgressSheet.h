@@ -38,8 +38,8 @@ namespace visivo {
 ///        map". Rendered as "<what>…", so pass it without the ellipsis.
 ///
 /// The caller owns the returned dialog and should close it through
-/// closeToolProgressSheet(). The 400 ms minimum duration means a compute that
-/// finishes immediately never flashes a sheet at the user.
+/// closeToolProgressSheet(). A compute that finishes inside 400 ms never
+/// flashes a sheet at the user.
 inline QProgressDialog *showToolProgressSheet(QWidget *parent, const QString &what)
 {
     auto *sheet = new QProgressDialog(what + QStringLiteral("…"),
@@ -52,7 +52,14 @@ inline QProgressDialog *showToolProgressSheet(QWidget *parent, const QString &wh
     sheet->setAutoClose(false);
     sheet->setAutoReset(false);
     sheet->setWindowTitle(QCoreApplication::translate("ToolProgressSheet", "Working"));
-    sheet->show();
+    // setValue(), NOT show(): show() puts the sheet up immediately, which
+    // defeats the minimumDuration and flashes a sheet at every fast compute.
+    // setValue() arms QProgressDialog's OWN delayed-show timer, so the sheet
+    // appears only if the work is still running 400 ms later — and because the
+    // timer belongs to the dialog, closing it cancels the pending show. A
+    // hand-rolled QTimer::singleShot(400, …, show) does not: measured, it
+    // re-showed a sheet that the completion handler had already closed.
+    sheet->setValue(0);
     return sheet;
 }
 

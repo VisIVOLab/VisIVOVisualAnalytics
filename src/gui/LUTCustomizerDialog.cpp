@@ -146,7 +146,7 @@ LUTCustomizerDialog::LUTCustomizerDialog(QWidget *parent)
 
     // Hint label inserted between the plot and the Lookup Table group
     auto *hintLbl = new QLabel(
-            u"Drag the \u25cf cyan (Min) or \u25cf orange (Max) line \u2014 or edit values below."_s,
+            u"Drag the \u25cf cyan (Min) or \u25cf orange (Max) line, or edit values below."_s,
             this);
     hintLbl->setStyleSheet(u"QLabel { color: #607080; font-size: 9px; padding: 0 4px; }"_s);
     hintLbl->setAlignment(Qt::AlignCenter);

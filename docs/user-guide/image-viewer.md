@@ -169,6 +169,27 @@ Only one measurement mode can be active at a time (ExclusiveOptional
 group). Activating a measurement mode deactivates any active probe or
 region tool.
 
+## Products from this map
+
+*Inspector ▸ Analysis ▸ Products* (or the *Tools* menu) has two operations that
+take the single 2-D map this window shows:
+
+- **Publication Figure…** renders the map as a publication-ready PNG through
+  matplotlib on the backend: choose the stretch (linear / log / sqrt / asinh /
+  power), the colormap, an optional title, and whether to draw the WCS sky grid
+  and a colorbar labelled with BUNIT. The file lands in Workspace Exports.
+- **Image Quality / Artifacts…** reports the diagnostics you want before
+  trusting a map: blanked fraction, dynamic range, noise, and indicators for
+  striping and negative-bowl artefacts.
+
+```{note}
+Both were previously in the Data Hub's *Science* menu, where they ran against
+whichever dataset had been opened last rather than the one you were looking at.
+They now act on this window's dataset. Both reduce anything with more than two
+axes to its first plane, so on a cube they describe one channel; to render or
+measure a cube's collapsed emission, compute a moment map first and open that.
+```
+
 ## Pixel histogram
 
 *Tools → Pixel Histogram…* (or the **Histogram** card in the sidebar)

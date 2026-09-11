@@ -147,6 +147,14 @@ private slots:
     void syncCatalogueTableSelection(int index);
 
 signals:
+    /// Asks the host to render a publication figure / measure image quality for
+    /// THIS window's dataset. The host captured this viewer's backend context
+    /// when it created the window, so the tool acts on the image in front of
+    /// the user instead of on "the last dataset opened" (the Data Hub's Science
+    /// menu did the latter, and targeted the wrong one with two images open).
+    void publicationFigureRequested();
+    void imageQualityRequested();
+
     void catalogueSourceSelectionChanged(int index);
 
 public:
@@ -570,6 +578,10 @@ private:
     vtkNew<vtkActor> m_measLineActor2;
     vtkSmartPointer<vtkTextActor> m_measLabelActor;
     QPointer<QAction> m_actRuler;
+    /// Moved off the Data Hub's Science menu: single-map tools, resolved by the
+    /// host against this window's own dataset.
+    QPointer<QAction> m_actPublicationFigure;
+    QPointer<QAction> m_actImageQuality;
     QPointer<QAction> m_actAngle;
     QPointer<QAction> m_actClearMeas;
     void setMeasurementMode(MeasurementMode mode);

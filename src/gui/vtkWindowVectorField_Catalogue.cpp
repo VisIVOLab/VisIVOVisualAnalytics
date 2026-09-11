@@ -742,7 +742,7 @@ void vtkWindowVectorField::showBulkFlowProfile()
     // Non-modal plot window (galaxies vs the reconstruction).
     auto *dlg = new QDialog(this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
-    dlg->setWindowTitle(u"Bulk flow vs radius -%1"_s.arg(this->m_catalogueName));
+    dlg->setWindowTitle(u"Bulk flow vs radius - %1"_s.arg(this->m_catalogueName));
     auto *lay = new QVBoxLayout(dlg);
     auto *plot = new QCustomPlot(dlg);
     plot->addGraph();

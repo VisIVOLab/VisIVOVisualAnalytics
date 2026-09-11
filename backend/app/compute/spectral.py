@@ -437,6 +437,8 @@ _AXIS_KEYWORD = re.compile(
     r"^(NAXIS|CTYPE|CRVAL|CRPIX|CDELT|CUNIT|CROTA|CNAME|CRDER|CSYER|CSPEC|PS|PV)"
     r"(\d+)(?:_\d+)?[A-Z]?$")
 _AXIS_MATRIX_KEYWORD = re.compile(r"^(PC|CD)(\d+)_(\d+)[A-Z]?$")
+# The pre-1999 fixed-width matrix form, still legal: PC004004, CD001001.
+_AXIS_MATRIX_LEGACY = re.compile(r"^(PC|CD)(\d{3})(\d{3})$")
 
 
 def _drop_surplus_axis_keywords(header, keep_naxis: int) -> None:
@@ -463,11 +465,49 @@ def _drop_surplus_axis_keywords(header, keep_naxis: int) -> None:
         if m and int(m.group(2)) > keep_naxis:
             del header[key]
             continue
-        m = _AXIS_MATRIX_KEYWORD.match(name)
+        m = _AXIS_MATRIX_KEYWORD.match(name) or _AXIS_MATRIX_LEGACY.match(name)
         if m and (int(m.group(2)) > keep_naxis or int(m.group(3)) > keep_naxis):
             del header[key]
+            continue
+        # WCSAXES counts the axes the WCS describes, so leaving it at 4 keeps
+        # astropy reading a 4-axis WCS off a 3-D image and warning about the
+        # mismatch, however many CTYPEn are gone.
+        if name == "WCSAXES" or (name.startswith("WCSAXES") and len(name) == 8):
+            try:
+                if int(header[key]) > keep_naxis:
+                    header[key] = keep_naxis
+            except (TypeError, ValueError):
+                del header[key]
     if header.get("BITPIX", 0) < 0 and "BLANK" in header:
         del header["BLANK"]
+    # Extrema of the INPUT, meaningless once a baseline has been subtracted:
+    # the tested output ranged -4.16..4.14 while the copied cards still said
+    # -5.72..54.19.
+    for stale in ("DATAMIN", "DATAMAX"):
+        if stale in header:
+            del header[stale]
+
+def _repair_celestial_units(dataset, header) -> None:
+    """Write back the celestial-unit repair the reader already does in memory.
+
+    ScientificFitsDataset overrides a celestial CUNITn that is not an angular
+    unit so it can build a WCS at all (wcs_status='sanitized'), but that repair
+    lived only in the loaded object: products copied the ORIGINAL header, so a
+    cube whose CUNIT1/2 say 'km/s' on the RA/Dec axes produced an output that
+    astropy refuses outright, with InvalidTransformError "In CUNIT1: Mismatched
+    units type 'plane angle': have 'km/s', want 'deg'". A derived
+    product no WCS library can read is not a product.
+    """
+    for axis in (1, 2):
+        key = f"CUNIT{axis}"
+        if key not in header:
+            continue
+        ctype = str(header.get(f"CTYPE{axis}", "")).strip()
+        unit = str(header.get(key, "")).strip()
+        if dataset._is_celestial_ctype(ctype) and not dataset._is_angular_unit(unit):
+            header[key] = "deg"
+            header.add_history(
+                f"VisIVO: CUNIT{axis} was {unit!r} on a celestial axis; corrected to 'deg'.")
 
 
 def _baseline_conditioning_warning(
@@ -720,6 +760,17 @@ def worker_baseline(
     # so that the output cube is correctly located in velocity/frequency space.
     header["NAXIS3"] = nchans
     header["CRPIX3"] = float(header.get("CRPIX3", 1.0)) - z0
+    # Miriad writes its own description of the spectral axis alongside the FITS
+    # one (LTYPE/LSTART/LSTEP/LWIDTH), and cropping the channel range left it
+    # describing the UNCROPPED cube: a crop from channel 10 shifted CRPIX3 and
+    # left LSTART at the original value. LSTEP is in LSTART's own units,
+    # so the correction needs no unit conversion.
+    _repair_celestial_units(dataset, header)
+    if z0 and "LSTART" in header and "LSTEP" in header:
+        try:
+            header["LSTART"] = float(header["LSTART"]) + z0 * float(header["LSTEP"])
+        except (TypeError, ValueError):
+            del header["LSTART"]
     # The output is 3-D even when the input was 4-D with a degenerate Stokes
     # axis, so the fourth axis's WCS keywords must go with it.
     header["BITPIX"] = -32

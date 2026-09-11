@@ -363,7 +363,7 @@ void MainWindow::doSkavaSodaSubset(const QString &obsId,
     // ── Region dialog (POS + BAND), prefilled from the dataset metadata ──
     const SkavaDatasetMetadata &m = datalink.dataset;
     QDialog dlg(this);
-    dlg.setWindowTitle(u"SODA subset -%1"_s.arg(obsId));
+    dlg.setWindowTitle(u"SODA subset - %1"_s.arg(obsId));
     auto *form = new QFormLayout(&dlg);
     auto mkEdit = [&](double value, const QString &placeholder) {
         auto *e = new QLineEdit(&dlg);
@@ -598,6 +598,53 @@ void MainWindow::doOpenDataPath(const QString &path)
 }
 
 
+void MainWindow::wireImageViewerProducts(vtkWindowImage *window,
+                                         const QString &backendUrl,
+                                         const QString &backendToken,
+                                         const QString &sessionId,
+                                         const QString &datasetId)
+{
+    // The single-map tools that used to live in the Data Hub's Science menu.
+    // Each viewer's own context is captured here, so they act on THAT image
+    // rather than on whichever dataset was opened last.
+    //
+    // Every path that constructs a vtkWindowImage must come through here.
+    // Wiring it inline in the generic open path left the VLKB inventory's own
+    // window (openVlkbImageLayer) with enabled actions whose signals nobody
+    // answered, so the tools did nothing at all.
+    if (!window)
+        return;
+    QObject::connect(window, &vtkWindowImage::publicationFigureRequested, this,
+                     [this, backendUrl, backendToken, sessionId, datasetId]() {
+                         this->runPublicationFigure(backendUrl, backendToken,
+                                                    sessionId, datasetId);
+                     });
+    QObject::connect(window, &vtkWindowImage::imageQualityRequested, this,
+                     [this, backendUrl, backendToken, sessionId, datasetId]() {
+                         this->runImageQuality(backendUrl, backendToken,
+                                               sessionId, datasetId);
+                     });
+}
+
+void MainWindow::adoptSessionContext(const QString &backendUrl, const QString &backendToken,
+                                     const QString &sessionId, const QString &datasetId,
+                                     int depth, const QString &spectralAxisType,
+                                     const QString &spectralAxisUnit)
+{
+    // The Data Hub keeps a SESSION, not a "current dataset": its Combine
+    // entries pick their inputs from the session list. The per-dataset tools
+    // that used to read these members live in the viewers now and receive the
+    // context of the window that asks.
+    m_sciBackendUrl        = backendUrl;
+    m_sciSessionId         = sessionId;
+    m_sciToken             = backendToken;
+    m_sciDatasetId         = datasetId;
+    m_sciDepth             = depth > 0 ? depth : 1;
+    m_sciSpectralAxisType  = spectralAxisType;
+    m_sciSpectralAxisUnit  = spectralAxisUnit;
+    this->refreshCombineMenuState();
+}
+
 void MainWindow::openViewerFromOpenedDataset(const QString &path,
                                               const BackendOpenDatasetResult &opened,
                                               const BackendClient &client)
@@ -623,6 +670,8 @@ void MainWindow::openViewerFromOpenedDataset(const QString &path,
                                 opened.beamPaDeg);
         }
         imgWin->setDynamicSpectrumMode(isDynspec);
+        this->wireImageViewerProducts(imgWin, client.baseUrl(), client.token(),
+                                      client.sessionId(), opened.datasetId);
         win = imgWin;
     } else if (opened.kind == u"cube"_s) {
         qDebug().noquote()
@@ -713,20 +762,9 @@ void MainWindow::openViewerFromOpenedDataset(const QString &path,
         this->recentMgr->record(path, name, opened.kind);
     }
 
-    // ── Science menu context ──────────────────────────────────────────────────
-    // Keep last-opened dataset info so Science menu actions can use it.
-    m_sciBackendUrl        = client.baseUrl();
-    m_sciSessionId         = client.sessionId();
-    m_sciToken             = client.token();
-    m_sciDatasetId         = opened.datasetId;
-    m_sciDepth             = opened.depth > 0 ? opened.depth : 1;
-    m_sciSpectralAxisType  = opened.spectralAxisType;
-    m_sciSpectralAxisUnit  = opened.spectralAxisUnit;
-    if (m_actLinewidth)   m_actLinewidth->setEnabled(true);
-    if (m_actBaseline)    m_actBaseline->setEnabled(true);
-    if (m_actSourceFind)  m_actSourceFind->setEnabled(true);
-    if (m_actPubFigure)    m_actPubFigure->setEnabled(true);
-    if (m_actImageQuality) m_actImageQuality->setEnabled(true);
+    this->adoptSessionContext(client.baseUrl(), client.token(), client.sessionId(),
+                              opened.datasetId, opened.depth,
+                              opened.spectralAxisType, opened.spectralAxisUnit);
 
     win->showMaximized();
     win->raise();
@@ -766,6 +804,15 @@ void MainWindow::openVlkbImageLayer(const QString &backendPath, const QString &d
                                     opened.cdelt, opened.bunit, opened.degenerateAxesSummary,
                                     opened.wcsStatus, opened.wcsWarningMessage,
                                     client.sessionId(), client.token(), this);
+    this->wireImageViewerProducts(win, client.baseUrl(), client.token(),
+                                  client.sessionId(), opened.datasetId);
+    // …and adopt the session, so the Data Hub's Combine entries see the datasets
+    // this path opened. Only the generic path did that, so a session made up of
+    // VLKB images alone left Combine disabled with datasets sitting in it.
+    this->adoptSessionContext(client.baseUrl(), client.token(), client.sessionId(),
+                              opened.datasetId, opened.depth,
+                              opened.spectralAxisType, opened.spectralAxisUnit);
+
     // Override the master layer name with the human-readable inventory label.
     win->setLayerDisplayName(0, displayName);
 

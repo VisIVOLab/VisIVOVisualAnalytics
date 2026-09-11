@@ -150,33 +150,24 @@ void MainWindow::rebuildCommandPalette()
                  u"View"_s,
                  [this]() { this->openDiagnosticsWindow(); }});
 
-        // ── Science ─────────────────────────────────────────────────────────
-        // Each entry calls QAction::trigger(), which respects the action's
-        // enabled state (disabled actions silently no-op when no dataset is
-        // open). The menubar's Science menu shows the actual enabled state.
+        // ── Combine ─────────────────────────────────────────────────────────
+        // Only the multi-dataset operations. The palette lives on the Data Hub,
+        // and the per-view tools it used to list (Line-Width, Baseline, Stack,
+        // Source Finding) moved into the viewers: triggering them from here
+        // would be triggering them against no particular window, which is the
+        // problem that move was fixing. They are in each viewer's own Analysis
+        // list and Tools menu.
         this->m_commandPalette->addAction(
-                {u"∿"_s, u"Line-Width Map…"_s,
-                 u"Science · FWHM / equivalent-width per pixel"_s,
-                 QString(), u"Science"_s, [this]() {
-                     if (this->m_actLinewidth) this->m_actLinewidth->trigger();
+                {u"÷"_s, u"Pixel Math / Spectral Index…"_s,
+                 u"Combine · pixel-wise math on one or two session maps"_s,
+                 QString(), u"Combine"_s, [this]() {
+                     if (this->m_actPixelMath) this->m_actPixelMath->trigger();
                  }});
         this->m_commandPalette->addAction(
-                {u"⌇"_s, u"Baseline Subtraction…"_s,
-                 u"Science · polynomial or median spectral baseline"_s,
-                 QString(), u"Science"_s, [this]() {
-                     if (this->m_actBaseline) this->m_actBaseline->trigger();
-                 }});
-        this->m_commandPalette->addAction(
-                {u"≡"_s, u"Spectral Stacking…"_s,
-                 u"Science · stack multiple session cubes into 1-D spectrum"_s,
-                 QString(), u"Science"_s, [this]() {
-                     if (this->m_actStack) this->m_actStack->trigger();
-                 }});
-        this->m_commandPalette->addAction(
-                {u"⌖"_s, u"Source Finding (SoFiA-2)…"_s,
-                 u"Science · run SoFiA-2 on the current dataset"_s,
-                 QString(), u"Science"_s, [this]() {
-                     if (this->m_actSourceFind) this->m_actSourceFind->trigger();
+                {u"▦"_s, u"Mosaic (noise-weighted)…"_s,
+                 u"Combine · reproject and co-add session images"_s,
+                 QString(), u"Combine"_s, [this]() {
+                     if (this->m_actMosaic) this->m_actMosaic->trigger();
                  }});
 
         // ── SAMP ────────────────────────────────────────────────────────────
@@ -274,8 +265,8 @@ void MainWindow::rebuildCommandPalette()
                             if (!a->isEnabled())
                                 subtitle = u"Unavailable right now"_s;
                             else if (a->isCheckable())
-                                subtitle = a->isChecked() ? u"On \u2014 select to turn off"_s
-                                                          : u"Off \u2014 select to turn on"_s;
+                                subtitle = a->isChecked() ? u"On, select to turn off"_s
+                                                          : u"Off, select to turn on"_s;
                             else {
                                 const QString tip = a->toolTip().remove(u'&');
                                 if (tip != label)
@@ -398,116 +389,70 @@ void MainWindow::buildSampMenu()
 }
 
 
-void MainWindow::buildScienceMenu()
+void MainWindow::buildCombineMenu()
 {
-    auto *sciMenu = new QMenu(u"Science"_s, this);
-    this->menuBar()->insertMenu(ui->menuHelp->menuAction(), sciMenu);
-    m_scienceMenu = sciMenu;
+    // The Data Hub keeps only what has NO owning window: operations that take
+    // SEVERAL of the session's datasets and produce a new one. Everything else
+    // that used to live here was a tool of a single view, resolved against
+    // "the last dataset opened" — a sticky global with no relation to the window
+    // the user was looking at, so with two cubes open it acted on the wrong
+    // one, and before any dataset was opened it could only answer "Open a
+    // dataset first" (user report). Those moved to the viewers, where the tool
+    // gate already knows what is on screen:
+    //
+    //   Line-Width Map, Baseline Subtraction, Stack Cubes to a Spectrum
+    //       → already in the cube viewer's Analysis list (this was a duplicate)
+    //   Source Finding (SoFiA-2)      → cube viewer, Sources & Kinematics
+    //   Publication Figure,
+    //   Image Quality / Artifacts     → image viewer, Products
+    //
+    // "Science" was also the wrong name for what is left: everything in this
+    // application is science. What these two share is scope.
+    auto *combineMenu = new QMenu(u"Combine"_s, this);
+    this->menuBar()->insertMenu(ui->menuHelp->menuAction(), combineMenu);
+    m_scienceMenu = combineMenu;
 
-    m_actLinewidth = sciMenu->addAction(u"Line-Width Map…"_s);
-    m_actLinewidth->setEnabled(false);
-    m_actLinewidth->setToolTip(u"Compute FWHM / Equivalent-Width map (S-02). Open a dataset first."_s);
-    QObject::connect(m_actLinewidth, &QAction::triggered, this, [this]() {
-        auto *dlg = new LinewidthDialog(m_sciBackendUrl, m_sciToken,
-                                        m_sciSessionId, m_sciDatasetId,
-                                        m_sciDepth, m_sciThreshold,
-                                        m_sciSpectralAxisType, m_sciSpectralAxisUnit,
-                                        this);
-        dlg->setAttribute(Qt::WA_DeleteOnClose);
-        dlg->show();
-    });
-
-    m_actBaseline = sciMenu->addAction(u"Baseline Subtraction…"_s);
-    m_actBaseline->setEnabled(false);
-    m_actBaseline->setToolTip(u"Subtract a polynomial or median spectral baseline (S-03). Open a dataset first."_s);
-    QObject::connect(m_actBaseline, &QAction::triggered, this, [this]() {
-        auto *dlg = new BaselineDialog(m_sciBackendUrl, m_sciToken,
-                                       m_sciSessionId, m_sciDatasetId,
-                                       m_sciDepth, this);
-        dlg->setAttribute(Qt::WA_DeleteOnClose);
-        dlg->show();
-    });
-
-    m_actStack = sciMenu->addAction(u"Spectral Stacking…"_s);
-    m_actStack->setEnabled(true);  // no dataset needed upfront — user selects from list
-    m_actStack->setToolTip(u"Stack multiple session datasets into a 1-D spectrum (S-04)."_s);
-    QObject::connect(m_actStack, &QAction::triggered, this, [this]() {
-        const QString url       = m_sciBackendUrl;
-        const QString token     = m_sciToken;
-        const QString sessionId = m_sciSessionId;
-        const QString currentId = m_sciDatasetId;
-        if (sessionId.isEmpty()) {
-            QMessageBox::information(this, u"Spectral Stacking"_s,
-                                     u"Open a dataset first to establish a backend session, "
-                                     u"then open the additional cubes you want to stack."_s);
-            return;
-        }
-        auto *watcher = new QFutureWatcher<BackendSessionDatasetsResult>(this);
-        QPointer<MainWindow> self(this);
-        QObject::connect(watcher, &QFutureWatcher<BackendSessionDatasetsResult>::finished,
-                         this, [self, watcher, url, token, sessionId, currentId]() {
-                             const auto listing = watcher->result();
-                             watcher->deleteLater();
-                             if (!self) return;
-                             if (!listing.valid) {
-                                 QMessageBox::warning(self, u"Spectral Stacking"_s,
-                                                      u"Could not list session datasets: %1"_s
-                                                              .arg(listing.error));
-                                 return;
-                             }
-                             std::vector<StackDialog::DatasetEntry> entries;
-                             entries.reserve(listing.datasets.size());
-                             for (const auto &d : listing.datasets) {
-                                 const QString fileName = QFileInfo(d.path).fileName();
-                                 const QString label = fileName.isEmpty() ? d.datasetId : fileName;
-                                 entries.push_back({ d.datasetId, d.kind, label,
-                                                     d.width, d.height, d.depth });
-                             }
-                             // Shared ownership: the async stack run captures a
-                             // copy of the shared_ptr, so the client survives an
-                             // early dialog close (no use-after-free).
-                             auto client = std::make_shared<BackendClient>(url, token);
-                             client->setSessionId(sessionId);
-                             auto *dlg = new StackDialog(client, sessionId, entries,
-                                                         currentId, self);
-                             dlg->setAttribute(Qt::WA_DeleteOnClose);
-                             // Non-modal — consistent with the other tool dialogs.
-                             dlg->show();
-                         });
-        watcher->setFuture(QtConcurrent::run([url, token, sessionId]() {
-            BackendClient c(url, token);
-            c.setSessionId(sessionId);
-            return c.listSessionDatasets(sessionId);
-        }));
-    });
-
-    m_actSourceFind = sciMenu->addAction(u"Source Finding (SoFiA-2)…"_s);
-    m_actSourceFind->setEnabled(false);
-    m_actSourceFind->setToolTip(u"Run SoFiA-2 on the current dataset (S-05). Open a dataset first."_s);
-    QObject::connect(m_actSourceFind, &QAction::triggered, this, [this]() {
-        this->openSourceFinder(m_sciBackendUrl, m_sciToken, m_sciSessionId, m_sciDatasetId);
-    });
-
-    sciMenu->addSeparator();
-
-    // ── Advanced 2-D products (SKAVA visualization use cases) ────────────
-    m_actPubFigure = sciMenu->addAction(u"Publication Figure…"_s);
-    m_actPubFigure->setEnabled(false);
-    m_actPubFigure->setToolTip(u"Render a publication-quality figure with WCS grid + colorbar (UC 1.3). Open a dataset first."_s);
-    QObject::connect(m_actPubFigure, &QAction::triggered, this, &MainWindow::runPublicationFigure);
-
-    m_actImageQuality = sciMenu->addAction(u"Image Quality / Artifacts…"_s);
-    m_actImageQuality->setEnabled(false);
-    m_actImageQuality->setToolTip(u"Compute quality/artifact metrics: blanked %, dynamic range, striping, negative bowl (UC 4.2)."_s);
-    QObject::connect(m_actImageQuality, &QAction::triggered, this, &MainWindow::runImageQuality);
-
-    m_actPixelMath = sciMenu->addAction(u"Pixel Math / Spectral Index…"_s);
-    m_actPixelMath->setEnabled(true);  // selects datasets from the session list
-    m_actPixelMath->setToolTip(u"Pixel-wise math on one/two maps, incl. spectral index (UC 3.2)."_s);
+    m_actPixelMath = combineMenu->addAction(u"Pixel Math / Spectral Index…"_s);
     QObject::connect(m_actPixelMath, &QAction::triggered, this, &MainWindow::runPixelMath);
 
-    m_actMosaic = sciMenu->addAction(u"Mosaic (noise-weighted)…"_s);
-    m_actMosaic->setEnabled(true);
-    m_actMosaic->setToolTip(u"Reproject + co-add multiple images into a noise-weighted mosaic (UC 3.3)."_s);
+    m_actMosaic = combineMenu->addAction(u"Mosaic (noise-weighted)…"_s);
     QObject::connect(m_actMosaic, &QAction::triggered, this, &MainWindow::runMosaic);
+
+    // Both need a session with datasets in it, not a "current" one. Enabled
+    // state AND tooltips come from refreshCombineMenuState, so the menu says
+    // what it can do instead of offering an action that explains it cannot.
+    this->refreshCombineMenuState();
+}
+
+void MainWindow::refreshCombineMenuState()
+{
+    // A viewer window IS the evidence that a session with a dataset exists, and
+    // any of them can supply the session context. Two datasets are needed for
+    // either operation to be meaningful, so that is the bar.
+    int viewers = 0;
+    for (QWidget *w : QApplication::topLevelWidgets()) {
+        if (w && (w->inherits("vtkWindowCube") || w->inherits("vtkWindowImage")))
+            ++viewers;
+    }
+    const bool enough = viewers >= 1 || !m_sciSessionId.isEmpty();
+    // Each entry's own description when it can run, the reason when it cannot.
+    // Overwriting the description on the way down and never restoring it left
+    // an enabled action still explaining that it needed a dataset.
+    static constexpr QLatin1StringView kBlocked(
+            "Open a dataset first: these combine datasets that are already open "
+            "in this session.");
+    const auto apply = [enough](QAction *a, const QString &ready) {
+        if (!a)
+            return;
+        a->setEnabled(enough);
+        a->setToolTip(enough ? ready : QString(kBlocked));
+    };
+    apply(m_actPixelMath,
+          u"Pixel-wise math on one or two maps from this session, including the "
+          u"spectral index between two frequencies. Pick the inputs from the "
+          u"session list."_s);
+    apply(m_actMosaic,
+          u"Reproject and co-add several images from this session onto one grid, "
+          u"weighted by their noise. Produces a 2-D mosaic: cube inputs "
+          u"contribute their first plane only."_s);
 }

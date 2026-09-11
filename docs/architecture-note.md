@@ -371,9 +371,78 @@ The real fix, deferred: hand the request to something that outlives the dialog,
 so closing it yields the map instead of wasting the compute. The result already
 opens in its own window, so nothing but ownership stands in the way.
 
-Still missing too: per-chunk progress from the backend for the chunked computes
-(line-width dispatches N chunks and reports none of them), which needs a channel
-back to the dialog, not just a log line.
+### "Is anything happening?" — one progress affordance
+
+The tools had grown three answers. Stack and Source Finding put up a
+window-modal `QProgressDialog` (on macOS a sheet out of the title bar, the one
+users actually noticed); Line-width and Baseline wrote into their own dialog's
+status bar; Compute Moment closed its dialog *first* and then reported into the
+**cube window's** status bar, bottom-left, away from where the user had just
+been working. Same operation, three places to look.
+
+`ToolProgressSheet.h` is now the only way to make one, and every tool that runs
+a backend compute follows the same shape:
+
+> **The settings window stays open across the run, and the sheet goes on IT.**
+> The action button starts the work instead of closing the window; the sheet is
+> window-modal on that window, so it both reports the work and blocks the
+> controls underneath for the duration; when the result lands the same window is
+> still there to run again with different parameters.
+
+Line-width, Baseline, Stack and Source Finding already worked that way. Compute
+Moment, Estimate Noise, Export Sub-Cube, Mask 3-D Region and Kinematic Model
+Overlay did not: they were `QDialog::exec()` prompts that closed on Accept, so
+the compute they started had no window of its own and its only sign of life was
+a line in the *cube window's* status bar, bottom-left, away from where the user
+had just been working (user report). They are persistent windows now.
+
+Two of them also asked **twice**. Export Sub-Cube prompted for bounds, closed,
+then prompted for a filename; Mask 3-D Region prompted for bounds, closed, then
+asked for the mask mode — and it borrowed the export's dialog verbatim, so it
+opened a window titled "Export Sub-Cube as FITS" that described exporting. Both
+now have one window with every parameter in it (`CubeBoxToolDialog`, shared by
+the two tools that act on a 3-D box, with per-tool title, hint, action verb and
+extra field).
+
+The remaining exceptions are **Export Current Channel as 2-D FITS** and **Export
+Moment Map as FITS**, which take one filename and nothing else and so have no
+settings window to host a sheet. They are not always fast, and the note that
+used to sit here (0.01–0.03 s, therefore never a sheet) generalised one
+measurement on a small cube: `worker_moment_save_fits` RE-COMPUTES the moment,
+auto-thresholding included, rather than serialising the map already on screen,
+so on a large cube, a queued backend or slow storage it can pass 400 ms easily.
+They are simply not converted yet. **Export Movie** keeps its own determinate progress dialog:
+it is the one operation that can actually report per-frame progress, and a real
+percentage beats the shared spinner. **Channel Maps** opens a window that *is*
+the result rather than computing into one.
+
+Three properties of the sheet are deliberate:
+
+- **Indeterminate.** No backend compute reports per-chunk progress yet, and a
+  fabricated percentage is worse than an honest spinner. (The missing piece is
+  unchanged: line-width dispatches N chunks and reports none of them, which
+  needs a channel back to the dialog, not just a log line.)
+- **No Cancel button.** The compute keeps running on the backend whether or not
+  the client watches, so a Cancel that merely hid the sheet would be a lie.
+  Note this does not make the sheet un-dismissable: Escape still closes it
+  (measured), and the settings windows converted below do not route their own
+  close through `confirmAbandonRunningCompute`. Dismissing either does not
+  cancel anything and does not lose the result — the completion handler still
+  runs, clears the status line and shows the outcome, parented to the viewer
+  when its dialog is gone.
+- **Interactive paths only.** `MomentMapController::dispatch()` is also the
+  copilot's entry point, so the sheet is created in `startComputation()` and
+  `dispatch()` only closes whatever it finds. An agent-driven compute must not
+  put a modal sheet in the user's way. It is closed *after* the staleness check,
+  so a superseded result cannot close the sheet of the request that replaced it.
+
+It is armed with `setValue(0)`, **not** `show()`. `show()` puts the sheet up at
+once, which defeats `minimumDuration` and flashes a sheet at every fast compute
+(measured: visible after 50 ms). `setValue()` arms QProgressDialog's own delayed
+timer, and because that timer belongs to the dialog, closing it cancels the
+pending show. A hand-rolled `QTimer::singleShot(400, …, show)` does not: measured
+in an offscreen Qt harness, it re-showed a sheet the completion handler had
+already closed.
 
 ---
 
@@ -540,6 +609,39 @@ Two things follow from the change and must not be re-broken:
   mounting a pane. With selection passive it guards nothing and is gone — if
   activation is ever put back on `currentChanged`, that guard has to come back
   with it, and so does the right-click problem.
+
+### Where a tool lives: scope, not subject matter
+
+A tool belongs to whatever knows *which data it acts on*. That gives exactly two
+homes, and the deciding question is how many datasets the operation takes:
+
+| The operation takes | Lives in | Because |
+|---|---|---|
+| the data in one view | that viewer's Tools menu + Inspector ▸ Analysis | the tool gate already knows what is on screen and whether it is visible |
+| several of the session's datasets, producing a new one | the Data Hub's **Combine** menu | there is no single owning window; the Data Hub is the session surface |
+
+The Data Hub used to carry a **Science** menu with nine entries, and it failed
+both tests. Three of them (Line-Width Map, Baseline Subtraction, Stack Cubes to
+a Spectrum) duplicated cube-viewer tools. Source Finding (SoFiA-2) was a cube
+tool reachable *only* from there. Publication Figure and Image Quality take a
+single 2-D map. All six resolved their target through `m_sciDatasetId` — "the
+last dataset opened", a sticky global with no relation to the focused window —
+so with two cubes open they acted on the wrong one, and the three entries that
+were clickable before any dataset existed could only answer "Open a dataset
+first" (user report). They now live in the viewers, and each viewer emits a
+request that the host answers with **that window's** backend context, captured
+when the window was created (the pattern `sourceFinderRequested` already used
+for the copilot's `show_sources`).
+
+What is left on the Data Hub is Pixel Math / Spectral Index and Mosaic, which
+genuinely combine datasets. "Science" was the wrong name for them too:
+everything in this application is science, and what those two share is scope, so
+the menu is called **Combine**. Its entries are enabled from what the session
+holds, not from a current dataset (`refreshCombineMenuState`).
+
+A corollary worth keeping: the command palette lives on the Data Hub, so it
+lists Combine's entries only. Triggering a per-view tool from there would mean
+triggering it against no particular window, which is the problem the move fixed.
 
 ### What a tool must leave behind
 
@@ -1031,8 +1133,29 @@ use a bare `QDialogButtonBox`; two of them relabel the primary (*Export…*,
 should take the theme's primary/secondary buttons and a verb label like the
 family above.
 
-Window titles are Title Case throughout ("Stack Spectral Cubes", "Color Maps",
+Window titles are Title Case throughout ("Stack Cubes to a Spectrum", "Color Maps",
 "Spectral Lines" were the three that were not, and are now).
+
+**Punctuation in user-visible strings: no em-dashes.** Every label, tooltip,
+status line, banner and message body uses a comma, a parenthesis or a plain
+hyphen instead; 265 strings across 54 files were converted, plus the backend's
+user-facing error text. The dash was doing three separate jobs and each takes
+its own replacement, which is why this is not a blind substitution:
+
+| Job | Example | Becomes |
+|---|---|---|
+| "no value yet" placeholder | `"Backend capacity: —"`, `"RA — Dec —"` | `-` |
+| self-contained trailing aside | `"…freely — the copilot remembers."` | parentheses |
+| apposition | `"VisIVO Binary Table — points / volumes"` | comma |
+| anything else, incl. a clause running into the next concatenated fragment | `"…held back — "` | ` - ` |
+
+Two traps a mechanical pass falls into: a dash at the end of a *fragment* of a
+concatenated literal must keep its trailing space (otherwise two words glue
+together across the join), and a trailing aside cannot become a parenthesis when
+the sentence continues in the next fragment (the closing bracket lands
+mid-sentence). Docstrings and code comments keep their dashes: they document the
+code to developers and are not labels. The copilot's system prompt carries the
+rule too, since what the assistant writes is itself user-visible text.
 
 Parameters are remembered per dataset through `AnalysisParamStore` by the moment,
 noise, kinematic-model and spectral-lines dialogs. Channel Maps, Export Movie,
@@ -1046,9 +1169,18 @@ systemic velocity again on every use).
   `BackendClient::listSessionDatasets(sessionId)` in a worker, gets the full
   set of cubes open in the backend session, and passes them with the
   `currentDatasetId` of the calling window.
+- The caller collapses entries that resolve to the same FILE. A path can be
+  registered in one session more than once (the baseline route registers its
+  output, and opening that output from the product row registers it again under
+  a second id), and the cube then appeared twice in the list, identical and
+  indistinguishable. Stacking a cube with itself is not a thing anyone wants.
 - The dialog pre-checks the current cube, hides non-cube entries, and
   disables (with tooltip) cubes whose `(width × height × depth)` does not
   match the reference shape — they cannot be stacked together.
+- The selection counter is computed once at the end of the constructor. It used
+  to update only on `itemChanged`, which is connected *after* the population, so
+  the dialog opened reading "Selected: 0 cubes" with a box visibly ticked and
+  the Stack button disabled.
 - Item label = basename of the FITS file; the true `dataset_id` lives in
   `Qt::UserRole`.
 

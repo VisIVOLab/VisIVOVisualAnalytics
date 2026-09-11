@@ -458,7 +458,7 @@ void vtkWindowImage::showFitsHeaderDialog()
     auto *dlg = new QDialog(this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
     dlg->setWindowModality(Qt::NonModal);
-    dlg->setWindowTitle(u"FITS Header -%1"_s.arg(QFileInfo(this->filepath).fileName()));
+    dlg->setWindowTitle(u"FITS Header - %1"_s.arg(QFileInfo(this->filepath).fileName()));
     dlg->resize(620, 480);
 
     auto *vbox = new QVBoxLayout(dlg);
@@ -642,6 +642,33 @@ void vtkWindowImage::setupInspector()
     add(u"Contours"_s, u"Load Contour from FITS…"_s, this->m_actLoadExternalContour);
     add(u"Measure"_s, u"Ruler (Distance)"_s, this->m_actRuler);
     add(u"Measure"_s, u"Angle (3 Points)"_s, this->m_actAngle);
+
+    // Two tools that used to live only in the Data Hub's Science menu, where
+    // they ran against whatever dataset had been opened last. They take a
+    // single 2-D map, which is exactly what this window shows, so they belong
+    // here and the host resolves them against THIS window's dataset.
+    // Both surfaces, like every other tool in this window: the Tools menu is
+    // where the user guide sends people, and the Inspector list is where they
+    // browse. Adding them only to the Inspector made the documented menu route
+    // a dead end.
+    if (!this->m_actPublicationFigure) {
+        this->m_actPublicationFigure = ui->menuTools->addAction(u"Publication Figure…"_s);
+        this->m_actPublicationFigure->setToolTip(
+                u"Render this map as a publication-ready PNG (WCS grid, colorbar, "
+                u"stretch and colormap of your choice)."_s);
+        QObject::connect(this->m_actPublicationFigure, &QAction::triggered, this,
+                         [this]() { emit this->publicationFigureRequested(); });
+    }
+    if (!this->m_actImageQuality) {
+        this->m_actImageQuality = ui->menuTools->addAction(u"Image Quality / Artifacts…"_s);
+        this->m_actImageQuality->setToolTip(
+                u"Report blanked fraction, dynamic range, noise and artefact "
+                u"indicators for this map."_s);
+        QObject::connect(this->m_actImageQuality, &QAction::triggered, this,
+                         [this]() { emit this->imageQualityRequested(); });
+    }
+    add(u"Products"_s, u"Publication Figure…"_s, this->m_actPublicationFigure);
+    add(u"Products"_s, u"Image Quality / Artifacts…"_s, this->m_actImageQuality);
 
     // Single-view window: no pane grid / Linked (those live in the cube's centre
     // toolbar, not the image viewer).

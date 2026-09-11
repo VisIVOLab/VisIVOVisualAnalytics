@@ -35,7 +35,14 @@ public:
     // Values are clamped to the cube extent by the spinboxes; call before exec().
     void setRegion(int x0, int x1, int y0, int y1, int chStart, int chEnd);
 
+    /// Grey the inputs while an estimate is in flight.
+    void setBusy(bool busy);
+
 signals:
+    /// The user pressed Estimate. The dialog stays open; the controller runs the
+    /// estimate and puts its progress sheet on this window.
+    void estimateRequested();
+
     // Emitted whenever any spinbox value changes (spatial or spectral) so
     // the cube viewer can paint live preview overlays: an amber rectangle
     // on the 2D slice (using x0..x1, y0..y1) AND a semi-transparent box
@@ -61,6 +68,8 @@ private:
     QSpinBox *m_chStartSpin{ nullptr };
     QSpinBox *m_chEndSpin{ nullptr };
     QPushButton *m_okBtn{ nullptr };
+    /// An estimate is in flight: Estimate stays unavailable regardless of bounds.
+    bool m_busy{ false };
     // Helper labels under each section: refreshed live in validate() with
     // pixel / channel counts plus scientific picking guidance, so the user
     // doesn't have to read the docs to know what makes a good region.
