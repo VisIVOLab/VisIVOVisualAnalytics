@@ -231,7 +231,7 @@ class ScientificFitsDataset:
         while arr.ndim > 3:
             logger.warning(
                 "squeeze_to_3d: dropping a non-degenerate leading axis of size %d "
-                "(keeping index 0 only) — remaining shape %s; if this is a STOKES "
+                "(keeping index 0 only), remaining shape %s; if this is a STOKES "
                 "axis the plane may not be Stokes I.",
                 arr.shape[0], arr.shape,
             )

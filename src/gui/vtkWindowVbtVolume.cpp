@@ -101,7 +101,7 @@ vtkWindowVbtVolume::vtkWindowVbtVolume(BackendVbtOpenResult openResult,
 void vtkWindowVbtVolume::setupUi()
 {
     this->setAttribute(Qt::WA_DeleteOnClose);
-    this->setWindowTitle(QStringLiteral("VBT Volume Viewer — %1 x %2 x %3")
+    this->setWindowTitle(QStringLiteral("VBT Volume Viewer, %1 x %2 x %3")
                                  .arg(this->openResult.dimensions[0])
                                  .arg(this->openResult.dimensions[1])
                                  .arg(this->openResult.dimensions[2]));
@@ -298,7 +298,7 @@ void vtkWindowVbtVolume::setupSidebarUi()
         this->sliderOpacity->setRange(1, 100);
         this->sliderOpacity->setValue(28);
         this->sliderOpacity->setToolTip(
-                u"Composite: scales the opacity ramp — higher = more opaque.\n"
+                u"Composite: scales the opacity ramp, higher = more opaque.\n"
                 u"MIP/MinIP: raises the threshold above which voxels are projection candidates."_s);
 
         this->comboBackground = new QComboBox(inner);

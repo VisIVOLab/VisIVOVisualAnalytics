@@ -8,6 +8,7 @@
 class QCheckBox;
 class QComboBox;
 class QLabel;
+class QProgressDialog;
 class QLineEdit;
 class QPushButton;
 class QSpinBox;
@@ -69,7 +70,12 @@ signals:
      * @param newDatasetId  Backend-assigned ID of the result dataset in this session.
      * @param summary       Human-readable summary string suitable for a status bar or log.
      */
-    void baselineResultReady(const QString &newDatasetId, const QString &summary);
+    /// @param outputPath  Where the backend wrote the cube. It is a TEMPORARY
+    ///                     file (the backend's temp directory), which the caller
+    ///                     needs in order to reopen the result later — the
+    ///                     summary string is for humans, not for parsing.
+    void baselineResultReady(const QString &newDatasetId, const QString &outputPath,
+                             const QString &summary);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -95,6 +101,8 @@ private:
 
     // Re-entrancy guard and stale-result fence.
     bool     m_busy{ false };
+    /// The shared window-modal progress sheet (ToolProgressSheet.h).
+    QPointer<QProgressDialog> m_progressSheet;
     int      m_currentRequestId{ 0 };
 
     // Form widgets.

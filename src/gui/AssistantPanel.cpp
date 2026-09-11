@@ -99,9 +99,9 @@ AssistantPanel::AssistantPanel(QWidget *parent) : QWidget(parent)
         }
     });
     m_transcript->setPlaceholderText(
-            u"Ask about the loaded dataset — units, statistics, a moment map, a "
+            u"Ask about the loaded dataset - units, statistics, a moment map, a "
             "distance. Every number in the answer is backed by a tool call.\n\n"
-            "Ask follow-up questions freely — the copilot remembers the conversation."_s);
+            "Ask follow-up questions freely (the copilot remembers the conversation)."_s);
     root->addWidget(m_transcript, 1);
 
     // Starter-question chips, shown only while the conversation is empty.
@@ -445,7 +445,7 @@ void AssistantPanel::renderConversation()
                              .arg(t.botFg, esc(e.text).replace(u"\n"_s, u"<br>"_s));
             if (!e.configured) {
                 inner += u"<br><span style='color:%1;font-size:small;'><i>No LLM provider is "
-                         "configured on the server — the analysis tools still work; open ⚙ to "
+                         "configured on the server - the analysis tools still work; open ⚙ to "
                          "enable natural-language answers.</i></span>"_s.arg(t.meta);
             }
             if (!e.provenance.isEmpty()) {
@@ -555,7 +555,7 @@ void AssistantPanel::startStream(const QString &question)
                         // We could not obtain a session; a strict backend would
                         // reject the stream, so say so instead of failing oddly.
                         setBusy(false);
-                        appendError(u"Could not establish a session with the backend — "
+                        appendError(u"Could not establish a session with the backend - "
                                     "check the connection and try again."_s);
                         return;
                     }

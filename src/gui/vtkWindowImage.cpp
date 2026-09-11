@@ -1541,7 +1541,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
 
     m_actComputeFaradayRM = ui->menuTools->addAction(u"Compute Faraday RM…"_s);
     m_actComputeFaradayRM->setToolTip(
-            u"Linear fit of PA vs λ² from ≥ 3 (Q, U, ν) triplets — low-RM regime only."_s);
+            u"Linear fit of PA vs λ² from ≥ 3 (Q, U, ν) triplets, low-RM regime only."_s);
     QObject::connect(m_actComputeFaradayRM, &QAction::triggered, this,
                      &vtkWindowImage::computeFaradayRM);
 
@@ -1590,7 +1590,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     actionCommandPalette->setShortcut(QKeySequence(QStringLiteral("Ctrl+K")));
     actionCommandPalette->setShortcutContext(Qt::ApplicationShortcut);
     actionCommandPalette->setToolTip(
-            u"Quick action search — same palette as the main window (⌘K)."_s);
+            u"Quick action search, same palette as the main window (⌘K)."_s);
     ui->menuView->addAction(actionCommandPalette);
     QObject::connect(actionCommandPalette, &QAction::triggered, this, [this]() {
         for (QWidget *w : QApplication::topLevelWidgets()) {
@@ -2480,7 +2480,7 @@ void vtkWindowImage::applyCopilotActions(const QList<QJsonObject> &actions)
     }
     this->vtkRender();
     this->statusBar()->showMessage(
-            tr("Copilot applied %n visualisation change(s) — Undo available.", "", applicable),
+            tr("Copilot applied %n visualisation change(s), Undo available.", "", applicable),
             6000);
 }
 

@@ -227,7 +227,7 @@ void vtkWindowCube::showKinematicModelDialog()
 
     auto *intro = new QLabel(
             u"Build a regularly-rotating-disk model on the cube. Velocity fields "
-            u"(Vsys / Vrot / σ) are in the cube's spectral unit — km/s once the "
+            u"(Vsys / Vrot / σ) are in the cube's spectral unit, km/s once the "
             u"axis converts. Appearance (level, colour, opacity, wireframe) is "
             u"tuned live afterwards in the Kinematic Model panel."_s);
     intro->setWordWrap(true);
@@ -369,7 +369,7 @@ void vtkWindowCube::showKinematicModelDialog()
                 vals[c] = it ? it->text().trimmed().toDouble(&ok) : 0.0;
                 if (!ok || !std::isfinite(vals[c])) {
                     QMessageBox::warning(this, u"Kinematic Model"_s,
-                                         u"Ring %1 has a non-numeric value — fix the table or "
+                                         u"Ring %1 has a non-numeric value, fix the table or "
                                          u"disable per-ring mode."_s.arg(row + 1));
                     return;
                 }
@@ -446,7 +446,7 @@ void vtkWindowCube::onKinematicModelReady()
         QMessageBox::information(
                 this, u"Kinematic Model"_s,
                 u"The model is empty (no emission landed on a channel).\n\n"
-                u"Spectral mode: %1 (unit: %2). Set Vsys/Vrot/σ in that unit — "
+                u"Spectral mode: %1 (unit: %2). Set Vsys/Vrot/σ in that unit - "
                 u"for a velocity cube use km/s within the cube's velocity range."_s
                         .arg(result.spectralMode.isEmpty() ? u"?"_s : result.spectralMode)
                         .arg(result.spectralUnit.isEmpty() ? u"?"_s : result.spectralUnit));
@@ -473,7 +473,7 @@ void vtkWindowCube::onKinematicModelReady()
             || curOrg[1] != m_kinematicLaunchOrigin[1] || curOrg[2] != m_kinematicLaunchOrigin[2];
     if (geomChanged) {
         this->statusBar()->showMessage(
-                u"Cube display changed while building — re-run the kinematic overlay."_s, 6000);
+                u"Cube display changed while building, re-run the kinematic overlay."_s, 6000);
         return;
     }
 
@@ -517,7 +517,7 @@ void vtkWindowCube::onKinematicModelReady()
     this->updateKinematic2dContour();
 
     this->statusBar()->showMessage(
-            u"Kinematic model overlaid (%1 vertices, mode %2 [%3]) — restyle it in the panel."_s
+            u"Kinematic model overlaid (%1 vertices, mode %2 [%3]), restyle it in the panel."_s
                     .arg(result.numVertices)
                     .arg(result.spectralMode.isEmpty() ? u"?"_s : result.spectralMode)
                     .arg(result.spectralUnit.isEmpty() ? u"?"_s : result.spectralUnit),

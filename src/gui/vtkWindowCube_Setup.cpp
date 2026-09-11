@@ -813,7 +813,7 @@ void vtkWindowCube::setupWorkspaceDocks()
     auto *dismissBtn =
             new QToolButton(this->m_localRecommendRemoteBanner);
     dismissBtn->setText(u"✕"_s);
-    dismissBtn->setToolTip(u"Dismiss — and stop suggesting this for this cube"_s);
+    dismissBtn->setToolTip(u"Dismiss - and stop suggesting this for this cube"_s);
     recLayout->addWidget(dismissBtn);
     this->m_localRecommendRemoteBanner->setVisible(false);
     localLayout->addWidget(this->m_localRecommendRemoteBanner);
@@ -866,7 +866,7 @@ void vtkWindowCube::setupWorkspaceDocks()
     bannerLayout->setContentsMargins(8, 2, 4, 2);
     bannerLayout->setSpacing(8);
     this->m_remoteRenderBannerLabel = new QLabel(
-            u"Remote rendering (GPU on backend) — click ✕ to switch to Local"_s,
+            u"Remote rendering (GPU on backend) - click ✕ to switch to Local"_s,
             banner);
     bannerLayout->addWidget(this->m_remoteRenderBannerLabel, 1);
     this->m_remoteRenderBannerClose = new QToolButton(banner);
@@ -997,9 +997,9 @@ void vtkWindowCube::refreshRemoteRecommendBanner()
         if (local && canRemote) {
             why = QStringLiteral(
                     "This view is capped at a decimated proxy above the %1 MB threshold.\n\n"
-                    "• Load full resolution — fetch the whole cube and render it here. It "
+                    "• Load full resolution, fetch the whole cube and render it here. It "
                     "needs ~%2 GB resident, in RAM and as a 3-D GPU texture.\n"
-                    "• Switch to Remote — render it in the backend process instead. Same "
+                    "• Switch to Remote, render it in the backend process instead. Same "
                     "machine and the same GPU, so this only moves where the cube lives, and "
                     "adds a per-frame encode.\n\n"
                     "Raise Cube/local_full_threshold_mb in Settings.ini to stop being asked.")
@@ -1008,7 +1008,7 @@ void vtkWindowCube::refreshRemoteRecommendBanner()
         } else if (local) {
             why = QStringLiteral(
                     "This view is capped at a decimated proxy above the %1 MB threshold, and "
-                    "this backend cannot render server-side (no EGL context — a CPU-only or "
+                    "this backend cannot render server-side (no EGL context - a CPU-only or "
                     "macOS backend), so loading it here is the only way to the full grid. It "
                     "needs ~%2 GB resident, in RAM and as a 3-D GPU texture.\n\n"
                     "Raise Cube/local_full_threshold_mb in Settings.ini to stop being asked.")
@@ -1017,20 +1017,20 @@ void vtkWindowCube::refreshRemoteRecommendBanner()
         } else if (canRemote) {
             why = QStringLiteral(
                     "Loading it here would pull %1 GB across the link and keep it resident. "
-                    "Rendering on the backend streams frames instead — the cube stays where "
+                    "Rendering on the backend streams frames instead - the cube stays where "
                     "it is.")
                           .arg(sizeGb, 0, 'f', 2);
         } else {
             why = QStringLiteral(
-                    "This backend cannot render server-side (no EGL context — a CPU-only or "
+                    "This backend cannot render server-side (no EGL context - a CPU-only or "
                     "macOS backend), so there is no streaming alternative: loading the full "
                     "grid means pulling %1 GB across the link and keeping it resident here. "
                     "For a region only, use View ▸ Crop Full Resolution.")
                           .arg(sizeGb, 0, 'f', 2);
         }
         this->m_localRecommendRemoteLabel->setText(
-                ((local || !canRemote) ? u"Full resolution is held back — "_s
-                                       : u"Remote rendering recommended — "_s)
+                ((local || !canRemote) ? u"Full resolution is held back - "_s
+                                       : u"Remote rendering recommended - "_s)
                 + reason + offer);
         this->m_localRecommendRemoteLabel->setToolTip(why);
         this->m_localRecommendRemoteBanner->setToolTip(why);

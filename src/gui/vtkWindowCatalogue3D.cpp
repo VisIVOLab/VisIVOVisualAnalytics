@@ -453,7 +453,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         }
     }
 
-    setWindowTitle(QStringLiteral("3D Catalogue — %1  (%2 sources)")
+    setWindowTitle(QStringLiteral("3D Catalogue, %1  (%2 sources)")
                            .arg(QFileInfo(filepath).fileName())
                            .arg(entries.size()));
 

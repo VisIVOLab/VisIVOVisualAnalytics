@@ -141,7 +141,7 @@ def worker_hi_products(
     warnings: list[str] = []
     if not mask_enabled:
         warnings.append(
-            "no mask applied — integrated_flux_jy_kms and hi_mass_msun are a "
+            "no mask applied, integrated_flux_jy_kms and hi_mass_msun are a "
             "WHOLE-FIELD integral (all sources + noise + residual continuum), not "
             "a single-source mass. Enable mask_enabled/threshold_auto or restrict "
             "to a source region before quoting the mass.")

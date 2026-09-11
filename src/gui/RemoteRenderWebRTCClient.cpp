@@ -248,7 +248,7 @@ void RemoteRenderWebRTCClient::setupPeerConnection()
         return;
     }
     qDebug().noquote() << QStringLiteral(
-            "[webrtc] addTrack succeeded — video track created");
+            "[webrtc] addTrack succeeded, video track created");
 
     // H.264 RTP depacketizer aggregates fragmented NAL units back into
     // whole frames (handles FU-A and STAP-A modes that aiortc uses).
@@ -409,7 +409,7 @@ void RemoteRenderWebRTCClient::onLocalDescriptionReady(const QString &sdp,
 
     qDebug().noquote() << QStringLiteral(
             "[webrtc] local description ready (type=%1, original=%2 bytes, "
-            "patched=%3 bytes) — posting to /v1/render/%4/sdp/offer")
+            "patched=%3 bytes), posting to /v1/render/%4/sdp/offer")
             .arg(type).arg(sdp.size()).arg(patched.size()).arg(m_sessionId);
     // Dump the FULL SDP. With 766-byte offers we're missing the
     // entire video m-line — addTrack() didn't take. Seeing the raw
@@ -424,7 +424,7 @@ void RemoteRenderWebRTCClient::onLocalDescriptionReady(const QString &sdp,
 void RemoteRenderWebRTCClient::postSdpOffer(const QString &offerSdp)
 {
     qDebug().noquote() << QStringLiteral(
-            "[webrtc] postSdpOffer entering — base=%1 session=%2 sdp=%3 bytes")
+            "[webrtc] postSdpOffer entering, base=%1 session=%2 sdp=%3 bytes")
             .arg(m_baseUrl).arg(m_sessionId).arg(offerSdp.size());
 
     QUrl url(m_baseUrl);
@@ -465,8 +465,8 @@ void RemoteRenderWebRTCClient::postSdpOffer(const QString &offerSdp)
                 }
             }
             qWarning().noquote() << QStringLiteral(
-                    "[webrtc] SDP offer HTTP %1 — %2").arg(code).arg(detail);
-            setStatus(QStringLiteral("Error: SDP offer HTTP %1 — %2")
+                    "[webrtc] SDP offer HTTP %1 -%2").arg(code).arg(detail);
+            setStatus(QStringLiteral("Error: SDP offer HTTP %1 -%2")
                               .arg(code).arg(detail));
             return;
         }
@@ -525,7 +525,7 @@ void RemoteRenderWebRTCClient::handleSdpAnswer(const QByteArray &responseBody)
         return;
     }
     qDebug().noquote() << QStringLiteral(
-            "[webrtc] received SDP answer (type=%1, %2 bytes) — "
+            "[webrtc] received SDP answer (type=%1, %2 bytes) - "
             "applying remote description").arg(type).arg(sdp.size());
     try {
         m_pc->setRemoteDescription(

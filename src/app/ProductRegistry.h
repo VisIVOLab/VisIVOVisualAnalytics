@@ -26,7 +26,7 @@ struct AnalysisProduct
     QString parentKey;       ///< stable dataset key (FITS filepath) it derives from
     QString parentLabel;     ///< display name of the parent dataset
     QString kind;            ///< "moment" | "pv" | "noise" | "linewidth" | …
-    QString label;           ///< e.g. "Moment 0 — integrated"
+    QString label;           ///< e.g. "Moment 0, integrated"
     QString renderer;        ///< non-empty ⇒ showable in a pane (§3.2); "" ⇒ Inspector-only
                              ///< (e.g. "moment2d"). Statistics/exports leave this empty.
     QString status{ QStringLiteral("ready") };  ///< "ready" | "running" | "failed"
@@ -58,6 +58,11 @@ public:
     /// Remove a product (emits productRemoved). Used for a TRANSITORY live entry that a tool
     /// promotes-or-drops (e.g. the Extract-Spectrum live preview). No-op if not present.
     void removeProduct(const QString &productId);
+
+    /// Replace a product's params (emits productUpdated). For a tool that
+    /// registers its row when it STARTS — so the user sees it running — and only
+    /// learns the recipe / output location when the result lands.
+    void setParams(const QString &productId, const QVariantMap &params);
 
     /// Associate a result window with a product (for focus-on-activate).
     void attachWindow(const QString &productId, QWidget *window);

@@ -196,6 +196,13 @@ region and channel range.
    - **MAD per channel**, same four summary stats.
    - **Subtitle** with the selected region and a warning when too much of
      the selection is blank — see [Blank-pixel handling](#blank-pixel-handling).
+5. The estimate is also recorded in **Session Data** as a statistics row
+   (`Noise σ=… (x …, y …)`), with σ/MAD, the region and the channel range in
+   its **Provenance** tab. The result panel is a transient window, and σ is the
+   number you reach for afterwards — the moment-map threshold, the isosurface
+   level, the mask cut-off — so closing the panel no longer loses it. Re-running
+   the *same* region updates that row in place; a different region adds its own,
+   so two noise regions can be compared side by side.
 
 ### Live preview overlays
 

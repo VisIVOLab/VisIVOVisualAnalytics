@@ -6,6 +6,8 @@
 
 #include "MomentMapController.h"
 
+#include "ToolProgressSheet.h"
+
 #include "AnalysisParamStore.h"
 #include "app/DiagnosticsManager.h"
 #include "theme/ToolDialogStyle.h"
@@ -120,6 +122,15 @@ void MomentMapController::startComputation(int defaultOrder)
             { u"maskEnabled"_s, config.maskEnabled }, { u"thresholdAuto"_s, config.thresholdAuto },
             { u"thresholdValue"_s, config.thresholdValue } });
 
+    // The interactive path only: the moment dialog has already closed by now, so
+    // without this the sole sign of a minutes-long compute was a line in the
+    // CUBE window's status bar, bottom-left, away from where the user was just
+    // working (user report). dispatch() is also the copilot's entry point, and
+    // an agent-driven compute must not put a modal sheet in anyone's way — so
+    // the sheet is created HERE and dispatch() merely closes whatever it finds.
+    if (m_parentWindow)
+        m_progressSheet = visivo::showToolProgressSheet(
+                m_parentWindow, u"Computing the moment map"_s);
     this->dispatch(config);
 }
 
@@ -183,6 +194,9 @@ void MomentMapController::dispatch(const Config &config)
         if (requestId != self->m_currentRequestId) {
             return; // stale result from a superseded request – discard
         }
+        // After the staleness check, never before: a superseded result must not
+        // close the sheet belonging to the request that replaced it.
+        visivo::closeToolProgressSheet(self->m_progressSheet);
 
         self->m_busy = false;
 
@@ -333,15 +347,15 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
     // to open the docs. Phrased for working astronomers, not specs.
     auto orderHint = [](int order) -> QString {
         switch (order) {
-        case 0:  return u"Sum I·Δv over the channel range — total line flux per pixel."_s;
-        case 1:  return u"Intensity-weighted spectral centroid — reveals velocity gradients (rotation, outflows)."_s;
+        case 0:  return u"Sum I·Δv over the channel range, total line flux per pixel."_s;
+        case 1:  return u"Intensity-weighted spectral centroid - reveals velocity gradients (rotation, outflows)."_s;
         case 2:  return u"Spectral variance, NOT FWHM. Use the Line-width Map tool for FWHM/EW."_s;
-        case 3:  return u"Asymmetry of the line profile — positive = high-velocity tail."_s;
-        case 4:  return u"Peakedness vs Gaussian — positive = leptokurtic; negative = flat / double-peaked."_s;
-        case 5:  return u"Standardised 5th moment — sensitive to asymmetric tails on top of skewness."_s;
-        case 6:  return u"Root-mean-square brightness — quick signal-strength map."_s;
-        case 8:  return u"Maximum intensity per spectrum — robust for narrow lines, equivalent to a peak map."_s;
-        case 10: return u"Minimum intensity per spectrum — useful for absorption studies."_s;
+        case 3:  return u"Asymmetry of the line profile, positive = high-velocity tail."_s;
+        case 4:  return u"Peakedness vs Gaussian, positive = leptokurtic; negative = flat / double-peaked."_s;
+        case 5:  return u"Standardised 5th moment, sensitive to asymmetric tails on top of skewness."_s;
+        case 6:  return u"Root-mean-square brightness, quick signal-strength map."_s;
+        case 8:  return u"Maximum intensity per spectrum - robust for narrow lines, equivalent to a peak map."_s;
+        case 10: return u"Minimum intensity per spectrum, useful for absorption studies."_s;
         }
         return {};
     };
@@ -438,7 +452,7 @@ bool MomentMapController::configureMomentDialog(int defaultOrder, Config &config
                      [updateThresholdEnabled](bool) { updateThresholdEnabled(); });
 
     auto *maskHintLabel = new QLabel(
-            u"Only voxels above the threshold contribute to the moment — this "
+            u"Only voxels above the threshold contribute to the moment - this "
             u"cleans up M1/M2. With Auto, the backend derives the threshold "
             u"from the noise (median + 3·σ via MAD); untick it to set a value "
             u"by hand."_s, &dialog);

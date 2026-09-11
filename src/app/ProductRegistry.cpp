@@ -48,6 +48,17 @@ void ProductRegistry::setStatus(const QString &productId, const QString &status,
     emit productUpdated(m_products[i]);
 }
 
+void ProductRegistry::setParams(const QString &productId, const QVariantMap &params)
+{
+    for (AnalysisProduct &p : m_products) {
+        if (p.productId != productId)
+            continue;
+        p.params = params;
+        emit productUpdated(p);
+        return;
+    }
+}
+
 void ProductRegistry::removeProduct(const QString &productId)
 {
     const int i = indexOf(productId);

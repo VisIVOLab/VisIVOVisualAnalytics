@@ -444,7 +444,7 @@ bool CubeVRController::open(vtkRenderer *desktopRenderer, vtkVolume *cubeVolume)
     });
     d->frameTimer.setInterval(0); // fire as fast as possible — OpenXR paces us
     d->active = true;
-    qInfo() << "[vr] OpenXR session started — pumping frames via QTimer";
+    qInfo() << "[vr] OpenXR session started, pumping frames via QTimer";
     d->frameTimer.start();
     emit sessionStarted();
     return true;

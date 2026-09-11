@@ -156,10 +156,25 @@ BackendAperturePhotometryResult BackendClient::requestAperturePhotometry(
     const QJsonObject obj = QJsonDocument::fromJson(raw).object();
     result.valid               = obj.value(QStringLiteral("valid")).toBool();
     result.error               = obj.value(QStringLiteral("error")).toString();
-    result.fluxJy              = obj.value(QStringLiteral("flux_jy")).toDouble();
-    result.fluxErrJy           = obj.value(QStringLiteral("flux_err_jy")).toDouble();
+    // These four are nullable: flux_jy / flux_err_jy are null unless the data are
+    // per-beam with a known beam, the raw sum is null when blanked pixels fall in
+    // the aperture, and the error is null when no annulus was given so the
+    // background was never measured. QJsonValue::toDouble() turns null into 0.0,
+    // which reads as a measured zero flux — NaN is this parser's convention for
+    // "not available" (see the deconvolved sizes below).
+    const auto nullableDouble = [&obj](const char *key) {
+        const QJsonValue v = obj.value(QLatin1String(key));
+        return v.isNull() || v.isUndefined() ? std::numeric_limits<double>::quiet_NaN()
+                                             : v.toDouble();
+    };
+    result.fluxJy              = nullableDouble("flux_jy");
+    result.fluxErrJy           = nullableDouble("flux_err_jy");
+    result.flux                = nullableDouble("flux");
+    result.fluxErr             = nullableDouble("flux_err");
+    result.fluxUnit            = obj.value(QStringLiteral("flux_unit")).toString();
     result.backgroundJyPerPix  = obj.value(QStringLiteral("background_jy_per_pix")).toDouble();
     result.nPixAperture        = obj.value(QStringLiteral("n_pix_aperture")).toInt();
+    result.apertureAreaPix     = obj.value(QStringLiteral("aperture_area_pix")).toDouble();
     result.channel             = obj.value(QStringLiteral("channel")).toInt(-1);
     result.pixX                = obj.value(QStringLiteral("pix_x")).toDouble();
     result.pixY                = obj.value(QStringLiteral("pix_y")).toDouble();

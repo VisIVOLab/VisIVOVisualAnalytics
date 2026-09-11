@@ -106,10 +106,13 @@
 #include <QFileInfo>
 #include <QActionGroup>
 #include <QScopeGuard>
+#include <QRegularExpression>
 #include <QSet>
 #include <QAction>
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QClipboard>
+#include <QGuiApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QColorDialog>
@@ -1133,6 +1136,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         // "Show in ▸": right-click a product → mount it in a chosen pane.
         connect(this->m_workspaceChrome, &WorkspaceChrome::sessionRowContextMenu, this,
                 &vtkWindowCube::showSessionRowContextMenu);
+        connect(this->m_workspaceChrome, &WorkspaceChrome::sessionProductReopen, this,
+                &vtkWindowCube::reopenProductFromFile);
         // Reverse sync: activating a pane by any route highlights its Session-tree row.
         connect(this, &vtkWindowCube::activePaneChanged, this, [this](int) {
             syncSessionTreeToActivePane();
@@ -1293,13 +1298,13 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 box.setIcon(QMessageBox::Warning);
                 box.setWindowTitle(
                         (localBackend || !this->m_serverSideRenderingAvailable)
-                                ? u"Large cube — this needs the whole volume in memory"_s
-                                : u"Large cube — remote rendering recommended"_s);
+                                ? u"Large cube - this needs the whole volume in memory"_s
+                                : u"Large cube, remote rendering recommended"_s);
                 box.setText(localBackend
                         ? QStringLiteral(
                                   "This cube is %1 GB at full resolution, above the %2 MB "
                                   "local-load threshold.\n\nThe backend is on this machine, so "
-                                  "nothing is downloaded over a network — but the whole volume "
+                                  "nothing is downloaded over a network - but the whole volume "
                                   "has to be resident here, in RAM and as a 3-D GPU texture.\n\n"
                                   "%3")
                                   .arg(warnCubeMb / 1024.0, 0, 'f', 2)
@@ -1326,7 +1331,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                                  "the transfer."_s
                                                : u"This backend cannot render server-side (no "
                                                  "EGL context), so there is no alternative to "
-                                                 "the download — consider Crop Full Resolution "
+                                                 "the download, consider Crop Full Resolution "
                                                  "for a region instead."_s));
                 // Only when the backend can actually do it: with no EGL there,
                 // this button led straight into a refused request (verified —
@@ -1441,7 +1446,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             this->statusBar()->showMessage(
                     u"3D pick armed: click the volume, the isosurface or the cutting "
                     u"plane. The blend mode decides which voxel along the ray you "
-                    u"get — MIP the brightest, Composite the front surface."_s,
+                    u"get - MIP the brightest, Composite the front surface."_s,
                     6000);
         } else {
             this->remove3dPickObserver();
@@ -1491,7 +1496,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     actionCommandPalette->setShortcut(QKeySequence(QStringLiteral("Ctrl+K")));
     actionCommandPalette->setShortcutContext(Qt::ApplicationShortcut);
     actionCommandPalette->setToolTip(
-            u"Quick action search — same palette as the main window (⌘K)."_s);
+            u"Quick action search, same palette as the main window (⌘K)."_s);
     ui->menuView->addAction(actionCommandPalette);
     QObject::connect(actionCommandPalette, &QAction::triggered, this, [this]() {
         // Find the MainWindow instance and ask it to open the palette. We
@@ -1660,7 +1665,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                          const int requestId =
                                  this->remotePreviewWatcher.property("requestId").toInt();
                          if (requestId != this->currentRemotePreviewRequestId) {
-                             qDebug().noquote() << QStringLiteral("[preview-debug] stale requestId=%1 vs current=%2 — return")
+                             qDebug().noquote() << QStringLiteral("[preview-debug] stale requestId=%1 vs current=%2, return")
                                                            .arg(requestId).arg(this->currentRemotePreviewRequestId);
                              return;
                          }
@@ -1933,7 +1938,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 this->m_momentProvenanceParams.insert(u"Scope"_s,
                                                       MomentMapController::describeMomentScope());
                 this->m_momentProvenanceParams.insert(
-                        u"Unit"_s, result.momentUnit.isEmpty() ? u"—"_s : result.momentUnit);
+                        u"Unit"_s, result.momentUnit.isEmpty() ? u"-"_s : result.momentUnit);
 
                 // Mark the moment available BEFORE applying — mountView() reads
                 // momentProvenanceState.valid to decide render vs empty state (§3.1).
@@ -1998,6 +2003,19 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             this,
             [this]() { this->updateBackendDerivedActionsAvailability(); },
             this);
+    // The estimate is a product like any other: a statistics row in Session Data
+    // whose Provenance holds σ/MAD. No renderer — there is nothing to draw in a
+    // pane — and no Provenance reveal, because the tool's own result dialog is
+    // already opening on top.
+    QObject::connect(this->noiseController, &NoiseController::noiseProvenanceReady, this,
+                     [this](const QString &stableKey, const QString &label,
+                            const QVariantMap &params) {
+                         this->registerAnalysisProduct(u"noise"_s, label, params,
+                                                       /*window=*/nullptr,
+                                                       this->scopedProductId(stableKey),
+                                                       /*renderer=*/QString(),
+                                                       /*revealProvenance=*/false);
+                     });
 
     // ── PV diagram backend fetch – delegated to PvController ─────────────────
     this->pvController = new PvController(
@@ -2289,7 +2307,28 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                        this);
         dlg->setAttribute(Qt::WA_DeleteOnClose);
         dlg->show();
-        this->registerAnalysisProduct(u"baseline"_s, u"Baseline-subtracted cube"_s, {}, dlg);
+        // The row is registered when the tool OPENS (so it is visible while it
+        // runs), and completed when the result lands. Both matter:
+        //
+        //  * `window` is a QPointer to the dialog, so once the user closes it the
+        //    row's only action was gone — right-click offered nothing, double
+        //    click did nothing, and the result was unreachable for ever;
+        //  * the params were EMPTY, so the new dataset id and the output path —
+        //    which the dialog showed once in a popup and then forgot — were not
+        //    written down anywhere. The cube itself was on disk the whole time,
+        //    in the backend's temp directory (user report).
+        //
+        // The dialog's own baselineResultReady signal existed for this and was
+        // connected to nothing at all, its comment notwithstanding.
+        const QString baselineId =
+                this->registerAnalysisProduct(u"baseline"_s, u"Baseline-subtracted cube"_s,
+                                              { { u"Status"_s, u"running…"_s } }, dlg);
+        QObject::connect(dlg, &BaselineDialog::baselineResultReady, this,
+                         [this, baselineId](const QString &newDatasetId, const QString &outputPath,
+                                            const QString &summary) {
+                             this->completeBaselineProduct(baselineId, newDatasetId, outputPath,
+                                                           summary);
+                         });
     });
 
     // S-04 Stack spectral cubes
@@ -2320,7 +2359,23 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              }
                              std::vector<StackDialog::DatasetEntry> entries;
                              entries.reserve(listing.datasets.size());
+                             // One row per FILE, not per dataset id. The same path can be
+                             // registered in a session more than once — a baseline run
+                             // registers its output, and opening that output (the product
+                             // row's double-click) registers it again under a second id —
+                             // and the cube then appeared twice in this list, identical
+                             // and indistinguishable (user report). Stacking a cube with
+                             // itself is not a thing anyone wants, so the duplicates go.
+                             QSet<QString> seenPaths;
                              for (const auto &d : listing.datasets) {
+                                 const QString canonical = d.path.isEmpty()
+                                         ? QString()
+                                         : QFileInfo(d.path).canonicalFilePath();
+                                 const QString key = canonical.isEmpty() ? d.path : canonical;
+                                 if (!key.isEmpty() && seenPaths.contains(key))
+                                     continue;
+                                 if (!key.isEmpty())
+                                     seenPaths.insert(key);
                                  // Use the file basename as the human label so the user can
                                  // tell the cubes apart; fall back to the dataset id when
                                  // the backend did not report a path.
@@ -2456,7 +2511,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             if (!cubeRen || !this->volume) {
                 actOpenInVR->setChecked(false);
                 QMessageBox::warning(this, u"Open in VR"_s,
-                                     u"The cube is not ready yet — wait for the "
+                                     u"The cube is not ready yet, wait for the "
                                      u"preview to load and try again."_s);
                 return;
             }
@@ -2529,7 +2584,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QAction *actChannelMaps = this->m_actChannelMaps;
     actChannelMaps->setToolTip(
             u"Display a mosaic of N consecutive channel slices with the same "
-            u"color scale — useful for identifying coherent structures across "
+            u"color scale, useful for identifying coherent structures across "
             u"the spectral axis."_s);
     QObject::connect(actChannelMaps, &QAction::triggered, this, [this]() {
         ChannelMapsDialog dlg(this->remoteDatasetDepth,
@@ -2573,7 +2628,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     m_actKinematicLasso->setCheckable(true);
     m_actKinematicLasso->setToolTip(
             u"Click a source in the 3-D view to select the whole kinematically-"
-            u"coherent object (geodesic, velocity-aware) — no coordinates, no box. "
+            u"coherent object (geodesic, velocity-aware), no coordinates, no box. "
             u"The green isosurface is the selection."_s);
     QObject::connect(m_actKinematicLasso, &QAction::toggled,
                      this, &vtkWindowCube::setKinematicLassoActive);
@@ -2636,7 +2691,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             }
         if (!haveViewer) {
             statusBar()->showMessage(
-                    u"No image viewer open — open a 2-D FITS image first; the slice "
+                    u"No image viewer open - open a 2-D FITS image first; the slice "
                     u"overlays there as contours."_s,
                     5000);
             this->applyMomentToolGate();
@@ -2675,8 +2730,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // Movie export (F3): channel scan / camera orbit → MP4 (or PNG frames).
     m_actExportMovie = ui->menuTools->addAction(u"Export Movie…"_s);
     m_actExportMovie->setToolTip(
-            u"Export an animation — a velocity channel scan or a 3-D camera "
-            u"orbit — as an MP4 video (or a PNG frame sequence)."_s);
+            u"Export an animation - a velocity channel scan or a 3-D camera "
+            u"orbit, as an MP4 video (or a PNG frame sequence)."_s);
     QObject::connect(m_actExportMovie, &QAction::triggered,
                      this, &vtkWindowCube::showExportMovieDialog);
 
@@ -2692,7 +2747,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     m_actLinkViews->setCheckable(true);
     m_actLinkViews->setToolTip(
             u"Synchronise camera, velocity channel and colour map across all open "
-            u"cube viewers that have Link Views enabled — for side-by-side comparison."_s);
+            u"cube viewers that have Link Views enabled - for side-by-side comparison."_s);
     QObject::connect(m_actLinkViews, &QAction::toggled,
                      this, &vtkWindowCube::setLinkViews);
     vtkWindowCube::s_registry.add(this);
@@ -2898,7 +2953,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(ui->lineUpperBound, &QLineEdit::editingFinished, this,
                      &vtkWindowCube::updateContours);
 
-    // Backend-authoritative: statistics fields show "—" until populated.
+    // Backend-authoritative: statistics fields show "-" until populated.
     ui->lineCubeMin->clear();
     ui->lineCubeMax->clear();
     ui->lineCubeMean->clear();
@@ -3010,7 +3065,7 @@ void vtkWindowCube::showFitsHeaderDialog()
     auto *dlg = new QDialog(this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
     dlg->setWindowModality(Qt::NonModal);
-    dlg->setWindowTitle(u"FITS Header — %1"_s.arg(QFileInfo(this->filepath).fileName()));
+    dlg->setWindowTitle(u"FITS Header -%1"_s.arg(QFileInfo(this->filepath).fileName()));
     dlg->resize(620, 480);
 
     auto *vbox = new QVBoxLayout(dlg);
@@ -3357,7 +3412,7 @@ void vtkWindowCube::requestMomentMode()
             DiagnosticsLevel::Info,
             DiagnosticsCategory::Scientific,
             QStringLiteral("MomentMap"),
-            QStringLiteral("No moment map available — opening configuration dialog."),
+            QStringLiteral("No moment map available, opening configuration dialog."),
             this->remoteDatasetId,
             this->remoteSessionId,
             QStringLiteral("moment"));
@@ -3483,7 +3538,7 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
     if ((requested == RenderMode::Remote || requested == RenderMode::Auto)
         && this->m_remoteSwitchInProgress) {
         qDebug().noquote() << QStringLiteral(
-                "[remote-render] applyRenderMode(%1) ignored — already switching")
+                "[remote-render] applyRenderMode(%1) ignored, already switching")
                 .arg(requested == RenderMode::Remote ? "Remote" : "Auto");
         return;
     }
@@ -3578,7 +3633,7 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
                 constexpr qint64 kSwitchTimeoutS = 300;
                 if (secs >= kSwitchTimeoutS) {
                     this->abortRemoteSwitch(
-                            QStringLiteral("Remote rendering did not start within %1 s — "
+                            QStringLiteral("Remote rendering did not start within %1 s - "
                                            "staying local. Check the backend's GPU / EGL "
                                            "support in Diagnostics, then retry.")
                                     .arg(kSwitchTimeoutS));
@@ -3594,14 +3649,14 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
                             "GPU… (%1 s)").arg(secs);
                 } else if (secs < 90) {
                     msg = QStringLiteral(
-                            "Loading cube into backend GPU memory — large "
+                            "Loading cube into backend GPU memory, large "
                             "datasets take a minute or two… (%1 s elapsed)")
                                   .arg(secs);
                 } else {
                     const qint64 mins = secs / 60;
                     const qint64 rem  = secs % 60;
                     msg = QStringLiteral(
-                            "Still loading — very large cubes (20+ GB) can "
+                            "Still loading, very large cubes (20+ GB) can "
                             "take several minutes. Elapsed %1m%2s. The 3D "
                             "will appear automatically when ready.")
                                   .arg(mins).arg(rem, 2, 10, QLatin1Char('0'));
@@ -4517,14 +4572,14 @@ void vtkWindowCube::showSliceHistogramPanel()
 
     auto *win = new QWidget(nullptr, Qt::Window);
     win->setAttribute(Qt::WA_DeleteOnClose);
-    win->setWindowTitle(QStringLiteral("Pixel Histogram — CH %1").arg(
+    win->setWindowTitle(QStringLiteral("Pixel Histogram, CH %1").arg(
             ui->sliderSlice->value()));
     win->resize(620, 380);
     auto *layout = new QVBoxLayout(win);
     layout->setContentsMargins(4, 4, 4, 4);
 
     auto *info = new QLabel(QStringLiteral(
-            "Slice %1 of %2  ·  range %3 — %4  ·  %5 valid pixels  ·  drag cursors to clip LUT")
+            "Slice %1 of %2  ·  range %3, %4  ·  %5 valid pixels  ·  drag cursors to clip LUT")
                     .arg(ui->sliderSlice->value())
                     .arg(this->remoteDatasetDepth)
                     .arg(vmin, 0, 'g', 6)
@@ -4694,7 +4749,7 @@ void vtkWindowCube::exportMomentMapAsFits()
     // inverted range).
     if (cfg.channelEnd < cfg.channelStart) {
         QMessageBox::warning(this, u"Export Moment as FITS"_s,
-                u"No moment has been computed yet — open Tools → Compute "
+                u"No moment has been computed yet - open Tools → Compute "
                 u"Moment first, then retry the export."_s);
         return;
     }
@@ -6392,7 +6447,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
     // (unchanged). Page 1 = the 2D/Moment pane page driving the active Pane2DView. The
     // header text + current page follow the active pane via activePaneChanged.
     QPushButton *dispHdr = nullptr;
-    QVBoxLayout *disp = addSection(u"DISPLAY — 3D"_s, true, true, &dispHdr);
+    QVBoxLayout *disp = addSection(u"DISPLAY, 3D"_s, true, true, &dispHdr);
     m_displayHeaderBtn = dispHdr;
     auto *dispStack = new QStackedWidget(root);
     m_displayStack = dispStack;
@@ -6621,7 +6676,7 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         auto *cb = new QCheckBox(u"3D rendering"_s, row);
         cb->setStyleSheet(QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;").arg(fg));
         cb->setToolTip(u"Show the volume or isosurface. Clear it to leave just the "
-                       u"cube outline, the cutting plane and any overlays — the "
+                       u"cube outline, the cutting plane and any overlays - the "
                        u"Isosurface / Volume selector above chooses which of the "
                        u"two is drawn when this is on."_s);
         cb->setChecked(m_show3dRendering);
@@ -7306,7 +7361,7 @@ void vtkWindowCube::showLinkNoReceiverHint(int srcSlot)
         return;
     m_linkNoReceiverHintShown = true;
     const QString label = viewTitle(m_slots[srcSlot].view);
-    const QString msg = QStringLiteral("Only pane showing %1 — nothing to link").arg(label);
+    const QString msg = QStringLiteral("Only pane showing %1 - nothing to link").arg(label);
     QWidget *anchor = m_linkLutChip ? m_linkLutChip.data()
                     : m_paneLinkedBtn ? m_paneLinkedBtn.data()
                                       : nullptr;
@@ -7622,7 +7677,7 @@ void vtkWindowCube::updateDisplaySectionForActivePane()
                   : hasActive                  ? u"NO PRODUCT"_s   // a None "empty" pane is active
                                                : u"NO PANE SELECTED"_s;
     const bool open = m_displayHeaderBtn->isChecked();
-    m_displayHeaderBtn->setText((open ? u"▼  "_s : u"▶  "_s) + u"DISPLAY — "_s + title);
+    m_displayHeaderBtn->setText((open ? u"▼  "_s : u"▶  "_s) + u"DISPLAY - "_s + title);
 
     // LAYERS follows the active pane. Volume, the cutting plane and the WCS axes
     // are 3-D actors; contours are drawn into the slice renderer. Showing all of
@@ -8016,7 +8071,43 @@ void vtkWindowCube::showSessionRowContextMenu(const QString &viewTag, const QStr
         // lives in its own window. Say so, and offer the one thing that applies,
         // rather than showing nothing at all on right-click.
         const AnalysisProduct p = ProductRegistry::instance().product(productId);
-        QAction *note = menu.addAction(u"Opens in its own window"_s);
+        // A product stored as a FITS on the backend (a baseline-subtracted cube,
+        // a mask, a sub-cube) is reopenable for as long as that file exists —
+        // which outlives the tool window by far. Without this the row died with
+        // its dialog: nothing to click, double-click inert, and a 1.5 GB result
+        // sitting in the backend's temp directory that the UI could not reach
+        // (user report).
+        const QString fitsPath = p.params.value(u"Output path"_s).toString();
+        if (!fitsPath.isEmpty()) {
+            QObject::connect(menu.addAction(u"Open as a New Cube"_s), &QAction::triggered, this,
+                             [this, fitsPath, label = p.label]() {
+                                 emit this->openBackendFitsRequested(fitsPath, label);
+                             });
+            // Keeping it. The file is in the backend's TEMP directory, so the
+            // honest answer to "how do I hold on to this?" used to be "run
+            // Export Sub-Cube as FITS" — a crop dialog, to copy a whole cube
+            // (user report). One click, straight into Workspace Exports.
+            const QString backendId = p.params.value(u"New dataset ID"_s).toString();
+            const bool temporary = p.params.value(u"Storage"_s).toString().contains(
+                    u"temporary"_s, Qt::CaseInsensitive);
+            if (!backendId.isEmpty() && temporary) {
+                QAction *keep = menu.addAction(u"Save a Permanent Copy (Workspace Exports)"_s);
+                keep->setToolTip(u"Copy this cube out of the backend's temporary "
+                                 u"directory into Workspace Exports, where it survives "
+                                 u"the session and the system will not delete it."_s);
+                QObject::connect(keep, &QAction::triggered, this,
+                                 [this, backendId, label = p.label, fitsPath]() {
+                                     this->saveProductCopyToWorkspace(backendId, label, fitsPath);
+                                 });
+            }
+            QAction *where = menu.addAction(u"Copy File Path"_s);
+            QObject::connect(where, &QAction::triggered, this, [fitsPath]() {
+                QGuiApplication::clipboard()->setText(fitsPath);
+            });
+            menu.addSeparator();
+        }
+        QAction *note = menu.addAction(fitsPath.isEmpty() ? u"Opens in its own window"_s
+                                                          : u"Stored on the backend"_s);
         note->setEnabled(false);
         if (p.window) {
             QObject::connect(menu.addAction(u"Bring window to front"_s), &QAction::triggered,
@@ -8702,7 +8793,7 @@ void vtkWindowCube::pinCurrentSpectrum()
     this->statusBar()->showMessage(
             target >= 0
                     ? QStringLiteral("Pinned %1 into pane %2.").arg(label).arg(target + 1)
-                    : QStringLiteral("Pinned %1 — no free pane: pick it from a pane's "
+                    : QStringLiteral("Pinned %1 - no free pane: pick it from a pane's "
                                      "\u25BE menu or from Session Data.").arg(label),
             6000);
 }
@@ -8903,7 +8994,7 @@ int vtkWindowCube::borrowPaneSlot(const QString &productId)
         return -1;
     m_borrowedPanes.insert(productId, m_slots[best].view);
     this->statusBar()->showMessage(
-            u"Borrowed pane %1 (was %2) — it comes back when the tool ends."_s
+            u"Borrowed pane %1 (was %2) (it comes back when the tool ends)."_s
                     .arg(best + 1)
                     .arg(viewTitle(m_slots[best].view)),
             6000);
@@ -8970,7 +9061,7 @@ void vtkWindowCube::startLiveSpectrum()
         this->updateLiveSpectrumHeader();   // mountView writes the product label; this the state
     } else {
         this->statusBar()->showMessage(
-                u"Extract Spectrum: no pane could be freed for the live spectrum — "
+                u"Extract Spectrum: no pane could be freed for the live spectrum - "
                 u"close a pane's view, or pick \u201CSpectrum (live)\u201D from a pane's "
                 u"\u25BE menu."_s,
                 6000);
@@ -9048,11 +9139,11 @@ void vtkWindowCube::updateLiveSpectrumHeader()
     // "already saved": ending the tool then removes the live row and adds
     // nothing, which read as losing the spectrum rather than as it being safe.
     const QString hint = !this->probeFrozen
-            ? u"\U0001F7E2 Live — hover the slice to track, click a pixel to pin its spectrum"_s
+            ? u"\U0001F7E2 Live - hover the slice to track, click a pixel to pin its spectrum"_s
             : m_lastProbeSpectrumPinned
             ? u"\U0001F4BE Saved as \u201C%1\u201D in Session Data  ·  click the slice "
               u"again to resume tracking"_s.arg(m_lastProbeSpectrumProduct)
-            : u"\U0001F512 Pinned — click the slice again to resume tracking  ·  "
+            : u"\U0001F512 Pinned - click the slice again to resume tracking  ·  "
               u"ending the tool (Extract Spectrum / Esc) keeps this spectrum in "
               u"Session Data  ·  \u201CPin Spectrum\u201D keeps it now"_s;
     for (int i = 0; i < 4; ++i)
@@ -9362,7 +9453,7 @@ void vtkWindowCube::buildPaneSlots()
         lutBtn->setCursor(Qt::PointingHandCursor);
         lutBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
         lutBtn->setIconSize(QSize(30, 9));
-        lutBtn->setToolTip(u"Colour map — click to change"_s);
+        lutBtn->setToolTip(u"Colour map - click to change"_s);
         lutBtn->setStyleSheet(u"QToolButton{background:transparent;border:1px solid #2A3238;"
                               u"border-radius:2px;padding:1px;}QToolButton:hover{border-color:%1;}"_s
                                       .arg(pri));
@@ -9751,10 +9842,10 @@ void vtkWindowCube::refreshPaneChrome()
                 a->setCheckable(true);
                 a->setChecked(cand == s.view);
                 if (collideJ >= 0) {
-                    // Disabled + the pane number reads as "can't — a moment is in P3"
+                    // Disabled + the pane number reads as "can't - a moment is in P3"
                     // without needing the tooltip (which stays as the full explanation).
                     a->setEnabled(false);
-                    a->setToolTip(QStringLiteral("%1 is already shown in P%2 — one moment map "
+                    a->setToolTip(QStringLiteral("%1 is already shown in P%2, one moment map "
                                                  "at a time")
                                           .arg(viewTitle(m_slots[collideJ].view))
                                           .arg(collideJ + 1));
@@ -10036,7 +10127,7 @@ vtkWindowCube::MapStats vtkWindowCube::computeMapStats(vtkImageData *img)
     }
     s.count = static_cast<long>(vals.size());
     if (vals.empty()) {
-        // No finite pixels → summary stats UNDEFINED (rendered "—"), not a misleading 0.
+        // No finite pixels → summary stats UNDEFINED (rendered "-"), not a misleading 0.
         const double nan = std::numeric_limits<double>::quiet_NaN();
         s.min = s.max = s.mean = s.median = s.std = s.rms = nan;
         return s;   // valid = false, count = 0, sum = 0
@@ -10122,11 +10213,11 @@ void vtkWindowCube::updateActiveMapStats()
 
     auto *lay = qobject_cast<QVBoxLayout *>(m_activeMapStatsSection->layout());
     const QString unitSuffix = unit.isEmpty() ? QString() : (u" "_s + unit);
-    // Gate on stats.valid so a map with no finite pixels (or no scalar array) renders "—",
+    // Gate on stats.valid so a map with no finite pixels (or no scalar array) renders "-",
     // never a misleading 0 <unit>.
     const bool ok = stats.valid;
     auto num = [&](double v) {
-        return (ok && std::isfinite(v)) ? (QString::number(v, 'g', 6) + unitSuffix) : u"—"_s;
+        return (ok && std::isfinite(v)) ? (QString::number(v, 'g', 6) + unitSuffix) : u"-"_s;
     };
 
     // Sub-caption = the pane name (this IS the "2D image" block, now pane-aware).
@@ -10219,7 +10310,7 @@ void vtkWindowCube::setupInspector()
     }
     panel->addPropertyRow(u"Session"_s, this->remoteSessionId);
     panel->addPropertyRow(u"Backend"_s, this->remoteBackendUrl);
-    panel->addPropertyRow(u"Sanity"_s, this->remoteWcsStatus.isEmpty() ? u"—"_s
+    panel->addPropertyRow(u"Sanity"_s, this->remoteWcsStatus.isEmpty() ? u"-"_s
                                                                        : this->remoteWcsStatus);
 
     // Flatten a re-hosted stat widget so it reads as a value, not an input box.
@@ -10248,9 +10339,9 @@ void vtkWindowCube::setupInspector()
     panel->addPropertyRow(u"Mean"_s, statVal(ui->lineCubeMean));
     // The full 8-row set (Median/Std/Sum added below) is filled from the backend's out-of-core
     // full-res scan — the ui->lineCube* fields show the fast local preview until it lands.
-    auto *cubeMedian = new QLabel(u"—"_s);
-    auto *cubeStd    = new QLabel(u"—"_s);
-    auto *cubeSum    = new QLabel(u"—"_s);
+    auto *cubeMedian = new QLabel(u"-"_s);
+    auto *cubeStd    = new QLabel(u"-"_s);
+    auto *cubeSum    = new QLabel(u"-"_s);
     m_cubeStatMedian = cubeMedian;
     m_cubeStatStd    = cubeStd;
     m_cubeStatSum    = cubeSum;
@@ -10261,7 +10352,7 @@ void vtkWindowCube::setupInspector()
     this->fetchCubeStatsAsync();   // full-res stats overwrite the 4 preview rows + fill the rest
 
     panel->addPropertyCaption(u"WCS"_s);
-    panel->addPropertyRow(u"Status"_s, this->remoteWcsStatus.isEmpty() ? u"—"_s
+    panel->addPropertyRow(u"Status"_s, this->remoteWcsStatus.isEmpty() ? u"-"_s
                                                                       : this->remoteWcsStatus);
     panel->addPropertyRow(u"Frame"_s, this->currentWcsFrameLabel());
     panel->addPropertyRow(u"Spectral axis"_s, this->spectralAxisTitle());
@@ -10387,7 +10478,7 @@ void vtkWindowCube::buildSpectrumInspectorControls(InspectorPanel *panel)
                                    .arg(fgMuted, VisivoTheme::sectionHeaderCss()));
     col->addWidget(caption);
 
-    m_specInspTitle = new QLabel(u"—"_s);
+    m_specInspTitle = new QLabel(u"-"_s);
     m_specInspTitle->setStyleSheet(
             QStringLiteral("color:%1; font-family:'Lato'; font-size:12px; font-weight:600;").arg(fg));
     m_specInspTitle->setWordWrap(true);
@@ -10435,7 +10526,7 @@ void vtkWindowCube::buildSpectrumInspectorControls(InspectorPanel *panel)
     // pinned a spectrum and then could not find it in Session Data.
     m_specInspPin        = mkBtn(u"Compare"_s,
                                  u"Keep the current curve on this plot as a comparison "
-                                 u"overlay — display only, NOT saved as a product "
+                                 u"overlay - display only, NOT saved as a product "
                                  u"(that is Tools ▸ Pin Spectrum)."_s);
     m_specInspClearPins  = mkBtn(u"Clear Overlays"_s,
                                  u"Remove all comparison curves from this plot."_s);
@@ -10457,7 +10548,7 @@ void vtkWindowCube::buildSpectrumInspectorControls(InspectorPanel *panel)
     grid->addWidget(m_specInspSavePng,    3, 1);
     col->addLayout(grid);
 
-    m_specInspStats = new QLabel(u"—"_s);
+    m_specInspStats = new QLabel(u"-"_s);
     m_specInspStats->setStyleSheet(
             QStringLiteral("color:%1; font-size:10px; font-family:'JetBrains Mono','SF Mono',monospace;")
                     .arg(fg));
@@ -10547,7 +10638,7 @@ void vtkWindowCube::updateSpectrumInspectorControls()
     m_specInspSaveCsv->setEnabled(haveSpec);
     m_specInspSavePng->setEnabled(haveSpec);
     const QString stats = sp->statsText();
-    m_specInspStats->setText(stats.isEmpty() ? u"—"_s : stats);
+    m_specInspStats->setText(stats.isEmpty() ? u"-"_s : stats);
 }
 
 void vtkWindowCube::fetchCubeStatsAsync()
@@ -11099,7 +11190,7 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
     // populated for this moment (MomentMapApplyResult itself carries no unit).
     {
         const QString u = this->m_momentProvenanceParams.value(u"Unit"_s).toString();
-        cached.unit = (u == u"—"_s) ? QString() : u;
+        cached.unit = (u == u"-"_s) ? QString() : u;
     }
     this->m_products2d.insert(productId, cached);
     this->m_lastComputedMomentProductId = productId;   // for the Slice/Moment toggle + export fallback
@@ -11256,6 +11347,99 @@ void vtkWindowCube::updateBackendDerivedActionsAvailability()
     this->applyMomentToolGate();
 }
 
+void vtkWindowCube::reopenProductFromFile(const QString &productId)
+{
+    // Double-click on a product whose tool window is gone. If it left a FITS on
+    // the backend, that is what "open" means; otherwise say so rather than
+    // doing nothing at all, which is what the row did before (user report).
+    const AnalysisProduct p = ProductRegistry::instance().product(productId);
+    const QString fitsPath = p.params.value(u"Output path"_s).toString();
+    if (!fitsPath.isEmpty()) {
+        emit this->openBackendFitsRequested(fitsPath, p.label);
+        return;
+    }
+    this->statusBar()->showMessage(
+            p.label.isEmpty()
+                    ? u"This product has no window and no stored file to reopen."_s
+                    : u"“%1” has no window and no stored file to reopen."_s.arg(p.label),
+            5000);
+}
+
+void vtkWindowCube::completeBaselineProduct(const QString &productId,
+                                            const QString &newDatasetId,
+                                            const QString &outputPath, const QString &summary)
+{
+    // Write down what the popup used to show once and then lose. "Output path"
+    // is the key one: it is what makes the row reopenable after the dialog is
+    // gone (see showSessionRowContextMenu), and it tells the user where the cube
+    // actually is — the backend's temp directory, which is why it was not in
+    // Workspace Exports (user report).
+    QVariantMap params;
+    if (!newDatasetId.isEmpty())
+        params.insert(u"New dataset ID"_s, newDatasetId);
+    if (!outputPath.isEmpty()) {
+        params.insert(u"Output path"_s, outputPath);
+        params.insert(u"Storage"_s, u"temporary file on the backend, export to keep it"_s);
+    }
+    // The summary carries method / RMS before-after / fit channels; keep it as
+    // one Provenance row rather than re-parsing it into fields.
+    if (!summary.isEmpty())
+        params.insert(u"Summary"_s, summary);
+    ProductRegistry::instance().setParams(productId, params);
+    ProductRegistry::instance().setStatus(productId, u"ready"_s);
+}
+
+void vtkWindowCube::saveProductCopyToWorkspace(const QString &backendDatasetId,
+                                               const QString &label,
+                                               const QString &sourcePath)
+{
+    using namespace Qt::StringLiterals;
+    // Basename from the product label, so the file is recognisable in the
+    // Workspace Exports list rather than being another hex id.
+    QString base = label.simplified().toLower();
+    base.replace(QRegularExpression(u"[^a-z0-9]+"_s), u"_"_s);
+    base = base.mid(0, 48);
+    while (base.endsWith(u'_'))
+        base.chop(1);
+    if (base.isEmpty())
+        base = u"product"_s;
+
+    this->statusBar()->showMessage(u"Copying %1 into Workspace Exports…"_s.arg(label), 0);
+    const QString url = this->remoteBackendUrl, token = this->remoteBackendToken;
+    const QString sessionId = this->remoteSessionId;
+    QPointer<vtkWindowCube> self(this);
+    auto *watcher = new QFutureWatcher<BackendWorkspaceDeleteResult>(this);
+    QObject::connect(watcher, &QFutureWatcher<BackendWorkspaceDeleteResult>::finished, this,
+                     [self, watcher, label, sourcePath]() {
+                         const auto r = watcher->result();
+                         watcher->deleteLater();
+                         if (!self) return;
+                         self->statusBar()->clearMessage();
+                         if (!r.valid) {
+                             QMessageBox::warning(self, u"Save a Permanent Copy"_s,
+                                     u"Could not copy %1 into Workspace Exports:\n\n%2"_s
+                                             .arg(label, r.error));
+                             return;
+                         }
+                         emit self->workspaceExportsChanged();
+                         self->statusBar()->showMessage(
+                                 u"Saved to Workspace Exports as %1"_s.arg(r.deletedFilename),
+                                 8000);
+                         QMessageBox::information(self, u"Save a Permanent Copy"_s,
+                                 u"%1 is now in Workspace Exports as:\n\n%2\n\n"
+                                 u"The temporary original stays where it was (%3) until "
+                                 u"the system clears it; open the permanent copy from the "
+                                 u"Workspace Exports panel in the Data Hub."_s
+                                         .arg(label, r.deletedFilename, sourcePath));
+                     });
+    watcher->setFuture(QtConcurrent::run(
+            [url, token, sessionId, backendDatasetId, base]() {
+                BackendClient c(url, token);
+                c.setSessionId(sessionId);
+                return c.copyDatasetToWorkspace(backendDatasetId, base);
+            }));
+}
+
 void vtkWindowCube::startFullResolutionLoad()
 {
     // The tail of View ▸ Load Full Resolution, without its warning dialog: the
@@ -11288,17 +11472,17 @@ void vtkWindowCube::applyMomentToolGate()
     const auto guard = qScopeGuard([this] { this->m_inToolGate = false; });
 
     static const QString reasonNoSlice =
-            u"acts on the 2D Slice — show it in a pane (the pane's ▾ menu)"_s;
+            u"acts on the 2D Slice, show it in a pane (the pane's ▾ menu)"_s;
     static const QString reasonNo3d =
-            u"acts on the 3D view — show it in a pane (the pane's ▾ menu)"_s;
+            u"acts on the 3D view, show it in a pane (the pane's ▾ menu)"_s;
     static const QString reasonNoProbe =
             u"probe a pixel first (Extract Spectrum, or Pick Spectrum on the 3D plane)"_s;
     static const QString reasonNoRegion =
             u"draw or import a region first (Box / Circle / Polygon / Annulus)"_s;
     static const QString reasonNoImageView =
-            u"open a 2D image viewer first — the slice overlays there as contours"_s;
+            u"open a 2D image viewer first - the slice overlays there as contours"_s;
     static const QString reasonNoLinkTargets =
-            u"nothing to link yet — split into 2 panes or open a second cube viewer"_s;
+            u"nothing to link yet, split into 2 panes or open a second cube viewer"_s;
     // Every reason this function writes, so a tooltip of ours is never mistaken
     // for the tool's own sentence and cached over it.
     static const QSet<QString> ourReasons{ reasonNoSlice,      reasonNo3d,
@@ -11831,7 +12015,7 @@ void vtkWindowCube::applyCopilotActions(const QList<QJsonObject> &actions)
         ui->vtkCube->renderWindow()->Render();
     this->statusBar()->showMessage(
             hasReversible
-                    ? tr("Copilot applied %n visualisation change(s) — Undo available.",
+                    ? tr("Copilot applied %n visualisation change(s), Undo available.",
                          "", actions.size())
                     : tr("Copilot applied %n change(s).", "", actions.size()),
             6000);
@@ -12468,7 +12652,7 @@ void vtkWindowCube::handle3dPickEvent()
     this->updateProbePlot();     // updates the live pane with the picked voxel's spectrum
     this->probeFrozen = true;    // hold the pick
     // The header was written by updateProbePlot() while still unfrozen, so it read
-    // "Live — hover the slice to track" over a pick that is in fact held.
+    // "Live, hover the slice to track" over a pick that is in fact held.
     this->updateLiveSpectrumHeader();
     this->refreshProbeOverlay();
     if (this->sliceWin) {
@@ -12482,7 +12666,7 @@ void vtkWindowCube::handle3dPickEvent()
             ? u"Spectrum at voxel (%1, %2); the ray hit channel %3 (%4)"_s
                       .arg(voxelX).arg(voxelY).arg(voxelZ + 1)
                       .arg(this->formatSpectralAxisValue(voxelZ))
-            : u"Spectrum extracted at voxel (%1, %2) — slice %3"_s
+            : u"Spectrum extracted at voxel (%1, %2), slice %3"_s
                       .arg(voxelX).arg(voxelY).arg(voxelZ + 1);
     this->statusBar()->showMessage(where, 6000);
     this->showPick3dMarker(world);   // mark WHERE the click landed, in the 3-D view

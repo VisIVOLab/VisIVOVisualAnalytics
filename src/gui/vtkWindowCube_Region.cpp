@@ -855,7 +855,7 @@ void vtkWindowCube::analyzeCurrentRegion()
 
         if (haveSpectrum) {
             const QString plotTitle =
-                    u"Mean per channel — %1 region"_s.arg(shapeLabel);
+                    u"Mean per channel, %1 region"_s.arg(shapeLabel);
             const bool freshWidget = !this->probePlotWidget;
             if (freshWidget) {
                 this->probePlotWidget = new ProfileWidget(this);
@@ -959,9 +959,9 @@ void vtkWindowCube::analyzeCurrentRegion()
     if (producedProduct) {
         this->statusBar()->showMessage(
                 (regionSpectrumPane >= 0
-                         ? u"%1 region: mean %2 · median %3 · %4/%5 px — spectrum in pane %6, "
+                         ? u"%1 region: mean %2 · median %3 · %4/%5 px - spectrum in pane %6, "
                            u"full stats in Inspector › Provenance."_s
-                         : u"%1 region: mean %2 · median %3 · %4/%5 px — no free pane for the "
+                         : u"%1 region: mean %2 · median %3 · %4/%5 px - no free pane for the "
                            u"spectrum (pick it from a pane's ▾ menu); full stats in "
                            u"Inspector › Provenance.%6"_s)
                         .arg(shapeLabel, fmt(stats.mean), fmt(stats.median))

@@ -381,7 +381,7 @@ void ProfileWidget::buildSpectrumHeader()
 
     // Row 2: meta info — filename, pixel coords, optional WCS, hint about
     // the click-to-pin interaction so users discover it without docs.
-    m_specMetaLabel = new QLabel(u"—"_s);
+    m_specMetaLabel = new QLabel(u"-"_s);
     m_specMetaLabel->setStyleSheet(
             u"font-size: 11px; color: %1; background: transparent; "
             u"font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;"_s.arg(tKey()));
@@ -461,7 +461,7 @@ void ProfileWidget::buildSpectrumHeader()
             u"Keep the current spectrum on the plot as a comparison curve. Draw another\n"
             u"region (or move the probe) and its spectrum overlays on top, so several\n"
             u"can be compared on the same axes. Each gets its own colour.\n\n"
-            u"Display only — this does NOT save a product. Use Tools ▸ Pin Spectrum for that."_s);
+            u"Display only - this does NOT save a product. Use Tools ▸ Pin Spectrum for that."_s);
     m_btnClearPins = new QPushButton(u"Clear Overlays"_s);
     m_btnClearPins->setStyleSheet(pillCss);
     m_btnClearPins->setCursor(Qt::PointingHandCursor);
@@ -509,7 +509,7 @@ void ProfileWidget::buildSpectrumHeader()
     auto *statsLayout = new QHBoxLayout(m_specStatsBar);
     statsLayout->setContentsMargins(14, 6, 14, 6);
 
-    m_specStatsLabel = new QLabel(u"—"_s);
+    m_specStatsLabel = new QLabel(u"-"_s);
     m_specStatsLabel->setStyleSheet(
             u"font-size: 11px; color: %1; background: transparent; "
             u"font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;"_s.arg(tValue()));
@@ -771,7 +771,7 @@ void ProfileWidget::refreshSpectrumStats(const QVector<double> &spectralKey,
                                          const QVector<double> &values)
 {
     if (!m_specStatsLabel || values.isEmpty()) {
-        if (m_specStatsLabel) m_specStatsLabel->setText(u"—"_s);
+        if (m_specStatsLabel) m_specStatsLabel->setText(u"-"_s);
         emit spectrumChanged();
         return;
     }
@@ -1549,7 +1549,7 @@ void ProfileWidget::saveSpectrumCsv()
 
     if (key.isEmpty() || values.isEmpty() || key.size() != values.size()) {
         QMessageBox::information(this, u"Save spectrum as CSV"_s,
-                                 u"No spectrum to export yet — pick a pixel on the slice first."_s);
+                                 u"No spectrum to export yet. Pick a pixel on the slice first."_s);
         return;
     }
 
@@ -2010,7 +2010,7 @@ void ProfileWidget::loadLineIdFile()
                                  u"frequency column."_s
                                          .arg(origin)
                                          .arg(formatNote.isEmpty() ? QString()
-                                                                   : u" — %1"_s.arg(formatNote))
+                                                                   : u" - %1"_s.arg(formatNote))
                                : u"%1: %2 line%3 (%4)."_s.arg(origin)
                                          .arg(lines.size())
                                          .arg(lines.size() == 1 ? u""_s : u"s"_s)
@@ -2026,7 +2026,7 @@ void ProfileWidget::loadLineIdFile()
             return;
         }
         load(QString::fromUtf8(f.readAll()),
-             u"Bundled list (rounded to kHz — verify against CDMS / JPL before publishing)"_s);
+             u"Bundled list (rounded to kHz, verify against CDMS / JPL before publishing)"_s);
     };
     auto loadFromFile = [&]() {
         const QString path = QFileDialog::getOpenFileName(
@@ -2079,7 +2079,7 @@ void ProfileWidget::loadLineIdFile()
             shift = QLocale::c().toDouble(shiftValue->text(), &ok);
         if (!ok) {
             QMessageBox::warning(this, u"Load Lines"_s,
-                                 u"“%1” is not a number — give the systemic velocity in "
+                                 u"“%1” is not a number - give the systemic velocity in "
                                  u"km/s, or the redshift z."_s.arg(shiftValue->text()));
             return;
         }
@@ -2136,7 +2136,7 @@ void ProfileWidget::applyLineList(const QVector<RestLine> &lines, const QString 
         } else {   // a velocity list
             if (axisUnit.quantity != 1) {
                 if (skipReason.isEmpty())
-                    skipReason = u"the axis is a frequency axis — load the list in "
+                    skipReason = u"the axis is a frequency axis, load the list in "
                                  u"Hz / MHz / GHz"_s;
             } else if (mode == 2) {
                 // Already observed: the value IS the axis coordinate.
@@ -2157,7 +2157,7 @@ void ProfileWidget::applyLineList(const QVector<RestLine> &lines, const QString 
                 if (!(m_axisRestFreqHz > 0.0)) {
                     if (skipReason.isEmpty())
                         skipReason = u"this cube's header has no RESTFRQ, so a velocity list "
-                                     u"cannot be redshifted in this axis's convention — load it "
+                                     u"cannot be redshifted in this axis's convention, load it "
                                      u"already in the observed frame"_s;
                 } else if (axisKind == spectral::AxisKind::Unknown) {
                     if (skipReason.isEmpty())
@@ -2173,7 +2173,7 @@ void ProfileWidget::applyLineList(const QVector<RestLine> &lines, const QString 
                                 m_axisRestFreqHz, axisSi);
                     if (!ok && skipReason.isEmpty())
                         skipReason = u"a velocity at or beyond the speed of light (or a redshift "
-                                     u"z ≤ −1) has no observed frequency — check the values and "
+                                     u"z ≤ −1) has no observed frequency, check the values and "
                                      u"the shift"_s;
                 }
             }

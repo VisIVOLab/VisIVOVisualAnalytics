@@ -358,7 +358,7 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
 void vtkWindowVbt::setupUi()
 {
     this->setAttribute(Qt::WA_DeleteOnClose);
-    this->setWindowTitle(QStringLiteral("VBT Point Viewer — %1 rows, %2 fields")
+    this->setWindowTitle(QStringLiteral("VBT Point Viewer - %1 rows, %2 fields")
                                  .arg(this->openResult.numRows)
                                  .arg(this->openResult.fields.size()));
     this->resize(1280, 800);
@@ -578,7 +578,7 @@ void vtkWindowVbt::setupSidebarUi()
 
     // makeValueLabel: right-aligned, selectable, monospace value label.
     const auto makeValLabel = [&valStyle](QWidget *parent = nullptr) -> QLabel* {
-        auto *lbl = new QLabel(u"—"_s, parent);
+        auto *lbl = new QLabel(u"-"_s, parent);
         lbl->setStyleSheet(valStyle);
         lbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         lbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -826,7 +826,7 @@ void vtkWindowVbt::setupSidebarUi()
 
         // Static rows (set once at construction)
         const QString fileName = this->m_headerPath.isEmpty()
-                ? u"—"_s : QFileInfo(this->m_headerPath).fileName();
+                ? u"-"_s : QFileInfo(this->m_headerPath).fileName();
         auto *fileVal = new QLabel(fileName, inner);
         fileVal->setStyleSheet(valStyle);
         fileVal->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -1065,7 +1065,7 @@ void vtkWindowVbt::applyFilter()
                                 ? QStringLiteral("Loaded %1 of %2 rows.")
                                           .arg(queryResult.returnedRows)
                                           .arg(queryResult.totalRows)
-                                : QStringLiteral("%1 filter(s) active — %2 of %3 rows.")
+                                : QStringLiteral("%1 filter(s) active, %2 of %3 rows.")
                                           .arg(nFilters)
                                           .arg(queryResult.returnedRows)
                                           .arg(queryResult.totalRows);
@@ -1139,7 +1139,7 @@ void vtkWindowVbt::loadMoreEntries()
 void vtkWindowVbt::autoReopenThenLoadMore()
 {
     if (this->filterStatusLabel)
-        this->filterStatusLabel->setText(u"Session expired — reconnecting\u2026"_s);
+        this->filterStatusLabel->setText(u"Session expired, reconnecting\u2026"_s);
     if (this->btnLoadMore) {
         this->btnLoadMore->setEnabled(false);
         this->btnLoadMore->setText(u"Reconnecting\u2026"_s);
@@ -1765,26 +1765,26 @@ void vtkWindowVbt::updateSummary()
 
     // ── Info page: Card 2 — Mapping ───────────────────────────────────────────
     const auto fieldOrNone = [](const QString &s) {
-        return s.isEmpty() ? QStringLiteral("—") : s;
+        return s.isEmpty() ? QStringLiteral("-") : s;
     };
     if (this->m_infoXVal)      this->m_infoXVal->setText(fieldOrNone(this->xFieldName));
     if (this->m_infoYVal)      this->m_infoYVal->setText(fieldOrNone(this->yFieldName));
     if (this->m_infoZVal)      this->m_infoZVal->setText(fieldOrNone(this->zFieldName));
     if (this->m_infoScalarVal) this->m_infoScalarVal->setText(
-            colorTxt == u"solid"_s ? u"—"_s : colorTxt);
+            colorTxt == u"solid"_s ? u"-"_s : colorTxt);
 
     // ── Info page: Card 3 — Data Range / Stats ────────────────────────────────
     const bool hasData = (this->dataScalarMin < this->dataScalarMax
                           || this->subsetResult.numRows > 0);
     if (this->m_infoDataMinVal)
         this->m_infoDataMinVal->setText(
-                hasData ? QString::number(this->dataScalarMin, 'g', 7) : u"—"_s);
+                hasData ? QString::number(this->dataScalarMin, 'g', 7) : u"-"_s);
     if (this->m_infoDataMaxVal)
         this->m_infoDataMaxVal->setText(
-                hasData ? QString::number(this->dataScalarMax, 'g', 7) : u"—"_s);
+                hasData ? QString::number(this->dataScalarMax, 'g', 7) : u"-"_s);
     if (this->m_infoMeanVal)
         this->m_infoMeanVal->setText(
-                hasData ? QString::number(this->dataScalarMean, 'g', 7) : u"—"_s);
+                hasData ? QString::number(this->dataScalarMean, 'g', 7) : u"-"_s);
     if (this->m_infoRangeMinVal)
         this->m_infoRangeMinVal->setText(QString::number(this->activeScalarMin, 'g', 7));
     if (this->m_infoRangeMaxVal)

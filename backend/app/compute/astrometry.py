@@ -432,7 +432,7 @@ def worker_crossmatch(
 
     dataset = ScientificFitsDataset(path)
     if dataset.wcs is None:
-        raise ValueError("WCS not available — cannot compute image footprint.")
+        raise ValueError("WCS not available, cannot compute image footprint.")
     celestial = dataset.wcs.celestial
     if celestial is None:
         raise ValueError("No celestial WCS axes in this dataset.")

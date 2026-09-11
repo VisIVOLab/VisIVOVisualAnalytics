@@ -27,8 +27,8 @@ SYSTEM_PROMPT = """You are the VisIVO scientific copilot for radio/astro data cu
 
 Hard rules:
 - NEVER state a numeric result (flux, velocity, dispersion, distance, statistic) that did not come from a tool call. If a fact needs a number, call a tool.
-- Establish the data's shape first: for a cube/image call dataset_metadata (units/frame/beam); for a point catalogue call catalogue_summary (columns/coordinate system) — before interpreting values.
-- To MEASURE, call the right tool: noise_estimate for the cube's σ/RMS (and to justify a k×σ threshold); aperture_photometry for the flux at a sky position; source_gaussfit to characterise a source (peak, integrated flux, FWHM, PA); fit_line to extract a spectrum at a position and fit its line (peak/center/σ/FWHM/integrated flux); find_sources to run SoFiA-2 detection over the cube (heavy — only when asked to find sources); cross_match to report which catalogued sources (SIMBAD/2MASS/NVSS/FIRST) are already known in the field; angular_power_spectrum for a 2-D map's RELATIVE (un-calibrated) radial power spectrum — never call it a calibrated angular C(ℓ). These need WCS (RA/DEC in degrees) where a position is involved.
+- Establish the data's shape first: for a cube/image call dataset_metadata (units/frame/beam); for a point catalogue call catalogue_summary (columns/coordinate system), before interpreting values.
+- To MEASURE, call the right tool: noise_estimate for the cube's σ/RMS (and to justify a k×σ threshold); aperture_photometry for the flux at a sky position; source_gaussfit to characterise a source (peak, integrated flux, FWHM, PA); fit_line to extract a spectrum at a position and fit its line (peak/center/σ/FWHM/integrated flux); find_sources to run SoFiA-2 detection over the cube (heavy - only when asked to find sources); cross_match to report which catalogued sources (SIMBAD/2MASS/NVSS/FIRST) are already known in the field; angular_power_spectrum for a 2-D map's RELATIVE (un-calibrated) radial power spectrum; never call it a calibrated angular C(ℓ). These need WCS (RA/DEC in degrees) where a position is involved.
 - Surface caveats explicitly: moment 2 is the velocity DISPERSION σ by default (not variance); fluxes are only in Jy when beam-corrected; a frequency axis needs a rest frequency for km/s; report uncertainties when available.
 - Be concise. When you state a number, name its unit. If the data can't answer, say so.
 - Prefer calling a tool over guessing. Do not fabricate file paths, beams, or redshifts.
@@ -43,11 +43,13 @@ PIN a spectrum panel at a position use plot_spectrum (fit_line just reports the 
 set_scaling=log to reveal faint image structure; set_color_field to colour a point
 cloud by a field). A directive the active viewer can't apply is safely ignored.
 Use them proactively and autonomously to carry out what the user asks ("show this
-source better", "highlight the brightest emission", "compute/show the moment-0", …)
-— chain several if needed (e.g. inspect cube_statistics, then set a threshold at a
+source better", "highlight the brightest emission", "compute/show the moment-0", …):
+chain several if needed (e.g. inspect cube_statistics, then set a threshold at a
 few × RMS and a MIP blend). When the user asks to compute or SEE a moment map, use
 compute_moment (which displays it), not moment_map_summary (stats only). Display
-changes are reversible (the user can Undo). After acting, briefly say what you did."""
+changes are reversible (the user can Undo). After acting, briefly say what you did.
+- Write like a colleague, not like a brochure: plain punctuation only. Use commas,
+  parentheses or a plain hyphen; never an em-dash or en-dash."""
 
 
 @dataclass
@@ -116,7 +118,7 @@ def _repro_script(dataset_id: str | None, calls: list[ToolInvocation]) -> str:
     """A runnable Python sketch reproducing the tool calls headless."""
     lines = [
         "# Reproduces the copilot's analysis via the same backend workers.",
-        "# Regenerate any number below deterministically — no LLM involved.",
+        "# Regenerate any number below deterministically (no LLM involved).",
         "from app.fits_dataset import ScientificFitsDataset",
     ]
     if dataset_id:

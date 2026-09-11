@@ -343,7 +343,7 @@ PythonResolution resolvePythonExe(const QString &settingsPython,
         if (!pythonVersionOk(v)) {
             const QString ver = v.first ? u"%1.%2"_s.arg(v.first).arg(v.second)
                                         : u"no version"_s;
-            logOut << u"[launcher] %1: %2 is %3 — too old, continuing"_s
+            logOut << u"[launcher] %1: %2 is %3 - too old, continuing"_s
                               .arg(what, exe, ver);
             rejected << u"%1 (%2)"_s.arg(exe, ver);
             return std::nullopt;
@@ -359,7 +359,7 @@ PythonResolution resolvePythonExe(const QString &settingsPython,
         if (auto r = accept(envOverride, u"VISIVO_BACKEND_PYTHON env var"_s))
             return *r;
         if (!isValidPythonExe(envOverride))
-            logOut << u"[launcher] VISIVO_BACKEND_PYTHON=%1 — not executable, skipping"_s
+            logOut << u"[launcher] VISIVO_BACKEND_PYTHON=%1 - not executable, skipping"_s
                               .arg(envOverride);
     }
 
@@ -609,7 +609,7 @@ bool BackendLauncher::bootstrapEnvironment(const QString &backendDir, const QStr
     }
 
     // ── 2. the dependencies ──────────────────────────────────────────────────
-    emit messageChanged(u"Installing backend dependencies — this takes a few "
+    emit messageChanged(u"Installing backend dependencies - this takes a few "
                         u"minutes the first time…"_s);
     appendLog(u"[launcher] pip install -r %1"_s.arg(requirements));
 
@@ -692,7 +692,7 @@ void BackendLauncher::launchProcess()
             detail = u"\n\nToo old:\n  %1"_s.arg(resolved.rejected.join(u"\n  "_s));
         emit failed(
                 u"VisIVO needs Python %1.%2 or newer and could not find one.%3\n\n"
-                u"Install a newer Python — on macOS, `brew install python@%1.%2` — "
+                u"Install a newer Python - on macOS, `brew install python@%1.%2` - "
                 u"then restart VisIVO, or point it at an interpreter with the "
                 u"VISIVO_BACKEND_PYTHON environment variable."_s
                         .arg(kMinPythonMajor).arg(kMinPythonMinor).arg(detail));
@@ -701,7 +701,7 @@ void BackendLauncher::launchProcess()
     appendLog(u"[launcher] Using Python: %1  (%2)"_s.arg(pythonExe, pythonSource));
 
     if (!hasBackendDeps(pythonExe)) {
-        appendLog(u"[launcher] Backend dependencies missing — bootstrapping"_s);
+        appendLog(u"[launcher] Backend dependencies missing, bootstrapping"_s);
         if (!bootstrapEnvironment(backendDir, pythonExe))
             return;   // bootstrapEnvironment() has already emitted failed()
         // Go straight to the venv the bootstrap just built, rather than running

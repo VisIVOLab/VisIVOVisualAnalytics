@@ -329,6 +329,12 @@ signals:
     /// path rather than duplicating it here.
     void sourceFinderRequested();
 
+    /// A product that lives as a FITS FILE on the backend (a baseline-subtracted
+    /// cube, a mask, a sub-cube) should be openable again from its Session Data
+    /// row. The window itself cannot open a dataset — MainWindow owns that — so
+    /// it asks.
+    void openBackendFitsRequested(const QString &path, const QString &label);
+
 public:
     enum class RemoteCubeDisplayState
     {
@@ -353,6 +359,14 @@ public:
     /// id is unique per window so a second viewer on the same dataset never collides in the
     /// ProductRegistry. Every product-id construction goes through here.
     QString scopedProductId(const QString &stem) const;
+
+    /// Copy a product's backend FITS into Workspace Exports (durable storage).
+    /// Offered on the Session Data row of any product whose file lives in the
+    /// backend's TEMP directory, which is where "and how do I keep it?" had no
+    /// good answer.
+    void saveProductCopyToWorkspace(const QString &backendDatasetId,
+                                    const QString &label,
+                                    const QString &sourcePath);
 
     enum class RegionMode
     {
@@ -401,7 +415,7 @@ private:
     // (momentDisplaySource) overwrites on each compute; this cache does not. Keyed
     // by the SAME productId the registry uses, so tree / dropdown / cache agree.
     // Whole-map statistics of a 2-D field (ignoring NaN/masked pixels). `valid` is false
-    // when there are no finite pixels — every summary stat is then undefined (rendered "—").
+    // when there are no finite pixels — every summary stat is then undefined (rendered "-").
     struct MapStats
     {
         bool valid{ false };
@@ -893,6 +907,13 @@ protected:
     /// Resolution, without its warning dialog — callers that have already told
     /// the user the cost use this).
     void startFullResolutionLoad();
+    /// Fill in a baseline product once its result arrives: the new dataset id and
+    /// the output path go into the params, so the row survives its dialog and can
+    /// be reopened from Session Data.
+    /// Double-click on a product with no window: reopen the FITS it left behind.
+    void reopenProductFromFile(const QString &productId);
+    void completeBaselineProduct(const QString &productId, const QString &newDatasetId,
+                                 const QString &outputPath, const QString &summary);
     /// Undo a half-started switch to remote rendering (guard, ticker, buttons,
     /// mode badge) and say why in the banner.
     void abortRemoteSwitch(const QString &reason);

@@ -55,7 +55,7 @@ StackDialog::StackDialog(std::shared_ptr<BackendClient> client,
     , m_client(std::move(client))
     , m_sessionId(sessionId)
 {
-    setWindowTitle(u"Stack Spectral Cubes"_s);
+    setWindowTitle(u"Stack Cubes to a Spectrum"_s);
     setMinimumWidth(540);
     resize(540, 520);
     // Shared input theme — see ToolDialogStyle.
@@ -64,13 +64,19 @@ StackDialog::StackDialog(std::shared_ptr<BackendClient> client,
     auto *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(16, 14, 16, 14);
     mainLayout->setSpacing(10);
-    mainLayout->addWidget(ToolDialogStyle::makeBreadcrumb(this, u"Stack Spectral Cubes"_s));
+    mainLayout->addWidget(ToolDialogStyle::makeBreadcrumb(this, u"Stack Cubes to a Spectrum"_s));
 
     // ── Intro line (matches the muted-helper look of MomentMap / Noise) ──
+    // Says what comes OUT, first thing. "Stack Spectral Cubes" was read as
+    // "merge these cubes into one cube" and the 1-D result came as a surprise
+    // (user report) — which is fair, because the word "stack" only means
+    // co-adding spectra if you already know the technique.
     auto *infoLabel = new QLabel(
-            u"Select two or more cubes to stack. All cubes must share the same "
-            u"spectral grid and spatial shape — incompatible cubes are listed "
-            u"as disabled below."_s, this);
+            u"Co-adds the selected cubes pixel-by-pixel into a SINGLE 1-D "
+            u"spectrum, so a signal too faint in any one cube can show up in "
+            u"their average. The cubes are not merged into a larger cube.\n\n"
+            u"Select two or more. All must share the same spectral grid and "
+            u"spatial shape (incompatible cubes are listed as disabled below)."_s, this);
     infoLabel->setStyleSheet(ToolDialogStyle::helperCss());
     infoLabel->setWordWrap(true);
     mainLayout->addWidget(infoLabel);
@@ -121,7 +127,7 @@ StackDialog::StackDialog(std::shared_ptr<BackendClient> client,
             // selectable, but disable + tooltip.
             item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
             item->setToolTip(
-                    u"Shape %1×%2×%3 differs from reference %4×%5×%6 — cannot be stacked."_s
+                    u"Shape %1×%2×%3 differs from reference %4×%5×%6, cannot be stacked."_s
                             .arg(e.width).arg(e.height).arg(e.depth)
                             .arg(refW).arg(refH).arg(refD));
             item->setCheckState(Qt::Unchecked);
@@ -133,7 +139,7 @@ StackDialog::StackDialog(std::shared_ptr<BackendClient> client,
     }
     if (cubeCount == 0) {
         auto *empty = new QListWidgetItem(
-                u"(no cube datasets open in this session — open ≥ 2 cubes first)"_s,
+                u"(no cube datasets open in this session - open ≥ 2 cubes first)"_s,
                 m_datasetList);
         empty->setFlags(Qt::NoItemFlags);
     }
@@ -185,7 +191,8 @@ StackDialog::StackDialog(std::shared_ptr<BackendClient> client,
 
     auto *methodologyLabel = new QLabel(
             u"Stacking is spatial pixel-by-pixel · cubes must share the same "
-            u"WCS / shape · output is a 1-D combined spectrum."_s, this);
+            u"WCS / shape · output is a 1-D combined spectrum, which lands in "
+            u"Session Data as a SPEC product."_s, this);
     methodologyLabel->setStyleSheet(ToolDialogStyle::helperCss());
     methodologyLabel->setWordWrap(true);
     mainLayout->addWidget(methodologyLabel);
@@ -204,6 +211,13 @@ StackDialog::StackDialog(std::shared_ptr<BackendClient> client,
     connect(m_datasetList, &QListWidget::itemChanged, this, &StackDialog::onItemChanged);
     connect(m_stackBtn,    &QPushButton::clicked,     this, &StackDialog::onCompute);
     connect(cancelBtn,     &QPushButton::clicked,     this, &QDialog::reject);
+
+    // Count what the list was BUILT with. The current cube is pre-checked up
+    // there, but the counter and the Stack button only ever updated on
+    // itemChanged — which is connected here, after the population — so the
+    // dialog opened saying "Selected: 0 cubes" with a box visibly ticked
+    // (user report).
+    updateSelectionLabel();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

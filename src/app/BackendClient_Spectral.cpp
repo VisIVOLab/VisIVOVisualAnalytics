@@ -53,7 +53,7 @@ static BackendSpectrumResult parseSpectrum(const QByteArray &raw, const QString 
 BackendLinewidthResult BackendClient::fetchLinewidthBinary(const QString &datasetId,
                                                             int channelStart, int channelEnd,
                                                             bool maskEnabled, float threshold,
-                                                            double restFreqHz)
+                                                            double restFreqHz, bool fast)
 {
     BackendLinewidthResult result;
     QString error;
@@ -62,7 +62,12 @@ BackendLinewidthResult BackendClient::fetchLinewidthBinary(const QString &datase
             { QStringLiteral("channel_start"),   channelStart },
             { QStringLiteral("channel_end"),     channelEnd },
             { QStringLiteral("mask_enabled"),    maskEnabled },
-            { QStringLiteral("threshold_value"), static_cast<double>(threshold) } };
+            { QStringLiteral("threshold_value"), static_cast<double>(threshold) },
+            // The endpoint has accepted this since R-07 and the desktop never
+            // sent it, so every line-width map ran one scipy curve_fit per
+            // pixel — ~10⁶ of them on a 1046×952 cube — even when the user
+            // asked for the equivalent width, which needs no fit at all.
+            { QStringLiteral("fast"),            fast } };
     // Only include rest_freq_hz when the caller provides a meaningful value.
     // Velocity-axis cubes must omit it; frequency/wavelength axes supply it.
     if (restFreqHz > 0.0) {
@@ -177,6 +182,7 @@ BackendBaselineResult BackendClient::requestBaseline(const QString &datasetId,
     result.rmsBefore     = obj.value(QStringLiteral("rms_before")).toDouble();
     result.rmsAfter      = obj.value(QStringLiteral("rms_after")).toDouble();
     result.method        = obj.value(QStringLiteral("method")).toString(method);
+    result.warning       = obj.value(QStringLiteral("warning")).toString();
     return result;
 }
 

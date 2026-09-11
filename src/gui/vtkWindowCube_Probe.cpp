@@ -298,7 +298,7 @@ void vtkWindowCube::toggleProbeFreeze()
     this->updateLiveSpectrumHeader();
     if (this->probeFrozen) {
         this->statusBar()->showMessage(
-                u"Spectrum pinned at pixel (%1, %2) — click the slice again to resume "
+                u"Spectrum pinned at pixel (%1, %2) - click the slice again to resume "
                 u"tracking. Ending the tool keeps this spectrum in Session Data; "
                 u"\u201CPin Spectrum\u201D keeps it now."_s
                         .arg(this->probeVoxel[0])
@@ -306,7 +306,7 @@ void vtkWindowCube::toggleProbeFreeze()
                 10000);
     } else {
         this->statusBar()->showMessage(
-                u"Live spectrum tracking resumed — click a pixel to pin it again."_s, 4000);
+                u"Live spectrum tracking resumed. Click a pixel to pin it again."_s, 4000);
     }
 }
 

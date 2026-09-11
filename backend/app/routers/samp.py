@@ -178,7 +178,7 @@ async def samp_receive(
     """
     if request.mtype not in SUPPORTED_RECEIVE_MTYPES:
         # Unknown mtype: store anyway (may be useful for logging/debug)
-        logger.debug("[samp] received unsupported mtype=%s — storing anyway", request.mtype)
+        logger.debug("[samp] received unsupported mtype=%s, storing anyway", request.mtype)
 
     msg = SAMPMessage(
         mtype=request.mtype,

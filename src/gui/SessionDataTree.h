@@ -74,6 +74,12 @@ signals:
     void rowContextMenuRequested(const QString &viewTag, const QString &productId,
                                  const QPoint &globalPos);
 
+    /// Double-click on a product that has NO window to raise (its tool window was
+    /// closed, or it never had one) and no pane renderer. The viewer decides what
+    /// that means — for a product stored as a backend FITS it means reopening it.
+    /// Without this the row was simply inert (user report).
+    void productReopenRequested(const QString &productId);
+
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;   // badge click on the viewport
 

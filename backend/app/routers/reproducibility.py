@@ -198,7 +198,7 @@ async def get_named_snapshot(
     if record is None:
         raise HTTPException(404, f"Unknown snapshot_id '{snapshot_id}'.")
     if provided_hmac and not hmac.compare_digest(provided_hmac, record["hmac"]):
-        raise HTTPException(403, "Snapshot HMAC verification failed — state may be tampered.")
+        raise HTTPException(403, "Snapshot HMAC verification failed, state may be tampered.")
     return {
         "valid": True,
         "error": "",

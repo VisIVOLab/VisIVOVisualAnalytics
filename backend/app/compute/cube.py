@@ -495,7 +495,7 @@ def worker_cube_save_channel_2d(
         out_header = wcs2d.to_header()
     except Exception as exc:
         logger.warning(
-            "[save_channel_2d] WCS extraction failed for %s (%s) — "
+            "[save_channel_2d] WCS extraction failed for %s (%s) -"
             "writing array with no celestial WCS.", src_path, exc,
         )
         out_header = _fits.Header()

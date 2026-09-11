@@ -66,6 +66,21 @@ public:
     // vtkWindowCube queries this inside updateBackendDerivedActionsAvailability().
     bool isBusy() const;
 
+signals:
+    /// A completed estimate, ready to be recorded as a product.
+    ///
+    /// σ is the number the rest of the session is built on — moment-map
+    /// thresholds, isosurface levels, mask cut-offs — but it used to exist only
+    /// inside a WA_DeleteOnClose result dialog, so closing that window lost it
+    /// and the only way back was to re-run the tool. Session Data is where a
+    /// tool's output belongs (the region tools already fold their statistics
+    /// into a product's Provenance), so the controller announces the result and
+    /// the cube window registers it. @p stableKey identifies the region+channel
+    /// range, so re-running the SAME selection updates its row in place while a
+    /// different selection adds one.
+    void noiseProvenanceReady(const QString &stableKey, const QString &label,
+                              const QVariantMap &params);
+
 public slots:
     // Triggered by QAction::triggered from vtkWindowCube.
     // Opens the region dialog; if accepted, launches the async estimation.

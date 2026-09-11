@@ -369,7 +369,7 @@ async def render_ws(websocket: WebSocket, session_id: str) -> None:
     except WebSocketDisconnect:
         logger.info("[render-ws] %s disconnected", session_id[:8] + "…")
     except Exception:
-        logger.exception("[render-ws] %s error — closing", session_id[:8] + "…")
+        logger.exception("[render-ws] %s error, closing", session_id[:8] + "…")
         try:
             await websocket.close(code=1011, reason="server error")
         except RuntimeError:

@@ -267,7 +267,7 @@ void vtkWindowImage::runDynspecPulseProfile()
         auto *win = new QWidget(nullptr, Qt::Window);
         win->setAttribute(Qt::WA_DeleteOnClose);
         win->setWindowTitle(
-                QStringLiteral("Pulse Profile — P=%1 s · DM=%2 · SNR=%3")
+                QStringLiteral("Pulse Profile, P=%1 s · DM=%2 · SNR=%3")
                         .arg(r.periodS, 0, 'g', 6)
                         .arg(r.dmPcCm3, 0, 'f', 3)
                         .arg(r.snrPeak, 0, 'f', 1));

@@ -29,6 +29,37 @@ from ._common import (  # noqa: F401
 )
 
 
+def _require_position_inside(
+    cx: float, cy: float, shape: tuple[int, int], ra_deg: float, dec_deg: float
+) -> None:
+    """Reject a sky position that does not land on the image.
+
+    Both workers index the image with the pixel coordinates derived here, and a
+    NEGATIVE coordinate is not caught by clamping the far edge: ``image[y0:y1,
+    0:-1393]`` is a valid slice counting back from the right, so a position off
+    the left edge silently measured a strip on the OPPOSITE side of the image,
+    and a slightly different offset instead surfaced as numpy's own "negative
+    dimensions are not allowed". Mosaic cutouts make this routine — their CRPIX
+    often sits thousands of pixels outside the extracted footprint.
+    """
+    ny, nx = shape
+    if not (np.isfinite(cx) and np.isfinite(cy)):
+        raise ValueError(
+            f"Sky position ({ra_deg}, {dec_deg}) deg does not map to a finite "
+            "pixel coordinate in this image's WCS."
+        )
+    # A pixel of index i covers [i - 0.5, i + 0.5], so the image spans
+    # [-0.5, n - 0.5) and the CENTRE of the corner pixel is a valid position.
+    # Testing 0 <= c instead rejected it: a round trip through the WCS puts the
+    # corner centre at -1.5e-11 rather than exactly 0, and the refusal then
+    # quoted "pixel (-0.0, -0.0)".
+    if not (-0.5 <= cx < nx - 0.5 and -0.5 <= cy < ny - 0.5):
+        raise ValueError(
+            f"Sky position ({ra_deg}, {dec_deg}) deg falls outside the image: it "
+            f"maps to pixel ({cx:.1f}, {cy:.1f}) and the image is {nx} x {ny}."
+        )
+
+
 def worker_aperture_photometry(
     path: str,
     channel: int | None,
@@ -82,7 +113,7 @@ def worker_aperture_photometry(
         hdul.close()
 
     if dataset.wcs is None:
-        raise ValueError("WCS not available for this dataset — cannot convert sky → pixel.")
+        raise ValueError("WCS not available for this dataset, cannot convert sky → pixel.")
 
     pixel_scale_arcsec = dataset.spatial_pixel_scale_arcsec()
     if pixel_scale_arcsec <= 0:
@@ -94,6 +125,7 @@ def worker_aperture_photometry(
         raise ValueError("No celestial WCS axes found in this dataset.")
     pix = celestial.all_world2pix([[ra_deg, dec_deg]], 0)[0]
     pix_x, pix_y = float(pix[0]), float(pix[1])
+    _require_position_inside(pix_x, pix_y, image.shape, ra_deg, dec_deg)
 
     r_ap   = aperture_arcsec   / pixel_scale_arcsec
     r_ann1 = annulus_inner_arcsec / pixel_scale_arcsec
@@ -101,25 +133,68 @@ def worker_aperture_photometry(
 
     position = (pix_x, pix_y)
     aperture = CircularAperture(position, r=r_ap)
-    annulus  = CircularAnnulus(position, r_in=r_ann1, r_out=r_ann2)
 
-    # Background: median inside annulus
-    ann_stats = ApertureStats(image, annulus, sigma_clip=None)
-    bkg_per_pix = float(ann_stats.median) if np.isfinite(ann_stats.median) else 0.0
-    # Local noise per pixel from the background annulus (used for the flux error).
-    bkg_rms = float(ann_stats.std) if np.isfinite(ann_stats.std) else 0.0
+    # The annulus is OPTIONAL (both radii default to zero = no local background).
+    # Handing photutils r_in == r_out == 0 raised its own ValueError, which the
+    # router turned into a 422 reading "'r_out' must be greater than 'r_in'" —
+    # an error for a request the API documents as valid. No annulus now means no
+    # background subtraction, and the flux error falls back to the aperture's own
+    # pixel scatter so the uncertainty is still reported rather than zero.
+    # "No annulus" is the both-radii-zero case only. A half-specified or
+    # inverted annulus is a mistake in the request, so it is reported instead of
+    # being quietly downgraded to "no background".
+    if annulus_inner_arcsec or annulus_outer_arcsec:
+        if annulus_inner_arcsec <= 0 or annulus_outer_arcsec <= annulus_inner_arcsec:
+            raise ValueError(
+                "Background annulus must have annulus_outer_arcsec > "
+                "annulus_inner_arcsec > 0 (got inner="
+                f"{annulus_inner_arcsec} arcsec, outer={annulus_outer_arcsec} arcsec). "
+                "Leave both at 0 for no background subtraction."
+            )
+        use_annulus = True
+    else:
+        use_annulus = False
+    if use_annulus:
+        annulus = CircularAnnulus(position, r_in=r_ann1, r_out=r_ann2)
+        # Background: median inside annulus
+        ann_stats = ApertureStats(image, annulus, sigma_clip=None)
+        bkg_per_pix = float(ann_stats.median) if np.isfinite(ann_stats.median) else 0.0
+        # Local noise per pixel from the background annulus (used for the flux error).
+        bkg_rms = float(ann_stats.std) if np.isfinite(ann_stats.std) else 0.0
+    else:
+        bkg_per_pix = 0.0
+        # No annulus means no background measurement, and therefore no noise
+        # estimate. The aperture's OWN scatter is not a substitute: it is
+        # dominated by the source, so on a noiseless Gaussian it reported an
+        # uncertainty that scaled with the peak (4.3 at amplitude 1, 427 at
+        # amplitude 100 �). "Unknown" is the honest answer.
+        bkg_rms = 0.0
 
     # Aperture sum
     ap_stats = ApertureStats(image, aperture, sigma_clip=None)
-    n_pix = int(ap_stats.sum_aper_area.value) if hasattr(ap_stats.sum_aper_area, "value") else int(np.pi * r_ap ** 2)
+    # Fractional geometric overlap area, falling back to the analytic circle when
+    # photutils reports a non-finite one (an aperture hanging off the edge) —
+    # int(nan) raises, and it used to raise all the way out as a 422 reading
+    # "cannot convert float NaN to integer".
+    _area = ap_stats.sum_aper_area
+    _area = float(_area.value) if hasattr(_area, "value") else float(_area)
+    if not np.isfinite(_area):
+        _area = float(np.pi * r_ap ** 2)
+    # The background is removed over the FRACTIONAL area. Truncating to whole
+    # pixels first biased the result by up to one pixel of background: on a
+    # constant image of 10 with an 8.65-pixel overlap the source flux came out
+    # 6.47 instead of 0.
+    n_pix = int(_area)
     # A non-finite aperture sum means blanked/NaN pixels fall inside the aperture.
-    # Report NaN (honest) rather than substituting the WHOLE-IMAGE sum, which
-    # would be an order-of-magnitude-wrong aperture flux.
-    raw_sum = float(ap_stats.sum) if np.isfinite(ap_stats.sum) else float("nan")
+    # Report it as unavailable (honest) rather than substituting the WHOLE-IMAGE
+    # sum, which would be an order-of-magnitude-wrong aperture flux. It is None
+    # rather than NaN because NaN is not representable in JSON and made the
+    # endpoint answer 500.
+    raw_sum = float(ap_stats.sum) if np.isfinite(ap_stats.sum) else None
     # Background-subtracted summed brightness. For Jy/beam data this is in
     # (Jy/beam)·pixel and must be divided by the beam area to become Jy; for
     # other BUNIT it is a plain sum in BUNIT·pixel.
-    flux_summed = raw_sum - bkg_per_pix * n_pix
+    flux_summed = None if raw_sum is None else raw_sum - bkg_per_pix * _area
 
     # R-01: beam-correct to Jy only when the data are per-beam AND the beam is
     # known. ``flux_jy`` is the physically-meaningful flux (Jy) or None; ``flux``
@@ -130,7 +205,9 @@ def worker_aperture_photometry(
     beam = dataset.beam_for_channel(resolved_channel)
     beam_area_px = beam_area_pixels(beam.major, beam.minor, pixel_scale_arcsec, dataset.spatial_pixel_area_arcsec2())
     per_beam = is_per_beam_bunit(dataset.bunit)
-    flux_jy: float | None = (flux_summed / beam_area_px) if (per_beam and beam_area_px) else None
+    flux_jy: float | None = (
+        (flux_summed / beam_area_px)
+        if (flux_summed is not None and per_beam and beam_area_px) else None)
     flux_unit = f"{dataset.bunit}*pixel" if dataset.bunit else "pixel_sum"
 
     # R-09: correlated-noise uncertainty. Pixels within a beam are not
@@ -140,15 +217,21 @@ def worker_aperture_photometry(
     # unknown we fall back to the independent-pixel form (n_beam = 1) for the raw
     # sum error and leave flux_err_jy = None. This replaces the old
     # counts/Poisson formula, which is dimensionless-wrong for Jy/beam.
+    # With no annulus there is no bkg_rms, so the uncertainty is unknown (None)
+    # rather than 0.0 — a zero error on an unmeasured background reads as a
+    # precise answer.
     n_beam = beam_area_px if beam_area_px else 1.0
-    err_summed = float(bkg_rms * np.sqrt(max(n_pix, 0) * n_beam)) if bkg_rms > 0 else 0.0
-    flux_err_jy = (err_summed / beam_area_px) if (per_beam and beam_area_px) else None
+    err_summed: float | None = (
+        float(bkg_rms * np.sqrt(max(_area, 0.0) * n_beam)) if bkg_rms > 0 else None)
+    flux_err_jy = ((err_summed / beam_area_px)
+                   if (err_summed is not None and per_beam and beam_area_px) else None)
 
     return {
         # Physical flux in Jy (None when not per-beam data or beam unknown).
         "flux_jy": flux_jy,
         "flux_err_jy": flux_err_jy,
-        # Raw background-subtracted sum + its honest unit, always available.
+        # Raw background-subtracted sum + its honest unit. None when blanked
+        # pixels made the aperture sum unavailable.
         "flux": flux_summed,
         "flux_err": err_summed,
         "flux_unit": flux_unit,
@@ -157,6 +240,9 @@ def worker_aperture_photometry(
         "background_rms_per_pix": bkg_rms,
         "bunit": dataset.bunit,
         "n_pix_aperture": n_pix,
+        # The fractional overlap area actually used for the background
+        # subtraction; n_pix_aperture is its truncated whole-pixel count.
+        "aperture_area_pix": _area,
         "channel": channel,
         "pix_x": pix_x,
         "pix_y": pix_y,
@@ -425,6 +511,7 @@ def worker_gauss_fit_2d(
 
     pix = celestial.all_world2pix([[ra_deg, dec_deg]], 0)[0]
     cx, cy = float(pix[0]), float(pix[1])
+    _require_position_inside(cx, cy, image.shape, ra_deg, dec_deg)
 
     half_box = int(np.ceil(box_arcsec / (2.0 * pixel_scale)))
     half_box = max(half_box, 5)

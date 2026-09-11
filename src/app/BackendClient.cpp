@@ -65,7 +65,7 @@ QByteArray visivoHeader(const QMap<QByteArray, QByteArray> &headers, const char 
     if (value.isNull() && isRequiredVisivoHeader(name)) {
         qWarning().noquote()
                 << "[BackendClient] backend response missing required header" << name
-                << "— client/server contract drift? Regenerate contract snapshots.";
+                << "- client/server contract drift? Regenerate contract snapshots.";
     }
     return value;
 }
@@ -3026,7 +3026,7 @@ QByteArray BackendClient::performGet(const QUrl &url, QString &error) const
         DiagnosticsManager::instance()->publish(
                 DiagnosticsLevel::Info, DiagnosticsCategory::Backend,
                 QStringLiteral("BackendClient"),
-                QStringLiteral("%1 %2 started — this can take minutes on a large cube")
+                QStringLiteral("%1 %2 started - this can take minutes on a large cube")
                         .arg(QStringLiteral("GET"), url.path()),
                 _datasetIdForRequest(QJsonDocument(), url),
                 this->m_sessionId, BackendClient::operationTagForPath(url.path()));
@@ -3206,7 +3206,7 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
         DiagnosticsManager::instance()->publish(
                 DiagnosticsLevel::Info, DiagnosticsCategory::Backend,
                 QStringLiteral("BackendClient"),
-                QStringLiteral("%1 %2 started — this can take minutes on a large cube")
+                QStringLiteral("%1 %2 started - this can take minutes on a large cube")
                         .arg(QStringLiteral("POST"), url.path()),
                 _datasetIdForRequest(body, url),
                 this->m_sessionId, BackendClient::operationTagForPath(url.path()));

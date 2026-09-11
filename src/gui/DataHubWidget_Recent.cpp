@@ -244,7 +244,7 @@ void DataHubWidget::refreshRecentDatasets()
                         "padding: 1px 5px; margin: 0;"));
             skavaBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
             skavaBadge->setToolTip(
-                    u"Opened via SKAVA discovery routing — reopen will "
+                    u"Opened via SKAVA discovery routing, reopen will "
                     u"re-query SKAVA and route to the current backend."_s);
             nameRowLayout->addWidget(skavaBadge, 0, Qt::AlignVCenter);
         }

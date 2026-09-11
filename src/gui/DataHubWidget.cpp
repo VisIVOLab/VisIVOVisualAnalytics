@@ -257,7 +257,7 @@ void DataHubWidget::buildUi()
 
         // Subtitle — Lato Regular, muted.
         auto *sub = new QLabel(
-                u"Backend-authoritative workflow — scientific operations run on remote nodes."_s,
+                u"Backend-authoritative workflow, scientific operations run on remote nodes."_s,
                 content);
         sub->setWordWrap(true);
         {
@@ -522,7 +522,7 @@ QFrame *DataHubWidget::buildQuickActionsList()
             Spec{u"catalogue"_s, u"Open 3D Catalogue…"_s,
                  u"CSV / VOTable / FITS / speck / IPAC in the source viewer"_s, QString(),  "openCatalogueRequested"},
             Spec{u"vbt"_s,       u"Open VBT…"_s,
-                 u"VisIVO Binary Table — points / volumes"_s, u"⇧⌘B"_s, "openVbtRequested"},
+                 u"VisIVO Binary Table, points / volumes"_s, u"⇧⌘B"_s, "openVbtRequested"},
             // Sky-map engines: both open as their own viewer tabs.
             Spec{u"hips"_s,      u"HiPS Viewer"_s,
                  u"Hierarchical sky surveys (DSS, 2MASS, …)"_s, QString(),
@@ -653,7 +653,7 @@ QFrame *DataHubWidget::buildLast5JobsPanel()
             QStringLiteral("background-color: rgba(4, 138, 191, 0.18); border: none;"));
     vbox->addWidget(sep);
 
-    this->labelCapacity = new QLabel(u"Backend capacity: —"_s, card);
+    this->labelCapacity = new QLabel(u"Backend capacity: -"_s, card);
     this->labelCapacity->setStyleSheet(
             QStringLiteral("color: %1; font-size: 11px; background: transparent;")
                     .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
@@ -695,7 +695,7 @@ QFrame *DataHubWidget::buildStatusBar()
     // Datasets readout: "14 datasets · 2 pinned" — populated in refreshStatus.
     // Repurposes the existing statusBarHealth pointer slot to keep the diff
     // small; the label is no longer about health state, it's about content.
-    this->statusBarHealth = new QLabel(u"— datasets"_s, bar);
+    this->statusBarHealth = new QLabel(u"- datasets"_s, bar);
     this->statusBarHealth->setStyleSheet(mutedStyle);
     hbox->addWidget(this->statusBarHealth);
 

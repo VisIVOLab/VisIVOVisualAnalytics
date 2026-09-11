@@ -21,7 +21,7 @@ NoiseRegionDialog::NoiseRegionDialog(int width, int height, int depth, QWidget *
     , m_height(height)
     , m_depth(depth)
 {
-    setWindowTitle(u"Noise Estimation — Select Region"_s);
+    setWindowTitle(u"Noise Estimation, Select Region"_s);
     setModal(true);
     // Shared input theme — see ToolDialogStyle.
     setStyleSheet(ToolDialogStyle::inputCss());
@@ -63,7 +63,7 @@ NoiseRegionDialog::NoiseRegionDialog(int width, int height, int depth, QWidget *
     root->addWidget(ToolDialogStyle::makeBreadcrumb(this, u"Estimate Noise"_s));
 
     auto *intro = new QLabel(
-            u"Pick a region of the cube where the signal is line-free — the "
+            u"Pick a region of the cube where the signal is line-free - the "
             u"backend computes a robust noise estimate over it. Defaults to "
             u"the full cube extent."_s, this);
     intro->setStyleSheet(ToolDialogStyle::helperCss());
@@ -190,7 +190,7 @@ void NoiseRegionDialog::validate()
                             ? static_cast<int>((100 * nPx) / totalPx) : 0;
             m_spatialHint->setText(
                     u"%1 × %2 pixels (%3 total, %4% of the cube footprint). "
-                    u"Pick an off-source area inside the data footprint — "
+                    u"Pick an off-source area inside the data footprint - "
                     u"avoid blanked borders or the result is mostly zero."_s
                             .arg(wPx).arg(hPx)
                             .arg(QLocale::system().toString(nPx)).arg(pct));

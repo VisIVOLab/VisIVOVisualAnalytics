@@ -179,7 +179,7 @@ class RenderManager:
         except Exception:
             logger.exception("[render-manager] close raised for %s", session_id[:8] + "…")
         logger.info(
-            "[render-manager] closed session %s — %d frames rendered, %.1f MB sent",
+            "[render-manager] closed session %s - %d frames rendered, %.1f MB sent",
             session_id, sess.stats.frames_rendered,
             sess.stats.bytes_sent / 1e6,
         )

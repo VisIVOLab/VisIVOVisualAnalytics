@@ -140,7 +140,7 @@ void HiPSWindow::setupUi()
     QObject::connect(m_resetBtn, &QToolButton::clicked, this, &HiPSWindow::onResetView);
     lay1->addWidget(m_resetBtn);
 
-    m_orderLabel = new QLabel(u"Order: —"_s, strip1);
+    m_orderLabel = new QLabel(u"Order: -"_s, strip1);
     lay1->addWidget(m_orderLabel);
 
     lay1->addSpacing(8);
@@ -255,7 +255,7 @@ void HiPSWindow::setupUi()
     };
 
     statusLayout->addWidget(makeSep());
-    m_coordsLabel = new QLabel(u"RA — Dec —"_s, statusStrip);
+    m_coordsLabel = new QLabel(u"RA, Dec -"_s, statusStrip);
     m_coordsLabel->setMinimumWidth(220);
     statusLayout->addWidget(m_coordsLabel);
     statusLayout->addWidget(makeSep());
@@ -263,7 +263,7 @@ void HiPSWindow::setupUi()
     m_surveyLabel->setMinimumWidth(140);
     statusLayout->addWidget(m_surveyLabel);
     statusLayout->addWidget(makeSep());
-    m_fovLabel = new QLabel(u"FOV —"_s, statusStrip);
+    m_fovLabel = new QLabel(u"FOV -"_s, statusStrip);
     m_fovLabel->setMinimumWidth(90);
     statusLayout->addWidget(m_fovLabel);
 

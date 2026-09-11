@@ -67,7 +67,7 @@ void styleRailSlot(QLabel *lbl)
 // Monospace fixed-slot label for the status rail.
 QLabel *makeRailSlot(QWidget *parent)
 {
-    auto *lbl = new QLabel(u"—"_s, parent);
+    auto *lbl = new QLabel(u"-"_s, parent);
     styleRailSlot(lbl);
     return lbl;
 }
@@ -263,7 +263,7 @@ void WorkspaceChrome::installStatusRail()
     // Session slot never changes after construction.
     if (m_sessionSlot) {
         const QString s = m_session.isEmpty()
-                ? QStringLiteral("session —")
+                ? QStringLiteral("session -")
                 : QStringLiteral("session %1…").arg(m_session.left(8));
         m_sessionSlot->setText(s);
     }
@@ -310,6 +310,10 @@ void WorkspaceChrome::installSessionDock(const QString &datasetKey,
     // Right-click a view or a product → the viewer builds the "Show in ▸" menu.
     connect(m_sessionTree, &SessionDataTree::rowContextMenuRequested, this,
             &WorkspaceChrome::sessionRowContextMenu);
+    // Double-click on a product with no window to raise → the viewer decides
+    // (a backend FITS can be reopened).
+    connect(m_sessionTree, &SessionDataTree::productReopenRequested, this,
+            &WorkspaceChrome::sessionProductReopen);
 
     // Host for the view/rendering controls (filled by the window via
     // addSessionLayers()). NOTE: no "LAYERS" header here — the flat controls the

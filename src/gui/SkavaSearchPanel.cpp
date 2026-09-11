@@ -303,7 +303,7 @@ void SkavaSearchPanel::buildUi()
 
         int row = 0;
         // POS
-        grid->addWidget(new QLabel(u"POS — RA (deg)"_s), row, 0);
+        grid->addWidget(new QLabel(u"POS, RA (deg)"_s), row, 0);
         m_raEdit = new QLineEdit; m_raEdit->setPlaceholderText(u"e.g. 187.5"_s);
         m_raEdit->setValidator(new QDoubleValidator(0.0, 360.0, 6, this));
         grid->addWidget(m_raEdit, row, 1);
@@ -318,7 +318,7 @@ void SkavaSearchPanel::buildUi()
         ++row;
 
         // BAND
-        grid->addWidget(new QLabel(u"BAND — min"_s), row, 0);
+        grid->addWidget(new QLabel(u"BAND, min"_s), row, 0);
         m_freqMinEdit = new QLineEdit; m_freqMinEdit->setPlaceholderText(u"e.g. 900"_s);
         m_freqMinEdit->setValidator(new QDoubleValidator(0.0, 1e18, 6, this));
         grid->addWidget(m_freqMinEdit, row, 1);
@@ -333,7 +333,7 @@ void SkavaSearchPanel::buildUi()
         ++row;
 
         // TIME (MJD)
-        grid->addWidget(new QLabel(u"TIME — MJD min"_s), row, 0);
+        grid->addWidget(new QLabel(u"TIME, MJD min"_s), row, 0);
         m_timeMinEdit = new QLineEdit; m_timeMinEdit->setPlaceholderText(u"e.g. 59000"_s);
         m_timeMinEdit->setValidator(new QDoubleValidator(0.0, 1e9, 4, this));
         grid->addWidget(m_timeMinEdit, row, 1);
@@ -411,22 +411,22 @@ void SkavaSearchPanel::buildUi()
     {
         auto *box = new QGroupBox(u"Provenance"_s, this);
         auto *form = new QFormLayout(box);
-        m_provenanceTitle = new QLabel(u"—"_s);
+        m_provenanceTitle = new QLabel(u"-"_s);
         m_provenanceTitle->setWordWrap(true);
         m_provenanceTitle->setTextInteractionFlags(Qt::TextSelectableByMouse);
         form->addRow(u"Title"_s, m_provenanceTitle);
-        m_provenanceDoi = new QLabel(u"—"_s);
+        m_provenanceDoi = new QLabel(u"-"_s);
         m_provenanceDoi->setTextInteractionFlags(Qt::TextSelectableByMouse);
         m_provenanceDoi->setTextFormat(Qt::RichText);
         m_provenanceDoi->setOpenExternalLinks(true);
         form->addRow(u"DOI"_s, m_provenanceDoi);
-        m_provenancePid = new QLabel(u"—"_s);
+        m_provenancePid = new QLabel(u"-"_s);
         m_provenancePid->setTextInteractionFlags(Qt::TextSelectableByMouse);
         form->addRow(u"PID"_s, m_provenancePid);
-        m_provenanceLicense = new QLabel(u"—"_s);
+        m_provenanceLicense = new QLabel(u"-"_s);
         m_provenanceLicense->setTextInteractionFlags(Qt::TextSelectableByMouse);
         form->addRow(u"License"_s, m_provenanceLicense);
-        m_provenanceCitation = new QLabel(u"—"_s);
+        m_provenanceCitation = new QLabel(u"-"_s);
         m_provenanceCitation->setWordWrap(true);
         m_provenanceCitation->setTextInteractionFlags(Qt::TextSelectableByMouse);
         form->addRow(u"Citation"_s, m_provenanceCitation);
@@ -536,11 +536,11 @@ void SkavaSearchPanel::onResultSelectionChanged()
     if (row < 0 || row >= all.size()) {
         m_openBtn->setEnabled(false);
         if (m_subsetBtn) m_subsetBtn->setEnabled(false);
-        m_provenanceTitle->setText(u"—"_s);
-        m_provenanceDoi->setText(u"—"_s);
-        m_provenancePid->setText(u"—"_s);
-        m_provenanceLicense->setText(u"—"_s);
-        m_provenanceCitation->setText(u"—"_s);
+        m_provenanceTitle->setText(u"-"_s);
+        m_provenanceDoi->setText(u"-"_s);
+        m_provenancePid->setText(u"-"_s);
+        m_provenanceLicense->setText(u"-"_s);
+        m_provenanceCitation->setText(u"-"_s);
         m_copyCitationBtn->setEnabled(false);
         return;
     }
@@ -548,18 +548,18 @@ void SkavaSearchPanel::onResultSelectionChanged()
     m_openBtn->setEnabled(true);
     if (m_subsetBtn) m_subsetBtn->setEnabled(true);
     m_provenanceTitle->setText(
-            meta.obsTitle.isEmpty() ? u"—"_s : meta.obsTitle);
+            meta.obsTitle.isEmpty() ? u"-"_s : meta.obsTitle);
     if (!meta.doi.isEmpty()) {
         const QString href = meta.doi.startsWith("http"_L1)
                 ? meta.doi : (u"https://doi.org/"_s + meta.doi);
         m_provenanceDoi->setText(
                 QStringLiteral("<a href='%1'>%2</a>").arg(href, meta.doi));
     } else {
-        m_provenanceDoi->setText(u"—"_s);
+        m_provenanceDoi->setText(u"-"_s);
     }
-    m_provenancePid->setText(meta.pid.isEmpty() ? u"—"_s : meta.pid);
-    m_provenanceLicense->setText(meta.license.isEmpty() ? u"—"_s : meta.license);
-    m_provenanceCitation->setText(meta.citation.isEmpty() ? u"—"_s : meta.citation);
+    m_provenancePid->setText(meta.pid.isEmpty() ? u"-"_s : meta.pid);
+    m_provenanceLicense->setText(meta.license.isEmpty() ? u"-"_s : meta.license);
+    m_provenanceCitation->setText(meta.citation.isEmpty() ? u"-"_s : meta.citation);
     m_copyCitationBtn->setEnabled(!meta.citation.isEmpty());
 }
 

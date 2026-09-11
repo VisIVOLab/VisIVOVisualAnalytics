@@ -541,6 +541,33 @@ Two things follow from the change and must not be re-broken:
   activation is ever put back on `currentChanged`, that guard has to come back
   with it, and so does the right-click problem.
 
+### What a tool must leave behind
+
+Every tool that produces a *result the user could want later* registers a
+product. `renderer` decides how the row behaves, and the three cases are all
+legitimate:
+
+| `renderer` | Row means | Tools |
+|---|---|---|
+| `moment2d` / `image2d` / `spectrum1d` / `pvdiagram` | mountable in a pane | Moment, Line-Width, PV, Extract/Pin Spectrum, region spectra, Stack |
+| *(empty)* | a **measurement**: the numbers live in Provenance | Estimate Noise, region 2-D statistics |
+| *(empty, with `window`)* | its own window, raised on activation | Channel Maps |
+| *(empty, with an `Output path` param)* | a file, reopenable via the row menu | Baseline-subtracted cube |
+
+The rule exists because a tool whose only output is a `WA_DeleteOnClose` result
+dialog silently loses it: Estimate Noise reported σ — the number that then sets
+the moment threshold, the isosurface level and the mask cut-off — in a floating
+panel and nowhere else, so closing the panel meant re-running the tool. The
+region tools had already been moved off that pattern (their statistics are
+folded into the product's Provenance) and noise now follows, keyed by
+region+channel range so a re-run of the same selection updates its row while a
+different selection adds one.
+
+The **exports** are the deliberate exception: Export Sub-Cube / Channel 2-D /
+Moment FITS / Mask 3-D Region write real files and belong to *Workspace
+Exports*, which is durable and already lists them, so they do not also appear
+as products.
+
 ---
 
 ## Cube viewer — tool availability and where results land

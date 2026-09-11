@@ -184,7 +184,7 @@ void vtkWindowVectorField::overlayCatalogue()
         const auto btn = QMessageBox::warning(
                 this, u"Overlay Catalogue"_s,
                 u"This velocity field is shown in grid units (Box size (Mpc) = 0), but a "
-                u"galaxy catalogue is in physical Mpc — the two will not align until you set "
+                u"galaxy catalogue is in physical Mpc - the two will not align until you set "
                 u"“Box size (Mpc)” to the field's physical box.\n\nOverlay anyway?"_s,
                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
         if (btn != QMessageBox::Yes)
@@ -511,7 +511,7 @@ void vtkWindowVectorField::onCatalogueOverlayReady()
     if (capped)
         msg += u" (of %1; capped)"_s.arg(data.totalRows);
     if (!data.cartesian)
-        msg += u" — note: not a Cartesian catalogue, positions may not match the field frame"_s;
+        msg += u" - note: not a Cartesian catalogue, positions may not match the field frame"_s;
     if (haveAgreement)
         msg += u" · agreement %1 · residual %2 · bulk %3 (km/s)"_s
                        .arg(meanAgreement, 0, 'f', 2)
@@ -742,7 +742,7 @@ void vtkWindowVectorField::showBulkFlowProfile()
     // Non-modal plot window (galaxies vs the reconstruction).
     auto *dlg = new QDialog(this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
-    dlg->setWindowTitle(u"Bulk flow vs radius — %1"_s.arg(this->m_catalogueName));
+    dlg->setWindowTitle(u"Bulk flow vs radius -%1"_s.arg(this->m_catalogueName));
     auto *lay = new QVBoxLayout(dlg);
     auto *plot = new QCustomPlot(dlg);
     plot->addGraph();

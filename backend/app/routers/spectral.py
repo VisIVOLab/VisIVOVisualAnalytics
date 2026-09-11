@@ -105,6 +105,10 @@ class BaselineResponse(BaseModel):
     rms_before: float = 0.0
     rms_after: float = 0.0
     output_path: str = ""
+    # Non-fatal caveats about a fit that SUCCEEDED (an extrapolated baseline, a
+    # residual larger than the input). The client shows these; a field missing
+    # HERE is a warning the user never sees, however carefully it is computed.
+    warning: str = ""
 
 
 class StackRequest(BaseModel):
@@ -560,7 +564,7 @@ async def spectral_baseline(
     return BaselineResponse(valid=True, new_dataset_id=new_id, **{
         k: result[k] for k in ("width", "height", "depth", "range_min", "range_max",
                                 "poly_order", "method", "fit_channels",
-                                "rms_before", "rms_after", "output_path")
+                                "rms_before", "rms_after", "output_path", "warning")
     })
 
 

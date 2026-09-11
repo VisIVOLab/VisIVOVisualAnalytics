@@ -819,7 +819,7 @@ TOOLS: dict[str, AssistantTool] = {
             name="moment_map_summary",
             description=(
                 "Compute a moment map over a channel range and return SUMMARY "
-                "facts (unit, value range, mean/median, finite-pixel count) — not "
+                "facts (unit, value range, mean/median, finite-pixel count), not "
                 "the pixel array. order 0=integrated intensity, 1=velocity field, "
                 "2=velocity dispersion σ (set moment2_variance=true for variance σ²)."
             ),
@@ -909,7 +909,7 @@ TOOLS: dict[str, AssistantTool] = {
             description=(
                 "Fit a 2-D elliptical Gaussian to a source at a sky position "
                 "(RA/DEC in degrees). Requires WCS. Uncertainties are null when "
-                "error_method is 'covariance' (no clean sky to measure them on) — "
+                "error_method is 'covariance' (no clean sky to measure them on) -"
                 "report that rather than quoting the diagnostic figures. "
                 "Returns peak, integrated flux "
                 "(Jy when beam-corrected), fitted and beam-deconvolved FWHMs and "
@@ -935,9 +935,9 @@ TOOLS: dict[str, AssistantTool] = {
                 "RELATIVE (un-calibrated) radial power spectrum of a loaded 2-D "
                 "map (e.g. a cosmological / CMB-like map), binned into n_bins "
                 "radial bins from the map's Fourier power. NOT a calibrated "
-                "angular C(ℓ) — use it to compare structure scales, and quote the "
+                "angular C(ℓ) - use it to compare structure scales, and quote the "
                 "worker's caveat. cl_err is null for a bin with fewer than 3 modes "
-                "(no error is estimable there) — say so rather than reading it as "
+                "(no error is estimable there), say so rather than reading it as "
                 "zero. channel selects a plane for a cube."
             ),
             parameters={
@@ -958,7 +958,7 @@ TOOLS: dict[str, AssistantTool] = {
                 "(needs WCS) or x+y (pixel). With radius_arcsec it uses the mean "
                 "spectrum over a circular aperture, else a single-pixel probe. "
                 "Returns peak, center, σ, FWHM (in the spectral axis unit), "
-                "integrated flux — those five with 1-sigma uncertainties — plus "
+                "integrated flux - those five with 1-sigma uncertainties, plus "
                 "continuum, equivalent width and residual RMS, which have none. "
                 "Report the uncertainties, and pass on spectral_correlation_note "
                 "when it is present."
@@ -982,7 +982,7 @@ TOOLS: dict[str, AssistantTool] = {
             description=(
                 "Run SoFiA-2 source finding on the whole cube and return the "
                 "detection catalogue (number of sources + their rows). Requires "
-                "the SoFiA-2 binary on the server. HEAVY — launches the external "
+                "the SoFiA-2 binary on the server. HEAVY, launches the external "
                 "finder over the full cube; call it only when the user asks to "
                 "detect/find sources."
             ),
@@ -1112,7 +1112,7 @@ TOOLS: dict[str, AssistantTool] = {
         AssistantTool(
             name="set_blend_mode",
             description=(
-                "ACTION: set the volume blend mode — 'composite' (opacity ray-cast), "
+                "ACTION: set the volume blend mode - 'composite' (opacity ray-cast), "
                 "'mip' (maximum intensity, good to spot the brightest source), or "
                 "'minip' (minimum intensity)."
             ),

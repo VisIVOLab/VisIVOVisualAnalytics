@@ -168,7 +168,7 @@ void MainWindow::runImageQuality()
             text += u"%1 : %2\n"_s.arg(k, -18).arg(r.metrics.value(k).toString());
         }
         const QStringList flags = r.metrics.value(u"flags"_s).toStringList();
-        text += u"\nflags : %1"_s.arg(flags.isEmpty() ? u"(none — looks clean)"_s
+        text += u"\nflags : %1"_s.arg(flags.isEmpty() ? u"(none, looks clean)"_s
                                                        : flags.join(u", "_s));
         QDialog box(this);
         box.setWindowTitle(u"Image Quality / Artifacts"_s);

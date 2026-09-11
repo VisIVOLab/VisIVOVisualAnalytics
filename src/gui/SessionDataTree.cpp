@@ -287,7 +287,7 @@ void SessionDataTree::upsertProduct(const AnalysisProduct &p)
     auto *child = new QStandardItem(productText(p));
     child->setData(p.productId, kProductIdRole);
     // Selecting a row only inspects it, so the row itself says how to show it.
-    child->setToolTip(QStringLiteral("%1 — double-click to show it in a pane, "
+    child->setToolTip(QStringLiteral("%1 - double-click to show it in a pane, "
                                      "right-click for “Show in ▸”").arg(p.kind));
     styleItem(child);
     ds->appendRow(child);
@@ -371,6 +371,16 @@ void SessionDataTree::onProductUpdated(const AnalysisProduct &product)
     if (!ownsProduct(product))
         return;
     upsertProduct(product);
+    // …and if this row is the one the Inspector is showing, tell it again. The
+    // Provenance panel is fed by productSelected, which only ever came from
+    // currentChanged, so a product that gained its parameters WHILE selected
+    // kept displaying the old ones: a baseline run watched from its own row sat
+    // at "Status: running…" after it finished, and selecting away and back was
+    // the only way to see the result.
+    if (const QStandardItem *cur = m_model->itemFromIndex(m_tree->currentIndex())) {
+        if (cur->data(kProductIdRole).toString() == product.productId)
+            emit productSelected(product.productId);
+    }
 }
 
 void SessionDataTree::setProductPaneAssignments(const QHash<QString, QList<int>> &assignments)
@@ -508,5 +518,9 @@ void SessionDataTree::onActivated(const QModelIndex &index)
         p.window->show();
         p.window->raise();
         p.window->activateWindow();
+        return;
     }
+    // No window (closed, or never created): not nothing — ask the viewer, which
+    // knows whether this product can be reopened from a file it left behind.
+    emit productReopenRequested(productId);
 }

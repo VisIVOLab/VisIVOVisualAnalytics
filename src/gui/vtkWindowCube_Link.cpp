@@ -135,7 +135,7 @@ void vtkWindowCube::setLinkViews(bool on)
     }
     this->statusBar()->showMessage(
             peers > 0 ? u"Linked views: on (%1 linked viewer(s) synced)."_s.arg(peers)
-                      : u"Linked views: on — enable it on another cube to sync them."_s,
+                      : u"Linked views: on, enable it on another cube to sync them."_s,
             5000);
 }
 
@@ -423,7 +423,7 @@ void vtkWindowCube::applyLinked2DSliceLut(const QString &name, int scaleMode, do
     } else {
         this->statusBar()->showMessage(
                 u"Linked window switched to log, but this image has no positive "
-                u"values — keeping its current scale."_s,
+                u"values, keeping its current scale."_s,
                 4000);
     }
     this->m_sliceScaleGamma = gamma;

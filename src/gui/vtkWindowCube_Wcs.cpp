@@ -349,7 +349,7 @@ void vtkWindowCube::setServerSideRenderingAvailable(bool available)
         this->m_actionRenderRemote->setEnabled(available);
         if (!available) {
             const QString why =
-                    u"This backend cannot render server-side (no EGL context — a CPU-only "
+                    u"This backend cannot render server-side (no EGL context - a CPU-only "
                     u"or macOS backend). Rendering happens here."_s;
             this->m_actionRenderRemote->setToolTip(why);
             this->m_actionRenderRemote->setStatusTip(why);

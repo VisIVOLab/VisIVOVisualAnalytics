@@ -304,7 +304,7 @@ void MainWindow::doOpenSkavaDataset(const QString &obsId,
         QApplication::restoreOverrideCursor();
         if (!opened.valid) {
             qWarning().noquote() << QStringLiteral(
-                    "[skava] remote backend %1 refused open: %2 — falling back to local download")
+                    "[skava] remote backend %1 refused open: %2, falling back to local download")
                     .arg(chosen.id, opened.error);
             // Revert the badge: the remote refused, so the imminent
             // download/open below is served by the local backend.
@@ -363,7 +363,7 @@ void MainWindow::doSkavaSodaSubset(const QString &obsId,
     // ── Region dialog (POS + BAND), prefilled from the dataset metadata ──
     const SkavaDatasetMetadata &m = datalink.dataset;
     QDialog dlg(this);
-    dlg.setWindowTitle(u"SODA subset — %1"_s.arg(obsId));
+    dlg.setWindowTitle(u"SODA subset -%1"_s.arg(obsId));
     auto *form = new QFormLayout(&dlg);
     auto mkEdit = [&](double value, const QString &placeholder) {
         auto *e = new QLineEdit(&dlg);
@@ -378,11 +378,11 @@ void MainWindow::doSkavaSodaSubset(const QString &obsId,
                             u"radius (deg)"_s);
     auto *bMinEdit = mkEdit(m.emMin, u"min (m)"_s);
     auto *bMaxEdit = mkEdit(m.emMax, u"max (m)"_s);
-    form->addRow(u"POS — RA (deg)"_s, raEdit);
+    form->addRow(u"POS, RA (deg)"_s, raEdit);
     form->addRow(u"Dec (deg)"_s, decEdit);
     form->addRow(u"Radius (deg)"_s, radEdit);
-    form->addRow(u"BAND — min (m)"_s, bMinEdit);
-    form->addRow(u"BAND — max (m)"_s, bMaxEdit);
+    form->addRow(u"BAND, min (m)"_s, bMinEdit);
+    form->addRow(u"BAND, max (m)"_s, bMaxEdit);
     auto *hint = new QLabel(
             u"Leave all POS fields or both BAND fields blank to omit that "
             u"axis. At least one of POS / BAND is required. The cutout runs on "
@@ -669,6 +669,15 @@ void MainWindow::openViewerFromOpenedDataset(const QString &path,
             QObject::connect(cubeWin, &vtkWindowCube::sourceFinderRequested, this,
                              [this, sfUrl, sfToken, sfSession, sfDataset]() {
                                  this->openSourceFinder(sfUrl, sfToken, sfSession, sfDataset);
+                             });
+        }
+        // A product stored as a backend FITS (baseline-subtracted cube, mask,
+        // sub-cube) reopened from its Session Data row.
+        {
+            const QString pUrl = client.baseUrl(), pToken = client.token();
+            QObject::connect(cubeWin, &vtkWindowCube::openBackendFitsRequested, this,
+                             [this, pUrl, pToken](const QString &path, const QString &label) {
+                                 this->openBackendProductFits(pUrl, pToken, path, label);
                              });
         }
         // Cube → Image contour relay: when the cube viewer emits

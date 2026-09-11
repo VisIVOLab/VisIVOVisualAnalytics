@@ -698,6 +698,11 @@ struct BackendBaselineResult
     double rmsBefore{ 0. };  ///< RMS of the original cube over the fit channels
     double rmsAfter{ 0. };   ///< RMS of the baseline-subtracted cube
     QString method;          ///< "polynomial" or "median"
+    /// Non-fatal caveats about a fit that SUCCEEDED — chiefly a polynomial
+    /// extrapolated far beyond the line-free channels, whose far end is
+    /// unconstrained and can carry a large false signal. Empty when there is
+    /// nothing to say. Shown to the user, never swallowed.
+    QString warning;
 };
 
 // ── Sub-cube extraction (crop ROI → new FITS dataset) ─────────────────────────
@@ -878,10 +883,23 @@ struct BackendAperturePhotometryResult
 {
     bool valid{ false };
     QString error;
-    double fluxJy{ 0. };
-    double fluxErrJy{ 0. };
+    /// NaN when the backend reports the value as unavailable (null): flux_jy /
+    /// flux_err_jy need per-beam data with a known beam, the raw sum is
+    /// unavailable when the aperture covers blanked pixels, and the error is
+    /// unavailable when no background annulus was requested. Test with
+    /// std::isnan before displaying — 0.0 would read as a measured zero.
+    double fluxJy{ std::numeric_limits<double>::quiet_NaN() };
+    double fluxErrJy{ std::numeric_limits<double>::quiet_NaN() };
+    /// Raw background-subtracted sum in @ref fluxUnit (always in the data's own
+    /// BUNIT·pixel, never relabelled Jy), and its uncertainty. NaN as above.
+    double flux{ std::numeric_limits<double>::quiet_NaN() };
+    double fluxErr{ std::numeric_limits<double>::quiet_NaN() };
+    QString fluxUnit;
     double backgroundJyPerPix{ 0. };
     int nPixAperture{ 0 };
+    /// Fractional pixel overlap area actually used for the background
+    /// subtraction; @ref nPixAperture is its truncated whole-pixel count.
+    double apertureAreaPix{ 0. };
     int channel{ -1 };          // -1 means "not set"
     double pixX{ 0. };
     double pixY{ 0. };
@@ -1715,7 +1733,14 @@ public:
     BackendLinewidthResult fetchLinewidthBinary(const QString &datasetId,
                                                 int channelStart, int channelEnd,
                                                 bool maskEnabled, float threshold,
-                                                double restFreqHz = 0.0);
+                                                double restFreqHz = 0.0,
+                                                /// True → the backend's vectorised path
+                                                /// (moment-2 dispersion for FWHM) instead
+                                                /// of one scipy curve_fit per pixel. The
+                                                /// endpoint has always accepted it; the
+                                                /// desktop never sent it, so every map
+                                                /// paid for ~10⁶ fits (audit).
+                                                bool fast = false);
 
     /** GET /v1/analysis/cube-stats/{dataset_id} — whole-cube statistics (min/max/mean/median/
      *  std/rms/sum + counts) computed on the FULL-resolution cube out-of-core. The desktop

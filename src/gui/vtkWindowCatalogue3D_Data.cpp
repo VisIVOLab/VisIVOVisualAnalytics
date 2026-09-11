@@ -405,7 +405,7 @@ void vtkWindowCatalogue3D::applyFilter()
                                 ? QStringLiteral("Loaded %1 of %2 sources.")
                                           .arg(out.entries.size())
                                           .arg(subset.totalRows)
-                                : QStringLiteral("%1 filter(s) active — %2 of %3 sources.")
+                                : QStringLiteral("%1 filter(s) active, %2 of %3 sources.")
                                           .arg(numFilters)
                                           .arg(out.entries.size())
                                           .arg(subset.totalRows);
@@ -506,7 +506,7 @@ void vtkWindowCatalogue3D::loadMoreEntries()
 void vtkWindowCatalogue3D::autoReopenThenLoadMore()
 {
     if (this->filterStatusLabel)
-        this->filterStatusLabel->setText(u"Session expired — reconnecting\u2026"_s);
+        this->filterStatusLabel->setText(u"Session expired, reconnecting\u2026"_s);
     if (this->btnLoadMore) {
         this->btnLoadMore->setEnabled(false);
         this->btnLoadMore->setText(u"Reconnecting\u2026"_s);

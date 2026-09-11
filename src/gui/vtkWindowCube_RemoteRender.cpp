@@ -247,11 +247,11 @@ void vtkWindowCube::requestRemoteRenderSession()
             // Stay on Local (current page) and tell the user why.
             if (this->statusBar()) {
                 this->statusBar()->showMessage(
-                        u"Remote rendering unavailable on this backend — staying local"_s,
+                        u"Remote rendering unavailable on this backend, staying local"_s,
                         5000);
             }
             this->abortRemoteSwitch(
-                    u"Remote rendering unavailable on this backend (HTTP %1) — staying local."_s
+                    u"Remote rendering unavailable on this backend (HTTP %1), staying local."_s
                             .arg(code));
             return;
         }
@@ -260,7 +260,7 @@ void vtkWindowCube::requestRemoteRenderSession()
         if (sid.isEmpty()) {
             qWarning() << "[remote-render] create_session returned no session_id";
             this->abortRemoteSwitch(
-                    u"The backend accepted the request but returned no render session — "
+                    u"The backend accepted the request but returned no render session - "
                     "staying local."_s);
             return;
         }
@@ -395,10 +395,10 @@ void vtkWindowCube::onRemoteRenderConnectionStateChanged(const QString &state)
     if (this->m_remoteRenderBannerLabel) {
         if (state == QLatin1String("Live")) {
             this->m_remoteRenderBannerLabel->setText(
-                    u"Remote rendering (GPU on backend) — click ✕ to switch to Local"_s);
+                    u"Remote rendering (GPU on backend) - click ✕ to switch to Local"_s);
         } else {
             this->m_remoteRenderBannerLabel->setText(
-                    u"Remote rendering — " + state);
+                    u"Remote rendering - " + state);
         }
     }
     // Clear the switch-in-progress guard on any terminal/failure
@@ -425,7 +425,7 @@ void vtkWindowCube::onRemoteRenderConnectionStateChanged(const QString &state)
             && this->m_localRecommendRemoteLabel) {
             this->m_localRecommendRemoteLabel->setText(
                     u"Remote rendering: " + state
-                    + u" — click Switch to Remote to retry."_s);
+                    + u" - click Switch to Remote to retry."_s);
             this->m_localRecommendRemoteBanner->setVisible(true);
         }
         if (this->m_localRecommendRemoteSwitchBtn) {
@@ -537,7 +537,7 @@ void vtkWindowCube::sendRemoteRenderStateCommand(const QVariantMap &command)
     const bool inRemote = (this->m_effectiveRenderMode == RenderMode::Remote);
     if (!widgetExists || !isLive || !inRemote) {
         qDebug().noquote() << QStringLiteral(
-                "[remote-render] DROP %1 — widget=%2 live=%3 mode=%4")
+                "[remote-render] DROP %1, widget=%2 live=%3 mode=%4")
                                       .arg(type)
                                       .arg(widgetExists)
                                       .arg(isLive)
@@ -554,7 +554,7 @@ void vtkWindowCube::sendRemoteRenderStateCommand(const QVariantMap &command)
 void vtkWindowCube::pushRenderStateToRemote()
 {
     qDebug().noquote() << QStringLiteral(
-            "[remote-render] BOOTSTRAP state push — widget=%1 live=%2 mode=%3 LUT=%4 threshold=%5")
+            "[remote-render] BOOTSTRAP state push, widget=%1 live=%2 mode=%3 LUT=%4 threshold=%5")
                                   .arg(this->m_remoteRenderWidget != nullptr)
                                   .arg(this->m_remoteRenderWidget
                                                && this->m_remoteRenderWidget->isLive())

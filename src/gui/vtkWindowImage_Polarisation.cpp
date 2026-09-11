@@ -581,7 +581,7 @@ void vtkWindowImage::computeSpectralIndex()
             QStringLiteral("α (%1↔%2 GHz)").arg(nuA, 0, 'f', 2).arg(nuB, 0, 'f', 2),
             StokesRole::DerivedAlpha, u"Spectrum"_s, -2.5, 1.5);
     statusBar()->showMessage(
-            QStringLiteral("Spectral index: %1 valid pixels, range %2 — %3")
+            QStringLiteral("Spectral index: %1 valid pixels, range %2 -%3")
                     .arg(nValid).arg(aMin, 0, 'f', 2).arg(aMax, 0, 'f', 2),
             5000);
 }
@@ -602,7 +602,7 @@ void vtkWindowImage::computeFaradayRM()
     auto *intro = new QLabel(
             u"Add ≥ 3 (Q, U, ν) triplets at different frequencies. The tool will "
             u"compute PA per pixel for each, then fit a line PA vs λ². The slope "
-            u"is RM (rad m⁻²). No PA unwrapping — works only for low-RM regimes."_s,
+            u"is RM (rad m⁻²). No PA unwrapping, works only for low-RM regimes."_s,
             &dlg);
     intro->setWordWrap(true);
     vl->addWidget(intro);
@@ -775,7 +775,7 @@ void vtkWindowImage::computeFaradayRM()
             StokesRole::DerivedRM, u"Spectrum"_s,
             std::max(-500.0, rmMin), std::min(500.0, rmMax));
     statusBar()->showMessage(
-            QStringLiteral("Faraday RM: %1 pixels, range %2 — %3 rad m⁻² (clipped to ±500 for display)")
+            QStringLiteral("Faraday RM: %1 pixels, range %2, %3 rad m⁻² (clipped to ±500 for display)")
                     .arg(nValid).arg(rmMin, 0, 'f', 1).arg(rmMax, 0, 'f', 1),
             6000);
 }
@@ -805,7 +805,7 @@ void vtkWindowImage::addDerivedLayer(vtkSmartPointer<vtkImageData> data,
     }
     this->vtkRender();
     statusBar()->showMessage(
-            QStringLiteral("Derived map added: %1 (range %2 — %3)")
+            QStringLiteral("Derived map added: %1 (range %2 -%3)")
                     .arg(name)
                     .arg(rangeMin, 0, 'g', 4)
                     .arg(rangeMax, 0, 'g', 4),

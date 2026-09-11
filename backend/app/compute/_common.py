@@ -47,10 +47,21 @@ def _b64i32_compressed(array: np.ndarray, level: int = 6) -> tuple[str, str]:
     return "qt-zlib", base64.b64encode(_qt_zlib_compress(raw, level)).decode("ascii")
 
 def _finite_range(array: np.ndarray) -> tuple[float, float]:
+    """Min/max over the FINITE values, for display ranges and LUT limits.
+
+    nanmin/nanmax skip NaN but keep infinities, so the mask computed here used
+    to be discarded: a plane carrying a single +inf reported range_max = inf,
+    which is not representable in JSON and made the endpoint answer 500
+    (reproduced on /v1/stokes â€).
+    """
     finite = np.isfinite(array)
     if not finite.any():
         return 0.0, 0.0
-    return float(np.nanmin(array)), float(np.nanmax(array))
+    # Masked reductions rather than array[finite]: the fancy-index copy is a
+    # second full-size array, which on a mostly-finite 2 GiB cube is another
+    # 2 GiB for two scalars.
+    return (float(np.min(array, where=finite, initial=np.inf)),
+            float(np.max(array, where=finite, initial=-np.inf)))
 
 def beam_area_pixels(
     bmaj_deg: float | None, bmin_deg: float | None, pix_arcsec: float | None,

@@ -45,7 +45,7 @@ class DiagnosticsEventsResponse(BaseModel):
 async def diagnostics_events(
     token: str = _auth,
     since: int = Query(default=0, ge=0,
-                       description="Watermark — return entries with id > since."),
+                       description="Watermark, return entries with id > since."),
     limit: int = Query(default=500, ge=1, le=2000,
                        description="Max entries per response."),
 ) -> DiagnosticsEventsResponse:

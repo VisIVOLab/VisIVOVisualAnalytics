@@ -126,6 +126,7 @@ signals:
     /// Right-click on a product row → the viewer shows the "Show in ▸" menu at globalPos.
     void sessionRowContextMenu(const QString &viewTag, const QString &productId,
                                const QPoint &globalPos);
+    void sessionProductReopen(const QString &productId);
 
 private:
     MainWindow *mainWindow() const;

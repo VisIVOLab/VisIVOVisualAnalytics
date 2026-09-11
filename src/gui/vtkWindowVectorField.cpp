@@ -68,7 +68,7 @@ vtkWindowVectorField::vtkWindowVectorField(const QString &path, BackendVelocityG
     : QMainWindow(parent), m_path(path), m_grid(std::move(grid)), m_datasetId(datasetId),
       m_backendUrl(backendUrl), m_backendToken(backendToken), m_sessionId(sessionId)
 {
-    this->setWindowTitle(u"Velocity Field — %1"_s.arg(QFileInfo(path).fileName()));
+    this->setWindowTitle(u"Velocity Field -%1"_s.arg(QFileInfo(path).fileName()));
     this->lut = vtkSmartPointer<vtkLookupTable>::New();
     this->axesWidget = vtkSmartPointer<vtkOrientationMarkerWidget>::New();
     this->scalarBar = vtkSmartPointer<vtkScalarBarActor>::New();
@@ -153,7 +153,7 @@ void vtkWindowVectorField::setupUi()
     this->spinMaxArrows->setSingleStep(10000);
     this->spinMaxArrows->setValue(50000);
     this->spinMaxArrows->setToolTip(
-            u"Max arrows drawn (uniformly sampled) — caps cost on large grids"_s);
+            u"Max arrows drawn (uniformly sampled), caps cost on large grids"_s);
     form->addRow(u"Max arrows"_s, this->spinMaxArrows);
 
     this->spinGlyphScale = new QDoubleSpinBox(side);
@@ -200,7 +200,7 @@ void vtkWindowVectorField::setupUi()
     this->chkBasins = new QCheckBox(side);
     this->chkBasins->setToolTip(
             u"Gravitational basins (watershed): regions whose streamlines converge to the "
-            u"same attractor — the Laniakea-style supercluster definition."_s);
+            u"same attractor (the Laniakea-style supercluster definition)."_s);
     structForm->addRow(u"Show basins"_s, this->chkBasins);
 
     this->comboBasinDir = new QComboBox(side);
@@ -215,12 +215,12 @@ void vtkWindowVectorField::setupUi()
     this->chkFieldDensity->setToolTip(
             u"Overdensity proxy from the velocity divergence (δ ∝ −∇·v, linear "
             u"theory): an isosurface of the convergent (∇·v < 0) cores. Best on a "
-            u"structured field — a uniform-divergence flow has no isosurface."_s);
+            u"structured field (a uniform-divergence flow has no isosurface)."_s);
     structForm->addRow(u"Overdensity (−∇·v)"_s, this->chkFieldDensity);
     this->chkFieldVoid = new QCheckBox(side);
     this->chkFieldVoid->setToolTip(
             u"Void proxy from the velocity divergence: an isosurface of the divergent "
-            u"(∇·v > 0) cores — underdensities / repellers (the Local Void, Dipole "
+            u"(∇·v > 0) cores, underdensities / repellers (the Local Void, Dipole "
             u"Repeller). Needs a diverging region (a flow source)."_s);
     structForm->addRow(u"Void (+∇·v)"_s, this->chkFieldVoid);
     this->sliderFieldDensityLevel = new QSlider(Qt::Horizontal, side);
@@ -234,7 +234,7 @@ void vtkWindowVectorField::setupUi()
     this->btnFieldBulkFlow = new QPushButton(u"Field bulk flow vs radius…"_s, side);
     this->btnFieldBulkFlow->setToolTip(
             u"Plot the reconstruction's own bulk flow |⟨v⟩| in spheres of growing "
-            u"radius about the observer — the field's coherent large-scale motion, "
+            u"radius about the observer - the field's coherent large-scale motion, "
             u"available without a catalogue."_s);
     structForm->addRow(this->btnFieldBulkFlow);
 
@@ -251,7 +251,7 @@ void vtkWindowVectorField::setupUi()
     this->btnOverlayCatalogue = new QPushButton(u"Overlay galaxy catalogue…"_s, side);
     this->btnOverlayCatalogue->setToolTip(
             u"Load a Cartesian (X/Y/Z Mpc) catalogue and draw its galaxies as points in "
-            u"this velocity field's frame — 'where galaxies sit in the flow'. Both must "
+            u"this velocity field's frame, 'where galaxies sit in the flow'. Both must "
             u"share the same coordinate system/origin to align."_s);
     ovLay->addWidget(this->btnOverlayCatalogue);
     this->btnRemoveCatalogue = new QPushButton(u"Remove overlay"_s, side);
@@ -282,15 +282,15 @@ void vtkWindowVectorField::setupUi()
     this->comboGalaxyShape->addItem(u"Points"_s);
     this->comboGalaxyShape->setEnabled(false);
     this->comboGalaxyShape->setToolTip(
-            u"Draw galaxies as points, or — when the catalogue carries vx/vy/vz — as "
-            u"velocity arrows (each galaxy's peculiar velocity), or — with a field "
-            u"loaded — residual arrows (v_galaxy − v_field: the unexplained motion). "
+            u"Draw galaxies as points, or, when the catalogue carries vx/vy/vz, as "
+            u"velocity arrows (each galaxy's peculiar velocity), or - with a field "
+            u"loaded, residual arrows (v_galaxy − v_field: the unexplained motion). "
             u"Both arrow modes share one physical scale, so they're comparable."_s);
     overlayForm->addRow(u"Galaxy shape"_s, this->comboGalaxyShape);
     this->chkGalaxyDensity = new QCheckBox(side);
     this->chkGalaxyDensity->setEnabled(false);
     this->chkGalaxyDensity->setToolTip(
-            u"Bin the galaxies into a density field and show an overdensity isosurface — "
+            u"Bin the galaxies into a density field and show an overdensity isosurface - "
             u"where large-scale structure (filaments/clusters) sits in the flow."_s);
     overlayForm->addRow(u"Galaxy density"_s, this->chkGalaxyDensity);
     this->sliderDensityLevel = new QSlider(Qt::Horizontal, side);
@@ -304,7 +304,7 @@ void vtkWindowVectorField::setupUi()
     this->btnBulkFlow = new QPushButton(u"Bulk flow vs radius…"_s, side);
     this->btnBulkFlow->setEnabled(false);
     this->btnBulkFlow->setToolTip(
-            u"Plot the bulk-flow amplitude |⟨v⟩| in spheres of growing radius — the "
+            u"Plot the bulk-flow amplitude |⟨v⟩| in spheres of growing radius - the "
             u"galaxies vs the reconstructed field. The Watkins–Feldman–Hudson curve "
             u"(its amplitude vs scale tests ΛCDM)."_s);
     ovLay->addWidget(this->btnBulkFlow);
@@ -343,7 +343,7 @@ void vtkWindowVectorField::setupUi()
         this->chkRoi->setToolTip(why);
         this->btnLoadRoi->setToolTip(why);
         if (auto *lbl = qobject_cast<QLabel *>(structForm->labelForField(this->chkRoi))) {
-            lbl->setText(u"Define ROI (n/a — full res)"_s);
+            lbl->setText(u"Define ROI (n/a, full res)"_s);
         }
     }
 

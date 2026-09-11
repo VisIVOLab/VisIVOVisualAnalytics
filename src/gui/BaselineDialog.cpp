@@ -13,6 +13,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include "ToolDialogClose.h"
+#include "ToolProgressSheet.h"
 
 #include <QMessageBox>
 #include <QPushButton>
@@ -92,7 +93,7 @@ BaselineDialog::BaselineDialog(const QString &backendUrl,
 
     auto *channelsHint = new QLabel(
             u"<b>Required.</b> Enter spectral ranges that contain no signal. "
-            u"The baseline is estimated from these channels only — fitting on "
+            u"The baseline is estimated from these channels only - fitting on "
             u"all channels will absorb real line emission."_s, central);
     channelsHint->setStyleSheet(ToolDialogStyle::helperCss());
     channelsHint->setWordWrap(true);
@@ -198,6 +199,7 @@ void BaselineDialog::onCompute()
     const int requestId = ++m_currentRequestId;
     setUiBusy(true);
     statusBar()->showMessage(u"Subtracting baseline…"_s);
+    m_progressSheet = visivo::showToolProgressSheet(this, u"Subtracting the baseline"_s);
 
     // ── Watcher: no parent so its lifetime is controlled by deleteLater() ─────
     auto *watcher = new QFutureWatcher<BackendBaselineResult>();
@@ -213,6 +215,7 @@ void BaselineDialog::onCompute()
         if (!self) {
             return;
         }
+        visivo::closeToolProgressSheet(self->m_progressSheet);
 
         // ── Newer request superseded this one — discard stale result ──────────
         if (requestId != self->m_currentRequestId) {
@@ -241,7 +244,15 @@ void BaselineDialog::onCompute()
         }
 
         // ── Success: build summary and notify ─────────────────────────────────
-        const QString summary =
+        // A fit can succeed and still be the wrong fit. The backend says so in
+        // `warning` (a baseline extrapolated far past the line-free channels; a
+        // residual RMS larger than the input's), and it goes at the TOP of the
+        // summary — which is also what reaches the status bar and the product's
+        // Provenance, so the caveat outlives this popup.
+        const QString caveat = result.warning.isEmpty()
+                ? QString()
+                : u"\u26A0 %1\n\n"_s.arg(result.warning);
+        const QString summary = caveat +
                 u"Baseline subtraction complete.\n\n"
                 u"Method: %1\n"
                 u"New dataset ID: %2\n"
@@ -249,7 +260,10 @@ void BaselineDialog::onCompute()
                 u"RMS before: %4\n"
                 u"RMS after:  %5\n"
                 u"Fit channels: %6\n"
-                u"Dimensions: %7 × %8 × %9 (W×H×D)"_s
+                u"Dimensions: %7 × %8 × %9 (W×H×D)\n\n"
+                u"The cube is a TEMPORARY file in the backend's temp directory - it is not a "
+                u"Workspace Export and the system may delete it. It is listed in Session Data, "
+                u"where you can reopen it; use Export Sub-Cube as FITS to keep a copy."_s
                         .arg(result.method.isEmpty() ? u"n/a"_s : result.method)
                         .arg(result.newDatasetId)
                         .arg(result.outputPath.isEmpty() ? u"n/a"_s : result.outputPath)
@@ -269,17 +283,23 @@ void BaselineDialog::onCompute()
                 u"baseline"_s);
 
         // Show result in status bar (short form) and notify connected listeners.
+        // The warning marker rides along here too: the status bar is what the
+        // user sees if the popup is dismissed quickly, and a caveat that only
+        // exists in a closed dialog is a caveat nobody read.
         const QString shortMsg =
-                u"Done — new dataset: %1  (RMS %2 → %3)"_s
+                u"%1Done, new dataset: %2  (RMS %3 → %4)%5"_s
+                .arg(result.warning.isEmpty() ? QString() : u"\u26A0 "_s)
                 .arg(result.newDatasetId)
                 .arg(result.rmsBefore, 0, 'g', 4)
-                .arg(result.rmsAfter,  0, 'g', 4);
+                .arg(result.rmsAfter,  0, 'g', 4)
+                .arg(result.warning.isEmpty() ? QString()
+                                              : u" - see the summary for a caveat"_s);
         self->statusBar()->showMessage(shortMsg, 12000);
 
         // Emit signal so connected callers (vtkWindowCube, MainWindow) can load
         // the new dataset into the viewer without this tool window needing to
         // know about the viewer's internals.
-        emit self->baselineResultReady(result.newDatasetId, summary);
+        emit self->baselineResultReady(result.newDatasetId, result.outputPath, summary);
 
         // Show a non-blocking information summary.
         QMessageBox::information(self, u"Baseline Subtraction"_s, summary);

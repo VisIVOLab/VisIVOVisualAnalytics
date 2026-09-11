@@ -7,6 +7,7 @@ class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
+class QProgressDialog;
 class QPushButton;
 class QSpinBox;
 
@@ -124,6 +125,10 @@ private:
 
     // Re-entrancy guard and stale-result fence.
     bool     m_busy{ false };
+    /// The shared window-modal progress sheet (ToolProgressSheet.h). The dialog's
+    /// own status bar is not enough on its own: a compute that takes minutes
+    /// needs something that says "working" without the user hunting for it.
+    QPointer<QProgressDialog> m_progressSheet;
     int      m_currentRequestId{ 0 };
 
     // Form widgets.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import concurrent.futures as _cf  # noqa: F401
 import logging  # noqa: F401
+import re
 import os as _os  # noqa: F401
 import shutil  # noqa: F401
 import subprocess  # noqa: F401
@@ -307,6 +308,218 @@ def _expand_channel_ranges(
     return fit_idx
 
 
+def _fit_poly_baseline(
+    x_fit: "np.ndarray",
+    x_all: "np.ndarray",
+    block: "np.ndarray",
+    deg: int,
+) -> "np.ndarray":
+    """Per-pixel polynomial baseline, evaluated on every channel. NaN-safe.
+
+    ``block`` is (n_fit_channels, npix) — the line-free channels of the flattened
+    cube; the return is (len(x_all), npix).
+
+    ``np.linalg.lstsq`` cannot be used directly on cube data: it has no notion of
+    a masked sample, so ANY column carrying a non-finite value comes back with
+    NaN coefficients. One fully flagged channel — routine in real
+    interferometric data — therefore puts a NaN in every column and blanks the
+    entire cube, which was reported to the user as an ill-conditioned fit. (The
+    columns do not contaminate each other; each is independently ruined.)
+
+    So the samples are masked per pixel instead, and columns sharing a mask are
+    fitted together. Cheapest path first, with pixels that have no finite sample
+    at all set aside as blank before the choice is made:
+
+    * all samples finite → one shared-SVD ``lstsq``, exactly as before;
+    * flagging is per-CHANNEL (whole channels flagged, so every surviving pixel
+      has the same gaps — the common real case, once the blanked footprint is
+      excluded) → drop those channels, one reduced shared-SVD ``lstsq``;
+    * otherwise (per-pixel flagging, e.g. a mask cube) → group the columns by
+      identical finite-sample pattern and take one shared-SVD ``lstsq`` per
+      group. The loop runs over PATTERNS, not pixels, and each iteration is
+      vectorised across that pattern's columns.
+
+    Every path therefore solves the least-squares problem through an SVD of the
+    masked design matrix. Forming the normal equations (VᵀWV)c = VᵀWy instead
+    would vectorise across all pixels at once, but it squares the condition
+    number: at degree 10 a fully finite pixel came out with a 3e-2 baseline
+    error against 2e-8 from the direct solve, and — because a pseudo-inverse
+    silently truncates the lost rank — its answer depended on whether some OTHER
+    pixel happened to be flagged.
+
+    Columns left with fewer than ``deg + 2`` finite samples cannot over-determine
+    the polynomial, so they come out NaN — blank, rather than fitted against a
+    fabricated baseline.
+    """
+    # Map the channel indices onto [-1, 1] before building the Vandermonde. In
+    # absolute channel index a degree-10 term on a 1000-channel cube spans ~1e30,
+    # which is unconditioned before any of the algebra below starts; the fitted
+    # polynomial SPACE is identical either way, and the coefficients themselves
+    # are never returned (only V_all @ coeffs).
+    #
+    # The scale comes from the FIT range, not the full axis: line-free channels
+    # often occupy one end of the cube, and normalising by the whole axis left
+    # the fitted interval as a sub-interval of [-1, 1] — half of it in the case
+    # above — which is exactly the conditioning the normalisation is here to fix.
+    lo, hi = float(np.min(x_fit)), float(np.max(x_fit))
+    half = (hi - lo) / 2.0 or 1.0
+    mid = (hi + lo) / 2.0
+    v_fit = np.vander((x_fit - mid) / half, N=deg + 1, increasing=True)
+    v_all = np.vander((x_all - mid) / half, N=deg + 1, increasing=True)
+
+    finite = np.isfinite(block)
+    if finite.all():
+        coeffs, *_ = np.linalg.lstsq(v_fit, block, rcond=None)
+        return v_all @ coeffs
+
+    # Allocated only now: on the all-finite path above it would be a second
+    # full-size cube held alive while `v_all @ coeffs` allocates the real one —
+    # 2 GB of nothing for 1000 channels x 250k pixels.
+    baseline = np.full((len(x_all), block.shape[1]), np.nan)
+
+    # Pixels with NO finite sample at all — the blanked footprint outside an
+    # interferometric primary beam — are starved whatever happens, so they are
+    # set aside FIRST and left NaN. Doing that before classifying the flagging
+    # pattern is what makes the cheap path below reachable on real data: those
+    # dead pixels put a NaN in every row, so without this step a cube with a
+    # blanked edge (i.e. most of them) never looks per-channel and every pixel
+    # goes through the grouped path.
+    live = finite.any(axis=0)
+    if not live.any():
+        return baseline
+    live_cols = np.flatnonzero(live)
+    finite_live = finite[:, live_cols]
+
+    # Per-channel flagging: among the live pixels a row of the fit block is
+    # either wholly good or wholly bad, so ONE reduced system serves them all.
+    good_rows = finite_live.all(axis=1)
+    if bool((good_rows | ~finite_live.any(axis=1)).all()):
+        if int(good_rows.sum()) < deg + 2:
+            return baseline
+        coeffs, *_ = np.linalg.lstsq(
+            v_fit[good_rows], block[np.ix_(good_rows, live_cols)], rcond=None)
+        baseline[:, live_cols] = v_all @ coeffs
+        return baseline
+
+    # General per-pixel flagging. Columns are bucketed by their finite-sample
+    # pattern (packed to bytes so the comparison is one row per 8 channels), then
+    # visited in sorted order so each bucket is a contiguous run — O(npix log
+    # npix) once, rather than a scan of every column per bucket.
+    groups = np.unique(np.packbits(finite_live, axis=0), axis=1,
+                       return_inverse=True)[1].ravel()
+    order = np.argsort(groups, kind="stable")
+    bounds = np.concatenate(([0], np.flatnonzero(np.diff(groups[order])) + 1,
+                             [len(order)]))
+    logger.info("[BASELINE] per-pixel flagging: %d distinct patterns over %d pixels",
+                len(bounds) - 1, len(live_cols))
+    for begin, stop in zip(bounds[:-1], bounds[1:], strict=True):
+        cols = live_cols[order[begin:stop]]
+        mask = finite[:, cols[0]]
+        if int(mask.sum()) < deg + 2:
+            continue          # starved: those columns stay NaN
+        coeffs, *_ = np.linalg.lstsq(
+            v_fit[mask], block[np.ix_(mask, cols)], rcond=None)
+        baseline[:, cols] = v_all @ coeffs
+    return baseline
+
+
+# How many times noisier the fitted baseline may be, at the worst channel, than
+# it is where it was actually fitted, before the user is told. Calibrated against
+# measured residuals: a one-sided selection over half a 1000-channel cube gives
+# 84x at degree 3 (residual RMS ~= the input noise, fine) and 436x at degree 4
+# (residual 5x the noise), so the boundary sits between them.
+_BASELINE_NOISE_INFLATION_LIMIT = 100.0
+
+
+# Keywords that carry a 1-based axis index, and the two matrix forms. Used to
+# drop the WCS description of axes the output no longer has.
+_AXIS_KEYWORD = re.compile(
+    r"^(NAXIS|CTYPE|CRVAL|CRPIX|CDELT|CUNIT|CROTA|CNAME|CRDER|CSYER|CSPEC|PS|PV)"
+    r"(\d+)(?:_\d+)?[A-Z]?$")
+_AXIS_MATRIX_KEYWORD = re.compile(r"^(PC|CD)(\d+)_(\d+)[A-Z]?$")
+
+
+def _drop_surplus_axis_keywords(header, keep_naxis: int) -> None:
+    """Strip the WCS keywords of axes beyond ``keep_naxis``, in place.
+
+    A cube stored as 4-D with a degenerate Stokes axis (NAXIS4 = 1, CTYPE4 =
+    'STOKES') is written back as 3-D, and astropy rewrites NAXIS/NAXIS1..3 from
+    the data — but everything ELSE about the fourth axis survived, so the output
+    header said NAXIS = 3 while still describing a CRPIX4/CDELT4/CRVAL4/CTYPE4
+    that no longer exists (user report). That is an internally inconsistent
+    header: readers that trust NAXIS ignore it, readers that scan for CTYPEn
+    find a Stokes axis in a 3-D cube.
+
+    ``BLANK`` goes too when the data are floating point: FITS defines it only
+    for integer arrays, where it names the value standing in for undefined
+    pixels. Carried onto float data (whose blanks are NaN) it is at best ignored
+    and at worst applied, turning every -1 into a blank.
+    """
+    for key in list(header.keys()):
+        if not key:
+            continue
+        name = key.upper()
+        m = _AXIS_KEYWORD.match(name)
+        if m and int(m.group(2)) > keep_naxis:
+            del header[key]
+            continue
+        m = _AXIS_MATRIX_KEYWORD.match(name)
+        if m and (int(m.group(2)) > keep_naxis or int(m.group(3)) > keep_naxis):
+            del header[key]
+    if header.get("BITPIX", 0) < 0 and "BLANK" in header:
+        del header["BLANK"]
+
+
+def _baseline_conditioning_warning(
+    x_fit: "np.ndarray", x_all: "np.ndarray", deg: int
+) -> str:
+    """Warn when the fitted baseline is poorly constrained where it is SUBTRACTED.
+
+    The fit is pinned only where the line-free channels are. Subtracting it
+    everywhere else is extrapolation, and a polynomial's prediction error grows
+    without bound outside the fitted interval — nothing in the algebra can
+    prevent that, because it is the model the caller asked for. Fitting degree
+    10 over channels 0-99 of a 1000-channel cube injected a false signal of ~4
+    into a cube whose noise is 0.0026, silently.
+
+    The measure is the LEVERAGE of the fit, h(x) = v(x)ᵀ(VᵀV)⁻¹v(x), which is
+    how much the fit amplifies noise at channel x; the reported figure is
+    sqrt(max h over the subtracted channels / mean h over the fitted ones), i.e.
+    how many times noisier the baseline is at its worst channel than where it
+    was fitted. That is the quantity the user is exposed to, and unlike a
+    monomial-growth proxy it is degree-aware for the right reason: on the same
+    geometry it separates a harmless degree-3 fit (84x) from a degree-4 one that
+    measurably degrades the cube (436x), which ``reach ** deg`` did not.
+    """
+    if deg < 1 or len(x_fit) < deg + 2 or len(x_all) == 0:
+        return ""
+    lo, hi = float(np.min(x_fit)), float(np.max(x_fit))
+    half = (hi - lo) / 2.0
+    if half <= 0.0:
+        return ""
+    mid = (hi + lo) / 2.0
+    v_fit = np.vander((x_fit - mid) / half, N=deg + 1, increasing=True)
+    v_all = np.vander((x_all - mid) / half, N=deg + 1, increasing=True)
+    gram_inv = np.linalg.pinv(v_fit.T @ v_fit)
+    h_all = np.einsum("ik,kl,il->i", v_all, gram_inv, v_all, optimize=True)
+    h_fit = np.einsum("ik,kl,il->i", v_fit, gram_inv, v_fit, optimize=True)
+    mean_fit = float(np.mean(h_fit))
+    if not (mean_fit > 0) or not np.isfinite(h_all).any():
+        return ""
+    inflation = float(np.sqrt(np.max(h_all) / mean_fit))
+    if not np.isfinite(inflation) or inflation < _BASELINE_NOISE_INFLATION_LIMIT:
+        return ""
+    worst = int(x_all[int(np.argmax(h_all))])
+    return (
+        f"The degree-{deg} baseline is only constrained by channels "
+        f"{int(lo)}-{int(hi)}; where it is subtracted furthest from those it is "
+        f"~{inflation:.3g}x more uncertain than where it was fitted (worst at "
+        f"channel {worst}), so those channels can carry a large false signal. "
+        "Put line-free ranges at BOTH ends of the range you subtract over, or "
+        "lower the polynomial order."
+    )
+
+
 def worker_baseline(
     path: str,
     output_path: str,
@@ -417,17 +630,20 @@ def worker_baseline(
     rms_before = float(np.sqrt(np.mean(flat[finite_before] ** 2))) if finite_before.any() else float("nan")
 
     if method == "median":
-        # Median of line-free channels per pixel → constant baseline
-        baseline_1d = np.nanmedian(flat[fit_idx, :], axis=0)  # (npix,)
+        # Median of line-free channels per pixel → constant baseline.
+        # nanmedian ignores NaN but KEEPS infinities, so a single +inf sample
+        # subtracted an infinite baseline from otherwise good channels and
+        # silently blanked them. Mask every non-finite sample.
+        fit_block = flat[fit_idx, :]
+        fit_block = np.where(np.isfinite(fit_block), fit_block, np.nan)
+        baseline_1d = np.nanmedian(fit_block, axis=0)  # (npix,)
         baseline = np.broadcast_to(baseline_1d, (nchans, ny * nx)).copy()
     else:
         # Polynomial least-squares fit constrained to line-free channels only.
         # The fitted model is then evaluated on ALL channels for subtraction.
-        V_fit = np.vander(fit_idx.astype(float), N=deg + 1, increasing=True)
-        V_all = np.vander(all_chan_idx.astype(float), N=deg + 1, increasing=True)
-        flat_fit = flat[fit_idx, :]
-        coeffs, _residuals, _rank, _sv = np.linalg.lstsq(V_fit, flat_fit, rcond=None)
-        baseline = V_all @ coeffs   # (nchans, npix)
+        baseline = _fit_poly_baseline(fit_idx.astype(float),
+                                      all_chan_idx.astype(float),
+                                      flat[fit_idx, :], deg)   # (nchans, npix)
 
     subtracted = (flat - baseline).astype(np.float32).reshape(nchans, ny, nx)
     logger.info("[BASELINE] subtracted shape: %s", subtracted.shape)
@@ -450,11 +666,16 @@ def worker_baseline(
     )
     if not finite_after.any():
         raise RuntimeError(
-            "Baseline subtraction produced no finite voxels. "
-            "The fit may be numerically ill-conditioned. "
-            "Try a lower polynomial order or different line-free ranges."
+            "Baseline subtraction produced no finite voxels: no pixel had at "
+            f"least {deg + 2} unflagged channel(s) inside the line-free "
+            "selection. Widen the line-free ranges, exclude flagged channels, "
+            "or lower the polynomial order."
         )
-    rms_after = float(np.sqrt(np.mean(subtracted[finite_after] ** 2)))
+    # float64 BEFORE squaring: subtracted is float32, so a 1e20 voxel squared
+    # overflowed to inf and the reported rms_after was inf — not representable
+    # in JSON, so the endpoint answered 500.
+    rms_after = float(np.sqrt(np.mean(
+        subtracted[finite_after].astype(np.float64) ** 2)))
     logger.info(
         "[BASELINE] corrected range: min=%s  max=%s  rms_after=%s",
         float(np.min(subtracted[finite_after])),
@@ -462,12 +683,47 @@ def worker_baseline(
         rms_after,
     )
 
+    # Caveats worth telling the user about a fit that SUCCEEDED. Extrapolation is
+    # the cause worth naming; a residual larger than the input is the symptom,
+    # and it is reported whatever the cause, because subtracting a baseline that
+    # made the cube noisier is never what the user wanted.
+    warnings_out = []
+    if method == "polynomial":
+        # The EFFECTIVE fit channels, not the requested ones: a sideband that is
+        # entirely flagged constrains nothing, so a selection that looks
+        # two-sided can be a one-sided fit in practice — which is exactly the
+        # case worth warning about, and it went unreported.
+        effective = fit_idx[finite_before[fit_idx, :].any(axis=1)]
+        conditioning = _baseline_conditioning_warning(
+            effective.astype(float), all_chan_idx.astype(float), deg)
+        if conditioning:
+            warnings_out.append(conditioning)
+    if np.isfinite(rms_before) and rms_before > 0 and rms_after > rms_before:
+        # Stated as an observation, not a diagnosis: a CORRECT continuum
+        # subtraction on a cube with broad absorption raises the RMS (10 with
+        # absorption to zero over 80 % of channels goes 4.47 -> 8.94), so
+        # "this added signal" would misdiagnose it.
+        warnings_out.append(
+            f"The residual RMS ({rms_after:.4g}) came out HIGHER than the "
+            f"input's ({rms_before:.4g}). That is expected when the subtracted "
+            "continuum was large compared with the line, but it is also what a "
+            "badly conditioned or over-fitted baseline looks like. Worth a "
+            "look at the output before you build on it."
+        )
+    warning = " ".join(warnings_out)
+    if warning:
+        logger.warning("[BASELINE] %s", warning)
+
     # Write output FITS, preserving spatial and spectral WCS from the input.
     # Only NAXIS3 and CRPIX3 are updated to reflect the channel sub-range;
     # all other spectral keywords (CTYPE3, CUNIT3, CRVAL3, CDELT3) are kept
     # so that the output cube is correctly located in velocity/frequency space.
     header["NAXIS3"] = nchans
     header["CRPIX3"] = float(header.get("CRPIX3", 1.0)) - z0
+    # The output is 3-D even when the input was 4-D with a degenerate Stokes
+    # axis, so the fourth axis's WCS keywords must go with it.
+    header["BITPIX"] = -32
+    _drop_surplus_axis_keywords(header, 3)
     logger.info(
         "[BASELINE] writing FITS  output_path=%s  data.shape=%s  NAXIS3=%s",
         output_path, subtracted.shape, nchans,
@@ -490,6 +746,9 @@ def worker_baseline(
         "rms_before": rms_before,
         "rms_after": rms_after,
         "output_path": output_path,
+        # Non-fatal caveats about the fit the caller asked for; the client folds
+        # these into the summary it shows and records in the product's Provenance.
+        "warning": warning,
     }
 
 
@@ -732,7 +991,7 @@ def worker_line_fit(
     corr_note = (
         "Residual autocorrelation is high (F = %.1f), so the reported errors are "
         "inflated by %.1fx. That is correct for spectrally smoothed data, but the "
-        "same signature is produced by a model that does not fit — an unresolved "
+        "same signature is produced by a model that does not fit - an unresolved "
         "component, broad wings, a curved baseline, or a window that clips the "
         "line. Inspect the residuals before trusting the widened errors."
         % (corr_factor, np.sqrt(corr_factor))

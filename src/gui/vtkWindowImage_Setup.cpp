@@ -458,7 +458,7 @@ void vtkWindowImage::showFitsHeaderDialog()
     auto *dlg = new QDialog(this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
     dlg->setWindowModality(Qt::NonModal);
-    dlg->setWindowTitle(u"FITS Header — %1"_s.arg(QFileInfo(this->filepath).fileName()));
+    dlg->setWindowTitle(u"FITS Header -%1"_s.arg(QFileInfo(this->filepath).fileName()));
     dlg->resize(620, 480);
 
     auto *vbox = new QVBoxLayout(dlg);

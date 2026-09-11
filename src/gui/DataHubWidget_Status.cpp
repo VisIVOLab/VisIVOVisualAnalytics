@@ -41,7 +41,7 @@ namespace {
 
 QString formatDurationShort(double seconds)
 {
-    if (!std::isfinite(seconds) || seconds < 0.0) return u"—"_s;
+    if (!std::isfinite(seconds) || seconds < 0.0) return u"-"_s;
     if (seconds < 1.0)   return QStringLiteral("%1ms").arg(int(seconds * 1000.0));
     if (seconds < 60.0)  return QStringLiteral("%1s").arg(seconds, 0, 'f', seconds < 10.0 ? 1 : 0);
     if (seconds < 3600.0) {
@@ -104,7 +104,7 @@ QFrame *DataHubWidget::buildSystemInsightsPanel()
                         .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         metricBox->addWidget(lbl);
 
-        this->labelRunningTasks = new QLabel(u"—"_s, card);
+        this->labelRunningTasks = new QLabel(u"-"_s, card);
         QFont f(QStringLiteral("Lato"));
         f.setPixelSize(32);
         f.setWeight(QFont::Black);
@@ -167,7 +167,7 @@ QFrame *DataHubWidget::buildSystemInsightsPanel()
                 QStringLiteral("background-color: rgba(4, 138, 191, 0.18); border: none;"));
         vbox->addWidget(sep);
 
-        this->labelCapacity = new QLabel(u"Backend capacity: —"_s, card);
+        this->labelCapacity = new QLabel(u"Backend capacity: -"_s, card);
         this->labelCapacity->setStyleSheet(
                 QStringLiteral("color: %1; font-size: 11px; background: transparent;")
                         .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
@@ -234,7 +234,7 @@ void DataHubWidget::refreshStatus()
         }
         if (this->labelStatusDetail) {
             this->labelStatusDetail->setText(
-                    QStringLiteral("Backend reachable — workers: %1, sessions: %2")
+                    QStringLiteral("Backend reachable - workers: %1, sessions: %2")
                             .arg(health.workers)
                             .arg(health.activeSessions));
         }
@@ -277,7 +277,7 @@ void DataHubWidget::refreshStatus()
         }
 
         qDebug().noquote()
-                << QStringLiteral("[DataHub] backend reachable — workers=%1 running=%2 sessions=%3")
+                << QStringLiteral("[DataHub] backend reachable, workers=%1 running=%2 sessions=%3")
                            .arg(health.workers)
                            .arg(health.runningTasks)
                            .arg(health.activeSessions);
@@ -302,13 +302,13 @@ void DataHubWidget::refreshStatus()
                             : health.error);
         }
         // Reset live activity readouts to "unknown" placeholder state.
-        if (this->labelRunningTasks)   this->labelRunningTasks->setText(u"—"_s);
+        if (this->labelRunningTasks)   this->labelRunningTasks->setText(u"-"_s);
         if (this->labelRunningCaption) this->labelRunningCaption->setText(u"Backend unreachable"_s);
-        if (this->labelCapacity)       this->labelCapacity->setText(u"Backend capacity: —"_s);
+        if (this->labelCapacity)       this->labelCapacity->setText(u"Backend capacity: -"_s);
         this->clearRecentTasksUi();
 
         // Bottom status bar: dataset count is still meaningful even when the
-        // backend is unreachable; the running-jobs cell becomes "—" and the
+        // backend is unreachable; the running-jobs cell becomes "-" and the
         // sanity badge hides.
         const int datasetCount = this->recentMgr ? this->recentMgr->datasets().size() : 0;
         if (this->statusBarHealth) {
@@ -320,14 +320,14 @@ void DataHubWidget::refreshStatus()
                             .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         }
         if (this->statusBarWorkers) {
-            this->statusBarWorkers->setText(u"jobs —"_s);
+            this->statusBarWorkers->setText(u"jobs -"_s);
             this->statusBarWorkers->setStyleSheet(
                     QStringLiteral("color: %1; font-size: 11px;")
                             .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         }
         if (this->statusBarSanity) this->statusBarSanity->setVisible(false);
         qDebug().noquote()
-                << QStringLiteral("[DataHub] backend unreachable — %1").arg(health.error);
+                << QStringLiteral("[DataHub] backend unreachable -%1").arg(health.error);
     }
 
     if (this->btnCheckConnection) {
@@ -361,7 +361,7 @@ void DataHubWidget::updateSystemInsights(const BackendHealthResult &health)
     if (this->labelRunningCaption) {
         this->labelRunningCaption->setText(
                 health.runningTasks == 0
-                        ? u"Idle — backend ready."_s
+                        ? u"Idle, backend ready."_s
                         : QStringLiteral("%1 operation%2 in flight…")
                                   .arg(health.runningTasks)
                                   .arg(health.runningTasks == 1 ? u""_s : u"s"_s));

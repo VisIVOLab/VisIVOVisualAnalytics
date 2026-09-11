@@ -359,3 +359,177 @@ def test_worker_error_is_reproducible_and_position_dependent(tmp_path):
     assert c["error_method"] == "empirical"
     assert c["peak_err"] != a["peak_err"], (
         "two sources must not report an identical error bar")
+
+
+# ── aperture photometry: the annulus is optional ─────────────────────────────
+# The request model defaults both annulus radii to 0.0 and the route documents
+# "optional annulus background subtraction", but handing photutils
+# r_in == r_out == 0 raised, so the documented default request was answered with
+# a 422 quoting photutils' own 'r_out' must be greater than 'r_in'.
+
+def test_aperture_photometry_without_an_annulus(tmp_path):
+    from app.compute import worker_aperture_photometry
+    path = str(tmp_path / "no_annulus.fits")
+    ra, dec = _write_source_image(path, 200, beam_fwhm=4.0)
+    r = worker_aperture_photometry(path, None, ra, dec, 20.0, 0.0, 0.0)
+    assert r["background_per_pix"] == 0.0
+    assert np.isfinite(r["flux"]) and r["flux"] > 0
+    # No annulus means the background was never measured, so the uncertainty is
+    # UNKNOWN. It must not be 0.0 (which reads as a precise answer) and must not
+    # be the aperture's own scatter (which is the source, not the noise).
+    assert r["flux_err"] is None
+    assert r["flux_err_jy"] is None
+
+
+@pytest.mark.parametrize("amplitude", [1.0, 100.0])
+def test_no_annulus_uncertainty_does_not_track_the_source(tmp_path, amplitude):
+    """On a noiseless image the uncertainty cannot depend on the source's peak.
+
+    Falling back to the aperture's own std made flux_err scale with amplitude
+    (4.3 at peak 1, 427 at peak 100) on data with no noise at all."""
+    from app.compute import worker_aperture_photometry
+    from astropy.io import fits as _fits
+    from astropy.wcs import WCS
+    path = str(tmp_path / f"noiseless_{amplitude}.fits")
+    gy, gx = np.mgrid[0:120, 0:120]
+    img = amplitude * np.exp(-(((gx - 60) ** 2 + (gy - 60) ** 2) / (2.0 * 9.0)))
+    hdr = _fits.Header()
+    hdr["CTYPE1"], hdr["CTYPE2"] = "RA---TAN", "DEC--TAN"
+    hdr["CRPIX1"] = hdr["CRPIX2"] = 61
+    hdr["CRVAL1"], hdr["CRVAL2"] = 150.0, -30.0
+    hdr["CDELT1"], hdr["CDELT2"] = -1 / 3600.0, 1 / 3600.0
+    hdr["BUNIT"] = "Jy/beam"
+    hdr["BMAJ"] = hdr["BMIN"] = 0.00222
+    hdr["BPA"] = 0.0
+    _fits.PrimaryHDU(img.astype(np.float32), hdr).writeto(path)
+    ra, dec = WCS(hdr).all_pix2world([[60, 60]], 0)[0]
+    r = worker_aperture_photometry(path, None, float(ra), float(dec), 10.0, 0.0, 0.0)
+    assert r["flux_err"] is None
+
+
+def test_aperture_photometry_with_an_annulus_subtracts_background(tmp_path):
+    from app.compute import worker_aperture_photometry
+    path = str(tmp_path / "with_annulus.fits")
+    ra, dec = _write_source_image(path, 200, beam_fwhm=4.0)
+    plain = worker_aperture_photometry(path, None, ra, dec, 20.0, 0.0, 0.0)
+    subbed = worker_aperture_photometry(path, None, ra, dec, 20.0, 30.0, 45.0)
+    assert subbed["background_per_pix"] != 0.0
+    # The only difference between the two is the annulus background, removed over
+    # the FRACTIONAL overlap area. (The fixture's median sky can sit either side
+    # of zero, so the SIGN of the shift is not the invariant — its size is.)
+    # Writing this with the truncated whole-pixel count would restate the bug
+    # below rather than test for it.
+    expected = plain["flux"] - subbed["background_per_pix"] * subbed["aperture_area_pix"]
+    assert subbed["flux"] == pytest.approx(expected, rel=1e-9)
+
+
+def test_background_is_removed_over_the_fractional_area(tmp_path):
+    """On a constant image the background-subtracted flux must be zero.
+
+    The overlap area of a clipped aperture is fractional (8.6467 pixels for this
+    geometry). Truncating it to 8 before subtracting left a whole pixel of
+    background behind — a source flux of 6.47 on an image that is pure
+    background."""
+    from app.compute import worker_aperture_photometry
+    from astropy.io import fits as _fits
+    from astropy.wcs import WCS
+    path = str(tmp_path / "constant.fits")
+    hdr = _fits.Header()
+    hdr["CTYPE1"], hdr["CTYPE2"] = "RA---TAN", "DEC--TAN"
+    hdr["CRPIX1"], hdr["CRPIX2"] = 51, 41
+    hdr["CRVAL1"], hdr["CRVAL2"] = 150.0, -30.0
+    hdr["CDELT1"], hdr["CDELT2"] = -1 / 3600.0, 1 / 3600.0
+    _fits.PrimaryHDU(np.full((80, 100), 10.0, dtype=np.float32), hdr).writeto(path)
+    # Just inside the left edge, so the aperture is clipped and the area is
+    # fractional. 1 pixel = 1 arcsec here.
+    ra, dec = WCS(hdr).all_pix2world([[0.1, 40.0]], 0)[0]
+    r = worker_aperture_photometry(path, None, float(ra), float(dec), 2.0, 3.0, 5.0)
+    assert r["aperture_area_pix"] != r["n_pix_aperture"]     # genuinely fractional
+    assert r["flux"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_the_centre_of_a_corner_pixel_is_inside_the_image(tmp_path):
+    """A WCS round trip puts the corner pixel centre at -1.5e-11, not 0, so a
+    `0 <= c` bound rejected a valid position and quoted "pixel (-0.0, -0.0)".
+    A pixel of index i covers [i-0.5, i+0.5]."""
+    from app.compute import worker_aperture_photometry, worker_gauss_fit_2d
+    from astropy.io import fits as _fits
+    from astropy.wcs import WCS
+    path = str(tmp_path / "corner.fits")
+    hdr = _fits.Header()
+    hdr["CTYPE1"], hdr["CTYPE2"] = "RA---TAN", "DEC--TAN"
+    hdr["CRPIX1"], hdr["CRPIX2"] = 51, 41
+    hdr["CRVAL1"], hdr["CRVAL2"] = 150.0, -30.0
+    hdr["CDELT1"], hdr["CDELT2"] = -1 / 3600.0, 1 / 3600.0
+    _fits.PrimaryHDU(np.full((80, 100), 10.0, dtype=np.float32), hdr).writeto(path)
+    wcs = WCS(hdr)
+    ra, dec = wcs.all_pix2world([[0, 0]], 0)[0]
+    assert wcs.all_world2pix([[ra, dec]], 0)[0][0] < 0.0     # the round-trip undershoot
+    assert worker_aperture_photometry(path, None, float(ra), float(dec),
+                                      20.0, 0.0, 0.0) is not None
+    assert worker_gauss_fit_2d(path, None, float(ra), float(dec), 20.0) is not None
+
+
+def test_an_all_blank_aperture_reports_unavailable_not_nan(tmp_path):
+    """NaN is not representable in JSON, so a blanked aperture answered 500."""
+    import json
+    from app.compute import worker_aperture_photometry
+    from astropy.io import fits as _fits
+    from astropy.wcs import WCS
+    path = str(tmp_path / "blanked.fits")
+    img = np.full((80, 100), 10.0, dtype=np.float32)
+    img[35:45, 45:55] = np.nan
+    hdr = _fits.Header()
+    hdr["CTYPE1"], hdr["CTYPE2"] = "RA---TAN", "DEC--TAN"
+    hdr["CRPIX1"], hdr["CRPIX2"] = 51, 41
+    hdr["CRVAL1"], hdr["CRVAL2"] = 150.0, -30.0
+    hdr["CDELT1"], hdr["CDELT2"] = -1 / 3600.0, 1 / 3600.0
+    _fits.PrimaryHDU(img, hdr).writeto(path)
+    ra, dec = WCS(hdr).all_pix2world([[50, 40]], 0)[0]
+    r = worker_aperture_photometry(path, None, float(ra), float(dec), 3.0, 0.0, 0.0)
+    assert r["flux"] is None and r["flux_jy"] is None
+    json.dumps(r, allow_nan=False)      # would raise on a NaN
+
+
+@pytest.mark.parametrize("inner,outer", [(45.0, 30.0), (0.0, 30.0), (30.0, 0.0), (30.0, 30.0)])
+def test_a_malformed_annulus_is_refused_not_ignored(tmp_path, inner, outer):
+    """Half-specified or inverted radii are a mistake in the request, so they
+    are reported rather than silently downgraded to "no background"."""
+    from app.compute import worker_aperture_photometry
+    path = str(tmp_path / f"bad_annulus_{inner}_{outer}.fits")
+    ra, dec = _write_source_image(path, 200, beam_fwhm=4.0)
+    with pytest.raises(ValueError, match="annulus"):
+        worker_aperture_photometry(path, None, ra, dec, 20.0, inner, outer)
+
+
+# ── a sky position off the image is refused, not silently relocated ──────────
+# Mosaic cutouts routinely carry a CRPIX thousands of pixels outside the
+# extracted footprint, so world2pix returns a NEGATIVE pixel coordinate. Python
+# slice semantics do not reject that: image[y0:y1, 0:-1393] counts back from the
+# right edge, so the measurement moved to the OPPOSITE side of the image (or
+# surfaced as numpy's "negative dimensions are not allowed" / photutils'
+# "cannot convert float NaN to integer").
+
+@pytest.mark.parametrize("worker_name", ["worker_gauss_fit_2d", "worker_aperture_photometry"])
+@pytest.mark.parametrize("offset_pix", [-400, 400])
+def test_a_position_off_the_image_is_refused(tmp_path, worker_name, offset_pix):
+    import app.compute as compute
+    from astropy.io import fits as _fits
+    from astropy.wcs import WCS
+    path = str(tmp_path / f"offimage_{worker_name}_{offset_pix}.fits")
+    ra, dec = _write_source_image(path, 200, beam_fwhm=4.0)
+    with _fits.open(path) as h:
+        wcs = WCS(h[0].header)
+    # A position `offset_pix` beyond the edge along x.
+    off_ra, off_dec = wcs.all_pix2world([[100.0 + offset_pix, 100.0]], 0)[0]
+    worker = getattr(compute, worker_name)
+    args = (path, None, float(off_ra), float(off_dec), 20.0)
+    if worker_name == "worker_aperture_photometry":
+        args = (*args, 0.0, 0.0)
+    with pytest.raises(ValueError, match="outside the image"):
+        worker(*args)
+    # …and the same call at the centre still works, so the guard is not blanket.
+    on_args = (path, None, ra, dec, 20.0)
+    if worker_name == "worker_aperture_photometry":
+        on_args = (*on_args, 0.0, 0.0)
+    assert worker(*on_args) is not None

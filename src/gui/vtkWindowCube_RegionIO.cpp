@@ -98,8 +98,8 @@ void vtkWindowCube::exportRegionsToFile()
                 u"Draw a region first (Tools ▸ Box/Circle/Polygon/Annulus Region Analysis)."_s);
         return;
     }
-    const QStringList choices{ u"DS9 — sky (FK5)"_s, u"DS9 — pixel"_s,
-                              u"CASA CRTF — sky (FK5)"_s, u"CASA CRTF — pixel"_s };
+    const QStringList choices{ u"DS9, sky (FK5)"_s, u"DS9, pixel"_s,
+                              u"CASA CRTF, sky (FK5)"_s, u"CASA CRTF, pixel"_s };
     bool ok = false;
     const QString choice = QInputDialog::getItem(
             this, u"Export Region"_s, u"Format and coordinate frame:"_s, choices, 0, false, &ok);
@@ -221,7 +221,7 @@ void vtkWindowCube::applyImportedRegion(const QJsonArray &regions)
             this->regionCurrentVoxel = { vox(cx + w / 2.0), vox(cy + h / 2.0) };
             this->regionMode = RegionMode::Box;
             if (std::abs(reg.value(u"angle_deg"_s).toDouble()) > 0.01)
-                note = u" (rotation ignored — box is axis-aligned)"_s;
+                note = u" (rotation ignored, box is axis-aligned)"_s;
         }
     } else if (shape == u"circle"_s) {
         const QJsonArray c = arr2(u"center"_s);
@@ -291,6 +291,6 @@ void vtkWindowCube::applyImportedRegion(const QJsonArray &regions)
 
     QString msg = u"Imported %1 region%2."_s.arg(shape).arg(note);
     if (regions.size() > 1)
-        msg += u" (%1 regions in file — only the first was loaded.)"_s.arg(regions.size());
+        msg += u" (%1 regions in file - only the first was loaded.)"_s.arg(regions.size());
     this->statusBar()->showMessage(msg, 8000);
 }

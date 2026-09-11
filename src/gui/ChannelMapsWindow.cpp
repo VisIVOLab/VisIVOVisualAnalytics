@@ -69,7 +69,7 @@ ChannelMapsWindow::ChannelMapsWindow(
 {
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowFlag(Qt::Window);
-    setWindowTitle(u"Channel Maps — %1"_s
+    setWindowTitle(u"Channel Maps -%1"_s
             .arg(QFileInfo(filepath).fileName()));
     resize(1200, 800);
 
@@ -424,7 +424,7 @@ void ChannelMapsWindow::saveMosaicPng()
 {
     if (m_slices.isEmpty()) {
         QMessageBox::information(this, u"Save mosaic"_s,
-                u"No panels to export — generate the channel maps first."_s);
+                u"No panels to export, generate the channel maps first."_s);
         return;
     }
 

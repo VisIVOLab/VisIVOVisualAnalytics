@@ -265,7 +265,7 @@ SkavaDiscoveryResponse SkavaClient::parseDiscoveryResponse(const QJsonObject &ob
     // SKAVA's standard error envelope per discovery_queries.md.
     if (obj.contains(u"error"_s) && obj.value(u"error"_s).isObject()) {
         const QJsonObject errObj = obj.value(u"error"_s).toObject();
-        r.error = u"%1 — %2"_s.arg(errObj.value(u"code"_s).toString(),
+        r.error = u"%1 -%2"_s.arg(errObj.value(u"code"_s).toString(),
                                     errObj.value(u"message"_s).toString());
         return r;
     }
@@ -289,7 +289,7 @@ SkavaDatalinkResponse SkavaClient::parseDatalinkResponse(const QJsonObject &obj)
     SkavaDatalinkResponse r;
     if (obj.contains(u"error"_s) && obj.value(u"error"_s).isObject()) {
         const QJsonObject errObj = obj.value(u"error"_s).toObject();
-        r.error = u"%1 — %2"_s.arg(errObj.value(u"code"_s).toString(),
+        r.error = u"%1 -%2"_s.arg(errObj.value(u"code"_s).toString(),
                                     errObj.value(u"message"_s).toString());
         return r;
     }

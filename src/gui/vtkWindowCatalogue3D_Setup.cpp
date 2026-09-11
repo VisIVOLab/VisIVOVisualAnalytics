@@ -252,7 +252,7 @@ void vtkWindowCatalogue3D::setupSidebar()
                 u"FK5 / J2000: standard equatorial (RA, Dec).\n"
                 u"Galactic (l, b): galactic longitude and latitude.\n"
                 u"Supergalactic (SGL, SGB): de Vaucouleurs frame of the local "
-                u"supercluster plane — the natural frame for cosmic-flow figures."_s);
+                u"supercluster plane (the natural frame for cosmic-flow figures)."_s);
         this->comboCosmology = new QComboBox(sceneCard);
         this->comboCosmology->addItems(
                 { u"Planck18"_s, u"Planck15"_s, u"Planck13"_s, u"WMAP9"_s });

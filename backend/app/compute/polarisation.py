@@ -63,7 +63,7 @@ def worker_stokes_plane(
 
     stokes_numpy_ax = dataset.stokes_numpy_axis()
     if stokes_numpy_ax is None:
-        raise RuntimeError("Stokes axis disappeared after detection — internal error.")
+        raise RuntimeError("Stokes axis disappeared after detection, internal error.")
 
     stokes_idx = stokes_map[plane]
     # Select Stokes plane along its numpy axis
@@ -262,7 +262,7 @@ def worker_rm_synthesis(
     phi_grid = np.arange(phi_min, phi_max, d_phi, dtype=np.float64)
     n_phi = len(phi_grid)
     if n_phi == 0:
-        raise ValueError("Empty φ grid — check phi_min, phi_max, d_phi.")
+        raise ValueError("Empty φ grid - check phi_min, phi_max, d_phi.")
 
     # Complex polarisation cube
     P_cube = (Q_cube + 1j * U_cube).astype(np.complex128)   # (n_freq, ny, nx)

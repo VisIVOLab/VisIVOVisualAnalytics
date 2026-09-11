@@ -138,7 +138,7 @@ def _geometry_warnings(hdr: "fits.Header", frame: str) -> list[str]:
         warnings.append(
             "axes with negative CDELT ("
             + ", ".join(f"CDELT{i}" for i in flipped)
-            + ") — the velocity field may be mirror-imaged relative to the "
+            + ") - the velocity field may be mirror-imaged relative to the "
             "assumed +x/+y/+z orientation; verify handedness."
         )
     # A parity flip can also be encoded in a CD/PC rotation matrix with positive
@@ -146,12 +146,12 @@ def _geometry_warnings(hdr: "fits.Header", frame: str) -> list[str]:
     det = _spatial_transform_determinant(hdr)
     if det is not None and det < 0.0:
         warnings.append(
-            "the spatial CD/PC transform has a negative determinant — a parity "
+            "the spatial CD/PC transform has a negative determinant - a parity "
             "flip (mirror) that CDELT signs alone don't reveal; verify handedness."
         )
     if "assumed" in frame:
         warnings.append(
-            "reference frame is assumed supergalactic (no VFRAME header) — "
+            "reference frame is assumed supergalactic (no VFRAME header) - "
             "attractor positions and vorticity sign are only trustworthy if the "
             "reconstruction really is right-handed supergalactic."
         )
@@ -237,7 +237,7 @@ def load_component_fits(
         vx, vy, vz, spacing, origin, "km/s (assumed)",
         "supergalactic (assumed)", box_known,
         ["reference frame is assumed supergalactic (three-component load carries "
-         "no frame metadata) — verify handedness before trusting vorticity sign."],
+         "no frame metadata), verify handedness before trusting vorticity sign."],
     )
 
 

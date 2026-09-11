@@ -49,7 +49,7 @@ def _open_dynspec(src_path: str) -> tuple[np.ndarray, fits.Header]:
             data = data[0]
     if data.ndim != 2:
         raise ValueError(
-            "Dynspec FITS must reduce to a 2-D array (freq, time) — got "
+            "Dynspec FITS must reduce to a 2-D array (freq, time), got "
             f"shape {data.shape}.")
     # FITS stores rows as NAXIS2 (frequency) and columns as NAXIS1 (time).
     # numpy reads it as (NAXIS2, NAXIS1) = (freq, time) — already correct.

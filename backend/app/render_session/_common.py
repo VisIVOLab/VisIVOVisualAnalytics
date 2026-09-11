@@ -153,7 +153,7 @@ def _build_color_tf(name: str, vmin: float, vmax: float):
         # No matplotlib available — flat fallback so the volume is at
         # least visible. Real fix: install matplotlib in the SIF.
         logger.warning(
-            "[render-session] matplotlib unavailable — LUT %r becomes a "
+            "[render-session] matplotlib unavailable, LUT %r becomes a "
             "grey ramp", name,
         )
         ctf.AddRGBPoint(vmin, 0.0, 0.0, 0.0)
@@ -167,7 +167,7 @@ def _build_color_tf(name: str, vmin: float, vmax: float):
         mpl_key = all_mpl_keys.get(name.lower())
     if mpl_key is None:
         logger.warning(
-            "[render-session] unknown LUT %r — falling back to Inferno", name,
+            "[render-session] unknown LUT %r, falling back to Inferno", name,
         )
         mpl_key = "inferno"
     logger.info("[render-session] LUT %r → matplotlib %r", name, mpl_key)

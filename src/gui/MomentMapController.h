@@ -33,10 +33,12 @@
 #include "MomentMapComputeTask.h"
 
 #include <QObject>
+#include <QPointer>
 
 #include <functional>
 
 class QWidget;
+class QProgressDialog;
 
 class MomentMapController : public QObject
 {
@@ -132,6 +134,9 @@ private:
     Config m_currentConfig;
     int m_currentRequestId{ 0 };
     bool m_busy{ false };
+    /// The window-modal progress sheet for the INTERACTIVE path only (the
+    /// copilot's headless dispatch leaves it null). See ToolProgressSheet.h.
+    QPointer<QProgressDialog> m_progressSheet;
     QString m_lastError;
 };
 

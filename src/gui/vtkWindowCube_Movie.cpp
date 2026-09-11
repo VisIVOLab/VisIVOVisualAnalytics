@@ -108,7 +108,7 @@ void vtkWindowCube::showExportMovieDialog()
     const QString ffmpeg = QStandardPaths::findExecutable(u"ffmpeg"_s);
     auto *note = new QLabel(
             ffmpeg.isEmpty()
-                    ? u"ffmpeg not found — frames will be saved as a PNG sequence."_s
+                    ? u"ffmpeg not found, frames will be saved as a PNG sequence."_s
                     : u"Output: MP4 (H.264) via ffmpeg."_s);
     note->setWordWrap(true);
     form->addRow(note);

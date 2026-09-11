@@ -308,8 +308,33 @@ the standard first step in spectral-line analysis.
 
 - The fit is **per pixel**, independently. There is no spatial smoothing
   of the baseline coefficients.
-- Pixels where the fit fails (singular matrix, all-NaN spectrum) are left
-  unchanged in the output and flagged in the diagnostic log.
+- **Flagged channels inside the line-free selection are simply skipped.**
+  Each pixel is fitted over its own unflagged samples, so a fully flagged
+  channel (routine in real interferometric cubes) costs you that channel and
+  nothing else. Pixels that share a flagging pattern are fitted together, and
+  the fit for one pixel never depends on what a *different* pixel is missing.
+- **The fit constrains only the channels you selected.** A polynomial is
+  evaluated over the *whole* cube, so channels far outside the line-free ranges
+  are extrapolated, and a high `poly_order` diverges as the *n*-th power of the
+  distance: degree 10 fitted on channels 0–99 of a 1000-channel cube injects a
+  false signal of ~4 into the far channels of a cube whose noise is 0.0026.
+  Prefer line-free ranges at **both ends** of the range you subtract over — then
+  every channel is interpolated — and treat a high order over a one-sided
+  selection with suspicion. The tool measures how much more uncertain the
+  baseline is at its worst channel than where it was fitted, and says so in the
+  result summary (which is also recorded in the product's Provenance), along
+  with a note when the residual RMS comes out higher than the input's. A
+  sideband that is entirely flagged does not count towards constraining the
+  fit — the warning is computed from the channels that actually carried data.
+- A pixel left with fewer than `poly_order + 2` unflagged channels in the
+  line-free selection cannot over-determine the polynomial, so it comes out
+  **blank (NaN)** rather than carrying a baseline fitted from too few points.
+  If the whole cube comes back blank, the selection is too narrow or lands on
+  flagged channels — widen it or lower the polynomial order.
+- The polynomial is fitted in a channel coordinate rescaled so the **line-free
+  range** spans [-1, 1], so a high `poly_order` stays numerically well
+  conditioned even when the line-free channels sit at one end of a long
+  spectral axis. This changes nothing about the fitted curve.
 - The cube is materialised on disk as a new FITS in the backend's temp
   directory. Repeated baseline runs on the same dataset can accumulate
   files; clean periodically.

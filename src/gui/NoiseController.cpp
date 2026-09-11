@@ -283,11 +283,48 @@ void NoiseController::showResult(const CubeNoiseEstimateResult &result)
         const int pct = static_cast<int>(std::round(result.blankFraction * 100.0));
         subtitle += u"\n⚠ %1 % of the selected pixels are blank (=0). "_s.arg(pct);
         if (result.blankFraction > 0.50) {
-            subtitle += u"σ excluding zeros — pick a tighter region inside "
+            subtitle += u"σ excluding zeros - pick a tighter region inside "
                         u"the data footprint for a clean estimate."_s;
         } else {
             subtitle += u"Result still computed over all finite pixels."_s;
         }
+    }
+
+    // Record it in Session Data before showing the dialog: the dialog is
+    // WA_DeleteOnClose, and σ is what the user reaches for next (moment-map
+    // threshold, isosurface level, mask cut-off). The product carries no
+    // renderer — it is a measurement, not something to draw in a pane — so it
+    // shows as a statistics row whose Provenance holds these numbers.
+    {
+        QVariantMap params;
+        params.insert(u"Region"_s, u"x=%1..%2, y=%3..%4"_s
+                                           .arg(result.x0).arg(result.x1)
+                                           .arg(result.y0).arg(result.y1));
+        params.insert(u"Channels"_s, u"%1..%2 (%3 planes)"_s
+                                             .arg(result.channelStart)
+                                             .arg(result.channelEnd)
+                                             .arg(result.numChannels));
+        params.insert(u"σ mean"_s,   fmt(sigmaStats[0]));
+        params.insert(u"σ median"_s, fmt(sigmaStats[1]));
+        params.insert(u"σ min"_s,    fmt(sigmaStats[2]));
+        params.insert(u"σ max"_s,    fmt(sigmaStats[3]));
+        params.insert(u"MAD mean"_s,   fmt(madStats[0]));
+        params.insert(u"MAD median"_s, fmt(madStats[1]));
+        params.insert(u"MAD min"_s,    fmt(madStats[2]));
+        params.insert(u"MAD max"_s,    fmt(madStats[3]));
+        if (result.blankFraction > 0.0) {
+            params.insert(u"Blank (=0) pixels"_s,
+                          u"%1 %"_s.arg(std::round(result.blankFraction * 100.0)));
+        }
+        const QString stableKey = u"noise-%1_%2_%3_%4_ch%5_%6"_s
+                                          .arg(result.x0).arg(result.x1)
+                                          .arg(result.y0).arg(result.y1)
+                                          .arg(result.channelStart).arg(result.channelEnd);
+        emit noiseProvenanceReady(
+                stableKey,
+                u"Noise σ=%1 (x %2..%3, y %4..%5)"_s.arg(fmt(sigmaStats[1]))
+                        .arg(result.x0).arg(result.x1).arg(result.y0).arg(result.y1),
+                params);
     }
 
     auto *dlg = new ToolResultDialog(m_parentWindow);

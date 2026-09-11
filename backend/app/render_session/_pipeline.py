@@ -483,7 +483,7 @@ class PipelineMixin:
         scalars = out.GetPointData().GetScalars()
         if scalars is None:
             raise RuntimeError(
-                "vtkWindowToImageFilter returned no scalars — readback failed"
+                "vtkWindowToImageFilter returned no scalars, readback failed"
             )
         arr = vtk_to_numpy(scalars)
         t3 = time.perf_counter()
@@ -601,6 +601,6 @@ class PipelineMixin:
                 self._cube_reader = None
         except Exception:
             logger.exception(
-                "[render-session %s] close raised — leaking is the lesser evil",
+                "[render-session %s] close raised, leaking is the lesser evil",
                 self.session_id,
             )

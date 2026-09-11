@@ -293,9 +293,9 @@ def provider_from_env(config: dict[str, Any] | None = None) -> AssistantProvider
             return NullProvider()
     except ImportError:
         logger.warning("[assistant] provider '%s' selected but its SDK is not "
-                       "installed — falling back to null.", name)
+                       "installed, falling back to null.", name)
         return NullProvider()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[assistant] provider '%s' init failed (%s) — null.", name, exc)
+        logger.warning("[assistant] provider '%s' init failed (%s), null.", name, exc)
         return NullProvider()
     return NullProvider()

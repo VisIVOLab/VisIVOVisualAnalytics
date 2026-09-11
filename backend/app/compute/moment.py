@@ -924,7 +924,7 @@ def worker_moment_save_fits(
         out_header = wcs2d.to_header()
     except Exception as exc:
         logger.warning(
-            "[moment_save_fits] WCS extraction failed for %s (%s) — "
+            "[moment_save_fits] WCS extraction failed for %s (%s) -"
             "writing array with no celestial WCS.",
             src_path, exc,
         )

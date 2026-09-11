@@ -400,7 +400,7 @@ void vtkWindowCube::onLassoSelectReady()
     if (r.count <= 0) {
         this->clearPresentedLassoSelection(true);
         this->statusBar()->showMessage(
-                u"Kinematic Lasso: nothing selected — click brighter emission."_s, 3000);
+                u"Kinematic Lasso: nothing selected. Click brighter emission."_s, 3000);
         if (pending) this->requestLassoSelection();
         return;
     }
@@ -420,7 +420,7 @@ void vtkWindowCube::onLassoSelectReady()
         this->m_lassoCountLabel->setText(u"%1 voxels selected"_s.arg(r.count));
     }
     this->statusBar()->showMessage(
-            u"Kinematic Lasso: %1 voxels selected — tune reach / velocity coupling to refine."_s
+            u"Kinematic Lasso: %1 voxels selected, tune reach / velocity coupling to refine."_s
             .arg(r.count), 4000);
 
     if (pending)
@@ -501,7 +501,7 @@ vtkWindowCube::LassoLevels vtkWindowCube::showLassoSelectionFromLevels(int reach
             this->m_lassoEditToggle->setChecked(false);
         }
         this->statusBar()->showMessage(
-                u"Kinematic Lasso: 2-D refinements discarded — Reach regrows the mask."_s, 4000);
+                u"Kinematic Lasso: 2-D refinements discarded, Reach regrows the mask."_s, 4000);
     }
     if (sel.count <= 0) {
         // Legitimate with a carve seed: the budget can exclude everything the add
@@ -572,7 +572,7 @@ void vtkWindowCube::onLassoLevelsReady()
     }
     if (this->showLassoSelectionFromLevels(int(std::lround(this->m_lassoReach))) == LassoLevels::NoCache) {
         this->statusBar()->showMessage(
-                u"Kinematic Lasso: nothing selected — click brighter emission."_s, 3000);
+                u"Kinematic Lasso: nothing selected. Click brighter emission."_s, 3000);
     }
 }
 
@@ -595,7 +595,7 @@ void vtkWindowCube::presentLassoSelection(const RemoteKinematicSelectResult &r)
     // spacing s = (displayDim-1)/(fullDim-1) (same convention as the kinematic model).
     if (!this->updateLassoDisplayPlacement()) {
         qWarning().noquote()
-                << "[lasso] no cube display image — selection kept, 3-D surface deferred";
+                << "[lasso] no cube display image - selection kept, 3-D surface deferred";
         return;
     }
     this->rebuildLassoIsosurface(true);
@@ -729,7 +729,7 @@ void vtkWindowCube::ensureLassoPanel()
     form->addRow(u"Velocity coupling"_s, lamRow);
     outer->addLayout(form);
 
-    m_lassoCountLabel = new QLabel(u"—"_s, body);
+    m_lassoCountLabel = new QLabel(u"-"_s, body);
     m_lassoCountLabel->setStyleSheet(u"color: palette(mid);"_s);
     outer->addWidget(m_lassoCountLabel);
 
@@ -1233,7 +1233,7 @@ void vtkWindowCube::clearKinematicLassoSelection()
     }
     this->updateLassoMaskOverlay(true);     // remove the 2-D outline
     this->setLassoApplyEnabled(false);
-    if (this->m_lassoCountLabel) this->m_lassoCountLabel->setText(u"—"_s);
+    if (this->m_lassoCountLabel) this->m_lassoCountLabel->setText(u"-"_s);
     // Back to the start: re-arm the call-to-action so it's obvious a click is needed.
     if (this->m_lassoActive) this->showLassoHint(true);
 }

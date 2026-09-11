@@ -23,8 +23,8 @@ std::array<const char *, 5> modeToolTips()
     return {
         "Linear mapping of scalar value → colour.",
         "Logarithmic mapping (range minimum must be strictly positive).",
-        "Square-root stretch (√t) — emphasises faint structure.",
-        "Squared stretch (t²) — emphasises bright structure.",
+        "Square-root stretch (√t), emphasises faint structure.",
+        "Squared stretch (t²), emphasises bright structure.",
         "Power stretch t^γ with adjustable exponent γ.",
     };
 }

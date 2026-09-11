@@ -652,8 +652,8 @@ void vtkWindowImage::exportRegionsToFile()
         return;
     }
     const QStringList choices{
-        u"DS9 — sky (FK5)"_s, u"DS9 — pixel"_s,
-        u"CASA CRTF — sky (FK5)"_s, u"CASA CRTF — pixel"_s };
+        u"DS9, sky (FK5)"_s, u"DS9, pixel"_s,
+        u"CASA CRTF, sky (FK5)"_s, u"CASA CRTF, pixel"_s };
     bool ok = false;
     const QString choice = QInputDialog::getItem(
             this, u"Export Region"_s, u"Format and coordinate frame:"_s, choices, 0, false, &ok);

@@ -420,7 +420,7 @@ void vtkWindowCatalogue3D::buildLabels()
     this->m_labelsSkippedDueToScale = (entries.size() > kMaxLabelEntries);
     if (this->m_labelsSkippedDueToScale) {
         qInfo() << "[catalogue3d] per-point labels skipped for" << entries.size()
-                << "sources (cap" << kMaxLabelEntries << ") — not built at this scale";
+                << "sources (cap" << kMaxLabelEntries << "), not built at this scale";
         return;
     }
     for (const auto &e : entries) {
@@ -748,7 +748,7 @@ QString vtkWindowCatalogue3D::renderBudgetStatusText() const
     if (!this->m_renderDecimated)
         return {};
     return QStringLiteral(
-                   "Render budget: drawing ≤%L1 of %L2 points (LOD) — picking and stats use all")
+                   "Render budget: drawing ≤%L1 of %L2 points (LOD), picking and stats use all")
             .arg(this->m_renderBudget)
             .arg(static_cast<qulonglong>(this->entries.size()));
 }

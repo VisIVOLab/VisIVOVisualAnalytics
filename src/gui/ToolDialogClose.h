@@ -42,7 +42,7 @@ inline bool confirmAbandonRunningCompute(QWidget *dialog, const QString &toolNam
     box.setText(QStringLiteral("%1 is still running on the backend.").arg(what));
     box.setInformativeText(QStringLiteral(
             "Closing this window discards the result. The computation itself cannot be "
-            "cancelled — it will run to completion on the backend and keep one of this "
+            "cancelled - it will run to completion on the backend and keep one of this "
             "session's compute slots busy until it does.\n\n"
             "You can watch it in the status bar (\"N running\") and in Diagnostics."));
     QPushButton *closeBtn = box.addButton(QStringLiteral("Close and Discard"),

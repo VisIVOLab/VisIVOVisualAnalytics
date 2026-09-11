@@ -150,7 +150,7 @@ def _geodesic_distance(
     if not (0 <= sz < nz and 0 <= sy < ny and 0 <= sx < nx):
         raise ValueError(f"Seed {(sz, sy, sx)} is outside the cube {data.shape}.")
     if not np.isfinite(data[sz, sy, sx]):
-        raise ValueError("Seed voxel is blank/NaN — click on visible emission.")
+        raise ValueError("Seed voxel is blank/NaN (click on visible emission).")
 
     if sigma is None or not np.isfinite(sigma) or sigma <= 0.0:
         sigma = _robust_sigma(data)
@@ -601,7 +601,7 @@ def worker_cube_mask_selection(
     finally:
         hdul.close()
     if not mask.any():
-        raise ValueError("Selection is empty — nothing to mask.")
+        raise ValueError("Selection is empty (nothing to mask).")
 
     shutil.copyfile(path, output_path)
     out_hdul = _fits.open(output_path, mode="update", memmap=True)
@@ -661,7 +661,7 @@ def worker_cube_mask_apply(
             f"({rw}×{rh}×{rd} float32).")
     roi_mask = (np.frombuffer(mask_bytes, dtype="<f4").reshape(rd, rh, rw) > 0.5)
     if not roi_mask.any():
-        raise ValueError("Mask is empty — nothing to apply.")
+        raise ValueError("Mask is empty (nothing to apply).")
 
     dataset = ScientificFitsDataset(path)
     hdul, raw = dataset.open_memmap()
