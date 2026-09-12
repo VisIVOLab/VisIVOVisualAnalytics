@@ -73,6 +73,11 @@ class vtkWindowImage : public QMainWindow
     Q_OBJECT
 
 public:
+    /// Record what the host computed for THIS window, as products of this
+    /// window. Public because MainWindow does the work and calls back.
+    void recordPublicationFigure(const QString &outputPath);
+    void recordImageQuality(const QVariantMap &metrics);
+
     // A dataset must always be opened via the backend (datasetId is required).
     vtkWindowImage(const QString &filepath, const QString &backendUrl, const QString &datasetId,
                    const std::array<QString, 3> &remoteCtype,
@@ -590,10 +595,29 @@ private:
         QString group;
         QAction *action{ nullptr };
     };
+    /// Register what a tool just produced, so it survives the window it was
+    /// shown in. See vtkWindowImage_Products.cpp for the three kinds.
+    /// @p layerIndex >= 0 binds the product to a layer of this window.
+    QString registerAnalysisProduct(const QString &kind, const QString &label,
+                                    const QVariantMap &params,
+                                    const QString &stableId,
+                                    const QVariantMap &resultView = {},
+                                    int layerIndex = -1);
+    /// Product id scoped to this file AND this window, so two windows on the
+    /// same image do not collide.
+    QString scopedProductId(const QString &stem) const;
+    /// Put a product back on screen: select its layer, open its file, or replay
+    /// its recorded result window.
+    void openProduct(const QString &productId);
+    void showSessionRowContextMenu(const QString &viewTag, const QString &productId,
+                                   const QPoint &globalPos);
+
     QVector<ImageTool> imageTools() const;
     /// Rebuild the Tools menu from imageTools(), grouped into submenus.
     void regroupImageToolsMenu();
 
+    /// productId → the layer it produced, for the products that are layers.
+    QHash<QString, int> m_productLayer;
     QPointer<QAction> m_actHistogram;
     QPointer<QAction> m_actAddText;
     QPointer<QAction> m_actAddArrow;

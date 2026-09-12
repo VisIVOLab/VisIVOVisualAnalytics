@@ -1156,6 +1156,15 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
         this->m_workspaceChrome->installSessionDock(
                 this->filepath, QFileInfo(this->filepath).fileName(), u"image"_s,
                 this->m_windowScope);
+        // The dock was installed and an owner scope minted, but nothing here ever
+        // registered a product: this window's Session Data listed the dataset and
+        // stayed empty for the rest of the session, however many maps, statistics
+        // and figures its tools produced. Same contract as the cube viewer now —
+        // a tool that makes something the user could want later leaves a row.
+        connect(this->m_workspaceChrome, &WorkspaceChrome::sessionRowContextMenu, this,
+                &vtkWindowImage::showSessionRowContextMenu);
+        connect(this->m_workspaceChrome, &WorkspaceChrome::sessionProductReopen, this,
+                &vtkWindowImage::openProduct);
         // setupInspector()/start() run at the END of the constructor — the
         // Analysis-tab tools reference QActions created later below.
     }
@@ -1418,6 +1427,19 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                              if (!self) return;
                              self->statusBar()->clearMessage();
                              if (r.first) {
+                                 // A file product, so the export is findable
+                                 // afterwards from this window rather than only
+                                 // from the Data Hub's exports panel.
+                                 QVariantMap params;
+                                 params.insert(u"Workspace filename"_s, r.second);
+                                 params.insert(u"Storage"_s, u"Workspace Exports"_s);
+                                 params.insert(u"Contents"_s,
+                                         u"the source dataset of this window, not its "
+                                         u"derived layers"_s);
+                                 self->registerAnalysisProduct(
+                                         u"export"_s,
+                                         u"Workspace export: %1"_s.arg(r.second),
+                                         params, self->scopedProductId(u"wsexport"_s));
                                  QMessageBox::information(self, u"Export"_s,
                                          u"Saved to Workspace Exports:\n%1"_s.arg(r.second));
                              } else {

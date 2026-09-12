@@ -614,15 +614,27 @@ void MainWindow::wireImageViewerProducts(vtkWindowImage *window,
     // answered, so the tools did nothing at all.
     if (!window)
         return;
+    // Each result goes back to the window that asked for it, which records it in
+    // its own Session Data. Without that the figure existed only in a message
+    // box and the metrics only in a dialog, in a window whose tree stayed empty.
+    QPointer<vtkWindowImage> owner(window);
     QObject::connect(window, &vtkWindowImage::publicationFigureRequested, this,
-                     [this, backendUrl, backendToken, sessionId, datasetId]() {
-                         this->runPublicationFigure(backendUrl, backendToken,
-                                                    sessionId, datasetId);
+                     [this, owner, backendUrl, backendToken, sessionId, datasetId]() {
+                         this->runPublicationFigure(
+                                 backendUrl, backendToken, sessionId, datasetId,
+                                 [owner](const QString &outputPath) {
+                                     if (owner)
+                                         owner->recordPublicationFigure(outputPath);
+                                 });
                      });
     QObject::connect(window, &vtkWindowImage::imageQualityRequested, this,
-                     [this, backendUrl, backendToken, sessionId, datasetId]() {
-                         this->runImageQuality(backendUrl, backendToken,
-                                               sessionId, datasetId);
+                     [this, owner, backendUrl, backendToken, sessionId, datasetId]() {
+                         this->runImageQuality(
+                                 backendUrl, backendToken, sessionId, datasetId,
+                                 [owner](const QVariantMap &metrics) {
+                                     if (owner)
+                                         owner->recordImageQuality(metrics);
+                                 });
                      });
 }
 

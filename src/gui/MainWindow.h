@@ -4,6 +4,7 @@
 #include "app/RecentDatasetsManager.h"
 
 #include <QMainWindow>
+#include <functional>
 #include <QPointer>
 #include <QStringList>
 #include <QString>
@@ -123,10 +124,15 @@ private:
     void openSourceFinder(const QString &backendUrl, const QString &backendToken,
                           const QString &sessionId, const QString &datasetId);
     /// Action handlers for the advanced 2-D product use cases.
+    /// @p onDone, when given, receives the rendered file's path so the calling
+    /// viewer can record the figure as a product of its own.
     void runPublicationFigure(const QString &backendUrl, const QString &backendToken,
-                               const QString &sessionId, const QString &datasetId);   ///< UC 1.3
+                              const QString &sessionId, const QString &datasetId,
+                              std::function<void(const QString &outputPath)> onDone = {});   ///< UC 1.3
+    /// @p onDone receives the metrics so the calling viewer can record them.
     void runImageQuality(const QString &backendUrl, const QString &backendToken,
-                          const QString &sessionId, const QString &datasetId);        ///< UC 4.2
+                         const QString &sessionId, const QString &datasetId,
+                         std::function<void(const QVariantMap &metrics)> onDone = {});        ///< UC 4.2
     void runPixelMath();           ///< UC 3.2
     void runMosaic();              ///< UC 3.3
     /// Shared viewer-creation logic used by both ``doOpenDataPath`` (local

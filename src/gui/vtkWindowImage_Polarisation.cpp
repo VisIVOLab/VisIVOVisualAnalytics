@@ -810,6 +810,19 @@ void vtkWindowImage::addDerivedLayer(vtkSmartPointer<vtkImageData> data,
                     .arg(rangeMin, 0, 'g', 4)
                     .arg(rangeMax, 0, 'g', 4),
             4000);
+
+    // Every derived map is a PRODUCT of this window: it is a new map computed
+    // from the loaded ones, and until now it existed only as a row in the layer
+    // list, with nothing in Session Data to say where it came from. The product
+    // is bound to the layer, so opening its row selects that layer.
+    QVariantMap params;
+    params.insert(u"Derived from"_s, QFileInfo(this->filepath).fileName());
+    params.insert(u"Layer"_s, name);
+    params.insert(u"Value range"_s, u"%1 … %2"_s.arg(rangeMin, 0, 'g', 6).arg(rangeMax, 0, 'g', 6));
+    params.insert(u"Colour map"_s, colorMap);
+    this->registerAnalysisProduct(u"derived"_s, name, params,
+                                  this->scopedProductId(u"derived-%1"_s.arg(name)),
+                                  /*resultView=*/{}, /*layerIndex=*/newIdx);
 }
 
 void vtkWindowImage::rebuildPolarizationVectors()

@@ -716,20 +716,21 @@ void vtkWindowImage::analyzeCurrentRegion()
     const int myGeneration = ++this->m_regionDialogGeneration;
     const RegionMode capturedMode = this->regionMode;
 
-    auto *dlg = new ToolResultDialog(this);
-    this->m_regionResultDialog = dlg;
-
-    dlg->setTitle(u"Region Analysis"_s);
-    dlg->setSubtitle(
+    // Built as a RECORD, then shown and registered from that single description
+    // (ToolResultDialog::makeRecord). Registering it is what makes the result
+    // outlive this window: the statistics used to exist only inside a dialog
+    // with WA_DeleteOnClose, so closing it meant drawing the region again.
+    QList<QPair<QString, QList<QPair<QString, QString>>>> sections;
+    const QString subtitle =
             QStringLiteral("%1  ·  computed on the currently loaded data block")
-                    .arg(regionModeLabel(capturedMode)));
+                    .arg(regionModeLabel(capturedMode));
 
     if (!stats.valid) {
-        dlg->addSection(u"Statistics"_s,
+        sections.append({ u"Statistics"_s,
                         { { u"Result"_s, u"No valid pixels in the selected region."_s },
-                          { u"Note"_s,   u"Blanked / NaN pixels are ignored."_s } });
+                          { u"Note"_s,   u"Blanked / NaN pixels are ignored."_s } } });
     } else {
-        dlg->addSection(u"Statistics"_s,
+        sections.append({ u"Statistics"_s,
                         { { u"Valid pixels"_s,
                             QStringLiteral("%1 / %2").arg(stats.validCount).arg(stats.totalCount) },
                           { u"Blanked / NaN"_s, QString::number(stats.blankedCount) },
@@ -738,7 +739,7 @@ void vtkWindowImage::analyzeCurrentRegion()
                           { u"Mean"_s,   QStringLiteral("%1").arg(stats.mean,     0, 'g', 8) },
                           { u"Median"_s, QStringLiteral("%1").arg(stats.median,   0, 'g', 8) },
                           { u"Std Dev"_s,QStringLiteral("%1").arg(stats.stddev,   0, 'g', 8) },
-                          { u"σ (MAD)"_s,QStringLiteral("%1").arg(stats.madSigma, 0, 'g', 8) } });
+                          { u"σ (MAD)"_s,QStringLiteral("%1").arg(stats.madSigma, 0, 'g', 8) } } });
 
         // ── Radio-specific: integrated flux if beam known ────────────────
         if (this->hasBeamInfo()) {
@@ -747,7 +748,7 @@ void vtkWindowImage::analyzeCurrentRegion()
                 const double fluxJy = stats.sum / Omega_beam_px;
                 const double snrPeak = (stats.madSigma > 0.0)
                         ? (stats.maxValue / stats.madSigma) : 0.0;
-                dlg->addSection(u"Radio (beam-aware)"_s,
+                sections.append({ u"Radio (beam-aware)"_s,
                         { { u"Beam (BMAJ × BMIN)"_s,
                             QStringLiteral("%1\" × %2\"")
                                     .arg(this->m_beamMajorDeg * 3600.0, 0, 'f', 2)
@@ -757,7 +758,7 @@ void vtkWindowImage::analyzeCurrentRegion()
                           { u"Integrated flux"_s,
                             QStringLiteral("%1 Jy").arg(fluxJy, 0, 'g', 6) },
                           { u"Peak SNR (peak/σ_MAD)"_s,
-                            QStringLiteral("%1").arg(snrPeak, 0, 'f', 1) } });
+                            QStringLiteral("%1").arg(snrPeak, 0, 'f', 1) } } });
             }
         }
 
@@ -802,13 +803,39 @@ void vtkWindowImage::analyzeCurrentRegion()
                 }
             }
             if (!rows.isEmpty()) {
-                dlg->addSection(u"Stokes (per-layer)"_s, rows);
+                sections.append({ u"Stokes (per-layer)"_s, rows });
             }
         }
 
-        dlg->addSection(u"Note"_s,
-                        { { QString(), u"Computed on valid pixels only."_s } });
+        sections.append({ u"Note"_s,
+                        { { QString(), u"Computed on valid pixels only."_s } } });
     }
+
+    const QVariantMap record =
+            ToolResultDialog::makeRecord(u"Region Analysis"_s, subtitle, sections);
+    auto *dlg = new ToolResultDialog(this);
+    this->m_regionResultDialog = dlg;
+    dlg->applyRecord(record);
+
+    // One row per REGION SHAPE: re-measuring the same kind of region replaces its
+    // row, a different shape adds one, so two regions can be compared.
+    QVariantMap params;
+    params.insert(u"Region"_s, regionModeLabel(capturedMode));
+    params.insert(u"Scope"_s, u"currently loaded data block"_s);
+    if (stats.valid) {
+        params.insert(u"Valid pixels"_s,
+                      u"%1 / %2"_s.arg(stats.validCount).arg(stats.totalCount));
+        params.insert(u"Mean"_s,   QStringLiteral("%1").arg(stats.mean,     0, 'g', 8));
+        params.insert(u"Median"_s, QStringLiteral("%1").arg(stats.median,   0, 'g', 8));
+        params.insert(u"Std Dev"_s,QStringLiteral("%1").arg(stats.stddev,   0, 'g', 8));
+        params.insert(u"σ (MAD)"_s,QStringLiteral("%1").arg(stats.madSigma, 0, 'g', 8));
+    }
+    this->registerAnalysisProduct(
+            u"region"_s,
+            u"%1 region stats"_s.arg(regionModeLabel(capturedMode)),
+            params,
+            this->scopedProductId(u"region-%1"_s.arg(static_cast<int>(capturedMode))),
+            record);
 
     // When the dialog is closed, clear the overlay and deactivate the region tool.
     // The generation guard prevents the cleanup from running if a newer analysis has

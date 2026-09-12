@@ -79,7 +79,8 @@ using namespace Qt::StringLiterals;
 // ── MainWindow: Science (extracted from MainWindow.cpp) ──
 
 void MainWindow::runPublicationFigure(const QString &backendUrl, const QString &backendToken,
-                                      const QString &sessionId, const QString &datasetId)
+                                      const QString &sessionId, const QString &datasetId,
+                                      std::function<void(const QString &)> onDone)
 {
     // Context passed in, not read from "the last dataset opened": these are
     // tools OF A VIEW, and the view that asks knows which dataset it shows.
@@ -118,7 +119,7 @@ void MainWindow::runPublicationFigure(const QString &backendUrl, const QString &
     const bool g = grid->isChecked(), c = cbar->isChecked();
     auto *watcher = new QFutureWatcher<BackendPublicationFigureResult>(this);
     QObject::connect(watcher, &QFutureWatcher<BackendPublicationFigureResult>::finished, this,
-                     [this, watcher]() {
+                     [this, watcher, onDone]() {
         QApplication::restoreOverrideCursor();
         watcher->deleteLater();
         const auto r = watcher->result();
@@ -127,6 +128,10 @@ void MainWindow::runPublicationFigure(const QString &backendUrl, const QString &
                     r.error.isEmpty() ? u"No detail."_s : r.error);
             return;
         }
+        // Tell the viewer that asked, so it can record the figure as one of its
+        // products rather than leaving it only in this message box.
+        if (onDone && !r.outputPath.isEmpty())
+            onDone(r.outputPath);
         const auto choice = QMessageBox::information(
                 this, u"Publication Figure"_s,
                 u"Figure saved on the backend:\n%1\n\nOpen it now? (works when the "
@@ -145,7 +150,8 @@ void MainWindow::runPublicationFigure(const QString &backendUrl, const QString &
 
 
 void MainWindow::runImageQuality(const QString &backendUrl, const QString &backendToken,
-                                 const QString &sessionId, const QString &datasetId)
+                                 const QString &sessionId, const QString &datasetId,
+                                 std::function<void(const QVariantMap &)> onDone)
 {
     if (datasetId.isEmpty()) {
         QMessageBox::information(this, u"Image Quality"_s,
@@ -155,7 +161,7 @@ void MainWindow::runImageQuality(const QString &backendUrl, const QString &backe
     const QString url = backendUrl, token = backendToken, ds = datasetId;
     auto *watcher = new QFutureWatcher<BackendImageQualityResult>(this);
     QObject::connect(watcher, &QFutureWatcher<BackendImageQualityResult>::finished, this,
-                     [this, watcher]() {
+                     [this, watcher, onDone]() {
         QApplication::restoreOverrideCursor();
         watcher->deleteLater();
         const auto r = watcher->result();
@@ -164,6 +170,8 @@ void MainWindow::runImageQuality(const QString &backendUrl, const QString &backe
                     r.error.isEmpty() ? u"No detail."_s : r.error);
             return;
         }
+        if (onDone)
+            onDone(r.metrics);
         const QStringList order = {
             u"total_pixels"_s, u"blanked_fraction"_s, u"zero_fraction"_s,
             u"negative_fraction"_s, u"min"_s, u"max"_s, u"mean"_s, u"median"_s,

@@ -723,6 +723,38 @@ Open Image" now, and its tooltip says outright that it does not open a viewer of
 its own. A precondition the name contradicts will keep being reported as a
 defect however well the gate explains it.
 
+### The image viewer's Session Data
+
+The 2-D viewer installed the session dock and minted an owner scope, and then
+registered nothing at all: its tree listed the dataset and stayed empty for the
+rest of the session, however many maps, statistics and figures its tools
+produced. It has the cube's contract now, with one difference forced by the
+window itself — it shows a single view, so a derived MAP is a *layer*, not a
+pane. That gives three kinds of row (`vtkWindowImage_Products.cpp`):
+
+| Kind | Produced by | Opening the row |
+|---|---|---|
+| **layer** | the polarisation family: P, PA, P/I, debiased P, spectral index, Faraday RM | selects that layer |
+| **file** | Publication Figure, Export to Workspace as FITS | opens the file; the menu copies its path |
+| **measurement** | region statistics, Image Quality | replays the result window from its record |
+
+The measurements go through the same record mechanism the cube's noise estimate
+uses, so the reopened window *is* the original rather than a reconstruction of
+it. Region analysis in particular used to build its sections straight into a
+`WA_DeleteOnClose` dialog: closing it meant drawing the region again.
+
+Publication Figure and Image Quality are computed by `MainWindow` (they were
+Data-Hub tools until the menu work), so they now take a completion callback and
+hand their result back to the window that asked, which records it. The host does
+the work; the product belongs to the viewer.
+
+```{admonition} Export to Workspace as FITS copies the SOURCE
+:class: note
+It calls `copy_dataset` with the window's master `remoteDatasetId`, so it exports
+the image the window was opened on — **not** the derived layers computed in it.
+The product's Provenance says so, because the tool's name does not.
+```
+
 ### Where a tool lives: scope, not subject matter
 
 A tool belongs to whatever knows *which data it acts on*. That gives exactly two

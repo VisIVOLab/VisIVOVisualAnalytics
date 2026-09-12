@@ -441,6 +441,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage_Measurement.cpp
         src/gui/vtkWindowImage_Contours.cpp
         src/gui/vtkWindowImage_Annotations.cpp
+        src/gui/vtkWindowImage_Products.cpp
         src/gui/vtkWindowImage_Region.cpp
         src/gui/vtkWindowImage_Setup.cpp
         src/gui/vtkWindowVbt.cpp
