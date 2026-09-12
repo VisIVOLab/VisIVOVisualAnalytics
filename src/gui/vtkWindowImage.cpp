@@ -1485,16 +1485,22 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     // ── Histogram ─────────────────────────────────────────────────────────
     ui->menuTools->addSeparator();
     auto *actHistogram = ui->menuTools->addAction(u"Pixel Histogram…"_s);
+    this->m_actHistogram = actHistogram;
     QObject::connect(actHistogram, &QAction::triggered, this,
                      &vtkWindowImage::showHistogramPanel);
 
     // ── Annotations ──────────────────────────────────────────────────────
     ui->menuTools->addSeparator();
     auto *actAddText = ui->menuTools->addAction(u"Add Text Annotation…"_s);
+    this->m_actAddText = actAddText;
     auto *actAddArrow = ui->menuTools->addAction(u"Add Arrow Annotation…"_s);
+    this->m_actAddArrow = actAddArrow;
     auto *actClearAnnot = ui->menuTools->addAction(u"Clear Annotations"_s);
+    this->m_actClearAnnot = actClearAnnot;
     auto *actSaveAnnot = ui->menuTools->addAction(u"Save Annotations"_s);
+    this->m_actSaveAnnot = actSaveAnnot;
     auto *actLoadAnnot = ui->menuTools->addAction(u"Load Annotations"_s);
+    this->m_actLoadAnnot = actLoadAnnot;
     QObject::connect(actAddText, &QAction::triggered, this, &vtkWindowImage::addTextAnnotation);
     QObject::connect(actAddArrow, &QAction::triggered, this, &vtkWindowImage::addArrowAnnotation);
     QObject::connect(actClearAnnot, &QAction::triggered, this, &vtkWindowImage::clearAnnotations);

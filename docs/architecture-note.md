@@ -610,6 +610,47 @@ Two things follow from the change and must not be re-broken:
   activation is ever put back on `currentChanged`, that guard has to come back
   with it, and so does the right-click problem.
 
+### Menus across the application
+
+An audit of every window's menubar (static: the .ui trees plus every runtime
+`addAction`, cross-referenced against the `connect`s) found **no dead entries**
+anywhere — every action has a handler, a default-action button or a state read.
+It did find these:
+
+- **The Data Hub opened the same things twice.** File held *Open File...*, *Open
+  VBT...* and *Open 3D Catalogue (CSV)...*; Data held *Open Remote Dataset…*,
+  *Open VBT…* and *Open 3D Catalogue (CSV)…* — the same three handlers under two
+  sets of labels, so nothing told the user that "Open File" and "Open Remote
+  Dataset" were one action. File now keeps a single **Open Dataset…** (the
+  conventional home) plus Exit; Data keeps what File has no convention for (3-D
+  catalogue, VBT, velocity field, HiPS).
+- **The image viewer had the cube's old disease.** Its Tools menu was one flat
+  run of **34** entries while Inspector ▸ Analysis listed **11**, hand-picked —
+  so two thirds of the window's tools existed in one surface only. It now has an
+  `imageTools()` table exactly like `cubeTools()`, feeding both surfaces, and
+  `regroupImageToolsMenu()` groups the menu into Spectral / Regions / Catalogue /
+  Contours / Measure / Statistics / Annotations / Polarisation / Products /
+  Export. Six actions were locals and had to be promoted to members to be
+  listed at all — being a local is *why* they existed only in the menu.
+- **The Data Hub's View had one entry** (Diagnostics) while the cube and the 3-D
+  catalogue list Diagnostics *and* the Command Palette. The palette was there,
+  as a bare `Ctrl+K` window shortcut with no menu entry: a shortcut nobody can
+  see is a feature only its author knows about. It is in View now.
+- **`RemoteMomentWindow` is unreachable** — nothing instantiates it. Its menus
+  are therefore not part of the application's surface; left in place, noted here.
+
+```{admonition} Moment 2 was labelled as its own opposite
+:class: warning
+The moment dialog offered "Moment 2: Variance – NOT velocity dispersion" and the
+provenance string said the same. The backend funnels every order-2 map through
+one function that returns **σ = sqrt(variance)** by default (matching CASA
+`immoments`, CARTA and SoFiA), and the client never sets the `moment2_variance`
+flag that would keep the raw variance — so the label said the opposite of what
+the user was handed, and contradicted the copilot's own description of M2. The
+label was accurate when it was written and went stale when the backend changed
+(R-03); both call sites now read "Velocity dispersion σ".
+```
+
 ### The cube window's menus, and what each one answers
 
 Four menus had grown by accretion: entries were added where the code that

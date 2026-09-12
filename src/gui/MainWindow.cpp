@@ -239,9 +239,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     // ── View menu ─────────────────────────────────────────────────────────────
     auto *viewMenu = new QMenu(u"View"_s, this);
     this->menuBar()->insertMenu(ui->menuHelp->menuAction(), viewMenu);
+    m_viewMenu = viewMenu;
     auto *diagnosticsAction = viewMenu->addAction(u"Diagnostics"_s);
+    diagnosticsAction->setToolTip(
+            u"Open the diagnostics window: backend requests, task states and the "
+            u"event log."_s);
     QObject::connect(diagnosticsAction, &QAction::triggered, this,
                      [this]() { this->openDiagnosticsWindow(); });
+    viewMenu->setToolTipsVisible(true);
 
     // ── SAMP menu ─────────────────────────────────────────────────────────────
     this->buildSampMenu();
@@ -358,9 +363,16 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
         auto *paletteAction = new QAction(u"Command Palette"_s, this);
         paletteAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+K")));
         paletteAction->setShortcutContext(Qt::ApplicationShortcut);
+        paletteAction->setText(u"Command Palette…"_s);
+        paletteAction->setToolTip(
+                u"Search every action in this window by name."_s);
         QObject::connect(paletteAction, &QAction::triggered,
                          this, &MainWindow::openCommandPalette);
         this->addAction(paletteAction);
+        // …and in the menu, like every other window: a shortcut nobody can see
+        // is a feature only its author knows about.
+        if (m_viewMenu)
+            m_viewMenu->addAction(paletteAction);
     }
 
     // ── Backend diagnostics mirror ───────────────────────────────────────────

@@ -330,8 +330,11 @@ void MainWindow::buildDataMenu()
 
     // Shortcuts are already defined on the File-menu actions in the .ui file;
     // do not duplicate them here to avoid ambiguous shortcut warnings.
-    auto *actOpenData = dataMenu->addAction(u"Open Remote Dataset…"_s);
-    QObject::connect(actOpenData, &QAction::triggered, this, &MainWindow::openData);
+    // "Open Dataset…" lives in File, the conventional home for it, and opens the
+    // same thing this entry did: three of File's four entries were duplicates of
+    // Data's, same handlers under different labels ("Open File..." and "Open
+    // Remote Dataset…" were one action), so nothing told the user they were the
+    // same. Data keeps what File has no convention for.
 
     auto *actOpenCatalogue = dataMenu->addAction(u"Open 3D Catalogue (CSV)…"_s);
     QObject::connect(actOpenCatalogue, &QAction::triggered, this, &MainWindow::openCatalogue3D);

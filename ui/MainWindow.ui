@@ -215,8 +215,6 @@
      <string>File</string>
     </property>
     <addaction name="actionOpenFile"/>
-    <addaction name="actionOpenVbt"/>
-    <addaction name="actionOpenCatalogue3D"/>
     <addaction name="separator"/>
     <addaction name="actionExit"/>
    </widget>
@@ -250,7 +248,7 @@
   </action>
   <action name="actionOpenFile">
    <property name="text">
-    <string>Open File...</string>
+    <string>Open Dataset…</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+O</string>

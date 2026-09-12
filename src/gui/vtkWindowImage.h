@@ -580,6 +580,26 @@ private:
     QPointer<QAction> m_actRuler;
     /// Moved off the Data Hub's Science menu: single-map tools, resolved by the
     /// host against this window's own dataset.
+    /// Members only so imageTools() can list them: they were locals, which is why
+    /// they existed in the Tools menu and in no other surface.
+    /// One row per tool: the group it belongs to and the action that runs it.
+    /// The Tools menu and Inspector ▸ Analysis are both built from this, so a
+    /// tool cannot appear on one surface and be missing from the other.
+    struct ImageTool
+    {
+        QString group;
+        QAction *action{ nullptr };
+    };
+    QVector<ImageTool> imageTools() const;
+    /// Rebuild the Tools menu from imageTools(), grouped into submenus.
+    void regroupImageToolsMenu();
+
+    QPointer<QAction> m_actHistogram;
+    QPointer<QAction> m_actAddText;
+    QPointer<QAction> m_actAddArrow;
+    QPointer<QAction> m_actClearAnnot;
+    QPointer<QAction> m_actSaveAnnot;
+    QPointer<QAction> m_actLoadAnnot;
     QPointer<QAction> m_actPublicationFigure;
     QPointer<QAction> m_actImageQuality;
     QPointer<QAction> m_actAngle;

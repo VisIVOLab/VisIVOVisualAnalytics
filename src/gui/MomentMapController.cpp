@@ -336,7 +336,7 @@ void MomentMapController::openMomentDialog(int defaultOrder, Config config,
     const std::array<std::pair<int, QString>, 9> orders = {
             std::pair{ 0,  u"Moment 0: Integrated intensity (M0)"_s },
             std::pair{ 1,  u"Moment 1: Intensity-weighted coordinate (M1)"_s },
-            std::pair{ 2,  u"Moment 2: Variance – NOT velocity dispersion (M2)"_s },
+            std::pair{ 2,  u"Moment 2: Velocity dispersion σ (M2)"_s },
             std::pair{ 3,  u"Moment 3: Skewness (M3)"_s },
             std::pair{ 4,  u"Moment 4: Excess kurtosis (M4)"_s },
             std::pair{ 5,  u"Moment 5: 5th-order diagnostic (M5)"_s },
@@ -541,7 +541,12 @@ QString MomentMapController::describeMomentOrder(int order)
     switch (order) {
     case 0:  return u"Moment 0 (Integrated intensity)"_s;
     case 1:  return u"Moment 1 (Intensity-weighted coordinate)"_s;
-    case 2:  return u"Moment 2 (Variance \u2013 NOT dispersion)"_s;
+    // σ, not σ². The backend funnels every order-2 map through one function that
+    // returns sqrt(variance) by default, matching CASA immoments, CARTA and
+    // SoFiA, and the client never sets the moment2_variance flag that would keep
+    // the raw variance — so these two labels said the opposite of what the user
+    // was handed, and contradicted the copilot's own description of M2.
+    case 2:  return u"Moment 2 (Velocity dispersion σ)"_s;
     case 3:  return u"Moment 3 (Skewness)"_s;
     case 4:  return u"Moment 4 (Excess kurtosis)"_s;
     case 5:  return u"Moment 5 (5th-order diagnostic)"_s;

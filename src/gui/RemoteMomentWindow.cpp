@@ -115,7 +115,7 @@ RemoteMomentWindow::RemoteMomentWindow(const QString &backendUrl, const QString 
     const QList<QPair<int, QString>> momentOrders = {
         { 0, u"Moment 0 (Integrated intensity)"_s },
         { 1, u"Moment 1 (Mean velocity)"_s },
-        { 2, u"Moment 2 (Variance – NOT dispersion)"_s },
+        { 2, u"Moment 2 (Velocity dispersion σ)"_s },
         { 8, u"Moment 8 (Peak value)"_s },
         { 10, u"Moment 10 (Minimum value)"_s },
     };

@@ -216,6 +216,7 @@ private:
     // single view and now live in the viewer that owns the data (the cube's and
     // the image's Analysis lists), which is the only place that knows which
     // dataset the user means.
+    QMenu *m_viewMenu{ nullptr };
     QPointer<QAction> m_actPixelMath;     ///< UC 3.2 pixel math / spectral index
     QPointer<QAction> m_actMosaic;        ///< UC 3.3 noise-weighted mosaic
     QPointer<QMenu>   m_sampMenu;

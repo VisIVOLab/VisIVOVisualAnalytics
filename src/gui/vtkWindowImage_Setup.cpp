@@ -628,21 +628,6 @@ void vtkWindowImage::setupInspector()
                 !this->m_workspaceChrome->inspectorCollapsed());
     }
 
-    const auto add = [panel](const QString &grp, const QString &label, QAction *a) {
-        if (a) panel->addTool(grp, label, a);
-    };
-    add(u"Spectral"_s, u"Extract Spectrum"_s, this->actionExtractSpectrum);
-    add(u"Regions"_s, u"Box Region"_s, this->actionBoxRegion);
-    add(u"Regions"_s, u"Circle Region"_s, this->actionCircleRegion);
-    add(u"Regions"_s, u"Polygon Region"_s, this->actionPolygonRegion);
-    add(u"Regions"_s, u"Annulus Region"_s, this->actionAnnulusRegion);
-    add(u"Catalogue"_s, u"Load Catalogue Overlay…"_s, this->actionLoadCatalogueOverlay);
-    add(u"Catalogue"_s, u"Cross-match…"_s, this->actionCrossmatch);
-    add(u"Contours"_s, u"Show Contours"_s, this->m_actToggleContours);
-    add(u"Contours"_s, u"Load Contour from FITS…"_s, this->m_actLoadExternalContour);
-    add(u"Measure"_s, u"Ruler (Distance)"_s, this->m_actRuler);
-    add(u"Measure"_s, u"Angle (3 Points)"_s, this->m_actAngle);
-
     // Two tools that used to live only in the Data Hub's Science menu, where
     // they ran against whatever dataset had been opened last. They take a
     // single 2-D map, which is exactly what this window shows, so they belong
@@ -667,14 +652,121 @@ void vtkWindowImage::setupInspector()
         QObject::connect(this->m_actImageQuality, &QAction::triggered, this,
                          [this]() { emit this->imageQualityRequested(); });
     }
-    add(u"Products"_s, u"Publication Figure…"_s, this->m_actPublicationFigure);
-    add(u"Products"_s, u"Image Quality / Artifacts…"_s, this->m_actImageQuality);
+
+    // Every tool, from the one table, on both surfaces — the same treatment the
+    // cube viewer got and for the same reason: this list held eleven entries
+    // chosen by hand out of thirty-four, so two thirds of the window's tools
+    // existed only in the Tools menu, which was itself one flat run of
+    // thirty-four items.
+    const auto add = [panel](const QString &grp, const QString &label, QAction *a) {
+        if (a) panel->addTool(grp, label, a);
+    };
+    for (const ImageTool &t : imageTools())
+        add(t.group, t.action->text().remove(u'&'), t.action);
+
+    // …and the menu itself, regrouped from that table.
+    regroupImageToolsMenu();
+
 
     // Single-view window: no pane grid / Linked (those live in the cube's centre
     // toolbar, not the image viewer).
 
     // Belt-and-suspenders: neutralise any stray direct-child widget painting at (0,0).
     this->parkOrphanDirectChildren();
+}
+
+QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
+{
+    // Grouped by what the astronomer is trying to DO. Same shape, and the same
+    // reasoning, as vtkWindowCube::cubeTools(): one table feeds the Tools menu
+    // and Inspector ▸ Analysis, so a tool cannot exist on one surface and not
+    // the other. No labels here — each QAction carries its own text.
+    const auto *self = this;
+    QVector<ImageTool> t;
+    const auto add = [&t](const QString &g, QAction *a) {
+        if (a)
+            t.append({ g, a });
+    };
+
+    add(u"Spectral"_s, self->actionExtractSpectrum);
+
+    add(u"Regions"_s, self->actionBoxRegion);
+    add(u"Regions"_s, self->actionCircleRegion);
+    add(u"Regions"_s, self->actionPolygonRegion);
+    add(u"Regions"_s, self->actionAnnulusRegion);
+    add(u"Regions"_s, self->m_actExportRegions);
+
+    add(u"Catalogue"_s, self->actionLoadCatalogueOverlay);
+    add(u"Catalogue"_s, self->actionCrossmatch);
+    add(u"Catalogue"_s, self->actionShowCatalogueOverlay);
+    add(u"Catalogue"_s, self->actionShowCatalogueLabels);
+    add(u"Catalogue"_s, self->actionClearCatalogueOverlay);
+
+    add(u"Contours"_s, self->m_actToggleContours);
+    add(u"Contours"_s, self->m_actLoadExternalContour);
+    add(u"Contours"_s, self->m_actClearAllContours);
+
+    add(u"Measure"_s, self->m_actRuler);
+    add(u"Measure"_s, self->m_actAngle);
+    add(u"Measure"_s, self->m_actClearMeas);
+
+    add(u"Statistics"_s, self->m_actHistogram);
+
+    add(u"Annotations"_s, self->m_actAddText);
+    add(u"Annotations"_s, self->m_actAddArrow);
+    add(u"Annotations"_s, self->m_actClearAnnot);
+    add(u"Annotations"_s, self->m_actSaveAnnot);
+    add(u"Annotations"_s, self->m_actLoadAnnot);
+
+    add(u"Polarisation"_s, self->m_actLoadStokesCompanions);
+    add(u"Polarisation"_s, self->m_actComputeStokesP);
+    add(u"Polarisation"_s, self->m_actComputeStokesPA);
+    add(u"Polarisation"_s, self->m_actComputeStokesFrac);
+    add(u"Polarisation"_s, self->m_actComputeStokesPdebiased);
+    add(u"Polarisation"_s, self->m_actComputeSpectralIndex);
+    add(u"Polarisation"_s, self->m_actComputeFaradayRM);
+    add(u"Polarisation"_s, self->m_actTogglePolVecs);
+
+    add(u"Products"_s, self->m_actPublicationFigure);
+    add(u"Products"_s, self->m_actImageQuality);
+
+    add(u"Export"_s, self->m_actExportToWorkspace);
+    return t;
+}
+
+void vtkWindowImage::regroupImageToolsMenu()
+{
+    if (!ui->menuTools)
+        return;
+    // Rebuild, never QMenu::clear(): most of these were created by
+    // menu->addAction("text"), which parents them to the MENU, and clear()
+    // deletes what it owns. Reparent first, then detach one by one. (The cube
+    // viewer learned this the same way — see regroupToolsMenu() there.)
+    const auto tools = imageTools();
+    const auto existing = ui->menuTools->actions();
+    for (QAction *a : existing) {
+        if (!a)
+            continue;
+        if (a->parent() == ui->menuTools)
+            a->setParent(this);
+        ui->menuTools->removeAction(a);
+    }
+
+    ui->menuTools->setToolTipsVisible(true);
+    QString current;
+    QMenu *sub = nullptr;
+    for (const ImageTool &t : tools) {
+        if (!t.action)
+            continue;
+        if (t.group != current) {
+            current = t.group;
+            sub = ui->menuTools->addMenu(current);
+            if (sub)
+                sub->setToolTipsVisible(true);   // not inherited from the parent
+        }
+        if (sub)
+            sub->addAction(t.action);
+    }
 }
 
 void vtkWindowImage::parkOrphanDirectChildren()
