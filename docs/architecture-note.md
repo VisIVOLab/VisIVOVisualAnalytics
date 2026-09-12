@@ -826,13 +826,30 @@ section, keys reading "σ mean" instead of "Mean", rows in alphabetical order
 will always drift.
 
 So a result window is described ONCE, as a plain `QVariantMap`
-(`ToolResultDialog::makeRecord` → `{title, subtitle, sections:[{title, rows}]}`),
-and that single description is both shown (`applyRecord`) and stored on the
-product (`AnalysisProduct::resultView`). Reopening replays it through the same
+(`{title, subtitle, sections:[{title, rows}]}`), and that single description is
+both shown (`ToolResultDialog::applyRecord`) and stored on the product
+(`AnalysisProduct::resultView`). Reopening replays it through the same
 method, so the two windows cannot differ. `params` stays flat and unchanged for
 the Provenance panel, which renders key/value pairs and would choke on a nested
 structure. The generic params-derived layout survives only as a fallback, for a
 product that never showed a result window.
+
+The shape itself lives in `ToolResultRecord.h` — pure QtCore, no widget — with
+`tests/test_tool_result_record.cpp` over it, because it is the part that can be
+wrong **without failing to compile**, and it was:
+
+```{admonition} QList::append(const QList<T> &) concatenates
+:class: warning
+The encoder appended each row as a bare `QVariantList`, so
+`rows.append(QVariantList{label, value})` chose the CONCATENATING overload and
+flattened every row into two loose strings. The decoder then called `toList()`
+on a string, got nothing back, and built each section with no rows. The window
+came up with a title, a subtitle and an **empty body** (user report, with a
+screenshot of the Region Analysis window). It compiled, it ran, and nothing
+anywhere said so. The fix is one explicit `QVariant(...)`; the test asserts the
+ENCODED structure directly rather than only the round trip, since a round trip
+through a matching bug on both sides would pass.
+```
 
 The alternative — keeping measurements OUT of Session Data because they render
 nothing — is the option this design rejects. σ is the most reused number in the
