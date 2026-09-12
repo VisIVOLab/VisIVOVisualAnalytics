@@ -1017,7 +1017,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->actionShowCuttingPlane = new QAction(u"Show Cutting Plane"_s, this);
     this->actionShowCuttingPlane->setCheckable(true);
     this->actionShowCuttingPlane->setChecked(true);
-    this->actionShow3dWcsAxes = new QAction(u"Show 3D WCS Axes"_s, this);
+    this->actionShow3dWcsAxes = new QAction(u"WCS Box in the 3-D View"_s, this);
     this->actionShow3dWcsAxes->setCheckable(true);
     this->actionShow3dWcsAxes->setChecked(false);
     this->actionPlaySlices = new QAction(u"Play Slices"_s, this);
@@ -1074,9 +1074,16 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->statusBar()->addPermanentWidget(this->catalogueInfoLabel);
     this->updateCatalogueInfoPanel();
     this->updateMomentProvenancePanel();
-    this->actionShowWcsAxes = new QAction(u"Show WCS Axes"_s, this);
+    // "Show WCS Axes" and "Show 3D WCS Axes" are different overlays in different
+    // views, and sitting next to each other in the Display group they read as
+    // one entry duplicated. Each says which view it belongs to.
+    this->actionShowWcsAxes = new QAction(u"Sky Grid on the 2-D Panes"_s, this);
     this->actionShowWcsAxes->setCheckable(true);
     this->actionShowWcsAxes->setChecked(this->showWcsAxes);
+    this->actionShowWcsAxes->setToolTip(
+            u"Draw the RA/Dec (or Galactic, or ecliptic) grid and tick labels over "
+            u"the slice and moment panes. The frame and the format come from the "
+            u"WCS menu."_s);
     ui->menuView->addSeparator();
     ui->menuView->addAction(this->actionShowControlsSidebar);
     ui->menuView->addAction(this->actionShowWcsAxes);
@@ -1091,6 +1098,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // Focus mode (§4.2): collapse both docks to rails and thin the status rail; a
     // toggle, not a mode — leaving it restores the exact pair it collapsed.
     auto *focusAct = new QAction(u"Focus mode"_s, this);
+    m_actFocusMode = focusAct;
     focusAct->setCheckable(true);
 #ifdef Q_OS_MACOS
     focusAct->setShortcut(QKeySequence(Qt::ALT | Qt::SHIFT | Qt::Key_F));
@@ -1232,6 +1240,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     });
     {
         auto *opacityMenu = ui->menuView->addMenu(u"Cutting Plane Opacity"_s);
+        m_menuCuttingPlaneOpacity = opacityMenu;
         // cuttingPlaneOpacityGroup was pre-created above setupSidebar().
         const std::array<int, 5> presets { 25, 50, 75, 100, 0 };
         const int defaultPercent = 50;   // match setupCubeRenderer's plane opacity
@@ -1267,6 +1276,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         ui->menuView->addSeparator();
         auto *loadFullAction =
                 ui->menuView->addAction(u"Load Full Resolution"_s);
+        m_actLoadFullRes = loadFullAction;
         loadFullAction->setToolTip(
                 u"Fetch the entire cube at full resolution from the backend. "
                 u"For very large cubes this can be slow and memory-intensive; "
@@ -1364,6 +1374,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
         auto *cropFullAction =
                 ui->menuView->addAction(u"Crop Full Resolution…"_s);
+        m_actCropFullRes = cropFullAction;
         cropFullAction->setToolTip(
                 u"Open the sub-cube extraction dialog to fetch only an X/Y/Z "
                 u"region at full resolution. Recommended over Load Full "
@@ -1382,6 +1393,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                      [this](bool checked) { this->setSliceAnimationActive(checked); });
     {
         auto *fpsMenu = ui->menuView->addMenu(u"Animation Speed"_s);
+        m_menuAnimationSpeed = fpsMenu;
         // animationFpsGroup was pre-created above setupSidebar().
         const std::array<int, 5> fpsPresets { 2, 5, 10, 15, 30 };
         for (int fps : fpsPresets) {
@@ -1402,6 +1414,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     }
     {
         auto *modeMenu = ui->menuView->addMenu(u"Animation Mode"_s);
+        m_menuAnimationMode = modeMenu;
         // animationModeGroup was pre-created above setupSidebar().
         struct Entry { AnimationMode mode; QString label; };
         const std::array<Entry, 3> entries {
@@ -1431,7 +1444,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->actionPickSpectrum3d->setToolTip(
             u"When enabled, clicking on the cutting plane inside the 3D view "
             u"extracts the spectral profile at that voxel into the probe plot."_s);
-    ui->menuView->addAction(this->actionPickSpectrum3d);
+    // NOT in View: this is a tool, and it is listed in Tools ▸ Spectral and in
+    // Inspector ▸ Analysis, where the gate can say whether the 3-D view it needs
+    // is even on screen.
     QObject::connect(this->actionPickSpectrum3d, &QAction::toggled, this, [this](bool checked) {
         if (checked) {
             // Give the 3-D pane the focus first. Otherwise the pane container
@@ -1491,6 +1506,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     auto *actionDiagnostics = new QAction(u"Diagnostics"_s, this);
     actionDiagnostics->setToolTip(u"Open the application-wide diagnostics log window."_s);
     ui->menuView->addAction(actionDiagnostics);
+    m_actDiagnostics = actionDiagnostics;
     QObject::connect(actionDiagnostics, &QAction::triggered, this,
                      []() { DiagnosticsWindow::showSingleton(); });
 
@@ -1500,6 +1516,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     actionCommandPalette->setToolTip(
             u"Quick action search, same palette as the main window (⌘K)."_s);
     ui->menuView->addAction(actionCommandPalette);
+    m_actCommandPalette = actionCommandPalette;
     QObject::connect(actionCommandPalette, &QAction::triggered, this, [this]() {
         // Find the MainWindow instance and ask it to open the palette. We
         // don't link against MainWindow here to avoid a circular include;
@@ -1519,8 +1536,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->actionCameraRoi->setToolTip(
             u"When enabled, the high-resolution cube is loaded only for the current camera viewport.\n"
             u"Unchecked: full dataset is used for refinement."_s);
-    ui->menuView->addSeparator();
-    ui->menuView->addAction(this->actionCameraRoi);
+    ui->menuCamera->addSeparator();
+    ui->menuCamera->addAction(this->actionCameraRoi);
     QObject::connect(this->actionCameraRoi, &QAction::toggled, this,
                      [this](bool checked) {
                          this->useCameraRoiRefinement = checked;
@@ -2237,13 +2254,30 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                          this->clearPersistentStatusMessage();
                      });
 
-    // Setup menu Camera
+    // ── Camera ───────────────────────────────────────────────────────────────
+    // Six standard viewpoints, each with its icon and a number shortcut, and
+    // below them what the camera FRAMES (the ROI refinement toggle, which used
+    // to sit at the bottom of an already overloaded View menu). Nothing else
+    // belongs here: this menu answers "where am I looking from".
     ui->actionCameraFront->setIcon(QIcon(u":/icons/PIC_FRONT.png"_s));
     ui->actionCameraBack->setIcon(QIcon(u":/icons/PIC_BACK.png"_s));
     ui->actionCameraTop->setIcon(QIcon(u":/icons/PIC_TOP.png"_s));
     ui->actionCameraRight->setIcon(QIcon(u":/icons/PIC_RIGHT.png"_s));
     ui->actionCameraBottom->setIcon(QIcon(u":/icons/PIC_BOTTOM.png"_s));
     ui->actionCameraLeft->setIcon(QIcon(u":/icons/PIC_LEFT.png"_s));
+    // Ctrl+1..6, not bare 1..6: the window is full of spin boxes and a channel
+    // slider that legitimately take digits when focused.
+    ui->actionCameraFront->setShortcut(QKeySequence(u"Ctrl+1"_s));
+    ui->actionCameraBack->setShortcut(QKeySequence(u"Ctrl+2"_s));
+    ui->actionCameraLeft->setShortcut(QKeySequence(u"Ctrl+3"_s));
+    ui->actionCameraRight->setShortcut(QKeySequence(u"Ctrl+4"_s));
+    ui->actionCameraTop->setShortcut(QKeySequence(u"Ctrl+5"_s));
+    ui->actionCameraBottom->setShortcut(QKeySequence(u"Ctrl+6"_s));
+    for (QAction *a : { ui->actionCameraFront, ui->actionCameraBack, ui->actionCameraLeft,
+                        ui->actionCameraRight, ui->actionCameraTop, ui->actionCameraBottom })
+        a->setToolTip(u"Look at the cube from %1 (%2)."_s
+                              .arg(a->text().remove(u'&').toLower(),
+                                   a->shortcut().toString(QKeySequence::NativeText)));
     QObject::connect(ui->actionCameraFront, &QAction::triggered, this,
                      &vtkWindowCube::resetCameraFront);
     QObject::connect(ui->actionCameraBack, &QAction::triggered, this,
@@ -2257,9 +2291,31 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(ui->actionCameraLeft, &QAction::triggered, this,
                      &vtkWindowCube::resetCameraLeft);
 
-    // Setup menu Edit
+    // ── Edit ─────────────────────────────────────────────────────────────────
+    // It held one entry, "Edit LUT", which is a menu that exists to hold a menu
+    // item. It now holds what the window can actually undo — the copilot's
+    // display changes, which were reversible all along but reachable only from
+    // the assistant panel — plus the colour-map editor, renamed to match the
+    // "Color map" control it opens in the left dock.
+    ui->actionEditLUT->setText(u"Edit Color Map…"_s);
+    ui->actionEditLUT->setIcon(QIcon(u":/icons/COLORIZE.png"_s));
+    ui->actionEditLUT->setToolTip(
+            u"Open the colour-map editor for the 3-D volume: stops, opacity curve "
+            u"and range."_s);
     QObject::connect(ui->actionEditLUT, &QAction::triggered, this,
                      &vtkWindowCube::showLUTCustomizer);
+
+    m_actUndoCopilot = new QAction(u"Undo Copilot Display Changes"_s, this);
+    m_actUndoCopilot->setShortcut(QKeySequence::Undo);
+    m_actUndoCopilot->setToolTip(
+            u"Put the display back as it was before the assistant's last batch of "
+            u"changes (colour map, threshold, render and blend mode, channel). It "
+            u"does not undo computed products."_s);
+    m_actUndoCopilot->setEnabled(false);   // nothing to undo until the copilot acts
+    QObject::connect(m_actUndoCopilot, &QAction::triggered, this,
+                     &vtkWindowCube::undoCopilotActions);
+    ui->menuEdit->insertAction(ui->actionEditLUT, m_actUndoCopilot);
+    ui->menuEdit->insertSeparator(ui->actionEditLUT);
 
     // Setup menu View
     auto imageGroup = new QActionGroup(this);
@@ -2447,19 +2503,49 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
     this->updateBackendDerivedActionsAvailability();
 
-    // Setup menu WCS
+    // ── WCS ──────────────────────────────────────────────────────────────────
+    // Two exclusive choices about the same thing, the sky coordinates drawn on
+    // the overlay: which FRAME they are in, and how they are FORMATTED. Both are
+    // meaningless without celestial axes, so the whole menu switches off for a
+    // cube that has none — and, as everywhere else, it says why rather than just
+    // greying out (a disabled menu shows its tooltip; a disabled menu BAR entry
+    // does not, so the reason goes in the title).
     auto groupWCS = new QActionGroup(this);
     groupWCS->addAction(ui->actionGalactic);
     groupWCS->addAction(ui->actionFK5);
     groupWCS->addAction(ui->actionEcliptic);
-    ui->menuWCS->setEnabled(this->remoteHasCelestialAxes());
+    const bool hasCelestial = this->remoteHasCelestialAxes();
+    ui->menuWCS->setEnabled(hasCelestial);
+    // The two overlays the WCS menu configures go with it: a sky grid with no
+    // sky is an entry that can only disappoint.
+    for (QAction *a : { this->actionShowWcsAxes.data(), this->actionShow3dWcsAxes.data() }) {
+        if (!a || hasCelestial)
+            continue;
+        a->setEnabled(false);
+        a->setToolTip(u"This cube's spatial axes are not celestial, so there are no "
+                      u"sky coordinates to draw."_s);
+    }
+    if (!hasCelestial) {
+        ui->menuWCS->setTitle(u"WCS (no celestial axes)"_s);
+        ui->menuWCS->setToolTip(
+                u"This cube's spatial axes are not celestial (no RA/Dec, Galactic or "
+                u"ecliptic coordinates to draw), so there is no frame or format to "
+                u"choose."_s);
+    }
     QObject::connect(groupWCS, &QActionGroup::triggered, this, &vtkWindowCube::changeLegendWCS);
+    for (QAction *a : { ui->actionGalactic, ui->actionFK5, ui->actionEcliptic })
+        a->setToolTip(u"Draw the sky overlay in %1 coordinates."_s
+                              .arg(a->text().remove(u'&')));
     ui->menuWCS->addSeparator();
     auto *formatGroup = new QActionGroup(this);
     this->actionWcsSexagesimal = ui->menuWCS->addAction(u"Sexagesimal"_s);
     this->actionWcsDecimal = ui->menuWCS->addAction(u"Decimal"_s);
     this->actionWcsSexagesimal->setCheckable(true);
     this->actionWcsDecimal->setCheckable(true);
+    this->actionWcsSexagesimal->setToolTip(
+            u"Label the overlay as hours/degrees, minutes and seconds (12h34m56s)."_s);
+    this->actionWcsDecimal->setToolTip(u"Label the overlay in decimal degrees (188.7354°)."_s);
+    ui->menuWCS->setToolTipsVisible(true);
     formatGroup->addAction(this->actionWcsSexagesimal);
     formatGroup->addAction(this->actionWcsDecimal);
     QObject::connect(formatGroup, &QActionGroup::triggered, this, [this](QAction *action) {
@@ -4300,6 +4386,21 @@ public:
         QObject::connect(m_actionBtn, &QPushButton::clicked, this, handler);
     }
 
+    /// Call @p handler whenever any of the six bounds changes, and once now.
+    ///
+    /// Typing six numbers and hoping is not a way to choose a sub-cube: the
+    /// caller uses this to draw the box being described, live, inside the
+    /// volume (user request). Every keystroke, not on editingFinished — the
+    /// point is to see the box move while deciding.
+    void onBoundsChanged(const std::function<void(const std::array<int, 6> &)> &handler)
+    {
+        for (QSpinBox *sb : { m_spX0, m_spX1, m_spY0, m_spY1, m_spZ0, m_spZ1 }) {
+            QObject::connect(sb, &QSpinBox::valueChanged, this,
+                             [this, handler]() { handler(bounds()); });
+        }
+        handler(bounds());
+    }
+
     /// The progress sheet is window-modal on this dialog and already blocks it;
     /// greying the action button makes the state visible as well as felt.
     void setBusy(bool busy) { if (m_actionBtn) m_actionBtn->setEnabled(!busy); }
@@ -4313,6 +4414,31 @@ private:
     QSpinBox *m_spZ1{ nullptr };
     QPushButton *m_actionBtn{ nullptr };
 };
+void previewBoxWhileEditing(vtkWindowCube *window, CubeBoxToolDialog *dialog)
+{
+    using namespace Qt::StringLiterals;
+    if (!window || !dialog)
+        return;
+    // The same amber overlay Estimate Noise uses to show its sampling region: a
+    // rectangle on the 2-D slice and a translucent box inside the volume. It was
+    // already there, tied to one tool; the two tools that crop or mask a 3-D box
+    // are exactly the ones that need it, because their parameters are six
+    // numbers with no other picture of what they select (user request).
+    QPointer<vtkWindowCube> self(window);
+    QPointer<CubeBoxToolDialog> owner(dialog);
+    dialog->onBoundsChanged([self, owner](const std::array<int, 6> &b) {
+        if (!self)
+            return;
+        self->claimRegionPreview(owner);   // the box on screen is this window's
+        self->setNoiseRegionPreview(b[0], b[1], b[2], b[3], b[4], b[5]);
+    });
+    // Cleared when the window goes, not when the run ends: the box describes
+    // what the window is set to, and the window outlives the run now.
+    QObject::connect(dialog, &QObject::destroyed, window, [self, dialog]() {
+        if (self)
+            self->clearRegionPreviewIfOwner(dialog);
+    });
+}
 } // namespace
 
 void vtkWindowCube::exportSubCubeAsFits()
@@ -4363,6 +4489,7 @@ void vtkWindowCube::exportSubCubeAsFits()
             defX0, defX1, defY0, defY1, defZ0, defZ1,
             u"Save as"_s, nameEdit);
     m_subCubeDialog = dlg;
+    previewBoxWhileEditing(this, dlg);
 
     QPointer<vtkWindowCube> self(this);
     dlg->onAction([this, self, dlg, nameEdit]() {
@@ -4470,6 +4597,7 @@ void vtkWindowCube::maskCubeRegion3d()
             defX0, defX1, defY0, defY1, defZ0, defZ1,
             u"Mode"_s, modeCombo);
     m_maskRegionDialog = dlg;
+    previewBoxWhileEditing(this, dlg);
 
     QPointer<vtkWindowCube> self(this);
     dlg->onAction([this, self, dlg, modeCombo]() {
@@ -4481,9 +4609,8 @@ void vtkWindowCube::maskCubeRegion3d()
         const auto b = dlg->bounds();
         const QString mode = modeCombo->currentData().toString();
 
-        // Show the selected box in the 3-D volume while the mask computes
-        // (reuses the noise-region 3-D box preview, cleared when it lands).
-        this->setNoiseRegionPreview(b[0], b[1], b[2], b[3], b[4], b[5]);
+        // The box is already on screen from the live preview below; it stays up
+        // through the compute and is cleared when the window closes.
 
         const QString url       = this->remoteBackendUrl;
         const QString token     = this->remoteBackendToken;
@@ -6375,6 +6502,11 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     };
 
     add(u"Spectral"_s, ui->actionExtractSpectrum);
+    // The 3-D counterpart of Extract Spectrum: click the cutting plane in the
+    // 3-D view instead of a pixel on the slice. The gate already knew about it
+    // (view3dTools) but it was listed nowhere a user browses tools — only in
+    // the View menu and the INTERACTION dock.
+    add(u"Spectral"_s, self->actionPickSpectrum3d);
     add(u"Spectral"_s, self->m_actPinSpectrum);
     add(u"Spectral"_s, self->actionExtractPvDiagram);
     add(u"Spectral"_s, ui->actionLinewidthMap);
@@ -6456,6 +6588,105 @@ void vtkWindowCube::regroupToolsMenu()
         if (sub)
             sub->addAction(t.action);
     }
+}
+
+
+void vtkWindowCube::regroupViewMenu()
+{
+    if (!ui->menuView)
+        return;
+    // Same treatment, and the same reason, as regroupToolsMenu(): the entries
+    // are added from a dozen places as they are created, so the menu's order was
+    // construction order. It had grown to twenty-seven entries with submenus
+    // interleaved — display state, docks, animation, data resolution,
+    // diagnostics and one actual TOOL, in the order the code happened to run.
+    //
+    // Four groups, each answering a different question:
+    //   Workspace  — where do the panels go
+    //   Display    — how is the data drawn
+    //   Animation  — how does it move
+    //   Data       — how much of it is loaded
+    // with the developer-facing entries last, after a separator.
+    //
+    // Removed rather than moved: "Pick Spectrum on Plane Click" is a TOOL and
+    // lives in Tools ▸ Spectral and Inspector ▸ Analysis, and "Use Camera ROI"
+    // is about what the camera frames, so it is in Camera now.
+    //
+    // NOT via QMenu::clear() — see regroupToolsMenu() for why that deletes
+    // actions the menu owns. Reparent, then detach.
+    // Every menu in this window shows its action tooltips, so a greyed entry can
+    // state its reason. It was set on Tools alone, which is why the Camera and
+    // Edit tooltips written next to their actions never appeared.
+    for (QMenu *m : { ui->menuView, ui->menuCamera, ui->menuEdit, ui->menuWCS,
+                      ui->menu3DRendering, ui->menu2DPanel,
+                      this->m_menuVolumeRendering.data(), m_menuCuttingPlaneOpacity.data(),
+                      m_menuAnimationSpeed.data(), m_menuAnimationMode.data() }) {
+        if (m)
+            m->setToolTipsVisible(true);
+    }
+
+    const auto existing = ui->menuView->actions();
+    for (QAction *a : existing) {
+        if (!a)
+            continue;
+        if (a->parent() == ui->menuView)
+            a->setParent(this);
+        ui->menuView->removeAction(a);
+    }
+
+    const auto addAct = [this](QAction *a) {
+        if (a)
+            ui->menuView->addAction(a);
+    };
+    const auto addSub = [this](QMenu *m) {
+        if (m)
+            ui->menuView->addMenu(m);
+    };
+    bool needSeparator = false;
+    const auto group = [this, &needSeparator]() {
+        if (needSeparator)
+            ui->menuView->addSeparator();
+        needSeparator = true;
+    };
+
+    // Workspace: what is on screen around the data.
+    group();
+    addAct(this->actionShowSessionPanel);
+    addAct(this->actionShowControlsSidebar);
+    addAct(m_actFocusMode);
+    addAct(this->actionResetLayout);
+
+    // Display: how the data is drawn. The 3-D representation and its blend mode
+    // belong together, as do the cutting plane and its opacity.
+    group();
+    addSub(ui->menu3DRendering);
+    addSub(this->m_menuVolumeRendering);
+    addAct(this->actionShowCuttingPlane);
+    addSub(m_menuCuttingPlaneOpacity);
+    addSub(ui->menu2DPanel);
+    addAct(this->actionShowWcsAxes);
+    addAct(this->actionShow3dWcsAxes);
+
+    // Animation along the spectral axis.
+    group();
+    addAct(this->actionPlaySlices);
+    addSub(m_menuAnimationSpeed);
+    addSub(m_menuAnimationMode);
+
+    // How much of the cube is actually loaded (absent on a small cube).
+    if (m_actLoadFullRes || m_actCropFullRes) {
+        group();
+        addAct(m_actLoadFullRes);
+        addAct(m_actCropFullRes);
+    }
+
+    // Developer-facing, last.
+    group();
+    addAct(m_actDiagnostics);
+    addAct(m_actCommandPalette);
+
+    // Anything added after this point (a dock's toggleViewAction, for one) lands
+    // at the end, which is where a per-dataset entry belongs.
 }
 
 QWidget *vtkWindowCube::buildFlatLeftDockControls()
@@ -10477,6 +10708,13 @@ void vtkWindowCube::setupInspector()
 
     // View → "Inspector Panel" expands/collapses the dock (never setVisible, which
     // would hide the rail to 0 px and bypass the collapse state — §4.1).
+    if (this->actionShowSessionPanel) {
+        QObject::connect(this->actionShowSessionPanel, &QAction::toggled, this,
+                         [this](bool checked) {
+                             if (this->m_workspaceChrome)
+                                 this->m_workspaceChrome->setSessionCollapsed(!checked);
+                         });
+    }
     if (this->actionShowControlsSidebar) {
         QObject::connect(this->actionShowControlsSidebar, &QAction::toggled, this,
                          [this](bool checked) {
@@ -10487,11 +10725,21 @@ void vtkWindowCube::setupInspector()
                          [this]() {
                              if (!this->m_workspaceChrome)
                                  return;
+                             if (this->actionShowSessionPanel) {
+                                 QSignalBlocker bs(this->actionShowSessionPanel);
+                                 this->actionShowSessionPanel->setChecked(
+                                         !this->m_workspaceChrome->sessionCollapsed());
+                             }
                              QSignalBlocker b(this->actionShowControlsSidebar);
                              this->actionShowControlsSidebar->setChecked(
                                      !this->m_workspaceChrome->inspectorCollapsed());
                          });
         // Seed the checkstate from the (already-applied) collapsed default.
+        if (this->actionShowSessionPanel) {
+            QSignalBlocker bs(this->actionShowSessionPanel);
+            this->actionShowSessionPanel->setChecked(
+                    !this->m_workspaceChrome->sessionCollapsed());
+        }
         QSignalBlocker b(this->actionShowControlsSidebar);
         this->actionShowControlsSidebar->setChecked(
                 !this->m_workspaceChrome->inspectorCollapsed());
@@ -10509,6 +10757,7 @@ void vtkWindowCube::setupInspector()
 
     // And the menu itself, regrouped from the same table.
     regroupToolsMenu();
+    regroupViewMenu();
 
     // Armed-pane border: every interaction tool listens to ONE view, and the
     // amber frame says which. Wired here, once, for all of them — by this point
@@ -12091,6 +12340,10 @@ void vtkWindowCube::applyCopilotActions(const QList<QJsonObject> &actions)
         // restore it (display-only, reversible).
         this->m_copilotUndo = CopilotSnapshot{};
         this->m_copilotUndo.valid = true;
+        // Edit ▸ Undo becomes available exactly when there is something to go
+        // back to, so the menu never offers an action that would do nothing.
+        if (m_actUndoCopilot)
+            m_actUndoCopilot->setEnabled(true);
         this->m_copilotUndo.colormap = this->m_activeColorMapName;
         this->m_copilotUndo.threshold = ui->lineThreshold ? ui->lineThreshold->text() : QString();
         this->m_copilotUndo.isosurface = ui->actionIsosurface && ui->actionIsosurface->isChecked();
@@ -12233,6 +12486,8 @@ void vtkWindowCube::undoCopilotActions()
         return;
     const CopilotSnapshot s = this->m_copilotUndo;
     this->m_copilotUndo.valid = false;   // one-shot; a new batch re-snapshots
+    if (m_actUndoCopilot)
+        m_actUndoCopilot->setEnabled(false);
 
     this->setCopilotRenderMode(s.isosurface);   // representation first
     if (!s.colormap.isEmpty())

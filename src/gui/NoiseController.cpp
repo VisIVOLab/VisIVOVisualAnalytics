@@ -134,8 +134,13 @@ void NoiseController::startEstimation()
     // current case), the cast yields null and the connect is a no-op.
     auto *cube = qobject_cast<vtkWindowCube *>(m_parentWindow);
     if (cube) {
-        QObject::connect(&dlg, &NoiseRegionDialog::regionPreviewChanged,
-                         cube, &vtkWindowCube::setNoiseRegionPreview);
+        QObject::connect(&dlg, &NoiseRegionDialog::regionPreviewChanged, cube,
+                         [cube, dlgPtr](int x0, int x1, int y0, int y1, int c0, int c1) {
+                             // Claim the shared overlay: the crop and mask windows
+                             // draw the same box, and whoever is editing owns it.
+                             cube->claimRegionPreview(dlgPtr);
+                             cube->setNoiseRegionPreview(x0, x1, y0, y1, c0, c1);
+                         });
         // Restore the noise region last used for this dataset (if any).
         const QVariantMap saved =
                 AnalysisParamStore().load(cube->datasetPersistKey(), u"noise"_s);

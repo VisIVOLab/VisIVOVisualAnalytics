@@ -671,11 +671,25 @@ void vtkWindowCube::setupSidebar()
     QObject::connect(m_uiAssembler->lutEditMomentButton(), &QToolButton::clicked,
                      this, &vtkWindowCube::showLUTCustomizer);
 
-    // View menu toggle action — now toggles the right-hand Inspector dock
-    // (wired to it in setupInspector(), which runs after the dock exists).
+    // View menu toggles for the two docks. Both, in a pair: View could hide the
+    // right-hand Inspector but said nothing about the left-hand Session Data
+    // panel, although WorkspaceChrome has always been able to collapse either
+    // (user report). A window with two docks and a menu entry for one of them
+    // makes the other look like furniture rather than a panel.
+    // Wired in setupInspector(), which runs after the docks exist.
+    this->actionShowSessionPanel = new QAction(u"Session Data Panel"_s, this);
+    this->actionShowSessionPanel->setCheckable(true);
+    this->actionShowSessionPanel->setChecked(true);
+    this->actionShowSessionPanel->setToolTip(
+            u"Show the left-hand panel: this dataset's views and products, and the "
+            u"display controls below them."_s);
+
     this->actionShowControlsSidebar = new QAction(u"Inspector Panel"_s, this);
     this->actionShowControlsSidebar->setCheckable(true);
     this->actionShowControlsSidebar->setChecked(true);
+    this->actionShowControlsSidebar->setToolTip(
+            u"Show the right-hand panel: Properties, Analysis tools, Provenance and "
+            u"the Copilot."_s);
 }
 
 void vtkWindowCube::setupWorkspaceDocks()

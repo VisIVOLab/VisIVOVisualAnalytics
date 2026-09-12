@@ -395,6 +395,17 @@ public slots:
     // Driven by NoiseRegionDialog::regionPreviewChanged.
     void setNoiseRegionPreview(int x0, int x1, int y0, int y1,
                                int chStart, int chEnd);
+    /// Record who is currently describing the amber region overlay, and clear it
+    /// only on that owner's behalf. Three tools draw it now (Estimate Noise,
+    /// Export Sub-Cube, Mask 3-D Region) from three non-modal windows that can
+    /// be open at once, so without this, closing any one of them wiped the box
+    /// another was still showing.
+    void claimRegionPreview(QObject *owner) { m_regionPreviewOwner = owner; }
+    void clearRegionPreviewIfOwner(QObject *owner)
+    {
+        if (owner && m_regionPreviewOwner == owner)
+            this->clearNoiseRegionPreview();
+    }
     void clearNoiseRegionPreview();
 
 private:
@@ -769,6 +780,10 @@ private:
 
     /// Rebuild the Tools menu from cubeTools(), one submenu per group.
     void regroupToolsMenu();
+    /// Rebuild the View menu in a deliberate order (Workspace / Display /
+    /// Animation / Data, then the developer entries). Runs once, after every
+    /// entry exists.
+    void regroupViewMenu();
 
 
     /// Push m_show3dRendering onto both 3-D props and repaint.
@@ -987,6 +1002,9 @@ protected:
 
     // ── Sidebar ───────────────────────────────────────────────────────────────
     SidebarPanel *m_sidebar{ nullptr };
+    /// View ▸ Session Data Panel: the LEFT dock (views, products, display
+    /// controls). Its counterpart below toggles the right-hand Inspector.
+    QPointer<QAction> actionShowSessionPanel;
     QPointer<QAction> actionShowControlsSidebar;
     // Owns all sidebar widget pointers and the four page-build methods.
     std::unique_ptr<CubeUiAssembler> m_uiAssembler;
@@ -1144,12 +1162,30 @@ protected:
     /// The statistics product registered most recently, so the result-window
     /// recipe that arrives immediately after can be attached to it.
     QString m_lastStatisticsProductId;
+    /// Whoever last drew the amber region overlay (see claimRegionPreview).
+    QPointer<QObject> m_regionPreviewOwner;
     QPointer<QDialog> m_subCubeDialog;
     QPointer<QDialog> m_maskRegionDialog;
     bool m_subCubeBusy{ false };
     bool m_maskRegionBusy{ false };
     QPointer<QDialog> m_kinematicDialog;
     QPointer<QProgressDialog> m_kinematicSheet;
+    /// Edit ▸ Undo: reverses the copilot's last batch of DISPLAY changes. Enabled
+    /// only while a snapshot exists to go back to.
+    QPointer<QAction> m_actUndoCopilot;
+
+    /// Members only so regroupViewMenu() can put the View menu in a deliberate
+    /// order: the entries are created all over this file, in the order the code
+    /// happens to run, which is how the menu ended up with twenty-seven entries
+    /// in no order at all.
+    QPointer<QAction> m_actFocusMode;
+    QPointer<QAction> m_actLoadFullRes;
+    QPointer<QAction> m_actCropFullRes;
+    QPointer<QAction> m_actDiagnostics;
+    QPointer<QAction> m_actCommandPalette;
+    QPointer<QMenu> m_menuCuttingPlaneOpacity;
+    QPointer<QMenu> m_menuAnimationSpeed;
+    QPointer<QMenu> m_menuAnimationMode;
     QPointer<QAction> m_actSourceFind;
     QPointer<QAction> m_actKinematicLasso;
     int m_lassoLastSeed[3]{ -1, -1, -1 };         ///< primary picked full-res seed (z,y,x)

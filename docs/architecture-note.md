@@ -610,6 +610,55 @@ Two things follow from the change and must not be re-broken:
   activation is ever put back on `currentChanged`, that guard has to come back
   with it, and so does the right-click problem.
 
+### The cube window's menus, and what each one answers
+
+Four menus had grown by accretion: entries were added where the code that
+created them happened to run, so their order was construction order and their
+membership was history. Each now answers one question, and `regroupViewMenu()`
+imposes the order the same way `regroupToolsMenu()` already did for Tools
+(rebuild, never `QMenu::clear()` — see there for why).
+
+| Menu | Answers | Notes |
+|---|---|---|
+| **Camera** | where am I looking from | The six viewpoints keep their existing icons and gain `Ctrl+1..6` (not bare digits: the window is full of spin boxes and a channel slider). *Use Camera ROI* moved here from the bottom of View — it is about what the camera frames. |
+| **Edit** | what can I take back | It held exactly one entry, *Edit LUT*: a menu that existed to hold a menu item. It now leads with **Undo Copilot Display Changes** (⌘Z), which was reversible all along but reachable only from the assistant panel, and is enabled only while a snapshot exists. *Edit LUT* is *Edit Color Map…*, matching the "Color map" control it opens. |
+| **View** | what is on screen and how is it drawn | Was 27 entries in no order. Now four groups, separated: **Workspace** (both dock toggles, Focus mode, Reset Layout), **Display** (3-D rendering + blend, cutting plane + opacity, 2-D panel, the two sky overlays), **Animation** (play, speed, mode), **Data** (Load/Crop Full Resolution, absent on a small cube), then the developer entries (Diagnostics, Command Palette) last. |
+| **WCS** | which sky coordinates, in what format | Frame (Galactic / FK5 / ecliptic) and format (sexagesimal / decimal), both exclusive. Meaningless without celestial axes, so the menu disables — and because a disabled menu-BAR entry shows no tooltip, the reason goes in its title: "WCS (no celestial axes)". |
+
+Two entries were moved out of View rather than reordered. *Pick Spectrum on
+Plane Click* is a **tool** — it was in View and in the INTERACTION dock but in
+neither of the two places a user browses tools, so it is in `cubeTools()` under
+Spectral now, where the gate can say whether the 3-D view it needs is even on
+screen. And *Show WCS Axes* / *Show 3D WCS Axes* are different overlays in
+different views; adjacent in the new Display group they read as one entry
+duplicated, so they are **Sky Grid on the 2-D Panes** and **WCS Box in the 3-D
+View**, both disabled with a reason when the cube has no celestial axes.
+
+View offered *Inspector Panel* — the right-hand dock — and said nothing about
+the left-hand **Session Data Panel**, although `WorkspaceChrome` could always
+collapse either (user report). A window with two docks and a menu entry for one
+of them makes the other look like furniture. They are a pair now, both tracking
+the chrome's state so Focus mode moves their check marks too.
+
+Menu action tooltips are now visible on every menu in this window, not just
+Tools. That was why the reasons written next to the Camera and Edit actions had
+never appeared.
+
+### Six numbers are not a picture
+
+Export Sub-Cube and Mask 3-D Region are configured by six spin boxes and, until
+now, nothing showed what those numbers select. The amber overlay that Estimate
+Noise draws for its sampling region — a rectangle on the 2-D slice and a
+translucent box inside the volume — was already there, wired to one tool. Both
+box tools now draw it **as the user types** (`valueChanged`, not
+`editingFinished`: the point is to watch the box move while deciding), through
+`CubeBoxToolDialog::onBoundsChanged`.
+
+That makes three non-modal windows sharing one overlay, so it needed an owner:
+`claimRegionPreview()` records who last drew it and `clearRegionPreviewIfOwner()`
+clears it only on that owner's behalf. Without it, closing any one of the three
+wiped the box another was still showing.
+
 ### A disabled tool has to say why
 
 The gate writes a reason for every tool it turns off ("open a 2D image viewer
@@ -819,7 +868,7 @@ state sync for free (no manual `connect` pairs needed for the boolean toggles).
 |---------|-----------------|------|----------------|
 | Cutting plane visibility | `actionShowCuttingPlane` | View → Show Cutting Plane | *3-D View Settings* → **CUTTING PLANE** → "Show cutting plane" toggle button (full-width, `setDefaultAction`) |
 | Cutting plane opacity (0–100%) | `cuttingPlaneOpacityGroup` (25 / 50 / 75 / 100 / 0% presets) | View → Cutting Plane Opacity → … | *3-D View Settings* → **CUTTING PLANE** → continuous slider with read-only QLineEdit value below (matches RENDERING THRESHOLD layout) |
-| 3D WCS axes (`vtkCubeAxesActor`) | `actionShow3dWcsAxes` | View → Show 3D WCS Axes | *3-D View Settings* → **3D REFERENCE** → "Show 3D WCS axes" toggle button |
+| 3D WCS axes (`vtkCubeAxesActor`) | `actionShow3dWcsAxes` | View → WCS Box in the 3-D View | *3-D View Settings* → **3D REFERENCE** → "Show 3D WCS axes" toggle button |
 | Slice animation | `actionPlaySlices` + `animationFpsGroup` + `animationModeGroup` | View → Play Slices / Animation Speed / Animation Mode | *2-D View Settings* → **SLICE ANIMATION** → "▶ Play" button + FPS combo (preset 2 / 5 / 10 / 15 / 30, **no free-form entry**) + Mode combo (Loop / Bounce / Stop at End) |
 | 3D pick on plane click | `actionPickSpectrum3d` | View → Pick Spectrum on Plane Click | *3-D View Settings* → **3D INTERACTION** → "Pick spectrum on plane click" toggle button |
 | Slice contours overlay | `ui->checkContours` (canonical state holder, hidden) | — | *2-D View Settings* → **CONTOURS** → "Show Contours" toggle button (drives the hidden checkbox; existing `checkStateChanged` handler stays untouched) + Level / Lower / Upper line edits |

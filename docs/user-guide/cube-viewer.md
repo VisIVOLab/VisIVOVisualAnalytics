@@ -312,7 +312,8 @@ curve *on the plot* as a comparison overlay, display only, nothing saved.
 ### Picking a spectrum from the 3-D view
 
 *Pick spectrum on cutting plane*, in the **INTERACTION** section of the left
-dock (or *View → Pick Spectrum on Plane Click*), arms a picker on the 3-D view.
+dock (or *Tools → Spectral → Pick Spectrum on Plane Click*, also in
+Inspector ▸ Analysis), arms a picker on the 3-D view.
 While it is armed the 3-D pane carries an amber border, so it is clear which
 view is listening, and it keeps taking clicks even if you select another pane —
 selecting the spectrum it just produced no longer switches the picker off.
@@ -644,10 +645,10 @@ distribution is enough to identify what it represents:
 
 ## WCS axes and overlays
 
-- *View → Show WCS Axes* paints sky-coordinate ticks on the 2-D slice and
+- *View → Sky Grid on the 2-D Panes* paints sky-coordinate ticks on the 2-D slice and
   moment maps. Toggle between **sexagesimal** (HMS / DMS) and **decimal**
   with the *WCS format* radio in the same menu.
-- *View → Show 3D WCS Axes* draws a labelled bounding box in the 3-D view
+- *View → WCS Box in the 3-D View* draws a labelled bounding box in the 3-D view
   with RA / Dec / Velocity ticks derived from the cube WCS. Useful as a
   spatial reference when rotating the camera.
 - *Tools → Load Catalogue Overlay* lets you overlay sources from a CSV /
@@ -696,6 +697,10 @@ with the ``VISIVO_EXPORTS_DIR`` environment variable):
   spectral coordinates. The sub-cube is also registered as a new dataset
   in the active session, so you can immediately open it in a new cube
   viewer.
+  As you type the X/Y/Z bounds, the region they describe is drawn live in the
+  viewer — an amber rectangle on the 2-D slice and a translucent box inside the
+  volume — so you can see what you are about to cut out before you cut it.
+  *Tools → Mask 3-D Region…* shows the same box.
 - **Tools → Export Current Channel as 2-D FITS…** — save the channel
   that is currently displayed on the slice slider as a **standalone
   2-D FITS image** (``NAXIS=2`` — the spectral axis is dropped, not
@@ -715,10 +720,12 @@ with the ``VISIVO_EXPORTS_DIR`` environment variable):
   ``contourDataReady`` signal. Useful for quick radio + optical
   comparisons without persisting intermediate files.
 
-Both flows ask only for a **basename** (e.g. ``m31_m0.fits``). The
-backend stores the file in the Workspace Exports dir and auto-suffixes
-collisions (``cube.fits`` → ``cube_1.fits`` → …). The completion dialog
-shows the chosen filename and on-disk path.
+Both flows take a **basename** (e.g. ``m31_m0.fits``) — a field in the tool's
+own window, not a second prompt after it closes, which is how Export Sub-Cube
+used to ask. The backend stores the file in the Workspace Exports dir and
+auto-suffixes collisions (``cube.fits`` → ``cube_1.fits`` → …). The completion
+dialog shows the chosen filename and on-disk path, and the tool window stays
+open so you can crop another region straight away.
 
 Once in the workspace, artefacts are listed in the **Workspace Exports**
 panel of the Data Hub. Per-entry actions:
