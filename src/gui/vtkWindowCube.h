@@ -2019,7 +2019,11 @@ protected:
                                     const QVariantMap &params, QWidget *window,
                                     const QString &stableId = QString(),
                                     const QString &renderer = QString(),
-                                    bool revealProvenance = true);
+                                    bool revealProvenance = true,
+                                    const QVariantMap &origin = {});
+    /// Redraw the region, or re-place the probe marker, a product was generated
+    /// from. Returns false when the product carries no geometry.
+    bool restoreProductOrigin(const QVariantMap &origin);
 
     /// Populate the right Inspector shell (Properties/Analysis tabs) and wire the
     /// pane-layout + Linked controls. Tools trigger the existing dialog QActions.

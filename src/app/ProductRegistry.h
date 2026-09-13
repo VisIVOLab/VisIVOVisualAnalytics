@@ -44,6 +44,11 @@ struct AnalysisProduct
     /// (ToolResultDialog::makeRecord), so the row can put it back on screen
     /// unchanged. Empty for products whose result is a pane or a file.
     QVariantMap resultView;
+    /// WHERE the tool measured: the drawn region, or the probed voxel
+    /// (ProductOrigin.h). Opening the row redraws it, so a number can be traced
+    /// back to the geometry that produced it instead of only being described.
+    /// Empty when the product has no geometry (a whole-image metric, a file).
+    QVariantMap origin;
 };
 
 class ProductRegistry : public QObject

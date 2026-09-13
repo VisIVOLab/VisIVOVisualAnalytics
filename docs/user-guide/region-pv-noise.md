@@ -98,6 +98,20 @@ background and the outer-vs-inner difference is shown automatically —
 useful for aperture photometry.
 ```
 
+Every region analysis leaves a row in **Session Data** carrying both its numbers
+and the shape they were measured on. Opening that row **redraws the region** and
+reopens the statistics, so a measurement taken twenty minutes and three regions
+ago can still be traced back to the pixels that produced it. The same holds for a
+pinned spectrum in the cube viewer: opening its row puts the crosshair back on
+the pixel it was probed at and returns to that channel.
+
+Drawing an annulus takes two steps: drag out the **outer** radius, then type the
+**inner** one when prompted. The inner ring is drawn **as you type it**, in the
+same amber the crop and mask previews use, so you can see the band you are about
+to measure before committing to it; it takes the region's own colour once you
+accept, and disappears if you cancel. (Before, the prompt was a bare number box
+and the ring appeared only after you had already chosen.)
+
 ### Sending the result somewhere
 
 - *Copy* the statistics block to the clipboard (CSV-ish format).

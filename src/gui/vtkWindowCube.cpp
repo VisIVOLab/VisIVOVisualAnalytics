@@ -35,6 +35,7 @@
 #include "theme/VisivoTheme.h"
 #include "theme/ToolDialogStyle.h"
 #include "ToolProgressSheet.h"
+#include "ProductOrigin.h"
 #include "ToolResultDialog.h"
 #include "ProfileWidget.h"
 #include "PvController.h"
@@ -6451,7 +6452,8 @@ QString vtkWindowCube::scopedProductId(const QString &stem) const
 QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QString &label,
                                                const QVariantMap &params, QWidget *window,
                                                const QString &stableId, const QString &renderer,
-                                               bool revealProvenance)
+                                               bool revealProvenance,
+                                               const QVariantMap &origin)
 {
     AnalysisProduct p;
     p.productId = stableId;
@@ -6465,6 +6467,7 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
     p.sessionId = this->remoteSessionId;
     p.ownerId = this->m_windowScope;   // this window owns + renders the product
     p.window = window;
+    p.origin = origin;
     const QString id = ProductRegistry::instance().registerProduct(std::move(p));
     if (this->m_workspaceChrome) {
         // Select the new product first (so Provenance is populated), then auto-expand
@@ -8332,6 +8335,20 @@ void vtkWindowCube::activateSessionView(const QString &viewTag, const QString &p
     // Resolve the Session-tree row to a pane view. A dataset root (both empty) has no
     // pane — leave the selection alone.
     using namespace Qt::StringLiterals;
+    // Whatever the row turns out to be, show WHERE it came from. The numbers or
+    // the curve say what was measured; the overlay says on which pixels, which
+    // is the half a product could not answer before (user report). Harmless for
+    // rows with no geometry: restoreProductOrigin returns false and draws
+    // nothing.
+    if (!productId.isEmpty()) {
+        const AnalysisProduct origin = ProductRegistry::instance().product(productId);
+        if (this->restoreProductOrigin(origin.origin)) {
+            const QString where = visivo::describeOrigin(origin.origin);
+            if (!where.isEmpty())
+                this->statusBar()->showMessage(u"Showing %1"_s.arg(where), 6000);
+        }
+    }
+
     PaneView target;
     if (viewTag == u"view3d"_s)
         target = { ViewId::View3D, {} };
@@ -9109,7 +9126,13 @@ void vtkWindowCube::pinCurrentSpectrum()
     if (!m_lastProbeContext.isEmpty())
         params.insert(u"Position"_s, m_lastProbeContext);
     params.insert(u"Channels"_s, QString::number(m_lastProbeKey.size()));
-    this->registerAnalysisProduct(u"spectrum"_s, label, params, this, productId, u"spectrum1d"_s);
+    // The pixel it was probed at travels with it: "which line of sight is this?"
+    // is the first thing asked of a pinned spectrum, and the Position string
+    // alone cannot put the crosshair back on the slice.
+    const QVariantMap origin = visivo::encodeProbeOrigin(this->probeVoxel);
+    params.insert(u"Measured on"_s, visivo::describeOrigin(origin));
+    this->registerAnalysisProduct(u"spectrum"_s, label, params, this, productId,
+                                  u"spectrum1d"_s, /*revealProvenance=*/true, origin);
 
     // A pin is PERMANENT, so it may grow the layout but never borrow: a borrowed
     // pane is given back when a tool ends, and this product has no end.
@@ -11730,6 +11753,56 @@ void vtkWindowCube::reopenProductFromFile(const QString &productId)
                     ? u"This product recorded nothing to reopen."_s
                     : u"“%1” recorded nothing to reopen."_s.arg(p.label),
             5000);
+}
+
+bool vtkWindowCube::restoreProductOrigin(const QVariantMap &origin)
+{
+    using namespace Qt::StringLiterals;
+    const QString kind = visivo::originKind(origin);
+    if (kind == u"probe"_s) {
+        // A pinned spectrum: put the crosshair back where it was probed, and go
+        // to that channel, so the plot and the slice agree about the pixel.
+        int v[3] = { 0, 0, 0 };
+        if (!visivo::originPoint(origin, u"voxel"_s, v, 3))
+            return false;
+        this->requestRemoteSlice(this->clampRemoteSliceIndex(v[2]));
+        this->probeVoxel = { v[0], v[1], v[2] };
+        this->probeValid = true;
+        this->refreshProbeOverlay();
+        if (auto *win = this->active2dWin())
+            win->Render();
+        return true;
+    }
+    if (kind != u"region"_s)
+        return false;
+    const QString shape = visivo::originShape(origin);
+    if (shape == u"polygon"_s) {
+        const auto verts = visivo::originPolygon(origin);
+        if (verts.size() < 3)
+            return false;
+        this->regionPolygonVertices = verts;
+        this->regionMode = RegionMode::Polygon;
+    } else {
+        int a[2] = { 0, 0 }, c[2] = { 0, 0 };
+        if (!visivo::originPoint(origin, u"anchor"_s, a, 2)
+            || !visivo::originPoint(origin, u"current"_s, c, 2))
+            return false;   // half a geometry is worse than none
+        this->regionAnchorVoxel = { a[0], a[1] };
+        this->regionCurrentVoxel = { c[0], c[1] };
+        this->regionAnnulusInnerRadius = visivo::originInnerRadius(origin);
+        this->regionMode = shape == u"box"_s     ? RegionMode::Box
+                         : shape == u"circle"_s  ? RegionMode::Circle
+                         : shape == u"annulus"_s ? RegionMode::Annulus
+                                                 : RegionMode::None;
+        if (this->regionMode == RegionMode::None)
+            return false;
+    }
+    this->regionDragging = false;
+    this->regionValid = true;
+    this->refreshRegionOverlay();
+    if (auto *win = this->active2dWin())
+        win->Render();
+    return true;
 }
 
 void vtkWindowCube::showRecordedResult(const AnalysisProduct &product)

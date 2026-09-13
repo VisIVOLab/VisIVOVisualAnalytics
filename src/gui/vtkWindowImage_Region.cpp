@@ -22,6 +22,7 @@
 #include "theme/SegmentedToggle.h"
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
+#include "ProductOrigin.h"
 #include "ToolResultDialog.h"
 #include "vtkInteractorStyleProfile.h"
 #include "vtkLegendScaleActorWCS.h"
@@ -320,11 +321,39 @@ void vtkWindowImage::finishRegionInteraction()
         const double dx = static_cast<double>(this->regionCurrentVoxel[0] - this->regionAnchorVoxel[0]);
         const double dy = static_cast<double>(this->regionCurrentVoxel[1] - this->regionAnchorVoxel[1]);
         const double outerRadius = std::sqrt(dx * dx + dy * dy);
-        bool accepted = false;
-        const double innerRadius = QInputDialog::getDouble(
-                this, u"Annulus Inner Radius"_s, u"Inner radius (pixels):"_s, 0.0, 0.0,
-                std::max(0.0, outerRadius), 1, &accepted);
+        // Live preview while the radius is typed. The inner ring is drawn as the
+        // number changes, in the amber of the crop/mask preview so it reads as
+        // "this is what you are setting", and takes the region's own colour once
+        // accepted. A modal QInputDialog::getDouble gave no feedback at all: you
+        // typed a radius blind and found out afterwards (user request).
+        QInputDialog prompt(this);
+        prompt.setWindowTitle(u"Annulus Inner Radius"_s);
+        prompt.setLabelText(u"Inner radius (pixels), 0 to %1:"_s
+                                    .arg(std::max(0.0, outerRadius), 0, 'f', 1));
+        prompt.setInputMode(QInputDialog::DoubleInput);
+        prompt.setDoubleRange(0.0, std::max(0.0, outerRadius));
+        prompt.setDoubleDecimals(1);
+        prompt.setDoubleValue(0.0);
+
+        this->regionAnnulusInnerActor->GetProperty()->SetColor(0.95, 0.65, 0.15);
+        const auto showInner = [this](double r) {
+            this->regionAnnulusInnerRadius = r;
+            this->regionDragging = false;   // the overlay hides the ring while dragging
+            this->regionValid = true;
+            this->refreshRegionOverlay();
+            ui->vtk->renderWindow()->Render();
+        };
+        showInner(0.0);
+        QObject::connect(&prompt, &QInputDialog::doubleValueChanged, this, showInner);
+
+        const bool accepted = prompt.exec() == QDialog::Accepted;
+        const double innerRadius = prompt.doubleValue();
+        // Back to the region's own colour: amber meant "being chosen".
+        this->regionAnnulusInnerActor->GetProperty()->SetColor(0.2, 0.9, 1.0);
         if (!accepted) {
+            this->regionAnnulusInnerRadius = 0.0;
+            this->refreshRegionOverlay();
+            ui->vtk->renderWindow()->Render();
             if (this->actionAnnulusRegion && this->actionAnnulusRegion->isChecked()) {
                 this->actionAnnulusRegion->setChecked(false);
             }
@@ -830,12 +859,18 @@ void vtkWindowImage::analyzeCurrentRegion()
         params.insert(u"Std Dev"_s,QStringLiteral("%1").arg(stats.stddev,   0, 'g', 8));
         params.insert(u"σ (MAD)"_s,QStringLiteral("%1").arg(stats.madSigma, 0, 'g', 8));
     }
+    // …with the geometry it was measured on, so opening the row redraws the very
+    // box/circle/polygon/annulus these numbers came from.
+    const QVariantMap origin = visivo::encodeRegionOrigin(
+            static_cast<int>(capturedMode), this->regionAnchorVoxel, this->regionCurrentVoxel,
+            this->regionPolygonVertices, this->regionAnnulusInnerRadius);
+    params.insert(u"Measured on"_s, visivo::describeOrigin(origin));
     this->registerAnalysisProduct(
             u"region"_s,
             u"%1 region stats"_s.arg(regionModeLabel(capturedMode)),
             params,
             this->scopedProductId(u"region-%1"_s.arg(static_cast<int>(capturedMode))),
-            record);
+            record, /*layerIndex=*/-1, origin);
 
     // When the dialog is closed, clear the overlay and deactivate the region tool.
     // The generation guard prevents the cleanup from running if a newer analysis has

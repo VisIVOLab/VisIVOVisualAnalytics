@@ -25,12 +25,15 @@
 
 #include "LayerListModel.h"   // src/, not src/gui/
 #include <QDockWidget>
+#include "ProductOrigin.h"
 #include "ProductRegistry.h"
 #include "ToolResultDialog.h"
 #include "WorkspaceChrome.h"
 
 #include <QAbstractItemModel>
 #include <QListView>
+#include <vtkRenderWindow.h>
+
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QFileInfo>
@@ -62,7 +65,8 @@ QString vtkWindowImage::registerAnalysisProduct(const QString &kind, const QStri
                                                 const QVariantMap &params,
                                                 const QString &stableId,
                                                 const QVariantMap &resultView,
-                                                int layerIndex)
+                                                int layerIndex,
+                                                const QVariantMap &origin)
 {
     AnalysisProduct p;
     p.productId = stableId;
@@ -73,6 +77,7 @@ QString vtkWindowImage::registerAnalysisProduct(const QString &kind, const QStri
     p.renderer = QString();   // single-view window: nothing mounts in a pane
     p.params = params;
     p.resultView = resultView;
+    p.origin = origin;
     p.sourceDatasetId = this->remoteDatasetId;
     p.sessionId = this->remoteSessionId;
     p.ownerId = this->m_windowScope;
@@ -111,7 +116,14 @@ void vtkWindowImage::openProduct(const QString &productId)
         QDesktopServices::openUrl(QUrl::fromLocalFile(path));
         return;
     }
-    // A MEASUREMENT: replay the window it came from.
+    // A MEASUREMENT: put the geometry back on screen first — the numbers say
+    // what was measured, the overlay says where, and a row that only reopens a
+    // table leaves the second half unanswered (user report).
+    if (this->restoreProductOrigin(p.origin)) {
+        const QString where = visivo::describeOrigin(p.origin);
+        if (!where.isEmpty())
+            this->statusBar()->showMessage(u"Showing %1"_s.arg(where), 6000);
+    }
     if (!p.resultView.isEmpty()) {
         const QString slot = u"recorded-result:"_s + productId;
         if (auto *existing = this->findChild<ToolResultDialog *>(slot)) {
@@ -210,4 +222,38 @@ void vtkWindowImage::recordImageQuality(const QVariantMap &metrics)
             { { u"Metrics"_s, rows } });
     this->registerAnalysisProduct(u"quality"_s, u"Image quality"_s, params,
                                   this->scopedProductId(u"imagequality"_s), record);
+}
+
+bool vtkWindowImage::restoreProductOrigin(const QVariantMap &origin)
+{
+    if (visivo::originKind(origin) != u"region"_s)
+        return false;
+    const QString shape = visivo::originShape(origin);
+    if (shape == u"polygon"_s) {
+        const auto verts = visivo::originPolygon(origin);
+        if (verts.size() < 3)
+            return false;
+        this->regionPolygonVertices = verts;
+        this->regionMode = RegionMode::Polygon;
+    } else {
+        int a[2] = { 0, 0 }, c[2] = { 0, 0 };
+        if (!visivo::originPoint(origin, u"anchor"_s, a, 2)
+            || !visivo::originPoint(origin, u"current"_s, c, 2))
+            return false;   // half a geometry is worse than none
+        this->regionAnchorVoxel = { a[0], a[1] };
+        this->regionCurrentVoxel = { c[0], c[1] };
+        this->regionAnnulusInnerRadius = visivo::originInnerRadius(origin);
+        this->regionMode = shape == u"box"_s      ? RegionMode::Box
+                         : shape == u"circle"_s   ? RegionMode::Circle
+                         : shape == u"annulus"_s  ? RegionMode::Annulus
+                                                  : RegionMode::None;
+        if (this->regionMode == RegionMode::None)
+            return false;
+    }
+    this->regionDragging = false;
+    this->regionValid = true;
+    this->refreshRegionOverlay();
+    if (ui->vtk && ui->vtk->renderWindow())
+        ui->vtk->renderWindow()->Render();
+    return true;
 }

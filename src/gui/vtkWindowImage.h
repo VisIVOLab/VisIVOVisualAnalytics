@@ -602,7 +602,11 @@ private:
                                     const QVariantMap &params,
                                     const QString &stableId,
                                     const QVariantMap &resultView = {},
-                                    int layerIndex = -1);
+                                    int layerIndex = -1,
+                                    const QVariantMap &origin = {});
+    /// Redraw the region a product was measured on. Returns false when the
+    /// product carries no geometry.
+    bool restoreProductOrigin(const QVariantMap &origin);
     /// Product id scoped to this file AND this window, so two windows on the
     /// same image do not collide.
     QString scopedProductId(const QString &stem) const;

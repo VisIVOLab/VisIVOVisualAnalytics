@@ -817,6 +817,31 @@ double-clicking did nothing and the popup the user had closed was gone for good
 (user report). The row menu says so explicitly ("Show the Numbers Again"),
 because an action reachable only by double-click is an action nobody finds.
 
+**A product says what it measured; it must also say where.** "Box region stats,
+mean 1204.7" does not tell you which box, and a pinned spectrum does not tell you
+which line of sight — with three regions drawn and two spectra pinned, the rows
+become indistinguishable within minutes (user report). So a product carries its
+`origin` alongside its numbers: the drawn region (shape, anchor, current vertex
+or polygon points, annulus inner radius) or the probed voxel, encoded by
+`ProductOrigin.h`.
+
+Opening the row **redraws it**. In the image viewer that means the region overlay
+comes back; in the cube it also re-places the probe crosshair and goes to the
+channel the spectrum was taken at, so the plot and the slice agree about the
+pixel. It runs on every row activation, before whatever else the row does — a
+pane-mounted spectrum restores its region *and* mounts, a measurement restores
+its region *and* replays its numbers — and is a no-op for products with no
+geometry (a moment map is computed over the whole field; there is nothing to
+draw). The human phrasing of the same thing goes into Provenance as **Measured
+on**, so the row reads even without clicking.
+
+Like the result record, the encoding lives in a pure header with tests over it
+(`tests/test_product_origin.cpp`). It carries the shape as a STRING rather than
+either window's `RegionMode` value, so a product registered by one build still
+restores in another if that enum ever gains a member, and a malformed record
+restores **nothing** rather than half a geometry — an overlay that silently lands
+at (0, 0) would be worse than no overlay at all.
+
 **Reopening replays a record; it does not re-derive a layout.** The first cut
 rebuilt the window from the product's provenance parameters, and the result only
 resembled the original: one flat list where there had been a *Sigma* and a *MAD*

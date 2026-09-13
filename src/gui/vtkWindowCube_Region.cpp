@@ -21,6 +21,7 @@
 #include "StackDialog.h"
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
+#include "ProductOrigin.h"
 #include "ToolResultDialog.h"
 #include "ProfileWidget.h"
 #include "PvController.h"
@@ -341,11 +342,47 @@ void vtkWindowCube::finishRegionInteraction()
         const double dx = static_cast<double>(this->regionCurrentVoxel[0] - this->regionAnchorVoxel[0]);
         const double dy = static_cast<double>(this->regionCurrentVoxel[1] - this->regionAnchorVoxel[1]);
         const double outerRadius = std::sqrt(dx * dx + dy * dy);
-        bool accepted = false;
-        const double innerRadius = QInputDialog::getDouble(
-                this, u"Annulus Inner Radius"_s, u"Inner radius (pixels):"_s, 0.0, 0.0,
-                std::max(0.0, outerRadius), 1, &accepted);
+        // Live preview while the radius is typed — the same amber the crop and
+        // mask box previews use, so it reads as "this is what you are setting",
+        // and back to the region's own colour once accepted. A modal
+        // QInputDialog::getDouble gave no feedback at all: you typed a radius
+        // blind and found out afterwards (user request). Both panes carry their
+        // own ring, so both are recoloured.
+        const auto innerActors = { this->sliceRegionAnnulusInnerActor.Get(),
+                                   this->momentRegionAnnulusInnerActor.Get() };
+        for (vtkActor *a : innerActors)
+            if (a)
+                a->GetProperty()->SetColor(0.95, 0.65, 0.15);
+
+        QInputDialog prompt(this);
+        prompt.setWindowTitle(u"Annulus Inner Radius"_s);
+        prompt.setLabelText(u"Inner radius (pixels), 0 to %1:"_s
+                                    .arg(std::max(0.0, outerRadius), 0, 'f', 1));
+        prompt.setInputMode(QInputDialog::DoubleInput);
+        prompt.setDoubleRange(0.0, std::max(0.0, outerRadius));
+        prompt.setDoubleDecimals(1);
+        prompt.setDoubleValue(0.0);
+        const auto showInner = [this](double r) {
+            this->regionAnnulusInnerRadius = r;
+            this->regionDragging = false;   // the overlay hides the ring while dragging
+            this->regionValid = true;
+            this->refreshRegionOverlay();
+            if (auto *win = this->active2dWin())
+                win->Render();
+        };
+        showInner(0.0);
+        QObject::connect(&prompt, &QInputDialog::doubleValueChanged, this, showInner);
+
+        const bool accepted = prompt.exec() == QDialog::Accepted;
+        const double innerRadius = prompt.doubleValue();
+        for (vtkActor *a : innerActors)
+            if (a)
+                a->GetProperty()->SetColor(0.2, 0.9, 1.0);
         if (!accepted) {
+            this->regionAnnulusInnerRadius = 0.0;
+            this->refreshRegionOverlay();
+            if (auto *win = this->active2dWin())
+                win->Render();
             if (this->actionAnnulusRegion && this->actionAnnulusRegion->isChecked()) {
                 this->actionAnnulusRegion->setChecked(false);
             }
@@ -920,8 +957,17 @@ void vtkWindowCube::analyzeCurrentRegion()
                     params.insert(u"Median"_s, fmt(stats.median));
                     params.insert(u"Std Dev"_s, fmt(stats.stddev));
                 }
+                // …and the region it was extracted from, so opening the row
+                // redraws that shape on the slice instead of leaving the user to
+                // work out which of several regions produced this curve.
+                const QVariantMap origin = visivo::encodeRegionOrigin(
+                        static_cast<int>(this->regionMode), this->regionAnchorVoxel,
+                        this->regionCurrentVoxel, this->regionPolygonVertices,
+                        this->regionAnnulusInnerRadius);
+                params.insert(u"Measured on"_s, visivo::describeOrigin(origin));
                 this->registerAnalysisProduct(u"spectrum"_s, label, params, this, pid,
-                                              u"spectrum1d"_s);
+                                              u"spectrum1d"_s, /*revealProvenance=*/true,
+                                              origin);
                 // SHOW it. The region spectrum used to be visible only by hand — via
                 // the fixed "Spectrum" pane entry (which drew the shared plot above,
                 // not this product) or by picking the SPEC row in a pane's ▾ menu. It
