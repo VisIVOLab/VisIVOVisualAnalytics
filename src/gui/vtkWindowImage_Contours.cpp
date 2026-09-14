@@ -10,6 +10,8 @@
 #include "CatalogueOverlayUtils.h"
 #include "DiagnosticsWindow.h"
 #include "ImageLayerController.h"
+#include "InspectorPanel.h"
+#include "WorkspaceChrome.h"
 #include "ImageLayerImportService.h"
 #include "ImageLayerLoadTask.h"
 #include "LUTCustomizerDialog.h"
@@ -230,6 +232,19 @@ void vtkWindowImage::setContoursVisible(bool vis)
     m_contoursVisible = vis;
     if (m_contourActor) {
         m_contourActor->SetVisibility(vis);
+    }
+    // The tool's parameters appear with the tool and leave with it.
+    if (m_workspaceChrome) {
+        if (auto *panel = m_workspaceChrome->inspectorPanel()) {
+            if (vis && m_contourSettingsBlock) {
+                panel->setToolSettings(u"Contours"_s, m_contourSettingsBlock);
+                // …and SHOW it: settings mounted in a tab nobody is looking at
+                // are the same as no settings.
+                m_workspaceChrome->revealParametersTab();
+            } else if (panel->activeToolSettings() == u"Contours"_s) {
+                panel->clearToolSettings();
+            }
+        }
     }
     if (ui->vtk->renderWindow())
         ui->vtk->renderWindow()->Render();

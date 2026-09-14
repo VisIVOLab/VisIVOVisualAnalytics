@@ -120,11 +120,37 @@ InspectorPanel::InspectorPanel(QWidget *parent)
             f.write(QJsonDocument(QJsonObject::fromVariantMap(m_provParams)).toJson());
         }
     });
+    // ── Two halves, one tab ──────────────────────────────────────────────────
+    // The tool you have OPEN and the product you have SELECTED both answer the
+    // same question - "which numbers produced what I am looking at" - so they
+    // live in one place instead of the three the settings used to be spread
+    // over (a dock block, a dialog, nowhere). The top half is the active tool's
+    // live settings, the bottom half the recorded ones of the selected product.
+    // Nothing is lost by merging: the bottom half IS the provenance - still
+    // called that, still with its Export recipe button - it just no longer has
+    // the tab to itself.
+    m_toolCaption = new QLabel(m_provPage);
+    m_toolCaption->setStyleSheet(
+            QStringLiteral("QLabel { color:%1; font-weight:700; font-size:10px;"
+                           " letter-spacing:0.14em; }")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    m_toolCaption->hide();
+    m_toolSettingsHost = new QWidget(m_provPage);
+    auto *toolHostLayout = new QVBoxLayout(m_toolSettingsHost);
+    toolHostLayout->setContentsMargins(0, 0, 0, 0);
+    toolHostLayout->setSpacing(4);
+    m_toolSettingsHost->hide();
+    m_provCaption = new QLabel(u"PROVENANCE"_s, m_provPage);
+    m_provCaption->setStyleSheet(m_toolCaption->styleSheet());
+
+    m_provLayout->addWidget(m_toolCaption);
+    m_provLayout->addWidget(m_toolSettingsHost);
+    m_provLayout->addWidget(m_provCaption);
     m_provLayout->addWidget(m_provTitle);
     m_provLayout->addWidget(m_provBody);
     m_provLayout->addWidget(exportBtn);
     m_provLayout->addStretch(1);
-    m_tabs->addTab(m_provPage, u"Provenance"_s);
+    m_tabs->addTab(m_provPage, u"Parameters"_s);
 }
 
 void InspectorPanel::clearProperties()
@@ -394,6 +420,54 @@ void InspectorPanel::showProvenance(const QString &title, const QVariantMap &par
     html += u"</table>"_s;
     m_provBody->setText(html);
     m_provBody->setTextFormat(Qt::RichText);
+}
+
+QString InspectorPanel::activeToolSettings() const
+{
+    return m_activeToolName;
+}
+
+void InspectorPanel::setToolSettings(const QString &toolName, QWidget *settings)
+{
+    if (!m_toolSettingsHost)
+        return;
+    auto *layout = qobject_cast<QVBoxLayout *>(m_toolSettingsHost->layout());
+    if (!layout)
+        return;
+    // Re-home whatever was there: the widget belongs to the window, which keeps
+    // it alive and reuses it, so it is removed from this layout, never deleted.
+    while (QLayoutItem *item = layout->takeAt(0)) {
+        if (QWidget *w = item->widget())
+            w->setParent(nullptr);
+        delete item;
+    }
+    if (!settings) {
+        clearToolSettings();
+        return;
+    }
+    layout->addWidget(settings);
+    settings->show();
+    m_activeToolName = toolName;
+    m_toolCaption->setText(toolName.toUpper());
+    m_toolCaption->show();
+    m_toolSettingsHost->show();
+}
+
+void InspectorPanel::clearToolSettings()
+{
+    m_activeToolName.clear();
+    if (!m_toolSettingsHost)
+        return;
+    if (auto *layout = qobject_cast<QVBoxLayout *>(m_toolSettingsHost->layout())) {
+        while (QLayoutItem *item = layout->takeAt(0)) {
+            if (QWidget *w = item->widget())
+                w->setParent(nullptr);
+            delete item;
+        }
+    }
+    m_toolSettingsHost->hide();
+    if (m_toolCaption)
+        m_toolCaption->hide();
 }
 
 void InspectorPanel::clearProvenance()

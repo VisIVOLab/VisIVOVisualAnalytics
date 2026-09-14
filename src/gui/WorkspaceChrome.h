@@ -70,6 +70,10 @@ public:
     /// wire the pane-layout / Linked controls. Cloud chip is fed by the poll.
     InspectorPanel *installInspectorDock();
 
+    /// The inspector panel itself, so a window can mount an active tool's
+    /// settings in its Parameters tab. Null until installInspectorDock().
+    InspectorPanel *inspectorPanel() const;
+
     /// The inspector dock (for wiring a show/hide toggle). Null until installed.
     QDockWidget *inspectorDock() const { return m_inspectorDock; }
 
@@ -91,6 +95,10 @@ public:
     /// Expand the Inspector + select a tab. Called by the rail entries and by the
     /// auto-expand triggers (tool launch → Analysis, product → Provenance).
     void revealInspectorTab(int index);
+    /// Expand the Inspector on the Parameters tab. Named rather than the bare
+    /// index 2 the call sites used: a tool that mounts its settings there has to
+    /// SHOW them, or the settings exist in a tab nobody was looking at.
+    void revealParametersTab() { revealInspectorTab(2); }
     /// Left-rail product count (fed by the window from ProductRegistry).
     void setSessionRailCount(int count);
 

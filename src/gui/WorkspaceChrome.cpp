@@ -378,7 +378,7 @@ AssistantPanel *WorkspaceChrome::installCopilot(const QString &url, const QStrin
         m_inspectorRail->setEntries(
                 { { u":/icons/rail_info.svg"_s, QObject::tr("Properties") },
                   { u":/icons/rail_stats.svg"_s, QObject::tr("Analysis") },
-                  { u":/icons/rail_provenance.svg"_s, QObject::tr("Provenance") },
+                  { u":/icons/rail_provenance.svg"_s, QObject::tr("Parameters") },
                   { u":/icons/rail_copilot.svg"_s, QObject::tr("Copilot") } });
     }
     return panel;
@@ -410,7 +410,7 @@ InspectorPanel *WorkspaceChrome::installInspectorDock()
     // Provenance→metadata; the tab name is the tooltip (§3.0c).
     m_inspectorRail->setEntries({ { u":/icons/rail_info.svg"_s, QObject::tr("Properties") },
                                   { u":/icons/rail_stats.svg"_s, QObject::tr("Analysis") },
-                                  { u":/icons/rail_provenance.svg"_s, QObject::tr("Provenance") } });
+                                  { u":/icons/rail_provenance.svg"_s, QObject::tr("Parameters") } });
     m_inspectorStack->addWidget(m_inspector);       // page 0
     m_inspectorStack->addWidget(m_inspectorRail);   // page 1
     m_inspectorDock->setWidget(m_inspectorStack);
@@ -574,6 +574,11 @@ void WorkspaceChrome::setInspectorCollapsed(bool collapsed)
                                            : (QDockWidget::DockWidgetMovable
                                               | QDockWidget::DockWidgetFloatable));
     emit dockCollapseChanged();
+}
+
+InspectorPanel *WorkspaceChrome::inspectorPanel() const
+{
+    return m_inspector;
 }
 
 void WorkspaceChrome::revealInspectorTab(int index)

@@ -1519,6 +1519,61 @@ window has exactly one layer watcher.
 
 ---
 
+### One place for a tool's parameters
+
+A tool's settings used to live wherever they had been built: the image viewer's
+contour Level/Lower/Upper in a block that sat in the left dock whether or not
+contours were on; the cube's in a `.ui` page (`pageContours`) inside the hidden
+sidebar container, which means **they could not be typed at all** — built, wired,
+unreachable, which is also why the cube's contour-bounds bug stayed invisible for
+so long; and the compute tools' in their own dialogs.
+
+The Inspector's third tab is now **Parameters**, with two captioned halves:
+
+- the **active tool's** live settings, mounted by the tool when it opens
+  (`InspectorPanel::setToolSettings`) and removed when it closes;
+- **PROVENANCE**: the recorded parameters of the product selected in Session
+  Data, which is what that tab always showed, with its Export-recipe button.
+
+Mounting the settings is not enough: the tool also **reveals** the tab
+(`WorkspaceChrome::revealParametersTab()`, which expands the Inspector if it is
+collapsed and moves the rail with it). Settings that appear in a tab the user is
+not looking at are the same as no settings — the failure this whole change was
+meant to fix. The helper is named rather than the bare index 2 the two existing
+call sites used.
+
+Same question, one place: *which numbers produced what I am looking at*. Merging
+rather than adding a fifth tab also avoids a trap — the tabs are addressed by
+INDEX (`revealInspectorTab(2)`, and the collapsed rail's entry list), so a tab
+that appears and disappears would silently renumber the others.
+
+The widget is **re-homed**, not rebuilt: the window owns it, keeps it alive and
+hands the same instance over, so there is never a second Level spin box writing
+the same state. The rule, stated the way a *user* can read it rather than in terms of where the
+code happens to keep things: a tool either **changes what you are looking at**
+(no product, no run button - its settings are the state of the view, and they
+live in this tab while it is on) or it **makes a new thing** (configure, run,
+a row in Session Data). The app already has the convention that says which is
+which, and it is the one every desktop uses: the **ellipsis**. `Compute Faraday
+RM…` asks first; `Show Contours` acts. Four labels were lying about that and were
+corrected - `Load Catalogue Overlay…`, `Save Annotations…`, `Load Annotations…`
+gained the ellipsis they had earned, `Pixel Histogram`, `Image Quality /
+Artifacts` and `Overlay Slice on an Open Image` lost one they had not (they open
+a panel or run straight away; they ask nothing). Whichever route a product came
+by, its parameters end up in the same tab afterwards.
+
+In the tab so far: **contours** and the **polarisation-vector overlay** (grid
+step, SNR threshold, length scale - which were also stranded on the hidden Tools
+page). Only one tool's settings are mounted at a time, and a tool clears only its
+own section (`activeToolSettings()`), or switching contours off would wipe the
+vectors' settings mounted after them. **Region needs no section**: its only
+"parameter" is the annulus inner radius, and that is a per-use prompt with a live
+preview during the drag, not standing state - its real parameters are the drawn
+geometry, which is provenance. Tools that already own a persistent dialog — Moment Map Settings,
+Export Sub-Cube, the noise region — keep it: the dialog hosts their progress
+sheet, and duplicating their parameters in the tab would be two sources of truth.
+For those the tab is the read-only half, after the fact.
+
 ### Region bounds: a circle is a centre and a rim, not two corners
 
 Both viewers scan a bounding box and ask the hit-tester about each pixel inside

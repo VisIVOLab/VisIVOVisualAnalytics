@@ -1220,7 +1220,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     QObject::connect(this->actionAnnulusRegion, &QAction::toggled, this,
                      [this](bool checked) { this->setRegionMode(RegionMode::Annulus, checked); });
     ui->menuTools->addSeparator();
-    this->actionLoadCatalogueOverlay = ui->menuTools->addAction(u"Load Catalogue Overlay"_s);
+    this->actionLoadCatalogueOverlay = ui->menuTools->addAction(u"Load Catalogue Overlay…"_s);
     this->actionCrossmatch = ui->menuTools->addAction(u"Cross-match with Catalogue…"_s);
     this->actionCrossmatch->setToolTip(
             u"Query an external catalogue (SIMBAD / 2MASS / NVSS / FIRST) over this image's "
@@ -1370,7 +1370,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
 
     // ── Histogram ─────────────────────────────────────────────────────────
     ui->menuTools->addSeparator();
-    auto *actHistogram = ui->menuTools->addAction(u"Pixel Histogram…"_s);
+    auto *actHistogram = ui->menuTools->addAction(u"Pixel Histogram"_s);
     this->m_actHistogram = actHistogram;
     QObject::connect(actHistogram, &QAction::triggered, this,
                      &vtkWindowImage::showHistogramPanel);
@@ -1383,9 +1383,9 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     this->m_actAddArrow = actAddArrow;
     auto *actClearAnnot = ui->menuTools->addAction(u"Clear Annotations"_s);
     this->m_actClearAnnot = actClearAnnot;
-    auto *actSaveAnnot = ui->menuTools->addAction(u"Save Annotations"_s);
+    auto *actSaveAnnot = ui->menuTools->addAction(u"Save Annotations…"_s);
     this->m_actSaveAnnot = actSaveAnnot;
-    auto *actLoadAnnot = ui->menuTools->addAction(u"Load Annotations"_s);
+    auto *actLoadAnnot = ui->menuTools->addAction(u"Load Annotations…"_s);
     this->m_actLoadAnnot = actLoadAnnot;
     QObject::connect(actAddText, &QAction::triggered, this, &vtkWindowImage::addTextAnnotation);
     QObject::connect(actAddArrow, &QAction::triggered, this, &vtkWindowImage::addArrowAnnotation);

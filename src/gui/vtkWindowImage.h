@@ -378,6 +378,13 @@ private:
     /// Lower / Upper widgets, which otherwise live only in the Tools page that
     /// the Inspector's Analysis tab superseded (and which is never shown).
     QWidget *buildContourControlsBlock();
+    /// Built once, parked hidden, mounted in the Inspector's Parameters tab for
+    /// as long as the contour tool is on.
+    QPointer<QWidget> m_contourSettingsBlock;
+    /// Same for the polarisation-vector overlay: grid step, SNR threshold and
+    /// length scale, shown while the vectors are on.
+    QWidget *buildPolVectorSettingsBlock();
+    QPointer<QWidget> m_polVecSettingsBlock;
     QPointer<QCheckBox> m_contourShowCheck;
     QPointer<QLineEdit> m_contourLowerEdit;
     QPointer<QLineEdit> m_contourUpperEdit;

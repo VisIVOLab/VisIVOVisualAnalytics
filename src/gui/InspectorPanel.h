@@ -57,7 +57,19 @@ public:
     /// caller owns the widget and toggles its visibility as the active pane changes.
     void addAnalysisSection(QWidget *section);
 
-    /// Select / query the active tab (0 Properties, 1 Analysis, 2 Provenance).
+    /// Parameters tab, top half: the ACTIVE tool's live settings. The caller owns
+    /// @p settings (it is re-homed here, never deleted) and calls this when the
+    /// tool opens and clearToolSettings() when it closes. The bottom half keeps
+    /// showing the selected product's recorded parameters, so one tab answers
+    /// both "what am I about to do" and "what was this made with".
+    void setToolSettings(const QString &toolName, QWidget *settings);
+    void clearToolSettings();
+    /// Which tool's settings are mounted, or empty. A tool clears only its OWN
+    /// section: turning contours off must not wipe the polarisation vectors'
+    /// settings that were mounted after them.
+    QString activeToolSettings() const;
+
+    /// Select / query the active tab (0 Properties, 1 Analysis, 2 Parameters).
     /// Used by the collapsible-rail entries and the auto-expand triggers (§4.1.4).
     void showTab(int index);
     int currentTab() const;
@@ -102,6 +114,10 @@ private:
 
     QWidget *m_provPage = nullptr;
     QVBoxLayout *m_provLayout = nullptr;
+    QString m_activeToolName;
+    QLabel *m_toolCaption{ nullptr };
+    QWidget *m_toolSettingsHost{ nullptr };
+    QLabel *m_provCaption{ nullptr };
     QLabel *m_provTitle = nullptr;
     QLabel *m_provBody = nullptr;
     QVariantMap m_provParams;

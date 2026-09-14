@@ -581,12 +581,21 @@ void vtkWindowImage::setupInspector()
     // LAYERS block; only info/stats stays in the Inspector Properties.
     if (this->m_inspectorPageLayer)     this->m_workspaceChrome->addSessionLayers(this->m_inspectorPageLayer);
     if (this->m_inspectorPageCatalogue) this->m_workspaceChrome->addSessionLayers(this->m_inspectorPageCatalogue);
-    // Contour settings belong with the other view controls in the left column,
-    // the way the cube viewer keeps its CONTOURS card there: the Analysis tab
-    // can only offer the on/off action, and a toggle with no Level / Lower /
-    // Upper is not a usable contour tool.
-    if (QWidget *contourBlock = this->buildContourControlsBlock())
-        this->m_workspaceChrome->addSessionLayers(contourBlock);
+    // Contour settings are a TOOL's parameters, not a permanent view control:
+    // they are built here, parked hidden, and mounted in the Inspector's
+    // Parameters tab while the tool is on (setContoursVisible). One place for
+    // every tool's settings, instead of a block that sits in the dock whether or
+    // not anything is using it.
+    m_contourSettingsBlock = this->buildContourControlsBlock();
+    if (m_contourSettingsBlock) {
+        m_contourSettingsBlock->setParent(panel);
+        m_contourSettingsBlock->hide();
+    }
+    m_polVecSettingsBlock = this->buildPolVectorSettingsBlock();
+    if (m_polVecSettingsBlock) {
+        m_polVecSettingsBlock->setParent(panel);
+        m_polVecSettingsBlock->hide();
+    }
     if (this->m_inspectorPageInfo)      panel->addPropertiesSection(this->m_inspectorPageInfo);
     // Re-home the kept-alive Tools page as a HIDDEN child of the inspector (not a
     // free child of the QMainWindow, where it could paint over the left dock).
@@ -651,7 +660,7 @@ void vtkWindowImage::setupInspector()
                          [this]() { emit this->publicationFigureRequested(); });
     }
     if (!this->m_actImageQuality) {
-        this->m_actImageQuality = ui->menuTools->addAction(u"Image Quality / Artifacts…"_s);
+        this->m_actImageQuality = ui->menuTools->addAction(u"Image Quality / Artifacts"_s);
         this->m_actImageQuality->setToolTip(
                 u"Report blanked fraction, dynamic range, noise and artefact "
                 u"indicators for this map."_s);
@@ -681,6 +690,54 @@ void vtkWindowImage::setupInspector()
     this->parkOrphanDirectChildren();
 }
 
+QWidget *vtkWindowImage::buildPolVectorSettingsBlock()
+{
+    auto *page = new QWidget;
+    auto *form = new QFormLayout(page);
+    form->setContentsMargins(0, 0, 0, 0);
+    form->setHorizontalSpacing(8);
+    form->setVerticalSpacing(4);
+
+    auto *gridSpin = new QSpinBox(page);
+    gridSpin->setRange(2, 200);
+    gridSpin->setValue(m_polVecGridStep);
+    gridSpin->setToolTip(u"One vector every N pixels."_s);
+    form->addRow(u"Grid step (px)"_s, gridSpin);
+    QObject::connect(gridSpin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int v) {
+        m_polVecGridStep = v;
+        if (m_polVecsVisible)
+            rebuildPolarizationVectors();
+        if (ui->vtk->renderWindow())
+            ui->vtk->renderWindow()->Render();
+    });
+
+    auto *snrEdit = new QLineEdit(QString::number(m_polVecSnrMin, 'f', 1), page);
+    snrEdit->setValidator(new QDoubleValidator(0.0, 100.0, 2, page));
+    snrEdit->setToolTip(u"Draw a vector only where P exceeds this many σ (MAD)."_s);
+    form->addRow(u"SNR threshold"_s, snrEdit);
+    QObject::connect(snrEdit, &QLineEdit::editingFinished, this, [this, snrEdit]() {
+        m_polVecSnrMin = snrEdit->text().toDouble();
+        if (m_polVecsVisible)
+            rebuildPolarizationVectors();
+        if (ui->vtk->renderWindow())
+            ui->vtk->renderWindow()->Render();
+    });
+
+    auto *scaleSlider = new QSlider(Qt::Horizontal, page);
+    scaleSlider->setRange(10, 300);
+    scaleSlider->setValue(static_cast<int>(m_polVecScale * 100.0));
+    scaleSlider->setToolTip(u"Length of the drawn vectors (display only)."_s);
+    form->addRow(u"Length scale"_s, scaleSlider);
+    QObject::connect(scaleSlider, &QSlider::valueChanged, this, [this](int v) {
+        m_polVecScale = v / 100.0;
+        if (m_polVecsVisible)
+            rebuildPolarizationVectors();
+        if (ui->vtk->renderWindow())
+            ui->vtk->renderWindow()->Render();
+    });
+    return page;
+}
+
 QWidget *vtkWindowImage::buildContourControlsBlock()
 {
     if (!m_contourLevelSpin || !m_contourLowerEdit || !m_contourUpperEdit)
@@ -688,12 +745,10 @@ QWidget *vtkWindowImage::buildContourControlsBlock()
 
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(12, 14, 12, 12);
-    layout->setSpacing(10);
-
-    auto *hdr = new QLabel(u"CONTOURS"_s, page);
-    hdr->setStyleSheet(VisivoTheme::sidebarHeaderStyleSheet());
-    layout->addWidget(hdr);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
+    // No header of its own: the Parameters tab captions the section with the
+    // tool's name, so a second "CONTOURS" title would just be noise.
 
     auto *card = new QFrame(page);
     card->setStyleSheet(VisivoTheme::sidebarCardStyleSheet());
@@ -730,7 +785,6 @@ QWidget *vtkWindowImage::buildContourControlsBlock()
     cardLayout->addLayout(form);
 
     layout->addWidget(card);
-    layout->addStretch(1);
     return page;
 }
 
@@ -936,6 +990,301 @@ void vtkWindowImage::setupSidebar()
         cl->addWidget(makeToolBtn(this->actionShowCatalogueOverlay,  card));
         cl->addWidget(makeToolBtn(this->actionShowCatalogueLabels,   card));
         cl->addWidget(makeToolBtn(this->actionClearCatalogueOverlay, card));
+        toolsLayout->addWidget(card);
+        m_dynspecHiddenCards.append(QPointer<QFrame>(card));
+    }
+
+    // Card: Measurement Tools (Ruler / Angle)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Measurement"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actRuler,     card));
+        cl->addWidget(makeToolBtn(m_actAngle,     card));
+        cl->addWidget(makeToolBtn(m_actClearMeas, card));
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Contours (same Level / Lower / Upper as the cube viewer)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+
+        auto *cardHdr = new QLabel(u"Contours"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actToggleContours, card));
+
+        auto *formLayout = new QFormLayout();
+        formLayout->setHorizontalSpacing(8);
+        formLayout->setVerticalSpacing(4);
+
+        m_contourLevelSpin = new QSpinBox(card);
+        m_contourLevelSpin->setRange(1, 100);
+        m_contourLevelSpin->setValue(m_contourLevel);
+        formLayout->addRow(u"Level"_s, m_contourLevelSpin);
+
+        m_contourLowerEdit = new QLineEdit(QString::number(m_contourLower, 'g', 6), card);
+        m_contourLowerEdit->setValidator(new QDoubleValidator(card));
+        formLayout->addRow(u"Lower"_s, m_contourLowerEdit);
+
+        m_contourUpperEdit = new QLineEdit(QString::number(m_contourUpper, 'g', 6), card);
+        m_contourUpperEdit->setValidator(new QDoubleValidator(card));
+        formLayout->addRow(u"Upper"_s, m_contourUpperEdit);
+        QSpinBox  *levelSpin = m_contourLevelSpin;
+        QLineEdit *lowerEdit = m_contourLowerEdit;
+        QLineEdit *upperEdit = m_contourUpperEdit;
+
+        cl->addLayout(formLayout);
+        toolsLayout->addWidget(card);
+
+        QObject::connect(levelSpin, qOverload<int>(&QSpinBox::valueChanged), this,
+                         [this](int v) { m_contourLevel = v; updateContours(); });
+        QObject::connect(lowerEdit, &QLineEdit::editingFinished, this,
+                         [this, lowerEdit]() {
+                             commitContourBounds(lowerEdit->text().toDouble(), m_contourUpper);
+                         });
+        QObject::connect(upperEdit, &QLineEdit::editingFinished, this,
+                         [this, upperEdit]() {
+                             commitContourBounds(m_contourLower, upperEdit->text().toDouble());
+                         });
+
+        // External contour overlay actions (mirror the Tools menu)
+        cl->addWidget(makeToolBtn(m_actLoadExternalContour, card));
+        cl->addWidget(makeToolBtn(m_actClearAllContours,    card));
+    }
+
+    // Card: I/O — Export to Workspace (mirror the Tools menu)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"I/O"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actExportToWorkspace, card));
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: WCS Display — toggle button for axes + SegmentedToggle for
+    // format (Sexagesimal / Decimal) and frame (Galactic / FK5 / Ecliptic),
+    // consistent with the cube viewer's mode selectors.
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(6);
+
+        auto *cardHdr = new QLabel(u"WCS Display"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(this->actionShowWcsAxes, card));
+
+        const QString secStyle =
+                QStringLiteral("QLabel { color: %1; font-size: 9px; margin-top: 4px; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
+
+        // Coordinate format: Sexagesimal | Decimal
+        auto *fmtHdr = new QLabel(u"Coordinate format"_s, card);
+        fmtHdr->setStyleSheet(secStyle);
+        cl->addWidget(fmtHdr);
+        auto *fmtToggle = new SegmentedToggle(card);
+        fmtToggle->addItem(u"Sexagesimal"_s, u"HMS / DMS"_s);
+        fmtToggle->addItem(u"Decimal"_s,     u"Decimal degrees"_s);
+        fmtToggle->setCurrentIndex(
+                this->actionWcsDecimal->isChecked() ? 1 : 0);
+        cl->addWidget(fmtToggle);
+        QObject::connect(fmtToggle, &SegmentedToggle::currentIndexChanged, this,
+                         [this](int idx) {
+                             if (idx == 0 && !this->actionWcsSexagesimal->isChecked())
+                                 this->actionWcsSexagesimal->trigger();
+                             else if (idx == 1 && !this->actionWcsDecimal->isChecked())
+                                 this->actionWcsDecimal->trigger();
+                         });
+
+        // Coordinate frame: Galactic | FK5 | Ecliptic
+        auto *frameHdr = new QLabel(u"Coordinate frame"_s, card);
+        frameHdr->setStyleSheet(secStyle);
+        cl->addWidget(frameHdr);
+        auto *frameToggle = new SegmentedToggle(card);
+        frameToggle->addItem(u"Galactic"_s, u"Galactic l, b"_s);
+        frameToggle->addItem(u"FK5"_s,      u"RA, Dec (J2000)"_s);
+        frameToggle->addItem(u"Ecliptic"_s, u"Ecliptic λ, β"_s);
+        if (ui->actionGalactic->isChecked())       frameToggle->setCurrentIndex(0);
+        else if (ui->actionFK5->isChecked())       frameToggle->setCurrentIndex(1);
+        else if (ui->actionEcliptic->isChecked())  frameToggle->setCurrentIndex(2);
+        cl->addWidget(frameToggle);
+        QObject::connect(frameToggle, &SegmentedToggle::currentIndexChanged, this,
+                         [this](int idx) {
+                             QAction *targets[] = { ui->actionGalactic,
+                                                    ui->actionFK5,
+                                                    ui->actionEcliptic };
+                             if (idx >= 0 && idx < 3 && !targets[idx]->isChecked())
+                                 targets[idx]->trigger();
+                         });
+
+        toolsLayout->addWidget(card);
+        m_dynspecHiddenCards.append(QPointer<QFrame>(card));
+    }
+
+    // Card: Histogram
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Histogram"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        auto *btn = new QToolButton(card);
+        btn->setText(u"Pixel Histogram…"_s);
+        btn->setStyleSheet(toolBtnStyle);
+        btn->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btn, &QToolButton::clicked, this, &vtkWindowImage::showHistogramPanel);
+        cl->addWidget(btn);
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Annotations
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Annotations"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        auto *btnText = new QToolButton(card);
+        btnText->setText(u"Add Text…"_s);
+        btnText->setStyleSheet(toolBtnStyle);
+        btnText->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnText->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnText, &QToolButton::clicked, this, &vtkWindowImage::addTextAnnotation);
+        cl->addWidget(btnText);
+
+        auto *btnArrow = new QToolButton(card);
+        btnArrow->setText(u"Add Arrow…"_s);
+        btnArrow->setStyleSheet(toolBtnStyle);
+        btnArrow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnArrow->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnArrow, &QToolButton::clicked, this, &vtkWindowImage::addArrowAnnotation);
+        cl->addWidget(btnArrow);
+
+        auto *btnClear = new QToolButton(card);
+        btnClear->setText(u"Clear All"_s);
+        btnClear->setStyleSheet(toolBtnStyle);
+        btnClear->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnClear->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnClear, &QToolButton::clicked, this, &vtkWindowImage::clearAnnotations);
+        cl->addWidget(btnClear);
+
+        auto *rowIO = new QHBoxLayout;
+        rowIO->setSpacing(4);
+        auto *btnSave = new QToolButton(card);
+        btnSave->setText(u"Save"_s);
+        btnSave->setStyleSheet(toolBtnStyle);
+        btnSave->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnSave->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnSave, &QToolButton::clicked, this, &vtkWindowImage::saveAnnotationsJson);
+        rowIO->addWidget(btnSave);
+
+        auto *btnLoad = new QToolButton(card);
+        btnLoad->setText(u"Load"_s);
+        btnLoad->setStyleSheet(toolBtnStyle);
+        btnLoad->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        btnLoad->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        QObject::connect(btnLoad, &QToolButton::clicked, this, &vtkWindowImage::loadAnnotationsJson);
+        rowIO->addWidget(btnLoad);
+
+        cl->addLayout(rowIO);
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Blink / Compare
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Blink / Compare"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actBlink, card));
+
+        auto *speedLbl = new QLabel(u"Speed"_s, card);
+        speedLbl->setStyleSheet(
+                QStringLiteral("QLabel { color: %1; font-size: 9px; "
+                               "font-weight: 600; margin-top: 2px; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        cl->addWidget(speedLbl);
+
+        auto *speedSlider = new QSlider(Qt::Horizontal, card);
+        speedSlider->setRange(50, 1000);
+        speedSlider->setValue(m_blinkIntervalMs);
+        speedSlider->setToolTip(u"Blink interval in ms (50–1000)"_s);
+        cl->addWidget(speedSlider);
+        QObject::connect(speedSlider, &QSlider::valueChanged, this,
+                         [this](int val) {
+                             m_blinkIntervalMs = val;
+                             if (m_blinkTimer.isActive())
+                                 m_blinkTimer.setInterval(val);
+                         });
+
+        toolsLayout->addWidget(card);
+    }
+
+    // Card: Stokes Analysis (radio polarimetry workflow)
+    {
+        auto *card = new QFrame(pageTools);
+        card->setStyleSheet(cardStyle);
+        auto *cl = new QVBoxLayout(card);
+        cl->setContentsMargins(8, 8, 8, 8);
+        cl->setSpacing(4);
+
+        auto *cardHdr = new QLabel(u"Stokes Analysis"_s, card);
+        cardHdr->setStyleSheet(subHdrStyle);
+        cl->addWidget(cardHdr);
+
+        cl->addWidget(makeToolBtn(m_actLoadStokesCompanions, card));
+        cl->addWidget(makeToolBtn(m_actComputeStokesP, card));
+        cl->addWidget(makeToolBtn(m_actComputeStokesPdebiased, card));
+        cl->addWidget(makeToolBtn(m_actComputeStokesPA, card));
+        cl->addWidget(makeToolBtn(m_actComputeStokesFrac, card));
+        cl->addWidget(makeToolBtn(m_actComputeSpectralIndex, card));
+        cl->addWidget(makeToolBtn(m_actComputeFaradayRM, card));
+        cl->addWidget(makeToolBtn(m_actTogglePolVecs, card));
+
+        // The vector parameters are NOT here: they are the tool's settings and
+        // live in the Inspector's Parameters tab while the overlay is on
+        // (buildPolVectorSettingsBlock). On this page - which the Analysis tab
+        // superseded and which is never shown - they were unreachable.
         toolsLayout->addWidget(card);
         m_dynspecHiddenCards.append(QPointer<QFrame>(card));
     }

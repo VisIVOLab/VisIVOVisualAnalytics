@@ -14,6 +14,8 @@
 #include "ImageLayerLoadTask.h"
 #include "LUTCustomizerDialog.h"
 #include "LayerListModel.h"
+#include "WorkspaceChrome.h"
+#include "InspectorPanel.h"
 #include "ProfileWidget.h"
 #include "RemoteFileBrowserDialog.h"
 #include "StokesCompanion.h"
@@ -1032,5 +1034,18 @@ void vtkWindowImage::setPolVectorsVisible(bool vis)
         rebuildPolarizationVectors();
     }
     m_polVecActor->SetVisibility(vis);
+    // Grid step / SNR / length are this tool's parameters: they appear with it.
+    if (m_workspaceChrome) {
+        if (auto *panel = m_workspaceChrome->inspectorPanel()) {
+            if (vis && m_polVecSettingsBlock) {
+                panel->setToolSettings(u"Polarisation vectors"_s, m_polVecSettingsBlock);
+                // …and SHOW it: settings mounted in a tab nobody is looking at
+                // are the same as no settings.
+                m_workspaceChrome->revealParametersTab();
+            } else if (panel->activeToolSettings() == u"Polarisation vectors"_s) {
+                panel->clearToolSettings();
+            }
+        }
+    }
     if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
 }

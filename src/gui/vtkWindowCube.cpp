@@ -2798,7 +2798,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(m_actExportChannel2d, &QAction::triggered,
                      this, &vtkWindowCube::exportCurrentChannelAs2dFits);
 
-    m_actSliceHistogram = ui->menuTools->addAction(u"Pixel Histogram (current slice)…"_s);
+    m_actSliceHistogram = ui->menuTools->addAction(u"Pixel Histogram (current slice)"_s);
     m_actSliceHistogram->setToolTip(
             u"Open a floating histogram of the current 2-D slice with two "
             u"draggable cursors (red = low, green = high) that live-clip the "
@@ -2822,7 +2822,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // "Send Slice to Image Viewer" read as "open this slice in an image viewer",
     // so its needing a viewer ALREADY open looked like a bug rather than the
     // point of the tool (user report). The name says what it does now.
-    m_actSendSliceToImage = ui->menuTools->addAction(u"Overlay Slice on an Open Image…"_s);
+    m_actSendSliceToImage = ui->menuTools->addAction(u"Overlay Slice on an Open Image"_s);
     m_actSendSliceToImage->setToolTip(
             u"Draw the current 2-D slice as contours over an image that is already "
             u"open in an image viewer, to compare the two. It does not open a "
@@ -2971,7 +2971,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // CATALOGUE group (menu-only — overlay state toggles don't fit the
     // sidebar's "do this action" tool-button paradigm).
     ui->menuTools->addSeparator();
-    this->actionLoadCatalogueOverlay  = ui->menuTools->addAction(u"Load Catalogue Overlay"_s);
+    this->actionLoadCatalogueOverlay  = ui->menuTools->addAction(u"Load Catalogue Overlay…"_s);
     this->actionShowCatalogueOverlay  = ui->menuTools->addAction(u"Show Catalogue Overlay"_s);
     this->actionShowCatalogueLabels   = ui->menuTools->addAction(u"Show Catalogue Labels"_s);
     this->actionClearCatalogueOverlay = ui->menuTools->addAction(u"Clear Catalogue Overlay"_s);
@@ -6246,7 +6246,23 @@ void vtkWindowCube::set2dWcsOverlayVisible(bool visible)
 
 void vtkWindowCube::updateContoursVisibility()
 {
-    this->contoursActor->SetVisibility(ui->checkContours->isChecked());
+    const bool on = ui->checkContours->isChecked();
+    this->contoursActor->SetVisibility(on);
+    // The tool's settings live in the Inspector's Parameters tab while the tool
+    // is on. They used to live in a .ui page (pageContours) inside the hidden
+    // sidebar container - built, wired, and unreachable: Level / Lower / Upper
+    // could not be typed at all, which is also why the bounds bug below stayed
+    // invisible for so long.
+    if (this->m_workspaceChrome) {
+        if (auto *panel = this->m_workspaceChrome->inspectorPanel()) {
+            if (on && ui->frameContours) {
+                panel->setToolSettings(u"Contours"_s, ui->frameContours);
+                this->m_workspaceChrome->revealParametersTab();
+            } else if (panel->activeToolSettings() == u"Contours"_s) {
+                panel->clearToolSettings();
+            }
+        }
+    }
     this->sliceWin->Render();
 }
 
@@ -6552,7 +6568,7 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
         // (§3.0b (c)). Also refresh the left rail's product count.
         this->m_workspaceChrome->selectSessionProduct(id);
         if (revealProvenance)
-            this->m_workspaceChrome->revealInspectorTab(2);
+            this->m_workspaceChrome->revealParametersTab();
         // Count only THIS window's products (the registry is session-wide; a sibling window on
         // the same dataset shares parentKey but has a different ownerId).
         const auto dsProducts =
@@ -8433,7 +8449,7 @@ void vtkWindowCube::activateSessionView(const QString &viewTag, const QString &p
         // report). Only on explicit activation: passive selection must not yank
         // the Inspector off the Analysis list.
         if (this->m_workspaceChrome && !product.params.isEmpty())
-            this->m_workspaceChrome->revealInspectorTab(2);
+            this->m_workspaceChrome->revealParametersTab();
     }
 
     PaneView target;
@@ -10825,6 +10841,12 @@ void vtkWindowCube::setupInspector()
     if (this->m_orphanToolsPage) {
         this->m_orphanToolsPage->setParent(panel);
         this->m_orphanToolsPage->hide();
+    }
+    // Same for the contour settings, which the Parameters tab mounts while the
+    // contour tool is on (updateContoursVisibility).
+    if (ui->frameContours) {
+        ui->frameContours->setParent(panel);
+        ui->frameContours->hide();
     }
 
     // View → "Inspector Panel" expands/collapses the dock (never setVisible, which
