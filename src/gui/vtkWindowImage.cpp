@@ -1719,11 +1719,6 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                 name.isEmpty() ? QString()
                                : u"These controls act on the layer selected below: %1"_s.arg(name));
     };
-    nameLayerSettings();
-    QObject::connect(ui->listLayer->selectionModel(), &QItemSelectionModel::currentChanged, this,
-                     [nameLayerSettings](const QModelIndex &, const QModelIndex &) {
-                         nameLayerSettings();
-                     });
     QObject::connect(this->layers, &LayerListModel::dataChanged, this,
                      [nameLayerSettings]() { nameLayerSettings(); });
 
@@ -1731,6 +1726,14 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     ui->listLayer->setAcceptDrops(true);
     ui->listLayer->setModel(this->layers);
     ui->listLayer->setCurrentIndex(this->layers->index(0, 0));
+    // Only now does the view have a selection model: connecting before setModel()
+    // subscribed to a null one, so the header kept naming the first layer no
+    // matter which row the user selected.
+    QObject::connect(ui->listLayer->selectionModel(), &QItemSelectionModel::currentChanged, this,
+                     [nameLayerSettings](const QModelIndex &, const QModelIndex &) {
+                         nameLayerSettings();
+                     });
+    nameLayerSettings();
     QObject::connect(this->layers, &LayerListModel::dataChanged, this, &vtkWindowImage::vtkRender);
     // Keep a layer always selected: if the current row is cleared while layers
     // remain, re-select the first one (deferred to avoid reentrancy).
@@ -1773,6 +1776,15 @@ vtkWindowImage::~vtkWindowImage()
 
 void vtkWindowImage::closeEvent(QCloseEvent *event)
 {
+    if (m_stokesDiscoveryActive) {
+        // The companion search is suspended inside a nested event loop (backend
+        // listing or file chooser) with `this` on the stack. Deleting the window
+        // now would resume that call on freed memory.
+        this->statusBar()->showMessage(
+                u"Finish or cancel the Stokes companion search first."_s, 4000);
+        event->ignore();
+        return;
+    }
     if (this->isBusy()) {
         this->showPersistentStatusMessage(u"Loading image..."_s);
         event->ignore();

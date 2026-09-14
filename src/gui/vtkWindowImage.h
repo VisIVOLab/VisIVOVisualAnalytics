@@ -621,6 +621,10 @@ private:
     /// Redraw the region a product was measured on. Returns false when the
     /// product carries no geometry.
     bool restoreProductOrigin(const QVariantMap &origin);
+    /// The mapping displayed-voxel -> world for the master layer as it is shown
+    /// right now (world = pos + voxel * scale). Recorded with a region so the
+    /// overlay can be put back on a different LOD. False if there is no image.
+    bool currentVoxelFrame(double scale[2], double pos[2]) const;
     /// Product id scoped to this file AND this window, so two windows on the
     /// same image do not collide.
     QString scopedProductId(const QString &stem) const;
@@ -636,6 +640,12 @@ private:
 
     /// productId → the layer it produced, for the products that are layers.
     QHash<QString, int> m_productLayer;
+    /// Layer display name per product: the row index above is not an identity,
+    /// the layer list can be reordered by drag and drop.
+    QHash<QString, QString> m_productLayerName;
+    /// Current row of the layer a product produced, or -1. Resolves by name and
+    /// falls back to the recorded row.
+    int productLayerRow(const QString &productId) const;
     QPointer<QAction> m_actHistogram;
     QPointer<QAction> m_actAddText;
     QPointer<QAction> m_actAddArrow;

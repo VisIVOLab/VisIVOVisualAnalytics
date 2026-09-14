@@ -861,9 +861,16 @@ void vtkWindowImage::analyzeCurrentRegion()
     }
     // …with the geometry it was measured on, so opening the row redraws the very
     // box/circle/polygon/annulus these numbers came from.
-    const QVariantMap origin = visivo::encodeRegionOrigin(
+    QVariantMap origin = visivo::encodeRegionOrigin(
             static_cast<int>(capturedMode), this->regionAnchorVoxel, this->regionCurrentVoxel,
             this->regionPolygonVertices, this->regionAnnulusInnerRadius);
+    // Stamp the voxel grid it was drawn on: this window shows a decimated LOD
+    // image before the full-resolution swap, and replaying raw indices across
+    // that swap would draw the overlay at half position and half size.
+    double frameScale[2], framePos[2];
+    if (this->currentVoxelFrame(frameScale, framePos))
+        origin = visivo::withVoxelFrame(origin, frameScale[0], frameScale[1], framePos[0],
+                                        framePos[1]);
     params.insert(u"Measured on"_s, visivo::describeOrigin(origin));
     this->registerAnalysisProduct(
             u"region"_s,

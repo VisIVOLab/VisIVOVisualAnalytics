@@ -765,6 +765,10 @@ QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
     add(u"Contours"_s, self->m_actLoadExternalContour);
     add(u"Contours"_s, self->m_actClearAllContours);
 
+    // The pixel probe / profile crosshair. It was on neither surface after the
+    // regroup - only on the Tools page the Analysis tab superseded, which is
+    // never shown - so the tool existed with no way to reach it.
+    add(u"Measure"_s, self->ui->actionProfile);
     add(u"Measure"_s, self->m_actRuler);
     add(u"Measure"_s, self->m_actAngle);
     add(u"Measure"_s, self->m_actClearMeas);
@@ -1529,6 +1533,15 @@ void vtkWindowImage::setupSidebar()
             if (ui->btnFilaments)
                 ui->btnFilaments->setToolTip(
                         u"Overlay the VLKB filaments that cross this image's footprint."_s);
+        } else if (ui->layoutPageCatalogue) {
+            // Qt delivers no ToolTip event to a disabled widget, so the reason
+            // set above is unreachable exactly when it is needed. Print it.
+            auto *why = new QLabel(u"No celestial WCS in this image, so there is no sky "
+                                   u"position to query the catalogue over."_s,
+                                   ui->pageCatalogue);
+            why->setWordWrap(true);
+            why->setStyleSheet(VisivoTheme::infoKeyStyleSheet());
+            ui->layoutPageCatalogue->addWidget(why);
         }
     }
 

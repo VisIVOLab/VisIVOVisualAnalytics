@@ -7,6 +7,8 @@
 
 #include <QDebug>
 #include <QFile>
+
+#include <vtkErrorCode.h>
 #include <QElapsedTimer>
 
 #include <vtkImageData.h>
@@ -51,8 +53,17 @@ ImageLayerLoadResult loadImageLayer(const ImageLayerLoadRequest &request)
             << QStringLiteral("[perf][layer] DeepCopy: %1 ms").arg(deepCopyTimer.elapsed());
     result.scalarRange = { reader->GetMin(), reader->GetMax() };
 
+    // The reader allocates its output before reading pixels, so a truncated or
+    // corrupt file still comes back with plausible dimensions - only ErrorCode
+    // says the read itself failed.
     int dims[3] = { 0, 0, 0 };
     result.imageData->GetDimensions(dims);
+    if (reader->GetErrorCode() != vtkErrorCode::NoError) {
+        result.imageData = nullptr;
+        result.errorMessage = "Could not read FITS file (" + request.layerFilepath + "): "
+                + vtkErrorCode::GetStringFromErrorCode(reader->GetErrorCode());
+        return result;
+    }
     if (dims[0] <= 0 || dims[1] <= 0 || result.imageData->GetNumberOfPoints() <= 0) {
         result.imageData = nullptr;
         result.errorMessage = "Not a readable 2-D FITS image: " + request.layerFilepath;

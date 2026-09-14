@@ -898,6 +898,24 @@ restores in another if that enum ever gains a member, and a malformed record
 restores **nothing** rather than half a geometry — an overlay that silently lands
 at (0, 0) would be worse than no overlay at all.
 
+**The grid it was drawn on travels with it.** Region geometry is stored in
+*displayed-voxel* indices, and in the image viewer that index space is coarser
+before the preview → full-resolution swap (spacing 2 on a decimated LOD). Replaying
+raw indices across a swap put the overlay at half position and half size — the
+numbers right, the box somewhere else, which is the LOD-coordinate bug class this
+code has hit before. So `withVoxelFrame()` stamps the mapping
+`world = pos + voxel · scale` at record time (`vtkWindowImage::currentVoxelFrame()`,
+the single place that mapping is written, shared with `refreshRegionOverlay()`),
+and `remapOriginVoxel()` converts into whatever grid is displayed at restore —
+including the annulus inner radius, which is a length in the same grid. Products
+recorded before the stamp, and grids that did not change, come back untouched.
+The cube viewer needs no stamp: every 2-D image it shows (slice, moment map) is
+served at unit spacing with origin 0.
+
+`m_productLayer` maps a product to the layer it created, but a row index is not
+an identity — the layer list is drag-reorderable — so the layer's **name** is
+recorded too and resolved first, with the row as fallback.
+
 **Reopening replays a record; it does not re-derive a layout.** The first cut
 rebuilt the window from the product's provenance parameters, and the result only
 resembled the original: one flat list where there had been a *Sigma* and a *MAD*
@@ -1485,14 +1503,20 @@ the moment description popup. They use `VisivoTheme::makePrimaryButton` /
 *Stack*, *Generate* — with *Close* beside it. Long operations show a progress
 indicator scoped to the dialog (window-modal to it, not to the application).
 
-**Parameter pickers — modal** (`exec()`), because they answer one question and
-return: Moment Map Settings (`MomentMapController`), the noise region
-(`NoiseRegionDialog`), the tilted-ring model, Export Movie, Export Sub-Cube,
-Spectral Lines, Color Maps. These are built inline where they are used and still
-use a bare `QDialogButtonBox`; two of them relabel the primary (*Export…*,
-*Overlay*) and the rest read *OK*. **Known incoherence**, not yet unified: they
-should take the theme's primary/secondary buttons and a verb label like the
-family above.
+**Parameter pickers.** These answer one question and return: the tilted-ring
+model, Export Movie, Spectral Lines, Color Maps are still modal (`exec()`),
+built inline where they are used and still using a bare `QDialogButtonBox`; two
+of them relabel the primary (*Export…*, *Overlay*) and the rest read *OK*.
+**Known incoherence**, not yet unified: they should take the theme's
+primary/secondary buttons and a verb label like the family above.
+
+The pickers that *launch a computation* are **no longer modal** — Moment Map
+Settings (`MomentMapController`, `dlg->show()`), the noise region
+(`NoiseRegionDialog`, kept and re-raised by `NoiseController`) and Export
+Sub-Cube / Mask 3-D Region (`CubeBoxToolDialog`) stay open and host the progress
+sheet themselves, so the modal sheet appears on the dialog the user is looking at
+rather than on the cube window behind it. That is the rule for every tool that
+computes: the dialog stays, the sheet goes on it.
 
 Window titles are Title Case throughout ("Stack Cubes to a Spectrum", "Color Maps",
 "Spectral Lines" were the three that were not, and are now).

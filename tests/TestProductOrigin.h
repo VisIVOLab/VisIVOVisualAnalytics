@@ -18,5 +18,8 @@ private slots:
     void pvPath_needsTwoPointsToBeAPath();
     void unknownMode_encodesToNothing();
     void malformedRecord_refusesRatherThanRestoringHalfAGeometry();
+    void voxelFrame_roundTripsAndRejectsAMalformedStamp();
+    void remap_movesAGeometryOntoAnotherLodGrid();
+    void remap_leavesTheGeometryAloneWithoutAStamp();
     void describeOrigin_readsAsASentence();
 };

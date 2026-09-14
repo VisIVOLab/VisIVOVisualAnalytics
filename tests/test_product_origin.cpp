@@ -108,6 +108,56 @@ void TestProductOrigin::malformedRecord_refusesRatherThanRestoringHalfAGeometry(
     QVERIFY(!visivo::originPoint(o, QStringLiteral("anchor"), a, 2));    // not numbers
 }
 
+void TestProductOrigin::voxelFrame_roundTripsAndRejectsAMalformedStamp()
+{
+    QVariantMap o = visivo::encodeRegionOrigin(kBox, { 4, 5 }, { 9, 11 }, {}, 0.0);
+    o = visivo::withVoxelFrame(o, 2.0, 2.0, -1.0, -1.0);
+    double scale[2] = { 0, 0 }, pos[2] = { 0, 0 };
+    QVERIFY(visivo::originFrame(o, scale, pos));
+    QCOMPARE(scale[0], 2.0);
+    QCOMPARE(pos[1], -1.0);
+
+    // A zero scale is not a usable mapping: reading it back must fail rather
+    // than hand out a divisor of zero.
+    QVariantMap dead = visivo::withVoxelFrame(o, 0.0, 2.0, 0.0, 0.0);
+    QVERIFY(!visivo::originFrame(dead, scale, pos));
+    QVariantMap truncated = o;
+    truncated.insert(QStringLiteral("frame"), QVariantList{ 1.0, 2.0 });
+    QVERIFY(!visivo::originFrame(truncated, scale, pos));
+}
+
+void TestProductOrigin::remap_movesAGeometryOntoAnotherLodGrid()
+{
+    // Recorded on a decimated image (spacing 2, first pixel at world 0), read
+    // back on the full-resolution one (spacing 1): a box at voxel 10 sits at
+    // world 20, which is voxel 20 of the finer grid.
+    QVariantMap o = visivo::encodeRegionOrigin(kBox, { 10, 20 }, { 30, 40 }, {}, 0.0);
+    o = visivo::withVoxelFrame(o, 2.0, 2.0, 0.0, 0.0);
+    const double scale[2] = { 1.0, 1.0 }, pos[2] = { 0.0, 0.0 };
+    int a[2] = { 10, 20 };
+    visivo::remapOriginVoxel(o, scale, pos, a);
+    QCOMPARE(a[0], 20);
+    QCOMPARE(a[1], 40);
+}
+
+void TestProductOrigin::remap_leavesTheGeometryAloneWithoutAStamp()
+{
+    // Products recorded before the stamp existed, and grids that did not change,
+    // must both come back untouched - a silent shift would be worse than no
+    // restore at all.
+    const QVariantMap old = visivo::encodeRegionOrigin(kBox, { 7, 8 }, { 9, 10 }, {}, 0.0);
+    const double scale[2] = { 2.0, 2.0 }, pos[2] = { 5.0, 5.0 };
+    int a[2] = { 7, 8 };
+    visivo::remapOriginVoxel(old, scale, pos, a);
+    QCOMPARE(a[0], 7);
+    QCOMPARE(a[1], 8);
+
+    const QVariantMap same = visivo::withVoxelFrame(old, 2.0, 2.0, 5.0, 5.0);
+    int b[2] = { 7, 8 };
+    visivo::remapOriginVoxel(same, scale, pos, b);
+    QCOMPARE(b[0], 7);
+}
+
 void TestProductOrigin::describeOrigin_readsAsASentence()
 {
     QCOMPARE(visivo::describeOrigin(visivo::encodeProbeOrigin({ 98, 140, 53 })),

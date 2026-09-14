@@ -23,6 +23,8 @@
 #include <QVariant>
 #include <QVariantMap>
 
+#include <cmath>
+
 #include <array>
 #include <vector>
 
@@ -138,6 +140,60 @@ inline std::vector<std::array<int, 2>> originPolygon(const QVariantMap &origin)
 inline double originInnerRadius(const QVariantMap &origin)
 {
     return origin.value(QStringLiteral("innerRadius")).toDouble();
+}
+
+// ── The voxel frame a geometry was recorded in ───────────────────────────────
+// Region geometry is stored in DISPLAYED-voxel indices, and on a decimated LOD
+// image that index space is coarser than the full-resolution one (spacing 2,
+// say). Replaying the raw indices after the viewer has swapped to another LOD
+// puts the overlay at the wrong place and size - the numbers would be right and
+// the box would be somewhere else. Stamping the mapping voxel -> world at
+// record time lets the restore convert into whatever grid is displayed then.
+//
+//   world = pos + voxel * scale        (pos = origin - extent0 * spacing)
+
+inline QVariantMap withVoxelFrame(QVariantMap origin, double scaleX, double scaleY,
+                                  double posX, double posY)
+{
+    origin.insert(QStringLiteral("frame"),
+                  QVariantList{ scaleX, scaleY, posX, posY });
+    return origin;
+}
+
+/// Read the recorded frame. False when the product predates the frame stamp -
+/// callers then have to assume the geometry is already in the current grid.
+inline bool originFrame(const QVariantMap &origin, double *scale, double *pos)
+{
+    const QVariantList f = origin.value(QStringLiteral("frame")).toList();
+    if (f.size() != 4 || !scale || !pos)
+        return false;
+    for (const QVariant &v : f) {
+        if (!v.canConvert<double>())
+            return false;
+    }
+    scale[0] = f.at(0).toDouble();
+    scale[1] = f.at(1).toDouble();
+    pos[0]   = f.at(2).toDouble();
+    pos[1]   = f.at(3).toDouble();
+    return scale[0] != 0.0 && scale[1] != 0.0;
+}
+
+/// Convert one recorded voxel into the grid described by `scale`/`pos`, using
+/// the frame stamped on `origin`. Returns the input unchanged when there is no
+/// stamp or the two grids match, so this is safe to call unconditionally.
+inline void remapOriginVoxel(const QVariantMap &origin, const double scale[2],
+                             const double pos[2], int voxel[2])
+{
+    double oldScale[2] = { 0., 0. }, oldPos[2] = { 0., 0. };
+    if (!originFrame(origin, oldScale, oldPos))
+        return;
+    if (oldScale[0] == scale[0] && oldScale[1] == scale[1] && oldPos[0] == pos[0]
+        && oldPos[1] == pos[1])
+        return;
+    for (int i = 0; i < 2; ++i) {
+        const double world = oldPos[i] + voxel[i] * oldScale[i];
+        voxel[i] = static_cast<int>(std::lround((world - pos[i]) / scale[i]));
+    }
 }
 
 /// A short human phrase for the row's tooltip and the status bar.

@@ -40,6 +40,7 @@
 #include <QGuiApplication>
 #include <QMenu>
 #include <QUrl>
+#include <vtkImageData.h>
 
 using namespace Qt::StringLiterals;
 
@@ -82,8 +83,19 @@ QString vtkWindowImage::registerAnalysisProduct(const QString &kind, const QStri
     p.sessionId = this->remoteSessionId;
     p.ownerId = this->m_windowScope;
     const QString id = ProductRegistry::instance().registerProduct(std::move(p));
-    if (layerIndex >= 0)
+    if (layerIndex >= 0) {
         m_productLayer.insert(id, layerIndex);
+        // The row number is not a layer identity: the list is drag-reorderable
+        // (LayerListModel::dropMimeData), so remember the NAME as well and
+        // resolve through it first when the product is opened.
+        if (this->layers && layerIndex < this->layers->rowCount()) {
+            const QString name =
+                    this->layers->data(this->layers->index(layerIndex, 0), Qt::DisplayRole)
+                            .toString();
+            if (!name.isEmpty())
+                m_productLayerName.insert(id, name);
+        }
+    }
 
     if (this->m_workspaceChrome) {
         this->m_workspaceChrome->selectSessionProduct(id);
@@ -99,15 +111,33 @@ QString vtkWindowImage::registerAnalysisProduct(const QString &kind, const QStri
     return id;
 }
 
+int vtkWindowImage::productLayerRow(const QString &productId) const
+{
+    const auto byIndex = m_productLayer.constFind(productId);
+    if (byIndex == m_productLayer.cend())
+        return -1;
+    // Names first: a reorder moves the layer, not its name. Fall back to the
+    // recorded row when the layer was never named or the name is gone.
+    const QString name = m_productLayerName.value(productId);
+    if (!name.isEmpty() && this->layers) {
+        for (int r = 0; r < this->layers->rowCount(); ++r) {
+            if (this->layers->data(this->layers->index(r, 0), Qt::DisplayRole).toString() == name)
+                return r;
+        }
+    }
+    const int row = byIndex.value();
+    return (this->layers && row < this->layers->rowCount()) ? row : -1;
+}
+
 void vtkWindowImage::openProduct(const QString &productId)
 {
     const AnalysisProduct p = ProductRegistry::instance().product(productId);
 
     // A LAYER: select it, which is what "open" means for a map in a window that
     // shows one view.
-    const auto layer = m_productLayer.constFind(productId);
-    if (layer != m_productLayer.cend()) {
-        selectLayer(ui->listLayer, this->layers, layer.value());
+    const int layerRow = this->productLayerRow(productId);
+    if (layerRow >= 0) {
+        selectLayer(ui->listLayer, this->layers, layerRow);
         return;
     }
     // A FILE: hand it to the desktop.
@@ -127,10 +157,13 @@ void vtkWindowImage::openProduct(const QString &productId)
     if (!p.resultView.isEmpty()) {
         const QString slot = u"recorded-result:"_s + productId;
         if (auto *existing = this->findChild<ToolResultDialog *>(slot)) {
-            existing->show();
-            existing->raise();
-            existing->activateWindow();
-            return;
+            // Replace, don't raise. A second run of the same tool overwrites the
+            // registry entry under the same id, so the open window can be
+            // showing the previous numbers - and applyRecord() APPENDS sections,
+            // so refreshing it in place would stack the two results instead.
+            existing->setObjectName(QString());
+            existing->close();
+            existing->deleteLater();
         }
         auto *dlg = new ToolResultDialog(this);
         dlg->setObjectName(slot);
@@ -156,12 +189,16 @@ void vtkWindowImage::showSessionRowContextMenu(const QString &viewTag, const QSt
     QMenu menu(this);
     menu.setToolTipsVisible(true);
 
-    const auto layer = m_productLayer.constFind(productId);
+    const int layerRow = this->productLayerRow(productId);
     const QString path = p.params.value(u"Output path"_s).toString();
-    if (layer != m_productLayer.cend()) {
+    if (layerRow >= 0) {
         QObject::connect(menu.addAction(u"Select This Layer"_s), &QAction::triggered, this,
-                         [this, idx = layer.value()]() {
-                             selectLayer(ui->listLayer, this->layers, idx);
+                         [this, productId]() {
+                             // Resolved again on click: the list may have been
+                             // reordered since the menu was built.
+                             const int row = this->productLayerRow(productId);
+                             if (row >= 0)
+                                 selectLayer(ui->listLayer, this->layers, row);
                          });
     } else if (!path.isEmpty()) {
         QAction *open = menu.addAction(u"Open the File"_s);
@@ -224,15 +261,48 @@ void vtkWindowImage::recordImageQuality(const QVariantMap &metrics)
                                   this->scopedProductId(u"imagequality"_s), record);
 }
 
+bool vtkWindowImage::currentVoxelFrame(double scale[2], double pos[2]) const
+{
+    auto *imageData =
+            this->layers ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
+    if (!imageData)
+        return false;
+    double ro[3], rs[3];
+    int rext[6];
+    imageData->GetOrigin(ro);
+    imageData->GetSpacing(rs);
+    imageData->GetExtent(rext);
+    // Same mapping refreshRegionOverlay() gives the overlay actors, kept in one
+    // place so a recorded region and a live one cannot drift apart.
+    scale[0] = rs[0];
+    scale[1] = rs[1];
+    pos[0]   = ro[0] - rext[0] * rs[0];
+    pos[1]   = ro[1] - rext[2] * rs[1];   // ext[2], not ext[1]: that Y index has bitten before
+    return scale[0] != 0.0 && scale[1] != 0.0;
+}
+
 bool vtkWindowImage::restoreProductOrigin(const QVariantMap &origin)
 {
     if (visivo::originKind(origin) != u"region"_s)
         return false;
     const QString shape = visivo::originShape(origin);
+    // The geometry was recorded in the voxel grid displayed at the time. If the
+    // viewer has swapped LOD since (preview -> full), that grid is not this one.
+    double scale[2] = { 1., 1. }, pos[2] = { 0., 0. };
+    const bool haveFrame = this->currentVoxelFrame(scale, pos);
+    const auto remap = [&](int v[2]) {
+        if (haveFrame)
+            visivo::remapOriginVoxel(origin, scale, pos, v);
+    };
     if (shape == u"polygon"_s) {
-        const auto verts = visivo::originPolygon(origin);
+        auto verts = visivo::originPolygon(origin);
         if (verts.size() < 3)
             return false;
+        for (auto &v : verts) {
+            int p[2] = { v[0], v[1] };
+            remap(p);
+            v = { p[0], p[1] };
+        }
         this->regionPolygonVertices = verts;
         this->regionMode = RegionMode::Polygon;
     } else {
@@ -240,9 +310,16 @@ bool vtkWindowImage::restoreProductOrigin(const QVariantMap &origin)
         if (!visivo::originPoint(origin, u"anchor"_s, a, 2)
             || !visivo::originPoint(origin, u"current"_s, c, 2))
             return false;   // half a geometry is worse than none
+        double oldScale[2] = { 1., 1. }, oldPos[2] = { 0., 0. };
+        const bool hadFrame = visivo::originFrame(origin, oldScale, oldPos);
+        remap(a);
+        remap(c);
         this->regionAnchorVoxel = { a[0], a[1] };
         this->regionCurrentVoxel = { c[0], c[1] };
+        // The inner radius is a length in the same voxel grid, so it scales too.
         this->regionAnnulusInnerRadius = visivo::originInnerRadius(origin);
+        if (haveFrame && hadFrame && oldScale[0] != 0.0)
+            this->regionAnnulusInnerRadius *= oldScale[0] / scale[0];
         this->regionMode = shape == u"box"_s      ? RegionMode::Box
                          : shape == u"circle"_s   ? RegionMode::Circle
                          : shape == u"annulus"_s  ? RegionMode::Annulus

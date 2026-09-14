@@ -337,6 +337,10 @@ void MainWindow::buildDataMenu()
     // same. Data keeps what File has no convention for.
 
     auto *actOpenCatalogue = dataMenu->addAction(u"Open 3D Catalogue (CSV)…"_s);
+    // Carries the shortcut the File entry used to have. That action still
+    // exists in the .ui (and is still connected) but belongs to no menu now, so
+    // its Ctrl+Shift+O reached nothing.
+    actOpenCatalogue->setShortcut(QKeySequence(u"Ctrl+Shift+O"_s));
     QObject::connect(actOpenCatalogue, &QAction::triggered, this, &MainWindow::openCatalogue3D);
 
     auto *actOpenVbt = dataMenu->addAction(u"Open VBT…"_s);

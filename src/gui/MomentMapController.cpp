@@ -336,7 +336,7 @@ void MomentMapController::openMomentDialog(int defaultOrder, Config config,
     const std::array<std::pair<int, QString>, 9> orders = {
             std::pair{ 0,  u"Moment 0: Integrated intensity (M0)"_s },
             std::pair{ 1,  u"Moment 1: Intensity-weighted coordinate (M1)"_s },
-            std::pair{ 2,  u"Moment 2: Velocity dispersion σ (M2)"_s },
+            std::pair{ 2,  u"Moment 2: Spectral dispersion σ (M2)"_s },
             std::pair{ 3,  u"Moment 3: Skewness (M3)"_s },
             std::pair{ 4,  u"Moment 4: Excess kurtosis (M4)"_s },
             std::pair{ 5,  u"Moment 5: 5th-order diagnostic (M5)"_s },
@@ -350,7 +350,9 @@ void MomentMapController::openMomentDialog(int defaultOrder, Config config,
         switch (order) {
         case 0:  return u"Sum I·Δv over the channel range, total line flux per pixel."_s;
         case 1:  return u"Intensity-weighted spectral centroid - reveals velocity gradients (rotation, outflows)."_s;
-        case 2:  return u"Spectral variance, NOT FWHM. Use the Line-width Map tool for FWHM/EW."_s;
+        case 2:  return u"Dispersion σ (the square root of the variance) in the cube's own "
+                        u"spectral unit - km/s for a velocity axis, Hz for a frequency one. "
+                        u"NOT FWHM: use the Line-width Map tool for FWHM/EW."_s;
         case 3:  return u"Asymmetry of the line profile, positive = high-velocity tail."_s;
         case 4:  return u"Peakedness vs Gaussian, positive = leptokurtic; negative = flat / double-peaked."_s;
         case 5:  return u"Standardised 5th moment, sensitive to asymmetric tails on top of skewness."_s;
@@ -546,7 +548,10 @@ QString MomentMapController::describeMomentOrder(int order)
     // SoFiA, and the client never sets the moment2_variance flag that would keep
     // the raw variance — so these two labels said the opposite of what the user
     // was handed, and contradicted the copilot's own description of M2.
-    case 2:  return u"Moment 2 (Velocity dispersion σ)"_s;
+    // "Spectral", not "Velocity": the backend works in the cube's native
+    // spectral coordinate and converts nothing, so on a CTYPE3=FREQ cube this
+    // map is a frequency dispersion.
+    case 2:  return u"Moment 2 (Spectral dispersion σ)"_s;
     case 3:  return u"Moment 3 (Skewness)"_s;
     case 4:  return u"Moment 4 (Excess kurtosis)"_s;
     case 5:  return u"Moment 5 (5th-order diagnostic)"_s;

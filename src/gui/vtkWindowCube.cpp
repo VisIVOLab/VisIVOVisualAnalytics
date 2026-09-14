@@ -2190,14 +2190,20 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 // parameters at all, so its row said "PV diagram" and nothing
                 // else: with two cuts taken, neither row could be told from the
                 // other, and neither said where on the sky it ran.
-                const QVariantMap pvOrigin = visivo::encodePvPathOrigin(
-                        this->pvPolylineVertices, this->pvWidthPixels);
+                // From the CAPTURED request, never the live drawing state: the
+                // user can start a new path while the extraction runs, and the
+                // row would then describe a cut this diagram was not taken along.
+                const auto &pvVerts = result.capturedVertices.empty() ? this->pvPolylineVertices
+                                                                      : result.capturedVertices;
+                const int pvWidth = result.capturedVertices.empty() ? this->pvWidthPixels
+                                                                    : result.capturedWidthPixels;
+                const QVariantMap pvOrigin = visivo::encodePvPathOrigin(pvVerts, pvWidth);
                 QVariantMap pvParams;
-                pvParams.insert(u"Path"_s, u"%1 points"_s.arg(this->pvPolylineVertices.size()));
-                pvParams.insert(u"Width"_s, u"%1 px"_s.arg(this->pvWidthPixels));
-                if (!this->pvPolylineVertices.empty()) {
-                    const auto &a = this->pvPolylineVertices.front();
-                    const auto &b = this->pvPolylineVertices.back();
+                pvParams.insert(u"Path"_s, u"%1 points"_s.arg(pvVerts.size()));
+                pvParams.insert(u"Width"_s, u"%1 px"_s.arg(pvWidth));
+                if (!pvVerts.empty()) {
+                    const auto &a = pvVerts.front();
+                    const auto &b = pvVerts.back();
                     pvParams.insert(u"From"_s, u"(%1, %2)"_s.arg(a[0]).arg(a[1]));
                     pvParams.insert(u"To"_s, u"(%1, %2)"_s.arg(b[0]).arg(b[1]));
                 }
