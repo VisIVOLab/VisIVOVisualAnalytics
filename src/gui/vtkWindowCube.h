@@ -1916,6 +1916,12 @@ protected:
     vtkNew<vtkActor> contoursActor;
     void updateContours();
     void updateContoursVisibility();
+    /// Point the contour levels at the data once the backend reports the cube's
+    /// real range. Until this runs the levels are the 0..1 placeholder set in the
+    /// constructor, which for any real radio cube lies entirely outside the data
+    /// - Show Contours then toggles an empty actor and looks broken.
+    void refreshContourBoundsFromData();
+    bool m_contourBoundsInitialised{ false };
 
     // Moment
     vtkNew<vtkTrivialProducer> momentDisplaySource;

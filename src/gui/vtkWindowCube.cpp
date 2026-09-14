@@ -1716,6 +1716,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                          const double span = result.cubeRange[1] - result.cubeRange[0];
                          this->lowerBound = static_cast<float>(result.cubeRange[0] + 0.03 * span);
                          this->upperBound = static_cast<float>(result.cubeRange[1]);
+                         // The contour levels were built from the 0..1 placeholder
+                         // in the constructor; move them onto the real data now.
+                         this->refreshContourBoundsFromData();
 
                          // applyCubeOpenResult() sets currentCubeVisibleRange from the real data.
                          // The initial threshold must be applied AFTER this, so that
@@ -3103,10 +3106,14 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     }
     QObject::connect(ui->lineLevel, &QLineEdit::editingFinished, this,
                      &vtkWindowCube::updateContours);
-    QObject::connect(ui->lineLowerBound, &QLineEdit::editingFinished, this,
-                     &vtkWindowCube::updateContours);
-    QObject::connect(ui->lineUpperBound, &QLineEdit::editingFinished, this,
-                     &vtkWindowCube::updateContours);
+    // Typing a bound claims it: the data-driven initialisation must not
+    // overwrite the user's own numbers if the preview lands afterwards.
+    for (QLineEdit *edit : { ui->lineLowerBound, ui->lineUpperBound }) {
+        QObject::connect(edit, &QLineEdit::editingFinished, this, [this]() {
+            m_contourBoundsInitialised = true;
+            this->updateContours();
+        });
+    }
 
     // Backend-authoritative: statistics fields show "-" until populated.
     ui->lineCubeMin->clear();
@@ -6287,10 +6294,50 @@ void vtkWindowCube::clearPersistentStatusMessage()
 
 void vtkWindowCube::updateContours()
 {
-    this->contours->GenerateValues(ui->lineLevel->text().toInt(),
-                                   ui->lineLowerBound->text().toDouble(),
-                                   ui->lineUpperBound->text().toDouble());
+    const int levels = ui->lineLevel->text().toInt();
+    const double lower = ui->lineLowerBound->text().toDouble();
+    const double upper = ui->lineUpperBound->text().toDouble();
+    // An inverted or empty range is a user-input mistake, not something to draw
+    // a guess from, so say why instead of leaving a toggle that does nothing.
+    if (levels < 1 || !(lower < upper)) {
+        this->statusBar()->showMessage(
+                u"Contour levels need Lower < Upper and at least one level."_s, 4000);
+        return;
+    }
+    this->contours->GenerateValues(levels, lower, upper);
+    // The mapper's colour range was built from the placeholder bounds too;
+    // without this every line comes out the same end-of-table colour.
+    if (this->contoursActor && this->contoursActor->GetMapper())
+        this->contoursActor->GetMapper()->SetScalarRange(lower, upper);
     this->sliceWin->Render();
+}
+
+void vtkWindowCube::refreshContourBoundsFromData()
+{
+    // Only the first time: after that the boxes hold the user's own numbers and
+    // a later data update must not overwrite them.
+    if (m_contourBoundsInitialised)
+        return;
+    if (!(this->lowerBound < this->upperBound))
+        return;
+    // The fields are the source of truth for updateContours(), so the bounds
+    // have to survive the round trip through text: QString::number's default
+    // six significant digits can collapse two close bounds onto one number,
+    // which would then fail validation with the flag already spent.
+    const QString lowerText = QString::number(this->lowerBound, 'g', 9);
+    const QString upperText = QString::number(this->upperBound, 'g', 9);
+    if (!(lowerText.toDouble() < upperText.toDouble()))
+        return;
+    {
+        const QSignalBlocker b(ui->lineLowerBound);
+        ui->lineLowerBound->setText(lowerText);
+    }
+    {
+        const QSignalBlocker b(ui->lineUpperBound);
+        ui->lineUpperBound->setText(upperText);
+    }
+    m_contourBoundsInitialised = true;
+    this->updateContours();
 }
 
 void vtkWindowCube::thresholdSliderChanged(int action)

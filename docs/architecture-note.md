@@ -1257,6 +1257,30 @@ updates within frames of the operation instead of on the next 4s tick.
 
 ---
 
+### Contour levels follow the data, once
+
+`vtkWindowCube`'s contour filter gets its levels in `setupSliceRenderer()`, which
+runs in the constructor - i.e. while `lowerBound`/`upperBound` are still the
+placeholder `0..1` installed next to the placeholder cube image. The real range
+arrives later, in the async preview handler, and used to update only the volume
+rendering: the contour levels and the Lower/Upper fields kept the placeholder, so
+on a cube whose values live in, say, `[-0.005, 0.08]` Jy/beam every level sat
+outside the data and *Show Contours* toggled an empty actor - the toggle looked
+dead.
+
+`refreshContourBoundsFromData()` is called right after the preview sets the real
+bounds. It writes the two fields (signal-blocked, 9 significant digits so the
+values survive the round trip through text, which is what `updateContours()`
+reads) and regenerates the levels. It runs **once**: typing in either bound also
+sets `m_contourBoundsInitialised`, so a user's own numbers are never overwritten
+by a preview that lands afterwards. `updateContours()` now refuses an inverted or
+empty range with a status-bar line, and updates the mapper's scalar range, which
+was also still built from `0..1`.
+
+The image viewer has the same UI but not this bug: `setupContourPipeline()` reads
+the master layer's real scalar range and syncs the fields, and the preview -> full
+swap marks the pipeline dirty so the first toggle rebuilds it.
+
 ## Channel Maps (`ChannelMapsWindow`)
 
 Displays an N × M grid of 2-D channel slices with a shared colour scale,
