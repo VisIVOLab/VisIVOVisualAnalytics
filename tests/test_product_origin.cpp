@@ -65,6 +65,27 @@ void TestProductOrigin::probe_roundTripsItsVoxel()
     QCOMPARE(v[2], 53);
 }
 
+void TestProductOrigin::pvPath_roundTripsItsPointsAndWidth()
+{
+    const QVariantMap o = visivo::encodePvPathOrigin({ { 10, 10 }, { 50, 60 }, { 90, 60 } }, 5);
+    QCOMPARE(visivo::originKind(o), QStringLiteral("pvpath"));
+    QCOMPARE(visivo::originWidth(o), 5);
+    const auto pts = visivo::originPolygon(o);
+    QCOMPARE(pts.size(), std::size_t(3));
+    QCOMPARE(pts.at(2)[0], 90);
+    // Not a region: restoring it as one would close the path into a shape that
+    // was never drawn.
+    QVERIFY(visivo::originKind(o) != QStringLiteral("region"));
+    QCOMPARE(visivo::describeOrigin(o), QStringLiteral("a 3-point PV path, 5 px wide"));
+}
+
+void TestProductOrigin::pvPath_needsTwoPointsToBeAPath()
+{
+    QVERIFY(visivo::encodePvPathOrigin({}, 1).isEmpty());
+    QVERIFY(visivo::encodePvPathOrigin({ { 1, 1 } }, 1).isEmpty());
+    QVERIFY(!visivo::encodePvPathOrigin({ { 1, 1 }, { 2, 2 } }, 1).isEmpty());
+}
+
 void TestProductOrigin::unknownMode_encodesToNothing()
 {
     // RegionMode::None, or a future shape this build does not know: an empty

@@ -2183,9 +2183,26 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 //   • else first FREE visible pane (no-steal),
                 //   • else park it hidden and let the tree row activate it later.
                 this->m_pvProductId = this->scopedProductId(u"pv"_s);
-                this->registerAnalysisProduct(u"pv"_s, u"PV diagram"_s, {},
+                // The cut it was taken along. This product registered NO
+                // parameters at all, so its row said "PV diagram" and nothing
+                // else: with two cuts taken, neither row could be told from the
+                // other, and neither said where on the sky it ran.
+                const QVariantMap pvOrigin = visivo::encodePvPathOrigin(
+                        this->pvPolylineVertices, this->pvWidthPixels);
+                QVariantMap pvParams;
+                pvParams.insert(u"Path"_s, u"%1 points"_s.arg(this->pvPolylineVertices.size()));
+                pvParams.insert(u"Width"_s, u"%1 px"_s.arg(this->pvWidthPixels));
+                if (!this->pvPolylineVertices.empty()) {
+                    const auto &a = this->pvPolylineVertices.front();
+                    const auto &b = this->pvPolylineVertices.back();
+                    pvParams.insert(u"From"_s, u"(%1, %2)"_s.arg(a[0]).arg(a[1]));
+                    pvParams.insert(u"To"_s, u"(%1, %2)"_s.arg(b[0]).arg(b[1]));
+                }
+                pvParams.insert(u"Measured on"_s, visivo::describeOrigin(pvOrigin));
+                this->registerAnalysisProduct(u"pv"_s, u"PV diagram"_s, pvParams,
                                               this->pvDiagramWidget, this->m_pvProductId,
-                                              u"pvdiagram"_s);
+                                              u"pvdiagram"_s, /*revealProvenance=*/true,
+                                              pvOrigin);
 
                 auto pvVisible = [this](int i) {
                     return m_slots[i].frame && m_slots[i].frame->isVisible();
@@ -2710,7 +2727,19 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 this->filepath, this);
         win->show();
         win->raise();
-        this->registerAnalysisProduct(u"channelmaps"_s, u"Channel maps"_s, {}, win);
+        // The recipe, not just the name: this row recorded nothing, so two runs
+        // over different channel ranges were indistinguishable in the tree.
+        QVariantMap cmParams;
+        cmParams.insert(u"Channels"_s, u"%1..%2"_s.arg(cfg.channelStart + 1).arg(cfg.channelEnd + 1));
+        cmParams.insert(u"Stride"_s, QString::number(cfg.stride));
+        cmParams.insert(u"Grid"_s, u"%1 columns"_s.arg(cfg.columns));
+        cmParams.insert(u"Colour map"_s, cfg.lutName);
+        cmParams.insert(u"Scale"_s, cfg.sharedRange ? u"shared across panels"_s
+                                                    : u"per panel"_s);
+        this->registerAnalysisProduct(u"channelmaps"_s,
+                                      u"Channel maps %1..%2"_s.arg(cfg.channelStart + 1)
+                                              .arg(cfg.channelEnd + 1),
+                                      cmParams, win);
     });
 
     // ANALYSIS: persist-to-FITS exports (sub-cube crop + moment map). These
@@ -8341,12 +8370,21 @@ void vtkWindowCube::activateSessionView(const QString &viewTag, const QString &p
     // rows with no geometry: restoreProductOrigin returns false and draws
     // nothing.
     if (!productId.isEmpty()) {
-        const AnalysisProduct origin = ProductRegistry::instance().product(productId);
-        if (this->restoreProductOrigin(origin.origin)) {
-            const QString where = visivo::describeOrigin(origin.origin);
+        const AnalysisProduct product = ProductRegistry::instance().product(productId);
+        if (this->restoreProductOrigin(product.origin)) {
+            const QString where = visivo::describeOrigin(product.origin);
             if (!where.isEmpty())
                 this->statusBar()->showMessage(u"Showing %1"_s.arg(where), 6000);
         }
+        // Reopening a product must put back everything producing it put up, not
+        // just the pane. A region analysis shows a spectrum AND its statistics —
+        // the statistics live in Provenance here rather than in a floating
+        // window, and registration reveals that tab (§4.1.4), so reopening has
+        // to as well or the numbers are simply missing the second time (user
+        // report). Only on explicit activation: passive selection must not yank
+        // the Inspector off the Analysis list.
+        if (this->m_workspaceChrome && !product.params.isEmpty())
+            this->m_workspaceChrome->revealInspectorTab(2);
     }
 
     PaneView target;
@@ -11769,6 +11807,19 @@ bool vtkWindowCube::restoreProductOrigin(const QVariantMap &origin)
         this->probeVoxel = { v[0], v[1], v[2] };
         this->probeValid = true;
         this->refreshProbeOverlay();
+        if (auto *win = this->active2dWin())
+            win->Render();
+        return true;
+    }
+    if (kind == u"pvpath"_s) {
+        const auto verts = visivo::originPolygon(origin);
+        if (verts.size() < 2)
+            return false;
+        this->pvPolylineVertices = verts;
+        this->pvWidthPixels = std::max(1, visivo::originWidth(origin));
+        this->pvCurrentVoxel = verts.back();
+        this->pvValid = true;
+        this->refreshPvOverlay();
         if (auto *win = this->active2dWin())
             win->Render();
         return true;

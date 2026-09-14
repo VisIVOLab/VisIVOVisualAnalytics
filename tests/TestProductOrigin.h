@@ -14,6 +14,8 @@ private slots:
     void annulus_roundTripsItsInnerRadius();
     void polygon_keepsEveryVertexAsAPair();
     void probe_roundTripsItsVoxel();
+    void pvPath_roundTripsItsPointsAndWidth();
+    void pvPath_needsTwoPointsToBeAPath();
     void unknownMode_encodesToNothing();
     void malformedRecord_refusesRatherThanRestoringHalfAGeometry();
     void describeOrigin_readsAsASentence();

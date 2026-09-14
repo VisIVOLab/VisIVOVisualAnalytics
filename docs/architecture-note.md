@@ -817,6 +817,27 @@ double-clicking did nothing and the popup the user had closed was gone for good
 (user report). The row menu says so explicitly ("Show the Numbers Again"),
 because an action reachable only by double-click is an action nobody finds.
 
+**Reopening restores everything the run put up, not just the main output.** A
+region analysis on a cube produces a spectrum *and* its statistics: the spectrum
+mounts in a pane, the statistics go to Provenance, and registration reveals that
+tab (§4.1.4). Reopening the row only re-mounted the pane, so the numbers were
+simply missing the second time (user report). Row **activation** now reveals
+Provenance too, whenever the product carries parameters — matching what
+registration does. Only on activation: passive selection must not yank the
+Inspector off the Analysis list.
+
+The same audit found two products registering **no parameters at all**, which
+makes two runs of the same tool indistinguishable in the tree:
+
+- **PV diagram** recorded neither its path nor its width. It now carries both,
+  plus a `pvpath` origin, so opening the row redraws the cut on the slice. A PV
+  path is its own origin kind rather than a "polygon": it is open and has a
+  width, and restoring one as a region would close it into a shape that was
+  never drawn.
+- **Channel maps** recorded nothing. It now carries the channel range, stride,
+  column count, colour map and whether the scale is shared, and its label names
+  the range so two runs read apart in the tree.
+
 **A product says what it measured; it must also say where.** "Box region stats,
 mean 1204.7" does not tell you which box, and a pinned spectrum does not tell you
 which line of sight — with three regions drawn and two spectra pinned, the rows

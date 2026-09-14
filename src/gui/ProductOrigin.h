@@ -68,6 +68,27 @@ inline QVariantMap encodeRegionOrigin(int mode,
     return m;
 }
 
+/// The path a PV diagram was cut along. Its own kind rather than a "polygon":
+/// a PV path is open and carries a width, and restoring one into a region's
+/// polygon would draw a closed shape that was never there.
+inline QVariantMap encodePvPathOrigin(const std::vector<std::array<int, 2>> &vertices,
+                                      int widthPixels)
+{
+    if (vertices.size() < 2)
+        return {};
+    QVariantList points;
+    for (const std::array<int, 2> &v : vertices)
+        points.append(QVariant(QVariantList{ v[0], v[1] }));
+    return { { QStringLiteral("kind"), QStringLiteral("pvpath") },
+             { QStringLiteral("points"), points },
+             { QStringLiteral("width"), widthPixels } };
+}
+
+inline int originWidth(const QVariantMap &origin)
+{
+    return origin.value(QStringLiteral("width")).toInt();
+}
+
 /// The pixel a spectrum was probed at.
 inline QVariantMap encodeProbeOrigin(const std::array<int, 3> &voxel)
 {
@@ -129,6 +150,11 @@ inline QString describeOrigin(const QVariantMap &origin)
             return QStringLiteral("probed at pixel (%1, %2), channel %3")
                     .arg(v[0]).arg(v[1]).arg(v[2] + 1);
         return QStringLiteral("a probed pixel");
+    }
+    if (kind == QStringLiteral("pvpath")) {
+        const int n = int(originPolygon(origin).size());
+        const int w = originWidth(origin);
+        return QStringLiteral("a %1-point PV path, %2 px wide").arg(n).arg(w);
     }
     if (kind != QStringLiteral("region"))
         return QString();
