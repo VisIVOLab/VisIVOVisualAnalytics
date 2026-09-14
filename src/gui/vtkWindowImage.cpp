@@ -106,6 +106,7 @@
 #include <QThreadPool>
 #include <QtConcurrentRun>
 
+#include "AstroUtils.h"
 #include "vtk/ImageLod.h"
 
 #include <algorithm>
@@ -886,201 +887,13 @@ static void tanSkyToPix(double lonDeg, double latDeg,
 }
 
 // ── (fetchVlkbAdditionalLayer removed) ───────────────────────────────────────
-// The VLKB add-layer path now reuses addLayerImage() directly, which calls
-// loadImageLayer() → AstroUtils/libwcs for WCS alignment.  This is the same
-// pipeline as "File → Add New Layer" and handles CD-matrix FITS correctly.
+// Its 190 lines of hand-rolled WCS alignment - the reason the backend-side layer
+// path was abandoned - are gone rather than commented out: loadRemoteImageLayer()
+// below does the same job with the SAME arithmetic as the local loader, because
+// AstroUtils can now build its WCS from the header the backend sends instead of
+// needing the file. The lesson (don't re-derive the alignment; reuse libwcs) is
+// in that function's comment, which is where it is useful.
 // ─────────────────────────────────────────────────────────────────────────────
-#if 0  // dead code block kept for reference, not compiled
-static ImageLayerLoadResult fetchVlkbAdditionalLayer(const QString &backendUrl,
-                                                      const QString &backendToken,
-                                                      const QString &backendPath,
-                                                      const QString &displayName,
-                                                      const std::array<double, 3> &masterCrpix,
-                                                      const std::array<double, 3> &masterCrval,
-                                                      const std::array<double, 3> &masterCdelt,
-                                                      const std::array<QString, 3> &masterCtype)
-{
-    ImageLayerLoadResult result;
-    result.filepath = displayName.toStdString(); // used as the layer display name
-
-    BackendClient client(backendUrl, backendToken);
-    const auto opened = client.openDataset(backendPath);
-    if (!opened.valid) {
-        result.errorMessage = opened.error.isEmpty() ? "Could not open VLKB layer on backend."
-                                                     : opened.error.toStdString();
-        return result;
-    }
-    if (opened.kind != u"image"_s) {
-        result.errorMessage = "VLKB entry is not a 2D image (kind=" + opened.kind.toStdString() + ").";
-        return result;
-    }
-
-    const auto response = client.requestImage(opened.datasetId);
-    if (!response.valid) {
-        result.errorMessage = response.error.isEmpty() ? "Remote image request failed."
-                                                       : response.error.toStdString();
-        return result;
-    }
-    if (response.scalarType != u"float32"_s) {
-        result.errorMessage = "Unsupported remote image scalar type.";
-        return result;
-    }
-    const qsizetype expectedBytes =
-            static_cast<qsizetype>(response.width) * response.height
-            * static_cast<qsizetype>(sizeof(float));
-    if (response.width <= 0 || response.height <= 0 || response.data.size() != expectedBytes) {
-        result.errorMessage = "Invalid remote image payload.";
-        return result;
-    }
-
-    // Build the raw layer image from the backend payload (no resampling).
-    auto rawImage = vtkSmartPointer<vtkImageData>::New();
-    rawImage->SetExtent(0, response.width - 1, 0, response.height - 1, 0, 0);
-    rawImage->AllocateScalars(VTK_FLOAT, 1);
-    std::memcpy(rawImage->GetScalarPointer(), response.data.constData(),
-                static_cast<std::size_t>(expectedBytes));
-
-    result.imageData  = rawImage;
-    result.scalarRange = { response.rangeMin, response.rangeMax };
-
-    // ── Legacy WCS alignment: spacing + origin + rotation ────────────────────
-    // Mirrors ImageLayerSet::registerLayerToMaster exactly:
-    //
-    //   1. Isotropic pixel-scale ratio  →  VTK spacing
-    //   2. WCS round-trip pixel (0,0) : layer→sky→master pixel  →  VTK origin
-    //   3. WCS round-trip pixel (0,100): slope → rotation angle  →  vtkTransform
-    //
-    // Frame conversion between layer and master (e.g. FK5 ↔ Galactic) is
-    // handled by wcscon if the CTYPE pairs differ.
-    //
-    // IMPORTANT: secpixLayer uses opened.pixelScaleArcsec (from astropy, handles
-    // CD matrix) instead of computing sqrt(|CDELT1*CDELT2|)*3600 from raw header
-    // CDELT which defaults to 1.0 (3600 arcsec/pix) for CD-matrix-only FITS.
-    // Similarly, sky coordinates for origin/rotation come from opened.wcsRefSky*
-    // (astropy WCS pixel_to_world) rather than our manual tanPixToSky, which also
-    // requires correct CDELT.
-
-    // ── Debug: master WCS params ──────────────────────────────────────────────
-    // masterCdelt here is already the effective CDELT (from addLayerFromBackendPath
-    // which substitutes remoteDatasetEffectiveCdelt when valid).
-    const double secpixMaster = std::sqrt(std::abs(masterCdelt[0] * masterCdelt[1])) * 3600.0;
-    qDebug().noquote()
-            << QStringLiteral("[vlkb-layer] MASTER  cdelt=(%1,%2) secpix=%3 arcsec/px"
-                               "  crpix=(%4,%5) crval=(%6,%7) ctype=(%8,%9)")
-                       .arg(masterCdelt[0], 0, 'g', 8).arg(masterCdelt[1], 0, 'g', 8)
-                       .arg(secpixMaster, 0, 'g', 6)
-                       .arg(masterCrpix[0], 0, 'f', 2).arg(masterCrpix[1], 0, 'f', 2)
-                       .arg(masterCrval[0], 0, 'f', 6).arg(masterCrval[1], 0, 'f', 6)
-                       .arg(masterCtype[0]).arg(masterCtype[1]);
-
-    // ── Debug: overlay WCS params ─────────────────────────────────────────────
-    const double secpixLayerFromCdelt =
-            std::sqrt(std::abs(opened.cdelt[0] * opened.cdelt[1])) * 3600.0;
-    qDebug().noquote()
-            << QStringLiteral("[vlkb-layer] OVERLAY cdelt=(%1,%2) secpix_cdelt=%3 secpix_astropy=%4"
-                               "  crpix=(%5,%6) crval=(%7,%8) ctype=(%9,%10)"
-                               "  wcsRefValid=%11")
-                       .arg(opened.cdelt[0], 0, 'g', 8).arg(opened.cdelt[1], 0, 'g', 8)
-                       .arg(secpixLayerFromCdelt, 0, 'g', 6)
-                       .arg(opened.pixelScaleArcsec, 0, 'g', 6)
-                       .arg(opened.crpix[0], 0, 'f', 2).arg(opened.crpix[1], 0, 'f', 2)
-                       .arg(opened.crval[0], 0, 'f', 6).arg(opened.crval[1], 0, 'f', 6)
-                       .arg(opened.ctype[0]).arg(opened.ctype[1])
-                       .arg(opened.wcsRefSkyValid ? QStringLiteral("yes") : QStringLiteral("no"));
-    if (opened.wcsRefSkyValid) {
-        qDebug().noquote()
-                << QStringLiteral("[vlkb-layer] OVERLAY wcsRef: pix(0,0)->sky(%1,%2)"
-                                   "  pix(0,100)->sky(%3,%4)")
-                           .arg(opened.wcsRefSky00[0], 0, 'f', 8).arg(opened.wcsRefSky00[1], 0, 'f', 8)
-                           .arg(opened.wcsRefSky0100[0], 0, 'f', 8).arg(opened.wcsRefSky0100[1], 0, 'f', 8);
-    }
-
-    // Use astropy pixel scale when available; fall back to CDELT only as last resort.
-    const double secpixLayer = (opened.pixelScaleArcsec > 0.0 && std::isfinite(opened.pixelScaleArcsec))
-                                ? opened.pixelScaleArcsec
-                                : secpixLayerFromCdelt;
-
-    if (secpixLayer > 0.0 && secpixMaster > 0.0
-            && std::isfinite(secpixLayer) && std::isfinite(secpixMaster)) {
-
-        // 1. Isotropic spacing
-        const double scaledPixel = secpixLayer / secpixMaster;
-        result.spacing = { scaledPixel, scaledPixel, 1.0 };
-
-        // Celestial frame codes (needed for cross-frame conversion via wcscon)
-        const int layerFrame  = inferCelestialFrameFromCtypePair(opened.ctype);
-        const int masterFrame = inferCelestialFrameFromCtypePair(masterCtype);
-        const bool needFrameConv = (layerFrame >= 0 && masterFrame >= 0
-                                    && layerFrame != masterFrame);
-
-        // Helper: convert sky coords from layer's frame to master's frame
-        auto toMasterFrame = [&](double &lon, double &lat) {
-            if (needFrameConv) {
-                wcscon(layerFrame, masterFrame, 2000.0, 2000.0, &lon, &lat, 2000.0);
-            }
-        };
-
-        // 2. Origin: layer pixel (0,0) → sky → master pixel
-        //    Prefer astropy-computed sky coord (wcsRefSky00) over manual tanPixToSky
-        //    to avoid CDELT=1.0 corruption in CD-matrix FITS.
-        double lon0, lat0;
-        if (opened.wcsRefSkyValid) {
-            lon0 = opened.wcsRefSky00[0];
-            lat0 = opened.wcsRefSky00[1];
-        } else {
-            tanPixToSky(0.0, 0.0, opened.crpix, opened.crval, opened.cdelt, lon0, lat0);
-        }
-        toMasterFrame(lon0, lat0);
-        double mx0, my0;
-        tanSkyToPix(lon0, lat0, masterCrpix, masterCrval, masterCdelt, mx0, my0);
-        result.origin = { mx0, my0, 0.0 };
-
-        // 3. Rotation: layer pixel (0,100) → sky → master pixel → slope → angle
-        double lon1, lat1;
-        if (opened.wcsRefSkyValid) {
-            lon1 = opened.wcsRefSky0100[0];
-            lat1 = opened.wcsRefSky0100[1];
-        } else {
-            tanPixToSky(0.0, 100.0, opened.crpix, opened.crval, opened.cdelt, lon1, lat1);
-        }
-        toMasterFrame(lon1, lat1);
-        double mx1, my1;
-        tanSkyToPix(lon1, lat1, masterCrpix, masterCrval, masterCdelt, mx1, my1);
-
-        const double dx = mx1 - mx0;
-        const double dy = my1 - my0;
-        if (std::abs(dx) > 1e-9) {
-            // Same formula as legacy vtkwindow_new::addLayerImage / registerLayerToMaster
-            const double m = std::abs(dy / dx);
-            result.rotationDegrees = 90.0 - std::atan(m) * 180.0 / M_PI;
-        }
-        // dx ≈ 0: overlay column maps to master column → no rotation
-
-        qDebug().noquote()
-                << QStringLiteral("[vlkb-layer] COMPUTED scaledPixel=%1"
-                                   " origin=(%2,%3) angle=%4°"
-                                   " frameConv=%5 skySource=%6")
-                           .arg(scaledPixel, 0, 'g', 6)
-                           .arg(mx0, 0, 'g', 8).arg(my0, 0, 'g', 8)
-                           .arg(result.rotationDegrees, 0, 'f', 4)
-                           .arg(needFrameConv ? QStringLiteral("yes") : QStringLiteral("no"))
-                           .arg(opened.wcsRefSkyValid ? QStringLiteral("astropy") : QStringLiteral("tanPixToSky"));
-    } else {
-        qWarning().noquote()
-                << QStringLiteral("[vlkb-layer] degenerate pixel scale for \"%1\","
-                                   " secpixLayer=%2 secpixMaster=%3"
-                                   " (layer cdelt=(%4,%5) astropy=%6);"
-                                   " using raw image without WCS alignment")
-                           .arg(displayName)
-                           .arg(secpixLayer).arg(secpixMaster)
-                           .arg(opened.cdelt[0]).arg(opened.cdelt[1])
-                           .arg(opened.pixelScaleArcsec);
-    }
-
-    result.valid = true;
-    return result;
-}
-#endif  // dead code block end
 
 
 QString formatImageBoundsSummary(vtkImageData *imageData)
@@ -1191,49 +1004,6 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
         this->persistentStatusActive = false;
         this->statusBar()->clearMessage();
     });
-    QObject::connect(&this->m_layerStageWatcher, &QFutureWatcher<StagedLayerFile>::finished, this,
-                     [this]() {
-                         const auto staged = m_layerStageWatcher.result();
-                         // Keep the master even if the layer failed: it is a
-                         // valid local copy and re-fetching it on the next
-                         // attempt would be a second pointless transfer.
-                         if (!staged.localMasterPath.isEmpty())
-                             m_localMasterPath = staged.localMasterPath;
-                         const QString requested = m_pendingStageLayerPath;
-                         m_pendingStageLayerPath.clear();
-                         if (!staged.error.isEmpty()) {
-                             this->setLayerImportEnabled(true);
-                             this->clearPersistentStatusMessage();
-                             m_pendingVlkbDisplayName.clear();
-                             if (!m_pendingStokesLoads.isEmpty()) {
-                                 m_pendingStokesLoads.clear();
-                                 statusBar()->showMessage(
-                                         u"Stokes companion loading stopped after an error."_s,
-                                         5000);
-                             }
-                             QMessageBox::warning(this, u"Add Layer"_s,
-                                                  staged.error + staged.warning);
-                             return;
-                         }
-                         // A copy left behind on the backend is not a failure, but
-                         // the user is the one who has to clean it up.
-                         if (!staged.warning.isEmpty()) {
-                             QMessageBox::information(this, u"Add Layer"_s,
-                                                      u"The layer was fetched."_s
-                                                              + staged.warning);
-                         }
-                         // Master-only staging leaves localPath empty: the layer
-                         // itself was readable here all along.
-                         const QString next =
-                                 staged.localPath.isEmpty() ? requested : staged.localPath;
-                         if (next.isEmpty()) {
-                             this->setLayerImportEnabled(true);
-                             this->clearPersistentStatusMessage();
-                             return;
-                         }
-                         // Same call, now with paths this process can open.
-                         this->addLayerImage(next.toStdString());
-                     });
     QObject::connect(&this->m_stokesListingWatcher,
                      &QFutureWatcher<StokesListing>::finished, this,
                      [this]() { this->onStokesListingReady(m_stokesListingWatcher.result()); });
@@ -1386,7 +1156,8 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     this->updateWcsStatusIndicator();
 
     // Setup Menu File
-    QObject::connect(ui->actionAddFITS, &QAction::triggered, this, &vtkWindowImage::addLocalFile);
+    QObject::connect(ui->actionAddFITS, &QAction::triggered, this,
+                     &vtkWindowImage::addLayerFromBrowser);
 
     // Setup Menu WCS
     auto groupWCS = new QActionGroup(this);
@@ -1867,7 +1638,7 @@ void vtkWindowImage::closeEvent(QCloseEvent *event)
 
 
 
-void vtkWindowImage::addLocalFile()
+void vtkWindowImage::addLayerFromBrowser()
 {
     if (this->isBusy()) {
         return;
@@ -1946,13 +1717,9 @@ void vtkWindowImage::setInteractorStyleProfile()
         ui->vtk->renderWindow()->GetInteractor()->SetInteractorStyle(style);
         this->vtkRender();
 
-        // The staged copy when the master lives on the backend: ProfileWidget
-        // builds an AstroUtils on this path with a local reader.
-        const QString profileMaster =
-                m_localMasterPath.isEmpty() ? this->filepath : m_localMasterPath;
         this->profileWidget =
                 new ProfileWidget(style, this->layers->getImageData(this->layers->getMasterIndex()),
-                                  profileMaster.toStdString(), this);
+                                  this->filepath.toStdString(), this);
         this->profileWidget->setUsageMode(ProfileWidget::UsageMode::ProbeLive, u"Profile"_s);
         this->profileWidget->setupImagePlots();
         QObject::connect(this->profileWidget, &ProfileWidget::destroyed, this,
@@ -1973,235 +1740,148 @@ int vtkWindowImage::currentLayerIndex() const
 }
 
 
-// ── Staging a backend-side file for the local layer pipeline ─────────────────
-// Additional layers are read by loadImageLayer() with a LOCAL vtkFITSReader +
-// AstroUtils: that is what aligns them to the master through libwcs, and it is
-// why the backend-side variant of this path was removed years ago (it did the
-// WCS math by hand and got CD-matrix images wrong). But every dataset path in
-// this application goes through the backend, which may be on another machine -
-// there the browser hands back a path this process cannot open at all.
+// ── Loading an additional layer that lives on the backend ────────────────────
+// The master image already opens remotely: its pixels come from the image
+// endpoints and never touch this filesystem. An additional layer could not,
+// for one reason only - loadImageLayer() aligns a layer to the master with
+// AstroUtils, and AstroUtils could only build a WCS from a FILE. That is not a
+// property of the alignment, it is a property of the constructor: the WCS lives
+// in the header, and /v1/files/header hands the header over.
 //
-// So: keep the local pipeline, and make the file local first. No new endpoint
-// and no second WCS implementation - the bytes that arrive are the same file,
-// so everything downstream behaves exactly as it does with a shared filesystem:
-//
-//   open_dataset(path) -> copy_dataset into the workspace -> download -> delete
-//
-// The workspace copy is removed afterwards: it is a transfer buffer, not
-// something the user asked to keep.
-using StagedLayerFile = vtkWindowImage::StagedLayerFile;
-
-/// Does this transfer error look like the operator-token asymmetry? Opening and
-/// copying accept any authenticated user; downloading and deleting want an
-/// operator token, so on a shared backend the copy succeeds and the download 403s.
-static bool looksLikeOperatorDenial(const QString &error)
+// So a remote layer is loaded the same way the master is: pixels from
+// /v1/image/preview (which returns the plane unchanged when it is small enough,
+// and a decimated one when it is not), WCS from the two headers. No file is
+// copied to this machine, and the alignment is the SAME arithmetic as the local
+// path - the numbers it works on just arrive over HTTP.
+static ImageLayerLoadResult loadRemoteImageLayer(const QString &backendUrl,
+                                                 const QString &backendToken,
+                                                 const QString &sessionId,
+                                                 const QString &layerPath,
+                                                 const QString &masterPath)
 {
-    return error.contains(QStringLiteral("403")) || error.contains(QStringLiteral("Forbidden"))
-            || error.contains(QStringLiteral("operator"), Qt::CaseInsensitive);
-}
+    ImageLayerLoadResult result;
+    result.filepath = layerPath.toStdString();
 
-/// Fetch ONE backend-side file. `error` non-empty means nothing was written.
-static QString fetchBackendFile(BackendClient &client, const QString &backendPath,
-                                const QString &cacheDir, QString &error, QString &leftover)
-{
-    // Size first, and REFUSE when it cannot be established: downloadExport
-    // buffers the whole file in memory before writing it, so an unknown size is
-    // an unbounded allocation, not a small risk.
-    constexpr qint64 kMaxStagedBytes = 2LL * 1024 * 1024 * 1024;
-    const QFileInfo remoteInfo(backendPath);
-    const auto dirListing = client.listFiles(remoteInfo.absolutePath());
-    qint64 size = -1;
-    for (const auto &entry : dirListing.entries) {
-        if (entry.name == remoteInfo.fileName()) {
-            size = entry.size;
-            break;
-        }
-    }
-    if (!dirListing.valid || size < 0) {
-        error = QStringLiteral("Could not establish the size of %1 on the backend%2, so it is "
-                               "not transferred: this path reads the whole file into memory.")
-                        .arg(remoteInfo.fileName(),
-                             dirListing.error.isEmpty()
-                                     ? QString()
-                                     : QStringLiteral(" (%1)").arg(dirListing.error));
-        return {};
-    }
-    if (size > kMaxStagedBytes) {
-        error = QStringLiteral("%1 is %2 GB. Files this large are not copied from a remote "
-                               "backend as a layer - open it as a dataset instead, so the "
-                               "pixels stay on the backend.")
-                        .arg(remoteInfo.fileName())
-                        .arg(size / double(1024 * 1024 * 1024), 0, 'f', 1);
-        return {};
-    }
-
-    const auto opened = client.openDataset(backendPath);
-    if (!opened.valid) {
-        error = opened.error.isEmpty()
-                ? QStringLiteral("The backend could not open %1.").arg(backendPath)
-                : opened.error;
-        return {};
-    }
-
-    // A name of our own: the workspace is the user's, and two files staged from
-    // different directories can share a basename.
-    const QString stem = QFileInfo(backendPath).completeBaseName();
-    const QString tag = QString::fromLatin1(
-            QCryptographicHash::hash(backendPath.toUtf8(), QCryptographicHash::Sha1)
-                    .toHex()
-                    .left(8));
-    const QString basename = QStringLiteral("layer_stage_%1_%2").arg(stem, tag);
-
-    const auto copied = client.copyDatasetToWorkspace(opened.datasetId, basename);
-    if (!copied.valid) {
-        error = copied.error.isEmpty()
-                ? QStringLiteral("The backend could not stage %1 for transfer.").arg(backendPath)
-                : copied.error;
-        return {};
-    }
-    const QString workspaceName = copied.deletedFilename;   // the created file, despite the name
-
-    QDir().mkpath(cacheDir);
-    // Re-fetched, never reused: nothing here can cheaply prove a cached copy is
-    // still the file the backend holds, and silently loading last week's pixels
-    // would be worse than the transfer.
-    //
-    // Each transfer writes its OWN file. Sharing one name per (backend, path)
-    // and replacing it meant a second window fetching the same file could
-    // truncate - or, between the remove and the rename, briefly delete - the
-    // copy this one is reading. Old copies in this directory are pruned by age
-    // instead; anything another window is using was written seconds ago.
-    const QString unique = QString::number(QCoreApplication::applicationPid()) + u"-"_s
-            + QString::number(QRandomGenerator::global()->generate(), 16);
-    const QFileInfo wsInfo(workspaceName);
-    const QString localPath = cacheDir + u"/"_s + wsInfo.completeBaseName() + u"."_s + unique
-            + (wsInfo.suffix().isEmpty() ? QString() : u"."_s + wsInfo.suffix());
-    const QDateTime cutoff = QDateTime::currentDateTime().addDays(-7);
-    for (const QFileInfo &stale : QDir(cacheDir).entryInfoList(QDir::Files)) {
-        if (stale.lastModified() < cutoff)
-            QFile::remove(stale.absoluteFilePath());
-    }
-    QString downloadError;
-    const bool ok = client.downloadExport(workspaceName, localPath, downloadError);
-    if (!ok)
-        QFile::remove(localPath);
-
-    // Clean up the transfer buffer. It must not mask a download failure, but it
-    // must not be hidden either: on a backend that reserves these routes for
-    // operators, the delete fails exactly when the download did, and the copy
-    // stays in the user's workspace.
-    const auto removed = client.deleteExport(workspaceName);
-    if (!removed.valid) {
-        qWarning().noquote() << QStringLiteral("[layer-stage] could not remove workspace copy %1: %2")
-                                        .arg(workspaceName, removed.error);
-        leftover = QStringLiteral(" A copy was left in the workspace as '%1'.").arg(workspaceName);
-    }
-
-    if (!ok) {
-        error = downloadError.isEmpty()
-                ? QStringLiteral("Could not download %1 from the backend.").arg(workspaceName)
-                : downloadError;
-        // The copy went through but the transfer did not: on a shared backend
-        // the download and delete routes want an operator token while opening
-        // and copying do not, and that asymmetry looks exactly like this.
-        if (looksLikeOperatorDenial(downloadError))
-            error += QStringLiteral(
-                    " (the backend's download route may require an operator token, "
-                    "which this session does not have)");
-        return {};   // the leftover copy is reported through `leftover`, once
-    }
-    return localPath;
-}
-
-static StagedLayerFile stageBackendFileLocally(const QString &backendUrl,
-                                               const QString &backendToken,
-                                               const QString &sessionId,
-                                               const QString &backendPath,
-                                               const QString &masterPath,
-                                               const QString &cacheDir)
-{
-    StagedLayerFile out;
     BackendClient client(backendUrl, backendToken);
     if (!sessionId.isEmpty())
         client.setSessionId(sessionId);
 
-    // The MASTER has to be local too, not just the new layer: loadImageLayer
-    // opens both - the layer for its pixels, the master for the WCS it is
-    // aligned to - with the same local reader. Staging only the layer left
-    // AstroUtils to open a file that is not there.
-    if (!masterPath.isEmpty()) {
-        QString error;
-        out.localMasterPath = fetchBackendFile(client, masterPath, cacheDir, error, out.warning);
-        if (out.localMasterPath.isEmpty()) {
-            out.error = QStringLiteral("The image this layer aligns to is on the backend and "
-                                       "could not be fetched: %1")
-                                .arg(error);
-            return out;
-        }
+    const auto opened = client.openDataset(layerPath);
+    if (!opened.valid) {
+        result.errorMessage = opened.error.isEmpty()
+                ? ("The backend could not open " + layerPath.toStdString() + ".")
+                : opened.error.toStdString();
+        return result;
     }
 
-    if (backendPath == masterPath) {
-        // Adding the master itself as a layer: one fetch, not two.
-        out.localPath = out.localMasterPath;
+    // One call for both cases: a plane within the budget comes back whole
+    // (scale 1), a larger one decimated, exactly as the master's preview does.
+    constexpr int kMaxLongestSide = 8192;
+    const auto pixels = client.requestImagePreview(opened.datasetId, kMaxLongestSide);
+    if (!pixels.valid) {
+        result.errorMessage = pixels.error.isEmpty() ? "Remote layer request failed."
+                                                     : pixels.error.toStdString();
+        return result;
+    }
+    if (pixels.scalarType != u"float32"_s) {
+        result.errorMessage = "Unsupported remote layer scalar type.";
+        return result;
+    }
+    const qsizetype expectedBytes = static_cast<qsizetype>(pixels.width) * pixels.height
+            * static_cast<qsizetype>(sizeof(float));
+    if (pixels.width <= 0 || pixels.height <= 0 || pixels.data.size() != expectedBytes) {
+        result.errorMessage = "Invalid remote layer payload.";
+        return result;
+    }
+
+    const auto layerHeader = client.fileHeader(layerPath);
+    const auto masterHeader = client.fileHeader(masterPath);
+    if (!layerHeader.valid || !masterHeader.valid) {
+        result.errorMessage = "Could not read the FITS headers needed to align this layer.";
+        return result;
+    }
+    const auto toCards = [](const QStringList &cards) {
+        std::vector<std::string> out;
+        out.reserve(static_cast<std::size_t>(cards.size()));
+        for (const QString &c : cards)
+            out.push_back(c.toStdString());
         return out;
+    };
+    AstroUtils astroLayer(toCards(layerHeader.cards));
+    AstroUtils astroMaster(toCards(masterHeader.cards));
+    if (astroMaster.getSecPix() <= 0.) {
+        result.errorMessage = "The master image has no usable WCS to align this layer to.";
+        return result;
     }
-    if (backendPath.isEmpty())
-        return out;   // master-only staging
 
-    QString error;
-    QString leftover;
-    out.localPath = fetchBackendFile(client, backendPath, cacheDir, error, leftover);
-    if (!leftover.isEmpty())
-        out.warning += leftover;
-    if (out.localPath.isEmpty())
-        out.error = error;
-    return out;
+    auto image = vtkSmartPointer<vtkImageData>::New();
+    image->SetExtent(0, pixels.width - 1, 0, pixels.height - 1, 0, 0);
+    image->AllocateScalars(VTK_FLOAT, 1);
+    std::memcpy(image->GetScalarPointer(), pixels.data.constData(),
+                static_cast<std::size_t>(expectedBytes));
+    result.imageData = image;
+    result.scalarRange = { pixels.rangeMin, pixels.rangeMax };
+
+    // Two mappings compose here: the layer's own decimation (displayed pixel ->
+    // layer source pixel) and the alignment (layer source pixel -> master pixel).
+    const auto decim = pixels.isPreview
+            ? ImageLod::previewMapping(pixels.fullWidth, pixels.fullHeight, pixels.width,
+                                       pixels.height)
+            : ImageLod::SourceMapping{};
+    const double scalingFactor = astroLayer.getSecPix() / astroMaster.getSecPix();
+    result.spacing = { decim.scaleX * scalingFactor, decim.scaleY * scalingFactor, 1. };
+
+    // Origin: where the FIRST DISPLAYED pixel sits in master pixels. It is the
+    // source pixel decim.origin, not source (0,0) - on a decimated layer those
+    // are not the same place.
+    double pos[2];
+    double pix[2] = { decim.originX, decim.originY };
+    astroLayer.xy2sky(pix, pos, WCS_J2000);
+    astroMaster.sky2xy(pos, pix, WCS_J2000);
+    result.origin = { pix[0], pix[1], 0. };
+
+    // Rotation: the same slope measurement as the local path, over a span of
+    // 100 DISPLAYED pixels so a decimated layer measures the same arc.
+    pix[0] = decim.originX;
+    pix[1] = decim.originY + 100. * decim.scaleY;
+    astroLayer.xy2sky(pix, pos, WCS_J2000);
+    astroMaster.sky2xy(pos, pix, WCS_J2000);
+    const double m = std::abs((pix[1] - result.origin[1]) / (pix[0] - result.origin[0]));
+    result.rotationDegrees = 90. - std::atan(m) * 180. / vtkMath::Pi();
+
+    result.valid = true;
+    qDebug().noquote()
+            << QStringLiteral("[remote-layer] %1 %2x%3 (source %4x%5) spacing=%6 origin=(%7, %8)")
+                       .arg(QFileInfo(layerPath).fileName())
+                       .arg(pixels.width).arg(pixels.height)
+                       .arg(pixels.fullWidth).arg(pixels.fullHeight)
+                       .arg(result.spacing[0])
+                       .arg(result.origin[0]).arg(result.origin[1]);
+    return result;
 }
 
 void vtkWindowImage::addLayerImage(const std::string &filepath)
 {
     const QString path = QString::fromStdString(filepath);
-    // A staged master that has since been cleared out of the cache is no master.
-    if (!m_localMasterPath.isEmpty() && !QFile::exists(m_localMasterPath))
-        m_localMasterPath.clear();
-    // Both files have to be here: the layer for its pixels, the master because
-    // loadImageLayer opens it too, to align the layer to it. A local layer over
-    // a remote master still needs the master fetched.
-    const bool needLayer = !QFile::exists(path);
-    const bool needMaster = m_localMasterPath.isEmpty() && !QFile::exists(this->filepath);
-    // A path the backend gave us that this machine cannot see: fetch it first,
-    // then come back here with a local one. Covers every caller - Add New Layer,
-    // the VLKB cutouts and the Stokes companions - because they all arrive here.
-    if ((needLayer || needMaster) && !this->remoteBackendUrl.isEmpty()) {
+    // Either file may live on the backend rather than here: the layer's pixels,
+    // or the master whose WCS the layer is aligned to. When that is the case the
+    // load goes through the backend instead of the local reader - same watcher,
+    // same result, so every caller (Add New Layer, the VLKB cutouts, the Stokes
+    // companions) is unaffected.
+    const bool remotePath = !QFile::exists(path) || !QFile::exists(this->filepath);
+    if (remotePath && !this->remoteBackendUrl.isEmpty()) {
         this->setLayerImportEnabled(false);
         this->showPersistentStatusMessage(
-                u"Fetching %1 from the backend..."_s.arg(QFileInfo(path).fileName()));
-        // One directory per (backend, file): two backends can serve different
-        // files at the same path, and a shared flat cache would have one
-        // download truncate a file another window is reading.
-        const QString key = QString::fromLatin1(
-                QCryptographicHash::hash((this->remoteBackendUrl + u"|"_s + path).toUtf8(),
-                                         QCryptographicHash::Sha1)
-                        .toHex()
-                        .left(12));
-        const QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
-                + u"/remote-layers/"_s + key;
-        const QString masterToStage = needMaster ? this->filepath : QString();
-        // Only what is actually missing: a layer that is already here must not
-        // be pulled over the network because the master was not.
-        m_pendingStageLayerPath = path;
-        m_layerStageWatcher.setFuture(QtConcurrent::run(
-                &stageBackendFileLocally, this->remoteBackendUrl, this->remoteBackendToken,
-                this->remoteSessionId, needLayer ? path : QString(), masterToStage, cacheDir));
+                u"Loading %1 from the backend..."_s.arg(QFileInfo(path).fileName()));
+        this->layerLoadWatcher.setFuture(QtConcurrent::run(
+                &loadRemoteImageLayer, this->remoteBackendUrl, this->remoteBackendToken,
+                this->remoteSessionId, path, this->filepath));
         return;
     }
     this->setLayerImportEnabled(false);
     this->showPersistentStatusMessage(u"Loading layer..."_s);
-    // The master the layer is aligned to: its staged copy when the real one
-    // lives on the backend.
-    const QString master = m_localMasterPath.isEmpty() ? this->filepath : m_localMasterPath;
     this->layerLoadWatcher.setFuture(QtConcurrent::run(
-            &loadImageLayer, ImageLayerLoadRequest { master.toStdString(), filepath }));
+            &loadImageLayer, ImageLayerLoadRequest { this->filepath.toStdString(), filepath }));
 }
 
 void vtkWindowImage::applyLoadedLayer(const ImageLayerLoadResult &result)
@@ -2472,12 +2152,12 @@ void vtkWindowImage::startRemoteFullResolutionLoad()
 
 bool vtkWindowImage::isBusy() const
 {
-    // Staging and the companion listing count: both end in a layer load, and a
-    // second import starting on top of them replaces the single layer watcher's
-    // future and overwrites m_pendingVlkbDisplayName - layers silently lost or
+    // The companion listing counts too: it ends in a layer load, and a second
+    // import starting on top of it replaces the single layer watcher's future
+    // and overwrites m_pendingVlkbDisplayName - layers silently lost or
     // mislabelled.
     return this->layerLoadWatcher.isRunning() || this->remoteImageWatcher.isRunning()
-            || this->remoteFullImageWatcher.isRunning() || this->m_layerStageWatcher.isRunning()
+            || this->remoteFullImageWatcher.isRunning()
             || this->m_stokesListingWatcher.isRunning();
 }
 
@@ -3242,11 +2922,10 @@ void vtkWindowImage::addLayerFromBackendPath(const QString &backendPath,
                 << QStringLiteral("[vlkb-layer] viewer busy, ignoring addLayerFromBackendPath");
         return;
     }
-    // Reuse the standard addLayerImage pipeline (vtkFITSReader + AstroUtils/libwcs).
-    // libwcs handles CD matrix correctly — no custom WCS math needed.
-    // The VLKB cutout FITS is saved on the backend filesystem; when the backend
-    // runs on the same machine as the client (the common case), backendPath is
-    // directly accessible as a local filesystem path.
+    // Reuse the standard addLayerImage pipeline, which picks the local reader or
+    // the backend depending on whether this machine can see the file. The VLKB
+    // cutout is written on the BACKEND's filesystem, so with a remote backend
+    // that is the backend path - and it loads either way.
     m_pendingVlkbDisplayName = displayName;
     this->addLayerImage(backendPath.toStdString());
     // Override the generic "Loading layer..." message with the VLKB-specific label.

@@ -1434,7 +1434,7 @@ all of which showed up as "the popup keeps coming back":
    `visivo::stokesCompanionCandidates()` / `pickStokesCompanion()`.
 
 2. **Which chooser.** The manual step opened a local `QFileDialog`, the only one
-   left in a dataset path. `File -> Add New Layer` (`addLocalFile()`) already uses
+   left in a dataset path. `File -> Add New Layer` (`addLayerFromBrowser()`) already uses
    `RemoteFileBrowserDialog`; the companion loader now does too, so the paths it
    hands the loader are paths the backend knows.
 
@@ -1455,36 +1455,54 @@ says so rather than leaving a silently partial Stokes set.
 
 ### Additional layers from a remote backend
 
-`addLayerImage()` -> `loadImageLayer()` reads the FITS with a **local**
-`vtkFITSReader` + `AstroUtils`, and that is not incidental: it is what aligns a
-layer to the master through libwcs. The backend-side variant of this path was
-written once and removed because it did the WCS by hand and got CD-matrix images
-wrong. So the pipeline stays local, and the *file* is made local first:
+The master image already opens remotely: its pixels come from the image
+endpoints and never touch this filesystem. An additional layer could not, and
+the reason was never pixel transport — `loadImageLayer()` aligns a layer to the
+master with `AstroUtils`, and `AstroUtils` could only build a WCS from a **file**.
+That is a property of the constructor, not of the alignment: the WCS lives in the
+header, and `/v1/files/header` hands the header over as 80-character cards.
 
-    open_dataset(path) -> copy_dataset into the workspace -> exports/download -> DELETE
+So `AstroUtils` gained a constructor over header cards (`wcsinit()` on the
+reconstructed header string; everything after it was already read from that
+string with `hget*`), and a remote layer now loads the way the master does —
+pixels from `/v1/image/preview`, which returns the plane unchanged when it fits
+and a decimated one when it does not, WCS from the two headers. Nothing is
+copied to this machine, and the alignment is the *same arithmetic* as the local
+path; the numbers it works on just arrive over HTTP.
 
-No new endpoint and no second WCS implementation — the bytes that arrive are the
-same file, so everything downstream behaves as it does on a shared filesystem.
-`addLayerImage()` itself decides: if the path is not readable here and a backend
-is configured, it stages first and re-enters with the local path. Every caller
-(Add New Layer, the VLKB cutouts, the Stokes companions) goes through it.
+Two mappings compose in the result: the layer's own decimation (displayed pixel →
+layer source pixel, from `ImageLod::previewMapping`) and the alignment (layer
+source pixel → master pixel). So the origin is the master pixel of the layer's
+first **displayed** pixel — source `(scale−1)/2`, not source `(0,0)`, which on a
+decimated layer is a different place — and the rotation slope is measured over
+100 displayed pixels so a decimated layer measures the same arc.
 
-The **master** is staged too, once, and remembered in `m_localMasterPath`
-(re-staged if the cache is cleared under it): `loadImageLayer` opens it as well,
-to align the layer to it, so a local layer over a remote master still needs the
-master here. The legacy `ProfileWidget` path, which also builds an `AstroUtils`
-locally, uses the same copy.
+`addLayerImage()` picks the path: if either the layer or the master is not
+readable here and a backend is configured, the load goes through the backend.
+Same watcher, same `ImageLayerLoadResult`, so every caller — Add New Layer, the
+VLKB cutouts, the Stokes companions — is unaffected. `ImageLayerSet::addLayer`
+takes the result's geometry as given (it does **not** re-run
+`registerLayerToMaster`), so the local path is untouched: with no decimation the
+new arithmetic reduces to exactly the old expressions.
 
-What it refuses, and says so: a file whose size cannot be established on the
-backend, or one over 2 GB — `downloadExport` buffers the whole file in memory
-before writing it, so an unknown size is an unbounded allocation and an SKA-scale
-cube should be *opened* as a dataset, not copied. Each transfer writes its **own** local file: one shared
-name per (backend, path) meant a second window fetching the same file could
-truncate the copy this one was reading, so old copies are pruned by age instead.
-The workspace copy is a transfer buffer and is deleted afterwards — except on a
-backend that reserves `download` and `DELETE` for operators, where both fail
-together; the message then names the copy that was left behind instead of
-pretending it was cleaned up, whether or not the download itself succeeded.
+The cards → header-string conversion is its own pure header
+(`src/FitsHeaderString.h`, unit-tested): libwcs reads a header as one flat buffer
+of fixed 80-column cards terminated by END, and each of those three rules fails
+*silently* when broken — a short card shifts every keyword after it, a missing
+END makes the parser run off the end of the buffer. The libwcs parse itself is
+only exercised at runtime: the test target links neither libwcs nor cfitsio.
+
+One libwcs trap worth knowing: `hlength`/`gethlength` keep the header length in a
+**file-static**, set by whoever last read a header, and every `hget*` / `wcsinit`
+call reads it back. Each constructor sets it for its own header before parsing,
+or the parse runs with another header's length — reading past the end of the
+buffer, or stopping before its keywords. That state is also *global*, so two
+`AstroUtils` built at the same time (the layer loader runs on a worker thread
+while the GUI thread can build its own) would each parse with the other's
+length: construction takes a process-wide mutex. Every call into libwcs's header
+parser in this codebase is inside those two constructors, so that is the whole
+surface; the per-object `pix2wcs`/`wcs2pix` afterwards touch only their own
+`WorldCoor`.
 
 ### The companion listing does not block the window
 

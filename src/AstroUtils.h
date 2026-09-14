@@ -6,6 +6,7 @@
 #include <QString>
 
 #include <string>
+#include <vector>
 
 struct WorldCoor;
 
@@ -20,6 +21,15 @@ public:
    * @param filepath FITS absolute filepath
    */
     AstroUtils(const std::string &filepath);
+    /**
+   * Build the WCS from FITS header CARDS instead of a file - the 80-character
+   * card images the backend's ``/v1/files/header`` returns. A dataset that lives
+   * on another machine can then be aligned to another one without copying a
+   * single pixel to this one: the WCS is the only part of the file this class
+   * ever needed.
+   * @param headerCards one FITS card per entry, in header order
+   */
+    explicit AstroUtils(const std::vector<std::string> &headerCards);
     ~AstroUtils();
 
     /**
@@ -139,6 +149,10 @@ public:
     bool isSimulation() const;
 
 private:
+    /// The part of construction that is the same either way: everything after
+    /// the WCS itself is read out of the header string with hget*.
+    void readHeaderKeywords(char *header);
+
     std::string filepath;
     struct WorldCoor *wcs;
     int naxis;

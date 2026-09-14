@@ -87,6 +87,8 @@ add_executable(VisIVOTests
     test_spectral_unit_convert.cpp
     TestCubeRegionGeom.h
     test_cube_region_geom.cpp
+    TestFitsHeaderString.h
+    test_fits_header_string.cpp
     TestStokesCompanion.h
     test_stokes_companion.cpp
     TestProductOrigin.h
