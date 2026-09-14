@@ -719,7 +719,17 @@ private:
     QPointer<QAction> m_actTogglePolVecs;
 
     void detectAndLoadStokesCompanions();
-    QString findStokesCompanionPath(const QString &iPath, const QString &role) const;
+    /// File names present in the directory holding `path`, listed through the
+    /// backend so the search works when the backend is on another machine.
+    QSet<QString> listStokesSearchDirectory(const QString &path, QString *error) const;
+    /// Queue of (path, "Stokes Q"-style label) waiting for the single layer
+    /// loader. Loading is asynchronous through one watcher, so companions have
+    /// to go in one at a time or all but the last are silently dropped.
+    QList<QPair<QString, QString>> m_pendingStokesLoads;
+    /// True while the companion search is inside a nested event loop (backend
+    /// listing, file chooser), which leaves the menu action clickable.
+    bool m_stokesDiscoveryActive{ false };
+    void startNextStokesLoad();
     int findLayerByStokesRole(StokesRole role) const;
     void computeStokesP();
     void computeStokesPA();

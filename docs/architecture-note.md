@@ -723,6 +723,41 @@ Open Image" now, and its tooltip says outright that it does not open a viewer of
 its own. A precondition the name contradicts will keep being reported as a
 defect however well the gate explains it.
 
+### The image viewer's left panel
+
+An audit of the panel (user question: "does this layout work?") found that more
+than a third of its height belonged to two `QTableWidget`s, **Inventory** and
+**Objects**, which were defined in the `.ui`, referenced by exactly one styling
+loop, and **never populated by any code**. Each declared `minimumHeight 120` and
+`verstretch 1`, so together they claimed 240 px plus all the spare space — which
+is why the panel reads as mostly empty and Session Data is squeezed into a strip
+at the top.
+
+The job they were presumably meant for is **already done elsewhere**:
+`ensureCatalogueDock()` builds a real source table with a `CatalogueTableModel`
+and two-way selection sync (click a row, the source highlights on the image, and
+vice versa), and shows itself when a catalogue loads. So both tables were
+removed rather than wired — a second list would have competed with the working
+one.
+
+What the dock did lack was a way back: it shows itself when the overlay loads and
+hides when it is cleared, but nothing could reopen it once closed, so the source
+list was gone for the rest of the session. Its `toggleViewAction` is in the image
+viewer's View menu now, as "Catalogue Sources" — the 3-D catalogue window already
+listed its own dock that way.
+
+Two smaller things in the same panel:
+
+- **"LAYER SETTINGS" now names the layer it edits.** The header sat above the
+  list whose current row it acts on, which reads as settings for the panel. With
+  one layer that is harmless; this window is built for many (I/Q/U/V plus P, PA,
+  P/I, α, RM), and there you could change a colour map without being told which
+  layer you changed.
+- **Sources / Filaments are gated on celestial WCS.** They query the Hi-GAL /
+  VLKB catalogues over the image footprint and used to be enabled always,
+  explaining the precondition only *after* the click, in a warning box. Same rule
+  as the cube's tool gate: say why before, not after.
+
 ### The image viewer's Session Data
 
 The 2-D viewer installed the session dock and minted an owner scope, and then
@@ -1279,12 +1314,56 @@ Several features were ported from (or inspired by) the cube viewer:
 | **Annotations** | Text (`vtkTextActor`) and arrow overlays placed interactively (crosshair click). Arrows use `buildArrowGeometry()` (shaft + fixed-size 8 px arrowhead, capped at 30 % of shaft). Arrow placement shows a live preview via `m_annotPreviewActor` updated in `mouseCallback()`. Save/Load via native `QFileDialog`. | `AnnotPlaceMode` state machine: `None → Text` (1 click) or `None → ArrowTip → ArrowLabel` (2 clicks). Right-click cancels. |
 | **Blink / Compare** | `m_blinkTimer` toggles visibility of layers 0 and 1 at `m_blinkIntervalMs` (50–1000 ms slider). Requires ≥ 2 layers; `toggleBlink(false)` restores all layers visible. | `getLayerActor(int)` pass-through added to `LayerListModel`. |
 | **Contour Phase 2 (cube → image)** | `vtkWindowCube` emits `contourDataReady(label, vtkImageData*)` via *Tools → Overlay Slice on an Open Image*. `MainWindow` relays to the first open `vtkWindowImage` via `overlayExternalContourData()`, which runs `vtkFlyingEdges2D` on the received data and adds the result as an external contour layer. | No WCS reprojection — assumes shared pixel grid (same dataset). |
-| **Stokes analysis** | `StokesRole` enum + `QHash<int, StokesRole>` map associates layer indices with their I/Q/U/V/derived role. `findStokesCompanionPath()` greps for sibling files matching common naming patterns (`StokesI` → `Q/U/V`, `_I.fits` → `_Q.fits`, ASKAP/MeerKAT `_PB` variants, `.fits.gz`). Derived maps `P = √(Q²+U²)`, `PA = ½·atan2(U,Q)`, `P/I` are computed in-place on `vtkImageData` via `computeStokesP/PA/Fractional()` and added as layers via `addDerivedLayer()`. | Master layer NaN colour set to transparent for radio mosaic convention. |
+| **Stokes analysis** | `StokesRole` enum + `QHash<int, StokesRole>` map associates layer indices with their I/Q/U/V/derived role. `visivo::pickStokesCompanion()` (`src/gui/StokesCompanion.h`, unit-tested) matches sibling files against common naming patterns (`StokesI` → `Q/U/V`, `_I.fits` → `_Q.fits`, ASKAP/MeerKAT `_PB` variants, `.fits.gz`). See "Loading the Stokes companions" below for where the listing comes from. Derived maps `P = √(Q²+U²)`, `PA = ½·atan2(U,Q)`, `P/I` are computed in-place on `vtkImageData` via `computeStokesP/PA/Fractional()` and added as layers via `addDerivedLayer()`. | Master layer NaN colour set to transparent for radio mosaic convention. |
 | **Debiased P** | `computeStokesPdebiased()` estimates per-channel σ as `½·(σ_MAD(Q) + σ_MAD(U))` over all valid pixels (not robust to bright spatial features, intentional — meant as a quick field-average), then `P_deb = √(max(0, Q²+U²−σ²))`. Result tagged `StokesRole::DerivedPdb`. | Label includes the σ value used for traceability. |
 | **Spectral index** | `computeSpectralIndex()` opens a `QDialog` (combos + line edits) to pick two layers and their frequencies, then computes `α = log(S_B/S_A)/log(ν_B/ν_A)` per pixel. Display LUT clamped to [−2.5, +1.5] (synchrotron + thermal range). | Both layers must share extent — explicit check, no resampling. |
 | **Faraday RM** | `computeFaradayRM()` opens a `QTableWidget`-based dialog where the user adds ≥ 3 (Q layer, U layer, ν GHz) triplets. Per pixel: PA_i = ½·atan2(U_i, Q_i), λ_i² = (c/ν_i)², then closed-form linear fit slope = `Σ(λ_i²−λ̄²)(PA_i−PA̅) / Σ(λ_i²−λ̄²)²`. Result clamped to ±500 rad m⁻² for display. | **No PA unwrapping** — valid only in the low-RM regime. Documented limitation. |
 | **Polarization vector overlay** | `rebuildPolarizationVectors()` samples Q and U on a configurable grid, computes per-pixel PA and P, filters by MAD-σ × SNR threshold, draws line segments in `m_polVecActor` (`vtkPolyData` + `vtkLineSource` family). Sidebar controls: grid step, SNR threshold, length scale. | Pixel-grid orientation assumes N-up E-left (standard FITS); rotated WCS would need a correction matrix. |
 | **Radio region stats** | `RegionStatistics` extended with `sum` and `madSigma` (`1.4826 × MAD(values − median)`). `analyzeCurrentRegion()` adds a **Radio (beam-aware)** section computing `Ω_beam_px = π·BMAJ·BMIN/(4·ln 2)` (from `m_beamMajorDeg/MinorDeg` stored in `setBeamInfo()`) and the integrated flux `Jy = sum / Ω_beam_px`. When any Stokes role layers are loaded, a **Stokes (per-layer)** section re-runs stats on each role's data and reports the appropriate scalar (Jy / degrees / %). | Median-MAD σ replaces std-dev for fields with bright sources. |
+
+
+### Loading the Stokes companions
+
+*Tools -> Load Stokes Q/U/V Companions* used to be three problems in a trench coat,
+all of which showed up as "the popup keeps coming back":
+
+1. **Where it looked.** It matched candidate names with `QFile::exists()`, i.e. on
+   the *client's* disk. Every dataset in this application is opened through the
+   backend, which may be on another machine, so the auto-detection found nothing
+   there and the user was dropped straight into the manual path.
+   `listStokesSearchDirectory()` now asks the backend (`BackendClient::listFiles`,
+   the same call the file browser makes) for the directory holding the Stokes I
+   file, and only falls back to a local `QDir` listing when no backend URL is
+   configured. The name patterns themselves moved into the pure, unit-tested
+   `visivo::stokesCompanionCandidates()` / `pickStokesCompanion()`.
+
+2. **Which chooser.** The manual step opened a local `QFileDialog`, the only one
+   left in a dataset path. `File -> Add New Layer` (`addLocalFile()`) already uses
+   `RemoteFileBrowserDialog`; the companion loader now does too, so the paths it
+   hands the loader are paths the backend knows.
+
+3. **What Cancel means, and how many popups there are.** The loop asked for Q,
+   then U, then V, with `continue` on an empty result: cancelling one chooser
+   simply opened the next, which reads exactly like a popup that reopens. Now a
+   single summary dialog first states what was already loaded, what was found
+   automatically and what is missing, and says how many choosers will follow and
+   in which order. Each chooser's title reads *Locate Stokes U  (2 of 3)*, and
+   Cancel abandons the rest of the sequence.
+
+One more bug was hiding behind those: the found companions were loaded with three
+back-to-back `addLayerImage()` calls, but that method drives a **single**
+`QFutureWatcher`, so each `setFuture()` discarded the previous load and only the
+last layer ever arrived. Loads are queued in `m_pendingStokesLoads` and started
+one at a time from the layer-load completion slot; a failure clears the queue and
+says so rather than leaving a silently partial Stokes set.
+
+**Still open, and wider than this tool:** `addLayerImage()` -> `loadImageLayer()`
+reads the FITS with a *local* `vtkFITSReader` + `AstroUtils`. Every additional-layer
+path shares that assumption (File -> Add New Layer, the VLKB cutout layers,
+and now the Stokes companions), so with a genuinely remote backend the browser
+hands back a path the client cannot open. Discovery and the chooser are now
+correct; the loader still needs a backend-side import (fetch or an
+`open_dataset` + pixel request) before additional layers work off-machine.
 
 ---
 

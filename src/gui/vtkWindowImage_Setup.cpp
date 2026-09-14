@@ -808,7 +808,7 @@ void vtkWindowImage::setupSidebar()
     for (QLabel *lbl : { ui->labelLayerHdr, ui->labelCatalogueHdr }) {
         lbl->setStyleSheet(hdrStyle);
     }
-    for (QLabel *lbl : { ui->labelLayerListHdr, ui->labelInventoryHdr, ui->labelObjectsHdr }) {
+    for (QLabel *lbl : { ui->labelLayerListHdr }) {
         lbl->setStyleSheet(subHdrStyle);
     }
     for (QFrame *f : { ui->frameLayerControls, ui->frameCatalogueActions }) {
@@ -1449,6 +1449,32 @@ void vtkWindowImage::setupSidebar()
     infoLayout->addStretch(1);
 
     // VLKB catalogue overlays: compact sources / filaments over the image footprint.
+    // These query the Hi-GAL / VLKB compact-source and filament catalogues over
+    // this image's footprint, so they need celestial coordinates to place the
+    // results on. They used to be enabled always and explain themselves only
+    // AFTER the click, in a warning box — the same "say why before, not after"
+    // rule the cube's tool gate follows.
+    {
+        const bool celestial = this->remoteHasCelestialAxes();
+        for (QPushButton *b : { ui->btnSources, ui->btnFilaments }) {
+            if (!b)
+                continue;
+            b->setEnabled(celestial);
+            if (!celestial)
+                b->setToolTip(u"This image has no celestial WCS, so there is no sky "
+                              u"position to query the catalogue over."_s);
+        }
+        if (celestial) {
+            if (ui->btnSources)
+                ui->btnSources->setToolTip(
+                        u"Overlay the VLKB compact sources that fall inside this "
+                        u"image's footprint."_s);
+            if (ui->btnFilaments)
+                ui->btnFilaments->setToolTip(
+                        u"Overlay the VLKB filaments that cross this image's footprint."_s);
+        }
+    }
+
     QObject::connect(ui->btnSources, &QPushButton::clicked, this,
                      &vtkWindowImage::overlayVlkbSources);
     QObject::connect(ui->btnFilaments, &QPushButton::clicked, this,

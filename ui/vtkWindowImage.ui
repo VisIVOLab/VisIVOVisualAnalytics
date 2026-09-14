@@ -289,41 +289,6 @@
              </widget>
             </item>
 
-            <!-- Inventory table sub-section -->
-            <item>
-             <widget class="QLabel" name="labelInventoryHdr">
-              <property name="text"><string>Inventory</string></property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QTableWidget" name="tableInventory">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-                <horstretch>0</horstretch>
-                <verstretch>1</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="minimumHeight"><number>120</number></property>
-             </widget>
-            </item>
-
-            <!-- Objects table sub-section -->
-            <item>
-             <widget class="QLabel" name="labelObjectsHdr">
-              <property name="text"><string>Objects</string></property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QTableWidget" name="tableObjects">
-              <property name="sizePolicy">
-               <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-                <horstretch>0</horstretch>
-                <verstretch>1</verstretch>
-               </sizepolicy>
-              </property>
-              <property name="minimumHeight"><number>120</number></property>
-             </widget>
-            </item>
 
            </layout>
           </widget>
@@ -491,8 +456,6 @@
   <tabstop>listLayer</tabstop>
   <tabstop>btnSources</tabstop>
   <tabstop>btnFilaments</tabstop>
-  <tabstop>tableInventory</tabstop>
-  <tabstop>tableObjects</tabstop>
   <tabstop>btn3D</tabstop>
  </tabstops>
 

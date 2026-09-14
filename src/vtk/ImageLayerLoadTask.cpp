@@ -6,6 +6,7 @@
 #include "wcs.h"
 
 #include <QDebug>
+#include <QFile>
 #include <QElapsedTimer>
 
 #include <vtkImageData.h>
@@ -26,6 +27,14 @@ ImageLayerLoadResult loadImageLayer(const ImageLayerLoadRequest &request)
         return result;
     }
 
+    // The reader reports nothing on a missing or unreadable file, so check here:
+    // callers (the Stokes companion queue in particular) rely on `valid` being
+    // false to stop and tell the user, instead of adding an empty layer.
+    if (!QFile::exists(QString::fromStdString(request.layerFilepath))) {
+        result.errorMessage = "File not found: " + request.layerFilepath;
+        return result;
+    }
+
     vtkNew<vtkFITSReader> reader;
     reader->SetFileName(request.layerFilepath.c_str());
     QElapsedTimer readTimer;
@@ -41,6 +50,14 @@ ImageLayerLoadResult loadImageLayer(const ImageLayerLoadRequest &request)
     qDebug().noquote()
             << QStringLiteral("[perf][layer] DeepCopy: %1 ms").arg(deepCopyTimer.elapsed());
     result.scalarRange = { reader->GetMin(), reader->GetMax() };
+
+    int dims[3] = { 0, 0, 0 };
+    result.imageData->GetDimensions(dims);
+    if (dims[0] <= 0 || dims[1] <= 0 || result.imageData->GetNumberOfPoints() <= 0) {
+        result.imageData = nullptr;
+        result.errorMessage = "Not a readable 2-D FITS image: " + request.layerFilepath;
+        return result;
+    }
 
     QElapsedTimer payloadTimer;
     payloadTimer.start();

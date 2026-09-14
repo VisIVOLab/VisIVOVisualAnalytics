@@ -16,6 +16,7 @@
 #include "LayerListModel.h"
 #include "ProfileWidget.h"
 #include "RemoteFileBrowserDialog.h"
+#include "StokesCompanion.h"
 #include "qcustomplot.h"
 #include "SidebarPanel.h"
 #include "theme/SegmentedToggle.h"
@@ -70,7 +71,8 @@
 #include <QDockWidget>
 #include <QElapsedTimer>
 #include <QFile>
-#include <QFileDialog>
+#include <QDir>
+#include <QScopeGuard>
 #include <QFileInfo>
 #include <QDoubleValidator>
 #include <QFormLayout>
@@ -159,35 +161,62 @@ int vtkWindowImage::findLayerByStokesRole(StokesRole role) const
     return -1;
 }
 
-QString vtkWindowImage::findStokesCompanionPath(const QString &iPath, const QString &role) const
+QSet<QString> vtkWindowImage::listStokesSearchDirectory(const QString &path,
+                                                        QString *error) const
 {
-    // Pattern strict: replace "StokesI" → "Stokes<role>" in the basename.
-    // Handles common variants: _StokesI_, -StokesI-, _I.fits, _I_PB.fits.
-    const QFileInfo fi(iPath);
-    const QString dir = fi.absolutePath();
-    const QString name = fi.fileName();
+    QSet<QString> names;
+    const QString dir = QFileInfo(path).absolutePath();
 
-    QStringList candidateNames;
-    candidateNames << QString(name).replace(u"StokesI"_s, u"Stokes"_s + role);
-    candidateNames << QString(name).replace(u"stokesI"_s, u"stokes"_s + role.toLower());
-    candidateNames << QString(name).replace(u"STOKESI"_s, u"STOKES"_s + role);
-    // ASKAP/MeerKAT patterns: _I.fits or _I_PB.fits
-    candidateNames << QString(name).replace(u"_I.fits"_s, u"_"_s + role + u".fits"_s);
-    candidateNames << QString(name).replace(u"_I_PB.fits"_s, u"_"_s + role + u"_PB.fits"_s);
-    candidateNames << QString(name).replace(u"_I.fits.gz"_s, u"_"_s + role + u".fits.gz"_s);
-    candidateNames << QString(name).replace(u"_I_PB.fits.gz"_s, u"_"_s + role + u"_PB.fits.gz"_s);
-    candidateNames.removeDuplicates();
-    candidateNames.removeAll(name);  // never match the I file itself
-
-    for (const QString &candidate : candidateNames) {
-        const QString full = dir + u"/"_s + candidate;
-        if (QFile::exists(full)) return full;
+    // Datasets live on the backend's filesystem, which is only the same as ours
+    // when the backend runs locally. Ask the backend what is in the directory,
+    // exactly as the file browser does, so the auto-detection is not silently
+    // empty against a remote server.
+    if (!this->remoteBackendUrl.isEmpty()) {
+        BackendClient client(this->remoteBackendUrl, this->remoteBackendToken);
+        const auto listing = client.listFiles(dir);
+        if (!listing.valid) {
+            if (error)
+                *error = listing.error.isEmpty() ? u"backend listing failed"_s : listing.error;
+            return names;
+        }
+        for (const auto &entry : listing.entries)
+            names.insert(entry.name);
+        return names;
     }
-    return QString();
+
+    for (const QFileInfo &fi : QDir(dir).entryInfoList(QDir::Files))
+        names.insert(fi.fileName());
+    return names;
+}
+
+void vtkWindowImage::startNextStokesLoad()
+{
+    if (m_pendingStokesLoads.isEmpty())
+        return;
+    const auto next = m_pendingStokesLoads.takeFirst();
+    // The role is assigned when the load finishes, by matching this label.
+    m_pendingVlkbDisplayName = next.second;
+    this->addLayerImage(next.first.toStdString());
 }
 
 void vtkWindowImage::detectAndLoadStokesCompanions()
 {
+    if (this->isBusy()) {
+        statusBar()->showMessage(u"Viewer busy, try again in a moment."_s, 3000);
+        return;
+    }
+    if (!m_pendingStokesLoads.isEmpty()) {
+        statusBar()->showMessage(u"Stokes companions are still loading."_s, 3000);
+        return;
+    }
+    // Both the backend listing and the file chooser spin a nested event loop, so
+    // the menu action stays clickable while this runs. A second pass would build
+    // its own queue on top of ours and overwrite m_pendingVlkbDisplayName.
+    if (m_stokesDiscoveryActive)
+        return;
+    m_stokesDiscoveryActive = true;
+    const auto discoveryGuard = qScopeGuard([this] { m_stokesDiscoveryActive = false; });
+
     // The master layer is treated as Stokes I.
     const int masterIdx = this->layers->getMasterIndex();
     if (!m_stokesRoles.contains(masterIdx))
@@ -196,46 +225,92 @@ void vtkWindowImage::detectAndLoadStokesCompanions()
     const QStringList roles = { u"Q"_s, u"U"_s, u"V"_s };
     QStringList missing;
     QStringList autoFound;
+    QStringList alreadyLoaded;
+
+    QString listingError;
+    const QSet<QString> listing = listStokesSearchDirectory(this->filepath, &listingError);
+    const QFileInfo iInfo(this->filepath);
+    const QString searchDir = iInfo.absolutePath();
 
     for (const QString &role : roles) {
         if (findLayerByStokesRole(
                 role == u"Q"_s ? StokesRole::Q
-                : role == u"U"_s ? StokesRole::U : StokesRole::V) >= 0)
+                : role == u"U"_s ? StokesRole::U : StokesRole::V) >= 0) {
+            alreadyLoaded.append(role);
             continue;
+        }
 
-        QString path = findStokesCompanionPath(this->filepath, role);
-        if (path.isEmpty()) {
+        const QString name = visivo::pickStokesCompanion(iInfo.fileName(), role, listing);
+        if (name.isEmpty()) {
             missing.append(role);
         } else {
-            autoFound.append(QStringLiteral("%1: %2").arg(role, QFileInfo(path).fileName()));
-            // Tag the slot for the role-assignment hook after the layer loads
-            m_pendingVlkbDisplayName = u"Stokes "_s + role;
-            this->addLayerImage(path.toStdString());
-            // The role will be assigned in the load-watcher callback by matching
-            // m_pendingVlkbDisplayName. For now, we just record an intent.
-            // Simpler: after addLayerImage we know rowCount will increase, but the
-            // load is async. We'll defer role assignment to the load completion.
+            autoFound.append(QStringLiteral("%1 (%2)").arg(role, name));
+            m_pendingStokesLoads.append({ searchDir + u"/"_s + name, u"Stokes "_s + role });
         }
     }
 
-    if (!autoFound.isEmpty()) {
-        statusBar()->showMessage(
-                QStringLiteral("Stokes companions found: %1").arg(autoFound.join(u", "_s)),
-                4000);
-    }
-
+    // Say what was found BEFORE opening any file chooser. Without this the
+    // manual step reads as a popup that keeps coming back, with no clue that
+    // each one is asking for a different component.
     if (!missing.isEmpty()) {
-        for (const QString &role : missing) {
-            const QString path = QFileDialog::getOpenFileName(
-                    this,
-                    QStringLiteral("Locate Stokes %1 file").arg(role),
-                    QFileInfo(this->filepath).absolutePath(),
-                    u"FITS files (*.fits *.fit *.fits.gz);;All files (*)"_s);
-            if (path.isEmpty()) continue;
-            m_pendingVlkbDisplayName = u"Stokes "_s + role;
-            this->addLayerImage(path.toStdString());
+        QStringList lines;
+        if (!alreadyLoaded.isEmpty())
+            lines << QStringLiteral("Already loaded: %1").arg(alreadyLoaded.join(u", "_s));
+        if (!autoFound.isEmpty())
+            lines << QStringLiteral("Found next to Stokes I: %1").arg(autoFound.join(u", "_s));
+        lines << QStringLiteral("Not found: %1").arg(missing.join(u", "_s));
+        if (!listingError.isEmpty())
+            lines << QStringLiteral("(could not list %1: %2)").arg(searchDir, listingError);
+        lines << QString();
+        lines << QStringLiteral("Locate the missing %1 yourself? You will get one file "
+                                "browser per component, in order (%2). Cancel in any of them "
+                                "stops the sequence.")
+                         .arg(missing.size() == 1 ? u"file"_s : u"files"_s,
+                              missing.join(u", "_s));
+
+        const auto answer = QMessageBox::question(
+                this, u"Load Stokes Companions"_s, lines.join(u"\n"_s),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        if (answer == QMessageBox::Yes) {
+            for (int i = 0; i < missing.size(); ++i) {
+                // The backend file browser, not a local QFileDialog: the paths
+                // the loader needs are the backend's, and with a remote backend
+                // a local chooser would show the wrong filesystem entirely.
+                RemoteFileBrowserDialog dialog(this->remoteBackendUrl, this->remoteBackendToken,
+                                               this);
+                // .fits.gz too: auto-detection matches gzipped companions, so the
+                // manual chooser must not hide the very files it suggests.
+                dialog.setExtensionFilter({ u".fits"_s, u".fit"_s, u".fits.gz"_s, u".fit.gz"_s },
+                                          u"FITS files only"_s);
+                dialog.setWindowTitle(QStringLiteral("Locate Stokes %1  (%2 of %3)")
+                                              .arg(missing.at(i))
+                                              .arg(i + 1)
+                                              .arg(missing.size()));
+                if (dialog.exec() != QDialog::Accepted)
+                    break;   // Cancel abandons the remaining components too
+                const QString path = dialog.selectedFilePath();
+                if (path.isEmpty())
+                    break;
+                m_pendingStokesLoads.append({ path, u"Stokes "_s + missing.at(i) });
+            }
         }
     }
+
+    if (m_pendingStokesLoads.isEmpty()) {
+        statusBar()->showMessage(
+                alreadyLoaded.size() == roles.size()
+                        ? u"Stokes Q, U and V are already loaded."_s
+                        : u"No Stokes companion loaded."_s,
+                4000);
+        return;
+    }
+
+    statusBar()->showMessage(
+            QStringLiteral("Loading %1 Stokes companion(s)...").arg(m_pendingStokesLoads.size()),
+            4000);
+    // One at a time: the layer loader has a single watcher, so starting three
+    // loads at once would keep only the last.
+    startNextStokesLoad();
 }
 
 void vtkWindowImage::computeStokesP()

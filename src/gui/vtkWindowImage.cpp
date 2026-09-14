@@ -1187,7 +1187,19 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                                                       QString::fromStdString(result.errorMessage));
                              }
                              m_pendingVlkbDisplayName.clear();
+                             // Drop the "Loading layer..." text first: clearing it
+                             // after the message below would wipe it immediately.
                              this->clearPersistentStatusMessage();
+                             // A companion that fails to load aborts the rest of
+                             // the queue: silently going on to the next one would
+                             // leave the user with a partial Stokes set and no
+                             // idea which component is missing.
+                             if (!m_pendingStokesLoads.isEmpty()) {
+                                 m_pendingStokesLoads.clear();
+                                 statusBar()->showMessage(
+                                         u"Stokes companion loading stopped after an error."_s,
+                                         5000);
+                             }
                              return;
                          }
 
@@ -1216,6 +1228,9 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                          }
 
                          this->clearPersistentStatusMessage();
+                         // The loader has a single watcher, so queued Stokes
+                         // companions go in one after the other from here.
+                         this->startNextStokesLoad();
                      });
     QObject::connect(&this->remoteImageWatcher, &QFutureWatcher<ImageLayerLoadResult>::finished, this,
                      [this]() {
@@ -1398,6 +1413,19 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     QObject::connect(this->actionClearCatalogueOverlay, &QAction::triggered, this,
                      &vtkWindowImage::clearCatalogueOverlay);
     this->ensureCatalogueDock();
+    // …and a way back to it. The dock shows itself when a catalogue loads and
+    // hides when the overlay is cleared, but nothing could reopen it once the
+    // user closed it — the source list was then unreachable for the rest of the
+    // session, while the panel held two empty tables meant for the same job
+    // (user report on the layout). The 3-D catalogue window already lists its
+    // own dock this way.
+    if (this->catalogueDock) {
+        QAction *toggle = this->catalogueDock->toggleViewAction();
+        toggle->setText(u"Catalogue Sources"_s);
+        toggle->setToolTip(u"The table of sources in the loaded catalogue overlay. "
+                           u"Selecting a row highlights that source on the image."_s);
+        ui->menuView->addAction(toggle);
+    }
 
     // FITS export → Workspace
     ui->menuTools->addSeparator();
@@ -1533,7 +1561,8 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     ui->menuTools->addSeparator();
     m_actLoadStokesCompanions = ui->menuTools->addAction(u"Load Stokes Q/U/V Companions…"_s);
     m_actLoadStokesCompanions->setToolTip(
-            u"Auto-detect and load Stokes Q, U, V files matching the current Stokes I."_s);
+            u"Auto-detect Stokes Q, U, V files matching the current Stokes I; "
+            u"anything not found can be picked from the backend file browser."_s);
     QObject::connect(m_actLoadStokesCompanions, &QAction::triggered, this,
                      &vtkWindowImage::detectAndLoadStokesCompanions);
 
@@ -1670,6 +1699,33 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     }
     QObject::connect(ui->sliderOpacity, &QSlider::actionTriggered, this,
                      &vtkWindowImage::changeCurrentLayerOpacity);
+
+    // The header names the layer these controls edit. "LAYER SETTINGS" sits
+    // ABOVE the list whose current row it acts on, which reads as settings for
+    // the panel rather than for a layer — harmless with one layer, a trap in the
+    // window this is: load Stokes companions and compute P, PA, P/I, α and RM and
+    // there are ten rows, any of whose colour map you can change without being
+    // told which one you changed (user report on the layout).
+    const auto nameLayerSettings = [this]() {
+        if (!ui->labelLayerHdr)
+            return;
+        const int row = this->currentLayerIndex();
+        const QString name = (row >= 0 && this->layers && row < this->layers->rowCount())
+                ? this->layers->data(this->layers->index(row, 0), Qt::DisplayRole).toString()
+                : QString();
+        ui->labelLayerHdr->setText(name.isEmpty() ? u"LAYER SETTINGS"_s
+                                                  : u"LAYER SETTINGS, %1"_s.arg(name));
+        ui->labelLayerHdr->setToolTip(
+                name.isEmpty() ? QString()
+                               : u"These controls act on the layer selected below: %1"_s.arg(name));
+    };
+    nameLayerSettings();
+    QObject::connect(ui->listLayer->selectionModel(), &QItemSelectionModel::currentChanged, this,
+                     [nameLayerSettings](const QModelIndex &, const QModelIndex &) {
+                         nameLayerSettings();
+                     });
+    QObject::connect(this->layers, &LayerListModel::dataChanged, this,
+                     [nameLayerSettings]() { nameLayerSettings(); });
 
     // Setup Layer List View
     ui->listLayer->setAcceptDrops(true);
