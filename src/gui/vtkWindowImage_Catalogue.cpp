@@ -504,6 +504,11 @@ void vtkWindowImage::crossmatchCatalogue()
 
     if (this->actionCrossmatch)
         this->actionCrossmatch->setEnabled(false);
+    // The result handler is generic (it just projects a parse result), so the
+    // parameters that produced it have to be kept here or the product could only
+    // say "some catalogue, some radius".
+    this->m_crossmatchCatalogue = catalogue;
+    this->m_crossmatchRadiusArcsec = radius;
     this->statusBar()->showMessage(u"Cross-matching against %1…"_s.arg(catalogue));
 
     this->m_crossmatchWatcher.setFuture(QtConcurrent::run(
@@ -557,9 +562,42 @@ void vtkWindowImage::onCrossmatchReady()
     if (parsed.entries.empty()) {
         this->showPersistentStatusMessage(
                 u"Cross-match: no catalogue sources in this image footprint."_s, 4000);
+        // Still a result, and one worth keeping: "nothing within 60 arcsec of
+        // this field" is an answer, and without a row the run left no trace at
+        // all once the status message timed out.
+        this->recordCrossmatch(0);
         return;
     }
     this->applyCatalogueOverlayResult(parsed);
+    this->recordCrossmatch(static_cast<int>(parsed.entries.size()));
+}
+
+void vtkWindowImage::recordCrossmatch(int matches)
+{
+    const QString label = u"Cross-match with %1"_s.arg(
+            m_crossmatchCatalogue.isEmpty() ? u"catalogue"_s : m_crossmatchCatalogue);
+    QVariantMap params;
+    params.insert(u"Catalogue"_s, m_crossmatchCatalogue);
+    params.insert(u"Search radius"_s, u"%1 arcsec"_s.arg(m_crossmatchRadiusArcsec, 0, 'g', 4));
+    params.insert(u"Matches"_s, QString::number(matches));
+    params.insert(u"Scope"_s, u"this image's footprint"_s);
+
+    const QVariantMap record = ToolResultDialog::makeRecord(
+            u"Cross-match"_s,
+            u"%1, within %2 arcsec of this image's footprint"_s.arg(m_crossmatchCatalogue)
+                    .arg(m_crossmatchRadiusArcsec, 0, 'g', 4),
+            { { u"Result"_s,
+                { { u"Catalogue"_s, m_crossmatchCatalogue },
+                  { u"Search radius"_s,
+                    u"%1 arcsec"_s.arg(m_crossmatchRadiusArcsec, 0, 'g', 4) },
+                  { u"Sources matched"_s, QString::number(matches) } } } });
+
+    // One row per run, not one per catalogue: two radii against the same
+    // catalogue are two different answers.
+    this->registerAnalysisProduct(u"crossmatch"_s, label, params,
+                                  this->scopedProductId(u"crossmatch-%1"_s.arg(
+                                          ++this->m_crossmatchRunCount)),
+                                  record);
 }
 
 void vtkWindowImage::clearCatalogueOverlay()

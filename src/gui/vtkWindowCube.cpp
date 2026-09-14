@@ -184,6 +184,7 @@
 #include <cstring>
 #include <limits>
 #include <sstream>
+#include "CubeRegionGeom.h"
 
 using namespace Qt::StringLiterals;
 using namespace CubeWcs;
@@ -328,29 +329,20 @@ std::array<int, 4> regionBounds2D(vtkWindowCube::RegionMode mode, const std::arr
                                   const std::array<int, 2> &current,
                                   const std::vector<std::array<int, 2>> &polygonVertices)
 {
+    // The third copy of this box (Export Sub-Cube and Mask 3-D Region default
+    // their extents from it), and it had the same quadrant bug: a circle or an
+    // annulus is a centre plus a rim point, not two opposite corners.
     if (mode == vtkWindowCube::RegionMode::Polygon && !polygonVertices.empty()) {
-        int xmin = polygonVertices.front()[0];
-        int xmax = polygonVertices.front()[0];
-        int ymin = polygonVertices.front()[1];
-        int ymax = polygonVertices.front()[1];
-        for (const auto &vertex : polygonVertices) {
-            xmin = std::min(xmin, vertex[0]);
-            xmax = std::max(xmax, vertex[0]);
-            ymin = std::min(ymin, vertex[1]);
-            ymax = std::max(ymax, vertex[1]);
-        }
-        xmin = std::min(xmin, current[0]);
-        xmax = std::max(xmax, current[0]);
-        ymin = std::min(ymin, current[1]);
-        ymax = std::max(ymax, current[1]);
-        return { xmin, xmax, ymin, ymax };
+        auto b = CubeRegionGeom::polygonBounds(polygonVertices);
+        b[0] = std::min(b[0], current[0]);
+        b[1] = std::max(b[1], current[0]);
+        b[2] = std::min(b[2], current[1]);
+        b[3] = std::max(b[3], current[1]);
+        return b;
     }
-
-    const int xmin = std::min(anchor[0], current[0]);
-    const int xmax = std::max(anchor[0], current[0]);
-    const int ymin = std::min(anchor[1], current[1]);
-    const int ymax = std::max(anchor[1], current[1]);
-    return { xmin, xmax, ymin, ymax };
+    if (mode == vtkWindowCube::RegionMode::Circle || mode == vtkWindowCube::RegionMode::Annulus)
+        return CubeRegionGeom::circleBounds(anchor, current);
+    return CubeRegionGeom::boxBounds(anchor, current);
 }
 
 

@@ -10,6 +10,10 @@ class TestCubeRegionGeom : public QObject
     Q_OBJECT
 
 private slots:
+    void bounds_circleCoversTheWholeDisc();
+    void bounds_annulusUsesTheOuterRadius();
+    void bounds_boxAndPolygonSpanTheirCorners();
+
     void box_insideEdgesInclusive();
     void box_outside();
     void box_anchorCurrentOrderIndependent();

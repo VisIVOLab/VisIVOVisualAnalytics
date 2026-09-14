@@ -85,6 +85,51 @@ inline bool pointInAnnulus(const std::array<int, 2> &center, const std::array<in
     return radius >= std::max(0.0, innerRadius) && radius <= outerRadius;
 }
 
+// ── Bounding boxes to scan ───────────────────────────────────────────────────
+// The hit-testers above are only asked about pixels inside these bounds, so a
+// box that does not cover the shape silently drops part of the measurement.
+// That is exactly what happened to circles and annuli in both viewers: their
+// geometry is a CENTRE plus a point on the rim, and taking the box between
+// those two corners scans one quadrant. A circle's statistics were computed
+// over a quarter of the circle, in the direction the user happened to drag.
+
+/// {xmin, xmax, ymin, ymax} spanned by the two opposite corners of a box.
+inline std::array<int, 4> boxBounds(const std::array<int, 2> &anchor,
+                                    const std::array<int, 2> &current)
+{
+    return { std::min(anchor[0], current[0]), std::max(anchor[0], current[0]),
+             std::min(anchor[1], current[1]), std::max(anchor[1], current[1]) };
+}
+
+/// {xmin, xmax, ymin, ymax} around a centre and a point on the rim. The radius
+/// is rounded OUT so a rim pixel is never cut off by truncation.
+inline std::array<int, 4> circleBounds(const std::array<int, 2> &center,
+                                       const std::array<int, 2> &rimPoint)
+{
+    const double dx = static_cast<double>(rimPoint[0] - center[0]);
+    const double dy = static_cast<double>(rimPoint[1] - center[1]);
+    const int r = static_cast<int>(std::ceil(std::sqrt(dx * dx + dy * dy)));
+    return { center[0] - r, center[0] + r, center[1] - r, center[1] + r };
+}
+
+/// {xmin, xmax, ymin, ymax} of a polygon, from its vertices alone. The in-progress
+/// cursor vertex is passed as one of them while drawing; a restored polygon has no
+/// cursor, and folding in unrelated anchor/current values would inflate the box.
+inline std::array<int, 4> polygonBounds(const std::vector<std::array<int, 2>> &vertices)
+{
+    if (vertices.empty())
+        return { 0, 0, 0, 0 };
+    int xmin = vertices.front()[0], xmax = xmin;
+    int ymin = vertices.front()[1], ymax = ymin;
+    for (const auto &v : vertices) {
+        xmin = std::min(xmin, v[0]);
+        xmax = std::max(xmax, v[0]);
+        ymin = std::min(ymin, v[1]);
+        ymax = std::max(ymax, v[1]);
+    }
+    return { xmin, xmax, ymin, ymax };
+}
+
 // VTK-dependent (fills a triangle-strip); defined in CubeRegionGeom.cpp.
 void buildAnnulusFill(vtkPoints *points, vtkCellArray *cells, vtkPolyData *polyData,
                       const std::array<int, 2> &center, double innerRadius, double outerRadius,

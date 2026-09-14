@@ -191,29 +191,24 @@ std::array<int, 4> regionBounds2D(vtkWindowCube::RegionMode mode, const std::arr
                                   const std::array<int, 2> &current,
                                   const std::vector<std::array<int, 2>> &polygonVertices)
 {
+    // Each shape's own box (CubeRegionGeom, unit-tested). A circle and an annulus
+    // are a CENTRE plus a point on the rim: the box between those two corners is
+    // one quadrant, and the stats loop only ever asked the hit-tester about
+    // pixels inside it - so their statistics covered a quarter of the shape, in
+    // whichever direction the user dragged.
     if (mode == vtkWindowCube::RegionMode::Polygon && !polygonVertices.empty()) {
-        int xmin = polygonVertices.front()[0];
-        int xmax = polygonVertices.front()[0];
-        int ymin = polygonVertices.front()[1];
-        int ymax = polygonVertices.front()[1];
-        for (const auto &vertex : polygonVertices) {
-            xmin = std::min(xmin, vertex[0]);
-            xmax = std::max(xmax, vertex[0]);
-            ymin = std::min(ymin, vertex[1]);
-            ymax = std::max(ymax, vertex[1]);
-        }
-        xmin = std::min(xmin, current[0]);
-        xmax = std::max(xmax, current[0]);
-        ymin = std::min(ymin, current[1]);
-        ymax = std::max(ymax, current[1]);
-        return { xmin, xmax, ymin, ymax };
+        auto b = CubeRegionGeom::polygonBounds(polygonVertices);
+        // While the polygon is still being drawn, `current` is the cursor vertex
+        // and is not in the list yet.
+        b[0] = std::min(b[0], current[0]);
+        b[1] = std::max(b[1], current[0]);
+        b[2] = std::min(b[2], current[1]);
+        b[3] = std::max(b[3], current[1]);
+        return b;
     }
-
-    const int xmin = std::min(anchor[0], current[0]);
-    const int xmax = std::max(anchor[0], current[0]);
-    const int ymin = std::min(anchor[1], current[1]);
-    const int ymax = std::max(anchor[1], current[1]);
-    return { xmin, xmax, ymin, ymax };
+    if (mode == vtkWindowCube::RegionMode::Circle || mode == vtkWindowCube::RegionMode::Annulus)
+        return CubeRegionGeom::circleBounds(anchor, current);
+    return CubeRegionGeom::boxBounds(anchor, current);
 }
 
 bool pointInRegion(vtkWindowCube::RegionMode mode, const std::array<int, 2> &anchor,
@@ -539,6 +534,28 @@ void vtkWindowCube::refreshRegionOverlay()
             polygonActor->VisibilityOff();
             polygonFillActor->VisibilityOff();
             return;
+        }
+
+        // Region geometry is in DISPLAYED-voxel indices; the primitives below are
+        // built straight in those numbers. That is only the same thing as world
+        // coordinates while every 2-D image the cube shows has spacing 1 and
+        // origin 0 - which is true today (slices and moment maps are both served
+        // that way), and is exactly the assumption that bit the image viewer once
+        // its images started arriving decimated. Carry the mapping on the actors
+        // instead of relying on it: identity in the current case, correct if a
+        // decimated slice or moment map is ever displayed.
+        double ro[3], rs[3];
+        int rext[6];
+        imageData->GetOrigin(ro);
+        imageData->GetSpacing(rs);
+        imageData->GetExtent(rext);
+        const double regionPosX = ro[0] - rext[0] * rs[0];
+        const double regionPosY = ro[1] - rext[2] * rs[1];   // ext[2]: the Y index, not ext[1]
+        for (vtkActor *a : { topActor, bottomActor, leftActor, rightActor, circleActor,
+                             annulusOuterActor, annulusInnerActor, annulusFillActor,
+                             polygonActor, polygonFillActor }) {
+            a->SetScale(rs[0], rs[1], 1.0);
+            a->SetPosition(regionPosX, regionPosY, 0.0);
         }
 
         const int xmin = std::min(this->regionAnchorVoxel[0], this->regionCurrentVoxel[0]);

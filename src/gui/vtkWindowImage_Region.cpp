@@ -155,29 +155,24 @@ std::array<int, 4> regionBounds2D(vtkWindowImage::RegionMode mode, const std::ar
                                   const std::array<int, 2> &current,
                                   const std::vector<std::array<int, 2>> &polygonVertices)
 {
+    // Each shape's own box (CubeRegionGeom, unit-tested). A circle and an annulus
+    // are a CENTRE plus a point on the rim: the box between those two corners is
+    // one quadrant, and the stats loop only ever asked the hit-tester about
+    // pixels inside it - so their statistics covered a quarter of the shape, in
+    // whichever direction the user dragged.
     if (mode == vtkWindowImage::RegionMode::Polygon && !polygonVertices.empty()) {
-        int xmin = polygonVertices.front()[0];
-        int xmax = polygonVertices.front()[0];
-        int ymin = polygonVertices.front()[1];
-        int ymax = polygonVertices.front()[1];
-        for (const auto &vertex : polygonVertices) {
-            xmin = std::min(xmin, vertex[0]);
-            xmax = std::max(xmax, vertex[0]);
-            ymin = std::min(ymin, vertex[1]);
-            ymax = std::max(ymax, vertex[1]);
-        }
-        xmin = std::min(xmin, current[0]);
-        xmax = std::max(xmax, current[0]);
-        ymin = std::min(ymin, current[1]);
-        ymax = std::max(ymax, current[1]);
-        return { xmin, xmax, ymin, ymax };
+        auto b = CubeRegionGeom::polygonBounds(polygonVertices);
+        // While the polygon is still being drawn, `current` is the cursor vertex
+        // and is not in the list yet.
+        b[0] = std::min(b[0], current[0]);
+        b[1] = std::max(b[1], current[0]);
+        b[2] = std::min(b[2], current[1]);
+        b[3] = std::max(b[3], current[1]);
+        return b;
     }
-
-    const int xmin = std::min(anchor[0], current[0]);
-    const int xmax = std::max(anchor[0], current[0]);
-    const int ymin = std::min(anchor[1], current[1]);
-    const int ymax = std::max(anchor[1], current[1]);
-    return { xmin, xmax, ymin, ymax };
+    if (mode == vtkWindowImage::RegionMode::Circle || mode == vtkWindowImage::RegionMode::Annulus)
+        return CubeRegionGeom::circleBounds(anchor, current);
+    return CubeRegionGeom::boxBounds(anchor, current);
 }
 
 bool pointInRegion(vtkWindowImage::RegionMode mode, const std::array<int, 2> &anchor,

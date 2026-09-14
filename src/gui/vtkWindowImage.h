@@ -639,6 +639,21 @@ private:
     void regroupImageToolsMenu();
 
     /// productId → the layer it produced, for the products that are layers.
+    /// The cross-match request that produced the pending result: the finished
+    /// handler is generic, so its product would otherwise have no parameters.
+    QString m_crossmatchCatalogue;
+    double  m_crossmatchRadiusArcsec{ 0.0 };
+    int     m_crossmatchRunCount{ 0 };
+    void recordCrossmatch(int matches);
+
+    /// Collapse the time axis of a dynamic spectrum into a spectrum. Only
+    /// meaningful in dynspec mode; a sky image has no spectral axis.
+    void extractSpectrum2D();
+    int m_extractedSpectrumCount{ 0 };
+    /// The curve behind each extracted-spectrum product, so reopening its row
+    /// replots it instead of showing only the summary.
+    QHash<QString, QPair<QVector<double>, QVector<double>>> m_extractedSpectra;
+
     QHash<QString, int> m_productLayer;
     /// Layer display name per product: the row index above is not an identity,
     /// the layer list can be reordered by drag and drop.

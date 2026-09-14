@@ -41,6 +41,7 @@
 #include <QMenu>
 #include <QUrl>
 #include <vtkImageData.h>
+#include "ProfileWidget.h"
 
 using namespace Qt::StringLiterals;
 
@@ -153,6 +154,19 @@ void vtkWindowImage::openProduct(const QString &productId)
         const QString where = visivo::describeOrigin(p.origin);
         if (!where.isEmpty())
             this->statusBar()->showMessage(u"Showing %1"_s.arg(where), 6000);
+    }
+    // A SPECTRUM this window extracted: replot the curve. The record alone would
+    // give the summary of a measurement whose point is its shape.
+    if (const auto curve = m_extractedSpectra.constFind(productId);
+        curve != m_extractedSpectra.cend()) {
+        auto *plot = new ProfileWidget(this);
+        plot->setAttribute(Qt::WA_DeleteOnClose);
+        plot->setWindowTitle(u"Extracted Spectrum"_s);
+        plot->setUsageMode(ProfileWidget::UsageMode::RegionStatic, p.label);
+        plot->setupSpectrumPlot(this->remoteOverlayAxisTitle(1), u"Mean value"_s);
+        plot->updateSpectrumPlot(curve->first, curve->second, p.label, /*live=*/false);
+        plot->show();
+        return;
     }
     if (!p.resultView.isEmpty()) {
         const QString slot = u"recorded-result:"_s + productId;

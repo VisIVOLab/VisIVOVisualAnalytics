@@ -1463,6 +1463,60 @@ correct; the loader still needs a backend-side import (fetch or an
 
 ---
 
+### Region bounds: a circle is a centre and a rim, not two corners
+
+Both viewers scan a bounding box and ask the hit-tester about each pixel inside
+it. `regionBounds2D` built that box from `anchor` and `current` for every shape
+except a polygon — but for a **circle and an annulus** those two points are the
+centre and a point on the rim, so the box was one quadrant and the statistics
+covered a quarter of the shape, in whichever direction the user happened to drag.
+The boxes now come from `CubeRegionGeom::boxBounds` / `circleBounds` (radius
+rounded out, so a rim pixel is never truncated away) / `polygonBounds`, in the
+pure header with the hit-testers, with tests that assert every pixel the
+hit-tester accepts is inside the bounds.
+
+There were **three** copies of that box. The third (`vtkWindowCube.cpp`, which
+Export Sub-Cube and Mask 3-D Region default their extents from) had the same bug:
+exporting a sub-cube from a circle region gave a box around a quadrant of it.
+All three now dispatch to the shared helpers.
+
+**Known and not fixed here:** the frequency labels an extracted spectrum carries
+are only as good as the display frame the loader wrote. The preview and the
+coarse whole-image assembly stretch their spacing to land on the last source
+pixel, while the backend samples at `floor((row + 0.5) · full / preview)` and at
+integer strides `2^level` — so on those two paths a row can be labelled with a
+neighbouring row's frequency. Viewport tile assemblies are exact (origin = tile
+offset in source pixels, spacing = `2^level`). Fixing it means changing the
+loaders' coordinate mapping, which every overlay in the window depends on.
+
+### Extract Spectrum, in the one 2-D case where it means something
+
+*Extract Spectrum* sat permanently disabled in the image viewer with "only
+available for cube views". True of a sky image — there is no third axis to run
+along — but not of a **dynamic spectrum**, which is a time × frequency plane:
+collapsing the time axis is a spectrum, and it is the first thing anyone looks at
+on beamformed data. So the action is enabled in dynspec mode and does exactly
+that, over the drawn region's bounding box when there is one.
+
+Two things it has to be honest about. Frequencies come from `remoteVoxelToWcs`,
+which speaks **full-resolution** indices, so the displayed row goes through
+`currentVoxelFrame()` first — a decimated or viewport-tiled display would
+otherwise label every channel with another channel's frequency. And the scope
+says "the whole observation" only when the display really holds it; on a partial
+display it names the time samples it actually collapsed. A fully flagged channel
+is NaN (a gap in the plot), not zero.
+
+The curve is kept in `m_extractedSpectra` so the Session Data row replots it
+rather than showing only the summary — the point of a spectrum is its shape.
+
+### Cross-match leaves a row
+
+`onCrossmatchReady()` registers a product with the catalogue, the search radius
+and the match count, including when the match count is **zero**: "nothing within
+60 arcsec of this field" is an answer, and it used to vanish with the status
+message. The request parameters are stashed when the query is launched, since the
+finished handler is generic (it just projects a parse result).
+
 ## Catalogue 3D viewer (`vtkWindowCatalogue3D`)
 
 Renders a remote CSV catalogue as a 3-D point cloud in Cartesian (RA/Dec/distance) space.

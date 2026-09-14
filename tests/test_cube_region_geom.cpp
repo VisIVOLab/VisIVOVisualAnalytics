@@ -16,6 +16,65 @@ using Poly = std::vector<std::array<int, 2>>;
 }  // namespace
 
 // ── pointInBox ───────────────────────────────────────────────────────────────
+void TestCubeRegionGeom::bounds_circleCoversTheWholeDisc()
+{
+    // The regression this exists for: a circle is a CENTRE plus a rim point, so
+    // the box between those two corners is one quadrant. Every pixel of the disc
+    // has to be inside the bounds, or the statistics silently cover a quarter of
+    // the shape in whichever direction the user dragged.
+    const std::array<int, 2> centre{ 100, 100 };
+    const std::array<int, 2> rim{ 120, 100 };   // radius 20, dragged right
+    const auto b = CubeRegionGeom::circleBounds(centre, rim);
+    QCOMPARE(b[0], 80);
+    QCOMPARE(b[1], 120);
+    QCOMPARE(b[2], 80);
+    QCOMPARE(b[3], 120);
+    // And every pixel the hit-tester accepts lies within them. Scanned WIDER
+    // than the bounds on purpose: a loop over the bounds themselves could never
+    // find a pixel outside them, which is the thing being asserted.
+    for (int y = b[2] - 5; y <= b[3] + 5; ++y) {
+        for (int x = b[0] - 5; x <= b[1] + 5; ++x) {
+            if (CubeRegionGeom::pointInCircle(centre, rim, x, y)) {
+                QVERIFY(x >= b[0] && x <= b[1]);
+                QVERIFY(y >= b[2] && y <= b[3]);
+            }
+        }
+    }
+    QVERIFY(CubeRegionGeom::pointInCircle(centre, rim, 85, 100));   // the half a
+    QVERIFY(CubeRegionGeom::pointInCircle(centre, rim, 100, 88));   // quadrant box lost
+}
+
+void TestCubeRegionGeom::bounds_annulusUsesTheOuterRadius()
+{
+    // A non-integer radius must round OUT: truncating cuts the rim pixels off.
+    const std::array<int, 2> centre{ 10, 10 };
+    const std::array<int, 2> rim{ 13, 14 };   // radius 5
+    const auto b = CubeRegionGeom::circleBounds(centre, rim);
+    QCOMPARE(b[0], 5);
+    QCOMPARE(b[1], 15);
+    const auto frac = CubeRegionGeom::circleBounds({ 0, 0 }, { 2, 2 });   // r = 2.83
+    QCOMPARE(frac[1], 3);
+}
+
+void TestCubeRegionGeom::bounds_boxAndPolygonSpanTheirCorners()
+{
+    const auto box = CubeRegionGeom::boxBounds({ 30, 40 }, { 10, 20 });   // dragged up-left
+    QCOMPARE(box[0], 10);
+    QCOMPARE(box[1], 30);
+    QCOMPARE(box[2], 20);
+    QCOMPARE(box[3], 40);
+
+    const std::vector<std::array<int, 2>> poly{ { 5, 5 }, { 9, 7 }, { 3, 11 } };
+    const auto pb = CubeRegionGeom::polygonBounds(poly);
+    QCOMPARE(pb[0], 3);
+    QCOMPARE(pb[1], 9);
+    QCOMPARE(pb[2], 5);
+    QCOMPARE(pb[3], 11);
+    // No vertices: a degenerate box rather than reading front() of an empty list.
+    const auto empty = CubeRegionGeom::polygonBounds({});
+    QCOMPARE(empty[1], 0);
+}
+
 void TestCubeRegionGeom::box_insideEdgesInclusive()
 {
     const P a{ 0, 0 }, c{ 10, 6 };

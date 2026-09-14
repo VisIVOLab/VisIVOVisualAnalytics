@@ -1355,7 +1355,9 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     ui->actionProfile->setCheckable(true);
     QObject::connect(ui->actionProfile, &QAction::toggled, this, &vtkWindowImage::setProbeModeActive);
     this->actionExtractSpectrum = ui->menuTools->addAction(u"Extract Spectrum"_s);
-    this->actionExtractSpectrum->setEnabled(false);
+    this->actionExtractSpectrum->setEnabled(false);   // enabled in dynspec mode
+    QObject::connect(this->actionExtractSpectrum, &QAction::triggered, this,
+                     &vtkWindowImage::extractSpectrum2D);
     this->actionExtractSpectrum->setToolTip(
             u"Spectrum extraction is only available for cube views."_s);
     this->actionExtractSpectrum->setStatusTip(
