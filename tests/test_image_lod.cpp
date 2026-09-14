@@ -4,6 +4,9 @@
 
 #include <QTest>
 
+#include <algorithm>
+#include <cmath>
+
 using ImageLod::TileGrid;
 
 // The 227MP mosaic used in manual testing: 15979×14204, 512px tiles → 6 levels,
@@ -181,6 +184,74 @@ void TestImageLod::viewportAssembly_coordinateMappingIsFullRes()
     const double lastY = va.originY + (va.height - 1) * va.spacing;
     QVERIFY(lastX <= g.fullWidth - 1);
     QVERIFY(lastY <= g.fullHeight - 1);
+}
+
+namespace {
+// backend/app/compute/cube.py::_build_preview - the sampler these mappings have
+// to agree with. Displayed pixel i holds this source pixel.
+int backendPreviewSource(int i, int full, int preview)
+{
+    const double idx = std::floor((i + 0.5) * (static_cast<double>(full)
+                                               / static_cast<double>(preview)));
+    return std::clamp(static_cast<int>(idx), 0, full - 1);
+}
+}   // namespace
+
+void TestImageLod::previewMapping_matchesTheBackendSampler()
+{
+    // Every displayed pixel must land within half a SOURCE pixel of the pixel
+    // the backend actually put there - all a floor() can cost, and what "this
+    // displayed pixel IS that source pixel" has to mean.
+    for (const auto &dims : { std::pair{ 1000, 100 }, std::pair{ 4096, 1536 },
+                              std::pair{ 7500, 1024 }, std::pair{ 999, 333 },
+                              std::pair{ 2048, 2048 } }) {
+        const int full = dims.first, preview = dims.second;
+        const auto m = ImageLod::previewMapping(full, full, preview, preview);
+        for (int i = 0; i < preview; ++i) {
+            const double mapped = m.originX + i * m.scaleX;
+            const double actual = backendPreviewSource(i, full, preview);
+            // Half a SOURCE pixel, which is all a floor() can cost. A bound of
+            // half a CELL would pass with the origin left at zero - the very
+            // mistake this mapping exists to fix.
+            QVERIFY2(std::abs(mapped - actual) <= 0.5 + 1e-9,
+                     qPrintable(QStringLiteral("full=%1 preview=%2 i=%3 mapped=%4 actual=%5")
+                                        .arg(full).arg(preview).arg(i).arg(mapped).arg(actual)));
+        }
+    }
+}
+
+void TestImageLod::previewMapping_beatsTheOldEndpointFormula()
+{
+    // The regression this replaces: spacing (full-1)/(preview-1) with origin 0
+    // pins the first and last displayed pixels to source 0 and full-1, which is
+    // where the sampler never put them.
+    const int full = 1000, preview = 100;
+    const auto m = ImageLod::previewMapping(full, full, preview, preview);
+    QCOMPARE(m.scaleX, 10.0);
+    QCOMPARE(m.originX, 4.5);
+    QCOMPARE(backendPreviewSource(0, full, preview), 5);   // not 0
+
+    const double oldScale = static_cast<double>(full - 1) / (preview - 1);
+    const double oldFirst = 0.0;
+    const double newFirst = m.originX;
+    QVERIFY(std::abs(newFirst - 5.0) < std::abs(oldFirst - 5.0));
+    const double oldLast = (preview - 1) * oldScale;
+    const double newLast = m.originX + (preview - 1) * m.scaleX;
+    const double actualLast = backendPreviewSource(preview - 1, full, preview);
+    QVERIFY(std::abs(newLast - actualLast) < std::abs(oldLast - actualLast));
+}
+
+void TestImageLod::assemblyMapping_isTheStrideExactly()
+{
+    // Tiles are a stride read: displayed i IS source i*2^level, no endpoint
+    // stretching and no offset.
+    for (int level = 0; level <= 4; ++level) {
+        const auto m = ImageLod::assemblyMapping(level);
+        QCOMPARE(m.scaleX, static_cast<double>(1 << level));
+        QCOMPARE(m.scaleY, static_cast<double>(1 << level));
+        QCOMPARE(m.originX, 0.0);
+        QCOMPARE(m.originY, 0.0);
+    }
 }
 
 void TestImageLod::viewportAssembly_degenerateGridInvalid()

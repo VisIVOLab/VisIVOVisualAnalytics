@@ -319,10 +319,14 @@ bool vtkWindowImage::updateProbeFromDisplayPosition(int displayX, int displayY)
     // display (spacing>1) the displayed voxel grid is coarser than full-res, so
     // track the readout + change-detection at full-res granularity — otherwise
     // the coordinates stall within one decimated pixel when zoomed in.
-    // remoteVoxelToWcs expects a full-res pixel index. No-op for a full-res image
-    // (spacing 1, origin 0 → worldCoord == voxel).
-    const double fullResX = worldCoord[0] - origin[0];
-    const double fullResY = worldCoord[1] - origin[1];
+    // remoteVoxelToWcs expects a full-res pixel index, and the world position IS
+    // that index: the image's origin/spacing map its grid onto full-res source
+    // pixels. Subtracting the origin again shifted the readout, the crosshair
+    // and the profile marker by the origin - harmless only while it was zero,
+    // which stopped being true once previews and tile assemblies started
+    // carrying their real offset.
+    const double fullResX = worldCoord[0];
+    const double fullResY = worldCoord[1];
     const int fullXi = std::lround(fullResX);
     const int fullYi = std::lround(fullResY);
     if (this->probeValid && this->m_probeFullPixel[0] == fullXi

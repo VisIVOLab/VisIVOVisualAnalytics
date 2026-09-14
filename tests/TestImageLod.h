@@ -30,6 +30,10 @@ private slots:
     void viewportAssembly_wholeImageZoomedOut();
     void viewportAssembly_midLevelOriginAndSpacing();
     void viewportAssembly_coordinateMappingIsFullRes();
+    void previewMapping_matchesTheBackendSampler();
+    void previewMapping_beatsTheOldEndpointFormula();
+    void assemblyMapping_isTheStrideExactly();
+
     void viewportAssembly_degenerateGridInvalid();
     void viewportAssembly_nonIntersectingInvalid();
 };

@@ -64,7 +64,13 @@ vtkSmartPointer<vtkImageData> buildPreviewImage(vtkImageData *sourceImage)
     const double *spacing = sourceImage->GetSpacing();
     const double xFactor = static_cast<double>(dims[0]) / static_cast<double>(previewWidth);
     const double yFactor = static_cast<double>(dims[1]) / static_cast<double>(previewHeight);
-    preview->SetOrigin(origin[0], origin[1], origin[2]);
+    // Same sampler as the backend's preview (floor((i+0.5)*factor)), so the same
+    // mapping: the first display cell's CENTRE is half a cell in, not at the
+    // input's origin. Copying the origin unchanged drew every feature offset by
+    // half a cell from where the probe, the region statistics and the catalogue
+    // overlay - which all read the UNDERLYING image - say it is.
+    preview->SetOrigin(origin[0] + (xFactor - 1.0) / 2.0 * spacing[0],
+                       origin[1] + (yFactor - 1.0) / 2.0 * spacing[1], origin[2]);
     preview->SetSpacing(spacing[0] * xFactor, spacing[1] * yFactor, spacing[2]);
 
     auto *sourceScalars = sourceImage->GetPointData() ? sourceImage->GetPointData()->GetScalars()

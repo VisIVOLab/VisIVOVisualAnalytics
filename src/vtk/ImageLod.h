@@ -62,6 +62,34 @@ struct ViewportAssembly
     bool valid{ false };
 };
 
+/// The affine mapping a decimated display grid -> FULL-RES source pixels:
+///   source = origin + displayedIndex * scale
+/// Every overlay, coordinate readout and WCS label in the image viewer reads the
+/// displayed image's own VTK origin/spacing, so getting these two numbers right
+/// at load time is what makes all of them right. They must mirror how the
+/// BACKEND sampled, which is why they live here next to the tile contract
+/// rather than being re-derived at each call site (they were, and drifted).
+struct SourceMapping
+{
+    double scaleX{ 1.0 }, scaleY{ 1.0 };
+    double originX{ 0.0 }, originY{ 0.0 };
+};
+
+/// Whole-image assembly from pyramid tiles at ``level``: the backend reads
+/// ``data[y0:y_stop:step, x0:x_stop:step]`` with ``step = 2^level`` and
+/// ``x0 = tileX*tileSize*step``, so displayed pixel i IS source pixel i*step.
+/// Exact - no interpolation, no endpoint stretching.
+SourceMapping assemblyMapping(int level);
+
+/// Backend preview (``_build_preview``): displayed pixel i holds source pixel
+/// ``floor((i + 0.5) * full / preview)``. The cell is ``full/preview`` source
+/// pixels wide and the first cell's CENTRE sits at ``(full/preview - 1)/2``, so
+/// that is the affine mapping. (The old endpoint-aligned
+/// ``(full-1)/(preview-1)`` with origin 0 pinned the first and last displayed
+/// pixels to source 0 and full-1, which is where the sampler never put them:
+/// it offset every coordinate by about half a preview cell.)
+SourceMapping previewMapping(int fullWidth, int fullHeight, int previewWidth, int previewHeight);
+
 /// Compute the ViewportAssembly for the visible source rectangle [x0,x1]×[y0,y1]
 /// (full-res px, any corner order) given the viewport height in screen px. The
 /// level is chosen so one displayed pixel ≈ one screen pixel; the tile set is

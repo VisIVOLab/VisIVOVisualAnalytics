@@ -447,20 +447,32 @@ ImageLayerLoadResult fetchRemoteImageLayer(const QString &backendUrl, const QStr
     vtkSmartPointer<vtkImageData> image = vtkSmartPointer<vtkImageData>::New();
     image->SetExtent(0, response.width - 1, 0, response.height - 1, 0, 0);
     image->SetOrigin(0., 0., 0.);
-    double spacingX = 1.0;
-    double spacingY = 1.0;
-    if (response.isPreview && response.width > 1 && response.height > 1 && response.fullWidth > 1
-        && response.fullHeight > 1) {
-        spacingX = static_cast<double>(response.fullWidth - 1) / static_cast<double>(response.width - 1);
-        spacingY = static_cast<double>(response.fullHeight - 1) / static_cast<double>(response.height - 1);
+    // The mapping displayed -> source, as the BACKEND actually sampled: origin
+    // too, not just spacing. Everything else in this window (overlays, probe
+    // readout, WCS labels, extracted spectra) reads this geometry, so this is
+    // the single place that decides whether they are on the right pixel.
+    ImageLod::SourceMapping mapping;
+    if (response.isPreview && response.width > 0 && response.height > 0 && response.fullWidth > 0
+        && response.fullHeight > 0) {
+        mapping = ImageLod::previewMapping(response.fullWidth, response.fullHeight, response.width,
+                                           response.height);
     }
-    image->SetSpacing(spacingX, spacingY, 1.);
+    image->SetOrigin(mapping.originX, mapping.originY, 0.);
+    image->SetSpacing(mapping.scaleX, mapping.scaleY, 1.);
     image->AllocateScalars(VTK_FLOAT, 1);
     std::memcpy(image->GetScalarPointer(), response.data.constData(),
                 static_cast<std::size_t>(expectedBytes));
 
     result.imageData = image;
     result.scalarRange = { response.rangeMin, response.rangeMax };
+    // …and on the RESULT, not only on the image: ImageLayer::applyLoadResult
+    // re-applies result.spacing/origin over whatever the image carries, so
+    // leaving them at the {1,1,1}/{0,0,0} defaults threw the preview's
+    // decimation away entirely - every overlay and readout on a preview was off
+    // by the whole decimation factor, not by the half cell the spacing formula
+    // was wrong by.
+    result.spacing = { mapping.scaleX, mapping.scaleY, 1.0 };
+    result.origin = { mapping.originX, mapping.originY, 0.0 };
     result.isPreview = response.isPreview;
     result.fullWidth = response.fullWidth;
     result.fullHeight = response.fullHeight;
@@ -634,14 +646,17 @@ ImageLayerLoadResult fetchRemoteImageLayerTiled(const QString &backendUrl, const
     // Spacing maps the decimated grid onto the full-resolution world extent
     // (preview convention). Set on the image AND result.spacing, since
     // ImageLayer::applyLoadResult re-applies result.spacing to the image.
-    const double sx = (downW > 1) ? static_cast<double>(fullW - 1) / static_cast<double>(downW - 1)
-                                  : 1.0;
-    const double sy = (downH > 1) ? static_cast<double>(fullH - 1) / static_cast<double>(downH - 1)
-                                  : 1.0;
+    // Decimated tiles are a STRIDE read on the backend: displayed pixel i is
+    // source pixel i·2^level, exactly. Stretching the spacing to land the last
+    // displayed pixel on source fullW-1 (the old formula) put every coordinate
+    // slightly off, by up to one source pixel at the far edge.
+    const auto mapping = ImageLod::assemblyMapping(level);
+    const double sx = mapping.scaleX;
+    const double sy = mapping.scaleY;
 
     vtkSmartPointer<vtkImageData> image = vtkSmartPointer<vtkImageData>::New();
     image->SetExtent(0, downW - 1, 0, downH - 1, 0, 0);
-    image->SetOrigin(0., 0., 0.);
+    image->SetOrigin(mapping.originX, mapping.originY, 0.);
     image->SetSpacing(sx, sy, 1.);
     image->AllocateScalars(VTK_FLOAT, 1);
     float *const buf = static_cast<float *>(image->GetScalarPointer());
@@ -698,7 +713,7 @@ ImageLayerLoadResult fetchRemoteImageLayerTiled(const QString &backendUrl, const
     // another fetch). Decimation is conveyed via spacing/origin.
     result.isPreview = false;
     result.spacing = { sx, sy, 1.0 };
-    result.origin = { 0.0, 0.0, 0.0 };
+    result.origin = { mapping.originX, mapping.originY, 0.0 };
     result.fullWidth = fullW;
     result.fullHeight = fullH;
     result.previewScaleFactor = static_cast<double>(step);

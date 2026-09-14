@@ -1480,14 +1480,44 @@ Export Sub-Cube and Mask 3-D Region default their extents from) had the same bug
 exporting a sub-cube from a circle region gave a box around a quadrant of it.
 All three now dispatch to the shared helpers.
 
-**Known and not fixed here:** the frequency labels an extracted spectrum carries
-are only as good as the display frame the loader wrote. The preview and the
-coarse whole-image assembly stretch their spacing to land on the last source
-pixel, while the backend samples at `floor((row + 0.5) · full / preview)` and at
-integer strides `2^level` — so on those two paths a row can be labelled with a
-neighbouring row's frequency. Viewport tile assemblies are exact (origin = tile
-offset in source pixels, spacing = `2^level`). Fixing it means changing the
-loaders' coordinate mapping, which every overlay in the window depends on.
+### One mapping, written where the sampling is known
+
+Every overlay, coordinate readout and WCS label in the image viewer reads the
+displayed image's own VTK `origin`/`spacing` — world coordinates in this window
+*are* full-resolution source pixels. So those two numbers, set once at load time,
+decide whether all of them are on the right pixel. They have to mirror how the
+**backend** sampled, and each loader was deriving them for itself:
+
+| path | backend sampling | mapping |
+|------|------------------|---------|
+| preview (`_build_preview`) | `source = floor((i + 0.5) · full/preview)` | `scale = full/preview`, `origin = (scale − 1)/2` |
+| tiles (`worker_image_tile`) | `data[y0:y_stop:step, x0:x_stop:step]`, `step = 2^level` | `scale = step`, `origin = tile offset` |
+
+`ImageLod::previewMapping()` / `assemblyMapping()` hold those, next to the tile
+contract they mirror, with a test that replays the backend sampler and asserts
+every displayed pixel lands within **half a source pixel** of the pixel the
+backend actually put there (half a *cell* would be satisfied by leaving the
+origin at zero — the bug itself).
+
+Three things were wrong before, in increasing order of seriousness:
+
+- The preview and the coarse whole-image assembly used an endpoint-aligned
+  `(full−1)/(displayed−1)` with origin 0, pinning the first and last displayed
+  pixels to source `0` and `full−1`, which is where neither sampler put them.
+- `buildPreviewImage()` — the client's *second* downsample, for rendering a very
+  large assembly — uses the same `floor((i+0.5)·factor)` sampler but copied the
+  input origin unchanged, so what was drawn sat half a cell off what the probe,
+  the region statistics and the catalogue overlay (which read the underlying
+  image) reported.
+- Worst: the preview path never set `result.spacing`/`result.origin`, and
+  `ImageLayer::applyLoadResult` re-applies those **over** whatever the image
+  carries — so the preview's decimation was discarded entirely and every
+  coordinate on a preview was off by the whole decimation factor, not by a half
+  cell. The loader's own `SetSpacing` had been dead code on that path.
+
+With the origin no longer always zero, the probe's `worldCoord − origin` turned
+out to be subtracting it a second time; the world position already *is* the
+full-resolution index.
 
 ### Extract Spectrum, in the one 2-D case where it means something
 

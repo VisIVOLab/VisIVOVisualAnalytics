@@ -149,4 +149,24 @@ ViewportAssembly viewportAssembly(double x0, double y0, double x1, double y1,
     return va;
 }
 
+SourceMapping assemblyMapping(int level)
+{
+    const double step = static_cast<double>(1 << std::max(0, level));
+    return { step, step, 0.0, 0.0 };
+}
+
+SourceMapping previewMapping(int fullWidth, int fullHeight, int previewWidth, int previewHeight)
+{
+    SourceMapping m;
+    if (previewWidth > 0 && fullWidth > 0) {
+        m.scaleX = static_cast<double>(fullWidth) / static_cast<double>(previewWidth);
+        m.originX = (m.scaleX - 1.0) / 2.0;
+    }
+    if (previewHeight > 0 && fullHeight > 0) {
+        m.scaleY = static_cast<double>(fullHeight) / static_cast<double>(previewHeight);
+        m.originY = (m.scaleY - 1.0) / 2.0;
+    }
+    return m;
+}
+
 }  // namespace ImageLod
