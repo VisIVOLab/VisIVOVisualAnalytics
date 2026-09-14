@@ -112,6 +112,8 @@
 #include <cmath>
 #include <cstring>
 #include <sstream>
+#include <QCoreApplication>
+#include <QRandomGenerator>
 
 using namespace Qt::StringLiterals;
 using namespace CubeWcs;
@@ -1189,6 +1191,52 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
         this->persistentStatusActive = false;
         this->statusBar()->clearMessage();
     });
+    QObject::connect(&this->m_layerStageWatcher, &QFutureWatcher<StagedLayerFile>::finished, this,
+                     [this]() {
+                         const auto staged = m_layerStageWatcher.result();
+                         // Keep the master even if the layer failed: it is a
+                         // valid local copy and re-fetching it on the next
+                         // attempt would be a second pointless transfer.
+                         if (!staged.localMasterPath.isEmpty())
+                             m_localMasterPath = staged.localMasterPath;
+                         const QString requested = m_pendingStageLayerPath;
+                         m_pendingStageLayerPath.clear();
+                         if (!staged.error.isEmpty()) {
+                             this->setLayerImportEnabled(true);
+                             this->clearPersistentStatusMessage();
+                             m_pendingVlkbDisplayName.clear();
+                             if (!m_pendingStokesLoads.isEmpty()) {
+                                 m_pendingStokesLoads.clear();
+                                 statusBar()->showMessage(
+                                         u"Stokes companion loading stopped after an error."_s,
+                                         5000);
+                             }
+                             QMessageBox::warning(this, u"Add Layer"_s,
+                                                  staged.error + staged.warning);
+                             return;
+                         }
+                         // A copy left behind on the backend is not a failure, but
+                         // the user is the one who has to clean it up.
+                         if (!staged.warning.isEmpty()) {
+                             QMessageBox::information(this, u"Add Layer"_s,
+                                                      u"The layer was fetched."_s
+                                                              + staged.warning);
+                         }
+                         // Master-only staging leaves localPath empty: the layer
+                         // itself was readable here all along.
+                         const QString next =
+                                 staged.localPath.isEmpty() ? requested : staged.localPath;
+                         if (next.isEmpty()) {
+                             this->setLayerImportEnabled(true);
+                             this->clearPersistentStatusMessage();
+                             return;
+                         }
+                         // Same call, now with paths this process can open.
+                         this->addLayerImage(next.toStdString());
+                     });
+    QObject::connect(&this->m_stokesListingWatcher,
+                     &QFutureWatcher<StokesListing>::finished, this,
+                     [this]() { this->onStokesListingReady(m_stokesListingWatcher.result()); });
     QObject::connect(&this->layerLoadWatcher, &QFutureWatcher<ImageLayerLoadResult>::finished, this,
                      [this]() {
                          this->setLayerImportEnabled(true);
@@ -1794,9 +1842,10 @@ vtkWindowImage::~vtkWindowImage()
 void vtkWindowImage::closeEvent(QCloseEvent *event)
 {
     if (m_stokesDiscoveryActive) {
-        // The companion search is suspended inside a nested event loop (backend
-        // listing or file chooser) with `this` on the stack. Deleting the window
-        // now would resume that call on freed memory.
+        // The companion search may be suspended inside a file chooser's nested
+        // event loop with `this` on the stack. Deleting the window now would
+        // resume that call on freed memory. (The directory listing itself is no
+        // longer blocking - it runs on a worker thread.)
         this->statusBar()->showMessage(
                 u"Finish or cancel the Stokes companion search first."_s, 4000);
         event->ignore();
@@ -1897,9 +1946,13 @@ void vtkWindowImage::setInteractorStyleProfile()
         ui->vtk->renderWindow()->GetInteractor()->SetInteractorStyle(style);
         this->vtkRender();
 
+        // The staged copy when the master lives on the backend: ProfileWidget
+        // builds an AstroUtils on this path with a local reader.
+        const QString profileMaster =
+                m_localMasterPath.isEmpty() ? this->filepath : m_localMasterPath;
         this->profileWidget =
                 new ProfileWidget(style, this->layers->getImageData(this->layers->getMasterIndex()),
-                                  this->filepath.toStdString(), this);
+                                  profileMaster.toStdString(), this);
         this->profileWidget->setUsageMode(ProfileWidget::UsageMode::ProbeLive, u"Profile"_s);
         this->profileWidget->setupImagePlots();
         QObject::connect(this->profileWidget, &ProfileWidget::destroyed, this,
@@ -1919,12 +1972,236 @@ int vtkWindowImage::currentLayerIndex() const
     return row;
 }
 
+
+// ── Staging a backend-side file for the local layer pipeline ─────────────────
+// Additional layers are read by loadImageLayer() with a LOCAL vtkFITSReader +
+// AstroUtils: that is what aligns them to the master through libwcs, and it is
+// why the backend-side variant of this path was removed years ago (it did the
+// WCS math by hand and got CD-matrix images wrong). But every dataset path in
+// this application goes through the backend, which may be on another machine -
+// there the browser hands back a path this process cannot open at all.
+//
+// So: keep the local pipeline, and make the file local first. No new endpoint
+// and no second WCS implementation - the bytes that arrive are the same file,
+// so everything downstream behaves exactly as it does with a shared filesystem:
+//
+//   open_dataset(path) -> copy_dataset into the workspace -> download -> delete
+//
+// The workspace copy is removed afterwards: it is a transfer buffer, not
+// something the user asked to keep.
+using StagedLayerFile = vtkWindowImage::StagedLayerFile;
+
+/// Does this transfer error look like the operator-token asymmetry? Opening and
+/// copying accept any authenticated user; downloading and deleting want an
+/// operator token, so on a shared backend the copy succeeds and the download 403s.
+static bool looksLikeOperatorDenial(const QString &error)
+{
+    return error.contains(QStringLiteral("403")) || error.contains(QStringLiteral("Forbidden"))
+            || error.contains(QStringLiteral("operator"), Qt::CaseInsensitive);
+}
+
+/// Fetch ONE backend-side file. `error` non-empty means nothing was written.
+static QString fetchBackendFile(BackendClient &client, const QString &backendPath,
+                                const QString &cacheDir, QString &error, QString &leftover)
+{
+    // Size first, and REFUSE when it cannot be established: downloadExport
+    // buffers the whole file in memory before writing it, so an unknown size is
+    // an unbounded allocation, not a small risk.
+    constexpr qint64 kMaxStagedBytes = 2LL * 1024 * 1024 * 1024;
+    const QFileInfo remoteInfo(backendPath);
+    const auto dirListing = client.listFiles(remoteInfo.absolutePath());
+    qint64 size = -1;
+    for (const auto &entry : dirListing.entries) {
+        if (entry.name == remoteInfo.fileName()) {
+            size = entry.size;
+            break;
+        }
+    }
+    if (!dirListing.valid || size < 0) {
+        error = QStringLiteral("Could not establish the size of %1 on the backend%2, so it is "
+                               "not transferred: this path reads the whole file into memory.")
+                        .arg(remoteInfo.fileName(),
+                             dirListing.error.isEmpty()
+                                     ? QString()
+                                     : QStringLiteral(" (%1)").arg(dirListing.error));
+        return {};
+    }
+    if (size > kMaxStagedBytes) {
+        error = QStringLiteral("%1 is %2 GB. Files this large are not copied from a remote "
+                               "backend as a layer - open it as a dataset instead, so the "
+                               "pixels stay on the backend.")
+                        .arg(remoteInfo.fileName())
+                        .arg(size / double(1024 * 1024 * 1024), 0, 'f', 1);
+        return {};
+    }
+
+    const auto opened = client.openDataset(backendPath);
+    if (!opened.valid) {
+        error = opened.error.isEmpty()
+                ? QStringLiteral("The backend could not open %1.").arg(backendPath)
+                : opened.error;
+        return {};
+    }
+
+    // A name of our own: the workspace is the user's, and two files staged from
+    // different directories can share a basename.
+    const QString stem = QFileInfo(backendPath).completeBaseName();
+    const QString tag = QString::fromLatin1(
+            QCryptographicHash::hash(backendPath.toUtf8(), QCryptographicHash::Sha1)
+                    .toHex()
+                    .left(8));
+    const QString basename = QStringLiteral("layer_stage_%1_%2").arg(stem, tag);
+
+    const auto copied = client.copyDatasetToWorkspace(opened.datasetId, basename);
+    if (!copied.valid) {
+        error = copied.error.isEmpty()
+                ? QStringLiteral("The backend could not stage %1 for transfer.").arg(backendPath)
+                : copied.error;
+        return {};
+    }
+    const QString workspaceName = copied.deletedFilename;   // the created file, despite the name
+
+    QDir().mkpath(cacheDir);
+    // Re-fetched, never reused: nothing here can cheaply prove a cached copy is
+    // still the file the backend holds, and silently loading last week's pixels
+    // would be worse than the transfer.
+    //
+    // Each transfer writes its OWN file. Sharing one name per (backend, path)
+    // and replacing it meant a second window fetching the same file could
+    // truncate - or, between the remove and the rename, briefly delete - the
+    // copy this one is reading. Old copies in this directory are pruned by age
+    // instead; anything another window is using was written seconds ago.
+    const QString unique = QString::number(QCoreApplication::applicationPid()) + u"-"_s
+            + QString::number(QRandomGenerator::global()->generate(), 16);
+    const QFileInfo wsInfo(workspaceName);
+    const QString localPath = cacheDir + u"/"_s + wsInfo.completeBaseName() + u"."_s + unique
+            + (wsInfo.suffix().isEmpty() ? QString() : u"."_s + wsInfo.suffix());
+    const QDateTime cutoff = QDateTime::currentDateTime().addDays(-7);
+    for (const QFileInfo &stale : QDir(cacheDir).entryInfoList(QDir::Files)) {
+        if (stale.lastModified() < cutoff)
+            QFile::remove(stale.absoluteFilePath());
+    }
+    QString downloadError;
+    const bool ok = client.downloadExport(workspaceName, localPath, downloadError);
+    if (!ok)
+        QFile::remove(localPath);
+
+    // Clean up the transfer buffer. It must not mask a download failure, but it
+    // must not be hidden either: on a backend that reserves these routes for
+    // operators, the delete fails exactly when the download did, and the copy
+    // stays in the user's workspace.
+    const auto removed = client.deleteExport(workspaceName);
+    if (!removed.valid) {
+        qWarning().noquote() << QStringLiteral("[layer-stage] could not remove workspace copy %1: %2")
+                                        .arg(workspaceName, removed.error);
+        leftover = QStringLiteral(" A copy was left in the workspace as '%1'.").arg(workspaceName);
+    }
+
+    if (!ok) {
+        error = downloadError.isEmpty()
+                ? QStringLiteral("Could not download %1 from the backend.").arg(workspaceName)
+                : downloadError;
+        // The copy went through but the transfer did not: on a shared backend
+        // the download and delete routes want an operator token while opening
+        // and copying do not, and that asymmetry looks exactly like this.
+        if (looksLikeOperatorDenial(downloadError))
+            error += QStringLiteral(
+                    " (the backend's download route may require an operator token, "
+                    "which this session does not have)");
+        return {};   // the leftover copy is reported through `leftover`, once
+    }
+    return localPath;
+}
+
+static StagedLayerFile stageBackendFileLocally(const QString &backendUrl,
+                                               const QString &backendToken,
+                                               const QString &sessionId,
+                                               const QString &backendPath,
+                                               const QString &masterPath,
+                                               const QString &cacheDir)
+{
+    StagedLayerFile out;
+    BackendClient client(backendUrl, backendToken);
+    if (!sessionId.isEmpty())
+        client.setSessionId(sessionId);
+
+    // The MASTER has to be local too, not just the new layer: loadImageLayer
+    // opens both - the layer for its pixels, the master for the WCS it is
+    // aligned to - with the same local reader. Staging only the layer left
+    // AstroUtils to open a file that is not there.
+    if (!masterPath.isEmpty()) {
+        QString error;
+        out.localMasterPath = fetchBackendFile(client, masterPath, cacheDir, error, out.warning);
+        if (out.localMasterPath.isEmpty()) {
+            out.error = QStringLiteral("The image this layer aligns to is on the backend and "
+                                       "could not be fetched: %1")
+                                .arg(error);
+            return out;
+        }
+    }
+
+    if (backendPath == masterPath) {
+        // Adding the master itself as a layer: one fetch, not two.
+        out.localPath = out.localMasterPath;
+        return out;
+    }
+    if (backendPath.isEmpty())
+        return out;   // master-only staging
+
+    QString error;
+    QString leftover;
+    out.localPath = fetchBackendFile(client, backendPath, cacheDir, error, leftover);
+    if (!leftover.isEmpty())
+        out.warning += leftover;
+    if (out.localPath.isEmpty())
+        out.error = error;
+    return out;
+}
+
 void vtkWindowImage::addLayerImage(const std::string &filepath)
 {
+    const QString path = QString::fromStdString(filepath);
+    // A staged master that has since been cleared out of the cache is no master.
+    if (!m_localMasterPath.isEmpty() && !QFile::exists(m_localMasterPath))
+        m_localMasterPath.clear();
+    // Both files have to be here: the layer for its pixels, the master because
+    // loadImageLayer opens it too, to align the layer to it. A local layer over
+    // a remote master still needs the master fetched.
+    const bool needLayer = !QFile::exists(path);
+    const bool needMaster = m_localMasterPath.isEmpty() && !QFile::exists(this->filepath);
+    // A path the backend gave us that this machine cannot see: fetch it first,
+    // then come back here with a local one. Covers every caller - Add New Layer,
+    // the VLKB cutouts and the Stokes companions - because they all arrive here.
+    if ((needLayer || needMaster) && !this->remoteBackendUrl.isEmpty()) {
+        this->setLayerImportEnabled(false);
+        this->showPersistentStatusMessage(
+                u"Fetching %1 from the backend..."_s.arg(QFileInfo(path).fileName()));
+        // One directory per (backend, file): two backends can serve different
+        // files at the same path, and a shared flat cache would have one
+        // download truncate a file another window is reading.
+        const QString key = QString::fromLatin1(
+                QCryptographicHash::hash((this->remoteBackendUrl + u"|"_s + path).toUtf8(),
+                                         QCryptographicHash::Sha1)
+                        .toHex()
+                        .left(12));
+        const QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+                + u"/remote-layers/"_s + key;
+        const QString masterToStage = needMaster ? this->filepath : QString();
+        // Only what is actually missing: a layer that is already here must not
+        // be pulled over the network because the master was not.
+        m_pendingStageLayerPath = path;
+        m_layerStageWatcher.setFuture(QtConcurrent::run(
+                &stageBackendFileLocally, this->remoteBackendUrl, this->remoteBackendToken,
+                this->remoteSessionId, needLayer ? path : QString(), masterToStage, cacheDir));
+        return;
+    }
     this->setLayerImportEnabled(false);
     this->showPersistentStatusMessage(u"Loading layer..."_s);
+    // The master the layer is aligned to: its staged copy when the real one
+    // lives on the backend.
+    const QString master = m_localMasterPath.isEmpty() ? this->filepath : m_localMasterPath;
     this->layerLoadWatcher.setFuture(QtConcurrent::run(
-            &loadImageLayer, ImageLayerLoadRequest { this->filepath.toStdString(), filepath }));
+            &loadImageLayer, ImageLayerLoadRequest { master.toStdString(), filepath }));
 }
 
 void vtkWindowImage::applyLoadedLayer(const ImageLayerLoadResult &result)
@@ -2195,8 +2472,13 @@ void vtkWindowImage::startRemoteFullResolutionLoad()
 
 bool vtkWindowImage::isBusy() const
 {
+    // Staging and the companion listing count: both end in a layer load, and a
+    // second import starting on top of them replaces the single layer watcher's
+    // future and overwrites m_pendingVlkbDisplayName - layers silently lost or
+    // mislabelled.
     return this->layerLoadWatcher.isRunning() || this->remoteImageWatcher.isRunning()
-            || this->remoteFullImageWatcher.isRunning();
+            || this->remoteFullImageWatcher.isRunning() || this->m_layerStageWatcher.isRunning()
+            || this->m_stokesListingWatcher.isRunning();
 }
 
 void vtkWindowImage::onImageInteractionSettled()

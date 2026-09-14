@@ -722,6 +722,27 @@ private:
 
     // ── Stokes / Radio polarimetry analysis ──────────────────────────────────
 public:
+    /// Result of the companion directory listing, which runs OFF the GUI thread:
+    /// BackendClient is synchronous, and a remote backend that is slow to answer
+    /// would otherwise freeze the window inside a nested event loop.
+    /// A backend-side file fetched to local storage so the (local) layer reader
+    /// can open it. `error` is what failure looks like - an empty `localPath`
+    /// with no error is the master-only case, where the layer was readable here
+    /// all along and only the master had to be fetched.
+    struct StagedLayerFile
+    {
+        QString localPath;         ///< empty with no error = master-only staging
+        QString localMasterPath;   ///< set only when the master had to be staged too
+        QString error;
+        QString warning;           ///< non-fatal, but the user has to hear it
+    };
+
+    struct StokesListing
+    {
+        QSet<QString> names;
+        QString error;
+    };
+
     enum class StokesRole {
         None, I, Q, U, V,
         DerivedP,     ///< Linear pol intensity √(Q²+U²)
@@ -758,9 +779,16 @@ private:
     QPointer<QAction> m_actTogglePolVecs;
 
     void detectAndLoadStokesCompanions();
-    /// File names present in the directory holding `path`, listed through the
-    /// backend so the search works when the backend is on another machine.
-    QSet<QString> listStokesSearchDirectory(const QString &path, QString *error) const;
+    QFutureWatcher<StagedLayerFile> m_layerStageWatcher;
+    /// Local copy of the master dataset, when the backend is not on this machine.
+    /// loadImageLayer reads the master to align a layer to it, with the same
+    /// local reader, so it has to exist here too.
+    QString m_localMasterPath;
+    /// The layer path that triggered the staging in flight: when only the master
+    /// had to be fetched, this is what gets loaded when staging completes.
+    QString m_pendingStageLayerPath;
+    QFutureWatcher<StokesListing> m_stokesListingWatcher;
+    void onStokesListingReady(const StokesListing &listing);
     /// Queue of (path, "Stokes Q"-style label) waiting for the single layer
     /// loader. Loading is asynchronous through one watcher, so companions have
     /// to go in one at a time or all but the last are silently dropped.

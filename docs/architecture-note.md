@@ -1453,13 +1453,51 @@ last layer ever arrived. Loads are queued in `m_pendingStokesLoads` and started
 one at a time from the layer-load completion slot; a failure clears the queue and
 says so rather than leaving a silently partial Stokes set.
 
-**Still open, and wider than this tool:** `addLayerImage()` -> `loadImageLayer()`
-reads the FITS with a *local* `vtkFITSReader` + `AstroUtils`. Every additional-layer
-path shares that assumption (File -> Add New Layer, the VLKB cutout layers,
-and now the Stokes companions), so with a genuinely remote backend the browser
-hands back a path the client cannot open. Discovery and the chooser are now
-correct; the loader still needs a backend-side import (fetch or an
-`open_dataset` + pixel request) before additional layers work off-machine.
+### Additional layers from a remote backend
+
+`addLayerImage()` -> `loadImageLayer()` reads the FITS with a **local**
+`vtkFITSReader` + `AstroUtils`, and that is not incidental: it is what aligns a
+layer to the master through libwcs. The backend-side variant of this path was
+written once and removed because it did the WCS by hand and got CD-matrix images
+wrong. So the pipeline stays local, and the *file* is made local first:
+
+    open_dataset(path) -> copy_dataset into the workspace -> exports/download -> DELETE
+
+No new endpoint and no second WCS implementation — the bytes that arrive are the
+same file, so everything downstream behaves as it does on a shared filesystem.
+`addLayerImage()` itself decides: if the path is not readable here and a backend
+is configured, it stages first and re-enters with the local path. Every caller
+(Add New Layer, the VLKB cutouts, the Stokes companions) goes through it.
+
+The **master** is staged too, once, and remembered in `m_localMasterPath`
+(re-staged if the cache is cleared under it): `loadImageLayer` opens it as well,
+to align the layer to it, so a local layer over a remote master still needs the
+master here. The legacy `ProfileWidget` path, which also builds an `AstroUtils`
+locally, uses the same copy.
+
+What it refuses, and says so: a file whose size cannot be established on the
+backend, or one over 2 GB — `downloadExport` buffers the whole file in memory
+before writing it, so an unknown size is an unbounded allocation and an SKA-scale
+cube should be *opened* as a dataset, not copied. Each transfer writes its **own** local file: one shared
+name per (backend, path) meant a second window fetching the same file could
+truncate the copy this one was reading, so old copies are pruned by age instead.
+The workspace copy is a transfer buffer and is deleted afterwards — except on a
+backend that reserves `download` and `DELETE` for operators, where both fail
+together; the message then names the copy that was left behind instead of
+pretending it was cleaned up, whether or not the download itself succeeded.
+
+### The companion listing does not block the window
+
+`BackendClient` is synchronous. The Stokes companion search ran `listFiles()` on
+the GUI thread, inside a nested event loop, which froze the window against a slow
+backend and let the user close it out from under the suspended call. The listing
+now runs through a `QFutureWatcher` and the interactive half resumes in
+`onStokesListingReady()`. The file choosers are still modal (like every other
+chooser here), so `closeEvent` still refuses to close while they are up, and the
+callback re-checks `isBusy()` before queueing — discovery no longer blocks other
+imports, so one can have started while the listing was out. `isBusy()` counts
+staging and listing for the same reason: they both end in a layer load, and the
+window has exactly one layer watcher.
 
 ---
 

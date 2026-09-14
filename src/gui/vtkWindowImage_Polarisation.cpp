@@ -161,33 +161,40 @@ int vtkWindowImage::findLayerByStokesRole(StokesRole role) const
     return -1;
 }
 
-QSet<QString> vtkWindowImage::listStokesSearchDirectory(const QString &path,
-                                                        QString *error) const
+namespace {
+
+// Runs on a WORKER thread: BackendClient is synchronous, and a remote backend
+// that takes its time answering must not freeze the window. Nothing here
+// touches the viewer, so there is no `this` to outlive the call.
+vtkWindowImage::StokesListing listStokesDirectory(const QString &backendUrl,
+                                                  const QString &backendToken,
+                                                  const QString &path)
 {
-    QSet<QString> names;
+    vtkWindowImage::StokesListing out;
     const QString dir = QFileInfo(path).absolutePath();
 
     // Datasets live on the backend's filesystem, which is only the same as ours
     // when the backend runs locally. Ask the backend what is in the directory,
     // exactly as the file browser does, so the auto-detection is not silently
     // empty against a remote server.
-    if (!this->remoteBackendUrl.isEmpty()) {
-        BackendClient client(this->remoteBackendUrl, this->remoteBackendToken);
+    if (!backendUrl.isEmpty()) {
+        BackendClient client(backendUrl, backendToken);
         const auto listing = client.listFiles(dir);
         if (!listing.valid) {
-            if (error)
-                *error = listing.error.isEmpty() ? u"backend listing failed"_s : listing.error;
-            return names;
+            out.error = listing.error.isEmpty() ? u"backend listing failed"_s : listing.error;
+            return out;
         }
         for (const auto &entry : listing.entries)
-            names.insert(entry.name);
-        return names;
+            out.names.insert(entry.name);
+        return out;
     }
 
     for (const QFileInfo &fi : QDir(dir).entryInfoList(QDir::Files))
-        names.insert(fi.fileName());
-    return names;
+        out.names.insert(fi.fileName());
+    return out;
 }
+
+}   // namespace
 
 void vtkWindowImage::startNextStokesLoad()
 {
@@ -209,26 +216,52 @@ void vtkWindowImage::detectAndLoadStokesCompanions()
         statusBar()->showMessage(u"Stokes companions are still loading."_s, 3000);
         return;
     }
-    // Both the backend listing and the file chooser spin a nested event loop, so
-    // the menu action stays clickable while this runs. A second pass would build
-    // its own queue on top of ours and overwrite m_pendingVlkbDisplayName.
+    // The file choosers below still spin a nested event loop, so the menu action
+    // stays clickable while this runs. A second pass would build its own queue on
+    // top of ours and overwrite m_pendingVlkbDisplayName.
     if (m_stokesDiscoveryActive)
         return;
     m_stokesDiscoveryActive = true;
-    const auto discoveryGuard = qScopeGuard([this] { m_stokesDiscoveryActive = false; });
 
     // The master layer is treated as Stokes I.
     const int masterIdx = this->layers->getMasterIndex();
     if (!m_stokesRoles.contains(masterIdx))
         m_stokesRoles.insert(masterIdx, StokesRole::I);
 
+    // The listing goes off-thread; the rest of the work resumes in
+    // onStokesListingReady(). The watcher is a member of this window, so if the
+    // window goes away the callback goes with it.
+    statusBar()->showMessage(u"Looking for Stokes companions..."_s);
+    m_stokesListingWatcher.setFuture(QtConcurrent::run(&listStokesDirectory,
+                                                       this->remoteBackendUrl,
+                                                       this->remoteBackendToken, this->filepath));
+}
+
+void vtkWindowImage::onStokesListingReady(const StokesListing &result)
+{
+    const auto discoveryGuard = qScopeGuard([this] { m_stokesDiscoveryActive = false; });
+
+    // Discovery does not block the window, so an import can have started while
+    // the listing was out. Queueing on top of it would replace the single layer
+    // watcher's future and lose whatever it was loading.
+    if (this->isBusy() || !m_pendingStokesLoads.isEmpty()) {
+        // Only if the bar is free: the operation that made us busy is saying
+        // something more useful there, and replacing it would also wipe it when
+        // this message times out.
+        if (!this->persistentStatusActive)
+            statusBar()->showMessage(
+                    u"Another layer is loading - try Load Stokes Companions again in a moment."_s,
+                    5000);
+        return;
+    }
+
     const QStringList roles = { u"Q"_s, u"U"_s, u"V"_s };
     QStringList missing;
     QStringList autoFound;
     QStringList alreadyLoaded;
 
-    QString listingError;
-    const QSet<QString> listing = listStokesSearchDirectory(this->filepath, &listingError);
+    const QString listingError = result.error;
+    const QSet<QString> &listing = result.names;
     const QFileInfo iInfo(this->filepath);
     const QString searchDir = iInfo.absolutePath();
 
