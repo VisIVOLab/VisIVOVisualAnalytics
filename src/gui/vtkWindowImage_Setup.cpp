@@ -581,6 +581,12 @@ void vtkWindowImage::setupInspector()
     // LAYERS block; only info/stats stays in the Inspector Properties.
     if (this->m_inspectorPageLayer)     this->m_workspaceChrome->addSessionLayers(this->m_inspectorPageLayer);
     if (this->m_inspectorPageCatalogue) this->m_workspaceChrome->addSessionLayers(this->m_inspectorPageCatalogue);
+    // Contour settings belong with the other view controls in the left column,
+    // the way the cube viewer keeps its CONTOURS card there: the Analysis tab
+    // can only offer the on/off action, and a toggle with no Level / Lower /
+    // Upper is not a usable contour tool.
+    if (QWidget *contourBlock = this->buildContourControlsBlock())
+        this->m_workspaceChrome->addSessionLayers(contourBlock);
     if (this->m_inspectorPageInfo)      panel->addPropertiesSection(this->m_inspectorPageInfo);
     // Re-home the kept-alive Tools page as a HIDDEN child of the inspector (not a
     // free child of the QMainWindow, where it could paint over the left dock).
@@ -673,6 +679,59 @@ void vtkWindowImage::setupInspector()
 
     // Belt-and-suspenders: neutralise any stray direct-child widget painting at (0,0).
     this->parkOrphanDirectChildren();
+}
+
+QWidget *vtkWindowImage::buildContourControlsBlock()
+{
+    if (!m_contourLevelSpin || !m_contourLowerEdit || !m_contourUpperEdit)
+        return nullptr;
+
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(12, 14, 12, 12);
+    layout->setSpacing(10);
+
+    auto *hdr = new QLabel(u"CONTOURS"_s, page);
+    hdr->setStyleSheet(VisivoTheme::sidebarHeaderStyleSheet());
+    layout->addWidget(hdr);
+
+    auto *card = new QFrame(page);
+    card->setStyleSheet(VisivoTheme::sidebarCardStyleSheet());
+    auto *cardLayout = new QVBoxLayout(card);
+    cardLayout->setContentsMargins(8, 8, 8, 8);
+    cardLayout->setSpacing(6);
+
+    // The checkbox and Tools > Show Contours are the same state, each following
+    // the other. Blocked on the way back, or they would drive each other.
+    m_contourShowCheck = new QCheckBox(u"Show contours"_s, card);
+    m_contourShowCheck->setChecked(m_contoursVisible);
+    cardLayout->addWidget(m_contourShowCheck);
+    if (m_actToggleContours) {
+        QObject::connect(m_contourShowCheck, &QCheckBox::toggled, m_actToggleContours,
+                         &QAction::setChecked);
+        QObject::connect(m_actToggleContours, &QAction::toggled, m_contourShowCheck,
+                         [this](bool on) {
+                             if (!m_contourShowCheck)
+                                 return;
+                             const QSignalBlocker b(m_contourShowCheck);
+                             m_contourShowCheck->setChecked(on);
+                         });
+    }
+
+    // Re-home the widgets that setupSidebar() already built and wired, rather
+    // than building a second set: two Level spin boxes writing the same
+    // m_contourLevel would disagree the moment either is used.
+    auto *form = new QFormLayout();
+    form->setHorizontalSpacing(8);
+    form->setVerticalSpacing(4);
+    form->addRow(u"Level"_s, m_contourLevelSpin.data());
+    form->addRow(u"Lower"_s, m_contourLowerEdit.data());
+    form->addRow(u"Upper"_s, m_contourUpperEdit.data());
+    cardLayout->addLayout(form);
+
+    layout->addWidget(card);
+    layout->addStretch(1);
+    return page;
 }
 
 QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
@@ -936,13 +995,11 @@ void vtkWindowImage::setupSidebar()
                          [this](int v) { m_contourLevel = v; updateContours(); });
         QObject::connect(lowerEdit, &QLineEdit::editingFinished, this,
                          [this, lowerEdit]() {
-                             m_contourLower = lowerEdit->text().toDouble();
-                             updateContours();
+                             commitContourBounds(lowerEdit->text().toDouble(), m_contourUpper);
                          });
         QObject::connect(upperEdit, &QLineEdit::editingFinished, this,
                          [this, upperEdit]() {
-                             m_contourUpper = upperEdit->text().toDouble();
-                             updateContours();
+                             commitContourBounds(m_contourLower, upperEdit->text().toDouble());
                          });
 
         // External contour overlay actions (mirror the Tools menu)

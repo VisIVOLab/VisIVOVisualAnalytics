@@ -1277,9 +1277,29 @@ by a preview that lands afterwards. `updateContours()` now refuses an inverted o
 empty range with a status-bar line, and updates the mapper's scalar range, which
 was also still built from `0..1`.
 
-The image viewer has the same UI but not this bug: `setupContourPipeline()` reads
-the master layer's real scalar range and syncs the fields, and the preview -> full
-swap marks the pipeline dirty so the first toggle rebuilds it.
+The image viewer's levels were never stale in the same way (`setupContourPipeline()`
+reads the master layer's real scalar range and syncs the fields, and the preview ->
+full swap marks the pipeline dirty so the first toggle rebuilds it) - but its
+Level / Lower / Upper fields were **unreachable**. They were built in
+`setupSidebar()`'s Contours card on `pageTools`, and that whole page is parked
+hidden in `m_orphanToolsPage` because the Inspector's Analysis tab superseded it.
+The Analysis tab can only list actions, so all the user had was a toggle.
+
+`buildContourControlsBlock()` puts a CONTOURS block in the left dock next to
+LAYER SETTINGS and CATALOGUE, where the cube viewer keeps its own contour card.
+It **re-homes** the widgets `setupSidebar()` already built and wired instead of
+building a second set (two Level spin boxes writing the same `m_contourLevel`
+would disagree the moment either was used), and adds a "Show contours" checkbox
+two-way bound to the `Show Contours` action, so the menu, the Analysis tab and
+the dock all show one state. `clearAllContours()` now goes through that action
+too, instead of leaving both controls reading "on".
+
+Bounds ownership there works the other way round from the cube: they follow the
+image's scalar range on every rebuild until the user types one, after which
+`m_contourBoundsUserSet` keeps them. `commitContourBounds()` refuses an
+unusable pair instead of storing it - the members feed `GenerateValues()` on the
+next rebuild, so a pair that `updateContours()` had rejected would otherwise come
+back by the side door.
 
 ## Channel Maps (`ChannelMapsWindow`)
 

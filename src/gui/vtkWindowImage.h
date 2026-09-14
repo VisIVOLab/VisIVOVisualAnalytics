@@ -360,9 +360,23 @@ private:
     int                      m_contourLevel{ 15 };
     double                   m_contourLower{ 0.0 };
     double                   m_contourUpper{ 1.0 };
+    /// True once the user has typed a bound. Until then the bounds follow the
+    /// image's scalar range on every pipeline rebuild (there is one after each
+    /// preview -> full swap); afterwards the user's numbers are kept.
+    bool                     m_contourBoundsUserSet{ false };
     void setupContourPipeline();
     void updateContours();
     void setContoursVisible(bool vis);
+    /// Accept a pair of contour bounds if it is usable, otherwise keep the last
+    /// accepted pair and put it back in the fields.
+    void commitContourBounds(double lower, double upper);
+    /// Write the accepted bounds into the Lower / Upper fields (signal-blocked).
+    void syncContourBoundFields();
+    /// The CONTOURS block in the left dock: re-homes the already-wired Level /
+    /// Lower / Upper widgets, which otherwise live only in the Tools page that
+    /// the Inspector's Analysis tab superseded (and which is never shown).
+    QWidget *buildContourControlsBlock();
+    QPointer<QCheckBox> m_contourShowCheck;
     QPointer<QLineEdit> m_contourLowerEdit;
     QPointer<QLineEdit> m_contourUpperEdit;
     QPointer<QSpinBox>  m_contourLevelSpin;

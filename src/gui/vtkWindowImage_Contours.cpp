@@ -119,10 +119,16 @@ void vtkWindowImage::setupContourPipeline()
             : nullptr;
     if (!imageData) return;
 
+    // The bounds follow the data until the user overrides them: setContoursVisible()
+    // rebuilds this pipeline after every preview -> full swap, and re-reading the
+    // range then would silently discard the numbers typed in the CONTOURS block.
     double range[2];
     imageData->GetScalarRange(range);
-    m_contourLower = range[0];
-    m_contourUpper = range[1];
+    if (!m_contourBoundsUserSet && std::isfinite(range[0]) && std::isfinite(range[1])
+        && range[0] < range[1]) {
+        m_contourLower = range[0];
+        m_contourUpper = range[1];
+    }
 
     const bool firstTime = !m_contourFilter;
     if (firstTime) {
@@ -150,26 +156,56 @@ void vtkWindowImage::setupContourPipeline()
                 ->SetScalarRange(m_contourLower, m_contourUpper);
     }
 
-    // Sync the sidebar line edits so the user sees the actual range from
-    // the real image data, not the stale defaults from construction time.
-    if (m_contourLowerEdit) {
-        const QSignalBlocker b(m_contourLowerEdit);
-        m_contourLowerEdit->setText(QString::number(m_contourLower, 'g', 6));
-    }
-    if (m_contourUpperEdit) {
-        const QSignalBlocker b(m_contourUpperEdit);
-        m_contourUpperEdit->setText(QString::number(m_contourUpper, 'g', 6));
-    }
+    // Sync the sidebar line edits so the user sees the values the filter is
+    // actually using, not the stale defaults from construction time.
+    syncContourBoundFields();
 
     m_contourActor->SetVisibility(m_contoursVisible);
     m_contourPipelineDirty = false;
 }
 
+void vtkWindowImage::syncContourBoundFields()
+{
+    if (m_contourLowerEdit) {
+        const QSignalBlocker b(m_contourLowerEdit);
+        m_contourLowerEdit->setText(QString::number(m_contourLower, 'g', 9));
+    }
+    if (m_contourUpperEdit) {
+        const QSignalBlocker b(m_contourUpperEdit);
+        m_contourUpperEdit->setText(QString::number(m_contourUpper, 'g', 9));
+    }
+}
+
+void vtkWindowImage::commitContourBounds(double lower, double upper)
+{
+    // Refuse rather than store: setupContourPipeline() feeds these members
+    // straight to GenerateValues, so an unusable pair accepted here would come
+    // back on the next rebuild even though updateContours() had rejected it.
+    if (!std::isfinite(lower) || !std::isfinite(upper) || !(lower < upper)) {
+        statusBar()->showMessage(
+                u"Contour bounds need Lower < Upper, keeping the previous pair."_s, 4000);
+        syncContourBoundFields();
+        return;
+    }
+    m_contourLower = lower;
+    m_contourUpper = upper;
+    // From here the bounds are the user's, and data updates leave them alone.
+    m_contourBoundsUserSet = true;
+    updateContours();
+}
+
 void vtkWindowImage::updateContours()
 {
+    // Typing a level before the pipeline exists is not an error: build it, then
+    // apply. setupContourPipeline() keeps the bounds already entered.
+    if (!m_contourFilter && m_contourPipelineDirty)
+        setupContourPipeline();
     if (!m_contourFilter) return;
-    // Guard: lower must be < upper for GenerateValues to produce valid levels.
-    if (m_contourLower >= m_contourUpper) return;
+    if (m_contourLevel < 1 || !(m_contourLower < m_contourUpper)) {
+        statusBar()->showMessage(
+                u"Contour levels need Lower < Upper and at least one level."_s, 4000);
+        return;
+    }
     m_contourFilter->GenerateValues(m_contourLevel, m_contourLower, m_contourUpper);
     m_contourFilter->Modified();
     m_contourFilter->Update();
@@ -303,7 +339,12 @@ void vtkWindowImage::clearAllContours()
         if (ren && layer.actor) ren->RemoveActor(layer.actor);
     }
     m_externalContourLayers.clear();
-    setContoursVisible(false);
+    // Through the action, so the Tools entry and the left dock's checkbox both
+    // follow; calling setContoursVisible() directly left them showing "on".
+    if (m_actToggleContours)
+        m_actToggleContours->setChecked(false);
+    else
+        setContoursVisible(false);
     if (ren && ui->vtk->renderWindow())
         ui->vtk->renderWindow()->Render();
 }
