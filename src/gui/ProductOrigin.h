@@ -196,6 +196,35 @@ inline void remapOriginVoxel(const QVariantMap &origin, const double scale[2],
     }
 }
 
+// ── Which surface the 2-D measurement was taken on ───────────────────────────
+// A cube shows several 2-D surfaces in the same place: channel N of the cube, or
+// a moment map. Region statistics computed on one of them are meaningless next
+// to another, and the geometry alone cannot tell them apart - reopening a
+// channel-10 measurement while channel 50 is displayed put the overlay back with
+// nothing saying the numbers came from elsewhere.
+
+inline QVariantMap withMeasuredSurface(QVariantMap origin, const QString &surface, int channel)
+{
+    if (!surface.isEmpty())
+        origin.insert(QStringLiteral("surface"), surface);   // "slice" | "moment"
+    if (channel >= 0)
+        origin.insert(QStringLiteral("channel"), channel);   // 0-based
+    return origin;
+}
+
+inline QString originSurface(const QVariantMap &origin)
+{
+    return origin.value(QStringLiteral("surface")).toString();
+}
+
+/// 0-based channel the measurement was taken on, or -1 when it was not a
+/// channel (a moment map) or the product predates the stamp.
+inline int originChannel(const QVariantMap &origin)
+{
+    const QVariant v = origin.value(QStringLiteral("channel"));
+    return v.canConvert<int>() ? v.toInt() : -1;
+}
+
 /// A short human phrase for the row's tooltip and the status bar.
 inline QString describeOrigin(const QVariantMap &origin)
 {
@@ -216,11 +245,28 @@ inline QString describeOrigin(const QVariantMap &origin)
         return QString();
     const QString shape = originShape(origin);
     if (shape == QStringLiteral("polygon"))
-        return QStringLiteral("a polygon of %1 points").arg(originPolygon(origin).size());
+        return QStringLiteral("a polygon of %1 points%2")
+                .arg(originPolygon(origin).size())
+                .arg(originSurface(origin) == QStringLiteral("moment")
+                             ? QStringLiteral(" on the moment map")
+                     : originChannel(origin) >= 0
+                             ? QStringLiteral(" on channel %1").arg(originChannel(origin) + 1)
+                             : QString());
+    // Where it was measured, when the product says so.
+    QString where;
+    const QString surface = originSurface(origin);
+    if (surface == QStringLiteral("moment"))
+        where = QStringLiteral(" on the moment map");
+    else if (originChannel(origin) >= 0)
+        where = QStringLiteral(" on channel %1").arg(originChannel(origin) + 1);
+    else if (surface == QStringLiteral("slice"))
+        where = QStringLiteral(" on the displayed slice");
+
     int a[2] = { 0, 0 };
     if (!originPoint(origin, QStringLiteral("anchor"), a, 2))
-        return QStringLiteral("a %1 region").arg(shape);
-    return QStringLiteral("a %1 region at (%2, %3)").arg(shape).arg(a[0]).arg(a[1]);
+        return QStringLiteral("a %1 region%2").arg(shape, where);
+    return QStringLiteral("a %1 region at (%2, %3)%4")
+            .arg(shape).arg(a[0]).arg(a[1]).arg(where);
 }
 
 }   // namespace visivo

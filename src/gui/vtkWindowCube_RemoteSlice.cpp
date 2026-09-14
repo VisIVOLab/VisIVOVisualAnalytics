@@ -278,12 +278,40 @@ void vtkWindowCube::requestRemoteSlice(int sliceIndex)
     }
 
     const QString key = this->remoteSliceCacheKey(sliceIndex);
-    if (this->remoteSliceFetchesInFlight.contains(key)) {
+    if (const auto inFlight = this->remoteSliceFetchesInFlight.constFind(key);
+        inFlight != this->remoteSliceFetchesInFlight.cend()) {
+        // Adopt that fetch as the current request. Returning without doing so
+        // left BOTH fetches unappliable: this one's requestId was no longer
+        // current, and the other one's index no longer matched, so asking again
+        // for a channel already being fetched displayed neither.
+        if (QObject *watcher = inFlight.value()) {
+            // PROMOTE it to this request: a fresh id (so nothing else can be
+            // confused for it), this caller's origin for the linked-broadcast
+            // decision, and - the reason the watcher is kept rather than its id -
+            // no longer a prefetch, since a prefetch's result is cached but never
+            // displayed and never reports its errors.
+            const int oldId = watcher->property("requestId").toInt();
+            const bool wasPrefetch = watcher->property("isPrefetch").toBool();
+            this->m_linkedRemoteRequestIds.remove(oldId);
+            const int adopted = ++this->m_remoteSliceRequestIdSeq;
+            watcher->setProperty("requestId", adopted);
+            watcher->setProperty("isPrefetch", false);
+            if (wasPrefetch)
+                ++this->activeRemoteSliceRequests;   // the handler will decrement it now
+            if (this->m_applyingLinkedUpdate)
+                this->m_linkedRemoteRequestIds.insert(adopted);
+            this->currentRemoteSliceRequestId = adopted;
+        }
         this->statusBar()->showMessage(u"Loading remote slice..."_s);
         return;
     }
 
-    const int requestId = ++this->currentRemoteSliceRequestId;
+    // Allocate from a counter that only ever goes forward. currentRemoteSliceRequestId
+    // says which result is wanted and can move BACKWARDS when a fetch is adopted
+    // above; deriving new ids from it would then hand a live watcher's id to a
+    // second request, and the two would consume each other's linked tokens.
+    const int requestId = ++this->m_remoteSliceRequestIdSeq;
+    this->currentRemoteSliceRequestId = requestId;
     // E-07/M6: remember linked-originated fetches by requestId so the (async)
     // result can be recognised as linked-driven and not echo-re-broadcast.
     if (this->m_applyingLinkedUpdate)
@@ -335,6 +363,11 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
         ui->sliderSlice->setValue(result.index + 1);
         ui->spinSlice->setValue(result.index + 1);
     }
+    // The channel actually ON SCREEN. The spin box is written from pending
+    // requests too, so anything that has to name the data it measured (region
+    // provenance) must read this, not the control.
+    this->m_displayedSliceIndex = result.index;
+    this->m_sliceErrorOnStatusBar = false;   // a slice arrived; the error is stale now
     ui->lineSpectral->setText(this->formatSpectralAxisValue(result.index));
     // The floating channel scrubber is normally driven by spinSlice::valueChanged,
     // which we just blocked — update it explicitly so it tracks every displayed
@@ -467,8 +500,12 @@ void vtkWindowCube::startRemoteSliceFetch(int sliceIndex, bool isPrefetch, int r
         return;
     }
 
-    this->remoteSliceFetchesInFlight.insert(key);
     auto *watcher = new QFutureWatcher<RemoteCubeSliceResult>(this);
+    this->remoteSliceFetchesInFlight.insert(key, watcher);
+    // Prefetches get a real id too: id 0 on every one of them meant an adopted
+    // prefetch shared its token with all the others.
+    if (requestId == 0)
+        requestId = ++this->m_remoteSliceRequestIdSeq;
     watcher->setProperty("requestId", requestId);
     watcher->setProperty("sliceKey", key);
     watcher->setProperty("isPrefetch", isPrefetch);
@@ -494,6 +531,10 @@ void vtkWindowCube::startRemoteSliceFetch(int sliceIndex, bool isPrefetch, int r
                                  this->statusBar()->showMessage(result.errorMessage.isEmpty()
                                                                         ? u"Could not load remote slice."_s
                                                                         : result.errorMessage);
+                                 // Hold it: a stale success finishing after this
+                                 // one would otherwise clear the only thing that
+                                 // told the user the slice failed.
+                                 this->m_sliceErrorOnStatusBar = true;
                              }
                              return;
                          }
@@ -503,7 +544,8 @@ void vtkWindowCube::startRemoteSliceFetch(int sliceIndex, bool isPrefetch, int r
                          const bool requestedSliceMatches = this->clampRemoteSliceIndex(result.index)
                                  == this->currentRequestedRemoteSliceIndex;
                          if (!isPrefetch && requestId != this->currentRemoteSliceRequestId) {
-                             if (this->activeRemoteSliceRequests == 0) {
+                             if (this->activeRemoteSliceRequests == 0
+                                 && !this->m_sliceErrorOnStatusBar) {
                                  this->clearPersistentStatusMessage();
                              }
                              return;

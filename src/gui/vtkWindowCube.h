@@ -1276,6 +1276,10 @@ protected:
     int currentRemotePreviewRequestId{ 0 };
     int currentRemoteHighResRequestId{ 0 };
     int currentRemoteSliceRequestId{ 0 };
+    /// Monotonic id source. Kept apart from currentRemoteSliceRequestId, which
+    /// names the wanted result and can move backwards when an in-flight fetch is
+    /// adopted; ids themselves must never be reused while a watcher holds one.
+    int m_remoteSliceRequestIdSeq{ 0 };
     std::array<int, 6> currentRemoteRoi{ 0, 0, 0, 0, 0, 0 };
     QString currentRemoteRefinementModeLabel{ QStringLiteral("Full") };
     bool currentRemoteRoiThicknessExpanded{ false };
@@ -1899,7 +1903,18 @@ protected:
     // is fetch-orchestration state and deliberately stays on the window.
     static constexpr int remoteSliceCacheCapacity = 8;
     RemoteSliceCache<RemoteCubeSliceResult> remoteSliceCache{ remoteSliceCacheCapacity };
-    QSet<QString> remoteSliceFetchesInFlight;
+    /// Slice cache key -> the requestId of the fetch already running for it, so
+    /// a second ask for the same channel can adopt that fetch instead of being
+    /// deduped into a request whose result nothing will accept.
+    /// Slice cache key -> the watcher of the fetch already running for it. A
+    /// second ask for the same channel PROMOTES that fetch (see
+    /// requestRemoteSlice) instead of being deduped into a request whose result
+    /// nothing will accept - which is also why the value is the watcher and not
+    /// just its id: a prefetch has to stop being a prefetch when adopted.
+    QHash<QString, QPointer<QObject>> remoteSliceFetchesInFlight;
+    /// The channel currently ON SCREEN (set where a slice is actually applied).
+    /// The spin box also shows channels that are still being fetched.
+    int m_displayedSliceIndex{ -1 };
     void updateSlice();
     void updateRemoteSliceDragFeedback(int sliceIndex);
     void requestRemoteSlice(int sliceIndex);
@@ -2030,6 +2045,23 @@ protected:
     /// Redraw the region, or re-place the probe marker, a product was generated
     /// from. Returns false when the product carries no geometry.
     bool restoreProductOrigin(const QVariantMap &origin);
+    /// Set by restoreProductOrigin when the restored geometry belongs to a
+    /// surface other than the one on screen; the caller appends it to its own
+    /// status line instead of overwriting the warning.
+    QString m_originRestoreNote;
+    /// Per moment product: how many times ITS pixels have been replaced. The
+    /// product id is stable across a recompute of the same order, so it alone
+    /// cannot tell a measurement's map from the one now on screen - and a single
+    /// global counter would flag every other map as recomputed too.
+    QHash<QString, int> m_momentProductGeneration;
+    /// True while a slice error is on the status bar, so an unrelated stale
+    /// result finishing afterwards does not wipe the message the user needs.
+    bool m_sliceErrorOnStatusBar{ false };
+    /// Add the 2-D surface a region was measured on (channel N of the cube, or
+    /// the moment map) to its origin. Geometry alone cannot tell them apart, and
+    /// statistics from one surface mean nothing on another.
+    QVariantMap stampRegionSurface(QVariantMap origin) const;
+    int m_regionStatsCount{ 0 };
 
     /// Populate the right Inspector shell (Properties/Analysis tabs) and wire the
     /// pane-layout + Linked controls. Tools trigger the existing dialog QActions.

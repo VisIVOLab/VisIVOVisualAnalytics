@@ -916,6 +916,40 @@ served at unit spacing with origin 0.
 an identity — the layer list is drag-reorderable — so the layer's **name** is
 recorded too and resolved first, with the row as fallback.
 
+**In the cube, geometry is not enough either.** The same pixels mean different
+things on channel 10, on channel 50 and on a moment map, and the window shows one
+of them at a time. So a cube region also stamps the *surface* it was measured on
+(`withMeasuredSurface`): `"slice"` plus the channel, or `"moment"` plus the
+moment product's id. Restoring navigates back to that channel (stopping the scrub
+debounce first, or a pending scrub would move the data out from under the overlay
+we just restored) and, when the recorded surface is not the one displayed at all,
+says so in the same status line rather than in a message the caller immediately
+overwrites. The channel comes from `m_displayedSliceIndex`, set where a slice is
+actually applied — the spin box also shows channels that are still being fetched,
+so measuring during a fetch would have stamped the channel the user asked for
+instead of the one the numbers came from.
+
+That navigation exposed an older fault in the fetch helper: asking again for a
+channel whose fetch was already in flight deduped without adopting it, so neither
+result was accepted (the new request's id was not current, the running one's
+index no longer matched). `remoteSliceFetchesInFlight` now maps the cache key to
+the **watcher**, and the second ask *promotes* that fetch: a fresh id (ids come
+from their own monotonic counter, since `currentRemoteSliceRequestId` names the
+wanted result and can move backwards), the new caller's linked-broadcast origin,
+and `isPrefetch` cleared — a prefetch's result is cached but never displayed and
+never reports its errors, so adopting one without promoting it would have shown
+nothing. A slice error now also survives an unrelated stale result finishing
+after it (`m_sliceErrorOnStatusBar`, cleared wherever the message itself is).
+
+The moment generation is per product (`m_momentProductGeneration`), not global:
+switching between two cached moment maps must not mark either as recomputed, and
+a measurement whose map is no longer loaded says exactly that.
+
+A region that yields valid statistics but **no spectrum** — on a moment map, or
+outside the loaded block — used to exist only in a status line that scrolled away.
+It now registers a `region` stats product like the image viewer's, with no result
+window, so its Session Data row replays the numbers instead of raising the cube.
+
 **Reopening replays a record; it does not re-derive a layout.** The first cut
 rebuilt the window from the product's provenance parameters, and the result only
 resembled the original: one flat list where there had been a *Sigma* and a *MAD*

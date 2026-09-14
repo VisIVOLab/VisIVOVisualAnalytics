@@ -6283,6 +6283,9 @@ void vtkWindowCube::showPersistentStatusMessage(const QString &text, int minDura
 
 void vtkWindowCube::clearPersistentStatusMessage()
 {
+    // Whatever reason the bar is being cleared for, a slice error that was on it
+    // is gone with the message - the flag must not outlive what it protects.
+    this->m_sliceErrorOnStatusBar = false;
     if (!this->persistentStatusActive) {
         this->statusBar()->clearMessage();
         return;
@@ -8427,7 +8430,8 @@ void vtkWindowCube::activateSessionView(const QString &viewTag, const QString &p
         if (this->restoreProductOrigin(product.origin)) {
             const QString where = visivo::describeOrigin(product.origin);
             if (!where.isEmpty())
-                this->statusBar()->showMessage(u"Showing %1"_s.arg(where), 6000);
+                this->statusBar()->showMessage(
+                        u"Showing %1%2"_s.arg(where, this->m_originRestoreNote), 6000);
         }
         // Reopening a product must put back everything producing it put up, not
         // just the pane. A region analysis shows a spectrum AND its statistics —
@@ -8537,8 +8541,19 @@ void vtkWindowCube::showSessionRowContextMenu(const QString &viewTag, const QStr
         if (isMeasurement) {
             QObject::connect(menu.addAction(u"Show the Numbers Again"_s), &QAction::triggered,
                              this, [this, pid = p.productId]() {
-                                 this->showRecordedResult(
-                                         ProductRegistry::instance().product(pid));
+                                 const AnalysisProduct prod =
+                                         ProductRegistry::instance().product(pid);
+                                 if (this->restoreProductOrigin(prod.origin)) {
+                                     if (auto *win = this->active2dWin())
+                                         win->Render();
+                                     if (!this->m_originRestoreNote.isEmpty())
+                                         this->statusBar()->showMessage(
+                                                 u"Showing %1%2"_s.arg(
+                                                         visivo::describeOrigin(prod.origin),
+                                                         this->m_originRestoreNote),
+                                                 6000);
+                                 }
+                                 this->showRecordedResult(prod);
                              });
             menu.addSeparator();
         }
@@ -11655,6 +11670,11 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
         cached.unit = (u == u"-"_s) ? QString() : u;
     }
     this->m_products2d.insert(productId, cached);
+    // New pixels under a product id that survives a recompute of the same order:
+    // measurements stamped with the previous generation are no longer about this
+    // map, and say so when restored. Per product - switching between two cached
+    // moments must not mark either of them as recomputed.
+    ++this->m_momentProductGeneration[productId];
     this->m_lastComputedMomentProductId = productId;   // for the Slice/Moment toggle + export fallback
     this->registerAnalysisProduct(u"moment"_s, productLabel, this->m_momentProvenanceParams,
                                   this, productId, u"moment2d"_s);
@@ -11836,6 +11856,18 @@ void vtkWindowCube::reopenProductFromFile(const QString &productId)
     // Inspector ▸ Provenance, but double-clicking did nothing at all and the
     // popup the user had closed was unrecoverable (user report).
     if (!p.params.isEmpty()) {
+        // The overlay too: a stats-only region clears its own overlay when the
+        // analysis ends, so without this the numbers come back with nothing on
+        // screen saying which pixels they came from.
+        if (this->restoreProductOrigin(p.origin)) {
+            if (auto *win = this->active2dWin())
+                win->Render();
+            if (!this->m_originRestoreNote.isEmpty())
+                this->statusBar()->showMessage(
+                        u"Showing %1%2"_s.arg(visivo::describeOrigin(p.origin),
+                                              this->m_originRestoreNote),
+                        6000);
+        }
         this->showRecordedResult(p);
         return;
     }
@@ -11846,9 +11878,39 @@ void vtkWindowCube::reopenProductFromFile(const QString &productId)
             5000);
 }
 
+QVariantMap vtkWindowCube::stampRegionSurface(QVariantMap origin) const
+{
+    using namespace Qt::StringLiterals;
+    const bool onSlice = this->viewingSlice();
+    // m_displayedSliceIndex, not the spin box: the control is written from a
+    // pending request too, so measuring during a fetch would stamp the channel
+    // the user asked for rather than the one the statistics came from.
+    const int channel = onSlice ? (this->m_displayedSliceIndex >= 0
+                                           ? this->m_displayedSliceIndex
+                                           : this->clampRemoteSliceIndex(ui->spinSlice->value() - 1))
+                                : -1;
+    origin = visivo::withMeasuredSurface(std::move(origin), onSlice ? u"slice"_s : u"moment"_s,
+                                         channel);
+    // "moment" alone does not say WHICH moment map: the pipeline holds one at a
+    // time and a recompute replaces it, so name the product too.
+    if (!onSlice) {
+        if (!this->m_momentPipelineProductId.isEmpty())
+            origin.insert(u"momentProduct"_s, this->m_momentPipelineProductId);
+        // …and WHICH version of it: the product id survives a recompute of the
+        // same order, the pixels do not.
+        if (!this->m_momentPipelineProductId.isEmpty())
+            origin.insert(u"momentGeneration"_s,
+                          this->m_momentProductGeneration.value(this->m_momentPipelineProductId, 0));
+    }
+    return origin;
+}
+
 bool vtkWindowCube::restoreProductOrigin(const QVariantMap &origin)
 {
     using namespace Qt::StringLiterals;
+    // At entry: the probe and PV branches return early, and a note left from a
+    // previous region would be appended to their status line instead.
+    m_originRestoreNote.clear();
     const QString kind = visivo::originKind(origin);
     if (kind == u"probe"_s) {
         // A pinned spectrum: put the crosshair back where it was probed, and go
@@ -11901,6 +11963,42 @@ bool vtkWindowCube::restoreProductOrigin(const QVariantMap &origin)
         if (this->regionMode == RegionMode::None)
             return false;
     }
+    // Back to the surface the numbers came from. Redrawing a channel-10 region
+    // over channel 50 puts the overlay in the right pixels of the wrong data.
+    const QString surface = visivo::originSurface(origin);
+    const int channel = visivo::originChannel(origin);
+    if (surface == u"slice"_s && channel >= 0) {
+        const int target = this->clampRemoteSliceIndex(channel);
+        if (!this->viewingSlice()) {
+            m_originRestoreNote = u" - measured on channel %1 of the cube, not on this "
+                                  u"moment map"_s.arg(target + 1);
+        } else {
+            // Restoring supersedes any navigation in progress, even when the
+            // right channel happens to be on screen already: a scrub waiting out
+            // its debounce, or a fetch in flight for another channel, would
+            // otherwise land after us and move the data out from under the
+            // overlay we just put back.
+            this->remoteSliceDebounceTimer.stop();
+            if (this->m_displayedSliceIndex != target
+                || this->currentRequestedRemoteSliceIndex != target)
+                this->requestRemoteSlice(target);
+        }
+    } else if (surface == u"moment"_s) {
+        const QString measuredOn = origin.value(u"momentProduct"_s).toString();
+        if (this->viewingSlice())
+            m_originRestoreNote = u" - measured on a moment map, not on this slice"_s;
+        else if (!measuredOn.isEmpty() && measuredOn != this->m_momentPipelineProductId)
+            m_originRestoreNote = u" - measured on a different moment map than the one shown"_s;
+        else if (!measuredOn.isEmpty() && !this->m_products2d.contains(measuredOn))
+            m_originRestoreNote = u" - the moment map it was measured on is no longer loaded"_s;
+        else if (origin.contains(u"momentGeneration"_s) && !measuredOn.isEmpty()
+                 && origin.value(u"momentGeneration"_s).toInt()
+                         != this->m_momentProductGeneration.value(measuredOn, 0))
+            // Same product id, different image: the id is stable across a
+            // recompute of the same order, so it cannot tell the two apart.
+            m_originRestoreNote =
+                    u" - the moment map has been recomputed since this was measured"_s;
+    }
     this->regionDragging = false;
     this->regionValid = true;
     this->refreshRegionOverlay();
@@ -11918,10 +12016,12 @@ void vtkWindowCube::showRecordedResult(const AnalysisProduct &product)
     // three identical result windows.
     const QString slot = u"recorded-result:"_s + product.productId;
     if (auto *existing = this->findChild<ToolResultDialog *>(slot)) {
-        existing->show();
-        existing->raise();
-        existing->activateWindow();
-        return;
+        // Replace rather than raise: a second run of the same tool overwrites the
+        // registry entry under this id, so an open window can be showing the
+        // previous numbers next to the newly restored overlay.
+        existing->setObjectName(QString());
+        existing->close();
+        existing->deleteLater();
     }
     auto *dlg = new ToolResultDialog(this);
     dlg->setObjectName(slot);

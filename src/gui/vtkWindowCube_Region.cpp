@@ -960,10 +960,10 @@ void vtkWindowCube::analyzeCurrentRegion()
                 // …and the region it was extracted from, so opening the row
                 // redraws that shape on the slice instead of leaving the user to
                 // work out which of several regions produced this curve.
-                const QVariantMap origin = visivo::encodeRegionOrigin(
+                const QVariantMap origin = this->stampRegionSurface(visivo::encodeRegionOrigin(
                         static_cast<int>(this->regionMode), this->regionAnchorVoxel,
                         this->regionCurrentVoxel, this->regionPolygonVertices,
-                        this->regionAnnulusInnerRadius);
+                        this->regionAnnulusInnerRadius));
                 params.insert(u"Measured on"_s, visivo::describeOrigin(origin));
                 this->registerAnalysisProduct(u"spectrum"_s, label, params, this, pid,
                                               u"spectrum1d"_s, /*revealProvenance=*/true,
@@ -1022,15 +1022,49 @@ void vtkWindowCube::analyzeCurrentRegion()
                     u"Region Analysis: no valid pixels in the selected region "
                     u"(all blanked / NaN)."_s,
                     5000);
-        else
+        else {
+            // Valid statistics but no cube spectrum to hang them on (a region on a
+            // moment map, or outside the loaded block). They used to exist only in
+            // a status line that scrolled away six seconds later: register them as
+            // a product so the row can be reopened and the region redrawn.
+            const int rn = ++this->m_regionStatsCount;
+            const QString pid = this->scopedProductId(QStringLiteral("regionstats%1").arg(rn));
+            const QVariantMap origin = this->stampRegionSurface(visivo::encodeRegionOrigin(
+                    static_cast<int>(this->regionMode), this->regionAnchorVoxel,
+                    this->regionCurrentVoxel, this->regionPolygonVertices,
+                    this->regionAnnulusInnerRadius));
+            QVariantMap params;
+            params.insert(u"Region"_s, shapeLabel);
+            params.insert(u"2D stats from"_s,
+                          this->viewingSlice() ? u"current 2D slice"_s : u"current moment map"_s);
+            params.insert(u"Valid pixels"_s,
+                          u"%1 / %2"_s.arg(stats.validCount).arg(stats.totalCount));
+            params.insert(u"Blanked / NaN"_s, QString::number(stats.blankedCount));
+            params.insert(u"Min"_s,     fmt(stats.minValue));
+            params.insert(u"Max"_s,     fmt(stats.maxValue));
+            params.insert(u"Mean"_s,    fmt(stats.mean));
+            params.insert(u"Median"_s,  fmt(stats.median));
+            params.insert(u"Std Dev"_s, fmt(stats.stddev));
+            params.insert(u"Measured on"_s, visivo::describeOrigin(origin));
+            params.insert(u"Status"_s, u"No cube spectrum for this region."_s);
+            // No result WINDOW: passing `this` would make the Session Data row
+            // raise the cube window instead of replaying the recorded numbers,
+            // and would drop "Show the Numbers Again" from its context menu.
+            this->registerAnalysisProduct(u"region"_s,
+                                          u"%1 region stats"_s.arg(shapeLabel), params,
+                                          /*window=*/nullptr, pid, QString(),
+                                          /*revealProvenance=*/true, origin);
             this->statusBar()->showMessage(
-                    u"%1 region: mean %2 · median %3 · %4/%5 px (no cube spectrum "
-                    u"to attach)."_s.arg(shapeLabel, fmt(stats.mean), fmt(stats.median))
+                    u"%1 region: mean %2 · median %3 · %4/%5 px (no cube spectrum; "
+                    u"stats saved in Session Data)."_s
+                            .arg(shapeLabel, fmt(stats.mean), fmt(stats.median))
                             .arg(stats.validCount)
                             .arg(stats.totalCount),
                     6000);
-        // No result to inspect → don't leave an overlay a previous region's still-open plot
-        // would otherwise keep visible; clear it now (a new analysis re-draws its own).
+        }
+        // No plot owns the overlay → don't leave one a previous region's still-open plot
+        // would otherwise keep visible; clear it now (a new analysis re-draws its own,
+        // and reopening the product redraws this one).
         this->clearRegion();
         if (this->active2dWin())
             this->active2dWin()->Render();

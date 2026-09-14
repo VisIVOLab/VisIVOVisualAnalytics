@@ -21,5 +21,6 @@ private slots:
     void voxelFrame_roundTripsAndRejectsAMalformedStamp();
     void remap_movesAGeometryOntoAnotherLodGrid();
     void remap_leavesTheGeometryAloneWithoutAStamp();
+    void measuredSurface_roundTripsAndReadsInTheDescription();
     void describeOrigin_readsAsASentence();
 };

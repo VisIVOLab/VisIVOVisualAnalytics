@@ -158,6 +158,28 @@ void TestProductOrigin::remap_leavesTheGeometryAloneWithoutAStamp()
     QCOMPARE(b[0], 7);
 }
 
+void TestProductOrigin::measuredSurface_roundTripsAndReadsInTheDescription()
+{
+    QVariantMap slice = visivo::encodeRegionOrigin(kBox, { 1, 2 }, { 3, 4 }, {}, 0.0);
+    slice = visivo::withMeasuredSurface(slice, QStringLiteral("slice"), 9);
+    QCOMPARE(visivo::originSurface(slice), QStringLiteral("slice"));
+    QCOMPARE(visivo::originChannel(slice), 9);
+    // Channels read 1-based to the user, as everywhere else in the app.
+    QVERIFY(visivo::describeOrigin(slice).contains(QStringLiteral("channel 10")));
+
+    QVariantMap moment = visivo::encodeRegionOrigin(kCircle, { 1, 2 }, { 3, 4 }, {}, 0.0);
+    moment = visivo::withMeasuredSurface(moment, QStringLiteral("moment"), -1);
+    QCOMPARE(visivo::originChannel(moment), -1);
+    QVERIFY(visivo::describeOrigin(moment).contains(QStringLiteral("moment map")));
+
+    // A product recorded before the stamp says nothing rather than guessing a
+    // channel that would send the viewer somewhere the numbers never came from.
+    const QVariantMap old = visivo::encodeRegionOrigin(kBox, { 1, 2 }, { 3, 4 }, {}, 0.0);
+    QCOMPARE(visivo::originChannel(old), -1);
+    QVERIFY(visivo::originSurface(old).isEmpty());
+    QVERIFY(!visivo::describeOrigin(old).contains(QStringLiteral("channel")));
+}
+
 void TestProductOrigin::describeOrigin_readsAsASentence()
 {
     QCOMPARE(visivo::describeOrigin(visivo::encodeProbeOrigin({ 98, 140, 53 })),
