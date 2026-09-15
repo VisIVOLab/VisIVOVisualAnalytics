@@ -2689,7 +2689,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
     // ANALYSIS: Extract PV Diagram goes at the tail of the group (after Stack
     // Spectral Cubes, which is currently the last action defined in .ui).
-    this->actionExtractPvDiagram = ui->menuTools->addAction(u"Extract PV Diagram"_s);
+    this->actionExtractPvDiagram = ui->menuTools->addAction(u"Extract PV Diagram…"_s);
     this->actionExtractPvDiagram->setCheckable(true);
     QObject::connect(this->actionExtractPvDiagram, &QAction::toggled, this,
                      &vtkWindowCube::setPvModeActive);
@@ -6065,7 +6065,7 @@ void vtkWindowCube::updateSlice()
 
 void vtkWindowCube::updateMomentProvenancePanel()
 {
-    // §3.0b (d): the moment provenance now lives in Inspector › Provenance (fed via
+    // §3.0b (d): the moment provenance now lives in Inspector › Parameters (fed via
     // the registered product's params). The status-bar label is retired — it sat in
     // the middle of the rail next to the duplicate "Full resolution" text. Keep the
     // widget (momentProvenanceState is still read elsewhere) but never show it.

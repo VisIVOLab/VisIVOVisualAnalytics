@@ -57,9 +57,11 @@ public:
     /// caller owns the widget and toggles its visibility as the active pane changes.
     void addAnalysisSection(QWidget *section);
 
-    /// Parameters tab, top half: the ACTIVE tool's live settings. The caller owns
-    /// @p settings (it is re-homed here, never deleted) and calls this when the
-    /// tool opens and clearToolSettings() when it closes. The bottom half keeps
+    /// Parameters tab, top half: the ACTIVE tool's live settings. @p settings is
+    /// re-homed under this panel - mounted while the tool is on, parked hidden
+    /// (still owned here) when it is not - so it outlives any number of
+    /// mount/unmount cycles and dies with the panel. Call it when the tool opens
+    /// and clearToolSettings() when it closes. The bottom half keeps
     /// showing the selected product's recorded parameters, so one tab answers
     /// both "what am I about to do" and "what was this made with".
     void setToolSettings(const QString &toolName, QWidget *settings);
@@ -117,6 +119,7 @@ private:
     QString m_activeToolName;
     QLabel *m_toolCaption{ nullptr };
     QWidget *m_toolSettingsHost{ nullptr };
+    QWidget *m_toolSettingsParking{ nullptr };   ///< owns the blocks while unmounted
     QLabel *m_provCaption{ nullptr };
     QLabel *m_provTitle = nullptr;
     QLabel *m_provBody = nullptr;

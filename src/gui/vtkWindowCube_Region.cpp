@@ -955,7 +955,7 @@ void vtkWindowCube::analyzeCurrentRegion()
                 this->m_products1d.insert(pid, sp);
                 // Fold the 2D region statistics into the product's Provenance (they used to live
                 // in a separate floating ToolResultDialog). registerAnalysisProduct reveals the
-                // Inspector's Provenance tab, so the stats surface there the moment the region is
+                // Inspector's Parameters tab, so the stats surface there the moment the region is
                 // drawn — no floating window. The spatial stats are the region's mean/min/max/…
                 // on the current slice or moment map; the spectrum (the pane) is the mean per
                 // channel across the full cube.
@@ -1023,10 +1023,10 @@ void vtkWindowCube::analyzeCurrentRegion()
         this->statusBar()->showMessage(
                 (regionSpectrumPane >= 0
                          ? u"%1 region: mean %2 · median %3 · %4/%5 px - spectrum in pane %6, "
-                           u"full stats in Inspector › Provenance."_s
+                           u"full stats in Inspector › Parameters."_s
                          : u"%1 region: mean %2 · median %3 · %4/%5 px - no free pane for the "
                            u"spectrum (pick it from a pane's ▾ menu); full stats in "
-                           u"Inspector › Provenance.%6"_s)
+                           u"Inspector › Parameters.%6"_s)
                         .arg(shapeLabel, fmt(stats.mean), fmt(stats.median))
                         .arg(stats.validCount)
                         .arg(stats.totalCount)

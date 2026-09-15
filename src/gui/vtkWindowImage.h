@@ -385,6 +385,14 @@ private:
     /// length scale, shown while the vectors are on.
     QWidget *buildPolVectorSettingsBlock();
     QPointer<QWidget> m_polVecSettingsBlock;
+    /// Tools whose settings are currently claimable, most recently switched on
+    /// LAST. Turning one off must hand the panel back to whichever is still on,
+    /// not blank it: contours on, vectors on, vectors off used to leave the
+    /// contours running with no way to change their levels.
+    QList<QPair<QString, QPointer<QWidget>>> m_activeToolSettings;
+    void claimToolSettings(const QString &toolName, QWidget *settings);
+    void releaseToolSettings(const QString &toolName);
+    void refreshToolSettingsPanel(bool reveal);
     QPointer<QCheckBox> m_contourShowCheck;
     QPointer<QLineEdit> m_contourLowerEdit;
     QPointer<QLineEdit> m_contourUpperEdit;

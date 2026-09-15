@@ -1556,17 +1556,22 @@ live in this tab while it is on) or it **makes a new thing** (configure, run,
 a row in Session Data). The app already has the convention that says which is
 which, and it is the one every desktop uses: the **ellipsis**. `Compute Faraday
 RM…` asks first; `Show Contours` acts. Four labels were lying about that and were
-corrected - `Load Catalogue Overlay…`, `Save Annotations…`, `Load Annotations…`
-gained the ellipsis they had earned, `Pixel Histogram`, `Image Quality /
-Artifacts` and `Overlay Slice on an Open Image` lost one they had not (they open
+corrected - `Load Catalogue Overlay…`, `Save Annotations…`, `Load Annotations…` and
+`Extract PV Diagram…` (it asks for the path width before you can draw) gained the
+ellipsis they had earned, `Pixel Histogram`, `Image Quality / Artifacts` and
+`Overlay Slice on an Open Image` lost one they had not (they open
 a panel or run straight away; they ask nothing). Whichever route a product came
 by, its parameters end up in the same tab afterwards.
 
 In the tab so far: **contours** and the **polarisation-vector overlay** (grid
 step, SNR threshold, length scale - which were also stranded on the hidden Tools
-page). Only one tool's settings are mounted at a time, and a tool clears only its
-own section (`activeToolSettings()`), or switching contours off would wipe the
-vectors' settings mounted after them. **Region needs no section**: its only
+page). One tool's settings are mounted at a time and the window keeps the list of
+tools that are on, most recent last: turning one off hands the section back to
+whichever is still on rather than blanking it (contours on, vectors on, vectors
+off used to leave the contours running with no way to change their levels).
+Unmounted blocks are **parked** under the panel, not orphaned - `setParent(nullptr)`
+does not delete a widget, it only takes it out of every ownership tree, so
+nothing would ever have freed them. **Region needs no section**: its only
 "parameter" is the annulus inner radius, and that is a per-use prompt with a live
 preview during the drag, not standing state - its real parameters are the drawn
 geometry, which is provenance. Tools that already own a persistent dialog — Moment Map Settings,

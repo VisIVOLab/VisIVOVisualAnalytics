@@ -135,6 +135,51 @@ double vtkWindowImage::beamAreaPixels() const
     return M_PI * bmaj_px * bmin_px / (4.0 * std::log(2.0));
 }
 
+namespace {
+
+/// Do these images occupy the same pixel grid? Every per-pixel Stokes
+/// computation below walks one image's extent and reads the others at the SAME
+/// indices, which is only meaningful when the three grids coincide. It used to
+/// be guaranteed because every layer was read from disk at full resolution;
+/// a layer now arrives from the backend decimated to its own size, so two
+/// perfectly co-registered companions can land on different grids and the loop
+/// would silently combine different places on the sky.
+bool sameSampledGrid(vtkImageData *a, vtkImageData *b)
+{
+    if (!a || !b)
+        return false;
+    int ea[6], eb[6];
+    double oa[3], ob[3], sa[3], sb[3];
+    a->GetExtent(ea);
+    b->GetExtent(eb);
+    a->GetOrigin(oa);
+    b->GetOrigin(ob);
+    a->GetSpacing(sa);
+    b->GetSpacing(sb);
+    for (int i = 0; i < 4; ++i)
+        if (ea[i] != eb[i])
+            return false;
+    for (int i = 0; i < 2; ++i) {
+        if (std::abs(oa[i] - ob[i]) > 1e-6 || std::abs(sa[i] - sb[i]) > 1e-6)
+            return false;
+    }
+    return true;
+}
+
+/// Message for the refusal above: it is a real situation with a real remedy,
+/// not a failure to compute.
+QString differentGridsMessage(const QString &what)
+{
+    return QStringLiteral(
+                   "%1 needs its input layers on the same pixel grid, and these are not: "
+                   "they were loaded at different resolutions (a large layer is fetched "
+                   "decimated). Reload them at the same resolution, or crop to a common "
+                   "region, before combining them.")
+            .arg(what);
+}
+
+}   // namespace
+
 QString vtkWindowImage::stokesRoleLabel(StokesRole r) const
 {
     switch (r) {
@@ -360,6 +405,10 @@ void vtkWindowImage::computeStokesP()
     auto *qData = this->layers->getImageData(qIdx);
     auto *uData = this->layers->getImageData(uIdx);
     if (!qData || !uData) return;
+    if (!sameSampledGrid(qData, uData)) {
+        QMessageBox::warning(this, u"Stokes"_s, differentGridsMessage(u"This computation"_s));
+        return;
+    }
 
     int ext[6];
     qData->GetExtent(ext);
@@ -411,6 +460,10 @@ void vtkWindowImage::computeStokesPA()
     auto *qData = this->layers->getImageData(qIdx);
     auto *uData = this->layers->getImageData(uIdx);
     if (!qData || !uData) return;
+    if (!sameSampledGrid(qData, uData)) {
+        QMessageBox::warning(this, u"Stokes"_s, differentGridsMessage(u"This computation"_s));
+        return;
+    }
 
     int ext[6];
     qData->GetExtent(ext);
@@ -455,6 +508,11 @@ void vtkWindowImage::computeStokesFractional()
     auto *qData = this->layers->getImageData(qIdx);
     auto *uData = this->layers->getImageData(uIdx);
     if (!iData || !qData || !uData) return;
+    if (!sameSampledGrid(iData, qData) || !sameSampledGrid(iData, uData)) {
+        QMessageBox::warning(this, u"Fractional Polarization"_s,
+                             differentGridsMessage(u"Fractional polarization"_s));
+        return;
+    }
 
     int ext[6];
     iData->GetExtent(ext);
@@ -511,6 +569,10 @@ void vtkWindowImage::computeStokesPdebiased()
     auto *qData = this->layers->getImageData(qIdx);
     auto *uData = this->layers->getImageData(uIdx);
     if (!qData || !uData) return;
+    if (!sameSampledGrid(qData, uData)) {
+        QMessageBox::warning(this, u"Stokes"_s, differentGridsMessage(u"This computation"_s));
+        return;
+    }
 
     const auto madSigmaOf = [](vtkImageData *d) -> double {
         int ext[6]; d->GetExtent(ext);
@@ -641,8 +703,9 @@ void vtkWindowImage::computeSpectralIndex()
     int extA[6], extB[6];
     dataA->GetExtent(extA);
     dataB->GetExtent(extB);
-    if (extA[0] != extB[0] || extA[1] != extB[1]
-        || extA[2] != extB[2] || extA[3] != extB[3]) {
+    // Extent alone is not the grid: two layers can share an extent and still
+    // sample different sky, if one was fetched decimated.
+    if (!sameSampledGrid(dataA, dataB)) {
         QMessageBox::warning(this, u"Spectral Index"_s,
                 u"Layers must share the same pixel grid. Use the cube viewer's "
                 u"moment-map export to produce co-registered images."_s);
@@ -949,6 +1012,25 @@ void vtkWindowImage::rebuildPolarizationVectors()
         m_polVecActor->VisibilityOff();
         return;
     }
+    if (!sameSampledGrid(qData, uData)) {
+        m_polVecActor->VisibilityOff();
+        statusBar()->showMessage(
+                u"Polarisation vectors need Q and U on the same pixel grid."_s, 5000);
+        return;
+    }
+    // The vectors are built in Q's VOXEL indices; Q may be displayed on a
+    // decimated grid, so the actor carries the same voxel -> world mapping the
+    // region overlay uses, or the vectors would be drawn at a fraction of the
+    // position and length of the pixels they describe.
+    {
+        double qo[3], qs[3];
+        int qe[6];
+        qData->GetOrigin(qo);
+        qData->GetSpacing(qs);
+        qData->GetExtent(qe);
+        m_polVecActor->SetScale(qs[0], qs[1], 1.0);
+        m_polVecActor->SetPosition(qo[0] - qe[0] * qs[0], qo[1] - qe[2] * qs[1], 0.0);
+    }
 
     int ext[6];
     qData->GetExtent(ext);
@@ -1035,17 +1117,14 @@ void vtkWindowImage::setPolVectorsVisible(bool vis)
     }
     m_polVecActor->SetVisibility(vis);
     // Grid step / SNR / length are this tool's parameters: they appear with it.
-    if (m_workspaceChrome) {
-        if (auto *panel = m_workspaceChrome->inspectorPanel()) {
-            if (vis && m_polVecSettingsBlock) {
-                panel->setToolSettings(u"Polarisation vectors"_s, m_polVecSettingsBlock);
-                // …and SHOW it: settings mounted in a tab nobody is looking at
-                // are the same as no settings.
-                m_workspaceChrome->revealParametersTab();
-            } else if (panel->activeToolSettings() == u"Polarisation vectors"_s) {
-                panel->clearToolSettings();
-            }
-        }
+    // The panel follows the tools that are on: this one claims it while it is
+    // shown (and the tab is revealed, or the settings would appear where nobody
+    // is looking), and hands it back to whichever tool is still on when it goes.
+    if (vis && m_polVecSettingsBlock)
+        claimToolSettings(u"Polarisation vectors"_s, m_polVecSettingsBlock);
+    else {
+        releaseToolSettings(u"Polarisation vectors"_s);
+        refreshToolSettingsPanel(/*reveal=*/false);
     }
     if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
 }

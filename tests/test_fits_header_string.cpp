@@ -40,13 +40,30 @@ void TestFitsHeaderString::everyCardIsPaddedToEightyColumns()
     QCOMPARE(header.substr(3 * visivo::kFitsCardLength, 6), std::string("CTYPE1"));
 }
 
-void TestFitsHeaderString::anOverlongCardIsTruncatedRatherThanShiftingTheRest()
+void TestFitsHeaderString::aLongValueKeepsItsContinuationCards()
 {
-    std::string overlong = "COMMENT ";
-    overlong.append(200, 'x');
-    const std::string header = visivo::buildFitsHeaderString({ overlong, "NAXIS   =  2" });
-    QCOMPARE(header.size(), 3 * visivo::kFitsCardLength);
-    QCOMPARE(header.substr(visivo::kFitsCardLength, 5), std::string("NAXIS"));
+    // astropy returns the WHOLE physical sequence for a long string value - the
+    // card and its CONTINUE images - as one entry. Truncating it to 80 columns
+    // threw the continuations away and left a value ending in '&' that points at
+    // nothing; the chunks must all survive, still 80 columns each.
+    auto card80 = [](std::string text) {
+        text.resize(visivo::kFitsCardLength, ' ');
+        return text;
+    };
+    const std::string first = card80("LONGKEY = 'first half of the value, continued&'");
+    const std::string cont = card80("CONTINUE  'the second half'");
+    const std::string header = visivo::buildFitsHeaderString({ first + cont, "NAXIS   =  2" });
+    QCOMPARE(header.size(), 4 * visivo::kFitsCardLength);
+    QCOMPARE(header.substr(0, 7), std::string("LONGKEY"));
+    QCOMPARE(header.substr(visivo::kFitsCardLength, 8), std::string("CONTINUE"));
+    // …and the card after it still starts on its own 80-column boundary.
+    QCOMPARE(header.substr(2 * visivo::kFitsCardLength, 5), std::string("NAXIS"));
+
+    // A ragged over-long entry is padded chunk by chunk, never left short.
+    std::string ragged = "COMMENT ";
+    ragged.append(100, 'x');
+    const std::string h2 = visivo::buildFitsHeaderString({ ragged });
+    QCOMPARE(h2.size(), 3 * visivo::kFitsCardLength);   // 2 chunks + END
 }
 
 void TestFitsHeaderString::theBufferAlwaysEndsWithAPaddedEnd()

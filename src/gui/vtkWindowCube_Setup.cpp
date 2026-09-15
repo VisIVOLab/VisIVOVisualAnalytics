@@ -688,8 +688,9 @@ void vtkWindowCube::setupSidebar()
     this->actionShowControlsSidebar->setCheckable(true);
     this->actionShowControlsSidebar->setChecked(true);
     this->actionShowControlsSidebar->setToolTip(
-            u"Show the right-hand panel: Properties, Analysis tools, Provenance and "
-            u"the Copilot."_s);
+            u"Show the right-hand panel: Properties, Analysis tools, Parameters "
+            u"(the active tool's settings and a product's provenance) and the "
+            u"Copilot."_s);
 }
 
 void vtkWindowCube::setupWorkspaceDocks()

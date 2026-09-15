@@ -88,8 +88,13 @@ ImageLayerLoadResult loadImageLayer(const ImageLayerLoadRequest &request)
     pix[1] = 100.;
     astroNewLayer.xy2sky(pix, posNewLayer, WCS_J2000);
     astroMaster.sky2xy(posNewLayer, pix, WCS_J2000);
-    const double m = std::abs((pix[1] - result.origin[1]) / (pix[0] - result.origin[0]));
-    result.rotationDegrees = 90. - std::atan(m) * 180. / vtkMath::Pi();
+    // Angle of the layer's +Y axis measured in the master's frame, SIGNED.
+    // The old form, 90 - atan(|dy/dx|), is the same number in the first quadrant
+    // (90 - atan(b/a) == atan(a/b)) but throws the sign away: a layer rotated
+    // -30 deg was drawn at +30, and 180 deg came out as 0.
+    const double dx = pix[0] - result.origin[0];
+    const double dy = pix[1] - result.origin[1];
+    result.rotationDegrees = std::atan2(dx, dy) * 180. / vtkMath::Pi();
     qDebug().noquote() << QStringLiteral("[perf][layer] payload preparation: %1 ms").arg(
             payloadTimer.elapsed());
 

@@ -11,7 +11,7 @@ class TestFitsHeaderString : public QObject
 
 private slots:
     void everyCardIsPaddedToEightyColumns();
-    void anOverlongCardIsTruncatedRatherThanShiftingTheRest();
+    void aLongValueKeepsItsContinuationCards();
     void theBufferAlwaysEndsWithAPaddedEnd();
     void noCardsStillYieldsAParseableHeader();
 };

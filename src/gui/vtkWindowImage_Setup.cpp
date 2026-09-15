@@ -690,6 +690,43 @@ void vtkWindowImage::setupInspector()
     this->parkOrphanDirectChildren();
 }
 
+void vtkWindowImage::claimToolSettings(const QString &toolName, QWidget *settings)
+{
+    if (!settings)
+        return;
+    releaseToolSettings(toolName);              // no duplicate entries
+    m_activeToolSettings.append({ toolName, QPointer<QWidget>(settings) });
+    refreshToolSettingsPanel(/*reveal=*/true);
+}
+
+void vtkWindowImage::releaseToolSettings(const QString &toolName)
+{
+    for (int i = m_activeToolSettings.size() - 1; i >= 0; --i) {
+        if (m_activeToolSettings.at(i).first == toolName)
+            m_activeToolSettings.removeAt(i);
+    }
+}
+
+void vtkWindowImage::refreshToolSettingsPanel(bool reveal)
+{
+    if (!m_workspaceChrome)
+        return;
+    auto *panel = m_workspaceChrome->inspectorPanel();
+    if (!panel)
+        return;
+    // The most recent tool still on wins; with none on the section goes away.
+    while (!m_activeToolSettings.isEmpty() && !m_activeToolSettings.last().second)
+        m_activeToolSettings.removeLast();
+    if (m_activeToolSettings.isEmpty()) {
+        panel->clearToolSettings();
+        return;
+    }
+    const auto &entry = m_activeToolSettings.last();
+    panel->setToolSettings(entry.first, entry.second);
+    if (reveal)
+        m_workspaceChrome->revealParametersTab();
+}
+
 QWidget *vtkWindowImage::buildPolVectorSettingsBlock()
 {
     auto *page = new QWidget;

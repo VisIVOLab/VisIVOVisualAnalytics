@@ -76,6 +76,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QUrl>
 #include <QDoubleValidator>
 #include <QFormLayout>
 #include <QSpinBox>
@@ -1809,8 +1810,16 @@ static ImageLayerLoadResult loadRemoteImageLayer(const QString &backendUrl,
     };
     AstroUtils astroLayer(toCards(layerHeader.cards));
     AstroUtils astroMaster(toCards(masterHeader.cards));
-    if (astroMaster.getSecPix() <= 0.) {
+    if (astroMaster.getSecPix() <= 0. || !std::isfinite(astroMaster.getSecPix())) {
         result.errorMessage = "The master image has no usable WCS to align this layer to.";
+        return result;
+    }
+    // …and the LAYER's own WCS. Without it xy2sky() returns leaving `pos`
+    // untouched, so the alignment below would read uninitialised sky coordinates
+    // and hand back a layer with spacing 0 at an arbitrary place - marked valid.
+    if (astroLayer.getSecPix() <= 0. || !std::isfinite(astroLayer.getSecPix())) {
+        result.errorMessage = "This layer has no usable WCS, so it cannot be aligned to the "
+                              "image: its FITS header carries no celestial solution.";
         return result;
     }
 
@@ -1840,14 +1849,26 @@ static ImageLayerLoadResult loadRemoteImageLayer(const QString &backendUrl,
     astroMaster.sky2xy(pos, pix, WCS_J2000);
     result.origin = { pix[0], pix[1], 0. };
 
-    // Rotation: the same slope measurement as the local path, over a span of
-    // 100 DISPLAYED pixels so a decimated layer measures the same arc.
+    // Rotation: the same measurement as the local path - the angle of the
+    // layer's +Y axis in the master's frame, signed - over a span of 100
+    // DISPLAYED pixels so a decimated layer measures the same arc.
     pix[0] = decim.originX;
     pix[1] = decim.originY + 100. * decim.scaleY;
     astroLayer.xy2sky(pix, pos, WCS_J2000);
     astroMaster.sky2xy(pos, pix, WCS_J2000);
-    const double m = std::abs((pix[1] - result.origin[1]) / (pix[0] - result.origin[0]));
-    result.rotationDegrees = 90. - std::atan(m) * 180. / vtkMath::Pi();
+    const double dx = pix[0] - result.origin[0];
+    const double dy = pix[1] - result.origin[1];
+    result.rotationDegrees = std::atan2(dx, dy) * 180. / vtkMath::Pi();
+
+    if (!std::isfinite(result.spacing[0]) || !std::isfinite(result.spacing[1])
+        || result.spacing[0] <= 0. || result.spacing[1] <= 0.
+        || !std::isfinite(result.origin[0]) || !std::isfinite(result.origin[1])
+        || !std::isfinite(result.rotationDegrees)) {
+        result.imageData = nullptr;
+        result.errorMessage = "The alignment of this layer to the image produced no usable "
+                              "geometry (incompatible WCS?).";
+        return result;
+    }
 
     result.valid = true;
     qDebug().noquote()
@@ -1863,13 +1884,24 @@ static ImageLayerLoadResult loadRemoteImageLayer(const QString &backendUrl,
 void vtkWindowImage::addLayerImage(const std::string &filepath)
 {
     const QString path = QString::fromStdString(filepath);
-    // Either file may live on the backend rather than here: the layer's pixels,
-    // or the master whose WCS the layer is aligned to. When that is the case the
-    // load goes through the backend instead of the local reader - same watcher,
-    // same result, so every caller (Add New Layer, the VLKB cutouts, the Stokes
+    // WHOSE filesystem is this path on? Every dataset here is opened through the
+    // backend, so a path is a BACKEND path. Asking QFile::exists() answers a
+    // different question - "is there a file here with that name" - and on a
+    // remote backend a client-side file of the same name would be loaded
+    // instead, silently: the wrong pixels, and the wrong WCS with them.
+    //
+    // The filesystem is shared only when the backend is on this machine, which
+    // the URL says. Anything else goes through the backend - same watcher, same
+    // result, so every caller (Add New Layer, the VLKB cutouts, the Stokes
     // companions) is unaffected.
-    const bool remotePath = !QFile::exists(path) || !QFile::exists(this->filepath);
-    if (remotePath && !this->remoteBackendUrl.isEmpty()) {
+    const QString backendHost = QUrl(this->remoteBackendUrl).host();
+    const bool backendIsLocal = backendHost.isEmpty() || backendHost == u"localhost"_s
+            || backendHost == u"127.0.0.1"_s || backendHost == u"::1"_s
+            || backendHost == u"0.0.0.0"_s;
+    const bool haveBothLocally = QFile::exists(path) && QFile::exists(this->filepath);
+    const bool useBackend = !this->remoteBackendUrl.isEmpty()
+            && !(backendIsLocal && haveBothLocally);
+    if (useBackend) {
         this->setLayerImportEnabled(false);
         this->showPersistentStatusMessage(
                 u"Loading %1 from the backend..."_s.arg(QFileInfo(path).fileName()));

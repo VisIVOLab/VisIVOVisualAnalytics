@@ -140,6 +140,13 @@ InspectorPanel::InspectorPanel(QWidget *parent)
     toolHostLayout->setContentsMargins(0, 0, 0, 0);
     toolHostLayout->setSpacing(4);
     m_toolSettingsHost->hide();
+    // Where a settings block waits while its tool is off. Unmounting used to
+    // setParent(nullptr), which does not delete the widget but takes it out of
+    // every ownership tree: nothing freed it and nothing would have. Parked here
+    // it is owned by this panel, hidden, and ready to be mounted again.
+    m_toolSettingsParking = new QWidget(m_provPage);
+    m_toolSettingsParking->setObjectName(u"toolSettingsParking"_s);
+    m_toolSettingsParking->hide();
     m_provCaption = new QLabel(u"PROVENANCE"_s, m_provPage);
     m_provCaption->setStyleSheet(m_toolCaption->styleSheet());
 
@@ -437,8 +444,10 @@ void InspectorPanel::setToolSettings(const QString &toolName, QWidget *settings)
     // Re-home whatever was there: the widget belongs to the window, which keeps
     // it alive and reuses it, so it is removed from this layout, never deleted.
     while (QLayoutItem *item = layout->takeAt(0)) {
-        if (QWidget *w = item->widget())
-            w->setParent(nullptr);
+        if (QWidget *w = item->widget()) {
+            w->setParent(m_toolSettingsParking);
+            w->hide();
+        }
         delete item;
     }
     if (!settings) {
@@ -460,8 +469,10 @@ void InspectorPanel::clearToolSettings()
         return;
     if (auto *layout = qobject_cast<QVBoxLayout *>(m_toolSettingsHost->layout())) {
         while (QLayoutItem *item = layout->takeAt(0)) {
-            if (QWidget *w = item->widget())
-                w->setParent(nullptr);
+            if (QWidget *w = item->widget()) {
+                w->setParent(m_toolSettingsParking);
+                w->hide();
+            }
             delete item;
         }
     }

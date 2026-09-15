@@ -17,18 +17,23 @@ namespace visivo {
 /// The fixed FITS card width.
 inline constexpr std::size_t kFitsCardLength = 80;
 
-/// One buffer of 80-column cards ending with a padded END card. Cards are
-/// space-padded, and anything longer than 80 characters is truncated - a card
-/// image is 80 columns by definition, and letting a long one through would
-/// misalign everything after it.
+/// One buffer of 80-column cards ending with a padded END card. Each entry is
+/// space-padded to 80 columns; an entry LONGER than 80 is split into 80-column
+/// chunks rather than truncated, because astropy's ``str(card)`` returns the
+/// whole physical sequence for a long string value - the card plus its CONTINUE
+/// images - in one entry. Truncating dropped the continuations and left a value
+/// ending in '&' pointing at nothing.
 inline std::string buildFitsHeaderString(const std::vector<std::string> &cards)
 {
     std::string header;
     header.reserve((cards.size() + 1) * kFitsCardLength);
     for (const std::string &card : cards) {
-        std::string padded = card.substr(0, kFitsCardLength);
-        padded.resize(kFitsCardLength, ' ');
-        header += padded;
+        for (std::size_t offset = 0; offset == 0 || offset < card.size();
+             offset += kFitsCardLength) {
+            std::string chunk = card.substr(offset, kFitsCardLength);
+            chunk.resize(kFitsCardLength, ' ');
+            header += chunk;
+        }
     }
     std::string end = "END";
     end.resize(kFitsCardLength, ' ');

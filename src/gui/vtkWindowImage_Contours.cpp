@@ -234,17 +234,14 @@ void vtkWindowImage::setContoursVisible(bool vis)
         m_contourActor->SetVisibility(vis);
     }
     // The tool's parameters appear with the tool and leave with it.
-    if (m_workspaceChrome) {
-        if (auto *panel = m_workspaceChrome->inspectorPanel()) {
-            if (vis && m_contourSettingsBlock) {
-                panel->setToolSettings(u"Contours"_s, m_contourSettingsBlock);
-                // …and SHOW it: settings mounted in a tab nobody is looking at
-                // are the same as no settings.
-                m_workspaceChrome->revealParametersTab();
-            } else if (panel->activeToolSettings() == u"Contours"_s) {
-                panel->clearToolSettings();
-            }
-        }
+    // The panel follows the tools that are on: this one claims it while it is
+    // shown (and the tab is revealed, or the settings would appear where nobody
+    // is looking), and hands it back to whichever tool is still on when it goes.
+    if (vis && m_contourSettingsBlock)
+        claimToolSettings(u"Contours"_s, m_contourSettingsBlock);
+    else {
+        releaseToolSettings(u"Contours"_s);
+        refreshToolSettingsPanel(/*reveal=*/false);
     }
     if (ui->vtk->renderWindow())
         ui->vtk->renderWindow()->Render();
