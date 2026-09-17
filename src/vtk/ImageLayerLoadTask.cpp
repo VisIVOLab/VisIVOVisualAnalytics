@@ -94,7 +94,12 @@ ImageLayerLoadResult loadImageLayer(const ImageLayerLoadRequest &request)
     // -30 deg was drawn at +30, and 180 deg came out as 0.
     const double dx = pix[0] - result.origin[0];
     const double dy = pix[1] - result.origin[1];
-    result.rotationDegrees = std::atan2(dx, dy) * 180. / vtkMath::Pi();
+    // VTK's RotateWXYZ(theta, 0,0,1) maps the layer's +Y to (-sin theta, cos theta),
+    // so reaching the master-space direction (dx, dy) needs theta = atan2(-dx, dy).
+    // atan2(dx, dy) has the right magnitude and the WRONG SIGN: a layer rotated
+    // -30 deg was drawn at +30. (The formula it replaced, 90 - atan|dy/dx|, had
+    // no sign at all, so this was never right - it is now.)
+    result.rotationDegrees = std::atan2(-dx, dy) * 180. / vtkMath::Pi();
     qDebug().noquote() << QStringLiteral("[perf][layer] payload preparation: %1 ms").arg(
             payloadTimer.elapsed());
 

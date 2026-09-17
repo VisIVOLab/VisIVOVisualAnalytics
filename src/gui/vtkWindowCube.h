@@ -1327,6 +1327,8 @@ protected:
     std::array<int, 2> regionCurrentVoxel{ -1, -1 };
     std::vector<std::array<int, 2>> regionPolygonVertices;
     std::vector<CatalogueOverlayEntry> catalogueOverlayEntries;
+    /// The loaded catalogue's own field names, in file order.
+    QStringList catalogueOverlayExtraFields;
     std::vector<std::array<double, 2>> catalogueOverlayPixels;
     std::vector<std::vector<std::array<double, 2>>> catalogueOverlayPolylines;
     std::vector<int> catalogueOverlaySourceFirstPolyline;

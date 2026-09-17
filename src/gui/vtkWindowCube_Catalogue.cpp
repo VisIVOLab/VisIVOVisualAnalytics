@@ -210,6 +210,7 @@ void vtkWindowCube::loadCatalogueOverlay()
     }
 
     const CatalogueOverlayParseResult parsed = CatalogueOverlayUtils::parseFile(path);
+    this->catalogueOverlayExtraFields = parsed.extraFields;
     if (!parsed.valid) {
         QMessageBox::warning(this, u"Catalogue Overlay"_s, parsed.errorMessage);
         return;
@@ -770,6 +771,7 @@ void vtkWindowCube::refreshCatalogueTable()
     if (!this->catalogueTableModel) {
         return;
     }
+    this->catalogueTableModel->setExtraFields(this->catalogueOverlayExtraFields);
     this->catalogueTableModel->setEntries(&this->catalogueOverlayEntries);
     if (this->catalogueDock) {
         this->catalogueDock->setVisible(!this->catalogueOverlayEntries.empty());

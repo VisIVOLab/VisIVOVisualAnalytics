@@ -3,6 +3,7 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QMap>
 #include <QRegularExpression>
 #include <QString>
 #include <QStringList>
@@ -85,9 +86,54 @@ struct VlkbCatalogueRaw
 
 namespace CatalogueOverlayUtils {
 
+/// Split one CSV record, honouring quotes. `split(',')` was enough while the only
+/// columns read were numbers; now that whole catalogues come through - a VLKB
+/// view with text columns, a local file with a description - a quoted comma
+/// shifts every field after it, so positions and sizes get read out of the wrong
+/// cells. RFC 4180 quoting: "" inside a quoted field is a literal quote.
 inline QStringList splitSimpleCsvLine(const QString &line)
 {
-    return line.split(u',', Qt::KeepEmptyParts);
+    QStringList out;
+    QString field;
+    bool inQuotes = false;
+    for (int i = 0; i < line.size(); ++i) {
+        const QChar c = line.at(i);
+        if (inQuotes) {
+            if (c == u'"') {
+                if (i + 1 < line.size() && line.at(i + 1) == u'"') {
+                    field.append(u'"');
+                    ++i;
+                } else {
+                    inQuotes = false;
+                }
+            } else {
+                field.append(c);
+            }
+        } else if (c == u'"') {
+            inQuotes = true;
+        } else if (c == u',') {
+            out.append(field);
+            field.clear();
+        } else {
+            field.append(c);
+        }
+    }
+    out.append(field);
+    return out;
+}
+
+/// Make a field name unique against the ones already collected: a catalogue with
+/// two columns called `flux` otherwise shows one and silently drops the other.
+inline QString uniqueFieldName(const QString &name, const QStringList &taken)
+{
+    if (!taken.contains(name))
+        return name;
+    for (int n = 2; n < 1000; ++n) {
+        const QString candidate = QStringLiteral("%1 (%2)").arg(name).arg(n);
+        if (!taken.contains(candidate))
+            return candidate;
+    }
+    return name;
 }
 
 inline int findHeaderIndex(const QStringList &headers, const QStringList &aliases)
@@ -133,6 +179,19 @@ inline CatalogueOverlayParseResult parseCsv(const QString &path)
         return result;
     }
 
+    // One name per column, uniqued once, and the extra-field list in header order.
+    QMap<int, QString> columnNames;
+    for (int c = 0; c < headers.size(); ++c) {
+        if (c == raIndex || c == decIndex || c == labelIndex)
+            continue;
+        const QString raw = headers.at(c).trimmed();
+        if (raw.isEmpty())
+            continue;
+        const QString unique = uniqueFieldName(raw, result.extraFields);
+        columnNames.insert(c, unique);
+        result.extraFields.append(unique);
+    }
+
     while (!stream.atEnd()) {
         const QString line = stream.readLine().trimmed();
         if (line.isEmpty()) {
@@ -162,13 +221,16 @@ inline CatalogueOverlayParseResult parseCsv(const QString &path)
         for (int c = 0; c < cols.size() && c < headers.size(); ++c) {
             if (c == raIndex || c == decIndex || c == labelIndex)
                 continue;
-            const QString key = headers.at(c).trimmed();
+            const QString rawKey = headers.at(c).trimmed();
             const QString value = cols.at(c).trimmed();
-            if (key.isEmpty() || value.isEmpty())
+            if (rawKey.isEmpty() || value.isEmpty())
+                continue;
+            // Stable per COLUMN, not per row: every row must use the same name
+            // for the same column, so the uniquing is done once on the header.
+            const QString key = columnNames.value(c);
+            if (key.isEmpty())
                 continue;
             entry.extra.append({ key, value });
-            if (!result.extraFields.contains(key))
-                result.extraFields.append(key);
         }
         result.entries.push_back(entry);
     }
@@ -278,8 +340,6 @@ inline CatalogueOverlayParseResult parseDs9(const QString &path)
                 if (key.isEmpty() || value.isEmpty())
                     continue;
                 entry.extra.append({ key, value });
-                if (!result.extraFields.contains(key))
-                    result.extraFields.append(key);
             }
         }
         if (currentFrame == QStringLiteral("image")) {
@@ -327,6 +387,12 @@ inline CatalogueOverlayParseResult parseDs9(const QString &path)
             }
             entry.raDeg = ra;
             entry.decDeg = dec;
+        }
+        // Only now that the region is accepted: a skipped shape used to leave a
+        // column with no value in any row.
+        for (const auto &kv : entry.extra) {
+            if (!result.extraFields.contains(kv.first))
+                result.extraFields.append(kv.first);
         }
         result.entries.push_back(entry);
     }

@@ -305,76 +305,100 @@ void vtkWindowImage::showHistogramPanel()
     if (values.empty()) return;
 
     std::sort(values.begin(), values.end());
-    const double dataMin = values.front();
-    const double dataMax = values.back();
-    if (dataMax <= dataMin) return;
 
-    // Bin over a ROBUST range, not min..max. On a radio map the extremes are a
-    // handful of bright pixels while the information is in a band around the
-    // noise: binning 0 .. 2 Jy/beam put every pixel of interest in the first of
-    // 256 bins and drew what looked like an empty plot (user report). The 0.5 -
-    // 99.5 percentile keeps the shape visible; values outside fall into the end
-    // bins, so nothing is dropped, and the full range is one click away.
-    const auto percentile = [&values](double p) {
-        const double pos = p * static_cast<double>(values.size() - 1);
-        const auto i = static_cast<std::size_t>(std::clamp(pos, 0.0,
-                                                           double(values.size() - 1)));
-        return values[i];
-    };
-    const double robustMin = percentile(0.005);
-    const double robustMax = percentile(0.995);
-
-    constexpr int nBins = 256;
-    double vmin = (robustMax > robustMin) ? robustMin : dataMin;
-    double vmax = (robustMax > robustMin) ? robustMax : dataMax;
-    double binWidth = (vmax - vmin) / nBins;
-    QVector<double> binCenters(nBins), counts(nBins, 0.0);
-    const auto fillBins = [&]() {
-        binWidth = (vmax - vmin) / nBins;
-        counts.fill(0.0);
-        for (int i = 0; i < nBins; ++i)
-            binCenters[i] = vmin + (i + 0.5) * binWidth;
-        for (const double v : values) {
-            int bin = static_cast<int>((v - vmin) / binWidth);
-            bin = std::clamp(bin, 0, nBins - 1);   // outliers land in the end bins
-            counts[bin] += 1.0;
+    // Every piece of state the re-binning touches lives in ONE object owned by
+    // a shared_ptr the callbacks copy. The first version captured the vectors
+    // and the bounds by reference from this function, which returns long before
+    // the checkboxes are ever clicked: the first toggle read freed memory.
+    struct HistogramState
+    {
+        std::vector<double> values;
+        double dataMin{ 0.0 }, dataMax{ 0.0 };
+        double robustMin{ 0.0 }, robustMax{ 0.0 };
+        double vmin{ 0.0 }, vmax{ 0.0 }, binWidth{ 0.0 };
+        QVector<double> binCenters, counts;
+        void fillBins(int nBins)
+        {
+            binWidth = (vmax - vmin) / nBins;
+            binCenters.resize(nBins);
+            counts.assign(nBins, 0.0);
+            for (int i = 0; i < nBins; ++i)
+                binCenters[i] = vmin + (i + 0.5) * binWidth;
+            for (const double v : values) {
+                // Clamp as a DOUBLE before the cast: with a robust range a far
+                // outlier gives an index beyond INT_MAX, and converting that to
+                // int is undefined - the clamp afterwards never sees it.
+                const double raw = (v - vmin) / binWidth;
+                const int bin = static_cast<int>(std::clamp(raw, 0.0, double(nBins - 1)));
+                counts[bin] += 1.0;
+            }
+        }
+        double maxCount() const
+        {
+            return counts.isEmpty() ? 1.0 : *std::max_element(counts.begin(), counts.end());
         }
     };
-    fillBins();
+
+    constexpr int nBins = 256;
+    auto st = std::make_shared<HistogramState>();
+    st->values = std::move(values);
+    st->dataMin = st->values.front();
+    st->dataMax = st->values.back();
+    if (st->dataMax <= st->dataMin) return;
+    const auto percentile = [&st](double p) {
+        const double pos = p * static_cast<double>(st->values.size() - 1);
+        const auto i = static_cast<std::size_t>(
+                std::clamp(pos, 0.0, double(st->values.size() - 1)));
+        return st->values[i];
+    };
+    st->robustMin = percentile(0.005);
+    st->robustMax = percentile(0.995);
+    const bool robustUsable = st->robustMax > st->robustMin;
+    st->vmin = robustUsable ? st->robustMin : st->dataMin;
+    st->vmax = robustUsable ? st->robustMax : st->dataMax;
+    st->fillBins(nBins);
+    const double dataMin = st->dataMin;
+    const double dataMax = st->dataMax;
 
     auto *win = new QWidget(nullptr, Qt::Window);
     win->setAttribute(Qt::WA_DeleteOnClose);
     win->setWindowTitle(u"Pixel Histogram"_s);
-    win->resize(600, 360);
+    win->resize(720, 460);
     auto *layout = new QVBoxLayout(win);
-    layout->setContentsMargins(4, 4, 4, 4);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(8);
 
     auto *plot = new QCustomPlot(win);
-    layout->addWidget(plot);
+    // The plot takes the room, the controls take what they need: without the
+    // stretch the window grew and the plot did not, leaving a band of empty
+    // panel under a postage-stamp histogram.
+    plot->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    plot->setMinimumHeight(240);
+    layout->addWidget(plot, 1);
 
     auto *bars = new QCPBars(plot->xAxis, plot->yAxis);
-    bars->setWidth(binWidth * 0.92);
-    bars->setData(binCenters, counts);
+    bars->setWidth(st->binWidth * 0.92);
+    bars->setData(st->binCenters, st->counts);
     bars->setPen(QPen(QColor(70, 130, 180)));
     bars->setBrush(QColor(70, 130, 180, 120));
 
     plot->xAxis->setLabel(u"Pixel Value"_s);
     plot->yAxis->setLabel(u"Count"_s);
-    plot->xAxis->setRange(vmin, vmax);
-    // Counts on a LOG axis: the noise peak is orders of magnitude above the
-    // source pixels, which on a linear axis are a flat line along zero.
-    auto *logTicker = new QCPAxisTickerLog;
-    plot->yAxis->setTicker(QSharedPointer<QCPAxisTicker>(logTicker));
-    plot->yAxis->setScaleType(QCPAxis::stLogarithmic);
-    const double maxCountNow = *std::max_element(counts.begin(), counts.end());
-    plot->yAxis->setRange(0.5, std::max(1.0, maxCountNow) * 1.6);
 
-    // …and the two choices stay the user's.
+    // The LUT cursors must be reachable: if either of them sits outside the
+    // robust range, start on the full range instead, or the user opens the
+    // histogram to drag two lines that are off-screen.
+    auto *lutForStart = this->layers->getLookupTable(this->layers->getMasterIndex());
+    const double *lutRangeForStart = lutForStart ? lutForStart->GetTableRange() : nullptr;
+    const bool cursorsInsideRobust =
+            !lutRangeForStart
+            || (lutRangeForStart[0] >= st->robustMin && lutRangeForStart[1] <= st->robustMax);
+
     auto *controls = new QWidget(win);
     auto *controlsLayout = new QHBoxLayout(controls);
     controlsLayout->setContentsMargins(4, 0, 4, 0);
     auto *robustCheck = new QCheckBox(u"Clip to 0.5–99.5 %"_s, controls);
-    robustCheck->setChecked(true);
+    robustCheck->setChecked(robustUsable && cursorsInsideRobust);
     robustCheck->setToolTip(u"Bin over the robust range instead of the full min..max, "
                             u"so a few bright pixels do not flatten the histogram."_s);
     auto *logCheck = new QCheckBox(u"Log counts"_s, controls);
@@ -385,18 +409,72 @@ void vtkWindowImage::showHistogramPanel()
     controlsLayout->addWidget(logCheck);
     controlsLayout->addStretch(1);
     controlsLayout->addWidget(rangeLabel);
-    layout->addWidget(controls);
+    layout->addWidget(controls, 0);
 
-    auto *barsPtr = bars;
+    // …and it should look like the rest of the application, not like a white
+    // sheet dropped on a dark window.
+    const QColor ink = QColor(QString::fromLatin1(VisivoTheme::kOnSurface()));
+    const QColor muted = QColor(QString::fromLatin1(VisivoTheme::kOnSurfaceVariant()));
+    const QColor panel = QColor(QString::fromLatin1(VisivoTheme::kSurface()));
+    plot->setBackground(QBrush(panel));
+    for (QCPAxis *axis : { plot->xAxis, plot->yAxis, plot->xAxis2, plot->yAxis2 }) {
+        axis->setBasePen(QPen(muted));
+        axis->setTickPen(QPen(muted));
+        axis->setSubTickPen(QPen(muted));
+        axis->setTickLabelColor(ink);
+        axis->setLabelColor(ink);
+        axis->grid()->setPen(QPen(QColor(muted.red(), muted.green(), muted.blue(), 60),
+                                  1, Qt::DotLine));
+    }
+    plot->axisRect()->setBackground(QBrush(panel));
+
+    auto *lut = this->layers->getLookupTable(this->layers->getMasterIndex());
+    const double *lutRange = lut ? lut->GetTableRange() : nullptr;
+    const double clipLow  = lutRange ? lutRange[0] : st->vmin;
+    const double clipHigh = lutRange ? lutRange[1] : st->vmax;
+
+    auto *lowLine = new QCPItemLine(plot);
+    lowLine->setPen(QPen(QColor(220, 50, 50), 2, Qt::DashLine));
+    lowLine->start->setType(QCPItemPosition::ptPlotCoords);
+    lowLine->end->setType(QCPItemPosition::ptPlotCoords);
+    lowLine->start->setCoords(clipLow, 0);
+    lowLine->end->setCoords(clipLow, st->maxCount() * 1.05);
+
+    auto *highLine = new QCPItemLine(plot);
+    highLine->setPen(QPen(QColor(50, 180, 50), 2, Qt::DashLine));
+    highLine->start->setType(QCPItemPosition::ptPlotCoords);
+    highLine->end->setType(QCPItemPosition::ptPlotCoords);
+    highLine->start->setCoords(clipHigh, 0);
+    highLine->end->setCoords(clipHigh, st->maxCount() * 1.05);
+
+    auto *lowLabel = new QCPItemText(plot);
+    lowLabel->setPositionAlignment(Qt::AlignBottom | Qt::AlignHCenter);
+    lowLabel->position->setType(QCPItemPosition::ptPlotCoords);
+    lowLabel->position->setCoords(clipLow, st->maxCount() * 1.02);
+    lowLabel->setText(QStringLiteral("Low: %1").arg(clipLow, 0, 'g', 5));
+    lowLabel->setColor(QColor(220, 50, 50));
+
+    auto *highLabel = new QCPItemText(plot);
+    highLabel->setPositionAlignment(Qt::AlignBottom | Qt::AlignHCenter);
+    highLabel->position->setType(QCPItemPosition::ptPlotCoords);
+    highLabel->position->setCoords(clipHigh, st->maxCount() * 1.02);
+    highLabel->setText(QStringLiteral("High: %1").arg(clipHigh, 0, 'g', 5));
+    highLabel->setColor(QColor(50, 180, 50));
+
+    // Re-binning owns nothing: it reads and writes the shared state, and moves the
+    // cursors with the new counts so the dashed lines keep meeting the bars.
     auto reBin = std::make_shared<std::function<void()>>();
-    *reBin = [=, &binCenters, &counts]() mutable {
-        vmin = robustCheck->isChecked() && robustMax > robustMin ? robustMin : dataMin;
-        vmax = robustCheck->isChecked() && robustMax > robustMin ? robustMax : dataMax;
-        fillBins();
-        barsPtr->setWidth(binWidth * 0.92);
-        barsPtr->setData(binCenters, counts);
-        plot->xAxis->setRange(vmin, vmax);
-        const double top = *std::max_element(counts.begin(), counts.end());
+    QPointer<QCPItemLine> lowForRebin(lowLine), highForRebin(highLine);
+    QPointer<QCPItemText> lowLabelForRebin(lowLabel), highLabelForRebin(highLabel);
+    *reBin = [plot, bars, st, robustCheck, logCheck, lowForRebin, highForRebin,
+              lowLabelForRebin, highLabelForRebin, robustUsable]() {
+        st->vmin = robustCheck->isChecked() && robustUsable ? st->robustMin : st->dataMin;
+        st->vmax = robustCheck->isChecked() && robustUsable ? st->robustMax : st->dataMax;
+        st->fillBins(nBins);
+        bars->setWidth(st->binWidth * 0.92);
+        bars->setData(st->binCenters, st->counts);
+        plot->xAxis->setRange(st->vmin, st->vmax);
+        const double top = st->maxCount();
         if (logCheck->isChecked()) {
             plot->yAxis->setScaleType(QCPAxis::stLogarithmic);
             plot->yAxis->setTicker(QSharedPointer<QCPAxisTicker>(new QCPAxisTickerLog));
@@ -406,43 +484,18 @@ void vtkWindowImage::showHistogramPanel()
             plot->yAxis->setTicker(QSharedPointer<QCPAxisTicker>(new QCPAxisTicker));
             plot->yAxis->setRange(0, std::max(1.0, top) * 1.05);
         }
+        const double h = std::max(1.0, top) * 1.05;
+        if (lowForRebin) lowForRebin->end->setCoords(lowForRebin->start->coords().x(), h);
+        if (highForRebin) highForRebin->end->setCoords(highForRebin->start->coords().x(), h);
+        if (lowLabelForRebin)
+            lowLabelForRebin->position->setCoords(lowLabelForRebin->position->coords().x(), h * 0.98);
+        if (highLabelForRebin)
+            highLabelForRebin->position->setCoords(highLabelForRebin->position->coords().x(), h * 0.98);
         plot->replot();
     };
     QObject::connect(robustCheck, &QCheckBox::toggled, win, [reBin](bool) { (*reBin)(); });
     QObject::connect(logCheck, &QCheckBox::toggled, win, [reBin](bool) { (*reBin)(); });
-
-    auto *lut = this->layers->getLookupTable(this->layers->getMasterIndex());
-    const double *lutRange = lut ? lut->GetTableRange() : nullptr;
-    const double clipLow  = lutRange ? lutRange[0] : vmin;
-    const double clipHigh = lutRange ? lutRange[1] : vmax;
-
-    auto *lowLine = new QCPItemLine(plot);
-    lowLine->setPen(QPen(QColor(220, 50, 50), 2, Qt::DashLine));
-    lowLine->start->setType(QCPItemPosition::ptPlotCoords);
-    lowLine->end->setType(QCPItemPosition::ptPlotCoords);
-    lowLine->start->setCoords(clipLow, 0);
-    lowLine->end->setCoords(clipLow, *std::max_element(counts.begin(), counts.end()) * 1.05);
-
-    auto *highLine = new QCPItemLine(plot);
-    highLine->setPen(QPen(QColor(50, 180, 50), 2, Qt::DashLine));
-    highLine->start->setType(QCPItemPosition::ptPlotCoords);
-    highLine->end->setType(QCPItemPosition::ptPlotCoords);
-    highLine->start->setCoords(clipHigh, 0);
-    highLine->end->setCoords(clipHigh, *std::max_element(counts.begin(), counts.end()) * 1.05);
-
-    auto *lowLabel = new QCPItemText(plot);
-    lowLabel->setPositionAlignment(Qt::AlignBottom | Qt::AlignHCenter);
-    lowLabel->position->setType(QCPItemPosition::ptPlotCoords);
-    lowLabel->position->setCoords(clipLow, *std::max_element(counts.begin(), counts.end()) * 1.02);
-    lowLabel->setText(QStringLiteral("Low: %1").arg(clipLow, 0, 'g', 5));
-    lowLabel->setColor(QColor(220, 50, 50));
-
-    auto *highLabel = new QCPItemText(plot);
-    highLabel->setPositionAlignment(Qt::AlignBottom | Qt::AlignHCenter);
-    highLabel->position->setType(QCPItemPosition::ptPlotCoords);
-    highLabel->position->setCoords(clipHigh, *std::max_element(counts.begin(), counts.end()) * 1.02);
-    highLabel->setText(QStringLiteral("High: %1").arg(clipHigh, 0, 'g', 5));
-    highLabel->setColor(QColor(50, 180, 50));
+    (*reBin)();   // apply the initial choice (robust or full) once everything exists
 
     QPointer<vtkWindowImage> self(this);
     QPointer<QCPItemLine> lowLinePtr(lowLine);
@@ -452,7 +505,7 @@ void vtkWindowImage::showHistogramPanel()
 
     bool *draggingLow = new bool(false);
     bool *draggingHigh = new bool(false);
-    const double maxCount = *std::max_element(counts.begin(), counts.end()) * 1.05;
+    const double maxCount = st->maxCount() * 1.05;
 
     QObject::connect(plot, &QCustomPlot::mousePress, win,
                      [plot, lowLinePtr, highLinePtr, draggingLow, draggingHigh](QMouseEvent *event) {

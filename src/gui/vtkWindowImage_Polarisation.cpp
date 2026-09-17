@@ -998,25 +998,25 @@ void vtkWindowImage::addDerivedLayer(vtkSmartPointer<vtkImageData> data,
                                   /*resultView=*/{}, /*layerIndex=*/newIdx);
 }
 
-void vtkWindowImage::rebuildPolarizationVectors()
+bool vtkWindowImage::rebuildPolarizationVectors()
 {
     const int qIdx = findLayerByStokesRole(StokesRole::Q);
     const int uIdx = findLayerByStokesRole(StokesRole::U);
     if (qIdx < 0 || uIdx < 0) {
         m_polVecActor->VisibilityOff();
-        return;
+        return false;
     }
     auto *qData = this->layers->getImageData(qIdx);
     auto *uData = this->layers->getImageData(uIdx);
     if (!qData || !uData) {
         m_polVecActor->VisibilityOff();
-        return;
+        return false;
     }
     if (!sameSampledGrid(qData, uData)) {
         m_polVecActor->VisibilityOff();
         statusBar()->showMessage(
                 u"Polarisation vectors need Q and U on the same pixel grid."_s, 5000);
-        return;
+        return false;
     }
     // The vectors are built in Q's VOXEL indices; Q may be displayed on a
     // decimated grid, so the actor carries the same voxel -> world mapping the
@@ -1054,7 +1054,7 @@ void vtkWindowImage::rebuildPolarizationVectors()
     }
     if (pSamples.empty() || pMax <= 0.0) {
         m_polVecActor->VisibilityOff();
-        return;
+        return false;
     }
 
     // Robust noise estimate from the sample set (median absolute deviation).
@@ -1107,6 +1107,7 @@ void vtkWindowImage::rebuildPolarizationVectors()
                     .arg(nDrawn).arg(m_polVecGridStep)
                     .arg(m_polVecSnrMin, 0, 'f', 1).arg(sigma, 0, 'g', 4),
             5000);
+    return true;
 }
 
 void vtkWindowImage::setPolVectorsVisible(bool vis)
@@ -1135,8 +1136,21 @@ void vtkWindowImage::setPolVectorsVisible(bool vis)
         }
     }
     m_polVecsVisible = vis;
-    if (vis) {
-        rebuildPolarizationVectors();
+    if (vis && !rebuildPolarizationVectors()) {
+        // The rebuild refused (incompatible Q/U grids, no data): do not switch the
+        // actor on over whatever geometry was left from last time, and put the
+        // toggle back - it said the tool was on while nothing was drawn.
+        m_polVecsVisible = false;
+        m_polVecActor->VisibilityOff();
+        if (m_actTogglePolVecs && m_actTogglePolVecs->isChecked()) {
+            const QSignalBlocker block(m_actTogglePolVecs);
+            m_actTogglePolVecs->setChecked(false);
+        }
+        releaseToolSettings(u"Polarisation vectors"_s);
+        refreshToolSettingsPanel(/*reveal=*/false);
+        if (ui->vtk->renderWindow())
+            ui->vtk->renderWindow()->Render();
+        return;
     }
     m_polVecActor->SetVisibility(vis);
     // Grid step / SNR / length are this tool's parameters: they appear with it.

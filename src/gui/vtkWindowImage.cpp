@@ -1556,17 +1556,22 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
         // tooltip below.
         const QString full = name.isEmpty() ? u"LAYER SETTINGS"_s
                                             : u"LAYER SETTINGS, %1"_s.arg(name);
-        const int budget = VisivoTheme::kLeftDockWidth - 24;   // dock width less padding
+        // The full text is kept on the widget so the elision can be redone when
+        // the font or the width changes (see the event filter below): computing
+        // it once left a near-limit caption clipped rather than elided after a
+        // font change.
+        ui->labelLayerHdr->setProperty("fullText", full);
         ui->labelLayerHdr->setMinimumWidth(0);
-        ui->labelLayerHdr->setMaximumWidth(budget);
-        ui->labelLayerHdr->setText(
-                QFontMetrics(ui->labelLayerHdr->font()).elidedText(full, Qt::ElideMiddle, budget));
+        ui->labelLayerHdr->setMaximumWidth(VisivoTheme::kLeftDockWidth - 24);
+        elideLayerSettingsHeader();
         ui->labelLayerHdr->setToolTip(
                 name.isEmpty() ? QString()
                                : u"These controls act on the layer selected below: %1"_s.arg(name));
     };
     QObject::connect(this->layers, &LayerListModel::dataChanged, this,
                      [nameLayerSettings]() { nameLayerSettings(); });
+    if (ui->labelLayerHdr)
+        ui->labelLayerHdr->installEventFilter(this);
 
     // Setup Layer List View
     ui->listLayer->setAcceptDrops(true);
@@ -1737,6 +1742,27 @@ void vtkWindowImage::setInteractorStyleProfile()
     }
 }
 
+void vtkWindowImage::elideLayerSettingsHeader()
+{
+    if (!ui || !ui->labelLayerHdr)
+        return;
+    const QString full = ui->labelLayerHdr->property("fullText").toString();
+    if (full.isEmpty())
+        return;
+    const int budget = std::max(40, ui->labelLayerHdr->width());
+    ui->labelLayerHdr->setText(
+            QFontMetrics(ui->labelLayerHdr->font()).elidedText(full, Qt::ElideMiddle, budget));
+}
+
+bool vtkWindowImage::eventFilter(QObject *watched, QEvent *event)
+{
+    if (ui && watched == ui->labelLayerHdr
+        && (event->type() == QEvent::Resize || event->type() == QEvent::FontChange)) {
+        elideLayerSettingsHeader();
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
+
 int vtkWindowImage::currentLayerIndex() const
 {
     const int row = ui->listLayer->currentIndex().row();
@@ -1867,7 +1893,12 @@ static ImageLayerLoadResult loadRemoteImageLayer(const QString &backendUrl,
     astroMaster.sky2xy(pos, pix, WCS_J2000);
     const double dx = pix[0] - result.origin[0];
     const double dy = pix[1] - result.origin[1];
-    result.rotationDegrees = std::atan2(dx, dy) * 180. / vtkMath::Pi();
+    // VTK's RotateWXYZ(theta, 0,0,1) maps the layer's +Y to (-sin theta, cos theta),
+    // so reaching the master-space direction (dx, dy) needs theta = atan2(-dx, dy).
+    // atan2(dx, dy) has the right magnitude and the WRONG SIGN: a layer rotated
+    // -30 deg was drawn at +30. (The formula it replaced, 90 - atan|dy/dx|, had
+    // no sign at all, so this was never right - it is now.)
+    result.rotationDegrees = std::atan2(-dx, dy) * 180. / vtkMath::Pi();
 
     if (!std::isfinite(result.spacing[0]) || !std::isfinite(result.spacing[1])
         || result.spacing[0] <= 0. || result.spacing[1] <= 0.

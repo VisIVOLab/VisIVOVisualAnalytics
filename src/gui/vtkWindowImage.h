@@ -607,6 +607,9 @@ private:
     void clearPersistentStatusMessage();
     void setLayerImportEnabled(bool enabled);
     int currentLayerIndex() const;
+    /// Re-elide the LAYER SETTINGS caption for the width and font it has NOW.
+    void elideLayerSettingsHeader();
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void addLayerImage(const std::string &filepath);
     bool remoteHasWcsAxis(int axis) const;
     double remoteVoxelToWcs(int axis, double voxelIndex, bool *ok = nullptr) const;
@@ -824,7 +827,9 @@ private:
                          const QString &name, StokesRole role,
                          const QString &colorMap,
                          double rangeMin, double rangeMax);
-    void rebuildPolarizationVectors();
+    /// False when there is nothing valid to draw (missing or mismatched Q/U):
+    /// the caller must then not switch the overlay on.
+    bool rebuildPolarizationVectors();
     void setPolVectorsVisible(bool vis);
     double beamAreaPixels() const;
     bool hasBeamInfo() const;
