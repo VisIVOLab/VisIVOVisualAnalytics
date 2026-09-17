@@ -23,6 +23,7 @@
 #include "theme/SegmentedToggle.h"
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
+#include "InspectorPanel.h"
 #include "WorkspaceChrome.h"
 #include "ProductRegistry.h"
 #include "ToolResultDialog.h"
@@ -76,6 +77,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFontMetrics>
 #include <QUrl>
 #include <QDoubleValidator>
 #include <QFormLayout>
@@ -1250,12 +1252,9 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     QObject::connect(this->actionClearCatalogueOverlay, &QAction::triggered, this,
                      &vtkWindowImage::clearCatalogueOverlay);
     this->ensureCatalogueDock();
-    // …and a way back to it. The dock shows itself when a catalogue loads and
+    // …and a way back to it: the dock shows itself when a catalogue loads and
     // hides when the overlay is cleared, but nothing could reopen it once the
-    // user closed it — the source list was then unreachable for the rest of the
-    // session, while the panel held two empty tables meant for the same job
-    // (user report on the layout). The 3-D catalogue window already lists its
-    // own dock this way.
+    // user had closed it.
     if (this->catalogueDock) {
         QAction *toggle = this->catalogueDock->toggleViewAction();
         toggle->setText(u"Catalogue Sources"_s);
@@ -1550,8 +1549,18 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
         const QString name = (row >= 0 && this->layers && row < this->layers->rowCount())
                 ? this->layers->data(this->layers->index(row, 0), Qt::DisplayRole).toString()
                 : QString();
-        ui->labelLayerHdr->setText(name.isEmpty() ? u"LAYER SETTINGS"_s
-                                                  : u"LAYER SETTINGS, %1"_s.arg(name));
+        // ELIDED: a long dataset name (image.i.SB9325.cont.taylor.0.restored.fits)
+        // otherwise sets the label's size hint and stretches the whole left
+        // column past the dock, taking the layer list with it. The middle is
+        // dropped so the extension stays readable, and the full name is in the
+        // tooltip below.
+        const QString full = name.isEmpty() ? u"LAYER SETTINGS"_s
+                                            : u"LAYER SETTINGS, %1"_s.arg(name);
+        const int budget = VisivoTheme::kLeftDockWidth - 24;   // dock width less padding
+        ui->labelLayerHdr->setMinimumWidth(0);
+        ui->labelLayerHdr->setMaximumWidth(budget);
+        ui->labelLayerHdr->setText(
+                QFontMetrics(ui->labelLayerHdr->font()).elidedText(full, Qt::ElideMiddle, budget));
         ui->labelLayerHdr->setToolTip(
                 name.isEmpty() ? QString()
                                : u"These controls act on the layer selected below: %1"_s.arg(name));

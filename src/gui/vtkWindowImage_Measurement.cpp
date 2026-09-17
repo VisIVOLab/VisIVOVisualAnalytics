@@ -105,6 +105,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <memory>
 #include <cstring>
 #include <sstream>
 
@@ -303,20 +305,42 @@ void vtkWindowImage::showHistogramPanel()
     if (values.empty()) return;
 
     std::sort(values.begin(), values.end());
-    const double vmin = values.front();
-    const double vmax = values.back();
-    if (vmax <= vmin) return;
+    const double dataMin = values.front();
+    const double dataMax = values.back();
+    if (dataMax <= dataMin) return;
+
+    // Bin over a ROBUST range, not min..max. On a radio map the extremes are a
+    // handful of bright pixels while the information is in a band around the
+    // noise: binning 0 .. 2 Jy/beam put every pixel of interest in the first of
+    // 256 bins and drew what looked like an empty plot (user report). The 0.5 -
+    // 99.5 percentile keeps the shape visible; values outside fall into the end
+    // bins, so nothing is dropped, and the full range is one click away.
+    const auto percentile = [&values](double p) {
+        const double pos = p * static_cast<double>(values.size() - 1);
+        const auto i = static_cast<std::size_t>(std::clamp(pos, 0.0,
+                                                           double(values.size() - 1)));
+        return values[i];
+    };
+    const double robustMin = percentile(0.005);
+    const double robustMax = percentile(0.995);
 
     constexpr int nBins = 256;
-    const double binWidth = (vmax - vmin) / nBins;
+    double vmin = (robustMax > robustMin) ? robustMin : dataMin;
+    double vmax = (robustMax > robustMin) ? robustMax : dataMax;
+    double binWidth = (vmax - vmin) / nBins;
     QVector<double> binCenters(nBins), counts(nBins, 0.0);
-    for (int i = 0; i < nBins; ++i)
-        binCenters[i] = vmin + (i + 0.5) * binWidth;
-    for (const double v : values) {
-        int bin = static_cast<int>((v - vmin) / binWidth);
-        if (bin >= nBins) bin = nBins - 1;
-        counts[bin] += 1.0;
-    }
+    const auto fillBins = [&]() {
+        binWidth = (vmax - vmin) / nBins;
+        counts.fill(0.0);
+        for (int i = 0; i < nBins; ++i)
+            binCenters[i] = vmin + (i + 0.5) * binWidth;
+        for (const double v : values) {
+            int bin = static_cast<int>((v - vmin) / binWidth);
+            bin = std::clamp(bin, 0, nBins - 1);   // outliers land in the end bins
+            counts[bin] += 1.0;
+        }
+    };
+    fillBins();
 
     auto *win = new QWidget(nullptr, Qt::Window);
     win->setAttribute(Qt::WA_DeleteOnClose);
@@ -337,7 +361,55 @@ void vtkWindowImage::showHistogramPanel()
     plot->xAxis->setLabel(u"Pixel Value"_s);
     plot->yAxis->setLabel(u"Count"_s);
     plot->xAxis->setRange(vmin, vmax);
-    plot->yAxis->setRange(0, *std::max_element(counts.begin(), counts.end()) * 1.05);
+    // Counts on a LOG axis: the noise peak is orders of magnitude above the
+    // source pixels, which on a linear axis are a flat line along zero.
+    auto *logTicker = new QCPAxisTickerLog;
+    plot->yAxis->setTicker(QSharedPointer<QCPAxisTicker>(logTicker));
+    plot->yAxis->setScaleType(QCPAxis::stLogarithmic);
+    const double maxCountNow = *std::max_element(counts.begin(), counts.end());
+    plot->yAxis->setRange(0.5, std::max(1.0, maxCountNow) * 1.6);
+
+    // …and the two choices stay the user's.
+    auto *controls = new QWidget(win);
+    auto *controlsLayout = new QHBoxLayout(controls);
+    controlsLayout->setContentsMargins(4, 0, 4, 0);
+    auto *robustCheck = new QCheckBox(u"Clip to 0.5–99.5 %"_s, controls);
+    robustCheck->setChecked(true);
+    robustCheck->setToolTip(u"Bin over the robust range instead of the full min..max, "
+                            u"so a few bright pixels do not flatten the histogram."_s);
+    auto *logCheck = new QCheckBox(u"Log counts"_s, controls);
+    logCheck->setChecked(true);
+    auto *rangeLabel = new QLabel(controls);
+    rangeLabel->setText(u"data %1 … %2"_s.arg(dataMin, 0, 'g', 4).arg(dataMax, 0, 'g', 4));
+    controlsLayout->addWidget(robustCheck);
+    controlsLayout->addWidget(logCheck);
+    controlsLayout->addStretch(1);
+    controlsLayout->addWidget(rangeLabel);
+    layout->addWidget(controls);
+
+    auto *barsPtr = bars;
+    auto reBin = std::make_shared<std::function<void()>>();
+    *reBin = [=, &binCenters, &counts]() mutable {
+        vmin = robustCheck->isChecked() && robustMax > robustMin ? robustMin : dataMin;
+        vmax = robustCheck->isChecked() && robustMax > robustMin ? robustMax : dataMax;
+        fillBins();
+        barsPtr->setWidth(binWidth * 0.92);
+        barsPtr->setData(binCenters, counts);
+        plot->xAxis->setRange(vmin, vmax);
+        const double top = *std::max_element(counts.begin(), counts.end());
+        if (logCheck->isChecked()) {
+            plot->yAxis->setScaleType(QCPAxis::stLogarithmic);
+            plot->yAxis->setTicker(QSharedPointer<QCPAxisTicker>(new QCPAxisTickerLog));
+            plot->yAxis->setRange(0.5, std::max(1.0, top) * 1.6);
+        } else {
+            plot->yAxis->setScaleType(QCPAxis::stLinear);
+            plot->yAxis->setTicker(QSharedPointer<QCPAxisTicker>(new QCPAxisTicker));
+            plot->yAxis->setRange(0, std::max(1.0, top) * 1.05);
+        }
+        plot->replot();
+    };
+    QObject::connect(robustCheck, &QCheckBox::toggled, win, [reBin](bool) { (*reBin)(); });
+    QObject::connect(logCheck, &QCheckBox::toggled, win, [reBin](bool) { (*reBin)(); });
 
     auto *lut = this->layers->getLookupTable(this->layers->getMasterIndex());
     const double *lutRange = lut ? lut->GetTableRange() : nullptr;

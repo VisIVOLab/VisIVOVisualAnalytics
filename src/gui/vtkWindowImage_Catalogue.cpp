@@ -6,6 +6,8 @@
 #include "app/DiagnosticsManager.h"
 #include "app/ThemeManager.h"
 #include "CatalogueTableModel.h"
+#include "WorkspaceChrome.h"
+#include "InspectorPanel.h"
 #include "ColorMaps.h"
 #include "CatalogueOverlayUtils.h"
 #include "DiagnosticsWindow.h"
@@ -79,6 +81,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileDialog>
+#include <QTextStream>
 #include <QFileInfo>
 #include <QDoubleValidator>
 #include <QFormLayout>
@@ -421,6 +424,8 @@ void vtkWindowImage::applyCatalogueOverlayResult(const CatalogueOverlayParseResu
     }
 
     this->catalogueOverlayLoaded = true;
+    this->catalogueOverlayFrameLabel = parsed.frameLabel;
+    this->catalogueOverlayExtraFields = parsed.extraFields;
     this->catalogueOverlaySummary =
             u"%1 sources from %2 (%3)"_s.arg(this->catalogueOverlayPixels.size())
                     .arg(parsed.sourceLabel, parsed.frameLabel);
@@ -432,8 +437,10 @@ void vtkWindowImage::applyCatalogueOverlayResult(const CatalogueOverlayParseResu
             std::any_of(this->catalogueOverlayPolylineBand.cbegin(),
                         this->catalogueOverlayPolylineBand.cend(),
                         [](const QString &b) { return !b.isEmpty(); });
-    if (!hasBands && this->m_vlkbBandPanel)
-        this->m_vlkbBandPanel->hide();
+    if (!hasBands) {
+        releaseToolSettings(u"Catalogue overlay"_s);
+        refreshToolSettingsPanel(/*reveal=*/false);
+    }
     this->refreshCatalogueTable();
     this->updateCatalogueInfoPanel();
     if (this->actionShowCatalogueOverlay) {
@@ -609,8 +616,8 @@ void vtkWindowImage::clearCatalogueOverlay()
     this->catalogueOverlayPolylineColors.clear();
     this->catalogueOverlayPolylineBand.clear();
     this->m_vlkbHiddenBands.clear();
-    if (this->m_vlkbBandPanel)
-        this->m_vlkbBandPanel->hide();
+    releaseToolSettings(u"Catalogue overlay"_s);
+    refreshToolSettingsPanel(/*reveal=*/false);
     this->catalogueOverlayData->GetCellData()->SetScalars(nullptr);
     if (auto *m = this->catalogueOverlayActor->GetMapper())
         m->ScalarVisibilityOff();
@@ -1039,6 +1046,11 @@ void vtkWindowImage::ensureCatalogueDock()
         return;
     }
 
+    // BOTTOM dock, not the right column. A table wants width, and Qt gives every
+    // dock in an area the same width: sharing the right column with the
+    // Inspector meant collapsing the Inspector squeezed this to the rail width
+    // (user report on the layout). The bottom area spans the window and is what
+    // the 3-D catalogue viewer already does with its own table.
     this->catalogueDock = new QDockWidget(u"Catalogue"_s, this);
     this->catalogueDock->setObjectName(u"CatalogueDockImage"_s);
     this->catalogueTableView = new QTableView(this->catalogueDock);
@@ -1051,8 +1063,8 @@ void vtkWindowImage::ensureCatalogueDock()
     this->catalogueTableView->verticalHeader()->setVisible(false);
     this->catalogueTableView->horizontalHeader()->setStretchLastSection(true);
     this->catalogueDock->setWidget(this->catalogueTableView);
-    this->addDockWidget(Qt::RightDockWidgetArea, this->catalogueDock);
-    this->catalogueDock->hide();
+    this->addDockWidget(Qt::BottomDockWidgetArea, this->catalogueDock);
+    this->catalogueDock->hide();   // shown when a catalogue loads
 
     QObject::connect(this, &vtkWindowImage::catalogueSourceSelectionChanged, this,
                      &vtkWindowImage::syncCatalogueTableSelection);
@@ -1061,7 +1073,11 @@ void vtkWindowImage::ensureCatalogueDock()
         if (this->syncingCatalogueSelection) {
             return;
         }
+        // Mark the origin so the sync below does not scroll the row out from
+        // under the pointer that just clicked it.
+        this->m_catalogueSelectionFromTable = true;
         this->setSelectedCatalogueSourceIndex(current.isValid() ? current.row() : -1);
+        this->m_catalogueSelectionFromTable = false;
     });
     QObject::connect(this->catalogueTableView, &QTableView::doubleClicked, this,
                      [this](const QModelIndex &index) {
@@ -1078,10 +1094,11 @@ void vtkWindowImage::refreshCatalogueTable()
     if (!this->catalogueTableModel) {
         return;
     }
+    this->catalogueTableModel->setFrameLabel(this->catalogueOverlayFrameLabel);
+    this->catalogueTableModel->setExtraFields(this->catalogueOverlayExtraFields);
     this->catalogueTableModel->setEntries(&this->catalogueOverlayEntries);
-    if (this->catalogueDock) {
+    if (this->catalogueDock)
         this->catalogueDock->setVisible(!this->catalogueOverlayEntries.empty());
-    }
     if (this->catalogueTableView) {
         this->catalogueTableView->resizeColumnsToContents();
     }
@@ -1110,6 +1127,109 @@ void vtkWindowImage::setSelectedCatalogueSourceIndex(int index)
         ui->vtk->renderWindow()->Render();
     }
     emit this->catalogueSourceSelectionChanged(index);
+}
+
+void vtkWindowImage::exportCatalogueOverlay()
+{
+    if (this->catalogueOverlayEntries.empty()) {
+        statusBar()->showMessage(u"No catalogue overlay to export."_s, 4000);
+        return;
+    }
+    const QString path = QFileDialog::getSaveFileName(
+            this, u"Export Catalogue"_s,
+            QFileInfo(this->filepath).completeBaseName() + u"_catalogue.csv"_s,
+            u"CSV (*.csv);;All files (*)"_s);
+    if (path.isEmpty())
+        return;
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, u"Export Catalogue"_s,
+                             u"Could not write %1: %2"_s.arg(path, f.errorString()));
+        return;
+    }
+    QTextStream out(&f);
+    // The frame is in the HEADER, not implied: these columns are Galactic for a
+    // VLKB overlay and equatorial for a loaded catalogue, and a file that does
+    // not say which is a file nobody can use later.
+    const QString frame = this->catalogueOverlayFrameLabel.isEmpty()
+            ? u"unknown"_s : this->catalogueOverlayFrameLabel;
+    const bool galactic = frame.compare(u"Galactic"_s, Qt::CaseInsensitive) == 0;
+    out << u"# catalogue exported from VisIVO Visual Analytics\n"_s
+        << u"# dataset: "_s << this->filepath << u"\n"_s
+        << u"# overlay: "_s << this->catalogueOverlaySummary << u"\n"_s
+        << u"# sky frame: "_s << frame << u"\n"_s;
+    out << (galactic ? u"name,type,band,glon_deg,glat_deg,"_s : u"name,type,band,ra_deg,dec_deg,"_s)
+        << u"x_pix,y_pix,radius_x_pix,radius_y_pix,angle_deg"_s;
+    for (const QString &field : this->catalogueOverlayExtraFields)
+        out << u',' << field;
+    out << u'\n';
+
+    const auto csv = [](QString v) {
+        v.replace(u'"', u"\"\""_s);
+        return v.contains(u',') || v.contains(u'"') ? u"\""_s + v + u"\""_s : v;
+    };
+    int n = 0;
+    for (std::size_t i = 0; i < this->catalogueOverlayEntries.size(); ++i) {
+        const CatalogueOverlayEntry &e = this->catalogueOverlayEntries[i];
+        const QString name = this->catalogueOverlayLabels.value(static_cast<qsizetype>(i)).trimmed();
+        out << csv(name.isEmpty() ? u"source %1"_s.arg(i + 1) : name) << u','
+            << (e.shape == CatalogueOverlayEntry::Shape::Ellipse    ? u"ellipse"_s
+                : e.shape == CatalogueOverlayEntry::Shape::Polyline ? u"polyline"_s
+                                                                   : u"marker"_s)
+            << u',' << csv(e.band) << u',';
+        if (e.frame == CatalogueOverlayEntry::Frame::Sky || e.hasSkyPosition)
+            out << QString::number(e.raDeg, 'f', 6) << u',' << QString::number(e.decDeg, 'f', 6);
+        else
+            out << u","_s;
+        out << u',' << QString::number(e.pixelX, 'f', 3)
+            << u',' << QString::number(e.pixelY, 'f', 3) << u',';
+        if (e.shape == CatalogueOverlayEntry::Shape::Ellipse)
+            out << QString::number(e.radiusX, 'f', 3) << u','
+                << QString::number(e.radiusY, 'f', 3) << u','
+                << QString::number(e.angleDeg, 'f', 2);
+        else
+            out << u",,"_s;
+        // …and the catalogue's own fields, in the same order as the header.
+        for (const QString &field : this->catalogueOverlayExtraFields) {
+            QString value;
+            for (const auto &kv : e.extra) {
+                if (kv.first == field) { value = kv.second; break; }
+            }
+            out << u',' << csv(value);
+        }
+        out << u'\n';
+        ++n;
+    }
+    f.close();
+    statusBar()->showMessage(u"Exported %1 catalogue entries to %2"_s.arg(n).arg(
+                                     QFileInfo(path).fileName()),
+                             5000);
+}
+
+void vtkWindowImage::zoomToCatalogueSourceUnderCursor()
+{
+    if (!this->catalogueOverlayLoaded || this->regionMode != RegionMode::None)
+        return;
+    auto *iren = ui && ui->vtk && ui->vtk->renderWindow()
+            ? ui->vtk->renderWindow()->GetInteractor() : nullptr;
+    const int *pos = iren ? iren->GetEventPosition() : nullptr;
+    if (!pos)
+        return;
+    // Pick under the cursor exactly as a single click does, then act only if it
+    // actually landed on a source: a double-click on empty sky must not fling
+    // the camera somewhere.
+    this->refreshCatalogueOverlayInteraction(pos[0], pos[1], true);
+    if (this->selectedCatalogueSourceIndex < 0)
+        return;
+    this->centerViewOnCatalogueSource(this->selectedCatalogueSourceIndex);
+    const QString name = this->catalogueOverlayLabels
+                                 .value(this->selectedCatalogueSourceIndex)
+                                 .trimmed();
+    this->statusBar()->showMessage(
+            name.isEmpty() ? u"Zoomed to the selected source."_s
+                           : u"Zoomed to %1"_s.arg(name),
+            4000);
 }
 
 void vtkWindowImage::centerViewOnCatalogueSource(int index, double zoomFactor)
@@ -1154,7 +1274,18 @@ void vtkWindowImage::syncCatalogueTableSelection(int index)
         const QModelIndex modelIndex = this->catalogueTableModel->index(index, 0);
         this->catalogueTableView->selectionModel()->setCurrentIndex(
                 modelIndex, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
-        this->catalogueTableView->scrollTo(modelIndex, QAbstractItemView::PositionAtCenter);
+        // Do NOT scroll when the click came from the table itself: recentring
+        // the row under the cursor moves it away, and the second click of a
+        // double-click lands on a different source. And when the selection does
+        // come from the image, only scroll if the row is not already in view -
+        // EnsureVisible, not PositionAtCenter, so the table stops jumping.
+        if (!this->m_catalogueSelectionFromTable) {
+            const QRect rowRect = this->catalogueTableView->visualRect(modelIndex);
+            const QRect viewport = this->catalogueTableView->viewport()->rect();
+            if (!rowRect.isValid() || !viewport.contains(rowRect.center()))
+                this->catalogueTableView->scrollTo(modelIndex,
+                                                   QAbstractItemView::EnsureVisible);
+        }
     }
     this->syncingCatalogueSelection = false;
 }
@@ -1275,6 +1406,28 @@ QString vlkbTapUrl(const QString &base, const QString &adql)
     return url.toString(QUrl::FullyEncoded);
 }
 
+// Which columns does the view actually have? Asking beats guessing: a wrong
+// column name does not degrade the query, it makes the whole thing fail and the
+// overlay never appears. TAP publishes its own schema, so the SELECT can be
+// built from what is there - and whatever we do not interpret ourselves still
+// reaches the table and the export as a field of the source.
+QStringList fetchVlkbColumns(const QString &base, const QString &table, QString &error)
+{
+    const QString adql = QStringLiteral(
+            "SELECT column_name FROM TAP_SCHEMA.columns WHERE table_name = '%1'").arg(table);
+    const QByteArray csv = vlkbGet(vlkbTapUrl(base, adql), error);
+    if (!error.isEmpty())
+        return {};
+    QStringList cols;
+    const QList<QByteArray> lines = csv.split('\n');
+    for (int i = 1; i < lines.size(); ++i) {   // skip header
+        const QString name = QString::fromUtf8(lines[i]).trimmed().remove(u'"');
+        if (!name.isEmpty())
+            cols.append(name);
+    }
+    return cols;
+}
+
 // Worker: compact sources for EVERY band in one query. The ADQL selects
 // glonft,glatft (band-merged position, used as fallback) then, per band in `bands`
 // order, (glon{b},glat{b},fwhma{b},fwhmb{b},pa{b}). Each row yields one ellipse per
@@ -1291,23 +1444,59 @@ VlkbCatalogueRaw fetchVlkbSources(const QString &base, const QString &adql,
     const QByteArray csv = vlkbGet(vlkbTapUrl(base, adql), err);
     if (!err.isEmpty()) { out.error = err; return out; }
     const QList<QByteArray> lines = csv.split('\n');
+    if (lines.isEmpty()) { out.error = QStringLiteral("Empty VLKB response."); return out; }
     const int nb = bands.size();
+
+    // Parse by NAME, from the response's own header, not by position: the SELECT
+    // is now built from the view's real column list, so positions are whatever
+    // the service returns - and the columns we do not interpret become fields of
+    // the source rather than being skipped.
+    const QStringList header = QString::fromUtf8(lines[0]).trimmed().remove(u'"').split(u',');
+    QHash<QString, int> col;
+    for (int i = 0; i < header.size(); ++i)
+        col.insert(header[i].trimmed().toLower(), i);
+    const auto idx = [&col](const QString &name) { return col.value(name.toLower(), -1); };
+    const auto num = [](const QStringList &c, int i, bool *ok) {
+        if (i < 0 || i >= c.size()) { *ok = false; return 0.0; }
+        return c[i].trimmed().toDouble(ok);
+    };
+    // Which band does a column belong to? Longest suffix wins, so fint1100 is
+    // not read as band "00".
+    QStringList bandsByLength = bands;
+    std::sort(bandsByLength.begin(), bandsByLength.end(),
+              [](const QString &a, const QString &b) { return a.size() > b.size(); });
+    const auto bandOfColumn = [&bandsByLength](const QString &name) {
+        for (const QString &b : bandsByLength) {
+            if (name.endsWith(b, Qt::CaseInsensitive))
+                return b;
+        }
+        return QString();
+    };
+    static const QStringList kGeometryStems = { u"glon"_s, u"glat"_s, u"fwhma"_s, u"fwhmb"_s,
+                                                u"pa"_s };
+    const auto isGeometry = [&bandOfColumn](const QString &name) {
+        const QString band = bandOfColumn(name);
+        const QString stem = band.isEmpty() ? name : name.left(name.size() - band.size());
+        return kGeometryStems.contains(stem, Qt::CaseInsensitive);
+    };
+
+    const int iGlonFt = idx(u"glonft"_s), iGlatFt = idx(u"glatft"_s);
     QSet<QString> seen;   // dedupe the SED view's repeated rows by band + position
     for (int i = 1; i < lines.size(); ++i) {         // skip header
         const QString line = QString::fromUtf8(lines[i]).trimmed();
         if (line.isEmpty()) continue;
         const QStringList c = line.split(u',');
-        if (c.size() < 2 + 5 * nb) continue;
+        if (c.size() < 2) continue;
         bool okXft = false, okYft = false;
-        const double glonft = c[0].toDouble(&okXft), glatft = c[1].toDouble(&okYft);
+        const double glonft = num(c, iGlonFt, &okXft), glatft = num(c, iGlatFt, &okYft);
         for (int b = 0; b < nb; ++b) {
-            const int base5 = 2 + 5 * b;
+            const QString suffix = bands[b];
             bool gx = false, gy = false, a = false, bb = false, p = false;
-            double glon = c[base5].toDouble(&gx);
-            double glat = c[base5 + 1].toDouble(&gy);
-            const double fa = c[base5 + 2].toDouble(&a);
-            const double fb = c[base5 + 3].toDouble(&bb);
-            const double pa = c[base5 + 4].toDouble(&p);
+            double glon = num(c, idx(u"glon"_s + suffix), &gx);
+            double glat = num(c, idx(u"glat"_s + suffix), &gy);
+            const double fa = num(c, idx(u"fwhma"_s + suffix), &a);
+            const double fb = num(c, idx(u"fwhmb"_s + suffix), &bb);
+            const double pa = num(c, idx(u"pa"_s + suffix), &p);
             if (!a || !bb || !p || fa <= 0.0 || fb <= 0.0) continue;   // not in this band
             // Fall back to the band-merged centroid if this band lacks its own.
             if (!gx || !gy || glon <= -9990.0 || glat <= -9990.0) {
@@ -1318,7 +1507,34 @@ VlkbCatalogueRaw fetchVlkbSources(const QString &base, const QString &adql,
                     .arg(glon, 0, 'f', 5).arg(glat, 0, 'f', 5);
             if (seen.contains(key)) continue;
             seen.insert(key);
-            out.ellipses.push_back({ glon, glat, fa, fb, pa, bands[b], QString() });
+            // A NAME, not "Source 64". The view carries no designation column, but
+            // a Hi-GAL compact source IS named by its Galactic position, so the
+            // standard designation can be written from it: G039.884-0.163, plus
+            // the band, since one physical source yields one ellipse per band.
+            // This also makes "Show Catalogue Labels" do something: it only draws
+            // labels that are non-empty, and every VLKB label was empty.
+            const QString designation =
+                    QStringLiteral("G%1%2%3 (%4)")
+                            .arg(glon, 7, 'f', 3, QLatin1Char('0'))
+                            .arg(glat < 0 ? QLatin1Char('-') : QLatin1Char('+'))
+                            .arg(std::abs(glat), 6, 'f', 3, QLatin1Char('0'))
+                            .arg(vlkbBandLabel(bands[b]));
+            // Everything else this row carries: the columns of THIS band, plus
+            // the ones that belong to no band (they describe the source).
+            QList<QPair<QString, QString>> fields;
+            for (int k = 0; k < header.size() && k < c.size(); ++k) {
+                const QString name = header[k].trimmed();
+                if (name.isEmpty() || isGeometry(name))
+                    continue;
+                const QString owner = bandOfColumn(name);
+                if (!owner.isEmpty() && owner != suffix)
+                    continue;   // another band's column
+                const QString value = c[k].trimmed();
+                if (value.isEmpty() || value == u"-9999"_s || value == u"-9999.0"_s)
+                    continue;
+                fields.append({ name, value });
+            }
+            out.ellipses.push_back({ glon, glat, fa, fb, pa, bands[b], designation, fields });
         }
     }
     out.valid = true;
@@ -1464,18 +1680,33 @@ void vtkWindowImage::runVlkbCatalogueQuery(double glonMin, double glonMax,
     } else {
         // One query returns every band's position + ellipse columns; toggled per
         // band later. Per-band glon/glat centre each band's ellipse on its own peak.
-        QString cols;
+        // Geometry columns we know we need; the rest comes from the view's own
+        // schema, so the SED (the reason this catalogue exists) reaches the table
+        // instead of being left on the server.
+        QString geometryCols;
         for (const QString &b : kVlkbBands)
-            cols += u",glon%1,glat%1,fwhma%1,fwhmb%1,pa%1"_s.arg(b);
-        const QString adql = QStringLiteral(
-                "SELECT glonft,glatft%1 FROM compactsources.sed_view_final "
-                "WHERE glonft BETWEEN %2 AND %3 AND glatft BETWEEN %4 AND %5")
-                .arg(cols).arg(glonMin, 0, 'f', 6).arg(glonMax, 0, 'f', 6)
-                .arg(glatMin, 0, 'f', 6).arg(glatMax, 0, 'f', 6);
+            geometryCols += u",glon%1,glat%1,fwhma%1,fwhmb%1,pa%1"_s.arg(b);
         const QStringList bands = kVlkbBands;
+        const QString table = u"compactsources.sed_view_final"_s;
+        const double lo1 = glonMin, hi1 = glonMax, lo2 = glatMin, hi2 = glatMax;
         this->statusBar()->showMessage(u"Querying VLKB compact sources (all bands)…"_s);
         this->m_vlkbCatWatcher.setFuture(QtConcurrent::run(
-                [vlkbUrl, adql, bands]() { return fetchVlkbSources(vlkbUrl, adql, bands); }));
+                [vlkbUrl, table, geometryCols, bands, lo1, hi1, lo2, hi2]() {
+                    QString schemaError;
+                    const QStringList all = fetchVlkbColumns(vlkbUrl, table, schemaError);
+                    // No schema, no guessing: fall back to the columns this client
+                    // has always asked for, so a service without TAP_SCHEMA still
+                    // gets its overlay.
+                    const QString cols = all.isEmpty() ? u"glonft,glatft"_s + geometryCols
+                                                       : all.join(QStringLiteral(","));
+                    const QString adql =
+                            QStringLiteral("SELECT %1 FROM %2 WHERE glonft BETWEEN %3 AND %4 "
+                                           "AND glatft BETWEEN %5 AND %6")
+                                    .arg(cols, table)
+                                    .arg(lo1, 0, 'f', 6).arg(hi1, 0, 'f', 6)
+                                    .arg(lo2, 0, 'f', 6).arg(hi2, 0, 'f', 6);
+                    return fetchVlkbSources(vlkbUrl, adql, bands);
+                }));
     }
 }
 
@@ -1686,7 +1917,18 @@ void vtkWindowImage::onVlkbCatalogueReady()
         CatalogueOverlayEntry ce;
         ce.frame = CatalogueOverlayEntry::Frame::Image;
         ce.shape = CatalogueOverlayEntry::Shape::Polyline;
+        // The SHAPE is in pixels (that is how the ellipse is built), but the
+        // source still has a sky position, and the table had nothing to show in
+        // its two sky columns because nobody carried it across.
+        ce.raDeg = e.glon;
+        ce.decDeg = e.glat;
+        ce.hasSkyPosition = true;
         ce.band = e.band;
+        ce.extra = e.fields;
+        for (const auto &kv : e.fields) {
+            if (!parsed.extraFields.contains(kv.first))
+                parsed.extraFields.append(kv.first);
+        }
         ce.color = vlkbBandColor(e.band);
         ce.label = e.label;
         for (int i = 0; i <= kEllipseSamples; ++i) {
@@ -1732,8 +1974,9 @@ void vtkWindowImage::onVlkbCatalogueReady()
         if (ui && ui->vtk && ui->vtk->renderWindow())
             ui->vtk->renderWindow()->Render();
         this->ensureVlkbBandPanel();
-    } else if (this->m_vlkbBandPanel) {
-        this->m_vlkbBandPanel->hide();
+    } else {
+        releaseToolSettings(u"Catalogue overlay"_s);
+        refreshToolSettingsPanel(/*reveal=*/false);
     }
 }
 
@@ -1755,22 +1998,22 @@ void vtkWindowImage::ensureVlkbBandPanel()
     for (const QString &b : present)   // any extra bands not in the canonical list
         if (!ordered.contains(b)) ordered.append(b);
 
+    // Which bands are drawn is a PARAMETER of the catalogue overlay, so it goes
+    // where every other tool's parameters go - the Inspector's Parameters tab -
+    // and not in a third dock sharing the right column with the Inspector and
+    // the source table.
     if (ordered.isEmpty()) {
-        if (this->m_vlkbBandPanel) this->m_vlkbBandPanel->hide();
+        releaseToolSettings(u"Catalogue overlay"_s);
+        refreshToolSettingsPanel(/*reveal=*/false);
         return;
     }
 
-    if (!this->m_vlkbBandPanel) {
-        this->m_vlkbBandPanel = new QDockWidget(u"VLKB Bands"_s, this);
-        this->m_vlkbBandPanel->setObjectName(u"vlkbBandPanel"_s);
-        this->m_vlkbBandPanel->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-        this->addDockWidget(Qt::RightDockWidgetArea, this->m_vlkbBandPanel);
-    }
-
-    auto *content = new QWidget(this->m_vlkbBandPanel);
+    auto *content = new QWidget(this);
     auto *layout = new QVBoxLayout(content);
-    layout->setContentsMargins(8, 8, 8, 8);
-    layout->setSpacing(4);
+    layout->setContentsMargins(4, 4, 4, 4);
+    // The rows were 4 px apart with the box hard against the label: nine bands
+    // read as one block. Give them room to be nine separate switches.
+    layout->setSpacing(8);
 
     for (const QString &band : ordered) {
         auto *cb = new QCheckBox(vlkbBandLabel(band), content);
@@ -1784,21 +2027,20 @@ void vtkWindowImage::ensureVlkbBandPanel()
         // that is too light so the text stays readable while keeping its band hue.
         for (int guard = 0; col.lightnessF() > 0.6 && guard < 8; ++guard)
             col = col.darker(130);
-        cb->setStyleSheet(u"QCheckBox { color: %1; font-weight: bold; }"_s.arg(col.name()));
+        cb->setStyleSheet(u"QCheckBox { color: %1; font-weight: bold; spacing: 8px; }"_s
+                                  .arg(col.name()));
         QObject::connect(cb, &QCheckBox::toggled, this,
                          [this, band](bool on) { this->toggleVlkbBand(band, on); });
         layout->addWidget(cb);
     }
     layout->addStretch(1);
-    // setWidget() reparents but does NOT delete the previous content widget, so
-    // grab it first and schedule it for deletion to avoid accumulating stale
-    // (hidden) widgets on every refresh.
-    QWidget *oldContent = this->m_vlkbBandPanel->widget();
-    this->m_vlkbBandPanel->setWidget(content);
+    // Rebuilt on every refresh (the band list can change), so the previous one
+    // is retired rather than left to accumulate hidden.
+    QWidget *oldContent = this->m_vlkbBandContent;
+    this->m_vlkbBandContent = content;
+    claimToolSettings(u"Catalogue overlay"_s, content);
     if (oldContent && oldContent != content)
         oldContent->deleteLater();
-    this->m_vlkbBandPanel->show();
-    this->m_vlkbBandPanel->raise();
 }
 
 // Show/hide all sources of a given band and re-render.

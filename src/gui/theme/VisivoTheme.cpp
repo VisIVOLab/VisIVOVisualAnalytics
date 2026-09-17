@@ -1040,6 +1040,21 @@ QString darkStyleSheet()
             "  background-color: #048ABF; border-color: #048ABF;"
             "  image: url(:/icons/check.svg);"
             "}"
+            // An item view's check box is the SAME control as a QCheckBox and has
+            // to look like one: without these rules the list fell back to the
+            // platform style, so a visible layer showed a filled square while the
+            // band filter next to it showed a tick. The explicit box also fixes
+            // the vertical placement - the indicator was drawn at the top of a
+            // 36 px row while the label sat centred.
+            "QAbstractItemView::indicator {"
+            "  width: 16px; height: 16px; border-radius: 3px;"
+            "  border: 1px solid #4A5257; background-color: transparent;"
+            "}"
+            "QAbstractItemView::indicator:checked {"
+            "  background-color: #048ABF; border-color: #048ABF;"
+            "  image: url(:/icons/check.svg);"
+            "}"
+            "QAbstractItemView::indicator:hover { border-color: #048ABF; }"
             "QRadioButton::indicator:hover, QCheckBox::indicator:hover {"
             "  border-color: #048ABF;"
             "}"

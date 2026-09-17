@@ -740,7 +740,10 @@ void vtkWindowCube::ensureCatalogueDock()
     this->catalogueTableView->verticalHeader()->setVisible(false);
     this->catalogueTableView->horizontalHeader()->setStretchLastSection(true);
     this->catalogueDock->setWidget(this->catalogueTableView);
-    this->addDockWidget(Qt::RightDockWidgetArea, this->catalogueDock);
+    // Bottom, not right: docks in one area share their width, so in the right
+    // column this table was squeezed to the rail width whenever the Inspector
+    // was collapsed - and a table wants width anyway.
+    this->addDockWidget(Qt::BottomDockWidgetArea, this->catalogueDock);
     this->catalogueDock->hide();
 
     QObject::connect(this, &vtkWindowCube::catalogueSourceSelectionChanged, this,

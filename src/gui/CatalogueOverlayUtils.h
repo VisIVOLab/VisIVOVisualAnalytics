@@ -30,6 +30,9 @@ struct CatalogueOverlayEntry
     Shape shape{ Shape::Marker };
     double raDeg{ 0.0 };
     double decDeg{ 0.0 };
+    /// True when raDeg/decDeg hold a real position. An Image-frame entry (a
+    /// shape built in pixels) can still know where it is on the sky.
+    bool hasSkyPosition{ false };
     double pixelX{ 0.0 };
     double pixelY{ 0.0 };
     double radiusX{ 0.0 };
@@ -39,6 +42,11 @@ struct CatalogueOverlayEntry
     std::array<double, 3> color{ -1.0, -1.0, -1.0 };  ///< per-entry RGB; <0 = default actor colour
     QString band;    ///< group tag (e.g. VLKB band "250") for per-group visibility toggles
     QString label;
+    /// Every field of the source row we did not interpret ourselves, in the
+    /// order the file gave them. A catalogue is not four numbers and a name: the
+    /// fluxes, errors and flags next to them are usually the reason it was
+    /// opened, and they used to be parsed and thrown away.
+    QList<QPair<QString, QString>> extra;
 };
 
 struct CatalogueOverlayParseResult
@@ -49,6 +57,9 @@ struct CatalogueOverlayParseResult
     QString sourceLabel;
     int skippedEntries{ 0 };
     std::vector<CatalogueOverlayEntry> entries;
+    /// Union of the extra field names, in first-seen order: the columns a table
+    /// should add after the ones every catalogue has.
+    QStringList extraFields;
 };
 
 // Raw VLKB catalogue query result, in Galactic coordinates (deg). The network
@@ -59,7 +70,14 @@ struct VlkbCatalogueRaw
     bool valid{ false };
     QString error;
     QString sourceLabel;
-    struct Ellipse { double glon, glat, fwhmaArcsec, fwhmbArcsec, paDeg; QString band; QString label; };
+    struct Ellipse {
+        double glon, glat, fwhmaArcsec, fwhmbArcsec, paDeg;
+        QString band;
+        QString label;
+        /// The row's other columns (fluxes, flags…), already filtered to the ones
+        /// that belong to this band or to no band at all.
+        QList<QPair<QString, QString>> fields;
+    };
     struct Polyline { std::vector<std::array<double, 2>> pts; QString label; };  // (glon,glat)
     std::vector<Ellipse> ellipses;
     std::vector<Polyline> polylines;
@@ -139,6 +157,18 @@ inline CatalogueOverlayParseResult parseCsv(const QString &path)
         entry.decDeg = dec;
         if (labelIndex >= 0 && labelIndex < cols.size()) {
             entry.label = cols.at(labelIndex).trimmed();
+        }
+        // …and everything else the row carries, under its own header.
+        for (int c = 0; c < cols.size() && c < headers.size(); ++c) {
+            if (c == raIndex || c == decIndex || c == labelIndex)
+                continue;
+            const QString key = headers.at(c).trimmed();
+            const QString value = cols.at(c).trimmed();
+            if (key.isEmpty() || value.isEmpty())
+                continue;
+            entry.extra.append({ key, value });
+            if (!result.extraFields.contains(key))
+                result.extraFields.append(key);
         }
         result.entries.push_back(entry);
     }
@@ -230,6 +260,28 @@ inline CatalogueOverlayParseResult parseDs9(const QString &path)
 
         CatalogueOverlayEntry entry;
         entry.label = label;
+        // Every other key=value attribute on the line, which is where a source
+        // finder puts what it measured (flux, snr, fit flags…). Only `text` is
+        // consumed above; the rest used to be dropped with the comment.
+        {
+            static const QRegularExpression attrRe(
+                    QStringLiteral("([A-Za-z_][A-Za-z0-9_.]*)\\s*=\\s*(\\{[^}]*\\}|\"[^\"]*\"|[^\\s]+)"));
+            auto it = attrRe.globalMatch(rawLine.section(u'#', 1));
+            while (it.hasNext()) {
+                const auto m = it.next();
+                const QString key = m.captured(1).trimmed();
+                if (key.compare(QStringLiteral("text"), Qt::CaseInsensitive) == 0)
+                    continue;
+                QString value = m.captured(2).trimmed();
+                if (value.size() >= 2 && (value.front() == u'{' || value.front() == u'"'))
+                    value = value.mid(1, value.size() - 2).trimmed();
+                if (key.isEmpty() || value.isEmpty())
+                    continue;
+                entry.extra.append({ key, value });
+                if (!result.extraFields.contains(key))
+                    result.extraFields.append(key);
+            }
+        }
         if (currentFrame == QStringLiteral("image")) {
             bool okX = false;
             bool okY = false;

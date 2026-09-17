@@ -148,6 +148,12 @@ private slots:
     void setInteractorStyleRegion();
     void toggleProbeFreeze();
     void finishRegionInteraction();
+    /// Double-click on the image: if a catalogue source is under the cursor,
+    /// select it and zoom to it (the table's double-click already did this).
+    void zoomToCatalogueSourceUnderCursor();
+    /// Write the loaded overlay to CSV: what is on screen, with the sky frame
+    /// named in the header rather than implied.
+    void exportCatalogueOverlay();
     void setProbeModeActive(bool active);
     void beginImageInteraction();
     void endImageInteraction();
@@ -385,6 +391,9 @@ private:
     /// length scale, shown while the vectors are on.
     QWidget *buildPolVectorSettingsBlock();
     QPointer<QWidget> m_polVecSettingsBlock;
+    /// Band filter of the catalogue overlay, rebuilt whenever the band set
+    /// changes and mounted as that tool's settings.
+    QPointer<QWidget> m_vlkbBandContent;
     /// Tools whose settings are currently claimable, most recently switched on
     /// LAST. Turning one off must hand the panel back to whichever is still on,
     /// not blank it: contours on, vectors on, vectors off used to leave the
@@ -435,12 +444,19 @@ private:
     QSet<QString> m_vlkbHiddenBands;                      ///< bands toggled off
     void toggleVlkbBand(const QString &band, bool visible);   ///< show/hide a band's sources
     void ensureVlkbBandPanel();                          ///< dock with a checkbox per present band
-    QPointer<QDockWidget> m_vlkbBandPanel;
     std::vector<int> catalogueOverlaySourceFirstPolyline;
     std::vector<int> catalogueOverlaySourcePolylineCount;
     std::vector<int> catalogueOverlayLabelIndices;
     QStringList catalogueOverlayLabels;
     QString catalogueOverlaySummary;
+    /// Sky frame of the loaded overlay ("Galactic", "ICRS", …): the table's two
+    /// sky columns are captioned from it.
+    QString catalogueOverlayFrameLabel;
+    /// The loaded catalogue's own field names, in file order.
+    QStringList catalogueOverlayExtraFields;
+    /// True while a selection change originated in the table, so the sync back
+    /// does not scroll the view the user is clicking in.
+    bool m_catalogueSelectionFromTable{ false };
     int hoveredCatalogueSourceIndex{ -1 };
     int selectedCatalogueSourceIndex{ -1 };
     double regionAnnulusInnerRadius{ 0.0 };
@@ -774,6 +790,9 @@ private:
     double m_polVecScale{ 1.0 };
     double m_polVecSnrMin{ 3.0 };
 
+    QPointer<QAction> m_actExportCatalogue;
+    QPointer<QAction> m_actVlkbSources;
+    QPointer<QAction> m_actVlkbFilaments;
     QPointer<QAction> m_actLoadStokesCompanions;
     QPointer<QAction> m_actComputeStokesP;
     QPointer<QAction> m_actComputeStokesPA;

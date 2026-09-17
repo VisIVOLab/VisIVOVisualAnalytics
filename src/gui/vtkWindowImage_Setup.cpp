@@ -212,6 +212,11 @@ void vtkWindowImage::setupRenderer()
                                       &vtkWindowImage::finishRegionInteraction);
     win->GetInteractor()->AddObserver(vtkCommand::LeftButtonDoubleClickEvent, this,
                                       &vtkWindowImage::finishRegionInteraction);
+    // Double-click on a catalogue source zooms to it, the same gesture the table
+    // already had. A single click selects and highlights it (that already
+    // worked); this is the other half of "point at it, look closer".
+    win->GetInteractor()->AddObserver(vtkCommand::LeftButtonDoubleClickEvent, this,
+                                      &vtkWindowImage::zoomToCatalogueSourceUnderCursor);
     // Viewport-driven LOD: when a camera interaction (pan / zoom) ends, re-arm a
     // short debounce; if the view settled on a different region/zoom we stream
     // the visible tiles at the appropriate pyramid level.
@@ -580,7 +585,12 @@ void vtkWindowImage::setupInspector()
     // Design #1d: layer/catalogue (view) controls live in the LEFT column's
     // LAYERS block; only info/stats stays in the Inspector Properties.
     if (this->m_inspectorPageLayer)     this->m_workspaceChrome->addSessionLayers(this->m_inspectorPageLayer);
-    if (this->m_inspectorPageCatalogue) this->m_workspaceChrome->addSessionLayers(this->m_inspectorPageCatalogue);
+    // No catalogue block in the left column any more: its two buttons were tools
+    // and moved to the tool table. The page stays parked with the others.
+    if (this->m_inspectorPageCatalogue) {
+        this->m_inspectorPageCatalogue->setParent(panel);
+        this->m_inspectorPageCatalogue->hide();
+    }
     // Contour settings are a TOOL's parameters, not a permanent view control:
     // they are built here, parked hidden, and mounted in the Inspector's
     // Parameters tab while the tool is on (setContoursVisible). One place for
@@ -851,6 +861,9 @@ QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
     add(u"Catalogue"_s, self->actionShowCatalogueOverlay);
     add(u"Catalogue"_s, self->actionShowCatalogueLabels);
     add(u"Catalogue"_s, self->actionClearCatalogueOverlay);
+    add(u"Catalogue"_s, self->m_actVlkbSources);
+    add(u"Catalogue"_s, self->m_actVlkbFilaments);
+    add(u"Catalogue"_s, self->m_actExportCatalogue);
 
     add(u"Contours"_s, self->m_actToggleContours);
     add(u"Contours"_s, self->m_actLoadExternalContour);
@@ -1895,46 +1908,41 @@ void vtkWindowImage::setupSidebar()
 
     infoLayout->addStretch(1);
 
-    // VLKB catalogue overlays: compact sources / filaments over the image footprint.
-    // These query the Hi-GAL / VLKB compact-source and filament catalogues over
-    // this image's footprint, so they need celestial coordinates to place the
-    // results on. They used to be enabled always and explain themselves only
-    // AFTER the click, in a warning box — the same "say why before, not after"
-    // rule the cube's tool gate follows.
+    // VLKB catalogue overlays: compact sources / filaments over the image
+    // footprint. They are TOOLS - they query the Hi-GAL / VLKB catalogues and
+    // produce an overlay, a source table and a product - so they belong with
+    // the other tools (Tools menu + Inspector ▸ Analysis, from imageTools()),
+    // not as two loose buttons in the left column, which answers "how is this
+    // view drawn". As buttons they were also reachable from ONE surface only,
+    // the same way Profile was.
     {
         const bool celestial = this->remoteHasCelestialAxes();
-        for (QPushButton *b : { ui->btnSources, ui->btnFilaments }) {
-            if (!b)
-                continue;
-            b->setEnabled(celestial);
-            if (!celestial)
-                b->setToolTip(u"This image has no celestial WCS, so there is no sky "
-                              u"position to query the catalogue over."_s);
-        }
-        if (celestial) {
-            if (ui->btnSources)
-                ui->btnSources->setToolTip(
-                        u"Overlay the VLKB compact sources that fall inside this "
-                        u"image's footprint."_s);
-            if (ui->btnFilaments)
-                ui->btnFilaments->setToolTip(
-                        u"Overlay the VLKB filaments that cross this image's footprint."_s);
-        } else if (ui->layoutPageCatalogue) {
-            // Qt delivers no ToolTip event to a disabled widget, so the reason
-            // set above is unreachable exactly when it is needed. Print it.
-            auto *why = new QLabel(u"No celestial WCS in this image, so there is no sky "
-                                   u"position to query the catalogue over."_s,
-                                   ui->pageCatalogue);
-            why->setWordWrap(true);
-            why->setStyleSheet(VisivoTheme::infoKeyStyleSheet());
-            ui->layoutPageCatalogue->addWidget(why);
-        }
-    }
+        const QString noWcs = u"This image has no celestial WCS, so there is no sky "
+                              u"position to query the catalogue over."_s;
+        m_actVlkbSources = ui->menuTools->addAction(u"Overlay VLKB Compact Sources"_s);
+        m_actVlkbSources->setEnabled(celestial);
+        m_actVlkbSources->setToolTip(
+                celestial ? u"Overlay the VLKB compact sources that fall inside this "
+                            u"image's footprint."_s
+                          : noWcs);
+        QObject::connect(m_actVlkbSources, &QAction::triggered, this,
+                         &vtkWindowImage::overlayVlkbSources);
 
-    QObject::connect(ui->btnSources, &QPushButton::clicked, this,
-                     &vtkWindowImage::overlayVlkbSources);
-    QObject::connect(ui->btnFilaments, &QPushButton::clicked, this,
-                     &vtkWindowImage::overlayVlkbFilaments);
+        m_actExportCatalogue = ui->menuTools->addAction(u"Export Catalogue…"_s);
+        m_actExportCatalogue->setToolTip(
+                u"Write the loaded catalogue overlay to CSV: names, positions in "
+                u"the overlay's own sky frame, pixel coordinates and shapes."_s);
+        QObject::connect(m_actExportCatalogue, &QAction::triggered, this,
+                         &vtkWindowImage::exportCatalogueOverlay);
+
+        m_actVlkbFilaments = ui->menuTools->addAction(u"Overlay VLKB Filaments"_s);
+        m_actVlkbFilaments->setEnabled(celestial);
+        m_actVlkbFilaments->setToolTip(
+                celestial ? u"Overlay the VLKB filaments that cross this image's footprint."_s
+                          : noWcs);
+        QObject::connect(m_actVlkbFilaments, &QAction::triggered, this,
+                         &vtkWindowImage::overlayVlkbFilaments);
+    }
     QObject::connect(&this->m_vlkbCatWatcher, &QFutureWatcher<VlkbCatalogueRaw>::finished, this,
                      &vtkWindowImage::onVlkbCatalogueReady);
 

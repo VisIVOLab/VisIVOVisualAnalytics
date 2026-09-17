@@ -92,14 +92,40 @@ else ()
     endif ()
 endif ()
 
-get_target_property(cfitsio_include_dirs CFITSIO::cfitsio INTERFACE_INCLUDE_DIRECTORIES)
-if (cfitsio_include_dirs)
-    list(FILTER cfitsio_include_dirs EXCLUDE REGEX
-            "^/Library/Developer/CommandLineTools/SDKs/.*/usr/include$")
-    set_target_properties(CFITSIO::cfitsio PROPERTIES
-            INTERFACE_INCLUDE_DIRECTORIES "${cfitsio_include_dirs}"
-    )
-endif ()
+# An SDK's own /usr/include must never be handed to the compiler as an include
+# directory: the C <math.h> found that way defines isfinite/isnan as MACROS
+# after <cmath> has undefined them, and every std::isfinite in the codebase
+# stops compiling ("expected unqualified-id") in headers nobody has touched.
+#
+# This used to be a one-target, one-path workaround (cfitsio, Command Line
+# Tools). An Xcode upgrade showed both halves were too narrow: the path moved to
+# /Applications/Xcode.app/.../SDKs/MacOSX.sdk/usr/include, and the target that
+# carried it was Qt6::PrintSupport (it wants the SDK's CUPS headers, and pins
+# the SDK it was built against). Strip it wherever it appears: the sysroot
+# already provides those headers through the proper mechanism.
+function(visivo_strip_sdk_usr_include target)
+    if (NOT TARGET ${target})
+        return()
+    endif ()
+    get_target_property(_inc ${target} INTERFACE_INCLUDE_DIRECTORIES)
+    if (NOT _inc)
+        return()
+    endif ()
+    set(_kept "${_inc}")
+    list(FILTER _kept EXCLUDE REGEX "/SDKs/[^/]*\\.sdk/usr/include$")
+    if (NOT "${_kept}" STREQUAL "${_inc}")
+        set_target_properties(${target} PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${_kept}")
+        message(STATUS "Stripped an SDK /usr/include from ${target}")
+    endif ()
+endfunction()
+
+visivo_strip_sdk_usr_include(CFITSIO::cfitsio)
+# Cups::Cups is where it hides on macOS: Qt6::PrintSupport links it, and its
+# headers live in the SDK's /usr/include, so the whole directory came along.
+visivo_strip_sdk_usr_include(Cups::Cups)
+foreach (_qt_comp IN LISTS qt_components)
+    visivo_strip_sdk_usr_include(Qt6::${_qt_comp})
+endforeach ()
 
 # ── Phase 3 SSR transport: H.265 / WebRTC via libdatachannel ────────────────
 #

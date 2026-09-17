@@ -1111,6 +1111,29 @@ void vtkWindowImage::rebuildPolarizationVectors()
 
 void vtkWindowImage::setPolVectorsVisible(bool vis)
 {
+    // Without Q and U there is nothing to draw, and the toggle used to switch on
+    // and show an empty image with its parameters beside it - the tool looked
+    // broken rather than inapplicable. Say which layers are missing, and put the
+    // toggle back where it was.
+    if (vis) {
+        const bool haveQ = findLayerByStokesRole(StokesRole::Q) >= 0;
+        const bool haveU = findLayerByStokesRole(StokesRole::U) >= 0;
+        if (!haveQ || !haveU) {
+            const QString missing = !haveQ && !haveU ? u"Q and U"_s : (!haveQ ? u"Q"_s : u"U"_s);
+            statusBar()->showMessage(
+                    u"Polarisation vectors need Stokes %1: load the companions first "
+                    u"(Tools ▸ Load Stokes Q/U/V Companions…)."_s.arg(missing), 6000);
+            if (m_actTogglePolVecs && m_actTogglePolVecs->isChecked()) {
+                const QSignalBlocker block(m_actTogglePolVecs);
+                m_actTogglePolVecs->setChecked(false);
+            }
+            m_polVecsVisible = false;
+            m_polVecActor->VisibilityOff();
+            if (ui->vtk->renderWindow())
+                ui->vtk->renderWindow()->Render();
+            return;
+        }
+    }
     m_polVecsVisible = vis;
     if (vis) {
         rebuildPolarizationVectors();

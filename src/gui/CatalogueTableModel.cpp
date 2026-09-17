@@ -15,6 +15,15 @@ QString catalogueShapeName(CatalogueOverlayEntry::Shape shape)
 
 CatalogueTableModel::CatalogueTableModel(QObject *parent) : QAbstractTableModel(parent) {}
 
+void CatalogueTableModel::setFrameLabel(const QString &frameLabel)
+{
+    if (m_frameLabel == frameLabel)
+        return;
+    m_frameLabel = frameLabel;
+    emit headerDataChanged(Qt::Horizontal, static_cast<int>(Column::RA),
+                           static_cast<int>(Column::Dec));
+}
+
 void CatalogueTableModel::setEntries(const std::vector<CatalogueOverlayEntry> *newEntries)
 {
     beginResetModel();
@@ -35,7 +44,16 @@ int CatalogueTableModel::columnCount(const QModelIndex &parent) const
     if (parent.isValid()) {
         return 0;
     }
-    return 8;
+    return kFixedColumns + static_cast<int>(m_extraFields.size());
+}
+
+void CatalogueTableModel::setExtraFields(const QStringList &fields)
+{
+    if (m_extraFields == fields)
+        return;
+    beginResetModel();
+    m_extraFields = fields;
+    endResetModel();
 }
 
 QVariant CatalogueTableModel::data(const QModelIndex &index, int role) const
@@ -46,6 +64,25 @@ QVariant CatalogueTableModel::data(const QModelIndex &index, int role) const
     }
 
     const CatalogueOverlayEntry &entry = this->entries->at(static_cast<std::size_t>(index.row()));
+    if (index.column() >= kFixedColumns) {
+        // A field of the catalogue itself: looked up by name, because not every
+        // row carries every field.
+        if (role != Qt::DisplayRole && role != Qt::TextAlignmentRole)
+            return {};
+        const QString key = m_extraFields.value(index.column() - kFixedColumns);
+        for (const auto &kv : entry.extra) {
+            if (kv.first == key) {
+                if (role == Qt::TextAlignmentRole) {
+                    bool numeric = false;
+                    kv.second.toDouble(&numeric);
+                    return static_cast<int>((numeric ? Qt::AlignRight : Qt::AlignLeft)
+                                            | Qt::AlignVCenter);
+                }
+                return kv.second;
+            }
+        }
+        return {};
+    }
     const auto column = static_cast<Column>(index.column());
 
     if (role == Qt::TextAlignmentRole) {
@@ -68,11 +105,15 @@ QVariant CatalogueTableModel::data(const QModelIndex &index, int role) const
                                                : entry.label.trimmed();
     case Column::Type:
         return catalogueShapeName(entry.shape);
+    // A sky position, when the entry has one - which is not the same question as
+    // "is the SHAPE in sky coordinates". A VLKB ellipse is drawn in pixels and
+    // still knows its Galactic centre; the two columns used to be empty for
+    // every such source.
     case Column::RA:
-        return entry.frame == CatalogueOverlayEntry::Frame::Sky
+        return entry.frame == CatalogueOverlayEntry::Frame::Sky || entry.hasSkyPosition
                 ? QString::number(entry.raDeg, 'f', 5) : QVariant{};
     case Column::Dec:
-        return entry.frame == CatalogueOverlayEntry::Frame::Sky
+        return entry.frame == CatalogueOverlayEntry::Frame::Sky || entry.hasSkyPosition
                 ? QString::number(entry.decDeg, 'f', 5) : QVariant{};
     case Column::X:
         return QString::number(entry.pixelX, 'f', 2);
@@ -100,6 +141,9 @@ QVariant CatalogueTableModel::headerData(int section, Qt::Orientation orientatio
     if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
         return QAbstractTableModel::headerData(section, orientation, role);
     }
+    if (section >= kFixedColumns) {
+        return m_extraFields.value(section - kFixedColumns);
+    }
 
     switch (static_cast<Column>(section)) {
     case Column::Name:
@@ -107,9 +151,13 @@ QVariant CatalogueTableModel::headerData(int section, Qt::Orientation orientatio
     case Column::Type:
         return QStringLiteral("Type");
     case Column::RA:
-        return QStringLiteral("RA (deg)");
+        // Naming the columns after the frame the numbers are in: a Galactic
+        // catalogue under an "RA (deg)" header is simply mislabelled data.
+        return m_frameLabel.compare(QStringLiteral("Galactic"), Qt::CaseInsensitive) == 0
+                ? QStringLiteral("GLON (deg)") : QStringLiteral("RA (deg)");
     case Column::Dec:
-        return QStringLiteral("Dec (deg)");
+        return m_frameLabel.compare(QStringLiteral("Galactic"), Qt::CaseInsensitive) == 0
+                ? QStringLiteral("GLAT (deg)") : QStringLiteral("Dec (deg)");
     case Column::X:
         return QStringLiteral("X");
     case Column::Y:
