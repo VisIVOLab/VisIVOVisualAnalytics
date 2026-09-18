@@ -131,15 +131,85 @@ state toggles plus one one-shot loader:
     again to bring it back.
 ```
 
-The overlay also drives a dock-window table:
-
-- Click a row → centre the view on the source (smooth fly-in animation).
-- Hover a glyph → highlight the matching row in the table.
-- Right-click selection → send via SAMP (see below).
-
 The overlay respects the viewer's WCS frame (J2000 / Galactic / Ecliptic);
 each source is projected through `wcscon()` so you see the same point
 regardless of the active frame.
+
+### Querying the VLKB directly
+
+In the image viewer you do not need a file at all. Two actions — *Tools →
+**Overlay VLKB Compact Sources*** and *Tools → **Overlay VLKB Filaments*** (also
+in the sidebar's **Catalogue** card) — query the VLKB over the footprint of the
+image, or over a rectangle you drag on it, and overlay the result:
+
+- **Compact sources** → `compactsources.sed_view_final`, the Hi-GAL band-merged
+  catalogue. One query brings back every band; per-band ellipses are centred on
+  each band's own peak, and the band toggles let you show one wavelength at a
+  time.
+- **Filaments** → `filaments.filaments`, drawn as contours.
+
+Both need a celestial WCS: without one there is no sky position to query over,
+and the actions are disabled with that explanation in their tooltip.
+
+The query is `SELECT *`: the whole row comes back and the client reads it by
+name from the response header. That is deliberate — the fluxes per band are the
+reason the catalogue exists, naming the columns explicitly would need a
+`TAP_SCHEMA` round trip, and one of them (`distance`) is an ADQL reserved word
+that makes the service answer 400 unless quoted.
+
+### The catalogue table
+
+The overlay drives a table dock at the bottom of the window.
+
+- **Names** are the catalogue's own designations, not `Source 1`, `Source 2`.
+- **RA / Dec** are shown for every entry that has a sky position — including
+  shapes drawn in pixels, which still know where they are on the sky.
+- **Every field the catalogue carries** is a column: the fluxes, errors,
+  backgrounds and flags next to the position, not just the four numbers needed
+  to draw a glyph. Columns appear in the file's own order after the fixed ones.
+- **Size / angle** appear when the catalogue gives a shape.
+
+Interaction:
+
+```{list-table}
+:header-rows: 1
+:widths: 34 66
+
+* - Action
+  - Result
+* - Click a row
+  - Highlights that source in the image (the view does not move, and the table
+    does not scroll out from under the pointer).
+* - Double-click a row, or double-click a source in the image
+  - Zooms to it.
+* - Hover a glyph
+  - Highlights the matching row.
+* - Right-click a row
+  - *Fit SED of this source…* and *Zoom to this source*.
+* - *Tools → Export Catalogue…*
+  - Writes what is on screen to CSV — names, positions in the overlay's own sky
+    frame (named in the header rather than implied), pixel coordinates, shapes
+    and every extra field.
+```
+
+For a **band-merged** catalogue the table is a tree: the band-merged source is
+the parent row, and its per-band detections are children under the usual
+disclosure arrow. A flat catalogue — a plain CSV, a ds9 region file — has no
+children and stays exactly the flat table it always was, with no expander
+column.
+
+```{note}
+The CSV reader is quote-aware and reads **records**, not lines: a quoted
+comma does not shift the columns, and a value — or a header — that spans
+several lines stays one field. A truncated last row is skipped and
+counted, and the count is reported rather than folded into the "loaded"
+message, so a file that lost rows does not look like one that did not.
+```
+
+Right-clicking a source and choosing *Fit SED of this source…* builds its SED
+from the whole band-merged family (or, for a flat catalogue, from the row's own
+flux columns) and opens the fitting window — see
+[SED fitting](sed-fitting).
 
 ```{tip}
 **Workflow sequence**: *Load* once to bring sources in → toggle *Show
@@ -220,6 +290,8 @@ window or via the Command Palette.
 
 ## See also
 
+- [SED fitting](sed-fitting) — turning a band-merged source's fluxes into a
+  mass, a dust temperature and a luminosity.
 - Developer reference: [`/v1/catalogue/*`](../backend-api#catalogue),
   [`/v1/hips/*`](../backend-api#hips), [`/v1/samp/*`](../backend-api#samp).
 - [Catalogue 3-D viewer technical reference](../catalogue3d-viewer) — for

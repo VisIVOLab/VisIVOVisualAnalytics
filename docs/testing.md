@@ -6,26 +6,34 @@ QTest-based headless unit suite under `tests/`. No VTK, no Qt::Widgets, no live 
 
 ```
 tests/
-  CMakeLists.txt              # visivo_test_support + VisIVOTests
-  main.cpp                    # QCoreApplication + QTest::qExec for each class
-  Test<Name>.h                # Q_OBJECT test class declaration (one per area)
-  test_backendclient.cpp        # 30 — result parsing, open response, image tiles
-  test_catalogue_parser.cpp     # 35 — redshift/distance field detection, distances
-  test_backend_routing.cpp      # 13 — Settings backend registry + SKAVA routing
-  test_image_lod.cpp            # 21 — viewport LOD math (level select + visible tiles)
-  test_analysis_param_store.cpp #  8 — per-dataset dialog parameter persistence
-  test_backend_contract.cpp     #  4 — shared header manifest ↔ client constants
-  test_remote_slice_cache.cpp   # 11 — slice cache keying + eviction
-  test_linked_window_registry.cpp #  8 — linked-views registry lifetime
-  test_spectral_unit_convert.cpp  # 22 — unit parsing + rest-frame → axis placement
-  test_cube_region_geom.cpp     # 17 — ROI hit-testers (box/circle/polygon/annulus)
-  test_cube_tool_gate.cpp       # 11 — CubeToolGate: which tools may act, and why not
-  test_spectral_axis_infer.cpp  # 16 — spectral-axis descriptor inference
-  test_kinematic_level_field.cpp # 19 — kinematic-lasso level field
-  test_ray_voxel_pick.cpp       # 18 — 3-D ray → voxel picking
+  CMakeLists.txt                   # visivo_test_support + VisIVOTests
+  main.cpp                         # QCoreApplication + QTest::qExec for each class
+  Test<Name>.h                     # Q_OBJECT test class declaration (one per area)
+  test_backendclient.cpp           # 34 — result parsing, open response, image tiles
+  test_catalogue_parser.cpp        # 35 — redshift/distance field detection, distances
+  test_backend_routing.cpp         # 13 — Settings backend registry + SKAVA routing
+  test_image_lod.cpp               # 24 — viewport LOD math (level select + visible tiles)
+  test_analysis_param_store.cpp    #  8 — per-dataset dialog parameter persistence
+  test_backend_contract.cpp        #  4 — shared header manifest ↔ client constants
+  test_remote_slice_cache.cpp      # 11 — slice cache keying + eviction
+  test_linked_window_registry.cpp  #  8 — linked-views registry lifetime
+  test_spectral_unit_convert.cpp   # 25 — unit parsing + rest-frame → axis placement
+  test_cube_region_geom.cpp        # 20 — ROI hit-testers (box/circle/polygon/annulus)
+  test_cube_tool_gate.cpp          # 11 — CubeToolGate: which tools may act, and why not
+  test_tool_result_record.cpp      #  8 — reopening a tool result exactly as it was
+  test_product_origin.cpp          # 15 — where a measurement was taken (region / voxel)
+  test_catalogue_csv.cpp           # 11 — quoting, multi-line records, truncated files
+  test_fits_header_string.cpp      #  6 — header cards → 80-column FITS header string
+  test_stokes_companion.cpp        #  9 — Stokes Q/U/V companion filename matching
+  test_spectral_axis_infer.cpp     # 16 — spectral-axis descriptor inference
+  test_kinematic_level_field.cpp   # 19 — kinematic-lasso level field
+  test_ray_voxel_pick.cpp          # 18 — 3-D ray → voxel picking
+  test_sed_builder.cpp             # 19 — SED from catalogue rows: band-merged groups, flux columns, units
 ```
 
-Total: **233 tests** in one binary (`ctest -V` prints the per-class totals).
+Total: **314 tests** in one binary, as QTest counts them — each class
+contributes its own `initTestCase` / `cleanupTestCase` to that figure.
+`ctest -V` prints the per-class totals.
 
 What belongs here: pure logic lifted out of the GUI classes so it can be
 checked without a display — parsers, geometry, unit conversions, and decision
@@ -33,6 +41,22 @@ tables such as `CubeToolGate` (which tools may act on what is on screen) or
 `SpectralUnitConvert` (where a rest-frame line lands on a given spectral axis).
 Both of those were extracted precisely because the only previous way to check
 them was to open the app and look at thirty buttons.
+
+The same reasoning drives `SedBuilder` (`test_sed_builder.cpp`): reading a SED
+out of a catalogue is a pile of column-name rules, and a misread column does not
+crash — it produces a fit that runs and is wrong. The rules therefore live in a
+header with no widgets in it, where they can be checked directly.
+
+The **backend** has its own pytest suite under `backend/tests/`. Two of its files
+are worth knowing about when touching the science: `test_sed_fit.py` (61 tests)
+round-trips greybody fits against synthetic SEDs and checks the Δχ² = 1
+uncertainty against its closed-form value, and `test_contract.py` pins the REST
+route list the desktop client depends on — **add an endpoint and it fails until
+you regenerate the snapshot**:
+
+```
+backend/.venv/bin/python backend/scripts/gen_contract.py
+```
 
 ---
 

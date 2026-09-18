@@ -77,6 +77,14 @@ Line-width (FWHM + EW) maps, baseline subtraction, spectral stacking
 across multiple cubes.
 :::
 
+:::{grid-item-card} 🔭 SED fitting
+:link: user-guide/sed-fitting
+:link-type: doc
+
+Greybody fits of a compact source's photometry: mass, dust temperature,
+β, L_bol, plus the VLKB theoretical-model grid.
+:::
+
 :::{grid-item-card} ✏️ Regions, PV, noise
 :link: user-guide/region-pv-noise
 :link-type: doc
@@ -167,6 +175,7 @@ user-guide/region-pv-noise
 user-guide/kinematic-lasso
 user-guide/source-finding
 user-guide/catalogues-hips
+user-guide/sed-fitting
 user-guide/skava-discovery
 user-guide/publication-output
 user-guide/copilot
@@ -317,6 +326,26 @@ every tool together with the page that documents its scientific use.
   - **Tools → Clear Catalogue Overlay**
   - Glyphs + table dock removed
   - [Catalogues · Overlay](user-guide/catalogues-hips#catalogue-overlay-on-cubes--images)
+* - Overlay VLKB compact sources / filaments without a file
+  - **Tools → Overlay VLKB Compact Sources** / **Overlay VLKB Filaments**
+  - Band-merged sources (all bands) or filament contours over the image footprint
+  - [Catalogues · VLKB](user-guide/catalogues-hips#querying-the-vlkb-directly)
+* - Export the overlay on screen
+  - **Tools → Export Catalogue…**
+  - CSV with the sky frame named in the header
+  - [Catalogues · The catalogue table](user-guide/catalogues-hips#the-catalogue-table)
+* - **SED FITTING**
+  -
+  -
+  -
+* - Fit a compact source's SED (mass, dust temperature, β, L_bol)
+  - Right-click a source in the catalogue table → **Fit SED of this source…**
+  - Optically thin / thick greybody fit + product in Session Data
+  - [SED fitting](user-guide/sed-fitting)
+* - Rank a source against pre-computed theoretical models
+  - **Fit theoretical models** in the SED window
+  - VLKB model grid ranked by χ², best overplotted
+  - [SED fitting · Theoretical models](user-guide/sed-fitting#theoretical-models-from-the-vlkb)
 * - **Interop**
   -
   -

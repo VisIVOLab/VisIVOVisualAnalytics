@@ -1663,6 +1663,85 @@ and the match count, including when the match count is **zero**: "nothing within
 message. The request parameters are stashed when the query is launched, since the
 finished handler is generic (it just projects a parse result).
 
+## SED fitting (`backend/app/compute/sed.py` + `SedWindow`)
+
+Ported in September 2026 from the legacy `ViaLacteaVisualAnalytics`, whose
+engines (`Utils/sedfitgrid_engine_thin|thick_vialactea.py`, D. Elia 2012–2015,
+Python port S. Mordini 2021) were driven from `sedvisualizerplot.cpp` through
+`QProcess` + `eval()` on positional argv strings, against a `python.exe` path
+held in `QSettings`.
+
+**Where each piece lives, and why there.**
+
+| Piece | Where | Why |
+|-------|-------|-----|
+| The physics | `backend/app/compute/sed.py` | Pure NumPy, no I/O, no Qt. A fit is reproducible from the API, and testable without a GUI or a display. The legacy result depended on whatever Python the user happened to have. |
+| The HTTP surface | `backend/app/routers/sed.py` | `/v1/sed/fit`, `/v1/sed/models`, `/v1/sed/defaults`. The VLKB model service's underscore-joined positional query and its SSRF guard live here, not in the client. |
+| Building the SED from a catalogue | `src/gui/SedBuilder.h` | Header-only and free of widgets, because this is where a SED goes wrong *quietly*: a misread column gives a fit that runs and is wrong. Unit-tested against both catalogue shapes. |
+| Presentation | `src/gui/SedWindow.{h,cpp}` | QCustomPlot + tabs. Owns no physics; the fits run in `QtConcurrent` because `BackendClient` is synchronous. |
+| Transport | `src/app/BackendClient_Sed.cpp` | Same result-struct pattern as the other domains. |
+| Entry point | `vtkWindowImage::showCatalogueSourceSed()` | Context menu on the catalogue table row. The window emits `fitProduced`; the *viewer* turns that into a Session Data product, because the viewer owns the dataset key, the window scope and the backend session — `SedWindow` knows none of them. |
+
+**Two catalogue shapes, one builder.** `SedBuilder::sourceGroupIndices()` expands
+a clicked row into the whole band-merged family (rows sharing `groupKey`);
+`buildSed()` then reads one point per band-tagged entry, or — for an untagged
+row — reads *across* its flux columns. Column names are matched by explicit
+candidate lists and a regex that converts unit suffixes (`S_1.2mm` → 1200 µm,
+not 1.2), and deliberately does **not** match `err_flux250`, `flux250_err`,
+`background250` or `flag70`, each of which would otherwise add a phantom point.
+
+**Angular size is not the drawn shape.** `CatalogueOverlayEntry::sizeArcsec` is
+separate from `radiusX`/`radiusY` on purpose: the radii are *pixels* for every
+Image-frame entry (the VLKB ellipse, a ds9 image region), and the optically
+thick fit needs arcsec. Using the radii scaled the solid angle — and therefore
+the mass — by the pixel scale squared. The VLKB path fills `sizeArcsec` from the
+FWHM columns before they are filtered out of `extra` as geometry.
+
+**What was deliberately changed from the legacy engines** (do not "restore"
+these; the legacy behaviour is the bug in each case):
+
+- The stop rule *"χ² improved by less than 1 %"* is gone. It halts the zoom
+  while the grid is still coarse: on a four-parameter thick fit it returned
+  χ² ≈ 6 where the true model scores 0. Convergence is now about **resolution**
+  (`_fully_resolved`), with a two-strike guard for a refinement that finds
+  nothing better.
+- Refinement is **multi-start** (`_seed_indices`, up to 8 separated minima of the
+  first grid). Zooming from the single best coarse cell converges neatly into the
+  wrong basin; the extra seeds are what find the optimum at all.
+- The best model is kept **globally** across iterations, so a refinement that
+  lands on a shifted grid can lower the resolution but never the quality.
+- Uncertainties are a **profile likelihood**: `_profile_bounds` scans each axis
+  outwards from the best fit with the nuisance parameters re-minimised
+  (`_profile_chi2`), bracketing and bisecting the Δχ² = 1 crossing
+  (`_threshold_crossing`). Reading the interval off the refined grid measures the
+  zoom, not the data — a 0.1 % error bar came back as "mass known exactly". The
+  threshold is anchored on the profile's own value at the optimum, so a finite
+  nuisance sampling cannot start the search outside its own bracket.
+- `dof = N_detections − N_free_parameters`, returned **as it is** even when ≤ 0,
+  and `chi2_reduced` is then `null`. Clamping it to 1 let an under-determined fit
+  win a thin-versus-thick comparison on a number that meant nothing. The client
+  carries that as NaN (`std::isnan`), never as 0.
+- Upper limits are excluded from the χ² and **veto** models brighter than the
+  limit, instead of the legacy sign test that indexed a NumPy array with
+  `list.index`.
+
+**Provenance, client side.** `SedWindow::FitProvenance` snapshots the request —
+the rows sent, the photometry sent, distance, κ, λ_ref, size, colour-correction
+flag, model, and an input revision counter — at launch. Export and the Session
+Data product read *that*, not the widgets: the user is free to change the ticks
+and spin boxes afterwards, and reading them later wrote a provenance that never
+happened and mis-aligned `fitted_flux_jy` with the bands. Editing after a fit
+marks the results stale; editing *during* one is caught by comparing the
+revision at completion.
+
+**Known limits, stated rather than hidden.** L_bol integrates the sampled
+5–2000 µm range only (a lower bound). The thick model's mass is derived, so its
+range is the spread over the corners of three separately profiled intervals, not
+a Δχ² = 1 interval — the result says so in its own `warnings`. Distance
+uncertainty is not propagated anywhere.
+
+---
+
 ## Catalogue 3D viewer (`vtkWindowCatalogue3D`)
 
 Renders a remote CSV catalogue as a 3-D point cloud in Cartesian (RA/Dec/distance) space.
@@ -1832,24 +1911,31 @@ Tunables: `VISIVO_HEAVY_SLOTS`, `VISIVO_LINEWIDTH_CHUNKS`,
 
 ## Unit Tests (`tests/`)
 
-QTest-based headless suite; no VTK, no Qt::Widgets, no live backend.
+QTest-based headless suite; no VTK, no Qt::Widgets, no live backend. Counts are
+as QTest reports them, so each class includes its own init/cleanup.
 
 | File | Tests | What it covers |
 |------|-------|----------------|
-| `test_backendclient.cpp` | 30 | `parseMomentResultObject`, `parsePvResultObject`, `parseNoiseResultObject`, open-response parsing |
+| `test_backendclient.cpp` | 34 | `parseMomentResultObject`, `parsePvResultObject`, `parseNoiseResultObject`, open-response parsing |
 | `test_catalogue_parser.cpp` | 35 | `detectedRedshiftField`, `detectedDistanceField`, `comovingDistanceMpc`, `entryDistanceMpc` |
 | `test_backend_routing.cpp` | 13 | `skava::BackendRouting` endpoint selection |
-| `test_image_lod.cpp` | 21 | tile pyramid / level-of-detail arithmetic |
+| `test_image_lod.cpp` | 24 | tile pyramid / level-of-detail arithmetic |
 | `test_analysis_param_store.cpp` | 8 | per-dataset dialog parameter persistence |
 | `test_backend_contract.cpp` | 4 | shared header manifest ↔ client constants |
 | `test_remote_slice_cache.cpp` | 11 | slice cache keying + eviction |
 | `test_linked_window_registry.cpp` | 8 | linked-views registry lifetime |
-| `test_spectral_unit_convert.cpp` | 22 | unit parsing/conversion **and** rest-frame → axis placement (`axisKindFromCtype`, `observedFrequencyHz`, `axisValueForFrequency` for VOPT/VRAD/VELO/FREQ) |
-| `test_cube_region_geom.cpp` | 17 | pure ROI hit-testers (box / circle / polygon / annulus) |
+| `test_spectral_unit_convert.cpp` | 25 | unit parsing/conversion **and** rest-frame → axis placement (`axisKindFromCtype`, `observedFrequencyHz`, `axisValueForFrequency` for VOPT/VRAD/VELO/FREQ) |
+| `test_cube_region_geom.cpp` | 20 | pure ROI hit-testers (box / circle / polygon / annulus) |
 | `test_cube_tool_gate.cpp` | 11 | `CubeToolGate` — which tools may act, view gates vs state gates |
 | `test_spectral_axis_infer.cpp` | 16 | spectral-axis descriptor inference from CTYPE/CUNIT |
 | `test_kinematic_level_field.cpp` | 19 | kinematic-lasso level field |
 | `test_ray_voxel_pick.cpp` | 18 | 3-D ray → voxel picking |
+| `test_tool_result_record.cpp` | 8 | reopening a tool result exactly as it was |
+| `test_product_origin.cpp` | 15 | where a measurement was taken (region / voxel) |
+| `test_catalogue_csv.cpp` | 11 | CSV quoting, multi-line records, truncated files |
+| `test_fits_header_string.cpp` | 6 | header cards → 80-column FITS header string |
+| `test_stokes_companion.cpp` | 9 | Stokes Q/U/V companion filename matching |
+| `test_sed_builder.cpp` | 19 | `visivo::SedBuilder` — building a SED from catalogue rows (band-merged groups, flat rows with several flux columns, column-name and unit rules, angular size) |
 
 Build (standalone — this is what CI runs; no VTK, no Qt::Widgets):
 ```
