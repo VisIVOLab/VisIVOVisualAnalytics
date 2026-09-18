@@ -39,9 +39,18 @@ struct SedPoint
     /// 0 when the catalogue does not give one. The optically thick fit needs it.
     double sizeArcsec{ 0.0 };
     bool upperLimit{ false };
-    /// Included in the fit. A point is dropped by default only when it carries
-    /// no usable flux; the user can untick the rest.
+    /// Included in the fit. Every band contributes one point by default; where
+    /// a band has several detections of the same source (see @ref alternative)
+    /// only the brightest starts ticked, and the user picks a different one
+    /// from the plot or the table.
     bool use{ true };
+    /// Another detection of this source in a band that already has one. A
+    /// band-merged catalogue is a tree, not a list: one source can match
+    /// several counterparts in a band, and the legacy client drew those as
+    /// branches of the SED. Keeping them — rather than silently taking the
+    /// brightest, which is what discarding them amounts to — is what lets the
+    /// user see that the choice exists and change it.
+    bool alternative{ false };
     QString band;        ///< the catalogue's own band tag, for display
     QString label;       ///< per-band designation, when the catalogue has one
     /// Index of the overlay entry this point came from, or -1 when several
@@ -267,6 +276,17 @@ inline std::vector<SedPoint> pointsFromWideRow(const CatalogueOverlayEntry &entr
     return points;
 }
 
+/// How many distinct bands the SED covers (alternatives of one band count once).
+inline std::size_t countUsableBands(const std::vector<SedPoint> &points)
+{
+    std::size_t bands = 0;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        if (i == 0 || points[i].wavelengthUm != points[i - 1].wavelengthUm)
+            ++bands;
+    }
+    return bands;
+}
+
 /// Build the SED of the entries at ``indices``.
 ///
 /// Band-tagged entries (VLKB) contribute one point each; when the selection is
@@ -317,16 +337,19 @@ inline SedBuildResult buildSed(const std::vector<CatalogueOverlayEntry> &entries
             return a.wavelengthUm < b.wavelengthUm;
         return a.fluxJy > b.fluxJy;
     });
-    points.erase(std::unique(points.begin(), points.end(),
-                             [](const SedPoint &a, const SedPoint &b) {
-                                 return a.wavelengthUm == b.wavelengthUm;
-                             }),
-                 points.end());
+    // Mark the branches instead of erasing them: within one wavelength the
+    // brightest is the default and the rest are alternatives the user can pick.
+    for (std::size_t i = 1; i < points.size(); ++i) {
+        if (points[i].wavelengthUm == points[i - 1].wavelengthUm) {
+            points[i].alternative = true;
+            points[i].use = false;
+        }
+    }
 
-    if (points.size() < 2) {
+    if (countUsableBands(points) < 2) {
         result.errorMessage = QStringLiteral(
                 "This source has %1 usable flux measurement(s); a SED fit needs at least 2.")
-                                      .arg(points.size());
+                                      .arg(countUsableBands(points));
         return result;
     }
 

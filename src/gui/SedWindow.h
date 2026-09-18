@@ -19,6 +19,8 @@
 #include <QString>
 #include <QWidget>
 
+#include <vector>
+
 class QCheckBox;
 class QComboBox;
 class QCustomPlot;
@@ -51,6 +53,11 @@ signals:
 
 private slots:
     void runGreybodyFit();
+    /// The user picked points on the plot: that selection *is* the set of bands
+    /// in the fit, so it is written straight back into the photometry table.
+    void onPlotSelectionChanged();
+    /// Sum the branches at each wavelength into one point, and back again.
+    void setBranchesCollapsed(bool collapsed);
     void runModelFit();
     void onGreybodyFitFinished();
     void onModelFitFinished();
@@ -61,20 +68,36 @@ private slots:
 
 private:
     void buildUi();
-    void buildBandTable();
+    void refreshBandTable();
     void buildParameterPanel(QWidget *page);
+    void applyPlotTheme();
     void replot();
     void plotObservedPoints();
+    /// Push the current @c use flags into the plot's selection, without
+    /// letting that round-trip back through onPlotSelectionChanged().
+    void syncPlotSelection();
+    /// Write the displayed rows' Use/UL flags back onto the branches they came
+    /// from, so collapsing and expanding never rolls an edit back.
+    void propagateEditsToRawPoints();
+    /// Recompute @ref m_rowBranches for a one-row-per-branch (expanded) list.
+    void resetRowBranches();
     void plotFit(const BackendSedFit &fit, const QColor &colour);
     void plotModel(const BackendSedModel &model, const QColor &colour);
     void showFitResults();
     void markResultsStale();
+    void updateIdleStatus();
     void setBusy(bool busy, const QString &message = QString());
     void announceProduct(const BackendSedFit &fit);
     /// Points currently ticked in the band table, as the backend wants them.
     QVector<BackendSedPoint> selectedPoints() const;
     /// Rows of m_sed.points that selectedPoints() would send, in the same order.
     QVector<int> selectedRows() const;
+    /// The pristine-list branches behind each selected row, in the same order.
+    QVector<QVector<int>> selectedBranches() const;
+    /// Which entry of the recorded request a table row corresponds to, matched
+    /// on wavelength (and flux, for a band with branches). -1 when the row was
+    /// not part of the fit, or when branches make the pairing ambiguous.
+    int provenanceIndexFor(int row) const;
     /// Ranges typed in the parameter panel; an empty vector means "not set", so
     /// the backend's own default applies rather than a second copy of it here.
     QVector<double> rangeFrom(QDoubleSpinBox *minBox, QDoubleSpinBox *maxBox,
@@ -82,6 +105,9 @@ private:
     void applyDefaults(const BackendSedDefaults &defaults);
 
     visivo::SedBuildResult m_sed;
+    /// The SED as built, before any collapsing. Collapsing is reversible, so
+    /// the branches have to survive it.
+    std::vector<visivo::SedPoint> m_rawPoints;
     QString m_backendUrl;
     QString m_backendToken;
     QString m_modelsServiceUrl;
@@ -97,6 +123,12 @@ private:
     struct FitProvenance
     {
         QVector<int> sentRows;              ///< index into m_sed.points, in the order sent
+        /// For each sent point, the branches of the pristine list behind it —
+        /// one entry when the branches were expanded, the whole group when they
+        /// were collapsed. Row numbers cannot do this job: collapsing renumbers
+        /// the rows, so a row index recorded before a collapse names a
+        /// different band afterwards.
+        QVector<QVector<int>> sentBranches;
         QVector<BackendSedPoint> points;    ///< exactly the photometry that was sent
         double distancePc{ 0. };
         double kappaRef{ 0. };
@@ -138,6 +170,8 @@ private:
     QPointer<QDoubleSpinBox> m_sizeArcsec;
     QPointer<QCheckBox> m_colourCorrection;
     QPointer<QCheckBox> m_logAxes;
+    QPointer<QCheckBox> m_selectOnPlot;
+    QPointer<QCheckBox> m_collapseBranches;
 
     QPointer<QDoubleSpinBox> m_massMin, m_massMax;
     QPointer<QSpinBox> m_massSteps;
@@ -157,6 +191,22 @@ private:
     QPointer<QPushButton> m_modelButton;
 
     bool m_updatingTable{ false };
+    bool m_syncingSelection{ false };
+    bool m_branchesCollapsed{ false };
+    /// For each displayed row, which entries of @ref m_rawPoints it stands for.
+    std::vector<std::vector<int>> m_rowBranches;
+    /// The displayed rows as the view built them. A row still equal to its
+    /// baseline has not been edited, and its branches must keep their own
+    /// flags rather than inherit the aggregate's.
+    std::vector<visivo::SedPoint> m_displayedBaseline;
+
+    /// The two photometry graphs and, per graph, which row of m_sed.points each
+    /// of their data points came from — the map the plot selection is written
+    /// back through.
+    QCPGraph *m_dataGraph{ nullptr };
+    QCPGraph *m_ulGraph{ nullptr };
+    std::vector<int> m_dataRows;
+    std::vector<int> m_ulRows;
 };
 
 #endif   // SedWindow_h

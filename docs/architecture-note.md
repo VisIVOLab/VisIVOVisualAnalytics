@@ -1725,6 +1725,31 @@ these; the legacy behaviour is the bug in each case):
   limit, instead of the legacy sign test that indexed a NumPy array with
   `list.index`.
 
+**Branches, and the identity problem they create.** A band-merged source can
+have several counterparts in one band. `SedBuilder` keeps them (sorted by
+wavelength, then flux; the fainter ones flagged `alternative` and unticked)
+rather than deduplicating, and `SedWindow` can *collapse* them — summing fluxes,
+errors in quadrature, refusing any group that mixes a detection with an upper
+limit, because that sum is not a measurement.
+
+Collapsing renumbers the rows, which breaks anything that identifies a point by
+its row: an export aligned by row index put one band's model next to another
+band's photometry. `m_rowBranches` maps each displayed row to the pristine-list
+branches behind it, `FitProvenance::sentBranches` records the same for the
+request that ran, and the two are matched as *sets*. Edits propagate down to the
+branches through the same map — but only the field the user actually changed,
+compared against `m_displayedBaseline`: a collapsed row's `use` is the OR of its
+branches, so copying it back wholesale turned "one branch in, one out" into
+"both in" on the next expand.
+
+**The plot is the input.** `QCustomPlot`'s own selection *is* the set of bands
+in the fit: `syncPlotSelection()` writes the `use` flags into it,
+`onPlotSelectionChanged()` reads them back, and a selection decorator draws the
+difference (filled/bright versus hollow/dim). The read-back defers its
+`replot()` through `QTimer::singleShot(0, this, …)` — the slot runs inside
+QCustomPlot's mouse handling, and `replot()` destroys the very plottable whose
+selection QCP has just changed.
+
 **Provenance, client side.** `SedWindow::FitProvenance` snapshots the request —
 the rows sent, the photometry sent, distance, κ, λ_ref, size, colour-correction
 flag, model, and an input revision counter — at launch. Export and the Session

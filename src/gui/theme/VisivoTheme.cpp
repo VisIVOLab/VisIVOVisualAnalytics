@@ -941,6 +941,26 @@ QString darkStyleSheet()
             "  background-color: rgba(18, 51, 79, 0.65);"
             "}"
 
+            // Disclosure arrow for EVERY tree. Qt draws the platform
+            // indicator in a near-black triangle, which is invisible on a
+            // dark row: the catalogue table's band-merged groups looked like
+            // rows with nothing to expand. SessionDataTree had already fixed
+            // this in its own widget stylesheet, so the fix only reached that
+            // one tree; it belongs here, where every QTreeView gets it.
+            //
+            // Qt draws a ::branch image at the SVG's intrinsic size and
+            // ignores width/height on the sub-control, hence the dedicated
+            // 9x6 tree_chevron pair rather than the heavier combo-box glyph.
+            "QTreeView::branch:has-children:!has-siblings:closed,"
+            "QTreeView::branch:closed:has-children:has-siblings {"
+            "  image: url(:/icons/tree_chevron_right.svg);"
+            "}"
+            "QTreeView::branch:open:has-children:!has-siblings,"
+            "QTreeView::branch:open:has-children:has-siblings {"
+            "  image: url(:/icons/tree_chevron_down.svg);"
+            "}"
+
+
             // ── Table view ─────────────────────────────────────────────────
             "QTableView {"
             "  background-color: #11181F;"
@@ -1514,6 +1534,26 @@ QString lightStyleSheet()
             "QListWidget::item:hover:!selected, QTreeWidget::item:hover:!selected {"
             "  background-color: rgba(213, 230, 242, 0.65);"
             "}"
+
+            // Disclosure arrow for EVERY tree. Qt draws the platform
+            // indicator in a near-black triangle, which is invisible on a
+            // light row: the catalogue table's band-merged groups looked like
+            // rows with nothing to expand. SessionDataTree had already fixed
+            // this in its own widget stylesheet, so the fix only reached that
+            // one tree; it belongs here, where every QTreeView gets it.
+            //
+            // Qt draws a ::branch image at the SVG's intrinsic size and
+            // ignores width/height on the sub-control, hence the dedicated
+            // 9x6 tree_chevron pair rather than the heavier combo-box glyph.
+            "QTreeView::branch:has-children:!has-siblings:closed,"
+            "QTreeView::branch:closed:has-children:has-siblings {"
+            "  image: url(:/icons/tree_chevron_right_light.svg);"
+            "}"
+            "QTreeView::branch:open:has-children:!has-siblings,"
+            "QTreeView::branch:open:has-children:has-siblings {"
+            "  image: url(:/icons/tree_chevron_down_light.svg);"
+            "}"
+
 
             // ── Table view ─────────────────────────────────────────────────────
             "QTableView {"

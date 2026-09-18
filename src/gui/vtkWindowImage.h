@@ -36,6 +36,7 @@ class QJsonObject;
 class QJsonArray;
 class QCheckBox;
 class QDockWidget;
+class QProgressDialog;
 class QFrame;
 class QLabel;
 class ToolResultDialog;
@@ -576,6 +577,10 @@ private:
     bool imageGalacticFootprint(double &glonMin, double &glonMax,
                                 double &glatMin, double &glatMax) const;
     QFutureWatcher<VlkbCatalogueRaw> m_vlkbCatWatcher;
+    /// Progress affordance for the VLKB query. A status-bar line at the very
+    /// bottom of a full-screen window is not feedback: the query takes
+    /// seconds, nothing moves, and the overlay looks like it did nothing.
+    QPointer<QProgressDialog> m_vlkbProgressSheet;
     bool m_vlkbCatIsFilament{ false };   ///< which shape the pending result carries
     // Rubber-band region select: drag a rectangle to query only that area (like the
     // legacy client); a click without a drag falls back to the whole image footprint.

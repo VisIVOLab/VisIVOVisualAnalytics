@@ -42,10 +42,36 @@ number — are left out, and the window says which ones and why. A missing band
 and a band that failed to parse look the same on a plot; they should not look
 the same in the log.
 
+### Branches
+
+A band-merged source can have **more than one counterpart in the same band**:
+the association is positional, and two sources at 250 µm can both fall inside
+the band-merged ellipse. Those are the SED's *branches*.
+
+VisIVO keeps them all. The brightest of a band starts in the fit, the others sit
+next to it as alternatives — hollow markers on the plot, greyed rows in the
+table — so the choice is visible and yours. Silently keeping the brightest is
+still a choice; it is just one made on your behalf and never shown.
+
+Two ways to resolve a branch:
+
+- **Pick one** — tick the alternative you want (or click it on the plot). The
+  band contributes that measurement.
+- **Collapse branches** — the checkbox under the plot sums the branches of each
+  band into a single point: fluxes added, errors in quadrature, size taken from
+  the largest. This is the legacy tool's *collapse*, and it answers the other
+  reading of the same data: the source is all of the counterparts together.
+
+A band whose branches mix a detection with an upper limit is **not** collapsed —
+adding 10 Jy to a "< 5 Jy" would hand the fit a measured 15 Jy nobody observed.
+Those branches stay separate and the log says where and why.
+
 ```{tip}
-A SED fit needs at least **two detections**. Upper limits constrain the fit but
-cannot define it, so a source with one detection and four upper limits is
-refused with that explanation rather than fitted to something meaningless.
+A SED fit needs detections at **two different wavelengths**. Upper limits
+constrain the fit but cannot define it, and two branches of one band are two
+measurements of the same point on the spectrum — neither case gives a curve to
+fit, and both are refused with that explanation rather than fitted to something
+meaningless.
 ```
 
 ## The window
@@ -59,9 +85,10 @@ The plot is on the left, four tabs on the right.
 * - Tab
   - What it holds
 * - **Photometry**
-  - One row per band: wavelength, flux, error, angular size, per-band
-    designation, and two checkboxes. **Use** includes the band in the fit;
-    **UL** declares its flux an upper limit.
+  - One row per measurement: wavelength, flux, error, angular size, per-band
+    designation, and two checkboxes. **Use** includes it in the fit; **UL**
+    declares its flux an upper limit. A band with several counterparts has
+    several rows — see *Branches*.
 * - **Fit**
   - The model (thin / thick / both), the source and dust constants (distance,
     κ at a reference wavelength, that reference wavelength, source size), the
@@ -76,8 +103,23 @@ The plot is on the left, four tabs on the right.
 ```
 
 Below: **Log axes** (a SED spans four decades in both directions — linear axes
-are almost never what you want), **Fit greybody**, **Fit theoretical models**,
-**Clear fits**, and **Export…**.
+are almost never what you want), **Select on plot**, **Collapse branches**,
+**Fit greybody**, **Fit theoretical models**, **Clear fits**, and **Export…**.
+
+### Choosing the bands on the plot
+
+The plot is not a picture of the fit input — it *is* the input. What is filled
+and bright is in the fit; what is hollow and dim is not, and a dashed guide line
+joins the points that are.
+
+- **Click** a point to fit that one alone at its wavelength.
+- **⌘/Ctrl-click** to add a point to the selection.
+- Tick **Select on plot** and **drag** a rectangle to take in everything inside
+  it. With the box unticked, dragging pans the plot instead — the two gestures
+  share a mouse button, so one of them has to be asked for.
+
+The Photometry table and the plot are the same state seen twice: a tick in one
+moves the other.
 
 ### Upper limits
 

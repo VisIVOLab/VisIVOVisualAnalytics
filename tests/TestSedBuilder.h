@@ -18,7 +18,8 @@ private slots:
     void fluxColumnNamesAreRecognisedInTheirCommonSpellings();
     void aColumnThatOnlyLooksLikeAFluxIsNotOne();
     void errorColumnsFollowTheirFluxColumnSpelling();
-    void duplicateBandsCollapseToTheBrighterMeasurement();
+    void duplicateBandsAreKeptAsBranches();
+    void abandWithTwoBranchesIsStillOneBand();
     void pointsComeBackSortedByWavelength();
     void aSourceWithOneBandIsRefusedWithAReason();
     void anEmptySelectionIsRefusedWithAReason();

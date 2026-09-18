@@ -19,6 +19,7 @@
 #include "ProfileWidget.h"
 #include "RemoteFileBrowserDialog.h"
 #include "SedBuilder.h"
+#include "ToolProgressSheet.h"
 #include "SedWindow.h"
 #include "qcustomplot.h"
 #include "SidebarPanel.h"
@@ -1840,6 +1841,8 @@ void vtkWindowImage::runVlkbCatalogueQuery(double glonMin, double glonMax,
                 .arg(glonMin, 0, 'f', 6).arg(glonMax, 0, 'f', 6)
                 .arg(glatMin, 0, 'f', 6).arg(glatMax, 0, 'f', 6);
         this->statusBar()->showMessage(u"Querying VLKB filaments…"_s);
+        this->m_vlkbProgressSheet =
+                visivo::showToolProgressSheet(this, u"Querying the VLKB for filaments"_s);
         this->m_vlkbCatWatcher.setFuture(QtConcurrent::run(
                 [vlkbUrl, adql]() { return fetchVlkbFilaments(vlkbUrl, adql); }));
     } else {
@@ -1862,6 +1865,8 @@ void vtkWindowImage::runVlkbCatalogueQuery(double glonMin, double glonMax,
                         .arg(glonMin, 0, 'f', 6).arg(glonMax, 0, 'f', 6)
                         .arg(glatMin, 0, 'f', 6).arg(glatMax, 0, 'f', 6);
         this->statusBar()->showMessage(u"Querying VLKB compact sources (all bands)…"_s);
+        this->m_vlkbProgressSheet = visivo::showToolProgressSheet(
+                this, u"Querying the VLKB for compact sources"_s);
         this->m_vlkbCatWatcher.setFuture(QtConcurrent::run(
                 [vlkbUrl, adql, bands]() { return fetchVlkbSources(vlkbUrl, adql, bands); }));
     }
@@ -2037,6 +2042,7 @@ void vtkWindowImage::onVlkbSelectRelease()
 void vtkWindowImage::onVlkbCatalogueReady()
 {
     const VlkbCatalogueRaw raw = this->m_vlkbCatWatcher.result();
+    visivo::closeToolProgressSheet(this->m_vlkbProgressSheet);
     this->statusBar()->clearMessage();
     if (!raw.valid) {
         QMessageBox::warning(this, u"VLKB catalogue"_s,

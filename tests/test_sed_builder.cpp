@@ -143,8 +143,11 @@ void TestSedBuilder::errorColumnsFollowTheirFluxColumnSpelling()
     QCOMPARE(sed.points[1].errorJy, 0.2);
 }
 
-void TestSedBuilder::duplicateBandsCollapseToTheBrighterMeasurement()
+void TestSedBuilder::duplicateBandsAreKeptAsBranches()
 {
+    // A band-merged source can have more than one counterpart in the same band.
+    // Those are the branches the legacy tool drew; discarding them is a silent
+    // choice of the brightest, made on the user's behalf and never shown.
     const std::vector<CatalogueOverlayEntry> entries{
         bandEntry("250", "G1", { { "flux250", "40.0" } }),
         bandEntry("250", "G1", { { "flux250", "42.0" } }),
@@ -152,9 +155,35 @@ void TestSedBuilder::duplicateBandsCollapseToTheBrighterMeasurement()
     };
     const SedBuildResult sed = SedBuilder::buildSed(entries, allIndices(entries.size()));
     QVERIFY(sed.valid);
-    QCOMPARE(sed.points.size(), std::size_t(2));
+    QCOMPARE(sed.points.size(), std::size_t(3));
+
+    // Brightest first, in the fit; the fainter one is its alternative.
     QCOMPARE(sed.points[0].wavelengthUm, 250.0);
     QCOMPARE(sed.points[0].fluxJy, 42.0);
+    QVERIFY(sed.points[0].use);
+    QVERIFY(!sed.points[0].alternative);
+
+    QCOMPARE(sed.points[1].wavelengthUm, 250.0);
+    QCOMPARE(sed.points[1].fluxJy, 40.0);
+    QVERIFY(!sed.points[1].use);
+    QVERIFY(sed.points[1].alternative);
+
+    QVERIFY(sed.points[2].use);
+    QVERIFY(!sed.points[2].alternative);
+}
+
+void TestSedBuilder::abandWithTwoBranchesIsStillOneBand()
+{
+    // Two counterparts at 250 µm are two measurements of ONE band. Counting
+    // them as two would let a source with a single band pass the "a SED needs
+    // at least two bands" rule.
+    const std::vector<CatalogueOverlayEntry> entries{
+        bandEntry("250", "G1", { { "flux250", "40.0" } }),
+        bandEntry("250", "G1", { { "flux250", "42.0" } }),
+    };
+    const SedBuildResult sed = SedBuilder::buildSed(entries, allIndices(entries.size()));
+    QVERIFY(!sed.valid);
+    QVERIFY(sed.errorMessage.contains(QStringLiteral("at least 2")));
 }
 
 void TestSedBuilder::pointsComeBackSortedByWavelength()

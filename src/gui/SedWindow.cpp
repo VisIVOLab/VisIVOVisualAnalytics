@@ -3,6 +3,7 @@
 #include "SedWindow.h"
 
 #include "qcustomplot.h"
+#include "theme/VisivoTheme.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -22,6 +23,7 @@
 #include <QTableWidget>
 #include <QTextBrowser>
 #include <QTextStream>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrent>
 
@@ -34,8 +36,7 @@ namespace {
 enum BandColumn {
     ColUse = 0,
     ColUpperLimit,
-    ColBand,
-    ColWavelength,
+    ColBand,        ///< wavelength in µm, with the catalogue's tag when it differs
     ColFlux,
     ColError,
     ColSize,
@@ -94,11 +95,65 @@ QString formatValue(double value)
     return QString::number(value, 'g', 5);
 }
 
+/// Distinct wavelengths among the selected DETECTIONS.
+///
+/// Counting points instead lets two branches of one band — two counterparts at
+/// 250 µm — stand in for two bands, and a "SED" of one wavelength is not one a
+/// greybody can be fitted to.
+int distinctDetectionWavelengths(const QVector<BackendSedPoint> &points)
+{
+    QVector<double> seen;
+    for (const BackendSedPoint &point : points) {
+        if (point.upperLimit)
+            continue;
+        bool known = false;
+        for (double wavelength : seen)
+            known = known || qFuzzyCompare(wavelength, point.wavelengthUm);
+        if (!known)
+            seen.append(point.wavelengthUm);
+    }
+    return static_cast<int>(seen.size());
+}
+
 QTableWidgetItem *readOnlyItem(const QString &text)
 {
     auto *item = new QTableWidgetItem(text);
     item->setFlags(item->flags() & ~Qt::ItemIsEditable);
     return item;
+}
+
+/// A measured number: right-aligned, so magnitudes line up down the column.
+QTableWidgetItem *numericItem(const QString &text)
+{
+    QTableWidgetItem *item = readOnlyItem(text);
+    item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    return item;
+}
+
+/// Four significant figures. A flux quoted as 0.035743 Jy claims a precision
+/// its own error bar does not have, and six digits per cell is what made the
+/// table hard to read across.
+QString formatQuantity(double value)
+{
+    if (!std::isfinite(value))
+        return u"—"_s;
+    return QString::number(value, 'g', 4);
+}
+
+/// What to call a band. For a Hi-GAL catalogue the tag *is* the wavelength, and
+/// showing both put the same number in two adjacent columns; the tag only earns
+/// its own text when it says something different (the MSX sub-bands, whose
+/// columns are all named after 21 µm).
+QString bandLabel(const visivo::SedPoint &point)
+{
+    const QString wavelength = QString::number(point.wavelengthUm, 'g', 4);
+    bool numeric = false;
+    const double tag = point.band.trimmed().toDouble(&numeric);
+    if (numeric && qFuzzyCompare(tag, point.wavelengthUm))
+        return wavelength;
+    if (point.band.trimmed().isEmpty())
+        return wavelength;
+    return u"%1  (%2)"_s.arg(wavelength, point.band.trimmed());
 }
 
 }   // namespace
@@ -115,9 +170,13 @@ SedWindow::SedWindow(const visivo::SedBuildResult &sed, const QString &backendUr
                                                : u"SED — %1"_s.arg(m_sed.sourceLabel));
     resize(1080, 680);
 
+    m_rawPoints = m_sed.points;
+    resetRowBranches();
     buildUi();
-    buildBandTable();
+    refreshBandTable();
 
+    connect(m_plot, &QCustomPlot::selectionChangedByUser,
+            this, &SedWindow::onPlotSelectionChanged);
     connect(&m_fitWatcher, &QFutureWatcher<BackendSedFitResult>::finished,
             this, &SedWindow::onGreybodyFitFinished);
     connect(&m_modelWatcher, &QFutureWatcher<BackendSedModelsResult>::finished,
@@ -154,6 +213,7 @@ SedWindow::SedWindow(const visivo::SedBuildResult &sed, const QString &backendUr
         m_log->append(u"Bands without a usable flux, left out of the SED: %1"_s
                               .arg(m_sed.skippedBands.join(u", "_s)));
     }
+    updateIdleStatus();
     replot();
 }
 
@@ -181,38 +241,53 @@ void SedWindow::buildUi()
 
     m_plot = new QCustomPlot(splitter);
     m_plot->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    m_plot->setMinimumWidth(360);
-    m_plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
+    m_plot->setMinimumWidth(420);
+    // iSelectPlottables is what makes a click on a point do anything at all;
+    // the selection-rect mode below only governs what a DRAG does. iMultiSelect
+    // lets ⌘/Ctrl-click add to the selection, and lets one rubber band take in
+    // both the detections and the upper limits, which are separate plottables.
+    m_plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables
+                            | QCP::iMultiSelect);
+    m_plot->setMultiSelectModifier(Qt::ControlModifier);
     m_plot->xAxis->setLabel(u"Wavelength (µm)"_s);
     m_plot->yAxis->setLabel(u"Flux (Jy)"_s);
     m_plot->legend->setVisible(true);
+    applyPlotTheme();
     splitter->addWidget(m_plot);
 
     m_tabs = new QTabWidget(splitter);
     m_tabs->setMinimumWidth(380);
     splitter->addWidget(m_tabs);
-    splitter->setStretchFactor(0, 3);
-    splitter->setStretchFactor(1, 2);
+    // The SED *is* the window; the tables serve it. Stretch factors alone left
+    // the plot at barely a third of the width, which is where a curve and its
+    // error bars stop being readable.
+    splitter->setStretchFactor(0, 5);
+    splitter->setStretchFactor(1, 4);
+    splitter->setSizes({ 620, 460 });
 
     // ── Photometry ───────────────────────────────────────────────────────────
     auto *bandsPage = new QWidget(m_tabs);
     auto *bandsLayout = new QVBoxLayout(bandsPage);
     bandsLayout->setContentsMargins(6, 6, 6, 6);
     auto *bandsHint = new QLabel(
-            u"Untick a band to leave it out of the fit. Tick “UL” to treat its flux as an "
-            "upper limit: the band then constrains the fit without entering the χ²."_s,
+            u"<b>Use</b> — include the band in the fit.   "
+            "<b>UL</b> — treat its flux as an upper limit: it constrains the fit "
+            "without entering the χ²."_s,
             bandsPage);
     bandsHint->setWordWrap(true);
     bandsLayout->addWidget(bandsHint);
     m_bandTable = new QTableWidget(bandsPage);
     m_bandTable->setColumnCount(BandColumnCount);
     m_bandTable->setHorizontalHeaderLabels(
-            { u"Use"_s, u"UL"_s, u"Band"_s, u"λ (µm)"_s, u"Flux (Jy)"_s,
+            { u"Use"_s, u"UL"_s, u"λ (µm)"_s, u"Flux (Jy)"_s,
               u"σ (Jy)"_s, u"Size (\")"_s, u"Designation"_s });
     m_bandTable->horizontalHeader()->setStretchLastSection(true);
     m_bandTable->verticalHeader()->setVisible(false);
     m_bandTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_bandTable->setAlternatingRowColors(true);
+    m_bandTable->setShowGrid(false);
     bandsLayout->addWidget(m_bandTable, 1);
+    connect(m_bandTable, &QTableWidget::cellChanged, this, &SedWindow::onBandTableChanged);
     m_tabs->addTab(bandsPage, u"Photometry"_s);
 
     // ── Fit parameters ───────────────────────────────────────────────────────
@@ -285,10 +360,32 @@ void SedWindow::buildUi()
     connect(m_logAxes, &QCheckBox::toggled, this, [this](bool) { replot(); });
     actionLayout->addWidget(m_logAxes);
 
+    // Picking the bands on the plot is how the legacy tool did it, and it is
+    // the natural gesture: the SED is what you are looking at. Off by default
+    // so a drag still pans; the two gestures are the same mouse button.
+    m_selectOnPlot = new QCheckBox(u"Select on plot"_s, actions);
+    m_selectOnPlot->setToolTip(
+            u"Drag on the plot to choose the bands that enter the fit. Click a point to "
+            "use only that one; ⌘/Ctrl-click to add. With this off, dragging pans."_s);
+    connect(m_selectOnPlot, &QCheckBox::toggled, this, [this](bool on) {
+        m_plot->setSelectionRectMode(on ? QCP::srmSelect : QCP::srmNone);
+    });
+    actionLayout->addWidget(m_selectOnPlot);
+
+    m_collapseBranches = new QCheckBox(u"Collapse branches"_s, actions);
+    m_collapseBranches->setToolTip(
+            u"A band-merged source can have more than one counterpart in the same band. "
+            "Collapsed, they are summed into a single point per band; expanded, each is a "
+            "separate branch you can choose between."_s);
+    connect(m_collapseBranches, &QCheckBox::toggled, this, &SedWindow::setBranchesCollapsed);
+    actionLayout->addWidget(m_collapseBranches);
+
     m_statusLabel = new QLabel(QString(), actions);
     actionLayout->addWidget(m_statusLabel, 1);
 
     m_fitButton = new QPushButton(u"Fit greybody"_s, actions);
+    m_fitButton->setDefault(true);
+    m_fitButton->setAutoDefault(true);
     connect(m_fitButton, &QPushButton::clicked, this, &SedWindow::runGreybodyFit);
     actionLayout->addWidget(m_fitButton);
 
@@ -305,6 +402,51 @@ void SedWindow::buildUi()
     actionLayout->addWidget(exportButton);
 
     layout->addWidget(actions);
+}
+
+void SedWindow::applyPlotTheme()
+{
+    // QCustomPlot defaults to a white sheet. Dropped into this application that
+    // is not merely inconsistent: the photometry is drawn in a light ink chosen
+    // for a dark panel, so on white the points were all but invisible.
+    const QColor ink = QColor(QString::fromLatin1(VisivoTheme::kOnSurface()));
+    const QColor muted = QColor(QString::fromLatin1(VisivoTheme::kOnSurfaceVariant()));
+    const QColor panel = QColor(QString::fromLatin1(VisivoTheme::kSurface()));
+
+    m_plot->setBackground(QBrush(panel));
+    m_plot->axisRect()->setBackground(QBrush(panel));
+    for (QCPAxis *axis : { m_plot->xAxis, m_plot->yAxis, m_plot->xAxis2, m_plot->yAxis2 }) {
+        axis->setBasePen(QPen(muted));
+        axis->setTickPen(QPen(muted));
+        axis->setSubTickPen(QPen(muted));
+        axis->setTickLabelColor(ink);
+        axis->setLabelColor(ink);
+        axis->grid()->setPen(QPen(QColor(muted.red(), muted.green(), muted.blue(), 60),
+                                  1, Qt::DotLine));
+        axis->grid()->setSubGridVisible(true);
+        axis->grid()->setSubGridPen(QPen(QColor(muted.red(), muted.green(), muted.blue(), 25),
+                                         1, Qt::DotLine));
+    }
+    // A SED is read across four decades; the top and right edges stop the eye
+    // from running off the plot at the ends of the curve. They are a FRAME:
+    // their ticks are switched off entirely, because replot() only ever updates
+    // the primary axes' scale and range, so opposite ticks would drift out of
+    // alignment as soon as the user zoomed.
+    for (QCPAxis *axis : { m_plot->xAxis2, m_plot->yAxis2 }) {
+        axis->setVisible(true);
+        axis->setTicks(false);
+        axis->setSubTicks(false);
+        axis->setTickLabels(false);
+    }
+
+    m_plot->legend->setBrush(QBrush(QColor(panel.red(), panel.green(), panel.blue(), 200)));
+    m_plot->legend->setBorderPen(QPen(muted));
+    m_plot->legend->setTextColor(ink);
+    // Top-left: a SED rises to a far-IR peak and falls, so that corner is the
+    // one reliably free of data. elementCount() guards the index — the legend
+    // is element 0 of the inset layout only while it lives in the axis rect.
+    if (m_plot->axisRect()->insetLayout()->elementCount() > 0)
+        m_plot->axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignTop | Qt::AlignLeft);
 }
 
 void SedWindow::buildParameterPanel(QWidget *page)
@@ -433,9 +575,10 @@ void SedWindow::buildParameterPanel(QWidget *page)
     connect(m_colourCorrection, &QCheckBox::toggled, this, touched);
 }
 
-void SedWindow::buildBandTable()
+void SedWindow::refreshBandTable()
 {
     m_updatingTable = true;
+    m_bandTable->clearContents();
     m_bandTable->setRowCount(static_cast<int>(m_sed.points.size()));
     for (int row = 0; row < static_cast<int>(m_sed.points.size()); ++row) {
         const visivo::SedPoint &point = m_sed.points[static_cast<std::size_t>(row)];
@@ -450,20 +593,133 @@ void SedWindow::buildBandTable()
         ul->setCheckState(point.upperLimit ? Qt::Checked : Qt::Unchecked);
         m_bandTable->setItem(row, ColUpperLimit, ul);
 
-        m_bandTable->setItem(row, ColBand, readOnlyItem(point.band));
-        m_bandTable->setItem(row, ColWavelength, readOnlyItem(formatValue(point.wavelengthUm)));
-        m_bandTable->setItem(row, ColFlux, readOnlyItem(formatValue(point.fluxJy)));
+        QTableWidgetItem *band = numericItem(bandLabel(point));
+        if (point.alternative) {
+            // An alternative counterpart in a band that already has one. Said
+            // in the row itself, because "why are there two 250 µm rows" is the
+            // first question the table otherwise raises.
+            band->setToolTip(u"Another counterpart of this source in the same band. "
+                             "Tick it to fit this branch instead."_s);
+            band->setForeground(QBrush(QColor(154, 174, 196)));
+        }
+        m_bandTable->setItem(row, ColBand, band);
+
+        m_bandTable->setItem(row, ColFlux, numericItem(formatQuantity(point.fluxJy)));
         m_bandTable->setItem(row, ColError,
-                             readOnlyItem(point.errorJy > 0.0 ? formatValue(point.errorJy) : u"—"_s));
+                             numericItem(point.errorJy > 0.0 ? formatQuantity(point.errorJy)
+                                                             : u"—"_s));
         m_bandTable->setItem(row, ColSize,
-                             readOnlyItem(point.sizeArcsec > 0.0 ? formatValue(point.sizeArcsec)
-                                                                 : u"—"_s));
+                             numericItem(point.sizeArcsec > 0.0
+                                                 ? QString::number(point.sizeArcsec, 'f', 1)
+                                                 : u"—"_s));
         m_bandTable->setItem(row, ColLabel, readOnlyItem(point.label));
     }
     m_bandTable->resizeColumnsToContents();
+    // Checkbox columns only ever hold a checkbox; leaving them sized to their
+    // header text put the ticks off under the label.
+    m_bandTable->setColumnWidth(ColUse, 46);
+    m_bandTable->setColumnWidth(ColUpperLimit, 46);
     m_updatingTable = false;
+}
 
-    connect(m_bandTable, &QTableWidget::cellChanged, this, &SedWindow::onBandTableChanged);
+void SedWindow::setBranchesCollapsed(bool collapsed)
+{
+    // Legacy behaviour, kept because it answers a real question: when a band
+    // has several counterparts, is the source the brightest of them or all of
+    // them together? Collapsed says "all of them", by summing the branches at
+    // each wavelength into one point.
+    if (collapsed == m_branchesCollapsed)
+        return;
+    propagateEditsToRawPoints();
+
+    if (!collapsed) {
+        m_sed.points = m_rawPoints;
+        m_branchesCollapsed = false;
+        resetRowBranches();
+    } else {
+        std::vector<visivo::SedPoint> summed;
+        std::vector<std::vector<int>> groups;
+        QStringList refused;
+
+        // Group by wavelength FIRST, then decide what to do with the whole
+        // group. Folding branch by branch into the previous point only ever
+        // compares two neighbours, so a group of three — two detections and a
+        // limit — came out half-summed.
+        for (std::size_t first = 0; first < m_rawPoints.size();) {
+            std::size_t last = first;
+            while (last + 1 < m_rawPoints.size()
+                   && m_rawPoints[last + 1].wavelengthUm == m_rawPoints[first].wavelengthUm) {
+                ++last;
+            }
+
+            bool anyDetection = false;
+            bool anyLimit = false;
+            for (std::size_t i = first; i <= last; ++i) {
+                anyDetection = anyDetection || !m_rawPoints[i].upperLimit;
+                anyLimit = anyLimit || m_rawPoints[i].upperLimit;
+            }
+
+            if (anyDetection && anyLimit) {
+                // A detection and an upper limit are not two measurements to
+                // add up: summing 10 Jy and a "< 5 Jy" would hand the fit a
+                // measured 15 Jy that nobody observed. The whole group stays as
+                // it is — no partial sums — and the log says where and why.
+                refused.append(QString::number(m_rawPoints[first].wavelengthUm));
+                for (std::size_t i = first; i <= last; ++i) {
+                    summed.push_back(m_rawPoints[i]);
+                    groups.push_back({ static_cast<int>(i) });
+                }
+                first = last + 1;
+                continue;
+            }
+
+            visivo::SedPoint total = m_rawPoints[first];
+            total.alternative = false;
+            std::vector<int> members{ static_cast<int>(first) };
+            for (std::size_t i = first + 1; i <= last; ++i) {
+                const visivo::SedPoint &branch = m_rawPoints[i];
+                total.fluxJy += branch.fluxJy;
+                // In quadrature, not the legacy's linear sum: the branches are
+                // independent measurements, and adding their errors linearly
+                // overstates the uncertainty of the total.
+                total.errorJy = std::sqrt(total.errorJy * total.errorJy
+                                          + branch.errorJy * branch.errorJy);
+                // The summed source is at least as large as its largest part.
+                total.sizeArcsec = std::max(total.sizeArcsec, branch.sizeArcsec);
+                // The aggregate is in the fit if any of its branches was: a band
+                // the user had excluded outright stays excluded.
+                total.use = total.use || branch.use;
+                members.push_back(static_cast<int>(i));
+            }
+            if (members.size() > 1) {
+                total.label = u"%1 (+%2 branches summed)"_s.arg(total.label)
+                                      .arg(members.size() - 1);
+            }
+            summed.push_back(total);
+            groups.push_back(std::move(members));
+            first = last + 1;
+        }
+
+        if (!refused.isEmpty()) {
+            m_log->append(u"Not collapsed at %1 µm: the band mixes a detection with an "
+                          "upper limit, and those cannot be added together."_s
+                                  .arg(refused.join(u", "_s)));
+        }
+        m_sed.points = std::move(summed);
+        m_rowBranches = std::move(groups);
+        m_displayedBaseline = m_sed.points;
+        m_branchesCollapsed = true;
+    }
+
+    refreshBandTable();
+    if (m_sizeArcsec) {
+        const double size = visivo::SedBuilder::representativeSizeArcsec(m_sed.points);
+        if (size > 0.0)
+            m_sizeArcsec->setValue(size);
+    }
+    markResultsStale();
+    updateIdleStatus();
+    replot();
 }
 
 void SedWindow::applyDefaults(const BackendSedDefaults &defaults)
@@ -504,7 +760,10 @@ void SedWindow::onBandTableChanged(int row, int column)
     else
         return;
 
+    propagateEditsToRawPoints();
     markResultsStale();
+    updateIdleStatus();
+    syncPlotSelection();
     // The thick model's size follows the bands actually in use.
     if (m_sizeArcsec) {
         const double size = visivo::SedBuilder::representativeSizeArcsec(m_sed.points);
@@ -522,6 +781,20 @@ QVector<int> SedWindow::selectedRows() const
             rows.append(row);
     }
     return rows;
+}
+
+QVector<QVector<int>> SedWindow::selectedBranches() const
+{
+    QVector<QVector<int>> branches;
+    for (int row : selectedRows()) {
+        QVector<int> members;
+        if (row >= 0 && static_cast<std::size_t>(row) < m_rowBranches.size()) {
+            for (int member : m_rowBranches[static_cast<std::size_t>(row)])
+                members.append(member);
+        }
+        branches.append(members);
+    }
+    return branches;
 }
 
 QVector<BackendSedPoint> SedWindow::selectedPoints() const
@@ -553,15 +826,12 @@ void SedWindow::runGreybodyFit()
     if (m_fitWatcher.isRunning())
         return;
     const QVector<BackendSedPoint> points = selectedPoints();
-    int detections = 0;
-    for (const BackendSedPoint &point : points) {
-        if (!point.upperLimit)
-            ++detections;
-    }
-    if (detections < 2) {
+    if (distinctDetectionWavelengths(points) < 2) {
         QMessageBox::warning(this, u"SED fit"_s,
-                             u"Select at least two detections. Upper limits constrain the fit "
-                             "but cannot define it."_s);
+                             u"Select at least two detections at different wavelengths. Two "
+                             "branches of the same band are two measurements of one point on "
+                             "the spectrum, and upper limits constrain the fit but cannot "
+                             "define it."_s);
         return;
     }
 
@@ -591,7 +861,8 @@ void SedWindow::runGreybodyFit()
         m_log->append(u"No source size available: only the optically thin model will be fitted."_s);
     }
 
-    m_pending = FitProvenance{ selectedRows(), points, request.distancePc, request.kappaRef,
+    m_pending = FitProvenance{ selectedRows(), selectedBranches(), points, request.distancePc,
+                               request.kappaRef,
                                request.lambdaRefUm, request.sizeArcsec,
                                request.colourCorrection, request.model, m_inputRevision };
 
@@ -615,6 +886,7 @@ void SedWindow::onGreybodyFitFinished()
     const BackendSedFitResult result = m_fitWatcher.result();
     if (!result.valid) {
         m_log->append(u"<b>Fit failed:</b> %1"_s.arg(result.error.toHtmlEscaped()));
+        updateIdleStatus();
         QMessageBox::warning(this, u"SED fit"_s, result.error);
         return;
     }
@@ -632,6 +904,7 @@ void SedWindow::onGreybodyFitFinished()
     }
     replot();
     m_tabs->setCurrentIndex(2);
+    updateIdleStatus();
     for (const BackendSedFit &fit : m_fits)
         announceProduct(fit);
 }
@@ -641,9 +914,9 @@ void SedWindow::runModelFit()
     if (m_modelWatcher.isRunning())
         return;
     const QVector<BackendSedPoint> points = selectedPoints();
-    if (points.size() < 2) {
+    if (distinctDetectionWavelengths(points) < 2) {
         QMessageBox::warning(this, u"Theoretical models"_s,
-                             u"Select at least two bands."_s);
+                             u"Select at least two bands at different wavelengths."_s);
         return;
     }
 
@@ -678,6 +951,7 @@ void SedWindow::onModelFitFinished()
     const BackendSedModelsResult result = m_modelWatcher.result();
     if (!result.valid) {
         m_log->append(u"<b>Model fit failed:</b> %1"_s.arg(result.error.toHtmlEscaped()));
+        updateIdleStatus();
         QMessageBox::warning(this, u"Theoretical models"_s, result.error);
         return;
     }
@@ -706,6 +980,7 @@ void SedWindow::onModelFitFinished()
     m_log->append(summary + u"."_s);
 
     m_tabs->setCurrentIndex(3);
+    updateIdleStatus();
     if (!m_models.isEmpty())
         m_modelTable->selectRow(0);
 }
@@ -725,6 +1000,8 @@ void SedWindow::clearFits()
     m_modelTable->setRowCount(0);
     m_resultTable->setRowCount(0);
     m_log->clear();
+    m_resultsStale = false;
+    updateIdleStatus();
     replot();
 }
 
@@ -775,36 +1052,81 @@ void SedWindow::replot()
 
 void SedWindow::plotObservedPoints()
 {
-    QVector<double> x, y, err;
-    QVector<double> ulX, ulY;
-    for (const visivo::SedPoint &point : m_sed.points) {
-        if (!point.use)
-            continue;
+    m_dataGraph = nullptr;
+    m_ulGraph = nullptr;
+    m_dataRows.clear();
+    m_ulRows.clear();
+
+    // EVERY point is plotted, in the fit or not. The ones left out are the
+    // alternative counterparts of a band — the branches of the band-merged
+    // tree — and a SED that silently dropped them would hide the fact that
+    // there was a choice to make at all. What is *in* the fit is shown by the
+    // plot's own selection: filled and bright, against hollow and dim.
+    QVector<double> x;
+    QVector<double> y;
+    QVector<double> err;
+    QVector<double> ulX;
+    QVector<double> ulY;
+    for (int row = 0; row < static_cast<int>(m_sed.points.size()); ++row) {
+        const visivo::SedPoint &point = m_sed.points[static_cast<std::size_t>(row)];
         if (point.upperLimit) {
             ulX.append(point.wavelengthUm);
             ulY.append(point.fluxJy);
+            m_ulRows.push_back(row);
             continue;
         }
         x.append(point.wavelengthUm);
         y.append(point.fluxJy);
         err.append(point.errorJy);
+        m_dataRows.push_back(row);
+    }
+
+    const QColor dim(kDataColour.red(), kDataColour.green(), kDataColour.blue(), 110);
+
+    // The guide line joins the bands actually in the fit, in wavelength order.
+    // It carries no model — it is there because an unconnected scatter of eight
+    // points across four decades does not read as one source's spectrum. Added
+    // FIRST: within a layer QCustomPlot draws in creation order, so this is how
+    // the line ends up behind the markers the user has to click.
+    QVector<double> lineX;
+    QVector<double> lineY;
+    for (const visivo::SedPoint &point : m_sed.points) {
+        if (!point.use || point.upperLimit)
+            continue;
+        lineX.append(point.wavelengthUm);
+        lineY.append(point.fluxJy);
+    }
+    if (lineX.size() >= 2) {
+        auto *guide = m_plot->addGraph();
+        guide->setData(lineX, lineY, /*alreadySorted=*/true);
+        guide->setPen(QPen(dim, 1, Qt::DashLine));
+        guide->setScatterStyle(QCPScatterStyle::ssNone);
+        guide->setSelectable(QCP::stNone);
+        guide->removeFromLegend();
     }
 
     if (!x.isEmpty()) {
-        auto *dataGraph = m_plot->addGraph();
-        dataGraph->setName(u"Photometry"_s);
-        dataGraph->setData(x, y);
-        dataGraph->setLineStyle(QCPGraph::lsNone);
-        dataGraph->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssDisc, kDataColour, 7));
+        m_dataGraph = m_plot->addGraph();
+        m_dataGraph->setName(u"Photometry"_s);
+        m_dataGraph->setData(x, y, /*alreadySorted=*/true);
+        m_dataGraph->setLineStyle(QCPGraph::lsNone);
+        m_dataGraph->setScatterStyle(
+                QCPScatterStyle(QCPScatterStyle::ssCircle, QPen(dim, 1.2), Qt::NoBrush, 7));
+        m_dataGraph->setSelectable(QCP::stMultipleDataRanges);
+        m_dataGraph->selectionDecorator()->setScatterStyle(
+                QCPScatterStyle(QCPScatterStyle::ssDisc, kDataColour, 7),
+                QCPScatterStyle::spAll);
+        m_dataGraph->selectionDecorator()->setPen(QPen(kDataColour));
 
         bool anyError = false;
         for (double e : err)
             anyError = anyError || e > 0.0;
         if (anyError) {
             auto *bars = new QCPErrorBars(m_plot->xAxis, m_plot->yAxis);
-            bars->setDataPlottable(dataGraph);
+            bars->setDataPlottable(m_dataGraph);
             bars->setData(err);
-            bars->setPen(QPen(kDataColour));
+            bars->setPen(QPen(dim));
+            bars->setSelectable(QCP::stNone);
             bars->removeFromLegend();
         }
     }
@@ -812,13 +1134,128 @@ void SedWindow::plotObservedPoints()
     if (!ulX.isEmpty()) {
         // Upper limits are drawn as downward triangles: they are not
         // measurements, and a disc would read as one.
-        auto *ulGraph = m_plot->addGraph();
-        ulGraph->setName(u"Upper limits"_s);
-        ulGraph->setData(ulX, ulY);
-        ulGraph->setLineStyle(QCPGraph::lsNone);
-        ulGraph->setScatterStyle(
-                QCPScatterStyle(QCPScatterStyle::ssTriangleInverted, QColor(200, 200, 90), 9));
+        const QColor limitColour(200, 200, 90);
+        const QColor limitDim(limitColour.red(), limitColour.green(), limitColour.blue(), 110);
+        m_ulGraph = m_plot->addGraph();
+        m_ulGraph->setName(u"Upper limits"_s);
+        m_ulGraph->setData(ulX, ulY, /*alreadySorted=*/true);
+        m_ulGraph->setLineStyle(QCPGraph::lsNone);
+        m_ulGraph->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssTriangleInverted,
+                                                   QPen(limitDim, 1.2), Qt::NoBrush, 9));
+        m_ulGraph->setSelectable(QCP::stMultipleDataRanges);
+        m_ulGraph->selectionDecorator()->setScatterStyle(
+                QCPScatterStyle(QCPScatterStyle::ssTriangleInverted, limitColour, 9),
+                QCPScatterStyle::spAll);
+        m_ulGraph->selectionDecorator()->setPen(QPen(limitColour));
     }
+
+    syncPlotSelection();
+}
+
+void SedWindow::resetRowBranches()
+{
+    m_rowBranches.clear();
+    m_rowBranches.reserve(m_sed.points.size());
+    for (int row = 0; row < static_cast<int>(m_sed.points.size()); ++row)
+        m_rowBranches.push_back({ row });
+    m_displayedBaseline = m_sed.points;
+}
+
+void SedWindow::propagateEditsToRawPoints()
+{
+    // Every edit reaches the pristine branch list, collapsed or not. Tying this
+    // to "only while expanded" meant a band unticked in the collapsed view came
+    // back ticked the moment the user expanded again — the edit had nowhere to
+    // live.
+    //
+    // Only what the user actually CHANGED is written down, though. A collapsed
+    // row's Use is the OR of its branches, so copying it back unconditionally
+    // would turn "one branch in, one out" into "both in" on the next expand —
+    // a band the user had excluded, silently back in the fit. The baseline is
+    // what the row held when the view was built; a row that still matches it
+    // has not been edited, and its branches are left alone.
+    if (m_rowBranches.size() != m_sed.points.size()
+        || m_displayedBaseline.size() != m_sed.points.size()) {
+        return;
+    }
+    for (std::size_t row = 0; row < m_sed.points.size(); ++row) {
+        const visivo::SedPoint &point = m_sed.points[row];
+        const bool useChanged = point.use != m_displayedBaseline[row].use;
+        const bool limitChanged = point.upperLimit != m_displayedBaseline[row].upperLimit;
+        if (!useChanged && !limitChanged)
+            continue;
+        for (int member : m_rowBranches[row]) {
+            if (member < 0 || static_cast<std::size_t>(member) >= m_rawPoints.size())
+                continue;
+            visivo::SedPoint &raw = m_rawPoints[static_cast<std::size_t>(member)];
+            if (useChanged)
+                raw.use = point.use;
+            if (limitChanged)
+                raw.upperLimit = point.upperLimit;
+        }
+        m_displayedBaseline[row] = point;
+    }
+}
+
+void SedWindow::syncPlotSelection()
+{
+    // setSelection() emits selectionChanged, not selectionChangedByUser, so
+    // this cannot loop back through onPlotSelectionChanged. The flag guards the
+    // case anyway: a future connection to the wrong signal would otherwise turn
+    // a redraw into an edit of the user's choice.
+    m_syncingSelection = true;
+    const auto apply = [this](QCPGraph *graph, const std::vector<int> &rows) {
+        if (!graph)
+            return;
+        QCPDataSelection selection;
+        for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+            const int row = rows[static_cast<std::size_t>(i)];
+            if (row >= 0 && static_cast<std::size_t>(row) < m_sed.points.size()
+                && m_sed.points[static_cast<std::size_t>(row)].use) {
+                selection.addDataRange(QCPDataRange(i, i + 1), /*simplify=*/false);
+            }
+        }
+        selection.simplify();
+        graph->setSelection(selection);
+    };
+    apply(m_dataGraph, m_dataRows);
+    apply(m_ulGraph, m_ulRows);
+    m_syncingSelection = false;
+}
+
+void SedWindow::onPlotSelectionChanged()
+{
+    if (m_syncingSelection)
+        return;
+
+    const auto readBack = [this](QCPGraph *graph, const std::vector<int> &rows) {
+        if (!graph)
+            return;
+        const QCPDataSelection selection = graph->selection();
+        for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+            const int row = rows[static_cast<std::size_t>(i)];
+            if (row < 0 || static_cast<std::size_t>(row) >= m_sed.points.size())
+                continue;
+            m_sed.points[static_cast<std::size_t>(row)].use =
+                    selection.contains(QCPDataSelection(QCPDataRange(i, i + 1)));
+        }
+    };
+    readBack(m_dataGraph, m_dataRows);
+    readBack(m_ulGraph, m_ulRows);
+
+    propagateEditsToRawPoints();
+    refreshBandTable();
+    if (m_sizeArcsec) {
+        const double size = visivo::SedBuilder::representativeSizeArcsec(m_sed.points);
+        if (size > 0.0)
+            m_sizeArcsec->setValue(size);
+    }
+    markResultsStale();
+    updateIdleStatus();
+    // Deferred: this slot runs from QCustomPlot's own mouse handling, and
+    // replot() deletes and rebuilds every plottable — including the graph whose
+    // selection QCP has just changed and may still touch on the way out.
+    QTimer::singleShot(0, this, [this]() { replot(); });
 }
 
 void SedWindow::plotFit(const BackendSedFit &fit, const QColor &colour)
@@ -892,6 +1329,45 @@ void SedWindow::showFitResults()
     }
 }
 
+void SedWindow::updateIdleStatus()
+{
+    // An empty status bar under an unfitted SED says nothing about what the
+    // window is for. Say what is loaded, and what the next step is.
+    //
+    // setBusy(false) clears the label, so every completion path — including the
+    // failures — has to come back through here, or the window ends up with a
+    // blank status line and no explanation.
+    if (!m_statusLabel || m_fitWatcher.isRunning() || m_modelWatcher.isRunning())
+        return;
+    if (m_resultsStale) {
+        m_statusLabel->setText(u"Results are out of date — run the fit again"_s);
+        return;
+    }
+    int used = 0;
+    int limits = 0;
+    double shortest = 0.0;
+    double longest = 0.0;
+    for (const visivo::SedPoint &point : m_sed.points) {
+        if (!point.use)
+            continue;
+        ++used;
+        if (point.upperLimit)
+            ++limits;
+        if (shortest == 0.0 || point.wavelengthUm < shortest)
+            shortest = point.wavelengthUm;
+        longest = std::max(longest, point.wavelengthUm);
+    }
+    QString text = u"%1 band(s) selected"_s.arg(used);
+    if (used > 0)
+        text += u", %1–%2 µm"_s.arg(QString::number(shortest, 'g', 4),
+                                    QString::number(longest, 'g', 4));
+    if (limits > 0)
+        text += u" (%1 upper limit(s))"_s.arg(limits);
+    text += m_fits.isEmpty() ? u" · no fit yet"_s
+                             : u" · %1 fit(s) plotted"_s.arg(m_fits.size());
+    m_statusLabel->setText(text);
+}
+
 void SedWindow::markResultsStale()
 {
     ++m_inputRevision;
@@ -900,8 +1376,7 @@ void SedWindow::markResultsStale()
     m_resultsStale = true;
     m_log->append(u"<i>The photometry changed after the last fit: the curves and results "
                   "shown belong to the previous selection. Run the fit again.</i>"_s);
-    if (m_statusLabel)
-        m_statusLabel->setText(u"Results are out of date"_s);
+    updateIdleStatus();
 }
 
 void SedWindow::setBusy(bool busy, const QString &message)
@@ -943,6 +1418,28 @@ void SedWindow::announceProduct(const BackendSedFit &fit)
 }
 
 // ── export ────────────────────────────────────────────────────────────────────
+
+int SedWindow::provenanceIndexFor(int row) const
+{
+    // Which entry of the recorded request this row IS, by the branches behind
+    // it. Matching on wavelength (and flux) instead cannot tell a branch that
+    // was fitted from one that was not, and after a collapse it paired the
+    // summed point with one of its own parts.
+    if (row < 0 || static_cast<std::size_t>(row) >= m_rowBranches.size())
+        return -1;
+    const std::vector<int> &members = m_rowBranches[static_cast<std::size_t>(row)];
+    for (int i = 0; i < m_provenance.sentBranches.size(); ++i) {
+        const QVector<int> &sent = m_provenance.sentBranches[i];
+        if (sent.size() != static_cast<int>(members.size()))
+            continue;
+        bool same = true;
+        for (int j = 0; j < sent.size() && same; ++j)
+            same = sent[j] == members[static_cast<std::size_t>(j)];
+        if (same)
+            return i;
+    }
+    return -1;
+}
 
 void SedWindow::exportSed()
 {
@@ -996,8 +1493,12 @@ void SedWindow::exportSed()
             << point.sizeArcsec << ',' << '"' << QString(point.label).replace(u'"', u"\"\""_s)
             << '"';
         // fitted_flux_jy is aligned with the bands that were SENT when the fit
-        // ran — which is the recorded selection, not whatever is ticked now.
-        const int sent = m_provenance.sentRows.indexOf(i);
+        // ran. Row indices cannot carry that across: collapsing the branches
+        // renumbers the rows, so row 2 can be 160 µm before the fit and 250 µm
+        // after it, and the export would put the model of one band next to the
+        // photometry of another. Match on the wavelength — and, where a band
+        // has branches, on the flux as well.
+        const int sent = provenanceIndexFor(i);
         if (!m_fits.isEmpty()) {
             if (sent >= 0 && sent < m_provenance.points.size()) {
                 const BackendSedPoint &used = m_provenance.points[sent];
