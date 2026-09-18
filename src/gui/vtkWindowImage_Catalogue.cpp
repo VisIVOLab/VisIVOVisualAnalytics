@@ -121,6 +121,7 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QTableView>
+#include <QTreeView>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QtConcurrentRun>
@@ -305,7 +306,6 @@ void vtkWindowImage::loadCatalogueOverlay()
         QMessageBox::warning(this, u"Catalogue Overlay"_s, parsed.errorMessage);
         return;
     }
-
     this->applyCatalogueOverlayResult(parsed);
 }
 
@@ -419,6 +419,14 @@ void vtkWindowImage::applyCatalogueOverlayResult(const CatalogueOverlayParseResu
     }
 
     if (this->catalogueOverlayPixels.empty()) {
+        // Nothing landed on the image: take the PREVIOUS overlay down as well.
+        // Clearing only the table left the old actors drawn over the image with
+        // an empty list beside them - the one state that says two things at once.
+        // clearCatalogueOverlay() is the single place that knows what an overlay
+        // consists of (actors, labels, highlights, band panel, re-render).
+        this->catalogueOverlayExtraFields.clear();
+        this->clearCatalogueOverlay();
+        this->refreshCatalogueTable();
         QMessageBox::warning(this, u"Catalogue Overlay"_s,
                              u"No sources could be projected onto the current image WCS."_s);
         return;
@@ -456,10 +464,15 @@ void vtkWindowImage::applyCatalogueOverlayResult(const CatalogueOverlayParseResu
         this->actionClearCatalogueOverlay->setEnabled(true);
     }
     this->setCatalogueOverlayVisible(true);
+    // One message, caveat included: a warning shown before this line was
+    // overwritten by it in the same synchronous flow.
+    const QString loaded =
+            u"Catalogue overlay loaded: %1 sources (%2)."_s
+                    .arg(this->catalogueOverlayPixels.size())
+                    .arg(parsed.frameLabel);
     this->showPersistentStatusMessage(
-            u"Catalogue overlay loaded: %1 sources (%2)."_s.arg(this->catalogueOverlayPixels.size())
-                    .arg(parsed.frameLabel),
-            3000);
+            parsed.errorMessage.isEmpty() ? loaded : loaded + u" "_s + parsed.errorMessage,
+            parsed.errorMessage.isEmpty() ? 3000 : 8000);
     if (skippedProjection > 0 || parsed.skippedEntries > 0) {
         qDebug().noquote() << QStringLiteral("[catalogue] loaded=%1 skipped_parse=%2 skipped_wcs=%3")
                                           .arg(this->catalogueOverlayPixels.size())
@@ -1054,15 +1067,22 @@ void vtkWindowImage::ensureCatalogueDock()
     // the 3-D catalogue viewer already does with its own table.
     this->catalogueDock = new QDockWidget(u"Catalogue"_s, this);
     this->catalogueDock->setObjectName(u"CatalogueDockImage"_s);
-    this->catalogueTableView = new QTableView(this->catalogueDock);
+    // A TREE, because a VLKB source and its per-band detections are one thing
+    // with parts: the band-merged row carries the arrow, the bands sit under it.
+    // For a catalogue with no such relation the model stays flat and this looks
+    // and behaves exactly like the table it replaces.
+    this->catalogueTableView = new QTreeView(this->catalogueDock);
     this->catalogueTableModel = new CatalogueTableModel(this->catalogueDock);
     this->catalogueTableView->setModel(this->catalogueTableModel);
     this->catalogueTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
     this->catalogueTableView->setSelectionMode(QAbstractItemView::SingleSelection);
     this->catalogueTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
     this->catalogueTableView->setSortingEnabled(false);
-    this->catalogueTableView->verticalHeader()->setVisible(false);
-    this->catalogueTableView->horizontalHeader()->setStretchLastSection(true);
+    this->catalogueTableView->setRootIsDecorated(true);
+    this->catalogueTableView->setUniformRowHeights(true);
+    this->catalogueTableView->setAllColumnsShowFocus(true);
+    this->catalogueTableView->setExpandsOnDoubleClick(false);   // double-click zooms
+    this->catalogueTableView->header()->setStretchLastSection(true);
     this->catalogueDock->setWidget(this->catalogueTableView);
     this->addDockWidget(Qt::BottomDockWidgetArea, this->catalogueDock);
     this->catalogueDock->hide();   // shown when a catalogue loads
@@ -1077,14 +1097,16 @@ void vtkWindowImage::ensureCatalogueDock()
         // Mark the origin so the sync below does not scroll the row out from
         // under the pointer that just clicked it.
         this->m_catalogueSelectionFromTable = true;
-        this->setSelectedCatalogueSourceIndex(current.isValid() ? current.row() : -1);
+        this->setSelectedCatalogueSourceIndex(
+                this->catalogueTableModel->entryIndexFor(current));
         this->m_catalogueSelectionFromTable = false;
     });
     QObject::connect(this->catalogueTableView, &QTableView::doubleClicked, this,
                      [this](const QModelIndex &index) {
-        if (index.isValid()) {
-            this->setSelectedCatalogueSourceIndex(index.row());
-            this->centerViewOnCatalogueSource(index.row());
+        const int entry = this->catalogueTableModel->entryIndexFor(index);
+        if (entry >= 0) {
+            this->setSelectedCatalogueSourceIndex(entry);
+            this->centerViewOnCatalogueSource(entry);
         }
     });
     this->refreshCatalogueTable();
@@ -1101,7 +1123,13 @@ void vtkWindowImage::refreshCatalogueTable()
     if (this->catalogueDock)
         this->catalogueDock->setVisible(!this->catalogueOverlayEntries.empty());
     if (this->catalogueTableView) {
-        this->catalogueTableView->resizeColumnsToContents();
+        // No expander column for a catalogue without children: a plain CSV or
+        // ds9 file must look exactly like the flat table it always was.
+        const bool grouped = this->catalogueTableModel->isGrouped();
+        this->catalogueTableView->setRootIsDecorated(grouped);
+        this->catalogueTableView->setIndentation(grouped ? 16 : 0);
+        for (int c = 0; c < this->catalogueTableModel->columnCount(); ++c)
+            this->catalogueTableView->resizeColumnToContents(c);
     }
     this->syncCatalogueTableSelection(this->selectedCatalogueSourceIndex);
 }
@@ -1296,10 +1324,18 @@ void vtkWindowImage::syncCatalogueTableSelection(int index)
     }
 
     this->syncingCatalogueSelection = true;
-    if (index < 0 || index >= this->catalogueTableModel->rowCount()) {
+    if (index < 0 || !this->catalogueTableModel->indexForEntry(index).isValid()) {
         this->catalogueTableView->clearSelection();
     } else {
-        const QModelIndex modelIndex = this->catalogueTableModel->index(index, 0);
+        const QModelIndex modelIndex = this->catalogueTableModel->indexForEntry(index);
+        if (!modelIndex.isValid()) {
+            this->syncingCatalogueSelection = false;
+            return;
+        }
+        // Open the parent, or selecting a band would highlight a row inside a
+        // collapsed group and look like nothing happened.
+        if (modelIndex.parent().isValid())
+            this->catalogueTableView->expand(modelIndex.parent());
         this->catalogueTableView->selectionModel()->setCurrentIndex(
                 modelIndex, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
         // Do NOT scroll when the click came from the table itself: recentring
@@ -1457,8 +1493,18 @@ VlkbCatalogueRaw fetchVlkbSources(const QString &base, const QString &adql,
     // is now built from the view's real column list, so positions are whatever
     // the service returns - and the columns we do not interpret become fields of
     // the source rather than being skipped.
-    const QStringList header = CatalogueOverlayUtils::splitSimpleCsvLine(
-            QString::fromUtf8(lines[0]).trimmed());
+    // The response header obeys the same quoting rules as its rows.
+    int headerEnd = 0;
+    QString headerRecord = QString::fromUtf8(lines[0]);
+    while (CatalogueOverlayUtils::csvRecordIsIncomplete(headerRecord)
+           && headerEnd + 1 < lines.size())
+        headerRecord += u'\n' + QString::fromUtf8(lines[++headerEnd]);
+    if (CatalogueOverlayUtils::csvRecordIsIncomplete(headerRecord)) {
+        out.error = QStringLiteral("The VLKB response header ends inside a quoted field.");
+        return out;
+    }
+    const QStringList header =
+            CatalogueOverlayUtils::splitSimpleCsvLine(headerRecord.trimmed());
     QHash<QString, int> col;
     for (int i = 0; i < header.size(); ++i)
         col.insert(header[i].trimmed().toLower(), i);
@@ -1512,8 +1558,20 @@ VlkbCatalogueRaw fetchVlkbSources(const QString &base, const QString &adql,
 
     const int iGlonFt = idx(u"glonft"_s), iGlatFt = idx(u"glatft"_s);
     QSet<QString> seen;   // dedupe the SED view's repeated rows by band + position
-    for (int i = 1; i < lines.size(); ++i) {         // skip header
-        const QString line = QString::fromUtf8(lines[i]).trimmed();
+    for (int i = headerEnd + 1; i < lines.size(); ++i) {   // after the header record
+        QString line = QString::fromUtf8(lines[i]);
+        // Same rule as the file parser: a text column returned by SELECT * can
+        // contain a newline inside quotes, and that is still one record.
+        while (CatalogueOverlayUtils::csvRecordIsIncomplete(line) && i + 1 < lines.size())
+            line += u'\n' + QString::fromUtf8(lines[++i]);
+        if (CatalogueOverlayUtils::csvRecordIsIncomplete(line)) {
+            // Truncated response: stop rather than read fields out of a fragment.
+            qWarning().noquote()
+                    << QStringLiteral("[vlkb] response ends inside a quoted field; "
+                                      "the last record was dropped");
+            break;
+        }
+        line = line.trimmed();
         if (line.isEmpty()) continue;
         const QStringList c = CatalogueOverlayUtils::splitSimpleCsvLine(line);
         if (c.size() < 2) continue;
@@ -1533,22 +1591,30 @@ VlkbCatalogueRaw fetchVlkbSources(const QString &base, const QString &adql,
                 if (!okXft || !okYft) continue;
                 glon = glonft; glat = glatft;
             }
-            const QString key = QStringLiteral("%1_%2_%3").arg(bands[b])
-                    .arg(glon, 0, 'f', 5).arg(glat, 0, 'f', 5);
-            if (seen.contains(key)) continue;
-            seen.insert(key);
-            // A NAME, not "Source 64". The view carries no designation column, but
-            // a Hi-GAL compact source IS named by its Galactic position, so the
-            // standard designation can be written from it: G039.884-0.163, plus
-            // the band, since one physical source yields one ellipse per band.
-            // This also makes "Show Catalogue Labels" do something: it only draws
-            // labels that are non-empty, and every VLKB label was empty.
-            // The view publishes the official designation; the position-derived one
-            // is the fallback for a service that does not.
+            // Identity of the SOURCE this detection belongs to: the band-merged
+            // designation, or idcss when the view publishes no designation.
             const int iDesignation = idx(u"designationft"_s);
             const QString published = (iDesignation >= 0 && iDesignation < c.size())
                     ? c[iDesignation].trimmed()
                     : QString();
+            const int iIdcss = idx(u"idcss"_s);
+            QString group = published;
+            if (group.isEmpty() && iIdcss >= 0 && iIdcss < c.size())
+                group = c[iIdcss].trimmed();
+
+            // The group is part of the identity: the SED view can hand the same
+            // per-band detection to two different band-merged sources, and a key
+            // of band+position alone gave it to whichever row came first - the
+            // other source silently lost that band from its tree.
+            const QString key = QStringLiteral("%1_%2_%3_%4").arg(bands[b])
+                    .arg(glon, 0, 'f', 5).arg(glat, 0, 'f', 5).arg(group);
+            if (seen.contains(key)) continue;
+            seen.insert(key);
+            // A NAME, not "Source 64": the published designation when there is
+            // one, otherwise the standard Galactic designation written from the
+            // position (G039.884-0.163), plus the band, since one physical source
+            // yields one ellipse per band. This is also what makes "Show
+            // Catalogue Labels" draw anything - it only draws non-empty labels.
             const QString designation = !published.isEmpty()
                     ? QStringLiteral("%1 (%2)").arg(published, vlkbBandLabel(bands[b]))
                     : QStringLiteral("G%1%2%3 (%4)")
@@ -1571,7 +1637,8 @@ VlkbCatalogueRaw fetchVlkbSources(const QString &base, const QString &adql,
                     continue;
                 fields.append({ name, value });
             }
-            out.ellipses.push_back({ glon, glat, fa, fb, pa, bands[b], designation, fields });
+            out.ellipses.push_back({ glon, glat, fa, fb, pa, bands[b], designation, fields,
+                                     group });
         }
     }
     out.valid = true;
@@ -1960,6 +2027,7 @@ void vtkWindowImage::onVlkbCatalogueReady()
         ce.radiusY = bPx;
         ce.angleDeg = e.paDeg;
         ce.extra = e.fields;
+        ce.groupKey = e.groupKey;
         for (const auto &kv : e.fields) {
             if (!parsed.extraFields.contains(kv.first))
                 parsed.extraFields.append(kv.first);

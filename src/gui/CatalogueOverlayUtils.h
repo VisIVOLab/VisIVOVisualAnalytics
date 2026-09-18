@@ -48,6 +48,10 @@ struct CatalogueOverlayEntry
     /// fluxes, errors and flags next to them are usually the reason it was
     /// opened, and they used to be parsed and thrown away.
     QList<QPair<QString, QString>> extra;
+    /// Entries sharing this key are ONE physical source seen in several bands
+    /// (VLKB: the band-merged designation). Empty when the catalogue has no such
+    /// relation, and the table then stays flat.
+    QString groupKey;
 };
 
 struct CatalogueOverlayParseResult
@@ -78,6 +82,7 @@ struct VlkbCatalogueRaw
         /// The row's other columns (fluxes, flags…), already filtered to the ones
         /// that belong to this band or to no band at all.
         QList<QPair<QString, QString>> fields;
+        QString groupKey;   ///< band-merged designation: one source, several bands
     };
     struct Polyline { std::vector<std::array<double, 2>> pts; QString label; };  // (glon,glat)
     std::vector<Ellipse> ellipses;
@@ -122,6 +127,39 @@ inline QStringList splitSimpleCsvLine(const QString &line)
     return out;
 }
 
+/// True when the line leaves a quoted field open, so the next physical line is
+/// still part of the same record. Splitting on newlines before parsing quotes
+/// truncated any value containing one and turned its tail into a bogus record.
+inline bool csvRecordIsIncomplete(const QString &accumulated)
+{
+    int quotes = 0;
+    for (const QChar c : accumulated)
+        if (c == u'"')
+            ++quotes;
+    return (quotes % 2) != 0;
+}
+
+/// Read ONE csv record from @p stream, however many physical lines it spans.
+/// @p unterminated is set when the file ends with a quote still open - which is
+/// a broken file, and the caller has to say so rather than use the fragment.
+inline QString readCsvRecord(QTextStream &stream, bool *unterminated = nullptr)
+{
+    if (unterminated)
+        *unterminated = false;
+    if (stream.atEnd())
+        return {};
+    QString record = stream.readLine();
+    while (csvRecordIsIncomplete(record)) {
+        if (stream.atEnd()) {
+            if (unterminated)
+                *unterminated = true;
+            break;
+        }
+        record += u'\n' + stream.readLine();
+    }
+    return record;
+}
+
 /// Make a field name unique against the ones already collected: a catalogue with
 /// two columns called `flux` otherwise shows one and silently drops the other.
 inline QString uniqueFieldName(const QString &name, const QStringList &taken)
@@ -160,8 +198,18 @@ inline CatalogueOverlayParseResult parseCsv(const QString &path)
 
     QTextStream stream(&file);
     QString headerLine;
+    bool headerUnterminated = false;
     while (!stream.atEnd() && headerLine.trimmed().isEmpty()) {
-        headerLine = stream.readLine();
+        // The header obeys the same quoting rules as the rows: a column name
+        // containing a newline used to cut the header in two and misalign every
+        // field after it.
+        headerLine = readCsvRecord(stream, &headerUnterminated);
+    }
+    if (headerUnterminated) {
+        result.errorMessage = QStringLiteral(
+                "CSV catalogue header ends inside a quoted field: the file is truncated "
+                "or its quoting is broken.");
+        return result;
     }
     if (headerLine.trimmed().isEmpty()) {
         result.errorMessage = QStringLiteral("CSV catalogue is empty.");
@@ -192,8 +240,18 @@ inline CatalogueOverlayParseResult parseCsv(const QString &path)
         result.extraFields.append(unique);
     }
 
+    bool truncatedTail = false;
     while (!stream.atEnd()) {
-        const QString line = stream.readLine().trimmed();
+        bool unterminated = false;
+        QString line = readCsvRecord(stream, &unterminated);
+        if (unterminated) {
+            // A row that never closes its quote is not a row: count it as skipped
+            // and stop, rather than inventing fields from the fragment.
+            truncatedTail = true;
+            ++result.skippedEntries;
+            break;
+        }
+        line = line.trimmed();
         if (line.isEmpty()) {
             continue;
         }
@@ -243,6 +301,12 @@ inline CatalogueOverlayParseResult parseCsv(const QString &path)
     result.valid = true;
     result.frameLabel = QStringLiteral("FK5/ICRS (RA/DEC degrees)");
     result.sourceLabel = QFileInfo(path).fileName();
+    if (truncatedTail) {
+        // Loaded, but the user has to know the file ended mid-record.
+        result.errorMessage = QStringLiteral(
+                "The last row ends inside a quoted field and was skipped: the file looks "
+                "truncated.");
+    }
     return result;
 }
 

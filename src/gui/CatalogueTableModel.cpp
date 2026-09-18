@@ -1,6 +1,9 @@
 #include "CatalogueTableModel.h"
 
+#include <QHash>
 #include <QString>
+
+#include <limits>
 
 namespace {
 QString catalogueShapeName(CatalogueOverlayEntry::Shape shape)
@@ -13,7 +16,99 @@ QString catalogueShapeName(CatalogueOverlayEntry::Shape shape)
 }
 }
 
-CatalogueTableModel::CatalogueTableModel(QObject *parent) : QAbstractTableModel(parent) {}
+namespace {
+// Top-level rows carry this as their internal id; a child carries its group.
+constexpr quintptr kTopLevel = std::numeric_limits<quintptr>::max();
+}   // namespace
+
+CatalogueTableModel::CatalogueTableModel(QObject *parent) : QAbstractItemModel(parent) {}
+
+void CatalogueTableModel::rebuildGroups()
+{
+    m_groups.clear();
+    m_grouped = false;
+    if (!entries)
+        return;
+    // Grouped only if the catalogue says so. A local file has no such relation
+    // and must keep behaving like a flat table.
+    QHash<QString, int> groupOfKey;
+    for (std::size_t i = 0; i < entries->size(); ++i) {
+        const CatalogueOverlayEntry &e = entries->at(i);
+        const int idx = static_cast<int>(i);
+        if (e.groupKey.isEmpty()) {
+            Group g;
+            g.representative = idx;
+            m_groups.append(g);
+            continue;
+        }
+        m_grouped = true;
+        auto it = groupOfKey.constFind(e.groupKey);
+        if (it == groupOfKey.cend()) {
+            Group g;
+            g.representative = idx;
+            m_groups.append(g);
+            groupOfKey.insert(e.groupKey, m_groups.size() - 1);
+            continue;
+        }
+        Group &g = m_groups[it.value()];
+        // The band-merged detection is the one that represents the source; any
+        // other band goes underneath it. Without one, the first seen leads.
+        const bool thisIsMerged = e.band == QStringLiteral("ft");
+        if (thisIsMerged && entries->at(static_cast<std::size_t>(g.representative)).band
+                    != QStringLiteral("ft")) {
+            g.children.append(g.representative);
+            g.representative = idx;
+        } else {
+            g.children.append(idx);
+        }
+    }
+}
+
+int CatalogueTableModel::entryIndexFor(const QModelIndex &index) const
+{
+    if (!index.isValid() || !entries)
+        return -1;
+    if (index.internalId() == kTopLevel) {
+        return index.row() >= 0 && index.row() < m_groups.size()
+                ? m_groups.at(index.row()).representative
+                : -1;
+    }
+    const auto g = static_cast<int>(index.internalId());
+    if (g < 0 || g >= m_groups.size())
+        return -1;
+    const QVector<int> &kids = m_groups.at(g).children;
+    return index.row() >= 0 && index.row() < kids.size() ? kids.at(index.row()) : -1;
+}
+
+QModelIndex CatalogueTableModel::indexForEntry(int entryIndex) const
+{
+    for (int g = 0; g < m_groups.size(); ++g) {
+        if (m_groups.at(g).representative == entryIndex)
+            return createIndex(g, 0, kTopLevel);
+        const int child = m_groups.at(g).children.indexOf(entryIndex);
+        if (child >= 0)
+            return createIndex(child, 0, static_cast<quintptr>(g));
+    }
+    return {};
+}
+
+QModelIndex CatalogueTableModel::index(int row, int column, const QModelIndex &parent) const
+{
+    if (!hasIndex(row, column, parent))
+        return {};
+    if (!parent.isValid())
+        return createIndex(row, column, kTopLevel);
+    if (parent.internalId() != kTopLevel)
+        return {};   // only two levels
+    return createIndex(row, column, static_cast<quintptr>(parent.row()));
+}
+
+QModelIndex CatalogueTableModel::parent(const QModelIndex &child) const
+{
+    if (!child.isValid() || child.internalId() == kTopLevel)
+        return {};
+    return createIndex(static_cast<int>(child.internalId()), 0, kTopLevel);
+}
 
 void CatalogueTableModel::setFrameLabel(const QString &frameLabel)
 {
@@ -28,22 +123,29 @@ void CatalogueTableModel::setEntries(const std::vector<CatalogueOverlayEntry> *n
 {
     beginResetModel();
     this->entries = newEntries;
+    rebuildGroups();
     endResetModel();
 }
 
 int CatalogueTableModel::rowCount(const QModelIndex &parent) const
 {
-    if (parent.isValid() || !this->entries) {
+    if (!this->entries)
         return 0;
-    }
-    return static_cast<int>(this->entries->size());
+    if (!parent.isValid())
+        return m_groups.size();
+    if (parent.internalId() != kTopLevel || parent.column() > 0)
+        return 0;
+    return parent.row() >= 0 && parent.row() < m_groups.size()
+            ? m_groups.at(parent.row()).children.size()
+            : 0;
 }
 
-int CatalogueTableModel::columnCount(const QModelIndex &parent) const
+int CatalogueTableModel::columnCount(const QModelIndex &) const
 {
-    if (parent.isValid()) {
-        return 0;
-    }
+    // The SAME columns at every level. Returning 0 for a valid parent made
+    // hasIndex() refuse every child index, so a band under its band-merged
+    // source could not be built by the view at all - while indexForEntry()
+    // created one directly, leaving navigation and selection disagreeing.
     return kFixedColumns + static_cast<int>(m_extraFields.size());
 }
 
@@ -58,12 +160,14 @@ void CatalogueTableModel::setExtraFields(const QStringList &fields)
 
 QVariant CatalogueTableModel::data(const QModelIndex &index, int role) const
 {
-    if (!index.isValid() || !this->entries || index.row() < 0
-        || index.row() >= static_cast<int>(this->entries->size())) {
+    if (!index.isValid() || !this->entries) {
         return {};
     }
 
-    const CatalogueOverlayEntry &entry = this->entries->at(static_cast<std::size_t>(index.row()));
+    const int entryIndex = entryIndexFor(index);
+    if (entryIndex < 0 || entryIndex >= static_cast<int>(this->entries->size()))
+        return {};
+    const CatalogueOverlayEntry &entry = this->entries->at(static_cast<std::size_t>(entryIndex));
     if (index.column() >= kFixedColumns) {
         // A field of the catalogue itself: looked up by name, because not every
         // row carries every field.
@@ -100,9 +204,20 @@ QVariant CatalogueTableModel::data(const QModelIndex &index, int role) const
     }
 
     switch (column) {
-    case Column::Name:
-        return entry.label.trimmed().isEmpty() ? QStringLiteral("Source %1").arg(index.row() + 1)
-                                               : entry.label.trimmed();
+    case Column::Name: {
+        const QString name = entry.label.trimmed().isEmpty()
+                ? QStringLiteral("Source %1").arg(entryIndex + 1)
+                : entry.label.trimmed();
+        // A parent says how many more bands are folded under it, so a collapsed
+        // row does not hide that there is anything to open.
+        if (index.internalId() == kTopLevel && index.row() < m_groups.size()) {
+            const int extra = m_groups.at(index.row()).children.size();
+            if (extra > 0)
+                return QStringLiteral("%1  + %2 band%3").arg(name).arg(extra)
+                        .arg(extra == 1 ? QString() : QStringLiteral("s"));
+        }
+        return name;
+    }
     case Column::Type:
         return catalogueShapeName(entry.shape);
     // A sky position, when the entry has one - which is not the same question as
@@ -119,15 +234,18 @@ QVariant CatalogueTableModel::data(const QModelIndex &index, int role) const
         return QString::number(entry.pixelX, 'f', 2);
     case Column::Y:
         return QString::number(entry.pixelY, 'f', 2);
+    // Whenever the source HAS a size, not only when its shape is drawn as an
+    // ellipse: a VLKB detection is sampled into a polyline and still has FWHM
+    // and PA, and both columns were empty for every one of them.
     case Column::Size:
-        if (entry.shape == CatalogueOverlayEntry::Shape::Ellipse) {
+        if (entry.radiusX > 0.0 || entry.radiusY > 0.0) {
             return QStringLiteral("%1, %2")
                     .arg(QString::number(entry.radiusX, 'f', 2),
                          QString::number(entry.radiusY, 'f', 2));
         }
         return {};
     case Column::Angle:
-        if (entry.shape == CatalogueOverlayEntry::Shape::Ellipse) {
+        if (entry.radiusX > 0.0 || entry.radiusY > 0.0) {
             return QString::number(entry.angleDeg, 'f', 1);
         }
         return {};
@@ -139,7 +257,7 @@ QVariant CatalogueTableModel::data(const QModelIndex &index, int role) const
 QVariant CatalogueTableModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
     if (orientation != Qt::Horizontal || role != Qt::DisplayRole) {
-        return QAbstractTableModel::headerData(section, orientation, role);
+        return QAbstractItemModel::headerData(section, orientation, role);
     }
     if (section >= kFixedColumns) {
         return m_extraFields.value(section - kFixedColumns);

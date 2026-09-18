@@ -505,7 +505,6 @@ void vtkWindowImage::showHistogramPanel()
 
     bool *draggingLow = new bool(false);
     bool *draggingHigh = new bool(false);
-    const double maxCount = st->maxCount() * 1.05;
 
     QObject::connect(plot, &QCustomPlot::mousePress, win,
                      [plot, lowLinePtr, highLinePtr, draggingLow, draggingHigh](QMouseEvent *event) {
@@ -518,7 +517,8 @@ void vtkWindowImage::showHistogramPanel()
 
     QObject::connect(plot, &QCustomPlot::mouseMove, win,
                      [plot, lowLinePtr, highLinePtr, lowLabelPtr, highLabelPtr,
-                      draggingLow, draggingHigh, maxCount](QMouseEvent *event) {
+                      draggingLow, draggingHigh, st](QMouseEvent *event) {
+        const double maxCount = st->maxCount() * 1.05;   // current bins, not the ones at open
         if (!*draggingLow && !*draggingHigh) return;
         const double x = plot->xAxis->pixelToCoord(event->pos().x());
         if (*draggingLow && lowLinePtr) {

@@ -40,6 +40,7 @@ class QFrame;
 class QLabel;
 class ToolResultDialog;
 class QTableView;
+class QTreeView;
 class SidebarPanel;
 class vtkActor;
 class vtkAxisActor2D;
@@ -266,7 +267,7 @@ private:
     QPointer<QLabel> wcsStatusLabel;
     QPointer<QLabel> catalogueInfoLabel;
     QPointer<QDockWidget> catalogueDock;
-    QPointer<QTableView> catalogueTableView;
+    QPointer<QTreeView> catalogueTableView;
     QPointer<CatalogueTableModel> catalogueTableModel;
     bool syncingCatalogueSelection{ false };
     QPointer<QAction> actionWcsSexagesimal;

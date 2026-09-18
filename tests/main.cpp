@@ -16,6 +16,7 @@
 #include "TestCubeToolGate.h"
 #include "TestToolResultRecord.h"
 #include "TestProductOrigin.h"
+#include "TestCatalogueCsv.h"
 #include "TestFitsHeaderString.h"
 #include "TestStokesCompanion.h"
 #include "TestSpectralAxisInfer.h"
@@ -43,6 +44,7 @@ int main(int argc, char *argv[])
     { TestCubeToolGate     t; status |= QTest::qExec(&t, argc, argv); }
     { TestToolResultRecord t; status |= QTest::qExec(&t, argc, argv); }
     { TestProductOrigin   t; status |= QTest::qExec(&t, argc, argv); }
+    { TestCatalogueCsv    t; status |= QTest::qExec(&t, argc, argv); }
     { TestFitsHeaderString t; status |= QTest::qExec(&t, argc, argv); }
     { TestStokesCompanion t; status |= QTest::qExec(&t, argc, argv); }
     { TestSpectralAxisInfer t; status |= QTest::qExec(&t, argc, argv); }

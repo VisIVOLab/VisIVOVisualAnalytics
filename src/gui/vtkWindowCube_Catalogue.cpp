@@ -141,6 +141,7 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QTableView>
+#include <QTreeView>
 #include <QThread>
 #include <QtConcurrentRun>
 #include <QVBoxLayout>
@@ -215,7 +216,6 @@ void vtkWindowCube::loadCatalogueOverlay()
         QMessageBox::warning(this, u"Catalogue Overlay"_s, parsed.errorMessage);
         return;
     }
-
     if (!this->remoteHasCelestialAxes()) {
         const bool hasImageEntries = std::any_of(
                 parsed.entries.cbegin(), parsed.entries.cend(), [](const CatalogueOverlayEntry &entry) {
@@ -278,6 +278,12 @@ void vtkWindowCube::loadCatalogueOverlay()
     }
 
     if (this->catalogueOverlayPixels.empty()) {
+        // Down with the previous overlay too, and BEFORE the modal box: leaving
+        // the old actors drawn next to an empty table says two different things
+        // about what is loaded.
+        this->catalogueOverlayExtraFields.clear();
+        this->clearCatalogueOverlay();
+        this->refreshCatalogueTable();
         QMessageBox::warning(this, u"Catalogue Overlay"_s,
                              u"No sources could be projected onto the current cube WCS."_s);
         return;
@@ -302,10 +308,16 @@ void vtkWindowCube::loadCatalogueOverlay()
         this->actionClearCatalogueOverlay->setEnabled(true);
     }
     this->setCatalogueOverlayVisible(true);
+    // One message, and it carries the caveat: a separate warning shown before
+    // this line was simply overwritten by it.
+    const QString loaded =
+            u"Catalogue overlay loaded: %1 sources (%2)."_s
+                    .arg(this->catalogueOverlayPixels.size())
+                    .arg(parsed.frameLabel);
     this->showPersistentStatusMessage(
-            u"Catalogue overlay loaded: %1 sources (%2)."_s.arg(this->catalogueOverlayPixels.size())
-                    .arg(parsed.frameLabel),
-            3000);
+            parsed.errorMessage.isEmpty() ? loaded
+                                          : loaded + u" "_s + parsed.errorMessage,
+            parsed.errorMessage.isEmpty() ? 3000 : 8000);
     if (skippedProjection > 0 || parsed.skippedEntries > 0) {
         qDebug().noquote() << QStringLiteral("[catalogue] loaded=%1 skipped_parse=%2 skipped_wcs=%3")
                                           .arg(this->catalogueOverlayPixels.size())
@@ -731,15 +743,16 @@ void vtkWindowCube::ensureCatalogueDock()
 
     this->catalogueDock = new QDockWidget(u"Catalogue"_s, this);
     this->catalogueDock->setObjectName(u"CatalogueDockCube"_s);
-    this->catalogueTableView = new QTableView(this->catalogueDock);
+    this->catalogueTableView = new QTreeView(this->catalogueDock);
     this->catalogueTableModel = new CatalogueTableModel(this->catalogueDock);
     this->catalogueTableView->setModel(this->catalogueTableModel);
     this->catalogueTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
     this->catalogueTableView->setSelectionMode(QAbstractItemView::SingleSelection);
     this->catalogueTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
     this->catalogueTableView->setSortingEnabled(false);
-    this->catalogueTableView->verticalHeader()->setVisible(false);
-    this->catalogueTableView->horizontalHeader()->setStretchLastSection(true);
+        this->catalogueTableView->header()->setStretchLastSection(true);
+    this->catalogueTableView->setUniformRowHeights(true);
+    this->catalogueTableView->setAllColumnsShowFocus(true);
     this->catalogueDock->setWidget(this->catalogueTableView);
     // Bottom, not right: docks in one area share their width, so in the right
     // column this table was squeezed to the rail width whenever the Inspector
@@ -754,13 +767,15 @@ void vtkWindowCube::ensureCatalogueDock()
         if (this->syncingCatalogueSelection) {
             return;
         }
-        this->setSelectedCatalogueSourceIndex(current.isValid() ? current.row() : -1);
+        this->setSelectedCatalogueSourceIndex(
+                this->catalogueTableModel->entryIndexFor(current));
     });
-    QObject::connect(this->catalogueTableView, &QTableView::doubleClicked, this,
+    QObject::connect(this->catalogueTableView, &QTreeView::doubleClicked, this,
                      [this](const QModelIndex &index) {
-        if (index.isValid()) {
-            this->setSelectedCatalogueSourceIndex(index.row());
-            this->centerViewOnCatalogueSource(index.row());
+        const int entry = this->catalogueTableModel->entryIndexFor(index);
+        if (entry >= 0) {
+            this->setSelectedCatalogueSourceIndex(entry);
+            this->centerViewOnCatalogueSource(entry);
         }
     });
     this->refreshCatalogueTable();
@@ -777,7 +792,11 @@ void vtkWindowCube::refreshCatalogueTable()
         this->catalogueDock->setVisible(!this->catalogueOverlayEntries.empty());
     }
     if (this->catalogueTableView) {
-        this->catalogueTableView->resizeColumnsToContents();
+        const bool grouped = this->catalogueTableModel->isGrouped();
+        this->catalogueTableView->setRootIsDecorated(grouped);
+        this->catalogueTableView->setIndentation(grouped ? 16 : 0);
+        for (int c = 0; c < this->catalogueTableModel->columnCount(); ++c)
+            this->catalogueTableView->resizeColumnToContents(c);
     }
     this->syncCatalogueTableSelection(this->selectedCatalogueSourceIndex);
 }
@@ -849,13 +868,22 @@ void vtkWindowCube::syncCatalogueTableSelection(int index)
     }
 
     this->syncingCatalogueSelection = true;
-    if (index < 0 || index >= this->catalogueTableModel->rowCount()) {
+    const QModelIndex modelIndex =
+            index < 0 ? QModelIndex() : this->catalogueTableModel->indexForEntry(index);
+    if (!modelIndex.isValid()) {
         this->catalogueTableView->clearSelection();
     } else {
-        const QModelIndex modelIndex = this->catalogueTableModel->index(index, 0);
+        if (modelIndex.parent().isValid())
+            this->catalogueTableView->expand(modelIndex.parent());
         this->catalogueTableView->selectionModel()->setCurrentIndex(
                 modelIndex, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
-        this->catalogueTableView->scrollTo(modelIndex, QAbstractItemView::PositionAtCenter);
+        // Only if it is not already in view, and never centred: recentring under
+        // the pointer is what made the row move away between the two clicks of a
+        // double-click in the image viewer.
+        const QRect rowRect = this->catalogueTableView->visualRect(modelIndex);
+        if (!rowRect.isValid()
+            || !this->catalogueTableView->viewport()->rect().contains(rowRect.center()))
+            this->catalogueTableView->scrollTo(modelIndex, QAbstractItemView::EnsureVisible);
     }
     this->syncingCatalogueSelection = false;
 }

@@ -76,6 +76,7 @@ class PvDiagramWidget;
 class ToolResultDialog;
 class ChannelOverlay;
 class QTableView;
+class QTreeView;
 class vtkAxisActor2D;
 class vtkActor;
 class vtkCubeAxesActor;
@@ -994,7 +995,7 @@ protected:
     QPointer<QLabel> momentProvenanceLabel;
     QPointer<QLabel> catalogueInfoLabel;
     QPointer<QDockWidget> catalogueDock;
-    QPointer<QTableView> catalogueTableView;
+    QPointer<QTreeView> catalogueTableView;
     QPointer<CatalogueTableModel> catalogueTableModel;
     bool syncingCatalogueSelection{ false };
     // ── Plot theme ───────────────────────────────────────────────────────────
