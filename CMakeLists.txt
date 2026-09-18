@@ -460,6 +460,9 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage.cpp
         src/gui/vtkWindowImage.h
         src/gui/vtkWindowImage_Catalogue.cpp
+        src/gui/SedWindow.cpp
+        src/gui/SedWindow.h
+        src/gui/SedBuilder.h
         src/gui/vtkWindowImage_Wcs.cpp
         src/gui/vtkWindowImage_Polarisation.cpp
         src/gui/vtkWindowImage_Probe.cpp

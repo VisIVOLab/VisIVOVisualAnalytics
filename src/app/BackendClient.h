@@ -906,6 +906,122 @@ struct BackendAperturePhotometryResult
     double pixelScaleArcsec{ 0. };
 };
 
+// ── SED fitting (greybody + VLKB theoretical models) ──────────────────────────
+
+/// One photometric point sent to the backend for a SED fit.
+struct BackendSedPoint
+{
+    double wavelengthUm{ 0. };
+    double fluxJy{ 0. };
+    /// 0 when the catalogue gives no error. The backend then falls back to a
+    /// Poisson-like χ² and says in its warnings that the interval is not a
+    /// confidence interval.
+    double errorJy{ 0. };
+    bool upperLimit{ false };
+};
+
+/// What to fit and over which grid. Every range is [min, max, steps]; a range
+/// with one step holds that parameter fixed at its minimum.
+struct BackendSedFitRequest
+{
+    /// "thin", "thick" or "both".
+    QString model{ QStringLiteral("thin") };
+    QVector<BackendSedPoint> points;
+    double distancePc{ 1000. };
+    double kappaRef{ 0.1 };          ///< cm² g⁻¹ at @ref lambdaRefUm
+    double lambdaRefUm{ 300. };
+    bool colourCorrection{ true };   ///< PACS 70/100/160 colour corrections
+    QVector<double> massRange;       ///< thin
+    QVector<double> tempRange;
+    QVector<double> betaRange;
+    double sizeArcsec{ 0. };         ///< thick: the measured source size
+    QVector<double> lambda0Range;
+    QVector<double> scaleRange;
+    QString sourceLabel;
+};
+
+/// One fitted model. @ref parameters and @ref uncertainties are keyed by the
+/// backend's own names (mass_msun, temperature_k, beta, lambda0_um,
+/// size_arcsec, luminosity_lsun, l_over_m).
+struct BackendSedFit
+{
+    QString model;
+    QMap<QString, double> parameters;
+    QMap<QString, double> uncertainties;
+    /// Parameters whose Δχ² = 1 interval ran off the end of the searched range:
+    /// their uncertainty is a lower bound, not an interval.
+    QStringList unbounded;
+    /// Parameters whose best value sits on the edge of the search range.
+    QStringList atBoundary;
+    QStringList warnings;
+    double chi2{ 0. };
+    /// NaN when @ref dof is not positive: an under-determined fit has no
+    /// reduced χ². Test with std::isnan before displaying or ranking on it.
+    double chi2Reduced{ std::numeric_limits<double>::quiet_NaN() };
+    /// N detections − N free parameters. Can be zero or negative.
+    int dof{ 0 };
+    int iterations{ 0 };
+    bool converged{ false };
+    double luminosityLsun{ 0. };
+    int bandsUsed{ 0 };
+    int bandsUpperLimit{ 0 };
+    /// The model SED, densely sampled (5–2000 µm).
+    QVector<double> modelWavelengthUm;
+    QVector<double> modelFluxJy;
+    /// The model evaluated at the input bands, in the order they were sent.
+    QVector<double> bandWavelengthUm;
+    QVector<double> fittedFluxJy;
+};
+
+struct BackendSedFitResult
+{
+    bool valid{ false };
+    QString error;
+    QVector<BackendSedFit> fits;
+    /// Name of the model with the lower reduced χ² ("thin" or "thick").
+    QString best;
+};
+
+/// One pre-computed theoretical model returned by the VLKB model service.
+struct BackendSedModel
+{
+    /// Every physical column the service returned (clump_mass, dust_temp,
+    /// bolometric_luminosity, chi2, …), by name.
+    QMap<QString, QVariant> fields;
+    double chi2{ 0. };
+    QVector<double> wavelengthUm;
+    QVector<double> fluxJy;
+};
+
+struct BackendSedModelsResult
+{
+    bool valid{ false };
+    QString error;
+    /// Column names in the service's own order, for the results table.
+    QStringList columns;
+    QVector<BackendSedModel> models;   ///< sorted by χ², best first
+    int totalModels{ 0 };
+    int skippedModels{ 0 };
+    bool truncated{ false };
+};
+
+/// Fit ranges and constants the backend suggests, so the dialog does not carry
+/// a second copy of the same numbers.
+struct BackendSedDefaults
+{
+    bool valid{ false };
+    QString error;
+    QVector<double> massRange;
+    QVector<double> tempRange;
+    QVector<double> betaRange;
+    QVector<double> lambda0Range;
+    QVector<double> scaleRange;
+    double kappaRef{ 0.1 };
+    double lambdaRefUm{ 300. };
+    double distancePc{ 1000. };
+    QString modelsServiceUrl;
+};
+
 // ── A-02: 2-D Gaussian source fitting ────────────────────────────────────────
 
 struct BackendGaussFit2DResult
@@ -1922,6 +2038,21 @@ public:
             double annulusInnerArcsec,
             double annulusOuterArcsec,
             int channel = -1);
+
+    // ── SED fitting ──────────────────────────────────────────────────────────
+    /** POST /v1/sed/fit — greybody fit of a source's photometry. */
+    BackendSedFitResult requestSedFit(const BackendSedFitRequest &request) const;
+
+    /** POST /v1/sed/models — fit against the VLKB grid of theoretical models. */
+    BackendSedModelsResult requestSedModels(const QVector<BackendSedPoint> &points,
+                                            double distancePc, double prefilter,
+                                            double weightMidIr, double weightFarIr,
+                                            double weightSubmm, double deltaChi2,
+                                            const QString &serviceUrl,
+                                            const QString &sourceLabel) const;
+
+    /** GET /v1/sed/defaults — the fit ranges the backend suggests. */
+    BackendSedDefaults requestSedDefaults() const;
 
     // ── A-02: 2-D Gaussian source fitting ────────────────────────────────────
     /** POST /v1/photometry/gaussfit/{dataset_id} */

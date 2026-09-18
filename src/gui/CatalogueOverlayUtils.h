@@ -36,8 +36,16 @@ struct CatalogueOverlayEntry
     bool hasSkyPosition{ false };
     double pixelX{ 0.0 };
     double pixelY{ 0.0 };
+    /// Drawn shape, in the units of @ref frame: PIXELS for an Image-frame entry.
+    /// Not an angular size — see @ref sizeArcsec.
     double radiusX{ 0.0 };
     double radiusY{ 0.0 };
+    /// Angular size of the source (arcsec), when the catalogue states one.
+    /// Separate from radiusX/radiusY on purpose: those are pixels for every
+    /// Image-frame entry (VLKB ellipses, ds9 image regions), and a SED fit that
+    /// took them for arcsec would return a mass wrong by the pixel scale
+    /// squared. 0 when the catalogue gives no angular size.
+    double sizeArcsec{ 0.0 };
     double angleDeg{ 0.0 };
     std::vector<std::array<double, 2>> polyline;   ///< Shape::Polyline vertices (pixels)
     std::array<double, 3> color{ -1.0, -1.0, -1.0 };  ///< per-entry RGB; <0 = default actor colour

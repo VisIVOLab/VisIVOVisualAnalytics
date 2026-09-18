@@ -105,6 +105,8 @@ add_executable(VisIVOTests
     test_kinematic_level_field.cpp
     TestRayVoxelPick.h
     test_ray_voxel_pick.cpp
+    TestSedBuilder.h
+    test_sed_builder.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

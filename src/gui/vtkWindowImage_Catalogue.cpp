@@ -18,6 +18,8 @@
 #include "LayerListModel.h"
 #include "ProfileWidget.h"
 #include "RemoteFileBrowserDialog.h"
+#include "SedBuilder.h"
+#include "SedWindow.h"
 #include "qcustomplot.h"
 #include "SidebarPanel.h"
 #include "theme/SegmentedToggle.h"
@@ -28,6 +30,8 @@
 #include "vtkLegendScaleActorWCS.h"
 #include "wcs.h"
 #include "Settings.h"
+
+#include <QMenu>
 
 #include <vtkCamera.h>
 #include <vtkActor2D.h>
@@ -1109,6 +1113,30 @@ void vtkWindowImage::ensureCatalogueDock()
             this->centerViewOnCatalogueSource(entry);
         }
     });
+
+    // Right-click a source to fit its SED. The action lives on the row rather
+    // than in a menu because "which source" is the first thing a SED needs, and
+    // a menu entry would have to guess it from the selection.
+    this->catalogueTableView->setContextMenuPolicy(Qt::CustomContextMenu);
+    QObject::connect(this->catalogueTableView, &QWidget::customContextMenuRequested, this,
+                     [this](const QPoint &pos) {
+        if (!this->catalogueTableView || !this->catalogueTableModel)
+            return;
+        const QModelIndex index = this->catalogueTableView->indexAt(pos);
+        const int entry = this->catalogueTableModel->entryIndexFor(index);
+        if (entry < 0)
+            return;
+        QMenu menu(this->catalogueTableView);
+        QAction *sed = menu.addAction(u"Fit SED of this source…"_s);
+        QAction *zoom = menu.addAction(u"Zoom to this source"_s);
+        QAction *chosen = menu.exec(this->catalogueTableView->viewport()->mapToGlobal(pos));
+        if (chosen == sed) {
+            this->showCatalogueSourceSed(entry);
+        } else if (chosen == zoom) {
+            this->setSelectedCatalogueSourceIndex(entry);
+            this->centerViewOnCatalogueSource(entry);
+        }
+    });
     this->refreshCatalogueTable();
 }
 
@@ -1156,6 +1184,39 @@ void vtkWindowImage::setSelectedCatalogueSourceIndex(int index)
         ui->vtk->renderWindow()->Render();
     }
     emit this->catalogueSourceSelectionChanged(index);
+}
+
+void vtkWindowImage::showCatalogueSourceSed(int entryIndex)
+{
+    if (entryIndex < 0
+        || static_cast<std::size_t>(entryIndex) >= this->catalogueOverlayEntries.size()) {
+        return;
+    }
+
+    // A band-merged source is several overlay rows; a flat catalogue's source
+    // is one row with several flux columns. SedBuilder knows both shapes.
+    const std::vector<int> group =
+            visivo::SedBuilder::sourceGroupIndices(this->catalogueOverlayEntries, entryIndex);
+    const visivo::SedBuildResult sed =
+            visivo::SedBuilder::buildSed(this->catalogueOverlayEntries, group);
+    if (!sed.valid) {
+        QMessageBox::information(this, u"SED"_s, sed.errorMessage);
+        return;
+    }
+
+    auto *window = new SedWindow(sed, this->remoteBackendUrl, this->remoteBackendToken);
+    // The SED's fits are products of THIS viewer's dataset: the window does not
+    // know the dataset key, the window scope or the backend session, and should
+    // not have to.
+    QObject::connect(window, &SedWindow::fitProduced, this,
+                     [this, label = sed.sourceLabel](const QString &productLabel,
+                                                     const QVariantMap &params) {
+        this->registerAnalysisProduct(u"sedfit"_s, productLabel, params,
+                                      this->scopedProductId(u"sedfit:%1:%2"_s.arg(
+                                              label, params.value(u"model"_s).toString())));
+    });
+    window->show();
+    window->raise();
 }
 
 void vtkWindowImage::exportCatalogueOverlay()
@@ -2025,6 +2086,9 @@ void vtkWindowImage::onVlkbCatalogueReady()
         ce.band = e.band;
         ce.radiusX = aPx;
         ce.radiusY = bPx;
+        // The angular size survives the conversion to pixels: the SED fit needs
+        // arcsec, and the FWHM columns are filtered out of `extra` as geometry.
+        ce.sizeArcsec = std::sqrt(e.fwhmaArcsec * e.fwhmbArcsec);
         ce.angleDeg = e.paDeg;
         ce.extra = e.fields;
         ce.groupKey = e.groupKey;

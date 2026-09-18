@@ -155,6 +155,10 @@ private slots:
     /// Write the loaded overlay to CSV: what is on screen, with the sky frame
     /// named in the header rather than implied.
     void exportCatalogueOverlay();
+    /// Open the SED of the catalogue source at @p entryIndex. For a band-merged
+    /// catalogue the whole group of per-band detections becomes one SED; for a
+    /// flat one the row's own flux columns do.
+    void showCatalogueSourceSed(int entryIndex);
     void setProbeModeActive(bool active);
     void beginImageInteraction();
     void endImageInteraction();
