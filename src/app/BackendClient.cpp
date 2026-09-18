@@ -2677,6 +2677,9 @@ const QStringList &heavyComputePaths()
         QStringLiteral("/products/image_quality"), QStringLiteral("/cube/pv"),
         QStringLiteral("/cube/noise"),         QStringLiteral("/cube/mask"),
         QStringLiteral("/velocity/"),          QStringLiteral("/kinematic"),
+        // Resampling an AREPO window is minutes of yt, not seconds: on the
+        // interactive timeout the client called a running job failed.
+        QStringLiteral("/simulations/arepo/extract"),
     };
     return paths;
 }

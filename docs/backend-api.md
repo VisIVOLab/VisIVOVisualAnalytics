@@ -549,6 +549,53 @@ fails or answers something that is not a model table.
 
 ---
 
+## Simulations
+
+AREPO snapshots: browse one, cost an extraction, run it. See
+[Simulation snapshots](user-guide/simulations).
+
+### `POST /v1/simulations/arepo/inspect`
+`{path}` → `{valid, error, path, tree, box_size_kpc, unit_length_cm,
+particle_types, tree_truncated, yt_available}`. `tree` is nested
+`{name, kind, shape, dtype, attributes, children}`. Needs only h5py, so it works
+on a backend that cannot run an extraction — `yt_available` says which that is.
+External links are named, never followed; the walk is bounded in depth and node
+count and reports `tree_truncated`.
+
+### `POST /v1/simulations/arepo/plan`
+`{path, level, window_kpc, offset_kpc}` → the grid the extraction *would*
+produce: `{shape, cell_size_pc, window_kpc, extent_kpc, offset_kpc,
+domain_width_kpc, level, base_dimensions, cells, bytes_estimate}`.
+
+A covering-grid cell is `domain / (base · 2^level)` — the level fixes the
+resolution and the window only says how many cells to take — so `extent_kpc`
+(what will be extracted) differs from `window_kpc` (what was asked for) by the
+rounding to whole cells. 422 on a non-physical window, a window larger than the
+box, or a grid past the cell limit.
+
+### `POST /v1/simulations/arepo/extract`
+`{path, level, particle, fields, window_kpc, offset_kpc}` →
+`{valid, error, plan, outputs: [{field, particle, path, bunit, shape}],
+domain_width_kpc}`. One FITS per field in a directory of its own, so re-running
+with a different window cannot overwrite an earlier result.
+
+Each cube carries a linear WCS in parsec centred on the window, `BUNIT` from
+yt's units, and the provenance of the extraction (`AREPOSRC`, `AREPOLVL`,
+`AREPOPRT`, `AREPOFLD`, `AREPOW*` extracted extent, `AREPOR*` requested window,
+`AREPOO*` offset).
+
+503 when `yt` is not installed; 422 for a cosmological snapshot (comoving
+coordinates are not handled), a non-scalar field, or an unusable grid. The route
+goes through the heavy-task throttle, so several extractions cannot saturate the
+backend.
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `VISIVO_AREPO_MAX_CELLS` | 600,000,000 | Largest grid an extraction may materialise |
+| `VISIVO_AREPO_MAX_LEVEL` | 14 | Highest refinement level accepted |
+
+---
+
 ## Error convention
 All endpoints return `{ "valid": false, "error": "<message>" }` on failure.
 HTTP status is typically 200 even for logical errors; the client checks `valid`.

@@ -243,14 +243,22 @@ vtkWindowImage::StokesListing listStokesDirectory(const QString &backendUrl,
 
 }   // namespace
 
-void vtkWindowImage::startNextStokesLoad()
+void vtkWindowImage::pumpLayerQueue()
 {
-    if (m_pendingStokesLoads.isEmpty())
+    if (m_pendingLayerLoads.isEmpty() || this->isBusy())
         return;
-    const auto next = m_pendingStokesLoads.takeFirst();
+    startNextQueuedLayerLoad();
+}
+
+void vtkWindowImage::startNextQueuedLayerLoad()
+{
+    if (m_pendingLayerLoads.isEmpty())
+        return;
+    const auto next = m_pendingLayerLoads.takeFirst();
     // The role is assigned when the load finishes, by matching this label.
-    m_pendingVlkbDisplayName = next.second;
-    this->addLayerImage(next.first.toStdString());
+    m_pendingVlkbDisplayName = next.displayName;
+    m_currentLoadPartOfSet = next.partOfSet;
+    this->addLayerImage(next.path.toStdString());
 }
 
 void vtkWindowImage::detectAndLoadStokesCompanions()
@@ -259,7 +267,7 @@ void vtkWindowImage::detectAndLoadStokesCompanions()
         statusBar()->showMessage(u"Viewer busy, try again in a moment."_s, 3000);
         return;
     }
-    if (!m_pendingStokesLoads.isEmpty()) {
+    if (!m_pendingLayerLoads.isEmpty()) {
         statusBar()->showMessage(u"Stokes companions are still loading."_s, 3000);
         return;
     }
@@ -291,7 +299,7 @@ void vtkWindowImage::onStokesListingReady(const StokesListing &result)
     // Discovery does not block the window, so an import can have started while
     // the listing was out. Queueing on top of it would replace the single layer
     // watcher's future and lose whatever it was loading.
-    if (this->isBusy() || !m_pendingStokesLoads.isEmpty()) {
+    if (this->isBusy() || !m_pendingLayerLoads.isEmpty()) {
         // Only if the bar is free: the operation that made us busy is saying
         // something more useful there, and replacing it would also wipe it when
         // this message times out.
@@ -325,7 +333,7 @@ void vtkWindowImage::onStokesListingReady(const StokesListing &result)
             missing.append(role);
         } else {
             autoFound.append(QStringLiteral("%1 (%2)").arg(role, name));
-            m_pendingStokesLoads.append({ searchDir + u"/"_s + name, u"Stokes "_s + role });
+            m_pendingLayerLoads.append({ searchDir + u"/"_s + name, u"Stokes "_s + role, true });
         }
     }
 
@@ -371,12 +379,15 @@ void vtkWindowImage::onStokesListingReady(const StokesListing &result)
                 const QString path = dialog.selectedFilePath();
                 if (path.isEmpty())
                     break;
-                m_pendingStokesLoads.append({ path, u"Stokes "_s + missing.at(i) });
+                m_pendingLayerLoads.append({ path, u"Stokes "_s + missing.at(i), true });
             }
         }
     }
 
-    if (m_pendingStokesLoads.isEmpty()) {
+    if (m_pendingLayerLoads.isEmpty()) {
+        // The listing has finished and started nothing: anything that queued
+        // itself while it ran is free to go.
+        this->pumpLayerQueue();
         statusBar()->showMessage(
                 alreadyLoaded.size() == roles.size()
                         ? u"Stokes Q, U and V are already loaded."_s
@@ -386,11 +397,11 @@ void vtkWindowImage::onStokesListingReady(const StokesListing &result)
     }
 
     statusBar()->showMessage(
-            QStringLiteral("Loading %1 Stokes companion(s)...").arg(m_pendingStokesLoads.size()),
+            QStringLiteral("Loading %1 Stokes companion(s)...").arg(m_pendingLayerLoads.size()),
             4000);
     // One at a time: the layer loader has a single watcher, so starting three
     // loads at once would keep only the last.
-    startNextStokesLoad();
+    startNextQueuedLayerLoad();
 }
 
 void vtkWindowImage::computeStokesP()

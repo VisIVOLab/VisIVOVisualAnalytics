@@ -25,6 +25,7 @@
 #include "vtkWindowCube.h"
 #include "vtkWindowImage.h"
 
+#include <QGridLayout>
 #include <QLabel>
 #include <QStatusBar>
 #include "HiPSWindow.h"
@@ -273,11 +274,27 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     QObject::connect(groupSelection, &QButtonGroup::buttonToggled, this,
                      &MainWindow::changeViewSelectionMode);
 
+    // A live description of the region the Query button would send. The panel
+    // otherwise gave no way to tell a cone from a box — the shape is decided by
+    // which of radius / dl / db happen to be filled, and the "Selection" radios
+    // above only choose what the sky view lets you draw.
+    m_vlkbQueryPreview = new QLabel(this);
+    m_vlkbQueryPreview->setWordWrap(true);
+    m_vlkbQueryPreview->setTextFormat(Qt::RichText);
+    if (auto *regionLayout = qobject_cast<QGridLayout *>(ui->boxRegion->layout()))
+        regionLayout->addWidget(m_vlkbQueryPreview, 6, 0, 1, 3);
+    for (QLineEdit *field : { ui->lineLon, ui->lineLat, ui->lineRadius,
+                              ui->lineDLon, ui->lineDLat }) {
+        QObject::connect(field, &QLineEdit::textChanged, this,
+                         &MainWindow::refreshVlkbQueryPreview);
+    }
+
     ui->lineLon->setValidator(new QDoubleValidator(ui->lineLon));
     ui->lineLat->setValidator(new QDoubleValidator(ui->lineLat));
     ui->lineRadius->setValidator(new QDoubleValidator(ui->lineRadius));
     ui->lineDLon->setValidator(new QDoubleValidator(ui->lineDLon));
     ui->lineDLat->setValidator(new QDoubleValidator(ui->lineDLat));
+    refreshVlkbQueryPreview();
 
     QObject::connect(ui->btnQuery, &QPushButton::clicked, this, &MainWindow::queryVlkb);
 

@@ -7,6 +7,7 @@
 #include <QFont>
 #include <QHBoxLayout>
 #include <QItemSelectionModel>
+#include <QCheckBox>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -98,12 +99,22 @@ void VLKBInventoryTree::buildUi(const QString &posCutout)
     m_tree = new QTreeView(this);
     m_tree->setHeaderHidden(true);
     m_tree->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_tree->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Several datasets over the same region is the normal case — six THOR
+    // pointings, four WISE bands — and downloading them one double-click at a
+    // time was the only way to get them.
+    m_tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_tree->setUniformRowHeights(true);
     vbox->addWidget(m_tree, 1);
 
     QObject::connect(m_tree, &QAbstractItemView::doubleClicked,
                      this,   &VLKBInventoryTree::onDoubleClicked);
+
+    // "Green = fully covers the region" was information you could only act on
+    // by eye, over a list of 151 rows. Now it filters.
+    m_coverageOnly = new QCheckBox(u"Only datasets that fully cover the region"_s, this);
+    QObject::connect(m_coverageOnly, &QCheckBox::toggled,
+                     this, &VLKBInventoryTree::reapplyFilter);
+    vbox->addWidget(m_coverageOnly);
 
     // Legend for the full-sky-overlap highlight.
     auto *legend = new QLabel(
@@ -163,10 +174,20 @@ void VLKBInventoryTree::setupTopLevels()
     }
 
     m_model = new QStandardItemModel(this);
+    // Three columns, because one was not enough to tell two rows apart: the
+    // inventory routinely lists six datasets all called "THOR 1.44 GHz", and
+    // what distinguishes them — their coverage of the region and their
+    // identifier — was only in a tooltip.
+    m_model->setHorizontalHeaderLabels({ u"Dataset"_s, u"Coverage"_s, u"Identifier"_s });
     m_model->appendRow(images);
     m_model->appendRow(cubes);
     m_tree->setModel(m_model);
 
+    // selectionChanged, not currentChanged: with multiple selection a ⌘-click
+    // can add or remove a row without moving the current index, and the button
+    // then showed a count for a selection that no longer existed.
+    QObject::connect(m_tree->selectionModel(), &QItemSelectionModel::selectionChanged,
+                     this, &VLKBInventoryTree::onSelectionChanged);
     QObject::connect(m_tree->selectionModel(), &QItemSelectionModel::currentChanged,
                      this, &VLKBInventoryTree::onSelectionChanged);
 }
@@ -266,6 +287,13 @@ void VLKBInventoryTree::parseVOTable(const QByteArray &votable)
             const QString label = (c.survey + u' ' + c.transition).simplified();
             const QString shown = label.isEmpty() ? c.ivoID.section(u'/', -1) : label;
             auto *row = new QStandardItem(shown);
+            auto *coverageCell = new QStandardItem(
+                    c.overlap == 3 ? u"full"_s : u"partial"_s);
+            coverageCell->setTextAlignment(Qt::AlignCenter);
+            // The identifier's tail is what actually differs between two
+            // datasets with the same survey and band.
+            auto *identifierCell = new QStandardItem(c.ivoID.section(u'/', -1));
+            identifierCell->setForeground(QColor(154, 174, 196));
             // Rich tooltip: survey, band/line, type, wavelength, identifier.
             QString tip = u"<b>%1</b>"_s.arg(shown.toHtmlEscaped());
             if (!c.survey.isEmpty())     tip += u"<br>Survey: %1"_s.arg(c.survey.toHtmlEscaped());
@@ -280,9 +308,15 @@ void VLKBInventoryTree::parseVOTable(const QByteArray &votable)
             row->setIcon(style()->standardIcon(
                     c.type == u"cube"_s ? QStyle::SP_FileDialogContentsView
                                         : QStyle::SP_FileIcon));
-            if (c.overlap == 3)
-                row->setBackground(QColor(60, 160, 60, 80));
-            parent->appendRow(row);
+            if (c.overlap == 3) {
+                for (QStandardItem *cell : { row, coverageCell, identifierCell })
+                    cell->setBackground(QColor(60, 160, 60, 80));
+            }
+            for (QStandardItem *cell : { coverageCell, identifierCell }) {
+                cell->setData(id, Qt::UserRole);
+                cell->setToolTip(tip);
+            }
+            parent->appendRow({ row, coverageCell, identifierCell });
         }
     }
 
@@ -303,18 +337,39 @@ void VLKBInventoryTree::onSelectionChanged()
 {
     // Enable Open only when a real dataset (leaf) that is currently VISIBLE is
     // selected — a leaf hidden by the filter must not be actionable.
-    const QModelIndex idx = m_tree->currentIndex();
-    bool ok = false;
-    if (idx.isValid() && !m_tree->isRowHidden(idx.row(), idx.parent())) {
+    int datasets = 0;
+    const QModelIndexList selected = m_tree->selectionModel()
+            ? m_tree->selectionModel()->selectedRows()
+            : QModelIndexList{};
+    for (const QModelIndex &idx : selected) {
+        if (!idx.isValid() || m_tree->isRowHidden(idx.row(), idx.parent()))
+            continue;
         auto *item = m_model->itemFromIndex(idx);
-        ok = item && m_cutouts.contains(item->data(Qt::UserRole).toUuid());
+        if (item && m_cutouts.contains(item->data(Qt::UserRole).toUuid()))
+            ++datasets;
     }
-    if (m_openButton) m_openButton->setEnabled(ok);
+    if (m_openButton) {
+        m_openButton->setEnabled(datasets > 0);
+        m_openButton->setText(datasets > 1 ? u"Download && Open (%1)"_s.arg(datasets)
+                                           : u"Download && Open"_s);
+    }
 }
 
 void VLKBInventoryTree::downloadSelected()
 {
-    requestCutout(m_tree->currentIndex());
+    // Every selected dataset, in the order the tree shows them. Asking for six
+    // pointings used to mean six double-clicks and six trips through the
+    // dialog.
+    // Always the selection, never the current index: a row can be current
+    // without being selected, and downloading that one instead is not what the
+    // highlighted rows promised.
+    const QModelIndexList selected = m_tree->selectionModel()
+            ? m_tree->selectionModel()->selectedRows()
+            : QModelIndexList{};
+    for (const QModelIndex &idx : selected) {
+        if (idx.isValid() && !m_tree->isRowHidden(idx.row(), idx.parent()))
+            requestCutout(idx);
+    }
 }
 
 void VLKBInventoryTree::requestCutout(const QModelIndex &idx)
@@ -430,6 +485,11 @@ bool VLKBInventoryTree::filterNode(QStandardItem *node, const QString &needle)
     return anyVisible;
 }
 
+void VLKBInventoryTree::reapplyFilter()
+{
+    applyFilter(m_filter ? m_filter->text() : QString());
+}
+
 void VLKBInventoryTree::applyFilter(const QString &text)
 {
     const QString needle = text.trimmed();
@@ -450,11 +510,45 @@ void VLKBInventoryTree::applyFilter(const QString &text)
         for (int r = 0; r < m_model->rowCount(); ++r)
             filterNode(m_model->item(r), needle);
     }
+    // …then the coverage filter on top of the text one: a dataset that only
+    // clips the corner of the region is rarely what anyone wanted.
+    if (m_coverageOnly && m_coverageOnly->isChecked())
+        hidePartialCoverage();
+
     // A leaf hidden by the filter must not remain the actionable current item.
     const QModelIndex cur = m_tree->currentIndex();
     if (cur.isValid() && m_tree->isRowHidden(cur.row(), cur.parent()))
         m_tree->selectionModel()->clear();
     onSelectionChanged();
+}
+
+void VLKBInventoryTree::hidePartialCoverage()
+{
+    // Hide every leaf whose dataset does not fully cover the region, then hide
+    // the branches that are left with nothing visible under them.
+    std::function<bool(QStandardItem *)> prune = [&](QStandardItem *node) {
+        bool anyVisible = false;
+        for (int r = 0; r < node->rowCount(); ++r) {
+            QStandardItem *child = node->child(r);
+            if (m_tree->isRowHidden(r, node->index()))
+                continue;
+            const QUuid id = child->data(Qt::UserRole).toUuid();
+            bool visible = false;
+            if (m_cutouts.contains(id)) {
+                visible = m_cutouts.value(id).overlap == 3;
+            } else {
+                visible = prune(child);
+            }
+            m_tree->setRowHidden(r, node->index(), !visible);
+            anyVisible = anyVisible || visible;
+        }
+        return anyVisible;
+    };
+    for (int r = 0; r < m_model->rowCount(); ++r) {
+        if (m_tree->isRowHidden(r, QModelIndex()))
+            continue;
+        m_tree->setRowHidden(r, QModelIndex(), !prune(m_model->item(r)));
+    }
 }
 
 int VLKBInventoryTree::groupIndexOf(double lambda) const

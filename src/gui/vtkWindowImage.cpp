@@ -1026,16 +1026,28 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                              // Drop the "Loading layer..." text first: clearing it
                              // after the message below would wipe it immediately.
                              this->clearPersistentStatusMessage();
-                             // A companion that fails to load aborts the rest of
-                             // the queue: silently going on to the next one would
-                             // leave the user with a partial Stokes set and no
-                             // idea which component is missing.
-                             if (!m_pendingStokesLoads.isEmpty()) {
-                                 m_pendingStokesLoads.clear();
-                                 statusBar()->showMessage(
-                                         u"Stokes companion loading stopped after an error."_s,
-                                         5000);
+                             // Taken and cleared FIRST: the error dialog above
+                             // spins an event loop, and a cutout starting from
+                             // inside it would otherwise inherit this flag and
+                             // be treated as part of the failed set.
+                             const bool wasPartOfSet = m_currentLoadPartOfSet;
+                             m_currentLoadPartOfSet = false;
+                             // A companion that fails aborts the rest of ITS
+                             // SET: half a Stokes set is worse than none, and
+                             // the user cannot see which half they got.
+                             // Independent layers — a batch of VLKB cutouts —
+                             // are not part of that bargain and carry on.
+                             if (wasPartOfSet) {
+                                 const qsizetype before = m_pendingLayerLoads.size();
+                                 m_pendingLayerLoads.removeIf(
+                                         [](const PendingLayerLoad &p) { return p.partOfSet; });
+                                 if (before != m_pendingLayerLoads.size()) {
+                                     statusBar()->showMessage(
+                                             u"Stokes companion loading stopped after an error."_s,
+                                             5000);
+                                 }
                              }
+                             this->pumpLayerQueue();
                              return;
                          }
 
@@ -1064,9 +1076,11 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                          }
 
                          this->clearPersistentStatusMessage();
-                         // The loader has a single watcher, so queued Stokes
-                         // companions go in one after the other from here.
-                         this->startNextStokesLoad();
+                         // Cleared before the next load, which sets its own.
+                         m_currentLoadPartOfSet = false;
+                         // The loader has a single watcher, so queued layers go
+                         // in one after the other from here.
+                         this->startNextQueuedLayerLoad();
                      });
     QObject::connect(&this->remoteImageWatcher, &QFutureWatcher<ImageLayerLoadResult>::finished, this,
                      [this]() {
@@ -1096,6 +1110,9 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                              this->startRemoteFullResolutionLoad();
                          } else {
                              this->clearPersistentStatusMessage();
+                             // A cutout that arrived while this was loading was
+                             // queued; nothing else would have started it.
+                             this->pumpLayerQueue();
                          }
                      });
     QObject::connect(&this->remoteFullImageWatcher, &QFutureWatcher<ImageLayerLoadResult>::finished, this,
@@ -1134,6 +1151,9 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                          this->m_viewportLodEnabled = (result.numLevels > 1
                                                        && result.fullWidth > 0 && result.fullHeight > 0);
                          this->m_lodApplied = { -1, -1, -1, -1, -1 };
+                         // Same as the preview path: release anything queued
+                         // while the full-resolution image was loading.
+                         this->pumpLayerQueue();
                          qDebug().noquote()
                                  << QStringLiteral("[viewport-lod] %1 (full=%2x%3 levels=%4)")
                                             .arg(this->m_viewportLodEnabled ? u"enabled"_s : u"disabled"_s)
@@ -2989,9 +3009,18 @@ void vtkWindowImage::setBeamInfo(double majorDeg, double minorDeg, double paDeg)
 void vtkWindowImage::addLayerFromBackendPath(const QString &backendPath,
                                               const QString &displayName)
 {
-    if (this->isBusy()) {
-        qWarning().noquote()
-                << QStringLiteral("[vlkb-layer] viewer busy, ignoring addLayerFromBackendPath");
+    if (this->isBusy() || !m_pendingLayerLoads.isEmpty()) {
+        // Queued, not dropped. Selecting six datasets in the VLKB inventory
+        // fires six of these at once, and the viewer loads one layer at a time:
+        // ignoring the rest meant the user got one cutout and a log line.
+        m_pendingLayerLoads.append({ backendPath, displayName, false });
+        this->showPersistentStatusMessage(
+                u"Queued VLKB layer \"%1\" (%2 waiting)…"_s.arg(displayName)
+                        .arg(m_pendingLayerLoads.size()));
+        // The queue may be non-empty while nothing is actually loading — the
+        // previous load finished between the two checks — so give it a push
+        // rather than waiting for an event that has already happened.
+        this->pumpLayerQueue();
         return;
     }
     // Reuse the standard addLayerImage pipeline, which picks the local reader or

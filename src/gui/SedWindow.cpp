@@ -243,12 +243,11 @@ void SedWindow::buildUi()
     m_plot->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_plot->setMinimumWidth(420);
     // iSelectPlottables is what makes a click on a point do anything at all;
-    // the selection-rect mode below only governs what a DRAG does. iMultiSelect
-    // lets ⌘/Ctrl-click add to the selection, and lets one rubber band take in
-    // both the detections and the upper limits, which are separate plottables.
+    // the selection-rect mode set by the "Select on plot" box only governs what
+    // a DRAG does. iMultiSelect lets one rubber band take in both the
+    // detections and the upper limits, which are separate plottables.
     m_plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables
                             | QCP::iMultiSelect);
-    m_plot->setMultiSelectModifier(Qt::ControlModifier);
     m_plot->xAxis->setLabel(u"Wavelength (µm)"_s);
     m_plot->yAxis->setLabel(u"Flux (Jy)"_s);
     m_plot->legend->setVisible(true);
@@ -365,8 +364,9 @@ void SedWindow::buildUi()
     // so a drag still pans; the two gestures are the same mouse button.
     m_selectOnPlot = new QCheckBox(u"Select on plot"_s, actions);
     m_selectOnPlot->setToolTip(
-            u"Drag on the plot to choose the bands that enter the fit. Click a point to "
-            "use only that one; ⌘/Ctrl-click to add. With this off, dragging pans."_s);
+            u"Drag a rectangle over the points to add them to the fit. Clicking a point "
+            "always toggles it, with or without this. Turn it off to drag the plot around "
+            "instead — the two gestures share a mouse button."_s);
     connect(m_selectOnPlot, &QCheckBox::toggled, this, [this](bool on) {
         m_plot->setSelectionRectMode(on ? QCP::srmSelect : QCP::srmNone);
     });
@@ -1228,20 +1228,50 @@ void SedWindow::onPlotSelectionChanged()
     if (m_syncingSelection)
         return;
 
-    const auto readBack = [this](QCPGraph *graph, const std::vector<int> &rows) {
+    // QCustomPlot's selection semantics are "the selection is whatever you last
+    // touched": a click replaces it, and a rubber band that catches one point
+    // throws the rest away. Copying that straight onto the fit input meant a
+    // stray drag silently dropped every other band, and the plot appeared to
+    // empty itself. The gesture is interpreted instead:
+    //
+    //   click a point   → toggle that band, leaving the others alone
+    //   drag over points → add them
+    //   click empty space → change nothing
+    //
+    // which is the promise the table's checkboxes already make, and needs no
+    // modifier key to be useful.
+    QVector<int> picked;
+    const auto pick = [&picked](QCPGraph *graph, const std::vector<int> &rows) {
         if (!graph)
             return;
         const QCPDataSelection selection = graph->selection();
         for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
-            const int row = rows[static_cast<std::size_t>(i)];
-            if (row < 0 || static_cast<std::size_t>(row) >= m_sed.points.size())
-                continue;
-            m_sed.points[static_cast<std::size_t>(row)].use =
-                    selection.contains(QCPDataSelection(QCPDataRange(i, i + 1)));
+            if (selection.contains(QCPDataSelection(QCPDataRange(i, i + 1))))
+                picked.append(rows[static_cast<std::size_t>(i)]);
         }
     };
-    readBack(m_dataGraph, m_dataRows);
-    readBack(m_ulGraph, m_ulRows);
+    pick(m_dataGraph, m_dataRows);
+    pick(m_ulGraph, m_ulRows);
+
+    if (picked.isEmpty()) {
+        // Nothing was hit: put the visual state back to what the fit input is,
+        // rather than letting an empty selection read as "no bands chosen".
+        syncPlotSelection();
+        return;
+    }
+
+    const auto valid = [this](int row) {
+        return row >= 0 && static_cast<std::size_t>(row) < m_sed.points.size();
+    };
+    if (picked.size() == 1 && valid(picked.first())) {
+        visivo::SedPoint &point = m_sed.points[static_cast<std::size_t>(picked.first())];
+        point.use = !point.use;
+    } else {
+        for (int row : picked) {
+            if (valid(row))
+                m_sed.points[static_cast<std::size_t>(row)].use = true;
+        }
+    }
 
     propagateEditsToRawPoints();
     refreshBandTable();

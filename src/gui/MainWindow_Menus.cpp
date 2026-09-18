@@ -351,6 +351,12 @@ void MainWindow::buildDataMenu()
             u"Open a cosmic-flow velocity field (3-component FITS) as 3-D streamlines / arrows."_s);
     QObject::connect(actOpenVelocity, &QAction::triggered, this, &MainWindow::openVelocityField);
 
+    auto *actArepo = dataMenu->addAction(u"Extract from AREPO Snapshot…"_s);
+    actArepo->setToolTip(
+            u"Resample a window of an AREPO simulation onto a uniform grid, on the backend, "
+            "and open the result as a cube."_s);
+    QObject::connect(actArepo, &QAction::triggered, this, &MainWindow::openArepoSnapshot);
+
     dataMenu->addSeparator();
 
     auto *actHiPS = dataMenu->addAction(u"HiPS Viewer…"_s);

@@ -46,6 +46,7 @@ from .routers import (
     velocity,
     assistant,
     sed,
+    simulations,
 )
 from .diagnostics_buffer import install_logging_handler
 
@@ -183,6 +184,7 @@ app.include_router(regions.router, dependencies=[_auth])
 app.include_router(velocity.router, dependencies=[_auth])
 app.include_router(assistant.router, dependencies=[_auth])
 app.include_router(sed.router, dependencies=[_auth])
+app.include_router(simulations.router, dependencies=[_auth])
 # SAMP: /v1/samp/files/{token} is public (no auth) for VO tool access;
 # all other /v1/samp/* routes use per-route auth declared in the router itself.
 app.include_router(samp.router)

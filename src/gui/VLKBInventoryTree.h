@@ -44,6 +44,7 @@ class QTreeView;
 class QLineEdit;
 class QLabel;
 class QPushButton;
+class QCheckBox;
 
 class VLKBInventoryTree : public QWidget
 {
@@ -77,6 +78,14 @@ private slots:
     void onSelectionChanged();
     void downloadSelected();
     void applyFilter(const QString &text);
+    /// Re-run the current filter. Bound to the coverage checkbox.
+    void reapplyFilter();
+
+private:
+    /// Hide the datasets that only partly overlap the queried region.
+    void hidePartialCoverage();
+
+private slots:
 
 private:
     struct WavelengthGroup { QString name; double lambdaMin; double lambdaMax; };
@@ -96,6 +105,7 @@ private:
     QStandardItemModel *m_model       { nullptr };
     QLineEdit          *m_filter      { nullptr };
     QLabel             *m_totalLabel  { nullptr };
+    QCheckBox          *m_coverageOnly{ nullptr };
     QPushButton        *m_openButton  { nullptr };
     QList<WavelengthGroup>       m_groups;
     QHash<QUuid, Cutout>         m_cutouts;

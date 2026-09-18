@@ -460,6 +460,8 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage.cpp
         src/gui/vtkWindowImage.h
         src/gui/vtkWindowImage_Catalogue.cpp
+        src/gui/ArepoExtractDialog.cpp
+        src/gui/ArepoExtractDialog.h
         src/gui/SedWindow.cpp
         src/gui/SedWindow.h
         src/gui/SedBuilder.h

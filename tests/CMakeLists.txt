@@ -107,6 +107,8 @@ add_executable(VisIVOTests
     test_ray_voxel_pick.cpp
     TestSedBuilder.h
     test_sed_builder.cpp
+    TestVlkbPosString.h
+    test_vlkb_pos_string.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

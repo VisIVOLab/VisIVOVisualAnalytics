@@ -65,8 +65,16 @@ async def vlkb_fetch_cutout(request: VlkbFetchRequest, _: None = _auth):
     out_path = out_dir / f"{url_hash}__{stem}"
 
     if out_path.exists():
-        logger.info("[vlkb] cache hit url=%s -> %s", raw_url, out_path)
-        return {"valid": True, "error": "", "path": str(out_path)}
+        # Validate the cache too: a bad response saved before this check would
+        # otherwise be handed back for ever, and re-requesting the same URL is
+        # exactly what a user does after a failure.
+        stale = _describe_if_not_fits(out_path, "")
+        if stale:
+            logger.info("[vlkb] discarding a cached non-FITS response for %s", raw_url)
+            _unlink_quiet(out_path)
+        else:
+            logger.info("[vlkb] cache hit url=%s -> %s", raw_url, out_path)
+            return {"valid": True, "error": "", "path": str(out_path)}
 
     logger.info("[vlkb] downloading url=%s -> %s", raw_url, out_path)
     try:
@@ -74,7 +82,9 @@ async def vlkb_fetch_cutout(request: VlkbFetchRequest, _: None = _auth):
         if request.vlkb_bearer:
             req.add_header("Authorization", f"Bearer {request.vlkb_bearer}")
         total = 0
+        content_type = ""
         with _urllib_request.urlopen(req, timeout=600) as resp, open(out_path, "wb") as out:
+            content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
             while True:
                 chunk = resp.read(8 * 1024 * 1024)  # 8 MiB
                 if not chunk:
@@ -93,7 +103,82 @@ async def vlkb_fetch_cutout(request: VlkbFetchRequest, _: None = _auth):
         logger.warning("[vlkb] download failed url=%s error=%s", raw_url, exc)
         return {"valid": False, "error": f"Download failed: {exc}", "path": ""}
 
+    # A SODA service answers an error with HTTP 200 and a VOTable or an HTML
+    # page. Saving that as `.fits` and handing the path back moved the failure
+    # to the FITS reader, which could only say "No SIMPLE card found" about a
+    # file whose real content was the explanation the user needed.
+    problem = _describe_if_not_fits(out_path, content_type)
+    if problem:
+        _unlink_quiet(out_path)
+        logger.warning("[vlkb] not a FITS response url=%s: %s", raw_url, problem)
+        return {"valid": False, "error": problem, "path": ""}
+
     return {"valid": True, "error": "", "path": str(out_path)}
+
+
+def _describe_if_not_fits(path: Path, content_type: str) -> str:
+    """Empty when the file really is FITS; otherwise why it is not.
+
+    The check is on the bytes, not on the Content-Type: services mislabel FITS
+    as octet-stream routinely, and mislabel their error pages as FITS just as
+    readily.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        return f"The download produced no file ({exc})."
+    if size == 0:
+        return "The service returned an empty response."
+
+    with open(path, "rb") as handle:
+        head = handle.read(4096)
+
+    if head.startswith(b"SIMPLE"):
+        return ""
+    if head[:2] == b"\x1f\x8b":
+        return ("The service returned a gzip-compressed file. Request it uncompressed, or "
+                "save it and decompress it before opening.")
+    if head[257:262] == b"ustar":
+        return ("The service returned a tar archive rather than a single cutout — this ID "
+                "probably needs the multi-cutout (async) endpoint.")
+
+    # Whatever it is, the service usually explains itself in the body: a
+    # VOTable <INFO>, an HTML error, a plain-text message. Show that.
+    text = head.decode("utf-8", errors="replace").strip()
+    detail = _first_message(text)
+    label = content_type or "an unknown type"
+    if detail:
+        return f"The service returned {label} instead of FITS: {detail}"
+    return (f"The service returned {label} instead of FITS "
+            f"({size} bytes, starting with {text[:120]!r}).")
+
+
+def _first_message(text: str) -> str:
+    """The human-readable part of a VOTable / XML / HTML error body, as PLAIN text.
+
+    Whatever comes back is written by a remote service and ends up in a dialog,
+    so any markup inside it is stripped rather than passed along: a message that
+    still contained ``<b>`` would be rendered as markup by a Qt message box that
+    auto-detects rich text.
+    """
+    import html  # noqa: PLC0415
+    import re  # noqa: PLC0415
+
+    def _plain(raw: str) -> str:
+        without_tags = re.sub(r"<[^>]*>", " ", raw)
+        return " ".join(html.unescape(without_tags).split())[:300]
+
+    # An explicit error INFO first: a VOTable can carry several, and the one
+    # that says ERROR is the one worth showing.
+    for pattern in (r"<INFO[^>]*value\s*=\s*[\"\']ERROR[\"\'][^>]*>(.*?)</INFO>",
+                    r"<INFO[^>]*>(.*?)</INFO>",
+                    r"<(?:title|h1|p)[^>]*>(.*?)</(?:title|h1|p)>"):
+        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        if match and _plain(match.group(1)):
+            return _plain(match.group(1))
+    if text and not text.lstrip().startswith("<"):
+        return _plain(text)
+    return ""
 
 
 def _unlink_quiet(path: Path) -> None:

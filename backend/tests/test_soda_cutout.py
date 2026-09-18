@@ -175,3 +175,83 @@ async def test_cutout_endpoint_rejects_http_scheme(client, auth_headers):
         json={"obs_id": "x", "access_url": "http://example.org/f.fits", "pos": "CIRCLE 1 2 0.1"},
     )
     assert resp.status_code == 400
+
+
+# ── VLKB cutout fetch: what comes back has to actually be FITS ────────────────
+
+def test_a_votable_error_is_reported_instead_of_being_saved_as_fits(tmp_path):
+    """A SODA service answers an error with HTTP 200 and a VOTable. Saving that
+    as .fits moved the failure to the FITS reader, which could only say
+    "No SIMPLE card found" about a file whose content was the explanation."""
+    from app.routers.vlkb import _describe_if_not_fits
+
+    path = tmp_path / "cutout.fits"
+    path.write_bytes(
+        b'<?xml version="1.0"?><VOTABLE><RESOURCE type="results">'
+        b'<INFO name="QUERY_STATUS" value="ERROR">POS outside the survey footprint</INFO>'
+        b'</RESOURCE></VOTABLE>')
+    problem = _describe_if_not_fits(path, "application/x-votable+xml")
+    assert "POS outside the survey footprint" in problem
+
+
+def test_a_real_fits_response_passes(tmp_path):
+    from app.routers.vlkb import _describe_if_not_fits
+
+    path = tmp_path / "cutout.fits"
+    path.write_bytes(b"SIMPLE  =                    T" + b" " * 100)
+    assert _describe_if_not_fits(path, "application/octet-stream") == ""
+
+
+def test_an_archive_or_gzip_response_is_named_for_what_it_is(tmp_path):
+    from app.routers.vlkb import _describe_if_not_fits
+
+    gz = tmp_path / "a.fits"
+    gz.write_bytes(b"\x1f\x8b\x08\x00" + b"\x00" * 64)
+    assert "gzip" in _describe_if_not_fits(gz, "application/gzip")
+
+    tar = tmp_path / "b.fits"
+    tar.write_bytes(b"\x00" * 257 + b"ustar" + b"\x00" * 300)
+    assert "tar archive" in _describe_if_not_fits(tar, "application/x-tar")
+
+
+def test_an_empty_response_is_reported(tmp_path):
+    from app.routers.vlkb import _describe_if_not_fits
+
+    path = tmp_path / "empty.fits"
+    path.write_bytes(b"")
+    assert "empty" in _describe_if_not_fits(path, "application/fits")
+
+
+def test_an_html_error_page_is_summarised(tmp_path):
+    from app.routers.vlkb import _describe_if_not_fits
+
+    path = tmp_path / "page.fits"
+    path.write_bytes(b"<html><head><title>502 Bad Gateway</title></head><body></body></html>")
+    problem = _describe_if_not_fits(path, "text/html")
+    assert "502 Bad Gateway" in problem
+
+
+def test_the_services_own_markup_does_not_reach_the_dialog(tmp_path):
+    """Whatever comes back is written by a remote service and ends up in a Qt
+    message box that auto-detects rich text: the markup is stripped here."""
+    from app.routers.vlkb import _describe_if_not_fits
+
+    path = tmp_path / "cutout.fits"
+    path.write_bytes(
+        b'<VOTABLE><RESOURCE><INFO name="QUERY_STATUS" value="ERROR">'
+        b'<b>overlap</b> &amp; computation failed</INFO></RESOURCE></VOTABLE>')
+    problem = _describe_if_not_fits(path, "application/x-votable+xml")
+    assert "overlap & computation failed" in problem
+    assert "<b>" not in problem
+
+
+def test_the_error_info_wins_over_an_ok_one(tmp_path):
+    # A VOTable routinely carries several INFOs; the one that says ERROR is the
+    # one worth showing.
+    from app.routers.vlkb import _describe_if_not_fits
+
+    path = tmp_path / "cutout.fits"
+    path.write_bytes(
+        b'<VOTABLE><INFO name="QUERY" value="OK">SELECT everything</INFO>'
+        b'<INFO name="QUERY_STATUS" value="ERROR">region outside the survey</INFO></VOTABLE>')
+    assert "region outside the survey" in _describe_if_not_fits(path, "")

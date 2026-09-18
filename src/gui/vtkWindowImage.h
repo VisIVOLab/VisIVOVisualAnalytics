@@ -821,11 +821,33 @@ private:
     /// Queue of (path, "Stokes Q"-style label) waiting for the single layer
     /// loader. Loading is asynchronous through one watcher, so companions have
     /// to go in one at a time or all but the last are silently dropped.
-    QList<QPair<QString, QString>> m_pendingStokesLoads;
+    /// One layer waiting for the single layer-load pipeline.
+    struct PendingLayerLoad
+    {
+        QString path;
+        QString displayName;
+        /// True for a member of an all-or-nothing set (the Stokes companions):
+        /// if one fails the rest are abandoned, because half a Stokes set is
+        /// worse than none and the user cannot see which half they got. False
+        /// for independent layers — six VLKB cutouts are six answers, and one
+        /// failing is no reason to drop the other five.
+        bool partOfSet{ false };
+    };
+    /// Used by the Stokes companion sequence and by a multi-dataset VLKB
+    /// download, which would otherwise drop every layer after the first — the
+    /// viewer loads one at a time, and "busy" used to mean "discarded".
+    QList<PendingLayerLoad> m_pendingLayerLoads;
+    /// Whether the load currently running belongs to such a set.
+    bool m_currentLoadPartOfSet{ false };
     /// True while the companion search is inside a nested event loop (backend
     /// listing, file chooser), which leaves the menu action clickable.
     bool m_stokesDiscoveryActive{ false };
-    void startNextStokesLoad();
+    void startNextQueuedLayerLoad();
+    /// Start the next queued layer IF nothing is loading. Called wherever the
+    /// viewer stops being busy — the layer loader, the preview and full-res
+    /// image loads, the Stokes listing — because a cutout that arrived during
+    /// any of those was queued and then waited for a pump that never came.
+    void pumpLayerQueue();
     int findLayerByStokesRole(StokesRole role) const;
     void computeStokesP();
     void computeStokesPA();

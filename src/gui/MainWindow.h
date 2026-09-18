@@ -23,6 +23,7 @@ class SampMessageHandler;
 class QAction;
 class QLabel;
 class QMenu;
+class QProgressDialog;
 class QTabWidget;
 class Settings;
 class VLKBInventoryTree;
@@ -66,14 +67,30 @@ private slots:
     void openVbt();
     void openVelocityField();   ///< F1: open a cosmic-flow velocity field (3-component FITS)
     void openHiPS();
+    /// Browse an AREPO snapshot on the backend and extract a uniform cube.
+    void openArepoSnapshot();
     void openSettingsDialog();
     void openAboutDialog();
     void loadPanoramicView();
     void changeViewSelectionMode();
     void skyRegionSelected(const QString &point, const QString &area);
     void queryVlkb();   ///< Triggered by btnQuery in the VLKB panel
+    /// Keep the VLKB panel honest: say which region the Query button will
+    /// actually send, and refuse to send one that has no size.
+    void refreshVlkbQueryPreview();
 
 private:
+    /// Live description of the region the VLKB Query button would send, shown
+    /// under the coordinate fields. Which SHAPE is sent is decided by which
+    /// fields are filled — radius means a cone, dl/db a box — and nothing said
+    /// so, least of all the "Selection" radios, which only control what the sky
+    /// view draws.
+    QPointer<QLabel> m_vlkbQueryPreview;
+    /// Progress affordance for a VLKB inventory query, and the watchdog that
+    /// ends it if the service never answers at all.
+    QPointer<QProgressDialog> m_vlkbQuerySheet;
+    QPointer<QTimer> m_vlkbQueryWatchdog;
+
     void buildDataMenu();
     void buildSampMenu();
     /// Builds the Data Hub's "Combine" menu: the operations that take SEVERAL
@@ -160,8 +177,11 @@ private:
     /// Open a VLKB 2D cutout (backend path) in a new vtkWindowImage, label its
     /// master layer with @p displayName, and associate the window with @p tree
     /// so subsequent 2D items from the same inventory session are added as layers.
+    /// @p tree is a QPointer, not a raw pointer: the inventory has
+    /// WA_DeleteOnClose and the backend calls in here spin an event loop, so it
+    /// can be closed while they run.
     void openVlkbImageLayer(const QString &backendPath, const QString &displayName,
-                             VLKBInventoryTree *tree);
+                             QPointer<VLKBInventoryTree> tree);
 
     Ui::MainWindow *ui;
     QPointer<Settings>               settings;

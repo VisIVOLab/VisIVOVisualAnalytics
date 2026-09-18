@@ -14,6 +14,7 @@
 #include "DataHubWidget.h"
 #include "DiagnosticsWindow.h"
 #include "LinewidthDialog.h"
+#include "ArepoExtractDialog.h"
 #include "RemoteFileBrowserDialog.h"
 #include "Settings.h"
 #include "SettingsDialog.h"
@@ -785,7 +786,7 @@ void MainWindow::openViewerFromOpenedDataset(const QString &path,
 
 
 void MainWindow::openVlkbImageLayer(const QString &backendPath, const QString &displayName,
-                                     VLKBInventoryTree *tree)
+                                     QPointer<VLKBInventoryTree> tree)
 {
     BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
     const auto health = client.health();
@@ -969,6 +970,40 @@ void MainWindow::openVbt()
     doOpenVbtPath(headerPath);
 }
 
+
+void MainWindow::openArepoSnapshot()
+{
+    const QString backendUrl   = this->settings->getBackendUrl();
+    const QString backendToken = this->settings->getBackendToken();
+
+    BackendClient client(backendUrl, backendToken);
+    const auto health = client.health();
+    if (!health.ok) {
+        QMessageBox::critical(
+                this, u"Backend unavailable"_s,
+                u"Cannot open an AREPO snapshot: the backend is not reachable.\n\nError: %1"_s
+                        .arg(health.error.isEmpty() ? u"No response"_s : health.error));
+        return;
+    }
+
+    // Browsed on the BACKEND's filesystem: a simulation snapshot is tens of
+    // gigabytes and lives where the compute is. The extraction reads it there
+    // and writes the cube there too.
+    RemoteFileBrowserDialog browser(client.baseUrl(), client.token(), this);
+    browser.setExtensionFilter({ u".hdf5"_s, u".h5"_s }, u"HDF5 snapshots"_s);
+    if (browser.exec() != QDialog::Accepted) {
+        return;
+    }
+    const QString path = browser.selectedFilePath();
+    if (path.isEmpty()) {
+        return;
+    }
+
+    auto *dialog = new ArepoExtractDialog(path, backendUrl, backendToken, this);
+    QObject::connect(dialog, &ArepoExtractDialog::cubeReady, this,
+                     [this](const QString &backendPath) { this->doOpenDataPath(backendPath); });
+    dialog->show();
+}
 
 void MainWindow::openVelocityField()
 {

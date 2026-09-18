@@ -176,6 +176,7 @@ user-guide/kinematic-lasso
 user-guide/source-finding
 user-guide/catalogues-hips
 user-guide/sed-fitting
+user-guide/simulations
 user-guide/skava-discovery
 user-guide/publication-output
 user-guide/copilot
@@ -334,6 +335,14 @@ every tool together with the page that documents its scientific use.
   - **Tools → Export Catalogue…**
   - CSV with the sky frame named in the header
   - [Catalogues · The catalogue table](user-guide/catalogues-hips#the-catalogue-table)
+* - **SIMULATIONS**
+  -
+  -
+  -
+* - Extract a uniform cube from an AREPO snapshot
+  - **Data → Extract from AREPO Snapshot…**
+  - One FITS cube per field, with a physical WCS in parsec
+  - [Simulation snapshots](user-guide/simulations)
 * - **SED FITTING**
   -
   -

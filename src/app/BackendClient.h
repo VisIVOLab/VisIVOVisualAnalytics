@@ -1022,6 +1022,71 @@ struct BackendSedDefaults
     QString modelsServiceUrl;
 };
 
+// ── Simulation snapshots (AREPO) ──────────────────────────────────────────────
+
+/// One node of a snapshot's HDF5 tree.
+struct BackendArepoNode
+{
+    QString name;
+    QString kind;                ///< "group" | "dataset"
+    QVector<int> shape;          ///< dataset dimensions; empty for a group
+    QString dtype;
+    /// The node's HDF5 attributes, already reduced to displayable values.
+    QList<QPair<QString, QString>> attributes;
+    QVector<BackendArepoNode> children;
+};
+
+struct BackendArepoInspectResult
+{
+    bool valid{ false };
+    QString error;
+    QString path;
+    BackendArepoNode tree;
+    /// Side of the simulation box in kpc. NaN when the snapshot does not say.
+    double boxSizeKpc{ std::numeric_limits<double>::quiet_NaN() };
+    double unitLengthCm{ std::numeric_limits<double>::quiet_NaN() };
+    /// Particle type ("PartType0"…) → the datasets it carries.
+    QMap<QString, QStringList> particleTypes;
+    /// Whether this backend can actually run an extraction (yt installed).
+    bool ytAvailable{ false };
+};
+
+/// What an extraction would produce, worked out before anything is allocated.
+struct BackendArepoPlan
+{
+    bool valid{ false };
+    QString error;
+    QVector<int> shape;
+    QVector<double> cellSizePc;
+    /// What was asked for…
+    QVector<double> windowKpc;
+    /// …and what will actually be extracted: the cell size is fixed by the
+    /// level, so the window is rounded to a whole number of cells.
+    QVector<double> extentKpc;
+    QVector<double> offsetKpc;
+    QVector<double> domainWidthKpc;
+    int level{ 0 };
+    qint64 cells{ 0 };
+    qint64 bytesEstimate{ 0 };
+};
+
+struct BackendArepoCube
+{
+    QString field;
+    QString particle;
+    QString path;      ///< on the BACKEND's filesystem
+    QString bunit;
+    QVector<int> shape;
+};
+
+struct BackendArepoExtractResult
+{
+    bool valid{ false };
+    QString error;
+    BackendArepoPlan plan;
+    QVector<BackendArepoCube> outputs;
+};
+
 // ── A-02: 2-D Gaussian source fitting ────────────────────────────────────────
 
 struct BackendGaussFit2DResult
@@ -2038,6 +2103,22 @@ public:
             double annulusInnerArcsec,
             double annulusOuterArcsec,
             int channel = -1);
+
+    // ── Simulation snapshots (AREPO) ─────────────────────────────────────────
+    /** POST /v1/simulations/arepo/inspect — HDF5 tree, box size, particle types. */
+    BackendArepoInspectResult inspectArepoSnapshot(const QString &path) const;
+
+    /** POST /v1/simulations/arepo/plan — the grid a level+window would produce. */
+    BackendArepoPlan planArepoExtraction(const QString &path, int level,
+                                         const QVector<double> &windowKpc,
+                                         const QVector<double> &offsetKpc) const;
+
+    /** POST /v1/simulations/arepo/extract — resample to a uniform cube per field. */
+    BackendArepoExtractResult extractArepoCubes(const QString &path, int level,
+                                                const QString &particle,
+                                                const QStringList &fields,
+                                                const QVector<double> &windowKpc,
+                                                const QVector<double> &offsetKpc) const;
 
     // ── SED fitting ──────────────────────────────────────────────────────────
     /** POST /v1/sed/fit — greybody fit of a source's photometry. */
