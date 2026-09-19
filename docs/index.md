@@ -175,6 +175,7 @@ user-guide/region-pv-noise
 user-guide/kinematic-lasso
 user-guide/source-finding
 user-guide/catalogues-hips
+user-guide/vlkb-archive
 user-guide/sed-fitting
 user-guide/simulations
 user-guide/skava-discovery
@@ -335,6 +336,18 @@ every tool together with the page that documents its scientific use.
   - **Tools → Export Catalogue…**
   - CSV with the sky frame named in the header
   - [Catalogues · The catalogue table](user-guide/catalogues-hips#the-catalogue-table)
+* - **VLKB ARCHIVE**
+  -
+  -
+  -
+* - Find and cut out images / cubes over a region of the Galactic plane
+  - **VLKB** tab: coordinates + radius (cone) or dl/db (box) → **Query**
+  - An inventory of every dataset covering the region, with its coverage
+  - [VLKB archive](user-guide/vlkb-archive)
+* - Download several datasets at once
+  - Select them in the inventory → **Download & Open**
+  - Images stack as layers in one viewer; cubes open in the cube viewer
+  - [VLKB archive · Downloading](user-guide/vlkb-archive#downloading)
 * - **SIMULATIONS**
   -
   -

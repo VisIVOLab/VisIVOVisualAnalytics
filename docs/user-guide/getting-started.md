@@ -111,7 +111,10 @@ the backend-side filesystem:
 - **Open 3-D Catalogue…** (CSV / VOTable) launches the
   [3-D catalogue viewer](catalogues-hips).
 - **HiPS Viewer…** opens the all-sky [HiPS viewer](catalogues-hips).
-- **VLKB Inventory** browses VLKB-served sources behind the OIDC flow.
+
+Beside it sits the **VLKB** tab, which queries the ViaLactea Knowledge Base over
+a region of the Galactic plane and cuts out the images and cubes that cover it —
+see [VLKB archive](vlkb-archive).
 
 You can also drag-and-drop a local FITS file onto the Data Hub — it will
 be staged on the backend automatically.

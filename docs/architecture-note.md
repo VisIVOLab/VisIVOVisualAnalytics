@@ -1663,6 +1663,55 @@ and the match count, including when the match count is **zero**: "nothing within
 message. The request parameters are stashed when the query is launched, since the
 finished handler is generic (it just projects a parse result).
 
+## VLKB archive path (query → inventory → cutout → layer)
+
+Three hops, and each used to build its own idea of where the user was pointing.
+
+**One POS string.** `visivo::circlePosString` / `rangePosString`
+(`src/gui/VlkbPosString.h`, unit-tested) is the only place a POS is built.
+Before that there were three: the panel's preview, `VlkbQueryService::search*`
+and the SODA URL, and two of them normalised a negative galactic longitude by
+adding **180** instead of 360 — so a query at the Galactic centre searched the
+far side of the Galaxy, and after the first fix the preview and the search
+disagreed with each other. `VlkbQueryService::searchPos()` takes the string the
+caller already showed the user, so preview, search and cutout cannot drift.
+
+Latitude is clamped rather than wrapped (past the pole is a typo, not a
+position); a box straddling l = 0 is emitted as `l₁ > l₂`, the RANGE convention
+for a wrap, because normalising the two edges independently selects the 356° of
+sky the user did *not* ask for; and a 360°-wide box becomes `0 360` rather than
+the zero-width interval two independently normalised edges would give.
+
+**The response is checked, not assumed.** `/v1/vlkb/fetch_cutout` validates the
+downloaded bytes before calling the file a FITS (see
+[Backend API · VLKB](backend-api#vlkb)). Without that, a service error saved as
+`.fits` surfaced as *"No SIMPLE card found"* from the FITS reader — an error
+about the file's syntax standing in for the archive's own explanation of what
+had gone wrong, which was inside that very file.
+
+**One layer loader, therefore a queue.** `vtkWindowImage` has a single layer
+load in flight (`layerLoadWatcher`), and `addLayerFromBackendPath` used to
+*drop* a request that arrived while it was busy. Selecting six datasets in the
+inventory fires six at once, so they are queued instead
+(`m_pendingLayerLoads`, drained by `pumpLayerQueue()` from every path that stops
+being busy — the layer loader, the preview and full-resolution image loads, the
+Stokes listing).
+
+The queue is shared with the Stokes companion sequence, and the two have
+different failure semantics, so each entry carries `partOfSet`: a failed Stokes
+companion abandons the rest of **its set** (half a set is worse than none, and
+the user cannot see which half they got), while six independent cutouts carry on
+— one failed download is no reason to drop five good ones. The flag of the
+running load is taken and cleared *before* the error dialog, whose event loop
+would otherwise let a new cutout inherit it.
+
+**Lifetimes.** The inventory window has `WA_DeleteOnClose` while the download
+watcher belongs to `MainWindow`, so the tree is held through a
+`QPointer` — including across `openVlkbImageLayer`, whose backend calls spin an
+event loop of their own.
+
+---
+
 ## SED fitting (`backend/app/compute/sed.py` + `SedWindow`)
 
 Ported in September 2026 from the legacy `ViaLacteaVisualAnalytics`, whose
@@ -1960,7 +2009,8 @@ as QTest reports them, so each class includes its own init/cleanup.
 | `test_catalogue_csv.cpp` | 11 | CSV quoting, multi-line records, truncated files |
 | `test_fits_header_string.cpp` | 6 | header cards → 80-column FITS header string |
 | `test_stokes_companion.cpp` | 9 | Stokes Q/U/V companion filename matching |
-| `test_sed_builder.cpp` | 19 | `visivo::SedBuilder` — building a SED from catalogue rows (band-merged groups, flat rows with several flux columns, column-name and unit rules, angular size) |
+| `test_vlkb_pos_string.cpp` | 11 | VLKB POS strings: galactic longitude wrapping, latitude clamping, the box across l = 0 and the full-circle box |
+| `test_sed_builder.cpp` | 20 | `visivo::SedBuilder` — building a SED from catalogue rows (band-merged groups, flat rows with several flux columns, column-name and unit rules, angular size) |
 
 Build (standalone — this is what CI runs; no VTK, no Qt::Widgets):
 ```

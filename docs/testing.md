@@ -28,10 +28,11 @@ tests/
   test_spectral_axis_infer.cpp     # 16 — spectral-axis descriptor inference
   test_kinematic_level_field.cpp   # 19 — kinematic-lasso level field
   test_ray_voxel_pick.cpp          # 18 — 3-D ray → voxel picking
-  test_sed_builder.cpp             # 19 — SED from catalogue rows: band-merged groups, flux columns, units
+  test_sed_builder.cpp             # 20 — SED from catalogue rows: band-merged groups, branches, flux columns, units
+  test_vlkb_pos_string.cpp         # 11 — VLKB POS strings: longitude wrapping, the box across l = 0
 ```
 
-Total: **314 tests** in one binary, as QTest counts them — each class
+Total: **326 tests** in one binary, as QTest counts them — each class
 contributes its own `initTestCase` / `cleanupTestCase` to that figure.
 `ctest -V` prints the per-class totals.
 
@@ -47,12 +48,18 @@ out of a catalogue is a pile of column-name rules, and a misread column does not
 crash — it produces a fit that runs and is wrong. The rules therefore live in a
 header with no widgets in it, where they can be checked directly.
 
-The **backend** has its own pytest suite under `backend/tests/`. Two of its files
-are worth knowing about when touching the science: `test_sed_fit.py` (61 tests)
-round-trips greybody fits against synthetic SEDs and checks the Δχ² = 1
-uncertainty against its closed-form value, and `test_contract.py` pins the REST
-route list the desktop client depends on — **add an endpoint and it fails until
-you regenerate the snapshot**:
+The **backend** has its own pytest suite under `backend/tests/`. Four of its
+files are worth knowing about when touching the science or the archive path:
+
+- `test_sed_fit.py` (61) round-trips greybody fits against synthetic SEDs and
+  checks the Δχ² = 1 uncertainty against its closed-form value;
+- `test_arepo.py` (34) builds a synthetic AREPO snapshot and exercises the HDF5
+  walk, the grid arithmetic and the FITS header — including the link cycles and
+  the attribute types that used to break the reply;
+- `test_soda_cutout.py` (20) covers what a VLKB cutout response has to be before
+  it is called a FITS file;
+- `test_contract.py` pins the REST route list the desktop client depends on —
+  **add an endpoint and it fails until you regenerate the snapshot**:
 
 ```
 backend/.venv/bin/python backend/scripts/gen_contract.py

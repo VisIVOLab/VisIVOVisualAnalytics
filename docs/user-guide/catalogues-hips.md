@@ -290,6 +290,9 @@ window or via the Command Palette.
 
 ## See also
 
+- [VLKB archive](vlkb-archive) — the other route through the same archive:
+  finding and cutting out the *images and cubes* over a region, rather than
+  overlaying a source catalogue on one you already have.
 - [SED fitting](sed-fitting) — turning a band-merged source's fluxes into a
   mass, a dust temperature and a luminosity.
 - Developer reference: [`/v1/catalogue/*`](../backend-api#catalogue),

@@ -439,6 +439,49 @@ Returns `ra_deg`, `dec_deg`, `resolved_name`.
 
 ---
 
+## VLKB
+
+### `POST /v1/vlkb/fetch_cutout`
+Download a cutout from a *remote* SODA service to the backend's filesystem.
+```json
+{ "soda_url": "https://…/soda/sync?ID=…&POS=CIRCLE%2040%200%200.3&POSSYS=GALACTIC",
+  "vlkb_bearer": "" }
+```
+Returns `{valid, error, path}` — `path` is on the **backend**, and is what the
+dataset-open route is then given.
+
+The URL comes from the client, so it is checked against SSRF before anything is
+fetched (`VISIVO_VLKB_ALLOWED_HOSTS`; private, loopback and link-local targets
+are refused unless a host is explicitly trusted).
+
+**What came back is checked before it is called a FITS file.** A SODA service
+answers an error with HTTP 200 and a VOTable or an HTML page, and mislabels its
+Content-Type in both directions — the observed failure carried
+`Content-Type: application/fits` on a plain-text error. So the check is on the
+bytes:
+
+| First bytes | Reported as |
+|-------------|-------------|
+| `SIMPLE` | a FITS file; the path is returned |
+| `\x1f\x8b` | gzip — ask for it uncompressed |
+| `ustar` at offset 257 | a tar archive — this ID needs the multi-cutout endpoint |
+| anything else | the service's own message, extracted from the body |
+
+The message is extracted from a VOTable `<INFO value="ERROR">`, an HTML
+`<title>`/`<h1>`/`<p>`, or plain text, and is returned as **plain text**: markup
+is stripped, because it is written by a remote service and ends up in a dialog.
+A response that is not FITS is deleted rather than kept, and a *cached* response
+is re-checked for the same reason — a bad file saved before this check would
+otherwise be handed back for ever, and re-requesting the same URL is exactly
+what a user does after a failure.
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `VISIVO_VLKB_MAX_BYTES` | 8 GiB | Cap on a single cutout download |
+| `VISIVO_VLKB_ALLOWED_HOSTS` | *(unset)* | Hosts that skip the private-address check |
+
+---
+
 ## SED
 
 Greybody fits of a compact source's photometry, and fits against the VLKB grid
