@@ -30,6 +30,7 @@
 #include "HiPSWindow.h"
 #include "vtkWindowVbt.h"
 #include "vtkWindowVbtVolume.h"
+#include "McutoutJobDialog.h"
 #include "VLKBInventoryTree.h"
 #include "ToolProgressSheet.h"
 #include "VlkbPosString.h"
@@ -350,6 +351,28 @@ void MainWindow::queryVlkb()
                          // the inventory while a cutout is in flight used to
                          // leave this callback dereferencing a freed window.
                          QPointer<VLKBInventoryTree> treeGuard(tree);
+
+                         // The archive's batch API. One job for the whole
+                         // selection, collected once — and it keeps running on
+                         // the archive whether or not the window stays open.
+                         QObject::connect(tree, &VLKBInventoryTree::batchRequested, this,
+                                          [this](const QStringList &ids, const QString &pos,
+                                                 const QStringList &names) {
+                             QVector<BackendMcutoutItem> items;
+                             items.reserve(ids.size());
+                             for (const QString &id : ids)
+                                 items.append({ id, pos });
+                             auto *job = new McutoutJobDialog(
+                                     items, names, this->settings->getVLKBUrl(),
+                                     this->auth->bearerToken(AuthService::VLKB),
+                                     this->settings->getBackendUrl(),
+                                     this->settings->getBackendToken(), this);
+                             QObject::connect(job, &McutoutJobDialog::cutoutReady, this,
+                                              [this](const QString &backendPath) {
+                                                  this->doOpenDataPath(backendPath);
+                                              });
+                             job->show();
+                         });
                          QObject::connect(tree, &VLKBInventoryTree::cutoutRequested, this,
                                           [this, treeGuard](const QString &ivoID, const QString &pos,
                                                        const QString &displayName,

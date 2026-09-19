@@ -1710,6 +1710,43 @@ watcher belongs to `MainWindow`, so the tree is held through a
 `QPointer` — including across `openVlkbImageLayer`, whose backend calls spin an
 event loop of their own.
 
+### The batch path (`app/vlkb_mcutout.py` + `McutoutJobDialog`)
+
+Twenty cutouts as twenty `sync` requests is twenty chances to lose one; the
+archive's own answer is a UWS job, which the legacy client drove from the
+desktop (`MCutoutSummary`, VLVA 1.7.4). Here the protocol is on the backend and
+the client owns the table and the polling — and the results are **unpacked**
+rather than handed over as a `.tar.gz`, which is where the legacy stopped.
+
+Three things carry the security weight, and each was found by review rather than
+by design:
+
+- **The job id is a path as well as a URL.** It comes back from the client on
+  every later call and is interpolated into both, so `validate_job_id` refuses
+  anything that is not a plain identifier — `.` and `..` included — and the
+  route's own model refuses it again with a 422 before the filesystem is
+  touched.
+- **A redirect carries the token.** `urllib` copies `Authorization` into the
+  redirected request, so a service answering 302 with a host of its choosing is
+  handed the user's VLKB bearer. Every call goes through one `_open()`, which
+  refuses redirects (`_RefuseRedirect`) and refuses to send a token over plain
+  HTTP. The two calls whose answer *is* a 3xx — the submit and the RUN command —
+  use `_CaptureRedirect`, which reads the `Location` without following it.
+  `submit_job` built its own request and observed neither rule until it was
+  routed through the same place.
+- **An archive is not its download size.** The byte cap on the transfer says
+  nothing about what it unpacks to, so the extraction is incremental and counts
+  members and extracted bytes; `filter="data"` does not impose quotas. A member
+  that resolves outside the target, a symlink, a device or a *sparse* member is
+  refused — for a sparse member `tarfile` does not verify that the map agrees
+  with the declared size, which is the bound the whole loop relies on.
+
+A submitted job is never dropped on the floor: if the submit succeeds and the
+first phase read fails, the route returns the id with `phase: "UNKNOWN"` rather
+than a 502, because the job is already running on the archive and a retry would
+submit a second one. Each fetch unpacks into a staging directory of its own,
+removed if anything fails — a half-written archive is not a result.
+
 ---
 
 ## SED fitting (`backend/app/compute/sed.py` + `SedWindow`)

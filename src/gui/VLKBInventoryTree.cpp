@@ -130,7 +130,19 @@ void VLKBInventoryTree::buildUi(const QString &posCutout)
     m_openButton = new QPushButton(u"Download && Open"_s, this);
     m_openButton->setEnabled(false);
     m_openButton->setDefault(true);
+    // The archive's own batch API: one job for the whole selection instead of
+    // one request per dataset. Worth it from a handful upwards, and it survives
+    // the app being closed — so it is offered, not imposed.
+    m_batchButton = new QPushButton(u"Request as batch…"_s, this);
+    m_batchButton->setEnabled(false);
+    m_batchButton->setToolTip(
+            u"Ask the archive for the whole selection as one asynchronous job. "
+            "Slower to start, but it is a single request and it keeps running if "
+            "you close this window."_s);
+    QObject::connect(m_batchButton, &QPushButton::clicked, this,
+                     &VLKBInventoryTree::requestBatch);
     actions->addWidget(hint, 1);
+    actions->addWidget(m_batchButton, 0);
     actions->addWidget(m_openButton, 0);
     vbox->addLayout(actions);
     QObject::connect(m_openButton, &QPushButton::clicked,
@@ -353,6 +365,12 @@ void VLKBInventoryTree::onSelectionChanged()
         m_openButton->setText(datasets > 1 ? u"Download && Open (%1)"_s.arg(datasets)
                                            : u"Download && Open"_s);
     }
+    if (m_batchButton) {
+        // One dataset is not a batch; the direct request is simpler and faster.
+        m_batchButton->setEnabled(datasets > 1);
+        m_batchButton->setText(datasets > 1 ? u"Request as batch (%1)…"_s.arg(datasets)
+                                            : u"Request as batch…"_s);
+    }
 }
 
 void VLKBInventoryTree::downloadSelected()
@@ -370,6 +388,31 @@ void VLKBInventoryTree::downloadSelected()
         if (idx.isValid() && !m_tree->isRowHidden(idx.row(), idx.parent()))
             requestCutout(idx);
     }
+}
+
+void VLKBInventoryTree::requestBatch()
+{
+    QStringList ids;
+    QStringList names;
+    const QModelIndexList selected = m_tree->selectionModel()
+            ? m_tree->selectionModel()->selectedRows()
+            : QModelIndexList{};
+    for (const QModelIndex &idx : selected) {
+        if (!idx.isValid() || m_tree->isRowHidden(idx.row(), idx.parent()))
+            continue;
+        auto *item = m_model->itemFromIndex(idx);
+        if (!item)
+            continue;
+        const QUuid id = item->data(Qt::UserRole).toUuid();
+        if (!m_cutouts.contains(id))
+            continue;
+        const Cutout &c = m_cutouts.value(id);
+        ids.append(c.ivoID);
+        names.append((c.survey + u' ' + c.transition).simplified());
+    }
+    if (ids.size() < 2)
+        return;
+    emit batchRequested(ids, m_posCutout, names);
 }
 
 void VLKBInventoryTree::requestCutout(const QModelIndex &idx)

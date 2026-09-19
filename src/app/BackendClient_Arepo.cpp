@@ -237,3 +237,141 @@ BackendArepoExtractResult BackendClient::extractArepoCubes(
     result.valid = true;
     return result;
 }
+
+// ── VLKB multi-cutout ─────────────────────────────────────────────────────────
+//
+// The archive's asynchronous batch API: submit a list of datasets as one job,
+// poll a phase, collect one archive. The protocol lives on the backend
+// (app/vlkb_mcutout.py) — including the SSRF guard, the auth token and the
+// unpacking — so this is only the transport.
+
+namespace {
+
+QJsonObject mcutoutJobBody(const QString &jobId, const QString &serviceUrl,
+                           const QString &bearer)
+{
+    return QJsonObject{
+        { QStringLiteral("job_id"), jobId },
+        { QStringLiteral("service_url"), serviceUrl },
+        { QStringLiteral("vlkb_bearer"), bearer },
+    };
+}
+
+}   // namespace
+
+BackendMcutoutSubmitResult BackendClient::submitVlkbMcutout(
+        const QVector<BackendMcutoutItem> &items, const QString &serviceUrl,
+        const QString &bearer) const
+{
+    BackendMcutoutSubmitResult result;
+    if (items.isEmpty()) {
+        result.error = QStringLiteral("Select at least one dataset.");
+        return result;
+    }
+
+    QJsonArray array;
+    for (const BackendMcutoutItem &item : items) {
+        array.append(QJsonObject{
+            { QStringLiteral("id"), item.id },
+            { QStringLiteral("pos"), item.pos },
+            { QStringLiteral("possys"), QStringLiteral("GALACTIC") },
+        });
+    }
+    const QJsonObject body{
+        { QStringLiteral("items"), array },
+        { QStringLiteral("service_url"), serviceUrl },
+        { QStringLiteral("vlkb_bearer"), bearer },
+    };
+
+    QString transportError;
+    const QByteArray payload = performPostRetryingBackpressure(
+            QUrl(m_baseUrl + QStringLiteral("/v1/vlkb/mcutout/submit")), QJsonDocument(body),
+            transportError);
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    if (!transportError.isEmpty() || !object.value(QStringLiteral("valid")).toBool()) {
+        result.error = describeFailure(payload, transportError,
+                                       QStringLiteral("The batch could not be submitted."));
+        return result;
+    }
+    result.jobId = object.value(QStringLiteral("job_id")).toString();
+    result.phase = object.value(QStringLiteral("phase")).toString();
+    result.count = object.value(QStringLiteral("count")).toInt();
+    result.valid = !result.jobId.isEmpty();
+    if (!result.valid)
+        result.error = QStringLiteral("The archive did not name a job.");
+    return result;
+}
+
+BackendMcutoutPhaseResult BackendClient::vlkbMcutoutPhase(const QString &jobId,
+                                                          const QString &serviceUrl,
+                                                          const QString &bearer) const
+{
+    BackendMcutoutPhaseResult result;
+    QString transportError;
+    const QByteArray payload = performPostRetryingBackpressure(
+            QUrl(m_baseUrl + QStringLiteral("/v1/vlkb/mcutout/phase")),
+            QJsonDocument(mcutoutJobBody(jobId, serviceUrl, bearer)), transportError);
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    if (!transportError.isEmpty() || !object.value(QStringLiteral("valid")).toBool()) {
+        result.error = describeFailure(payload, transportError,
+                                       QStringLiteral("The job's phase is unknown."));
+        return result;
+    }
+    result.phase = object.value(QStringLiteral("phase")).toString();
+    result.terminal = object.value(QStringLiteral("terminal")).toBool();
+    result.valid = true;
+    return result;
+}
+
+BackendMcutoutReportResult BackendClient::vlkbMcutoutReport(const QString &jobId,
+                                                            const QString &serviceUrl,
+                                                            const QString &bearer) const
+{
+    BackendMcutoutReportResult result;
+    QString transportError;
+    const QByteArray payload = performPostRetryingBackpressure(
+            QUrl(m_baseUrl + QStringLiteral("/v1/vlkb/mcutout/report")),
+            QJsonDocument(mcutoutJobBody(jobId, serviceUrl, bearer)), transportError);
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    if (!transportError.isEmpty() || !object.value(QStringLiteral("valid")).toBool()) {
+        result.error = describeFailure(payload, transportError,
+                                       QStringLiteral("The job report is unavailable."));
+        return result;
+    }
+    const QJsonArray entries = object.value(QStringLiteral("results")).toArray();
+    for (const QJsonValue &value : entries) {
+        const QJsonObject entry = value.toObject();
+        BackendMcutoutOutcome outcome;
+        outcome.index = entry.value(QStringLiteral("index")).toInt(-1);
+        outcome.ok = entry.value(QStringLiteral("ok")).toBool();
+        outcome.filename = entry.value(QStringLiteral("filename")).toString();
+        outcome.detail = entry.value(QStringLiteral("detail")).toString();
+        result.results.append(outcome);
+    }
+    result.valid = true;
+    return result;
+}
+
+BackendMcutoutFetchResult BackendClient::vlkbMcutoutFetch(const QString &jobId,
+                                                          const QString &serviceUrl,
+                                                          const QString &bearer) const
+{
+    BackendMcutoutFetchResult result;
+    QString transportError;
+    const QByteArray payload = performPostRetryingBackpressure(
+            QUrl(m_baseUrl + QStringLiteral("/v1/vlkb/mcutout/fetch")),
+            QJsonDocument(mcutoutJobBody(jobId, serviceUrl, bearer)), transportError);
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    if (!transportError.isEmpty() || !object.value(QStringLiteral("valid")).toBool()) {
+        result.error = describeFailure(payload, transportError,
+                                       QStringLiteral("The results could not be collected."));
+        return result;
+    }
+    result.archivePath = object.value(QStringLiteral("archive")).toString();
+    const QJsonArray files = object.value(QStringLiteral("files")).toArray();
+    for (const QJsonValue &value : files)
+        result.files.append(value.toString());
+    result.bytes = static_cast<qint64>(object.value(QStringLiteral("bytes")).toDouble());
+    result.valid = true;
+    return result;
+}

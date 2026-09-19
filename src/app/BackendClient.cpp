@@ -2680,6 +2680,9 @@ const QStringList &heavyComputePaths()
         // Resampling an AREPO window is minutes of yt, not seconds: on the
         // interactive timeout the client called a running job failed.
         QStringLiteral("/simulations/arepo/extract"),
+        // Downloading and unpacking a batch of cutouts is minutes of
+        // archive time, not an interactive request.
+        QStringLiteral("/vlkb/mcutout/fetch"),
     };
     return paths;
 }

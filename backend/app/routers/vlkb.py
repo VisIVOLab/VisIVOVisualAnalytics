@@ -23,8 +23,8 @@ import urllib.request as _urllib_request
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 
 from ..auth import verify_token
 from ..dependencies import assert_safe_fetch_url, get_exports_dir
@@ -39,6 +39,31 @@ _MAX_CUTOUT_BYTES = int(os.environ.get("VISIVO_VLKB_MAX_BYTES", str(8 * 1024**3)
 
 class VlkbFetchRequest(BaseModel):
     soda_url: str
+    vlkb_bearer: str = ""
+
+
+class McutoutItem(BaseModel):
+    """One dataset of a batch: what to cut, and where."""
+
+    id: str
+    #: "CIRCLE l b r" or "RANGE l1 l2 b1 b2" — the same string the single
+    #: cutout path sends, so a batch means exactly the same region.
+    pos: str
+    possys: str = "GALACTIC"
+
+
+class McutoutSubmitRequest(BaseModel):
+    items: list[McutoutItem]
+    service_url: str = ""
+    vlkb_bearer: str = ""
+
+
+class McutoutJobRequest(BaseModel):
+    #: A job id is interpolated into a URL *and* into the directory the results
+    #: are unpacked into, so it is constrained here as well as in the service
+    #: module — "x/../../escaped" is a plain string until something refuses it.
+    job_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
+    service_url: str = ""
     vlkb_bearer: str = ""
 
 
@@ -186,3 +211,145 @@ def _unlink_quiet(path: Path) -> None:
         path.unlink()
     except FileNotFoundError:
         pass
+
+
+# ── multi-cutout (UWS batch) ──────────────────────────────────────────────────
+#
+# One dataset at a time is what /fetch_cutout does. Twenty datasets is what the
+# archive's asynchronous job API is for, and what the legacy client's
+# MCutoutSummary drove: submit the list, poll a phase, collect one archive.
+# See app/vlkb_mcutout.py for the protocol.
+
+
+def _mcutout_service(explicit: str) -> str:
+    """The archive base URL, checked against SSRF before anything is sent."""
+    from ..vlkb_mcutout import McutoutError, resolve_service_url  # noqa: PLC0415
+
+    try:
+        base = resolve_service_url(explicit)
+    except McutoutError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    try:
+        assert_safe_fetch_url(base, allowlist_env="VISIVO_VLKB_ALLOWED_HOSTS",
+                              block_private=True)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return base
+
+
+def _mcutout_failure(exc: Exception) -> HTTPException:
+    """The archive's own words, or ours, with the status that fits."""
+    import urllib.error as _err  # noqa: PLC0415
+
+    from ..vlkb_mcutout import McutoutError  # noqa: PLC0415
+
+    if isinstance(exc, McutoutError):
+        return HTTPException(422, str(exc))
+    if isinstance(exc, _err.HTTPError):
+        return HTTPException(502, f"The archive returned HTTP {exc.code}: {exc.reason}")
+    return HTTPException(502, f"The archive could not be reached: {exc}")
+
+
+@router.post("/v1/vlkb/mcutout/submit", tags=["vlkb"])
+async def vlkb_mcutout_submit(request: McutoutSubmitRequest, _: None = _auth):
+    """Submit a batch of cutouts as one asynchronous job.
+
+    Body: ``{items: [{id, pos, possys}], service_url?, vlkb_bearer?}`` — ``pos``
+    is the POS string the single-cutout path uses, so a batch covers exactly the
+    region the user was shown.
+
+    Returns ``{valid, error, job_id, phase, count}``. The job outlives the
+    request (and the client): poll ``/phase``, then collect with ``/fetch``.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from ..vlkb_mcutout import job_phase, submit_job  # noqa: PLC0415
+
+    base = _mcutout_service(request.service_url)
+    items = [{"id": item.id, "pos": item.pos, "possys": item.possys} for item in request.items]
+    try:
+        job = await asyncio.to_thread(submit_job, base, items, request.vlkb_bearer)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[mcutout] submit failed: %s", exc)
+        raise _mcutout_failure(exc) from exc
+
+    # The job exists from here on. A phase read that fails must not lose it:
+    # reporting an error without the id would leave the batch running on the
+    # archive with nobody able to collect it, and a retry would submit a second.
+    try:
+        phase = await asyncio.to_thread(job_phase, base, job, request.vlkb_bearer)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[mcutout] submitted job=%s but its phase is unknown: %s", job, exc)
+        phase = "UNKNOWN"
+    logger.info("[mcutout] submitted job=%s items=%d phase=%s", job, len(items), phase)
+    return {"valid": True, "error": "", "job_id": job, "phase": phase, "count": len(items)}
+
+
+@router.post("/v1/vlkb/mcutout/phase", tags=["vlkb"])
+async def vlkb_mcutout_phase(request: McutoutJobRequest, _: None = _auth):
+    """Where the job has got to.
+
+    Returns ``{valid, error, phase, terminal}``. A job the archive left ``HELD``
+    is started here rather than reported as stuck — that is what HELD means, and
+    the client should not have to know it.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from ..vlkb_mcutout import TERMINAL_PHASES, job_phase, run_job  # noqa: PLC0415
+
+    base = _mcutout_service(request.service_url)
+    try:
+        phase = await asyncio.to_thread(job_phase, base, request.job_id, request.vlkb_bearer)
+        if phase == "HELD":
+            phase = await asyncio.to_thread(run_job, base, request.job_id, request.vlkb_bearer)
+    except Exception as exc:  # noqa: BLE001
+        raise _mcutout_failure(exc) from exc
+    return {"valid": True, "error": "", "phase": phase, "terminal": phase in TERMINAL_PHASES}
+
+
+@router.post("/v1/vlkb/mcutout/report", tags=["vlkb"])
+async def vlkb_mcutout_report(request: McutoutJobRequest, _: None = _auth):
+    """Per-dataset outcome of a finished job, in submission order.
+
+    Returns ``{valid, error, results: [{index, ok, filename, detail}]}``.
+    ``detail`` carries whatever the archive said about a failure — the only
+    clue to why one dataset of twenty came back empty.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from ..vlkb_mcutout import job_report  # noqa: PLC0415
+
+    base = _mcutout_service(request.service_url)
+    try:
+        results = await asyncio.to_thread(job_report, base, request.job_id, request.vlkb_bearer)
+    except Exception as exc:  # noqa: BLE001
+        raise _mcutout_failure(exc) from exc
+    return {"valid": True, "error": "", "results": results}
+
+
+@router.post("/v1/vlkb/mcutout/fetch", tags=["vlkb"])
+async def vlkb_mcutout_fetch(request: McutoutJobRequest, _: None = _auth):
+    """Download the job's archive and unpack it on the backend.
+
+    Returns ``{valid, error, archive, files, bytes}`` — ``files`` are the
+    extracted cutouts, ready for the ordinary dataset-open route. The legacy
+    stopped at the `.tar.gz`, which left the cutouts one manual step away from
+    the viewer that had just asked for them.
+
+    Archive members that would write outside the job's own directory are
+    refused, symlinks and devices skipped.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from ..vlkb_mcutout import fetch_results  # noqa: PLC0415
+
+    base = _mcutout_service(request.service_url)
+    out_dir = get_exports_dir() / "vlkb_cutouts"
+    try:
+        result = await asyncio.to_thread(fetch_results, base, request.job_id,
+                                         str(out_dir), request.vlkb_bearer)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[mcutout] fetch failed job=%s: %s", request.job_id, exc)
+        raise _mcutout_failure(exc) from exc
+    logger.info("[mcutout] fetched job=%s files=%d", request.job_id, len(result["files"]))
+    return {"valid": True, "error": "", **result}

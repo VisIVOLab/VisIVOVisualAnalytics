@@ -348,6 +348,10 @@ every tool together with the page that documents its scientific use.
   - Select them in the inventory → **Download & Open**
   - Images stack as layers in one viewer; cubes open in the cube viewer
   - [VLKB archive · Downloading](user-guide/vlkb-archive#downloading)
+* - Ask the archive for a long list as one job
+  - Select them → **Request as batch (N)…**
+  - One asynchronous job, collected and unpacked in one go; survives closing the window
+  - [VLKB archive · Many datasets at once](user-guide/vlkb-archive#many-datasets-at-once)
 * - **SIMULATIONS**
   -
   -

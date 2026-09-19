@@ -461,6 +461,8 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage.h
         src/gui/vtkWindowImage_Catalogue.cpp
         src/gui/ArepoExtractDialog.cpp
+        src/gui/McutoutJobDialog.cpp
+        src/gui/McutoutJobDialog.h
         src/gui/ArepoExtractDialog.h
         src/gui/SedWindow.cpp
         src/gui/SedWindow.h
@@ -580,6 +582,7 @@ qt_add_resources(${PROJECT_NAME} rail_icons
         resources/icons/rail_filter.svg
         resources/icons/rail_metadata.svg
         resources/icons/rail_copilot.svg
+        resources/icons/radio_dot.svg
         resources/icons/chevron_down.svg
         resources/icons/chevron_up.svg
         resources/icons/chevron_right.svg

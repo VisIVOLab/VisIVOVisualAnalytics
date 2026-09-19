@@ -73,10 +73,16 @@ signals:
     void cutoutRequested(const QString &ivoID, const QString &posCutout,
                          const QString &displayName, const QString &type);
 
+    /// The user asked for the selection as ONE asynchronous archive job rather
+    /// than N synchronous cutouts. Parallel lists, one entry per dataset.
+    void batchRequested(const QStringList &ivoIDs, const QString &posCutout,
+                        const QStringList &displayNames);
+
 private slots:
     void onDoubleClicked(const QModelIndex &idx);
     void onSelectionChanged();
     void downloadSelected();
+    void requestBatch();
     void applyFilter(const QString &text);
     /// Re-run the current filter. Bound to the coverage checkbox.
     void reapplyFilter();
@@ -107,6 +113,7 @@ private:
     QLabel             *m_totalLabel  { nullptr };
     QCheckBox          *m_coverageOnly{ nullptr };
     QPushButton        *m_openButton  { nullptr };
+    QPushButton        *m_batchButton { nullptr };
     QList<WavelengthGroup>       m_groups;
     QHash<QUuid, Cutout>         m_cutouts;
     QString                      m_posCutout;

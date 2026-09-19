@@ -480,6 +480,65 @@ what a user does after a failure.
 | `VISIVO_VLKB_MAX_BYTES` | 8 GiB | Cap on a single cutout download |
 | `VISIVO_VLKB_ALLOWED_HOSTS` | *(unset)* | Hosts that skip the private-address check |
 
+### Multi-cutout (asynchronous batch)
+
+One SODA `sync` request cuts one dataset; the archive's answer to "cut twenty"
+is a UWS job. Four routes drive it, and the protocol lives in
+`app/vlkb_mcutout.py`.
+
+#### `POST /v1/vlkb/mcutout/submit`
+```json
+{ "items": [{ "id": "ivo://…", "pos": "CIRCLE 40 0 0.3", "possys": "GALACTIC" }],
+  "service_url": "", "vlkb_bearer": "" }
+```
+`pos` is the same POS string the single-cutout path sends, so a batch covers
+exactly the region the user was shown; it is parsed server-side into the
+service's `{circle}`/`{range}` shape. Returns
+`{valid, error, job_id, phase, count}`.
+
+**A submitted job is never lost.** If the submit succeeds but the first phase
+read fails, the route still returns the `job_id` with `phase: "UNKNOWN"` —
+reporting an error without the id would leave the batch running on the archive
+with nobody able to collect it, and a retry would submit a second one.
+
+#### `POST /v1/vlkb/mcutout/phase`
+`{job_id, service_url?, vlkb_bearer?}` → `{valid, error, phase, terminal}`.
+A job the archive left `HELD` (accepted but not started) is started here rather
+than reported as stuck.
+
+#### `POST /v1/vlkb/mcutout/report`
+→ `{valid, error, results: [{index, ok, filename, detail}]}`, in submission
+order. `detail` keeps whatever the archive said about a failure — the only clue
+to why one dataset of twenty came back empty.
+
+#### `POST /v1/vlkb/mcutout/fetch`
+→ `{valid, error, archive, files, bytes}`. Downloads the job's `.tar.gz` **and
+unpacks it**, into a staging directory of its own per fetch; `files` are the
+cutouts, ready for the ordinary dataset-open route. Goes through the heavy-task
+throttle.
+
+**What is refused, and why.** A `job_id` is interpolated into a URL *and* into
+that directory, so it must be a plain identifier (`.` and `..` included in the
+refusal). Redirects are never followed on these calls: `urllib` copies the
+`Authorization` header into the redirected request, so a service answering 302
+with a host of its choosing would be handed the user's VLKB token — the two
+calls whose answer *is* a 3xx (submit, and the RUN command) read the `Location`
+without following it. The token is never sent over plain HTTP. On extraction, a
+member that resolves outside the directory, a symlink, a device, or a **sparse**
+member is refused — for a sparse member `tarfile` does not check that the map
+agrees with the declared size, so the size stops bounding what gets written —
+and the totals are capped.
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `VISIVO_VLKB_MCUTOUT_TIMEOUT` | 300 s | Socket timeout for each archive call |
+| `VISIVO_VLKB_MCUTOUT_MAX_ITEMS` | 500 | Datasets in one batch |
+| `VISIVO_VLKB_MCUTOUT_MAX_BYTES` | 16 GiB | Results archive download |
+| `VISIVO_VLKB_MCUTOUT_MAX_EXTRACTED` | 32 GiB | Total unpacked size |
+| `VISIVO_VLKB_MCUTOUT_MAX_MEMBERS` | 2000 | Entries in the archive |
+| `VISIVO_VLKB_MCUTOUT_MAX_REPORT` | 8 MiB | Job report |
+| `VISIVO_VLKB_URL` | *(unset)* | Default archive base URL |
+
 ---
 
 ## SED

@@ -1042,19 +1042,28 @@ QString darkStyleSheet()
             "QSplitter::handle:vertical   { height: 1px; }"
 
             // ── Radio / check box ──────────────────────────────────────────
+            // padding + min-height: three radios stacked in a group box came out
+            // as one block of text with dots. The row also becomes a comfortable
+            // click target — the label is part of it, and it was 16 px tall.
             "QRadioButton, QCheckBox {"
-            "  color: #F1F4F6; spacing: 8px; background-color: transparent;"
+            "  color: #F1F4F6; spacing: 10px; background-color: transparent;"
+            "  padding: 3px 0; min-height: 20px;"
             "}"
+            // A radio has to read as a RING, and as a ring with a dot when it is
+            // on. The old rule put an 8 px radius on a 16 px box with a 2 px
+            // border — 20 px painted — so it came out a rounded square, and the
+            // checked state filled it solid, which is what a checkbox does.
             "QRadioButton::indicator {"
-            "  width: 16px; height: 16px; border-radius: 8px;"
-            "  border: 2px solid #2B343C; background-color: #11181F;"
+            "  width: 14px; height: 14px; border-radius: 9px;"
+            "  border: 2px solid #4A5257; background-color: transparent;"
             "}"
             "QCheckBox::indicator {"
             "  width: 16px; height: 16px; border-radius: 3px;"
             "  border: 1px solid #4A5257; background-color: transparent;"
             "}"
             "QRadioButton::indicator:checked {"
-            "  background-color: #048ABF; border-color: #048ABF;"
+            "  border-color: #048ABF; background-color: #048ABF;"
+            "  image: url(:/icons/radio_dot.svg);"
             "}"
             "QCheckBox::indicator:checked {"
             "  background-color: #048ABF; border-color: #048ABF;"
@@ -1636,19 +1645,24 @@ QString lightStyleSheet()
             "QSplitter::handle:vertical   { height: 1px; }"
 
             // ── Radio / check box ──────────────────────────────────────────────
+            // See the dark sheet: room between stacked radios, and a row tall
+            // enough to click.
             "QRadioButton, QCheckBox {"
-            "  color: #1C2734; spacing: 8px; background-color: transparent;"
+            "  color: #1C2734; spacing: 10px; background-color: transparent;"
+            "  padding: 3px 0; min-height: 20px;"
             "}"
+            // See the dark sheet: a ring, not a rounded square.
             "QRadioButton::indicator {"
-            "  width: 16px; height: 16px; border-radius: 8px;"
-            "  border: 2px solid #D8DEE7; background-color: #FFFFFF;"
+            "  width: 14px; height: 14px; border-radius: 9px;"
+            "  border: 2px solid #B7C0CC; background-color: #FFFFFF;"
             "}"
             "QCheckBox::indicator {"
             "  width: 16px; height: 16px; border-radius: 3px;"
             "  border: 1px solid #B7C0CC; background-color: transparent;"
             "}"
             "QRadioButton::indicator:checked {"
-            "  background-color: #005574; border-color: #005574;"
+            "  border-color: #005574; background-color: #005574;"
+            "  image: url(:/icons/radio_dot.svg);"
             "}"
             "QCheckBox::indicator:checked {"
             "  background-color: #005574; border-color: #005574;"

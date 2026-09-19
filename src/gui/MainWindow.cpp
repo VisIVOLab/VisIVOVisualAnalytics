@@ -267,6 +267,16 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     QObject::connect(webobj, &WebViewProcess::processJavascript, this,
                      &MainWindow::skyRegionSelected);
 
+    // What these radios do was the single most confusing thing about the panel:
+    // they are a DRAWING mode for the sky view, not the shape of the query, and
+    // nothing said so. The query's shape follows the fields below.
+    ui->boxSelection->setToolTip(
+            u"Choose what you can draw on the sky view. Drawing fills in the "
+            "coordinates below — it does not decide the shape of the query."_s);
+    ui->radioSelNone->setToolTip(u"Don't draw on the sky view; type the coordinates instead."_s);
+    ui->radioSelPoint->setToolTip(u"Click the sky view to set the centre."_s);
+    ui->radioSelRect->setToolTip(u"Drag a rectangle on the sky view to set the centre and dl / db."_s);
+
     auto groupSelection = new QButtonGroup(this);
     groupSelection->addButton(ui->radioSelNone);
     groupSelection->addButton(ui->radioSelPoint);

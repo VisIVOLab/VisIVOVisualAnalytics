@@ -1022,6 +1022,60 @@ struct BackendSedDefaults
     QString modelsServiceUrl;
 };
 
+// ── VLKB multi-cutout (asynchronous batch) ───────────────────────────────────
+
+/// One dataset of a batch request: what to cut, and where.
+struct BackendMcutoutItem
+{
+    QString id;      ///< the archive's obs_publisher_did
+    QString pos;     ///< "CIRCLE l b r" or "RANGE l1 l2 b1 b2"
+};
+
+struct BackendMcutoutSubmitResult
+{
+    bool valid{ false };
+    QString error;
+    QString jobId;
+    QString phase;
+    int count{ 0 };
+};
+
+struct BackendMcutoutPhaseResult
+{
+    bool valid{ false };
+    QString error;
+    QString phase;
+    /// The job has stopped, one way or another: COMPLETED, ABORTED or ERROR.
+    bool terminal{ false };
+};
+
+/// What became of one dataset of the batch.
+struct BackendMcutoutOutcome
+{
+    int index{ -1 };
+    bool ok{ false };
+    QString filename;
+    /// Whatever the archive said about a failure — the only clue to why one
+    /// dataset of twenty came back empty.
+    QString detail;
+};
+
+struct BackendMcutoutReportResult
+{
+    bool valid{ false };
+    QString error;
+    QVector<BackendMcutoutOutcome> results;
+};
+
+struct BackendMcutoutFetchResult
+{
+    bool valid{ false };
+    QString error;
+    QString archivePath;      ///< the .tar.gz, on the BACKEND
+    QStringList files;        ///< the cutouts extracted from it
+    qint64 bytes{ 0 };
+};
+
 // ── Simulation snapshots (AREPO) ──────────────────────────────────────────────
 
 /// One node of a snapshot's HDF5 tree.
@@ -2103,6 +2157,24 @@ public:
             double annulusInnerArcsec,
             double annulusOuterArcsec,
             int channel = -1);
+
+    // ── VLKB multi-cutout ────────────────────────────────────────────────────
+    /** POST /v1/vlkb/mcutout/submit — one asynchronous job for a batch. */
+    BackendMcutoutSubmitResult submitVlkbMcutout(const QVector<BackendMcutoutItem> &items,
+                                                 const QString &serviceUrl,
+                                                 const QString &bearer) const;
+
+    /** POST /v1/vlkb/mcutout/phase — where the job has got to (starts a HELD one). */
+    BackendMcutoutPhaseResult vlkbMcutoutPhase(const QString &jobId, const QString &serviceUrl,
+                                               const QString &bearer) const;
+
+    /** POST /v1/vlkb/mcutout/report — per-dataset outcome, in submission order. */
+    BackendMcutoutReportResult vlkbMcutoutReport(const QString &jobId, const QString &serviceUrl,
+                                                 const QString &bearer) const;
+
+    /** POST /v1/vlkb/mcutout/fetch — download and unpack the results. */
+    BackendMcutoutFetchResult vlkbMcutoutFetch(const QString &jobId, const QString &serviceUrl,
+                                               const QString &bearer) const;
 
     // ── Simulation snapshots (AREPO) ─────────────────────────────────────────
     /** POST /v1/simulations/arepo/inspect — HDF5 tree, box size, particle types. */

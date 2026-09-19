@@ -80,7 +80,8 @@ merely clips a corner.
 ## 3 · Downloading
 
 Double-click a dataset, or select several — ⌘/Ctrl-click, or shift-click for a
-run — and press **Download & Open**, which counts what it will fetch. Each
+run — and press **Download & Open**, which counts what it will fetch. For a
+long list, consider *Request as batch* below instead. Each
 dataset is cut to your region by the archive, downloaded **to the backend**, and
 opened:
 
@@ -92,6 +93,52 @@ opened:
 The viewer loads one layer at a time, so a batch queues and goes in one after
 another — the status line says how many are waiting. A download that fails does
 not cancel the rest.
+
+## Many datasets at once
+
+Selecting a dataset and pressing *Download & Open* asks the archive for it
+directly, one request per dataset. That is the right thing for a handful. For
+more, **Request as batch (N)…** — enabled from two datasets up — uses the
+archive's own batch API instead: the whole selection goes as **one
+asynchronous job**.
+
+The difference is worth knowing:
+
+```{list-table}
+:header-rows: 1
+:widths: 26 37 37
+
+* -
+  - Download & Open
+  - Request as batch
+* - Requests
+  - One per dataset
+  - One job for all of them
+* - Starts
+  - Immediately
+  - After the archive queues the job
+* - If you close the window
+  - The remaining downloads stop
+  - The job keeps running on the archive
+* - Results arrive
+  - One cutout at a time
+  - All together, in one archive
+```
+
+The batch window lists what was asked for and follows the job: it shows the
+phase (queued, executing, completed), and when the job finishes it marks each
+dataset **ready** or **failed** — hover a failed row for the archive's own
+reason, which is usually the interesting part when nineteen of twenty worked.
+
+Press **Download & Open** there to collect the results. They are downloaded to
+the backend and **unpacked** for you, then opened like any other cutout. (The
+legacy tool stopped at handing you a `.tar.gz`.)
+
+```{tip}
+A job the archive accepted keeps going whether or not you are watching it. If
+the report cannot be read — a moment of network trouble — the window offers
+**Retry report** rather than losing the job: the results are still there.
+```
 
 ## When the archive says no
 

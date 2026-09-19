@@ -58,6 +58,10 @@ files are worth knowing about when touching the science or the archive path:
   the attribute types that used to break the reply;
 - `test_soda_cutout.py` (20) covers what a VLKB cutout response has to be before
   it is called a FITS file;
+- `test_vlkb_mcutout.py` (39) covers the batch job either side of the wire — the
+  POS parsing, the job id, the report — and the parts that can do damage: path
+  traversal out of the results directory, redirects that would carry the access
+  token elsewhere, and an archive that unpacks to more than it downloaded;
 - `test_contract.py` pins the REST route list the desktop client depends on —
   **add an endpoint and it fails until you regenerate the snapshot**:
 
