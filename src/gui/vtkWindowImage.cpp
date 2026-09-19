@@ -1517,8 +1517,11 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     // All QActions are now initialised — safe to build the sidebar
     this->setupSidebar();
 
-    // Color Maps Combobox — with gradient preview icon
-    ui->comboLut->setIconSize(QSize(80, 14));
+    // Color Maps Combobox — with gradient preview icon. 48×12 is the cube
+    // viewer's size, and it is what fits a 26 px field once the theme's padding
+    // and border are taken off; the 80×14 this used to ask for had room only
+    // while the combo owned a line of its own.
+    ui->comboLut->setIconSize(QSize(48, 12));
     auto cmaps = ColorMaps::GetColorMapNames();
     std::for_each(cmaps.cbegin(), cmaps.cend(), [this](const std::string &name) {
         ui->comboLut->addItem(makeColormapIcon(name), QString::fromStdString(name));
@@ -1527,8 +1530,41 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     QObject::connect(ui->comboLut, &QComboBox::textActivated, this,
                      &vtkWindowImage::changeCurrentColorMap);
 
-    // LUT Customizer — give the button a clear label and tooltip
-    ui->btnLutEdit->setText(u"Advanced…"_s);
+    // LUT customizer — an inline "Edit" beside the combo, as in the cube viewer.
+    // A full-width "Advanced…" button under the combo read as a second control
+    // of its own rather than as the way into the map you are looking at.
+    if (ui->labelColorMap) {
+        ui->labelColorMap->setStyleSheet(
+                QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    }
+    // Let the combo shrink with the dock instead of forcing the row wider than
+    // the panel — but not past its own gradient preview, hence the floor.
+    ui->comboLut->setMinimumContentsLength(3);
+    ui->comboLut->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    ui->comboLut->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    ui->comboLut->setMinimumWidth(110);
+    ui->comboLut->setFixedHeight(26);
+    // The theme gives combo boxes 6px of vertical padding and a border, which
+    // leaves 12px of a 26px field — less than the icon. Tighten both here.
+    ui->comboLut->setStyleSheet(
+            u"QComboBox { padding: 2px 8px; font-size: 12px; }"_s);
+    // Only the combo grows with the dock: the label and the link keep their size.
+    if (ui->hboxColorMap) {
+        ui->hboxColorMap->setStretch(0, 0);
+        ui->hboxColorMap->setStretch(1, 1);
+        ui->hboxColorMap->setStretch(2, 0);
+    }
+
+    ui->btnLutEdit->setText(u"Edit"_s);
+    ui->btnLutEdit->setCursor(Qt::PointingHandCursor);
+    ui->btnLutEdit->setFlat(true);
+    ui->btnLutEdit->setFixedHeight(26);
+    ui->btnLutEdit->setStyleSheet(
+            QStringLiteral("QPushButton{background:transparent;border:none;color:%1;"
+                           "font-size:11px;font-weight:600;padding:0 2px;}"
+                           "QPushButton:hover{text-decoration:underline;}")
+                    .arg(QLatin1StringView(VisivoTheme::kPrimary())));
     ui->btnLutEdit->setToolTip(u"Open advanced LUT editor (histogram, manual range adjustment)"_s);
     QObject::connect(ui->btnLutEdit, &QPushButton::clicked, this,
                      &vtkWindowImage::showLUTCustomizer);

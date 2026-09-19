@@ -59,6 +59,31 @@ struct BackendHealthResult
     std::vector<BackendRecentTask> recentTasks;
 };
 
+/// What one file is, as answered by POST /v1/files/classify.
+///
+/// The Data Hub used to ask the user to choose the *kind* of file before the
+/// file: three "Open …" entries, two of which accepted `.fits`. This result is
+/// what replaced that question — the backend looks at the bytes, and the client
+/// only asks when the content genuinely is ambiguous (`opener == "ask"`).
+struct BackendClassifyResult
+{
+    bool valid{ false };
+    QString error;
+    QString path;
+    /// The path to hand the opener when it differs from `path` — a VBT chosen
+    /// by its `.bin` opens by its `.head` sidecar. Empty means "use `path`".
+    QString openPath;
+    /// image | cube | dynspec | fits-table | catalogue | vbt | compressed |
+    /// directory | unknown
+    QString kind;
+    /// dataset | catalogue | vbt | ask | unsupported
+    QString opener;
+    /// False when the client should ask the user rather than dispatch.
+    bool confident{ false };
+    /// One sentence naming what was found, for the prompt when we do ask.
+    QString detail;
+};
+
 struct BackendListFilesResult
 {
     bool valid{ false };
@@ -1625,6 +1650,9 @@ public:
 
     BackendHealthResult health() const;
     BackendListFilesResult listFiles(const QString &path) const;
+
+    /// POST /v1/files/classify — what is this file? Feeds the single "Open…".
+    BackendClassifyResult classifyFile(const QString &path) const;
     BackendFileHeaderResult fileHeader(const QString &path) const;
 
     /// GET /v1/sessions/{session_id}/datasets — enumerate datasets currently

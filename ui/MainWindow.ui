@@ -305,7 +305,10 @@
   </action>
   <action name="actionOpenFile">
    <property name="text">
-    <string>Open Dataset…</string>
+    <string>Open…</string>
+   </property>
+   <property name="toolTip">
+    <string>Open any supported file — the backend identifies it and picks the viewer.</string>
    </property>
    <property name="shortcut">
     <string>Ctrl+O</string>

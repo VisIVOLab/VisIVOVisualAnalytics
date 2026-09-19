@@ -86,3 +86,32 @@ async def file_header(request: FileHeaderRequest, _: None = _auth) -> FileHeader
     except Exception as exc:
         return FileHeaderResponse(valid=False, error=str(exc), cards=[])
     return FileHeaderResponse(valid=True, error="", cards=cards)
+
+
+@router.post("/v1/files/classify", response_model=FileClassifyResponse, tags=["files"])
+async def classify_file(request: FileClassifyRequest, _: None = _auth) -> FileClassifyResponse:
+    """What is this file? — so the client can offer one *Open…* instead of three.
+
+    The answer is derived from the file itself (magic bytes, extension, at most
+    one FITS header); nothing is opened, converted or registered. ``opener``
+    names the route that should receive the path, and ``confident`` is False
+    when the client should ask the user rather than pick.
+    """
+    from ..classify import classify_path  # noqa: PLC0415
+
+    try:
+        path = _normalize_path(request.path)
+    except Exception:
+        # Same answer for refused and missing: the classifier must not become a
+        # way to enumerate what lies outside the allowed roots.
+        return FileClassifyResponse(valid=False, error="File not found.")
+    if not path.exists():
+        return FileClassifyResponse(valid=False, error="File not found.")
+
+    try:
+        verdict = classify_path(path)
+    except OSError as exc:
+        return FileClassifyResponse(valid=False, error=str(exc))
+
+    logger.info("[classify] %s → %s (%s)", path, verdict["kind"], verdict["opener"])
+    return FileClassifyResponse(valid=True, error="", path=str(path), **verdict)

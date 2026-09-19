@@ -850,6 +850,37 @@ void MainWindow::openVlkbImageLayer(const QString &backendPath, const QString &d
 }
 
 
+/// Offer to load every same-extension sibling in the folder as ONE combined
+/// catalogue — the spatial subtables of a cosmological snapshot arrive that
+/// way. Returns the group, or an empty list to open just the selected file.
+static QStringList catalogueSiblingGroup(const BackendClient &client, const QString &filepath,
+                                         QWidget *parent)
+{
+    const QFileInfo info(filepath);
+    const QString suffix = info.suffix().toLower();
+    QStringList group;
+    const auto listing = client.listFiles(info.path());
+    if (listing.valid) {
+        for (const auto &entry : listing.entries) {
+            if (entry.type == u"file"_s && !entry.path.isEmpty()
+                && QFileInfo(entry.name).suffix().toLower() == suffix)
+                group << entry.path;
+        }
+    }
+    if (group.size() < 2)
+        return {};
+    std::sort(group.begin(), group.end());
+    const auto answer = QMessageBox::question(
+            parent, u"Multiple catalogue files"_s,
+            u"Found %1 .%2 files in this folder.\n\nLoad ALL of them as one "
+            u"combined catalogue? (No = open just the selected file.)"_s
+                    .arg(group.size())
+                    .arg(suffix),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    return answer == QMessageBox::Yes ? group : QStringList();
+}
+
+
 void MainWindow::openCatalogue3D()
 {
     BackendClient client(settings->getBackendUrl(), settings->getBackendToken());
@@ -876,37 +907,7 @@ void MainWindow::openCatalogue3D()
     if (filepath.isEmpty())
         return;
 
-    // Offer to load all same-extension siblings in the folder as ONE combined
-    // catalogue (e.g. the spatial subtables of a cosmological snapshot).
-    QStringList groupPaths;
-    {
-        const QFileInfo fi(filepath);
-        const QString suffix = fi.suffix().toLower();
-        const auto listing = client.listFiles(fi.path());
-        if (listing.valid) {
-            for (const auto &e : listing.entries) {
-                if (e.type == u"file"_s && !e.path.isEmpty()
-                    && QFileInfo(e.name).suffix().toLower() == suffix)
-                    groupPaths << e.path;
-            }
-        }
-        if (groupPaths.size() > 1) {
-            std::sort(groupPaths.begin(), groupPaths.end());
-            const auto answer = QMessageBox::question(
-                    this, u"Multiple catalogue files"_s,
-                    u"Found %1 .%2 files in this folder.\n\nLoad ALL of them as one "
-                    u"combined catalogue? (No = open just the selected file.)"_s
-                            .arg(groupPaths.size())
-                            .arg(suffix),
-                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-            if (answer != QMessageBox::Yes)
-                groupPaths.clear();
-        } else {
-            groupPaths.clear();
-        }
-    }
-
-    doOpenCataloguePath(filepath, groupPaths);
+    doOpenCataloguePath(filepath, catalogueSiblingGroup(client, filepath, this));
 }
 
 
@@ -935,6 +936,109 @@ void MainWindow::doOpenCataloguePath(const QString &filepath, const QStringList 
     if (this->recentMgr) {
         this->recentMgr->record(filepath, QFileInfo(filepath).fileName(), u"catalogue"_s);
     }
+}
+
+
+// ── One Open… ────────────────────────────────────────────────────────────────
+//
+// There used to be three: *Open Remote Dataset…*, *Open 3D Catalogue…*,
+// *Open VBT…*. Two of them accepted `.fits`, so choosing one meant already
+// knowing whether the FITS in hand held an image, a cube or a table — the
+// backend's three open routes, put to the user as a question. Now the file is
+// chosen first and the backend says what it is; the user is asked only when the
+// content really is ambiguous.
+
+void MainWindow::openAnything()
+{
+    BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
+    const auto health = client.health();
+    if (!health.ok) {
+        QMessageBox::critical(
+                this, u"Backend unavailable"_s,
+                u"Cannot open a file: the backend is not reachable.\n\n"
+                u"Start a local backend or configure a remote backend URL in Settings, "
+                u"then try again.\n\nError: %1"_s.arg(health.error.isEmpty()
+                                                              ? u"No response"_s
+                                                              : health.error));
+        return;
+    }
+
+    // No extension filter: the whole point is that the user does not have to
+    // decide what kind of file this is before picking it.
+    RemoteFileBrowserDialog dialog(client.baseUrl(), client.token(), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString path = dialog.selectedFilePath();
+    if (path.isEmpty())
+        return;
+
+    dispatchOpenForPath(path);
+}
+
+
+void MainWindow::dispatchOpenForPath(const QString &path)
+{
+    BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
+    const BackendClassifyResult verdict = client.classifyFile(path);
+
+    // A VBT picked by its `.bin` opens through the `.head` beside it: the VBT
+    // route parses the header, and handing it the binary would fail on a file
+    // the user chose correctly.
+    const QString target = verdict.valid && !verdict.openPath.isEmpty() ? verdict.openPath : path;
+
+    const QString opener = verdict.valid ? verdict.opener : QString();
+    if (opener == u"dataset"_s) {
+        doOpenDataPath(target);
+        return;
+    }
+    if (opener == u"catalogue"_s) {
+        doOpenCataloguePath(target, catalogueSiblingGroup(client, target, this));
+        return;
+    }
+    if (opener == u"vbt"_s) {
+        doOpenVbtPath(target);
+        return;
+    }
+    if (opener == u"unsupported"_s) {
+        // We know what it is and nothing here opens it. Offering the three
+        // viewers would only move the failure one dialog later.
+        QMessageBox box(QMessageBox::Information, u"Cannot open this file"_s,
+                        u"%1\n\n%2"_s.arg(QFileInfo(path).fileName(), verdict.detail),
+                        QMessageBox::Ok, this);
+        box.setTextFormat(Qt::PlainText);
+        box.exec();
+        return;
+    }
+
+    // Ambiguous, unrecognised, or a backend too old to have the classifier:
+    // ask, rather than guess and open the wrong viewer.
+    const bool isTable = verdict.valid && verdict.kind == u"fits-table"_s;
+    const QString detail = verdict.valid
+            ? verdict.detail
+            : u"The backend could not identify this file (%1)."_s.arg(
+                      verdict.error.isEmpty() ? u"no detail"_s : verdict.error);
+
+    QMessageBox box(this);
+    box.setWindowTitle(u"How should this open?"_s);
+    box.setIcon(QMessageBox::Question);
+    box.setTextFormat(Qt::PlainText);
+    box.setText(u"%1\n\n%2"_s.arg(QFileInfo(path).fileName(), detail));
+    auto *asCatalogue = box.addButton(u"3-D Catalogue"_s, QMessageBox::AcceptRole);
+    auto *asDataset = box.addButton(u"Image or Cube"_s, QMessageBox::AcceptRole);
+    QPushButton *asVbt = isTable ? nullptr
+                                 : box.addButton(u"VisIVO Binary Table"_s,
+                                                 QMessageBox::AcceptRole);
+    box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(isTable ? asCatalogue : asDataset);
+    box.exec();
+
+    if (box.clickedButton() == asCatalogue)
+        doOpenCataloguePath(target, catalogueSiblingGroup(client, target, this));
+    else if (box.clickedButton() == asDataset)
+        doOpenDataPath(target);
+    else if (asVbt && box.clickedButton() == asVbt)
+        doOpenVbtPath(target);
 }
 
 

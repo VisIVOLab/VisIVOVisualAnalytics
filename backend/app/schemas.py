@@ -35,6 +35,28 @@ class FileHeaderResponse(BaseModel):
     cards: list[str]
 
 
+class FileClassifyRequest(BaseModel):
+    path: str
+
+
+class FileClassifyResponse(BaseModel):
+    """What one file is, so a single *Open…* can decide where it goes."""
+    valid: bool
+    error: str = ""
+    path: str = ""
+    #: image | cube | dynspec | fits-table | catalogue | vbt | directory | unknown
+    kind: str = ""
+    #: dataset | catalogue | vbt | ask | unsupported — the route that opens it
+    opener: str = ""
+    #: The path to hand the opener when it differs from `path` — a VBT chosen by
+    #: its `.bin` opens by its `.head` sidecar. Empty means "use `path`".
+    open_path: str = ""
+    #: False when the client should ask the user instead of dispatching.
+    confident: bool = False
+    #: One sentence for the user, in the words of what was actually found.
+    detail: str = ""
+
+
 class OpenDatasetRequest(BaseModel):
     path: str
 

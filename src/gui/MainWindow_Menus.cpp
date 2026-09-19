@@ -106,9 +106,9 @@ void MainWindow::rebuildCommandPalette()
                 // ▣ and not ⌘: the Command symbol reads as a keyboard modifier,
                 // and the shortcut column two inches to the right is full of
                 // real ones. Same reason ⌥ is gone from Spectral Stacking.
-                {u"▣"_s, u"Open Remote Dataset…"_s,
-                 u"File · backend filesystem · FITS"_s, u"⌘O"_s, u"File"_s,
-                 [this]() { this->openData(); }});
+                {u"▣"_s, u"Open…"_s,
+                 u"File · any supported file · identified on open"_s, u"⌘O"_s, u"File"_s,
+                 [this]() { this->openAnything(); }});
         this->m_commandPalette->addAction(
                 {u"✦"_s, u"Open 3D Catalogue…"_s,
                  u"File · CSV / VOTable / FITS / speck / IPAC in 3D viewer"_s, QString(), u"File"_s,

@@ -624,6 +624,41 @@ It did find these:
   Dataset" were one action. File now keeps a single **Open Dataset…** (the
   conventional home) plus Exit; Data keeps what File has no convention for (3-D
   catalogue, VBT, velocity field, HiPS).
+- **The file types were the user's problem.** What remained after that tidying
+  was still three open actions — dataset, 3-D catalogue, VBT — and two of them
+  accepted `.fits`. So the first thing the application asked was a question the
+  user often could not answer: *is the FITS in your hand an image, a cube, or a
+  table?* The split was a picture of the backend's three open routes
+  (`/v1/datasets/open`, `/v1/catalogue/open`, `/v1/vbt/open`), not of anyone's
+  work. The Data Hub now leads with a single **Open…**: the file is chosen
+  first, `POST /v1/files/classify` says what it is from its own bytes (magic
+  number, extension, at most one FITS header — nothing is opened or converted),
+  and the matching viewer opens. The user is asked only when the *content* is
+  ambiguous — a FITS table is a source catalogue or an overlay, and nothing in
+  the file distinguishes them — and told, rather than asked, when nothing here
+  opens the file (a `.fits.gz`: no open route accepts a compressed file, so
+  offering the three viewers would only move the failure one dialog later). The
+  distinction the old menu buried — a *file* versus a *service* — is now the one
+  the panel makes: **Open…**, then an **Archives** group for HiPS and VLKB.
+  `openAnything()` / `dispatchOpenForPath()` in `MainWindow_Open.cpp` hold the
+  dispatch; the named catalogue and VBT entries stay in the Data menu as the
+  escape hatch when the user would rather be explicit.
+- **"Last 5 jobs" was always empty.** The Data Hub's activity panel renders
+  `recent_tasks` from `/v1/health`, which comes from the task registry — and
+  only two endpoints in the whole backend create a task (`/v1/tasks/moment`,
+  `/v1/tasks/pv`). Everything else is synchronous and registered nothing, so a
+  panel promising "run a tool to see history" showed nothing no matter what the
+  user ran. Teaching thirty routers to register a task would have been thirty
+  chances to forget, so the history is taken where every request already
+  passes: an HTTP middleware in `app/main.py` records each compute request when
+  its *response finishes* — the real duration, including a streamed body — into
+  a bounded deque that `TaskRegistry.snapshot()` merges with the real tasks. Two
+  details make it honest rather than merely populated: most routes report
+  failure as HTTP 200 with a `{"valid": false}` envelope, so the middleware
+  reads the head of a JSON body rather than trusting the status code; and what
+  the user calls a job is work they asked for and waited on, so browsing, image
+  tiles, session bookkeeping, channel scrubbing and job polling are excluded —
+  one slice per mouse move would otherwise erase the five jobs that mattered.
 - **The image viewer had the cube's old disease.** Its Tools menu was one flat
   run of **34** entries while Inspector ▸ Analysis listed **11**, hand-picked —
   so two thirds of the window's tools existed in one surface only. It now has an

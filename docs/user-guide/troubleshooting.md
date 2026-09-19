@@ -258,7 +258,7 @@ interactive responsiveness for throughput.
 ### "Stack Cubes to a Spectrum" shows only one cube
 
 You only have one cube open in the current backend session. Open the
-other cubes first (via *Data Hub → Open Remote Dataset*). The dialog
+other cubes first (via *Data Hub → Open…*). The dialog
 enumerates all cubes whose shape matches the reference cube.
 
 If you have multiple cubes open but only one appears in the list:

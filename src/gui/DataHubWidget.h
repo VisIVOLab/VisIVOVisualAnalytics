@@ -57,6 +57,9 @@ protected:
     void refreshRecentDatasets();
 
 signals:
+    /// The single *Open…*: the file is chosen first, and what it is decides
+    /// which viewer receives it.
+    void openAnythingRequested();
     void openDataRequested();
     void openCatalogueRequested();
     void openVbtRequested();

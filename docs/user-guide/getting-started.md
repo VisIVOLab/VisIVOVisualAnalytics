@@ -102,15 +102,23 @@ Click **Continue** to enter the main window.
 The **Data Hub** is the landing tab of the main window. Use it to browse
 the backend-side filesystem:
 
-- **Open Remote Dataset…** opens a remote file browser rooted at the
-  backend's working directory. Select a `.fits` file. The client classifies
-  it server-side and decides whether it's a 2-D image or 3-D spectral cube,
-  then opens the appropriate viewer:
+- **Open…** (⌘O, also *File ▸ Open…*) opens a remote file browser rooted at the
+  backend's working directory. Pick any supported file: the backend identifies
+  it from its contents and the matching viewer opens.
   - 2-D FITS image → [Image viewer](image-viewer)
   - 3-D spectral cube → [Spectral cube viewer](cube-viewer)
-- **Open 3-D Catalogue…** (CSV / VOTable) launches the
-  [3-D catalogue viewer](catalogues-hips).
-- **HiPS Viewer…** opens the all-sky [HiPS viewer](catalogues-hips).
+  - FITS with time and frequency axes, or HDF5 → the dynamic-spectrum viewer
+  - CSV / VOTable / IPAC / speck → [3-D catalogue viewer](catalogues-hips)
+  - VisIVO Binary Table (`.bin` + `.head`) → [VBT viewer](vbt-viewer)
+
+  You are asked only when the file itself is ambiguous. A FITS **table** is the
+  usual case: it can be a source catalogue or a table to overlay on an image,
+  and nothing in the file says which — so the client asks instead of guessing.
+
+Under **Archives**:
+
+- **HiPS Viewer** opens the all-sky [HiPS viewer](catalogues-hips).
+- **VLKB Inventory** goes to the [VLKB archive](vlkb-archive) tab.
 
 Beside it sits the **VLKB** tab, which queries the ViaLactea Knowledge Base over
 a region of the Galactic plane and cuts out the images and cubes that cover it —
@@ -178,8 +186,9 @@ hunting through menus. It works from inside the viewer windows too.
 
 Searchable groups:
 
-- **File** — Open Remote Dataset, Open 3D Catalogue, Open VBT, HiPS
-  Viewer, VLKB Inventory.
+- **File** — Open…, Open 3D Catalogue, Open VBT, HiPS Viewer, VLKB
+  Inventory. (**Open…** takes any supported file; the two named entries are
+  there for when you would rather say which opener to use.)
 - **Recent datasets** — last six datasets opened in this session
   (refreshed each time the palette is opened).
 - **Application** — Open Settings (⌘,), About, Quit VisIVO Visual

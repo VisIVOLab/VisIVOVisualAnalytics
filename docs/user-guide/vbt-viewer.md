@@ -8,7 +8,7 @@ conversion step.
 
 | | |
 |---|---|
-| **Open** | *File → Open VBT…* (select the `.head` file, not the binary) |
+| **Open** | *File → Open…* (either the `.bin` or its `.head`), or *Data → Open VBT…* (the `.head`) |
 | **Point table** | one row per object → 3-D point cloud |
 | **Volume table** | a regular grid → volume rendering |
 

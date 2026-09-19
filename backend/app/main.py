@@ -9,7 +9,9 @@ cosmology, hips, resolve, meta) lives in its own router module under app/routers
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
+import time
 import uuid
 from pathlib import Path
 from fastapi import FastAPI, Depends, Request, Response
@@ -17,6 +19,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .auth import verify_token
+from .tasks import TASKS
 from .routers import (
     meta,
     files,
@@ -113,6 +116,132 @@ async def attach_request_id(request: Request, call_next):
     request.state.request_id = request_id
     response: Response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
+    return response
+
+
+# ── Middleware: what the backend actually did ─────────────────────────────────
+# The Data Hub shows "Last 5 jobs", and it was always empty: only
+# ``/v1/tasks/moment`` and ``/v1/tasks/pv`` create a TaskRecord, and every other
+# computation the backend performs is synchronous and left no trace. Rather than
+# teach thirty routers to register a task, the history is taken where every
+# request already passes — here.
+#
+# What counts as a job is "work the user asked for and waited on", so the
+# exclusions below are the requests that are not that: browsing, session
+# bookkeeping, interactive scrubbing (a channel slice per mouse move), polling,
+# and the binary re-fetch of a product that was just computed and recorded.
+
+_HISTORY_SKIP_PREFIXES = (
+    "/v1/files/",          # browsing, classifying, header peeks
+    "/v1/sessions",        # session lifecycle
+    "/v1/tasks/",          # already recorded by the task registry itself
+    "/v1/render/",         # WebRTC signalling and per-frame interaction
+    "/v1/image/",          # tiles and previews: one per pan / zoom step
+    "/v1/samp/",           # interoperability messaging
+    "/v1/diagnostics",
+    "/v1/assistant/config",
+    "/v1/assistant/stream",  # a chat stream, not a job (and /query is recorded)
+)
+
+_HISTORY_SKIP_PATHS = frozenset({
+    "/v1/cube/slice",          # channel scrubbing
+    "/v1/cube/preview",
+    "/v1/spectral/probe",      # spectrum under the cursor
+    "/v1/vlkb/mcutout/phase",  # job polling, every 2 s
+    "/v1/cosmology/distance",
+    "/v1/cosmology/distance/batch",
+})
+
+
+def _history_operation_name(request: Request, path: str) -> str | None:
+    """The name to file this request under, or None to leave it out."""
+    if request.method not in ("POST", "PUT", "PATCH"):
+        return None
+    if not path.startswith("/v1/"):
+        return None
+    if path.startswith(_HISTORY_SKIP_PREFIXES) or path in _HISTORY_SKIP_PATHS:
+        return None
+    if path.endswith("/result/binary"):
+        # The product itself was recorded when it was computed; this is only
+        # the client collecting the bytes. Other `/binary` routes (spectral
+        # linewidth, stack, skeleton, RM synthesis) do the computation, so the
+        # exclusion is on `/result/binary` and not on the suffix alone.
+        return None
+    # Prefer the route template, so twenty moment maps on twenty datasets are
+    # twenty "products/moment" rather than twenty distinct-looking operations.
+    route = request.scope.get("route")
+    template = getattr(route, "path", path) or path
+    return template[len("/v1/"):].strip("/") or None
+
+
+#: How much of a JSON response to keep while it streams past, to read the
+#: ``valid``/``error`` envelope out of it. The field is first in every one.
+_ENVELOPE_PEEK_BYTES = 4096
+
+
+def _envelope_failed(body: bytes) -> bool:
+    """Whether a captured response body says ``valid: false``.
+
+    Most routes here report failure as HTTP 200 with ``{"valid": false, …}``,
+    so the status code alone would file every failed open as a finished job.
+    """
+    if not body.lstrip().startswith(b"{"):
+        return False
+    try:
+        return json.loads(body).get("valid") is False
+    except (ValueError, AttributeError):
+        pass
+    # Truncated at the peek limit. `valid` is the first field of every one of
+    # these envelopes, so only the head is examined: searching the whole prefix
+    # would read a nested {"valid": false} — one failed row of a successful
+    # batch — as the response itself having failed.
+    head = body.lstrip()[1:40].replace(b'"valid": false', b'"valid":false')
+    return head.lstrip().startswith(b'"valid":false')
+
+
+@app.middleware("http")
+async def record_operation_history(request: Request, call_next):
+    started = time.perf_counter()
+    try:
+        response: Response = await call_next(request)
+    except Exception:
+        operation = _history_operation_name(request, request.url.path)
+        if operation:
+            TASKS.record_operation(operation, status="failed",
+                                   duration_seconds=time.perf_counter() - started)
+        raise
+
+    operation = _history_operation_name(request, request.url.path)
+    if not operation:
+        return response
+
+    # Record when the response has actually been produced, not when its headers
+    # were sent: a streamed response is still being computed at this point, and
+    # its duration would be the startup alone.
+    #
+    # Known limit: if the client disconnects mid-response, or the body generator
+    # itself raises, Starlette has already ended our view of the iterator, so
+    # the operation is filed as finished. The history is a record of what the
+    # backend was asked to do, not an audit log.
+    is_json = response.headers.get("content-type", "").startswith("application/json")
+    upstream = response.body_iterator
+
+    async def _watched():
+        captured = bytearray()
+        try:
+            async for chunk in upstream:
+                if is_json and len(captured) < _ENVELOPE_PEEK_BYTES:
+                    captured.extend(chunk[: _ENVELOPE_PEEK_BYTES - len(captured)])
+                yield chunk
+        except Exception:
+            TASKS.record_operation(operation, status="failed",
+                                   duration_seconds=time.perf_counter() - started)
+            raise
+        failed = response.status_code >= 400 or (is_json and _envelope_failed(bytes(captured)))
+        TASKS.record_operation(operation, status="failed" if failed else "done",
+                               duration_seconds=time.perf_counter() - started)
+
+    response.body_iterator = _watched()
     return response
 
 

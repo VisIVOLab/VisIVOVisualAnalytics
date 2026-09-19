@@ -108,17 +108,15 @@ was changed.
 
 The *Layer Settings* sidebar exposes:
 
-- **Color map** combo (Inferno, Viridis, Magma, Plasma, Cividis, …) with
-  gradient preview icons.
-- **Scale** — a **Linear | Log** segmented toggle (same pill-style
-  control used throughout the cube viewer). Log scale compresses the
-  dynamic range and is useful for images spanning several orders of
-  magnitude (e.g. Hα narrowband, X-ray mosaics).
+- **Color map** — the combo (Inferno, Viridis, Magma, Plasma, Cividis, …)
+  with gradient preview icons, and an inline **Edit** beside it, as in the
+  cube viewer.
 - **Layer opacity** slider for blending when multiple layers are stacked.
 
-For more precise control open the *2-D LUT editor* (`Advanced…` button) —
-a non-modal QCustomPlot editor where you can drag the transfer-function
-control points.
+**Edit** opens the *2-D LUT editor* — a non-modal QCustomPlot editor where you
+drag the transfer-function control points. The scale (Linear, Log, Sqrt,
+Square, Power γ) lives there too: one place with the full set, rather than an
+inline Linear | Log toggle offering two of five.
 
 ## Regions and probes
 

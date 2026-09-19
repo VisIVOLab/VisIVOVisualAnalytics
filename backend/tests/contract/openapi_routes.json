@@ -69,6 +69,7 @@
     "POST /v1/dynspec/pulse_profile",
     "POST /v1/dynspec/rfi_mask",
     "POST /v1/exports/copy_dataset",
+    "POST /v1/files/classify",
     "POST /v1/files/header",
     "POST /v1/hips/catalogue_overlay",
     "POST /v1/hips/open",

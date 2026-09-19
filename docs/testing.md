@@ -48,8 +48,9 @@ out of a catalogue is a pile of column-name rules, and a misread column does not
 crash — it produces a fit that runs and is wrong. The rules therefore live in a
 header with no widgets in it, where they can be checked directly.
 
-The **backend** has its own pytest suite under `backend/tests/`. Four of its
-files are worth knowing about when touching the science or the archive path:
+The **backend** has its own pytest suite under `backend/tests/`. A few of its
+files are worth knowing about when touching the science, the archive path or
+the way files get opened:
 
 - `test_sed_fit.py` (61) round-trips greybody fits against synthetic SEDs and
   checks the Δχ² = 1 uncertainty against its closed-form value;
@@ -62,6 +63,15 @@ files are worth knowing about when touching the science or the archive path:
   POS parsing, the job id, the report — and the parts that can do damage: path
   traversal out of the results directory, redirects that would carry the access
   token elsewhere, and an archive that unpacks to more than it downloaded;
+- `test_classify.py` (26) pins what the single **Open…** does with each kind of
+  file. Most of it is telling image, cube and table apart from the bytes — a
+  length-1 Stokes axis must not make a map into a cube — and the rest is about
+  refusing to guess: prose with commas is not a catalogue, a FITS table is
+  ambiguous on purpose, and a compressed file is refused rather than routed to
+  an opener that would reject it;
+- `test_operation_history.py` (32) covers "Last 5 jobs": that work is recorded
+  and that browsing, scrubbing and polling are not, and that a route answering
+  HTTP 200 with `{"valid": false}` is filed as failed;
 - `test_contract.py` pins the REST route list the desktop client depends on —
   **add an endpoint and it fails until you regenerate the snapshot**:
 

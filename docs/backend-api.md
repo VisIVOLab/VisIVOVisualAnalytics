@@ -30,9 +30,32 @@ Backend liveness and capacity.
   "product_cache_capacity": 64,
   "task_registry_entries": 0,
   "task_ttl_enabled": true,
-  "task_ttl_seconds": 3600
+  "task_ttl_seconds": 3600,
+  "running_tasks": 0,
+  "recent_tasks": [
+    { "operation": "products/moment", "status": "done",
+      "duration_seconds": 2.4, "age_seconds": 31.0, "cache_hit": false }
+  ]
 }
 ```
+
+`recent_tasks` is what the Data Hub shows as **Last 5 jobs**, and it holds two
+kinds of entry: the asynchronous tasks (`/v1/tasks/moment`, `/v1/tasks/pv`) and
+every other compute request, recorded by an HTTP middleware when its response
+finishes. Without the second kind the list was almost always empty — the rest of
+the backend is synchronous and registered nothing.
+
+`operation` is the route template (`photometry/aperture/{dataset_id}`), so the
+same tool run on twenty datasets reads as twenty runs of one operation rather
+than twenty different ones. `status` is `failed` both for an HTTP error and for
+the `{"valid": false}` envelope that most routes return with HTTP 200.
+
+Not recorded: browsing and classification (`/v1/files/*`), session bookkeeping,
+image tiles, SAMP, WebRTC signalling, interactive scrubbing (`/v1/cube/slice`,
+`/v1/spectral/probe`), job polling (`/v1/vlkb/mcutout/phase`), and the
+`/result/binary` collection of a product that was recorded when it was computed.
+Only `POST`/`PUT`/`PATCH` count. The history holds the last 50 operations and is
+served to admin tokens only, as the rest of the snapshot is.
 
 ### `GET /v1/sessions`
 Aggregate session-registry statistics.
@@ -67,6 +90,35 @@ List backend-side directory. Returns `FileEntry[]` with `name`, `path`, `type`, 
 { "path": "/data/cube.fits" }
 ```
 Returns FITS header cards as `string[]`.
+
+### `POST /v1/files/classify`
+What is this file? Answers from the file itself — magic bytes, extension, and at
+most one FITS header; nothing is opened, converted or registered.
+
+```json
+{ "path": "/data/unknown.fits" }
+```
+```json
+{ "valid": true, "error": "", "path": "/data/unknown.fits", "open_path": "",
+  "kind": "cube", "opener": "dataset", "confident": true,
+  "detail": "FITS cube (512 × 512 × 200)." }
+```
+
+| Field | Meaning |
+|-------|---------|
+| `kind` | `image`, `cube`, `dynspec`, `fits-table`, `catalogue`, `vbt`, `compressed`, `directory`, `unknown` |
+| `opener` | `dataset` → `/v1/datasets/open`; `catalogue` → `/v1/catalogue/open`; `vbt` → `/v1/vbt/open`; `ask` → the content is ambiguous, let the user choose; `unsupported` → nothing here opens it, say so |
+| `open_path` | The path to hand the opener when it differs from `path`: a VBT chosen by its `.bin` opens through the `.head` beside it. Empty means "use `path`". |
+| `confident` | `false` when the answer is a guess — a FITS whose header would not parse, for instance |
+| `detail` | One sentence naming what was found, shown to the user when we have to ask |
+
+A FITS **table** is reported as `fits-table` / `ask`: it can be a source
+catalogue or a table to overlay, and only the user knows which. A missing path
+and a refused one answer identically (`"File not found."`), so the classifier
+cannot be used to enumerate what lies outside the allowed data roots.
+
+This is what lets the client offer a single **Open…** instead of one action per
+file type.
 
 ---
 

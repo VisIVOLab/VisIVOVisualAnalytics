@@ -515,24 +515,31 @@ QFrame *DataHubWidget::buildQuickActionsList()
         QString subtitle;
         QString shortcut;
         const char *signalName;  // we connect via switch
+        QString section;     // non-empty = start a new group with this heading
     };
-    const std::array<Spec, 5> specs{
-            Spec{u"dataset"_s,   u"Open Remote Dataset…"_s,
-                 u"Browse FITS on the backend filesystem"_s, u"⌘O"_s, "openDataRequested"},
-            Spec{u"catalogue"_s, u"Open 3D Catalogue…"_s,
-                 u"CSV / VOTable / FITS / speck / IPAC in the source viewer"_s, QString(),  "openCatalogueRequested"},
-            Spec{u"vbt"_s,       u"Open VBT…"_s,
-                 u"VisIVO Binary Table, points / volumes"_s, u"⇧⌘B"_s, "openVbtRequested"},
+    // One entry for files, one group for archives. There used to be three file
+    // entries — dataset / catalogue / VBT — which asked the user to classify
+    // the file before opening it; two of them accepted `.fits`, so the question
+    // was often unanswerable. The backend classifies it now (/v1/files/classify)
+    // and only asks when the content is genuinely ambiguous.
+    const std::array<Spec, 3> specs{
+            Spec{u"dataset"_s,   u"Open…"_s,
+                 u"FITS image or cube, catalogue, VBT — identified on open"_s, u"⌘O"_s,
+                 "openAnythingRequested", QString()},
             // Sky-map engines: both open as their own viewer tabs.
             Spec{u"hips"_s,      u"HiPS Viewer"_s,
                  u"Hierarchical sky surveys (DSS, 2MASS, …)"_s, QString(),
-                 "openHiPSRequested"},
+                 "openHiPSRequested", u"Archives"_s},
             Spec{u"hips"_s,      u"VLKB Inventory"_s,
                  u"Browse VLKB sources & add as image layers"_s, QString(),
-                 "openVLKBRequested"},
+                 "openVLKBRequested", QString()},
     };
 
     for (const auto &s : specs) {
+        if (!s.section.isEmpty()) {
+            vbox->addSpacing(6);
+            vbox->addWidget(VisivoTheme::makeSectionLabel(s.section, card));
+        }
         auto *row = new QFrame(card);
         row->setObjectName(u"qaRow"_s);
         row->setCursor(Qt::PointingHandCursor);
@@ -879,7 +886,8 @@ bool DataHubWidget::eventFilter(QObject *watched, QEvent *event)
         if (auto *w = qobject_cast<QFrame *>(watched);
             w && w->objectName() == u"qaRow"_s) {
             const QString sig = w->property("qaSignal").toString();
-            if      (sig == u"openDataRequested"_s)      emit openDataRequested();
+            if      (sig == u"openAnythingRequested"_s)  emit openAnythingRequested();
+            else if (sig == u"openDataRequested"_s)      emit openDataRequested();
             else if (sig == u"openCatalogueRequested"_s) emit openCatalogueRequested();
             else if (sig == u"openVbtRequested"_s)       emit openVbtRequested();
             else if (sig == u"openHiPSRequested"_s)      emit openHiPSRequested();

@@ -62,6 +62,12 @@ protected:
 
 private slots:
     void setApplicationTheme();
+    /// One *Open…* for every file: browse, ask the backend what it is, and
+    /// send it to the viewer that suits it. Replaces the split between
+    /// ``openData``/``openCatalogue3D``/``openVbt``, which made the user
+    /// classify the file before opening it — and could not be answered for a
+    /// `.fits`, since two of the three accepted one.
+    void openAnything();
     void openData();
     void openCatalogue3D();
     void openVbt();
@@ -111,6 +117,10 @@ private:
 
     // Path-based open helpers (skip the file browser dialog, used for reopen).
     void doOpenDataPath(const QString &path);
+    /// Classify ``path`` on the backend and open it accordingly, asking the
+    /// user only when the content itself is ambiguous (a FITS table can be a
+    /// catalogue or an overlay) or unrecognised.
+    void dispatchOpenForPath(const QString &path);
     void doOpenCataloguePath(const QString &path, const QStringList &paths = QStringList());
     /// Resolve a remote URL → download via VisIVO backend → open. Used by
     /// the SKAVA Discovery tab after a DataLink lookup. ``obsId`` is the

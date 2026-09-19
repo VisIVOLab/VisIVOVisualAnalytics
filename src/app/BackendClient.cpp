@@ -506,6 +506,30 @@ BackendListFilesResult BackendClient::listFiles(const QString &path) const
     return result;
 }
 
+BackendClassifyResult BackendClient::classifyFile(const QString &path) const
+{
+    BackendClassifyResult result;
+    QString error;
+    QJsonObject body;
+    body.insert(QStringLiteral("path"), path);
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/files/classify")), QJsonDocument(body), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.path = object.value(QStringLiteral("path")).toString();
+    result.openPath = object.value(QStringLiteral("open_path")).toString();
+    result.kind = object.value(QStringLiteral("kind")).toString();
+    result.opener = object.value(QStringLiteral("opener")).toString();
+    result.confident = object.value(QStringLiteral("confident")).toBool(false);
+    result.detail = object.value(QStringLiteral("detail")).toString();
+    return result;
+}
+
 BackendSessionDatasetsResult BackendClient::listSessionDatasets(const QString &sessionId) const
 {
     BackendSessionDatasetsResult result;

@@ -155,10 +155,38 @@
                <property name="bottomMargin"><number>8</number></property>
                <property name="spacing"><number>8</number></property>
 
+               <!-- Colour map on one line: label, the combo, and an inline
+                    "Edit" link into the LUT customizer — the same row the cube
+                    viewer uses. A full-width "Advanced…" button below the combo
+                    read as a second, unrelated control. -->
                <item>
-                <widget class="QComboBox" name="comboLut"/>
+                <layout class="QHBoxLayout" name="hboxColorMap">
+                 <property name="spacing"><number>8</number></property>
+                 <item>
+                  <widget class="QLabel" name="labelColorMap">
+                   <property name="text"><string>Color map</string></property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QComboBox" name="comboLut"/>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="btnLutEdit">
+                   <property name="sizePolicy">
+                    <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                     <horstretch>0</horstretch>
+                     <verstretch>0</verstretch>
+                    </sizepolicy>
+                   </property>
+                   <property name="text"><string>Edit</string></property>
+                  </widget>
+                 </item>
+                </layout>
                </item>
 
+               <!-- The scale radios are hidden at runtime (the LUT customizer
+                    owns the full Linear / Log / Sqrt / Square / Power set), but
+                    showCurrentLayerSettings still reads their state. -->
                <item>
                 <layout class="QHBoxLayout" name="hboxScale">
                  <property name="spacing"><number>6</number></property>
@@ -171,25 +199,6 @@
                  <item>
                   <widget class="QRadioButton" name="radioLog">
                    <property name="text"><string>Log</string></property>
-                  </widget>
-                 </item>
-                 <item>
-                  <spacer>
-                   <property name="orientation"><enum>Qt::Horizontal</enum></property>
-                   <property name="sizeHint" stdset="0">
-                    <size><width>10</width><height>20</height></size>
-                   </property>
-                  </spacer>
-                 </item>
-                 <item>
-                  <widget class="QPushButton" name="btnLutEdit">
-                   <property name="sizePolicy">
-                    <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                     <horstretch>0</horstretch>
-                     <verstretch>0</verstretch>
-                    </sizepolicy>
-                   </property>
-                   <property name="text"><string>...</string></property>
                   </widget>
                  </item>
                 </layout>

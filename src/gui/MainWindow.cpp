@@ -224,7 +224,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     });
 
     // ── Setup Menu File (existing actions) ───────────────────────────────────
-    QObject::connect(ui->actionOpenFile, &QAction::triggered, this, &MainWindow::openData);
+    // File ▸ Open… takes anything: the file is identified on the backend and
+    // routed to the viewer that fits it (see MainWindow::dispatchOpenForPath).
+    QObject::connect(ui->actionOpenFile, &QAction::triggered, this,
+                     &MainWindow::openAnything);
     QObject::connect(ui->actionOpenVbt, &QAction::triggered, this, &MainWindow::openVbt);
     QObject::connect(ui->actionOpenCatalogue3D, &QAction::triggered, this,
                      &MainWindow::openCatalogue3D);
@@ -309,6 +312,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     QObject::connect(ui->btnQuery, &QPushButton::clicked, this, &MainWindow::queryVlkb);
 
     // ── Wire DataHub signals to MainWindow actions ────────────────────────────
+    QObject::connect(this->dataHub, &DataHubWidget::openAnythingRequested,
+                     this, &MainWindow::openAnything);
     QObject::connect(this->dataHub, &DataHubWidget::openDataRequested,
                      this, &MainWindow::openData);
     QObject::connect(this->dataHub, &DataHubWidget::openCatalogueRequested,

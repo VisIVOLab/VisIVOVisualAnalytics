@@ -132,7 +132,7 @@ co-registered, so the overlay actually aligns.
 
 A rotating-disk HI cube (64³) with a velocity (VRAD) spectral axis + rest freq.
 
-**Open:** *Data ▸ Open Remote Dataset…* → `hi_cube.fits` (opens the cube
+**Open:** *File ▸ Open…* → `hi_cube.fits` (opens the cube
 viewer).
 
 | Feature | Do this | Expect |
@@ -154,7 +154,7 @@ Cubes* (open it twice). See the user-guide pages for each.
 
 256² image with a celestial WCS, a beam (Jy/beam), and 8 Gaussian sources.
 
-**Open:** *Data ▸ Open Remote Dataset…* → `image_2d.fits` (image viewer).
+**Open:** *File ▸ Open…* → `image_2d.fits` (image viewer).
 
 | Feature | Do this | Expect |
 |---|---|---|

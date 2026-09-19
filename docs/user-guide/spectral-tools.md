@@ -399,7 +399,7 @@ want their average / median spectrum for population-level analysis.
 
 ### How to use it
 
-1. Open **two or more cubes** in the session. Each `Open Remote Dataset`
+1. Open **two or more cubes** in the session. Each `Open…`
    from the same client instance shares the same session.
 2. **Tools → Stack Cubes to a Spectrum…** The dialog lists the cubes
    currently open in the session, each labelled with the file basename and

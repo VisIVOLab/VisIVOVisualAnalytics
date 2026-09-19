@@ -241,7 +241,7 @@ every tool together with the page that documents its scientific use.
   -
   -
 * - Open a remote FITS cube / image
-  - **Data Hub → Open Remote Dataset** (or ⌘O)
+  - **Data Hub → Open…** (or ⌘O)
   - Cube viewer or Image viewer
   - [Getting started](user-guide/getting-started)
 * - Navigate the spectral axis
