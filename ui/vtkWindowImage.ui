@@ -218,11 +218,32 @@
              </widget>
             </item>
 
-            <!-- Layer list sub-header -->
+            <!-- Layer list sub-header, with the action that adds one. The
+                 menu entry alone (File ▸ Add Image Layer…) was the only way in,
+                 and nobody looks in a File menu for "another layer". -->
             <item>
-             <widget class="QLabel" name="labelLayerListHdr">
-              <property name="text"><string>Layers</string></property>
-             </widget>
+             <layout class="QHBoxLayout" name="hboxLayerListHdr">
+              <property name="spacing"><number>8</number></property>
+              <item>
+               <widget class="QLabel" name="labelLayerListHdr">
+                <property name="text"><string>Layers</string></property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="btnAddLayer">
+                <property name="sizePolicy">
+                 <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+                  <horstretch>0</horstretch>
+                  <verstretch>0</verstretch>
+                 </sizepolicy>
+                </property>
+                <property name="text"><string>+ Add…</string></property>
+                <property name="toolTip">
+                 <string>Overlay another FITS image on this one (⌘L). It must cover some of the same sky.</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
             </item>
 
             <!-- Layer list (expands to fill remaining space) -->
@@ -442,7 +463,11 @@
    <property name="shortcut"><string>Ctrl+P</string></property>
   </action>
   <action name="actionAddFITS">
-   <property name="text"><string>Add new FITS file...</string></property>
+   <property name="text"><string>Add Image Layer…</string></property>
+   <property name="toolTip">
+    <string>Overlay another FITS image on this one. It must cover some of the same sky.</string>
+   </property>
+   <property name="shortcut"><string>Ctrl+L</string></property>
   </action>
 
  </widget>
@@ -462,6 +487,7 @@
   <tabstop>radioLog</tabstop>
   <tabstop>btnLutEdit</tabstop>
   <tabstop>sliderOpacity</tabstop>
+  <tabstop>btnAddLayer</tabstop>
   <tabstop>listLayer</tabstop>
   <tabstop>btnSources</tabstop>
   <tabstop>btnFilaments</tabstop>

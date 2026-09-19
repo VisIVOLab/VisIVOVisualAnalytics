@@ -281,21 +281,28 @@ void AstroUtils::getBounds(double *ra_min, double *ra_max, double *dec_min, doub
     wcsrange(this->wcs, ra_min, ra_max, dec_min, dec_max);
 }
 
-bool AstroUtils::overlap(const std::string &filepath) const
+SkyOverlap::Bounds AstroUtils::skyBounds() const
 {
-    AstroUtils other(filepath);
+    SkyOverlap::Bounds bounds;
+    this->getBounds(&bounds.raMin, &bounds.raMax, &bounds.decMin, &bounds.decMax, WCS_J2000);
+    return bounds;
+}
+
+bool AstroUtils::overlap(const AstroUtils &other) const
+{
+    // No celestial solution on either side: there is no sky to share.
     if (this->isSimulation() || other.isSimulation()) {
         return false;
     }
+    // The interval arithmetic lives in SkyOverlap so it can be tested on its
+    // own — in particular the field that straddles RA = 0, which wcsrange()
+    // reports as ra_min > ra_max and which a plain interval test rejects.
+    return SkyOverlap::overlaps(this->skyBounds(), other.skyBounds());
+}
 
-    double ra_min1, ra_max1, dec_min1, dec_max1;
-    this->getBounds(&ra_min1, &ra_max1, &dec_min1, &dec_max1, WCS_J2000);
-
-    double ra_min2, ra_max2, dec_min2, dec_max2;
-    other.getBounds(&ra_min2, &ra_max2, &dec_min2, &dec_max2, WCS_J2000);
-
-    return std::max(ra_min1, ra_min2) < std::min(ra_max1, ra_max2)
-            && std::max(dec_min1, dec_min2) < std::min(dec_max1, dec_max2);
+bool AstroUtils::overlap(const std::string &filepath) const
+{
+    return this->overlap(AstroUtils(filepath));
 }
 
 bool AstroUtils::isImage() const

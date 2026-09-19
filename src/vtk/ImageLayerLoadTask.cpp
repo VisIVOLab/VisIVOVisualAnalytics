@@ -75,6 +75,23 @@ ImageLayerLoadResult loadImageLayer(const ImageLayerLoadRequest &request)
     AstroUtils astroMaster(request.masterFilepath);
     AstroUtils astroNewLayer(request.layerFilepath);
 
+    // A layer that covers none of the master's sky is not a layer. Aligning it
+    // anyway succeeds — the WCS puts it where it belongs, off the edge of the
+    // image — so the load reports success and nothing appears on screen.
+    if (astroMaster.isSimulation() || astroNewLayer.isSimulation()) {
+        result.imageData = nullptr;
+        result.errorMessage = "One of these images has no celestial solution in its header (pixel "
+                              "coordinates only), so there is no way to line the two up.";
+        return result;
+    }
+    if (!request.ignoreOverlap && !astroMaster.overlap(astroNewLayer)) {
+        result.imageData = nullptr;
+        result.noOverlap = true;
+        result.errorMessage = "This image covers none of the sky the current image covers, "
+                              "so it cannot be layered on top of it.";
+        return result;
+    }
+
     const double scalingFactor = astroNewLayer.getSecPix() / astroMaster.getSecPix();
     result.spacing = { scalingFactor, scalingFactor, 1. };
 

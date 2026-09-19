@@ -43,6 +43,13 @@ tables such as `CubeToolGate` (which tools may act on what is on screen) or
 Both of those were extracted precisely because the only previous way to check
 them was to open the app and look at thirty buttons.
 
+`SkyOverlap` (`test_sky_overlap.cpp`) is there for the same reason: whether a
+FITS can be added as a layer to the image on screen is one interval comparison,
+and the case that breaks it — a field straddling RA = 0, which `wcsrange()`
+reports as `ra_min > ra_max` — cannot be reached from a GUI test. The rule is a
+header with no FITS and no VTK in it, so the wrap, the touching edges and the
+missing WCS solution are all checked directly.
+
 The same reasoning drives `SedBuilder` (`test_sed_builder.cpp`): reading a SED
 out of a catalogue is a pile of column-name rules, and a misread column does not
 crash — it produces a fit that runs and is wrong. The rules therefore live in a

@@ -24,6 +24,7 @@
 #include "TestRayVoxelPick.h"
 #include "TestSedBuilder.h"
 #include "TestVlkbPosString.h"
+#include "TestSkyOverlap.h"
 
 #include <QCoreApplication>
 #include <QTest>
@@ -54,5 +55,6 @@ int main(int argc, char *argv[])
     { TestRayVoxelPick     t; status |= QTest::qExec(&t, argc, argv); }
     { TestSedBuilder       t; status |= QTest::qExec(&t, argc, argv); }
     { TestVlkbPosString    t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSkyOverlap       t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }

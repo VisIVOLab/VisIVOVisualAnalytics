@@ -1,6 +1,8 @@
 #ifndef AstroUtils_h
 #define AstroUtils_h
 
+#include "gui/SkyOverlap.h"
+
 #include <fitsio.h>
 
 #include <QString>
@@ -127,6 +129,22 @@ public:
    * @return true if there is an overlap
    */
     bool overlap(const std::string &filepath) const;
+
+  /**
+   * Check whether this image and @p other cover any common sky.
+   *
+   * The overload taking a path has to open a file; this one does not, so it
+   * also serves the remote layer path, where both WCS are built from headers
+   * fetched over HTTP and no file exists on this machine.
+   *
+   * @return true if there is an overlap
+   */
+    bool overlap(const AstroUtils &other) const;
+
+  /**
+   * @return the sky bounds used by overlap(), in degrees (J2000).
+   */
+    SkyOverlap::Bounds skyBounds() const;
 
     /**
    * @return true if FITS file has exactly 2 axes

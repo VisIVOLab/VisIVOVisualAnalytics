@@ -258,7 +258,7 @@ void vtkWindowImage::startNextQueuedLayerLoad()
     // The role is assigned when the load finishes, by matching this label.
     m_pendingVlkbDisplayName = next.displayName;
     m_currentLoadPartOfSet = next.partOfSet;
-    this->addLayerImage(next.path.toStdString());
+    this->addLayerImage(next.path.toStdString(), next.ignoreOverlap);
 }
 
 void vtkWindowImage::detectAndLoadStokesCompanions()

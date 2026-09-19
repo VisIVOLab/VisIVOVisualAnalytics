@@ -109,6 +109,8 @@ add_executable(VisIVOTests
     test_sed_builder.cpp
     TestVlkbPosString.h
     test_vlkb_pos_string.cpp
+    TestSkyOverlap.h
+    test_sky_overlap.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

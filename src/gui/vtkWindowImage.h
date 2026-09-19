@@ -27,6 +27,7 @@
 class WorkspaceChrome;
 class ImageLayerController;
 class ImageLayerImportService;
+class QMessageBox;
 class LayerListModel;
 class LUTCustomizerDialog;
 class ProfileWidget;
@@ -175,6 +176,10 @@ signals:
     void imageQualityRequested();
 
     void catalogueSourceSelectionChanged(int index);
+
+    /// A FITS the user tried to add as a layer covers none of this image's sky.
+    /// They chose to open it on its own instead — only the host can do that.
+    void openInOwnWindowRequested(const QString &path);
 
 public:
     enum class RegionMode
@@ -620,7 +625,20 @@ private:
     /// Re-elide the LAYER SETTINGS caption for the width and font it has NOW.
     void elideLayerSettingsHeader();
     bool eventFilter(QObject *watched, QEvent *event) override;
-    void addLayerImage(const std::string &filepath);
+    /// Tell the user why a layer was not added — non-modally, so no nested
+    /// event loop runs while the pending-load queue is being put right. When
+    /// the file simply belongs elsewhere, this is also where the choice between
+    /// a window of its own and adding it anyway is offered.
+    /// @param displayName  the label this load carried, so "Add Anyway" can put
+    ///                      it back rather than adding an unnamed layer
+    /// @param partOfSet     whether it belonged to an all-or-nothing set
+    void showLayerLoadFailure(const ImageLayerLoadResult &result, const QString &displayName,
+                              bool partOfSet);
+
+    /// @param ignoreOverlap add the layer even if it covers none of this
+    ///        image's sky — the user's answer to the refusal, since the sky
+    ///        bounds behind it are a bounding box and can be too narrow.
+    void addLayerImage(const std::string &filepath, bool ignoreOverlap = false);
     bool remoteHasWcsAxis(int axis) const;
     double remoteVoxelToWcs(int axis, double voxelIndex, bool *ok = nullptr) const;
     QString remoteFormatAxisCoordinate(int axis, double voxelIndex) const;
@@ -832,11 +850,19 @@ private:
         /// for independent layers — six VLKB cutouts are six answers, and one
         /// failing is no reason to drop the other five.
         bool partOfSet{ false };
+        /// Set by the "Add Anyway" answer to a refused layer: the queue is the
+        /// only way back in when another load started while the dialog was up.
+        bool ignoreOverlap{ false };
     };
     /// Used by the Stokes companion sequence and by a multi-dataset VLKB
     /// download, which would otherwise drop every layer after the first — the
     /// viewer loads one at a time, and "busy" used to mean "discarded".
     QList<PendingLayerLoad> m_pendingLayerLoads;
+    /// The failure message currently on screen. A batch of cutouts can fail one
+    /// after another, and one dialog per failure buries the window.
+    QPointer<QMessageBox> m_layerFailureDialog;
+    /// Failures not shown because that dialog was already up.
+    int m_suppressedLayerFailures{ 0 };
     /// Whether the load currently running belongs to such a set.
     bool m_currentLoadPartOfSet{ false };
     /// True while the companion search is inside a nested event loop (backend

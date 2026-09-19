@@ -64,14 +64,29 @@ there are no controls; it just tracks your view.
 
 You can overlay or compare multiple images in the same window:
 
-- **Add New Layer…** — pick another FITS image from the *remote file
-  browser*. Backend-side check (`ImageLayerImportService`) validates the
-  layer's WCS against the base image and warns if the pixel grids don't
-  overlap.
+- **Add Image Layer…** (*File* menu, ⌘L, or the **+ Add…** beside the
+  *Layers* list) — pick another FITS image from the *remote file browser*.
 - Use the layer panel to **reorder**, **toggle visibility**, set a
   **per-layer colour map**, **opacity** and **z-order**.
-- Manual local files: drop a `.fits` from the OS file browser, or pick it
-  via *File → Add New FITS File…*
+- You can also drop a `.fits` from the OS file browser onto the window.
+
+### A layer has to cover the same sky
+
+Before anything is downloaded, the two headers are compared: a file that
+covers none of the sky the current image covers is not added. It is not a
+broken file — the WCS alignment would place it correctly, off the edge of the
+image, so the load would "succeed" and nothing would appear.
+
+Instead the viewer says so and offers:
+
+- **Open in New Window** — the sensible answer for an image of somewhere else;
+- **Add Anyway** — the sky bounds behind the refusal come from `wcsrange()`,
+  which is a bounding box, and a rotated field straddling RA = 0 can measure
+  narrower than it really is. This is how you overrule the check;
+- **Cancel**.
+
+An image whose header carries no celestial solution (pixel coordinates only)
+is refused outright: there is no position to line it up with.
 
 All layer sources go through the same `loadImageLayer()` / `AstroUtils` /
 `libwcs` pipeline, so alignment between layers is handled the same way

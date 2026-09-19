@@ -96,7 +96,9 @@
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QMetaObject>
+#include <QAbstractButton>
 #include <QMessageBox>
+#include <QPointer>
 #include <QSignalBlocker>
 #include <QPlainTextEdit>
 #include <QDialog>
@@ -1019,17 +1021,19 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                              if (!result.errorMessage.empty()) {
                                  this->persistentStatusActive = false;
                                  this->statusMessageClearTimer.stop();
-                                 QMessageBox::warning(this, u"Import FITS file"_s,
-                                                      QString::fromStdString(result.errorMessage));
                              }
+                             // Snapshot before the clearing: "Add Anyway" puts
+                             // the load back through the queue, and a layer that
+                             // returns without its label loses its Stokes role
+                             // with it.
+                             const QString failedDisplayName = m_pendingVlkbDisplayName;
                              m_pendingVlkbDisplayName.clear();
                              // Drop the "Loading layer..." text first: clearing it
                              // after the message below would wipe it immediately.
                              this->clearPersistentStatusMessage();
-                             // Taken and cleared FIRST: the error dialog above
-                             // spins an event loop, and a cutout starting from
-                             // inside it would otherwise inherit this flag and
-                             // be treated as part of the failed set.
+                             // Taken and cleared FIRST: the queue is pumped below
+                             // and a load starting from there must not inherit
+                             // this flag and be treated as part of the failed set.
                              const bool wasPartOfSet = m_currentLoadPartOfSet;
                              m_currentLoadPartOfSet = false;
                              // A companion that fails aborts the rest of ITS
@@ -1047,6 +1051,12 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                                              5000);
                                  }
                              }
+                             // The message is shown without a nested event loop,
+                             // and only after the queue has been put right: an
+                             // exec() here pumps the pending loads while the flags
+                             // above still describe the failed one, and its stack
+                             // frame outlives the window if the user closes it.
+                             this->showLayerLoadFailure(result, failedDisplayName, wasPartOfSet);
                              this->pumpLayerQueue();
                              return;
                          }
@@ -1181,6 +1191,21 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     // Setup Menu File
     QObject::connect(ui->actionAddFITS, &QAction::triggered, this,
                      &vtkWindowImage::addLayerFromBrowser);
+    // The same action beside the layer list, which is where it is looked for.
+    if (ui->btnAddLayer) {
+        ui->btnAddLayer->setCursor(Qt::PointingHandCursor);
+        ui->btnAddLayer->setFlat(true);
+        ui->btnAddLayer->setFixedHeight(22);
+        ui->btnAddLayer->setStyleSheet(
+                QStringLiteral("QPushButton{background:transparent;border:none;color:%1;"
+                               "font-size:11px;font-weight:600;padding:0 2px;}"
+                               "QPushButton:hover{text-decoration:underline;}"
+                               "QPushButton:disabled{color:%2;}")
+                        .arg(QLatin1StringView(VisivoTheme::kPrimary()),
+                             QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        QObject::connect(ui->btnAddLayer, &QPushButton::clicked, this,
+                         &vtkWindowImage::addLayerFromBrowser);
+    }
 
     // Setup Menu WCS
     auto groupWCS = new QActionGroup(this);
@@ -1849,7 +1874,7 @@ static ImageLayerLoadResult loadRemoteImageLayer(const QString &backendUrl,
                                                  const QString &backendToken,
                                                  const QString &sessionId,
                                                  const QString &layerPath,
-                                                 const QString &masterPath)
+                                                 const QString &masterPath, bool ignoreOverlap)
 {
     ImageLayerLoadResult result;
     result.filepath = layerPath.toStdString();
@@ -1857,6 +1882,53 @@ static ImageLayerLoadResult loadRemoteImageLayer(const QString &backendUrl,
     BackendClient client(backendUrl, backendToken);
     if (!sessionId.isEmpty())
         client.setSessionId(sessionId);
+
+    // The headers first, and the pixels only if the two images have sky in
+    // common: downloading a plane to discover it belongs somewhere else is
+    // wasted on a slow link, and on a fast one it is still the wrong answer.
+    const auto layerHeaderEarly = client.fileHeader(layerPath);
+    const auto masterHeaderEarly = client.fileHeader(masterPath);
+    if (!layerHeaderEarly.valid || !masterHeaderEarly.valid) {
+        result.errorMessage = "Could not read the FITS headers needed to align this layer.";
+        return result;
+    }
+    const auto cardsOf = [](const QStringList &cards) {
+        std::vector<std::string> out;
+        out.reserve(static_cast<std::size_t>(cards.size()));
+        for (const QString &c : cards)
+            out.push_back(c.toStdString());
+        return out;
+    };
+    AstroUtils astroLayer(cardsOf(layerHeaderEarly.cards));
+    AstroUtils astroMaster(cardsOf(masterHeaderEarly.cards));
+    if (astroMaster.getSecPix() <= 0. || !std::isfinite(astroMaster.getSecPix())) {
+        result.errorMessage = "The master image has no usable WCS to align this layer to.";
+        return result;
+    }
+    // …and the LAYER's own WCS. Without it xy2sky() returns leaving `pos`
+    // untouched, so the alignment below would read uninitialised sky coordinates
+    // and hand back a layer with spacing 0 at an arbitrary place - marked valid.
+    if (astroLayer.getSecPix() <= 0. || !std::isfinite(astroLayer.getSecPix())) {
+        result.errorMessage = "This layer has no usable WCS, so it cannot be aligned to the "
+                              "image: its FITS header carries no celestial solution.";
+        return result;
+    }
+    // A layer that covers none of the master's sky is placed correctly — off
+    // the edge of the image — and is therefore invisible. Refuse it here and
+    // let the window offer the only thing that makes sense: its own window.
+    if (astroMaster.isSimulation() || astroLayer.isSimulation()) {
+        // "Does not overlap" would be a guess: without a celestial solution
+        // there is no position to compare, only pixel indices.
+        result.errorMessage = "One of these images has no celestial solution in its header (pixel "
+                              "coordinates only), so there is no way to line the two up.";
+        return result;
+    }
+    if (!ignoreOverlap && !astroMaster.overlap(astroLayer)) {
+        result.noOverlap = true;
+        result.errorMessage = "This image covers none of the sky the current image covers, "
+                              "so it cannot be layered on top of it.";
+        return result;
+    }
 
     const auto opened = client.openDataset(layerPath);
     if (!opened.valid) {
@@ -1883,34 +1955,6 @@ static ImageLayerLoadResult loadRemoteImageLayer(const QString &backendUrl,
             * static_cast<qsizetype>(sizeof(float));
     if (pixels.width <= 0 || pixels.height <= 0 || pixels.data.size() != expectedBytes) {
         result.errorMessage = "Invalid remote layer payload.";
-        return result;
-    }
-
-    const auto layerHeader = client.fileHeader(layerPath);
-    const auto masterHeader = client.fileHeader(masterPath);
-    if (!layerHeader.valid || !masterHeader.valid) {
-        result.errorMessage = "Could not read the FITS headers needed to align this layer.";
-        return result;
-    }
-    const auto toCards = [](const QStringList &cards) {
-        std::vector<std::string> out;
-        out.reserve(static_cast<std::size_t>(cards.size()));
-        for (const QString &c : cards)
-            out.push_back(c.toStdString());
-        return out;
-    };
-    AstroUtils astroLayer(toCards(layerHeader.cards));
-    AstroUtils astroMaster(toCards(masterHeader.cards));
-    if (astroMaster.getSecPix() <= 0. || !std::isfinite(astroMaster.getSecPix())) {
-        result.errorMessage = "The master image has no usable WCS to align this layer to.";
-        return result;
-    }
-    // …and the LAYER's own WCS. Without it xy2sky() returns leaving `pos`
-    // untouched, so the alignment below would read uninitialised sky coordinates
-    // and hand back a layer with spacing 0 at an arbitrary place - marked valid.
-    if (astroLayer.getSecPix() <= 0. || !std::isfinite(astroLayer.getSecPix())) {
-        result.errorMessage = "This layer has no usable WCS, so it cannot be aligned to the "
-                              "image: its FITS header carries no celestial solution.";
         return result;
     }
 
@@ -1977,7 +2021,78 @@ static ImageLayerLoadResult loadRemoteImageLayer(const QString &backendUrl,
     return result;
 }
 
-void vtkWindowImage::addLayerImage(const std::string &filepath)
+void vtkWindowImage::showLayerLoadFailure(const ImageLayerLoadResult &result,
+                                          const QString &displayName, bool partOfSet)
+{
+    if (result.errorMessage.empty())
+        return;
+
+    const QString path = QString::fromStdString(result.filepath);
+    const QString detail = QString::fromStdString(result.errorMessage);
+
+    // Six VLKB cutouts that all fail are six failures, not six dialogs stacked
+    // over the window. The first one speaks; the rest are counted in the status
+    // bar, which can be read without dismissing anything.
+    if (m_layerFailureDialog) {
+        ++m_suppressedLayerFailures;
+        statusBar()->showMessage(
+                u"%1 more layer(s) could not be added; see the open message."_s.arg(
+                        m_suppressedLayerFailures),
+                6000);
+        return;
+    }
+
+    auto *box = new QMessageBox(this);
+    m_layerFailureDialog = box;
+    QObject::connect(box, &QObject::destroyed, this,
+                     [this]() { m_suppressedLayerFailures = 0; });
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->setWindowTitle(u"Add image layer"_s);
+    box->setTextFormat(Qt::PlainText);
+    box->setIcon(result.noOverlap ? QMessageBox::Information : QMessageBox::Warning);
+    box->setText(path.isEmpty() ? detail
+                                : u"%1\n\n%2"_s.arg(QFileInfo(path).fileName(), detail));
+
+    if (!result.noOverlap) {
+        box->setStandardButtons(QMessageBox::Ok);
+        box->open();
+        return;
+    }
+
+    // The file is not broken — it is of somewhere else. Two answers make sense,
+    // and neither is "layer it anyway and show nothing".
+    auto *openOwn = box->addButton(u"Open in New Window"_s, QMessageBox::AcceptRole);
+    // The sky bounds behind the refusal come from wcsrange(), which is a
+    // bounding box: a rotated field straddling RA = 0 can measure narrower than
+    // it is. This is the user's way to overrule us.
+    auto *addAnyway = box->addButton(u"Add Anyway"_s, QMessageBox::DestructiveRole);
+    box->addButton(QMessageBox::Cancel);
+    box->setDefaultButton(openOwn);
+
+    QPointer<vtkWindowImage> self(this);
+    QObject::connect(box, &QMessageBox::finished, this,
+                     [this, self, box, openOwn, addAnyway, path, displayName, partOfSet]() {
+                         if (!self || path.isEmpty())
+                             return;
+                         QAbstractButton *clicked = box->clickedButton();
+                         if (clicked == openOwn) {
+                             emit this->openInOwnWindowRequested(path);
+                         } else if (clicked == addAnyway) {
+                             // Through the queue, not straight into the loader:
+                             // another layer may have started while the dialog
+                             // was open, and a second future on the one watcher
+                             // would strand it. The queue carries the label back
+                             // too, so the layer keeps its name and its role.
+                             m_pendingLayerLoads.append(
+                                     { path, displayName, partOfSet, /*ignoreOverlap=*/true });
+                             this->pumpLayerQueue();
+                         }
+                     });
+    box->open();
+}
+
+
+void vtkWindowImage::addLayerImage(const std::string &filepath, bool ignoreOverlap)
 {
     const QString path = QString::fromStdString(filepath);
     // WHOSE filesystem is this path on? Every dataset here is opened through the
@@ -2003,13 +2118,14 @@ void vtkWindowImage::addLayerImage(const std::string &filepath)
                 u"Loading %1 from the backend..."_s.arg(QFileInfo(path).fileName()));
         this->layerLoadWatcher.setFuture(QtConcurrent::run(
                 &loadRemoteImageLayer, this->remoteBackendUrl, this->remoteBackendToken,
-                this->remoteSessionId, path, this->filepath));
+                this->remoteSessionId, path, this->filepath, ignoreOverlap));
         return;
     }
     this->setLayerImportEnabled(false);
     this->showPersistentStatusMessage(u"Loading layer..."_s);
     this->layerLoadWatcher.setFuture(QtConcurrent::run(
-            &loadImageLayer, ImageLayerLoadRequest { this->filepath.toStdString(), filepath }));
+            &loadImageLayer,
+            ImageLayerLoadRequest { this->filepath.toStdString(), filepath, ignoreOverlap }));
 }
 
 void vtkWindowImage::applyLoadedLayer(const ImageLayerLoadResult &result)
@@ -2416,6 +2532,10 @@ void vtkWindowImage::setLayerImportEnabled(bool enabled)
     // reads files directly on the client desktop for rendering purposes only.
     // It is not an authoritative data operation and is kept as an adapter.
     ui->actionAddFITS->setEnabled(enabled);
+    // The sidebar button is the same action: it must grey out with it, or a
+    // second load would be started while the first is still running.
+    if (ui->btnAddLayer)
+        ui->btnAddLayer->setEnabled(enabled);
 }
 
 

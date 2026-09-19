@@ -628,6 +628,11 @@ void MainWindow::wireImageViewerProducts(vtkWindowImage *window,
                                          owner->recordPublicationFigure(outputPath);
                                  });
                      });
+    // A layer that turned out to be somewhere else entirely: the user asked for
+    // it in a window of its own, which is the one thing a layer viewer cannot do
+    // for itself.
+    QObject::connect(window, &vtkWindowImage::openInOwnWindowRequested, this,
+                     [this](const QString &path) { this->doOpenDataPath(path); });
     QObject::connect(window, &vtkWindowImage::imageQualityRequested, this,
                      [this, owner, backendUrl, backendToken, sessionId, datasetId]() {
                          this->runImageQuality(
