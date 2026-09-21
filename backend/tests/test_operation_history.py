@@ -150,6 +150,18 @@ def test_tasks_and_operations_share_one_ordered_list():
         == ["products/isosurface", "moment", "spectral/stack"]
 
 
+def test_a_cosmology_batch_is_a_job_but_one_distance_is_not():
+    """Picking a different cosmology recomputes every source's position.
+
+    The single-redshift lookup is UI chatter and stays out of the history; the
+    batch behind the 3-D catalogue's cosmology selector is the one thing that
+    viewer did which left no trace of having happened.
+    """
+    assert _history_operation_name(
+        _Request("POST"), "/v1/cosmology/distance/batch") == "cosmology/distance/batch"
+    assert _history_operation_name(_Request("POST"), "/v1/cosmology/distance") is None
+
+
 def test_a_completed_task_is_in_the_snapshot():
     """The task API's terminal status is "completed", not "done".
 

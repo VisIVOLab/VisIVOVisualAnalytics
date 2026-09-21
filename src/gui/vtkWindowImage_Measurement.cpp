@@ -124,6 +124,10 @@ void vtkWindowImage::setMeasurementMode(MeasurementMode mode)
     const QScopeGuard syncStrip([this]() { this->syncModeStrip(); });
     if (m_measMode == mode) return;
 
+    // Same order of precedence as everywhere else: a pending annotation would
+    // swallow the first click of the measurement.
+    if (this->m_annotPlaceMode != AnnotPlaceMode::None)
+        this->cancelAnnotationPlacement();
     if (this->probeModeActive && ui->actionProfile->isChecked())
         ui->actionProfile->setChecked(false);
     if (this->regionMode != RegionMode::None) {

@@ -155,7 +155,11 @@ _HISTORY_SKIP_PATHS = frozenset({
     "/v1/spectral/probe",      # spectrum under the cursor
     "/v1/vlkb/mcutout/phase",  # job polling, every 2 s
     "/v1/cosmology/distance",
-    "/v1/cosmology/distance/batch",
+    # NOT the batch: one distance is a lookup the UI makes while the user types,
+    # but the batch is asked for once, when the user picks a different cosmology,
+    # and it recomputes the position of every source in the catalogue. That is a
+    # job, and it was the only thing the 3-D catalogue viewer did that left no
+    # trace of having happened.
 })
 
 

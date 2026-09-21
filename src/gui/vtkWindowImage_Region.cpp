@@ -467,6 +467,28 @@ void vtkWindowImage::setRegionMode(RegionMode mode, bool active)
     if (this->probeModeActive && ui->actionProfile->isChecked()) {
         ui->actionProfile->setChecked(false);
     }
+    // A measurement outranks a region when a click is dispatched (see
+    // ViewerModeState.h), and setMeasurementMode() disarms any region for
+    // exactly that reason — but the reverse was missing. Arming a region from
+    // the Tools ▸ Regions menu while the ruler was on left the ruler consuming
+    // every drag: the menu entry showed as checked, the strip still said Ruler,
+    // and dragging drew a distance instead of measuring a region. Unchecking
+    // happens here, BEFORE regionMode is assigned, so that the measurement
+    // setter's own region cleanup has nothing to undo.
+    // An annotation waiting to be placed outranks both (ViewerModeState.h again)
+    // — the next click would put the text down instead of starting the region.
+    // The mode strip cancels it; the menu path did not.
+    if (this->m_annotPlaceMode != AnnotPlaceMode::None)
+        this->cancelAnnotationPlacement();
+    if (this->m_measMode != MeasurementMode::None) {
+        QAction *measurements[] = { this->m_actRuler, this->m_actAngle };
+        for (auto *action : measurements) {
+            if (action && action->isChecked())
+                action->setChecked(false);
+        }
+        if (this->m_measMode != MeasurementMode::None)
+            this->setMeasurementMode(MeasurementMode::None);
+    }
     if (mode == RegionMode::Box && this->actionCircleRegion && this->actionCircleRegion->isChecked()) {
         this->actionCircleRegion->setChecked(false);
     }

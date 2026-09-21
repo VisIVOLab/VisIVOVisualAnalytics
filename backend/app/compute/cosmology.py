@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import concurrent.futures as _cf  # noqa: F401
 import logging  # noqa: F401
 import os as _os  # noqa: F401
@@ -103,13 +104,52 @@ def worker_angular_power_spectrum(
     data = data.copy()
     data[~finite_mask] = float(np.nanmean(data[finite_mask]))
 
-    # Pixel scale in radians (for ℓ conversion); fall back to |CDELT1| in degrees
-    try:
-        pixel_scale_rad = float(dataset.spatial_pixel_scale_arcsec() * np.pi / (180.0 * 3600.0))
-    except Exception:
-        pixel_scale_rad = abs(float(dataset.header.get("CDELT1", 1.0))) * np.pi / 180.0
-    if pixel_scale_rad <= 0.0:
-        pixel_scale_rad = 1.0   # fallback: unitless
+    # Pixel scale in radians, for the ℓ conversion — and ONLY when the header
+    # actually carries one. `spatial_pixel_scale_arcsec()` answers 3600 arcsec
+    # for a map with no WCS at all (astropy's 1 degree per pixel default), so
+    # asking it unconditionally produced a multipole axis computed from an
+    # invented pixel size: ℓ looked calibrated and was wrong by whatever the
+    # real scale is. A map with no angular information gets ℓ = k and says so.
+    header = dataset.header
+    # The question is whether the map has a CELESTIAL scale, which is not the
+    # same as "the header has a CDELT". A linear axis in metres has one too, and
+    # a map with no WCS at all is answered 3600 arcsec by the pixel-scale helper
+    # (astropy's one-degree-per-pixel default) — either way ℓ came back looking
+    # calibrated and wrong. astropy's own `has_celestial` decides it, which also
+    # covers the scale being carried by a PC matrix or a CD matrix instead of
+    # CDELT; the header check below is only for a file astropy could not parse.
+    has_angular_scale = False
+    wcs = getattr(dataset, "wcs", None)
+    if wcs is not None:
+        with contextlib.suppress(Exception):
+            # And the celestial pair has to be the plane that was SLICED OUT.
+            # The slice above always takes the leading numpy axis, i.e. the
+            # last FITS axis, so the plane is celestial only when FITS axes 1
+            # and 2 are. A cube written (FREQ, RA, DEC) — spectral first — hands
+            # back an RA/frequency plane, and calling its pixel scale an angle
+            # would put a multipole axis on a spectrum.
+            celestial_axes = {
+                index + 1
+                for index, ctype in enumerate(wcs.wcs.ctype)
+                if str(ctype).strip().upper().startswith(
+                    ("RA--", "DEC-", "GLON", "GLAT", "ELON", "ELAT",
+                     "SLON", "SLAT", "HPLN", "HPLT"))
+            }
+            has_angular_scale = bool(wcs.has_celestial) and celestial_axes == {1, 2}
+    if not has_angular_scale and wcs is None:
+        ctype1 = str(header.get("CTYPE1", "")).strip().upper()
+        has_angular_scale = (
+            ctype1.startswith(("RA--", "DEC-", "GLON", "GLAT", "ELON", "ELAT",
+                               "SLON", "SLAT", "HPLN", "HPLT"))
+            and abs(float(header.get("CDELT1", 0.0) or 0.0)) > 0.0)
+
+    pixel_scale_rad = 0.0
+    if has_angular_scale:
+        with contextlib.suppress(Exception):
+            pixel_scale_rad = float(
+                dataset.spatial_pixel_scale_arcsec() * np.pi / (180.0 * 3600.0))
+    if pixel_scale_rad < 0.0:
+        pixel_scale_rad = 0.0
 
     # 2-D Hann window
     wy = np.hanning(ny)[:, np.newaxis]
@@ -203,6 +243,12 @@ def worker_angular_power_spectrum(
         # poorly determined error whatever scalar is applied, so the count is
         # returned rather than left for the caller to guess at.
         "n_modes": n_modes_out,
+        # Whether `ell` is an angular multipole at all. False for a map with no
+        # spatial WCS, where it repeats `k_bins` (pixel⁻¹) rather than being
+        # scaled by a pixel size nobody stated.
+        "ell_is_angular": bool(pixel_scale_rad > 0.0),
+        "pixel_scale_arcsec": (float(pixel_scale_rad * 180.0 * 3600.0 / np.pi)
+                               if pixel_scale_rad > 0.0 else None),
         # The window's effective-mode penalty. A bin's EFFECTIVE mode count is
         # n_modes / mode_coupling² — which is much smaller than it looks: with the
         # Hann window's 1.94, eight raw modes are only about two effective ones.

@@ -12,18 +12,44 @@
 //
 //   click X Y              — click once at (X, Y), in screen POINTS (not pixels)
 //   click X Y toX toY      — press at (X, Y), drag, release at (toX, toY)
+//   click --double X Y     — double-click at (X, Y)
+//
+// The double click is a real one: the two clicks carry clickCount 1 and 2 on
+// the same events, which is what VTK's LeftButtonDoubleClickEvent is derived
+// from. Two separate single clicks do not produce it, so the tools that
+// finalise on a double click — the PV path, the kinematic lasso — cannot be
+// driven without this.
 
 import CoreGraphics
 import Foundation
 
-let args = CommandLine.arguments
+var args = CommandLine.arguments
+var doubleClick = false
+if let index = args.firstIndex(of: "--double") {
+    doubleClick = true
+    args.remove(at: index)
+}
 guard args.count >= 3, let x = Double(args[1]), let y = Double(args[2]) else {
-    print("usage: click X Y [dragToX dragToY]"); exit(1)
+    print("usage: click [--double] X Y [dragToX dragToY]"); exit(1)
 }
 let p = CGPoint(x: x, y: y)
 let src = CGEventSource(stateID: .hidSystemState)
 CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left)?.post(tap: .cghidEventTap)
 usleep(80_000)
+
+if doubleClick {
+    for count in 1...2 {
+        for type in [CGEventType.leftMouseDown, CGEventType.leftMouseUp] {
+            let event = CGEvent(mouseEventSource: src, mouseType: type,
+                                mouseCursorPosition: p, mouseButton: .left)
+            event?.setIntegerValueField(.mouseEventClickState, value: Int64(count))
+            event?.post(tap: .cghidEventTap)
+            usleep(30_000)
+        }
+    }
+    exit(0)
+}
+
 CGEvent(mouseEventSource: src, mouseType: .leftMouseDown, mouseCursorPosition: p, mouseButton: .left)?.post(tap: .cghidEventTap)
 usleep(80_000)
 if args.count >= 5, let dx = Double(args[3]), let dy = Double(args[4]) {

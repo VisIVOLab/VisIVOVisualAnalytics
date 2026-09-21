@@ -123,9 +123,12 @@ to nothing, a dialog opened on a window with no dataset, a result written to a
 file nobody opens — all of those pass every test above.
 
 `tools/gui_smoke/gui_smoke.py` launches the built application on a real FITS
-file, clicks through fifteen scenarios across the image and cube viewers, and
-asserts on the backend's own job history, on the files that appear in the
-workspace, and on the window and menu lists — never on a screenshot.
+file, clicks through thirty scenarios across the image, cube and catalogue
+viewers —
+moments, line-width, baseline subtraction, PV extraction, the kinematic lasso,
+source finding, the exports, the regions, the products — and asserts on the
+backend's own job history, on the files that appear in the workspace (including
+their NAXIS), and on the labels the windows show — never on a screenshot.
 
 ```bash
 python3 tools/gui_smoke/gui_smoke.py --image 2d.fits --cube 3d.fits
@@ -136,11 +139,21 @@ Accessibility permission, and CI has none of the three. `tools/gui_smoke/README.
 documents the scenarios, the oracles, and the platform behaviour each helper
 exists to work around.
 
-It has already earned its keep: driving Compute Moment showed that no
+It has already earned its keep twice. Driving Compute Moment showed that no
 `/v1/tasks/*` job ever appeared in the activity panel — the task API's terminal
 status is `completed` and the registry snapshot recognised only `done`, so a
 moment showed up neither as running nor as finished. The unit test that covered
-the snapshot had used `done`, so nothing caught it.
+the snapshot had used `done`, so nothing caught it. And arming a region from
+Tools ▸ Regions turned out to do nothing at all while the ruler was armed: the
+menu entry checked, the strip still saying Ruler, the drag drawing a distance.
+And a file that is not a FITS — an IPAC table, a `.speck`, a CSV, a VisIVO
+Binary Table — could not be opened from outside the application at all: the
+desktop entry point never reached the classifier, so a double-click was answered
+with "Unsupported file type. Expected FITS or HDF5" while the same file opened
+fine from Open….
+
+All three are the same shape of bug — everything is wired, and the wire goes
+somewhere else.
 
 ---
 

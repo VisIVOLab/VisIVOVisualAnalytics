@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import os
 import signal
@@ -129,7 +130,7 @@ def activate_app() -> None:
     time.sleep(0.5)
 
 
-def ensure_frontmost(attempts: int = 4) -> None:
+def ensure_frontmost(attempts: int = 4, strict: bool = False) -> bool:
     """Bring the application forward, and do not click until it is.
 
     A synthetic click into a background application is spent activating it: the
@@ -141,9 +142,27 @@ def ensure_frontmost(attempts: int = 4) -> None:
     """
     for _ in range(attempts):
         if system_events("get frontmost", check=False) == "true":
-            return
+            return True
         activate_app()
-    raise ScriptError("the application will not come to the front")
+    # Not an error by itself: during a launch the process exists and has no
+    # window yet, and cannot be activated at all. It IS an error before a
+    # click, which is what `strict` is for — a click into a background
+    # application is spent activating it and the button never sees it.
+    if strict:
+        raise ScriptError("the application will not come to the front")
+    return False
+
+
+def windows_raw() -> list[str]:
+    """The window list WITHOUT bringing the application forward first.
+
+    Used while waiting for a launch: a process that is still building its first
+    window cannot be activated, and asking it to come forward every 500 ms only
+    slows down the thing being waited for. Once there is a window, `windows()`
+    takes over.
+    """
+    raw = system_events("get name of every window", check=False)
+    return [w.strip() for w in raw.split(",") if w.strip()] if raw else []
 
 
 def windows() -> list[str]:
@@ -313,8 +332,52 @@ def dismiss_confirmation() -> bool:
     return False
 
 
-def close_product_windows(timeout: float = 10.0) -> None:
+def modal_windows() -> list[int]:
+    """Indices of windows the application is BLOCKED on.
+
+    A `QMessageBox` on macOS is a window of its own carrying the application's
+    name, so it is indistinguishable from the main window by title, and its OK
+    button is not exposed by name either — it reports three unnamed buttons and
+    nothing else. What it does report is `AXModal`, and that is the only thing
+    that tells this alert apart from the viewer it is sitting on top of.
+
+    It matters because while one is up nothing else in the application responds:
+    a scenario that left one behind made every later menu click, every mode
+    button and every drag do precisely nothing, with no error anywhere.
+    """
+    blocked = []
+    for index in range(1, len(windows()) + 1):
+        if system_events(f'get value of attribute "AXModal" of window {index}',
+                         check=False) == "true":
+            blocked.append(index)
+    return blocked
+
+
+def dismiss_modal_alert() -> bool:
+    """Answer a blocking alert, harmlessly, and say whether there was one."""
+    for index in modal_windows():
+        system_events(f'perform action "AXRaise" of window {index}', check=False)
+        time.sleep(0.3)
+        for name in ("No", "Cancel", "OK", "Close"):
+            point = button_center(name, frontmost_only=True)
+            if point:
+                ensure_frontmost()
+                subprocess.run([str(_clicker()), str(point[0]), str(point[1])], check=False)
+                time.sleep(0.5)
+                return True
+        # Nothing is named: press the default button, which for the message
+        # boxes this application raises is the one that dismisses them.
+        ensure_frontmost()
+        osascript('tell application "System Events" to key code 36', check=False)
+        time.sleep(0.5)
+        return True
+    return False
+
+
+def close_product_windows(keep: set[str] | None = None, timeout: float = 10.0) -> None:
     """Close every window that is not a main one, and dismiss any open sheet.
+
+    `keep` names the windows that belong to the session under test.
 
     Scenarios that end with a product window still up cost the NEXT scenario
     its dialog: with a product window key, the viewer's menu action fires into
@@ -330,8 +393,15 @@ def close_product_windows(timeout: float = 10.0) -> None:
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if dismiss_modal_alert():
+            continue
+        # What to keep is what was on screen when the file finished opening,
+        # not "the window with the application's name": the 3-D catalogue viewer
+        # is titled after the catalogue, so a rule based on the title closed the
+        # very window the scenario was about.
+        keeping = keep if keep is not None else {MAIN_WINDOW_TITLE}
         extra = [index for index, title in enumerate(windows(), start=1)
-                 if title != MAIN_WINDOW_TITLE]
+                 if title not in keeping]
         if not extra and sheet_count() == 0:
             return
         if extra:
@@ -358,7 +428,7 @@ def close_product_windows(timeout: float = 10.0) -> None:
     # before it started: the next one runs into whatever is still on screen.
     raise AssertionError(
         f"could not clear the screen between scenarios: windows={windows()}, "
-        f"sheets={sheet_count()}")
+        f"sheets={sheet_count()}, modal={modal_windows()}")
 
 
 def menu_item(path: list[str]) -> str:
@@ -370,6 +440,21 @@ def menu_item(path: list[str]) -> str:
     for name in rest[:-1]:
         chain = f'menu 1 of menu item "{name}" of {chain}'
     return system_events(f'click menu item "{leaf}" of {chain}')
+
+
+def arm_mode(path: list[str], mode: str, attempts: int = 3) -> None:
+    """Arm an interaction mode from the menu, and make sure it took.
+
+    A menu click that does not arrive leaves the PREVIOUS mode armed, and the
+    gesture that follows is then read by that one: a circle-region scenario
+    drew a ruler line across the image and reported that the statistics window
+    never opened.
+    """
+    for _ in range(attempts):
+        menu_item(path)
+        if wait_for(lambda: mode_hint() == mode, timeout=5):
+            return
+    raise AssertionError(f'"{path[-1]}" did not arm {mode} (viewer is in {mode_hint()})')
 
 
 def open_dialog(path: list[str], title_fragment: str, timeout: float = 20.0,
@@ -451,6 +536,64 @@ def labelled_number(texts: list[str], label: str) -> float | None:
             with contextlib_suppress():
                 return float(candidate.split("/")[0].strip())
     return None
+
+
+def set_text_field(title_fragment: str, value: str, position: int = 1) -> bool:
+    """Type into a dialog's text field, through accessibility.
+
+    A `QLineEdit` does answer `set value`, unlike the custom widgets — which is
+    the only way to give a tool a parameter it REQUIRES before it will run:
+    baseline subtraction refuses without line-free channels, and rightly so.
+    """
+    for index, title in enumerate(windows(), start=1):
+        if title_fragment.lower() not in title.lower():
+            continue
+        system_events(f'set value of text field {position} of window {index} to "{value}"',
+                      check=False)
+        return system_events(f"get value of text field {position} of window {index}",
+                             check=False) == value
+    return False
+
+
+def number_before(texts: list[str], phrase: str) -> float | None:
+    """The number in "4 voxels selected", given "voxels selected"."""
+    for value in texts:
+        match = re.search(r"([-+]?[\d.]+(?:[eE][-+]?\d+)?)\s*" + re.escape(phrase), value)
+        if match:
+            with contextlib_suppress():
+                return float(match.group(1))
+    return None
+
+
+def menu_button(title_fragment: str, window_fragment: str = "") -> tuple[int, int] | None:
+    """(window index, button index) of a combo whose CURRENT VALUE matches.
+
+    Qt's combo boxes reach accessibility as `AXMenuButton`s whose title is the
+    selected entry — "Planck18", "WMAP9" — so a combo is found by what it is
+    showing, and read back the same way to see that a choice took effect. Their
+    popup is drawn by Qt and is not an `AXMenu`, so the entry itself still has
+    to be clicked at a point.
+    """
+    for index, title in enumerate(windows(), start=1):
+        if window_fragment and window_fragment.lower() not in title.lower():
+            continue
+        groups = system_events(f"get count of groups of window {index}", check=False)
+        with contextlib_suppress():
+            for group in range(1, int(groups) + 1):
+                ref = f"group {group} of window {index}"
+                count = system_events(f"get count of menu buttons of {ref}", check=False)
+                with contextlib_suppress():
+                    for button in range(1, int(count) + 1):
+                        value = system_events(f"get title of menu button {button} of {ref}",
+                                              check=False)
+                        if title_fragment.lower() in value.lower():
+                            return index, button
+    return None
+
+
+def menu_button_title(window: int, group: int, button: int) -> str:
+    return system_events(
+        f"get title of menu button {button} of group {group} of window {window}", check=False)
 
 
 def overlay_count(overlay: str) -> float | None:
@@ -757,6 +900,8 @@ class App:
         self.clicker = self._build_clicker()
         self.ops = OperationLog()
         self._owned: set[int] = set()
+        self.baseline: set[str] = {MAIN_WINDOW_TITLE}
+        self.dataset: Path | None = None
         self.shots = 0
 
     # -- setup ---------------------------------------------------------------
@@ -788,16 +933,22 @@ class App:
 
     def launch(self, dataset: Path) -> None:
         self.kill_everything()
+        self.dataset = dataset
         self.log = self.artefacts / f"app-{dataset.stem[:24]}.log"
         handle = open(self.log, "w")
         self.ops.start()
+        # Since THIS launch, not since the suite started: the count is
+        # cumulative, so after an image run every later launch looked like it
+        # had opened a FITS and waited for a Tools menu the catalogue viewer
+        # does not have.
+        mark = self.ops.mark()
         before = set(_backend_pids())
         self.process = subprocess.Popen([str(APP), str(dataset)], stdout=handle, stderr=handle)
         self._owned.add(self.process.pid)
         try:
-            ready = wait_for(lambda: any("Visual Analytics" in w for w in windows())
-                             and not any("Starting" in w for w in windows()),
-                             timeout=90)
+            ready = wait_for(lambda: any("Visual Analytics" in w for w in windows_raw())
+                             and not any("Starting" in w for w in windows_raw()),
+                             timeout=120, interval=1.0)
         finally:
             # Whatever backend appeared after our own launch is ours to stop —
             # claimed even when the launch fails, or a run that gives up on a
@@ -805,14 +956,24 @@ class App:
             self._owned |= set(_backend_pids()) - before
         if not ready:
             raise AssertionError(f"the window never appeared (see {self.log})")
-        # The dataset is open once the backend says so.
-        if not wait_for(lambda: self.ops.count("datasets/open"), timeout=60):
-            raise AssertionError("the backend never saw the dataset being opened")
+        # The backend says when the file is open — under the name of the route
+        # that opened it, which is not the same for every kind: a catalogue goes
+        # through catalogue/open and a VisIVO Binary Table through vbt/open.
+        opened = ("datasets/open", "catalogue/open", "vbt/open")
+        if not wait_for(lambda: any(self.ops.count(name, mark) for name in opened), timeout=60):
+            raise AssertionError("the backend never saw the file being opened")
         # …and the viewer is usable once its own menus are on the bar: the first
         # scenario after a launch otherwise clicks a menu that is still the Data
-        # Hub's and reports the dialog as never opening.
-        focus_window_with_menu("Tools", timeout=30)
+        # Hub's and reports the dialog as never opening. The 3-D catalogue window
+        # carries no Tools menu — its controls are all in the window — so this
+        # only applies to the image and cube viewers.
+        if self.ops.count("datasets/open", mark):
+            focus_window_with_menu("Tools", timeout=30)
         self.activate()
+        # Everything on screen once the file is open belongs to the session; a
+        # scenario's own windows are whatever appears after this.
+        time.sleep(1.0)
+        self.baseline = set(windows())
 
     def activate(self) -> None:
         osascript(f'tell application "{PROCESS}" to activate')
@@ -821,7 +982,7 @@ class App:
     # -- driving -------------------------------------------------------------
 
     def click(self, x: float, y: float) -> None:
-        ensure_frontmost()
+        ensure_frontmost(strict=True)
         subprocess.run([str(self.clicker), str(x), str(y)], check=True)
         time.sleep(0.4)
 
@@ -861,8 +1022,15 @@ class App:
             return
         raise AssertionError(f'pressing "{name}" never had any effect')
 
+    def double_click(self, x: float, y: float) -> None:
+        """Two clicks the application reads as one gesture — what the PV path
+        and the kinematic lasso finalise on."""
+        ensure_frontmost(strict=True)
+        subprocess.run([str(self.clicker), "--double", str(x), str(y)], check=True)
+        time.sleep(0.5)
+
     def drag(self, x: float, y: float, to_x: float, to_y: float) -> None:
-        ensure_frontmost()
+        ensure_frontmost(strict=True)
         subprocess.run([str(self.clicker), str(x), str(y), str(to_x), str(to_y)], check=True)
         time.sleep(0.6)
 
@@ -935,6 +1103,13 @@ def scenario(name: str, kind: str, description: str = ""):
 MODE_STRIP_Y = 141
 MODE_X = {"Pan": 79, "Probe": 128, "Region": 185, "Ruler": 240, "Annotate": 300}
 IMAGE_CENTRE = (860, 560)
+
+# The cube viewer's 3D/2D switch, and where its panes draw. Same story as the
+# mode strip: a custom widget that accessibility does not expose as buttons.
+CUBE_VIEW_X = {"3D": 414, "2D": 436}
+CUBE_VIEW_Y = 135
+VOLUME_CENTRE = (872, 572)
+SLICE_POINTS = [(500, 500), (800, 600), (980, 640)]
 
 
 @scenario("mode-strip", "image")
@@ -1217,6 +1392,366 @@ def _smooth_cube(app: App) -> None:
     app.screenshot("cube-smooth")
 
 
+@scenario("linewidth", "cube")
+def _linewidth(app: App) -> None:
+    """The line-width map is computed by the backend."""
+    mark = app.ops.mark()
+    menu_item(["Tools", "Spectral", "Line-width Map…"])
+    if not wait_for(lambda: any("Line-Width" in w for w in windows()), timeout=20):
+        raise AssertionError("the line-width dialog never opened")
+    app.click_button_until("Compute",
+                           lambda: app.ops.count("spectral/linewidth/binary", mark))
+    if app.ops.failed("spectral/linewidth/binary", mark):
+        raise AssertionError("the backend reported the line-width map as failed")
+    app.screenshot("linewidth")
+
+
+@scenario("baseline", "cube")
+def _baseline(app: App) -> None:
+    """Baseline subtraction runs on the channels it is given and reports what it
+    did to the noise.
+
+    The line-free ranges are typed in because the tool REFUSES without them —
+    fitting a baseline on every channel would absorb the line, and the dialog
+    says so. Channels are 1-based here, which is itself worth pinning.
+    """
+    mark = app.ops.mark()
+    menu_item(["Tools", "Spectral", "Baseline Subtraction…"])
+    if not wait_for(lambda: any("Baseline" in w for w in windows()), timeout=20):
+        raise AssertionError("the baseline dialog never opened")
+    # Derived from the cube's own depth, not hard-coded: the dialog validates
+    # the range against the number of channels (and counts them from 1), so
+    # "1-50,350-400" is correct for this 402-channel cube and refused by a
+    # smaller one — the scenario would then fail for the wrong reason.
+    depth = fits_axes(app.dataset)[2] if app.dataset and len(fits_axes(app.dataset)) > 2 else 0
+    if depth < 8:
+        raise AssertionError(f"not a cube: {app.dataset}")
+    edge = max(2, depth // 8)
+    ranges = f"1-{edge},{depth - edge + 1}-{depth}"
+    if not set_text_field("Baseline", ranges):
+        raise AssertionError(f"the line-free channel ranges ({ranges}) could not be entered")
+    operation = "spectral/baseline/{session_id}/{dataset_id}"
+    app.click_button_until("Subtract Baseline", lambda: app.ops.count(operation, mark),
+                           timeout=180, attempts=2)
+    if app.ops.failed(operation, mark):
+        raise AssertionError("the backend reported the baseline subtraction as failed")
+    texts = " ".join(window_texts("Baseline"))
+    if "RMS before" not in texts or "RMS after" not in texts:
+        raise AssertionError(f"the result was not reported back: {texts[-300:]}")
+    app.screenshot("baseline")
+
+
+@scenario("pv-diagram", "cube")
+def _pv_diagram(app: App) -> None:
+    """A PV path drawn on the 2-D pane is extracted.
+
+    Two things had to be true before this could be driven at all: the tool only
+    arms on the 2-D pane (armed from the 3-D view the menu item does nothing at
+    all), and the path is finalised by a real DOUBLE click — two single clicks
+    do not produce the event VTK is listening for.
+    """
+    app.click(CUBE_VIEW_X["2D"], CUBE_VIEW_Y)
+    time.sleep(2.0)
+    menu_item(["Tools", "Spectral", "Extract PV Diagram…"])
+    if not wait_for(lambda: bool(modal_windows()), timeout=20):
+        raise AssertionError("the PV width prompt never appeared — is the 2-D pane active?")
+    app.click_button("OK")
+    mark = app.ops.mark()
+    first, second, last = SLICE_POINTS
+    app.click(*first)
+    app.click(*second)
+    app.double_click(*last)
+    if not wait_for(lambda: app.ops.count("pv", mark), timeout=120):
+        raise AssertionError("the backend never received the PV extraction")
+    if app.ops.failed("pv", mark):
+        raise AssertionError("the backend reported the PV extraction as failed")
+    app.screenshot("pv-diagram")
+    app.click(CUBE_VIEW_X["3D"], CUBE_VIEW_Y)
+
+
+@scenario("kinematic-lasso", "cube")
+def _kinematic_lasso(app: App) -> None:
+    """A double-click in the volume selects a connected source.
+
+    The Inspector reports how many voxels came back, which is the oracle: a
+    lasso that reaches the backend and returns an empty selection looks exactly
+    like a working one from the outside.
+    """
+    app.click(CUBE_VIEW_X["3D"], CUBE_VIEW_Y)
+    time.sleep(2.0)
+    menu_item(["Tools", "Sources  Kinematics", "Kinematic Lasso (click to select)"])
+    mark = app.ops.mark()
+    app.double_click(*VOLUME_CENTRE)
+    if not wait_for(lambda: app.ops.count("cube/kinematic_levels_bin", mark), timeout=120):
+        raise AssertionError("the backend never received the lasso selection")
+    if app.ops.failed("cube/kinematic_levels_bin", mark):
+        raise AssertionError("the backend reported the lasso selection as failed")
+
+    def selected() -> float | None:
+        return number_before(window_texts(MAIN_WINDOW_TITLE), "voxels selected")
+
+    if not wait_for(lambda: (selected() or 0) > 0, timeout=30):
+        raise AssertionError(f"the lasso selected nothing ({selected()} voxels)")
+    app.screenshot("kinematic-lasso")
+
+
+@scenario("kinematic-model", "cube")
+def _kinematic_model(app: App) -> None:
+    """The tilted-ring model overlay is built by the backend."""
+    mark = app.ops.mark()
+    menu_item(["Tools", "Sources  Kinematics", "Kinematic Model Overlay…"])
+    if not wait_for(lambda: any("Kinematic" in w for w in windows()), timeout=20):
+        raise AssertionError("the kinematic model dialog never opened")
+    app.click_button_until("Overlay", lambda: app.ops.count("cube/kinematic_model_bin", mark))
+    if app.ops.failed("cube/kinematic_model_bin", mark):
+        raise AssertionError("the backend reported the kinematic model as failed")
+    app.screenshot("kinematic-model")
+
+
+@scenario("mask-region", "cube")
+def _mask_region(app: App) -> None:
+    """Masking a 3-D region writes a cube of the same shape into the workspace."""
+    before = set(WORKSPACE.glob("*mask*.fits"))
+    mark = app.ops.mark()
+    menu_item(["Tools", "Regions", "Mask 3-D Region…"])
+    if not wait_for(lambda: any("Mask 3-D" in w for w in windows()), timeout=20):
+        raise AssertionError("the mask dialog never opened")
+    app.click_button_until("Mask", lambda: app.ops.count("cube/mask", mark))
+    if app.ops.failed("cube/mask", mark):
+        raise AssertionError("the backend reported the masking as failed")
+    if not wait_for(lambda: set(WORKSPACE.glob("*mask*.fits")) - before, timeout=60):
+        raise AssertionError("no masked cube appeared in the workspace")
+    written = sorted(set(WORKSPACE.glob("*mask*.fits")) - before)[0]
+    if len(fits_axes(written)) < 3:
+        raise AssertionError(f"the masked cube has {fits_axes(written)}")
+    app.screenshot("mask-region")
+
+
+@scenario("export-subcube", "cube")
+def _export_subcube(app: App) -> None:
+    """Export Sub-Cube writes a cube, and says where."""
+    before = set(WORKSPACE.glob("*subcube*.fits"))
+    mark = app.ops.mark()
+    menu_item(["Tools", "Export", "Export Sub-Cube as FITS…"])
+    if not wait_for(lambda: any("Export Sub-Cube" in w for w in windows()), timeout=20):
+        raise AssertionError("the sub-cube dialog never opened")
+    app.click_button_until("Export", lambda: app.ops.count("cube/save_subregion", mark))
+    if app.ops.failed("cube/save_subregion", mark):
+        raise AssertionError("the backend reported the sub-cube export as failed")
+    if not wait_for(lambda: set(WORKSPACE.glob("*subcube*.fits")) - before, timeout=60):
+        raise AssertionError("no sub-cube appeared in the workspace")
+    written = sorted(set(WORKSPACE.glob("*subcube*.fits")) - before)[0]
+    if len(fits_axes(written)) < 3:
+        raise AssertionError(f"the exported sub-cube has {fits_axes(written)}")
+    app.screenshot("export-subcube")
+
+
+@scenario("export-channel", "cube")
+def _export_channel(app: App) -> None:
+    """Exporting the current channel writes a 2-D FITS — a cube collapsed to a
+    map is how it reaches the Stokes and spectral-index workflows."""
+    before = set(WORKSPACE.glob("*_ch[0-9]*.fits"))
+    mark = app.ops.mark()
+    menu_item(["Tools", "Export", "Export Current Channel as 2-D FITS…"])
+    if not wait_for(lambda: any("Export Current Channel" in w for w in windows()), timeout=20):
+        raise AssertionError("the channel export dialog never opened")
+    app.click_button_until("OK", lambda: app.ops.count("cube/save_channel_2d", mark))
+    if app.ops.failed("cube/save_channel_2d", mark):
+        raise AssertionError("the backend reported the channel export as failed")
+    if not wait_for(lambda: set(WORKSPACE.glob("*_ch[0-9]*.fits")) - before, timeout=60):
+        raise AssertionError("no channel map appeared in the workspace")
+    written = sorted(set(WORKSPACE.glob("*_ch[0-9]*.fits")) - before)[0]
+    if len(fits_axes(written)) != 2:
+        raise AssertionError(f"the exported channel has {fits_axes(written)}, not 2 axes")
+    app.screenshot("export-channel")
+
+
+@scenario("sofia", "cube")
+def _sofia(app: App) -> None:
+    """Source finding reaches the backend and the answer is SHOWN.
+
+    Whether SoFiA-2 is installed on the backend's PATH is not this suite's
+    business — on a machine without it the route answers 503 with that reason.
+    What is this suite's business is that the button reaches the route and that
+    whatever comes back, a catalogue or a refusal, ends up in front of the user
+    instead of being swallowed.
+    """
+    mark = app.ops.mark()
+    menu_item(["Tools", "Sources  Kinematics", "Source Finding (SoFiA-2)…"])
+    if not wait_for(lambda: any("SoFiA" in w for w in windows()), timeout=20):
+        raise AssertionError("the source-finding dialog never opened")
+    before = " ".join(window_texts("SoFiA"))
+    app.click_button("Run SoFiA-2")
+    if not wait_for(lambda: any(op.startswith("sourcefind") for op in app.ops.names(mark)),
+                    timeout=180):
+        raise AssertionError("the backend never received the source-finding request")
+    if not wait_for(lambda: " ".join(window_texts("SoFiA")) != before, timeout=60):
+        raise AssertionError("the dialog never reported the outcome of the run")
+    app.screenshot("sofia")
+
+
+@scenario("publication-figure", "image")
+def _publication_figure(app: App) -> None:
+    """The publication figure is rendered by the backend and reported back."""
+    mark = app.ops.mark()
+    menu_item(["Tools", "Products", "Publication Figure…"])
+    if not wait_for(lambda: any("Publication Figure" in w for w in windows()), timeout=20):
+        raise AssertionError("the publication figure dialog never opened")
+    app.click_button_until("Render",
+                           lambda: app.ops.count("products/publication_figure", mark),
+                           timeout=180, attempts=2)
+    if app.ops.failed("products/publication_figure", mark):
+        raise AssertionError("the backend reported the figure as failed")
+    if not wait_for(lambda: bool(modal_windows()), timeout=60):
+        raise AssertionError("the figure was rendered but never reported to the user")
+    app.screenshot("publication-figure")
+
+
+@scenario("export-workspace", "image")
+def _export_workspace(app: App) -> None:
+    """Export to Workspace copies the dataset where the Data Hub can find it."""
+    before = set(WORKSPACE.glob("*.fits"))
+    mark = app.ops.mark()
+    menu_item(["Tools", "Export", "Export to Workspace as FITS…"])
+    if not wait_for(lambda: any("Export to Workspace" in w for w in windows()), timeout=20):
+        raise AssertionError("the export dialog never opened")
+    app.click_button_until("OK", lambda: app.ops.count("exports/copy_dataset", mark))
+    if app.ops.failed("exports/copy_dataset", mark):
+        raise AssertionError("the backend reported the export as failed")
+    if not wait_for(lambda: set(WORKSPACE.glob("*.fits")) - before or bool(modal_windows()),
+                    timeout=60):
+        raise AssertionError("nothing appeared in the workspace and nothing was said")
+    app.screenshot("export-workspace")
+
+
+@scenario("polarisation-refusal", "image")
+def _polarisation_refusal(app: App) -> None:
+    """Polarised intensity says what is missing instead of doing nothing.
+
+    There are no Stokes companions to load in a plain continuum image, so what
+    is under test is the refusal: a tool whose inputs are absent has to say so.
+    Silence here is indistinguishable from a broken menu entry — and that is
+    what the user reports.
+    """
+    mark = app.ops.mark()
+    menu_item(["Tools", "Polarisation", "Compute Pol. Intensity (P)"])
+    if not wait_for(lambda: bool(modal_windows()), timeout=20):
+        raise AssertionError("the tool neither computed anything nor said why")
+    said = " ".join(window_texts(MAIN_WINDOW_TITLE))
+    if "Stokes" not in said:
+        raise AssertionError(f"the refusal does not name what is missing: {said[:200]}")
+    if app.ops.names(mark):
+        raise AssertionError("it asked the backend for something it cannot compute")
+    app.screenshot("polarisation-refusal")
+
+
+@scenario("circle-region", "image")
+def _circle_region(app: App) -> None:
+    """A circle is measured as a circle, of the radius that was dragged.
+
+    The shapes share everything up to the mask, so a circle that quietly
+    measured its bounding box would show the same window and the same labels.
+    What separates them is geometry: a box dragged corner-to-corner over
+    (2a × 2b) holds 4ab pixels, and a circle dragged from its CENTRE by (a, b)
+    has radius √(a²+b²), so their pixel counts must stand in the ratio
+    π(a²+b²)/(4ab) — 1.61 for the drags below. A circle quietly measured as the
+    reference rectangle gives 1.0 and one measured as its own bounding square
+    gives (a²+b²)/(ab) = 2.05, both far outside the tolerance. Measured: 1.599.
+
+    Both drags stay well inside the image on purpose: a region clipped by the
+    edge holds fewer pixels than its shape says, and the comparison would then
+    measure the framing rather than the mask.
+    """
+    centre_x, centre_y = IMAGE_CENTRE
+    half_width, half_height = 150, 120
+
+    def measure(entry: str, x0: float, y0: float, x1: float, y1: float) -> float:
+        arm_mode(["Tools", "Regions", entry], "Region")
+        app.drag(x0, y0, x1, y1)
+        if not wait_for(lambda: "Region Analysis" in " ".join(windows()), timeout=20):
+            raise AssertionError(f"{entry}: the region statistics window never opened")
+        texts = window_texts("Region Analysis")
+        count = labelled_number(texts, "Valid pixels")
+        shape = entry.split()[0].lower()
+        if not any(shape in value.lower() for value in texts):
+            raise AssertionError(f"{entry}: not reported as a {shape}: {texts[:6]}")
+        if not count or count <= 0:
+            raise AssertionError(f"{entry}: no valid pixels ({texts[:6]})")
+        for index, title in enumerate(windows(), start=1):
+            if "Region Analysis" in title:
+                close_window(index)
+                break
+        return count
+
+    box = measure("Box Region Stats",
+                  centre_x - half_width, centre_y - half_height,
+                  centre_x + half_width, centre_y + half_height)
+    circle = measure("Circle Region Stats",
+                     centre_x, centre_y,
+                     centre_x + half_width, centre_y + half_height)
+
+    expected = math.pi * (half_width ** 2 + half_height ** 2) / (4.0 * half_width * half_height)
+    ratio = circle / box
+    if abs(ratio - expected) / expected > 0.08:
+        raise AssertionError(
+            f"circle/box = {ratio:.3f} ({circle:.0f}/{box:.0f} pixels), expected "
+            f"{expected:.3f} — a circle measured as the reference rectangle gives "
+            "1.0, and as its own bounding square 2.05")
+    app.screenshot("circle-region")
+
+
+@scenario("catalogue-opens", "catalogue")
+def _catalogue_opens(app: App) -> None:
+    """A catalogue handed to the application by the DESKTOP opens.
+
+    This is the regression test for a file that is not a FITS: the desktop
+    entry point (command line, Finder, file association) went straight to the
+    FITS/HDF5 route, so a double-clicked catalogue, IPAC table, .speck, VOTable
+    or VisIVO Binary Table was answered with "Unsupported file type. Expected
+    FITS (.fits, .fit) or HDF5" — while the very same file opened from the
+    application's own Open… dialog, which classifies first.
+    """
+    if not wait_for(lambda: any("sources)" in w for w in windows()), timeout=60):
+        raise AssertionError(f"no catalogue window opened: {windows()}")
+    if app.ops.failed("catalogue/open"):
+        raise AssertionError("the backend reported the catalogue open as failed")
+    app.screenshot("catalogue-opens")
+
+
+@scenario("catalogue-cosmology", "catalogue")
+def _catalogue_cosmology(app: App) -> None:
+    """Choosing another cosmology recomputes the catalogue through the backend.
+
+    The default, Planck18, is integrated locally in the client (it agrees with
+    astropy's Planck18 to better than 0.1 % — `test_catalogue_cosmology.cpp`
+    pins that); every other model is the backend's, so this is the path that
+    proves the two are wired together at all.
+    """
+    where = menu_button("Planck18", "3D Catalogue")
+    if not where:
+        raise AssertionError("the cosmology selector was not found")
+    window, button = where
+    mark = app.ops.mark()
+    system_events(f'perform action "AXPress" of menu button {button} of '
+                  f'group 1 of window {window}', check=False)
+    time.sleep(1.2)
+    # The popup is drawn by Qt and is not an AXMenu, so it is driven by the
+    # keyboard rather than by clicking a point inside it.
+    ensure_frontmost()
+    for _ in range(3):
+        osascript('tell application "System Events" to key code 125', check=False)   # Down
+        time.sleep(0.25)
+    osascript('tell application "System Events" to key code 36', check=False)        # Return
+    if not wait_for(lambda: menu_button_title(window, 1, button) == "WMAP9", timeout=15):
+        raise AssertionError(
+            f"the selector still reads {menu_button_title(window, 1, button)!r}")
+    if not wait_for(lambda: app.ops.count("cosmology/distance/batch", mark), timeout=60):
+        raise AssertionError("the backend was never asked for the new distances")
+    if app.ops.failed("cosmology/distance/batch", mark):
+        raise AssertionError("the backend reported the distance batch as failed")
+    app.screenshot("catalogue-cosmology")
+
+
 @scenario("menus", "image")
 def _menus(app: App) -> None:
     """Every tool group the viewer advertises is still reachable — a menu that
@@ -1240,6 +1775,26 @@ def _menus(app: App) -> None:
 
 # ── running them ─────────────────────────────────────────────────────────────
 
+def write_sample_catalogue(directory: Path) -> Path:
+    """A small RA/Dec/redshift catalogue, written rather than depended on.
+
+    The catalogue scenarios are about the desktop open path and the cosmology
+    selector, and both are exercised by 300 synthetic sources — so they run on
+    any machine instead of only where somebody keeps a catalogue file.
+    """
+    import random
+
+    random.seed(7)
+    path = directory / "redshift_catalogue.csv"
+    rows = ["name,ra,dec,redshift"]
+    for index in range(300):
+        rows.append("src{:03d},{:.5f},{:.5f},{:.5f}".format(
+            index, random.uniform(150.0, 160.0), random.uniform(-2.0, 8.0),
+            random.uniform(0.01, 0.35)))
+    path.write_text("\n".join(rows) + "\n")
+    return path
+
+
 def run_scenarios(app: App, dataset: Path, kind: str, wanted: set[str] | None) -> list[Result]:
     chosen = [s for s in SCENARIOS if s.kind == kind and (not wanted or s.name in wanted)]
     if not chosen:
@@ -1251,7 +1806,7 @@ def run_scenarios(app: App, dataset: Path, kind: str, wanted: set[str] | None) -
         started = time.monotonic()
         try:
             app.activate()
-            close_product_windows()
+            close_product_windows(app.baseline)
             item.run(app)
             results.append(Result(item.name, True, seconds=time.monotonic() - started))
             print(f"   ✓ {item.name}  ({results[-1].seconds:.1f}s)")
@@ -1270,6 +1825,9 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--image", type=Path, help="a 2-D FITS to run the image scenarios on")
     parser.add_argument("--cube", type=Path, help="a 3-D FITS to run the cube scenarios on")
+    parser.add_argument("--catalogue", type=Path,
+                        help="a catalogue (CSV/VOTable/IPAC/.speck) for the catalogue "
+                             "scenarios; one is written for you if this is omitted")
     parser.add_argument("--only", default="", help="comma-separated scenario names")
     parser.add_argument("--artefacts", type=Path,
                         default=Path(tempfile.gettempdir()) / "visivo-gui-smoke",
@@ -1291,7 +1849,9 @@ def main() -> int:
     if not APP.exists():
         print(f"the app is not built: {APP}")
         return 2
-    if not args.image and not args.cube:
+    wants_catalogue = not args.only or any(
+        name.startswith("catalogue") for name in args.only.split(","))
+    if not args.image and not args.cube and not wants_catalogue:
         print("give --image and/or --cube (a FITS to open)")
         return 2
 
@@ -1321,6 +1881,9 @@ def main() -> int:
             results += run_scenarios(app, args.image.expanduser(), "image", wanted)
         if args.cube:
             results += run_scenarios(app, args.cube.expanduser(), "cube", wanted)
+        catalogue = (args.catalogue.expanduser() if args.catalogue
+                     else write_sample_catalogue(args.artefacts))
+        results += run_scenarios(app, catalogue, "catalogue", wanted)
     finally:
         app.close()
 

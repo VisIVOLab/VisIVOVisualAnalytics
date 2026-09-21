@@ -25,6 +25,7 @@
 #include "TestSedBuilder.h"
 #include "TestVlkbPosString.h"
 #include "TestSkyOverlap.h"
+#include "TestCatalogueCosmology.h"
 #include "TestFitsHeaderCard.h"
 #include "TestViewerModeState.h"
 #include "TestLayerCardGeometry.h"
@@ -60,6 +61,7 @@ int main(int argc, char *argv[])
     { TestSedBuilder       t; status |= QTest::qExec(&t, argc, argv); }
     { TestVlkbPosString    t; status |= QTest::qExec(&t, argc, argv); }
     { TestSkyOverlap       t; status |= QTest::qExec(&t, argc, argv); }
+    { TestCatalogueCosmology       t; status |= QTest::qExec(&t, argc, argv); }
     { TestFitsHeaderCard   t; status |= QTest::qExec(&t, argc, argv); }
     { TestViewerModeState  t; status |= QTest::qExec(&t, argc, argv); }
     { TestLayerCardGeometry t; status |= QTest::qExec(&t, argc, argv); }

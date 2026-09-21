@@ -572,7 +572,13 @@ void MainWindow::openDatasetPath(const QString &path)
     this->show();
     this->raise();
     this->activateWindow();
-    this->doOpenDataPath(info.absoluteFilePath());
+    // Through the CLASSIFIER, exactly like File ▸ Open…. This entry point used
+    // to call doOpenDataPath() directly, which is the FITS/HDF5 route: a
+    // double-clicked IPAC table, .speck, CSV, VOTable or VisIVO Binary Table was
+    // answered with "Unsupported file type. Expected FITS (.fits, .fit) or HDF5"
+    // although the application opens every one of them from its own Open dialog.
+    // Whatever the desktop hands over goes through the same single decision.
+    this->dispatchOpenForPath(info.absoluteFilePath());
 }
 
 void MainWindow::doOpenDataPath(const QString &path)
@@ -990,6 +996,18 @@ void MainWindow::openAnything()
 void MainWindow::dispatchOpenForPath(const QString &path)
 {
     BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
+    // Asked here rather than only in openAnything(): the desktop reaches this
+    // without going through the browser, and a backend that is down would
+    // otherwise surface as "the backend could not identify this file", followed
+    // by a dialog asking the user to choose a viewer that cannot open anything.
+    const auto health = client.health();
+    if (!health.ok) {
+        QMessageBox::critical(
+                this, u"Backend unavailable"_s,
+                u"Cannot open a file: the backend is not reachable.\n\n"
+                u"Error: %1"_s.arg(health.error.isEmpty() ? u"No response"_s : health.error));
+        return;
+    }
     const BackendClassifyResult verdict = client.classifyFile(path);
 
     // A VBT picked by its `.bin` opens through the `.head` beside it: the VBT
