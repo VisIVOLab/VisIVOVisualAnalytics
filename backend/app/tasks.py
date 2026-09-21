@@ -184,7 +184,13 @@ class TaskRegistry:
             for record in self._tasks.values():
                 if record.status in ("pending", "running"):
                     running_count += 1
-                elif record.status in ("done", "failed", "cancelled"):
+                # "completed" as well as "done": the task API's own terminal
+                # status is "completed" (that is what /v1/tasks/{id} reports and
+                # what the client polls for), so a registry that only knew
+                # "done" dropped every long-running job — moments, above all —
+                # out of the activity panel entirely. It showed nothing at all
+                # for them: not running, not finished.
+                elif record.status in ("done", "completed", "failed", "cancelled"):
                     finished.append(record)
 
             # Sort finished by completion time (descending) and keep top N.

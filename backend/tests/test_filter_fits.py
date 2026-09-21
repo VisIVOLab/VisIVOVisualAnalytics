@@ -354,6 +354,37 @@ def test_smoothing_a_jy_per_beam_map_conserves_the_integrated_flux(tmp_path):
     assert result["flux_scale"] > 1.0
 
 
+def test_a_per_beam_map_without_a_beam_says_the_flux_was_not_corrected(tmp_path):
+    """Found by running it: a real SoFiA cube is Jy/beam with no BMAJ. Smoothing
+    it widens a beam nothing records, so the values stand for a different flux
+    and cannot be corrected — and saying nothing is how that map gets quoted."""
+    data = np.zeros((4, 32, 32))
+    data[:, 16, 16] = 1.0
+    source = _write(tmp_path / "nobeam.fits", data, BUNIT="Jy/beam")
+    out = tmp_path / "nobeam_out.fits"
+    result = worker_filter_fits(str(source), str(out), 3.0, 1)
+
+    assert result["flux_scale"] == 1.0
+    assert result["beam_missing"] is True
+    with fits.open(out) as hdul:
+        history = " ".join(str(card) for card in hdul[0].header["HISTORY"])
+        assert "no BMAJ" in history
+
+
+def test_a_map_with_a_beam_does_not_raise_the_warning(tmp_path):
+    source = _write(tmp_path / "beam.fits", np.zeros((16, 16)),
+                    BUNIT="Jy/beam", BMAJ=0.002, BMIN=0.002)
+    result = worker_filter_fits(str(source), str(tmp_path / "beam_out.fits"), 3.0, 1)
+    assert result["beam_missing"] is False
+    assert result["flux_scale"] > 1.0
+
+
+def test_a_per_pixel_map_without_a_beam_needs_no_warning(tmp_path):
+    source = _write(tmp_path / "perpix.fits", np.zeros((16, 16)), BUNIT="Jy/pixel")
+    result = worker_filter_fits(str(source), str(tmp_path / "perpix_out.fits"), 3.0, 1)
+    assert result["beam_missing"] is False
+
+
 def test_smoothing_a_jy_per_pixel_map_conserves_the_sum(tmp_path):
     data = np.zeros((64, 64))
     data[32, 32] = 1.0

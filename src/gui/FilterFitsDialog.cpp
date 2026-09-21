@@ -203,6 +203,21 @@ void FilterFitsDialog::onFinished()
     }
     m_status->setText(u"%1 — %2"_s.arg(result.workspaceFilename, done.join(u", "_s)));
 
+    if (result.beamMissing) {
+        // Not a failure, but not something to discover later either: the map is
+        // in Jy/beam, the beam just grew, and nothing in the header says by how
+        // much — so its fluxes no longer compare with the input's.
+        QMessageBox box(QMessageBox::Warning, windowTitle(),
+                        u"%1 was smoothed, but its header carries no beam "
+                        u"(BMAJ/BMIN) while its unit is per beam.\n\nThe values "
+                        u"could not be rescaled for the wider beam, so fluxes "
+                        u"measured on the result are not comparable with the "
+                        u"original."_s.arg(result.workspaceFilename),
+                        QMessageBox::Ok, this);
+        box.setTextFormat(Qt::PlainText);
+        box.exec();
+    }
+
     emit filtered(result.outputPath);
     QDialog::accept();
 }

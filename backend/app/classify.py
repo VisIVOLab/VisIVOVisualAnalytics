@@ -145,18 +145,32 @@ def _classify_fits(path: Path, head: bytes) -> dict:
 
 
 def _looks_like_delimited_text(text: str) -> bool:
-    """Whether this reads as a table: several lines, each with the same separator.
+    """Whether this reads as a table: several lines with the same field count.
 
-    One line with commas is a sentence; ten lines with the same number of commas
-    is a catalogue.
+    One line with commas is a sentence; ten lines that parse into the same
+    number of fields is a catalogue.
+
+    The fields are PARSED, not counted as characters. A quoted field containing
+    the separator — an object name with a comma, a contour written as
+    "10.4_10.6,0.0_0.2" — makes the raw counts differ between the header and the
+    rows, and a character count then calls a perfectly ordinary CSV unknown.
     """
+    import csv  # noqa: PLC0415
+    import io  # noqa: PLC0415
+
     lines = [line for line in text.splitlines() if line.strip()
              and not line.lstrip().startswith("#")]
     if len(lines) < 2:
         return False
+    # The last line of a truncated read is usually half a row.
+    sample = lines[:10] if len(lines) > 10 else lines
     for separator in (",", "\t", ";"):
-        counts = [line.count(separator) for line in lines[:10]]
-        if counts[0] >= 1 and len(set(counts)) == 1:
+        try:
+            rows = list(csv.reader(io.StringIO("\n".join(sample)), delimiter=separator))
+        except csv.Error:
+            continue
+        counts = [len(row) for row in rows if row]
+        if len(counts) >= 2 and counts[0] >= 2 and len(set(counts)) == 1:
             return True
     return False
 

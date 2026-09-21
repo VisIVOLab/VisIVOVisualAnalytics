@@ -9,6 +9,8 @@ user actually ran).
 """
 from __future__ import annotations
 
+import asyncio
+
 import numpy as np
 import pytest
 from astropy.io import fits
@@ -148,6 +150,24 @@ def test_tasks_and_operations_share_one_ordered_list():
         == ["products/isosurface", "moment", "spectral/stack"]
 
 
+def test_a_completed_task_is_in_the_snapshot():
+    """The task API's terminal status is "completed", not "done".
+
+    That is what `/v1/tasks/moment` sets and what the client polls for, so a
+    snapshot that recognised only "done" listed no moment at all — neither
+    running nor finished. Driving the real application through Compute Moment
+    is what showed it: the map appeared, and the activity panel stayed empty.
+    """
+    registry = TaskRegistry()
+    record = registry.create("moment")
+    registry.update(record.task_id, status="completed")
+
+    recent = registry.snapshot()["recent_tasks"]
+    assert [entry["operation"] for entry in recent] == ["moment"]
+    assert recent[0]["status"] == "completed"
+    assert registry.snapshot()["running_count"] == 0
+
+
 def test_the_snapshot_limit_is_honoured():
     registry = TaskRegistry()
     for index in range(10):
@@ -205,3 +225,43 @@ async def test_a_failed_open_is_not_filed_as_a_finished_job(client, auth_headers
     recent = (await client.get("/v1/health", headers=auth_headers)).json()["recent_tasks"]
     opens = [entry for entry in recent if entry["operation"] == "datasets/open"]
     assert opens and opens[0]["status"] == "failed"
+
+
+# ── The whole way round: a task route reaching the health panel ──────────────
+
+@pytest.mark.asyncio
+async def test_a_moment_task_reaches_the_activity_panel(client, opened_cube) -> None:
+    """Submit a real moment task and find it in `/v1/health`.
+
+    The unit test above pins the registry, but it writes the terminal status
+    itself: it would still pass if `/v1/tasks/moment` stopped recording the
+    task at all. This one goes through the route the viewer uses and reads the
+    list the Data Hub shows, which is the thing that was actually empty.
+    """
+    created = await client.post(
+        "/v1/tasks/moment",
+        json={
+            "dataset_id": opened_cube["dataset_id"],
+            "moment_order": 0,
+            "channel_start": 0,
+            "channel_end": 8,
+            "mask_enabled": False,
+            "threshold_value": 0.0,
+        },
+        headers=opened_cube["headers"],
+    )
+    assert created.status_code == 200
+    task_id = created.json()["task_id"]
+
+    for _ in range(50):
+        status = await client.get(f"/v1/tasks/{task_id}", headers=opened_cube["headers"])
+        if status.json()["status"] in ("completed", "failed"):
+            break
+        await asyncio.sleep(0.1)
+    assert status.json()["status"] == "completed"
+
+    health = await client.get("/v1/health", headers=opened_cube["headers"])
+    assert health.status_code == 200
+    body = health.json()
+    assert "moment" in [entry["operation"] for entry in body["recent_tasks"]], body
+    assert body["running_tasks"] == 0

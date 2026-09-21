@@ -323,7 +323,8 @@ async def hips2fits_cutout(request: Hips2FitsRequest, _: None = _auth) -> Hips2F
         request.hips, request.format)
     output_path = str(make_workspace_path(basename))
     try:
-        result = await _run(hips2fits.fetch_cutout, params, output_path)
+        # A network fetch: a thread, not a compute worker (see _run_io).
+        result = await _run_io(hips2fits.fetch_cutout, params, output_path)
     except ValueError as exc:
         return Hips2FitsResponse(valid=False, error=str(exc))
     except Exception as exc:

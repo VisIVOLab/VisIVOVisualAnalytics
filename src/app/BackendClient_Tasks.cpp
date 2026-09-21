@@ -219,6 +219,8 @@ BackendFilterFitsResult BackendClient::filterFits(const QString &path,
     result.smoothFwhmPixels  = o.value(QStringLiteral("smooth_fwhm_pixels")).toDouble();
     result.smoothFwhmArcsec  = o.value(QStringLiteral("smooth_fwhm_arcsec")).toDouble();
     result.regridFactor      = o.value(QStringLiteral("regrid_factor")).toInt(1);
+    result.fluxScale         = o.value(QStringLiteral("flux_scale")).toDouble(1.0);
+    result.beamMissing       = o.value(QStringLiteral("beam_missing")).toBool(false);
     return result;
 }
 
@@ -530,6 +532,24 @@ BackendTaskStatusResult BackendClient::waitForTaskCompletion(const BackendTaskCr
                             .arg(createResult.taskId, taskStatus.error),
                     {}, this->m_sessionId, operationTag);
             return taskStatus;
+        }
+        if (taskStatus.status == QStringLiteral("cancelled")) {
+            // Cancelled is terminal too. The status route answers valid=true
+            // for a cancelled task, so the invalid-response branch above does
+            // not catch it: without this the client polls a task that will
+            // never change again until the poll times out, and then tells the
+            // user the backend stopped answering.
+            BackendTaskStatusResult cancelled = taskStatus;
+            if (cancelled.error.isEmpty())
+                cancelled.error = QStringLiteral("Task cancelled.");
+            qWarning().noquote()
+                    << QStringLiteral("%1 cancelled task_id=%2").arg(logTag, createResult.taskId);
+            DiagnosticsManager::instance()->publish(
+                    DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
+                    QStringLiteral("BackendClient"),
+                    QStringLiteral("Task cancelled (%1).").arg(createResult.taskId), {},
+                    this->m_sessionId, operationTag);
+            return cancelled;
         }
     }
 

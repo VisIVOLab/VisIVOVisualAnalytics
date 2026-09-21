@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..auth import verify_token
-from ..dependencies import (_run, assert_safe_fetch_url, get_exports_dir,
+from ..dependencies import (_run_io, assert_safe_fetch_url, get_exports_dir,
                             make_workspace_path)
 
 router = APIRouter(tags=["vlkb"])
@@ -420,8 +420,9 @@ async def vlkb_tap_query(request: VlkbTapRequest, _: None = _auth) -> VlkbTapRes
     basename = request.output_basename.strip() or f"vlkb_{request.preset or 'query'}.csv"
     output_path = str(make_workspace_path(basename))
     try:
-        result = await _run(vlkb_tap.run_query, request.service_url, adql, output_path,
-                            int(request.max_rows))
+        # A network fetch: a thread, not a compute worker (see _run_io).
+        result = await _run_io(vlkb_tap.run_query, request.service_url, adql, output_path,
+                               int(request.max_rows))
     except vlkb_tap.VlkbQueryError as exc:
         return VlkbTapResponse(valid=False, error=str(exc))
     except Exception as exc:

@@ -968,6 +968,12 @@ struct BackendFilterFitsResult
     double smoothFwhmPixels{ 0. };
     double smoothFwhmArcsec{ 0. };
     int regridFactor{ 1 };
+    /// 1.0 unless the beam grew under a per-beam unit, in which case the pixels
+    /// were scaled with it so the integrated flux is unchanged.
+    double fluxScale{ 1. };
+    /// The unit is per beam, the map was smoothed, and the header carries no
+    /// beam — the values could not be rescaled and are no longer comparable.
+    bool beamMissing{ false };
 };
 
 // ── Workspace Exports listing ────────────────────────────────────────────────

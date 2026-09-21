@@ -403,7 +403,7 @@ __all__ = [
     "_normalize_catalogue_field", "_catalogue_field_type",
     "_catalogue_metadata_from_dataframe", "_catalogue_csv_metadata",
     "_catalogue_load_dataframe", "_catalogue_metadata",
-    "_get_dask_client", "_run", "_run_interactive", "_run_with_limit",
+    "_get_dask_client", "_run", "_run_io", "_run_interactive", "_run_with_limit",
     "acquire_task_slot", "task_slot_busy_error",
     "_run_heavy", "_run_heavy_with_limit",
     "_moment_product_payload", "_pv_product_payload",
@@ -698,12 +698,22 @@ def _catalogue_metadata_from_dataframe(frame: pd.DataFrame, fmt: str) -> dict[st
     y_field = _first(("Y", "SGY", "YMPC", "POSY", "PY"))
     z_field = _first(("Z", "SGZ", "ZMPC", "POSZ", "PZ"))
 
+    # Galactic catalogues carry l/b instead. Every VLKB table is one of these —
+    # compact sources (glon/glat), the band-merged view (glonft/glatft), bubbles
+    # (glon_cen/glat_cen) — and refusing them meant a query could be run, saved,
+    # and then not opened, which is where the chain used to end.
+    glon_field = _first(("GLON", "GLONFT", "GLONCEN", "L", "LII", "LONGITUDE", "GLONDEG"))
+    glat_field = _first(("GLAT", "GLATFT", "GLATCEN", "B", "BII", "LATITUDE", "GLATDEG"))
+
     if ra_field and dec_field:
         system = "sky"
+    elif glon_field and glat_field:
+        system = "galactic"
     elif x_field and y_field and z_field:
         system = "cartesian"
     else:
-        raise ValueError("Catalogue requires RA/DEC or X/Y/Z columns.")
+        raise ValueError(
+            "Catalogue requires RA/DEC, Galactic l/b, or X/Y/Z columns.")
 
     return {
         "kind": "catalogue",
@@ -712,6 +722,10 @@ def _catalogue_metadata_from_dataframe(frame: pd.DataFrame, fmt: str) -> dict[st
         "fields": fields,
         "coordinate_fields": {
             "ra": ra_field, "dec": dec_field,
+            # A galactic catalogue reports its own columns here: the viewer is
+            # told the FRAME rather than handed l/b relabelled as RA/Dec, which
+            # would put every source in the wrong place by up to 90 degrees.
+            "glon": glon_field, "glat": glat_field,
             "x": x_field, "y": y_field, "z": z_field,
             "system": system,
         },
@@ -922,6 +936,24 @@ def _select_moment_backend(order: int, subset_bytes: int):
     if subset_bytes >= _DASK_MIN_BYTES:
         return (True, None)  # auto: local threaded dask once big enough
     return (False, None)
+
+
+async def _run_io(fn, *args) -> Any:
+    """Run a blocking **I/O-bound** call in a thread, not in the process pool.
+
+    The pool behind :func:`_run` exists to keep CPU work off the event loop, and
+    its slots are the backend's compute capacity. A remote fetch is not compute:
+    it is a socket waiting, for as long as the far end takes — up to the whole
+    timeout. Parking that in a worker process spends a compute slot on doing
+    nothing, and a handful of slow archives can starve the interactive requests
+    (slice, preview, probe) that the pool is sized for.
+
+    A thread is the right place for it: the GIL is released while the socket
+    waits, nothing is pickled, and the function still runs in this process —
+    which also means a test can patch what it calls.
+    """
+    loop = _asyncio.get_running_loop()
+    return await loop.run_in_executor(None, fn, *args)
 
 
 async def _run(fn, *args) -> Any:

@@ -356,10 +356,17 @@ class CatalogueFieldInfo(BaseModel):
 class CatalogueCoordinateFields(BaseModel):
     ra: str = ""
     dec: str = ""
+    #: Galactic longitude/latitude columns, when the catalogue carries l/b
+    #: instead of RA/Dec — every VLKB table does. Reported as themselves, with
+    #: `system` naming the frame, rather than copied into ra/dec: l/b relabelled
+    #: as RA/Dec places a source up to 90 degrees from where it is.
+    glon: str = ""
+    glat: str = ""
     x: str = ""
     y: str = ""
     z: str = ""
-    system: str = "sky"   # "sky" (RA/DEC) or "cartesian" (X/Y/Z, e.g. Mpc)
+    #: "sky" (RA/DEC) · "galactic" (l/b) · "cartesian" (X/Y/Z, e.g. Mpc)
+    system: str = "sky"
 
 
 class CatalogueOpenResponse(BaseModel):

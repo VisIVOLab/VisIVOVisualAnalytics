@@ -114,6 +114,36 @@ backend/.venv/bin/python backend/scripts/gen_contract.py
 
 ---
 
+## Driving the real application (`tools/gui_smoke`)
+
+The unit suites answer *is this function right*, and the backend suite answers
+*is this route right*. Neither answers the question that keeps breaking: **does
+the thing the user clicks reach the thing that was tested?** A menu entry wired
+to nothing, a dialog opened on a window with no dataset, a result written to a
+file nobody opens — all of those pass every test above.
+
+`tools/gui_smoke/gui_smoke.py` launches the built application on a real FITS
+file, clicks through fifteen scenarios across the image and cube viewers, and
+asserts on the backend's own job history, on the files that appear in the
+workspace, and on the window and menu lists — never on a screenshot.
+
+```bash
+python3 tools/gui_smoke/gui_smoke.py --image 2d.fits --cube 3d.fits
+```
+
+It is a **developer tool, not a test target**: it needs macOS, a display and
+Accessibility permission, and CI has none of the three. `tools/gui_smoke/README.md`
+documents the scenarios, the oracles, and the platform behaviour each helper
+exists to work around.
+
+It has already earned its keep: driving Compute Moment showed that no
+`/v1/tasks/*` job ever appeared in the activity panel — the task API's terminal
+status is `completed` and the registry snapshot recognised only `done`, so a
+moment showed up neither as running nor as finished. The unit test that covered
+the snapshot had used `done`, so nothing caught it.
+
+---
+
 ## Build
 
 ```bash

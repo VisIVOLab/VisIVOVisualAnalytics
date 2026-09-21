@@ -329,6 +329,7 @@ def worker_filter_fits(input_path: str, output_path: str, smooth_fwhm_pixels: fl
     A cube is treated plane by plane: this is a *spatial* operation, and
     smoothing along the spectral axis would be a different instrument.
     """
+    beam_missing = False
     smooth_fwhm_pixels = float(smooth_fwhm_pixels or 0.0)
     regrid_factor = int(regrid_factor or 1)
     if smooth_fwhm_pixels <= 0 and regrid_factor <= 1:
@@ -393,6 +394,16 @@ def worker_filter_fits(input_path: str, output_path: str, smooth_fwhm_pixels: fl
             header["HISTORY"] = (
                 f"VisIVO: values scaled by {flux_scale:.6f} for the widened beam "
                 f"(flux conserved)")
+        elif is_per_beam(bunit) and old_beam[0] is None:
+            # A per-beam map with no beam in its header: the values are now per
+            # a WIDER beam that nothing records, so the flux they stand for has
+            # changed and cannot be corrected. Say so — silence here is how a
+            # map ends up quoted with a flux that is quietly too low.
+            beam_missing = True
+            header["HISTORY"] = (
+                "VisIVO: BUNIT is per beam but the header has no BMAJ/BMIN, so the "
+                "values were NOT rescaled for the widened beam - fluxes from this "
+                "file are not comparable with the input")
         header["HISTORY"] = (
             f"VisIVO: Gaussian smooth, FWHM {smooth_fwhm_pixels:.3f} px "
             f"(sigma {sigma:.3f} px, truncated at {_TRUNCATE_SIGMAS:.0f} sigma), "
@@ -431,4 +442,7 @@ def worker_filter_fits(input_path: str, output_path: str, smooth_fwhm_pixels: fl
         # 1.0 unless the beam grew under a per-beam unit, in which case the
         # pixels were scaled with it so the integrated flux is unchanged.
         "flux_scale": float(flux_scale),
+        # True when the unit is per beam, the map was smoothed, and no beam was
+        # recorded — so the flux could not be conserved and the user has to know.
+        "beam_missing": bool(beam_missing),
     }

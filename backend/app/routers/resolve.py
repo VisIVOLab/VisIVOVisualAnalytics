@@ -88,7 +88,8 @@ async def cone_search(request: ConeSearchRequest, _: None = _auth) -> ConeSearch
     basename = request.output_basename.strip() or "cone_search.csv"
     output_path = str(make_workspace_path(basename))
     try:
-        result = await _run(
+        # A network fetch: a thread, not a compute worker (see _run_io).
+        result = await _run_io(
             run_cone_search, request.url, request.ra, request.dec, request.radius,
             int(request.verbosity), output_path, int(request.max_rows))
     except ConeSearchError as exc:

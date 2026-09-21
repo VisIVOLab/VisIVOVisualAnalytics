@@ -136,7 +136,6 @@ _HISTORY_SKIP_PREFIXES = (
     "/v1/sessions",        # session lifecycle
     "/v1/tasks/",          # already recorded by the task registry itself
     "/v1/render/",         # WebRTC signalling and per-frame interaction
-    "/v1/image/",          # tiles and previews: one per pan / zoom step
     "/v1/samp/",           # interoperability messaging
     "/v1/diagnostics",
     "/v1/assistant/config",
@@ -144,6 +143,13 @@ _HISTORY_SKIP_PREFIXES = (
 )
 
 _HISTORY_SKIP_PATHS = frozenset({
+    # The interactive image routes, named one by one rather than skipped as a
+    # "/v1/image/" prefix: /v1/image/filter lives under that prefix and is a
+    # job — it takes seconds and writes a file — so a prefix rule hid exactly
+    # the entry the panel is for.
+    "/v1/image/tile",
+    "/v1/image/preview",
+    "/v1/image/full",
     "/v1/cube/slice",          # channel scrubbing
     "/v1/cube/preview",
     "/v1/spectral/probe",      # spectrum under the cursor
