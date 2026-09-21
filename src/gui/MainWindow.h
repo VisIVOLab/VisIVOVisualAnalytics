@@ -73,6 +73,10 @@ private slots:
     void openVbt();
     void openVelocityField();   ///< F1: open a cosmic-flow velocity field (3-component FITS)
     void openHiPS();
+    /// Data ▸ HiPS Cutout — a FITS out of any HiPS survey (CDS hips2fits).
+    void openHips2Fits();
+    /// Data ▸ Cone Search — a VO Simple Cone Search, saved as a catalogue.
+    void openConeSearch();
     /// Browse an AREPO snapshot on the backend and extract a uniform cube.
     void openArepoSnapshot();
     void openSettingsDialog();

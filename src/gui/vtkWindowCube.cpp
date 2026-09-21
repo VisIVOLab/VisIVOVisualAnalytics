@@ -1,4 +1,7 @@
 #include "vtkWindowCube.h"
+
+#include "FilterFitsDialog.h"
+#include "FitsHeaderEditorDialog.h"
 #include "ui_vtkWindowCube.h"
 #include "CubeWcsUtil.h"
 #include "vtk/RayVoxelPick.h"
@@ -2747,6 +2750,38 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // round-trip the heavy work through the backend exactly like the rest
     // of the ANALYSIS group, so the UI thread stays responsive while the
     // FITS is being written.
+    // Smooth / regrid — the same backend operation the image viewer offers, on
+    // every plane of the cube. Spatial only: smoothing along the spectral axis
+    // would be a different instrument, not a filter.
+    m_actFilterFits = ui->menuTools->addAction(u"Smooth / Regrid…"_s);
+    m_actFilterFits->setToolTip(
+            u"Gaussian-smooth and/or shrink every plane of this cube on the backend, "
+            u"into a new FITS file in the Workspace."_s);
+    QObject::connect(m_actFilterFits, &QAction::triggered, this, [this]() {
+        const double cdeltX = std::abs(this->remoteDatasetCdelt[0]);
+        const double cdeltY = std::abs(this->remoteDatasetCdelt[1]);
+        const double scaleDeg = (std::isfinite(cdeltX) && cdeltX > 0
+                                 && std::isfinite(cdeltY) && cdeltY > 0)
+                ? 0.5 * (cdeltX + cdeltY)
+                : 0.0;
+        auto *dialog = new FilterFitsDialog(this->filepath, scaleDeg * 3600.0,
+                                            this->remoteDatasetWidth, this->remoteDatasetHeight,
+                                            this->remoteBackendUrl, this->remoteBackendToken,
+                                            this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        QPointer<vtkWindowCube> self(this);
+        QObject::connect(dialog, &FilterFitsDialog::filtered, this,
+                         [this, self](const QString &path) {
+                             if (!self)
+                                 return;
+                             // A cube cannot layer another cube: the result is
+                             // a dataset of its own, and only the host opens one.
+                             emit this->openBackendFitsRequested(
+                                     path, QFileInfo(path).fileName());
+                         });
+        dialog->open();
+    });
+
     m_actExportSubCube = ui->menuTools->addAction(u"Export Sub-Cube as FITS…"_s);
     m_actExportSubCube->setToolTip(
             u"Crop the current cube to a spatial+spectral ROI and persist "
@@ -3283,6 +3318,37 @@ void vtkWindowCube::showFitsHeaderDialog()
         body->setPlainText(u"(empty header)"_s);
     }
     vbox->addWidget(body, 1);
+
+    // Editing belongs where the header already is — the legacy put it in a
+    // separate window that only appeared when a file failed to open.
+    auto *actions = new QHBoxLayout;
+    actions->setContentsMargins(12, 8, 12, 12);
+    actions->addStretch(1);
+    auto *edit = new QPushButton(u"Edit…"_s, dlg);
+    edit->setEnabled(result.valid && !result.cards.isEmpty());
+    edit->setToolTip(u"Correct keywords and save the result as a new FITS file "
+                     u"in the Workspace. This file is not modified."_s);
+    const QStringList cards = result.cards;
+    QPointer<vtkWindowCube> self(this);
+    QObject::connect(edit, &QPushButton::clicked, dlg, [this, self, dlg, cards]() {
+        if (!self)
+            return;
+        auto *editor = new FitsHeaderEditorDialog(this->filepath, cards,
+                                                  this->remoteBackendUrl,
+                                                  this->remoteBackendToken, self);
+        editor->setAttribute(Qt::WA_DeleteOnClose);
+        QObject::connect(editor, &FitsHeaderEditorDialog::saved, self,
+                         [this, self](const QString &path) {
+                             if (!self)
+                                 return;
+                             emit this->openBackendFitsRequested(
+                                     path, QFileInfo(path).fileName());
+                         });
+        editor->open();
+        dlg->close();
+    });
+    actions->addWidget(edit);
+    vbox->addLayout(actions);
 
     dlg->show();
 }
@@ -6632,6 +6698,7 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Catalogue"_s, self->actionShowCatalogueLabels);
     add(u"Catalogue"_s, self->actionClearCatalogueOverlay);
 
+    add(u"Export"_s, self->m_actFilterFits);
     add(u"Export"_s, self->m_actExportSubCube);
     add(u"Export"_s, self->m_actExportChannel2d);
     add(u"Export"_s, self->m_actExportMomentFits);

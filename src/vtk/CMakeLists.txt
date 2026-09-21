@@ -8,6 +8,7 @@ add_library(visivo_shared_vtk STATIC
         ${PROJECT_SOURCE_DIR}/src/app/BackendClient_RegionRepro.cpp
         ${PROJECT_SOURCE_DIR}/src/app/BackendClient_Sed.cpp
         ${PROJECT_SOURCE_DIR}/src/app/BackendClient_Arepo.cpp
+        ${PROJECT_SOURCE_DIR}/src/app/BackendClient_Archives.cpp
         ${PROJECT_SOURCE_DIR}/src/app/BackendClient.h
         ${PROJECT_SOURCE_DIR}/src/app/BackendClientFactory.cpp
         ${PROJECT_SOURCE_DIR}/src/app/BackendClientFactory.h

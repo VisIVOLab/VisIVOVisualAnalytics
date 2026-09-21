@@ -1,4 +1,6 @@
 #include "vtkWindowImage.h"
+
+#include "VlkbQueryComposer.h"
 #include "ui_vtkWindowImage.h"
 #include "CubeViewportGeometry.h"
 
@@ -272,6 +274,18 @@ CatalogueOverlayParseResult catalogueResultFromRegions(const QJsonArray &regions
 }
 
 }  // namespace
+
+/// What to call the catalogue in a message. Singular is the noun minus its "s",
+/// which is true for all three.
+QString vtkWindowImage::vlkbCatalogueNoun(VlkbOverlayKind kind)
+{
+    switch (kind) {
+    case VlkbOverlayKind::Filaments: return QStringLiteral("filaments");
+    case VlkbOverlayKind::Bubbles:   return QStringLiteral("bubbles");
+    case VlkbOverlayKind::Sources:   break;
+    }
+    return QStringLiteral("sources");
+}
 
 void vtkWindowImage::loadCatalogueOverlay()
 {
@@ -1708,10 +1722,13 @@ VlkbCatalogueRaw fetchVlkbSources(const QString &base, const QString &adql,
 }
 
 // Worker: filament outlines. Each row is "idfil,\"glon1_..._,glat1_..._\"".
-VlkbCatalogueRaw fetchVlkbFilaments(const QString &base, const QString &adql)
+/// Contour catalogues — filaments and bubbles — which differ only in the table
+/// they come from and in whether the contour closes on itself.
+VlkbCatalogueRaw fetchVlkbContours(const QString &base, const QString &adql,
+                                   const QString &noun, bool closed)
 {
     VlkbCatalogueRaw out;
-    out.sourceLabel = QStringLiteral("VLKB filaments");
+    out.sourceLabel = QStringLiteral("VLKB ") + noun;
     QString err;
     const QByteArray csv = vlkbGet(vlkbTapUrl(base, adql), err);
     if (!err.isEmpty()) { out.error = err; return out; }
@@ -1733,13 +1750,16 @@ VlkbCatalogueRaw fetchVlkbFilaments(const QString &base, const QString &adql)
         const int n = std::min(glons.size(), glats.size());
         if (n < 2) continue;
         VlkbCatalogueRaw::Polyline poly;
-        poly.label = QStringLiteral("filament %1").arg(id);
+        poly.label = QStringLiteral("%1 %2").arg(noun.chopped(1), id);
         poly.pts.reserve(n);
         for (int k = 0; k < n; ++k) {
             bool a = false, b = false;
             const double g = glons[k].toDouble(&a), l = glats[k].toDouble(&b);
             if (a && b) poly.pts.push_back({ g, l });
         }
+        // A bubble is a rim: without the closing segment it is drawn as a C.
+        if (closed && poly.pts.size() >= 3 && poly.pts.front() != poly.pts.back())
+            poly.pts.push_back(poly.pts.front());
         if (poly.pts.size() >= 2) out.polylines.push_back(std::move(poly));
     }
     out.valid = true;
@@ -1814,7 +1834,7 @@ void vtkWindowImage::overlayVlkbSources()
         return;
     }
     // Query ALL Hi-GAL bands in one go; per-band visibility is toggled afterwards.
-    this->beginVlkbRegionSelect(false);
+    this->beginVlkbRegionSelect(VlkbOverlayKind::Sources);
 }
 
 void vtkWindowImage::overlayVlkbFilaments()
@@ -1825,8 +1845,46 @@ void vtkWindowImage::overlayVlkbFilaments()
                              u"This image has no celestial WCS to place filaments on."_s);
         return;
     }
-    this->beginVlkbRegionSelect(true);
+    this->beginVlkbRegionSelect(VlkbOverlayKind::Filaments);
 }
+
+void vtkWindowImage::overlayVlkbBubbles()
+{
+    // The legacy had a bubble button, a selector and an importer — and no query
+    // for them: generateQuery() had no bubble branch, so the mode ran the
+    // compact-source query and drew sources. The query is in the backend now
+    // (app/vlkb_tap.py) and this is the mode that uses it.
+    if (this->m_vlkbCatWatcher.isRunning() || this->m_vlkbSelectActive) return;
+    if (!this->remoteHasCelestialAxes()) {
+        QMessageBox::warning(this, u"VLKB bubbles"_s,
+                             u"This image has no celestial WCS to place bubbles on."_s);
+        return;
+    }
+    this->beginVlkbRegionSelect(VlkbOverlayKind::Bubbles);
+}
+
+void vtkWindowImage::openVlkbQueryComposer()
+{
+    auto *composer = new VlkbQueryComposer(this->remoteBackendUrl, this->remoteBackendToken,
+                                           this);
+    composer->setAttribute(Qt::WA_DeleteOnClose);
+    // Prefill with what this window is looking at — the legacy made you type
+    // the box, or drag one and lose the dialog's other settings.
+    double glonMin = 0.0, glonMax = 0.0, glatMin = 0.0, glatMax = 0.0;
+    if (this->imageGalacticFootprint(glonMin, glonMax, glatMin, glatMax))
+        composer->setBox(glonMin, glonMax, glatMin, glatMax);
+    QPointer<vtkWindowImage> self(this);
+    QObject::connect(composer, &VlkbQueryComposer::catalogueReady, this,
+                     [this, self](const QString &path) {
+                         if (!self)
+                             return;
+                         // The result is a catalogue file; only the host opens
+                         // one in the 3-D viewer.
+                         emit this->openInOwnWindowRequested(path);
+                     });
+    composer->open();
+}
+
 
 // Build the ADQL for the current mode over the given Galactic box and run the query.
 void vtkWindowImage::runVlkbCatalogueQuery(double glonMin, double glonMax,
@@ -1834,17 +1892,28 @@ void vtkWindowImage::runVlkbCatalogueQuery(double glonMin, double glonMax,
 {
     if (this->m_vlkbCatWatcher.isRunning()) return;
     const QString vlkbUrl = vlkbBaseUrl();
-    if (this->m_vlkbCatIsFilament) {
-        const QString adql = QStringLiteral(
-                "SELECT idfil,contour FROM filaments.filaments "
-                "WHERE glon BETWEEN %1 AND %2 AND glat BETWEEN %3 AND %4")
-                .arg(glonMin, 0, 'f', 6).arg(glonMax, 0, 'f', 6)
-                .arg(glatMin, 0, 'f', 6).arg(glatMax, 0, 'f', 6);
-        this->statusBar()->showMessage(u"Querying VLKB filaments…"_s);
-        this->m_vlkbProgressSheet =
-                visivo::showToolProgressSheet(this, u"Querying the VLKB for filaments"_s);
+    if (this->vlkbCatIsContour()) {
+        // Filaments and bubbles are the same shape from two tables. The bubble
+        // contour closes on itself — it is a rim, not a spine — which is the
+        // only difference in the drawing.
+        const bool bubbles = this->m_vlkbCatKind == VlkbOverlayKind::Bubbles;
+        const QString adql =
+                (bubbles ? QStringLiteral(
+                         "SELECT idbubble,contour FROM bubbles.bubbles "
+                         "WHERE glon_cen BETWEEN %1 AND %2 AND glat_cen BETWEEN %3 AND %4")
+                         : QStringLiteral(
+                                 "SELECT idfil,contour FROM filaments.filaments "
+                                 "WHERE glon BETWEEN %1 AND %2 AND glat BETWEEN %3 AND %4"))
+                        .arg(glonMin, 0, 'f', 6).arg(glonMax, 0, 'f', 6)
+                        .arg(glatMin, 0, 'f', 6).arg(glatMax, 0, 'f', 6);
+        const QString noun = vlkbCatalogueNoun(this->m_vlkbCatKind);
+        this->statusBar()->showMessage(u"Querying VLKB %1…"_s.arg(noun));
+        this->m_vlkbProgressSheet = visivo::showToolProgressSheet(
+                this, u"Querying the VLKB for %1"_s.arg(noun));
         this->m_vlkbCatWatcher.setFuture(QtConcurrent::run(
-                [vlkbUrl, adql]() { return fetchVlkbFilaments(vlkbUrl, adql); }));
+                [vlkbUrl, adql, noun, bubbles]() {
+                    return fetchVlkbContours(vlkbUrl, adql, noun, bubbles);
+                }));
     } else {
         // One query returns every band's position + ellipse columns; toggled per
         // band later. Per-band glon/glat centre each band's ellipse on its own peak.
@@ -1872,9 +1941,9 @@ void vtkWindowImage::runVlkbCatalogueQuery(double glonMin, double glonMax,
     }
 }
 
-void vtkWindowImage::runVlkbCatalogueQueryWholeImage(bool isFilament)
+void vtkWindowImage::runVlkbCatalogueQueryWholeImage(VlkbOverlayKind kind)
 {
-    this->m_vlkbCatIsFilament = isFilament;
+    this->m_vlkbCatKind = kind;
     double glonMin, glonMax, glatMin, glatMax;
     if (!this->imageGalacticFootprint(glonMin, glonMax, glatMin, glatMax)) {
         QMessageBox::warning(this, u"VLKB catalogue"_s, u"Could not determine the image footprint."_s);
@@ -1885,12 +1954,12 @@ void vtkWindowImage::runVlkbCatalogueQueryWholeImage(bool isFilament)
 
 // ── Rubber-band region selection over the image ─────────────────────────────
 
-void vtkWindowImage::beginVlkbRegionSelect(bool isFilament)
+void vtkWindowImage::beginVlkbRegionSelect(VlkbOverlayKind kind)
 {
     auto *iren = ui->vtk && ui->vtk->renderWindow()
             ? ui->vtk->renderWindow()->GetInteractor() : nullptr;
-    if (!iren) { this->runVlkbCatalogueQueryWholeImage(isFilament); return; }
-    this->m_vlkbCatIsFilament = isFilament;
+    if (!iren) { this->runVlkbCatalogueQueryWholeImage(kind); return; }
+    this->m_vlkbCatKind = kind;
     this->m_vlkbSelectActive = true;
     this->m_vlkbSelectDragging = false;
     // Take over the pointer with a passive style so a drag draws the rectangle
@@ -1911,7 +1980,7 @@ void vtkWindowImage::beginVlkbRegionSelect(bool isFilament)
     if (ui->vtk) ui->vtk->setCursor(Qt::CrossCursor);
     this->statusBar()->showMessage(
             u"Drag a rectangle to query %1 in that area (or click once for the whole image)."_s
-                    .arg(isFilament ? u"filaments"_s : u"sources"_s), 0);
+                    .arg(vlkbCatalogueNoun(kind)), 0);
 }
 
 void vtkWindowImage::endVlkbRegionSelect()
@@ -1999,7 +2068,7 @@ void vtkWindowImage::onVlkbSelectRelease()
         const int *p = iren->GetEventPosition();   // use the actual release corner
         this->m_vlkbSelEnd[0] = p[0]; this->m_vlkbSelEnd[1] = p[1];
     }
-    const bool isFilament = this->m_vlkbCatIsFilament;
+    const VlkbOverlayKind kind = this->m_vlkbCatKind;
     const int dx = std::abs(this->m_vlkbSelEnd[0] - this->m_vlkbSelStart[0]);
     const int dy = std::abs(this->m_vlkbSelEnd[1] - this->m_vlkbSelStart[1]);
     auto *ren = ui->vtk && ui->vtk->renderWindow()
@@ -2010,7 +2079,7 @@ void vtkWindowImage::onVlkbSelectRelease()
     this->endVlkbRegionSelect();
 
     if (dx < 5 || dy < 5 || !ren) {          // a click, not a drag → whole image
-        this->runVlkbCatalogueQueryWholeImage(isFilament);
+        this->runVlkbCatalogueQueryWholeImage(kind);
         return;
     }
     // Display corners → world (full-res pixel) → native lon/lat → Galactic box.
@@ -2034,8 +2103,8 @@ void vtkWindowImage::onVlkbSelectRelease()
             any = true;
         }
     }
-    this->m_vlkbCatIsFilament = isFilament;
-    if (!any || lmax < lmin) { this->runVlkbCatalogueQueryWholeImage(isFilament); return; }
+    this->m_vlkbCatKind = kind;
+    if (!any || lmax < lmin) { this->runVlkbCatalogueQueryWholeImage(kind); return; }
     this->runVlkbCatalogueQuery(lmin, lmax, bmin, bmax);
 }
 
@@ -2131,11 +2200,11 @@ void vtkWindowImage::onVlkbCatalogueReady()
     if (parsed.entries.empty()) {
         QMessageBox::information(this, u"VLKB catalogue"_s,
                                  u"No %1 found in this image footprint."_s.arg(
-                                         this->m_vlkbCatIsFilament ? u"filaments"_s : u"sources"_s));
+                                         vlkbCatalogueNoun(this->m_vlkbCatKind)));
         return;
     }
     this->applyCatalogueOverlayResult(parsed);
-    if (!this->m_vlkbCatIsFilament) {
+    if (!this->vlkbCatIsContour()) {
         // Legacy behaviour: show only the band-merged sources by default; the user
         // enables individual bands from the panel. Hide every present band except
         // the merged one (applyCatalogueOverlayResult cleared m_vlkbHiddenBands).

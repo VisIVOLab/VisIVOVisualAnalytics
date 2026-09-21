@@ -139,6 +139,21 @@ The cube has no celestial axes (only the spectral axis is recognised),
 or the `CRVAL` / `CRPIX` are missing. Check the FITS header
 (*View → Show FITS Header* in the cube viewer).
 
+If the keywords are simply missing or wrong — a `CTYPE1` that never got
+written, a `CDELT` saved as a quoted string — **Edit…** in that header
+window writes a corrected **copy** into the Workspace and tells you whether
+the result has a celestial WCS. The file on disk is not modified.
+
+### A layer will not go onto my image: "covers none of the sky…"
+
+The FITS you are adding is of a different part of the sky. The viewer refuses
+it because layering it would place it correctly — off the edge of the image —
+and show nothing at all. Use **Open in New Window** for it.
+
+If you believe the two really do overlap, **Add Anyway** is there: the check
+uses `wcsrange()` bounds, which are a bounding box, and a rotated field
+straddling RA = 0 can measure narrower than it is.
+
 ## Tools
 
 ### "Pick Spectrum on Plane Click" does nothing when I click

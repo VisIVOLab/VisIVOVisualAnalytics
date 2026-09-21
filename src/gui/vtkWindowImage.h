@@ -177,8 +177,9 @@ signals:
 
     void catalogueSourceSelectionChanged(int index);
 
-    /// A FITS the user tried to add as a layer covers none of this image's sky.
-    /// They chose to open it on its own instead — only the host can do that.
+    /// Open this file in a window of its own — a layer that covers none of this
+    /// image's sky, or the catalogue a VLKB query just saved. Only the host can
+    /// open a dataset, and what the file is decides which viewer gets it.
     void openInOwnWindowRequested(const QString &path);
 
 public:
@@ -365,6 +366,7 @@ private:
     QPointer<QAction> m_actToggleContours;
     QPointer<QAction> m_actLoadExternalContour;
     QPointer<QAction> m_actClearAllContours;
+    QPointer<QAction> m_actFilterFits;
     QPointer<QAction> m_actExportToWorkspace;
     QPointer<QAction> m_actExportRegions;
     vtkSmartPointer<vtkFlyingEdges2D> m_contourFilter;
@@ -574,6 +576,10 @@ private:
     // ── VLKB catalogue overlays (compact sources / filaments over the footprint) ──
     void overlayVlkbSources();     ///< btnSources — band-merged compact sources (+ band picker)
     void overlayVlkbFilaments();   ///< btnFilaments — filament outlines as polylines
+    void overlayVlkbBubbles();     ///< bubble outlines as closed polylines
+    /// Tools ▸ VLKB Catalogue Query… — the legacy's query composer, prefilled
+    /// with this image's own Galactic footprint.
+    void openVlkbQueryComposer();
     void onVlkbCatalogueReady();   ///< project the raw Galactic result → overlay
     /// Project a Galactic (glon,glat) position to full-res image pixels via the
     /// window's WCS (handles a non-Galactic native frame by converting first).
@@ -586,16 +592,28 @@ private:
     /// bottom of a full-screen window is not feedback: the query takes
     /// seconds, nothing moves, and the overlay looks like it did nothing.
     QPointer<QProgressDialog> m_vlkbProgressSheet;
-    bool m_vlkbCatIsFilament{ false };   ///< which shape the pending result carries
+    /// Which VLKB catalogue the pending query is for. Sources are ellipses;
+    /// filaments and bubbles are both contours, and differ only in the table
+    /// they come from and in whether the contour closes.
+    enum class VlkbOverlayKind
+    {
+        Sources,
+        Filaments,
+        Bubbles,
+    };
+    VlkbOverlayKind m_vlkbCatKind{ VlkbOverlayKind::Sources };
+    /// True for the two contour catalogues — the shape the pending result carries.
+    bool vlkbCatIsContour() const { return m_vlkbCatKind != VlkbOverlayKind::Sources; }
+    static QString vlkbCatalogueNoun(VlkbOverlayKind kind);
     // Rubber-band region select: drag a rectangle to query only that area (like the
     // legacy client); a click without a drag falls back to the whole image footprint.
-    void beginVlkbRegionSelect(bool isFilament);
+    void beginVlkbRegionSelect(VlkbOverlayKind kind);
     void endVlkbRegionSelect();
     void onVlkbSelectPress();
     void onVlkbSelectMove();
     void onVlkbSelectRelease();
     void runVlkbCatalogueQuery(double glonMin, double glonMax, double glatMin, double glatMax);
-    void runVlkbCatalogueQueryWholeImage(bool isFilament);   ///< click-without-drag fallback
+    void runVlkbCatalogueQueryWholeImage(VlkbOverlayKind kind);   ///< click-without-drag fallback
     bool m_vlkbSelectActive{ false };
     bool m_vlkbSelectDragging{ false };
     QString m_vlkbBand{ QStringLiteral("250") };
@@ -625,6 +643,10 @@ private:
     /// Re-elide the LAYER SETTINGS caption for the width and font it has NOW.
     void elideLayerSettingsHeader();
     bool eventFilter(QObject *watched, QEvent *event) override;
+    /// Tools ▸ Smooth / Regrid… — the legacy's *Filter FITS*, acting on this
+    /// window's image and returning the result as a layer over it.
+    void openFilterFitsDialog();
+
     /// Tell the user why a layer was not added — non-modally, so no nested
     /// event loop runs while the pending-load queue is being put right. When
     /// the file simply belongs elsewhere, this is also where the choice between
@@ -824,6 +846,8 @@ private:
     QPointer<QAction> m_actExportCatalogue;
     QPointer<QAction> m_actVlkbSources;
     QPointer<QAction> m_actVlkbFilaments;
+    QPointer<QAction> m_actVlkbBubbles;
+    QPointer<QAction> m_actVlkbQuery;
     QPointer<QAction> m_actLoadStokesCompanions;
     QPointer<QAction> m_actComputeStokesP;
     QPointer<QAction> m_actComputeStokesPA;

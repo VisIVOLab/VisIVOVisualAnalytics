@@ -24,6 +24,12 @@ BUNIT
   `Jy/beam`, `K`, `counts`). All region statistics and moment maps
   report values in BUNIT when it is set on the source cube / image.
 
+Cone search (SCS)
+  *Simple Cone Search* — the IVOA protocol for "what is within this radius
+  of this position?". A service takes `RA`, `DEC` and `SR` (search radius,
+  degrees) and answers with a VOTable. See
+  [Catalogues & HiPS — Cone Search](catalogues-hips#cone-search).
+
 CTYPE
   FITS header keyword that names each WCS axis (e.g. `RA---SIN`,
   `DEC--SIN`, `VELO-LSR`). VisIVO inspects CTYPE to decide axis order,
@@ -70,6 +76,12 @@ HiPS
   *Hierarchical Progressive Survey* — multi-resolution tiled image format
   used by the IVOA to serve all-sky surveys. See
   [HiPS viewer](catalogues-hips#hips-viewer).
+
+hips2fits
+  A CDS service that reprojects a HiPS survey onto a WCS you specify and
+  returns a FITS (or a picture). It is how a survey becomes a file you can
+  measure on, rather than tiles you can only look at. See
+  [Catalogues & HiPS](catalogues-hips#hips-cutout-hips2fits).
 
 Isosurface
   A closed 3-D surface where the cube's intensity equals a given
@@ -161,6 +173,12 @@ SPECVAL (SPECTYPE, SPECUNIT)
   `VRAD`), and `SPECUNIT` mirrors `CUNIT3` (e.g. `Hz`, `km/s`). The
   Stokes / spectral-index / Faraday-RM dialogs in the image viewer use
   these to prompt the user with the right frequency at recall time.
+
+TAP / ADQL
+  *Table Access Protocol* and the query language it speaks — SQL with
+  astronomy added (`POINT`, `CIRCLE`, `radians()`). The VLKB catalogues
+  are queried this way. See
+  [Catalogues & HiPS — VLKB Catalogue Query](catalogues-hips#vlkb-catalogue-query).
 
 VBT
   *VisIVO Binary Table* — efficient column-oriented binary format used

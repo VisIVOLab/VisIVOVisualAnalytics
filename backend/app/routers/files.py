@@ -115,3 +115,71 @@ async def classify_file(request: FileClassifyRequest, _: None = _auth) -> FileCl
 
     logger.info("[classify] %s → %s (%s)", path, verdict["kind"], verdict["opener"])
     return FileClassifyResponse(valid=True, error="", path=str(path), **verdict)
+
+
+# ── Header editing: write a corrected copy into the workspace ────────────────
+
+class HeaderCardEdit(BaseModel):
+    key: str
+    value: Any = ""
+    #: None (omitted) leaves the card's comment alone; "" clears it.
+    comment: str | None = None
+
+
+class FileHeaderPatchRequest(BaseModel):
+    path: str
+    cards: list[HeaderCardEdit] = []
+    remove: list[str] = []
+    #: Workspace Exports filename (basename only). Empty → "<stem>_hdr.fits".
+    output_basename: str = ""
+
+
+class FileHeaderPatchResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    output_path: str = ""
+    workspace_filename: str = ""
+    #: One line per edit, naming the old value as well as the new.
+    changes: list[str] = []
+    hdu_index: int = 0
+    #: "celestial" | "degraded" | "none" | "unknown" — what the edited header
+    #: now amounts to, so "did that fix it?" is answered here.
+    wcs_status: str = ""
+    wcs_message: str = ""
+    wcs_celestial: bool = False
+
+
+@router.post("/v1/files/header/patch", response_model=FileHeaderPatchResponse, tags=["files"])
+async def patch_file_header(request: FileHeaderPatchRequest,
+                            _: None = _auth) -> FileHeaderPatchResponse:
+    """Apply header edits to a COPY of the file, in the Workspace Exports dir.
+
+    The input is never modified. Structural keywords (SIMPLE, BITPIX, NAXISn, …)
+    are refused: they describe the bytes on disk, and editing them here would
+    make the header disagree with the data that follows it.
+    """
+    from ..fits_header_edit import HeaderEditError, worker_patch_header  # noqa: PLC0415
+
+    try:
+        source = _normalize_path(request.path)
+    except Exception:
+        return FileHeaderPatchResponse(valid=False, error="File not found.")
+    if not source.is_file():
+        return FileHeaderPatchResponse(valid=False, error="File not found.")
+
+    basename = request.output_basename.strip() or f"{source.stem}_hdr.fits"
+    output_path = str(make_workspace_path(basename))
+    try:
+        result = await _run(
+            worker_patch_header, str(source), output_path,
+            [card.model_dump() for card in request.cards], list(request.remove))
+    except HeaderEditError as exc:
+        return FileHeaderPatchResponse(valid=False, error=str(exc))
+    except Exception as exc:
+        logger.exception("[header-patch] failed path=%s", request.path)
+        return FileHeaderPatchResponse(
+            valid=False,
+            error="The header could not be written. See the backend log.")
+
+    return FileHeaderPatchResponse(
+        valid=True, workspace_filename=Path(result["output_path"]).name, **result)

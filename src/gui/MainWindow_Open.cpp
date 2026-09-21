@@ -1,4 +1,8 @@
 #include "MainWindow.h"
+
+#include "ConeSearchWindow.h"
+
+#include "Hips2FitsDialog.h"
 #include "ui_MainWindow.h"
 
 #include "AboutDialog.h"
@@ -628,11 +632,12 @@ void MainWindow::wireImageViewerProducts(vtkWindowImage *window,
                                          owner->recordPublicationFigure(outputPath);
                                  });
                      });
-    // A layer that turned out to be somewhere else entirely: the user asked for
-    // it in a window of its own, which is the one thing a layer viewer cannot do
-    // for itself.
+    // "Open this file on its own", which is the one thing a viewer cannot do for
+    // itself. What the file is decides which viewer receives it: a layer that
+    // turned out to be somewhere else is an image, a catalogue query's result is
+    // a table, and dispatchOpenForPath knows the difference.
     QObject::connect(window, &vtkWindowImage::openInOwnWindowRequested, this,
-                     [this](const QString &path) { this->doOpenDataPath(path); });
+                     [this](const QString &path) { this->dispatchOpenForPath(path); });
     QObject::connect(window, &vtkWindowImage::imageQualityRequested, this,
                      [this, owner, backendUrl, backendToken, sessionId, datasetId]() {
                          this->runImageQuality(
@@ -1077,6 +1082,37 @@ void MainWindow::openVbt()
     }
 
     doOpenVbtPath(headerPath);
+}
+
+
+void MainWindow::openHips2Fits()
+{
+    auto *dialog = new Hips2FitsDialog(this->settings->getBackendUrl(),
+                                       this->settings->getBackendToken(), this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    QObject::connect(dialog, &Hips2FitsDialog::cutoutReady, this,
+                     [this](const QString &path) {
+                         // It is a FITS in the workspace like any other: the
+                         // unified open decides whether it is an image or a cube.
+                         this->dispatchOpenForPath(path);
+                     });
+    dialog->open();
+}
+
+
+void MainWindow::openConeSearch()
+{
+    auto *window = new ConeSearchWindow(this->settings->getBackendUrl(),
+                                        this->settings->getBackendToken(), this);
+    QObject::connect(window, &ConeSearchWindow::catalogueReady, this,
+                     [this](const QString &path) {
+                         // The search saved every row as CSV, so what the legacy
+                         // could only show in a table is a catalogue here.
+                         this->doOpenCataloguePath(path);
+                     });
+    window->show();
+    window->raise();
+    window->activateWindow();
 }
 
 

@@ -97,6 +97,46 @@ backend the layer is opened there and its WCS built from the header the
 backend returns, so a path that also exists locally cannot silently load
 a different file.
 
+## Smoothing and regridding
+
+*Tools → Smooth / Regrid…* (the legacy's *Filter FITS*) applies a Gaussian
+kernel and/or an integer shrink on the backend and adds the result as a layer.
+The dialog says what each choice means before you commit: the kernel FWHM in
+arcseconds, and the pixel size the regrid would produce.
+
+Three things it does that the legacy did not:
+
+- **blank pixels stay blank** and do not eat their neighbourhood — the
+  convolution is normalised by the smoothed coverage;
+- **the beam grows with the kernel** (`BMAJ`/`BMIN` summed in quadrature), so
+  the output still describes its own resolution — and for a map in Jy/beam the
+  pixels are scaled with it, so the integrated flux is the same before and
+  after. (Smoothing preserves the sum of the pixels; the flux is that sum over
+  the beam area, so a wider beam with unchanged numbers means less flux.) The
+  dialog reports the factor it applied;
+- **a per-pixel unit is summed, not averaged.** Block-averaging a `Jy/pixel` map
+  loses flux by the square of the factor; `BUNIT` decides, and the result says
+  which rule was used.
+
+The same entry exists in the cube viewer, where every plane is filtered — a
+spatial operation, so the spectral axis is left alone.
+
+## Editing the header
+
+Click the **IMAGE** tag in the toolbar to see the FITS header, then **Edit…**.
+Any keyword can be changed, added or removed; the result is written as a **new
+file** in the Workspace and offered for opening, and the file on disk is never
+modified.
+
+Structural keywords (`SIMPLE`, `BITPIX`, `NAXISn`) and the data-scaling ones
+(`BSCALE`, `BZERO`, `BLANK`) are not editable: they describe the bytes rather
+than the science, and editing them makes the header disagree with its own data.
+
+When you save, the backend builds the WCS from the edited header and tells you
+what it amounts to — *Celestial WCS (RA---TAN, DEC--TAN)*, or that there still
+is none. The legacy's header dialog reported "File has been saved!" either way,
+so a wrong guess was only discovered by reopening the copy.
+
 ## WCS overlay and frame
 
 - **Show WCS Axes** in the *View* menu paints ticks along the image axes

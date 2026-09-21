@@ -300,3 +300,54 @@ window or via the Command Palette.
 - [Catalogue 3-D viewer technical reference](../catalogue3d-viewer) — for
   developers customising the geometry / size cards or adding new
   cosmology models.
+
+
+## Getting data out of the archives
+
+Three entries under **Data** fetch rather than open. Each writes into the
+Workspace, so what comes back is a file the rest of the application can use.
+
+### HiPS Cutout (hips2fits)
+
+*Data → HiPS Cutout (hips2fits)…* reprojects any HiPS survey onto a WCS of your
+choosing through the CDS service, and opens the FITS it returns. Pick a survey
+(the list is a starting point — any id from the CDS registry works), a position,
+a field of view and a size.
+
+Every parameter is checked before the request leaves: an empty survey, a field of
+view of zero or a cutout over 30 Mpx is refused with the reason rather than sent
+for the service to reject. Choosing `png`/`jpg` enables the percentile cuts and
+the stretch — they turn numbers into pixels, and a FITS carries the numbers
+themselves, so for FITS they are not sent at all.
+
+### Cone Search
+
+*Data → Cone Search…* asks a VO Simple Cone Search service what is around a
+position. Choose one of the listed services or paste the URL of another; `RA`,
+`DEC`, `SR` and `VERB` are merged into whatever query the URL already carries.
+
+The rows appear in the window, **and the whole result is saved as a CSV** —
+**Open as Catalogue** opens it in the [3-D catalogue viewer](catalogues-hips),
+where it can be filtered, coloured and overlaid like any other catalogue.
+
+### VLKB Catalogue Query
+
+*Tools → VLKB Catalogue Query…* in the image viewer runs the VLKB catalogue
+queries over a Galactic box — prefilled with the footprint of the image you are
+looking at:
+
+| Catalogue | What it is |
+|-----------|------------|
+| Compact sources, band-merged | the SED view: one row per source, fluxes in every band |
+| Compact sources, one band | a single Hi-GAL band table |
+| Filaments | filament spines with their branches |
+| Bubbles | bubble rims |
+| 3-D selection | sources with distances, carrying Galactocentric `x`/`y`/`z` |
+
+…or write the ADQL yourself. The result is saved as a CSV and can be opened as a
+catalogue; the query actually sent is shown, so a preset can be read, copied and
+edited.
+
+For the two contour catalogues there is also a direct overlay: *Tools → Overlay
+VLKB Filaments* and *Overlay VLKB Bubbles* draw them on the image over a
+rectangle you drag (or the whole footprint, if you click without dragging).

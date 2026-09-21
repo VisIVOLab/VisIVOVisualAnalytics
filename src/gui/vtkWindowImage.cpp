@@ -12,6 +12,7 @@
 #include "CatalogueOverlayUtils.h"
 #include "DiagnosticsWindow.h"
 #include "ImageLayerController.h"
+#include "FilterFitsDialog.h"
 #include "ImageLayerImportService.h"
 #include "ImageLayerLoadTask.h"
 #include "LUTCustomizerDialog.h"
@@ -1308,6 +1309,18 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
         ui->menuView->addAction(toggle);
     }
 
+    // Smooth / regrid — the legacy's "Filter FITS", which lived in a menu of
+    // its own in the main window and acted on whatever file you picked. Here it
+    // acts on the image you are looking at, and the result comes back as a
+    // layer over it.
+    ui->menuTools->addSeparator();
+    m_actFilterFits = ui->menuTools->addAction(u"Smooth / Regrid…"_s);
+    m_actFilterFits->setToolTip(
+            u"Gaussian-smooth and/or shrink this image on the backend, into a new "
+            u"file in the Workspace, and add it as a layer."_s);
+    QObject::connect(m_actFilterFits, &QAction::triggered, this,
+                     &vtkWindowImage::openFilterFitsDialog);
+
     // FITS export → Workspace
     ui->menuTools->addSeparator();
     m_actExportToWorkspace = ui->menuTools->addAction(u"Export to Workspace as FITS…"_s);
@@ -2020,6 +2033,38 @@ static ImageLayerLoadResult loadRemoteImageLayer(const QString &backendUrl,
                        .arg(result.origin[0]).arg(result.origin[1]);
     return result;
 }
+
+void vtkWindowImage::openFilterFitsDialog()
+{
+    // The pixel scale is what turns "3 pixels" into something an astronomer can
+    // judge, so it is passed in rather than left for the dialog to guess.
+    const double cdeltX = std::abs(this->remoteDatasetCdelt[0]);
+    const double cdeltY = std::abs(this->remoteDatasetCdelt[1]);
+    const double scaleDeg = (std::isfinite(cdeltX) && cdeltX > 0
+                             && std::isfinite(cdeltY) && cdeltY > 0)
+            ? 0.5 * (cdeltX + cdeltY)
+            : 0.0;
+
+    int dims[3] = { 0, 0, 0 };
+    if (this->layers && this->layers->getImageData(this->layers->getMasterIndex()))
+        this->layers->getImageData(this->layers->getMasterIndex())->GetDimensions(dims);
+
+    auto *dialog = new FilterFitsDialog(this->filepath, scaleDeg * 3600.0, dims[0], dims[1],
+                                        this->remoteBackendUrl, this->remoteBackendToken, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    QPointer<vtkWindowImage> self(this);
+    QObject::connect(dialog, &FilterFitsDialog::filtered, this,
+                     [this, self](const QString &path) {
+                         if (!self)
+                             return;
+                         // Same field, so it passes the overlap check by
+                         // construction — a regridded copy covers exactly the
+                         // sky the original did.
+                         this->addLayerFromBackendPath(path, QFileInfo(path).fileName());
+                     });
+    dialog->open();
+}
+
 
 void vtkWindowImage::showLayerLoadFailure(const ImageLayerLoadResult &result,
                                           const QString &displayName, bool partOfSet)

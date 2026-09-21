@@ -79,6 +79,24 @@ the way files get opened:
 - `test_operation_history.py` (32) covers "Last 5 jobs": that work is recorded
   and that browsing, scrubbing and polling are not, and that a route answering
   HTTP 200 with `{"valid": false}` is filed as failed;
+- `test_filter_fits.py` (38) is mostly about the three things the legacy's
+  *Filter FITS* got wrong and that only surface later, in the photometry: a
+  blank pixel eating its neighbourhood, a beam that no longer describes the map,
+  and flux lost by block-averaging a per-pixel unit. It also pins the WCS
+  arithmetic — the half-pixel terms in `CRPIX`, and the keywords of a squeezed
+  Stokes axis going with it;
+- `test_fits_header_edit.py` (35), `test_hips2fits.py` (33),
+  `test_cone_search.py` (24) and `test_vlkb_tap.py` (27) cover the four archive
+  and repair routes. The recurring theme is refusing *first*: a structural
+  keyword, a 64-Mpx cutout, a radius of zero, a box of zero width — each with
+  the reason, rather than a round trip and somebody else's error page. The other
+  half is reading what services actually send: a VO error carried inside a valid
+  VOTable, a TAP error returned as XML when CSV was asked for, an HTML gateway
+  page where a FITS was expected;
+- `test_safe_fetch.py` (4) stands on its own because the bug it guards against
+  has been fixed three times in this codebase and forgotten twice: a validated
+  URL that redirects into the private network. It runs a real local server that
+  answers 302, so the test fails if the redirect handler is ever dropped;
 - `test_contract.py` pins the REST route list the desktop client depends on —
   **add an endpoint and it fails until you regenerate the snapshot**:
 

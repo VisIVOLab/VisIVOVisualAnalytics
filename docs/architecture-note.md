@@ -659,6 +659,29 @@ It did find these:
   the user calls a job is work they asked for and waited on, so browsing, image
   tiles, session bookkeeping, channel scrubbing and job polling are excluded —
   one slice per mouse move would otherwise erase the five jobs that mattered.
+- **The last five legacy features, and what they became.** *Filter FITS*,
+  the header modifier, hips2fits, cone search and the VLKB query composer were
+  the remaining gaps against ViaLactea Visual Analytics 1.7.4. Three of them ran
+  outside the application in the legacy — cone search and the VLKB composer
+  shelled out to bundled Python scripts through whichever interpreter
+  *setting.ini* named, so both stopped working whenever that path went stale —
+  and all five are backend routes now (`app/compute/imutils.py`,
+  `app/fits_header_edit.py`, `app/hips2fits.py`, `app/cone_search.py`,
+  `app/vlkb_tap.py`). That is not tidiness: it is what makes them testable
+  without a display, safe to point at a user-supplied URL (one SSRF guard, not
+  three), and correctable without releasing a client — the legacy compiled the
+  HiPS survey list and the VLKB schema into two dialogs.
+
+  Porting them turned up four defects worth naming, because each is the kind
+  that produces a plausible wrong answer rather than an error:
+  the smoothing filter spread every blank pixel over its kernel footprint and
+  left `BMAJ` describing a resolution the map no longer had; the regrid averaged
+  `Jy/pixel` blocks, which loses flux by the square of the factor; the header
+  modifier reported success whether or not the values typed produced a readable
+  WCS; and the bubble mode — a button, a rubber-band selector and an importer —
+  had no query behind it at all, so it ran the compact-source query and drew
+  sources. The first three are fixed in the arithmetic (and pinned by tests);
+  the fourth is now a query.
 - **The image viewer had the cube's old disease.** Its Tools menu was one flat
   run of **34** entries while Inspector ▸ Analysis listed **11**, hand-picked —
   so two thirds of the window's tools existed in one surface only. It now has an

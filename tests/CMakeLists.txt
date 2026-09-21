@@ -111,6 +111,8 @@ add_executable(VisIVOTests
     test_vlkb_pos_string.cpp
     TestSkyOverlap.h
     test_sky_overlap.cpp
+    TestFitsHeaderCard.h
+    test_fits_header_card.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

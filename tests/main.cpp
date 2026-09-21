@@ -25,6 +25,7 @@
 #include "TestSedBuilder.h"
 #include "TestVlkbPosString.h"
 #include "TestSkyOverlap.h"
+#include "TestFitsHeaderCard.h"
 
 #include <QCoreApplication>
 #include <QTest>
@@ -56,5 +57,6 @@ int main(int argc, char *argv[])
     { TestSedBuilder       t; status |= QTest::qExec(&t, argc, argv); }
     { TestVlkbPosString    t; status |= QTest::qExec(&t, argc, argv); }
     { TestSkyOverlap       t; status |= QTest::qExec(&t, argc, argv); }
+    { TestFitsHeaderCard   t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }

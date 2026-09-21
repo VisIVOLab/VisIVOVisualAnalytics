@@ -244,6 +244,26 @@ every tool together with the page that documents its scientific use.
   - **Data Hub → Open…** (or ⌘O)
   - Cube viewer or Image viewer
   - [Getting started](user-guide/getting-started)
+* - Smooth or regrid a map / cube
+  - **Tools → Smooth / Regrid…**
+  - A new FITS in the Workspace, added as a layer
+  - [Image viewer](user-guide/image-viewer)
+* - Repair a FITS header
+  - **IMAGE tag → Edit…**
+  - A corrected copy, with what its WCS now amounts to
+  - [Image viewer](user-guide/image-viewer)
+* - Cut a FITS out of a HiPS survey
+  - **Data → HiPS Cutout (hips2fits)…**
+  - Image viewer
+  - [Catalogues & HiPS](user-guide/catalogues-hips)
+* - Ask a VO service what is around a position
+  - **Data → Cone Search…**
+  - A table, saved as a catalogue
+  - [Catalogues & HiPS](user-guide/catalogues-hips)
+* - Query the VLKB catalogues
+  - **Tools → VLKB Catalogue Query…**
+  - A catalogue, or an overlay on the image
+  - [Catalogues & HiPS](user-guide/catalogues-hips)
 * - Navigate the spectral axis
   - Slice slider, ▶ Play animation
   - Slice tile + textured 3-D cutting plane

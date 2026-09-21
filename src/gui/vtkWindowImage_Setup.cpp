@@ -10,6 +10,7 @@
 #include "CatalogueOverlayUtils.h"
 #include "DiagnosticsWindow.h"
 #include "ImageLayerController.h"
+#include "FitsHeaderEditorDialog.h"
 #include "ImageLayerImportService.h"
 #include "ImageLayerLoadTask.h"
 #include "LUTCustomizerDialog.h"
@@ -522,6 +523,39 @@ void vtkWindowImage::showFitsHeaderDialog()
     }
     vbox->addWidget(body, 1);
 
+    // The header was read-only, which is where the legacy's separate "header
+    // modifier" dialog came from — a second window, reachable only when a file
+    // failed to open. Editing belongs where the header already is.
+    auto *actions = new QHBoxLayout;
+    actions->setContentsMargins(12, 8, 12, 12);
+    actions->addStretch(1);
+    auto *edit = new QPushButton(u"Edit…"_s, dlg);
+    edit->setEnabled(result.valid && !result.cards.isEmpty());
+    edit->setToolTip(u"Correct keywords and save the result as a new FITS file "
+                     u"in the Workspace. This file is not modified."_s);
+    const QStringList cards = result.cards;
+    QPointer<vtkWindowImage> self(this);
+    QObject::connect(edit, &QPushButton::clicked, dlg, [this, self, dlg, cards]() {
+        if (!self)
+            return;
+        auto *editor = new FitsHeaderEditorDialog(this->filepath, cards,
+                                                  this->remoteBackendUrl,
+                                                  this->remoteBackendToken, self);
+        editor->setAttribute(Qt::WA_DeleteOnClose);
+        QObject::connect(editor, &FitsHeaderEditorDialog::saved, self,
+                         [self](const QString &path) {
+                             if (!self)
+                                 return;
+                             // A repaired copy of THIS image: same sky, so it
+                             // goes on as a layer.
+                             self->addLayerFromBackendPath(path, QFileInfo(path).fileName());
+                         });
+        editor->open();
+        dlg->close();
+    });
+    actions->addWidget(edit);
+    vbox->addLayout(actions);
+
     dlg->show();
 }
 
@@ -863,6 +897,8 @@ QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
     add(u"Catalogue"_s, self->actionClearCatalogueOverlay);
     add(u"Catalogue"_s, self->m_actVlkbSources);
     add(u"Catalogue"_s, self->m_actVlkbFilaments);
+    add(u"Catalogue"_s, self->m_actVlkbBubbles);
+    add(u"Catalogue"_s, self->m_actVlkbQuery);
     add(u"Catalogue"_s, self->m_actExportCatalogue);
 
     add(u"Contours"_s, self->m_actToggleContours);
@@ -897,6 +933,7 @@ QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
     add(u"Products"_s, self->m_actPublicationFigure);
     add(u"Products"_s, self->m_actImageQuality);
 
+    add(u"Export"_s, self->m_actFilterFits);
     add(u"Export"_s, self->m_actExportToWorkspace);
     return t;
 }
@@ -1942,6 +1979,22 @@ void vtkWindowImage::setupSidebar()
                           : noWcs);
         QObject::connect(m_actVlkbFilaments, &QAction::triggered, this,
                          &vtkWindowImage::overlayVlkbFilaments);
+
+        m_actVlkbBubbles = ui->menuTools->addAction(u"Overlay VLKB Bubbles"_s);
+        m_actVlkbBubbles->setEnabled(celestial);
+        m_actVlkbBubbles->setToolTip(
+                celestial ? u"Overlay the VLKB bubbles whose rim falls inside this "
+                            u"image's footprint."_s
+                          : noWcs);
+        QObject::connect(m_actVlkbBubbles, &QAction::triggered, this,
+                         &vtkWindowImage::overlayVlkbBubbles);
+
+        m_actVlkbQuery = ui->menuTools->addAction(u"VLKB Catalogue Query…"_s);
+        m_actVlkbQuery->setToolTip(
+                u"Run any of the VLKB catalogue queries over a Galactic box — or your "
+                u"own ADQL — and save the result as a catalogue."_s);
+        QObject::connect(m_actVlkbQuery, &QAction::triggered, this,
+                         &vtkWindowImage::openVlkbQueryComposer);
     }
     QObject::connect(&this->m_vlkbCatWatcher, &QFutureWatcher<VlkbCatalogueRaw>::finished, this,
                      &vtkWindowImage::onVlkbCatalogueReady);

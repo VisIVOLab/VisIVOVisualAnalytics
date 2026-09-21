@@ -122,6 +122,14 @@ void MainWindow::rebuildCommandPalette()
                  u"File · hierarchical sky surveys"_s, QString(), u"File"_s,
                  [this]() { this->openHiPS(); }});
         this->m_commandPalette->addAction(
+                {u"◈"_s, u"HiPS Cutout (hips2fits)…"_s,
+                 u"File · a FITS out of any HiPS survey"_s, QString(), u"File"_s,
+                 [this]() { this->openHips2Fits(); }});
+        this->m_commandPalette->addAction(
+                {u"◎"_s, u"Cone Search…"_s,
+                 u"File · what a VO service has around a position"_s, QString(), u"File"_s,
+                 [this]() { this->openConeSearch(); }});
+        this->m_commandPalette->addAction(
                 {u"◑"_s, u"VLKB Inventory"_s,
                  u"File · browse remote VLKB sources"_s, QString(), u"File"_s,
                  [this]() { this->revealVLKBTab(); }});
@@ -358,6 +366,20 @@ void MainWindow::buildDataMenu()
     QObject::connect(actArepo, &QAction::triggered, this, &MainWindow::openArepoSnapshot);
 
     dataMenu->addSeparator();
+
+    // The archive services: they fetch a file rather than open one, which is
+    // why they sit below the separator with the HiPS viewer rather than among
+    // the Open entries.
+    auto *actHips2Fits = dataMenu->addAction(u"HiPS Cutout (hips2fits)…"_s);
+    actHips2Fits->setToolTip(
+            u"Cut a FITS out of any HiPS survey at a position and field of view."_s);
+    QObject::connect(actHips2Fits, &QAction::triggered, this, &MainWindow::openHips2Fits);
+
+    auto *actConeSearch = dataMenu->addAction(u"Cone Search…"_s);
+    actConeSearch->setToolTip(
+            u"Ask a VO cone-search service what is around a position; the result is "
+            u"saved as a catalogue."_s);
+    QObject::connect(actConeSearch, &QAction::triggered, this, &MainWindow::openConeSearch);
 
     auto *actHiPS = dataMenu->addAction(u"HiPS Viewer…"_s);
     actHiPS->setToolTip(u"Open the HiPS panoramic sky viewer."_s);

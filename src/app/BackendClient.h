@@ -836,6 +836,140 @@ struct BackendSaveMomentFitsResult
     QString momentUnit;   ///< Same value as bunit, kept for symmetry with /moment
 };
 
+// ── VLKB catalogue queries (TAP) ─────────────────────────────────────────────
+
+struct BackendVlkbPreset
+{
+    QString id;
+    QString label;
+    QString table;
+};
+
+struct BackendVlkbPresetsResult
+{
+    bool valid{ false };
+    QString error;
+    QList<BackendVlkbPreset> presets;
+    QStringList bands;
+    QString serviceUrl;
+};
+
+struct BackendVlkbTapResult
+{
+    bool valid{ false };
+    QString error;
+    QString url;
+    /// The ADQL actually run — a preset is built on the backend, so this is how
+    /// the user sees what it asked for.
+    QString query;
+    QStringList columns;
+    QList<QStringList> rows;
+    int totalRows{ 0 };
+    bool truncated{ false };
+    QString outputPath;
+    QString workspaceFilename;
+    /// The service stopped at the requested row limit, so there may be more.
+    bool hitRowLimit{ false };
+};
+
+// ── hips2fits and cone search ────────────────────────────────────────────────
+
+struct BackendHips2FitsResult
+{
+    bool valid{ false };
+    QString error;
+    QString outputPath;
+    QString workspaceFilename;
+    qint64 bytes{ 0 };
+    bool isFits{ false };
+    /// The request as sent, so what was asked for is reproducible outside the app.
+    QString url;
+};
+
+struct BackendHips2FitsOptions
+{
+    bool valid{ false };
+    QString error;
+    QStringList surveys;
+    QStringList projections;
+    QStringList stretches;
+    QString endpoint;
+};
+
+struct BackendConeSearchResult
+{
+    bool valid{ false };
+    QString error;
+    QString url;
+    QStringList columns;
+    QList<QStringList> rows;
+    int totalRows{ 0 };
+    bool truncated{ false };
+    /// The whole result saved as CSV, ready to open as a catalogue.
+    QString outputPath;
+    QString workspaceFilename;
+    QString raColumn;
+    QString decColumn;
+};
+
+struct BackendConeSearchService
+{
+    QString name;
+    QString url;
+};
+
+// ── FITS header editing ──────────────────────────────────────────────────────
+
+struct BackendHeaderCardEdit
+{
+    QString key;
+    QString value;
+    /// Only sent when `commentProvided` is true. An empty comment that IS sent
+    /// means "clear this card's comment"; not sending it means "leave it as it
+    /// is". Without the distinction, editing a value would wipe a comment the
+    /// user never touched.
+    QString comment;
+    bool commentProvided{ false };
+};
+
+struct BackendHeaderPatchResult
+{
+    bool valid{ false };
+    QString error;
+    QString outputPath;
+    QString workspaceFilename;
+    /// One line per edit, naming the old value as well as the new.
+    QStringList changes;
+    /// "celestial" | "degraded" | "none" | "unknown" — what the edited header
+    /// now amounts to. The legacy reported success either way.
+    QString wcsStatus;
+    QString wcsMessage;
+    bool wcsCelestial{ false };
+};
+
+// ── Filter FITS: smooth and/or regrid a file into the workspace ──────────────
+
+struct BackendFilterFitsResult
+{
+    bool valid{ false };
+    QString error;
+    /// On-disk path of the new FITS in the backend's Workspace Exports dir.
+    QString outputPath;
+    QString workspaceFilename;
+    int width{ 0 };
+    int height{ 0 };
+    int depth{ 1 };
+    double rangeMin{ 0. };
+    double rangeMax{ 0. };
+    QString bunit;
+    /// "mean" or "sum" — how each block was combined, decided from BUNIT when
+    /// the request asked for "auto".
+    QString combine;
+    double smoothFwhmPixels{ 0. };
+    double smoothFwhmArcsec{ 0. };
+    int regridFactor{ 1 };
+};
+
 // ── Workspace Exports listing ────────────────────────────────────────────────
 
 struct BackendWorkspaceExportEntry
@@ -2116,6 +2250,46 @@ public:
      *  persist it as a 2-D FITS file in the Workspace Exports dir
      *  (celestial WCS + BUNIT). @p outputBasename optional; default is
      *  synthesised from source + order. */
+    /// POST /v1/image/filter — Gaussian smoothing and/or an integer regrid of a
+    /// FITS file, written as a new file in the workspace. Either step may be
+    /// skipped (FWHM 0, factor 1), but not both.
+    /// GET /v1/vlkb/tap/presets — the named catalogue queries.
+    BackendVlkbPresetsResult vlkbTapPresets() const;
+
+    /// POST /v1/vlkb/tap — run a preset over a Galactic box, or an ADQL
+    /// statement, and save the result as a catalogue.
+    BackendVlkbTapResult vlkbTapQuery(const QString &preset, const QString &query,
+                                      double glonMin, double glonMax, double glatMin,
+                                      double glatMax, const QString &band, int maxRows,
+                                      const QString &outputBasename = QString()) const;
+
+    /// GET /v1/hips/hips2fits/surveys — the starting survey list and the
+    /// enumerations the service accepts.
+    BackendHips2FitsOptions hips2fitsOptions() const;
+
+    /// POST /v1/hips/hips2fits — cut a FITS (or a picture) out of a HiPS survey
+    /// into the workspace.
+    BackendHips2FitsResult hips2fits(const QVariantMap &parameters) const;
+
+    /// GET /v1/resolve/cone_search/services — a few known endpoints.
+    QList<BackendConeSearchService> coneSearchServices() const;
+
+    /// POST /v1/resolve/cone_search — a VO Simple Cone Search, saved as CSV.
+    BackendConeSearchResult coneSearch(const QString &serviceUrl, double ra, double dec,
+                                       double radiusDeg, int verbosity,
+                                       const QString &outputBasename = QString()) const;
+
+    /// POST /v1/files/header/patch — apply header edits to a COPY of the file
+    /// in the workspace, and report what the result's WCS amounts to.
+    BackendHeaderPatchResult patchFitsHeader(const QString &path,
+                                             const QList<BackendHeaderCardEdit> &cards,
+                                             const QStringList &remove,
+                                             const QString &outputBasename = QString());
+
+    BackendFilterFitsResult filterFits(const QString &path, double smoothFwhmPixels,
+                                       int regridFactor, const QString &combine,
+                                       const QString &outputBasename = QString());
+
     BackendSaveMomentFitsResult saveMomentFits(const QString &datasetId,
                                                 int order,
                                                 int channelStart, int channelEnd,

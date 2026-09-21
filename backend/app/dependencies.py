@@ -317,14 +317,32 @@ def make_workspace_path(basename: str) -> _Path:
     # If no extension, default to .fits (the only artefact type for now).
     if "." not in safe:
         safe = safe + ".fits"
+    def _usable(path: _Path) -> bool:
+        """Free, and still inside the workspace once symlinks are followed.
+
+        ``exists()`` is False for a DANGLING symlink, so a link left in the
+        exports directory pointing at a path outside it would be handed back as
+        "free" and the writer would then create the target through it. Nobody
+        reaches this without write access to the exports directory, but the
+        check is one line and the failure is silent.
+        """
+        if path.exists() or path.is_symlink():
+            return False
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return False
+        root = _EXPORTS_DIR.resolve()
+        return resolved == root / resolved.name and root in resolved.parents
+
     candidate = _EXPORTS_DIR / safe
-    if not candidate.exists():
+    if _usable(candidate):
         return candidate
     stem = candidate.stem
     suffix = candidate.suffix
     for n in range(1, 10000):
         alt = _EXPORTS_DIR / f"{stem}_{n}{suffix}"
-        if not alt.exists():
+        if _usable(alt):
             return alt
     # Pathological: 10k+ collisions on the same basename. Caller likely has a
     # bug; fail loud rather than overwrite.

@@ -461,6 +461,17 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage.h
         src/gui/vtkWindowImage_Catalogue.cpp
         src/gui/ArepoExtractDialog.cpp
+        src/gui/FilterFitsDialog.cpp
+        src/gui/Hips2FitsDialog.cpp
+        src/gui/VlkbQueryComposer.cpp
+        src/gui/VlkbQueryComposer.h
+        src/gui/Hips2FitsDialog.h
+        src/gui/ConeSearchWindow.cpp
+        src/gui/ConeSearchWindow.h
+        src/gui/FitsHeaderEditorDialog.cpp
+        src/gui/FitsHeaderEditorDialog.h
+        src/gui/FitsHeaderCard.h
+        src/gui/FilterFitsDialog.h
         src/gui/McutoutJobDialog.cpp
         src/gui/McutoutJobDialog.h
         src/gui/ArepoExtractDialog.h

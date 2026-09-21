@@ -96,3 +96,97 @@ async def image_tile(
     except Exception as exc:
         return ImageTileResponse(valid=False, error=str(exc))
     return ImageTileResponse(valid=True, error="", **result)
+
+
+# ── Filter FITS: smooth and/or regrid a file into the workspace ──────────────
+# The legacy's *Filter FITS* dialog, moved to the backend so the arithmetic is
+# the same for every client and can be tested without a display. What it does
+# differently is in app/compute/imutils.py: blanks stay blank, the beam grows
+# with the kernel, and a per-pixel unit is summed rather than averaged.
+
+class FilterFitsRequest(BaseModel):
+    """Either action may be omitted, but not both."""
+    path: str
+    #: Gaussian FWHM in pixels; 0 = no smoothing.
+    smooth_fwhm_pixels: float = 0.0
+    #: Integer shrink factor; 1 = no regrid.
+    regrid_factor: int = 1
+    #: "auto" reads BUNIT: per-pixel units are summed, surface brightness
+    #: averaged. "mean"/"sum" force it.
+    combine: str = "auto"
+    #: Workspace Exports filename (basename only). Empty → derived from the input.
+    output_basename: str = ""
+
+
+class FilterFitsResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    output_path: str = ""
+    workspace_filename: str = ""
+    width: int = 0
+    height: int = 0
+    depth: int = 1
+    range_min: float = 0.0
+    range_max: float = 0.0
+    bunit: str = ""
+    combine: str = ""
+    smooth_fwhm_pixels: float = 0.0
+    smooth_fwhm_arcsec: float = 0.0
+    regrid_factor: int = 1
+    #: 1.0 unless the beam grew under a per-beam unit, in which case the pixels
+    #: were scaled with it so the integrated flux is unchanged.
+    flux_scale: float = 1.0
+
+
+def _filtered_basename(source: Path, smooth: float, factor: int) -> str:
+    """Name the output after what was done to it, as the legacy did — but only
+    for the steps that were actually taken (it appended `_smooth` whether or not
+    the box was ticked, because it asked `isCheckable()` instead of
+    `isChecked()`)."""
+    stem = source.stem
+    if smooth > 0:
+        stem += "_smooth"
+    if factor > 1:
+        stem += f"_regrid{factor}"
+    return f"{stem}.fits"
+
+
+@router.post("/v1/image/filter", response_model=FilterFitsResponse, tags=["image"])
+async def filter_fits(
+    request: FilterFitsRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> FilterFitsResponse:
+    """Smooth and/or shrink a FITS file, writing a new one in the workspace."""
+    from ..compute.imutils import worker_filter_fits  # noqa: PLC0415
+    try:
+        source = _normalize_path(request.path)
+        if not source.is_file():
+            return FilterFitsResponse(valid=False, error="File not found.")
+        basename = request.output_basename.strip() or _filtered_basename(
+            source, float(request.smooth_fwhm_pixels), int(request.regrid_factor))
+        output_path = str(make_workspace_path(basename))
+        result = await _run_heavy_with_limit(
+            session,
+            worker_filter_fits,
+            str(source),
+            output_path,
+            float(request.smooth_fwhm_pixels),
+            int(request.regrid_factor),
+            str(request.combine),
+        )
+    except HTTPException:
+        raise
+    except PermissionError:
+        # Same answer as a missing file: the refusal must not confirm the path.
+        return FilterFitsResponse(valid=False, error="File not found.")
+    except ValueError as exc:
+        # Deliberate refusals from the worker — "nothing to do", a factor that
+        # leaves nothing of the image — are written for the user.
+        return FilterFitsResponse(valid=False, error=str(exc))
+    except Exception:
+        logger.exception("[filter] failed path=%s", request.path)
+        return FilterFitsResponse(
+            valid=False, error="The filter could not be completed. See the backend log.")
+    return FilterFitsResponse(
+        valid=True, workspace_filename=Path(result["output_path"]).name, **result)

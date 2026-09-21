@@ -249,3 +249,89 @@ async def hips_catalogue_overlay(
         total_in_view=d["total_in_view"],
         truncated=d["truncated"],
     )
+
+
+# ── hips2fits: a FITS cut out of any HiPS survey ─────────────────────────────
+
+class Hips2FitsRequest(BaseModel):
+    hips: str
+    width: int = 512
+    height: int = 512
+    ra: float = 0.0
+    dec: float = 0.0
+    fov: float = 1.0
+    projection: str = "TAN"
+    coordsys: str = "icrs"
+    rotation_angle: float = 0.0
+    format: str = "fits"
+    #: Percentile cuts and stretch — only meaningful for jpg/png.
+    min_cut: float = 0.5
+    max_cut: float = 99.5
+    stretch: str = "linear"
+    output_basename: str = ""
+
+
+class Hips2FitsResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    output_path: str = ""
+    workspace_filename: str = ""
+    bytes: int = 0
+    is_fits: bool = False
+    #: The full request URL, so what was asked for is reproducible outside the app.
+    url: str = ""
+
+
+class Hips2FitsSurveysResponse(BaseModel):
+    surveys: list[str]
+    projections: list[str]
+    stretches: list[str]
+    endpoint: str
+
+
+@router.get("/v1/hips/hips2fits/surveys", response_model=Hips2FitsSurveysResponse, tags=["hips"])
+async def hips2fits_surveys(_: None = _auth) -> Hips2FitsSurveysResponse:
+    """The starting list of surveys and the accepted enumerations.
+
+    The legacy carried these as a QStringList inside the dialog, so correcting a
+    survey id meant releasing a client.
+    """
+    from .. import hips2fits  # noqa: PLC0415
+    return Hips2FitsSurveysResponse(
+        surveys=hips2fits.known_surveys(),
+        projections=list(hips2fits.PROJECTIONS),
+        stretches=list(hips2fits.STRETCHES),
+        endpoint=hips2fits.endpoint(),
+    )
+
+
+@router.post("/v1/hips/hips2fits", response_model=Hips2FitsResponse, tags=["hips"])
+async def hips2fits_cutout(request: Hips2FitsRequest, _: None = _auth) -> Hips2FitsResponse:
+    """Cut a FITS (or a picture) out of a HiPS survey, into the workspace."""
+    from .. import hips2fits  # noqa: PLC0415
+
+    try:
+        params = hips2fits.build_query(
+            request.hips, request.width, request.height, request.ra, request.dec,
+            request.fov, request.projection, request.coordsys, request.rotation_angle,
+            request.format, request.min_cut, request.max_cut, request.stretch)
+    except ValueError as exc:
+        # A parameter the service would have refused: say so without the round trip.
+        return Hips2FitsResponse(valid=False, error=str(exc))
+
+    basename = request.output_basename.strip() or hips2fits.default_basename(
+        request.hips, request.format)
+    output_path = str(make_workspace_path(basename))
+    try:
+        result = await _run(hips2fits.fetch_cutout, params, output_path)
+    except ValueError as exc:
+        return Hips2FitsResponse(valid=False, error=str(exc))
+    except Exception as exc:
+        # An unforeseen failure: logged in full, reported without the
+        # server-side detail (a path, a mount point) that str(exc) carries.
+        logger.exception("[hips2fits] failed hips=%s", request.hips)
+        return Hips2FitsResponse(
+            valid=False, error="The cutout could not be completed. See the backend log.")
+
+    return Hips2FitsResponse(
+        valid=True, workspace_filename=Path(result["output_path"]).name, **result)

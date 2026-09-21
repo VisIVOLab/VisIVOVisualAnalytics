@@ -91,6 +91,33 @@ List backend-side directory. Returns `FileEntry[]` with `name`, `path`, `type`, 
 ```
 Returns FITS header cards as `string[]`.
 
+### `POST /v1/files/header/patch`
+Apply header edits to a **copy** of the file, in the Workspace. The input is
+never modified.
+
+```json
+{ "path": "/data/broken.fits",
+  "cards": [{ "key": "CTYPE1", "value": "RA---TAN", "comment": "" },
+            { "key": "CTYPE2", "value": "DEC--TAN" }],
+  "remove": ["EQUINOX"], "output_basename": "" }
+```
+Returns `output_path`, `workspace_filename`, `changes` (one line per edit,
+naming the old value as well as the new), `hdu_index`, and `wcs_status` /
+`wcs_message` / `wcs_celestial`.
+
+That last part is the point. The legacy's header modifier appeared only when a
+file failed to open, offered three keyword groups, and reported "File has been
+saved!" whether or not the values typed produced a header anything could read.
+Here the WCS is built from the result and the reply says what it amounts to — a
+celestial solution, a degraded one, or still nothing.
+
+Refused: `SIMPLE`, `BITPIX`, `NAXISn`, `EXTEND`, `XTENSION`, `PCOUNT`, `GCOUNT`,
+`TFIELDS` — they describe the bytes on disk — and `BSCALE`, `BZERO`, `BLANK`,
+which say how the stored integers map to physical values: editing one does not
+annotate the data, it multiplies it. A value that reads as a number is written
+as a number, since a quoted `'-0.001'` in `CDELT1` is a string card that every
+WCS parser ignores; quote it explicitly to force a string.
+
 ### `POST /v1/files/classify`
 What is this file? Answers from the file itself — magic bytes, extension, and at
 most one FITS header; nothing is opened, converted or registered.
@@ -317,6 +344,35 @@ Returns a downsampled float32 image (base64) + `width`, `height`, `full_width`, 
 ### `POST /v1/image/full`
 Same, no size cap. **Loads the whole plane into RAM** — use `/v1/image/tile` (or `/v1/image/preview`) for large mosaics.
 
+### `POST /v1/image/filter`
+Gaussian-smooth and/or shrink a FITS **file** into a new one in the Workspace.
+Either step may be skipped, but not both. A cube is filtered plane by plane —
+this is a spatial operation, and smoothing along the spectral axis would be a
+different instrument.
+
+```json
+{ "path": "/data/map.fits", "smooth_fwhm_pixels": 3.0,
+  "regrid_factor": 2, "combine": "auto", "output_basename": "" }
+```
+Returns `output_path`, `workspace_filename`, `width`, `height`, `depth`,
+`range_min`, `range_max`, `bunit`, `combine`, `smooth_fwhm_pixels`,
+`smooth_fwhm_arcsec`, `regrid_factor` and `flux_scale`.
+
+This is the legacy's *Filter FITS*, with three corrections that only show up
+later, in the photometry:
+
+| | |
+|---|---|
+| **Blanks stay blank** | The convolution is normalised by the smoothed coverage, so a NaN neither spreads over the kernel footprint nor drags its neighbours towards zero. libwcs' `FiltFITS` ate a 4σ-wide hole around every blank pixel. |
+| **The beam grows — and the flux follows it** | `BMAJ`/`BMIN` are summed in quadrature with the kernel, *and* the pixels are scaled by the ratio of beam areas when the unit is per beam (`flux_scale` in the reply, and a `HISTORY` card). Convolution preserves the **sum** of the pixels; in Jy/beam the integrated flux is that sum divided by the beam area, so a wider beam with unchanged numbers means less flux — a source smoothed with a kernel equal to its own beam would appear to lose half of it. Per-pixel and per-solid-angle units are not scaled: their sum, respectively their surface brightness, is already what the convolution preserves. |
+| **The unit decides how to combine** | `combine: "auto"` reads `BUNIT`: a per-pixel unit (Jy/pixel) is **summed**, surface brightness (Jy/beam, MJy/sr) **averaged**. Averaging a Jy/pixel map loses flux by the square of the factor. `"mean"`/`"sum"` force it. |
+
+The WCS is moved onto the new grid: `CRPIX' = (CRPIX − 0.5)/f + 0.5` (the
+half-pixel terms are the difference between FITS' 1-based pixel centres and the
+block edges — dropping them puts the map half a block off), `CDELT` and any
+`CD`/`PC` matrix scaled by `f`, and the WCS keywords of axes squeezed out of the
+data are dropped and the rest renumbered.
+
 ### `POST /v1/image/tile`
 Out-of-core pyramid tile of a 2-D image mosaic — reads only the requested tile
 region from the memmap, so multi-GB mosaics can be panned / zoomed without
@@ -355,6 +411,30 @@ Returns `distances_Mpc[]` in the same order. Supported models: `Planck18`, `Plan
 { "url": "http://alasky.u-strasbg.fr/DSS/DSS2Merged" }
 ```
 Returns `survey_id`, `order_min`, `order_max`, `frame`, `tile_format`, `ra_center`, `dec_center`, `fov`.
+
+### `POST /v1/hips/hips2fits`
+Cut a FITS (or a picture) out of any HiPS survey, via the CDS hips2fits service,
+into the Workspace.
+
+```json
+{ "hips": "CDS/P/DSS2/color", "width": 512, "height": 512,
+  "ra": 83.82, "dec": -5.39, "fov": 0.5, "projection": "TAN",
+  "coordsys": "icrs", "rotation_angle": 0.0, "format": "fits" }
+```
+Returns `output_path`, `workspace_filename`, `bytes`, `is_fits` and `url` — the
+request as sent, so a cutout is reproducible outside the application.
+
+Every parameter is checked before the request leaves: an empty survey, a field
+of view of zero, a declination off the sky or a cutout over 30 Mpx is refused
+with the reason. `min_cut`, `max_cut` and `stretch` are sent only for `jpg`/`png`
+— they turn numbers into pixels, and a FITS carries the numbers. A response that
+is not a FITS when one was asked for is reported with the service's own
+`description` rather than saved under a `.fits` name.
+
+### `GET /v1/hips/hips2fits/surveys`
+The starting survey list plus the accepted projections and stretches. The legacy
+carried these as a `QStringList` inside the dialog, so correcting a survey id
+meant releasing a client.
 
 ### `GET /v1/hips/{survey_id}/allsky?order=<N>`
 AllSky mosaic PNG/JPEG bytes.
@@ -489,6 +569,36 @@ The SAMP router (`backend/app/routers/samp.py`) is included **without auth depen
 ```
 Returns `ra_deg`, `dec_deg`, `resolved_name`.
 
+### `POST /v1/resolve/cone_search`
+A VO Simple Cone Search against any service.
+
+```json
+{ "url": "https://vizier.cds.unistra.fr/viz-bin/conesearch/II/246/out",
+  "ra": 83.82, "dec": -5.39, "radius": 0.05, "verbosity": 2, "max_rows": 5000 }
+```
+Returns `url`, `columns`, `rows` (capped at `max_rows`), `total_rows`,
+`truncated`, `position_columns` (`{"ra": …, "dec": …}` when they could be
+identified) and `output_path` — **the whole result saved as CSV**, which is what
+lets a search end in a catalogue the viewers can open.
+
+Two documents are refused before astropy sees them: one carrying a `STREAM`
+with an `href` — the parser would fetch that address itself, outside every
+guard, so a service could have `file:///etc/passwd` or an internal port come
+back as table cells — and one carrying a DTD, which no VOTable needs and which
+is an entity-expansion denial of service waiting to happen. The check parses the
+document rather than matching a pattern, because an attribute value may contain
+`>`.
+
+`RA`/`DEC`/`SR`/`VERB` are merged into whatever query the service URL already
+carries (a VizieR cone-search URL has its own parameters, and appending a second
+`?` produces something that is not a URL). The URL is user-supplied, so it goes
+through the SSRF guard; `VISIVO_CONE_SEARCH_ALLOWED_HOSTS` trusts specific hosts.
+A service reports failure *inside* a valid VOTable, so an empty table is not
+necessarily an empty sky — that `INFO value="ERROR"` is raised as the error.
+
+### `GET /v1/resolve/cone_search/services`
+A few known endpoints, so the field starts with something.
+
 ---
 
 ## VLKB
@@ -590,6 +700,39 @@ and the totals are capped.
 | `VISIVO_VLKB_MCUTOUT_MAX_MEMBERS` | 2000 | Entries in the archive |
 | `VISIVO_VLKB_MCUTOUT_MAX_REPORT` | 8 MiB | Job report |
 | `VISIVO_VLKB_URL` | *(unset)* | Default archive base URL |
+
+---
+
+### `POST /v1/vlkb/tap`
+Run a VLKB catalogue query — one of the named presets over a Galactic box, or
+ADQL of your own — and save the result as a CSV catalogue in the Workspace.
+
+```json
+{ "preset": "bubbles", "glon_min": 10.0, "glon_max": 12.0,
+  "glat_min": -1.0, "glat_max": 1.0, "band": "", "max_rows": 0 }
+```
+Returns `url`, `query` (the ADQL actually run — a preset is built on the backend,
+so this is how the user sees what it asked for), `columns`, `rows` (a preview),
+`total_rows`, `truncated`, `output_path`, `workspace_filename` and
+`hit_row_limit`.
+
+| Preset | Table |
+|--------|-------|
+| `bandmerged` | `compactsources.sed_view_final` (positions are `glonft`/`glatft`) |
+| `band` | `compactsources.higal<70\|160\|250\|350\|500>` |
+| `filaments` | `filaments.filaments` joined to `filaments.branches` |
+| `bubbles` | `bubbles.bubbles` |
+| `distances` | `compactsources.distances`, with `x`/`y`/`z` derived from `dist`, `glon`, `glat` — this is what makes a 3-D selection a point cloud rather than a list |
+
+These are the legacy's own queries, with one addition: it had a bubble mode —
+a button, a selector and an importer — and no bubble query, because
+`generateQuery()` had no branch for it, so choosing bubbles ran the compact-source
+query. Only `SELECT` statements are forwarded (TAP sync is a read interface), and
+the service URL goes through the SSRF guard (`VISIVO_VLKB_ALLOWED_HOSTS`).
+
+### `GET /v1/vlkb/tap/presets`
+The presets, the Hi-GAL bands and the configured service URL, so the client does
+not carry the VLKB schema inside it.
 
 ---
 
@@ -747,6 +890,25 @@ backend.
 |----------|---------|--------|
 | `VISIVO_AREPO_MAX_CELLS` | 600,000,000 | Largest grid an extraction may materialise |
 | `VISIVO_AREPO_MAX_LEVEL` | 14 | Highest refinement level accepted |
+
+---
+
+### Fetching on the client's behalf
+
+`/v1/resolve/cone_search`, `/v1/hips/hips2fits` and `/v1/vlkb/tap` all fetch a
+URL the client chose or can override. They go through one helper
+(`app/safe_fetch.py`), which applies the SSRF policy to the URL **and to every
+redirect target** — validating only the first URL is not enough, since a public
+host is free to answer `302 Location: http://169.254.169.254/` and `urlopen`
+follows redirects by default. Each has its own allowlist variable
+(`VISIVO_CONE_SEARCH_ALLOWED_HOSTS`, `VISIVO_HIPS2FITS_ALLOWED_HOSTS`,
+`VISIVO_VLKB_ALLOWED_HOSTS`) for trusting a specific host — which is also how a
+service on a private network is reached deliberately.
+
+Failures these routes can explain — a bad parameter, a service's own error
+message — come back in `error`. Anything unforeseen is logged with its traceback
+and answered with a fixed sentence: `str(exc)` on an unexpected exception
+carries server paths and mount points to whoever asked.
 
 ---
 

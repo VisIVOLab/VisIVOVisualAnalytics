@@ -169,6 +169,21 @@ SPECTRUM controls of the product it just produced. The Tools menu and
 collapsed.
 ```
 
+#### Preparing the cube: Smooth / Regrid
+
+*Tools → Smooth / Regrid…* applies a Gaussian kernel and/or an integer shrink
+to **every plane**, on the backend, and writes a new FITS into the Workspace,
+which then opens as a cube of its own.
+
+It is a *spatial* operation: the spectral axis is left alone, so a line in one
+channel does not appear in its neighbours. Blank pixels stay blank, the beam
+grows with the kernel, and a per-pixel `BUNIT` is summed rather than averaged —
+see [Image viewer — Smoothing and regridding](image-viewer#smoothing-and-regridding)
+for why each of those matters.
+
+The header can be repaired the same way as in the image viewer: the **CUBE**
+tag in the toolbar shows the FITS header, and **Edit…** writes a corrected copy.
+
 #### Session Data: selecting vs showing
 
 The left panel's tree is a **table of contents**, and the two gestures do

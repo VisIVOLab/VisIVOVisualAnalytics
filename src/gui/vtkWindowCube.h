@@ -1082,6 +1082,7 @@ protected:
     /// "Export Moment Map as FITS…" — enabled only once a moment is on
     /// screen (the controller pushes the first result). Stays enabled.
     QPointer<QAction> m_actExportMomentFits;
+    QPointer<QAction> m_actFilterFits;
     QPointer<QAction> m_actExportSubCube;
     QPointer<QAction> m_actMaskRegion;
     QPointer<QAction> m_actExportChannel2d;

@@ -27,7 +27,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..auth import verify_token
-from ..dependencies import assert_safe_fetch_url, get_exports_dir
+from ..dependencies import (_run, assert_safe_fetch_url, get_exports_dir,
+                            make_workspace_path)
 
 router = APIRouter(tags=["vlkb"])
 logger = logging.getLogger("visivo.backend")
@@ -353,3 +354,80 @@ async def vlkb_mcutout_fetch(request: McutoutJobRequest, _: None = _auth):
         raise _mcutout_failure(exc) from exc
     logger.info("[mcutout] fetched job=%s files=%d", request.job_id, len(result["files"]))
     return {"valid": True, "error": "", **result}
+
+
+# ── TAP: the catalogue query composer ────────────────────────────────────────
+
+class VlkbTapRequest(BaseModel):
+    """Either a preset over a Galactic box, or an ADQL statement of your own."""
+    #: "" = use `query`; otherwise one of app.vlkb_tap.PRESETS.
+    preset: str = ""
+    query: str = ""
+    glon_min: float = 0.0
+    glon_max: float = 0.0
+    glat_min: float = 0.0
+    glat_max: float = 0.0
+    band: str = ""
+    #: "" = the backend's configured VLKB.
+    service_url: str = ""
+    max_rows: int = 0
+    output_basename: str = ""
+
+
+class VlkbTapResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    url: str = ""
+    query: str = ""
+    columns: list[str] = []
+    rows: list[list[str]] = []
+    total_rows: int = 0
+    truncated: bool = False
+    output_path: str = ""
+    workspace_filename: str = ""
+    hit_row_limit: bool = False
+
+
+class VlkbTapPresetsResponse(BaseModel):
+    presets: list[dict[str, str]]
+    bands: list[str]
+    service_url: str
+
+
+@router.get("/v1/vlkb/tap/presets", response_model=VlkbTapPresetsResponse, tags=["vlkb"])
+async def vlkb_tap_presets(_: None = _auth) -> VlkbTapPresetsResponse:
+    """The named queries, so the client does not carry the VLKB schema in it."""
+    from .. import vlkb_tap  # noqa: PLC0415
+    return VlkbTapPresetsResponse(
+        presets=[dict(p) for p in vlkb_tap.PRESETS],
+        bands=list(vlkb_tap.BANDS),
+        service_url=vlkb_tap.tap_base(""),
+    )
+
+
+@router.post("/v1/vlkb/tap", response_model=VlkbTapResponse, tags=["vlkb"])
+async def vlkb_tap_query(request: VlkbTapRequest, _: None = _auth) -> VlkbTapResponse:
+    """Run an ADQL query against the VLKB and save the result as a catalogue."""
+    from .. import vlkb_tap  # noqa: PLC0415
+
+    try:
+        adql = (vlkb_tap.build_query(request.preset, request.glon_min, request.glon_max,
+                                     request.glat_min, request.glat_max, request.band)
+                if request.preset else request.query)
+    except vlkb_tap.VlkbQueryError as exc:
+        return VlkbTapResponse(valid=False, error=str(exc))
+
+    basename = request.output_basename.strip() or f"vlkb_{request.preset or 'query'}.csv"
+    output_path = str(make_workspace_path(basename))
+    try:
+        result = await _run(vlkb_tap.run_query, request.service_url, adql, output_path,
+                            int(request.max_rows))
+    except vlkb_tap.VlkbQueryError as exc:
+        return VlkbTapResponse(valid=False, error=str(exc))
+    except Exception as exc:
+        logger.exception("[vlkb-tap] failed preset=%s", request.preset)
+        return VlkbTapResponse(
+            valid=False, error="The query could not be completed. See the backend log.")
+
+    workspace_filename = Path(result["output_path"]).name if result["output_path"] else ""
+    return VlkbTapResponse(valid=True, workspace_filename=workspace_filename, **result)

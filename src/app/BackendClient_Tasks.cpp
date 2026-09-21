@@ -141,6 +141,87 @@ BackendSaveMomentFitsResult BackendClient::saveMomentFits(
     return parseSaveMomentFitsObject(QJsonDocument::fromJson(raw).object());
 }
 
+BackendHeaderPatchResult BackendClient::patchFitsHeader(
+        const QString &path, const QList<BackendHeaderCardEdit> &cards,
+        const QStringList &remove, const QString &outputBasename)
+{
+    BackendHeaderPatchResult result;
+    QString error;
+    QJsonArray cardArray;
+    for (const BackendHeaderCardEdit &card : cards) {
+        QJsonObject entry{ { QStringLiteral("key"), card.key },
+                           { QStringLiteral("value"), card.value } };
+        // Absent means "leave the comment alone"; present-and-empty means
+        // "clear it". Sending "" unconditionally would clear every comment.
+        if (card.commentProvided)
+            entry.insert(QStringLiteral("comment"), card.comment);
+        cardArray.append(entry);
+    }
+    QJsonArray removeArray;
+    for (const QString &key : remove)
+        removeArray.append(key);
+
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("path"),            path },
+            { QStringLiteral("cards"),           cardArray },
+            { QStringLiteral("remove"),          removeArray },
+            { QStringLiteral("output_basename"), outputBasename } });
+    const QByteArray raw = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/files/header/patch")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject o = QJsonDocument::fromJson(raw).object();
+    result.valid             = o.value(QStringLiteral("valid")).toBool(false);
+    result.error             = o.value(QStringLiteral("error")).toString();
+    result.outputPath        = o.value(QStringLiteral("output_path")).toString();
+    result.workspaceFilename = o.value(QStringLiteral("workspace_filename")).toString();
+    for (const QJsonValue &v : o.value(QStringLiteral("changes")).toArray())
+        result.changes << v.toString();
+    result.wcsStatus    = o.value(QStringLiteral("wcs_status")).toString();
+    result.wcsMessage   = o.value(QStringLiteral("wcs_message")).toString();
+    result.wcsCelestial = o.value(QStringLiteral("wcs_celestial")).toBool(false);
+    return result;
+}
+
+BackendFilterFitsResult BackendClient::filterFits(const QString &path,
+                                                 double smoothFwhmPixels, int regridFactor,
+                                                 const QString &combine,
+                                                 const QString &outputBasename)
+{
+    BackendFilterFitsResult result;
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("path"),               path },
+            { QStringLiteral("smooth_fwhm_pixels"), smoothFwhmPixels },
+            { QStringLiteral("regrid_factor"),      regridFactor },
+            { QStringLiteral("combine"),            combine },
+            { QStringLiteral("output_basename"),    outputBasename } });
+    const QByteArray raw = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/image/filter")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject o = QJsonDocument::fromJson(raw).object();
+    result.valid             = o.value(QStringLiteral("valid")).toBool(false);
+    result.error             = o.value(QStringLiteral("error")).toString();
+    result.outputPath        = o.value(QStringLiteral("output_path")).toString();
+    result.workspaceFilename = o.value(QStringLiteral("workspace_filename")).toString();
+    result.width             = o.value(QStringLiteral("width")).toInt();
+    result.height            = o.value(QStringLiteral("height")).toInt();
+    result.depth             = o.value(QStringLiteral("depth")).toInt(1);
+    result.rangeMin          = o.value(QStringLiteral("range_min")).toDouble();
+    result.rangeMax          = o.value(QStringLiteral("range_max")).toDouble();
+    result.bunit             = o.value(QStringLiteral("bunit")).toString();
+    result.combine           = o.value(QStringLiteral("combine")).toString();
+    result.smoothFwhmPixels  = o.value(QStringLiteral("smooth_fwhm_pixels")).toDouble();
+    result.smoothFwhmArcsec  = o.value(QStringLiteral("smooth_fwhm_arcsec")).toDouble();
+    result.regridFactor      = o.value(QStringLiteral("regrid_factor")).toInt(1);
+    return result;
+}
+
 BackendWorkspaceDeleteResult BackendClient::copyDatasetToWorkspace(
         const QString &datasetId, const QString &basename)
 {
