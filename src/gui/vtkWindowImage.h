@@ -43,6 +43,7 @@ class QLabel;
 class ToolResultDialog;
 class QTableView;
 class QTreeView;
+class SegmentedToggle;
 class SidebarPanel;
 class vtkActor;
 class vtkAxisActor2D;
@@ -333,6 +334,74 @@ private:
 
     // Layout B-style top toolbar: path-pill + tag chips + Find/Command/Export.
     void setupViewerToolbar();
+
+    // ── The mode strip ───────────────────────────────────────────────────────
+    // Pan, Probe, Region, Ruler and Annotate are mutually exclusive modes, and
+    // until now they were armed from the Tools menu with nothing on screen to
+    // say which one was on — you found out by clicking and seeing what happened.
+    // The strip is that missing state, and it is two-way: arming a mode from the
+    // menu moves the strip, and moving the strip arms the mode.
+    enum class ViewerMode
+    {
+        Pan = 0,
+        Probe,
+        Region,
+        Ruler,
+        Annotate,
+    };
+    /// Build the strip row under the viewer toolbar.
+    void setupModeStrip();
+
+    // ── The overlays block ───────────────────────────────────────────────────
+    // What is drawn ON TOP of the image — catalogue sources, polarisation
+    // vectors, the WCS grid, annotations — was switched from four places: two
+    // entries in Tools, one in View, and one that did not exist at all
+    // (annotations could be added and cleared, never hidden). None of them said
+    // how much was up there. Four rows, four counts, one place.
+    /// The live Σ / μ box in the corner of the viewport, shown while a region is
+    /// being dragged. Until now the numbers arrived only when the drag ended, in
+    /// a dialog — so the region was chosen blind and adjusted by repetition.
+    void updateRegionReadout();
+    void hideRegionReadout();
+    QPointer<QLabel> m_regionReadout;
+
+    void setupOverlaysBlock();
+    /// Re-read the toggles and the counts from the window's own state. Called
+    /// whenever an overlay is loaded, cleared or toggled from anywhere.
+    void refreshOverlaysBlock();
+    /// Show or hide the annotation actors (the toggle that was missing).
+    void setAnnotationsVisible(bool visible);
+
+    QPointer<QWidget> m_overlaysBlock;
+    QPointer<QCheckBox> m_overlayCatalogue;
+    QPointer<QCheckBox> m_overlayLabels;
+    QPointer<QCheckBox> m_overlayPolVectors;
+    QPointer<QCheckBox> m_overlayWcsGrid;
+    QPointer<QCheckBox> m_overlayAnnotations;
+    /// The count beside each row. QPointer, not a raw pointer: the rows are
+    /// children of the block, and a refresh can be triggered while the window is
+    /// coming down.
+    QHash<QCheckBox *, QPointer<QLabel>> m_overlayCounts;
+    bool m_annotationsVisible{ true };
+    bool m_syncingOverlays{ false };
+    /// Arm the mode the user picked on the strip.
+    void applyViewerMode(ViewerMode mode);
+    /// Move the strip to whatever the window is actually doing. Called from
+    /// every place that changes a mode, whichever surface started it.
+    void syncModeStrip();
+    /// The mode the window is in right now, read from the modes themselves —
+    /// there is no separate copy of this state to fall out of step.
+    ViewerMode currentViewerMode() const;
+
+    QPointer<SegmentedToggle> m_modeStrip;
+    /// Box / Circle / Polygon / Annulus — shown only while Region is armed.
+    QPointer<SegmentedToggle> m_regionShapeStrip;
+    QPointer<QLabel> m_modeHint;
+    /// The shape to arm when Region is chosen on the strip: whichever was used
+    /// last, so the choice survives leaving the mode and coming back.
+    RegionMode m_lastRegionShape{ RegionMode::Box };
+    /// Guard against the strip and the actions driving each other in circles.
+    bool m_syncingModeStrip{ false };
 
     /// Populate the right Inspector shell (Properties/Analysis). The image is a
     /// single-view window, so pane-layout and Linked are disabled.

@@ -229,20 +229,6 @@
                 <property name="text"><string>Layers</string></property>
                </widget>
               </item>
-              <item>
-               <widget class="QPushButton" name="btnAddLayer">
-                <property name="sizePolicy">
-                 <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-                  <horstretch>0</horstretch>
-                  <verstretch>0</verstretch>
-                 </sizepolicy>
-                </property>
-                <property name="text"><string>+ Add…</string></property>
-                <property name="toolTip">
-                 <string>Overlay another FITS image on this one (⌘L). It must cover some of the same sky.</string>
-                </property>
-               </widget>
-              </item>
              </layout>
             </item>
 
@@ -261,6 +247,15 @@
               </property>
               <property name="defaultDropAction">
                <enum>Qt::DropAction::MoveAction</enum>
+              </property>
+             </widget>
+            </item>
+
+            <item>
+             <widget class="QPushButton" name="btnAddLayer">
+              <property name="text"><string>＋  Add layer…</string></property>
+              <property name="toolTip">
+               <string>Overlay another FITS image on this one (⌘L). It must cover some of the same sky.</string>
               </property>
              </widget>
             </item>
@@ -487,8 +482,8 @@
   <tabstop>radioLog</tabstop>
   <tabstop>btnLutEdit</tabstop>
   <tabstop>sliderOpacity</tabstop>
-  <tabstop>btnAddLayer</tabstop>
   <tabstop>listLayer</tabstop>
+  <tabstop>btnAddLayer</tabstop>
   <tabstop>btnSources</tabstop>
   <tabstop>btnFilaments</tabstop>
   <tabstop>btn3D</tabstop>

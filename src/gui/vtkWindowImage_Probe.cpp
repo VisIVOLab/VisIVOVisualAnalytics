@@ -63,6 +63,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QDebug>
+#include <QScopeGuard>
 #include <QKeySequence>
 #include <QIcon>
 #include <QImage>
@@ -412,6 +413,9 @@ void vtkWindowImage::clearProbe()
 
 void vtkWindowImage::setProbeModeActive(bool active)
 {
+    // However this function returns, the strip ends up showing the state it
+    // left behind — including the early returns.
+    const QScopeGuard syncStrip([this]() { this->syncModeStrip(); });
     this->probeModeActive = active;
     if (active) {
         if (this->actionBoxRegion && this->actionBoxRegion->isChecked()) {

@@ -13,6 +13,7 @@
 #include "DiagnosticsWindow.h"
 #include "ImageLayerController.h"
 #include "FilterFitsDialog.h"
+#include "LayerCardDelegate.h"
 #include "ImageLayerImportService.h"
 #include "ImageLayerLoadTask.h"
 #include "LUTCustomizerDialog.h"
@@ -956,6 +957,8 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     this->m_windowScope = ProductRegistry::instance().newOwnerScope();
     ui->setupUi(this);
     this->setupViewerToolbar();
+    // The row under it: which mode the window is in, and how to leave it.
+    this->setupModeStrip();
     // setupSidebar() is called later, after all QActions are initialised
     qDebug().noquote()
             << QStringLiteral("[wcs] remote metadata loaded ctype=%1,%2 cdelt=%3,%4")
@@ -1192,17 +1195,37 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     // Setup Menu File
     QObject::connect(ui->actionAddFITS, &QAction::triggered, this,
                      &vtkWindowImage::addLayerFromBrowser);
-    // The same action beside the layer list, which is where it is looked for.
+    // Each layer as a card: its own colour map, stretch and opacity on the row,
+    // instead of one line of text and a settings panel that describes only
+    // whichever layer happens to be selected.
+    if (ui->listLayer) {
+        ui->listLayer->setItemDelegate(new LayerCardDelegate(ui->listLayer));
+        ui->listLayer->setSpacing(0);
+        ui->listLayer->setUniformItemSizes(true);
+    }
+
+    // The way to add a layer, at the end of the stack — the design's dashed
+    // "Add layer from backend…" row.
+    //
+    // It is a widget under the list rather than a last row INSIDE it, which is
+    // what the design draws. A phantom row would have to be a row of the model,
+    // and every index-based accessor in this window (getImageData, the LUT, the
+    // opacity, the drag-reorder) would then have to know that the last row is
+    // not a layer. That is a wrong-layer bug waiting to be written, in exchange
+    // for a few pixels of position — and this way the row stays visible when
+    // the list scrolls, which the design's version does not.
     if (ui->btnAddLayer) {
         ui->btnAddLayer->setCursor(Qt::PointingHandCursor);
         ui->btnAddLayer->setFlat(true);
-        ui->btnAddLayer->setFixedHeight(22);
+        ui->btnAddLayer->setFixedHeight(28);
         ui->btnAddLayer->setStyleSheet(
-                QStringLiteral("QPushButton{background:transparent;border:none;color:%1;"
-                               "font-size:11px;font-weight:600;padding:0 2px;}"
-                               "QPushButton:hover{text-decoration:underline;}"
-                               "QPushButton:disabled{color:%2;}")
+                QStringLiteral("QPushButton{background:transparent;"
+                               "border:1px dashed %2; border-radius:6px; color:%1;"
+                               "font-size:11px;font-weight:600;padding:0 8px;text-align:left;}"
+                               "QPushButton:hover{border-color:%1;}"
+                               "QPushButton:disabled{color:%3;border-color:%3;}")
                         .arg(QLatin1StringView(VisivoTheme::kPrimary()),
+                             QLatin1StringView(VisivoTheme::kOutline()),
                              QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         QObject::connect(ui->btnAddLayer, &QPushButton::clicked, this,
                          &vtkWindowImage::addLayerFromBrowser);

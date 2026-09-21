@@ -462,6 +462,8 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage_Catalogue.cpp
         src/gui/ArepoExtractDialog.cpp
         src/gui/FilterFitsDialog.cpp
+        src/gui/LayerCardDelegate.cpp
+        src/gui/LayerCardDelegate.h
         src/gui/Hips2FitsDialog.cpp
         src/gui/VlkbQueryComposer.cpp
         src/gui/VlkbQueryComposer.h

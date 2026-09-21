@@ -23,6 +23,7 @@
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
 #include "ProductOrigin.h"
+#include "RegionReadout.h"
 #include "ToolResultDialog.h"
 #include "vtkInteractorStyleProfile.h"
 #include "vtkLegendScaleActorWCS.h"
@@ -65,6 +66,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QDebug>
+#include <QScopeGuard>
 #include <QKeySequence>
 #include <QIcon>
 #include <QImage>
@@ -210,6 +212,70 @@ QString regionModeLabel(vtkWindowImage::RegionMode mode)
     default:
         return u"Region"_s;
     }
+}
+
+/// Sum and mean only, in one pass, over at most a fixed budget of pixels.
+///
+/// The full statistics sort the values (median, MAD); doing that on every mouse
+/// move costs a tenth of a second on a megapixel region. This is what the live
+/// readout can afford — and when it has to sample, it says so, because a sampled
+/// sum scaled back up is an estimate and must not be read as the flux.
+struct RegionQuickStats
+{
+    double sum{ 0. };
+    double mean{ 0. };
+    long long validCount{ 0 };
+    bool sampled{ false };
+};
+
+RegionQuickStats computeRegionQuickStats(vtkImageData *imageData,
+                                         vtkWindowImage::RegionMode mode,
+                                         const std::array<int, 2> &anchor,
+                                         const std::array<int, 2> &current,
+                                         const std::vector<std::array<int, 2>> &polygonVertices,
+                                         double annulusInnerRadius)
+{
+    RegionQuickStats quick;
+    if (!imageData)
+        return quick;
+
+    int extent[6];
+    imageData->GetExtent(extent);
+    const auto bounds = regionBounds2D(mode, anchor, current, polygonVertices);
+    const int x0 = std::max(extent[0], bounds[0]);
+    const int x1 = std::min(extent[1], bounds[1]);
+    const int y0 = std::max(extent[2], bounds[2]);
+    const int y1 = std::min(extent[3], bounds[3]);
+    if (x1 < x0 || y1 < y0)
+        return quick;
+
+    const long long box = static_cast<long long>(x1 - x0 + 1) * (y1 - y0 + 1);
+    const int stride = visivo::regionSampleStride(box);
+    quick.sampled = stride > 1;
+
+    double sum = 0.0;
+    long long counted = 0;
+    for (int y = y0; y <= y1; y += stride) {
+        for (int x = x0; x <= x1; x += stride) {
+            if (!pointInRegion(mode, anchor, current, polygonVertices, annulusInnerRadius, x, y))
+                continue;
+            const double value = imageData->GetScalarComponentAsDouble(x, y, extent[4], 0);
+            if (!std::isfinite(value))
+                continue;
+            sum += value;
+            ++counted;
+        }
+    }
+    if (counted == 0)
+        return quick;
+
+    quick.mean = sum / static_cast<double>(counted);
+    // Scale the sum back to the whole region: the mean is unbiased under
+    // sampling, the sum is not.
+    const double scale = static_cast<double>(stride) * static_cast<double>(stride);
+    quick.sum = quick.sampled ? sum * scale : sum;
+    quick.validCount = quick.sampled ? static_cast<long long>(counted * scale) : counted;
+    return quick;
 }
 
 RegionStatistics computeRegionStatistics2D(vtkImageData *imageData, vtkWindowImage::RegionMode mode,
@@ -381,6 +447,9 @@ void vtkWindowImage::finishRegionInteraction()
 
 void vtkWindowImage::setRegionMode(RegionMode mode, bool active)
 {
+    // However this function returns, the strip ends up showing the state it
+    // left behind — including the early returns.
+    const QScopeGuard syncStrip([this]() { this->syncModeStrip(); });
     if (!active) {
         if (this->regionMode == mode) {
             this->regionMode = RegionMode::None;
@@ -453,13 +522,73 @@ bool vtkWindowImage::updateRegionFromDisplayPosition(int displayX, int displayY)
     return true;
 }
 
+void vtkWindowImage::updateRegionReadout()
+{
+    if (!ui->vtk)
+        return;
+    auto *imageData =
+            this->layers ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
+    if (!imageData || this->regionMode == RegionMode::None || !this->regionValid) {
+        this->hideRegionReadout();
+        return;
+    }
+
+    if (!m_regionReadout) {
+        // A child of the render widget, so it floats over the image and moves
+        // with it; the VTK surface has no layout to put it in.
+        m_regionReadout = new QLabel(ui->vtk);
+        m_regionReadout->setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_regionReadout->setStyleSheet(
+                QStringLiteral("QLabel { background: rgba(0,0,0,0.55); color:%1;"
+                               " border:1px solid %2; border-radius:6px;"
+                               " padding:5px 10px;"
+                               " font-family:'JetBrains Mono','SF Mono',monospace;"
+                               " font-size:10px; }")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurface()),
+                             QLatin1StringView(VisivoTheme::kOutline())));
+    }
+
+    const auto quick = computeRegionQuickStats(imageData, this->regionMode,
+                                               this->regionAnchorVoxel, this->regionCurrentVoxel,
+                                               this->regionPolygonVertices,
+                                               this->regionAnnulusInnerRadius);
+    m_regionReadout->setText(visivo::regionReadoutText(regionModeLabel(this->regionMode),
+                                                       quick.sum, quick.mean, quick.validCount,
+                                                       quick.sampled));
+    // Never wider than the viewport it floats in: a long shape name plus two
+    // figures on a narrow window would run out past the right edge, where there
+    // is nothing to clip it.
+    m_regionReadout->setMaximumWidth(std::max(120, ui->vtk->width() - 24));
+    m_regionReadout->adjustSize();
+    // Bottom-left of the viewport, clear of the colorbar on the right — and
+    // above the WCS axis strip VTK draws along the bottom edge, which a 12 px
+    // margin lands squarely on top of (seen by running it: the box covered the
+    // "-0.50" tick label).
+    constexpr int kAxisStripHeight = 44;
+    m_regionReadout->move(12,
+                          std::max(0, ui->vtk->height() - m_regionReadout->height()
+                                              - kAxisStripHeight));
+    m_regionReadout->show();
+    m_regionReadout->raise();
+}
+
+void vtkWindowImage::hideRegionReadout()
+{
+    if (m_regionReadout)
+        m_regionReadout->hide();
+}
+
 void vtkWindowImage::refreshRegionOverlay()
 {
     auto *imageData = this->layers ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
     if (!imageData || this->regionMode == RegionMode::None || !this->regionValid) {
         this->clearRegion();
+        this->hideRegionReadout();
         return;
     }
+    // The numbers follow the shape: same call site, so they cannot show a
+    // region that is no longer the one on screen.
+    this->updateRegionReadout();
 
     // Region geometry (anchor/current voxels, polygon vertices, annulus radii) is expressed in
     // the *displayed* image's voxel index space. On a decimated LOD image that voxel space is
@@ -583,6 +712,8 @@ void vtkWindowImage::refreshRegionOverlay()
 
 void vtkWindowImage::clearRegion()
 {
+    // The readout describes a region; with none there is nothing for it to say.
+    this->hideRegionReadout();
     this->regionValid = false;
     this->regionDragging = false;
     this->ignoreNextPolygonRelease = false;

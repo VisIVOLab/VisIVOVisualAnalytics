@@ -1111,6 +1111,7 @@ bool vtkWindowImage::rebuildPolarizationVectors()
 
     m_polVecData->SetPoints(m_polVecPoints);
     m_polVecData->SetLines(m_polVecCells);
+    this->refreshOverlaysBlock();
     m_polVecData->Modified();
 
     statusBar()->showMessage(

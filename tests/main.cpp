@@ -26,6 +26,9 @@
 #include "TestVlkbPosString.h"
 #include "TestSkyOverlap.h"
 #include "TestFitsHeaderCard.h"
+#include "TestViewerModeState.h"
+#include "TestLayerCardGeometry.h"
+#include "TestRegionReadout.h"
 
 #include <QCoreApplication>
 #include <QTest>
@@ -58,5 +61,8 @@ int main(int argc, char *argv[])
     { TestVlkbPosString    t; status |= QTest::qExec(&t, argc, argv); }
     { TestSkyOverlap       t; status |= QTest::qExec(&t, argc, argv); }
     { TestFitsHeaderCard   t; status |= QTest::qExec(&t, argc, argv); }
+    { TestViewerModeState  t; status |= QTest::qExec(&t, argc, argv); }
+    { TestLayerCardGeometry t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRegionReadout    t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }

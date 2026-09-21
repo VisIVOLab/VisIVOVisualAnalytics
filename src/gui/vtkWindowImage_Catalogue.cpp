@@ -80,6 +80,7 @@
 #include <QCheckBox>
 #include <QColor>
 #include <QDebug>
+#include <QScopeGuard>
 #include <QKeySequence>
 #include <QIcon>
 #include <QImage>
@@ -332,6 +333,9 @@ void vtkWindowImage::loadCatalogueOverlay()
 // the shared back end for both file overlays and the catalogue cross-match.
 void vtkWindowImage::applyCatalogueOverlayResult(const CatalogueOverlayParseResult &parsed)
 {
+    // However this returns, the overlays block ends up showing the count that
+    // is actually on screen.
+    const QScopeGuard overlaysGuard([this]() { this->refreshOverlaysBlock(); });
     if (!this->remoteHasCelestialAxes()) {
         const bool hasImageEntries = std::any_of(
                 parsed.entries.cbegin(), parsed.entries.cend(), [](const CatalogueOverlayEntry &entry) {
@@ -642,6 +646,9 @@ void vtkWindowImage::recordCrossmatch(int matches)
 
 void vtkWindowImage::clearCatalogueOverlay()
 {
+    // However this returns, the overlays block ends up showing the count that
+    // is actually on screen.
+    const QScopeGuard overlaysGuard([this]() { this->refreshOverlaysBlock(); });
     this->catalogueOverlayLoaded = false;
     this->catalogueOverlayPixels.clear();
     this->catalogueOverlayEntries.clear();

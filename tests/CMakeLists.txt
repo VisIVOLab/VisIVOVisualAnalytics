@@ -113,6 +113,12 @@ add_executable(VisIVOTests
     test_sky_overlap.cpp
     TestFitsHeaderCard.h
     test_fits_header_card.cpp
+    TestViewerModeState.h
+    test_viewer_mode_state.cpp
+    TestLayerCardGeometry.h
+    test_layer_card_geometry.cpp
+    TestRegionReadout.h
+    test_region_readout.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

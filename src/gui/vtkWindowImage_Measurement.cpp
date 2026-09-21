@@ -65,6 +65,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QDebug>
+#include <QScopeGuard>
 #include <QKeySequence>
 #include <QIcon>
 #include <QImage>
@@ -118,6 +119,9 @@ using namespace CubeGeom;  // shared viewport-geometry helpers (deduplicated)
 
 void vtkWindowImage::setMeasurementMode(MeasurementMode mode)
 {
+    // However this function returns, the strip ends up showing the state it
+    // left behind — including the early returns.
+    const QScopeGuard syncStrip([this]() { this->syncModeStrip(); });
     if (m_measMode == mode) return;
 
     if (this->probeModeActive && ui->actionProfile->isChecked())

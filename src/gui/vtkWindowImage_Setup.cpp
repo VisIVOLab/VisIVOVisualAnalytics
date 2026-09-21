@@ -19,6 +19,7 @@
 #include "RemoteFileBrowserDialog.h"
 #include "qcustomplot.h"
 #include "SidebarPanel.h"
+#include "ViewerModeState.h"
 #include "theme/SegmentedToggle.h"
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
@@ -600,6 +601,366 @@ void vtkWindowImage::setupViewerToolbar()
     m_workspaceChrome->attachCommandBar(w);
 }
 
+// ── The mode strip ───────────────────────────────────────────────────────────
+//
+// Pan, Probe, Region, Ruler and Annotate are mutually exclusive — arming one
+// disarms the others, and the code has always known that. What it never showed
+// was WHICH one is on: they were entered from the Tools menu, whose checkmarks
+// are invisible until the menu is open, so the way to find out was to click on
+// the image and see what happened. The redesign calls this "the missing
+// affordance"; this row is it.
+//
+// The strip holds no state of its own. `currentViewerMode()` reads the modes
+// themselves, so the strip cannot drift out of step with them — which matters
+// because a mode can also be armed from the menu, the palette, or by another
+// mode disarming it.
+
+void vtkWindowImage::setupModeStrip()
+{
+    auto *row = new QWidget(this);
+    auto *layout = new QHBoxLayout(row);
+    layout->setContentsMargins(10, 0, 10, 6);
+    layout->setSpacing(10);
+
+    auto *label = new QLabel(u"Mode"_s, row);
+    label->setStyleSheet(
+            QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    layout->addWidget(label);
+
+    m_modeStrip = new SegmentedToggle(row);
+    m_modeStrip->addItem(u"Pan"_s, u"Pan and zoom; no tool armed."_s);
+    m_modeStrip->addItem(u"Probe"_s, u"Read pixel values and the profile under the cursor."_s);
+    m_modeStrip->addItem(u"Region"_s, u"Drag a region and measure inside it."_s);
+    m_modeStrip->addItem(u"Ruler"_s, u"Measure a distance on the sky."_s);
+    m_modeStrip->addItem(u"Annotate"_s, u"Place a text annotation on the image."_s);
+    m_modeStrip->setCurrentIndex(0);
+    layout->addWidget(m_modeStrip);
+
+    m_regionShapeStrip = new SegmentedToggle(row);
+    m_regionShapeStrip->addItem(u"Box"_s, u"Rectangular region."_s);
+    m_regionShapeStrip->addItem(u"Circle"_s, u"Circular region."_s);
+    m_regionShapeStrip->addItem(u"Poly"_s, u"Polygon region: click the vertices."_s);
+    m_regionShapeStrip->addItem(u"Annulus"_s, u"Annular region: inner and outer radius."_s);
+    m_regionShapeStrip->setCurrentIndex(0);
+    // Only meaningful while Region is armed — a shape picker for a mode you are
+    // not in is a control that does nothing.
+    m_regionShapeStrip->setVisible(false);
+    layout->addWidget(m_regionShapeStrip);
+
+    m_modeHint = new QLabel(QString(), row);
+    m_modeHint->setStyleSheet(
+            QStringLiteral("color:%1; font-family:'JetBrains Mono','SF Mono',monospace;"
+                           "font-size:10px;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    layout->addWidget(m_modeHint, 1);
+
+    QObject::connect(m_modeStrip, &SegmentedToggle::currentIndexChanged, this,
+                     [this](int index) {
+                         if (m_syncingModeStrip)
+                             return;
+                         this->applyViewerMode(static_cast<ViewerMode>(index));
+                     });
+    QObject::connect(m_regionShapeStrip, &SegmentedToggle::currentIndexChanged, this,
+                     [this](int index) {
+                         if (m_syncingModeStrip)
+                             return;
+                         static const RegionMode shapes[] = {
+                             RegionMode::Box, RegionMode::Circle,
+                             RegionMode::Polygon, RegionMode::Annulus,
+                         };
+                         if (index < 0 || index >= 4)
+                             return;
+                         m_lastRegionShape = shapes[index];
+                         this->applyViewerMode(ViewerMode::Region);
+                     });
+
+    auto *host = new QToolBar(this);
+    host->setObjectName(u"modeStripHost"_s);
+    host->setMovable(false);
+    host->setFloatable(false);
+    host->setContextMenuPolicy(Qt::PreventContextMenu);
+    host->setStyleSheet(
+            QStringLiteral("QToolBar#modeStripHost { background: transparent; border: none;"
+                           " padding: 0px; spacing: 0px; }"));
+    host->addWidget(row);
+    this->addToolBarBreak(Qt::TopToolBarArea);
+    this->addToolBar(Qt::TopToolBarArea, host);
+
+    this->syncModeStrip();
+}
+
+vtkWindowImage::ViewerMode vtkWindowImage::currentViewerMode() const
+{
+    // The precedence lives in ViewerModeState.h, where it can be tested without
+    // a window: what to show when the four flags somehow disagree is exactly
+    // the part that goes wrong silently.
+    const auto kind = visivo::viewerModeFor(
+            this->regionMode != RegionMode::None,
+            this->m_measMode != MeasurementMode::None,
+            this->m_annotPlaceMode != AnnotPlaceMode::None,
+            this->probeModeActive);
+    return static_cast<ViewerMode>(static_cast<int>(kind));
+}
+
+void vtkWindowImage::applyViewerMode(ViewerMode mode)
+{
+    // Everything goes through the existing actions rather than through the
+    // setters: the actions carry the checked state the menu draws, and the
+    // setters are what they call. Driving the actions keeps both surfaces in
+    // agreement for free.
+    const auto uncheck = [](QAction *action) {
+        if (action && action->isChecked())
+            action->setChecked(false);
+    };
+
+    if (mode != ViewerMode::Region) {
+        uncheck(this->actionBoxRegion);
+        uncheck(this->actionCircleRegion);
+        uncheck(this->actionPolygonRegion);
+        uncheck(this->actionAnnulusRegion);
+    }
+    if (mode != ViewerMode::Ruler) {
+        uncheck(this->m_actRuler);
+        uncheck(this->m_actAngle);
+    }
+    if (mode != ViewerMode::Probe)
+        uncheck(ui->actionProfile);
+    if (mode != ViewerMode::Annotate && this->m_annotPlaceMode != AnnotPlaceMode::None) {
+        // An annotation waiting to be placed is armed state like any other: it
+        // holds the next click. Leaving it pending means the strip says Pan
+        // while the image is still waiting to receive text.
+        this->cancelAnnotationPlacement();
+    }
+
+    switch (mode) {
+    case ViewerMode::Pan:
+        break;
+    case ViewerMode::Probe:
+        if (ui->actionProfile)
+            ui->actionProfile->setChecked(true);
+        break;
+    case ViewerMode::Region: {
+        QAction *shape = nullptr;
+        switch (m_lastRegionShape) {
+        case RegionMode::Circle:  shape = this->actionCircleRegion;  break;
+        case RegionMode::Polygon: shape = this->actionPolygonRegion; break;
+        case RegionMode::Annulus: shape = this->actionAnnulusRegion; break;
+        case RegionMode::Box:
+        case RegionMode::None:    shape = this->actionBoxRegion;     break;
+        }
+        if (shape && !shape->isChecked())
+            shape->setChecked(true);
+        break;
+    }
+    case ViewerMode::Ruler:
+        if (m_actRuler && !m_actRuler->isChecked())
+            m_actRuler->setChecked(true);
+        break;
+    case ViewerMode::Annotate:
+        // Placing an annotation needs its text first, so this opens the same
+        // dialog the menu entry does; the mode begins when it is accepted.
+        this->addTextAnnotation();
+        break;
+    }
+
+    this->syncModeStrip();
+}
+
+void vtkWindowImage::syncModeStrip()
+{
+    if (!m_modeStrip)
+        return;
+    const ViewerMode mode = this->currentViewerMode();
+
+    m_syncingModeStrip = true;
+    m_modeStrip->setCurrentIndex(static_cast<int>(mode));
+    if (m_regionShapeStrip) {
+        m_regionShapeStrip->setVisible(mode == ViewerMode::Region);
+        int shapeIndex = 0;
+        switch (this->regionMode) {
+        case RegionMode::Circle:  shapeIndex = 1; break;
+        case RegionMode::Polygon: shapeIndex = 2; break;
+        case RegionMode::Annulus: shapeIndex = 3; break;
+        case RegionMode::Box:
+        case RegionMode::None:    shapeIndex = 0; break;
+        }
+        if (this->regionMode != RegionMode::None) {
+            m_lastRegionShape = this->regionMode;
+            m_regionShapeStrip->setCurrentIndex(shapeIndex);
+        }
+    }
+    m_syncingModeStrip = false;
+
+    if (!m_modeHint)
+        return;
+    switch (mode) {
+    case ViewerMode::Pan:
+        m_modeHint->setText(u"drag to pan · wheel to zoom"_s);
+        break;
+    case ViewerMode::Probe:
+        m_modeHint->setText(u"move over the image · click to freeze"_s);
+        break;
+    case ViewerMode::Region:
+        m_modeHint->setText(this->regionMode == RegionMode::Polygon
+                                    ? u"click each vertex · double-click to close"_s
+                                    : u"drag on the image"_s);
+        break;
+    case ViewerMode::Ruler:
+        m_modeHint->setText(u"click the two ends"_s);
+        break;
+    case ViewerMode::Annotate:
+        m_modeHint->setText(u"click to place"_s);
+        break;
+    }
+}
+
+
+// ── The overlays block ───────────────────────────────────────────────────────
+//
+// Four things can be drawn on top of the image, and each was switched somewhere
+// else: catalogue sources and their labels in Tools, polarisation vectors in
+// Tools, the WCS grid in View, and annotations nowhere — they could be added and
+// cleared, never hidden. None of the four said how many objects were up there,
+// so "is that everything?" had no answer short of exporting the catalogue.
+//
+// The rows are checkboxes over the SAME QActions, not a second set of state:
+// toggling from the menu moves the row and vice versa, and the counts come from
+// the window's own vectors.
+
+void vtkWindowImage::setupOverlaysBlock()
+{
+    auto *block = new QWidget(this);
+    auto *layout = new QVBoxLayout(block);
+    layout->setContentsMargins(0, 8, 0, 0);
+    layout->setSpacing(4);
+
+    auto *header = new QLabel(u"OVERLAYS"_s, block);
+    header->setStyleSheet(
+            QStringLiteral("color:%1; font-size:10px; font-weight:700; letter-spacing:0.14em;")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+    layout->addWidget(header);
+
+    // Each row is a checkbox plus a right-aligned count. The count is the part
+    // that did not exist anywhere before.
+    const auto addRow = [this, block, layout](const QString &text,
+                                              const QString &toolTip) -> QCheckBox * {
+        auto *row = new QWidget(block);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(8);
+        auto *box = new QCheckBox(text, row);
+        box->setToolTip(toolTip);
+        rowLayout->addWidget(box, 1);
+        auto *count = new QLabel(QString(), row);
+        count->setStyleSheet(
+                QStringLiteral("color:%1; font-family:'JetBrains Mono','SF Mono',monospace;"
+                               "font-size:10px;")
+                        .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        rowLayout->addWidget(count, 0);
+        layout->addWidget(row);
+        m_overlayCounts.insert(box, count);
+        return box;
+    };
+
+    m_overlayCatalogue = addRow(u"Catalogue sources"_s,
+                                u"The loaded catalogue overlay."_s);
+    m_overlayLabels = addRow(u"Source labels"_s,
+                             u"Names beside the catalogue sources."_s);
+    m_overlayPolVectors = addRow(u"Polarisation vectors"_s,
+                                 u"Vectors computed from the Stokes companions."_s);
+    m_overlayWcsGrid = addRow(u"WCS axes"_s, u"Coordinate ticks around the image."_s);
+    m_overlayAnnotations = addRow(u"Annotations"_s, u"Text and arrows you placed."_s);
+
+    // Each checkbox drives the action that already owns the behaviour; the
+    // action's own toggled() brings the row back in step, whichever surface
+    // started it. m_syncingOverlays keeps the two from echoing.
+    const auto bind = [this](QCheckBox *box, QAction *action) {
+        if (!box || !action)
+            return;
+        QObject::connect(box, &QCheckBox::toggled, this, [this, action](bool on) {
+            if (m_syncingOverlays)
+                return;
+            if (action->isChecked() != on)
+                action->setChecked(on);
+        });
+        QObject::connect(action, &QAction::toggled, this,
+                         [this]() { this->refreshOverlaysBlock(); });
+        QObject::connect(action, &QAction::changed, this,
+                         [this]() { this->refreshOverlaysBlock(); });
+    };
+    bind(m_overlayCatalogue, this->actionShowCatalogueOverlay);
+    bind(m_overlayLabels, this->actionShowCatalogueLabels);
+    bind(m_overlayPolVectors, this->m_actTogglePolVecs);
+    bind(m_overlayWcsGrid, this->actionShowWcsAxes);
+
+    // Annotations had no visibility toggle at all — this is the one place it
+    // exists, so the checkbox owns it rather than mirroring an action.
+    QObject::connect(m_overlayAnnotations, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_syncingOverlays)
+            return;
+        this->setAnnotationsVisible(on);
+    });
+
+    m_overlaysBlock = block;
+    this->refreshOverlaysBlock();
+}
+
+void vtkWindowImage::refreshOverlaysBlock()
+{
+    if (!m_overlaysBlock)
+        return;
+    m_syncingOverlays = true;
+
+    const auto sync = [this](QCheckBox *box, QAction *action, int count) {
+        if (!box)
+            return;
+        if (action) {
+            box->setChecked(action->isChecked());
+            // An overlay that has nothing loaded cannot be switched on, and the
+            // row says so rather than failing silently when clicked.
+            box->setEnabled(action->isEnabled());
+        }
+        if (QLabel *label = m_overlayCounts.value(box))
+            label->setText(count >= 0 ? QString::number(count) : QString());
+    };
+
+    const int sources = static_cast<int>(this->catalogueOverlayEntries.size());
+    sync(m_overlayCatalogue, this->actionShowCatalogueOverlay, sources);
+    // No count on the labels row: there is one label per source, so repeating
+    // the number says nothing the row above did not already say.
+    sync(m_overlayLabels, this->actionShowCatalogueLabels, -1);
+    sync(m_overlayPolVectors, this->m_actTogglePolVecs,
+         static_cast<int>(m_polVecCells->GetNumberOfCells()));
+    sync(m_overlayWcsGrid, this->actionShowWcsAxes, -1);
+
+    if (m_overlayAnnotations) {
+        m_overlayAnnotations->setChecked(m_annotationsVisible);
+        m_overlayAnnotations->setEnabled(!m_annotations.empty());
+        if (QLabel *label = m_overlayCounts.value(m_overlayAnnotations))
+            label->setText(QString::number(m_annotations.size()));
+    }
+
+    m_syncingOverlays = false;
+}
+
+void vtkWindowImage::setAnnotationsVisible(bool visible)
+{
+    m_annotationsVisible = visible;
+    for (auto &actor : m_annotTextActors) {
+        if (actor)
+            actor->SetVisibility(visible ? 1 : 0);
+    }
+    for (auto &actor : m_annotArrowActors) {
+        if (actor)
+            actor->SetVisibility(visible ? 1 : 0);
+    }
+    if (ui->vtk && ui->vtk->renderWindow())
+        ui->vtk->renderWindow()->Render();
+    this->refreshOverlaysBlock();
+}
+
+
 void vtkWindowImage::setupInspector()
 {
     if (!this->m_workspaceChrome)
@@ -618,6 +979,11 @@ void vtkWindowImage::setupInspector()
     // Migrate the former rail pages (layers, catalogue, info/stats) here.
     // Design #1d: layer/catalogue (view) controls live in the LEFT column's
     // LAYERS block; only info/stats stays in the Inspector Properties.
+    // The overlays go under the layer list, in the same column: what is drawn
+    // over the image belongs next to what the image is made of.
+    this->setupOverlaysBlock();
+    if (m_overlaysBlock && ui->pageLayer && ui->pageLayer->layout())
+        ui->pageLayer->layout()->addWidget(m_overlaysBlock);
     if (this->m_inspectorPageLayer)     this->m_workspaceChrome->addSessionLayers(this->m_inspectorPageLayer);
     // No catalogue block in the left column any more: its two buttons were tools
     // and moved to the tool table. The page stays parked with the others.

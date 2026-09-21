@@ -43,6 +43,14 @@ tables such as `CubeToolGate` (which tools may act on what is on screen) or
 Both of those were extracted precisely because the only previous way to check
 them was to open the app and look at thirty buttons.
 
+`ViewerModeState` (`test_viewer_mode_state.cpp`) is a smaller case of the same
+idea. The image viewer's five modes are mutually exclusive, and the flags that
+say so are cleared by four different code paths; the question the test pins is
+what the mode strip must show if two of them ever disagree — the answer being
+the mode that will consume the next click, which is `toggleProbeFreeze()`'s own
+dispatch order. Getting that backwards (the first version did) shows the user a
+tool they are not in, which is worse than showing nothing.
+
 `SkyOverlap` (`test_sky_overlap.cpp`) is there for the same reason: whether a
 FITS can be added as a layer to the image on screen is one interval comparison,
 and the case that breaks it — a field straddling RA = 0, which `wcsrange()`

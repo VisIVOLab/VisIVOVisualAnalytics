@@ -166,6 +166,7 @@ void vtkWindowImage::addTextAnnotation()
     m_annotPlaceMode = AnnotPlaceMode::Text;
     ui->vtk->setCursor(Qt::CrossCursor);
     statusBar()->showMessage(u"Click on the image to place the text annotation."_s, 0);
+    this->syncModeStrip();
 }
 
 void vtkWindowImage::addArrowAnnotation()
@@ -178,6 +179,7 @@ void vtkWindowImage::addArrowAnnotation()
 
     m_pendingAnnotText = text.trimmed();
     m_annotPlaceMode = AnnotPlaceMode::ArrowTip;
+    this->syncModeStrip();
     ui->vtk->setCursor(Qt::CrossCursor);
     statusBar()->showMessage(u"Click on the image to place the arrow tip."_s, 0);
 }
@@ -240,6 +242,7 @@ void vtkWindowImage::updateAnnotationPreview(double worldX, double worldY)
 void vtkWindowImage::cancelAnnotationPlacement()
 {
     m_annotPlaceMode = AnnotPlaceMode::None;
+    this->syncModeStrip();
     m_pendingAnnotText.clear();
     m_annotPreviewActor->VisibilityOff();
     const bool needsCross = this->probeModeActive
@@ -308,6 +311,17 @@ void vtkWindowImage::refreshAnnotationOverlay()
             m_annotArrowActors.push_back(nullptr);
         }
     }
+
+    // The actors are rebuilt from scratch here, so the visibility toggle has to
+    // be re-applied: otherwise hiding the annotations and then adding one shows
+    // the whole set again.
+    if (!m_annotationsVisible) {
+        for (auto &actor : m_annotTextActors)
+            if (actor) actor->SetVisibility(0);
+        for (auto &actor : m_annotArrowActors)
+            if (actor) actor->SetVisibility(0);
+    }
+    this->refreshOverlaysBlock();
 
     ui->vtk->renderWindow()->Render();
 }

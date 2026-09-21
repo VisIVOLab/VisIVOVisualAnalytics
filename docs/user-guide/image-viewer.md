@@ -66,8 +66,15 @@ You can overlay or compare multiple images in the same window:
 
 - **Add Image Layer…** (*File* menu, ⌘L, or the **+ Add…** beside the
   *Layers* list) — pick another FITS image from the *remote file browser*.
-- Use the layer panel to **reorder**, **toggle visibility**, set a
-  **per-layer colour map**, **opacity** and **z-order**.
+- Each layer is a **card**: the visibility box, its name, and — on the second
+  line — a strip of that layer's own colour map with its stretch and opacity.
+  Before, those three were visible only in the panel above the list and only for
+  the selected layer, so telling six VLKB cutouts apart meant clicking each one
+  in turn. The base layer is tagged `base`.
+- Drag the cards to **reorder** them; that is the z-order. Clicking the
+  visibility box toggles the layer without changing which one the settings above
+  act on.
+- **＋ Add layer…** sits under the stack, and **Overlays** under that.
 - You can also drop a `.fits` from the OS file browser onto the window.
 
 ### A layer has to cover the same sky
@@ -159,6 +166,21 @@ If the WCS metadata is partial or invalid the backend sanitises it and the
 **WCS** badge in the status bar turns yellow with a tooltip listing what
 was changed.
 
+## Overlays
+
+Under the layer stack, one row per thing drawn *on top* of the image —
+catalogue sources, source labels, polarisation vectors, WCS axes, annotations —
+each with a count on the right.
+
+They were switched from four different places before: two entries in Tools, one
+in View, and annotations from nowhere at all (they could be added and cleared,
+never hidden). And none of them said how many objects were up there, so "is that
+all of them?" had no answer short of exporting the catalogue.
+
+A row whose overlay has nothing loaded is greyed out rather than failing
+silently when clicked. The rows and the menu entries are the same switches: use
+either.
+
 ## Color map & contrast
 
 The *Layer Settings* sidebar exposes:
@@ -173,7 +195,36 @@ drag the transfer-function control points. The scale (Linear, Log, Sqrt,
 Square, Power γ) lives there too: one place with the full set, rather than an
 inline Linear | Log toggle offering two of five.
 
+## Modes: what the next click will do
+
+Under the toolbar there is a **mode strip** — Pan · Probe · Region · Ruler ·
+Annotate. These five are mutually exclusive: arming one disarms the others, and
+which one is on decides what a click on the image does.
+
+That was always true; what is new is that you can see it. Before, the modes were
+armed from the Tools menu, whose checkmarks are invisible until you open it, so
+the way to find out which mode you were in was to click and watch what happened.
+
+- Picking a segment arms that mode; **Pan** disarms everything.
+- Choosing **Region** shows a second strip for the shape — Box, Circle, Poly,
+  Annulus — and remembers your last choice for the next time.
+- The strip is two-way: arming a mode from the Tools menu or the command palette
+  moves it, and leaving Annotate cancels an annotation that was waiting to be
+  placed, rather than leaving it to land on your next click.
+- To the right, a short line says what the armed mode expects — *drag on the
+  image*, *click each vertex · double-click to close*, *click the two ends*.
+
 ## Regions and probes
+
+While you drag a region, a small box in the bottom-left corner of the viewport
+shows what is inside it: **Σ** and **μ**, updating as you drag. Before, the
+numbers arrived only when you let go, in a dialog — so the region was chosen
+blind and adjusted by repetition.
+
+A **≈** in front of a figure means it was sampled rather than summed: the
+readout runs on every mouse move, so on a region of more than ~200 000 pixels it
+reads a grid of them and scales up. The full statistics on release use every
+pixel, and those are the ones to quote.
 
 The image viewer shares the same region / probe machinery as the cube
 viewer's 2-D dock:
