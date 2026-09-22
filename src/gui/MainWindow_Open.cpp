@@ -241,6 +241,13 @@ void MainWindow::openData()
     // All datasets are opened via the backend. The backend may be a localhost
     // instance or a remote server — that distinction is a deployment detail,
     // not a client-side mode. There is no "local FITS open" path.
+    //
+    // Reachable only from the Data Hub's old action grid, which nothing builds
+    // any more (the quick-actions list offers one "Open…" instead). It is kept
+    // wired rather than half-deleted, so it has to behave like the others: its
+    // browser has no extension filter, and since any file can be picked there,
+    // the selection goes through the classifier rather than straight to the
+    // FITS/HDF5 route.
     BackendClient client(this->settings->getBackendUrl(), this->settings->getBackendToken());
     const auto health = client.health();
     if (!health.ok) {
@@ -264,7 +271,7 @@ void MainWindow::openData()
         return;
     }
 
-    doOpenDataPath(path);
+    dispatchOpenForPath(path);
 }
 
 
@@ -1097,12 +1104,16 @@ void MainWindow::openVbt()
         return;
     }
 
-    const QString headerPath = dialog.selectedFilePath();
-    if (headerPath.isEmpty()) {
+    const QString picked = dialog.selectedFilePath();
+    if (picked.isEmpty()) {
         return;
     }
 
-    doOpenVbtPath(headerPath);
+    // Through the classifier, not straight to doOpenVbtPath(): `/v1/vbt/open`
+    // wants the HEADER, and a user who picks the `.bin` — now that the browser
+    // lets them — would otherwise hand the binary to a parser expecting four
+    // lines of text. The classifier answers with the `.head` beside it.
+    dispatchOpenForPath(picked);
 }
 
 

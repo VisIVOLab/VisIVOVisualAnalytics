@@ -143,7 +143,14 @@ void vtkWindowVbtVolume::setupUi()
     QObject::connect(this->spinScaleGamma, &QDoubleSpinBox::valueChanged, this,
                      [this](double) { this->updateTransferFunctions(); });
     QObject::connect(this->buttonAutoscale, &QPushButton::clicked, this, [this]() {
-        this->setColorRange(this->dataScalarMin, this->dataScalarMax);
+        // The SAME range the field is loaded with, not the raw extremes.
+        // Autoscale used to set min..max, and on a simulation volume — where a
+        // handful of voxels are orders of magnitude above the rest — that put
+        // essentially every voxel at the bottom of the colour and opacity ramps
+        // and the volume disappeared (user report: "autoscale fa sparire
+        // tutto", on a 512³ CDM density field spanning 5e-12 … 4e-4). The raw
+        // extremes are still one edit away in the two fields above.
+        this->applyAutoColorRange();
         this->updateTransferFunctions();
     });
     QObject::connect(this->comboBackground, &QComboBox::currentIndexChanged, this,
@@ -328,6 +335,10 @@ void vtkWindowVbtVolume::setupSidebarUi()
         this->spinRangeMin->setRange(-1e30, 1e30);
         this->spinRangeMax->setRange(-1e30, 1e30);
         this->buttonAutoscale = new QPushButton(u"Autoscale"_s, inner);
+        this->buttonAutoscale->setToolTip(
+                u"Reset the colour range to the 2nd–99.9th percentile of the data — "
+                u"what the viewer opens with. The raw minimum and maximum are rarely "
+                u"a useful range for a density field."_s);
 
         fl->addRow(u"Range min"_s, this->spinRangeMin);
         fl->addRow(u"Range max"_s, this->spinRangeMax);
@@ -358,18 +369,12 @@ void vtkWindowVbtVolume::setupSidebarUi()
         pageVolumeLayout->addWidget(makeCard(u"RENDERING"_s, inner));
     }
 
-    // Card: Summary
-    {
-        auto *inner = new QWidget;
-        auto *vl = new QVBoxLayout(inner);
-        vl->setContentsMargins(0, 0, 0, 0);
-        this->summaryGrid = new QFormLayout;
-        this->summaryGrid->setContentsMargins(0, 0, 0, 0);
-        this->summaryGrid->setSpacing(4);
-        this->summaryGrid->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-        vl->addLayout(this->summaryGrid);
-        pageVolumeLayout->addWidget(makeCard(u"SUMMARY"_s, inner));
-    }
+    // No SUMMARY card here any more. It described the DATASET — dimensions,
+    // spacing, fields, scalar type — in the column that holds the CONTROLS, and
+    // said the same things the Inspector's Properties tab says two panels away
+    // (user report). What is on screen belongs on the right; what changes what
+    // is on screen belongs here. The one row that was not a duplicate, the
+    // active scalar, is a live row in Properties now.
     pageVolumeLayout->addStretch(1);
 
     // ── Page 1: Info ──────────────────────────────────────────────────────────
@@ -585,12 +590,7 @@ void vtkWindowVbtVolume::applySubsetResult(const BackendVbtSubsetResult &subset)
         this->cachedOpacityMidHigh = std::sqrt(this->cachedPositiveFloor * positiveMax);
         this->cachedOpacityHigh = positiveMax;
     }
-    if (this->cachedSampledValues.size() >= 16) {
-        this->setColorRange(percentileFromSortedSample(this->cachedSampledValues, 0.02),
-                            percentileFromSortedSample(this->cachedSampledValues, 0.999));
-    } else {
-        this->setColorRange(minValue, maxValue);
-    }
+    this->applyAutoColorRange();
 
     double imageRange[2]{ 0.0, 0.0 };
     this->currentImageData->GetScalarRange(imageRange);
@@ -643,6 +643,20 @@ void vtkWindowVbtVolume::applySubsetResult(const BackendVbtSubsetResult &subset)
     this->m_loadingActor->VisibilityOff();
     this->renderWindow->Render();
     this->updateSummary();
+}
+
+void vtkWindowVbtVolume::applyAutoColorRange()
+{
+    // A density field is not uniform: its top percentile can be four orders of
+    // magnitude above its median, so the extremes are a bad colour range and a
+    // worse opacity one. The 2nd-to-99.9th percentile of the sampled voxels is
+    // what shows the structure, and it is what the viewer opens with.
+    if (this->cachedSampledValues.size() >= 16) {
+        this->setColorRange(percentileFromSortedSample(this->cachedSampledValues, 0.02),
+                            percentileFromSortedSample(this->cachedSampledValues, 0.999));
+        return;
+    }
+    this->setColorRange(this->dataScalarMin, this->dataScalarMax);
 }
 
 void vtkWindowVbtVolume::updateTransferFunctions()
@@ -1044,16 +1058,15 @@ void vtkWindowVbtVolume::updateSummary()
     const QString activeField = this->comboScalarField ? this->comboScalarField->currentText() : QString();
     const auto &dims = this->openResult.dimensions;
     const auto &spacing = this->openResult.spacing;
-    setInfoRows(this->summaryGrid,
-                { { u"Dimensions"_s, QStringLiteral("%1 × %2 × %3")
-                                             .arg(dims[0]).arg(dims[1]).arg(dims[2]) },
-                  { u"Spacing"_s, QStringLiteral("%1, %2, %3")
-                                          .arg(spacing[0]).arg(spacing[1]).arg(spacing[2]) },
-                  { u"Fields"_s, QString::number(this->openResult.fields.size()) },
-                  { u"Scalar type"_s, this->openResult.scalarType },
-                  { u"Active scalar"_s, activeField } });
+    Q_UNUSED(dims);
+    // The scalar being rendered follows the Scalar selector on the left, so it
+    // is the one line of the old SUMMARY card that had to stay live.
+    if (this->m_propActiveScalar)
+        InspectorPanel::applyValueStyle(this->m_propActiveScalar, activeField);
     setInfoRows(this->metadataGrid,
                 { { u"Kind"_s, this->openResult.kind },
+                  { u"Spacing"_s, QStringLiteral("%1, %2, %3")
+                                          .arg(spacing[0]).arg(spacing[1]).arg(spacing[2]) },
                   { u"Fields"_s, QString::number(this->openResult.fields.size()) },
                   { u"Voxels"_s, QString::number(this->openResult.numRows) },
                   { u"Dataset ID"_s, this->openResult.datasetId } });
@@ -1106,18 +1119,23 @@ void vtkWindowVbtVolume::setupWorkspaceDocks()
     InspectorPanel *panel = chrome->installInspectorDock();
     if (!panel)
         return;
-    panel->setProperties({
-            { u"Dataset"_s, info.fileName() },
-            { u"Type"_s, u"VBT VOLUME"_s },
-            { u"Dimensions"_s, QStringLiteral("%1 × %2 × %3")
-                                       .arg(this->openResult.dimensions[0])
-                                       .arg(this->openResult.dimensions[1])
-                                       .arg(this->openResult.dimensions[2]) },
-            { u"Scalar type"_s, this->openResult.scalarType },
-            { u"Path"_s, this->m_headerPath },
-            { u"Session"_s, this->sessionId },
-            { u"Backend"_s, this->backendUrl },
-    });
+    panel->clearProperties();
+    panel->addPropertyRow(u"Dataset"_s, info.fileName());
+    panel->addPropertyRow(u"Type"_s, u"VBT VOLUME"_s);
+    panel->addPropertyRow(u"Dimensions"_s, QStringLiteral("%1 × %2 × %3")
+                                                   .arg(this->openResult.dimensions[0])
+                                                   .arg(this->openResult.dimensions[1])
+                                                   .arg(this->openResult.dimensions[2]));
+    panel->addPropertyRow(u"Scalar type"_s, this->openResult.scalarType);
+    // Live: the scalar being rendered follows the Scalar selector on the left.
+    this->m_propActiveScalar = new QLabel;
+    InspectorPanel::applyValueStyle(
+            this->m_propActiveScalar,
+            this->comboScalarField ? this->comboScalarField->currentText() : QString());
+    panel->addPropertyRow(u"Active scalar"_s, this->m_propActiveScalar);
+    panel->addPropertyRow(u"Path"_s, this->m_headerPath);
+    panel->addPropertyRow(u"Session"_s, this->sessionId);
+    panel->addPropertyRow(u"Backend"_s, this->backendUrl);
     if (this->m_pageInfo) {
         this->m_pageInfo->show();
         panel->addPropertiesSection(this->m_pageInfo);

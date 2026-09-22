@@ -68,6 +68,9 @@ private:
     /// here too: a VBT volume is a dataset on a backend like any other, and this
     /// window said nothing about which file it was showing or whether that
     /// backend was still answering.
+    /// The colour range "auto" should mean: the 2nd–99.9th percentile of the
+    /// sampled voxels, which is what the viewer picks when the field is loaded.
+    void applyAutoColorRange();
     void setupViewerChrome();
     /// Session Data on the left, Inspector on the right — as in every viewer.
     void setupWorkspaceDocks();
@@ -104,7 +107,7 @@ private:
     QPointer<QDoubleSpinBox> spinRangeMin;
     QPointer<QDoubleSpinBox> spinRangeMax;
     QPointer<QPushButton> buttonAutoscale;
-    QPointer<QFormLayout> summaryGrid;   ///< key/value rows, as in the image viewer
+    QPointer<QLabel> m_propActiveScalar;   ///< Inspector row; follows the Scalar selector
     QPointer<QListWidget> fieldList;
     QPointer<QFormLayout> metadataGrid;
     bool updatingRangeControls{ false };
