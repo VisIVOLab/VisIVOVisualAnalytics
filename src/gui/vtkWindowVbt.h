@@ -35,7 +35,6 @@ class QFrame;
 class QLabel;
 class QListWidget;
 class QPushButton;
-class SidebarPanel;
 class QScrollArea;
 class QSlider;
 class QStackedWidget;
@@ -50,6 +49,8 @@ struct VbtFilterTaskResult
     QString statusMsg;
     int totalRows{ 0 }; // backend-reported total (before limit/offset)
 };
+
+class WorkspaceChrome;
 
 class vtkWindowVbt : public QMainWindow
 {
@@ -103,6 +104,20 @@ private:
     const QString backendToken;
     QString sessionId;
     const QString m_headerPath;   ///< original .head file path; used for session-expiry reopen
+    WorkspaceChrome *m_workspaceChrome{ nullptr };
+    /// The three control pages, mounted in the two docks by setupWorkspaceDocks:
+    /// display in the LEFT column beside the dataset, filters and info in the
+    /// RIGHT Inspector — the arrangement every other viewer uses.
+    QPointer<QWidget> m_pageDisplay;
+    QPointer<QWidget> m_pageFilters;
+    QPointer<QWidget> m_pageInfo;
+    QPointer<QAction> m_actionSessionPanel;
+    QPointer<QLabel> m_propSession;   ///< Inspector row; replaced on recovery
+    void setupWorkspaceDocks();
+    /// The command bar and status rail shared with the other viewers.
+    void setupViewerChrome();
+    /// What the kind tag opens — the VBT's own header: fields, rows, type.
+    void showVbtHeaderDialog();
 
     QPointer<QVTKOpenGLNativeWidget> vtkWidget;
     QPointer<QComboBox> comboRenderMode;
@@ -162,7 +177,6 @@ private:
     QString m_lastColorField;
 
     // ── Sidebar ──────────────────────────────────────────────────────────────
-    SidebarPanel *m_sidebar{ nullptr };
     QPointer<QAction> actionShowControlsSidebar;
     void setupSidebarUi();
 

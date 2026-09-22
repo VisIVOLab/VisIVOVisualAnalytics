@@ -7,6 +7,10 @@
 #include "Catalogue3DTableModel.h"
 #include "Catalogue3DParser.h"
 #include "theme/VisivoTheme.h"
+#include "WorkspaceChrome.h"
+#include "InspectorPanel.h"
+#include <QToolButton>
+#include <QTableWidget>
 
 // ── VTK ──────────────────────────────────────────────────────────────────────
 #include <QVTKOpenGLNativeWidget.h>
@@ -70,7 +74,6 @@
 #include <QVBoxLayout>
 #include "AssistantPanel.h"
 #include "CopilotActionRouter.h"
-#include "SidebarPanel.h"
 #include <QtConcurrent>
 
 #include <optional>
@@ -89,14 +92,15 @@ using namespace Qt::StringLiterals;
 // ── Setup ──
 // Extracted verbatim from vtkWindowCatalogue3D.cpp.
 
-void vtkWindowCatalogue3D::setupSidebar()
+void vtkWindowCatalogue3D::buildControlPages()
 {
-    // Remove the UI-file sidebar container and replace it with SidebarPanel.
+    // The pages are built here and MOUNTED LATER, in setupWorkspaceDocks(): the
+    // docks are installed once the catalogue has been read, because the window's
+    // Session Data row and the Inspector's properties describe what was loaded.
+    // Until then each page is a hidden child of the window.
     auto *mainLayout = qobject_cast<QHBoxLayout *>(ui->centralwidget->layout());
     mainLayout->removeWidget(ui->sidebarContainer);
     ui->sidebarContainer->hide();
-
-    this->m_sidebar = new SidebarPanel(296, this);
 
     // Shared card styles (same palette as cube viewer).
     const QString hdrStyle    = VisivoTheme::sidebarHeaderStyleSheet();
@@ -122,7 +126,7 @@ void vtkWindowCatalogue3D::setupSidebar()
         auto *reprLayout = new QVBoxLayout(reprCard);
         reprLayout->setContentsMargins(8, 8, 8, 8);
         reprLayout->setSpacing(6);
-        auto *reprHdr = new QLabel(u"Source Representation"_s, reprCard);
+        auto *reprHdr = new QLabel(u"SOURCE REPRESENTATION"_s, reprCard);
         reprHdr->setStyleSheet(subHdrStyle);
         reprLayout->addWidget(reprHdr);
 
@@ -142,7 +146,7 @@ void vtkWindowCatalogue3D::setupSidebar()
         auto *axisLayout = new QVBoxLayout(axisCard);
         axisLayout->setContentsMargins(8, 8, 8, 8);
         axisLayout->setSpacing(6);
-        auto *axisHdr = new QLabel(u"Axis Mapping"_s, axisCard);
+        auto *axisHdr = new QLabel(u"AXIS MAPPING"_s, axisCard);
         axisHdr->setStyleSheet(subHdrStyle);
         axisLayout->addWidget(axisHdr);
 
@@ -163,7 +167,7 @@ void vtkWindowCatalogue3D::setupSidebar()
         auto *encLayout = new QVBoxLayout(encCard);
         encLayout->setContentsMargins(8, 8, 8, 8);
         encLayout->setSpacing(6);
-        auto *encHdr = new QLabel(u"Visual Encoding"_s, encCard);
+        auto *encHdr = new QLabel(u"VISUAL ENCODING"_s, encCard);
         encHdr->setStyleSheet(subHdrStyle);
         encLayout->addWidget(encHdr);
 
@@ -232,7 +236,7 @@ void vtkWindowCatalogue3D::setupSidebar()
         auto *sceneLayout = new QVBoxLayout(sceneCard);
         sceneLayout->setContentsMargins(8, 8, 8, 8);
         sceneLayout->setSpacing(6);
-        auto *sceneHdr = new QLabel(u"Scene"_s, sceneCard);
+        auto *sceneHdr = new QLabel(u"SCENE"_s, sceneCard);
         sceneHdr->setStyleSheet(subHdrStyle);
         sceneLayout->addWidget(sceneHdr);
 
@@ -275,20 +279,46 @@ void vtkWindowCatalogue3D::setupSidebar()
 
         auto *sceneForm = new QFormLayout;
         sceneForm->setContentsMargins(0, 0, 0, 0);
-        sceneForm->addRow(u"Frame"_s,     this->comboFrame);
-        sceneForm->addRow(u"Cosmology"_s, this->comboCosmology);
-        sceneForm->addRow(u"Distance"_s,  this->comboDistanceMode);
+        sceneForm->addRow(u"Frame"_s, this->comboFrame);
         sceneLayout->addLayout(sceneForm);
         pageLayout->addWidget(sceneCard);
 
+        // ── Cosmology card ────────────────────────────────────────────────────
+        // The model and the distance convention decide WHERE every source is,
+        // not how it looks, so they are not scene decoration and no longer sit
+        // under "Scene" between the axes and the bounding box. They also say
+        // what they did: the model changed and 300 positions moved, which the
+        // status line at the bottom of a different page used to report.
+        auto *cosmoCard = new QFrame(pageViz);
+        cosmoCard->setStyleSheet(cardStyle);
+        auto *cosmoLayout = new QVBoxLayout(cosmoCard);
+        cosmoLayout->setContentsMargins(8, 8, 8, 8);
+        cosmoLayout->setSpacing(6);
+        auto *cosmoHdr = new QLabel(u"COSMOLOGY"_s, cosmoCard);
+        cosmoHdr->setStyleSheet(subHdrStyle);
+        cosmoLayout->addWidget(cosmoHdr);
+
+        auto *cosmoForm = new QFormLayout;
+        cosmoForm->setContentsMargins(0, 0, 0, 0);
+        cosmoForm->addRow(u"Model"_s, this->comboCosmology);
+        cosmoForm->addRow(u"Distance"_s, this->comboDistanceMode);
+        cosmoLayout->addLayout(cosmoForm);
+
+        this->m_cosmologyStatus = new QLabel(cosmoCard);
+        this->m_cosmologyStatus->setWordWrap(true);
+        this->m_cosmologyStatus->setStyleSheet(VisivoTheme::infoKeyStyleSheet());
+        cosmoLayout->addWidget(this->m_cosmologyStatus);
+        pageLayout->addWidget(cosmoCard);
+
         pageLayout->addStretch(1);
-        this->m_sidebar->addPage(u":/icons/rail_viz.svg"_s, u"Visualization"_s, pageViz);
+        this->m_pageViz = pageViz;
+        pageViz->setParent(this);
+        pageViz->hide();
     }
 
     // ── Source Info page (from UI file) ───────────────────────────────────────
     ui->groupInfo->setStyleSheet(cardStyle);
     ui->labelInfoHdr->setStyleSheet(hdrStyle);
-    this->m_sidebar->addPage(u":/icons/rail_info.svg"_s, u"Source Info"_s, ui->pageInfo);
 
     // ── Filters page ─────────────────────────────────────────────────────────
     // Widgets assigned to members here; signal/slot connections wired later
@@ -310,7 +340,7 @@ void vtkWindowCatalogue3D::setupSidebar()
         filtersCardLayout->setContentsMargins(8, 8, 8, 8);
         filtersCardLayout->setSpacing(6);
 
-        auto *listLabel = new QLabel(u"Active filters"_s, filtersCard);
+        auto *listLabel = new QLabel(u"ACTIVE FILTERS"_s, filtersCard);
         listLabel->setStyleSheet(subHdrStyle);
         filtersCardLayout->addWidget(listLabel);
 
@@ -364,35 +394,41 @@ void vtkWindowCatalogue3D::setupSidebar()
 
         pageLayout->addWidget(actionsCard);
         pageLayout->addStretch(1);
-
-        this->m_sidebar->addPage(u":/icons/rail_filter.svg"_s, u"Filters"_s, pageFilters);
+        this->m_pageFilters = pageFilters;
+        pageFilters->setParent(this);
+        pageFilters->hide();
     }
 
     // ── Scientific copilot page ───────────────────────────────────────────────
     // Grounded Q&A over the loaded catalogue (catalogue_summary + cosmology_distance
     // tools) plus reversible camera control. The dataset id is set later, once the
     // catalogue open request returns (see the open handlers in the .cpp).
-    {
-        this->m_copilot = new AssistantPanel(this);
-        this->m_copilot->setBackend(this->backendUrl, this->backendToken);
-        this->m_copilot->setSuggestions({
-                u"What columns does this catalogue have?"_s,
-                u"What's the redshift range?"_s,
-                u"Comoving distance at redshift 0.1?"_s });
-        // Router registration happens once the dataset id is known (async open).
-        this->m_sidebar->addPage(u":/icons/rail_copilot.svg"_s, u"Copilot"_s, this->m_copilot);
-    }
+    // The copilot is the Inspector's own tab now (installCopilot creates it), so
+    // nothing is built here — see setupWorkspaceDocks().
 
-    this->m_sidebar->finalize(0);
-    mainLayout->insertWidget(0, this->m_sidebar);
-
-    // View menu toggle — inserted before existing actions to keep it first.
-    this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
-            u"Controls Sidebar"_s, this);
-    ui->menuView->insertAction(ui->menuView->actions().isEmpty()
-                                       ? nullptr : ui->menuView->actions().first(),
-                               this->actionShowControlsSidebar);
-    ui->menuView->insertSeparator(ui->menuView->actions().value(1));
+    // View menu: the same two entries as the image and cube viewers, naming the
+    // docks rather than a "Controls Sidebar" that exists nowhere else.
+    auto *actionSession = new QAction(u"Session Data Panel"_s, this);
+    actionSession->setCheckable(true);
+    actionSession->setChecked(true);
+    this->actionShowControlsSidebar = new QAction(u"Inspector Panel"_s, this);
+    this->actionShowControlsSidebar->setCheckable(true);
+    this->actionShowControlsSidebar->setChecked(true);
+    QAction *before = ui->menuView->actions().isEmpty() ? nullptr
+                                                        : ui->menuView->actions().first();
+    ui->menuView->insertAction(before, actionSession);
+    ui->menuView->insertAction(before, this->actionShowControlsSidebar);
+    ui->menuView->insertSeparator(before);
+    QObject::connect(actionSession, &QAction::toggled, this, [this](bool checked) {
+        if (this->m_workspaceChrome)
+            this->m_workspaceChrome->setSessionCollapsed(!checked);
+    });
+    QObject::connect(this->actionShowControlsSidebar, &QAction::toggled, this,
+                     [this](bool checked) {
+                         if (this->m_workspaceChrome)
+                             this->m_workspaceChrome->setInspectorCollapsed(!checked);
+                     });
+    this->m_actionSessionPanel = actionSession;
 }
 
 void vtkWindowCatalogue3D::setupRenderer()
@@ -621,4 +657,256 @@ void vtkWindowCatalogue3D::populateMappingControls()
     int colorIndex = this->comboMapColor->findData(this->mapColorKey);
     this->comboMapColor->setCurrentIndex(colorIndex >= 0 ? colorIndex : 0);
     this->updatingMappingControls = false;
+}
+
+// ── Shared viewer chrome ─────────────────────────────────────────────────────
+//
+// The image and cube viewers open with a command bar across the top — the file's
+// path, a tag naming what the file IS, the ⌘K search, the live backend chip —
+// and a status rail along the bottom. This window had none of it: the only clue
+// to which catalogue was on screen was the title bar, and the only sign that the
+// backend was alive was that things happened when you clicked. It is the same
+// kind of window; it gets the same chrome.
+
+void vtkWindowCatalogue3D::setupViewerChrome()
+{
+    VisivoTheme::ViewerToolbarSpec spec;
+    spec.filePath = this->filepath;
+    spec.primaryTag = QStringLiteral("CAT · %1 sources").arg(this->entries.size());
+    // A concatenated catalogue is several files behaving as one, which is worth
+    // saying here: the path pill can only show the first of them.
+    spec.secondaryTag = this->m_cataloguePaths.size() > 1
+            ? QStringLiteral("%1 files · remote").arg(this->m_cataloguePaths.size())
+            : QStringLiteral("remote");
+
+    VisivoTheme::ViewerToolbarWidgets widgets;
+    this->m_workspaceChrome = WorkspaceChrome::installCommandBar(
+            this, spec, this->backendUrl, this->backendToken, this->remoteSessionId, &widgets);
+    if (!this->m_workspaceChrome)
+        return;
+
+    this->m_kindTag = widgets.primaryTag;
+    if (widgets.primaryTag) {
+        widgets.primaryTag->setToolTip(u"Columns in this catalogue, and which of "
+                                       u"them are its coordinates."_s);
+        QObject::connect(widgets.primaryTag, &QToolButton::clicked, this,
+                         [this]() { this->showCatalogueFieldsDialog(); });
+    }
+    this->m_workspaceChrome->installStatusRail();
+    this->setupWorkspaceDocks();
+    this->m_workspaceChrome->start();
+
+    // Say what the positions on screen ARE before the user touches anything: a
+    // panel that only speaks once something changes leaves the first — and most
+    // common — state unexplained.
+    this->refreshViewerChrome();
+}
+
+void vtkWindowCatalogue3D::setupWorkspaceDocks()
+{
+    // Session Data on the left, Inspector on the right — the same two docks, in
+    // the same places, with the same collapse-to-a-rail behaviour as the image
+    // and cube viewers. This window used to carry a control rail of its own
+    // design instead, so moving between a cube and a catalogue meant learning
+    // the window again.
+    WorkspaceChrome *chrome = this->m_workspaceChrome;
+    if (!chrome)
+        return;
+
+    const QFileInfo info(this->filepath);
+    chrome->installSessionDock(this->filepath, info.fileName(), u"catalogue"_s);
+    // Design #1d: what is drawn and how it is drawn lives in the LEFT column,
+    // under the dataset it belongs to.
+    if (this->m_pageViz) {
+        this->m_pageViz->show();
+        chrome->addSessionLayers(this->m_pageViz);
+    }
+
+    InspectorPanel *panel = chrome->installInspectorDock();
+    if (!panel)
+        return;
+    // Built row by row rather than with setProperties(), because two of them
+    // have to be updated later and re-running setProperties() clears the page —
+    // taking the Source Info section mounted below it with it.
+    // Styled by the Inspector itself, so a row this window updates later looks
+    // and behaves exactly like the ones it owns — elided to the column, with the
+    // whole value in the tooltip.
+    const auto valueLabel = [](const QString &text) {
+        auto *label = new QLabel;
+        InspectorPanel::applyValueStyle(label, text);
+        return label;
+    };
+    panel->clearProperties();
+    panel->addPropertyRow(u"Dataset"_s, info.fileName());
+    panel->addPropertyRow(u"Type"_s, u"CATALOGUE"_s);
+    this->m_propSources = valueLabel(QString::number(this->entries.size()));
+    panel->addPropertyRow(u"Sources"_s, this->m_propSources);
+    panel->addPropertyRow(u"Columns"_s, QString::number(this->schema.fields.size()));
+    panel->addPropertyRow(u"Path"_s, this->filepath);
+    this->m_propSession = valueLabel(this->remoteSessionId);
+    panel->addPropertyRow(u"Session"_s, this->m_propSession);
+    panel->addPropertyRow(u"Backend"_s, this->backendUrl);
+    // The selected source's details sit under those properties: both answer
+    // "what am I looking at", which is what the Properties tab is for.
+    if (ui->pageInfo)
+        panel->addPropertiesSection(ui->pageInfo);
+    // Filtering is an analysis of the catalogue, not a view setting.
+    if (this->m_pageFilters) {
+        this->m_pageFilters->show();
+        panel->addAnalysisSection(this->m_pageFilters);
+    }
+
+    // The copilot becomes the Inspector's own tab, as in the other viewers.
+    if (!this->backendUrl.isEmpty()) {
+        this->m_copilot = chrome->installCopilot(this->backendUrl, this->backendToken,
+                                                 this->remoteDatasetId);
+        if (this->m_copilot) {
+            this->m_copilot->setSuggestions({
+                    u"What columns does this catalogue have?"_s,
+                    u"What's the redshift range?"_s,
+                    u"Comoving distance at redshift 0.1?"_s });
+            CopilotActionRouter::instance()->registerTarget(
+                    this->remoteDatasetId, this,
+                    [this](const QList<QJsonObject> &acts) { this->applyCopilotActions(acts); },
+                    [this]() { this->undoCopilotActions(); });
+        }
+    }
+
+    // Seed the two checkmarks from the docks' ACTUAL state: the Inspector opens
+    // as a rail by design (§4.1.4), so an action that starts checked means the
+    // first click asks for a collapse that has already happened and nothing
+    // moves — which is exactly what it did.
+    if (this->m_actionSessionPanel) {
+        QSignalBlocker block(this->m_actionSessionPanel);
+        this->m_actionSessionPanel->setChecked(!chrome->sessionCollapsed());
+    }
+    if (this->actionShowControlsSidebar) {
+        QSignalBlocker block(this->actionShowControlsSidebar);
+        this->actionShowControlsSidebar->setChecked(!chrome->inspectorCollapsed());
+    }
+
+    // Keep the View-menu checkmarks in step with a collapse done by clicking the
+    // dock's own chevron.
+    QObject::connect(chrome, &WorkspaceChrome::dockCollapseChanged, this, [this]() {
+        if (!this->m_workspaceChrome)
+            return;
+        if (this->m_actionSessionPanel) {
+            QSignalBlocker block(this->m_actionSessionPanel);
+            this->m_actionSessionPanel->setChecked(!this->m_workspaceChrome->sessionCollapsed());
+        }
+        if (this->actionShowControlsSidebar) {
+            QSignalBlocker block(this->actionShowControlsSidebar);
+            this->actionShowControlsSidebar->setChecked(
+                    !this->m_workspaceChrome->inspectorCollapsed());
+        }
+    });
+}
+
+void vtkWindowCatalogue3D::refreshViewerChrome()
+{
+    const int count = static_cast<int>(this->entries.size());
+    if (this->m_kindTag)
+        this->m_kindTag->setText(u"CAT · %1 sources"_s.arg(count));
+    // The Inspector counts the same sources as the command bar, and names the
+    // session the window is actually talking to — which changes when an expired
+    // one is recovered.
+    if (this->m_propSources)
+        InspectorPanel::applyValueStyle(this->m_propSources, QString::number(count));
+    if (this->m_propSession)
+        InspectorPanel::applyValueStyle(this->m_propSession, this->remoteSessionId);
+    if (this->m_workspaceChrome)
+        this->m_workspaceChrome->setSessionId(this->remoteSessionId);
+
+    if (!this->m_cosmologyStatus)
+        return;
+    // What the line must not do is claim a cosmology that had no part in the
+    // positions. A Cartesian catalogue carries its own X/Y/Z; the redshift-space
+    // mode uses cz/H₀ and ignores the model entirely; and a catalogue with its
+    // own distance column uses THAT in preference to any conversion, which is
+    // why the column is named rather than implied.
+    if (this->schema.isCartesian()) {
+        this->m_cosmologyStatus->setText(
+                u"Positions are the catalogue's own X/Y/Z — no redshift conversion."_s);
+        return;
+    }
+    // The wording follows entryDistanceMpc()'s own order of precedence:
+    // redshift-space (with a usable z) → a distance computed by the backend for
+    // the selected model → the catalogue's distance column → the local Planck18
+    // integral → the 300 Mpc default. Saying anything simpler would be saying
+    // something false for some of the rows.
+    const QString distanceField = Catalogue3DParser::detail::detectedDistanceField(this->schema);
+    if (this->schema.distanceMode == CatalogueDistanceMode::RedshiftSpace) {
+        this->m_cosmologyStatus->setText(
+                u"Redshift-space cz/H₀ · %1 sources · the model is not used; a source "
+                u"without a usable redshift keeps its catalogue distance"_s.arg(count));
+        return;
+    }
+    const QString model = this->m_cosmologyModel.isEmpty() ? u"Planck18"_s : this->m_cosmologyModel;
+    const bool backendComputed = model != u"Planck18"_s;
+    const QString source = backendComputed ? model : u"Planck18 (local)"_s;
+    QString line = u"%1 · %2 sources"_s.arg(source).arg(count);
+    if (!distanceField.isEmpty()) {
+        line += backendComputed
+                // Once the backend has answered for a redshift, that distance is
+                // the one used: the column only gets a say where it did not.
+                ? u" · \"%1\" where the model produced nothing"_s.arg(distanceField)
+                : u" · \"%1\" is used where a source has one"_s.arg(distanceField);
+    }
+    this->m_cosmologyStatus->setText(line);
+}
+
+void vtkWindowCatalogue3D::showCatalogueFieldsDialog()
+{
+    auto *dlg = new QDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowModality(Qt::NonModal);
+    dlg->setWindowTitle(u"Catalogue Fields - %1"_s.arg(QFileInfo(this->filepath).fileName()));
+    dlg->resize(560, 460);
+
+    auto *layout = new QVBoxLayout(dlg);
+    layout->setContentsMargins(16, 14, 16, 14);
+    layout->setSpacing(10);
+
+    auto *header = new QLabel(u"Catalogue Fields"_s, dlg);
+    header->setStyleSheet(VisivoTheme::sidebarHeaderStyleSheet());
+    layout->addWidget(header);
+
+    // Which column is which coordinate is the thing that decides where every
+    // source is drawn, so it is stated first and by name — a catalogue whose
+    // l/b were read as RA/Dec looks perfectly plausible and is 90° wrong.
+    const auto coordinateLine = [this]() -> QString {
+        if (!this->schema.raFieldName.isEmpty() || !this->schema.decFieldName.isEmpty())
+            return u"Sky: %1 / %2"_s.arg(this->schema.raFieldName, this->schema.decFieldName);
+        if (!this->schema.xFieldName.isEmpty())
+            return u"Cartesian: %1 / %2 / %3"_s.arg(this->schema.xFieldName,
+                                                    this->schema.yFieldName,
+                                                    this->schema.zFieldName);
+        return u"No coordinate columns were recognised."_s;
+    };
+
+    auto *summary = new QLabel(
+            u"%1\n%2 sources · %3 columns"_s.arg(coordinateLine())
+                    .arg(this->entries.size())
+                    .arg(this->schema.fields.size()),
+            dlg);
+    summary->setStyleSheet(VisivoTheme::infoValueStyleSheet());
+    layout->addWidget(summary);
+
+    auto *table = new QTableWidget(static_cast<int>(this->schema.fields.size()), 2, dlg);
+    table->setHorizontalHeaderLabels({ u"Column"_s, u"Type"_s });
+    table->verticalHeader()->setVisible(false);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->setColumnWidth(0, 320);
+    for (int row = 0; row < static_cast<int>(this->schema.fields.size()); ++row) {
+        table->setItem(row, 0, new QTableWidgetItem(this->schema.fields[row].name));
+        table->setItem(row, 1, new QTableWidgetItem(this->schema.fields[row].type));
+    }
+    layout->addWidget(table, 1);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dlg);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
+    layout->addWidget(buttons);
+    dlg->show();
 }

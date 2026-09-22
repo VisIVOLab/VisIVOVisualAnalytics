@@ -5,6 +5,11 @@
 #include "app/ThemeManager.h"
 #include "DiagnosticsWindow.h"
 #include "theme/VisivoTheme.h"
+#include <QDockWidget>
+#include <QHeaderView>
+#include <QTableWidget>
+#include "WorkspaceChrome.h"
+#include "InspectorPanel.h"
 
 #include <QApplication>
 #include <QKeySequence>
@@ -55,7 +60,6 @@
 #include <QPushButton>
 #include "AssistantPanel.h"
 #include "CopilotActionRouter.h"
-#include "SidebarPanel.h"
 #include <vtkCamera.h>
 #include <QSignalBlocker>
 #include <QSlider>
@@ -169,6 +173,7 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
     this->yFieldName = findCoordField(this->openResult.fields, u"y"_s);
     this->zFieldName = findCoordField(this->openResult.fields, u"z"_s);
     this->setupUi();
+    this->setupViewerChrome();
     this->setupRenderer();
     this->buildPointCloud();
     this->updateColorMapping();
@@ -347,8 +352,26 @@ vtkWindowVbt::vtkWindowVbt(BackendVbtOpenResult openResult, BackendVbtSubsetResu
                          // Session recovered — update IDs and retry load-more.
                          this->openResult.datasetId = result.datasetId;
                          this->sessionId            = result.sessionId;
-                         if (this->m_copilot)
+                         if (this->m_copilot) {
                              this->m_copilot->setDatasetId(this->openResult.datasetId);
+                             // And the ROUTER has to learn the new id too, or the
+                             // copilot's own directives — colour, camera — are
+                             // addressed to a dataset nothing answers for and are
+                             // dropped without a word.
+                             CopilotActionRouter::instance()->registerTarget(
+                                     this->openResult.datasetId, this,
+                                     [this](const QList<QJsonObject> &acts) {
+                                         this->applyCopilotActions(acts);
+                                     },
+                                     [this]() { this->undoCopilotActions(); });
+                         }
+                         // The status rail and the Inspector named the expired
+                         // session until the window was closed.
+                         if (this->m_workspaceChrome)
+                             this->m_workspaceChrome->setSessionId(this->sessionId);
+                         if (this->m_propSession)
+                             InspectorPanel::applyValueStyle(this->m_propSession,
+                                                             this->sessionId);
                          if (this->filterStatusLabel)
                              this->filterStatusLabel->setText({});
                          this->loadMoreEntries();
@@ -371,7 +394,6 @@ void vtkWindowVbt::setupUi()
     rootLayout->setContentsMargins(0, 0, 0, 0);
 
     this->setupSidebarUi();
-    rootLayout->addWidget(this->m_sidebar);
 
     this->vtkWidget = new QVTKOpenGLNativeWidget(central);
     rootLayout->addWidget(this->vtkWidget, 1);
@@ -522,9 +544,23 @@ void vtkWindowVbt::setupUi()
 
     // ── View menu ─────────────────────────────────────────────────────────────
     auto *viewMenu = this->menuBar()->addMenu(u"View"_s);
-    this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
-            u"Controls Sidebar"_s, this);
+    this->m_actionSessionPanel = new QAction(u"Session Data Panel"_s, this);
+    this->m_actionSessionPanel->setCheckable(true);
+    this->m_actionSessionPanel->setChecked(true);
+    viewMenu->addAction(this->m_actionSessionPanel);
+    QObject::connect(this->m_actionSessionPanel, &QAction::toggled, this, [this](bool checked) {
+        if (this->m_workspaceChrome)
+            this->m_workspaceChrome->setSessionCollapsed(!checked);
+    });
+    this->actionShowControlsSidebar = new QAction(u"Inspector Panel"_s, this);
+    this->actionShowControlsSidebar->setCheckable(true);
+    this->actionShowControlsSidebar->setChecked(true);
     viewMenu->addAction(this->actionShowControlsSidebar);
+    QObject::connect(this->actionShowControlsSidebar, &QAction::toggled, this,
+                     [this](bool checked) {
+                         if (this->m_workspaceChrome)
+                             this->m_workspaceChrome->setInspectorCollapsed(!checked);
+                     });
 
     // ── Diagnostics + Command Palette (replicated across windows) ────────────
     viewMenu->addSeparator();
@@ -973,24 +1009,16 @@ void vtkWindowVbt::setupSidebarUi()
     // ── Scientific copilot page ───────────────────────────────────────────────
     // Grounded Q&A over the loaded VBT (vbt_summary tool) plus reversible colormap
     // and camera control. The dataset id is known at construction.
-    this->m_copilot = new AssistantPanel(this);
-    this->m_copilot->setBackend(this->backendUrl, this->backendToken);
-    this->m_copilot->setDatasetId(this->openResult.datasetId);
-    this->m_copilot->setSuggestions({
-            u"How many points and what fields does this table have?"_s,
-            u"Colour it by the density field"_s });
-    CopilotActionRouter::instance()->registerTarget(
-            this->openResult.datasetId, this,
-            [this](const QList<QJsonObject> &acts) { this->applyCopilotActions(acts); },
-            [this]() { this->undoCopilotActions(); });
-
-    // ── Wire pages into SidebarPanel ──────────────────────────────────────────
-    this->m_sidebar = new SidebarPanel(320, this);
-    this->m_sidebar->addPage(u":/icons/rail_display.svg"_s, u"Display"_s,    pageDisplay);
-    this->m_sidebar->addPage(u":/icons/rail_filter.svg"_s,  u"Filters"_s,   pageFilters);
-    this->m_sidebar->addPage(u":/icons/rail_stats.svg"_s,   u"Info / Stats"_s, pageInfo);
-    this->m_sidebar->addPage(u":/icons/rail_copilot.svg"_s, u"Copilot"_s,   this->m_copilot);
-    this->m_sidebar->finalize(0);
+    // The copilot is the Inspector's own tab (installCopilot), and the pages go
+    // into the two docks — see setupWorkspaceDocks(), called from the
+    // constructor right after this.
+    this->m_pageDisplay = pageDisplay;
+    this->m_pageFilters = pageFilters;
+    this->m_pageInfo = pageInfo;
+    for (QWidget *page : { pageDisplay, pageFilters, pageInfo }) {
+        page->setParent(this);
+        page->hide();
+    }
 }
 
 void vtkWindowVbt::applyFilter()
@@ -1789,4 +1817,158 @@ void vtkWindowVbt::updateSummary()
         this->m_infoRangeMinVal->setText(QString::number(this->activeScalarMin, 'g', 7));
     if (this->m_infoRangeMaxVal)
         this->m_infoRangeMaxVal->setText(QString::number(this->activeScalarMax, 'g', 7));
+}
+
+
+// ── Shared viewer chrome ─────────────────────────────────────────────────────
+//
+// The same command bar and status rail as the image, cube and volume viewers.
+
+void vtkWindowVbt::setupViewerChrome()
+{
+    VisivoTheme::ViewerToolbarSpec spec;
+    spec.filePath = this->m_headerPath;
+    spec.primaryTag = QStringLiteral("VBT · %1 rows").arg(this->openResult.numRows);
+    spec.secondaryTag = QStringLiteral("remote · %1 fields").arg(this->openResult.fields.size());
+
+    VisivoTheme::ViewerToolbarWidgets widgets;
+    this->m_workspaceChrome = WorkspaceChrome::installCommandBar(
+            this, spec, this->backendUrl, this->backendToken, this->sessionId, &widgets);
+    if (!this->m_workspaceChrome)
+        return;
+    if (widgets.primaryTag) {
+        widgets.primaryTag->setToolTip(QStringLiteral("The VBT header: fields, rows, type."));
+        QObject::connect(widgets.primaryTag, &QToolButton::clicked, this,
+                         [this]() { this->showVbtHeaderDialog(); });
+    }
+    this->m_workspaceChrome->installStatusRail();
+    this->setupWorkspaceDocks();
+    this->m_workspaceChrome->start();
+}
+
+void vtkWindowVbt::setupWorkspaceDocks()
+{
+    WorkspaceChrome *chrome = this->m_workspaceChrome;
+    if (!chrome)
+        return;
+    const QFileInfo info(this->m_headerPath);
+    chrome->installSessionDock(this->m_headerPath, info.fileName(), u"vbt"_s);
+    if (this->m_pageDisplay) {
+        this->m_pageDisplay->show();
+        chrome->addSessionLayers(this->m_pageDisplay);
+    }
+
+    InspectorPanel *panel = chrome->installInspectorDock();
+    if (!panel)
+        return;
+    panel->clearProperties();
+    panel->addPropertyRow(u"Dataset"_s, info.fileName());
+    panel->addPropertyRow(u"Type"_s, u"VBT POINTS"_s);
+    panel->addPropertyRow(u"Rows"_s, QString::number(this->openResult.numRows));
+    panel->addPropertyRow(u"Fields"_s, QString::number(this->openResult.fields.size()));
+    panel->addPropertyRow(u"Scalar type"_s, this->openResult.scalarType);
+    panel->addPropertyRow(u"Path"_s, this->m_headerPath);
+    // Held, because recovery from an expired session replaces it.
+    this->m_propSession = new QLabel;
+    InspectorPanel::applyValueStyle(this->m_propSession, this->sessionId);
+    panel->addPropertyRow(u"Session"_s, this->m_propSession);
+    panel->addPropertyRow(u"Backend"_s, this->backendUrl);
+    if (this->m_pageInfo) {
+        this->m_pageInfo->show();
+        panel->addPropertiesSection(this->m_pageInfo);
+    }
+    // Filtering the table is an analysis of it, not a view setting.
+    if (this->m_pageFilters) {
+        this->m_pageFilters->show();
+        panel->addAnalysisSection(this->m_pageFilters);
+    }
+
+    if (!this->backendUrl.isEmpty()) {
+        this->m_copilot = chrome->installCopilot(this->backendUrl, this->backendToken,
+                                                 this->openResult.datasetId);
+        if (this->m_copilot) {
+            this->m_copilot->setSuggestions({
+                    u"How many points and what fields does this table have?"_s,
+                    u"Colour it by the density field"_s });
+            CopilotActionRouter::instance()->registerTarget(
+                    this->openResult.datasetId, this,
+                    [this](const QList<QJsonObject> &acts) { this->applyCopilotActions(acts); },
+                    [this]() { this->undoCopilotActions(); });
+        }
+    }
+
+    if (this->m_actionSessionPanel) {
+        QSignalBlocker block(this->m_actionSessionPanel);
+        this->m_actionSessionPanel->setChecked(!chrome->sessionCollapsed());
+    }
+    if (this->actionShowControlsSidebar) {
+        QSignalBlocker block(this->actionShowControlsSidebar);
+        this->actionShowControlsSidebar->setChecked(!chrome->inspectorCollapsed());
+    }
+    QObject::connect(chrome, &WorkspaceChrome::dockCollapseChanged, this, [this]() {
+        if (!this->m_workspaceChrome)
+            return;
+        if (this->m_actionSessionPanel) {
+            QSignalBlocker block(this->m_actionSessionPanel);
+            this->m_actionSessionPanel->setChecked(!this->m_workspaceChrome->sessionCollapsed());
+        }
+        if (this->actionShowControlsSidebar) {
+            QSignalBlocker block(this->actionShowControlsSidebar);
+            this->actionShowControlsSidebar->setChecked(
+                    !this->m_workspaceChrome->inspectorCollapsed());
+        }
+    });
+}
+
+void vtkWindowVbt::showVbtHeaderDialog()
+{
+    auto *dlg = new QDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowModality(Qt::NonModal);
+    dlg->setWindowTitle(QStringLiteral("VBT Header - %1")
+                                .arg(QFileInfo(this->m_headerPath).fileName()));
+    dlg->resize(520, 460);
+
+    auto *layout = new QVBoxLayout(dlg);
+    layout->setContentsMargins(16, 14, 16, 14);
+    layout->setSpacing(10);
+
+    auto *header = new QLabel(QStringLiteral("VBT Header"), dlg);
+    header->setStyleSheet(VisivoTheme::sidebarHeaderStyleSheet());
+    layout->addWidget(header);
+
+    // Which fields are the POSITIONS decides where every point is drawn, the
+    // same way the coordinate columns do in a catalogue, so they are named
+    // rather than left for the reader to spot in the list.
+    auto *summary = new QLabel(
+            QStringLiteral("%1 rows · %2 fields · %3\nPositions: %4 / %5 / %6")
+                    .arg(this->openResult.numRows)
+                    .arg(this->openResult.fields.size())
+                    .arg(this->openResult.scalarType)
+                    .arg(this->xFieldName.isEmpty() ? QStringLiteral("—") : this->xFieldName,
+                         this->yFieldName.isEmpty() ? QStringLiteral("—") : this->yFieldName,
+                         this->zFieldName.isEmpty() ? QStringLiteral("—") : this->zFieldName),
+            dlg);
+    summary->setStyleSheet(VisivoTheme::infoValueStyleSheet());
+    layout->addWidget(summary);
+
+    auto *table = new QTableWidget(static_cast<int>(this->openResult.fields.size()), 1, dlg);
+    table->setHorizontalHeaderLabels({ QStringLiteral("Field") });
+    table->verticalHeader()->setVisible(false);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->horizontalHeader()->setStretchLastSection(true);
+    for (int row = 0; row < static_cast<int>(this->openResult.fields.size()); ++row)
+        table->setItem(row, 0, new QTableWidgetItem(this->openResult.fields[row].name));
+    layout->addWidget(table, 1);
+
+    auto *path = new QLabel(this->m_headerPath, dlg);
+    path->setStyleSheet(VisivoTheme::infoKeyStyleSheet());
+    path->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    path->setWordWrap(true);
+    layout->addWidget(path);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dlg);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
+    layout->addWidget(buttons);
+    dlg->show();
 }

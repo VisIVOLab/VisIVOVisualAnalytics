@@ -1266,7 +1266,7 @@ void MainWindow::doOpenVbtPath(const QString &headerPath)
                     win = new vtkWindowVbtVolume(
                             result.openResult, result.subsetResult,
                             result.backendUrl, result.backendToken,
-                            result.sessionId, this);
+                            result.sessionId, headerPath, this);
                 } else {
                     auto *vbtWin = new vtkWindowVbt(
                             result.openResult, result.subsetResult,

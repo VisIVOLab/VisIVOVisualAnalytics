@@ -67,7 +67,6 @@
 #include <QTextEdit>
 #include <QTimer>
 #include <QVBoxLayout>
-#include "SidebarPanel.h"
 #include <QtConcurrent>
 
 #include <optional>
@@ -183,6 +182,7 @@ void vtkWindowCatalogue3D::recomputeScenePositionsAndRebuild()
     // The table's Distance / X / Y / Z columns derive from the (now recomputed)
     // positions — refresh it so it doesn't show stale distances after the recompute.
     this->refreshCatalogueTable();
+    this->refreshViewerChrome();
     this->renderWindow->Render();
 }
 
@@ -201,11 +201,12 @@ void vtkWindowCatalogue3D::triggerCosmologyUpdate()
         for (auto &e : this->entries)
             e.distanceMpc = std::numeric_limits<double>::quiet_NaN();
         this->recomputeScenePositionsAndRebuild();
+        const QString message =
+                QStringLiteral("Planck18 (local) · %1 sources").arg(entries.size());
+        this->refreshViewerChrome();
         if (this->filterStatusLabel)
-            this->filterStatusLabel->setText(
-                    QStringLiteral("Cosmology: Planck18 (local) – %1 sources.").arg(entries.size()));
-        ui->labelStatus->setText(
-                QStringLiteral("Cosmology: Planck18 (local) – %1 sources.").arg(entries.size()));
+            this->filterStatusLabel->setText(QStringLiteral("Cosmology: %1.").arg(message));
+        ui->labelStatus->setText(QStringLiteral("Cosmology: %1.").arg(message));
         return;
     }
 
@@ -213,6 +214,9 @@ void vtkWindowCatalogue3D::triggerCosmologyUpdate()
     this->m_cosmologyBusy = true;
     if (this->comboCosmology)
         this->comboCosmology->setEnabled(false);
+    if (this->m_cosmologyStatus)
+        this->m_cosmologyStatus->setText(
+                QStringLiteral("Computing distances with %1…").arg(this->m_cosmologyModel));
     if (this->filterStatusLabel)
         this->filterStatusLabel->setText(
                 QStringLiteral("Computing distances with %1…").arg(this->m_cosmologyModel));
@@ -280,6 +284,8 @@ void vtkWindowCatalogue3D::onCosmologyFinished()
     const auto result = this->m_cosmologyWatcher.result();
     if (!result.valid) {
         const QString msg = QStringLiteral("Cosmology update failed: %1").arg(result.error);
+        if (this->m_cosmologyStatus)
+            this->m_cosmologyStatus->setText(msg);
         QMessageBox::warning(this, u"Cosmology Error"_s, msg);
         ui->labelStatus->setText(msg);
         if (this->filterStatusLabel)
@@ -325,6 +331,12 @@ void vtkWindowCatalogue3D::onCosmologyFinished()
     ui->labelStatus->setText(statusMsg);
     if (this->filterStatusLabel)
         this->filterStatusLabel->setText(statusMsg);
+    this->refreshViewerChrome();
+    if (refused > 0 && this->m_cosmologyStatus) {
+        this->m_cosmologyStatus->setText(
+                this->m_cosmologyStatus->text()
+                + QStringLiteral(" · %1 without a usable redshift").arg(refused));
+    }
 }
 
 void vtkWindowCatalogue3D::applyFilter()

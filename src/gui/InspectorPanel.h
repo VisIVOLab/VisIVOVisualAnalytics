@@ -42,6 +42,14 @@ public:
     /// Key/value row whose value is a live widget (e.g. a re-hosted stat label).
     void addPropertyRow(const QString &key, QWidget *valueWidget);
 
+    /// Give a label the look AND the width discipline of a Properties value:
+    /// mono, right-aligned, elided to the column with the full text in the
+    /// tooltip. Public because some rows are updated by their window after the
+    /// fact (a source count, a session id that changes on recovery) and have to
+    /// be held as widgets — those must not bypass the elision, or one long
+    /// value widens the page and pushes every short one out of sight.
+    static void applyValueStyle(QLabel *label, const QString &value);
+
     /// Properties tab: append a full widget section (e.g. a migrated sidebar page
     /// such as the 3D/2D view settings) below the key/value rows. Ownership moves
     /// to the Properties page.

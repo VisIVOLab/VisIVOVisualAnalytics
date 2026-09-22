@@ -187,16 +187,32 @@ void InspectorPanel::addPropertyCaption(const QString &caption, bool sub)
     m_propsLayout->insertWidget(m_propsLayout->count() - 1, lbl);
 }
 
-void InspectorPanel::addPropertyRow(const QString &key, const QString &value)
+void InspectorPanel::applyValueStyle(QLabel *label, const QString &value)
 {
-    auto *val = new QLabel(value);
-    val->setStyleSheet(
+    if (!label)
+        return;
+    label->setStyleSheet(
             QStringLiteral("color:%1; font-family:'JetBrains Mono','SF Mono',monospace;"
                            " font-size:11px;")
                     .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
-    val->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    val->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    val->setToolTip(value);
+    label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    label->setToolTip(value);
+    // A long value — a path or a session UUID — used to widen the whole
+    // Properties page: the panel is a fixed 320 px, so the page then scrolled
+    // sideways and every SHORT value was pushed out of sight beyond the right
+    // edge. The rows looked empty. Elided with the label's own metrics, full
+    // text in the tooltip.
+    constexpr int kMaxValueWidth = 190;
+    label->setMaximumWidth(kMaxValueWidth);
+    label->ensurePolished();
+    label->setText(label->fontMetrics().elidedText(value, Qt::ElideMiddle, kMaxValueWidth));
+}
+
+void InspectorPanel::addPropertyRow(const QString &key, const QString &value)
+{
+    auto *val = new QLabel;
+    applyValueStyle(val, value);
     addPropertyRow(key, static_cast<QWidget *>(val));
 }
 

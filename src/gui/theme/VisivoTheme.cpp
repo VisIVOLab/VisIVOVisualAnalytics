@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QFont>
 #include <QFontDatabase>
+#include <QFontMetrics>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -537,13 +538,35 @@ QWidget *makeViewerToolbar(const ViewerToolbarSpec &spec,
     const QString fileText = fi.fileName();
 
     if (!dirText.isEmpty()) {
-        auto *dir = new QLabel(dirText, pill);
+        // Long paths are elided in the middle, and the label is given a hard
+        // maximum width. A file opened from a deep working directory used to
+        // push the search field and the backend chip off the right-hand edge of
+        // the window — the bar has a fixed set of controls and the path is the
+        // only part of it that can be any length.
+        //
+        // Elision is by WIDTH, not by counting characters: a path of three
+        // components can still be 300 characters wide, and cutting on
+        // separators mangles a Windows root ("C:/…") or a UNC prefix. Qt's own
+        // elision leaves whatever fits and puts the ellipsis in the middle,
+        // whatever the separators are.
+        constexpr int kMaxPathWidth = 340;
+        auto *dir = new QLabel(pill);
+        dir->setMaximumWidth(kMaxPathWidth);
+        dir->setToolTip(spec.filePath);
         dir->setStyleSheet(
                 QStringLiteral(
                         "color: %1; font-family: 'JetBrains Mono', 'SF Mono', monospace; "
                         "font-size: 11px;")
                         .arg(QLatin1StringView(kOnSurfaceVariant())));
         dir->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        // Elided with the label's OWN metrics, and only after the stylesheet
+        // has been applied and polished: the font that ends up in use is
+        // whichever of the CSS family list this machine actually has, and
+        // measuring a font constructed by name here would elide against a
+        // different one — cutting the path early on a machine without
+        // JetBrains Mono, or overshooting the width on one with it.
+        dir->ensurePolished();
+        dir->setText(dir->fontMetrics().elidedText(dirText, Qt::ElideMiddle, kMaxPathWidth));
         pillLayout->addWidget(dir);
     }
 

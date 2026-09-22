@@ -67,7 +67,6 @@
 #include <QTableView>
 #include <QTextEdit>
 #include <QVBoxLayout>
-#include "SidebarPanel.h"
 #include <QtConcurrent>
 
 #include <optional>

@@ -504,6 +504,40 @@ def _texts(ref: str) -> list[str]:
             and value.strip() != "missing value"]
 
 
+def inspector_tabs(window_fragment: str = "") -> list[str]:
+    """The Inspector's tab names, from whichever window shows one.
+
+    Nested two levels down (dock → stack → tab widget), so `window_texts` does
+    not reach them; this is what proves a window HAS the shared Inspector rather
+    than a panel of its own design.
+    """
+    for index, title in enumerate(windows(), start=1):
+        if window_fragment and window_fragment.lower() not in title.lower():
+            continue
+        groups = system_events(f"get count of groups of window {index}", check=False)
+        with contextlib_suppress():
+            for group in range(1, int(groups) + 1):
+                ref = f"group {group} of window {index}"
+                raw = system_events(
+                    f"get name of every radio button of tab group 1 of {ref}", check=False)
+                names = [n.strip() for n in raw.split(",") if n.strip()]
+                if names:
+                    return names
+    return []
+
+
+def has_session_dock(window_fragment: str = "") -> bool:
+    """Is the shared left dock there.
+
+    Only the LEFT one can be checked this way: the Inspector opens collapsed by
+    design, and its rail is custom-painted — accessibility reports the group as
+    empty, with neither the title nor the icons in it. Proving the Inspector
+    exists therefore means opening it and reading its tabs, which is what the
+    `*-inspector` scenarios do.
+    """
+    return "Session Data" in window_texts(window_fragment)
+
+
 def window_texts(title_fragment: str = "") -> list[str]:
     """Every label in a window, its groups included.
 
@@ -1715,6 +1749,12 @@ def _catalogue_opens(app: App) -> None:
         raise AssertionError(f"no catalogue window opened: {windows()}")
     if app.ops.failed("catalogue/open"):
         raise AssertionError("the backend reported the catalogue open as failed")
+    # And it opens with the SAME two docks as the image and cube viewers: Session
+    # Data on the left, Inspector on the right. This window used to carry a
+    # control rail of its own design, which is the thing a user coming from a
+    # cube had to learn again.
+    if not has_session_dock():
+        raise AssertionError("the shared Session Data dock is missing")
     app.screenshot("catalogue-opens")
 
 
@@ -1750,6 +1790,110 @@ def _catalogue_cosmology(app: App) -> None:
     if app.ops.failed("cosmology/distance/batch", mark):
         raise AssertionError("the backend reported the distance batch as failed")
     app.screenshot("catalogue-cosmology")
+
+
+@scenario("catalogue-fields", "catalogue")
+def _catalogue_fields(app: App) -> None:
+    """The kind tag in the command bar opens the catalogue's columns.
+
+    The command bar itself is what is under test here: this window had none —
+    no path, no kind tag, no ⌘K, no backend chip — while the image and cube
+    viewers had all four. The tag is also the catalogue's answer to the image
+    viewer's FITS header, and it has to name which columns are the coordinates:
+    a catalogue whose l/b were read as RA/Dec looks plausible and is 90° wrong.
+    """
+    app.click_button("CAT")
+    if not wait_for(lambda: any("Catalogue Fields" in w for w in windows()), timeout=20):
+        raise AssertionError("the catalogue fields window never opened")
+    texts = " ".join(window_texts("Catalogue Fields"))
+    if "ra" not in texts or "dec" not in texts:
+        raise AssertionError(f"the coordinate columns are not named: {texts[:200]}")
+    app.screenshot("catalogue-fields")
+
+
+@scenario("vbt-opens", "vbt")
+def _vbt_opens(app: App) -> None:
+    """A VisIVO Binary Table opens in the point viewer."""
+    if not wait_for(lambda: any("VBT Point Viewer" in w for w in windows()), timeout=60):
+        raise AssertionError(f"no VBT window opened: {windows()}")
+    if app.ops.failed("vbt/open"):
+        raise AssertionError("the backend reported the VBT open as failed")
+    if not has_session_dock():
+        raise AssertionError("the shared Session Data dock is missing")
+    app.screenshot("vbt-opens")
+
+
+@scenario("vbt-header", "vbt")
+def _vbt_header(app: App) -> None:
+    """The VBT viewer's command bar, and the header behind its kind tag."""
+    app.click_button("VBT")
+    if not wait_for(lambda: any("VBT Header" in w for w in windows()), timeout=20):
+        raise AssertionError("the VBT header window never opened")
+    texts = " ".join(window_texts("VBT Header"))
+    if "Positions:" not in texts:
+        raise AssertionError(f"the header does not say which fields are positions: {texts[:200]}")
+    # The count comes from the file under test rather than from a literal, so a
+    # `--vbt` of any size still passes: a .head is four lines, the third of
+    # which is the row count.
+    head = Path(str(app.dataset) + ".head").read_text().splitlines()
+    rows = head[2].split()[0]
+    if f"{rows} rows" not in texts:
+        raise AssertionError(f"the header does not report {rows} rows: {texts[:200]}")
+    app.screenshot("vbt-header")
+
+
+@scenario("vbt-volume-opens", "vbt-volume")
+def _vbt_volume_opens(app: App) -> None:
+    """A VBT volume opens in the volume viewer — the other VBT window."""
+    if not wait_for(lambda: any("VBT Volume Viewer" in w for w in windows()), timeout=60):
+        raise AssertionError(f"no VBT volume window opened: {windows()}")
+    if app.ops.failed("vbt/open"):
+        raise AssertionError("the backend reported the VBT open as failed")
+    if not has_session_dock():
+        raise AssertionError("the shared Session Data dock is missing")
+    app.screenshot("vbt-volume-opens")
+
+
+@scenario("vbt-volume-header", "vbt-volume")
+def _vbt_volume_header(app: App) -> None:
+    """Its command bar, and the header behind the kind tag."""
+    app.click_button("VBT")
+    if not wait_for(lambda: any("VBT Header" in w for w in windows()), timeout=20):
+        raise AssertionError("the VBT header window never opened")
+    texts = " ".join(window_texts("VBT Header"))
+    if "voxels" not in texts or "spacing" not in texts:
+        raise AssertionError(f"the header does not describe the geometry: {texts[:200]}")
+    app.screenshot("vbt-volume-header")
+
+
+@scenario("catalogue-inspector", "catalogue")
+def _catalogue_inspector(app: App) -> None:
+    """The Inspector opens from the View menu and carries the usual four tabs."""
+    menu_item(["View", "Inspector Panel"])
+    if not wait_for(lambda: inspector_tabs() == ["Properties", "Analysis", "Parameters",
+                                                 "Copilot"], timeout=20):
+        raise AssertionError(f"the Inspector tabs are {inspector_tabs()}")
+    app.screenshot("catalogue-inspector")
+
+
+@scenario("vbt-inspector", "vbt")
+def _vbt_inspector(app: App) -> None:
+    """Same Inspector, same four tabs, in the VBT point viewer."""
+    menu_item(["View", "Inspector Panel"])
+    if not wait_for(lambda: inspector_tabs() == ["Properties", "Analysis", "Parameters",
+                                                 "Copilot"], timeout=20):
+        raise AssertionError(f"the Inspector tabs are {inspector_tabs()}")
+    app.screenshot("vbt-inspector")
+
+
+@scenario("vbt-volume-inspector", "vbt-volume")
+def _vbt_volume_inspector(app: App) -> None:
+    """And in the VBT volume viewer."""
+    menu_item(["View", "Inspector Panel"])
+    if not wait_for(lambda: inspector_tabs() == ["Properties", "Analysis", "Parameters",
+                                                 "Copilot"], timeout=20):
+        raise AssertionError(f"the Inspector tabs are {inspector_tabs()}")
+    app.screenshot("vbt-volume-inspector")
 
 
 @scenario("menus", "image")
@@ -1795,6 +1939,58 @@ def write_sample_catalogue(directory: Path) -> Path:
     return path
 
 
+def write_sample_vbt(directory: Path) -> Path:
+    """A small VisIVO Binary Table (point cloud) and its .head, written here.
+
+    Same reason as the catalogue: the VBT viewers are part of the application
+    and nothing exercised them, because exercising them needed a file this
+    repository does not carry. The format is four lines of header — type, field
+    count, row count, endianness — then one name per field, with the binary
+    holding each field's column one after another.
+    """
+    import random
+    import struct
+
+    random.seed(11)
+    rows, fields = 2000, ("X", "Y", "Z", "Mass")
+    columns = {name: [] for name in fields}
+    for _ in range(rows):
+        columns["X"].append(random.gauss(0, 40))
+        columns["Y"].append(random.gauss(0, 40))
+        columns["Z"].append(random.gauss(0, 40))
+        columns["Mass"].append(abs(random.gauss(10, 3)))
+
+    binary = directory / "points.bin"
+    with binary.open("wb") as handle:
+        for name in fields:
+            handle.write(struct.pack("<%df" % rows, *columns[name]))
+    (directory / "points.bin.head").write_text(
+        "float\n{}\n{}\nlittle\n{}\n".format(len(fields), rows, "\n".join(fields)))
+    return binary
+
+
+def write_sample_vbt_volume(directory: Path) -> Path:
+    """A small VBT VOLUME — the other VBT viewer, and a different window.
+
+    The point and volume viewers share a file format and nothing else: separate
+    classes, separate sidebars, separate chrome. A fixture that is only a point
+    cloud leaves half of it untested.
+    """
+    import random
+    import struct
+
+    random.seed(13)
+    size = 24
+    voxels = size ** 3
+    values = [abs(random.gauss(1.0, 0.3)) for _ in range(voxels)]
+    binary = directory / "volume.bin"
+    with binary.open("wb") as handle:
+        handle.write(struct.pack("<%df" % voxels, *values))
+    (directory / "volume.bin.head").write_text(
+        "float\n1\n{} {} {} {} 1 1 1\nlittle\nDensity\n".format(voxels, size, size, size))
+    return binary
+
+
 def run_scenarios(app: App, dataset: Path, kind: str, wanted: set[str] | None) -> list[Result]:
     chosen = [s for s in SCENARIOS if s.kind == kind and (not wanted or s.name in wanted)]
     if not chosen:
@@ -1825,6 +2021,9 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--image", type=Path, help="a 2-D FITS to run the image scenarios on")
     parser.add_argument("--cube", type=Path, help="a 3-D FITS to run the cube scenarios on")
+    parser.add_argument("--vbt", type=Path,
+                        help="a VisIVO Binary Table (.bin) for the VBT scenarios; one is "
+                             "written for you if this is omitted")
     parser.add_argument("--catalogue", type=Path,
                         help="a catalogue (CSV/VOTable/IPAC/.speck) for the catalogue "
                              "scenarios; one is written for you if this is omitted")
@@ -1849,9 +2048,9 @@ def main() -> int:
     if not APP.exists():
         print(f"the app is not built: {APP}")
         return 2
-    wants_catalogue = not args.only or any(
-        name.startswith("catalogue") for name in args.only.split(","))
-    if not args.image and not args.cube and not wants_catalogue:
+    wants_generated = not args.only or any(
+        name.startswith(("catalogue", "vbt")) for name in args.only.split(","))
+    if not args.image and not args.cube and not wants_generated:
         print("give --image and/or --cube (a FITS to open)")
         return 2
 
@@ -1884,6 +2083,10 @@ def main() -> int:
         catalogue = (args.catalogue.expanduser() if args.catalogue
                      else write_sample_catalogue(args.artefacts))
         results += run_scenarios(app, catalogue, "catalogue", wanted)
+        vbt = args.vbt.expanduser() if args.vbt else write_sample_vbt(args.artefacts)
+        results += run_scenarios(app, vbt, "vbt", wanted)
+        results += run_scenarios(app, write_sample_vbt_volume(args.artefacts),
+                                 "vbt-volume", wanted)
     finally:
         app.close()
 

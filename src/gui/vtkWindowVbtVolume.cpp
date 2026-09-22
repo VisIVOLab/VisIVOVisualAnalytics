@@ -3,6 +3,15 @@
 #include "app/ThemeManager.h"
 #include "DiagnosticsWindow.h"
 #include "theme/VisivoTheme.h"
+#include <QFileInfo>
+#include <QHeaderView>
+#include <QTableWidget>
+#include <QDialogButtonBox>
+#include <QDialog>
+#include "WorkspaceChrome.h"
+#include "InspectorPanel.h"
+#include <QDockWidget>
+#include <QToolButton>
 
 #include <QApplication>
 #include <QKeySequence>
@@ -38,7 +47,6 @@
 #include <QVBoxLayout>
 #include "AssistantPanel.h"
 #include "CopilotActionRouter.h"
-#include "SidebarPanel.h"
 #include <QWidget>
 
 #include <algorithm>
@@ -71,9 +79,11 @@ vtkWindowVbtVolume::vtkWindowVbtVolume(BackendVbtOpenResult openResult,
                                        const QString &backendUrl,
                                        const QString &backendToken,
                                        const QString &sessionId,
+                                       const QString &headerPath,
                                        QWidget *parent)
     : QMainWindow(parent)
     , openResult(std::move(openResult))
+    , m_headerPath(headerPath)
     , backendUrl(backendUrl)
     , backendToken(backendToken)
     , sessionId(sessionId)
@@ -91,6 +101,7 @@ vtkWindowVbtVolume::vtkWindowVbtVolume(BackendVbtOpenResult openResult,
                        .arg(this->openResult.fields.empty() ? QStringLiteral("<none>")
                                                             : this->openResult.fields[0].name);
     this->setupUi();
+    this->setupViewerChrome();
     this->setupRenderer();
     // Apply the initial subset received at open time without an extra round-trip.
     // rebuildVolumeData() will contact the backend on subsequent field changes.
@@ -115,7 +126,6 @@ void vtkWindowVbtVolume::setupUi()
     rootLayout->setContentsMargins(0, 0, 0, 0);
 
     this->setupSidebarUi();
-    rootLayout->addWidget(this->m_sidebar);
 
     this->vtkWidget = new QVTKOpenGLNativeWidget(central);
     this->vtkWidget->setMinimumSize(700, 500);
@@ -155,9 +165,23 @@ void vtkWindowVbtVolume::setupUi()
 
     // ── View menu ─────────────────────────────────────────────────────────────
     auto *viewMenu = this->menuBar()->addMenu(u"View"_s);
-    this->actionShowControlsSidebar = this->m_sidebar->createToggleAction(
-            u"Controls Sidebar"_s, this);
+    this->m_actionSessionPanel = new QAction(u"Session Data Panel"_s, this);
+    this->m_actionSessionPanel->setCheckable(true);
+    this->m_actionSessionPanel->setChecked(true);
+    viewMenu->addAction(this->m_actionSessionPanel);
+    QObject::connect(this->m_actionSessionPanel, &QAction::toggled, this, [this](bool checked) {
+        if (this->m_workspaceChrome)
+            this->m_workspaceChrome->setSessionCollapsed(!checked);
+    });
+    this->actionShowControlsSidebar = new QAction(u"Inspector Panel"_s, this);
+    this->actionShowControlsSidebar->setCheckable(true);
+    this->actionShowControlsSidebar->setChecked(true);
     viewMenu->addAction(this->actionShowControlsSidebar);
+    QObject::connect(this->actionShowControlsSidebar, &QAction::toggled, this,
+                     [this](bool checked) {
+                         if (this->m_workspaceChrome)
+                             this->m_workspaceChrome->setInspectorCollapsed(!checked);
+                     });
 
     // ── Diagnostics + Command Palette (replicated across windows) ────────────
     viewMenu->addSeparator();
@@ -184,6 +208,31 @@ void vtkWindowVbtVolume::setupUi()
 // ─────────────────────────────────────────────────────────────────────────────
 // Sidebar implementation
 // ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// Fill a form layout with muted key / mono value rows — the same pairing the
+/// image and cube viewers use for their info grids. A five-line label in one
+/// colour is not readable at a glance the way aligned pairs are, and it was the
+/// only place in the application that presented dataset facts that way.
+void setInfoRows(QFormLayout *grid, const QList<QPair<QString, QString>> &rows)
+{
+    if (!grid)
+        return;
+    while (grid->rowCount() > 0)
+        grid->removeRow(0);
+    for (const auto &row : rows) {
+        auto *key = new QLabel(row.first);
+        key->setStyleSheet(VisivoTheme::infoKeyStyleSheet());
+        auto *value = new QLabel(row.second);
+        value->setStyleSheet(VisivoTheme::infoValueStyleSheet());
+        value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        value->setWordWrap(true);
+        grid->addRow(key, value);
+    }
+}
+
+}   // namespace
 
 void vtkWindowVbtVolume::setupSidebarUi()
 {
@@ -314,10 +363,11 @@ void vtkWindowVbtVolume::setupSidebarUi()
         auto *inner = new QWidget;
         auto *vl = new QVBoxLayout(inner);
         vl->setContentsMargins(0, 0, 0, 0);
-        this->summaryLabel = new QLabel(inner);
-        this->summaryLabel->setWordWrap(true);
-        this->summaryLabel->setStyleSheet(u"color: #6080a0; font-size: 10px;"_s);
-        vl->addWidget(this->summaryLabel);
+        this->summaryGrid = new QFormLayout;
+        this->summaryGrid->setContentsMargins(0, 0, 0, 0);
+        this->summaryGrid->setSpacing(4);
+        this->summaryGrid->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        vl->addLayout(this->summaryGrid);
         pageVolumeLayout->addWidget(makeCard(u"SUMMARY"_s, inner));
     }
     pageVolumeLayout->addStretch(1);
@@ -332,9 +382,11 @@ void vtkWindowVbtVolume::setupSidebarUi()
         auto *inner = new QWidget;
         auto *vl = new QVBoxLayout(inner);
         vl->setContentsMargins(0, 0, 0, 0);
-        this->metadataLabel = new QLabel(inner);
-        this->metadataLabel->setWordWrap(true);
-        vl->addWidget(this->metadataLabel);
+        this->metadataGrid = new QFormLayout;
+        this->metadataGrid->setContentsMargins(0, 0, 0, 0);
+        this->metadataGrid->setSpacing(4);
+        this->metadataGrid->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        vl->addLayout(this->metadataGrid);
         pageInfoLayout->addWidget(makeCard(u"DATASET INFO"_s, inner));
     }
     {
@@ -349,25 +401,15 @@ void vtkWindowVbtVolume::setupSidebarUi()
     }
     pageInfoLayout->addStretch(1);
 
-    // ── Wire pages into SidebarPanel ──────────────────────────────────────────
     // ── Scientific copilot page ───────────────────────────────────────────────
-    this->m_copilot = new AssistantPanel(this);
-    this->m_copilot->setBackend(this->backendUrl, this->backendToken);
-    this->m_copilot->setDatasetId(this->openResult.datasetId);
-    this->m_copilot->setSuggestions({
-            u"How many points and what fields does this table have?"_s,
-            u"Show it in log scale"_s,
-            u"Use MIP blending"_s });
-    CopilotActionRouter::instance()->registerTarget(
-            this->openResult.datasetId, this,
-            [this](const QList<QJsonObject> &acts) { this->applyCopilotActions(acts); },
-            [this]() { this->undoCopilotActions(); });
-
-    this->m_sidebar = new SidebarPanel(320, this);
-    this->m_sidebar->addPage(u":/icons/rail_display.svg"_s,  u"Volume Settings"_s, pageVolume);
-    this->m_sidebar->addPage(u":/icons/rail_metadata.svg"_s, u"Info"_s,            pageInfo);
-    this->m_sidebar->addPage(u":/icons/rail_copilot.svg"_s,  u"Copilot"_s,         this->m_copilot);
-    this->m_sidebar->finalize(0);
+    // The pages go into the two docks, not into a rail of this window's own —
+    // see setupWorkspaceDocks(), called right after this from the constructor.
+    this->m_pageVolume = pageVolume;
+    this->m_pageInfo = pageInfo;
+    pageVolume->setParent(this);
+    pageVolume->hide();
+    pageInfo->setParent(this);
+    pageInfo->hide();
 }
 
 void vtkWindowVbtVolume::setupRenderer()
@@ -1002,21 +1044,171 @@ void vtkWindowVbtVolume::updateSummary()
     const QString activeField = this->comboScalarField ? this->comboScalarField->currentText() : QString();
     const auto &dims = this->openResult.dimensions;
     const auto &spacing = this->openResult.spacing;
-    if (this->summaryLabel) {
-        this->summaryLabel->setText(
-                QStringLiteral("Dimensions: %1 x %2 x %3\nSpacing: %4, %5, %6\nFields: %7\nScalar type: %8\nActive scalar: %9")
-                        .arg(dims[0]).arg(dims[1]).arg(dims[2])
-                        .arg(spacing[0]).arg(spacing[1]).arg(spacing[2])
-                        .arg(this->openResult.fields.size())
-                        .arg(this->openResult.scalarType)
-                        .arg(activeField));
+    setInfoRows(this->summaryGrid,
+                { { u"Dimensions"_s, QStringLiteral("%1 × %2 × %3")
+                                             .arg(dims[0]).arg(dims[1]).arg(dims[2]) },
+                  { u"Spacing"_s, QStringLiteral("%1, %2, %3")
+                                          .arg(spacing[0]).arg(spacing[1]).arg(spacing[2]) },
+                  { u"Fields"_s, QString::number(this->openResult.fields.size()) },
+                  { u"Scalar type"_s, this->openResult.scalarType },
+                  { u"Active scalar"_s, activeField } });
+    setInfoRows(this->metadataGrid,
+                { { u"Kind"_s, this->openResult.kind },
+                  { u"Fields"_s, QString::number(this->openResult.fields.size()) },
+                  { u"Voxels"_s, QString::number(this->openResult.numRows) },
+                  { u"Dataset ID"_s, this->openResult.datasetId } });
+}
+
+// ── Shared viewer chrome ─────────────────────────────────────────────────────
+//
+// Same command bar and status rail as the image and cube viewers: the path of
+// the file on screen, a tag saying what it is, ⌘K, and the live backend chip —
+// plus the bottom rail with health, queue, cache and session. This window is a
+// remote dataset viewer like the others and had none of it.
+
+void vtkWindowVbtVolume::setupViewerChrome()
+{
+    VisivoTheme::ViewerToolbarSpec spec;
+    spec.filePath = this->m_headerPath;
+    spec.primaryTag = QStringLiteral("VBT · %1×%2×%3")
+                              .arg(this->openResult.dimensions[0])
+                              .arg(this->openResult.dimensions[1])
+                              .arg(this->openResult.dimensions[2]);
+    spec.secondaryTag = QStringLiteral("remote · %1").arg(this->openResult.scalarType);
+
+    VisivoTheme::ViewerToolbarWidgets widgets;
+    this->m_workspaceChrome = WorkspaceChrome::installCommandBar(
+            this, spec, this->backendUrl, this->backendToken, this->sessionId, &widgets);
+    if (!this->m_workspaceChrome)
+        return;
+    if (widgets.primaryTag) {
+        widgets.primaryTag->setToolTip(QStringLiteral("The VBT header: fields, type, geometry."));
+        QObject::connect(widgets.primaryTag, &QToolButton::clicked, this,
+                         [this]() { this->showVbtHeaderDialog(); });
     }
-    if (this->metadataLabel) {
-        this->metadataLabel->setText(
-                QStringLiteral("Kind: %1\nFields: %2\nVoxel count: %3\nDataset ID: %4")
-                        .arg(this->openResult.kind)
-                        .arg(this->openResult.fields.size())
-                        .arg(this->openResult.numRows)
-                        .arg(this->openResult.datasetId));
+    this->m_workspaceChrome->installStatusRail();
+    this->setupWorkspaceDocks();
+    this->m_workspaceChrome->start();
+}
+
+void vtkWindowVbtVolume::setupWorkspaceDocks()
+{
+    WorkspaceChrome *chrome = this->m_workspaceChrome;
+    if (!chrome)
+        return;
+    const QFileInfo info(this->m_headerPath);
+    chrome->installSessionDock(this->m_headerPath, info.fileName(), u"vbt-volume"_s);
+    if (this->m_pageVolume) {
+        this->m_pageVolume->show();
+        chrome->addSessionLayers(this->m_pageVolume);
     }
+
+    InspectorPanel *panel = chrome->installInspectorDock();
+    if (!panel)
+        return;
+    panel->setProperties({
+            { u"Dataset"_s, info.fileName() },
+            { u"Type"_s, u"VBT VOLUME"_s },
+            { u"Dimensions"_s, QStringLiteral("%1 × %2 × %3")
+                                       .arg(this->openResult.dimensions[0])
+                                       .arg(this->openResult.dimensions[1])
+                                       .arg(this->openResult.dimensions[2]) },
+            { u"Scalar type"_s, this->openResult.scalarType },
+            { u"Path"_s, this->m_headerPath },
+            { u"Session"_s, this->sessionId },
+            { u"Backend"_s, this->backendUrl },
+    });
+    if (this->m_pageInfo) {
+        this->m_pageInfo->show();
+        panel->addPropertiesSection(this->m_pageInfo);
+    }
+
+    if (!this->backendUrl.isEmpty()) {
+        this->m_copilot = chrome->installCopilot(this->backendUrl, this->backendToken,
+                                                 this->openResult.datasetId);
+        if (this->m_copilot) {
+            this->m_copilot->setSuggestions({
+                    u"How many points and what fields does this table have?"_s,
+                    u"Show it in log scale"_s,
+                    u"Use MIP blending"_s });
+            CopilotActionRouter::instance()->registerTarget(
+                    this->openResult.datasetId, this,
+                    [this](const QList<QJsonObject> &acts) { this->applyCopilotActions(acts); },
+                    [this]() { this->undoCopilotActions(); });
+        }
+    }
+
+    if (this->m_actionSessionPanel) {
+        QSignalBlocker block(this->m_actionSessionPanel);
+        this->m_actionSessionPanel->setChecked(!chrome->sessionCollapsed());
+    }
+    if (this->actionShowControlsSidebar) {
+        QSignalBlocker block(this->actionShowControlsSidebar);
+        this->actionShowControlsSidebar->setChecked(!chrome->inspectorCollapsed());
+    }
+    QObject::connect(chrome, &WorkspaceChrome::dockCollapseChanged, this, [this]() {
+        if (!this->m_workspaceChrome)
+            return;
+        if (this->m_actionSessionPanel) {
+            QSignalBlocker block(this->m_actionSessionPanel);
+            this->m_actionSessionPanel->setChecked(!this->m_workspaceChrome->sessionCollapsed());
+        }
+        if (this->actionShowControlsSidebar) {
+            QSignalBlocker block(this->actionShowControlsSidebar);
+            this->actionShowControlsSidebar->setChecked(
+                    !this->m_workspaceChrome->inspectorCollapsed());
+        }
+    });
+}
+
+void vtkWindowVbtVolume::showVbtHeaderDialog()
+{
+    auto *dlg = new QDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowModality(Qt::NonModal);
+    dlg->setWindowTitle(QStringLiteral("VBT Header - %1")
+                                .arg(QFileInfo(this->m_headerPath).fileName()));
+    dlg->resize(520, 420);
+
+    auto *layout = new QVBoxLayout(dlg);
+    layout->setContentsMargins(16, 14, 16, 14);
+    layout->setSpacing(10);
+
+    auto *header = new QLabel(QStringLiteral("VBT Header"), dlg);
+    header->setStyleSheet(VisivoTheme::sidebarHeaderStyleSheet());
+    layout->addWidget(header);
+
+    auto *summary = new QLabel(
+            QStringLiteral("%1 × %2 × %3 voxels · spacing %4, %5, %6\n%7 · %8 field(s)")
+                    .arg(this->openResult.dimensions[0])
+                    .arg(this->openResult.dimensions[1])
+                    .arg(this->openResult.dimensions[2])
+                    .arg(this->openResult.spacing[0], 0, 'g', 6)
+                    .arg(this->openResult.spacing[1], 0, 'g', 6)
+                    .arg(this->openResult.spacing[2], 0, 'g', 6)
+                    .arg(this->openResult.scalarType)
+                    .arg(this->openResult.fields.size()),
+            dlg);
+    summary->setStyleSheet(VisivoTheme::infoValueStyleSheet());
+    layout->addWidget(summary);
+
+    auto *table = new QTableWidget(static_cast<int>(this->openResult.fields.size()), 1, dlg);
+    table->setHorizontalHeaderLabels({ QStringLiteral("Field") });
+    table->verticalHeader()->setVisible(false);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->horizontalHeader()->setStretchLastSection(true);
+    for (int row = 0; row < static_cast<int>(this->openResult.fields.size()); ++row)
+        table->setItem(row, 0, new QTableWidgetItem(this->openResult.fields[row].name));
+    layout->addWidget(table, 1);
+
+    auto *path = new QLabel(this->m_headerPath, dlg);
+    path->setStyleSheet(VisivoTheme::infoKeyStyleSheet());
+    path->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    path->setWordWrap(true);
+    layout->addWidget(path);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dlg);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
+    layout->addWidget(buttons);
+    dlg->show();
 }

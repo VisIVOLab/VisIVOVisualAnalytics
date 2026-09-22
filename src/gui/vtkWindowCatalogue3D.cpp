@@ -70,7 +70,6 @@
 #include <QTableView>
 #include <QTextEdit>
 #include <QVBoxLayout>
-#include "SidebarPanel.h"
 #include <QtConcurrent>
 
 #include <optional>
@@ -194,7 +193,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     , m_cataloguePaths(paths)
 {
     ui->setupUi(this);
-    this->setupSidebar();
+    this->buildControlPages();
 
     // ── Connect background filter watcher ─────────────────────────────────────
     QObject::connect(&this->filterWatcher, &QFutureWatcher<Catalogue3DFilterTaskResult>::finished,
@@ -284,6 +283,10 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                              this->buildLabels();
                          }
                          this->refreshCatalogueTable();
+                         // The command bar counts what is on screen, so it has to
+                         // follow a filter: it used to keep claiming the number
+                         // the window opened with.
+                         this->refreshViewerChrome();
                          this->renderWindow->Render();
                      });
 
@@ -356,6 +359,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                     this->buildLabels();
                 }
                 this->refreshCatalogueTable();
+                this->refreshViewerChrome();   // another page of sources changes the count
                 this->renderWindow->Render();
             });
 
@@ -389,6 +393,10 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                      },
                                      [this]() { this->undoCopilotActions(); });
                          }
+                         // The window is on a NEW session now: the status rail
+                         // and the Inspector both named the expired one until
+                         // this was added.
+                         this->refreshViewerChrome();
                          if (this->filterStatusLabel)
                              this->filterStatusLabel->setText({});
                          this->loadMoreEntries();
@@ -405,6 +413,10 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     } else {
         this->remoteDatasetId = opened.datasetId;
         this->remoteSessionId = opened.sessionId;
+        // On the FIRST open the copilot does not exist yet — it is the
+        // Inspector's tab, and the Inspector is installed once this load has
+        // finished (setupWorkspaceDocks does the same wiring there). This branch
+        // still matters for a re-open into a live window.
         if (this->m_copilot) {
             this->m_copilot->setDatasetId(this->remoteDatasetId);
             CopilotActionRouter::instance()->registerTarget(
@@ -456,6 +468,11 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     setWindowTitle(QStringLiteral("3D Catalogue, %1  (%2 sources)")
                            .arg(QFileInfo(filepath).fileName())
                            .arg(entries.size()));
+
+    // The same command bar and status rail as the image and cube viewers. Built
+    // here rather than in setupUi() because the kind tag names the number of
+    // sources, which is only known once the catalogue has been read.
+    this->setupViewerChrome();
 
     // ── VTK scene ────────────────────────────────────────────────────────────
     setupRenderer();

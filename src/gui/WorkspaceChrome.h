@@ -48,6 +48,22 @@ public:
                     QString sessionId,
                     QObject *parent = nullptr);
 
+    /// Build the command bar, install it at the top of @p window, and return the
+    /// chrome that owns it — the whole "make this window look like a viewer"
+    /// step in one call.
+    ///
+    /// Every viewer did this by hand, so the three that came later (the 3-D
+    /// catalogue and the two VBT windows) did not do it at all: no path, no kind
+    /// tag, no ⌘K, no backend chip, while the image and cube viewers had all
+    /// four. @p out receives the widgets for anything the caller wants to wire
+    /// itself — typically the kind tag, which each viewer answers differently.
+    static WorkspaceChrome *installCommandBar(QMainWindow *window,
+                                              const VisivoTheme::ViewerToolbarSpec &spec,
+                                              const QString &backendUrl,
+                                              const QString &backendToken,
+                                              const QString &sessionId,
+                                              VisivoTheme::ViewerToolbarWidgets *out = nullptr);
+
     /// Wire the interactive command-bar widgets (may hold nulls; each is
     /// wired only if present). Also registers the live remote/health chip.
     void attachCommandBar(const VisivoTheme::ViewerToolbarWidgets &widgets);
@@ -119,6 +135,11 @@ public:
     /// Begin polling backend health (safe no-op if no backend URL).
     void start();
 
+    /// The session this window belongs to CAN change: an expired session is
+    /// recovered by reopening the dataset, and the status rail then named the
+    /// dead one for the rest of the window's life.
+    void setSessionId(const QString &sessionId);
+
     /// Snapshot returned by the health worker (backend health + latency).
     struct HealthSnapshot;
 
@@ -139,6 +160,7 @@ signals:
 private:
     MainWindow *mainWindow() const;
     void poll();
+    void refreshSessionSlot();
     void onPollFinished();
     /// Custom dock title bar (label + collapse glyph). Lets the header hide cleanly.
     QWidget *makeDockTitleBar(const QString &title, const QString &glyph,

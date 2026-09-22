@@ -22,6 +22,7 @@
 #include <QJsonObject>
 #include <QList>
 #include <QMainWindow>
+#include <QFormLayout>
 #include <QPointer>
 
 class AssistantPanel;
@@ -33,9 +34,10 @@ class QLabel;
 class QListWidget;
 class QPushButton;
 class QSlider;
-class SidebarPanel;
 class QVTKOpenGLNativeWidget;
 class vtkImageData;
+
+class WorkspaceChrome;
 
 class vtkWindowVbtVolume : public QMainWindow
 {
@@ -47,6 +49,7 @@ public:
                                 const QString &backendUrl,
                                 const QString &backendToken,
                                 const QString &sessionId,
+                                const QString &headerPath = {},
                                 QWidget *parent = nullptr);
     ~vtkWindowVbtVolume() override = default;
 
@@ -61,6 +64,15 @@ public:
 private:
     void setupUi();
     void setupRenderer();
+    /// The command bar and status rail the image and cube viewers have. Built
+    /// here too: a VBT volume is a dataset on a backend like any other, and this
+    /// window said nothing about which file it was showing or whether that
+    /// backend was still answering.
+    void setupViewerChrome();
+    /// Session Data on the left, Inspector on the right — as in every viewer.
+    void setupWorkspaceDocks();
+    /// What the kind tag opens — the VBT's own header: fields, type, geometry.
+    void showVbtHeaderDialog();
     void rebuildVolumeData();
     void applySubsetResult(const BackendVbtSubsetResult &subset);
     void updateTransferFunctions();
@@ -76,6 +88,8 @@ private:
     double positiveFloor() const;
 
     BackendVbtOpenResult openResult;
+    const QString m_headerPath;   ///< the .head file this volume came from
+    WorkspaceChrome *m_workspaceChrome{ nullptr };
     const QString backendUrl;
     const QString backendToken;
     const QString sessionId;
@@ -90,13 +104,18 @@ private:
     QPointer<QDoubleSpinBox> spinRangeMin;
     QPointer<QDoubleSpinBox> spinRangeMax;
     QPointer<QPushButton> buttonAutoscale;
-    QPointer<QLabel> summaryLabel;
+    QPointer<QFormLayout> summaryGrid;   ///< key/value rows, as in the image viewer
     QPointer<QListWidget> fieldList;
-    QPointer<QLabel> metadataLabel;
+    QPointer<QFormLayout> metadataGrid;
     bool updatingRangeControls{ false };
 
     // ── Sidebar ──────────────────────────────────────────────────────────────
-    SidebarPanel *m_sidebar{ nullptr };
+    /// The two pages, built once and mounted in the docks (see
+    /// setupWorkspaceDocks): the volume controls in the LEFT column under
+    /// Session Data, the dataset info in the RIGHT Inspector.
+    QPointer<QWidget> m_pageVolume;
+    QPointer<QWidget> m_pageInfo;
+    QPointer<QAction> m_actionSessionPanel;
     QPointer<QAction> actionShowControlsSidebar;
     void setupSidebarUi();
 

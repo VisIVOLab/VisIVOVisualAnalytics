@@ -14,6 +14,10 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QComboBox>
+#include <QFormLayout>
+#include <QLineEdit>
+#include <QAbstractSpinBox>
 #include <QDockWidget>
 #include <QElapsedTimer>
 #include <QFrame>
@@ -28,6 +32,7 @@
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QTabWidget>
+#include <QToolBar>
 #include <QToolButton>
 #include <QUrl>
 #include <QtConcurrentRun>
@@ -146,6 +151,39 @@ WorkspaceChrome::WorkspaceChrome(QMainWindow *window, QString backendUrl,
             [this](EffectiveTheme) { restyleForTheme(); });
 }
 
+WorkspaceChrome *WorkspaceChrome::installCommandBar(
+        QMainWindow *window, const VisivoTheme::ViewerToolbarSpec &spec,
+        const QString &backendUrl, const QString &backendToken, const QString &sessionId,
+        VisivoTheme::ViewerToolbarWidgets *out)
+{
+    if (!window)
+        return nullptr;
+
+    VisivoTheme::ViewerToolbarWidgets widgets;
+    QWidget *bar = VisivoTheme::makeViewerToolbar(spec, &widgets, window);
+
+    auto *host = new QToolBar(window);
+    host->setObjectName(QStringLiteral("viewerToolbarHost"));
+    host->setMovable(false);
+    host->setFloatable(false);
+    host->setContextMenuPolicy(Qt::PreventContextMenu);
+    host->setStyleSheet(QStringLiteral("QToolBar#viewerToolbarHost {"
+                                       "  background-color: transparent;"
+                                       "  border: none;"
+                                       "  padding: 6px 10px 4px 10px;"
+                                       "  spacing: 0px;"
+                                       "}"));
+    host->addWidget(bar);
+    window->addToolBar(Qt::TopToolBarArea, host);
+
+    auto *chrome = new WorkspaceChrome(window, backendUrl, backendToken, sessionId, window);
+    chrome->attachCommandBar(widgets);
+    if (out)
+        *out = widgets;
+    return chrome;
+}
+
+
 void WorkspaceChrome::restyleForTheme()
 {
     styleRailSlot(m_queueSlot);
@@ -260,13 +298,24 @@ void WorkspaceChrome::installStatusRail()
     connect(sc, &QShortcut::activated, this,
             []() { DiagnosticsWindow::showSingleton(); });
 
-    // Session slot never changes after construction.
-    if (m_sessionSlot) {
-        const QString s = m_session.isEmpty()
-                ? QStringLiteral("session -")
-                : QStringLiteral("session %1…").arg(m_session.left(8));
-        m_sessionSlot->setText(s);
-    }
+    refreshSessionSlot();
+}
+
+void WorkspaceChrome::setSessionId(const QString &sessionId)
+{
+    if (m_session == sessionId)
+        return;
+    m_session = sessionId;
+    refreshSessionSlot();
+}
+
+void WorkspaceChrome::refreshSessionSlot()
+{
+    if (!m_sessionSlot)
+        return;
+    m_sessionSlot->setText(m_session.isEmpty()
+                                   ? QStringLiteral("session -")
+                                   : QStringLiteral("session %1…").arg(m_session.left(8)));
 }
 
 void WorkspaceChrome::installSessionDock(const QString &datasetKey,
@@ -322,7 +371,12 @@ void WorkspaceChrome::installSessionDock(const QString &datasetKey,
     auto *layersScroll = new QScrollArea(container);
     layersScroll->setWidgetResizable(true);
     layersScroll->setFrameShape(QFrame::NoFrame);
-    layersScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // A horizontal bar WHEN NEEDED, not never. The column is a fixed 272 px and
+    // the content cannot always shrink to it — a combo box is as wide as its
+    // longest entry — so "always off" did not mean "it fits", it meant the right
+    // edge of the controls was cut off with nothing to say so. Everything the
+    // window puts here is reachable now, whatever its natural width.
+    layersScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     auto *layersInner = new QWidget(layersScroll);
     m_sessionLayersLayout = new QVBoxLayout(layersInner);
     m_sessionLayersLayout->setContentsMargins(0, 0, 0, 0);
@@ -360,6 +414,56 @@ void WorkspaceChrome::addSessionLayers(QWidget *w)
     if (auto *p = w->parentWidget())
         if (auto *l = p->layout())
             l->removeWidget(w);
+    // Let the controls fit the column, which is a fixed 272 px.
+    //
+    // What overflows is not the layout, it is the MINIMUM width of individual
+    // fields: a QComboBox asks for its longest entry ("MIP (Max Intensity)",
+    // "Supergalactic (SGL, SGB)"), and a QDoubleSpinBox with 12 decimals asks
+    // for "0.383494066596" plus its buttons. Add a label and the card's margins
+    // and the page cannot be drawn in the column however the layout is written,
+    // so its right-hand edge was clipped. Each of these is allowed to shrink and
+    // elide instead; the full value stays readable by clicking into the field,
+    // and a combo's entries are all in its popup.
+    // EXPANDING with a small minimum, not Ignored: a field has to be able to
+    // shrink to fit the column, and then take every pixel the column leaves it.
+    // Ignored does the first and not the second — the fields collapsed to their
+    // minimum and the entries read "Ellipsoic", "Comput", "Planck1" with most
+    // of the column empty beside them.
+    const auto relax = [](QWidget *widget, int minimumWidth) {
+        // A width the caller FIXED is a decision, not an accident: minimum ==
+        // maximum is what setFixedWidth() leaves behind, and overwriting it
+        // would silently undo it.
+        if (widget->minimumWidth() == widget->maximumWidth())
+            return;
+        widget->setMinimumWidth(minimumWidth);
+        widget->setSizePolicy(QSizePolicy::Expanding, widget->sizePolicy().verticalPolicy());
+    };
+    for (QComboBox *combo : w->findChildren<QComboBox *>()) {
+        // The minimum is what the combo may shrink TO, not what it will show:
+        // four characters plus the arrow, so a long entry no longer sets the
+        // width of the whole page.
+        combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        combo->setMinimumContentsLength(4);
+        relax(combo, 70);
+    }
+    for (QAbstractSpinBox *spin : w->findChildren<QAbstractSpinBox *>())
+        relax(spin, 70);
+    for (QLineEdit *edit : w->findChildren<QLineEdit *>()) {
+        // Not the editor INSIDE a spin box or an editable combo: that one is
+        // sized by its owner, which has already been given a minimum here, and
+        // forcing the same 70 px on the inner editor leaves no room for the
+        // frame and the buttons around it.
+        if (qobject_cast<QAbstractSpinBox *>(edit->parentWidget())
+            || qobject_cast<QComboBox *>(edit->parentWidget()))
+            continue;
+        relax(edit, 70);
+    }
+    // And let the forms GIVE them that width. QFormLayout's default on macOS is
+    // FieldsStayAtSizeHint: the field column stays at the size hint whatever
+    // room there is, so relaxing the minimum alone left the controls at their
+    // minimum — a 100 px combo reading "Comput" beside 150 px of empty column.
+    for (QFormLayout *form : w->findChildren<QFormLayout *>())
+        form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     m_sessionLayersLayout->insertWidget(m_sessionLayersLayout->count() - 1, w);
     w->show();
 }

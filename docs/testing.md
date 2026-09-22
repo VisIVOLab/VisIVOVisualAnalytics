@@ -123,8 +123,8 @@ to nothing, a dialog opened on a window with no dataset, a result written to a
 file nobody opens — all of those pass every test above.
 
 `tools/gui_smoke/gui_smoke.py` launches the built application on a real FITS
-file, clicks through thirty scenarios across the image, cube and catalogue
-viewers —
+file, clicks through thirty-eight scenarios across the image, cube, catalogue and
+VBT viewers —
 moments, line-width, baseline subtraction, PV extraction, the kinematic lasso,
 source finding, the exports, the regions, the products — and asserts on the
 backend's own job history, on the files that appear in the workspace (including

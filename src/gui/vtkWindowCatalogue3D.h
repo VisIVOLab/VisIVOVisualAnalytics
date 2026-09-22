@@ -21,6 +21,8 @@
 
 #include <vector>
 
+class WorkspaceChrome;
+
 // VTK forward declarations
 class vtkActor;
 class vtkBillboardTextActor3D;
@@ -48,9 +50,9 @@ class QDoubleSpinBox;
 class QListWidget;
 class QPushButton;
 class QLabel;
+class QToolButton;
 class QTextEdit;
 class QTableView;
-class SidebarPanel;
 class Catalogue3DTableModel;
 class AssistantPanel;
 QT_BEGIN_NAMESPACE
@@ -151,10 +153,44 @@ private:
         Flux,
     };
 
-    // ── Sidebar ───────────────────────────────────────────────────────────────
-    SidebarPanel *m_sidebar{ nullptr };
-    QPointer<QAction> actionShowControlsSidebar;
-    void setupSidebar();
+    // ── Control pages ─────────────────────────────────────────────────────────
+    // Built once, then mounted in the two docks the image and cube viewers use:
+    // the view controls in the LEFT column under Session Data (design #1d — the
+    // rendering controls live beside what is being rendered), the source info
+    // and the filters in the RIGHT Inspector. They used to live in a rail of
+    // their own that existed nowhere else in the application.
+    QPointer<QWidget> m_pageViz;
+    QPointer<QWidget> m_pageFilters;
+    QPointer<QAction> actionShowControlsSidebar;   ///< "Inspector Panel"
+    QPointer<QAction> m_actionSessionPanel;        ///< "Session Data Panel"
+    void buildControlPages();
+
+    // ── Shared viewer chrome ──────────────────────────────────────────────────
+    // The command bar (path · kind tag · ⌘K · backend chip) and the status rail
+    // the image and cube viewers have always had. This window is a viewer too.
+    WorkspaceChrome *m_workspaceChrome{ nullptr };
+    void setupViewerChrome();
+    /// Session Data on the left, Inspector on the right — the same two docks as
+    /// the image and cube viewers, with this window's pages mounted in them.
+    void setupWorkspaceDocks();
+    /// Re-word the command bar's kind tag and the cosmology status line from the
+    /// CURRENT state. Both were written once at startup, so a filter or another
+    /// page of sources left the bar claiming the number the window opened with.
+    void refreshViewerChrome();
+    QPointer<QToolButton> m_kindTag;
+    /// The two Inspector rows that do not stay put: the count changes with a
+    /// filter or another page of sources, and the session changes when an
+    /// expired one is recovered. Held as widgets because re-running
+    /// setProperties() would delete the Source Info section mounted under them.
+    QPointer<QLabel> m_propSources;
+    QPointer<QLabel> m_propSession;
+    /// What the kind tag opens: the catalogue's columns and which of them the
+    /// backend recognised as coordinates — this window's answer to the image
+    /// viewer's FITS header.
+    void showCatalogueFieldsDialog();
+    /// Under the cosmology controls: which model the positions on screen were
+    /// computed with, and how many sources it moved.
+    QPointer<QLabel> m_cosmologyStatus;
 
     // ── Scientific copilot ────────────────────────────────────────────────────
     AssistantPanel *m_copilot{ nullptr };

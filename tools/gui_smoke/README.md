@@ -10,8 +10,10 @@ python3 tools/gui_smoke/gui_smoke.py --image path/to/2d.fits --cube path/to/3d.f
 python3 tools/gui_smoke/gui_smoke.py --image path/to/2d.fits --only ruler,region-readout
 ```
 
-The catalogue scenarios need no data of their own: a 300-source RA/Dec/redshift
-CSV is written into the artefacts directory unless `--catalogue` names one.
+The catalogue and VBT scenarios need no data of their own: a 300-source
+RA/Dec/redshift CSV, a 2000-point VisIVO Binary Table and a 24³ VBT volume are
+written into the artefacts directory unless `--catalogue` / `--vbt` name real
+ones.
 
 The suite needs the application and port 8000 to itself, and it will not stop
 either behind your back: with one already running it says so and exits, unless
@@ -93,6 +95,14 @@ docstring rather than papered over.
 | cube  | `sofia`                | Source finding reaches the backend and the answer — catalogue or refusal — is shown |
 | catalogue | `catalogue-opens`  | A catalogue handed over by the DESKTOP (command line, Finder, file association) opens — the regression test for everything that is not a FITS |
 | catalogue | `catalogue-cosmology` | Choosing another cosmology recomputes the catalogue through the backend |
+| catalogue | `catalogue-fields` | The command bar's kind tag opens the catalogue's columns and names its coordinates |
+| catalogue | `catalogue-inspector` | The Inspector opens from the View menu with the usual four tabs |
+| vbt       | `vbt-opens`        | A VisIVO Binary Table opens in the point viewer |
+| vbt       | `vbt-header`       | The VBT command bar, and the header behind its kind tag |
+| vbt       | `vbt-inspector`    | Same Inspector, same four tabs |
+| vbt-volume | `vbt-volume-opens` | A VBT volume opens in the volume viewer — the other VBT window |
+| vbt-volume | `vbt-volume-header` | Its command bar, and the geometry behind the kind tag |
+| vbt-volume | `vbt-volume-inspector` | Same Inspector, same four tabs |
 
 Not covered here, and why: anything that needs the network (VLKB overlays and
 queries, HiPS, cone search, hips2fits, catalogue cross-match against SIMBAD),
