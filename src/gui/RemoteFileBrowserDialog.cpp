@@ -69,7 +69,7 @@ RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl,
       pathEdit(new QLineEdit(this)),
       entriesTree(new QTreeWidget(this)),
       openButton(new QPushButton(u"Open"_s, this)),
-      fitsOnlyCheck(new QCheckBox(u"FITS only"_s, this)),
+      fitsOnlyCheck(new QCheckBox(u"FITS only"_s, this)),   // a VIEW filter; off unless a caller asks
       sortCombo(new QComboBox(this)),
       nameValue(new QLabel(this)),
       pathValue(new QLabel(this)),
@@ -218,18 +218,7 @@ RemoteFileBrowserDialog::RemoteFileBrowserDialog(const QString &backendUrl,
                              return;
                          }
 
-                         bool selectable = false;
-                         if (!this->m_extensionFilter.isEmpty()) {
-                             for (const QString &suffix : this->m_extensionFilter) {
-                                 if (item->text(0).endsWith(suffix, Qt::CaseInsensitive)) {
-                                     selectable = true;
-                                     break;
-                                 }
-                             }
-                         } else {
-                             selectable = item->data(0, IsFitsRole).toBool();
-                         }
-                         if (selectable) {
+                         if (this->isSelectable(item)) {
                              this->selectedPath = itemPath;
                              this->accept();
                          }
@@ -405,24 +394,32 @@ void RemoteFileBrowserDialog::updateDetails(const BackendFileEntry *entry)
     }
 }
 
+bool RemoteFileBrowserDialog::isSelectable(const QTreeWidgetItem *item) const
+{
+    if (!item || item->data(0, TypeRole).toString() != u"file"_s)
+        return false;
+    // A caller that asked for one kind of file gets exactly that kind.
+    if (!this->m_extensionFilter.isEmpty()) {
+        const QString name = item->text(0);
+        for (const QString &suffix : this->m_extensionFilter) {
+            if (name.endsWith(suffix, Qt::CaseInsensitive))
+                return true;
+        }
+        return false;
+    }
+    // Otherwise ANY file can be picked. This dialog is also the unified
+    // "Open…", whose whole point is that the user does not have to decide what
+    // kind of file this is before choosing it — the backend classifies it
+    // afterwards and says so when it cannot. Enabling Open only for FITS meant
+    // a catalogue, a .speck or a VisIVO Binary Table could be seen in the list
+    // and not opened, with no explanation: the button simply stayed grey.
+    return true;
+}
+
 void RemoteFileBrowserDialog::updateSelectionState()
 {
     const auto *item = this->entriesTree->currentItem();
-    const bool isFile = item && item->data(0, TypeRole).toString() == u"file"_s;
-    bool selectable = false;
-    if (isFile) {
-        if (!this->m_extensionFilter.isEmpty()) {
-            const QString name = item->text(0);
-            for (const QString &suffix : this->m_extensionFilter) {
-                if (name.endsWith(suffix, Qt::CaseInsensitive)) {
-                    selectable = true;
-                    break;
-                }
-            }
-        } else {
-            selectable = item->data(0, IsFitsRole).toBool();
-        }
-    }
+    const bool selectable = this->isSelectable(item);
     this->selectedPath = selectable ? item->data(0, PathRole).toString() : QString();
     this->openButton->setEnabled(selectable);
 }

@@ -123,23 +123,28 @@ to nothing, a dialog opened on a window with no dataset, a result written to a
 file nobody opens — all of those pass every test above.
 
 `tools/gui_smoke/gui_smoke.py` launches the built application on a real FITS
-file, clicks through thirty-eight scenarios across the image, cube, catalogue and
-VBT viewers —
-moments, line-width, baseline subtraction, PV extraction, the kinematic lasso,
-source finding, the exports, the regions, the products — and asserts on the
-backend's own job history, on the files that appear in the workspace (including
-their NAXIS), and on the labels the windows show — never on a screenshot.
+file and clicks through thirty-eight scenarios across the image, cube, catalogue
+and VBT viewers — moments, line-width, baseline subtraction, PV extraction, the
+kinematic lasso, source finding, the exports, the regions, the products, the
+cosmology selector, the shared docks — asserting on the backend's own job
+history, on the files that appear in the workspace (including their NAXIS), and
+on the labels the windows show. Never on a screenshot.
 
 ```bash
 python3 tools/gui_smoke/gui_smoke.py --image 2d.fits --cube 3d.fits
 ```
+
+The catalogue and VBT passes need no data of their own: the suite writes a
+300-source RA/Dec/redshift CSV, a 2000-point VisIVO Binary Table and a 24³ VBT
+volume into its artefacts directory unless `--catalogue` / `--vbt` name real
+ones.
 
 It is a **developer tool, not a test target**: it needs macOS, a display and
 Accessibility permission, and CI has none of the three. `tools/gui_smoke/README.md`
 documents the scenarios, the oracles, and the platform behaviour each helper
 exists to work around.
 
-It has already earned its keep twice. Driving Compute Moment showed that no
+It has already earned its keep several times over. Driving Compute Moment showed that no
 `/v1/tasks/*` job ever appeared in the activity panel — the task API's terminal
 status is `completed` and the registry snapshot recognised only `done`, so a
 moment showed up neither as running nor as finished. The unit test that covered
@@ -152,8 +157,14 @@ desktop entry point never reached the classifier, so a double-click was answered
 with "Unsupported file type. Expected FITS or HDF5" while the same file opened
 fine from Open….
 
-All three are the same shape of bug — everything is wired, and the wire goes
-somewhere else.
+The same class of bug turned up once more in the Open dialog itself, reported by
+a user rather than by the suite: its Open button was enabled only for a row the
+listing had marked as FITS, so a VBT could be seen in the browser and not
+opened — the button just stayed grey.
+
+They are all the same shape — everything is wired, and the wire goes somewhere
+else. None of them is reachable by a unit test, and all of them are one click
+deep.
 
 ---
 

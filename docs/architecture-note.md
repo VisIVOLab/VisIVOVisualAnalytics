@@ -1925,7 +1925,7 @@ Key capabilities:
 - **Cosmology model selector**: Planck18 (local integration), Planck15/13/WMAP9 (async batch via `/v1/cosmology/distance/batch`)
 - **Geometry modes**: Ellipsoid, Sphere, Point, Cross (vtkGlyph3D)
 - **Size modes**: Fixed, Major axis, LLS, Flux
-- **Interaction**: hover highlight (yellow wireframe sphere), click-select (red wireframe), sidebar info panel, table view dock
+- **Interaction**: hover highlight (yellow wireframe sphere), click-select (red wireframe), Inspector ▸ Properties info panel, table view dock
 - **Morphology LUT**: deterministic colour per morphology class; unknown classes cycle the palette
 - **Pagination**: 50 000 row pages; "Load more" button
 
@@ -1953,7 +1953,7 @@ Renders a remote VBT (VisIVO Binary Table) dataset as a 3-D point cloud.
 Key capabilities:
 - **Render modes**: Plain (vtkPolyDataMapper) and Gaussian splat (vtkPointGaussianMapper)
 - **Color mapping**: any scalar field; configurable colour map and range
-- **Sidebar**: Display (render mode, colour, range), Filters, Metadata pages
+- **Layout**: the shared chrome — command bar, Session Data (display controls), Inspector (Properties / Analysis with the filters / Parameters / Copilot), status rail
 - **Pagination**: 50 000 row pages; "Load more" appends column vectors
 
 ---
@@ -1968,6 +1968,76 @@ Key capabilities:
 - Astronomical name resolution via `resolveTarget()` → `POST /v1/resolve/target`
 - Catalogue overlay via `requestHiPSCatalogueOverlay()` → `POST /v1/hips/catalogue_overlay`
 - `HiPSViewportWidget` owns the tile compositing and paint logic
+
+---
+
+## One window shape for every viewer
+
+The image and cube viewers had the command bar, the Session Data dock, the
+Inspector and the status rail. The 3-D catalogue and the two VBT windows had a
+`SidebarPanel` — a control rail of their own design, which existed nowhere else
+— and no bar, no rail, no Inspector. Moving between a cube and a catalogue meant
+learning the window again, and the catalogue said nothing about which file it was
+showing or whether the backend was still answering.
+
+They are the same shape now. `WorkspaceChrome::installCommandBar()` is the whole
+"make this window a viewer" step in one call (it was three hand-written copies),
+and each window then mounts its own pages in the two docks:
+
+| page | where it goes |
+| --- | --- |
+| view / rendering controls | Session Data, under the dataset row (design #1d: what is drawn lives beside what it is drawn from) |
+| dataset and selection info | Inspector ▸ Properties |
+| filters | Inspector ▸ Analysis — filtering is an analysis of the data, not a view setting |
+| copilot | Inspector's own tab (`installCopilot`), not a page of its own |
+
+The kind tag in the command bar is clickable in every viewer and answers the
+same question — *what is this file* — with what that window can say: the FITS
+header, the catalogue's columns and which of them are its coordinates, the VBT's
+fields and geometry.
+
+### The column is 272 px, so the controls have to fit it
+
+The left column is a fixed `kLeftDockWidth`, and its scroll area had the
+horizontal bar **always off**. Content whose minimum width exceeded the column
+was therefore cut with nothing to say so — and the minimum is not the layout's
+to give: a `QComboBox` asks for its longest entry ("Supergalactic (SGL, SGB)"), a
+`QDoubleSpinBox` with 12 decimals for "0.383494066596" and its buttons. The
+pages built for a 320 px rail overflowed a 272 px dock (user report, with a
+screenshot).
+
+`addSessionLayers()` now normalises what it mounts: combos elide
+(`AdjustToMinimumContentsLengthWithIcon`, 4 characters), spin boxes and line
+edits get a 70 px minimum, all of them `Expanding` horizontally, and every
+`QFormLayout` in the page switches to `AllNonFixedFieldsGrow` — macOS defaults to
+`FieldsStayAtSizeHint`, so relaxing the minimum alone left 100 px combos reading
+"Comput" beside an empty half-column. A width the caller FIXED (minimum ==
+maximum) is left alone, and a spin box's internal editor is not touched: it is
+sized by its owner. The scroll bar is `AsNeeded` underneath all of it, so nothing
+can be silently clipped again.
+
+### Anything the application can open, from anywhere
+
+Two entry points decided for themselves what was openable, and both decided
+"FITS":
+
+* `openDatasetPath()` — the desktop, the command line, a file association — went
+  straight to the FITS/HDF5 route, so a double-clicked IPAC table, `.speck`, CSV,
+  VOTable or VisIVO Binary Table was answered with *"Unsupported file type.
+  Expected FITS (.fits, .fit) or HDF5"*, although all of them open from the
+  application's own Open… dialog. It goes through `dispatchOpenForPath()` now,
+  the same classify-first decision, with the backend health checked there so a
+  dead backend is reported as such instead of surfacing as "could not identify
+  this file".
+* `RemoteFileBrowserDialog` enabled its Open button only for a row the listing
+  had marked as FITS whenever no caller had set an extension filter — which is
+  exactly the unified Open…, whose whole point is that the user does not decide
+  the kind first. A VBT could be seen in the list and not opened: the button
+  simply stayed grey (user report). Any file is selectable there now; the
+  classifier answers afterwards, including "I know what this is and nothing here
+  opens it". A caller's extension filter still means exactly what it says — and
+  the VBT one accepts either half of the pair, since the classifier resolves a
+  `.bin` to the `.head` beside it.
 
 ---
 

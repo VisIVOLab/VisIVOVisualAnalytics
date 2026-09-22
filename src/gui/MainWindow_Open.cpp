@@ -1089,7 +1089,10 @@ void MainWindow::openVbt()
     }
 
     RemoteFileBrowserDialog dialog(client.baseUrl(), client.token(), this);
-    dialog.setExtensionFilter({u".bin.head"_s}, u"VBT files only"_s);
+    // Either half of the pair: the classifier resolves a picked `.bin` to the
+    // `.head` beside it, and a user who sees both in the folder should not have
+    // to know which one the application wants.
+    dialog.setExtensionFilter({u".bin.head"_s, u".head"_s, u".bin"_s}, u"VBT files only"_s);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }

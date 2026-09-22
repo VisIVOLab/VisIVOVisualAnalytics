@@ -127,15 +127,24 @@ see [VLKB archive](vlkb-archive).
 You can also drag-and-drop a local FITS file onto the Data Hub — it will
 be staged on the backend automatically.
 
-### From the desktop: double-click a FITS file
+### From the desktop: double-click a file
 
 VisIVO registers itself as a FITS viewer, so a `.fits` (`.fit`, `.fts`, `.fz`)
-file can be opened from the file manager or the command line:
+file can be opened from the file manager or the command line — and so can
+anything else the application opens: a catalogue (CSV, VOTable, IPAC `.tbl`,
+`.speck`) or a VisIVO Binary Table.
 
 ```bash
 VisIVOVisualAnalytics /data/WALLABY.fits      # also works with several paths
+VisIVOVisualAnalytics /data/snapshot.tbl      # catalogue → 3-D catalogue viewer
+VisIVOVisualAnalytics /data/volume.bin        # VBT → point or volume viewer
 open -a "VisIVO Visual Analytics" cube.fits    # macOS
 ```
+
+Whatever the file is, it goes through the same single decision as *File ▸
+Open…*: the backend classifies it and the right viewer opens. When the content
+is genuinely ambiguous — a FITS table can be either — you are asked which viewer
+to use rather than guessed at.
 
 If VisIVO is not running the startup sequence happens first — backend, then
 authentication — and the file opens as soon as the main window appears. If it is
@@ -170,8 +179,9 @@ line if the binary lives elsewhere.
 
 ```{caution}
 The file is opened **by path, through the backend** — the same route as *Open
-Remote Dataset*. A double-clicked file therefore has to be readable by the
-backend process: with a local auto-started backend that is anything you can
+Remote Dataset*, and the classification happens there too, so with the backend
+down you are told that rather than asked to choose a viewer. A double-clicked
+file therefore has to be readable by the backend process: with a local auto-started backend that is anything you can
 read, but with a remote backend the path must exist *there*. Use the Data Hub's
 drag-and-drop instead, which stages the file server-side.
 ```

@@ -283,21 +283,38 @@ re-renders.
 
 ---
 
-## Sidebar pages
+## Window layout
 
-The sidebar uses a rail + stacked-widget layout with three pages:
+The same chrome as the image and cube viewers, built by `WorkspaceChrome`
+(`installCommandBar` / `installSessionDock` / `installInspectorDock`) rather than
+by a control rail of this window's own:
 
-1. **Visualization** — geometry / size mode + Axis Mapping card (X/Y/Z, size, colour field assignment) + scene controls (frame, cosmology, axes, shells)
-2. **Source Info** — selected source metadata (from `ui->pageInfo`)
-3. **Filters** — multi-filter list + Apply + Load more
+* **Command bar** (top) — path pill, the `CAT · N sources` kind tag (click it for
+  the catalogue's columns and which of them are its coordinates — this window's
+  answer to the FITS header dialog), ⌘K search, backend chip.
+* **Session Data** (left dock, 272 px) — the dataset row, then the visualization
+  controls: source representation, axis mapping, visual encoding, scene, and the
+  **Cosmology** card (model, distance mode, and a line saying which of them
+  produced the positions on screen).
+* **Inspector** (right dock, collapsed to a rail by default) — *Properties*
+  (dataset, type, sources, columns, path, session, backend + the selected
+  source's details), *Analysis* (the filter list, Apply, Load more),
+  *Parameters*, *Copilot*.
+* **Status rail** (bottom) — health, queue, cache, session.
 
-The full catalogue table view is a separate `QDockWidget`, not a sidebar page.
+The full catalogue table is a separate `QDockWidget` at the bottom.
+
+The source count and the session id are the two rows that change after the
+window is built — a filter, another page of sources, a recovered session — so
+they are held as labels and refreshed by `refreshViewerChrome()` instead of
+re-running `setProperties()`, which would delete the Source Info section mounted
+below them.
 
 ---
 
 ## Pagination
 
 Page size: 50 000 rows.
-"Load more (N remaining)" button appears in the Filter sidebar page when more rows are available.
+"Load more (N remaining)" appears in the Inspector's *Analysis* tab, under the filters, when more rows are available.
 Each load-more fetch uses the same active filters and increments the offset.
 After each append the full VTK scene is rebuilt (points, glyphs, labels).

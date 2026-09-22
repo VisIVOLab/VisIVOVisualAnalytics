@@ -39,11 +39,24 @@ A **volume** table declares its geometry on the row-count line instead — row
 count, then `nx ny nz`, then the cell spacing — and VisIVO opens it in the
 volume renderer rather than as points.
 
-```{caution}
-Open the **`.head`**, not the binary. The binary alone carries no description of
-what its bytes mean, and the viewer will tell you the header was not found
-rather than guess.
+```{tip}
+Either half of the pair will do. Pick the `.head` or the `.bin` — the backend
+resolves a chosen binary to the header beside it. What it cannot do is open a
+binary whose header is missing: the bytes alone carry no description of what
+they mean, and you are told so rather than guessed at.
 ```
+
+---
+
+## The window
+
+Both VBT viewers — points and volumes — are laid out like the image and cube
+viewers: the command bar across the top (path, a `VBT · …` tag that opens the
+header, ⌘K, the backend chip), **Session Data** on the left with the display
+controls, the **Inspector** on the right (Properties, Analysis, Parameters,
+Copilot) collapsed to a rail until you need it, and the status rail along the
+bottom. *View ▸ Session Data Panel* and *View ▸ Inspector Panel* fold either
+column away.
 
 ---
 
