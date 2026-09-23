@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 from datetime import datetime, timezone
 import base64
+import urllib.error as _urllib_error
+import urllib.request as _urllib_request
 import numpy as np
 import pandas as pd
 from astropy.io import fits

@@ -124,7 +124,7 @@ The client talks to it exclusively through `BackendClient` (REST/HTTP, bearer-to
 | `tasks` | `POST /v1/tasks/moment`, `/pv`; `GET`/`DELETE /v1/tasks/{id}` | async task queue; client polls for completion |
 | `image` | `POST /v1/image/full`, `/preview` | 2-D image export/preview |
 | `cosmology` | `POST /v1/cosmology/distance`, `/distance/batch` | redshift → comoving distance (astropy) |
-| `hips` | `POST /v1/hips/open`; `GET /v1/hips/{id}/allsky`, `/tile/…`; `POST /query_tiles`, `/catalogue_overlay` | HiPS sky survey tiles + source overlay |
+| `hips` | `POST /v1/hips/open`; `GET /v1/hips/surveys`, `/v1/hips/{id}/allsky`, `/tile/…`; `POST /query_tiles`, `/catalogue_overlay` | the CDS survey registry, HiPS sky survey tiles + source overlay |
 | `resolve` | `POST /v1/resolve/target` | astronomical name → sky coordinates |
 | `samp` | `POST /v1/samp/send`/`receive`/`connect`/`files/register`/`import-url`/`upload-file`/`send-fits`/`send-catalogue`; `GET /v1/samp/pending`/`inbox`/`status`/`files/{token}` | SAMP messaging + file sharing; **no auth dependency** so the local SAMP hub can reach it directly |
 | `spectral` | `POST /v1/spectral/linewidth`, `/linewidth/binary`, `/baseline/{sid}/{did}`, `/stack`, `/stack/binary`; `GET /v1/spectral/linewidth/{ds_id}` | per-pixel FWHM + EW maps (S-02), polynomial / median baseline subtraction (S-03), spectral stacking (S-04) |
@@ -168,6 +168,7 @@ Result structs (all in `BackendClient.h`):
 | `BackendImageResult` | `requestImagePreview()`, `requestImage()` |
 | `BackendIsosurfaceResult` | `requestIsosurface()` |
 | `BackendHiPSSurveyInfo` | `openHiPS()` |
+| `BackendHiPSRegistryResult` | `requestHiPSSurveys()` |
 | `BackendHiPSViewResponse` | `requestHiPSTilesForView()` |
 | `BackendTargetResolveResult` | `resolveTarget()` |
 | `BackendCosmologyBatchResult` | `requestCosmologyDistanceBatch()` |

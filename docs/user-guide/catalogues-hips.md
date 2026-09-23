@@ -25,7 +25,12 @@ The viewer needs both a sky frame and a distance for each entry:
 * - Frame combo
   - FK5 / J2000 (default) or Galactic (l, b). Conversion is done with
     `wcscon()` from libwcs the moment you switch frame.
-* - Distance source (priority)
+* - Distance mode
+  - **Real-space (comoving)**, the default, or **redshift-space (cz/H₀)**,
+    which places every source at the naive Hubble distance from its redshift
+    alone. Against a source that also has an independent real-space distance,
+    the difference between the two is its line-of-sight peculiar velocity.
+* - Distance source (priority, in real-space mode)
   - 1. `entry.distanceMpc` override (set by the cosmology selector)
     2. The catalogue's `distance` / `dist` / `dMpc` field
     3. A redshift field (`z`, `REDSHIFT`, `ZSPEC`, `ZMEAN`, `ZPHOT`)
@@ -33,12 +38,19 @@ The viewer needs both a sky frame and a distance for each entry:
     4. Hard-coded 300 Mpc fallback
 ```
 
+The **Cosmology** card in the left column says which of these produced the
+positions on screen — the model, or the catalogue's own distance column, or
+cz/H₀ with the model unused.
+
 ### Cosmology models
 
 For redshift-derived distances pick one of:
 
-- **Planck18** — local Riemann integration (`H₀ = 67.74`, `Ωm = 0.3089`,
-  `ΩΛ = 0.6911`). No network call.
+- **Planck18** — integrated in the client (`H₀ = 67.66`, `Ωm = 0.3111`,
+  flat `ΩΛ = 1 − Ωm`), so no network call. It agrees with astropy's Planck18 to
+  better than 0.1 % out to z = 20, which `tests/test_catalogue_cosmology.cpp`
+  pins — the two have to match, or switching the selector away from the default
+  and back would move every source for a numerical reason.
 - **Planck15** / **Planck13** / **WMAP9** — computed by the backend
   (`POST /v1/cosmology/distance/batch`, async). The viewer re-projects
   the cloud automatically when results arrive.
@@ -78,16 +90,16 @@ For million-row catalogues the backend exposes a paginated query API:
 
 - Filters are AND-combined, with operators `<`, `≤`, `>`, `≥`, `=`,
   `≠`, `contains`, `startswith`, `endswith`.
-- The *Filter* sidebar lets you stack multiple filters and apply them in
-  one click — the query is sent to the backend, the result count is shown,
-  and the cloud rebuilds with only matching entries.
+- The Inspector's *Analysis* tab lets you stack multiple filters and apply
+  them in one click — the query is sent to the backend, the result count is
+  shown, and the cloud rebuilds with only matching entries.
 - Datasets > 50 000 rows are loaded in pages of 50 000; the *Load more
-  (N remaining)* button appears in the filter card.
+  (N remaining)* button appears under the filters.
 
 ### Interaction
 
-- Hover a glyph → yellow wireframe sphere; the info panel shows all
-  catalogue fields for that source.
+- Hover a glyph → yellow wireframe sphere; the Inspector's *Properties* tab
+  shows all catalogue fields for that source.
 - Click → red wireframe outline + the source is highlighted in the
   *Catalogue* table dock.
 - Click a table row → camera flies to centre on the source.
@@ -139,8 +151,8 @@ regardless of the active frame.
 
 In the image viewer you do not need a file at all. Two actions — *Tools →
 **Overlay VLKB Compact Sources*** and *Tools → **Overlay VLKB Filaments*** (also
-in the sidebar's **Catalogue** card) — query the VLKB over the footprint of the
-image, or over a rectangle you drag on it, and overlay the result:
+in the Inspector's tool list) — query the VLKB over the footprint of the image,
+or over a rectangle you drag on it, and overlay the result:
 
 - **Compact sources** → `compactsources.sed_view_final`, the Hi-GAL band-merged
   catalogue. One query brings back every band; per-band ellipses are centred on
@@ -242,27 +254,123 @@ Hierarchical Progressive Surveys (HiPS) are pre-tiled multi-resolution
 all-sky images served as static files. VisIVO ships with a built-in HiPS
 browser:
 
-Open from **File → HiPS Viewer…** or the Command Palette.
+Open from **Data → HiPS Viewer…** or the Command Palette. It opens as a tab
+in the main window, not a separate viewer window.
 
 Workflow:
 
-1. Paste a HiPS root URL (e.g. `http://alasky.u-strasbg.fr/DSS/DSS2Merged`).
-   The viewer asks the backend to discover the survey properties (orders,
-   tile format, native frame, FOV).
-2. Pan & zoom with the mouse. The viewer requests only the tiles needed
-   for the current viewport (`/v1/hips/{id}/query_tiles`); levels of
-   detail load on demand.
-3. **Catalogue overlay** — the backend can return a Simbad / VizieR /
-   custom catalogue restricted to the visible field
-   (`/v1/hips/catalogue_overlay`).
-4. **Target resolution** — type a name ("M87", "NGC 1068") in the search
-   bar; the backend resolves it via Sesame (`/v1/resolve/target`) and
-   centres the view.
+1. Press **Browse…** and pick a survey. The list is every image HiPS
+   registered with the CDS MOCServer — around 1400 of them — grouped by the
+   category its publisher gave it and filtered as you type: every word has to
+   appear somewhere in the row, so `herschel 250` narrows to the six Herschel
+   250 µm surveys rather than widening. The list is cached for a week;
+   **Refresh** fetches it again.
+
+   You can still paste a HiPS root URL into *Survey* and press **Open** — any
+   server works, not only CDS. Either way the backend reads the survey's
+   `properties` file (orders, tile format, native frame).
+
+   ```{note}
+   Only image surveys of the sky are offered. The registry also lists HiPS
+   catalogues and cubes, which this viewer cannot draw as tiles, and maps of
+   planetary surfaces — Mars, the Moon, Io — which have no sky position at all.
+   ```
+
+   A HiPS is tiled in its own frame, and rather more than half the registry is
+   **galactic** rather than equatorial. The backend converts: the position you
+   ask for goes into the survey's frame to choose the tiles, and every tile
+   comes back in ICRS, so a galactic survey lines up with an equatorial one and
+   with the catalogue overlays.
+2. Pan with a drag and zoom with the wheel, or use **−** / **+** and **⌂**
+   for a reset. The viewer requests only the tiles the current viewport
+   needs (`/v1/hips/{id}/query_tiles`); the order in use is shown next to
+   the zoom buttons. While the tiles for a new zoom level are in flight the
+   view stays filled: each missing tile is drawn from the coarsest level
+   already in the cache, so the picture sharpens rather than flashing.
+
+   ```{note}
+   Orientation follows the sky convention — RA increases to the **left** —
+   so the field matches hips2fits, Aladin and the image viewer's overlays.
+   ```
+
+3. **Projection** — the selector next to the order picks how the sphere is
+   laid on the screen:
+
+   ```{list-table}
+   :header-rows: 1
+   :widths: 12 88
+
+   * - Code
+     - What it is for
+   * - `TAN`
+     - Gnomonic, the default. A tangent plane: great straight out to a few
+       degrees, and it diverges as the field approaches a hemisphere, so it
+       stops at 120°.
+   * - `SIN`
+     - Orthographic — the sphere as seen from far away. Exactly one
+       hemisphere, no more.
+   * - `ARC`
+     - Zenithal equidistant. Distances from the centre are true, so it is the
+       one to use when you care how far something is from where you are
+       pointing.
+   * - `AIT`
+     - Hammer-Aitoff. The whole sky in one ellipse; the usual choice for an
+       all-sky figure.
+   * - `MOL`
+     - Mollweide. Also the whole sky, and equal-area, so relative sky
+       coverage is honest. Being equal-area it cannot also be conformal: at
+       the centre it stretches by 11% vertically and squeezes by 10%
+       horizontally, the two cancelling exactly. The field of view is that
+       geometric mean, so switching to it preserves the area on screen rather
+       than either width.
+   * - `MER`
+     - Mercator, cut off at ±85° because the poles are infinitely far away.
+   ```
+
+   Zooming out past 90° puts you in a whole-sky view, which is drawn from the
+   survey's AllSky mosaic — a single request that covers the entire sphere.
+   That same mosaic is what makes a deep zoom fill in immediately rather than
+   from nothing.
+3. **Target resolution** — type a name ("M31", "NGC 1068") in *Target* and
+   press **Go**; the backend resolves it through Sesame
+   (`/v1/resolve/target`) and centres the view on it.
+4. **Grid** overlays an RA/Dec graticule whose spacing adapts to the field. It
+   follows whichever projection is selected, so on an all-sky map the meridians
+   curve in to the poles rather than being switched off.
+5. **Cat** overlays a catalogue, from either of two sources:
+
+   - **a VO cone search over the field on screen** — pick a service (VizieR,
+     NED, or any cone-search URL you paste), and the search is centred on the
+     view with a radius of half the field. The result is saved as a CSV in the
+     Workspace and overlaid, using the position columns the backend identifies.
+     A wide field starts at 5° and says so, rather than quietly searching less
+     than you can see; what a given service will actually answer varies.
+   - **a CSV/TSV already on the backend filesystem**, chosen with the remote
+     file browser.
+
+   Either way the backend returns only the rows inside the visible field
+   (`/v1/hips/catalogue_overlay`) and the count is shown in the status bar.
+   "Visible" is measured, not guessed: the viewer sends the angular radius that
+   covers its own viewport — corners included, which a field of view quoted
+   across the width does not tell you — and the backend selects by separation
+   from the centre rather than by a range of right ascension, which says
+   nothing near a pole. Resizing the window refetches, because a taller window
+   sees further.
+6. **Overlay** opens a second survey on top of the first. The slider sets
+   its opacity, and **⧸⧸** switches from alpha blending to a side-by-side
+   split so you can compare the two halves of the field.
 
 ```{note}
 HiPS tile fetching is HTTP only and goes through the backend so that
 firewalled / VPN'd HiPS roots still work for the desktop client; you
 don't need direct internet access from the GUI.
+```
+
+```{caution}
+Still missing compared with Aladin: no MOC display, no per-survey colour map
+or stretch controls, and no FITS-HiPS pixel readout. When you need one of
+those, reach for Aladin over SAMP — VisIVO can hand it the current position
+(see [SAMP](#samp)).
 ```
 
 ## SAMP

@@ -400,6 +400,8 @@ set(PROJECT_SOURCES
         src/gui/BackendsSettingsWidget.h
         src/gui/HiPSViewportWidget.cpp
         src/gui/HiPSViewportWidget.h
+        src/gui/HiPSCatalogueDialog.cpp
+        src/gui/HiPSSurveyBrowserDialog.cpp
         src/gui/HiPSWindow.cpp
         src/gui/HiPSWindow.h
         src/gui/CubeUiAssembler.cpp

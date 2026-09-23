@@ -570,9 +570,31 @@ class CatalogueOverlayRequest(BaseModel):
     ra_center: float
     dec_center: float
     fov_deg: float
+    # Angular radius that actually covers the viewport, corners included. The
+    # client knows its aspect ratio and projection and can measure it; without
+    # it the field is guessed from fov_deg alone and the corners are cut off.
+    radius_deg: float = 0.0  # 0 = derive it from fov_deg
     ra_field: str = ""       # auto-detected if empty
     dec_field: str = ""
     max_sources: int = 5000  # spatial sub-sample cap
+
+
+class HiPSRegistryEntry(BaseModel):
+    id: str = ""
+    title: str = ""
+    url: str = ""
+    category: str = ""
+    regime: str = ""
+    frame: str = ""
+    tile_formats: list[str] = []
+    kind: str = ""          # image | catalog | cube | spectral-cube | unknown
+    max_order: int = 0
+
+
+class HiPSRegistryResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    surveys: list[HiPSRegistryEntry] = []
 
 
 class CatalogueOverlaySource(BaseModel):

@@ -149,7 +149,7 @@ so a wrong guess was only discovered by reopening the copy.
 - **Show WCS Axes** in the *View* menu paints ticks along the image axes
   according to its WCS metadata.
 - **Coordinate format** — a **Sexagesimal | Decimal** segmented toggle in
-  the sidebar's *Tools → WCS Display* card.
+  *Tools ▸ WCS Display*.
 - **Coordinate frame** — a **Galactic | FK5 | Ecliptic** segmented toggle
   in the same card. Conversions go through `wcscon()` from libwcs. The
   current frame label is shown in the bottom status bar.
@@ -243,7 +243,8 @@ The detailed semantics are documented in
 Iso-contour lines can be drawn on top of the image from two sources:
 
 - **Self contours** — computed from the image's own pixel values.
-  Toggle **Show Contours** in the *Tools* sidebar (or *Tools* menu),
+  Toggle **Show Contours** from the *Tools* menu (or the Inspector's *Analysis*
+  list),
   then adjust **Level** (number of contour lines), **Lower** and
   **Upper** (value range). The pipeline uses `vtkFlyingEdges2D`, the
   same filter as the cube viewer's slice contours.
@@ -267,8 +268,8 @@ optical comparison workflow.
 
 ## Measurement tools
 
-Two interactive measurement modes are available in the *Tools* sidebar
-**Measurement** card (or *Tools* menu):
+Two interactive measurement modes, from *Tools ▸ Measure* or the Inspector's
+*Analysis* list:
 
 - **Ruler (Distance)** — click two points on the image. A dashed
   orange line is drawn between them and the distance is displayed in
@@ -279,9 +280,12 @@ Two interactive measurement modes are available in the *Tools* sidebar
   B–C are drawn and the angle at vertex B is displayed in degrees.
 - **Clear Measurement** removes the current measurement overlay.
 
-Only one measurement mode can be active at a time (ExclusiveOptional
-group). Activating a measurement mode deactivates any active probe or
-region tool.
+Only one measurement mode can be active at a time (ExclusiveOptional group),
+and arming one disarms the probe, any region and a pending annotation — in both
+directions. That symmetry was missing until recently: arming a region from
+*Tools ▸ Regions* while the ruler was on left the ruler in charge, so the menu
+entry showed as checked, the mode strip still said Ruler, and dragging drew a
+distance instead of a region.
 
 ## Products from this map
 
@@ -306,7 +310,7 @@ measure a cube's collapsed emission, compute a moment map first and open that.
 
 ## Pixel histogram
 
-*Tools → Pixel Histogram…* (or the **Histogram** card in the sidebar)
+*Tools → Pixel Histogram…* (or the Inspector's *Analysis* list)
 opens a window showing the pixel-value distribution of the master layer as a
 256-bin bar chart.
 

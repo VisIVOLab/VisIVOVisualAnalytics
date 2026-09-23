@@ -28,7 +28,7 @@ This note documents the current service boundaries, their implementation status,
 | tasks | `createMomentTask()`, `createPvTask()`, `requestTaskStatus()`, `waitForTaskCompletion()` |
 | image | `requestImagePreview()`, `requestImage()` |
 | cosmology | `requestCosmologyDistanceBatch()` |
-| hips | `openHiPS()`, `requestHiPSAllsky()`, `requestHiPSTile()`, `requestHiPSTilesForView()`, `requestHiPSCatalogueOverlay()` |
+| hips | `requestHiPSSurveys()`, `openHiPS()`, `requestHiPSAllsky()`, `requestHiPSTile()`, `requestHiPSTilesForView()`, `requestHiPSCatalogueOverlay()` |
 | resolve | `resolveTarget()` |
 | samp | `requestSampStatus()`, send / receive / inbox / files-register / import-url / upload-file / send-fits / send-catalogue (delegated to `SAMPClient` in `src/app/`) |
 | spectral | `requestLinewidthBinary()`, `requestBaselineSubtract()`, `requestSpectralStackBinary()` (S-02 / S-03 / S-04) |
@@ -187,6 +187,7 @@ Filters are re-applied verbatim on each page (same `filters[]` vector, different
 **Implemented and stable.**
 
 ### Contract
+- Survey registry: `requestHiPSSurveys()` → `BackendHiPSRegistryResult`
 - `openHiPS(url)` → `BackendHiPSSurveyInfo`
 - Tile fetch: `requestHiPSAllsky()`, `requestHiPSTile()`
 - View-aware tile set: `requestHiPSTilesForView()`
@@ -194,7 +195,11 @@ Filters are re-applied verbatim on each page (same `filters[]` vector, different
 - Name resolution: `resolveTarget()` → `BackendTargetResolveResult`
 
 ### Client-side integration
-`HiPSWindow` / `HiPSViewportWidget` manage the tile cache and compositing entirely client-side. The backend is responsible only for computing which tiles are needed and serving the tile bytes.
+`HiPSWindow` / `HiPSViewportWidget` manage the tile cache, the projection and
+the compositing entirely client-side — including splitting the AllSky mosaic
+back into the tiles it is made of, which is what gives a whole-sky view and the
+low-resolution fallback under a deep zoom. The backend computes which tiles are
+needed, serves the tile bytes, and proxies the CDS survey registry.
 
 ---
 

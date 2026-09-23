@@ -520,6 +520,26 @@ struct BackendHiPSSurveyInfo
     QStringList tileFormats; // e.g. {"png"} or {"jpeg"}
 };
 
+struct BackendHiPSRegistryEntry
+{
+    QString id;
+    QString title;
+    QString url;
+    QString category;
+    QString regime;
+    QString frame;
+    QStringList tileFormats;
+    QString kind;            // image | catalog | cube | spectral-cube | unknown
+    int     maxOrder{ 0 };
+};
+
+struct BackendHiPSRegistryResult
+{
+    bool valid{ false };
+    QString error;
+    QVector<BackendHiPSRegistryEntry> surveys;
+};
+
 struct BackendHiPSTileInfo
 {
     int pix{ 0 };
@@ -1876,6 +1896,10 @@ public:
     BackendTabularQueryResponse queryTabularVbt(const BackendTabularQueryRequest &req) const;
     // ── HiPS endpoints ────────────────────────────────────────────────────────
     BackendHiPSSurveyInfo openHiPS(const QString &url);
+
+    // Every image HiPS registered with the CDS MOCServer, so the viewer can
+    // offer a list instead of requiring a URL to be known and typed.
+    BackendHiPSRegistryResult requestHiPSSurveys(bool refresh = false) const;
     /** GET /v1/hips/{id}/allsky?order=N – raw PNG/JPEG bytes of the AllSky mosaic. */
     QByteArray requestHiPSAllsky(const QString &surveyId, int order) const;
     /** GET /v1/hips/{id}/tile/{order}/{pix} – raw PNG/JPEG bytes of one tile. */
@@ -1979,7 +2003,7 @@ public:
     BackendHiPSCatalogueOverlayResult requestHiPSCatalogueOverlay(
             const QString &cataloguePath, double raDeg, double decDeg, double fovDeg,
             const QString &raField = {}, const QString &decField = {},
-            int maxSources = 5000) const;
+            int maxSources = 5000, double radiusDeg = 0.0) const;
 
     /** POST /v1/vlkb/fetch_cutout – download a VLKB SODA cutout server-side.
      *  @param sodaUrl     Full SODA sync URL (ID + POS + POSSYS already encoded).

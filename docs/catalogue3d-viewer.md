@@ -198,12 +198,19 @@ a velocity field (see the velocity-field viewer).
 
 For each entry, `Catalogue3DParser::detail::entryDistanceMpc(entry, schema)` applies in order:
 
-1. `entry.distanceMpc > 0` — cosmology-selector override (set by `onCosmologyFinished()`)
-2. Catalogue `distance` / `dist` / `dMpc` field — positive values only
-3. Redshift field (`z`, `REDSHIFT`, `ZSPEC`, `ZMEAN`, `ZPHOT`, …) → `comovingDistanceMpc(z)` — if result > 0
+0. **Redshift-space mode** (`CatalogueDistanceMode::RedshiftSpace`) — `hubbleDistanceMpc(z)` for any source with a usable z > 0, deliberately ignoring the override and the distance column; anything without one falls through to the list below
+1. `entry.distanceMpc` finite — cosmology-selector override (set by `onCosmologyFinished()`)
+2. Catalogue `distance` / `dist` / `dMpc` field — positive values only, converted to a comoving radius when the column is a luminosity or angular-diameter distance
+3. Redshift field (`z`, `REDSHIFT`, `ZSPEC`, `ZMEAN`, `ZPHOT`, …) → `comovingDistanceMpc(z)` — z > 0, since a redshift column holding 0 means "not measured"
 4. Hardcoded 300 Mpc fallback
 
-`comovingDistanceMpc(z)` uses a simple Riemann integral with Planck18 constants (H₀ = 67.74, Ωm = 0.3089, ΩΛ = 0.6911). It returns 0 for z ≤ 0.
+`comovingDistanceMpc(z)` is a 1000-step trapezoid over a flat **Planck 2018**
+model (H₀ = 67.66, Ωm = 0.3111, ΩΛ = 1 − Ωm, no radiation term). It returns 0
+for z ≤ 0. The constants were Planck 2015 (67.74 / 0.3089) while the UI called
+the branch "Planck18 (local)", which made the default disagree with the
+astropy-backed models by ~1 %; `tests/test_catalogue_cosmology.cpp` now pins it
+against astropy's Planck18 at ten redshifts out to z = 20, where the two agree
+to 0.06 %.
 
 ---
 

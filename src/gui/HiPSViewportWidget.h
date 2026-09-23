@@ -56,6 +56,10 @@ struct HiPSTileFetchResult
     QString error;
 };
 
+// Sky projections the viewport can draw in. Tan/Sin/Arc are centred on the
+// view and show a field; Ait/Mol/Mer map the whole sphere at once.
+enum class SkyProjection { Tan, Sin, Arc, Ait, Mol, Mer };
+
 class HiPSViewportWidget : public QWidget
 {
     Q_OBJECT
@@ -76,6 +80,13 @@ public:
     void setCenter(double raDeg, double decDeg);
     void setFov(double fovDeg);
     void resetView();
+
+    // ── Projection ────────────────────────────────────────────────────────────
+    void setProjection(SkyProjection projection);
+    SkyProjection projection() const { return m_projection; }
+    static QString projectionName(SkyProjection projection);
+    static QString projectionCode(SkyProjection projection);
+    static double  projectionMaxFovDeg(SkyProjection projection);
 
     double centerRa()  const { return m_view.raDeg; }
     double centerDec() const { return m_view.decDeg; }
@@ -111,8 +122,13 @@ signals:
     void fovChanged(double fovDeg);
     void orderChanged(int order);
     void loadingChanged(bool loading);
+    void projectionChanged(SkyProjection projection);
     // Emitted when catalogue overlay is refreshed (totalInView, truncated)
     void catalogueOverlayRefreshed(int totalInView, bool truncated);
+    // …and when it could not be read at all. Without this a catalogue that
+    // failed to load left the button switched on over an empty sky, and every
+    // later click was taken as a visibility toggle rather than a new attempt.
+    void catalogueOverlayFailed(const QString &error);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -134,6 +150,17 @@ private:
     QPointF project(double raDeg, double decDeg) const;
     void    unproject(QPointF screen, double &raDeg, double &decDeg) const;
     double  scalePixPerRad() const;
+    // Width in pixels the whole sphere's image occupies in the current
+    // projection; 0 for gnomonic, whose image is unbounded.
+    double  projectionSpanPx() const;
+    // Angular radius that covers the whole viewport, corners included. A field
+    // of view measured across the width says nothing about how far a corner
+    // reaches, and in a curved projection the two are not even proportional.
+    double  viewportRadiusDeg() const;
+    // Order used for the whole-sky pass, and the one the AllSky mosaic seeds.
+    // Each survey has its own maximum order, so the secondary must not be
+    // asked for the primary's.
+    int     allSkyOrder(bool secondary = false) const;
 
     // ── Primary tile management ───────────────────────────────────────────────
     void onViewChanged();
@@ -150,9 +177,7 @@ private:
 
     // ── Rendering ─────────────────────────────────────────────────────────────
     void renderBackground(QPainter &p) const;
-    void renderAllsky(QPainter &p) const;
     void renderTiles(QPainter &p);
-    void renderAllskySec(QPainter &p) const;   // Task 2
     void renderTilesSec(QPainter &p);           // Task 2
     void renderGrid(QPainter &p) const;         // Task 1
     void renderCatalogueOverlay(QPainter &p) const; // Task 3
@@ -167,6 +192,15 @@ private:
 
     // ── View state ────────────────────────────────────────────────────────────
     ViewState m_view;
+    SkyProjection m_projection{ SkyProjection::Tan };
+
+    // Split an AllSky mosaic into its tiles and seed a cache with them.
+    void seedCacheFromAllsky(const QPixmap &mosaic, int order,
+                             QHash<HiPSTileKey, QPixmap> &cache) const;
+    // Drop tiles that are neither in view nor useful as LOD ancestors once the
+    // cache grows past its budget. Previews are never evicted.
+    void evictTilesIfOverBudget(QHash<HiPSTileKey, QPixmap> &cache,
+                                const std::vector<HiPSTileDescriptor> &inView) const;
 
     // ── Pan interaction ───────────────────────────────────────────────────────
     bool      m_panning{ false };
@@ -174,7 +208,7 @@ private:
     ViewState m_panStartView;
 
     // ── AllSky (primary) ──────────────────────────────────────────────────────
-    QPixmap m_allskyPixmap;
+    bool    m_allskyLoaded{ false };
     bool    m_allskyLoading{ false };
     QFutureWatcher<QByteArray> m_allskyWatcher;
 
@@ -183,6 +217,11 @@ private:
     QFutureWatcher<BackendHiPSViewResponse> m_tileListWatcher;
     static constexpr int kMaxConcurrent = 6;
     QHash<HiPSTileKey, QPixmap> m_tileCache;
+    // Low-resolution tiles cut out of the AllSky mosaic. Kept apart from
+    // m_tileCache so they can back the LOD fallback without ever counting as
+    // "this tile is loaded" — otherwise a 64px thumbnail would satisfy the
+    // renderer and the full-resolution tile would never be fetched.
+    QHash<HiPSTileKey, QPixmap> m_previewCache;
     QSet<HiPSTileKey>  m_pendingKeys;
     QList<HiPSTileKey> m_fetchQueue;
     QList<QFutureWatcher<HiPSTileFetchResult> *> m_activeWatchers;
@@ -196,13 +235,14 @@ private:
     QString m_backendUrlSec;
     QString m_backendTokenSec;
 
-    QPixmap m_allskyPixmapSec;
+    bool    m_allskyLoadedSec{ false };
     bool    m_allskyLoadingSec{ false };
     QFutureWatcher<QByteArray> m_allskyWatcherSec;
 
     std::vector<HiPSTileDescriptor> m_currentTilesSec;
     QFutureWatcher<BackendHiPSViewResponse> m_tileListWatcherSec;
     QHash<HiPSTileKey, QPixmap> m_tileCacheSec;
+    QHash<HiPSTileKey, QPixmap> m_previewCacheSec;
     QSet<HiPSTileKey>  m_pendingKeysSec;
     QList<HiPSTileKey> m_fetchQueueSec;
     QList<QFutureWatcher<HiPSTileFetchResult> *> m_activeWatchersSec;
@@ -218,6 +258,15 @@ private:
     QVector<BackendHiPSCatalogueSource> m_catalogueSources;
     QFutureWatcher<BackendHiPSCatalogueOverlayResult> m_catalogueWatcher;
     QTimer *m_catalogueRefreshTimer{ nullptr };
+    // A refresh asked for while one was already running: without this the view
+    // could be panned away from the field the running request was for, and the
+    // overlay would stay on the old field until something else moved.
+    bool    m_cataloguePending{ false };
+    // Bumped whenever the catalogue changes or is cleared, so a request that
+    // was already in flight cannot install its sources over the new one — or
+    // clear it, if the old one failed.
+    quint64 m_catalogueGeneration{ 0 };
+    quint64 m_catalogueRequestGeneration{ 0 };
 
     // ── Shared debounce timer ─────────────────────────────────────────────────
     QTimer *m_viewChangeTimer{ nullptr };

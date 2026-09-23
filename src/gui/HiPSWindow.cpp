@@ -1,7 +1,11 @@
 #include "HiPSWindow.h"
 
+#include "HiPSCatalogueDialog.h"
+#include "HiPSSurveyBrowserDialog.h"
 #include "RemoteFileBrowserDialog.h"
 
+#include <QComboBox>
+#include <QSignalBlocker>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -14,6 +18,8 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QtConcurrent>
+
+#include <cmath>
 
 using namespace Qt::StringLiterals;
 
@@ -28,32 +34,40 @@ static HiPSOpenTaskResult runHiPSOpenTask(const QString &backendUrl,
     return { info.valid, info.error, info };
 }
 
+// Sexagesimal with the carry done before formatting: rounding the seconds to
+// one decimal first is what turns 41d 29' 59.97" into 41d 30' 00.0" rather
+// than the impossible 41d 29' 60.0" the status strip used to show.
+static void sexagesimal(double value, int &whole, int &minutes, double &seconds)
+{
+    whole   = static_cast<int>(value);
+    double m = (value - whole) * 60.0;
+    minutes = static_cast<int>(m);
+    seconds = std::round((m - minutes) * 60.0 * 10.0) / 10.0;
+    if (seconds >= 60.0) { seconds -= 60.0; ++minutes; }
+    if (minutes >= 60)   { minutes -= 60;   ++whole;   }
+}
+
 static QString fmtRa(double ra)
 {
-    const double h = ra / 15.0;
-    const int    H = static_cast<int>(h);
-    const double m = (h - H) * 60.0;
-    const int    M = static_cast<int>(m);
-    const double s = (m - M) * 60.0;
+    int h = 0, m = 0; double sec = 0.0;
+    sexagesimal(ra / 15.0, h, m, sec);
+    if (h >= 24) h -= 24;
     return QStringLiteral("RA %1h%2m%3s")
-            .arg(H, 2, 10, QLatin1Char('0'))
-            .arg(M, 2, 10, QLatin1Char('0'))
-            .arg(s, 4, 'f', 1, QLatin1Char('0'));
+            .arg(h, 2, 10, QLatin1Char('0'))
+            .arg(m, 2, 10, QLatin1Char('0'))
+            .arg(sec, 4, 'f', 1, QLatin1Char('0'));
 }
 
 static QString fmtDec(double dec)
 {
     const char sign = dec < 0 ? '-' : '+';
-    const double a  = std::abs(dec);
-    const int    D  = static_cast<int>(a);
-    const double m  = (a - D) * 60.0;
-    const int    M  = static_cast<int>(m);
-    const double s  = (m - M) * 60.0;
+    int d = 0, m = 0; double sec = 0.0;
+    sexagesimal(std::abs(dec), d, m, sec);
     return QStringLiteral("Dec %1%2°%3'%4\"")
             .arg(sign)
-            .arg(D, 2, 10, QLatin1Char('0'))
-            .arg(M, 2, 10, QLatin1Char('0'))
-            .arg(s, 4, 'f', 1, QLatin1Char('0'));
+            .arg(d, 2, 10, QLatin1Char('0'))
+            .arg(m, 2, 10, QLatin1Char('0'))
+            .arg(sec, 4, 'f', 1, QLatin1Char('0'));
 }
 
 // ── Construction ──────────────────────────────────────────────────────────────
@@ -116,6 +130,13 @@ void HiPSWindow::setupUi()
     QObject::connect(m_urlEdit, &QLineEdit::returnPressed, this, &HiPSWindow::onOpenClicked);
     lay1->addWidget(m_urlEdit, 1);
 
+    // A URL you have to know is not a way in. The registry button lists every
+    // image HiPS the CDS MOCServer publishes.
+    m_browseBtn = new QPushButton(u"Browse…"_s, strip1);
+    m_browseBtn->setToolTip(u"Choose from the surveys registered with CDS"_s);
+    QObject::connect(m_browseBtn, &QPushButton::clicked, this, &HiPSWindow::onBrowseSurveys);
+    lay1->addWidget(m_browseBtn);
+
     m_openBtn = new QPushButton(u"Open"_s, strip1);
     QObject::connect(m_openBtn, &QPushButton::clicked, this, &HiPSWindow::onOpenClicked);
     lay1->addWidget(m_openBtn);
@@ -142,6 +163,25 @@ void HiPSWindow::setupUi()
 
     m_orderLabel = new QLabel(u"Order: -"_s, strip1);
     lay1->addWidget(m_orderLabel);
+
+    lay1->addSpacing(8);
+
+    // Projection. Gnomonic shows a field; the all-sky ones put the whole
+    // sphere on screen, which the viewer could not do at all before.
+    m_projectionCombo = new QComboBox(strip1);
+    m_projectionCombo->setToolTip(u"Sky projection"_s);
+    for (auto proj : { SkyProjection::Tan, SkyProjection::Sin, SkyProjection::Arc,
+                       SkyProjection::Ait, SkyProjection::Mol, SkyProjection::Mer }) {
+        m_projectionCombo->addItem(HiPSViewportWidget::projectionCode(proj),
+                                   QVariant::fromValue(static_cast<int>(proj)));
+        m_projectionCombo->setItemData(m_projectionCombo->count() - 1,
+                                       HiPSViewportWidget::projectionName(proj),
+                                       Qt::ToolTipRole);
+    }
+    m_projectionCombo->setCurrentIndex(0);
+    QObject::connect(m_projectionCombo, &QComboBox::currentIndexChanged,
+                     this, &HiPSWindow::onProjectionSelected);
+    lay1->addWidget(m_projectionCombo);
 
     lay1->addSpacing(8);
 
@@ -284,6 +324,17 @@ void HiPSWindow::connectViewport()
                      this, &HiPSWindow::onLoadingChanged);
     QObject::connect(m_viewport, &HiPSViewportWidget::catalogueOverlayRefreshed,
                      this, &HiPSWindow::onCatalogueOverlayRefreshed);
+    QObject::connect(m_viewport, &HiPSViewportWidget::catalogueOverlayFailed,
+                     this, &HiPSWindow::onCatalogueOverlayFailed);
+    // Keep the selector honest if the viewport ever changes projection itself.
+    QObject::connect(m_viewport, &HiPSViewportWidget::projectionChanged,
+                     this, [this](SkyProjection proj) {
+                         if (!m_projectionCombo) return;
+                         const int i = m_projectionCombo->findData(static_cast<int>(proj));
+                         if (i < 0 || i == m_projectionCombo->currentIndex()) return;
+                         const QSignalBlocker blocker(m_projectionCombo);
+                         m_projectionCombo->setCurrentIndex(i);
+                     });
 }
 
 // ── Status helpers ────────────────────────────────────────────────────────────
@@ -408,36 +459,50 @@ void HiPSWindow::onBlendModeToggled(bool sideBySide)
 
 void HiPSWindow::onLoadCatalogueClicked()
 {
-    if (m_viewport && m_catBtn->isChecked() && m_viewport->hasCatalogueOverlay()) {
-        // Toggle visibility if catalogue is already loaded
-        m_viewport->setCatalogueOverlayVisible(m_catBtn->isChecked());
-        return;
-    }
+    if (!m_viewport) return;
 
-    if (!m_catBtn->isChecked()) {
-        if (m_viewport) m_viewport->setCatalogueOverlayVisible(false);
-        return;
-    }
-
-    // Open the remote file browser to pick a CSV
-    RemoteFileBrowserDialog dialog(m_backendUrl, m_backendToken, this);
-    dialog.setExtensionFilter({u".csv"_s, u".tsv"_s, u".txt"_s}, u"Catalogues (CSV)"_s);
-    if (dialog.exec() != QDialog::Accepted) {
-        m_catBtn->setChecked(false);
-        return;
-    }
-
-    const QString path = dialog.selectedFilePath();
-    if (path.isEmpty()) {
-        m_catBtn->setChecked(false);
-        return;
-    }
-
-    if (m_viewport) {
-        m_viewport->setCatalogueOverlay(path);
+    if (m_catBtn->isChecked() && m_viewport->hasCatalogueOverlay()) {
+        // Already loaded: the button is a visibility toggle from here on.
         m_viewport->setCatalogueOverlayVisible(true);
-        showStatus(QStringLiteral("Loading catalogue: %1").arg(path));
+        return;
     }
+    if (!m_catBtn->isChecked()) {
+        m_viewport->setCatalogueOverlayVisible(false);
+        return;
+    }
+
+    HiPSCatalogueDialog dialog(m_backendUrl, m_backendToken,
+                               m_viewport->centerRa(), m_viewport->centerDec(),
+                               m_viewport->fov(), this);
+    if (dialog.exec() != QDialog::Accepted || dialog.cataloguePath().isEmpty()) {
+        m_catBtn->setChecked(false);
+        return;
+    }
+
+    m_viewport->setCatalogueOverlay(dialog.cataloguePath(),
+                                    dialog.raField(), dialog.decField());
+    m_viewport->setCatalogueOverlayVisible(true);
+    showStatus(QStringLiteral("Catalogue overlay: %1").arg(dialog.describeSource()));
+}
+
+void HiPSWindow::onBrowseSurveys()
+{
+    HiPSSurveyBrowserDialog dialog(m_backendUrl, m_backendToken, this);
+    if (dialog.exec() != QDialog::Accepted) return;
+    const QString url = dialog.selectedUrl();
+    if (url.isEmpty()) return;
+    if (m_urlEdit) m_urlEdit->setText(url);
+    beginOpenSurvey(url, false);
+}
+
+void HiPSWindow::onProjectionSelected(int index)
+{
+    if (!m_viewport || index < 0 || !m_projectionCombo) return;
+    const auto proj = static_cast<SkyProjection>(
+            m_projectionCombo->itemData(index).toInt());
+    m_viewport->setProjection(proj);
+    showStatus(QStringLiteral("Projection: %1")
+                       .arg(HiPSViewportWidget::projectionName(proj)));
 }
 
 void HiPSWindow::onCatalogueOverlayRefreshed(int totalInView, bool truncated)
@@ -450,6 +515,14 @@ void HiPSWindow::onCatalogueOverlayRefreshed(int totalInView, bool truncated)
 }
 
 // ── Task 4 — Target resolver ──────────────────────────────────────────────────
+
+void HiPSWindow::onCatalogueOverlayFailed(const QString &error)
+{
+    // Put the button back so the next click offers the picker again rather
+    // than toggling the visibility of a catalogue that was never loaded.
+    if (m_catBtn) m_catBtn->setChecked(false);
+    showStatus(QStringLiteral("Catalogue overlay: %1").arg(error));
+}
 
 void HiPSWindow::onResolveClicked()
 {
@@ -503,7 +576,12 @@ void HiPSWindow::onCursorCoordinates(double ra, double dec)
 
 void HiPSWindow::onCenterChanged(double ra, double dec)
 {
-    Q_UNUSED(ra); Q_UNUSED(dec);
+    // Show the view centre whenever it moves. A cursor over the viewport
+    // overwrites this with the position under the pointer, which is what you
+    // want while pointing; without it the label read "-" until the first
+    // mouse-move, even after a resolved target had recentred the view.
+    if (m_coordsLabel)
+        m_coordsLabel->setText(QStringLiteral("%1   %2").arg(fmtRa(ra), fmtDec(dec)));
 }
 
 void HiPSWindow::onFovChanged(double fov)

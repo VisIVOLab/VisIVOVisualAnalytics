@@ -477,6 +477,18 @@ The starting survey list plus the accepted projections and stretches. The legacy
 carried these as a `QStringList` inside the dialog, so correcting a survey id
 meant releasing a client.
 
+### `GET /v1/hips/surveys?kind=image&refresh=false`
+Every HiPS registered with the CDS MOCServer: `id`, `title`, `url`, `category`,
+`regime`, `frame`, `tile_formats`, `kind` and `max_order`. `kind` is the
+registry's `dataproduct_type` (`image`, `catalog`, `cube`, …) and the default
+filter keeps only the imagery, which is all the viewer can draw as tiles; pass
+an empty `kind` for the lot. Surveys whose frame is a planetary body rather
+than a sky (`mars`, `moon`, `io`, …) are never returned — they have no
+celestial position. The raw document is cached under the HiPS cache
+directory for a week, in a file named after the query so changing the requested
+fields invalidates it; `refresh=true` fetches it again. A registry that cannot
+be reached answers `valid: false` with the reason rather than failing.
+
 ### `GET /v1/hips/{survey_id}/allsky?order=<N>`
 AllSky mosaic PNG/JPEG bytes.
 
@@ -484,10 +496,26 @@ AllSky mosaic PNG/JPEG bytes.
 Single HiPS tile bytes.
 
 ### `POST /v1/hips/{survey_id}/query_tiles`
-Given a viewport (RA/Dec center + FOV), return tile pixel indices at the appropriate order.
+Given a viewport (RA/Dec center + FOV), return the HEALPix tiles covering it —
+NESTED pixel index, centre and four corners per tile — at the requested order,
+clamped to the survey's `max_order`. A field of 360° means the whole sphere and
+returns every tile of the order (`12 × 4^order` of them), which is what the
+all-sky projections ask for. **The position is in ICRS and so is every position
+returned**, whatever frame the survey is tiled in: the centre is converted into
+the survey's frame to pick the tiles and the tile centres and corners are
+converted back. Over half the CDS registry is galactic, and reading those tile
+coordinates as RA/Dec puts the imagery nowhere near the field asked for. Requires **healpy** on the backend; without it the
+route answers `valid: false` with an install hint rather than failing.
 
 ### `POST /v1/hips/catalogue_overlay`
-Given a HiPS survey viewport, return catalogue sources within the field as `BackendHiPSCatalogueSource[]`.
+Given a HiPS survey viewport and the path of a **CSV/TSV on the backend
+filesystem** (confined to the configured data roots), return the rows falling
+inside the field as `BackendHiPSCatalogueSource[]`. Selection is by angular
+separation from the centre, not by a box in RA — near a pole every right
+ascension is in view and no interval says so. `radius_deg` is the radius the
+client measured for its own viewport, corners included; without it the radius
+is guessed from `fov_deg` and the corners are cut off. It does not query Simbad or
+VizieR — use `/v1/resolve/cone_search` for that and overlay the CSV it writes.
 
 ---
 

@@ -6,6 +6,8 @@
 
 #include <QFutureWatcher>
 #include <QPointer>
+
+class QComboBox;
 #include <QString>
 #include <QWidget>
 
@@ -63,6 +65,9 @@ private slots:
 
     // Task 1 – Grid
     void onGridToggled(bool checked);
+    void onProjectionSelected(int index);
+    void onBrowseSurveys();
+    void onCatalogueOverlayFailed(const QString &error);
 
     // Task 2 – Secondary survey
     void onOpenSecondaryClicked();
@@ -104,6 +109,8 @@ private:
     QPointer<QToolButton> m_resetBtn;
     QPointer<QLabel>      m_orderLabel;
     QPointer<QToolButton> m_gridBtn;
+    QPointer<QComboBox>   m_projectionCombo;
+    QPointer<QPushButton> m_browseBtn;
     QPointer<QToolButton> m_catBtn;
 
     // Strip 2 – target resolver + secondary survey

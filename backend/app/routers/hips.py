@@ -18,6 +18,7 @@ from ..tasks import TASKS
 from ..product_cache import PRODUCT_CACHE
 from ..fits_dataset import ScientificFitsDataset
 import asyncio
+import urllib.error as _urllib_error
 
 router = APIRouter(tags=['hips'])
 
@@ -54,13 +55,26 @@ async def hips_open(
              or props.get("obs_collection")
              or props.get("creator_did")
              or "Unknown Survey")
-    frame_raw = props.get("hips_frame", "equatorial").lower()
-    if "galactic" in frame_raw:
-        frame = "galactic"
-    elif "ecliptic" in frame_raw:
-        frame = "ecliptic"
-    else:
-        frame = "equatorial"
+    # Exact names, not substrings: "supergalactic" is not galactic, and reading
+    # it as such would place the survey tens of degrees out.
+    frame_raw = props.get("hips_frame", "equatorial").lower().strip()
+    _FRAME_ALIASES = {
+        "": "equatorial", "equatorial": "equatorial", "icrs": "equatorial",
+        "j2000": "equatorial", "fk5": "equatorial",
+        "galactic": "galactic", "gal": "galactic",
+        "ecliptic": "ecliptic", "ecl": "ecliptic",
+    }
+    frame = _FRAME_ALIASES.get(frame_raw)
+    if frame is None:
+        # Most of what lands here is a planetary surface — the registry carries
+        # maps of Mars, the Moon, Io. Calling those equatorial, as this used
+        # to, drew a planet's terrain onto the sky at coordinates that mean
+        # nothing.
+        return HiPSSurveyResponse(
+            valid=False,
+            error=f"This HiPS declares the frame '{frame_raw}', which VisIVO's "
+                  f"sky viewer does not support. It reads equatorial, galactic "
+                  f"and ecliptic surveys; a planetary surface is not a sky.")
 
     try:
         max_order = int(props.get("hips_order", "9"))
@@ -93,6 +107,39 @@ async def hips_open(
         max_order=max_order, min_order=min_order,
         tile_width=tile_width, tile_formats=formats,
     )
+
+@router.get("/v1/hips/surveys", response_model=HiPSRegistryResponse, tags=["hips"])
+async def hips_surveys(
+    refresh: bool = Query(False, description="Refetch from CDS instead of using the cache."),
+    kind: str = Query("image", description="Filter by dataproduct type; empty for all."),
+    _: None = _auth,
+) -> HiPSRegistryResponse:
+    """Every HiPS registered with the CDS MOCServer.
+
+    Typing a survey URL by hand was the only way into the viewer, which meant
+    you had to know one already. The list is cached on disk for a week; the
+    registry changes rarely and the document is a third of a megabyte.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        surveys = await loop.run_in_executor(None, _load_hips_registry_sync, refresh)
+    except Exception as exc:  # noqa: BLE001 — a remote service, not our code
+        logger.warning("[hips-registry] unavailable: %s", exc)
+        return HiPSRegistryResponse(
+            valid=False,
+            error=f"The HiPS registry could not be read: {exc}")
+
+    wanted = kind.strip().lower()
+    if wanted:
+        surveys = [s for s in surveys if s.get("kind") == wanted]
+    # The registry also carries planetary-body HiPS — Mars, the Moon, Io. They
+    # are maps of a surface, not of the sky, and have no position a celestial
+    # viewer can place them at.
+    surveys = [s for s in surveys
+               if (s.get("frame") or "equatorial").lower() in _HIPS_SKY_FRAMES]
+    return HiPSRegistryResponse(valid=True,
+                                surveys=[HiPSRegistryEntry(**s) for s in surveys])
+
 
 @router.get("/v1/hips/{survey_id}/allsky", tags=["hips"])
 async def hips_allsky(
@@ -214,10 +261,11 @@ async def hips_query_tiles(
     max_order: int = entry["max_order"]
     order = max(0, min(request.order, max_order))
     try:
-        loop = _asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         tiles_raw = await loop.run_in_executor(
             None, _get_tiles_for_fov,
             request.ra_center, request.dec_center, request.fov_deg, order,
+            entry.get("frame", "equatorial"),
         )
     except Exception as exc:
         return HiPSViewResponse(valid=False, error=f"HEALPix query failed: {exc}")
@@ -235,11 +283,12 @@ async def hips_catalogue_overlay(
 ) -> CatalogueOverlayResponse:
     """Return catalogue sources (RA/Dec) visible in the given HiPS viewport.
     Reads a CSV file at `catalogue_path` on the backend filesystem."""
-    loop = _asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     d = await loop.run_in_executor(
         None, _catalogue_overlay_sync,
         request.catalogue_path, request.ra_center, request.dec_center,
         request.fov_deg, request.ra_field, request.dec_field, request.max_sources,
+        request.radius_deg,
     )
     if not d["valid"]:
         return CatalogueOverlayResponse(valid=False, error=d["error"])

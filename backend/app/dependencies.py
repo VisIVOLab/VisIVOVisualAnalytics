@@ -2,12 +2,14 @@ import asyncio
 import asyncio as _asyncio
 import base64
 import csv
+import hashlib
 import functools
 import logging
 import math as _math
 import os
 import struct
 import sys as _sys
+import tempfile
 import threading
 import time
 import urllib.error as _urllib_error
@@ -412,6 +414,7 @@ __all__ = [
     "_progress_ticker",
     "_load_cosmology_models",
     "_hips_fetch_sync", "_hips_fetch", "_parse_hips_properties",
+    "_load_hips_registry_sync", "_parse_hips_registry", "_HIPS_SKY_FRAMES",
     "_best_tile_formats", "_tile_url", "_allsky_url",
     "_tile_cache_path", "_allsky_cache_path", "_get_tiles_for_fov",
     "_resolve_target_sync", "_load_overlay_csv", "_catalogue_overlay_sync",
@@ -1501,6 +1504,116 @@ async def _hips_fetch(url: str) -> bytes:
     return await loop.run_in_executor(None, _hips_fetch_sync, url)
 
 
+# ── The CDS HiPS registry ────────────────────────────────────────────────────
+#
+# Typing a survey URL by hand was the only way into the viewer, which meant you
+# had to know one. The MOCServer publishes every registered HiPS, so the client
+# can offer the list instead.
+
+_HIPS_REGISTRY_URL = (
+    "https://alasky.cds.unistra.fr/MocServer/query"
+    "?hips_service_url=*&get=record&fmt=json"
+    "&fields=ID,obs_title,hips_service_url,client_category,obs_regime,"
+    "hips_order,hips_frame,hips_tile_format,dataproduct_type"
+)
+# The registry changes rarely and the list is a third of a megabyte, so it is
+# kept on disk and only refetched when stale or when the client asks.
+_HIPS_REGISTRY_TTL_SECONDS = 7 * 24 * 3600
+
+
+def _hips_registry_cache_path() -> _Path:
+    # Named after the query, so changing the fields we ask for invalidates the
+    # cache instead of silently serving a document without them.
+    digest = hashlib.sha256(_HIPS_REGISTRY_URL.encode("utf-8")).hexdigest()[:12]
+    return _HIPS_CACHE_DIR / f"registry_{digest}.json"
+
+
+def _parse_hips_registry(payload: bytes) -> list[dict]:
+    """Records the viewer can use, out of the MOCServer's JSON.
+
+    The response is not valid UTF-8 — titles carry a latin-1 micro sign — so it
+    is decoded leniently rather than refused.
+    """
+    import json as _json  # noqa: PLC0415
+
+    try:
+        records = _json.loads(payload.decode("utf-8", errors="replace"))
+    except Exception as exc:  # noqa: BLE001 — a remote document, not our code
+        raise ValueError(f"The HiPS registry did not parse: {exc}") from exc
+    if not isinstance(records, list):
+        raise ValueError("The HiPS registry was not a list of records.")
+
+    surveys: list[dict] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        url = str(record.get("hips_service_url") or "").strip()
+        if not url:
+            continue
+        try:
+            max_order = int(str(record.get("hips_order", "")).strip() or 0)
+        except ValueError:
+            max_order = 0
+        # Most of the registry is imagery, but it also lists HiPS catalogues
+        # and cubes, which this viewer cannot draw as tiles. Say which is which
+        # rather than offering all 1500 and letting a third of them fail.
+        kind = str(record.get("dataproduct_type") or "").strip().lower() or "unknown"
+        surveys.append({
+            "id": str(record.get("ID") or "").strip(),
+            "title": str(record.get("obs_title") or record.get("ID") or "").strip(),
+            "url": url,
+            "category": str(record.get("client_category") or "").strip(),
+            "regime": str(record.get("obs_regime") or "").strip(),
+            "frame": str(record.get("hips_frame") or "").strip(),
+            "tile_formats": str(record.get("hips_tile_format") or "").split(),
+            "kind": kind,
+            "max_order": max_order,
+        })
+    surveys.sort(key=lambda s: (s["category"].lower(), s["title"].lower()))
+    return surveys
+
+
+def _load_hips_registry_sync(refresh: bool = False) -> list[dict]:
+    """The registry, from disk when it is fresh enough and from CDS otherwise."""
+    cache = _hips_registry_cache_path()
+    if not refresh:
+        try:
+            # Everything about reading the cache is best-effort: an unreadable
+            # file, one that vanishes between the stat and the read, or one
+            # that no longer parses is a cache miss, not a failed request.
+            age = time.time() - cache.stat().st_mtime
+            if 0.0 <= age < _HIPS_REGISTRY_TTL_SECONDS:
+                return _parse_hips_registry(cache.read_bytes())
+        except (OSError, ValueError):
+            pass
+
+    payload = _hips_fetch_sync(_HIPS_REGISTRY_URL)
+    surveys = _parse_hips_registry(payload)
+    temporary: _Path | None = None
+    try:
+        # Written through a temporary file in the same directory and renamed
+        # into place, so a write that stops halfway cannot leave a truncated
+        # document where the last good copy was, and two of them at once cannot
+        # interleave. This is about partial writes, not power loss: a
+        # disposable cache does not warrant fsync.
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=cache.parent, delete=False) as handle:
+            temporary = _Path(handle.name)
+            handle.write(payload)
+        os.replace(temporary, cache)
+        temporary = None
+    except OSError:
+        pass                  # an unwritable cache only costs us the next fetch
+    finally:
+        if temporary is not None:
+            # The rename never happened; do not leave the fragment behind.
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+    return surveys
+
+
 def _parse_hips_properties(text: str) -> dict[str, str]:
     """Parse a Java-style `.properties` file as used by the HiPS standard."""
     props: dict[str, str] = {}
@@ -1541,39 +1654,101 @@ def _allsky_cache_path(survey_id: str, order: int, fmt: str) -> _Path:
     return _HIPS_CACHE_DIR / survey_id / f"allsky_{order}.{fmt}"
 
 
+# The sky frames a HiPS can be tiled in. Anything else in the registry is a
+# planetary body, not a sky, and has no place in a celestial viewer.
+_HIPS_SKY_FRAMES = ("equatorial", "galactic", "ecliptic")
+
+_ASTROPY_FRAMES = {
+    "galactic": "galactic",
+    "ecliptic": "barycentricmeanecliptic",
+}
+
+
+def _hips_frame_to_icrs(frame: str, lon_deg, lat_deg):
+    """Longitudes/latitudes in a survey's own frame → ICRS RA/Dec."""
+    target = _ASTROPY_FRAMES.get((frame or "").lower())
+    if target is None:
+        return np.asarray(lon_deg, dtype=float), np.asarray(lat_deg, dtype=float)
+    from astropy.coordinates import SkyCoord  # noqa: PLC0415
+    import astropy.units as u  # noqa: PLC0415
+
+    coords = SkyCoord(np.asarray(lon_deg, dtype=float) * u.deg,
+                      np.asarray(lat_deg, dtype=float) * u.deg,
+                      frame=target).icrs
+    return coords.ra.deg, coords.dec.deg
+
+
+def _icrs_to_hips_frame(frame: str, ra_deg: float, dec_deg: float) -> tuple[float, float]:
+    """ICRS RA/Dec → the longitude/latitude a survey's own tiles are indexed by."""
+    target = _ASTROPY_FRAMES.get((frame or "").lower())
+    if target is None:
+        return float(ra_deg), float(dec_deg)
+    from astropy.coordinates import SkyCoord  # noqa: PLC0415
+    import astropy.units as u  # noqa: PLC0415
+
+    coords = SkyCoord(float(ra_deg) * u.deg, float(dec_deg) * u.deg,
+                      frame="icrs").transform_to(target)
+    return float(coords.spherical.lon.deg), float(coords.spherical.lat.deg)
+
+
 def _get_tiles_for_fov(
-    ra_deg: float, dec_deg: float, fov_deg: float, order: int
+    ra_deg: float, dec_deg: float, fov_deg: float, order: int, frame: str = "equatorial"
 ) -> list[dict]:
-    """Return HEALPix NESTED tiles covering the given FOV.  Requires healpy."""
+    """HEALPix NESTED tiles covering the given FOV, in ICRS.  Requires healpy.
+
+    A HiPS is tiled in its own frame, and rather more than half the registry is
+    galactic. The viewport asks in ICRS and draws in ICRS, so the centre is
+    converted into the survey's frame to choose the tiles, and every position
+    that comes back is converted out of it again — without which a galactic
+    survey landed its tiles wherever those numbers happened to fall on an
+    equatorial sky, tens of degrees from the right place.
+    """
     nside = _hp.order2nside(order)
-    # Centre unit vector
-    theta = _math.radians(90.0 - dec_deg)
-    phi   = _math.radians(ra_deg)
+    lon_deg, lat_deg = _icrs_to_hips_frame(frame, ra_deg, dec_deg)
+    # Centre unit vector, in the survey's own frame
+    theta = _math.radians(90.0 - lat_deg)
+    phi   = _math.radians(lon_deg)
     vec   = _hp.ang2vec(theta, phi)
     # Disc radius with √2 margin so corner tiles are included
     radius_rad = _math.radians(fov_deg / 2.0 * 1.42)
-    pixels = _hp.query_disc(nside, vec, radius_rad, nest=True, inclusive=True)
+    if radius_rad >= _math.pi:
+        # A disc that large is the whole sphere, and query_disc will not take a
+        # radius above pi. The all-sky projections ask for exactly this.
+        pixels = np.arange(12 * nside * nside, dtype=np.int64)
+    else:
+        pixels = _hp.query_disc(nside, vec, radius_rad, nest=True, inclusive=True)
+
+    pixels = [int(p) for p in pixels]
+    if not pixels:
+        return []
+
+    # Gather every position first, so a frame conversion is one vectorised call
+    # rather than five per tile.
+    lons: list[float] = []
+    lats: list[float] = []
+    for p in pixels:
+        theta_c, phi_c = _hp.pix2ang(nside, p, nest=True)
+        lons.append(_math.degrees(phi_c))
+        lats.append(90.0 - _math.degrees(theta_c))
+
+        corners = _hp.boundaries(nside, p, step=1, nest=True)  # shape (3,4)
+        for i in range(4):
+            lons.append(_math.degrees(_math.atan2(corners[1, i], corners[0, i])))
+            lats.append(90.0 - _math.degrees(_math.acos(
+                max(-1.0, min(1.0, corners[2, i])))))
+
+    ra_all, dec_all = _hips_frame_to_icrs(frame, lons, lats)
 
     result = []
-    for pix in pixels:
-        p = int(pix)
-        theta_c, phi_c = _hp.pix2ang(nside, p, nest=True)
-        ra_c  = float(_math.degrees(phi_c))
-        dec_c = float(90.0 - _math.degrees(theta_c))
-
-        # 4 corners in (theta, phi) then convert to (ra, dec)
-        corners = _hp.boundaries(nside, p, step=1, nest=True)  # shape (3,4)
-        c_ra  = [float(_math.degrees(_math.atan2(corners[1, i], corners[0, i]))) for i in range(4)]
-        c_dec = [float(90.0 - _math.degrees(_math.acos(
-            max(-1.0, min(1.0, corners[2, i]))))) for i in range(4)]
-
+    for index, p in enumerate(pixels):
+        base = index * 5
         result.append({
             "pix": p,
             "order": order,
-            "ra_center": ra_c,
-            "dec_center": dec_c,
-            "corners_ra": c_ra,
-            "corners_dec": c_dec,
+            "ra_center": float(ra_all[base]),
+            "dec_center": float(dec_all[base]),
+            "corners_ra": [float(ra_all[base + 1 + i]) for i in range(4)],
+            "corners_dec": [float(dec_all[base + 1 + i]) for i in range(4)],
         })
     return result
 
@@ -1621,7 +1796,7 @@ def _load_overlay_csv(path: str) -> pd.DataFrame:
 
 def _catalogue_overlay_sync(
     path: str, ra_center: float, dec_center: float, fov_deg: float,
-    ra_field: str, dec_field: str, max_sources: int,
+    ra_field: str, dec_field: str, max_sources: int, radius_deg: float = 0.0,
 ) -> dict:
     try:
         # Client-supplied path: confine it like every other filesystem read
@@ -1645,23 +1820,37 @@ def _catalogue_overlay_sync(
     ra_col  = pd.to_numeric(df[ra_field],  errors="coerce")
     dec_col = pd.to_numeric(df[dec_field], errors="coerce")
 
-    # Conservative bounding-box filter
-    half_fov  = fov_deg * 0.6
-    cos_dec   = max(0.02, abs(float(np.cos(np.radians(dec_center)))))
-    ra_margin = min(180.0, half_fov / cos_dec)
+    # Angular separation, not a bounding box in right ascension. The box was
+    # described as conservative and is not: it widens RA by the cosine of the
+    # *centre's* declination, so a view centred at +85 degrees with a 20 degree
+    # field threw away a source 6 degrees from the centre because its right
+    # ascension was on the other side of the pole. Near a pole every RA is in
+    # view, and no interval in RA says so.
+    # The radius the client measured, when it sent one: only it knows the
+    # viewport's aspect ratio and projection, and a field of view across the
+    # width says nothing about how far the corners reach. 0.6 x fov is the
+    # fallback for a caller that does not say.
+    radius = float(radius_deg) if radius_deg and radius_deg > 0 else fov_deg * 0.6
+    radius = min(180.0, max(0.0, radius))
 
-    ra_min, ra_max   = ra_center - ra_margin, ra_center + ra_margin
-    dec_min, dec_max = dec_center - half_fov, dec_center + half_fov
-
-    if ra_min < 0:
-        mask = ((ra_col >= ra_min + 360) | (ra_col <= ra_max)) & \
-               (dec_col >= dec_min) & (dec_col <= dec_max)
-    elif ra_max > 360:
-        mask = ((ra_col >= ra_min) | (ra_col <= ra_max - 360)) & \
-               (dec_col >= dec_min) & (dec_col <= dec_max)
-    else:
-        mask = (ra_col >= ra_min) & (ra_col <= ra_max) & \
-               (dec_col >= dec_min) & (dec_col <= dec_max)
+    lam  = np.radians(ra_col.to_numpy(dtype=float))
+    phi  = np.radians(dec_col.to_numpy(dtype=float))
+    lam0 = _math.radians(ra_center)
+    phi0 = _math.radians(dec_center)
+    with np.errstate(invalid="ignore"):
+        cos_sep = (_math.sin(phi0) * np.sin(phi)
+                   + _math.cos(phi0) * np.cos(phi) * np.cos(lam - lam0))
+        # Rounding can put the cosine a hair outside [-1, 1], which at a radius
+        # of 180 degrees dropped the antipode of the view centre from a
+        # whole-sky selection.
+        cos_sep = np.clip(cos_sep, -1.0, 1.0)
+        if radius >= 180.0:
+            keep = np.isfinite(cos_sep)
+        else:
+            keep = cos_sep >= _math.cos(_math.radians(radius))
+        # A row with an unreadable position gives NaN, which compares false and
+        # is dropped, exactly as it was before.
+        mask = pd.Series(keep, index=df.index)
 
     filtered  = df[mask]
     total     = int(len(filtered))

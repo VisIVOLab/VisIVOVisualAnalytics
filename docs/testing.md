@@ -101,6 +101,20 @@ the way files get opened:
   half is reading what services actually send: a VO error carried inside a valid
   VOTable, a TAP error returned as XML when CSV was asked for, an HTML gateway
   page where a FITS was expected;
+- `test_hips_tile_query.py` (9) covers the two routes that decide whether the
+  HiPS viewer shows anything — `query_tiles` and `catalogue_overlay`. Both had
+  no test and both shipped dead: a router refactor left them calling a name the
+  star-import does not re-export, and the surrounding `except Exception` dressed
+  the `NameError` up as a plausible "HEALPix query failed", so the viewer drew
+  an empty sky and nothing in CI noticed. The tests register a survey directly
+  in the session registry, so no network is involved;
+- `test_hips_registry.py` (19) covers the CDS survey registry behind the
+  viewer's survey picker: that a record without a service URL is dropped, that
+  one latin-1 byte in a title does not throw away the other 1500 records, and
+  that the on-disk cache behaves as a cache — stale, damaged, unreadable and
+  unwritable all fall back to the network rather than failing the request. It
+  is a separate module from `test_hips_tile_query.py` on purpose: none of this
+  needs healpy, and that one skips without it;
 - `test_safe_fetch.py` (4) stands on its own because the bug it guards against
   has been fixed three times in this codebase and forgotten twice: a validated
   URL that redirects into the private network. It runs a real local server that

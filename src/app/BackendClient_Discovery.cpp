@@ -31,6 +31,45 @@
 
 // ── BackendClient: Discovery domain (extracted verbatim) ──
 
+BackendHiPSRegistryResult BackendClient::requestHiPSSurveys(bool refresh) const
+{
+    BackendHiPSRegistryResult result;
+    QUrl url(m_baseUrl + QStringLiteral("/v1/hips/surveys"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("kind"), QStringLiteral("image"));
+    if (refresh)
+        query.addQueryItem(QStringLiteral("refresh"), QStringLiteral("true"));
+    url.setQuery(query);
+
+    QString error;
+    const QByteArray payload = performGet(url, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    result.valid = obj.value(QStringLiteral("valid")).toBool(false);
+    result.error = obj.value(QStringLiteral("error")).toString();
+    const QJsonArray entries = obj.value(QStringLiteral("surveys")).toArray();
+    result.surveys.reserve(entries.size());
+    for (const QJsonValue &v : entries) {
+        const QJsonObject o = v.toObject();
+        BackendHiPSRegistryEntry entry;
+        entry.id       = o.value(QStringLiteral("id")).toString();
+        entry.title    = o.value(QStringLiteral("title")).toString();
+        entry.url      = o.value(QStringLiteral("url")).toString();
+        entry.category = o.value(QStringLiteral("category")).toString();
+        entry.regime   = o.value(QStringLiteral("regime")).toString();
+        entry.frame    = o.value(QStringLiteral("frame")).toString();
+        entry.kind     = o.value(QStringLiteral("kind")).toString();
+        entry.maxOrder = o.value(QStringLiteral("max_order")).toInt(0);
+        for (const QJsonValue &f : o.value(QStringLiteral("tile_formats")).toArray())
+            entry.tileFormats.append(f.toString());
+        result.surveys.append(entry);
+    }
+    return result;
+}
+
 BackendHiPSSurveyInfo BackendClient::openHiPS(const QString &url)
 {
     BackendHiPSSurveyInfo result;
@@ -183,7 +222,8 @@ BackendTargetResolveResult BackendClient::resolveTarget(const QString &name) con
 
 BackendHiPSCatalogueOverlayResult BackendClient::requestHiPSCatalogueOverlay(
         const QString &cataloguePath, double raDeg, double decDeg, double fovDeg,
-        const QString &raField, const QString &decField, int maxSources) const
+        const QString &raField, const QString &decField, int maxSources,
+        double radiusDeg) const
 {
     BackendHiPSCatalogueOverlayResult result;
     const QUrl url(m_baseUrl + QStringLiteral("/v1/hips/catalogue_overlay"));
@@ -194,6 +234,8 @@ BackendHiPSCatalogueOverlayResult BackendClient::requestHiPSCatalogueOverlay(
             { QStringLiteral("fov_deg"),        fovDeg        },
             { QStringLiteral("max_sources"),    maxSources    },
     };
+    if (radiusDeg > 0.0)
+        bodyObj[QStringLiteral("radius_deg")] = radiusDeg;
     if (!raField.isEmpty())  bodyObj[QStringLiteral("ra_field")]  = raField;
     if (!decField.isEmpty()) bodyObj[QStringLiteral("dec_field")] = decField;
     QString error;

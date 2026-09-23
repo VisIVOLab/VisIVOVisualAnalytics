@@ -17,6 +17,7 @@
     "GET /v1/files/list",
     "GET /v1/health",
     "GET /v1/hips/hips2fits/surveys",
+    "GET /v1/hips/surveys",
     "GET /v1/hips/{survey_id}/allsky",
     "GET /v1/hips/{survey_id}/tile/{order}/{pix}",
     "GET /v1/render/diagnostics",
