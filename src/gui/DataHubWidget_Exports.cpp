@@ -1,4 +1,5 @@
 #include "DataHubWidget.h"
+#include "ElideOnResize.h"
 #include "app/BackendClient.h"
 #include "app/RecentDatasetsManager.h"
 #include "app/ThemeManager.h"
@@ -267,6 +268,16 @@ void DataHubWidget::refreshWorkspaceExports()
                                                     "background: transparent; border: none;")
                                              .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
                              name->setTextInteractionFlags(Qt::TextSelectableByMouse);
+                             // A vlkb-cutout name is long enough to widen this
+                             // row past the panel, and the horizontal scrollbar
+                             // is off — so Delete ended up beyond the edge on
+                             // EVERY row, not just the long one, because one
+                             // wide row sets the container's width.
+                             name->setMinimumWidth(1);
+                             name->setSizePolicy(QSizePolicy::Ignored,
+                                                 QSizePolicy::Preferred);
+                             ElideOnResize::apply(name, entry.filename);
+                             row->setToolTip(entry.filename);
                              h->addWidget(name, 1);
 
                              auto *meta = new QLabel(

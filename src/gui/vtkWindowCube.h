@@ -13,6 +13,7 @@
 // they are constructed and their methods are called.
 class CubeUiAssembler;
 class WorkspaceChrome;
+class InspectorPanel;
 class MomentMapController;
 class NoiseController;
 class PvController;
@@ -1195,9 +1196,18 @@ protected:
     // ⇧-click ADDs another source (union), ⌥-click CARVEs a region out. Each is (z,y,x).
     QVector<std::array<int, 3>> m_lassoAddSeeds;
     QVector<std::array<int, 3>> m_lassoSubSeeds;
+    /// Where the last click landed (z,y,x, full-res). The yellow marker follows
+    /// THIS, not m_lassoLastSeed: a ⇧/⌥ click adds or carves without moving the
+    /// grow's origin, and the marker must still show where the user clicked.
+    std::array<int, 3> m_lassoMarkerSeed{ 0, 0, 0 };
+    bool m_lassoSurfaceShown{ false };            ///< the green surface actually has geometry
     bool m_lassoDiscardResult{ false };           ///< discard the in-flight grow (cleared mid-fetch)
     bool m_lassoPendingRegrow{ false };           ///< a slider moved during a grow → re-grow on finish
-    // Live refinement panel (built lazily on first selection).
+    // Live refinement controls (built lazily on first selection). They live in the
+    // Inspector's Parameters tab like every other live tool (see
+    // InspectorPanel::setToolSettings); m_lassoPanel is the fallback dock used
+    // only when this window has no workspace chrome to host them.
+    QPointer<QWidget> m_lassoSettings;
     QPointer<QDockWidget> m_lassoPanel;
     QSlider *m_lassoReachSlider{ nullptr };
     QSlider *m_lassoLambdaSlider{ nullptr };
@@ -1267,7 +1277,14 @@ protected:
     /// re-thresholding the level field, so 2-D hand refinements survive.
     void refreshLassoAfterDisplaySwap();
     void ensureLassoPanel();
+    InspectorPanel *lassoInspectorPanel() const;  ///< the Parameters host, or null with no chrome
+    /// Mount the controls wherever they are hosted; \a reveal also switches to the
+    /// Parameters tab, and is false for results arriving in the background.
+    void showLassoPanel(bool reveal = true);
+    void hideLassoPanel();                        ///< release the Parameters tab when the tool is disarmed
     void placeLassoSeedMarker(const double world[3], bool render = true);
+    void lassoSeedWorld(double out[3]) const;     ///< seed voxel -> current display world
+    void updateLassoSeedMarkerVisibility(bool render = true);  ///< marker shows only while there is no surface
     void applyLassoMask(const QString &mode);     ///< isolate/remove the selection → new cube
     // Moment computation is delegated to MomentMapController.
     MomentMapController *momentController{ nullptr };

@@ -137,6 +137,7 @@ QFrame *makeActionCard(const QString &iconKind, const QString &title,
 
     // Recent datasets — manager pointer (not owned), layout for dynamic items.
     RecentDatasetsManager *recentMgr{ nullptr };
+    QPointer<QPushButton> m_clearRecentsButton;
     QPointer<QVBoxLayout>  recentItemsLayout;
 
     // Workspace Exports — populated by refreshWorkspaceExports().

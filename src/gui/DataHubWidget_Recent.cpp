@@ -1,5 +1,6 @@
 #include "DataHubWidget.h"
 #include "CardClickFilter.h"
+#include "ElideOnResize.h"
 #include "app/BackendClient.h"
 #include "app/RecentDatasetsManager.h"
 #include "app/ThemeManager.h"
@@ -10,6 +11,9 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QEvent>
+#include <QFontMetrics>
+#include <QObject>
+#include <QPointer>
 #include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -75,10 +79,52 @@ QFrame *DataHubWidget::buildRecentDatasetsPanel()
     vbox->setContentsMargins(20, 16, 20, 16);
     vbox->setSpacing(10);
 
-    // Header row: section label (left) — future "Clear all" button goes here (right).
     auto *header = new QHBoxLayout;
     header->addWidget(VisivoTheme::makeSectionLabel(u"Recent Datasets"_s, card));
     header->addStretch(1);
+
+    // Clearing the list was only possible by editing the settings file. The
+    // button is hidden while the list is already empty rather than shown
+    // disabled, so it never invites a click that would do nothing.
+    m_clearRecentsButton = new QPushButton(u"Clear"_s, card);
+    m_clearRecentsButton->setCursor(Qt::PointingHandCursor);
+    m_clearRecentsButton->setFlat(true);
+    // Sized and toned to the 10 px section heading it sits beside: at the
+    // global button size it dominated the header, and showing or hiding it
+    // moved the header's height.
+    m_clearRecentsButton->setMinimumHeight(18);
+    {
+        // The header must not change height when the button appears or goes:
+        // a hidden widget normally stops taking part in the layout.
+        QSizePolicy sp = m_clearRecentsButton->sizePolicy();
+        sp.setRetainSizeWhenHidden(true);
+        m_clearRecentsButton->setSizePolicy(sp);
+    }
+    m_clearRecentsButton->setStyleSheet(
+            QStringLiteral("QPushButton { color: %1; background: transparent; "
+                           "border: none; font-size: 10px; padding: 0 2px; }"
+                           "QPushButton:hover { color: %2; }")
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()),
+                         QLatin1StringView(VisivoTheme::kOnSurface())));
+    m_clearRecentsButton->setToolTip(
+            u"Forget every dataset in this list. The files themselves are not "
+            u"touched — only VisIVO's record of having opened them."_s);
+    m_clearRecentsButton->hide();
+    QObject::connect(m_clearRecentsButton, &QPushButton::clicked, this, [this]() {
+        if (!this->recentMgr) return;
+        const int count = this->recentMgr->datasets().size();
+        if (count <= 0) return;
+        const auto answer = QMessageBox::question(
+                this, u"Clear Recent Datasets"_s,
+                QStringLiteral("Forget %1 recent dataset%2?\n\n"
+                               "This only clears the list. Nothing on disk is deleted.")
+                        .arg(count)
+                        .arg(count == 1 ? QString() : u"s"_s),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes) return;
+        this->recentMgr->clear();   // emits changed() -> refreshRecentDatasets()
+    });
+    header->addWidget(m_clearRecentsButton);
     vbox->addLayout(header);
 
     // Scrollable item list.  The actual items are injected by refreshRecentDatasets().
@@ -136,11 +182,16 @@ void DataHubWidget::refreshRecentDatasets()
     const QList<RecentDataset> datasets =
             this->recentMgr ? this->recentMgr->datasets() : QList<RecentDataset>{};
 
+    // Nothing to clear when there is nothing listed.
+    if (this->m_clearRecentsButton) {
+        this->m_clearRecentsButton->setVisible(!datasets.isEmpty());
+    }
+
     if (datasets.isEmpty()) {
         // Empty-state label.
         auto *empty = new QLabel(
                 u"No recently opened datasets.\n"
-                u"Open a dataset using the actions above."_s,
+                u"Open one from Quick actions, beside this list."_s,
                 nullptr);
         empty->setAlignment(Qt::AlignCenter);
         empty->setWordWrap(true);
@@ -227,9 +278,22 @@ void DataHubWidget::refreshRecentDatasets()
                 QStringLiteral("color: %1; background: transparent; border: none;")
                         .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
         nameLbl->setAttribute(Qt::WA_TransparentForMouseEvents);
-        nameLbl->setToolTip(ds.source == u"skava"_s && !ds.obsId.isEmpty()
-                ? u"SKAVA obs_id: %1"_s.arg(ds.obsId) : ds.id);
-        nameRowLayout->addWidget(nameLbl);
+        // Elided, not truncated by the layout: a long path used to set this
+        // card's minimum width and push the badge and the remove button past
+        // the right edge, where the horizontal scrollbar is switched off and
+        // they could not be reached at all. The full name stays in the
+        // tooltip.
+        nameLbl->setMinimumWidth(1);
+        nameLbl->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        ElideOnResize::apply(nameLbl, ds.displayName);
+        // The tooltip goes on the ROW, not on this label: the label is
+        // transparent to mouse events, so a tooltip set here is never shown.
+        // displayName is not always a basename — the manager falls back to the
+        // full id — so the untruncated name belongs somewhere reachable.
+        row->setToolTip(ds.source == u"skava"_s && !ds.obsId.isEmpty()
+                ? u"%1\nSKAVA obs_id: %2"_s.arg(ds.displayName, ds.obsId)
+                : u"%1\n%2"_s.arg(ds.displayName, ds.id));
+        nameRowLayout->addWidget(nameLbl, 1);
 
         if (ds.source == u"skava"_s) {
             auto *skavaBadge = new QLabel(u"SKAVA"_s, row);

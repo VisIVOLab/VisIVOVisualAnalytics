@@ -10,7 +10,9 @@
 #include "ui_vtkWindowCube.h"
 
 #include "CubeRegionGeom.h"
+#include "InspectorPanel.h"
 #include "KinematicLevelField.h"
+#include "WorkspaceChrome.h"
 #include "app/BackendClient.h"
 
 #include <vtkActor.h>
@@ -40,6 +42,7 @@
 #include <vtkVolumePicker.h>
 
 #include <QApplication>
+#include <QScopeGuard>
 #include <QDockWidget>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -133,7 +136,7 @@ void vtkWindowCube::setKinematicLassoActive(bool active)
         // Open the panel right away so the controls are discoverable before the
         // first click, and paint an in-viewport prompt telling the user what to do.
         this->ensureLassoPanel();
-        if (this->m_lassoPanel) this->m_lassoPanel->show();
+        this->showLassoPanel();
         // Keep the mouse/keyboard focus on the 3-D view so the very first click
         // selects instead of being spent re-focusing the widget.
         ui->vtkCube->setFocus(Qt::OtherFocusReason);
@@ -144,6 +147,12 @@ void vtkWindowCube::setKinematicLassoActive(bool active)
         if (this->m_lassoReleaseTag) { iren->RemoveObserver(this->m_lassoReleaseTag); this->m_lassoReleaseTag = 0; }
         ui->vtkCube->setCursor(Qt::ArrowCursor);
         this->showLassoHint(false);
+        // Disarming only stops seed picking. A selection that is still on screen —
+        // possibly with 2-D refinement running — still needs Apply, Clear and the
+        // refine toggle, so the controls stay until the selection is cleared.
+        if (!this->m_lassoHasSeed) {
+            this->hideLassoPanel();
+        }
         this->statusBar()->clearMessage();
     }
 }
@@ -258,6 +267,11 @@ void vtkWindowCube::onLassoRelease()
     picker->GetPickPosition(world);
     this->placeLassoSeedMarker(world);
 
+    // The marker shows where the LAST click landed, which for a ⇧/⌥ click is not
+    // the primary seed — so it is tracked separately from m_lassoLastSeed, which
+    // is the grow's origin and must not move.
+    this->m_lassoMarkerSeed = { seedZ, seedY, seedX };
+
     // ⇧-click ADDs another source (union); ⌥-click CARVEs a region out; a plain
     // click starts a fresh selection.
     const bool shift = iren->GetShiftKey();
@@ -301,6 +315,9 @@ void vtkWindowCube::requestLassoSelection()
     // could stick if the window closes mid-grow) + a prominent status.
     if (ui->vtkCube) ui->vtkCube->setCursor(Qt::BusyCursor);
     this->statusBar()->showMessage(u"Kinematic Lasso: growing selection…"_s, 0);
+    // A grow is starting (from a click, or from a slider release): bring the marker
+    // back over whatever surface is still on screen.
+    this->updateLassoSeedMarkerVisibility();
 
     const QString url = this->remoteBackendUrl, token = this->remoteBackendToken;
     const QString session = this->remoteSessionId, dataset = this->remoteDatasetId;
@@ -352,11 +369,27 @@ void vtkWindowCube::placeLassoSeedMarker(const double world[3], bool render)
     if (!renderer) {
         return;
     }
+    const auto diagOf = [](const double b[6]) {
+        return std::sqrt((b[1] - b[0]) * (b[1] - b[0]) + (b[3] - b[2]) * (b[3] - b[2])
+                         + (b[5] - b[4]) * (b[5] - b[4]));
+    };
     double b[6];
     renderer->ComputeVisiblePropBounds(b);
-    const double diag = std::sqrt((b[1] - b[0]) * (b[1] - b[0]) + (b[3] - b[2]) * (b[3] - b[2])
-                                  + (b[5] - b[4]) * (b[5] - b[4]));
-    const double radius = std::max(0.4, 0.012 * (diag > 0 ? diag : 64.0));
+    const double sceneDiag = diagOf(b);
+    // Before a selection exists the marker is the only feedback that the click
+    // landed, so it is sized against the scene. Once the green surface is there
+    // the marker must not hide it: a compact source (a few thousand voxels) is
+    // smaller than 1.2% of a 1046x952x398 scene diagonal, which is exactly how a
+    // selection ended up completely covered by the seed.
+    double radius = std::max(0.4, 0.012 * (sceneDiag > 0 ? sceneDiag : 64.0));
+    if (this->m_lassoActor && this->m_lassoActor->GetMapper()) {
+        double sb[6];
+        this->m_lassoActor->GetBounds(sb);
+        const double selDiag = diagOf(sb);
+        if (selDiag > 0) {
+            radius = std::clamp(0.10 * selDiag, 0.4, radius);
+        }
+    }
     auto sphere = vtkSmartPointer<vtkSphereSource>::New();
     sphere->SetCenter(world[0], world[1], world[2]);
     sphere->SetRadius(radius);
@@ -373,13 +406,42 @@ void vtkWindowCube::placeLassoSeedMarker(const double world[3], bool render)
     this->m_lassoSeedActor->GetProperty()->SetColor(1.0, 0.9, 0.1);   // yellow seed
     this->m_lassoSeedActor->GetProperty()->LightingOff();
     this->m_lassoSeedActor->PickableOff();
+    this->updateLassoSeedMarkerVisibility(/*render=*/false);
     if (render) {
+        ui->vtkCube->renderWindow()->Render();
+    }
+}
+
+void vtkWindowCube::updateLassoSeedMarkerVisibility(bool render)
+{
+    if (!this->m_lassoSeedActor) {
+        return;
+    }
+    // The marker exists to say "your click landed" while the grow runs — which is
+    // the only moment there is nothing else to look at. Once the green surface is
+    // up it IS the answer, and a dot sitting inside it only hides the middle of
+    // the source, so the marker steps aside. It comes back on the next click, and
+    // stays whenever there is no surface: an empty result, a failed grow, or a
+    // 2-D subtraction that erased the last selected voxel. The test is on the
+    // surface actually having geometry — a mask can be non-empty and still
+    // contour to nothing.
+    const bool growing = this->m_lassoSelectWatcher.isRunning()
+            || this->m_lassoLevelsWatcher.isRunning();
+    const int want = (growing || !this->m_lassoSurfaceShown) ? 1 : 0;
+    if (this->m_lassoSeedActor->GetVisibility() == want) {
+        return;
+    }
+    this->m_lassoSeedActor->SetVisibility(want);
+    if (render && ui->vtkCube && ui->vtkCube->renderWindow()) {
         ui->vtkCube->renderWindow()->Render();
     }
 }
 
 void vtkWindowCube::onLassoSelectReady()
 {
+    // Whatever this handler does — present, fail, discard, re-request — the marker
+    // must end up agreeing with what is on screen.
+    const auto markerSync = qScopeGuard([this] { this->updateLassoSeedMarkerVisibility(); });
     if (ui->vtkCube) ui->vtkCube->setCursor(this->m_lassoActive ? Qt::CrossCursor : Qt::ArrowCursor);
     const RemoteKinematicSelectResult r = this->m_lassoSelectWatcher.result();
     this->statusBar()->clearMessage();
@@ -412,10 +474,10 @@ void vtkWindowCube::onLassoSelectReady()
     }
 
     this->ensureLassoPanel();
-    if (this->m_lassoPanel) {
-        this->m_lassoPanel->show();
-        this->m_lassoPanel->raise();
-    }
+    // A user double-click landed a selection: that is an explicit gesture, so it
+    // may reveal Parameters — but a result arriving after the tool was disarmed
+    // must not.
+    this->showLassoPanel(this->m_lassoActive);
     if (this->m_lassoCountLabel) {
         this->m_lassoCountLabel->setText(u"%1 voxels selected"_s.arg(r.count));
     }
@@ -534,6 +596,9 @@ vtkWindowCube::LassoLevels vtkWindowCube::showLassoSelectionFromLevels(int reach
 
 void vtkWindowCube::onLassoLevelsReady()
 {
+    // Whatever this handler does — present, fail, discard, re-request — the marker
+    // must end up agreeing with what is on screen.
+    const auto markerSync = qScopeGuard([this] { this->updateLassoSeedMarkerVisibility(); });
     const BackendKinematicLevelsResult lv = this->m_lassoLevelsWatcher.result();
     if (ui->vtkCube) ui->vtkCube->setCursor(this->m_lassoActive ? Qt::CrossCursor : Qt::ArrowCursor);
     this->statusBar()->clearMessage();
@@ -662,11 +727,8 @@ void vtkWindowCube::refreshLassoAfterDisplaySwap()
     // the mapping we just recomputed (spacing 1 on a ROI display, the preview
     // scale otherwise) rather than leaving it behind where the click landed.
     if (this->m_lassoHasSeed && this->m_lassoSeedActor) {
-        const double world[3] = {
-            double(this->m_lassoLastSeed[2]) * this->m_lassoDispSpacing[0],
-            double(this->m_lassoLastSeed[1]) * this->m_lassoDispSpacing[1],
-            double(this->m_lassoLastSeed[0]) * this->m_lassoDispSpacing[2],
-        };
+        double world[3];
+        this->lassoSeedWorld(world);
         this->placeLassoSeedMarker(world, /*render=*/false);
     }
 }
@@ -680,12 +742,13 @@ void vtkWindowCube::setLassoApplyEnabled(bool on)
 
 void vtkWindowCube::ensureLassoPanel()
 {
-    if (this->m_lassoPanel) {
+    if (this->m_lassoSettings) {
         return;
     }
-    auto *dock = new QDockWidget(u"Kinematic Lasso"_s, this);
-    dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
-    auto *body = new QWidget(dock);
+    // The body is parented to the window, not to its host: the Inspector parks and
+    // re-adopts tool settings as the user switches tools, so the window has to be
+    // the thing that keeps it alive.
+    auto *body = new QWidget(this);
     auto *outer = new QVBoxLayout(body);
     outer->setContentsMargins(12, 10, 12, 10);
     outer->setSpacing(8);
@@ -699,6 +762,10 @@ void vtkWindowCube::ensureLassoPanel()
 
     auto *form = new QFormLayout();
     form->setSpacing(6);
+    // macOS defaults to FieldsStayAtSizeHint, which pins each field to its hint
+    // and clips the slider row (and its value label) in the narrow Parameters tab.
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    form->setRowWrapPolicy(QFormLayout::DontWrapRows);
 
     // Reach: slider 1..64 → reach value. The upper bound comes from the two-cube
     // validation: on a large, low-surface-brightness source the best Dice sat at
@@ -709,6 +776,11 @@ void vtkWindowCube::ensureLassoPanel()
     m_lassoReachSlider->setRange(1, 64);
     m_lassoReachSlider->setValue(std::clamp(int(std::lround(m_lassoReach)), 1, 64));
     m_lassoReachValue = new QLabel(QString::number(m_lassoReach, 'f', 0), body);
+    // Reserve the widest value the slider can show, so the number is never clipped
+    // by the slider taking the whole row.
+    m_lassoReachValue->setMinimumWidth(m_lassoReachValue->fontMetrics().horizontalAdvance(u"000"_s));
+    m_lassoReachValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_lassoReachSlider->setMinimumWidth(70);
     auto *reachRow = new QWidget(body);
     auto *reachLay = new QHBoxLayout(reachRow);
     reachLay->setContentsMargins(0, 0, 0, 0);
@@ -721,6 +793,9 @@ void vtkWindowCube::ensureLassoPanel()
     m_lassoLambdaSlider->setRange(10, 500);
     m_lassoLambdaSlider->setValue(std::clamp(int(std::lround(m_lassoLambdaV * 100.0)), 10, 500));
     m_lassoLambdaValue = new QLabel(QString::number(m_lassoLambdaV, 'f', 2), body);
+    m_lassoLambdaValue->setMinimumWidth(m_lassoLambdaValue->fontMetrics().horizontalAdvance(u"0.00"_s));
+    m_lassoLambdaValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_lassoLambdaSlider->setMinimumWidth(70);
     auto *lamRow = new QWidget(body);
     auto *lamLay = new QHBoxLayout(lamRow);
     lamLay->setContentsMargins(0, 0, 0, 0);
@@ -741,7 +816,7 @@ void vtkWindowCube::ensureLassoPanel()
 
     // Apply: turn the selection into a new masked cube.
     auto *applyRow = new QWidget(body);
-    auto *applyLay = new QHBoxLayout(applyRow);
+    auto *applyLay = new QVBoxLayout(applyRow);
     applyLay->setContentsMargins(0, 0, 0, 0);
     auto *isolateBtn = new QPushButton(u"Isolate → new cube"_s, applyRow);
     isolateBtn->setToolTip(u"Blank everything OUTSIDE the selection."_s);
@@ -765,7 +840,7 @@ void vtkWindowCube::ensureLassoPanel()
                            u"selection pixels on the current channel."_s);
     outer->addWidget(editToggle);
     auto *modeRow = new QWidget(body);
-    auto *modeLay = new QHBoxLayout(modeRow);
+    auto *modeLay = new QHBoxLayout(modeRow);   // Add/Subtract are short enough to pair
     modeLay->setContentsMargins(0, 0, 0, 0);
     auto *addBtn = new QPushButton(u"Add"_s, modeRow);
     addBtn->setCheckable(true);
@@ -830,9 +905,66 @@ void vtkWindowCube::ensureLassoPanel()
     QObject::connect(clearBtn, &QPushButton::clicked, this,
                      [this]() { this->clearKinematicLassoSelection(); });
 
-    dock->setWidget(body);
-    this->addDockWidget(Qt::RightDockWidgetArea, dock);
-    this->m_lassoPanel = dock;
+    this->m_lassoSettings = body;
+    if (!this->lassoInspectorPanel()) {
+        // No workspace chrome (a bare cube window): keep the old dock so the tool
+        // is still usable rather than silently losing its controls.
+        auto *dock = new QDockWidget(u"Kinematic Lasso"_s, this);
+        dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+        dock->setWidget(body);
+        this->addDockWidget(Qt::RightDockWidgetArea, dock);
+        this->m_lassoPanel = dock;
+    }
+}
+
+InspectorPanel *vtkWindowCube::lassoInspectorPanel() const
+{
+    return this->m_workspaceChrome ? this->m_workspaceChrome->inspectorPanel() : nullptr;
+}
+
+void vtkWindowCube::showLassoPanel(bool reveal)
+{
+    if (!this->m_lassoSettings) {
+        return;
+    }
+    // Live tool controls belong in the Inspector's Parameters tab (the convention
+    // Contours and the image tools already follow) — not in a dock of their own
+    // stacked under the Inspector, where they only look like part of Analysis.
+    if (auto *panel = this->lassoInspectorPanel()) {
+        if (panel->activeToolSettings() != u"Kinematic Lasso"_s) {
+            // A background grow finishing must not yank the tab away from a tool
+            // the user has since switched to: only an explicit arm/select does.
+            if (!reveal) {
+                return;
+            }
+            // Re-mounting the same widget would park and re-show it, which can cost
+            // the slider its keyboard focus mid-drag — so only mount when needed.
+            panel->setToolSettings(u"Kinematic Lasso"_s, this->m_lassoSettings);
+        }
+        if (reveal) {
+            this->m_workspaceChrome->revealParametersTab();
+        }
+        return;
+    }
+    if (this->m_lassoPanel) {
+        this->m_lassoPanel->show();
+        if (reveal) this->m_lassoPanel->raise();
+    }
+}
+
+void vtkWindowCube::hideLassoPanel()
+{
+    if (auto *panel = this->lassoInspectorPanel()) {
+        // Only give the tab back if it is still ours: another tool may have taken
+        // it over in the meantime.
+        if (panel->activeToolSettings() == u"Kinematic Lasso"_s) {
+            panel->clearToolSettings();
+        }
+        return;
+    }
+    if (this->m_lassoPanel) {
+        this->m_lassoPanel->hide();
+    }
 }
 
 void vtkWindowCube::updateLassoMaskOverlay(bool render)
@@ -906,6 +1038,8 @@ void vtkWindowCube::rebuildLassoIsosurface(bool render)
     if (this->m_lassoMaskBytes.isEmpty() || mw <= 0 || mh <= 0 || md <= 0) {
         if (this->m_lassoActor) { renderer->RemoveActor(this->m_lassoActor); this->m_lassoActor = nullptr; }
         this->m_lassoImage = nullptr;
+        this->m_lassoSurfaceShown = false;
+        this->updateLassoSeedMarkerVisibility(/*render=*/false);   // nothing selected → the marker is the only feedback
         if (render && ui->vtkCube->renderWindow()) ui->vtkCube->renderWindow()->Render();
         return;
     }
@@ -925,6 +1059,7 @@ void vtkWindowCube::rebuildLassoIsosurface(bool render)
     contour->SetValue(0, 0.5);          // binary 0/1 mask → surface at 0.5
     contour->ComputeNormalsOn();
     contour->Update();
+    this->m_lassoSurfaceShown = contour->GetOutput() && contour->GetOutput()->GetNumberOfCells() > 0;
     auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
     mapper->SetInputConnection(contour->GetOutputPort());
     mapper->ScalarVisibilityOff();
@@ -938,8 +1073,27 @@ void vtkWindowCube::rebuildLassoIsosurface(bool render)
     this->m_lassoActor = actor;
     this->m_lassoImage = img;
     renderer->AddActor(actor);
+    // The surface just changed size (first grow, or a Reach scrub): re-place the
+    // seed marker so it is re-scaled against the selection it now sits in — and
+    // so it hides itself now that there is a surface to look at instead.
+    if (this->m_lassoHasSeed && this->m_lassoSeedActor) {
+        double world[3];
+        this->lassoSeedWorld(world);
+        this->placeLassoSeedMarker(world, /*render=*/false);
+    } else {
+        this->updateLassoSeedMarkerVisibility(/*render=*/false);
+    }
     if (render && ui->vtkCube->renderWindow())
         ui->vtkCube->renderWindow()->Render();
+}
+
+void vtkWindowCube::lassoSeedWorld(double out[3]) const
+{
+    // The marked seed is a full-res voxel (z,y,x); the display it is drawn on may
+    // be a decimated preview, so it maps through the same spacing as the mask.
+    out[0] = double(this->m_lassoMarkerSeed[2]) * this->m_lassoDispSpacing[0];
+    out[1] = double(this->m_lassoMarkerSeed[1]) * this->m_lassoDispSpacing[1];
+    out[2] = double(this->m_lassoMarkerSeed[0]) * this->m_lassoDispSpacing[2];
 }
 
 // ── Phase 2: draw a polygon on the 2-D channel map to add/subtract mask pixels ──
@@ -1221,8 +1375,10 @@ void vtkWindowCube::clearKinematicLassoSelection()
     }
     this->m_lassoActor = nullptr;
     this->m_lassoImage = nullptr;
+    this->m_lassoSurfaceShown = false;
     this->m_lassoSeedActor = nullptr;
     this->m_lassoHasSeed = false;
+    this->m_lassoMarkerSeed = { 0, 0, 0 };
     this->m_lassoAddSeeds.clear();
     this->m_lassoSubSeeds.clear();
     this->m_lassoMaskBytes.clear();
@@ -1233,6 +1389,10 @@ void vtkWindowCube::clearKinematicLassoSelection()
     }
     this->updateLassoMaskOverlay(true);     // remove the 2-D outline
     this->setLassoApplyEnabled(false);
+    // Nothing selected and nothing to pick with → give the Parameters tab back.
+    if (!this->m_lassoActive) {
+        this->hideLassoPanel();
+    }
     if (this->m_lassoCountLabel) this->m_lassoCountLabel->setText(u"-"_s);
     // Back to the start: re-arm the call-to-action so it's obvious a click is needed.
     if (this->m_lassoActive) this->showLassoHint(true);

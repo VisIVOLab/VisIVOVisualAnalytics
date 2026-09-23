@@ -290,22 +290,22 @@ void DataHubWidget::buildUi()
     // ── 3. Backend toolbar (path-pill + connection status) ───────────────────
     vbox->addWidget(buildBackendCard());
 
-    // ── 4. Mission Control body: 60/40 two-column layout ─────────────────────
-    //    LEFT (60%): Recent Datasets — the user's main entry into work
-    //    RIGHT (40%): Quick actions stack + Last 5 jobs feed
+    // ── 4. Mission Control body: three columns ───────────────────────────────
+    //    Recent Datasets | Quick actions | Last 5 jobs
+    //
+    // Quick actions and Last 5 jobs used to be stacked in one 40% column, which
+    // made this row as tall as the two of them together — about 450 px — and
+    // pushed Workspace Exports off the bottom of the window, where only its
+    // title showed. Side by side the row is as tall as the taller of the two,
+    // and the space they gain is space the exports panel below now has. It also
+    // uses the width that stack was leaving empty.
     {
         auto *row = new QHBoxLayout;
         row->setSpacing(16);
-
-        row->addWidget(buildRecentDatasetsPanel(), 60);
-
-        auto *rightCol = new QVBoxLayout;
-        rightCol->setSpacing(16);
-        rightCol->addWidget(buildQuickActionsList());
-        rightCol->addWidget(buildLast5JobsPanel(), 1);
-        row->addLayout(rightCol, 40);
-
-        vbox->addLayout(row, 1);
+        row->addWidget(buildRecentDatasetsPanel(), 40);
+        row->addWidget(buildQuickActionsList(), 30);
+        row->addWidget(buildLast5JobsPanel(), 30);
+        vbox->addLayout(row);
     }
 
     // ── 4b. Workspace Exports (persistent FITS artefacts) ────────────────────
@@ -313,7 +313,7 @@ void DataHubWidget::buildUi()
     // the backend's Workspace Exports dir with per-row buttons (open in
     // VisIVO, download to local FS, delete). Refresh happens on first
     // show + on demand via the panel's own refresh button.
-    vbox->addWidget(buildWorkspaceExportsPanel());
+    vbox->addWidget(buildWorkspaceExportsPanel(), 1);
 
     // ── 5. Credits line (small, right-aligned) ───────────────────────────────
     {
@@ -582,6 +582,12 @@ QFrame *DataHubWidget::buildQuickActionsList()
         sub->setStyleSheet(
                 QStringLiteral("color: %1; font-size: 11px;")
                         .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+        // Wrapping, so the longest subtitle does not set this card's minimum
+        // width. Without it the three columns cannot narrow past the width of
+        // that one sentence, and the page overflows sideways in a scroll area
+        // whose horizontal bar is switched off — invisible, unreachable.
+        sub->setWordWrap(true);
+        sub->setMinimumWidth(1);
         labelCol->addWidget(sub);
         rl->addLayout(labelCol, 1);
 
