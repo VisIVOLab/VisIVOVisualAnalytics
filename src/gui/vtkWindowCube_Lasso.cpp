@@ -147,11 +147,17 @@ void vtkWindowCube::setKinematicLassoActive(bool active)
         if (this->m_lassoReleaseTag) { iren->RemoveObserver(this->m_lassoReleaseTag); this->m_lassoReleaseTag = 0; }
         ui->vtkCube->setCursor(Qt::ArrowCursor);
         this->showLassoHint(false);
-        // Disarming only stops seed picking. A selection that is still on screen —
-        // possibly with 2-D refinement running — still needs Apply, Clear and the
-        // refine toggle, so the controls stay until the selection is cleared.
-        if (!this->m_lassoHasSeed) {
-            this->hideLassoPanel();
+        // Un-checking the tool CLOSES it: the selection it drew goes with it, along
+        // with any 2-D refinement, and the Parameters tab is handed back. Leaving
+        // the green surface behind with no controls to Apply or Clear it is the
+        // one state the user cannot get out of. Clearing without closing is what
+        // the panel's own "Clear selection" is for.
+        if (this->m_lassoDisarmIsSuspend) {
+            // The 3-D view left the layout: keep the selection and its controls so
+            // they are still there when the pane comes back.
+            this->updateLassoSeedMarkerVisibility();
+        } else {
+            this->clearKinematicLassoSelection();   // releases the Parameters tab: m_lassoActive is already false
         }
         this->statusBar()->clearMessage();
     }

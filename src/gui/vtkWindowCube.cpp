@@ -82,6 +82,7 @@
 #include <vtkCommand.h>
 #include <vtkCubeAxesActor.h>
 #include <vtkOutlineFilter.h>
+#include <vtkPropCollection.h>
 #include <vtkPropPicker.h>
 #include <vtkRenderWindowInteractor.h>
 #include <vtkPlaneSource.h>
@@ -5852,6 +5853,27 @@ void vtkWindowCube::updateRemoteCuttingPlane(int sliceIndex)
                        .arg(bounds[4], 0, 'g', 12)
                        .arg(bounds[5], 0, 'g', 12)
                        .arg(this->remoteCuttingPlaneActor->GetVisibility());
+    // TEMPORARY PROBE (VISIVO_PROP_PROBE=1): dump every visible prop's class and
+    // world bounds, to identify an actor that renders larger than the cube outline.
+    if (qEnvironmentVariableIsSet("VISIVO_PROP_PROBE")) {
+        if (auto *ren = ui->vtkCube && ui->vtkCube->renderWindow()
+                    ? ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer()
+                    : nullptr) {
+            qDebug().noquote() << QStringLiteral("[prop-probe] cube display bounds=%1,%2 %3,%4 %5,%6")
+                        .arg(bounds[0]).arg(bounds[1]).arg(bounds[2])
+                        .arg(bounds[3]).arg(bounds[4]).arg(bounds[5]);
+            vtkPropCollection *props = ren->GetViewProps();
+            props->InitTraversal();
+            while (vtkProp *prop = props->GetNextProp()) {
+                if (!prop->GetVisibility()) continue;
+                double pb[6] = { 0, 0, 0, 0, 0, 0 };
+                if (const double *b = prop->GetBounds()) std::copy(b, b + 6, pb);
+                qDebug().noquote() << QStringLiteral("[prop-probe] %1 bounds=%2,%3 %4,%5 %6,%7")
+                            .arg(QString::fromLatin1(prop->GetClassName()))
+                            .arg(pb[0]).arg(pb[1]).arg(pb[2]).arg(pb[3]).arg(pb[4]).arg(pb[5]);
+            }
+        }
+    }
     // NOTE: caller is responsible for the next Render(). We used to call Render
     // here, but all 3 callers (applyCubeOpenResult, applyRemoteSliceResult,
     // updateRemoteSliceDragFeedback) already trigger a Render immediately
@@ -5895,6 +5917,8 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     result.cubeImageData->Modified();
     // A lasso selection on screen was placed against the display we just replaced.
     this->refreshLassoAfterDisplaySwap();
+    // …and so was any amber ROI preview box (Export Sub-Cube / Mask 3-D / noise).
+    this->refreshRegionPreviewAfterDisplaySwap();
     this->remoteIsosurfaceReady = false;
     this->setCubeRenderModeLocally(false);
     if (result.momentImageData) {
@@ -12332,8 +12356,16 @@ void vtkWindowCube::applyMomentToolGate()
         if (!showingOurReason)
             m_toolBaseTooltips.insert(a, a->toolTip());
         if (!enabled && !reason.isEmpty()) {
-            if (a->isCheckable() && a->isChecked())
+            if (a->isCheckable() && a->isChecked()) {
+                // This gate un-arms because the tool's VIEW left the layout, not
+                // because the user closed the tool — so the lasso must suspend
+                // (stop listening for clicks) rather than close, which would throw
+                // away a selection the user refined merely for switching panes.
+                const bool lasso = (a == m_actKinematicLasso.data());
+                if (lasso) m_lassoDisarmIsSuspend = true;
                 a->setChecked(false);   // un-arm a tool whose view left the layout
+                if (lasso) m_lassoDisarmIsSuspend = false;
+            }
             a->setEnabled(false);
             a->setToolTip(reason);
             a->setStatusTip(reason);

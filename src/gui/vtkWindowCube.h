@@ -409,6 +409,7 @@ public slots:
             this->clearNoiseRegionPreview();
     }
     void clearNoiseRegionPreview();
+    void refreshRegionPreviewAfterDisplaySwap();  ///< re-place the amber box on a preview<->full swap
 
 private:
     struct MomentMapApplyResult
@@ -1167,6 +1168,10 @@ protected:
     QString m_lastStatisticsProductId;
     /// Whoever last drew the amber region overlay (see claimRegionPreview).
     QPointer<QObject> m_regionPreviewOwner;
+    /// Full-res voxel indices of the amber ROI box last shown, so it can be
+    /// re-placed when the display swaps between the preview and full resolution.
+    std::array<int, 6> m_regionPreviewBounds{ 0, 0, 0, 0, 0, 0 };
+    bool m_regionPreviewActive{ false };
     QPointer<QDialog> m_subCubeDialog;
     QPointer<QDialog> m_maskRegionDialog;
     bool m_subCubeBusy{ false };
@@ -1200,6 +1205,9 @@ protected:
     /// THIS, not m_lassoLastSeed: a ⇧/⌥ click adds or carves without moving the
     /// grow's origin, and the marker must still show where the user clicked.
     std::array<int, 3> m_lassoMarkerSeed{ 0, 0, 0 };
+    /// Set only while the pane-layout gate un-arms the tool: that disarm suspends
+    /// the lasso, it does not close it, so the selection survives the pane change.
+    bool m_lassoDisarmIsSuspend{ false };
     bool m_lassoSurfaceShown{ false };            ///< the green surface actually has geometry
     bool m_lassoDiscardResult{ false };           ///< discard the in-flight grow (cleared mid-fetch)
     bool m_lassoPendingRegrow{ false };           ///< a slider moved during a grow → re-grow on finish
