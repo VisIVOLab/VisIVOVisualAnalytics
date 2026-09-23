@@ -500,7 +500,10 @@ Given a viewport (RA/Dec center + FOV), return the HEALPix tiles covering it —
 NESTED pixel index, centre and four corners per tile — at the requested order,
 clamped to the survey's `max_order`. A field of 360° means the whole sphere and
 returns every tile of the order (`12 × 4^order` of them), which is what the
-all-sky projections ask for. **The position is in ICRS and so is every position
+all-sky projections ask for. `radius_deg` is the angular radius the client
+measured for its own viewport; without it the disc is derived from `fov_deg`,
+which is quoted across the width and so misses the corners of a tall window or
+a curved projection. **The position is in ICRS and so is every position
 returned**, whatever frame the survey is tiled in: the centre is converted into
 the survey's frame to pick the tiles and the tile centres and corners are
 converted back. Over half the CDS registry is galactic, and reading those tile

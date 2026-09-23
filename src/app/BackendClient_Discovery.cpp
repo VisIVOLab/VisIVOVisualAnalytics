@@ -126,18 +126,22 @@ QByteArray BackendClient::requestHiPSTile(const QString &surveyId, int order, in
 
 BackendHiPSViewResponse BackendClient::requestHiPSTilesForView(const QString &surveyId,
                                                                double raDeg, double decDeg,
-                                                               double fovDeg, int order) const
+                                                               double fovDeg, int order,
+                                                               double radiusDeg) const
 {
     BackendHiPSViewResponse result;
     const QUrl url(m_baseUrl + QStringLiteral("/v1/hips/") + surveyId
                    + QStringLiteral("/query_tiles"));
-    const QJsonDocument body(QJsonObject{
+    QJsonObject bodyObj{
             { QStringLiteral("survey_id"), surveyId },
             { QStringLiteral("ra_center"),  raDeg   },
             { QStringLiteral("dec_center"), decDeg  },
             { QStringLiteral("fov_deg"),    fovDeg  },
             { QStringLiteral("order"),      order   },
-    });
+    };
+    if (radiusDeg > 0.0)
+        bodyObj[QStringLiteral("radius_deg")] = radiusDeg;
+    const QJsonDocument body(bodyObj);
     QString error;
     const QByteArray payload = performPost(url, body, error);
     if (!error.isEmpty()) {

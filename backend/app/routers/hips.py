@@ -265,7 +265,7 @@ async def hips_query_tiles(
         tiles_raw = await loop.run_in_executor(
             None, _get_tiles_for_fov,
             request.ra_center, request.dec_center, request.fov_deg, order,
-            entry.get("frame", "equatorial"),
+            entry.get("frame", "equatorial"), request.radius_deg,
         )
     except Exception as exc:
         return HiPSViewResponse(valid=False, error=f"HEALPix query failed: {exc}")

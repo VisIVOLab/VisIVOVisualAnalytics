@@ -30,10 +30,18 @@ tests/
   test_ray_voxel_pick.cpp          # 18 — 3-D ray → voxel picking
   test_sed_builder.cpp             # 20 — SED from catalogue rows: band-merged groups, branches, flux columns, units
   test_vlkb_pos_string.cpp         # 11 — VLKB POS strings: longitude wrapping, the box across l = 0
+  test_catalogue_cosmology.cpp     #  8 — local Planck18 distances against astropy, to z = 20
+  test_fits_header_card.cpp        # 11 — one header card: types, quoting, refused keywords
+  test_layer_card_geometry.cpp     #  8 — layer-card hit rectangles in the image viewer
+  test_region_readout.cpp          #  8 — what a region reports, and in which units
 ```
 
-Total: **326 tests** in one binary, as QTest counts them — each class
+Total: **379 tests** in one binary, as QTest counts them — each class
 contributes its own `initTestCase` / `cleanupTestCase` to that figure.
+The per-file numbers above come from the binary's own totals
+(`./VisIVOTests | grep Totals`), so they can be checked rather than trusted.
+They sum to 361: the remaining 18 are `test_viewer_mode_state.cpp` (6) and
+`test_sky_overlap.cpp` (12), described below rather than listed above.
 `ctest -V` prints the per-class totals.
 
 What belongs here: pure logic lifted out of the GUI classes so it can be
@@ -101,7 +109,7 @@ the way files get opened:
   half is reading what services actually send: a VO error carried inside a valid
   VOTable, a TAP error returned as XML when CSV was asked for, an HTML gateway
   page where a FITS was expected;
-- `test_hips_tile_query.py` (9) covers the two routes that decide whether the
+- `test_hips_tile_query.py` (10) covers the two routes that decide whether the
   HiPS viewer shows anything — `query_tiles` and `catalogue_overlay`. Both had
   no test and both shipped dead: a router refactor left them calling a name the
   star-import does not re-export, and the surrounding `except Exception` dressed

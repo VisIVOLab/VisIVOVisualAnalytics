@@ -1907,7 +1907,7 @@ public:
     /** POST /v1/hips/{id}/query_tiles – tile list for the current viewport. */
     BackendHiPSViewResponse requestHiPSTilesForView(const QString &surveyId,
                                                     double raDeg, double decDeg,
-                                                    double fovDeg, int order) const;
+                                                    double fovDeg, int order, double radiusDeg = 0.0) const;
     // ── Milestone 2 ──────────────────────────────────────────────────────────
     // ── Cosmology endpoints ───────────────────────────────────────────────────
     /** POST /v1/cosmology/distance/batch – comoving distances for a list of redshifts. */

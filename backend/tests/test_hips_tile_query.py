@@ -91,6 +91,27 @@ async def test_query_tiles_returns_a_covering_tile_set(client, auth_headers):
 
 
 @pytest.mark.asyncio
+async def test_query_tiles_honours_an_explicit_radius(client, auth_headers):
+    """A field of view is quoted across the width. A tall window, or a curved
+    projection, reaches further than half of it, and the tiles for the corners
+    were simply never asked for."""
+    survey_id, session_headers = _register_survey()
+
+    async def query(**extra):
+        body = {"survey_id": survey_id, "ra_center": 0.0, "dec_center": 0.0,
+                "fov_deg": 10.0, "order": 5}
+        body.update(extra)
+        return (await client.post(f"/v1/hips/{survey_id}/query_tiles", json=body,
+                                  headers={**auth_headers, **session_headers})).json()
+
+    narrow = await query()
+    wide = await query(radius_deg=11.05)      # the corner of a 600x1200 viewport
+    assert narrow["valid"] and wide["valid"]
+    assert len(wide["tiles"]) > len(narrow["tiles"])
+    assert set(t["pix"] for t in narrow["tiles"]) < set(t["pix"] for t in wide["tiles"])
+
+
+@pytest.mark.asyncio
 async def test_a_galactic_survey_returns_tiles_around_the_requested_sky_position():
     """A HiPS is tiled in its own frame, and more than half the CDS registry is
     galactic. Reading those tile coordinates as RA/Dec put a galactic survey's

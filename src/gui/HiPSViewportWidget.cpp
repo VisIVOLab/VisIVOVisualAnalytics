@@ -402,6 +402,10 @@ HiPSViewportWidget::HiPSViewportWidget(QWidget *parent)
                          }
                          update();
                          emit orderChanged(currentOrder());
+                         if (m_tileListPending) {
+                             m_tileListPending = false;
+                             QTimer::singleShot(0, this, [this]() { requestTileList(); });
+                         }
                      });
 
     // ── Allsky watcher (secondary — Task 2) ───────────────────────────────
@@ -438,6 +442,10 @@ HiPSViewportWidget::HiPSViewportWidget(QWidget *parent)
                              }
                          }
                          update();
+                         if (m_tileListPendingSec) {
+                             m_tileListPendingSec = false;
+                             QTimer::singleShot(0, this, [this]() { requestTileListSec(); });
+                         }
                      });
 
     // ── Catalogue watcher (Task 3) ────────────────────────────────────────
@@ -734,25 +742,44 @@ double HiPSViewportWidget::viewportRadiusDeg() const
     // Measured, not assumed. In the native frame the separation from the view
     // centre is just the angle off the +Z axis, so each probe is one acos.
     //
-    // A probe that falls outside the projection's outline has no sky position
-    // at all, and treating it as zero understated the radius: in orthographic
-    // at a 90 degree field the corners are off the disc, which measured 51
-    // degrees for a viewport showing 82. When that happens the honest answer
-    // is that the view reaches as far as the projection does.
+    // The perimeter is sampled densely rather than at the four corners: in a
+    // curved projection the furthest point of a wide viewport is not a corner.
+    // A 284-degree Hammer-Aitoff field in a 1200x300 window reaches 154.8
+    // degrees part-way up its left edge, where the corners only reach 153.1,
+    // and catalogue sources in between were dropped. A probe that falls
+    // outside the projection's outline has no sky position at all, and the
+    // honest answer is then that the view reaches as far as the projection
+    // does.
     const double scale = scalePixPerRad();
-    double worst = 0.0;
-    for (int j = 0; j <= 2; ++j) {
-        for (int i = 0; i <= 2; ++i) {
-            const double px = -(double(i) * width()  * 0.5 - width()  * 0.5) / scale;
-            const double py = -(double(j) * height() * 0.5 - height() * 0.5) / scale;
-            NativeVec v{};
-            if (!unprojectNative(m_projection, px, py, v))
+    const auto probe = [&](double x, double y, double &sepDeg) {
+        NativeVec v{};
+        if (!unprojectNative(m_projection,
+                             -(x - width() * 0.5) / scale,
+                             -(y - height() * 0.5) / scale, v))
+            return false;
+        sepDeg = qRadiansToDegrees(std::acos(std::clamp(v.z, -1.0, 1.0)));
+        return true;
+    };
+
+    constexpr int kPerEdge = 64;
+    double worst = 0.0, sep = 0.0;
+    for (int k = 0; k <= kPerEdge; ++k) {
+        const double t = double(k) / kPerEdge;
+        const double x = t * width(), y = t * height();
+        // The four edges, plus the centre lines so a viewport that straddles
+        // the outline is caught wherever it does so.
+        const QPointF points[] = {
+            { x, 0.0 }, { x, double(height()) }, { 0.0, y }, { double(width()), y },
+            { x, height() * 0.5 }, { width() * 0.5, y },
+        };
+        for (const QPointF &pt : points) {
+            if (!probe(pt.x(), pt.y(), sep))
                 return 180.0;
-            worst = std::max(worst,
-                             qRadiansToDegrees(std::acos(std::clamp(v.z, -1.0, 1.0))));
+            worst = std::max(worst, sep);
         }
     }
-    return std::clamp(worst, 0.0, 180.0);
+    // A little margin: the sampling is dense but it is still sampling.
+    return std::clamp(worst * 1.05, 0.0, 180.0);
 }
 
 int HiPSViewportWidget::allSkyOrder(bool secondary) const
@@ -903,7 +930,11 @@ void HiPSViewportWidget::onViewChanged()
 
 void HiPSViewportWidget::requestTileList()
 {
-    if (m_tileListWatcher.isRunning()) return;
+    if (m_tileListWatcher.isRunning()) {
+        m_tileListPending = true;
+        return;
+    }
+    m_tileListPending = false;
 
     const QString backendUrl   = m_backendUrl;
     const QString backendToken = m_backendToken;
@@ -919,13 +950,20 @@ void HiPSViewportWidget::requestTileList()
     const int     order        = wholeSky
                                        ? allSkyOrder(false)
                                        : optimalOrder(m_view.fovDeg, width(), m_survey.maxOrder);
+    // The disc the backend queries has to cover the viewport, corners and all.
+    // Past 90 degrees we ask for the whole sphere as a matter of policy rather
+    // than geometry: that is the order the AllSky mosaic already covers, so it
+    // costs nothing, and it is drawn from previews without fetching.
+    const double  radiusDeg    = wholeSky ? 180.0 : viewportRadiusDeg();
 
     m_tileListWatcher.setFuture(QtConcurrent::run(
-            [backendUrl, backendToken, surveyId, sessionId, raDeg, decDeg, fovDeg, order]()
+            [backendUrl, backendToken, surveyId, sessionId, raDeg, decDeg, fovDeg, order,
+             radiusDeg]()
                     -> BackendHiPSViewResponse {
                 BackendClient client(backendUrl, backendToken);
                 if (!sessionId.isEmpty()) client.setSessionId(sessionId);
-                return client.requestHiPSTilesForView(surveyId, raDeg, decDeg, fovDeg, order);
+                return client.requestHiPSTilesForView(surveyId, raDeg, decDeg, fovDeg,
+                                                      order, radiusDeg);
             }));
 }
 
@@ -1008,7 +1046,12 @@ void HiPSViewportWidget::drainFetchQueue()
 
 void HiPSViewportWidget::requestTileListSec()
 {
-    if (!m_hasSurveySec || m_tileListWatcherSec.isRunning()) return;
+    if (!m_hasSurveySec) return;
+    if (m_tileListWatcherSec.isRunning()) {
+        m_tileListPendingSec = true;
+        return;
+    }
+    m_tileListPendingSec = false;
 
     const QString backendUrl   = m_backendUrlSec;
     const QString backendToken = m_backendTokenSec;
@@ -1024,13 +1067,16 @@ void HiPSViewportWidget::requestTileListSec()
     const int     order        = wholeSky
                                        ? allSkyOrder(true)
                                        : optimalOrder(m_view.fovDeg, width(), m_surveySec.maxOrder);
+    const double  radiusDeg    = wholeSky ? 180.0 : viewportRadiusDeg();
 
     m_tileListWatcherSec.setFuture(QtConcurrent::run(
-            [backendUrl, backendToken, surveyId, sessionId, raDeg, decDeg, fovDeg, order]()
+            [backendUrl, backendToken, surveyId, sessionId, raDeg, decDeg, fovDeg, order,
+             radiusDeg]()
                     -> BackendHiPSViewResponse {
                 BackendClient client(backendUrl, backendToken);
                 if (!sessionId.isEmpty()) client.setSessionId(sessionId);
-                return client.requestHiPSTilesForView(surveyId, raDeg, decDeg, fovDeg, order);
+                return client.requestHiPSTilesForView(surveyId, raDeg, decDeg, fovDeg,
+                                                      order, radiusDeg);
             }));
 }
 

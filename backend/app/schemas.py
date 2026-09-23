@@ -544,6 +544,10 @@ class HiPSViewRequest(BaseModel):
     dec_center: float
     fov_deg: float
     order: int
+    # Angular radius that actually covers the viewport. A field of view quoted
+    # across the width says nothing about a tall window or a curved
+    # projection; 0 falls back to deriving it from fov_deg.
+    radius_deg: float = 0.0
 
 
 class HiPSViewResponse(BaseModel):

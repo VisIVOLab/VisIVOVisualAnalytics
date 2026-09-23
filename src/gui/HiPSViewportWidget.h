@@ -215,6 +215,10 @@ private:
     // ── Tile list + cache (primary) ───────────────────────────────────────────
     std::vector<HiPSTileDescriptor> m_currentTiles;
     QFutureWatcher<BackendHiPSViewResponse> m_tileListWatcher;
+    // A view change that arrived while a tile list was in flight: without it
+    // the request that returns is for the field we have already left, and
+    // nothing asks for the current one until the user moves again.
+    bool m_tileListPending{ false };
     static constexpr int kMaxConcurrent = 6;
     QHash<HiPSTileKey, QPixmap> m_tileCache;
     // Low-resolution tiles cut out of the AllSky mosaic. Kept apart from
@@ -241,6 +245,7 @@ private:
 
     std::vector<HiPSTileDescriptor> m_currentTilesSec;
     QFutureWatcher<BackendHiPSViewResponse> m_tileListWatcherSec;
+    bool m_tileListPendingSec{ false };
     QHash<HiPSTileKey, QPixmap> m_tileCacheSec;
     QHash<HiPSTileKey, QPixmap> m_previewCacheSec;
     QSet<HiPSTileKey>  m_pendingKeysSec;

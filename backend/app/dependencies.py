@@ -1692,7 +1692,8 @@ def _icrs_to_hips_frame(frame: str, ra_deg: float, dec_deg: float) -> tuple[floa
 
 
 def _get_tiles_for_fov(
-    ra_deg: float, dec_deg: float, fov_deg: float, order: int, frame: str = "equatorial"
+    ra_deg: float, dec_deg: float, fov_deg: float, order: int, frame: str = "equatorial",
+    radius_deg: float = 0.0,
 ) -> list[dict]:
     """HEALPix NESTED tiles covering the given FOV, in ICRS.  Requires healpy.
 
@@ -1709,8 +1710,13 @@ def _get_tiles_for_fov(
     theta = _math.radians(90.0 - lat_deg)
     phi   = _math.radians(lon_deg)
     vec   = _hp.ang2vec(theta, phi)
-    # Disc radius with √2 margin so corner tiles are included
-    radius_rad = _math.radians(fov_deg / 2.0 * 1.42)
+    # The radius the client measured for its own viewport when it sent one:
+    # only it knows the aspect ratio and the projection, and a 10 degree field
+    # in a 600x1200 window reaches 11 degrees at the corner while half the
+    # field of view with a sqrt(2) margin gives 7.1. The old estimate remains
+    # the fallback for a caller that says nothing.
+    radius_rad = _math.radians(radius_deg if radius_deg and radius_deg > 0
+                               else fov_deg / 2.0 * 1.42)
     if radius_rad >= _math.pi:
         # A disc that large is the whole sphere, and query_disc will not take a
         # radius above pi. The all-sky projections ask for exactly this.
