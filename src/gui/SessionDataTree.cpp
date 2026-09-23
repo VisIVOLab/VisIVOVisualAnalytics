@@ -198,6 +198,17 @@ SessionDataTree::SessionDataTree(QWidget *parent)
     // it never MOUNTS anything or rearranges panes. Mounting is the explicit
     // gesture: double-click (onActivated), or right-click ▸ Show in.
     //
+    // ANY button, the right one included. Qt makes the pressed row current
+    // whichever button pressed it, and a right-click that highlights a row
+    // without taking the focus with it leaves exactly the split this signal
+    // exists to close: the tree pointing at one view while the dock's DISPLAY
+    // section is titled after another — and the highlight OUTLIVES the menu, so
+    // the misleading state is what you are left looking at (user report). The
+    // historical reason to keep the right-click inert was that selection used to
+    // MOUNT, which made "Show in ▸" pointless by acting before it opened; that
+    // menu is built per visible pane and never consults the active one, so
+    // moving the focus cannot disturb it.
+    //
     // Selection used to mount into the active pane, which had two consequences.
     // It replaced whatever that pane was showing just because the user clicked a
     // row to read its provenance — and since Qt makes the pressed row current on

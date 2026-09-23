@@ -191,7 +191,9 @@ different things:
 
 - **Click** a row — the dataset's views (*3D Volume*, *2D Slice*) or any product
   — to *inspect* it: the Inspector's Properties / Provenance follow the
-  selection. Nothing moves in the panes.
+  selection, and if a pane is already showing that row it becomes the **active**
+  one. Nothing is mounted and no pane changes what it shows; a row that is not on
+  screen anywhere simply leaves the panes alone.
 - **Double-click** to *show* it: the row is mounted in a pane (a free one, else
   the layout grows). A product with no pane renderer — a baseline-subtracted
   cube, a noise estimate — raises its own window instead.
@@ -204,7 +206,20 @@ different things:
 Selecting a row used to mount it straight away. That replaced whatever the
 active pane was showing just because you clicked a row to read its provenance —
 and, since a right-click also makes a row current, it mounted the product before
-its own *Show in ▸* menu could open, which made that menu pointless.
+its own *Show in ▸* menu could open, which made that menu pointless. Selection
+now moves the focus at most: it follows a view that is already on screen, and
+never mounts. That applies to the right-click too — it highlights the row it
+acts on, and the highlight stays after the menu closes, so the focus has to go
+with it or the panel is left pointing at one view while the dock describes
+another. *Show in ▸* is built per pane and does not consult the active one, so
+nothing there is disturbed.
+```
+
+```{tip}
+Why the focus matters: the dock's **DISPLAY** section is titled after the active
+pane and acts on it. If the tree says *2D Slice* while the active pane is the
+3-D view, the colour map you change there is the volume's. That is why selecting
+a row now takes the focus with it.
 ```
 
 #### When a tool is available, and where it acts

@@ -580,7 +580,7 @@ is the route that always works.
 
 ---
 
-## Session Data tree (`SessionDataTree`) — selection is passive
+## Session Data tree (`SessionDataTree`) — selection focuses, it never mounts
 
 The tree is the table of contents for the dataset's views (`view3d`, `slice2d`)
 and its registered products. Its contract, worth stating because breaking it is
@@ -589,6 +589,7 @@ invisible until someone loses a pane:
 | Gesture | Signal | Effect |
 |---------|--------|--------|
 | select (any button) | `productSelected(productId)` | Inspector ▸ Properties / Provenance follow. **Nothing is mounted.** |
+| select (left button or keyboard) | `rowSelected(viewTag, productId)` | `focusSessionViewIfVisible()` makes the pane ALREADY showing that row active. Mounts nothing, moves nothing; a row on no pane is left alone |
 | double-click | `rowActivated(viewTag, productId)` | `activateSessionView()` mounts the row (free pane → grow), or raises the product's own window when it has no pane renderer |
 | right-click | `rowContextMenuRequested(viewTag, productId, pos)` | the viewer builds "Show in ▸ Pane N" (and "Bring window to front" for a window-only product) |
 | pane-badge click | `paneBadgeActivated(pane)` | activates the pane that already shows the row |
@@ -598,18 +599,54 @@ selection *was* activation. Two consequences: clicking a row to read its
 provenance replaced whatever the active pane was showing, and — because Qt makes
 the pressed row current on any button — a right-click mounted the product before
 its own "Show in ▸" menu opened, which made that menu unreachable in practice.
-Selection is now inspection only; mounting is explicit.
+Selection is now inspection plus focus; mounting stays explicit.
+
+The focus half came later, from a user report that is worth recording because it
+shows why "passive" was too passive. The left dock's DISPLAY section is titled
+after, and acts on, the **active pane**. Selecting *2D Slice* in the tree while
+the 3-D pane stayed active left the header reading `DISPLAY - 3D VIEW`, so the
+colour map changed there went to the volume — the tree said one thing and the
+dock did another. `rowSelected` closes that gap with the weakest action that
+does: follow the pane that already shows the row.
+
+Two guards keep it from becoming the old behaviour again:
+
+- `m_selectingProgrammatically` (RAII, `QScopedValueRollback`) marks every
+  selection the CODE makes — `selectProduct()`, the pane→tree reverse sync
+  `selectForView()`, the dataset root, and `removeRow()`. The last one is not
+  theoretical: removing the current row makes a neighbour current, and without
+  the guard deleting a product moved the focus to whatever took its place.
+- `focusSessionViewIfVisible()` prefers an already-active matching pane before
+  searching, so a product duplicated into panes 1 and 3 does not drag the focus
+  from 3 to 1.
+
+The **right-click is not an exception**, and the first attempt at this made it
+one — reasoning from the warning below that a right-click must leave the panes
+alone. It must leave them *unmounted*; it cannot leave them unfocused. Qt makes
+the pressed row current whatever the button, that highlight outlives the menu,
+and a highlighted row whose pane is not the active one is precisely the split
+`rowSelected` exists to close. The old damage came from selection MOUNTING,
+which acted before "Show in ▸" could open; that menu is built per visible pane
+and never reads `m_activePane`, so focus cannot disturb it.
+
+What it deliberately does NOT do: mount, grow the layout, or run the
+explicit-activation side effects (`restoreProductOrigin`,
+`revealParametersTab`). Selecting a row that is on no pane leaves the panes as
+they are — the alternative is evicting what you are looking at because you
+clicked a row to read its parameters, which is the mistake this whole section
+is about.
 
 Two things follow from the change and must not be re-broken:
 
 - `onActivated()` handles the intrinsic **view** rows as well as products. They
   used to arrive in a pane only through the selection side effect, so
   double-click did nothing for them.
-- The `m_suppressActivate` flag (with its RAII guards around `selectProduct()` /
-  `selectForView()`) existed solely to stop a *programmatic* selection from
-  mounting a pane. With selection passive it guards nothing and is gone — if
-  activation is ever put back on `currentChanged`, that guard has to come back
-  with it, and so does the right-click problem.
+- The `m_suppressActivate` flag existed solely to stop a *programmatic*
+  selection from mounting a pane. Making selection passive retired it; adding
+  the focus half brought the same idea back as
+  `m_selectingProgrammatically`, for the same reason. If anything is ever put
+  back on `currentChanged`, it has to respect both that flag and the
+  right-click one.
 
 ### Menus across the application
 
