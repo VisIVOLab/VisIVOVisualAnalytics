@@ -1222,9 +1222,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             u"Show the 2D slice mapped as a textured plane inside the 3D cube view."_s);
     ui->menuView->addAction(this->actionShowCuttingPlane);
     QObject::connect(this->actionShowCuttingPlane, &QAction::toggled, this, [this](bool checked) {
-        if (this->remoteCuttingPlaneActor) {
-            this->remoteCuttingPlaneActor->SetVisibility(checked ? 1 : 0);
-        }
+        this->setRemoteCuttingPlaneVisible(checked);
         if (ui->vtkCube->renderWindow()) {
             ui->vtkCube->renderWindow()->Render();
         }
@@ -1628,6 +1626,11 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->remoteCuttingPlaneTexture->InterpolateOn();
     this->remoteCuttingPlaneTexture->RepeatOff();
     this->remoteCuttingPlaneActor->SetTexture(this->remoteCuttingPlaneTexture);
+    // Attached here, not on the first slice. Deferring it looked tidier — the
+    // texture is transparent until a slice arrives — but the deferred path is
+    // not reached in every flow, and the plane then showed its border and
+    // never the data. The border actor covers the empty-texture case instead,
+    // without touching when the texture is bound.
 
     this->updateDataStatePanel();
     this->updateSanityPanel();
@@ -5772,6 +5775,14 @@ bool vtkWindowCube::requestHighResCube()
     return true;
 }
 
+void vtkWindowCube::setRemoteCuttingPlaneVisible(bool visible)
+{
+    if (this->remoteCuttingPlaneActor)
+        this->remoteCuttingPlaneActor->SetVisibility(visible ? 1 : 0);
+    if (this->remoteCuttingPlaneEdgeActor)
+        this->remoteCuttingPlaneEdgeActor->SetVisibility(visible ? 1 : 0);
+}
+
 void vtkWindowCube::updateRemoteCuttingPlane(int sliceIndex)
 {
     // Mirror the slice index to the SSR backend so the textured plane
@@ -5787,7 +5798,7 @@ void vtkWindowCube::updateRemoteCuttingPlane(int sliceIndex)
     auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
     if (!cubeImage) {
         qDebug().noquote() << QStringLiteral("[remote-plane] preview valid=0");
-        this->remoteCuttingPlaneActor->VisibilityOff();
+        this->setRemoteCuttingPlaneVisible(false);
         return;
     }
 
@@ -5802,7 +5813,7 @@ void vtkWindowCube::updateRemoteCuttingPlane(int sliceIndex)
                            .arg(extent[3])
                            .arg(extent[4])
                            .arg(extent[5]);
-        this->remoteCuttingPlaneActor->VisibilityOff();
+        this->setRemoteCuttingPlaneVisible(false);
         return;
     }
 
@@ -5827,7 +5838,10 @@ void vtkWindowCube::updateRemoteCuttingPlane(int sliceIndex)
         mapper->Modified();
     }
     this->remoteCuttingPlaneActor->Modified();
-    this->remoteCuttingPlaneActor->VisibilityOn();
+    // From the checkbox, not unconditionally on: switching the plane off and
+    // then changing channel used to bring it straight back.
+    this->setRemoteCuttingPlaneVisible(!this->actionShowCuttingPlane
+                                       || this->actionShowCuttingPlane->isChecked());
     qDebug().noquote()
             << QStringLiteral("[remote-plane] update z=%1 bounds=%2,%3,%4,%5,%6,%7 visible=%8")
                        .arg(z, 0, 'g', 12)

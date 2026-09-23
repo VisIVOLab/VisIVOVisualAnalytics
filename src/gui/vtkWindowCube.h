@@ -1721,6 +1721,12 @@ protected:
     vtkSmartPointer<vtkGPUVolumeRayCastMapper> volumeMapper;  // stored for blend-mode changes
     vtkNew<vtkPlaneSource> remoteCuttingPlaneSource;
     vtkNew<vtkActor> remoteCuttingPlaneActor;
+    // The plane's border, as its own untextured actor. The textured plane's
+    // own EdgeVisibility is modulated by that texture, so on an empty channel
+    // — where the slice maps to the bottom of the colormap, which is black —
+    // the plane and its edges both vanished into the background and the plane
+    // looked as though it had been switched off.
+    vtkNew<vtkActor> remoteCuttingPlaneEdgeActor;
     // Texture sampling the 2D slice colors (sliceColors output) mapped onto
     // the cutting plane in the 3D view, so the plane shows the actual slice
     // content instead of a plain green fill.
@@ -1760,6 +1766,10 @@ protected:
     std::array<int, 6> computeVisibleROI();
     bool requestHighResCube();
     void updateRemoteCuttingPlane(int sliceIndex);
+    /// Fill and border in one call: they are one plane to the user. The
+    /// successful-update path used to turn the fill on unconditionally, so
+    /// switching the plane off and then changing channel brought it back.
+    void setRemoteCuttingPlaneVisible(bool visible);
     int remoteSliceCount() const;
     int clampRemoteSliceIndex(int sliceIndex) const;
     double remoteSliceCoordinate(int sliceIndex) const;

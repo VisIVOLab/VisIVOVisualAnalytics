@@ -1257,20 +1257,42 @@ void vtkWindowCube::setupCubeRenderer()
         this->remoteCuttingPlaneActor->SetMapper(planeMapper);
 
         // The slice texture is attached AFTER setupSliceRenderer() finishes
-        // (see the ctor, right after this->setupMomentRenderer()). Here we
-        // only configure the plane's solid-colour fallback: a translucent
-        // white surface with a red outline so the plane is still identifiable
-        // before the first slice tile arrives.
+        // (see the ctor). Here we only configure the fill: a translucent white
+        // surface under whatever the texture shows. The border is a separate
+        // actor below, because an edge drawn by THIS actor is modulated by the
+        // texture and vanishes on any channel whose data is near the bottom of
+        // the colour map.
         this->remoteCuttingPlaneActor->GetProperty()->SetColor(1.0, 1.0, 1.0);
         this->remoteCuttingPlaneActor->GetProperty()->SetOpacity(0.5);
-        this->remoteCuttingPlaneActor->GetProperty()->EdgeVisibilityOn();
-        this->remoteCuttingPlaneActor->GetProperty()->SetEdgeColor(1.0, 0.0, 0.0);
-        this->remoteCuttingPlaneActor->GetProperty()->SetLineWidth(3.0);
+        // No edges on this one: they are modulated by the texture, so on a
+        // dark slice they disappear with it, and on a bright one they change
+        // colour. remoteCuttingPlaneEdgeActor below draws the border instead,
+        // at a constant colour, whatever the channel holds.
+        this->remoteCuttingPlaneActor->GetProperty()->EdgeVisibilityOff();
         this->remoteCuttingPlaneActor->GetProperty()->LightingOff();
         this->remoteCuttingPlaneActor->GetProperty()->BackfaceCullingOff();
         this->remoteCuttingPlaneActor->GetProperty()->FrontfaceCullingOff();
         this->remoteCuttingPlaneActor->VisibilityOn();
         ren->AddViewProp(this->remoteCuttingPlaneActor);
+
+        // Border: same geometry, no texture, drawn as a wireframe. This is
+        // what makes the plane findable on a channel whose data is empty.
+        vtkNew<vtkPolyDataMapper> edgeMapper;
+        edgeMapper->SetInputConnection(this->remoteCuttingPlaneSource->GetOutputPort());
+        edgeMapper->ScalarVisibilityOff();
+        this->remoteCuttingPlaneEdgeActor->SetMapper(edgeMapper);
+        auto *edgeProp = this->remoteCuttingPlaneEdgeActor->GetProperty();
+        edgeProp->SetRepresentationToWireframe();
+        edgeProp->SetColor(1.0, 0.25, 0.25);
+        edgeProp->SetLineWidth(2.0);
+        edgeProp->LightingOff();
+        edgeProp->SetOpacity(1.0);
+        this->remoteCuttingPlaneEdgeActor->SetVisibility(
+                this->remoteCuttingPlaneActor->GetVisibility());
+        // From here on the two are set together, never separately — see
+        // setRemoteCuttingPlaneVisible().
+        this->remoteCuttingPlaneEdgeActor->PickableOff();
+        ren->AddViewProp(this->remoteCuttingPlaneEdgeActor);
         qDebug().noquote()
                 << QStringLiteral("[remote-plane] actor added renderer=%1 actor=%2 visible=%3")
                            .arg(reinterpret_cast<quintptr>(ren.GetPointer()), 0, 16)
