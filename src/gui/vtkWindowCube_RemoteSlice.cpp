@@ -277,6 +277,14 @@ void vtkWindowCube::requestRemoteSlice(int sliceIndex)
         return;
     }
 
+    // Asking for a slice again — whether that starts a fetch or adopts one that
+    // is already out — takes a previous failure off the pane. Both paths, or
+    // adopting an in-flight fetch would leave the old error sitting there while
+    // the status bar says it is loading.
+    if (this->m_slice2dLoadingActor && this->m_slice2dLoadingActor->GetVisibility()) {
+        this->setSlice2dPlaceholder(u"Loading 2D view…"_s);
+    }
+
     const QString key = this->remoteSliceCacheKey(sliceIndex);
     if (const auto inFlight = this->remoteSliceFetchesInFlight.constFind(key);
         inFlight != this->remoteSliceFetchesInFlight.cend()) {
@@ -319,6 +327,26 @@ void vtkWindowCube::requestRemoteSlice(int sliceIndex)
     ++this->activeRemoteSliceRequests;
     this->statusBar()->showMessage(u"Loading remote slice..."_s);
     this->startRemoteSliceFetch(sliceIndex, false, requestId);
+}
+
+void vtkWindowCube::setSlice2dPlaceholder(const QString &text)
+{
+    // One owner for the text in the middle of an empty 2-D pane: "Loading…"
+    // while a fetch is out, the reason when one fails. An empty string hides it.
+    if (!this->m_slice2dLoadingActor) {
+        return;
+    }
+    if (text.isEmpty()) {
+        this->m_slice2dLoadingActor->VisibilityOff();
+    } else {
+        this->m_slice2dLoadingActor->SetInput(text.toUtf8().constData());
+        this->m_slice2dLoadingActor->VisibilityOn();
+    }
+    // sliceWin, not active2dWin(): the placeholder was added to the slice
+    // renderer, and the "active" 2-D window may be the moment map.
+    if (this->sliceWin) {
+        this->sliceWin->Render();
+    }
 }
 
 void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
@@ -535,6 +563,15 @@ void vtkWindowCube::startRemoteSliceFetch(int sliceIndex, bool isPrefetch, int r
                                  // one would otherwise clear the only thing that
                                  // told the user the slice failed.
                                  this->m_sliceErrorOnStatusBar = true;
+                                 // …and say it in the pane itself. A status-bar
+                                 // line is easy to miss next to a 2-D view that
+                                 // goes on claiming it is still loading, which is
+                                 // how a wedged backend read as a slow one.
+                                 this->setSlice2dPlaceholder(
+                                         u"2-D view could not be loaded.\n%1"_s.arg(
+                                                 result.errorMessage.isEmpty()
+                                                         ? u"The backend did not return the slice."_s
+                                                         : result.errorMessage));
                              }
                              return;
                          }

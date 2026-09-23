@@ -353,6 +353,9 @@ void WorkspaceChrome::installSessionDock(const QString &datasetKey,
     // showing that view/product the active one (or mount it).
     connect(m_sessionTree, &SessionDataTree::rowActivated, this,
             &WorkspaceChrome::sessionRowActivated);
+    // Selecting a row focuses the pane that already shows it (no mounting).
+    connect(m_sessionTree, &SessionDataTree::rowSelected, this,
+            &WorkspaceChrome::sessionRowSelected);
     // (#4) A pane-number badge click activates that pane.
     connect(m_sessionTree, &SessionDataTree::paneBadgeActivated, this,
             &WorkspaceChrome::sessionPaneBadgeActivated);

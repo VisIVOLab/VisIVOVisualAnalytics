@@ -14,6 +14,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QStandardItem>
+#include <QScopedValueRollback>
 #include <QStandardItemModel>
 #include <QStyledItemDelegate>
 #include <QTimer>
@@ -193,8 +194,9 @@ SessionDataTree::SessionDataTree(QWidget *parent)
             [this]() { updateHeightToContents(); });
     connect(m_model, &QStandardItemModel::rowsRemoved, this,
             [this]() { updateHeightToContents(); });
-    // Selecting a row INSPECTS it; it does not move anything. Mounting is the
-    // explicit gesture: double-click (onActivated), or right-click ▸ Show in.
+    // Selecting a row INSPECTS it, and focuses the pane that already shows it —
+    // it never MOUNTS anything or rearranges panes. Mounting is the explicit
+    // gesture: double-click (onActivated), or right-click ▸ Show in.
     //
     // Selection used to mount into the active pane, which had two consequences.
     // It replaced whatever that pane was showing just because the user clicked a
@@ -206,6 +208,14 @@ SessionDataTree::SessionDataTree(QWidget *parent)
                 QStandardItem *it = m_model->itemFromIndex(cur);
                 const QString productId = it ? it->data(kProductIdRole).toString() : QString();
                 emit productSelected(productId);                 // → Inspector › Provenance
+                // A selection the USER made also moves the focus to the pane already
+                // showing that row, so the dock's DISPLAY section is about the thing
+                // that is highlighted. A programmatic one stays passive.
+                if (!m_selectingProgrammatically) {
+                    const QString viewTag = it ? it->data(kViewTagRole).toString() : QString();
+                    if (!viewTag.isEmpty() || !productId.isEmpty())
+                        emit rowSelected(viewTag, productId);
+                }
             });
 
     ProductRegistry &reg = ProductRegistry::instance();
@@ -305,7 +315,14 @@ void SessionDataTree::onProductRemoved(const QString &productId)
         for (int i = 0; i < ds->rowCount(); ++i) {
             QStandardItem *child = ds->child(i);
             if (child && child->data(kProductIdRole).toString() == productId) {
-                ds->removeRow(i);
+                // Removing the current row makes a NEIGHBOUR current, and that
+                // is not a selection gesture: without the guard, deleting a
+                // product would move the focus (and the dock's DISPLAY section)
+                // to whatever row happened to take its place.
+                {
+                    QScopedValueRollback<bool> guard(m_selectingProgrammatically, true);
+                    ds->removeRow(i);
+                }
                 updateHeightToContents();
                 return;
             }
@@ -324,8 +341,13 @@ void SessionDataTree::setCurrentDataset(const QString &parentKey, const QString 
     for (const AnalysisProduct &p : existing)
         if (ownsProduct(p))
             upsertProduct(p);
-    if (ds)
+    if (ds) {
+        // A dataset root carries neither a view tag nor a product id, so this
+        // cannot emit rowSelected today; guarded anyway, because "the code moved
+        // the selection" is the rule, not a property of this particular row.
+        QScopedValueRollback<bool> guard(m_selectingProgrammatically, true);
         m_tree->setCurrentIndex(ds->index());
+    }
     // Defer once so row heights are realised by the layout before we measure.
     updateHeightToContents();
     QTimer::singleShot(0, this, [this]() { updateHeightToContents(); });
@@ -359,6 +381,8 @@ void SessionDataTree::selectProduct(const QString &productId)
                 // Programmatic selection (e.g. registerAnalysisProduct populating
                 // Provenance): drive productSelected but NOT rowActivated — a passive
                 // registration must never mount/steal a pane.
+                // Passive: a product registering itself must not steal a pane.
+                QScopedValueRollback<bool> guard(m_selectingProgrammatically, true);
                 m_tree->setCurrentIndex(child->index());   // → currentChanged → productSelected
                 return;
             }
@@ -464,6 +488,9 @@ void SessionDataTree::selectForView(const QString &viewTag, const QString &produ
     walk(m_model->invisibleRootItem());
     if (!match)
         return;
+    // Passive: this is the pane→tree direction, so it must not emit rowSelected and
+    // bounce straight back as tree→pane.
+    QScopedValueRollback<bool> guard(m_selectingProgrammatically, true);
     m_tree->setCurrentIndex(match->index());   // passive: selection no longer mounts
 }
 

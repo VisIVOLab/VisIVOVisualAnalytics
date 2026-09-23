@@ -16,6 +16,7 @@ import urllib.error as _urllib_error
 import urllib.request as _urllib_request
 import uuid
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime, timezone
 from pathlib import Path
 from pathlib import Path as _Path
@@ -141,12 +142,89 @@ def _worker_init(counter, visible_gpus) -> None:  # pragma: no cover
     )
 
 
-_POOL = ProcessPoolExecutor(
-    max_workers=_WORKERS,
-    mp_context=_MP_CONTEXT,
-    initializer=_worker_init,
-    initargs=(_GPU_COUNTER, _VISIBLE_GPUS),
-)
+def _new_pool() -> ProcessPoolExecutor:
+    return ProcessPoolExecutor(
+        max_workers=_WORKERS,
+        mp_context=_MP_CONTEXT,
+        initializer=_worker_init,
+        initargs=(_GPU_COUNTER, _VISIBLE_GPUS),
+    )
+
+
+_POOL = _new_pool()
+# Guards the replacement of a broken pool: several requests usually fail
+# together, and only the first of them should build the replacement.
+_POOL_LOCK = threading.Lock()
+# Counts how many times the pool had to be rebuilt, so /health can say so.
+_POOL_RESTARTS = 0
+
+
+def pool_health() -> dict[str, Any]:
+    """How the local worker pool is doing, for ``/v1/health``."""
+    return {"workers": _WORKERS, "restarts": _POOL_RESTARTS}
+
+
+def _replace_broken_pool(pool: ProcessPoolExecutor, fn) -> None:
+    """Swap in a fresh pool, unless somebody already did it for this one."""
+    global _POOL, _POOL_RESTARTS
+    with _POOL_LOCK:
+        if _POOL is not pool:
+            return                      # another caller got there first
+        logger.error(
+            "[pool] worker pool is broken (a worker process died) around %s; replacing it",
+            getattr(fn, "__name__", fn),
+        )
+        _POOL_RESTARTS += 1
+        _POOL = _new_pool()
+    try:
+        pool.shutdown(wait=False)
+    except Exception:                   # noqa: BLE001 - already broken; never mask the caller's error
+        logger.debug("[pool] shutdown of the broken pool failed", exc_info=True)
+
+
+async def _run_in_pool(fn, *args) -> Any:
+    """Submit to the local process pool, surviving a worker that dies.
+
+    A ProcessPoolExecutor whose worker is killed (OOM, a segfaulting native
+    library, an operator killing the process group) is **permanently broken**:
+    every later submit raises, and since this pool is a module global that means
+    every slice, preview and probe fails for the lifetime of the backend while
+    ``/health`` keeps answering instantly and the client keeps reporting
+    "backend ok". Observed exactly that way — a wedged backend whose only
+    symptom was "[Errno 32] Broken pipe" in the status bar and a 2-D view that
+    never loaded.
+
+    So a broken pool is always replaced. Whether *this* call may be retried
+    turns on one question — did its work ever start? — and there is a reliable
+    signal for it, which "somebody else replaced the pool first" is not:
+
+    * ``submit()`` **rejected** the task (``run_in_executor`` calls it
+      synchronously): the pool was already broken, our work never ran, another
+      request's task is what killed the worker. Safe to retry on the new pool.
+    * the **future** failed while we awaited it: our task had been accepted, and
+      nothing here can tell whether it was the one that killed the worker or an
+      innocent bystander that was merely queued behind it. Resubmitting a killer
+      would take the replacement pool down too, so this request fails — and the
+      next one finds a healthy pool.
+    """
+    loop = _asyncio.get_running_loop()
+    for attempt in (0, 1):
+        pool = _POOL
+        try:
+            future = loop.run_in_executor(pool, fn, *args)
+        except BrokenProcessPool:
+            _replace_broken_pool(pool, fn)
+            if attempt == 0:
+                continue                # never ran → retry once on the fresh pool
+            raise
+        try:
+            return await future
+        except BrokenProcessPool:
+            _replace_broken_pool(pool, fn)
+            raise
+    raise AssertionError("unreachable: the loop either returns or raises")
+
+
 _DASK_CLIENT = None
 _DASK_SCHEDULER = os.environ.get('VISIVO_DASK_SCHEDULER', '')
 # Dask is now ON by default (auto). Modes: 'auto' → use a distributed scheduler
@@ -387,7 +465,7 @@ _DEC_CANDIDATES = ["dec", "Dec", "DEC", "DEJ2000", "dec_deg", "DECdeg", "DELTA_J
 # (e.g. _normalize_path, _is_fits) being available, so list them explicitly.
 __all__ = [
     "logger",
-    "_WORKERS", "_POOL", "_DASK_CLIENT", "_DASK_SCHEDULER", "_VTK_AVAILABLE",
+    "_WORKERS", "_POOL", "pool_health", "_DASK_CLIENT", "_DASK_SCHEDULER", "_VTK_AVAILABLE",
     "_auth",
     "_FITS_SUFFIXES",
     "_COSMOLOGY_MODELS",
@@ -972,8 +1050,7 @@ async def _run(fn, *args) -> Any:
         future = client.submit(fn, *args)
         return await future
     else:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(_POOL, fn, *args)
+        return await _run_in_pool(fn, *args)
 
 
 async def _run_interactive(fn, *args) -> Any:
@@ -991,8 +1068,7 @@ async def _run_interactive(fn, *args) -> Any:
       * /v1/image/preview — single-channel display
       * (potentially) probe, ROI stats during cursor drag
     """
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_POOL, fn, *args)
+    return await _run_in_pool(fn, *args)
 
 
 # ── Heavy-task throttle ──────────────────────────────────────────────────────
@@ -1216,9 +1292,7 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
             request.moment_order, subset_bytes,
         )
         async with _heavy_semaphore():
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                _POOL,
+            result = await _run_in_pool(
                 _moment_map_dask,
                 dataset.path,
                 request.moment_order,

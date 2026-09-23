@@ -45,6 +45,13 @@ public:
     /// step whichever the user drove. @p viewTag "view3d"/"slice2d" or @p productId.
     void selectForView(const QString &viewTag, const QString &productId);
 
+private:
+    /// True while the code, not the user, moves the selection: such a move must
+    /// stay passive (a product registering itself must never steal a pane).
+    bool m_selectingProgrammatically = false;
+
+public:
+
     /// (#4) Which pane(s) currently SHOW each product → small pane-number badges on the
     /// right of the row (a product duplicated in two panes shows two). Products absent
     /// from the map get no badge. Repaints the tree.
@@ -55,10 +62,22 @@ signals:
     /// selection is a dataset root or cleared).
     void productSelected(const QString &productId);
 
-    /// Emitted on ANY selection change so the viewer can make the matching pane the
-    /// active one (or mount it). @p viewTag is "view3d"/"slice2d" for the intrinsic
+    /// Emitted when the USER moves the selection (not on a programmatic one), so the
+    /// viewer can make the pane already showing that view the active one. Unlike
+    /// rowActivated this must never mount anything or move panes around: selecting a
+    /// row is a statement about what you are looking at, not a request to rearrange.
+    /// It exists because the left dock's DISPLAY section follows the ACTIVE PANE, so
+    /// a row highlighted in the tree while another pane stayed active meant the
+    /// colour map you then changed was applied to a different view than the one
+    /// selected (user report).
+    void rowSelected(const QString &viewTag, const QString &productId);
+
+    /// Emitted when a row is ACTIVATED (double-click / Enter, or the Show-in menu)
+    /// so the viewer can make the matching pane the active one, mounting the view
+    /// if no pane shows it yet. @p viewTag is "view3d"/"slice2d" for the intrinsic
     /// view rows; @p productId is set for a derived-product row. Both empty for a
-    /// dataset root (§ tree-selection = pane-selection).
+    /// dataset root. Plain selection goes through rowSelected above, which never
+    /// mounts (§ tree-selection = pane-selection).
     void rowActivated(const QString &viewTag, const QString &productId);
 
     /// (#4) A pane-number badge was clicked → the viewer activates that pane (§5.1).

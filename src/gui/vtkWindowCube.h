@@ -605,6 +605,8 @@ private:
     /// make it active; otherwise mount it in the active pane. @p viewTag is
     /// "view3d"/"slice2d"; @p productId targets a derived product (empty for view rows).
     void activateSessionView(const QString &viewTag, const QString &productId);
+    /// Selection (not activation): focus the pane already showing that row, if any.
+    void focusSessionViewIfVisible(const QString &viewTag, const QString &productId);
     // "Show in ▸": right-click a product in the tree → build a menu of visible panes + New
     // pane, mount the product there (duplicable). Renderable products only.
     /// "Show in ▸" for any Session Data row: an intrinsic view or a product.
@@ -1957,6 +1959,7 @@ protected:
     void updateSlice();
     void updateRemoteSliceDragFeedback(int sliceIndex);
     void requestRemoteSlice(int sliceIndex);
+    void setSlice2dPlaceholder(const QString &text);  ///< text in the empty 2-D pane ("" hides it)
     void applyRemoteSliceResult(const RemoteCubeSliceResult &result);
     QString remoteSliceCacheKey(int sliceIndex) const;
     void cacheRemoteSliceResult(const RemoteCubeSliceResult &result);

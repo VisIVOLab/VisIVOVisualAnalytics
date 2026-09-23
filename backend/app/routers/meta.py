@@ -28,12 +28,17 @@ _configured_workers = int(os.environ.get("VISIVO_WORKERS", "4"))
 @router.get("/v1/health", tags=["meta"])
 async def health(token: str = _auth) -> dict:
     from ..auth import is_admin_token
+    from ..dependencies import pool_health
     cache_stats = PRODUCT_CACHE.stats()
     task_stats = TASKS.stats()
     task_snapshot = TASKS.snapshot(recent_limit=5)
     return {
         "ok": True,
         "workers": _configured_workers,
+        # A pool that had to be rebuilt means requests failed with the worker
+        # that died. "ok" alone was reassuring a client whose every slice
+        # request was failing.
+        "worker_pool_restarts": pool_health()["restarts"],
         "active_sessions": REGISTRY.stats()["active_sessions"],
         "product_cache_entries": cache_stats["entries"],
         "product_cache_capacity": cache_stats["max_entries"],

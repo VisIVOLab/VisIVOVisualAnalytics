@@ -148,6 +148,9 @@ signals:
     /// A Session-tree row was selected → the viewer should activate the matching pane.
     /// @p viewTag is "view3d"/"slice2d" for intrinsic views; @p productId for a product.
     void sessionRowActivated(const QString &viewTag, const QString &productId);
+    /// The user moved the tree selection: focus the pane already showing that row.
+    /// Never mounts — see SessionDataTree::rowSelected.
+    void sessionRowSelected(const QString &viewTag, const QString &productId);
 
     /// (#4) A pane-number badge in the tree was clicked → activate that pane (1-based).
     void sessionPaneBadgeActivated(int paneNumber);

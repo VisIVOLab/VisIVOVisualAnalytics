@@ -1136,6 +1136,10 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         // Tree-selection = pane-selection: activate (or mount) the matching pane.
         connect(this->m_workspaceChrome, &WorkspaceChrome::sessionRowActivated, this,
                 &vtkWindowCube::activateSessionView);
+        // …and selecting a row focuses the pane that already shows it, so the dock's
+        // DISPLAY section describes the row you just highlighted.
+        connect(this->m_workspaceChrome, &WorkspaceChrome::sessionRowSelected, this,
+                &vtkWindowCube::focusSessionViewIfVisible);
         // (#4) A pane-number badge click activates that pane (badge is 1-based).
         connect(this->m_workspaceChrome, &WorkspaceChrome::sessionPaneBadgeActivated, this,
                 [this](int paneNumber) { setActivePane(paneNumber - 1); });
@@ -8504,6 +8508,43 @@ void vtkWindowCube::setActivePane(int pane)
     refreshPaneActiveStyles();   // also re-gates interactors (§5.1)
     if (changed)
         emit activePaneChanged(pane);   // §5.2: DISPLAY dock follows the active pane
+}
+
+void vtkWindowCube::focusSessionViewIfVisible(const QString &viewTag, const QString &productId)
+{
+    using namespace Qt::StringLiterals;
+    // The gentle half of activateSessionView: selecting a row says "this is what I
+    // am looking at", so the pane showing it becomes the active one — and the left
+    // dock's DISPLAY section, which follows the ACTIVE PANE, is then about that row.
+    // Without this, highlighting "2D Slice" while the 3-D pane stayed active left
+    // the dock headed "DISPLAY - 3D VIEW", and the colour map changed there went to
+    // the volume (user report).
+    //
+    // What it deliberately does NOT do is mount anything or move panes around: a
+    // row that is not on screen is left alone, and double-click still mounts it.
+    PaneView target;
+    if (viewTag == u"view3d"_s)
+        target = { ViewId::View3D, {} };
+    else if (viewTag == u"slice2d"_s)
+        target = { ViewId::Slice2D, {} };
+    else if (!productId.isEmpty())
+        target = { ViewId::Product, productId };
+    else
+        return;
+
+    // A product duplicated into two panes matches both. If one of them is already
+    // active, stay there: switching to the lowest-numbered match would move the
+    // focus off the pane the user is working in, for a row that describes it too.
+    if (m_activePane >= 0 && m_activePane < 4 && m_slots[m_activePane].frame
+        && m_slots[m_activePane].frame->isVisible() && m_slots[m_activePane].view == target) {
+        return;
+    }
+    for (int i = 0; i < 4; ++i) {
+        if (m_slots[i].frame && m_slots[i].frame->isVisible() && m_slots[i].view == target) {
+            setActivePane(i);
+            return;
+        }
+    }
 }
 
 void vtkWindowCube::activateSessionView(const QString &viewTag, const QString &productId)
