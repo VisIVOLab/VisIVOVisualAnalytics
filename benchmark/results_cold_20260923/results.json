@@ -1,0 +1,112 @@
+{
+ "environment": {
+  "timestamp": "2026-09-23T19:52:14",
+  "base_url": "http://127.0.0.1:8011",
+  "repeats": 1,
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "machine": "arm64",
+  "python": "3.11.15",
+  "note": "Apple M5 Max (18 cores), 64 GB unified memory, Apple SSD (APFS), macOS 27.0; embedded backend (uvicorn, 4 worker processes), no GPU offload for these ops. Cold product cache: a freshly started backend, --repeats 1, so every figure is a first-run measurement. The OS page cache was NOT purged between cubes."
+ },
+ "records": [
+  {
+   "cube": "/Users/fvitello/visivo_bench_data/cube_1gb.fits",
+   "ops": {
+    "preview": [
+     2.515672874986194
+    ],
+    "fullres": [
+     1.1643015000154264
+    ],
+    "roi": [
+     0.3859776249737479
+    ],
+    "lasso": [
+     1.7099311249912716
+    ],
+    "m0": [
+     0.6888363749603741
+    ],
+    "pv": [
+     0.7878324590274133
+    ]
+   },
+   "width": 794,
+   "height": 794,
+   "depth": 397,
+   "size_gb_f32": 1.0,
+   "open_s": 0.014,
+   "roi_gb": 0.66,
+   "seed_zyx": [
+    198,
+    392,
+    400
+   ],
+   "lasso_selected_voxels": 534196
+  },
+  {
+   "cube": "/Users/fvitello/visivo_bench_data/cube_8gb.fits",
+   "ops": {
+    "preview": [
+     3.3276513750315644
+    ],
+    "roi": [
+     1.6655538330087438
+    ],
+    "lasso": [
+     5.093480875017121
+    ],
+    "m0": [
+     10.60733850003453
+    ],
+    "pv": [
+     4.571102916961536
+    ]
+   },
+   "width": 1586,
+   "height": 1586,
+   "depth": 793,
+   "size_gb_f32": 7.98,
+   "open_s": 0.006,
+   "roi_gb": 1.07,
+   "seed_zyx": [
+    396,
+    795,
+    792
+   ],
+   "lasso_selected_voxels": 528860
+  },
+  {
+   "cube": "/Users/fvitello/visivo_bench_data/cube_30gb.fits",
+   "ops": {
+    "preview": [
+     21.79725479101762
+    ],
+    "roi": [
+     8.539637083013076
+    ],
+    "lasso": [
+     17.510471540968865
+    ],
+    "m0": [
+     89.16185616701841
+    ],
+    "pv": [
+     30.9996810000157
+    ]
+   },
+   "width": 2466,
+   "height": 2466,
+   "depth": 1233,
+   "size_gb_f32": 29.99,
+   "open_s": 0.007,
+   "roi_gb": 1.07,
+   "seed_zyx": [
+    616,
+    1254,
+    1220
+   ],
+   "lasso_selected_voxels": 639280
+  }
+ ]
+}

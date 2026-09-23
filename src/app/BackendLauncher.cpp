@@ -398,10 +398,38 @@ PythonResolution resolvePythonExe(const QString &settingsPython,
     if (auto r = accept(venvPythonPath(userDataVenvDir()), u"user-data venv"_s))
         return *r;
 
-    // ── 4. Bundled Python alongside the executable ───────────────────────────
+    // ── 4. Bundled Python shipped with the release ───────────────────────────
+    //  A release carries its own relocatable interpreter with the backend's
+    //  dependencies already installed, so a user who has no Python — or only
+    //  the 3.9 macOS ships — still gets a working backend without running any
+    //  setup script. Where it sits differs per package, and all three layouts
+    //  are searched rather than assumed:
+    //
+    //    macOS    <App>.app/Contents/Resources/python/bin/python3   (inside the
+    //             bundle, so the .app stays self-contained in the DMG)
+    //    Windows  <pkg>/bin/python/python.exe                (next to the .exe)
+    //    Linux    <pkg>/python/bin/python3                   (BESIDE the
+    //             AppImage, not inside it: the AppImage is a read-only
+    //             squashfs built by linuxdeploy, which walks everything in the
+    //             AppDir; keeping the runtime out of its way is simpler than
+    //             arguing with it. $APPIMAGE names the file being run, so its
+    //             directory is where to look.)
+    //
+    //  The plain appDir/python3 entries stay for a hand-made layout.
     const QString appDir = QCoreApplication::applicationDirPath();
-    for (const QString &c : { QDir::cleanPath(appDir + u"/python3"_s),
-                              QDir::cleanPath(appDir + u"/python"_s) }) {
+    QStringList bundled{
+        QDir::cleanPath(appDir + u"/../Resources/python/bin/python3"_s),   // macOS .app
+        QDir::cleanPath(appDir + u"/python/python.exe"_s),                 // Windows package
+        QDir::cleanPath(appDir + u"/python/bin/python3"_s),                // generic layout
+        QDir::cleanPath(appDir + u"/../python/bin/python3"_s),             // installed tree
+        QDir::cleanPath(appDir + u"/python3"_s),
+        QDir::cleanPath(appDir + u"/python"_s),
+    };
+    if (const QString appImage = qEnvironmentVariable("APPIMAGE"); !appImage.isEmpty()) {
+        const QString dir = QFileInfo(appImage).absolutePath();
+        bundled.prepend(QDir::cleanPath(dir + u"/python/bin/python3"_s));
+    }
+    for (const QString &c : bundled) {
         if (auto r = accept(c, u"bundled backend runtime"_s))
             return *r;
     }

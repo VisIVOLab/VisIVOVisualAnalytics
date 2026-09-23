@@ -119,6 +119,30 @@ def find_seed(cli: Client, ds: str, w: int, h: int, d: int) -> tuple[int, int, i
     return zc, int(y), int(x)
 
 
+class OpFailed(Exception):
+    """One measured operation did not complete; the campaign continues."""
+
+
+def attempt(rec: dict, label: str, fn):
+    """Run one measured operation, recording n/a instead of aborting on failure.
+
+    A campaign that dies on its first unsupported combination reports nothing
+    about the cubes after it — and the failure most likely to happen here is not
+    a defect in the software under test but a documented limit of the measuring
+    path: /v1/cube/subvolume_bin answers with a single response body, so a
+    multi-GB full-resolution fetch breaks the connection (IncompleteRead) where
+    the desktop client would have fetched parallel slabs. That belongs in the
+    table as n/a with its reason recorded, not as a missing 30 GB column.
+    """
+    try:
+        return fn()
+    except Exception as exc:                      # noqa: BLE001 - any failure is an n/a cell
+        reason = f"{type(exc).__name__}: {exc}"
+        rec.setdefault("failed_ops", {})[label] = reason
+        log(f"    {label:<14} n/a  ({reason[:120]})")
+        return None
+
+
 def bench_cube(cli: Client, cube: str, repeats: int, seed, roi_only_above_gb: float,
                skip: set[str]) -> dict:
     rec: dict = {"cube": cube, "ops": {}}
@@ -139,26 +163,31 @@ def bench_cube(cli: Client, cube: str, repeats: int, seed, roi_only_above_gb: fl
 
     # -- 1. preview --------------------------------------------------------
     if "preview" not in skip:
-        ts = []
-        for _ in range(repeats):
-            t, r = timed(cli.post_json, "/v1/cube/preview",
-                         {"dataset_id": ds, "downsample": 4})
-            assert r.get("valid", True), r.get("error")
-            ts.append(t)
-        rec["ops"]["preview"] = ts
-        log(f"    preview        {med_mad(ts)[0]:.2f}s")
+        def _preview():
+            ts = []
+            for _ in range(repeats):
+                t, r = timed(cli.post_json, "/v1/cube/preview",
+                             {"dataset_id": ds, "downsample": 4})
+                if not r.get("valid", True):
+                    raise OpFailed(str(r.get("error")))
+                ts.append(t)
+            rec["ops"]["preview"] = ts
+            log(f"    preview        {med_mad(ts)[0]:.2f}s")
+        attempt(rec, "preview", _preview)
 
     # -- 2. full resolution / camera ROI -----------------------------------
     if "fullres" not in skip:
         if size_gb <= roi_only_above_gb:
-            ts = []
-            for _ in range(repeats):
-                t, (n, _) = timed(cli.post_stream, "/v1/cube/subvolume_bin",
-                                  dict(dataset_id=ds, x0=0, x1=w - 1,
-                                       y0=0, y1=h - 1, z0=0, z1=d - 1))
-                ts.append(t)
-            rec["ops"]["fullres"] = ts
-            log(f"    full-res       {med_mad(ts)[0]:.2f}s  ({n/1e9:.1f} GB)")
+            def _fullres():
+                ts = []
+                for _ in range(repeats):
+                    t, (n, _) = timed(cli.post_stream, "/v1/cube/subvolume_bin",
+                                      dict(dataset_id=ds, x0=0, x1=w - 1,
+                                           y0=0, y1=h - 1, z0=0, z1=d - 1))
+                    ts.append(t)
+                rec["ops"]["fullres"] = ts
+                log(f"    full-res       {med_mad(ts)[0]:.2f}s  ({n/1e9:.1f} GB)")
+            attempt(rec, "full-res", _fullres)
         # camera ROI: a CENTRED box bounded by the viewport, not a fixed fraction
         # of the cube — the desktop fetches only what the camera frames (and in
         # parallel slabs). Cap it to ROI_CAP_VOX (~1 GB f32) so the single-request
@@ -168,17 +197,19 @@ def bench_cube(cli: Client, cube: str, repeats: int, seed, roi_only_above_gb: fl
         side = int(round(ROI_CAP_VOX ** (1.0 / 3.0)))
         bx, by, bz = min(w, side), min(h, side), min(d, side)
         x0c, y0c, z0c = (w - bx) // 2, (h - by) // 2, (d - bz) // 2
-        ts = []
-        for _ in range(repeats):
-            t, (n, _) = timed(cli.post_stream, "/v1/cube/subvolume_bin",
-                              dict(dataset_id=ds,
-                                   x0=x0c, x1=x0c + bx - 1,
-                                   y0=y0c, y1=y0c + by - 1,
-                                   z0=z0c, z1=z0c + bz - 1))
-            ts.append(t)
-        rec["ops"]["roi"] = ts
-        rec["roi_gb"] = round(n / 1e9, 2)
-        log(f"    camera ROI     {med_mad(ts)[0]:.2f}s  ({n/1e9:.2f} GB)")
+        def _roi():
+            ts = []
+            for _ in range(repeats):
+                t, (n, _) = timed(cli.post_stream, "/v1/cube/subvolume_bin",
+                                  dict(dataset_id=ds,
+                                       x0=x0c, x1=x0c + bx - 1,
+                                       y0=y0c, y1=y0c + by - 1,
+                                       z0=z0c, z1=z0c + bz - 1))
+                ts.append(t)
+            rec["ops"]["roi"] = ts
+            rec["roi_gb"] = round(n / 1e9, 2)
+            log(f"    camera ROI     {med_mad(ts)[0]:.2f}s  ({n/1e9:.2f} GB)")
+        attempt(rec, "camera ROI", _roi)
 
     # -- seed for the lasso --------------------------------------------------
     if "lasso" not in skip:
@@ -207,30 +238,36 @@ def bench_cube(cli: Client, cube: str, repeats: int, seed, roi_only_above_gb: fl
 
     # -- 4. masked M0 (auto 3-sigma threshold) -------------------------------
     if "m0" not in skip:
-        ts = []
-        for r_i in range(repeats):
-            t, r = timed(cli.post_json, "/v1/products/moment",
-                         dict(dataset_id=ds, moment_order=0,
-                              # vary the start channel to defeat the cache
-                              channel_start=r_i, channel_end=d - 1,
-                              mask_enabled=True, threshold_auto=True))
-            assert r.get("valid", True), r.get("error")
-            ts.append(t)
-        rec["ops"]["m0"] = ts
-        log(f"    masked M0      {med_mad(ts)[0]:.2f}s")
+        def _m0():
+            ts = []
+            for r_i in range(repeats):
+                t, r = timed(cli.post_json, "/v1/products/moment",
+                             dict(dataset_id=ds, moment_order=0,
+                                  # vary the start channel to defeat the cache
+                                  channel_start=r_i, channel_end=d - 1,
+                                  mask_enabled=True, threshold_auto=True))
+                if not r.get("valid", True):
+                    raise OpFailed(str(r.get("error")))
+                ts.append(t)
+            rec["ops"]["m0"] = ts
+            log(f"    masked M0      {med_mad(ts)[0]:.2f}s")
+        attempt(rec, "masked M0", _m0)
 
     # -- 5. PV extraction ----------------------------------------------------
     if "pv" not in skip:
-        ts = []
-        for r_i in range(repeats):
-            verts = [[w // 8 + r_i, h // 8], [w // 2, h // 2],
-                     [7 * w // 8, 7 * h // 8]]
-            t, r = timed(cli.post_json, "/v1/cube/pv",
-                         dict(dataset_id=ds, vertices=verts, width_pixels=3))
-            assert r.get("valid", True), r.get("error")
-            ts.append(t)
-        rec["ops"]["pv"] = ts
-        log(f"    PV extraction  {med_mad(ts)[0]:.2f}s")
+        def _pv():
+            ts = []
+            for r_i in range(repeats):
+                verts = [[w // 8 + r_i, h // 8], [w // 2, h // 2],
+                         [7 * w // 8, 7 * h // 8]]
+                t, r = timed(cli.post_json, "/v1/cube/pv",
+                             dict(dataset_id=ds, vertices=verts, width_pixels=3))
+                if not r.get("valid", True):
+                    raise OpFailed(str(r.get("error")))
+                ts.append(t)
+            rec["ops"]["pv"] = ts
+            log(f"    PV extraction  {med_mad(ts)[0]:.2f}s")
+        attempt(rec, "PV extraction", _pv)
 
     cli.session_id = None  # next cube opens its own session
     return rec

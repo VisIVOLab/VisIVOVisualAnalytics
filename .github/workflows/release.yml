@@ -6,6 +6,7 @@
 #
 # Outputs (per matrix entry)
 #   - macOS arm64: VisIVOVisualAnalytics-macos-arm64.dmg
+#   - macOS x86_64: VisIVOVisualAnalytics-macos-x86_64.dmg
 #                  contains: VisIVOVisualAnalytics.app + Setup Backend.command
 #   - Linux x86_64: VisIVOVisualAnalytics-linux-x86_64.tar.gz
 #                   contains: *.AppImage + setup_backend.sh + requirements.txt
@@ -18,12 +19,22 @@
 #   - Linux:   <AppDir>/usr/bin/backend/  (inside the AppImage)
 #   - Windows: bin\backend\
 #
-# The Python venv is NOT bundled — testers run the setup script once, which
-# creates a venv in a writable user-data location:
+# A self-contained Python runtime (python-build-standalone) with the backend's
+# dependencies already installed ships WITH it, so a release runs on a machine
+# that has no Python at all:
+#   - macOS:   <App>.app/Contents/Resources/python/   (inside the bundle)
+#   - Linux:   <pkg>/python/   BESIDE the AppImage — the AppImage is a
+#              read-only squashfs and linuxdeploy rewrites what it finds in the
+#              AppDir, so the runtime is kept out of it; the client resolves it
+#              from $APPIMAGE's directory
+#   - Windows: bin\python\
+#
+# The setup scripts remain, now optional: they build a venv in a writable
+# user-data location, which BackendLauncher PREFERS over the bundled runtime.
+# That is the supported way to add optional extras (cupy, an LLM SDK):
 #   - macOS:   ~/Library/Application Support/VisIVO/.venv
 #   - Linux:   ${XDG_DATA_HOME:-~/.local/share}/VisIVO/.venv
 #   - Windows: %APPDATA%\VisIVO\.venv
-# The BackendLauncher in the desktop client picks it up automatically.
 #
 # Builds are unsigned — internal-tester distribution only.
 # First run is slow (~45–60 min for VTK); subsequent runs hit the cache.
@@ -38,6 +49,11 @@ on:
 
 env:
   QT_VERSION: '6.10.1'
+  # Relocatable CPython shipped inside the release so a user needs no Python of
+  # their own. python-build-standalone is the same runtime uv installs; the
+  # "install_only" flavour is a self-contained tree that can be moved anywhere.
+  PY_RUNTIME_VERSION: '3.12.8'
+  PY_RUNTIME_TAG: '20241219'
   VTK_VERSION: '9.5.0'
   CFITSIO_VERSION: '4.6.3'  # Linux: built from source. macOS: from Homebrew.
 
@@ -52,14 +68,29 @@ jobs:
             name: linux-x86_64
             qt_host: linux
             qt_arch: linux_gcc_64
-          - os: macos-14
+            py_triple: x86_64-unknown-linux-gnu
+          # Runner labels checked against actions/runner-images: macos-13 has been
+          # retired and macos-14 is deprecated, so both would fail or age out.
+          # ubuntu-22.04 is kept deliberately — the oldest supported glibc makes
+          # the most portable AppImage.
+          - os: macos-15
             name: macos-arm64
             qt_host: mac
             qt_arch: clang_64
+            py_triple: aarch64-apple-darwin
+          # Intel Macs: a separate runner, not a universal binary — VTK is built
+          # from source per runner and lipo-ing two VTK trees is far more work
+          # than one more matrix entry.
+          - os: macos-15-intel
+            name: macos-x86_64
+            qt_host: mac
+            qt_arch: clang_64
+            py_triple: x86_64-apple-darwin
           - os: windows-2022
             name: windows-x86_64
             qt_host: windows
             qt_arch: win64_msvc2022_64
+            py_triple: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.os }}
 
@@ -67,6 +98,50 @@ jobs:
       - uses: actions/checkout@v4
 
       # ── System dependencies ──────────────────────────────────────────────
+      # ── Self-contained Python runtime ────────────────────────────────────
+      # The release ships its own interpreter with the backend's dependencies
+      # already installed. Before this, a tester had to have Python 3.11+ and
+      # run a setup script that pip-installed ~1 GB of scientific wheels over
+      # the network — which fails on a stock Mac (Apple ships 3.9), on a locked
+      # -down Windows box, and on any machine without a working toolchain.
+      #
+      # python-build-standalone's "install_only" tree is relocatable: it can be
+      # copied into an .app bundle or a zip and still run.
+      #
+      # This runs FIRST, before Qt and the hour-long VTK build, because the two
+      # things that can go wrong here — a release asset that moved, a dependency
+      # with no wheel for this platform — are worth finding in three minutes.
+      - name: Build self-contained Python runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/astral-sh/python-build-standalone/releases/download"
+          URL="$BASE/${PY_RUNTIME_TAG}/cpython-${PY_RUNTIME_VERSION}+${PY_RUNTIME_TAG}-${{ matrix.py_triple }}-install_only.tar.gz"
+          echo "Fetching $URL"
+          curl -fsSL -o pyruntime.tar.gz "$URL"
+          rm -rf pyruntime && mkdir pyruntime
+          tar -xzf pyruntime.tar.gz -C pyruntime   # creates pyruntime/python/
+          if [ -x pyruntime/python/bin/python3 ]; then
+            PY=pyruntime/python/bin/python3
+          else
+            PY=pyruntime/python/python.exe          # Windows layout
+          fi
+          "$PY" -VV
+          "$PY" -m pip install --upgrade pip wheel
+          # --only-binary=:all: keeps a missing wheel a loud failure here rather
+          # than a silent source build that works on the runner and not on the
+          # user's machine.
+          "$PY" -m pip install --only-binary=:all: -r backend/requirements.txt
+          # Trim what no end user needs. pip stays: the copilot's optional SDKs
+          # and a user's own extras are installed into this same tree.
+          find pyruntime -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+          find pyruntime -name '*.pyc' -delete 2>/dev/null || true
+          rm -rf pyruntime/python/lib/python*/test pyruntime/python/lib/python*/idlelib \
+                 pyruntime/python/lib/python*/tkinter pyruntime/python/lib/python*/turtledemo \
+                 2>/dev/null || true
+          "$PY" -c "import fastapi, uvicorn, numpy, astropy, vtk, scipy, pandas; print('runtime imports OK')"
+          du -sh pyruntime || true
+
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -313,15 +388,35 @@ jobs:
           [ -f backend/pytest.ini ] && cp backend/pytest.ini "$BACKEND_DEST/" || true
           find "$BACKEND_DEST" -name __pycache__ -type d -prune -exec rm -rf {} +
 
+          # The interpreter goes inside the bundle, so the .app in the DMG is
+          # self-contained and nothing has to be installed next to it.
+          cp -R pyruntime/python "dist/VisIVOVisualAnalytics.app/Contents/Resources/python"
+
       # Re-sign the whole bundle ad-hoc AFTER all modifications (Qt deploy +
-      # backend copy). On Apple Silicon any tampering with a signed bundle
+      # backend copy + bundled interpreter). On Apple Silicon any tampering with a signed bundle
       # produces SIGKILL "Code Signature Invalid" at dyld load time.
       - name: Re-sign bundle ad-hoc (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          codesign --force --deep --sign - dist/VisIVOVisualAnalytics.app
-          codesign --verify --deep --strict --verbose=2 dist/VisIVOVisualAnalytics.app
+          set -euo pipefail
+          APP=dist/VisIVOVisualAnalytics.app
+          # --deep does NOT sign loose Mach-O files under Resources/ — Apple's
+          # own documentation says so, and it seals them as resources instead.
+          # The bundled interpreter is exactly that: an executable plus a few
+          # thousand .so extensions living in Resources/python. Sign them
+          # explicitly FIRST, innermost outwards, or the app is "valid" while
+          # dyld refuses the extension modules.
+          if [ -d "$APP/Contents/Resources/python" ]; then
+            find "$APP/Contents/Resources/python" \
+                 \( -name '*.so' -o -name '*.dylib' -o -path '*/bin/*' \) -type f -print0 \
+              | xargs -0 -n 64 codesign --force --sign - 2>/dev/null || true
+          fi
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          # Prove the bundled interpreter still runs after signing, from its
+          # final place inside the bundle.
+          "$APP/Contents/Resources/python/bin/python3" -c "import vtk, numpy, astropy; print('bundled runtime OK after signing')"
 
       # Stage the .app together with the backend setup script in a folder,
       # then turn that folder into the DMG. Tester sees both side by side
@@ -337,19 +432,25 @@ jobs:
           cp scripts/setup_backend.command "$STAGE/Setup Backend.command"
           chmod +x "$STAGE/Setup Backend.command"
           cat > "$STAGE/README.txt" <<'README'
-          VisIVO Visual Analytics — first-time setup
-          ==========================================
+          VisIVO Visual Analytics
+          =======================
 
           1. Drag VisIVOVisualAnalytics.app into /Applications.
-          2. Double-click "Setup Backend.command" to install the Python
-             backend (requires Python 3.11+ on the system).
-             This creates a venv at:
-                 ~/Library/Application Support/VisIVO/.venv
-          3. Launch VisIVOVisualAnalytics from /Applications.
+          2. Launch it.
 
-          If macOS refuses to open the app or the script:
-             right-click → Open, then confirm. (The bundle is ad-hoc
-             signed, not notarized — internal-tester distribution.)
+          There is no step 3: the app carries its own Python runtime with the
+          backend's dependencies inside the bundle, so nothing is installed and
+          the 3.9 that macOS ships is not used.
+
+          If macOS refuses to open the app: right-click → Open, then confirm.
+          (The bundle is ad-hoc signed, not notarized — internal-tester
+          distribution.)
+
+          "Setup Backend.command" is optional, and only for using your own
+          Python instead: it builds a virtual environment in
+              ~/Library/Application Support/VisIVO/.venv
+          which the app prefers over the bundled runtime. That is also how to
+          add optional extras (an LLM SDK for the copilot, a CUDA cupy).
           README
           hdiutil create \
             -volname "VisIVO Visual Analytics" \
@@ -391,6 +492,9 @@ jobs:
           [ -f backend/pytest.ini ] && cp backend/pytest.ini "$BACKEND_DEST/" || true
           find "$BACKEND_DEST" -name __pycache__ -type d -prune -exec rm -rf {} +
 
+          # Bundled interpreter next to the .exe (BackendLauncher looks here).
+          cp -R pyruntime/python "$BIN/python"
+
       - name: Package Windows release
         if: runner.os == 'Windows'
         shell: bash
@@ -407,18 +511,27 @@ jobs:
           cp scripts/setup_backend.bat "$PKG/setup_backend.bat"
           cp backend/requirements.txt "$PKG/requirements.txt"
           cat > "$PKG/README.txt" <<README
-          VisIVO Visual Analytics — first-time setup (Windows)
-          ====================================================
+          VisIVO Visual Analytics (Windows)
+          =================================
 
-          1. setup_backend.bat
-             Double-click to install the Python backend in:
-                 %APPDATA%\VisIVO\.venv
-             Requires Python 3.11+ from https://www.python.org/downloads/
-             (tick "Add python.exe to PATH" during install).
+          Just run it:
 
-          2. bin\\VisIVOVisualAnalytics.exe
-             Double-click to launch. SmartScreen will warn the first time;
-             click "More info" -> "Run anyway".
+              bin\\VisIVOVisualAnalytics.exe
+
+          SmartScreen will warn the first time (the build is unsigned): click
+          "More info" -> "Run anyway".
+
+          Nothing to install. This package carries its own Python runtime with
+          the backend's dependencies in bin\\python.
+
+          Note: healpy has no Windows wheels, so the HiPS tile-query endpoints
+          are unavailable on this platform; everything else runs.
+
+          Optional, only if you would rather use your own Python: run
+          setup_backend.bat, which builds a virtual environment in
+              %APPDATA%\VisIVO\.venv
+          from requirements.txt. The client prefers that environment over the
+          bundled one.
           README
           # PowerShell zip is reliable cross-runner; bash zip may be missing.
           powershell -Command "Compress-Archive -Path '$PKG' -DestinationPath '$PKG.zip' -Force"
@@ -499,21 +612,61 @@ jobs:
           cp scripts/setup_backend.sh "$PKG/setup_backend.sh"
           chmod +x "$PKG/setup_backend.sh"
           cp backend/requirements.txt "$PKG/requirements.txt"
+          # The interpreter travels BESIDE the AppImage, not inside it: the
+          # AppImage is a read-only squashfs and linuxdeploy rewrites what it
+          # finds in the AppDir. The client resolves it from $APPIMAGE's
+          # directory, so extracting the tarball is the whole installation.
+          cp -R pyruntime/python "$PKG/python"
           cat > "$PKG/README.txt" <<README
-          VisIVO Visual Analytics — first-time setup
-          ==========================================
+          VisIVO Visual Analytics
+          =======================
 
-          1. ./setup_backend.sh
-             Installs the Python backend in:
-                \$XDG_DATA_HOME/VisIVO/.venv  (default: ~/.local/share/VisIVO/.venv)
-             Requires Python 3.11+ with the venv module
-             (Debian/Ubuntu: sudo apt install python3 python3-venv python3-pip).
+          Just run it:
 
-          2. ./$PKG.AppImage
-             Launches the desktop client; it will pick up the venv created
-             in step 1 automatically.
+              ./$PKG.AppImage
+
+          Nothing to install. This package carries its own Python runtime with
+          the backend's dependencies in ./python, and the client finds it next
+          to the AppImage — so keep the two together when you move them.
+
+          Optional, only if you would rather use your own Python: run
+          ./setup_backend.sh, which builds a virtual environment in
+             \$XDG_DATA_HOME/VisIVO/.venv  (default: ~/.local/share/VisIVO/.venv)
+          from requirements.txt. The client prefers that environment over the
+          bundled one, so it is also how you add optional extras (a CUDA build
+          of cupy, an LLM SDK for the copilot).
           README
           tar -czf "$PKG.tar.gz" "$PKG"
+
+      # The staging check ran before the runtime was copied, signed and packaged.
+      # This one runs the interpreter from the place the user will actually get,
+      # and imports the backend itself rather than a few libraries — the failures
+      # worth catching here (a broken relocation, a signature dyld rejects, a
+      # file the packager dropped) all survive the earlier check.
+      - name: Smoke-test the packaged runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ runner.os }}" in
+            macOS)   PY="dmg-staging/VisIVOVisualAnalytics.app/Contents/Resources/python/bin/python3" ;;
+            Windows) PY="VisIVOVisualAnalytics-${{ matrix.name }}/bin/python/python.exe" ;;
+            Linux)   PY="VisIVOVisualAnalytics-${{ matrix.name }}/python/bin/python3" ;;
+          esac
+          PYABS="$PWD/$PY"                      # the check below runs from $BE
+          echo "interpreter: $PYABS"
+          "$PYABS" -VV
+          # Import the backend app from the bundled backend sources, the way the
+          # launcher will.
+          case "${{ runner.os }}" in
+            macOS)   BE="dmg-staging/VisIVOVisualAnalytics.app/Contents/Resources/backend" ;;
+            Windows) BE="VisIVOVisualAnalytics-${{ matrix.name }}/bin/backend" ;;
+            Linux)   BE="" ;;   # inside the AppImage; not reachable from here
+          esac
+          if [ -n "$BE" ]; then
+            ( cd "$BE" && "$PYABS" -c "import app.main; print('backend imports OK')" )
+          else
+            "$PYABS" -c "import fastapi, uvicorn, vtk, numpy, astropy; print('runtime OK')"
+          fi
 
       # ── Upload + attach to release ───────────────────────────────────────
       - name: Upload artifact
