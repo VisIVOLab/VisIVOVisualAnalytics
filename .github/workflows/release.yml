@@ -188,10 +188,16 @@ jobs:
           host: ${{ matrix.qt_host }}
           target: desktop
           arch: ${{ matrix.qt_arch }}
+          # The list must cover every component CMakeLists.txt asks for that is
+          # NOT in qtbase — checked against `qt_components` there:
+          #   WebSockets      -> qtwebsockets   (WebRTC signalling for remote render)
+          #   NetworkAuth     -> qtnetworkauth
+          #   WebEngineWidgets-> qtwebengine (+ qtwebchannel, its dependency)
+          # Concurrent, Widgets, Xml, Svg, Network and PrintSupport ship in qtbase.
           # qtserialport is pulled in by the qtpositioning NMEA plugin that
           # linuxdeploy-plugin-qt tries to bundle; without it the deploy fails
           # with "Could not find dependency: libQt6SerialPort.so.6".
-          modules: 'qtwebengine qtwebchannel qtpositioning qtnetworkauth qtserialport'
+          modules: 'qtwebengine qtwebchannel qtwebsockets qtpositioning qtnetworkauth qtserialport'
           cache: true
 
       # ── cfitsio on Linux: built from source (cached). The upstream CMake
