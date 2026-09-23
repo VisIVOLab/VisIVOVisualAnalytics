@@ -1622,9 +1622,18 @@ ellipsis they had earned, `Pixel Histogram`, `Image Quality / Artifacts` and
 a panel or run straight away; they ask nothing). Whichever route a product came
 by, its parameters end up in the same tab afterwards.
 
-In the tab so far: **contours** and the **polarisation-vector overlay** (grid
+In the tab so far: **contours**, the **polarisation-vector overlay** (grid
 step, SNR threshold, length scale - which were also stranded on the hidden Tools
-page). One tool's settings are mounted at a time and the window keeps the list of
+page) and the **Kinematic Lasso**. The lasso had kept its own `QDockWidget`
+docked to the right of the cube window, under the Inspector — close enough to
+read as part of the Analysis tab while belonging to nothing, and with no obvious
+way to dismiss it. It now mounts the same body through `setToolSettings`, and
+un-checking the tool closes it: the selection, the 2-D refinement and the
+controls go together, because a green isosurface left on screen with no Apply or
+Clear beside it is a state with no exit. The pane-layout gate un-arms tools whose
+view has left the screen — that path **suspends** the lasso instead, or a
+temporary switch to one pane would silently discard a selection the user spent
+minutes refining. One tool's settings are mounted at a time and the window keeps the list of
 tools that are on, most recent last: turning one off hands the section back to
 whichever is still on rather than blanking it (contours on, vectors on, vectors
 off used to leave the contours running with no way to change their levels).
@@ -1693,6 +1702,29 @@ Three things were wrong before, in increasing order of seriousness:
 With the origin no longer always zero, the probe's `worldCoord − origin` turned
 out to be subtracting it a second time; the world position already *is* the
 full-resolution index.
+
+The same class of bug surfaced once more in the cube viewer, in the **amber ROI
+preview box** that Export Sub-Cube, Mask 3-D Region and Estimate Noise all draw
+while you type their bounds. The six numbers are full-resolution voxel indices —
+the spin boxes are built from the dataset's real dimensions and the backend reads
+them the same way — but they were fed straight to `vtkCubeSource::SetBounds`,
+under a comment asserting that spacing (1,1,1) and origin (0,0,0) make pixel and
+world coordinates identical. True at full resolution; false on the decimated
+preview, which is what the viewer shows until you press *Load full resolution*.
+On a 1046×952×398 cube previewed at 349×318×133 the box came out **three times**
+the size of the cube's own outline, floating outside it. `setNoiseRegionPreview`
+now maps index → display world with the display image's own geometry,
+`(ddim−1)/(full−1) × spacing`, and skips the mapping when a high-resolution ROI
+is loaded, because that display already carries full-res coordinates (its origin
+is the ROI corner, its spacing 1) — the same distinction
+`updateLassoDisplayPlacement` makes. The 2-D rectangle beside it needs no
+mapping: the backend serves the slice at full resolution. A box drawn before a
+preview↔full swap is re-placed afterwards
+(`refreshRegionPreviewAfterDisplaySwap`), next to the lasso's equivalent.
+
+The lesson keeps repeating, so it is worth stating once: **an overlay's numbers
+and the display's coordinates are two different spaces whenever an LOD is in
+play**, and every new overlay has to say which one it is in.
 
 ### Extract Spectrum, in the one 2-D case where it means something
 

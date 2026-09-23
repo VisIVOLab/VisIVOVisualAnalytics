@@ -216,7 +216,10 @@ A tool is bound to a **view**, not to the pane you happen to have selected:
   in some pane; the two 3-D tools (Kinematic Lasso, *Pick spectrum on cutting
   plane*) whenever the **3D View** is. If the view is not on screen the tool is
   greyed out and its tooltip says so — *"acts on the 2D Slice — show it in a
-  pane (the pane's ▾ menu)"*.
+  pane (the pane's ▾ menu)"*. Un-arming a tool this way is **not** the same as
+  closing it: taking the 3-D view off screen suspends the Kinematic Lasso and
+  leaves its selection intact for when the pane comes back, whereas un-checking
+  the tool yourself closes it and clears the selection.
 - While a tool is armed, the pane showing the view it listens to wears a
   **thicker amber border** and **keeps taking the mouse** even when another pane
   is selected. So you can arm *Extract Spectrum*, click the spectrum pane to

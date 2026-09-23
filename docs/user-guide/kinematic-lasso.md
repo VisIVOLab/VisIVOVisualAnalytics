@@ -18,6 +18,8 @@ whatever happens to be spatially adjacent.
 | **Add** | ⇧ double-click a second source |
 | **Carve** | ⌥ double-click a region to remove |
 | **Apply** | *Isolate → new cube* or *Remove → new cube* |
+| **Controls** | Inspector ▸ **Parameters**, which opens on the tool |
+| **Close** | un-check the menu entry, or <kbd>Esc</kbd> — this also clears the selection |
 
 ```{caution}
 The lasso is **assisted segmentation, not detection**. It starts from a source
@@ -39,9 +41,18 @@ the connected component of the ≥ nσ emission that contains your click, so one
 click on a spiral arm grabs the whole galaxy. Isolated noise peaks above nσ are
 their own tiny components and are dropped.
 
-A yellow marker shows the seed voxel. The selection appears as a green
-isosurface, and its outline is drawn on the 2-D channel map as you step through
-channels.
+A yellow marker shows where the click landed while the grow runs, then steps
+aside once there is something better to look at: the selection itself, as a green
+isosurface, with its outline drawn on the 2-D channel map as you step through
+channels. The marker comes back on the next click, and stays if a grow returns
+nothing — so a marker with no green around it means the click found no source.
+
+The controls appear in the Inspector's **Parameters** tab, which the tool opens
+for you. Un-checking *Kinematic Lasso* closes the tool: the selection, any 2-D
+refinement and the controls all go. Use *Clear selection* to start over without
+closing. Changing the pane layout so the 3-D view is no longer on screen only
+**suspends** the tool — it stops listening for clicks, and your selection is
+still there when the pane comes back.
 
 ```{tip}
 If the double-click lands on empty sky you get *"click on visible emission"* —
@@ -147,6 +158,16 @@ happens. Do your 2-D refinement **after** you have settled the controls.
 
 Both write the mask exactly as displayed, including any 2-D refinements, so what
 you see is what is written. Neither modifies your original file.
+
+```{note}
+Neither one crops. The product keeps the source cube's **full dimensions**, so
+isolating a compact source out of a 1.5 GB cube gives you another 1.5 GB file in
+which all but a few thousand voxels are NaN. That is deliberate: identical pixel
+coordinates and WCS mean the result overlays the original channel for channel,
+and anything you compute on it stays comparable without re-alignment. When you
+want the small file instead, follow up with *Tools → Export Sub-Cube as FITS…*,
+which does crop and shifts ``CRPIX`` accordingly.
+```
 
 ---
 

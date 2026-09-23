@@ -82,7 +82,6 @@
 #include <vtkCommand.h>
 #include <vtkCubeAxesActor.h>
 #include <vtkOutlineFilter.h>
-#include <vtkPropCollection.h>
 #include <vtkPropPicker.h>
 #include <vtkRenderWindowInteractor.h>
 #include <vtkPlaneSource.h>
@@ -5853,27 +5852,6 @@ void vtkWindowCube::updateRemoteCuttingPlane(int sliceIndex)
                        .arg(bounds[4], 0, 'g', 12)
                        .arg(bounds[5], 0, 'g', 12)
                        .arg(this->remoteCuttingPlaneActor->GetVisibility());
-    // TEMPORARY PROBE (VISIVO_PROP_PROBE=1): dump every visible prop's class and
-    // world bounds, to identify an actor that renders larger than the cube outline.
-    if (qEnvironmentVariableIsSet("VISIVO_PROP_PROBE")) {
-        if (auto *ren = ui->vtkCube && ui->vtkCube->renderWindow()
-                    ? ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer()
-                    : nullptr) {
-            qDebug().noquote() << QStringLiteral("[prop-probe] cube display bounds=%1,%2 %3,%4 %5,%6")
-                        .arg(bounds[0]).arg(bounds[1]).arg(bounds[2])
-                        .arg(bounds[3]).arg(bounds[4]).arg(bounds[5]);
-            vtkPropCollection *props = ren->GetViewProps();
-            props->InitTraversal();
-            while (vtkProp *prop = props->GetNextProp()) {
-                if (!prop->GetVisibility()) continue;
-                double pb[6] = { 0, 0, 0, 0, 0, 0 };
-                if (const double *b = prop->GetBounds()) std::copy(b, b + 6, pb);
-                qDebug().noquote() << QStringLiteral("[prop-probe] %1 bounds=%2,%3 %4,%5 %6,%7")
-                            .arg(QString::fromLatin1(prop->GetClassName()))
-                            .arg(pb[0]).arg(pb[1]).arg(pb[2]).arg(pb[3]).arg(pb[4]).arg(pb[5]);
-            }
-        }
-    }
     // NOTE: caller is responsible for the next Render(). We used to call Render
     // here, but all 3 callers (applyCubeOpenResult, applyRemoteSliceResult,
     // updateRemoteSliceDragFeedback) already trigger a Render immediately
