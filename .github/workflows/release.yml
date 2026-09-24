@@ -139,7 +139,7 @@ jobs:
           rm -rf pyruntime/python/lib/python*/test pyruntime/python/lib/python*/idlelib \
                  pyruntime/python/lib/python*/tkinter pyruntime/python/lib/python*/turtledemo \
                  2>/dev/null || true
-          "$PY" -c "import fastapi, uvicorn, numpy, astropy, vtk, scipy, pandas; print('runtime imports OK')"
+          "$PY" -B -c "import fastapi, uvicorn, numpy, astropy, vtk, scipy, pandas; print('runtime imports OK')"
           du -sh pyruntime || true
 
       - name: Install system deps (Linux)
@@ -452,7 +452,9 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP"
           # Prove the bundled interpreter still runs after signing, from its
           # final place inside the bundle.
-          "$APP/Contents/Resources/python/bin/python3" -c "import vtk, numpy, astropy; print('bundled runtime OK after signing')"
+          # -B: without it this very check writes __pycache__ back into the bundle
+          # it just signed, and the staging verification below rejects it.
+          "$APP/Contents/Resources/python/bin/python3" -B -c "import vtk, numpy, astropy; print('bundled runtime OK after signing')"
 
       # Stage the .app together with the backend setup script in a folder,
       # then turn that folder into the DMG. Tester sees both side by side
@@ -464,7 +466,12 @@ jobs:
           STAGE=dmg-staging
           rm -rf "$STAGE"
           mkdir -p "$STAGE"
-          cp -R dist/VisIVOVisualAnalytics.app "$STAGE/"
+          # ditto reproduces a signed bundle faithfully (extended attributes,
+          # symlinked framework versions). The verification on the next line is
+          # the actual guarantee — it is what caught a bundle whose signature had
+          # been invalidated after signing.
+          ditto dist/VisIVOVisualAnalytics.app "$STAGE/VisIVOVisualAnalytics.app"
+          codesign --verify --deep --strict "$STAGE/VisIVOVisualAnalytics.app"
           cp scripts/setup_backend.command "$STAGE/Setup Backend.command"
           chmod +x "$STAGE/Setup Backend.command"
           cat > "$STAGE/README.txt" <<'README'
@@ -699,9 +706,9 @@ jobs:
             Linux)   BE="" ;;   # inside the AppImage; not reachable from here
           esac
           if [ -n "$BE" ]; then
-            ( cd "$BE" && "$PYABS" -c "import app.main; print('backend imports OK')" )
+            ( cd "$BE" && "$PYABS" -B -c "import app.main; print('backend imports OK')" )
           else
-            "$PYABS" -c "import fastapi, uvicorn, vtk, numpy, astropy; print('runtime OK')"
+            "$PYABS" -B -c "import fastapi, uvicorn, vtk, numpy, astropy; print('runtime OK')"
           fi
 
       # ── Upload + attach to release ───────────────────────────────────────

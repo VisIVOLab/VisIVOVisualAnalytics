@@ -93,10 +93,43 @@ bool waitForProcessPumpingEvents(QProcess &proc, int timeoutMs);
  * short for the same reason: `python -c` answers in well under a second, and a
  * candidate that cannot manage that in three is not one to wait on.
  */
+/**
+ * Environment for ANY invocation of a Python interpreter we make.
+ *
+ * Its only job is to keep bytecode out of wherever the interpreter lives. On a
+ * bundled runtime that directory is inside the signed .app, and the 61
+ * ``__pycache__`` directories a bare `python -c 'import sys'` leaves in the
+ * standard library are enough to break the code signature — the version probe
+ * alone did it, which is why this is here and not only on the backend process.
+ */
+QProcessEnvironment pythonInvocationEnvironment()
+{
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    // A user's own setting wins — but only a REAL one: CPython treats an
+    // exported-but-empty value as unset, so `contains()` alone would hand the
+    // bundle back to the default behaviour.
+    if (!env.value(u"PYTHONPYCACHEPREFIX"_s).isEmpty()
+        || !env.value(u"PYTHONDONTWRITEBYTECODE"_s).isEmpty())
+        return env;
+    const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    const QString dir = cache.isEmpty() ? QString() : QDir::cleanPath(cache + u"/pycache"_s);
+    // If the cache directory cannot be made, fall back to writing no bytecode at
+    // all rather than to a prefix that does not exist: an unwritable prefix does
+    // not send CPython back to the bundle, but it does mean silently failing
+    // cache writes on every import.
+    if (!dir.isEmpty() && QDir().mkpath(dir)) {
+        env.insert(u"PYTHONPYCACHEPREFIX"_s, dir);
+    } else {
+        env.insert(u"PYTHONDONTWRITEBYTECODE"_s, u"1"_s);
+    }
+    return env;
+}
+
 QString runCapture(const QString &exe, const QStringList &args, int timeoutMs = 3000)
 {
     QProcess p;
     p.setProcessChannelMode(QProcess::MergedChannels);
+    p.setProcessEnvironment(pythonInvocationEnvironment());
     p.start(exe, args);
     if (!waitForProcessPumpingEvents(p, timeoutMs)) {
         p.kill();
@@ -146,7 +179,10 @@ bool pythonVersionOk(const QPair<int, int> &v)
  */
 QProcessEnvironment backendEnvironment()
 {
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    // Same bytecode redirection as every other python invocation: the backend
+    // is the one that imports the most, so it writes the most.
+    QProcessEnvironment env = pythonInvocationEnvironment();
+
     if (!env.value(u"VISIVO_TOKEN"_s).trimmed().isEmpty())
         return env;   // already pinned by the shell; the client reads it too
 
@@ -199,6 +235,7 @@ QProcessEnvironment backendEnvironment()
 bool hasBackendDeps(const QString &exe)
 {
     QProcess p;
+    p.setProcessEnvironment(pythonInvocationEnvironment());
     p.start(exe, { u"-c"_s, u"import fastapi, uvicorn, astropy, numpy"_s });
     // Pumped, like runCapture: importing astropy and numpy is seconds, not
     // milliseconds, and this also runs on the GUI thread.
@@ -618,6 +655,9 @@ bool BackendLauncher::bootstrapEnvironment(const QString &backendDir, const QStr
         appendLog(u"[launcher] Creating venv at %1"_s.arg(venvDir));
         QProcess venv;
         venv.setProcessChannelMode(QProcess::MergedChannels);
+        // Bootstrap runs the SAME interpreter the probes do — which, when the
+        // bundled runtime failed a dependency check, is the one inside the .app.
+        venv.setProcessEnvironment(pythonInvocationEnvironment());
         venv.start(pythonExe, { u"-m"_s, u"venv"_s, venvDir });
         if (!waitForProcessPumpingEvents(venv, 120000) || venv.exitCode() != 0) {
             const QString out = QString::fromLocal8Bit(venv.readAll()).trimmed();
@@ -655,6 +695,7 @@ bool BackendLauncher::bootstrapEnvironment(const QString &backendDir, const QStr
                 emit messageChanged(t);
         }
     });
+    pip.setProcessEnvironment(pythonInvocationEnvironment());
     pip.start(venvPython, { u"-m"_s, u"pip"_s, u"install"_s, u"--upgrade"_s,
                             u"-r"_s, requirements });
     // No timeout: a cold install of this dependency set over a slow link
