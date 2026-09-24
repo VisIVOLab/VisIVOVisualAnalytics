@@ -29,13 +29,34 @@ if let index = args.firstIndex(of: "--double") {
     doubleClick = true
     args.remove(at: index)
 }
+// Scrolling is how a VTK view zooms, and a screenshot of a source that occupies
+// 1 % of the frame is not a figure. The wheel event has to be posted at the
+// point, so the pointer is moved there first like every other gesture here.
+var scrollTicks: Int32 = 0
+if let index = args.firstIndex(of: "--scroll"), index + 1 < args.count,
+   let ticks = Int32(args[index + 1]) {
+    scrollTicks = ticks
+    args.removeSubrange(index...(index + 1))
+}
 guard args.count >= 3, let x = Double(args[1]), let y = Double(args[2]) else {
-    print("usage: click [--double] X Y [dragToX dragToY]"); exit(1)
+    print("usage: click [--double] [--scroll N] X Y [dragToX dragToY]"); exit(1)
 }
 let p = CGPoint(x: x, y: y)
 let src = CGEventSource(stateID: .hidSystemState)
 CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left)?.post(tap: .cghidEventTap)
 usleep(80_000)
+
+if scrollTicks != 0 {
+    // One event per tick, the way a wheel actually reports, with a pause
+    // between: a single large delta makes VTK jump instead of zoom.
+    let step: Int32 = scrollTicks > 0 ? 1 : -1
+    for _ in 0..<abs(scrollTicks) {
+        CGEvent(scrollWheelEvent2Source: src, units: .line, wheelCount: 1,
+                wheel1: step, wheel2: 0, wheel3: 0)?.post(tap: .cghidEventTap)
+        usleep(60_000)
+    }
+    exit(0)
+}
 
 if doubleClick {
     for count in 1...2 {

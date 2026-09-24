@@ -64,6 +64,11 @@ public:
     /// Called by MainWindow after it creates a new vtkWindowImage for this session.
     void setLinkedImageWindow(vtkWindowImage *win);
 
+public slots:
+    /// Called by whoever performs the fetch, so the dialog can stop saying it
+    /// is waiting. @p ok false keeps the failed dataset's name visible.
+    void noteCutoutFinished(const QString &displayName, bool ok);
+
 signals:
     /// Emitted when the user double-clicks a leaf item.
     /// @param ivoID       obs_publisher_did of the selected cutout.
@@ -90,6 +95,9 @@ private slots:
 private:
     /// Hide the datasets that only partly overlap the queried region.
     void hidePartialCoverage();
+    /// Note that a cutout request has just gone out, and refresh the status.
+    void noteCutoutStarted(const QString &displayName);
+    void updateStatus();
 
 private slots:
 
@@ -104,7 +112,9 @@ private:
     void annotateCounts();                       ///< append "(N)" to branch nodes, grey empties
     int  countAndTag(QStandardItem *node);        ///< recursive leaf count + tagging
     bool filterNode(QStandardItem *node, const QString &needle);  ///< recursive hide/show
-    void requestCutout(const QModelIndex &idx);   ///< shared by double-click + button
+    void requestCutout(const QModelIndex &idx);
+    /// Let category rows use the full width instead of being elided in column 0.
+    void spanGroupRows();   ///< shared by double-click + button
     int  groupIndexOf(double lambda) const;
 
     QTreeView          *m_tree        { nullptr };
@@ -114,6 +124,11 @@ private:
     QCheckBox          *m_coverageOnly{ nullptr };
     QPushButton        *m_openButton  { nullptr };
     QPushButton        *m_batchButton { nullptr };
+    QLabel             *m_status      { nullptr };  ///< "Requesting …" while fetches are out
+    int                 m_pending     { 0 };        ///< cutout requests still in flight
+    bool                m_busyCursorSet { false };
+    QString             m_lastRequested;
+    QString             m_lastFailed;
     QList<WavelengthGroup>       m_groups;
     QHash<QUuid, Cutout>         m_cutouts;
     QString                      m_posCutout;

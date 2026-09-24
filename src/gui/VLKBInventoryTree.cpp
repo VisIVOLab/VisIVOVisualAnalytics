@@ -14,6 +14,8 @@
 #include <QModelIndex>
 #include <QPushButton>
 #include <QStandardItem>
+#include <QApplication>
+#include <QHeaderView>
 #include <QStandardItemModel>
 #include <QStyle>
 #include <QTreeView>
@@ -70,7 +72,11 @@ VLKBInventoryTree::VLKBInventoryTree(const QByteArray &votable,
 void VLKBInventoryTree::buildUi(const QString &posCutout)
 {
     setWindowTitle(u"VLKB Inventory"_s);
-    resize(520, 620);
+    // Three columns of real content — the dataset name, its coverage and the
+    // archive filename — do not fit in 520 px: something is always elided, and
+    // for a while it was the category headings. Wider by default; the columns
+    // below then give every spare pixel to the names.
+    resize(760, 680);
 
     auto *vbox = new QVBoxLayout(this);
     vbox->setContentsMargins(10, 8, 10, 8);
@@ -122,6 +128,17 @@ void VLKBInventoryTree::buildUi(const QString &posCutout)
             u"= dataset fully covers the region"_s, this);
     legend->setStyleSheet(u"color: #8090a0; font-size: 10px;"_s);
     vbox->addWidget(legend);
+
+    // What is happening right now. A cutout is fetched asynchronously — the
+    // window does not freeze — but until it arrives nothing on screen changed,
+    // so a double-click read as "it did nothing" and people clicked again. This
+    // line is the answer, and it is here rather than in a modal dialog because
+    // several requests legitimately run at once.
+    m_status = new QLabel(this);
+    m_status->setStyleSheet(u"color: #d8b24a; font-size: 11px;"_s);
+    m_status->setWordWrap(true);
+    m_status->setVisible(false);
+    vbox->addWidget(m_status);
 
     // Action row: explicit Open button (double-click still works).
     auto *actions = new QHBoxLayout;
@@ -194,6 +211,13 @@ void VLKBInventoryTree::setupTopLevels()
     m_model->appendRow(images);
     m_model->appendRow(cubes);
     m_tree->setModel(m_model);
+    // Coverage is one short word and Identifier a filename: sized to content
+    // they stop squeezing the first column, which is what carries the tree.
+    if (auto *hdr = m_tree->header()) {
+        hdr->setSectionResizeMode(0, QHeaderView::Stretch);
+        hdr->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+        hdr->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    }
 
     // selectionChanged, not currentChanged: with multiple selection a ⌘-click
     // can add or remove a row without moving the current index, and the button
@@ -336,6 +360,29 @@ void VLKBInventoryTree::parseVOTable(const QByteArray &votable)
         qCritical() << Q_FUNC_INFO << xml.errorString();
         QMessageBox::critical(this, u"VLKB Parse Error"_s, xml.errorString());
     }
+
+    spanGroupRows();
+}
+
+void VLKBInventoryTree::spanGroupRows()
+{
+    // Category rows ("Continuum", "Near-IR", a species name) carry nothing in
+    // the Coverage and Identifier columns, but they were still confined to the
+    // first column — whose width is set by the leaf rows' icons — so every one
+    // of them was shown elided: "Continuu...", "Near-I...", "Far-IR ...". They
+    // are headings, so let them use the whole width, which is what
+    // setFirstColumnSpanned is for. Nothing is widened and no leaf row moves.
+    std::function<void(const QModelIndex &)> walk = [&](const QModelIndex &parent) {
+        const int rows = m_model->rowCount(parent);
+        for (int r = 0; r < rows; ++r) {
+            const QModelIndex idx = m_model->index(r, 0, parent);
+            if (m_model->rowCount(idx) > 0) {   // has children => a category
+                m_tree->setFirstColumnSpanned(r, parent, true);
+                walk(idx);
+            }
+        }
+    };
+    walk(QModelIndex());
 }
 
 // ── Interaction ───────────────────────────────────────────────────────────────
@@ -441,7 +488,55 @@ void VLKBInventoryTree::requestCutout(const QModelIndex &idx)
         displayName = c.ivoID.section(u'/', -1);
     }
 
+    noteCutoutStarted(displayName.simplified());
     emit cutoutRequested(c.ivoID, m_posCutout, displayName.simplified(), c.type);
+}
+
+void VLKBInventoryTree::noteCutoutStarted(const QString &displayName)
+{
+    ++m_pending;
+    m_lastRequested = displayName;
+    updateStatus();
+}
+
+void VLKBInventoryTree::noteCutoutFinished(const QString &displayName, bool ok)
+{
+    if (m_pending > 0)
+        --m_pending;
+    if (!ok)
+        m_lastFailed = displayName;
+    updateStatus();
+}
+
+void VLKBInventoryTree::updateStatus()
+{
+    if (!m_status)
+        return;
+    if (m_pending > 0) {
+        m_status->setText(m_pending == 1
+                ? u"Requesting %1 from the archive — the viewer opens when it arrives…"_s
+                          .arg(m_lastRequested)
+                : u"Requesting %1 datasets from the archive…"_s.arg(m_pending));
+        m_status->setVisible(true);
+        // The cursor says the same thing for the hand that is still on the
+        // mouse, which is where the attention is right after a double-click.
+        if (!m_busyCursorSet) {
+            m_busyCursorSet = true;
+            QApplication::setOverrideCursor(Qt::BusyCursor);
+        }
+    } else {
+        m_status->setVisible(false);
+        if (m_busyCursorSet) {
+            m_busyCursorSet = false;
+            QApplication::restoreOverrideCursor();
+        }
+    }
+    // Requests keep running if the window closes, but the buttons should not
+    // invite a second identical one while the first is out.
+    if (m_openButton && m_pending > 0)
+        m_openButton->setEnabled(false);
+    else
+        onSelectionChanged();
 }
 
 // ── Style helpers ─────────────────────────────────────────────────────────────

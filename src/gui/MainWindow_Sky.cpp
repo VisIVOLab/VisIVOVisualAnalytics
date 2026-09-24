@@ -522,6 +522,14 @@ void MainWindow::queryVlkb()
                                                       [this, tree, displayName, type, watcher]() {
                                                           watcher->deleteLater();
                                                           const auto res = watcher->result();
+                                                          // Tell the inventory dialog the wait is
+                                                          // over, whichever way it ended: it is the
+                                                          // window the user is looking at, and it
+                                                          // has been saying "requesting…" since the
+                                                          // double-click.
+                                                          if (tree)
+                                                              tree->noteCutoutFinished(displayName,
+                                                                                       res.valid);
                                                           if (!res.valid) {
                                                               // The text is the
                                                               // remote service's
