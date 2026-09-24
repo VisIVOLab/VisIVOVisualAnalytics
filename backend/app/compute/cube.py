@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import textwrap
 import concurrent.futures as _cf  # noqa: F401
 import logging  # noqa: F401
 import os as _os  # noqa: F401
@@ -843,6 +844,197 @@ def worker_cube_preview(path: str, downsample: int) -> dict[str, Any]:
         "range_max": range_max,
         "compression": compression,
         "data_base64": data_b64,
+    }
+
+
+
+#: A FITS header may hold only printable ASCII. Astronomy text is full of what
+#: it may not: "rad m⁻²", "φ", "σ²_QU", "…". Astropy refuses the whole card, so
+#: without this every polarimetry export — the maps this path exists for —
+#: failed with a 422 while the ASCII-only tests passed.
+_FITS_ASCII_SUBSTITUTIONS = {
+    "\u00b5": "u", "\u03bc": "u",                        # micro / mu
+    "\u03c6": "phi", "\u03c3": "sigma", "\u03bb": "lambda",
+    "\u03b1": "alpha", "\u03b2": "beta", "\u0394": "Delta", "\u03b4": "delta",
+    "\u00b0": "deg", "\u2212": "-", "\u2013": "-", "\u2014": "-",
+    "\u2026": "...", "\u00d7": "x", "\u00b7": ".",
+    "\u00b2": "2", "\u00b3": "3", "\u00b9": "1",         # superscript digits
+    "\u2070": "0", "\u2074": "4", "\u2075": "5", "\u2076": "6",
+    "\u2077": "7", "\u2078": "8", "\u2079": "9",
+    "\u207b": "-", "\u207a": "+",                        # superscript sign
+    "\u2080": "0", "\u2081": "1", "\u2082": "2", "\u2083": "3",
+    "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+}
+
+
+def _fits_ascii(text: str) -> str:
+    """`text` reduced to what a FITS header card can hold.
+
+    Transliterates the characters astronomy actually uses — "rad m⁻²" becomes
+    "rad m-2", "φ" becomes "phi" — rather than dropping them, because a unit
+    with its exponent silently removed is worse than an ugly one. Anything left
+    outside printable ASCII is replaced with "?" so the card still says
+    something was there.
+    """
+    out = []
+    for ch in str(text):
+        mapped = _FITS_ASCII_SUBSTITUTIONS.get(ch, ch)
+        for m in mapped:
+            out.append(m if 32 <= ord(m) <= 126 else "?")
+    return "".join(out)
+
+
+#: Upper bound on an uploaded map. 8192² float32 is 256 MiB decoded, well past
+#: any map a viewer displays, and the check runs on the ENCODED length before
+#: anything is decoded — a caller that announces 1 x 1 and sends a gigabyte
+#: should not get a gigabyte of allocation first.
+_MAP_MAX_PIXELS = 8192 * 8192
+
+
+def worker_save_map_2d(
+    src_path: str,
+    output_path: str,
+    pixels_b64: str,
+    width: int,
+    height: int,
+    bunit: str = "",
+    history: list[str] | None = None,
+    region: tuple[int, int] | None = None,
+) -> dict[str, Any]:
+    """Write a 2-D map the CLIENT computed as a standalone FITS in the workspace.
+
+    The generic counterpart to :func:`worker_cube_save_channel_2d`. That one
+    re-derives its pixels here from a recipe, which only works for a product
+    the service knows how to recompute — a moment. Everything else the cube
+    viewer produces (polarised intensity, position angle, peak Faraday depth,
+    line-width) arrives as finished pixels, and had no way out of the
+    application at all: it could be looked at and not kept.
+
+    So the pixels come up with the request and the HEADER is built here, from
+    `src_path`, because that is where the WCS is. A client-side writer would
+    have to reimplement the celestial-axis projection and would get a different
+    answer the day the source is a cube with a Stokes axis.
+
+    `bunit` overrides the source's, since a derived map rarely shares it: a
+    position angle is in degrees and a Faraday depth in rad/m², whatever the
+    cube was measured in. `region` is the (x0, y0) pixel origin of a map
+    computed over a sub-region, and shifts CRPIX so the output still points at
+    the right sky rather than silently claiming the full field's astrometry.
+    """
+    from astropy.io import fits as _fits  # noqa: PLC0415
+    from astropy.wcs import WCS as _WCS   # noqa: PLC0415
+
+    w, h = int(width), int(height)
+    if w <= 0 or h <= 0:
+        raise ValueError(f"A map needs positive dimensions, got {w} x {h}.")
+    if w * h > _MAP_MAX_PIXELS:
+        raise ValueError(
+            f"A {w} x {h} map is larger than the {_MAP_MAX_PIXELS} pixel limit for an export.")
+    expected = w * h * 4
+    # Checked on the ENCODED length, before decoding: base64 is 4 characters
+    # per 3 bytes, so the declared shape bounds the payload without allocating
+    # it first. A caller announcing a tiny map and sending a huge body is
+    # refused here rather than after the allocation.
+    encoded = len(pixels_b64)
+    if encoded > ((expected + 2) // 3) * 4 + 4:
+        raise ValueError(
+            f"The payload is larger than the {w} x {h} shape it declares.")
+    raw = base64.b64decode(pixels_b64)
+    if len(raw) != expected:
+        raise ValueError(
+            f"The payload is {len(raw)} bytes but {w} x {h} float32 pixels need {expected}.")
+    plane = np.frombuffer(raw, dtype="<f4").reshape(h, w).copy()
+
+    dataset = ScientificFitsDataset(src_path)
+    hdul, _ = dataset.open_memmap()
+    try:
+        src_header = hdul[0].header.copy()
+    finally:
+        hdul.close()
+
+    wcs_note = ""
+    celestial = None
+    try:
+        full = _WCS(src_header, relax=True)
+        celestial = full.celestial if full.has_celestial else None
+    except Exception as exc:  # noqa: BLE001
+        # A SIP-distorted cube cannot be built as an N-D WCS at all: astropy
+        # refuses, because SIP is defined in two dimensions only. Selecting two
+        # axes up front does work and keeps the distortion, so the failure is a
+        # reason to try the narrower construction — not to give up and export a
+        # map with no astrometry, which is what the plain `.celestial` path did.
+        logger.info("[save_map_2d] N-D WCS refused for %s (%s); trying the 2-D subset.",
+                    src_path, exc)
+        try:
+            narrow = _WCS(src_header, relax=True, naxis=2)
+            celestial = narrow if narrow.has_celestial else None
+        except Exception as exc2:  # noqa: BLE001
+            logger.warning("[save_map_2d] no usable WCS for %s (%s).", src_path, exc2)
+            wcs_note = f"VisIVO: no celestial WCS could be derived from the source ({exc2})"
+
+    if celestial is not None:
+        # relax=True on to_header() as well as on the read: the default
+        # serialisation drops non-standard conventions, and a source with SIP
+        # distortion would export its linear terms only — right at the
+        # reference pixel and increasingly wrong away from it.
+        out_header = celestial.to_header(relax=True)
+    else:
+        out_header = _fits.Header()
+        if not wcs_note:
+            # has_celestial False raises nothing, so without this a source with
+            # no sky axes exported silently — and a map with no astrometry looks
+            # exactly like one with astrometry until somebody overlays it.
+            wcs_note = "VisIVO: the source has no celestial axes; this map has no astrometry"
+        logger.warning("[save_map_2d] %s: %s", src_path, wcs_note)
+
+    if region is not None:
+        # A cropped map keeps the parent's pixel scale but not its reference
+        # pixel. Without this the file claims the whole field's astrometry and
+        # every position read off it is wrong by the crop offset.
+        x0, y0 = int(region[0]), int(region[1])
+        for key, offset in (("CRPIX1", x0), ("CRPIX2", y0)):
+            if key in out_header and offset:
+                out_header[key] = float(out_header[key]) - offset
+        out_header.add_history(
+            f"VisIVO: sub-region origin (x={x0}, y={y0}) of the source grid")
+
+    out_header["NAXIS"] = 2
+    out_header["NAXIS1"] = w
+    out_header["NAXIS2"] = h
+    # Sanitised too: these come from the SOURCE file, which is somebody else's
+    # data. A published cube with a non-ASCII OBJECT would otherwise fail the
+    # export at the last step, having done all the work.
+    for key in ("OBJECT", "TELESCOP", "INSTRUME", "BMAJ", "BMIN", "BPA"):
+        if key in src_header:
+            value = src_header[key]
+            out_header[key] = _fits_ascii(value) if isinstance(value, str) else value
+    if bunit:
+        out_header["BUNIT"] = _fits_ascii(bunit)
+    elif "BUNIT" in src_header:
+        out_header["BUNIT"] = _fits_ascii(str(src_header["BUNIT"]))
+
+    out_header.add_history(
+        _fits_ascii(f"VisIVO 2-D map export derived from {Path(src_path).name}"))
+    if wcs_note:
+        out_header.add_history(_fits_ascii(wcs_note))
+    for line in (history or []):
+        # HISTORY cards are 72 characters wide; astropy splits longer ones, but
+        # splitting mid-word makes the provenance hard to read back.
+        for chunk in textwrap.wrap(_fits_ascii(line), width=68) or [""]:
+            out_header.add_history(chunk)
+
+    logger.info("[save_map_2d] writing FITS  src=%s  out=%s  shape=(%s, %s)",
+                src_path, output_path, h, w)
+    _fits.HDUList([_fits.PrimaryHDU(data=plane, header=out_header)]).writeto(
+        output_path, overwrite=True)
+
+    finite = plane[np.isfinite(plane)]
+    return {
+        "output_path": output_path,
+        "width": w,
+        "height": h,
+        "range_min": float(finite.min()) if finite.size else 0.0,
+        "range_max": float(finite.max()) if finite.size else 0.0,
     }
 
 

@@ -47,10 +47,12 @@ from ._common import (  # noqa: F401
 #     the header disagreement is only logged — refusing would reject a real,
 #     published dataset over a typo in a keyword we do not need.
 #
-#   2. The I cube's frequency grid is NOT the Q/U grid (CRVAL3 1.3426 GHz vs
-#     1.2838 GHz for the same field). λ² must come from the file that supplied
-#     Q, never from whichever file the user happened to open. Getting this
-#     wrong silently biases every rotation measure.
+#   2. λ² must come from the file that supplied Q, never from whichever file
+#     the user happened to open. In MGCLS the sub-band keywords of a field's
+#     I and Q cubes agree, but their WCS spectral axes do not (CRVAL3 1.3426
+#     vs 1.2838 GHz), so the rule costs nothing there and protects against the
+#     releases where the planes really do differ. Getting it wrong silently
+#     biases every rotation measure.
 #
 #   3. These cubes are 7500 × 7500 × 16 per plane. Materialising one as float64
 #     costs 7 GB, two 14 GB, and RM synthesis needs both in full. Every read

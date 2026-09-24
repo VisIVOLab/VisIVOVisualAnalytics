@@ -679,10 +679,21 @@ void vtkWindowCube::publishRmSynthesisMaps(const BackendRmSynthesisResult &r, co
                                              ? u"x%1y%2w%3h%4"_s.arg(region.x()).arg(region.y())
                                                        .arg(region.width()).arg(region.height())
                                              : u"full"_s);
-    addImageProduct(u"polarisation"_s, u"fdf_peak_%1"_s.arg(key),
-                    u"Peak |F(φ)|"_s, peak, this->m_brightnessUnit, params, u"Inferno"_s);
+    const QString peakId = addImageProduct(
+            u"polarisation"_s, u"fdf_peak_%1"_s.arg(key),
+            u"Peak |F(φ)|"_s, peak, this->m_brightnessUnit, params, u"Inferno"_s);
     // Faraday depth is signed and centred on zero — a diverging map, like a
     // velocity field, so the sign is readable at a glance.
-    addImageProduct(u"polarisation"_s, u"fdf_depth_%1"_s.arg(key),
-                    u"Faraday depth (RM)"_s, depth, u"rad m⁻²"_s, params, u"Coolwarm"_s);
+    const QString depthId = addImageProduct(
+            u"polarisation"_s, u"fdf_depth_%1"_s.arg(key),
+            u"Faraday depth (RM)"_s, depth, u"rad m⁻²"_s, params, u"Coolwarm"_s);
+
+    // Where these pixels sit in the source grid, so exporting them writes the
+    // astrometry of the crop and not of the whole field.
+    if (region.isValid()) {
+        for (const QString &id : { peakId, depthId }) {
+            if (auto it = m_products2d.find(id); it != m_products2d.end())
+                it->regionOrigin = region.topLeft();
+        }
+    }
 }

@@ -10,6 +10,7 @@
 #include <QJsonObject>
 #include <QList>
 #include <QNetworkRequest>
+#include <QPoint>
 #include <QPointF>
 #include <QRect>
 #include <QString>
@@ -2260,6 +2261,31 @@ public:
      *  dataset on the backend session and lands in the Workspace Exports dir.
      *  Used by the Stokes / spectral-index / Faraday-RM workflows when you
      *  need several single-frequency 2-D maps from one or more cubes. */
+    /** POST /v1/exports/save_map_2d — persist a 2-D map THIS client computed
+     *  as a FITS in Workspace Exports.
+     *
+     *  The generic export. saveCubeChannelAs2dFits() and saveMomentFits() send
+     *  a recipe and let the service re-derive the pixels, which only works for
+     *  a product the service knows how to recompute; everything else the cube
+     *  viewer produces (polarised intensity, position angle, Faraday depth,
+     *  line-width) is finished pixels, and this is how it gets out.
+     *
+     *  @param sourceDatasetId the dataset the map derives from — the source of
+     *                         its celestial WCS, which is built service-side.
+     *  @param pixels          row-major float32 LE, width × height.
+     *  @param bunit           the map's own unit (a position angle is in
+     *                         degrees whatever the cube was measured in).
+     *  @param history         provenance, written as FITS HISTORY cards.
+     *  @param regionOrigin    pixel origin when the map covers a sub-region;
+     *                         null for a full-field map. */
+    BackendSaveChannel2dResult saveMap2dToWorkspace(
+            const QString &sourceDatasetId,
+            const QByteArray &pixels, int width, int height,
+            const QString &outputBasename,
+            const QString &bunit = {},
+            const QStringList &history = {},
+            const QPoint &regionOrigin = {});
+
     BackendSaveChannel2dResult saveCubeChannelAs2dFits(const QString &datasetId,
                                                         int channel,
                                                         const QString &outputBasename = {});

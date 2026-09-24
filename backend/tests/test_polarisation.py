@@ -891,6 +891,34 @@ class TestMfImagePlaneLayout(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_reading_the_wcs_axis_instead_would_be_off_by_a_factor(self):
+        """Pins the number quoted in the paper: 25 rad/m^2 read as 63.
+
+        Not a test of the worker — the worker gets it right, which is the point
+        — but of the claim that getting it wrong is expensive. The grids are
+        the real MGCLS ones: FREQnnnn spans 908-1656 MHz over 14 sub-band
+        planes, the WCS axis 1284-2147 MHz over all 16, so reading the axis
+        also drags the two fitted planes into the transform. If this number
+        ever moves, the sentence in the paper has to move with it.
+        """
+        c = 2.99792458e8
+        true_rm = 25.0
+        keywords = 9.080371093750e8 + np.arange(14) * 5.755108e7
+        wcs_axis = 1.283791015625e9 + np.arange(16) * 5.755108e7
+        phi = np.arange(-200.0, 200.0, 0.5)
+
+        signal = np.exp(2j * true_rm * (c / keywords) ** 2)
+        correct = phi[np.argmax(np.abs(
+            np.exp(-2j * np.outer(phi, (c / keywords) ** 2)) @ signal))]
+        # As a WCS reader would see it: wrong frequencies, and two fitted
+        # planes prepended where sub-bands are expected.
+        with_fitted = np.concatenate([[signal[0], signal[0]], signal])
+        naive = phi[np.argmax(np.abs(
+            np.exp(-2j * np.outer(phi, (c / wcs_axis) ** 2)) @ with_fitted))]
+
+        self.assertAlmostEqual(correct, true_rm, delta=0.5)
+        self.assertAlmostEqual(naive, 63.0, delta=1.0)
+
     def test_q_mfimage_with_plain_u_is_refused(self):
         """Same sky grid, same plane count — only the sub-band keywords differ."""
         from app.compute import worker_rm_synthesis

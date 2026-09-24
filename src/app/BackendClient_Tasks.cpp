@@ -111,6 +111,58 @@ BackendSaveChannel2dResult BackendClient::saveCubeChannelAs2dFits(
     return parseSaveChannel2dObject(QJsonDocument::fromJson(raw).object());
 }
 
+BackendSaveChannel2dResult BackendClient::saveMap2dToWorkspace(
+        const QString &sourceDatasetId,
+        const QByteArray &pixels, int width, int height,
+        const QString &outputBasename,
+        const QString &bunit,
+        const QStringList &history,
+        const QPoint &regionOrigin)
+{
+    BackendSaveChannel2dResult result;
+    // Checked here rather than server-side alone: a mismatch means the caller
+    // paired the wrong buffer with the wrong shape, and uploading megabytes to
+    // be told so is a slow way to find out.
+    const qsizetype expected =
+            static_cast<qsizetype>(width) * height * static_cast<qsizetype>(sizeof(float));
+    if (width <= 0 || height <= 0 || pixels.size() != expected) {
+        result.error = QStringLiteral(
+                "The map is %1 x %2 but the buffer holds %3 bytes, not %4.")
+                               .arg(width).arg(height).arg(pixels.size()).arg(expected);
+        return result;
+    }
+
+    QJsonObject body{
+        { QStringLiteral("dataset_id"),      sourceDatasetId },
+        { QStringLiteral("output_basename"), outputBasename },
+        { QStringLiteral("width"),           width },
+        { QStringLiteral("height"),          height },
+        { QStringLiteral("pixels_base64"),
+          QString::fromLatin1(pixels.toBase64()) },
+        { QStringLiteral("bunit"),           bunit },
+    };
+    if (!history.isEmpty()) {
+        QJsonArray lines;
+        for (const QString &line : history)
+            lines.append(line);
+        body.insert(QStringLiteral("history"), lines);
+    }
+    if (!regionOrigin.isNull()) {
+        body.insert(QStringLiteral("region_origin"),
+                    QJsonArray{ regionOrigin.x(), regionOrigin.y() });
+    }
+
+    QString error;
+    const QByteArray raw = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/exports/save_map_2d")),
+            QJsonDocument(body), error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    return parseSaveChannel2dObject(QJsonDocument::fromJson(raw).object());
+}
+
 BackendSaveMomentFitsResult BackendClient::saveMomentFits(
         const QString &datasetId,
         int order,

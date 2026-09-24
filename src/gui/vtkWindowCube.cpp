@@ -2853,6 +2853,15 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(m_actSliceHistogram, &QAction::triggered,
                      this, &vtkWindowCube::showSliceHistogramPanel);
 
+    m_actExportDisplayedMap = ui->menuTools->addAction(u"Export Displayed Map as FITS…"_s);
+    m_actExportDisplayedMap->setToolTip(
+            u"Save the 2-D map currently shown in a pane — a moment, a line-width "
+            u"map, polarised intensity, a Faraday-depth map — as a standalone 2-D "
+            u"FITS in Workspace Exports, with the celestial WCS and the parameters "
+            u"it was computed with recorded as HISTORY."_s);
+    QObject::connect(m_actExportDisplayedMap, &QAction::triggered,
+                     this, &vtkWindowCube::exportDisplayedMapAsFits);
+
     m_actExportMomentFits = ui->menuTools->addAction(u"Export Moment Map as FITS…"_s);
     m_actExportMomentFits->setToolTip(
             u"Persist the moment map currently displayed in the 2-D view "
@@ -2861,8 +2870,10 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // have nothing to export). updateMomentExportEnabled() flips this on
     // when momentController publishes its first result.
     m_actExportMomentFits->setEnabled(false);
-    QObject::connect(m_actExportMomentFits, &QAction::triggered,
-                     this, &vtkWindowCube::exportMomentMapAsFits);
+    // Through a lambda, not a member-pointer: triggered(bool) cannot bind to a
+    // slot taking a QString, and the action's own path wants the default.
+    QObject::connect(m_actExportMomentFits, &QAction::triggered, this,
+                     [this]() { this->exportMomentMapAsFits(); });
 
     // Send current slice / moment to an open image viewer as contour overlay
     // "Send Slice to Image Viewer" read as "open this slice in an image viewer",
@@ -5066,7 +5077,144 @@ void vtkWindowCube::showSliceHistogramPanel()
     win->show();
 }
 
-void vtkWindowCube::exportMomentMapAsFits()
+QString vtkWindowCube::displayedImageProductId() const
+{
+    // The focused pane first, so with two maps side by side the export follows
+    // the one the user is looking at rather than pane order.
+    for (const bool focusedOnly : { true, false }) {
+        for (int i = 0; i < 4; ++i) {
+            const PaneView &pv = m_slots[i].view;
+            if (pv.kind != ViewId::Product || !m_products2d.contains(pv.productId))
+                continue;
+            if (!m_slots[i].frame || !m_slots[i].frame->isVisible())
+                continue;
+            if (focusedOnly && i != m_activePane)
+                continue;
+            return pv.productId;
+        }
+    }
+    return {};
+}
+
+void vtkWindowCube::exportDisplayedMapAsFits()
+{
+    const QString productId = displayedImageProductId();
+    if (productId.isEmpty()) {
+        QMessageBox::warning(this, u"Export Map"_s,
+                u"No 2-D map is on screen. Compute one — a moment, a line-width map, "
+                u"a polarimetry map — and show it in a pane first."_s);
+        return;
+    }
+    // A moment has a recipe, and exporting the recipe is better than exporting
+    // the pixels: the service recomputes at full precision and records the
+    // channels and mask it used. Only what cannot be recomputed goes up as
+    // pixels.
+    if (productId.startsWith(u"moment"_s)) {
+        // Named explicitly: the moment exporter picks the first VISIBLE moment
+        // in pane order, which with Moment 0 in an earlier pane and Moment 1
+        // focused would export the one the user is not looking at.
+        exportMomentMapAsFits(productId);
+        return;
+    }
+
+    const auto it = m_products2d.constFind(productId);
+    if (it == m_products2d.constEnd() || !it->imageData)
+        return;
+    // Everything needed is COPIED out now, before the dialog below spins a
+    // nested event loop. A computation finishing during that loop calls
+    // addImageProduct(), which inserts into m_products2d and invalidates this
+    // iterator — and would otherwise pair pixels already read with another
+    // product's label and unit.
+    vtkImageData *img = it->imageData;
+    const QString label = it->label;
+    const QString unit = it->unit;
+    const QPoint origin = it->regionOrigin;
+    const QVariantMap params = ProductRegistry::instance().product(productId).params;
+    int ext[6];
+    img->GetExtent(ext);
+    const int w = ext[1] - ext[0] + 1;
+    const int h = ext[3] - ext[2] + 1;
+    if (w <= 0 || h <= 0)
+        return;
+
+    // Copied out as float32 whatever the product stores, because that is what
+    // the wire format and the FITS both are.
+    QByteArray pixels(static_cast<qsizetype>(w) * h * static_cast<qsizetype>(sizeof(float)),
+                      Qt::Uninitialized);
+    auto *out = reinterpret_cast<float *>(pixels.data());
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            out[static_cast<qsizetype>(y) * w + x] =
+                    img->GetScalarComponentAsFloat(ext[0] + x, ext[2] + y, 0, 0);
+        }
+    }
+
+    QString base = label.simplified().toLower();
+    base.replace(QRegularExpression(u"[^a-z0-9]+"_s), u"_"_s);
+    while (base.endsWith(u'_'))
+        base.chop(1);
+    if (base.isEmpty())
+        base = u"map"_s;
+    const QFileInfo srcInfo(this->filepath);
+    bool ok = false;
+    const QString basename = QInputDialog::getText(
+            this, u"Export Map as FITS"_s,
+            u"Save in Workspace Exports as (.fits is appended if missing;\n"
+            u"existing names get a _1, _2 suffix):"_s,
+            QLineEdit::Normal, u"%1_%2.fits"_s.arg(srcInfo.completeBaseName(), base), &ok);
+    if (!ok)
+        return;
+
+    // Provenance as HISTORY cards. These are the same rows the Inspector shows
+    // for the product, so what the file records and what the window says are
+    // one thing — a map whose parameters live only in a screenshot is not a
+    // result anyone can check.
+    // Provenance from the registry — the same rows the Inspector shows, so the
+    // file records exactly what the window says.
+    QStringList history;
+    history << u"%1 computed by VisIVO from %2"_s.arg(label, srcInfo.fileName());
+    for (auto p = params.constBegin(); p != params.constEnd(); ++p)
+        history << u"%1: %2"_s.arg(p.key(), p.value().toString());
+
+    const QString url = this->remoteBackendUrl, token = this->remoteBackendToken;
+    const QString sessionId = this->remoteSessionId, datasetId = this->remoteDatasetId;
+
+    this->statusBar()->showMessage(u"Exporting %1 to Workspace Exports…"_s.arg(label), 0);
+    auto *watcher = new QFutureWatcher<BackendSaveChannel2dResult>(this);
+    QPointer<vtkWindowCube> self(this);
+    QObject::connect(watcher, &QFutureWatcher<BackendSaveChannel2dResult>::finished, this,
+                     [self, watcher, label]() {
+                         const auto r = watcher->result();
+                         watcher->deleteLater();
+                         if (!self)
+                             return;
+                         self->statusBar()->clearMessage();
+                         if (!r.valid) {
+                             QMessageBox::warning(self, u"Export Map"_s,
+                                     r.error.isEmpty() ? u"The export failed."_s : r.error);
+                             return;
+                         }
+                         QMessageBox::information(self, u"Export Map"_s,
+                                 u"%1 saved to the Workspace Exports as 2-D FITS.\n\n"
+                                 u"Filename: %2\n"
+                                 u"Path: %3\n"
+                                 u"Shape: %4 × %5 (W × H)\n\n"
+                                 u"Browse / download / delete from the\n"
+                                 u"Workspace Exports panel in the Data Hub, or open it\n"
+                                 u"in the image viewer."_s
+                                         .arg(label, r.workspaceFilename, r.outputPath)
+                                         .arg(r.width).arg(r.height));
+                     });
+    watcher->setFuture(QtConcurrent::run(
+            [url, token, sessionId, datasetId, pixels, w, h, basename, unit, history, origin]() {
+                BackendClient c(url, token);
+                c.setSessionId(sessionId);
+                return c.saveMap2dToWorkspace(datasetId, pixels, w, h, basename, unit,
+                                              history, origin);
+            }));
+}
+
+void vtkWindowCube::exportMomentMapAsFits(const QString &requestedProductId)
 {
     if (!this->momentController) return;
     // §3.2: export the recipe of the moment currently DISPLAYED — with several moments
@@ -5074,8 +5222,8 @@ void vtkWindowCube::exportMomentMapAsFits()
     // computed one; else the controller's last accepted config (single-moment case).
     struct { int order, channelStart, channelEnd; bool maskEnabled;
              double thresholdValue; bool thresholdAuto; } cfg{};
-    QString exportId;
-    for (int i = 0; i < 4; ++i) {
+    QString exportId = requestedProductId;
+    for (int i = 0; exportId.isEmpty() && i < 4; ++i) {
         const PaneView &pv = m_slots[i].view;
         // Only a MOMENT product carries the export recipe (order/channels/mask). m_products2d
         // now also holds other image products (line-width, …) with default order/channels —
@@ -6718,6 +6866,16 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Statistics"_s, self->actionEstimateNoise);
     add(u"Statistics"_s, self->m_actSliceHistogram);
 
+    // Polarimetry (vtkWindowCube_Polarisation.cpp). This table is the ONLY way
+    // into the Tools menu: regroupToolsMenu() rebuilds the menu from it and
+    // detaches everything it does not list, so an action added straight to
+    // menuTools is created, wired, and then silently removed before the user
+    // ever sees it. The Inspector's Analysis tab is built from the same table,
+    // so listing here is also what puts them in the sidebar.
+    add(u"Polarimetry"_s, self->m_actLoadStokesCompanions);
+    add(u"Polarimetry"_s, self->m_actPolarisedIntensity);
+    add(u"Polarimetry"_s, self->m_actRmSynthesis);
+
     add(u"Regions"_s, self->actionBoxRegion);
     add(u"Regions"_s, self->actionCircleRegion);
     add(u"Regions"_s, self->actionPolygonRegion);
@@ -6738,6 +6896,7 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Export"_s, self->m_actFilterFits);
     add(u"Export"_s, self->m_actExportSubCube);
     add(u"Export"_s, self->m_actExportChannel2d);
+    add(u"Export"_s, self->m_actExportDisplayedMap);
     add(u"Export"_s, self->m_actExportMomentFits);
     add(u"Export"_s, self->m_actExportMovie);
 

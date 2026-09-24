@@ -29,6 +29,7 @@ class PvController;
 #include <QCloseEvent>
 #include <QElapsedTimer>
 #include <QHash>
+#include <QPoint>
 #include <QRect>
 #include <QMainWindow>
 #include <QList>
@@ -459,6 +460,12 @@ private:
         double thresholdValue{ 0. };
         bool thresholdAuto{ false };
         QString unit;                                    ///< physical unit (Inspector stats)
+        /// Pixel origin in the SOURCE grid when this map covers a sub-region.
+        /// Null for a full-field map. Carried so the generic FITS export can
+        /// shift CRPIX: a cropped map that keeps the parent's reference pixel
+        /// claims the whole field's astrometry and every position read off it
+        /// is wrong by the crop offset.
+        QPoint regionOrigin;
         MapStats stats;                                  ///< cached whole-map stats
         bool statsComputed{ false };                     ///< compute once (imageData is immutable)
     };
@@ -1103,6 +1110,7 @@ protected:
     /// "Export Moment Map as FITS…" — enabled only once a moment is on
     /// screen (the controller pushes the first result). Stays enabled.
     QPointer<QAction> m_actExportMomentFits;
+    QPointer<QAction> m_actExportDisplayedMap;
     QPointer<QAction> m_actFilterFits;
     QPointer<QAction> m_actExportSubCube;
     QPointer<QAction> m_actMaskRegion;
@@ -1152,6 +1160,14 @@ protected:
     QString askForStokesCompanionPath(const QString &role, int index, int total);
     void publishPolarisationMaps(const struct BackendPolarisationPiResult &r, int channel);
     void publishRmSynthesisMaps(const struct BackendRmSynthesisResult &r, const QRect &region);
+    /// Tools → "Export Displayed Map as FITS…". The generic counterpart to
+    /// exportMomentMapAsFits(), which can only export a moment because it
+    /// exports a RECIPE for the service to recompute. Everything else this
+    /// window produces is finished pixels, so those go up with the request.
+    void exportDisplayedMapAsFits();
+    /// The 2-D product currently visible in a pane, preferring the focused one,
+    /// or an empty string when no map is on screen.
+    QString displayedImageProductId() const;
     /// Pixel bounds {x0, x1, y0, y1} of the drawn region, or the full extent
     /// when none is drawn. Wraps the file-local regionBounds2D() so callers
     /// outside vtkWindowCube.cpp get the same answer as Export Sub-Cube.
@@ -1566,7 +1582,9 @@ protected:
     /// Tools → "Export Moment Map as FITS…". Re-runs the moment with the
     /// last accepted config and persists it as a 2-D FITS via
     /// /v1/products/moment_fits. Async, same pattern as above.
-    void exportMomentMapAsFits();
+    /// @param productId the moment to export; empty keeps the historical
+    /// behaviour of picking the first visible moment (the action's own path).
+    void exportMomentMapAsFits(const QString &productId = {});
     bool finalizePolygonRegion();
     void extractCurrentPvDiagram();
     void loadCatalogueOverlay();

@@ -403,8 +403,11 @@ def make_stokes_cubes(out: Path) -> list[Path]:
         hdu.writeto(path, overwrite=True)
         return path
 
-    # The I cube is on a DIFFERENT frequency grid from Q/U, as in the release:
-    # lambda^2 must come from the file that supplies Q.
+    # The I cube's WCS spectral axis describes a different grid from Q/U's,
+    # while all four carry the same FREQnnnn sub-band keywords — which is
+    # exactly what the real release does. So this set exercises the hazard that
+    # actually bites (WCS axis vs keywords), not a difference between the
+    # files' true frequencies, which there is none of.
     return [
         write("I", 1.0, 1.342562580617e9),
         write("Q", 2.0, 9.080371093750e8),

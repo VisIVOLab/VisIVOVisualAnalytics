@@ -18,7 +18,10 @@ sequences (``../``) or absolute paths.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import suppress
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,7 +33,9 @@ from pydantic import BaseModel
 from ..auth import require_operator, verify_token
 from ..sessions import Session, get_session
 from ..dependencies import (
+    _require_dataset,
     get_exports_dir,
+    make_workspace_path,
     resolve_workspace_path,
 )
 
@@ -174,6 +179,90 @@ async def exports_copy_dataset(
         workspace_filename=dest.name,
         output_path=str(dest),
     )
+
+
+class SaveMap2dRequest(BaseModel):
+    """A 2-D map computed by the client, to be kept as a FITS in the workspace."""
+
+    #: The dataset the map derives from — the source of its celestial WCS.
+    dataset_id: str
+    #: Suggested file name; a numeric suffix is added on collision.
+    output_basename: str = ""
+    width: int
+    height: int
+    #: Row-major float32 little-endian pixels, base64-encoded.
+    pixels_base64: str
+    #: Physical unit of the map, which is rarely the source cube's.
+    bunit: str = ""
+    #: Provenance, written as HISTORY cards: what was computed, from what.
+    history: list[str] = []
+    #: (x0, y0) pixel origin when the map covers a sub-region of the source.
+    region_origin: list[int] | None = None
+
+
+@router.post("/v1/exports/save_map_2d", tags=["exports"])
+async def exports_save_map_2d(
+    request: SaveMap2dRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+):
+    """Persist a client-computed 2-D map as a standalone FITS in the workspace.
+
+    The generic export path. ``/v1/cube/save_channel_2d`` and the moment
+    exporter re-derive their pixels from a recipe, which only works for
+    products the service can recompute; everything else the viewer produces —
+    polarised intensity, position angle, Faraday depth, line-width — is
+    finished pixels, and this is how it leaves the application.
+
+    The header is built here from the source dataset, so every export gets the
+    same celestial WCS treatment rather than a client-side reimplementation.
+    """
+    from ..compute import worker_save_map_2d  # noqa: PLC0415
+
+    entry = _require_dataset(session, request.dataset_id)
+    origin = None
+    if request.region_origin is not None:
+        if len(request.region_origin) != 2:
+            raise HTTPException(422, "region_origin must be [x0, y0] in pixels.")
+        origin = (int(request.region_origin[0]), int(request.region_origin[1]))
+
+    basename = request.output_basename.strip() or f"{Path(entry['path']).stem}_map.fits"
+    if not basename.lower().endswith((".fits", ".fit", ".fts")):
+        basename += ".fits"
+    # Reserved: two exports started together must not be handed one path.
+    output_path = str(make_workspace_path(basename, reserve=True))
+
+    try:
+        result = await asyncio.to_thread(
+            worker_save_map_2d, entry["path"], output_path, request.pixels_base64,
+            request.width, request.height, request.bunit, request.history, origin)
+    except Exception as exc:
+        # make_workspace_path() reserved the name with an empty file; a failed
+        # export must not leave it in the workspace listing.
+        with suppress(OSError):
+            Path(output_path).unlink()
+        if isinstance(exc, HTTPException):
+            raise
+        if isinstance(exc, ValueError):
+            raise HTTPException(422, str(exc)) from exc
+        logger.warning("[save_map_2d] failed dataset_id=%s error=%s", request.dataset_id, exc)
+        raise HTTPException(500, str(exc)) from exc
+
+    # Registered like any other export, so the map can be reopened in the image
+    # viewer without a round trip through the filesystem.
+    new_id = f"ds_{uuid.uuid4().hex[:12]}"
+    session.datasets[new_id] = {
+        "path": result["output_path"], "kind": "image",
+        "width": result["width"], "height": result["height"], "depth": 1,
+    }
+    logger.info("[save_map_2d] registered new dataset  new_id=%s  path=%s",
+                new_id, result["output_path"])
+    return {
+        "valid": True, "error": "",
+        "new_dataset_id": new_id,
+        "workspace_filename": Path(result["output_path"]).name,
+        **{k: result[k] for k in ("output_path", "width", "height", "range_min", "range_max")},
+    }
 
 
 @router.delete("/v1/exports/{filename}",

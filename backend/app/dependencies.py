@@ -436,9 +436,16 @@ def get_exports_dir() -> _Path:
     return _EXPORTS_DIR
 
 
-def make_workspace_path(basename: str) -> _Path:
+def make_workspace_path(basename: str, reserve: bool = False) -> _Path:
     """Resolve a user-provided basename into a safe workspace path,
     auto-suffixing on collision (``cube.fits`` → ``cube_1.fits`` → …).
+
+    With ``reserve=True`` the name is claimed atomically (an empty file is
+    created), so two concurrent writers cannot be handed the same path. It is
+    opt-in because a caller that decides not to write after all — a catalogue
+    search that returns no rows — would otherwise leave a phantom artefact in
+    the workspace listing. Callers that reserve are responsible for removing
+    the placeholder if they fail.
 
     The basename is sanitised: any directory separators are stripped so
     callers cannot break out of the workspace; an empty / dot-only name
@@ -471,14 +478,34 @@ def make_workspace_path(basename: str) -> _Path:
         root = _EXPORTS_DIR.resolve()
         return resolved == root / resolved.name and root in resolved.parents
 
+    def _reserve(path: _Path) -> bool:
+        """Claim the name, atomically when asked to.
+
+        Checking that a name is free and then returning it is a race: two
+        exports started together both see it free, both are handed the same
+        path, and the second one to finish overwrites the first — with both
+        registered dataset ids pointing at one file. O_EXCL makes the check and
+        the claim one operation.
+        """
+        if not _usable(path):
+            return False
+        if not reserve:
+            return True
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except OSError:
+            return False
+        os.close(fd)
+        return True
+
     candidate = _EXPORTS_DIR / safe
-    if _usable(candidate):
+    if _reserve(candidate):
         return candidate
     stem = candidate.stem
     suffix = candidate.suffix
     for n in range(1, 10000):
         alt = _EXPORTS_DIR / f"{stem}_{n}{suffix}"
-        if _usable(alt):
+        if _reserve(alt):
             return alt
     # Pathological: 10k+ collisions on the same basename. Caller likely has a
     # bug; fail loud rather than overwrite.

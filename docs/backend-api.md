@@ -522,6 +522,36 @@ VizieR — use `/v1/resolve/cone_search` for that and overlay the CSV it writes.
 
 ---
 
+### `POST /v1/exports/save_map_2d`
+Persist a 2-D map the CLIENT computed as a standalone FITS in the workspace.
+
+```json
+{
+  "dataset_id": "...",
+  "output_basename": "field_faraday_depth.fits",
+  "width": 512, "height": 512,
+  "pixels_base64": "…",
+  "bunit": "rad m-2",
+  "history": ["RM synthesis, φ -80…80 step 1", "Q from FIELD_Q.fits"],
+  "region_origin": [x0, y0]
+}
+```
+
+The generic export path. `/v1/cube/save_channel_2d` and the moment exporter
+re-derive their pixels from a recipe, which only works for products the service
+can recompute; everything else the viewer produces — polarised intensity,
+position angle, Faraday depth, line-width — is finished pixels and leaves
+through here.
+
+The header is built service-side from `dataset_id`, so every export gets the
+same treatment: `NAXIS=2` with the celestial axes only, `OBJECT` / `TELESCOP` /
+beam carried over, `bunit` overriding the source's, and `history` written as
+`HISTORY` cards. `region_origin` shifts `CRPIX` for a cropped map.
+
+Returns `{valid, new_dataset_id, workspace_filename, output_path, width,
+height, range_min, range_max}`; the file is registered as a session dataset, so
+it can be reopened without going through the filesystem.
+
 ## Polarisation
 
 Implemented in `backend/app/routers/polarisation.py`, computed in
