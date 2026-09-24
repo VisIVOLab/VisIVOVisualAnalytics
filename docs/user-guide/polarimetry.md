@@ -84,7 +84,7 @@ Two maps come back:
 
 ```{important}
 The whole dispersion cube is **not** transferred. It is `n_φ × height × width`
-floats: for a 7500² image even a hundred φ samples is over 20 TB. The server
+floats: for a 7500² image a hundred φ samples is 22 GB. The server
 refuses a cube request above 512 MiB and says so, naming the two ways out — the
 peak maps (what the viewer asks for) or a smaller region.
 ```
@@ -122,7 +122,17 @@ enabled. The archive also ships `G000.0+2.5_RM.fits.gz`, an independently
 produced Faraday cube, which is a ready-made check on your own RM map.
 
 ```{warning}
-Three things in these files are worth knowing before you trust a header:
+Four things in these files are worth knowing before you trust a header:
+
+- **`NAXIS3 = 16` is not sixteen sub-bands.** These are Obit MFImage products:
+  the axis holds `NTERM = 2` *fitted* planes (total flux, spectral index) and
+  then `NSPEC = 14` sub-bands, whose real frequencies are in per-plane
+  `FREQ0001`…`FREQ0014` keywords — 908 to 1656 MHz. The WCS axis
+  (`CRVAL3`/`CDELT3`) describes 1284 to 2147 MHz, which is neither the same
+  grid nor the same planes. VisIVO-next reads the keywords when they are
+  present and consistent, and falls back to the WCS axis when they are not.
+  Without this, RM synthesis would use the wrong λ² *and* feed two fitted
+  planes into the transform, producing a plausible-looking and wrong RM map.
 
 - **`OBJECT` is unreliable.** The Q/U/V cubes of `G000.0+2.5` say
   `OBJECT = 'SMC1R07C'`, a different pointing entirely.

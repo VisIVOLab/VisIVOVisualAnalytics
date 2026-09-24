@@ -445,7 +445,7 @@ def worker_polarisation_pi_pa(
 # ── P-03: Rotation Measure synthesis ─────────────────────────────────────────
 
 # An FDF cube is n_phi × ny × nx float32. At MGCLS size (7500² pixels) even a
-# hundred φ samples is 22 TB, so the full cube cannot be the only answer the
+# hundred φ samples is 22 GB, so the full cube cannot be the only answer the
 # endpoint knows how to give. `reduce="peak"` returns the two maps that are
 # actually looked at — peak |F| and the φ at which it peaks — and a region
 # keeps the cube variant usable on a cut-out.

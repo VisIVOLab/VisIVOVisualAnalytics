@@ -27,6 +27,8 @@ Manifest:
   tbl_snapshot/snap_demo_1_1_1.tbl  … _1_1_2.tbl  … _1_2_1.tbl
   velocity_field.fits          hi_cube.fits                image_2d.fits
   combo/velocity.fits          combo/galaxies.csv
+  stokes_DEMO_I.fits           stokes_DEMO_Q.fits
+  stokes_DEMO_U.fits           stokes_DEMO_V.fits
 ```
 
 ## Prerequisites
@@ -163,6 +165,42 @@ Cubes* (open it twice). See the user-guide pages for each.
 | Region stats | draw a box/circle over a source | mean/rms/sum/flux (beam-aware) |
 | Region IO | Export the region (CRTF/DS9), re-import | round-trips onto the image |
 | Contours | enable contours | isophotes around the sources |
+
+## 9 · Full-Stokes cubes  ·  `stokes_DEMO_{I,Q,U,V}.fits`
+
+Four 256² × 16 cubes, one per Stokes parameter, written in the file layout of
+the MeerKAT MGCLS release (doi:10.48479/f2a2-qw16) rather than a tidied-up
+version of it. Three properties of the real archive are reproduced on purpose,
+because a demo file cleaner than the data tests nothing:
+
+- each file carries a **degenerate Stokes axis** — one plane, identified by
+  `CRVAL4`. This is the layout the companion mechanism exists for;
+- the spectral axis is the **Obit MFImage** one: `NTERM = 2` *fitted* planes
+  (total flux, spectral index) precede `NSPEC = 14` sub-bands, whose real
+  frequencies (908–1656 MHz) are in `FREQ0001`…`FREQ0014` and **not** on the
+  WCS axis, which describes a different grid entirely. `stokes_DEMO_I.fits` is
+  on yet another grid, as the real I cubes are;
+- `stokes_DEMO_V.fits` declares `CRVAL4 = 1`, i.e. "I" — the error the
+  published V cubes carry.
+
+**Open:** *File ▸ Open…* → `stokes_DEMO_I.fits` (cube viewer).
+
+| Feature | Do this | Expect |
+|---|---|---|
+| Companion discovery | Tools ▸ Load Stokes Q/U/V Companions… | Q, U and V found by name, no chooser appears |
+| Polarised intensity | Tools ▸ Polarised Intensity & Angle | two products; PI peaks ≈ 1.06, PA spans −90…+90° |
+| RM synthesis | Tools ▸ Rotation Measure Synthesis…, φ −80…80 step 1 | 14 channels used (**not** 16), two maps |
+| Faraday depth map | look at it | left-to-right gradient −30→+30, plus a **+36** blob and a **−47** one |
+| Region restriction | draw a box, re-run with the box ticked | a separate pair of products, not a replacement |
+
+The last row but one is the check that matters: a flat map, or one spanning
+different values, means the MFImage keywords were ignored and the WCS axis
+(1284–2147 MHz) was used instead. Measured through the backend, the recovered
+depth is −47 … 36 rad m⁻² against a true −46.7 … 36.3, the residual being the
+φ step.
+
+Full workflow and the real-archive caveats:
+[Polarimetry (Stokes Q, U, V)](user-guide/polarimetry).
 
 ---
 

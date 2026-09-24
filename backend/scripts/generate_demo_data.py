@@ -28,6 +28,9 @@ RNG = np.random.default_rng(20260701)
 # HI 21 cm rest frequency (Hz) — used for the demo cube's spectral WCS.
 HI_RESTFRQ = 1_420_405_751.786
 
+# Speed of light (m/s) — the Stokes cubes need it for λ² = (c/ν)².
+C_LIGHT = 2.997_924_58e8
+
 
 # ── 1. 3-D catalogue — sky (RA/Dec/redshift) ──────────────────────────────────
 def make_catalogue_sky(out: Path) -> Path:
@@ -313,6 +316,103 @@ def make_image_2d(out: Path) -> Path:
     return path
 
 
+# ── 9. Full-Stokes cubes, one per plane (cube polarimetry / RM synthesis) ─────
+def make_stokes_cubes(out: Path) -> list[Path]:
+    """Four cubes, one per Stokes parameter, in the MeerKAT MGCLS file layout.
+
+    Exercises: cube viewer → Load Stokes Q/U/V Companions, Polarised Intensity
+    & Angle, Rotation Measure Synthesis; the companion-naming rules; and the
+    backend's per-file Stokes path.
+
+    Written deliberately in the shape the real MGCLS release uses
+    (doi:10.48479/f2a2-qw16), including the three things about it that make a
+    naive reader get the wrong answer. Each is reproduced on purpose, because a
+    demo file that is tidier than the archive tests nothing:
+
+      1. A DEGENERATE Stokes axis: each file carries one plane, and which plane
+         it is lives in CRVAL4. This is the layout companions exist for.
+      2. The Obit MFImage plane layout: the spectral axis holds NTERM fitted
+         planes (total flux, spectral index) BEFORE NSPEC sub-bands, and the
+         sub-band frequencies are in per-plane FREQnnnn keywords, not on the
+         WCS axis — whose CRVAL3/CDELT3 here describe a different grid
+         entirely, exactly as in the real files. Reading the WCS axis instead
+         gives the wrong lambda^2 and feeds two fitted planes into the
+         transform.
+      3. A V cube whose CRVAL4 says 1, i.e. "I". The real MGCLS V cubes carry
+         this, and the client is expected to trust the role it asked for.
+
+    The rotation measure varies across the field (a left-to-right gradient plus
+    two blobs) so the recovered Faraday-depth map has structure to check rather
+    than one flat value. See docs/user-guide/polarimetry.md.
+    """
+    nx = ny = 256
+    n_term, n_spec = 2, 14
+    # The real G000.0+2.5 sub-band centres.
+    freqs = 9.080371093750e8 + np.arange(n_spec) * 5.755108e7
+    lam2 = (C_LIGHT / freqs) ** 2
+
+    yy, xx = np.mgrid[0:ny, 0:nx].astype(np.float64)
+    rm = 30.0 * (xx / nx - 0.5) * 2.0                     # -30 … +30 rad/m²
+    pol = 0.05 * np.ones((ny, nx))
+    for cy, cx, rm_amp, p_amp, sig in [(75, 90, 45.0, 1.0, 11.0),
+                                       (170, 165, -55.0, 0.7, 15.0),
+                                       (210, 60, 0.0, 0.4, 7.0)]:
+        blob = np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2.0 * sig ** 2))
+        rm += rm_amp * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2)
+                              / (2.0 * (2.5 * sig) ** 2))
+        pol += p_amp * blob
+    total_i = 3.0 * pol + 0.1
+
+    def planes(role: str) -> np.ndarray:
+        arr = np.zeros((1, n_term + n_spec, ny, nx), dtype=np.float32)
+        arr[0, 0] = total_i          # fitted plane: total flux
+        arr[0, 1] = -0.7             # fitted plane: spectral index
+        for k in range(n_spec):
+            angle = 2.0 * rm * lam2[k]
+            if role == "I":
+                plane = total_i
+            elif role == "Q":
+                plane = pol * np.cos(angle)
+            elif role == "U":
+                plane = pol * np.sin(angle)
+            else:
+                plane = 0.02 * total_i
+            arr[0, n_term + k] = plane + RNG.normal(0, 0.01, (ny, nx))
+        return arr
+
+    def write(role: str, crval4: float, wcs_freq0: float) -> Path:
+        hdu = fits.PrimaryHDU(planes(role))
+        h = hdu.header
+        h["BUNIT"] = "JY/BEAM"
+        h["OBJECT"] = "DEMO_FIELD"
+        h["TELESCOP"] = "MeerKAT"
+        h["CTYPE1"], h["CRVAL1"], h["CRPIX1"], h["CDELT1"] = \
+            "GLON-SIN", 0.0, nx / 2.0, -4.166667e-4
+        h["CTYPE2"], h["CRVAL2"], h["CRPIX2"], h["CDELT2"] = \
+            "GLAT-SIN", 2.5, ny / 2.0, 4.166667e-4
+        # SPECLNMF, no CUNIT, and a grid that is NOT the sub-band grid: the
+        # header as MFImage really writes it.
+        h["CTYPE3"], h["CRVAL3"], h["CRPIX3"], h["CDELT3"] = \
+            "SPECLNMF", wcs_freq0, 1.0, 5.755108e7
+        h["CTYPE4"], h["CRVAL4"], h["CRPIX4"], h["CDELT4"] = \
+            "STOKES", crval4, 1.0, 1.0
+        h["NTERM"], h["NSPEC"] = n_term, n_spec
+        for i, f in enumerate(freqs, start=1):
+            h[f"FREQ{i:04d}"] = float(f)
+        path = out / f"stokes_DEMO_{role}.fits"
+        hdu.writeto(path, overwrite=True)
+        return path
+
+    # The I cube is on a DIFFERENT frequency grid from Q/U, as in the release:
+    # lambda^2 must come from the file that supplies Q.
+    return [
+        write("I", 1.0, 1.342562580617e9),
+        write("Q", 2.0, 9.080371093750e8),
+        write("U", 3.0, 9.080371093750e8),
+        write("V", 1.0, 9.080371093750e8),   # CRVAL4 = "I": the real V header
+    ]
+
+
 def main() -> int:
     out = Path(sys.argv[1]).expanduser() if len(sys.argv) > 1 \
         else Path.home() / "VisIVO_demo_data"
@@ -331,6 +431,7 @@ def main() -> int:
     made += [str(fpath), str(cpath)]
     made.append(str(make_hi_cube(out)))
     made.append(str(make_image_2d(out)))
+    made += [str(p) for p in make_stokes_cubes(out)]
 
     print(f"Wrote {len(made)} demo files under {out}:")
     for m in made:
