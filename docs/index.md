@@ -173,6 +173,7 @@ user-guide/moment-maps
 user-guide/spectral-tools
 user-guide/region-pv-noise
 user-guide/kinematic-lasso
+user-guide/polarimetry
 user-guide/source-finding
 user-guide/catalogues-hips
 user-guide/vlkb-archive

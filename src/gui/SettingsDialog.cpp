@@ -17,6 +17,8 @@
 #include <QLineEdit>
 #include <QScreen>
 #include <QScrollArea>
+#include <QTabBar>
+#include <QTabWidget>
 
 #include <limits>
 
@@ -78,25 +80,11 @@ SettingsDialog::SettingsDialog(Settings *settings, AuthWrapper *auth, QWidget *p
     // Inject the widget into the dialog's vertical layout just above the
     // buttonBox so it appears at the bottom alongside the other groups.
     this->backendsWidget = new BackendsSettingsWidget(this->settings, this);
-    if (auto *box = qobject_cast<QBoxLayout *>(this->layout())) {
-        const int buttonBoxIndex = box->indexOf(ui->buttonBox);
-        if (buttonBoxIndex >= 0) {
-            box->insertWidget(buttonBoxIndex, this->backendsWidget);
-        } else {
-            box->addWidget(this->backendsWidget);
-        }
-    }
 
     // Scientific-copilot LLM provider section (persisted here; the Copilot panel
-    // re-applies it to the backend on Settings::updated).
-    if (auto *box = qobject_cast<QBoxLayout *>(this->layout())) {
-        QWidget *copilot = this->buildCopilotSection();
-        const int buttonBoxIndex = box->indexOf(ui->buttonBox);
-        if (buttonBoxIndex >= 0)
-            box->insertWidget(buttonBoxIndex, copilot);
-        else
-            box->addWidget(copilot);
-    }
+    // re-applies it to the backend on Settings::updated). Both this and the
+    // remote-backends widget are placed by buildTabs() below.
+    QWidget *copilotSection = this->buildCopilotSection();
 
     // Restore defaults
     QObject::connect(ui->buttonBox, &QDialogButtonBox::clicked, this,
@@ -114,36 +102,102 @@ SettingsDialog::SettingsDialog(Settings *settings, AuthWrapper *auth, QWidget *p
     // their settings
     QObject::connect(this, &SettingsDialog::accepted, this->settings, &Settings::updated);
 
-    // Make the dialog scrollable: the stacked sections can exceed the window (and
-    // the screen) height, leaving the lower sections / buttons unreachable. Move
-    // every section into a QScrollArea, keeping the button box pinned below it.
-    if (auto *outer = qobject_cast<QVBoxLayout *>(this->layout())) {
-        auto *content = new QWidget;
-        auto *contentLayout = new QVBoxLayout(content);
-        contentLayout->setContentsMargins(0, 0, 0, 0);
-        outer->removeWidget(ui->buttonBox);   // keep the buttons outside the scroll area
-        while (outer->count() > 0) {
-            QLayoutItem *item = outer->takeAt(0);
-            if (QWidget *w = item->widget()) {
-                contentLayout->addWidget(w);  // reparents w to `content`
-                delete item;                  // free the now-empty wrapper (not the widget)
-            } else {
-                contentLayout->addItem(item); // layouts / spacers transfer as-is
-            }
+    // Group the sections into tabs rather than stacking all eight of them in one
+    // column. Stacked, the dialog is taller than most screens and the only way
+    // to reach the copilot or the remote backends is a long scroll past settings
+    // nobody was looking for; the button box also drifts off-screen. Each tab
+    // keeps its own scroll area, so a tab that still overflows (a long list of
+    // remote backends) stays reachable, and the button box is pinned outside
+    // them all.
+    this->buildTabs(copilotSection);
+}
+
+// Move the sections built by the .ui file (plus the two built in code) into a
+// QTabWidget. The widgets are reparented, never recreated, so every pointer the
+// rest of this class holds — ui->lineVLKBUrl, m_copilotKey, … — stays valid.
+void SettingsDialog::buildTabs(QWidget *copilotSection)
+{
+    auto *outer = qobject_cast<QVBoxLayout *>(this->layout());
+    if (!outer)
+        return;
+
+    // Take the sections out of the dialog's layout before anything is added
+    // back, so nothing is left behind if the .ui gains a section later: whatever
+    // is not claimed by a tab below goes to the first one.
+    outer->removeWidget(ui->buttonBox);
+    QList<QWidget *> loose;
+    while (outer->count() > 0) {
+        QLayoutItem *item = outer->takeAt(0);
+        if (QWidget *w = item->widget())
+            loose.append(w);
+        delete item;   // the wrapper, not the widget
+    }
+
+    auto *tabs = new QTabWidget(this);
+
+    // One tab = a scroll area over a column of group boxes.
+    auto addTab = [&](const QString &title, const QList<QWidget *> &sections) {
+        auto *page = new QWidget;
+        auto *col = new QVBoxLayout(page);
+        col->setContentsMargins(4, 8, 4, 4);
+        col->setSpacing(8);
+        for (QWidget *w : sections) {
+            if (!w)
+                continue;
+            loose.removeOne(w);
+            col->addWidget(w);
         }
-        auto *scroll = new QScrollArea(this);
+        col->addStretch(1);   // sections keep their height, they don't spread
+        auto *scroll = new QScrollArea(tabs);
         scroll->setWidgetResizable(true);
         scroll->setFrameShape(QFrame::NoFrame);
-        scroll->setWidget(content);
-        outer->addWidget(scroll);
-        outer->addWidget(ui->buttonBox);
+        scroll->setWidget(page);
+        tabs->addTab(scroll, title);
+        return page;
+    };
+
+    QWidget *first = addTab(tr("General"), { ui->groupUI, ui->groupPython,
+                                             ui->groupVisualization });
+    addTab(tr("Data Access"), { ui->groupVLKB, ui->groupPanoramicView });
+    addTab(tr("Backends"), { ui->groupBackend, this->backendsWidget });
+    addTab(tr("Copilot"), { copilotSection });
+
+    // Anything the .ui grew that no tab claimed (and the spacer it ends with).
+    if (auto *col = qobject_cast<QVBoxLayout *>(first->layout())) {
+        for (QWidget *w : std::as_const(loose))
+            col->insertWidget(col->count() - 1, w);
     }
-    // Open at a height that fits the screen; the scroll area handles any overflow.
+
+    outer->addWidget(tabs);
+    outer->addWidget(ui->buttonBox);
+
+    // Open large enough to show a whole tab. sizeHint() cannot be used here: a
+    // QScrollArea reports a small hint of its own regardless of its contents, so
+    // asking the dialog collapsed it to a few hundred pixels and every tab
+    // opened already scrolled. Measure the widest page instead, and cap against
+    // the screen.
+    int w = 0, h = 0;
+    for (int i = 0; i < tabs->count(); ++i) {
+        if (auto *sa = qobject_cast<QScrollArea *>(tabs->widget(i))) {
+            if (QWidget *page = sa->widget()) {
+                w = qMax(w, page->sizeHint().width());
+                h = qMax(h, page->sizeHint().height());
+            }
+        }
+    }
+    // Room for the tab bar, the button box, the frame and a scrollbar.
+    w += 60;
+    h += tabs->tabBar()->sizeHint().height() + ui->buttonBox->sizeHint().height() + 60;
+    // Floor first, then the screen cap — the other way round a small display
+    // would be overruled by the floor and the button box would sit off-screen.
+    w = qMax(w, 620);
+    h = qMax(h, 480);
     if (QScreen *scr = this->screen()) {
-        const int fitH = qMin(this->sizeHint().height(),
-                              static_cast<int>(scr->availableGeometry().height() * 0.9));
-        this->resize(this->width(), fitH);
+        const QRect avail = scr->availableGeometry();
+        w = qMin(w, static_cast<int>(avail.width() * 0.9));
+        h = qMin(h, static_cast<int>(avail.height() * 0.9));
     }
+    this->resize(w, h);
 }
 
 SettingsDialog::~SettingsDialog()

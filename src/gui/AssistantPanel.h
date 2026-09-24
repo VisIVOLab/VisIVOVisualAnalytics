@@ -58,7 +58,6 @@ signals:
 
 private slots:
     void onSend();
-    void onSettings();   ///< choose the LLM provider (Claude / OpenAI / own server)
     void onSettingsUpdated();   ///< re-apply after the global Settings dialog changes it
     void onClearConversation();   ///< start a fresh conversation (drops follow-up context)
 
@@ -66,6 +65,10 @@ private:
     /// Push the persisted copilot provider config (Settings) to the backend, so
     /// the user configures the provider once and it auto-applies on every connect.
     void applyProviderFromSettings();
+    /// Run a deferred provider change once no query and no stream is live.
+    void maybeApplyPendingProvider();
+    /// Abort and detach a stream reply that is still open.
+    void closeLiveStream();
     void renderConversation();   ///< rebuild the transcript HTML from m_turns/logs
     void appendError(const QString &text);
     void setBusy(bool busy);
@@ -95,6 +98,8 @@ private:
     QString m_token;
     QString m_datasetId;
     bool m_busy{ false };
+    /// A Settings change landed while the panel was busy; applied on release.
+    bool m_providerApplyPending{ false };
     bool m_providerAutoApplied{ false };   ///< auto-apply the saved config only once
 
     QList<Entry> m_entries;    ///< everything shown in the transcript, for re-render
@@ -105,7 +110,6 @@ private:
     QTextBrowser *m_transcript{ nullptr };
     QLineEdit *m_input{ nullptr };
     QPushButton *m_send{ nullptr };
-    QPushButton *m_settings{ nullptr };
     QPushButton *m_clear{ nullptr };
     QLabel *m_status{ nullptr };
     QWidget *m_suggestions{ nullptr };        ///< chip container (shown when empty)

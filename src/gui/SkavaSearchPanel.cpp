@@ -21,6 +21,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QProgressBar>
 #include <QSpinBox>
 #include <QTableView>
 #include <QVBoxLayout>
@@ -254,8 +255,12 @@ SkavaSearchPanel::SkavaSearchPanel(Settings *settings,
     QObject::connect(m_resultsTable->selectionModel(),
                      &QItemSelectionModel::currentRowChanged,
                      this, &SkavaSearchPanel::onResultSelectionChanged);
-    QObject::connect(m_searchBtn, &QPushButton::clicked,
-                     this, &SkavaSearchPanel::runSearch);
+    QObject::connect(m_searchBtn, &QPushButton::clicked, this, [this]() {
+        if (m_busy)
+            cancelRequest();
+        else
+            runSearch();
+    });
     QObject::connect(m_openBtn, &QPushButton::clicked,
                      this, &SkavaSearchPanel::openSelected);
     QObject::connect(m_subsetBtn, &QPushButton::clicked,
@@ -283,14 +288,31 @@ void SkavaSearchPanel::buildUi()
     // ── Connection bar ───────────────────────────────────────────────
     {
         auto *box = new QGroupBox(u"Connection"_s, this);
-        auto *form = new QFormLayout(box);
+        auto *grid = new QGridLayout(box);
+        // A QGridLayout with an explicit column stretch, not a QFormLayout:
+        // QFormLayout's field column is sized by the style, and on macOS the
+        // field kept its size hint however much room the row had — the SKAVA URL
+        // showed as "…r.oact.inaf.it:8443" in a box a third of the width
+        // available, with the label stranded mid-row. Setting
+        // AllNonFixedFieldsGrow did not change it. A grid whose field column
+        // carries all the stretch behaves the same on every platform.
+        grid->setHorizontalSpacing(8);
+        grid->setVerticalSpacing(4);
+        grid->setColumnStretch(0, 0);
+        grid->setColumnStretch(1, 1);
+        auto *urlLabel = new QLabel(u"SKAVA URL"_s, box);
         m_urlEdit = new QLineEdit(box);
         m_urlEdit->setPlaceholderText(u"http://localhost:8000"_s);
-        form->addRow(u"SKAVA URL"_s, m_urlEdit);
+        urlLabel->setBuddy(m_urlEdit);
+        grid->addWidget(urlLabel, 0, 0);
+        grid->addWidget(m_urlEdit, 0, 1);
+        auto *tokenLabel = new QLabel(u"Token"_s, box);
         m_tokenEdit = new QLineEdit(box);
         m_tokenEdit->setPlaceholderText(u"(optional bearer token)"_s);
         m_tokenEdit->setEchoMode(QLineEdit::Password);
-        form->addRow(u"Token"_s, m_tokenEdit);
+        tokenLabel->setBuddy(m_tokenEdit);
+        grid->addWidget(tokenLabel, 1, 0);
+        grid->addWidget(m_tokenEdit, 1, 1);
         root->addWidget(box);
     }
 
@@ -388,10 +410,21 @@ void SkavaSearchPanel::buildUi()
                 u"Compute a spatial/spectral cutout on the dataset's co-located "
                 u"VisIVO backend (compute next to data) and open the result."_s);
         m_statusLabel = new QLabel(this);
+        // An indeterminate bar, scoped to this panel, rather than an
+        // application-wide wait cursor: the search is a network call, the rest
+        // of the application stays usable during it, and a cursor that says
+        // otherwise is a lie — one that used to outlive the request, because
+        // nothing ever timed out.
+        m_busyBar = new QProgressBar(this);
+        m_busyBar->setRange(0, 0);           // indeterminate
+        m_busyBar->setTextVisible(false);
+        m_busyBar->setFixedSize(90, 6);
+        m_busyBar->setVisible(false);
         bar->addWidget(m_searchBtn);
         bar->addWidget(m_openBtn);
         bar->addWidget(m_subsetBtn);
         bar->addStretch(1);
+        bar->addWidget(m_busyBar);
         bar->addWidget(m_statusLabel);
         root->addLayout(bar);
     }
@@ -410,29 +443,50 @@ void SkavaSearchPanel::buildUi()
     // ── Provenance ───────────────────────────────────────────────────
     {
         auto *box = new QGroupBox(u"Provenance"_s, this);
-        auto *form = new QFormLayout(box);
-        m_provenanceTitle = new QLabel(u"-"_s);
+        auto *grid = new QGridLayout(box);
+        // A QGridLayout with an explicit column stretch, not a QFormLayout:
+        // QFormLayout's field column is sized by the style, and on macOS the
+        // field kept its size hint however much room the row had — the SKAVA URL
+        // showed as "…r.oact.inaf.it:8443" in a box a third of the width
+        // available, with the label stranded mid-row. Setting
+        // AllNonFixedFieldsGrow did not change it. A grid whose field column
+        // carries all the stretch behaves the same on every platform.
+        grid->setHorizontalSpacing(8);
+        grid->setVerticalSpacing(4);
+        grid->setColumnStretch(0, 0);
+        grid->setColumnStretch(1, 1);
+        int prow = 0;
+        // Long values (title, citation) wrap, so the label sits at the top of
+        // its row rather than floating against the middle line.
+        auto addRow = [&](const QString &text, QWidget *field) {
+            auto *label = new QLabel(text, box);
+            label->setAlignment(Qt::AlignRight | Qt::AlignTop);
+            grid->addWidget(label, prow, 0);
+            grid->addWidget(field, prow, 1);
+            ++prow;
+        };
+        m_provenanceTitle = new QLabel(u"-"_s, box);
         m_provenanceTitle->setWordWrap(true);
         m_provenanceTitle->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        form->addRow(u"Title"_s, m_provenanceTitle);
-        m_provenanceDoi = new QLabel(u"-"_s);
+        addRow(u"Title"_s, m_provenanceTitle);
+        m_provenanceDoi = new QLabel(u"-"_s, box);
         m_provenanceDoi->setTextInteractionFlags(Qt::TextSelectableByMouse);
         m_provenanceDoi->setTextFormat(Qt::RichText);
         m_provenanceDoi->setOpenExternalLinks(true);
-        form->addRow(u"DOI"_s, m_provenanceDoi);
-        m_provenancePid = new QLabel(u"-"_s);
+        addRow(u"DOI"_s, m_provenanceDoi);
+        m_provenancePid = new QLabel(u"-"_s, box);
         m_provenancePid->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        form->addRow(u"PID"_s, m_provenancePid);
-        m_provenanceLicense = new QLabel(u"-"_s);
+        addRow(u"PID"_s, m_provenancePid);
+        m_provenanceLicense = new QLabel(u"-"_s, box);
         m_provenanceLicense->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        form->addRow(u"License"_s, m_provenanceLicense);
-        m_provenanceCitation = new QLabel(u"-"_s);
+        addRow(u"License"_s, m_provenanceLicense);
+        m_provenanceCitation = new QLabel(u"-"_s, box);
         m_provenanceCitation->setWordWrap(true);
         m_provenanceCitation->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        form->addRow(u"Citation"_s, m_provenanceCitation);
-        m_copyCitationBtn = new QPushButton(u"Copy citation"_s);
+        addRow(u"Citation"_s, m_provenanceCitation);
+        m_copyCitationBtn = new QPushButton(u"Copy citation"_s, box);
         m_copyCitationBtn->setEnabled(false);
-        form->addRow(u""_s, m_copyCitationBtn);
+        grid->addWidget(m_copyCitationBtn, prow, 1, Qt::AlignLeft);
         root->addWidget(box);
     }
 }
@@ -453,7 +507,14 @@ void SkavaSearchPanel::reloadClientFromFields()
 
 void SkavaSearchPanel::setBusy(bool busy, const QString &message)
 {
-    m_searchBtn->setEnabled(!busy);
+    m_busy = busy;
+    // The button stays enabled and becomes the way out of the request: a
+    // network call can take tens of seconds against a slow or unreachable node,
+    // and having to sit through it before being allowed to fix the URL and try
+    // again is the whole complaint the deadline above only half answers.
+    m_searchBtn->setEnabled(true);
+    m_searchBtn->setText(busy ? u"Cancel"_s : u"Search"_s);
+    m_searchBtn->setDefault(!busy);
     const bool hasSelection = !busy
                               && m_resultsTable->currentIndex().isValid()
                               && m_resultsTable->currentIndex().row() >= 0;
@@ -462,21 +523,27 @@ void SkavaSearchPanel::setBusy(bool busy, const QString &message)
     if (busy) {
         m_statusLabel->setText(message.isEmpty() ? u"Working…"_s : message);
     }
-    // The override-cursor stack must stay balanced: one push per busy=true,
-    // exactly one pop per busy=false. The previous version pushed an Arrow
-    // cursor on busy=false and then popped, which left the original Wait
-    // override on the stack and made the cursor "stick".
-    if (busy && !m_cursorOverrideActive) {
-        QApplication::setOverrideCursor(Qt::WaitCursor);
-        m_cursorOverrideActive = true;
-    } else if (!busy && m_cursorOverrideActive) {
-        QApplication::restoreOverrideCursor();
-        m_cursorOverrideActive = false;
-    }
+    if (m_busyBar)
+        m_busyBar->setVisible(busy);
+}
+
+void SkavaSearchPanel::cancelRequest()
+{
+    if (!m_busy || !m_skavaClient)
+        return;
+    // The worker is inside a blocking call; it polls the flag and unwinds on
+    // its own. setBusy(false) is left to the watcher's finished handler, which
+    // runs either way, so the panel cannot be re-enabled while the thread is
+    // still using the client.
+    m_skavaClient->requestCancel();
+    m_searchBtn->setEnabled(false);
+    m_statusLabel->setText(u"Cancelling…"_s);
 }
 
 void SkavaSearchPanel::runSearch()
 {
+    if (m_busy)
+        return;   // one request at a time: see onResultSelectionChanged()
     reloadClientFromFields();
     if (m_urlEdit->text().trimmed().isEmpty()) {
         QMessageBox::information(this, u"SKAVA"_s,
@@ -524,6 +591,7 @@ void SkavaSearchPanel::runSearch()
 
     setBusy(true, u"Searching…"_s);
     SkavaClient *client = m_skavaClient;  // captured by ptr
+    client->clearCancel();
     m_searchWatcher->setFuture(QtConcurrent::run([client, f]() {
         return client->searchDiscovery(f);
     }));
@@ -545,8 +613,12 @@ void SkavaSearchPanel::onResultSelectionChanged()
         return;
     }
     const auto &meta = all[row].metadata;
-    m_openBtn->setEnabled(true);
-    if (m_subsetBtn) m_subsetBtn->setEnabled(true);
+    // Not while a request is out: Open and SODA share the client and the one
+    // DataLink watcher with the search, so launching a second one would have
+    // the first watcher's setBusy(false) hand the panel back while a worker is
+    // still using the client — and one cancel flag would serve both.
+    m_openBtn->setEnabled(!m_busy);
+    if (m_subsetBtn) m_subsetBtn->setEnabled(!m_busy);
     m_provenanceTitle->setText(
             meta.obsTitle.isEmpty() ? u"-"_s : meta.obsTitle);
     if (!meta.doi.isEmpty()) {
@@ -565,6 +637,8 @@ void SkavaSearchPanel::onResultSelectionChanged()
 
 void SkavaSearchPanel::openSelected()
 {
+    if (m_busy)
+        return;   // one request at a time: see onResultSelectionChanged()
     reloadClientFromFields();
     const int row = m_resultsTable->currentIndex().row();
     const auto &all = m_resultsModel->results();
@@ -574,6 +648,7 @@ void SkavaSearchPanel::openSelected()
 
     setBusy(true, u"Resolving access URL…"_s);
     SkavaClient *client = m_skavaClient;
+    client->clearCancel();
     m_datalinkWatcher->setFuture(QtConcurrent::run([client, obsId]() {
         return client->getDatalink(obsId);
     }));
@@ -581,6 +656,8 @@ void SkavaSearchPanel::openSelected()
 
 void SkavaSearchPanel::requestSubset()
 {
+    if (m_busy)
+        return;   // one request at a time: see onResultSelectionChanged()
     reloadClientFromFields();
     const int row = m_resultsTable->currentIndex().row();
     const auto &all = m_resultsModel->results();
@@ -593,6 +670,7 @@ void SkavaSearchPanel::requestSubset()
     m_pendingSubset = true;
     setBusy(true, u"Resolving access for SODA subset…"_s);
     SkavaClient *client = m_skavaClient;
+    client->clearCancel();
     m_datalinkWatcher->setFuture(QtConcurrent::run([client, obsId]() {
         return client->getDatalink(obsId);
     }));

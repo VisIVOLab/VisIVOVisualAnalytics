@@ -46,6 +46,42 @@ void TestStokesCompanion::askapSuffix_isReplacedIncludingTheGzipVariant()
                     .contains(QStringLiteral("image.restored_V.fits.gz")));
 }
 
+// MGCLS publishes 32 of its 52 fields as FIELD_I_PB.fits.gz with Q, U and V
+// carrying no _PB at all, so a rule that only ever looks for _Q_PB finds
+// nothing for those fields.
+void TestStokesCompanion::pbCorrectedIntensity_alsoOffersUncorrectedCompanions()
+{
+    const QStringList gz = visivo::stokesCompanionCandidates(
+            QStringLiteral("G000.0+2.5_I_PB.fits.gz"), QStringLiteral("Q"));
+    QVERIFY(gz.contains(QStringLiteral("G000.0+2.5_Q.fits.gz")));
+    // The more specific _PB → _PB candidate is still offered, and offered first.
+    QVERIFY(gz.contains(QStringLiteral("G000.0+2.5_Q_PB.fits.gz")));
+    QVERIFY(gz.indexOf(QStringLiteral("G000.0+2.5_Q_PB.fits.gz"))
+            < gz.indexOf(QStringLiteral("G000.0+2.5_Q.fits.gz")));
+
+    QVERIFY(visivo::stokesCompanionCandidates(QStringLiteral("field_I_PB.fits"),
+                                              QStringLiteral("U"))
+                    .contains(QStringLiteral("field_U.fits")));
+}
+
+// Order matters only when both spellings are on disk: the primary-beam
+// corrected companion belongs with a primary-beam corrected intensity.
+void TestStokesCompanion::pick_prefersThePbCompanionWhenBothExist()
+{
+    const QSet<QString> listing{ QStringLiteral("f_I_PB.fits.gz"),
+                                 QStringLiteral("f_Q_PB.fits.gz"),
+                                 QStringLiteral("f_Q.fits.gz") };
+    QCOMPARE(visivo::pickStokesCompanion(QStringLiteral("f_I_PB.fits.gz"),
+                                         QStringLiteral("Q"), listing),
+             QStringLiteral("f_Q_PB.fits.gz"));
+
+    const QSet<QString> mgcls{ QStringLiteral("f_I_PB.fits.gz"),
+                               QStringLiteral("f_Q.fits.gz") };
+    QCOMPARE(visivo::pickStokesCompanion(QStringLiteral("f_I_PB.fits.gz"),
+                                         QStringLiteral("Q"), mgcls),
+             QStringLiteral("f_Q.fits.gz"));
+}
+
 void TestStokesCompanion::theStokesIFileItself_isNeverACandidate()
 {
     // Several patterns miss, and a miss leaves the name unchanged; loading the

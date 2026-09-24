@@ -11,6 +11,7 @@
 #include <QList>
 #include <QNetworkRequest>
 #include <QPointF>
+#include <QRect>
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
@@ -1386,6 +1387,20 @@ struct BackendCrossmatchResult
 
 // ── P-01: Stokes plane extraction ────────────────────────────────────────────
 
+/// Dataset ids of the files that hold the Stokes planes a dataset lacks.
+///
+/// MeerKAT (MGCLS), ASKAP/POSSUM and anything produced by Obit MFImage publish
+/// one FITS per Stokes plane, each with a degenerate STOKES axis, so the
+/// dataset the user opened typically carries only I. The viewer opens the
+/// sibling files as datasets of their own and names them here; an empty id
+/// means "not loaded".
+struct BackendStokesCompanionIds
+{
+    QString i, q, u, v;
+
+    bool isEmpty() const { return i.isEmpty() && q.isEmpty() && u.isEmpty() && v.isEmpty(); }
+};
+
 struct BackendStokesPlaneResult
 {
     bool valid{ false };
@@ -1437,6 +1452,12 @@ struct BackendRmSynthesisResult
     float rangeMin{ 0.f };
     float rangeMax{ 0.f };
     QByteArray fdfData;           ///< float32 LE FDF cube (nPhi*height rows × width cols)
+    /// Peak mode only: the φ of the |F(φ)| maximum per pixel — the RM map.
+    /// Empty in cube mode, where fdfData holds the whole dispersion cube.
+    QByteArray phiPeakData;
+    float phiPeakMin{ 0.f };
+    float phiPeakMax{ 0.f };
+    bool peakMode{ false };
 };
 
 // ── C-01: Angular power spectrum ─────────────────────────────────────────────
@@ -2471,7 +2492,8 @@ public:
     BackendStokesPlaneResult requestStokesPlane(
             const QString &datasetId,
             const QString &plane = QStringLiteral("I"),
-            int channel = 0);
+            int channel = 0,
+            const QString &companionDatasetId = {});
 
     // ── P-02: Polarised intensity and angle ───────────────────────────────────
     /** POST /v1/polarisation/pi/result/binary
@@ -2479,18 +2501,28 @@ public:
     BackendPolarisationPiResult requestPolarisationPi(
             const QString &datasetId,
             int channel = 0,
-            const QVector<int> &lineFreeChannels = {});
+            const QVector<int> &lineFreeChannels = {},
+            const BackendStokesCompanionIds &companions = {});
 
     // ── P-03: Rotation Measure synthesis ──────────────────────────────────────
     /** POST /v1/polarisation/rmsynthesis/{dataset_id}/binary
      *  Returns the FDF cube |F(φ)| as a binary frame (nPhi*ny rows × nx cols float32).
      *  @param phiRange  [phi_min, phi_max] in rad/m².
      *  @param dPhi      φ step in rad/m². */
+    /** @param companions  Q/U dataset ids when the primary carries neither.
+     *  @param peakOnly     Ask for the peak-|F| and peak-φ maps instead of the
+     *                      whole dispersion cube. On a survey-sized image the
+     *                      cube is terabytes and the server refuses it, so this
+     *                      is the mode the viewer uses.
+     *  @param region       (x0, y0, w, h) in pixels; whole image when null. */
     BackendRmSynthesisResult requestRmSynthesis(
             const QString &datasetId,
             double phiMin = -100.0,
             double phiMax = 100.0,
-            double dPhi = 1.0);
+            double dPhi = 1.0,
+            const BackendStokesCompanionIds &companions = {},
+            bool peakOnly = false,
+            const QRect &region = {});
 
     // ── C-01: Angular power spectrum ──────────────────────────────────────────
     /** POST /v1/cosmology/angular_power/{dataset_id} */

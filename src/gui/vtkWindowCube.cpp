@@ -2840,6 +2840,10 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(m_actExportChannel2d, &QAction::triggered,
                      this, &vtkWindowCube::exportCurrentChannelAs2dFits);
 
+    // Stokes / polarimetry (vtkWindowCube_Polarisation.cpp): companion
+    // discovery, PI/PA and RM synthesis, all computed backend-side.
+    this->setupPolarisationTools();
+
     m_actSliceHistogram = ui->menuTools->addAction(u"Pixel Histogram (current slice)"_s);
     m_actSliceHistogram->setToolTip(
             u"Open a floating histogram of the current 2-D slice with two "
@@ -4548,6 +4552,19 @@ void previewBoxWhileEditing(vtkWindowCube *window, CubeBoxToolDialog *dialog)
     });
 }
 } // namespace
+
+std::array<int, 4> vtkWindowCube::currentRegionBounds2D() const
+{
+    const int maxX = std::max(0, this->remoteDatasetWidth - 1);
+    const int maxY = std::max(0, this->remoteDatasetHeight - 1);
+    if (!this->regionValid || this->regionMode == RegionMode::None)
+        return { 0, maxX, 0, maxY };
+    const auto bounds = regionBounds2D(this->regionMode, this->regionAnchorVoxel,
+                                       this->regionCurrentVoxel, this->regionPolygonVertices);
+    const int x0 = std::clamp(bounds[0], 0, maxX);
+    const int y0 = std::clamp(bounds[2], 0, maxY);
+    return { x0, std::clamp(bounds[1], x0, maxX), y0, std::clamp(bounds[3], y0, maxY) };
+}
 
 void vtkWindowCube::exportSubCubeAsFits()
 {

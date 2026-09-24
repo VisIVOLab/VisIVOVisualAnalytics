@@ -42,6 +42,18 @@ inline QStringList stokesCompanionCandidates(const QString &fileName, const QStr
     candidates << QString(fileName).replace(QStringLiteral("_I_PB.fits.gz"),
                                             QStringLiteral("_") + role
                                                     + QStringLiteral("_PB.fits.gz"));
+    // A primary-beam corrected intensity image next to UNCORRECTED companions.
+    // MGCLS is published this way: of its 52 fields, 32 ship FIELD_I_PB.fits.gz
+    // while Q, U and V have no _PB variant at all — so the rules above, which
+    // only ever look for _Q_PB, find nothing for those 32 fields and the whole
+    // set has to be located by hand. Less specific than the _PB → _PB rules, so
+    // it is appended after them and only wins when they match no file.
+    candidates << QString(fileName).replace(QStringLiteral("_I_PB.fits.gz"),
+                                            QStringLiteral("_") + role
+                                                    + QStringLiteral(".fits.gz"));
+    candidates << QString(fileName).replace(QStringLiteral("_I_PB.fits"),
+                                            QStringLiteral("_") + role
+                                                    + QStringLiteral(".fits"));
     candidates.removeDuplicates();
     candidates.removeAll(fileName);   // a pattern that matched nothing is not a candidate
     return candidates;

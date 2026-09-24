@@ -641,6 +641,18 @@ publication-ready mosaic. The colour scale is shared across all panels
 faint emission and strong peaks are directly comparable.
 ```
 
+#### Stokes polarimetry
+
+*Tools → Load Stokes Q/U/V Companions… / Polarised Intensity & Angle /
+Rotation Measure Synthesis…* work on full-Stokes cubes — including surveys that
+publish one cube per Stokes plane, such as MeerKAT MGCLS and ASKAP/POSSUM. The
+companion cubes are opened on the backend and never loaded into the viewer,
+which is what makes 7500² × 16 per plane workable; the results come back as
+ordinary 2-D products.
+
+Full workflow, naming rules and a worked MGCLS example:
+[Polarimetry (Stokes Q, U, V)](polarimetry).
+
 ## Regions, PV diagrams, noise
 
 These are all explained on a dedicated page:

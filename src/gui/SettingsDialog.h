@@ -48,6 +48,8 @@ private:
     QLineEdit *m_copilotUrl{ nullptr };
     QLineEdit *m_copilotModel{ nullptr };
     QWidget *buildCopilotSection();   ///< build the group, pre-filled from Settings
+    /// Reparent every section into a QTabWidget and size the dialog to it.
+    void buildTabs(QWidget *copilotSection);
 
     void setVLKBAuthStatus();
 };

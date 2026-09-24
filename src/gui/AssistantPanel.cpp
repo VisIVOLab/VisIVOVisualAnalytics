@@ -6,11 +6,7 @@
 #include "app/BackendClientFactory.h"
 
 #include <QClipboard>
-#include <QComboBox>
-#include <QDialog>
 #include <QGuiApplication>
-#include <QDialogButtonBox>
-#include <QFormLayout>
 #include <QFuture>
 #include <QFutureWatcher>
 #include <QHBoxLayout>
@@ -22,6 +18,7 @@
 #include <QNetworkRequest>
 #include <QPalette>
 #include <QPushButton>
+#include <QTimer>
 #include <QScrollBar>
 #include <QTextBrowser>
 #include <QVBoxLayout>
@@ -117,20 +114,15 @@ AssistantPanel::AssistantPanel(QWidget *parent) : QWidget(parent)
     root->addWidget(m_status);
 
     auto *row = new QHBoxLayout();
-    m_settings = new QPushButton(u"⚙"_s, this);
-    m_settings->setToolTip(u"Choose the AI provider (Claude / OpenAI / your server)"_s);
-    m_settings->setFixedWidth(32);
     m_input = new QLineEdit(this);
     m_input->setPlaceholderText(u"Ask a question…"_s);
     m_input->setClearButtonEnabled(true);
     m_send = new QPushButton(u"Send"_s, this);
     m_send->setDefault(true);
-    row->addWidget(m_settings);
     row->addWidget(m_input, 1);
     row->addWidget(m_send);
     root->addLayout(row);
 
-    connect(m_settings, &QPushButton::clicked, this, &AssistantPanel::onSettings);
     // While a query STREAMS the Send button becomes a Stop button. Other busy
     // work (e.g. applying a provider) leaves it a disabled Send.
     connect(m_send, &QPushButton::clicked, this, [this]() {
@@ -187,116 +179,6 @@ void AssistantPanel::rebuildSuggestions()
     m_suggestions->setVisible(m_entries.isEmpty() && !m_suggestionPrompts.isEmpty());
 }
 
-void AssistantPanel::onSettings()
-{
-    if (m_url.isEmpty()) {
-        appendError(u"No backend connection."_s);
-        return;
-    }
-    QDialog dlg(this);
-    dlg.setWindowTitle(u"AI provider"_s);
-    auto *form = new QFormLayout(&dlg);
-
-    auto *provider = new QComboBox(&dlg);
-    // userData = the backend provider key; index order fixed below.
-    provider->addItem(u"Claude (Anthropic)"_s, u"anthropic"_s);
-    provider->addItem(u"ChatGPT (OpenAI)"_s, u"openai"_s);
-    provider->addItem(u"Your server (OpenAI-compatible)"_s, u"openai"_s);
-    provider->addItem(u"None"_s, u"null"_s);
-
-    auto *key = new QLineEdit(&dlg);
-    key->setEchoMode(QLineEdit::Password);
-    key->setPlaceholderText(u"API key"_s);
-    auto *url = new QLineEdit(&dlg);
-    url->setPlaceholderText(u"http://your-server:8000/v1"_s);
-    auto *model = new QLineEdit(&dlg);
-    model->setPlaceholderText(u"model name (optional)"_s);
-
-    form->addRow(u"Provider"_s, provider);
-    form->addRow(u"API key"_s, key);
-    form->addRow(u"Server URL"_s, url);
-    form->addRow(u"Model"_s, model);
-
-    // Show only the relevant field(s) per provider: cloud → key; own server →
-    // URL (+ optional key); none → nothing.
-    auto refresh = [&]() {
-        const int i = provider->currentIndex();
-        key->setVisible(i == 0 || i == 1 || i == 2);
-        url->setVisible(i == 2);
-        model->setVisible(i != 3);
-        form->labelForField(key)->setVisible(key->isVisible());
-        form->labelForField(url)->setVisible(url->isVisible());
-        form->labelForField(model)->setVisible(model->isVisible());
-    };
-    connect(provider, &QComboBox::currentIndexChanged, &dlg, [&](int) { refresh(); });
-    // Pre-fill from the persisted config so the user doesn't re-enter it.
-    if (Settings *s = BackendClientFactory::instance()->settings()) {
-        provider->setCurrentIndex(s->getCopilotProvider());
-        key->setText(s->getCopilotKey());
-        url->setText(s->getCopilotUrl());
-        model->setText(s->getCopilotModel());
-    }
-    refresh();
-
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    form->addRow(buttons);
-
-    if (dlg.exec() != QDialog::Accepted)
-        return;
-
-    // Send the COMPLETE state for the chosen provider; every unselected field is
-    // cleared server-side so switching fully resets stale keys/URL/model. The
-    // self-hosted endpoint key goes to base_url_key (NEVER openai_key) so a
-    // stored cloud key can't be redirected to an arbitrary server.
-    const int idx = provider->currentIndex();
-    const QString prov = provider->currentData().toString();
-    const QString k = key->text();
-    const QString m = model->text().trimmed();
-    // Persist the choice so it auto-applies on the next connect (the user asked
-    // not to re-enter it every time).
-    if (Settings *s = BackendClientFactory::instance()->settings()) {
-        s->setCopilotProvider(idx);
-        s->setCopilotKey(k);
-        s->setCopilotUrl(url->text().trimmed());
-        s->setCopilotModel(m);
-    }
-    QString anthropicKey, openaiKey, baseUrl, baseUrlKey;
-    if (idx == 0)
-        anthropicKey = k;                       // Claude
-    else if (idx == 1)
-        openaiKey = k;                          // ChatGPT (OpenAI cloud)
-    else if (idx == 2) {                         // Your server (self-hosted)
-        baseUrl = url->text().trimmed();
-        baseUrlKey = k;
-    }
-
-    setBusy(true);
-    m_status->setText(u"Applying provider…"_s);
-    const QString url0 = m_url, token0 = m_token;
-    auto *watcher = new QFutureWatcher<BackendAssistantConfigResult>(this);
-    connect(watcher, &QFutureWatcher<BackendAssistantConfigResult>::finished, this,
-            [this, watcher]() {
-                const BackendAssistantConfigResult r = watcher->result();
-                watcher->deleteLater();
-                setBusy(false);
-                if (!r.error.isEmpty()) {
-                    appendError(r.error);
-                    return;
-                }
-                m_status->setText(r.configured
-                        ? u"Provider: %1 (ready)"_s.arg(r.provider)
-                        : u"Provider: %1 (not configured)"_s.arg(r.provider));
-            });
-    watcher->setFuture(QtConcurrent::run(
-            [url0, token0, prov, anthropicKey, openaiKey, baseUrl, baseUrlKey, m]() {
-                BackendClient client(url0, token0);
-                return client.setAssistantConfig(prov, anthropicKey, openaiKey, baseUrl,
-                                                 baseUrlKey, m);
-            }));
-}
-
 void AssistantPanel::setBackend(const QString &url, const QString &token)
 {
     const bool endpointChanged = (url != m_url || token != m_token);
@@ -331,14 +213,30 @@ void AssistantPanel::onSettingsUpdated()
 
 void AssistantPanel::applyProviderFromSettings()
 {
-    // Auto-apply only once (first connect), so a later manual ⚙ change can't be
-    // overwritten by a repeated/stale connect-time POST.
+    // Auto-apply only once per settings change, so a repeated or stale
+    // connect-time POST can't overwrite what the user just chose. Editing the
+    // provider in Settings clears the flag (see onSettingsUpdated).
     if (m_providerAutoApplied)
         return;
     Settings *s = BackendClientFactory::instance()->settings();
     if (!s || m_url.isEmpty())
         return;
-    m_providerAutoApplied = true;
+    // Never overlap a query, a stream or another provider POST: they share
+    // m_busy, the stream pointer and the reply buffer, and whichever finished
+    // first would hand the panel back while the other was still running. The
+    // apply is deferred instead of dropped — the user changed the provider in
+    // Settings and expects it to take, not to be lost because a question
+    // happened to be in flight. setBusy() re-runs this once the panel is free,
+    // and it re-reads Settings then, so only the newest choice is applied.
+    // m_streamReply as well as m_busy: the busy state is dropped on the SSE
+    // "result" frame, while the reply itself stays open for a little longer.
+    // Going by m_busy alone would start the POST inside that window, and the
+    // reply's own finished handler would then clear busy under it.
+    if (m_busy || m_streamReply) {
+        m_providerApplyPending = true;
+        return;
+    }
+    m_providerApplyPending = false;
     const int idx = s->getCopilotProvider();
     const QString key = s->getCopilotKey();
     const QString model = s->getCopilotModel();
@@ -355,14 +253,35 @@ void AssistantPanel::applyProviderFromSettings()
         baseUrl = s->getCopilotUrl();
         baseUrlKey = key;
     }
-    // Fire-and-forget: configure the backend in the background; the panel's next
-    // query/status reflects it. Failures are non-fatal (the user can re-open ⚙).
+    // The panel is busy until the backend has taken the provider: a question
+    // asked in between would be answered by whatever provider the server still
+    // had. A failure is reported and the flag is cleared, so the next connect or
+    // Settings change tries again instead of silently keeping the old provider.
+    m_providerAutoApplied = true;
+    setBusy(true);
+    m_status->setText(u"Applying provider…"_s);
     const QString url0 = m_url, token0 = m_token;
-    (void)QtConcurrent::run(
+    auto *watcher = new QFutureWatcher<BackendAssistantConfigResult>(this);
+    connect(watcher, &QFutureWatcher<BackendAssistantConfigResult>::finished, this,
+            [this, watcher]() {
+                const BackendAssistantConfigResult r = watcher->result();
+                watcher->deleteLater();
+                setBusy(false);
+                if (!r.error.isEmpty()) {
+                    m_providerAutoApplied = false;   // let the next attempt retry
+                    appendError(r.error);
+                    return;
+                }
+                m_status->setText(r.configured
+                        ? u"Provider: %1 (ready)"_s.arg(r.provider)
+                        : u"Provider: %1 (not configured)"_s.arg(r.provider));
+            });
+    watcher->setFuture(QtConcurrent::run(
             [url0, token0, prov, anthropicKey, openaiKey, baseUrl, baseUrlKey, model]() {
                 BackendClient client(url0, token0);
-                client.setAssistantConfig(prov, anthropicKey, openaiKey, baseUrl, baseUrlKey, model);
-            });
+                return client.setAssistantConfig(prov, anthropicKey, openaiKey, baseUrl,
+                                                 baseUrlKey, model);
+            }));
 }
 
 void AssistantPanel::setDatasetId(const QString &datasetId)
@@ -378,15 +297,27 @@ void AssistantPanel::setDatasetId(const QString &datasetId)
     renderConversation();
 }
 
+void AssistantPanel::maybeApplyPendingProvider()
+{
+    // A provider change that arrived mid-query runs once the panel is really
+    // idle — no busy state AND no stream still open. Queued rather than called
+    // directly, so it cannot re-enter its caller.
+    if (!m_providerApplyPending || m_busy || m_streamReply)
+        return;
+    m_providerApplyPending = false;
+    m_providerAutoApplied = false;
+    QTimer::singleShot(0, this, &AssistantPanel::applyProviderFromSettings);
+}
+
 void AssistantPanel::setBusy(bool busy)
 {
     if (m_busy == busy)
         return;
     m_busy = busy;
+    if (!busy)
+        maybeApplyPendingProvider();
     refreshSendButton();
     m_input->setEnabled(!busy);
-    if (m_settings)
-        m_settings->setEnabled(!busy);   // no provider change overlapping a live query
     if (m_suggestions)
         m_suggestions->setEnabled(!busy);   // starter chips shouldn't look clickable mid-request
     m_status->setText(busy ? u"Thinking…"_s : QString());
@@ -445,8 +376,9 @@ void AssistantPanel::renderConversation()
                              .arg(t.botFg, esc(e.text).replace(u"\n"_s, u"<br>"_s));
             if (!e.configured) {
                 inner += u"<br><span style='color:%1;font-size:small;'><i>No LLM provider is "
-                         u"configured on the server - the analysis tools still work; open ⚙ to "
-                         u"enable natural-language answers.</i></span>"_s.arg(t.meta);
+                         u"configured on the server - the analysis tools still work; choose one "
+                         u"in Settings ▸ Scientific Copilot to enable "
+                         u"natural-language answers.</i></span>"_s.arg(t.meta);
             }
             if (!e.provenance.isEmpty()) {
                 inner += u"<div style='margin-top:6px;border-top:1px solid %1;padding-top:4px;'>"
@@ -511,10 +443,31 @@ void AssistantPanel::onSend()
     startStream(question);
 }
 
+// Close a stream that is still open, so nothing of it reaches the next one.
+//
+// The busy state is dropped on the SSE "result" frame, while the reply stays
+// open until the server closes it, so Send is reachable with the previous
+// stream still live. Left alone, its late frames would be appended to the new
+// answer, and its finished handler would clear the new stream's busy state.
+void AssistantPanel::closeLiveStream()
+{
+    if (!m_streamReply)
+        return;
+    QNetworkReply *stale = m_streamReply;
+    m_streamReply = nullptr;
+    stale->disconnect(this);     // nothing of it touches the new conversation
+    stale->abort();
+    stale->deleteLater();
+}
+
 void AssistantPanel::startStream(const QString &question)
 {
     if (!m_net)
         m_net = new QNetworkAccessManager(this);
+    // Before the resets below, not after: on the session-minting path the send
+    // is deferred to a worker, and a surviving reply would otherwise spend that
+    // time writing into the buffer and flags this just cleared.
+    closeLiveStream();
     // Capture the scope so a reply that outlives a dataset/backend swap is dropped.
     m_scopeDatasetId = m_datasetId;
     m_scopeUrl = m_url;
@@ -590,6 +543,7 @@ void AssistantPanel::sendStreamRequest(const QString &question)
     BackendClient::applySessionHeaders(req, m_url, m_token);
     req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
 
+    closeLiveStream();   // normally a no-op: startStream() already did it
     QNetworkReply *reply = m_net->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
     m_streamReply = reply;
     refreshSendButton();   // now that a stream is live, the button offers Stop
@@ -616,6 +570,9 @@ void AssistantPanel::sendStreamRequest(const QString &question)
         m_streamReply = nullptr;
         reply->deleteLater();
         setBusy(false);
+        // setBusy() may have had nothing to clear (the "result" frame already
+        // did), so the pending provider change is flushed from here too.
+        maybeApplyPendingProvider();
         // A user-initiated Stop: drop any buffered bytes, no error banner.
         if (m_userStopped) {
             m_streamBuf.clear();

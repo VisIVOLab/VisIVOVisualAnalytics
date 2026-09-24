@@ -13,6 +13,7 @@ class QComboBox;
 class QGroupBox;
 class QLabel;
 class QLineEdit;
+class QProgressBar;
 class QPushButton;
 class QSpinBox;
 class QTableView;
@@ -84,6 +85,8 @@ private:
     void applySettingsToFields();
     void reloadClientFromFields();
     void setBusy(bool busy, const QString &message = {});
+    /// Ask the in-flight request to unwind; the watcher still clears the busy state.
+    void cancelRequest();
 
     Settings *m_settings{ nullptr };
     BackendClient *m_backendClient{ nullptr };
@@ -113,6 +116,8 @@ private:
     QPushButton *m_openBtn{ nullptr };
     QPushButton *m_subsetBtn{ nullptr };
     QLabel      *m_statusLabel{ nullptr };
+    QProgressBar *m_busyBar{ nullptr };   ///< indeterminate, while a request is out
+    bool m_busy{ false };                ///< a request is in flight (Search reads "Cancel")
 
     // Results
     QTableView         *m_resultsTable{ nullptr };
@@ -128,11 +133,6 @@ private:
 
     QFutureWatcher<SkavaDiscoveryResponse> *m_searchWatcher{ nullptr };
     QFutureWatcher<SkavaDatalinkResponse>  *m_datalinkWatcher{ nullptr };
-
-    /// True between ``setBusy(true,…)`` and the matching
-    /// ``setBusy(false)`` — used to keep the override-cursor stack
-    /// balanced so a stuck WaitCursor never survives a request.
-    bool m_cursorOverrideActive{ false };
 
     /// Set by ``requestSubset()`` so the shared DataLink watcher knows to
     /// emit ``sodaSubsetRequested`` instead of the open signals when the

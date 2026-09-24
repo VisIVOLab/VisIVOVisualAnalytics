@@ -474,9 +474,14 @@ class ScientificFitsDataset:
 
     # FITS CTYPE prefixes that denote a spectral axis (frequency, velocity,
     # wavelength, energy, …) per FITS WCS Paper III.
+    # SPECLNMF is not in Paper III: it is what Obit MFImage writes for the
+    # per-sub-band frequency axis of a wide-band image, and it is what every
+    # MeerKAT MGCLS cube carries. Without it such a cube only finds its spectral
+    # axis through the positional fallback below, which is wrong for any cube
+    # whose spectral axis is not last.
     _SPECTRAL_CTYPE_PREFIXES = (
         "FREQ", "ENER", "WAVN", "VRAD", "WAVE", "VOPT", "ZOPT",
-        "AWAV", "VELO", "BETA", "FELO",
+        "AWAV", "VELO", "BETA", "FELO", "SPECLNMF",
     )
 
     def cube_numpy_spectral_fits_axis(self) -> int:

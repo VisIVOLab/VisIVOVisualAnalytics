@@ -1,6 +1,7 @@
 #ifndef SkavaClient_h
 #define SkavaClient_h
 
+#include <atomic>
 #include <QObject>
 #include <QString>
 #include <QVector>
@@ -187,11 +188,30 @@ public:
     static SkavaDiscoveryResponse  parseDiscoveryResponse(const class QJsonObject &obj);
     static SkavaDatalinkResponse   parseDatalinkResponse(const class QJsonObject &obj);
 
+public:
+    /// Abort the request currently in flight, if any.
+    ///
+    /// Safe to call from any thread — in practice the UI thread, while the
+    /// blocking call runs on a QtConcurrent worker. The worker notices within
+    /// ~200 ms and returns an error reading "cancelled", so the panel is free
+    /// again immediately instead of waiting out the network deadline. The flag
+    /// is cleared by the next request, so a cancel that arrives after a request
+    /// has already finished does not kill the following one.
+    void requestCancel();
+
+    /// Clear a previous cancellation. Call it on the UI thread immediately
+    /// BEFORE submitting a request: clearing it inside the worker loses a
+    /// Cancel pressed while the task was still queued, which left the panel
+    /// stuck on "Cancelling…" for the whole of a request nobody wanted.
+    void clearCancel();
+
 private:
     QByteArray performGet(const class QUrl &url, QString &error) const;
 
     QString m_baseUrl;
     QString m_bearerToken;
+    /// Set by requestCancel(), read by the worker inside performGet().
+    mutable std::atomic_bool m_cancelRequested{ false };
 };
 
 #endif  // SkavaClient_h

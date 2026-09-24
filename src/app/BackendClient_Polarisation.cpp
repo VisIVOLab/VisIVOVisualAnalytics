@@ -34,14 +34,18 @@
 BackendStokesPlaneResult BackendClient::requestStokesPlane(
         const QString &datasetId,
         const QString &plane,
-        int channel)
+        int channel,
+        const QString &companionDatasetId)
 {
     BackendStokesPlaneResult result;
     QString error;
-    const QUrl url(m_baseUrl
-                   + QStringLiteral("/v1/stokes/") + datasetId
-                   + QStringLiteral("/binary?plane=") + plane
-                   + QStringLiteral("&channel=") + QString::number(channel));
+    QString query = QStringLiteral("/binary?plane=") + plane
+                    + QStringLiteral("&channel=") + QString::number(channel);
+    // The file that actually holds this plane, when the dataset the user opened
+    // does not (one FITS per Stokes plane).
+    if (!companionDatasetId.isEmpty())
+        query += QStringLiteral("&companion_dataset_id=") + companionDatasetId;
+    const QUrl url(m_baseUrl + QStringLiteral("/v1/stokes/") + datasetId + query);
     const QByteArray raw = performGet(url, error);
     if (!error.isEmpty()) { result.error = error; return result; }
 
@@ -67,22 +71,45 @@ BackendStokesPlaneResult BackendClient::requestStokesPlane(
     return result;
 }
 
+namespace {
+
+/// The "companions" object the polarisation endpoints expect, or an absent
+/// value when nothing is loaded. Built once so the metadata request and the
+/// binary request that follows it cannot disagree about which files to read —
+/// they would then describe one computation and return another.
+QJsonObject stokesCompanionsJson(const BackendStokesCompanionIds &ids)
+{
+    QJsonObject obj;
+    if (!ids.i.isEmpty()) obj.insert(QStringLiteral("i_dataset_id"), ids.i);
+    if (!ids.q.isEmpty()) obj.insert(QStringLiteral("q_dataset_id"), ids.q);
+    if (!ids.u.isEmpty()) obj.insert(QStringLiteral("u_dataset_id"), ids.u);
+    if (!ids.v.isEmpty()) obj.insert(QStringLiteral("v_dataset_id"), ids.v);
+    return obj;
+}
+
+}   // namespace
+
 BackendPolarisationPiResult BackendClient::requestPolarisationPi(
         const QString &datasetId,
         int channel,
-        const QVector<int> &lineFreeChannels)
+        const QVector<int> &lineFreeChannels,
+        const BackendStokesCompanionIds &companions)
 {
     BackendPolarisationPiResult result;
     QString error;
+    const QJsonObject companionsObj = stokesCompanionsJson(companions);
 
     // Step 1: register PI+PA maps via JSON endpoint to get dataset IDs
     QJsonArray lfcArr;
     for (int ch : lineFreeChannels) lfcArr.append(ch);
-    const QJsonDocument regBody(QJsonObject{
+    QJsonObject piBody{
         { QStringLiteral("dataset_id"),       datasetId },
         { QStringLiteral("channel"),          channel },
         { QStringLiteral("line_free_channels"), lfcArr },
-    });
+    };
+    if (!companionsObj.isEmpty())
+        piBody.insert(QStringLiteral("companions"), companionsObj);
+    const QJsonDocument regBody(piBody);
     const QByteArray regRaw = performPost(
             QUrl(m_baseUrl + QStringLiteral("/v1/polarisation/pi/") + datasetId),
             regBody, error);
@@ -104,11 +131,7 @@ BackendPolarisationPiResult BackendClient::requestPolarisationPi(
     result.paDatasetId  = regObj.value(QStringLiteral("pa_dataset_id")).toString();
 
     // Step 2: fetch binary data (two concatenated frames: PI then PA)
-    const QJsonDocument binBody(QJsonObject{
-        { QStringLiteral("dataset_id"),       datasetId },
-        { QStringLiteral("channel"),          channel },
-        { QStringLiteral("line_free_channels"), lfcArr },
-    });
+    const QJsonDocument binBody(piBody);   // same request, so the same computation
     const QByteArray binRaw = performPost(
             QUrl(m_baseUrl + QStringLiteral("/v1/polarisation/pi/result/binary")),
             binBody, error);
@@ -124,10 +147,12 @@ BackendPolarisationPiResult BackendClient::requestPolarisationPi(
         result.error = QStringLiteral("Failed to parse PA binary frame");
         return result;
     }
-    result.piData = QByteArray(reinterpret_cast<const char *>(piFrame.data.data()),
-                               static_cast<qsizetype>(piFrame.data.size() * sizeof(float)));
-    result.paData = QByteArray(reinterpret_cast<const char *>(paFrame.data.data()),
-                               static_cast<qsizetype>(paFrame.data.size() * sizeof(float)));
+    // Straight assignment: BinaryArrayResult::data is already the raw float32
+    // bytes. The earlier form re-wrapped it as if it were a float ARRAY and
+    // multiplied the count by sizeof(float), reading four times the allocation
+    // — harmless only for as long as nothing called these endpoints.
+    result.piData = piFrame.data;
+    result.paData = paFrame.data;
     result.valid = true;
     return result;
 }
@@ -136,17 +161,31 @@ BackendRmSynthesisResult BackendClient::requestRmSynthesis(
         const QString &datasetId,
         double phiMin,
         double phiMax,
-        double dPhi)
+        double dPhi,
+        const BackendStokesCompanionIds &companions,
+        bool peakOnly,
+        const QRect &region)
 {
     BackendRmSynthesisResult result;
+    result.peakMode = peakOnly;
     QString error;
 
-    // Step 1: get metadata (phi_grid, rmsf, shape) via JSON endpoint
-    const QJsonDocument metaBody(QJsonObject{
-        { QStringLiteral("dataset_id"),      datasetId },
+    QJsonObject body{
+        { QStringLiteral("dataset_id"),       datasetId },
         { QStringLiteral("phi_range_rad_m2"), QJsonArray{ phiMin, phiMax } },
-        { QStringLiteral("dphi_rad_m2"),     dPhi },
-    });
+        { QStringLiteral("dphi_rad_m2"),      dPhi },
+        { QStringLiteral("reduce"), peakOnly ? QStringLiteral("peak") : QStringLiteral("cube") },
+    };
+    const QJsonObject companionsObj = stokesCompanionsJson(companions);
+    if (!companionsObj.isEmpty())
+        body.insert(QStringLiteral("companions"), companionsObj);
+    if (region.isValid()) {
+        body.insert(QStringLiteral("region"),
+                    QJsonArray{ region.x(), region.y(), region.width(), region.height() });
+    }
+
+    // Step 1: get metadata (phi_grid, rmsf, shape) via JSON endpoint
+    const QJsonDocument metaBody(body);
     const QByteArray metaRaw = performPost(
             QUrl(m_baseUrl + QStringLiteral("/v1/polarisation/rmsynthesis/") + datasetId),
             metaBody, error);
@@ -169,13 +208,11 @@ BackendRmSynthesisResult BackendClient::requestRmSynthesis(
         result.phiGrid.append(v.toDouble());
     for (const QJsonValue &v : metaObj.value(QStringLiteral("rmsf")).toArray())
         result.rmsf.append(v.toDouble());
+    result.phiPeakMin = static_cast<float>(metaObj.value(QStringLiteral("phi_peak_min")).toDouble());
+    result.phiPeakMax = static_cast<float>(metaObj.value(QStringLiteral("phi_peak_max")).toDouble());
 
     // Step 2: fetch binary FDF cube (nPhi*height rows × width cols float32)
-    const QJsonDocument binBody(QJsonObject{
-        { QStringLiteral("dataset_id"),      datasetId },
-        { QStringLiteral("phi_range_rad_m2"), QJsonArray{ phiMin, phiMax } },
-        { QStringLiteral("dphi_rad_m2"),     dPhi },
-    });
+    const QJsonDocument binBody(body);   // same request, so the same computation
     const QByteArray binRaw = performPost(
             QUrl(m_baseUrl + QStringLiteral("/v1/polarisation/rmsynthesis/") + datasetId
                  + QStringLiteral("/binary")),
@@ -188,8 +225,17 @@ BackendRmSynthesisResult BackendClient::requestRmSynthesis(
         result.error = QStringLiteral("Failed to parse FDF binary frame");
         return result;
     }
-    result.fdfData = QByteArray(reinterpret_cast<const char *>(fdfFrame.data.data()),
-                                static_cast<qsizetype>(fdfFrame.data.size() * sizeof(float)));
+    result.fdfData = fdfFrame.data;   // already raw float32 bytes
+    // Peak mode sends a second frame: the φ at which each pixel peaks, i.e. the
+    // RM map. Its absence is a protocol error, not an empty result.
+    if (peakOnly) {
+        BinaryArrayResult phiFrame;
+        if (!parseBinaryFrame(binRaw, offset, phiFrame)) {
+            result.error = QStringLiteral("Failed to parse the peak-φ binary frame");
+            return result;
+        }
+        result.phiPeakData = phiFrame.data;
+    }
     result.valid = true;
     return result;
 }

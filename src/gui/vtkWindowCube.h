@@ -29,6 +29,7 @@ class PvController;
 #include <QCloseEvent>
 #include <QElapsedTimer>
 #include <QHash>
+#include <QRect>
 #include <QMainWindow>
 #include <QList>
 #include <QPointer>
@@ -893,6 +894,22 @@ private:
     void saveLayoutSettings();                 ///< §4.3 (layout_v2/cube/)
     void restoreLayoutSettings();
 
+public:
+    /// What one Stokes companion-discovery pass found.
+    ///
+    /// Public because the two workers that FILL it are free functions running
+    /// off-thread in vtkWindowCube_Polarisation.cpp; the member that consumes
+    /// it is applyStokesCompanionScan(). Holds no pointers into the window, so
+    /// it survives the window closing mid-scan.
+    struct StokesCompanionScan
+    {
+        QString error;
+        QHash<QString, QString> ids;      ///< role → session dataset id
+        QHash<QString, QString> names;    ///< role → file name, for the message
+        QHash<QString, QString> failed;   ///< role → why it could not be opened
+        QStringList missing;              ///< roles no candidate name matched
+    };
+
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;   ///< pane-header click → active
     /// Window activation is when the set of OTHER open windows can have changed
@@ -1091,6 +1108,57 @@ protected:
     QPointer<QAction> m_actMaskRegion;
     QPointer<QAction> m_actExportChannel2d;
     QPointer<QAction> m_actSliceHistogram;
+
+    // ── Stokes / polarimetry on cubes (see vtkWindowCube_Polarisation.cpp) ────
+    //
+    // The image viewer does its polarimetry client-side on 2-D layers. A cube
+    // cannot work that way: MeerKAT MGCLS ships 7500 × 7500 × 16 per Stokes
+    // plane, so Q and U are never both in memory here. The cube viewer instead
+    // names the companion FILES to the backend and receives finished maps.
+    QPointer<QAction> m_actLoadStokesCompanions;
+    QPointer<QAction> m_actPolarisedIntensity;
+    QPointer<QAction> m_actRmSynthesis;
+    /// Session dataset ids of the companion files, by Stokes role. Empty until
+    /// "Load Stokes Companions…" has run (or if this cube carries its own
+    /// Stokes axis, in which case the backend needs no companions at all).
+    BackendStokesCompanionIds m_stokesCompanions;
+    /// Role → file name, for the status line and the tool tips. Parallel to
+    /// m_stokesCompanions so a message can name what was actually loaded.
+    QHash<QString, QString> m_stokesCompanionFiles;
+    /// True when this cube's own header carries a Stokes axis with ≥ 2 planes,
+    /// so Q and U are already here and no companion is needed.
+    bool m_hasOwnStokesAxis{ false };
+    bool m_stokesDiscoveryActive{ false };
+
+    void setupPolarisationTools();
+    /// Find, open and remember the sibling files holding Q/U/V.
+    void loadStokesCompanions();
+    /// PI and PA of the displayed channel, as two 2-D products.
+    void computePolarisedIntensityMap();
+    /// RM synthesis over the cube's frequency axis → peak-|F| and RM maps.
+    void runRmSynthesis();
+    /// Enable/disable the three actions and explain why in their tool tips.
+    void updatePolarisationActions();
+    /// "Q, U (from G000.0+2.5_Q.fits, …)" for the status bar.
+    QString stokesCompanionSummary() const;
+    /// Roles this window can supply to the backend right now.
+    QStringList availableStokesRoles() const;
+    /// Adopt a finished discovery pass; @p offerManual opens the file chooser
+    /// for whatever is still missing (false on the second, manual pass, which
+    /// must not ask again).
+    void applyStokesCompanionScan(const StokesCompanionScan &scan, bool offerManual);
+    /// Ask the user for the file holding @p role. Browses the BACKEND's
+    /// filesystem, which is the only one the loader can read from.
+    QString askForStokesCompanionPath(const QString &role, int index, int total);
+    void publishPolarisationMaps(const struct BackendPolarisationPiResult &r, int channel);
+    void publishRmSynthesisMaps(const struct BackendRmSynthesisResult &r, const QRect &region);
+    /// Pixel bounds {x0, x1, y0, y1} of the drawn region, or the full extent
+    /// when none is drawn. Wraps the file-local regionBounds2D() so callers
+    /// outside vtkWindowCube.cpp get the same answer as Export Sub-Cube.
+    std::array<int, 4> currentRegionBounds2D() const;
+    /// The Stokes plane this cube itself is, parsed from the collapsed-axis
+    /// summary ("Collapsed axes: STOKES=2 (1)" → "Q"), or empty.
+    QString ownStokesPlane() const;
     QPointer<QAction> m_actSendSliceToImage;
     QPointer<QAction> m_actKinematicModel;
     QPointer<QAction> m_actExportMovie;

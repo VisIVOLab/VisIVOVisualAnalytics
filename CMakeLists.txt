@@ -453,6 +453,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_Wcs.cpp
         src/gui/vtkWindowCube_RemoteSlice.cpp
         src/gui/vtkWindowCube_Probe.cpp
+        src/gui/vtkWindowCube_Polarisation.cpp
         src/gui/vtkWindowCube_Region.cpp
         src/gui/vtkWindowCube_Setup.cpp
         src/gui/vtkWindowCube_Kinematic.cpp

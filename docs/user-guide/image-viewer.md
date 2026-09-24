@@ -363,6 +363,14 @@ motion, or artefact differences between two epochs or bands.
 
 ## Stokes / Radio polarimetry analysis
 
+```{note}
+This section is the **image** path: the companions are loaded as layers and
+combined here, pixel by pixel. For full-Stokes **cubes** — one cube per plane,
+as MeerKAT MGCLS and ASKAP/POSSUM publish them — use the cube viewer instead,
+where the arithmetic happens on the backend and nothing that large is loaded.
+See [Polarimetry (Stokes Q, U, V)](polarimetry).
+```
+
 For continuum radio data with full polarimetry (Stokes I, Q, U, V), the
 image viewer has a dedicated **Stokes Analysis** workflow card in the
 *Tools* sidebar (also available under *Tools* menu):

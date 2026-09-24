@@ -2,6 +2,7 @@
 
 #include <QDebug>
 #include <QEventLoop>
+#include <QTimer>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -87,7 +88,28 @@ void SkavaClient::setBearerToken(const QString &token)
     m_bearerToken = token;
 }
 
+namespace {
+/// How long a single SKAVA request may take before it is abandoned. Generous
+/// enough for a real ObsCore query over a slow link, short enough that an
+/// unreachable node is reported rather than waited on.
+constexpr int kRequestTimeoutMs  = 30'000;
+/// Inactivity timeout: a transfer that stalls mid-stream.
+constexpr int kTransferTimeoutMs = 15'000;
+/// How often the blocking request checks whether the user pressed Cancel.
+constexpr int kCancelPollMs      = 200;
+}   // namespace
+
 // ── HTTP helper ─────────────────────────────────────────────────────────────
+
+void SkavaClient::requestCancel()
+{
+    m_cancelRequested.store(true);
+}
+
+void SkavaClient::clearCancel()
+{
+    m_cancelRequested.store(false);
+}
 
 QByteArray SkavaClient::performGet(const QUrl &url, QString &error) const
 {
@@ -97,13 +119,62 @@ QByteArray SkavaClient::performGet(const QUrl &url, QString &error) const
         req.setRawHeader("Authorization",
                           QByteArray("Bearer ") + m_bearerToken.toUtf8());
     }
+    // Two deadlines, because they fail differently and both were missing.
+    //
+    // setTransferTimeout covers a connection that goes quiet mid-transfer.
+    // The timer covers the rest: a host that accepts the connection and never
+    // answers, a proxy that holds it open, a VPN that dropped. Without either,
+    // this QEventLoop waits forever — the worker thread never returns, the
+    // watcher never fires, and the panel stays "Searching…" with the wait
+    // cursor up for the rest of the session. That is exactly what a user saw
+    // against an unreachable SKAVA node.
+    req.setTransferTimeout(kTransferTimeoutMs);
+
     auto *nam = threadLocalNam();
     QNetworkReply *reply = nam->get(req);
     QEventLoop loop;
     QObject::connect(reply, &QNetworkReply::finished,
                      &loop, &QEventLoop::quit);
-    loop.exec();
+    bool timedOut = false;
+    QTimer deadline;
+    deadline.setSingleShot(true);
+    QObject::connect(&deadline, &QTimer::timeout, &loop, [&]() {
+        timedOut = true;
+        reply->abort();          // → finished() → loop.quit()
+    });
+    deadline.start(kRequestTimeoutMs);
 
+    // Cancellation is polled rather than signalled: requestCancel() runs on the
+    // UI thread, and a QNetworkReply may only be touched from the thread that
+    // created it. The poll timer lives in this nested event loop, so the abort
+    // happens on the right thread, at the cost of up to one poll of latency.
+    bool cancelled = false;
+    QTimer cancelPoll;
+    QObject::connect(&cancelPoll, &QTimer::timeout, &loop, [&]() {
+        if (!m_cancelRequested.load())
+            return;
+        cancelled = true;
+        reply->abort();          // → finished() → loop.quit()
+    });
+    cancelPoll.start(kCancelPollMs);
+
+    loop.exec();
+    deadline.stop();
+    cancelPoll.stop();
+
+    if (cancelled || m_cancelRequested.load()) {
+        error = u"Search cancelled."_s;
+        reply->deleteLater();
+        return {};
+    }
+    if (timedOut) {
+        error = u"No answer from %1 after %2 s. The node may be unreachable from "
+                u"this network (some SKAVA deployments need a VPN), or down."_s
+                        .arg(url.host())
+                        .arg(kRequestTimeoutMs / 1000);
+        reply->deleteLater();
+        return {};
+    }
     if (reply->error() != QNetworkReply::NoError) {
         error = reply->errorString();
         reply->deleteLater();

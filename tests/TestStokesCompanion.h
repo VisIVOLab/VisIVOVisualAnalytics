@@ -17,4 +17,6 @@ private slots:
     void pick_takesTheFirstCandidateThatExists();
     void pick_returnsNothingWhenTheCompanionIsAbsent();
     void aNameThatMatchesNoPattern_yieldsNoCandidates();
+    void pbCorrectedIntensity_alsoOffersUncorrectedCompanions();
+    void pick_prefersThePbCompanionWhenBothExist();
 };
