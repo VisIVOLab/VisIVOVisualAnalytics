@@ -129,6 +129,76 @@ message(STATUS
         "Bundle repair: ${_n_repaired} of ${_n_plugins} Qt plugin(s) needed the "
         "bundle rpath")
 
+# ── 1b. Make @executable_path work for the QtWebEngine helper too ───────────
+#
+# fixup_bundle rewrites every Mach-O in the bundle to
+# `@executable_path/../Frameworks/<X>.framework/Versions/A/<X>`. dyld resolves
+# @executable_path against the RUNNING executable — and this bundle has two of
+# them at different depths:
+#
+#   Contents/MacOS/VisIVOVisualAnalytics                            <- ../Frameworks ✓
+#   Contents/Frameworks/QtWebEngineCore.framework/Versions/A/
+#       Helpers/QtWebEngineProcess.app/Contents/MacOS/QtWebEngineProcess   ✗
+#
+# For the helper that path lands inside its own nested .app, where nothing
+# exists, so it dies at launch with "Library not loaded" and every
+# QWebEngineView in the application is a black rectangle — silently, because the
+# failure is in a child process that never gets far enough to report it. It is
+# how the VLKB panoramic view came up blank in the first distributable build
+# while working perfectly in the development tree.
+#
+# Rewriting the helper's own load commands is not enough: the frameworks IT
+# loads carry the same @executable_path convention, and they are resolved
+# against the helper as well — fixing QtWebEngineCore only uncovered QtQuick,
+# then QtPositioning, then QtCore. The fix that covers the whole transitive
+# closure at once is a symlink, so that `@executable_path/../Frameworks` names
+# the real Frameworks directory from the helper too:
+#
+#   <helper>.app/Contents/Frameworks -> ../../../../../..   (the app's Frameworks)
+#
+# Qt's own macdeployqt solves this with @rpath instead; that is not available
+# here because fixup_bundle has already replaced the rpath references.
+set(_helper_app
+    "${_app}/Contents/Frameworks/QtWebEngineCore.framework/Versions/A/Helpers/QtWebEngineProcess.app")
+set(_helper "${_helper_app}/Contents/MacOS/QtWebEngineProcess")
+if (EXISTS "${_helper}")
+    set(_helper_fw "${_helper_app}/Contents/Frameworks")
+    if (NOT EXISTS "${_helper_fw}")
+        execute_process(
+                COMMAND ${CMAKE_COMMAND} -E create_symlink "../../../../../.." "${_helper_fw}"
+                RESULT_VARIABLE _link_rc ERROR_VARIABLE _link_err)
+        if (NOT _link_rc EQUAL 0)
+            message(FATAL_ERROR
+                    "could not link the bundle's Frameworks into the QtWebEngine "
+                    "helper: ${_link_err}")
+        endif ()
+        message(STATUS
+                "Bundle repair: linked Contents/Frameworks into QtWebEngineProcess.app")
+    endif ()
+
+    # Prove it rather than assume it: resolve every @executable_path reference
+    # the helper carries, from the helper's own directory, and require the file
+    # to exist. Without this the build cannot tell a working web view from a
+    # black one.
+    execute_process(COMMAND otool -L "${_helper}"
+            OUTPUT_VARIABLE _helper_otool ERROR_VARIABLE _helper_err
+            RESULT_VARIABLE _helper_rc OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if (NOT _helper_rc EQUAL 0)
+        message(FATAL_ERROR "otool could not read the QtWebEngine helper: ${_helper_err}")
+    endif ()
+    string(REGEX MATCHALL "@executable_path/[^ ]+" _helper_refs "${_helper_otool}")
+    get_filename_component(_helper_dir "${_helper}" DIRECTORY)
+    foreach (_ref IN LISTS _helper_refs)
+        string(REPLACE "@executable_path" "${_helper_dir}" _abs "${_ref}")
+        if (NOT EXISTS "${_abs}")
+            message(FATAL_ERROR
+                    "QtWebEngineProcess references ${_ref}, which resolves to ${_abs} "
+                    "and does not exist. Every web view in the application would be "
+                    "blank.")
+        endif ()
+    endforeach ()
+endif ()
+
 # ── 2. The signature ─────────────────────────────────────────────────────────
 
 execute_process(

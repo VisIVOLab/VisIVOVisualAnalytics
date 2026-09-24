@@ -7,6 +7,7 @@
 #include <functional>
 #include <QPointer>
 #include <QStringList>
+#include <QUrl>
 #include <QString>
 #include <QTimer>
 
@@ -236,6 +237,14 @@ private:
     // closed it. Used by both the Data Hub Quick action and the command
     // palette entry.
     void revealVLKBTab();
+    /// Point the panoramic view at the Galactic plane once its page has loaded.
+    void frameGalacticPlane();
+    /// Panoramic-view load state: the URL last asked for, whether the
+    /// loadFinished handler is already connected (it is connected once, not per
+    /// load), and whether what is on screen is our own error page.
+    QUrl m_panoramicUrl;
+    bool m_panoramicHandlerConnected = false;
+    bool m_panoramicShowingError = false;
     std::unique_ptr<BackendClient>   m_sampBackendClient;
     QPointer<SampClient>             m_sampClient;
     QPointer<SampMessageHandler>     m_sampHandler;

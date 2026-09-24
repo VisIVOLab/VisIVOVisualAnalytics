@@ -21,6 +21,8 @@
 #include "SourceFindDialog.h"
 #include "StackDialog.h"
 #include "WebViewProcess.h"
+
+#include <QWebEngineView>
 #include "vtkWindowCatalogue3D.h"
 #include "vtkWindowCube.h"
 #include "vtkWindowImage.h"
@@ -89,6 +91,9 @@ void MainWindow::revealVLKBTab()
     const int existing = this->m_tabs->indexOf(this->m_vlkbPanel);
     if (existing >= 0) {
         this->m_tabs->setCurrentIndex(existing);
+        // Re-frame on every reveal, not only the first: the pane's size is only
+        // real once it is on screen, and it changes with the window.
+        this->frameGalacticPlane();
         return;
     }
 
@@ -97,6 +102,7 @@ void MainWindow::revealVLKBTab()
     this->m_vlkbPanel->show();
     const int idx = this->m_tabs->insertTab(1, this->m_vlkbPanel, u"VLKB"_s);
     this->m_tabs->setCurrentIndex(idx);
+    this->frameGalacticPlane();
 }
 
 
@@ -125,9 +131,128 @@ constexpr int kVlkbQueryTimeoutMs = 120000;
 
 void MainWindow::loadPanoramicView()
 {
-    ui->view->load(QUrl::fromUserInput(this->settings->getPanoramicView()));
+    const QUrl url = QUrl::fromUserInput(this->settings->getPanoramicView());
+    this->m_panoramicUrl = url;
+
+    // A failed load leaves a QWebEngineView showing nothing at all — the same
+    // black rectangle as a working page that has not painted yet, with no hint
+    // of which of the two it is. The panoramic view is a REMOTE page served by
+    // an INAF host, so the ordinary reasons to see nothing are being off the
+    // VPN, the service being down, or a wrong URL in the settings — all of them
+    // things the user can act on, and none of them visible today.
+    //
+    // ONE persistent connection, not a fresh single-shot per call: loadFinished
+    // belongs to the view, not to a particular load(), so changing the URL in
+    // Settings while a load is still out would leave two handlers racing for
+    // the same signal — the one that fired would report whichever URL its own
+    // lambda had captured, which need not be the one that failed.
+    if (!this->m_panoramicHandlerConnected) {
+        this->m_panoramicHandlerConnected = true;
+        QObject::connect(ui->view, &QWebEngineView::loadFinished, this, [this](bool ok) {
+            // setHtml() below is itself a load, and reports back here. Let it
+            // through without reacting, or a failure would redraw itself.
+            if (ok) {
+                this->m_panoramicShowingError = false;
+                this->frameGalacticPlane();
+                return;
+            }
+            if (this->m_panoramicShowingError) {
+                this->m_panoramicShowingError = false;
+                return;
+            }
+            this->m_panoramicShowingError = true;
+            const QString html =
+                    u"<html><body style='background:#12161c;color:#c9d3df;"
+                    u"font-family:-apple-system,Segoe UI,sans-serif;padding:32px'>"
+                    u"<h2 style='color:#e8a33d;margin:0 0 12px'>"
+                    u"Panoramic view unavailable</h2>"
+                    u"<p>Could not load <code>%1</code>.</p>"
+                    u"<p>The panoramic view is served by a remote host: check that you "
+                    u"are on a network that can reach it (some INAF services need the "
+                    u"VPN), that the service is up, and that the URL under "
+                    u"<b>Settings &rarr; Panoramic view</b> is the one you mean. The "
+                    u"VLKB query on the right still works without it if you type the "
+                    u"coordinates yourself.</p></body></html>"_s
+                            .arg(this->m_panoramicUrl.toString().toHtmlEscaped());
+            ui->view->setHtml(html, this->m_panoramicUrl);
+            qWarning().noquote()
+                    << u"[sky] panoramic view failed to load: %1"_s.arg(
+                               this->m_panoramicUrl.toString());
+        });
+    }
+    this->m_panoramicShowingError = false;
+    ui->view->load(url);
 }
 
+
+void MainWindow::frameGalacticPlane()
+{
+    // The remote page opens on empty space: its own init() ends with
+    //
+    //   var mapBoundsInitialZoom = new OpenLayers.Bounds(135.337, 16000.0, 135.337, 20000.0);
+    //   map.zoomToExtent(mapBoundsInitialZoom);
+    //
+    // and that rectangle is degenerate in x and lies entirely OUTSIDE the map,
+    // which spans y -4398..0 — so the view lands nowhere and the user has to
+    // hunt for the Galactic plane with the pan arrows before doing anything.
+    // We cannot change the page, but we can tell it where to look once it has
+    // loaded, through the same channel the selection controls already use.
+    //
+    // By default we FIT THE HEIGHT of the survey rather than pick a zoom level:
+    // the strip is about 61 times wider than it is tall, so any fixed level is
+    // right for exactly one window size — level 7 frames it thinly on a small
+    // window and leaves half the pane empty on a large one. Fitting the height
+    // centres the plane and fills the pane on both. A non-zero PanoramicView/zoom
+    // in the settings overrides this with that level, for anyone who wants to
+    // open somewhere specific.
+    //
+    // Written defensively: this runs inside a page we do not own, so it checks
+    // that OpenLayers and the map are there and reports rather than throwing if
+    // the page ever changes shape.
+    const int zoom = this->settings ? this->settings->getPanoramicZoom() : 0;
+    const QString js = uR"JS(
+        (function () {
+            try {
+                if (typeof map === 'undefined' || !map || typeof OpenLayers === 'undefined')
+                    return 'no-map';
+                // The page is loaded at startup while the VLKB tab is still
+                // hidden, so the map div has no usable size until it is shown:
+                // OpenLayers caches that size and must be told to re-read it,
+                // or every computation below is done against a zero-sized
+                // viewport and the view lands nowhere.
+                map.updateSize();
+                var e = map.getMaxExtent();
+                var size = map.getSize();
+                if (!e || !size || !size.h || size.h < 50) return 'not-visible';
+                var cx = (e.left + e.right) / 2, cy = (e.top + e.bottom) / 2;
+                var fixed = %1;
+                if (fixed > 0) {
+                    map.setCenter(new OpenLayers.LonLat(cx, cy), fixed);
+                    return 'ok';
+                }
+                var h = e.getHeight();
+                var w = h * (size.w / size.h);      // same aspect as the pane
+                map.zoomToExtent(new OpenLayers.Bounds(cx - w / 2, cy - h / 2,
+                                                       cx + w / 2, cy + h / 2));
+                return 'ok';
+            } catch (err) { return 'error: ' + err; }
+        })();
+    )JS"_s.arg(zoom);
+    // Deferred: called straight after show()/insertTab() the widget has not been
+    // laid out yet, so the map would measure the size it is about to stop having.
+    QTimer::singleShot(0, this, [this, js]() {
+        if (!ui || !ui->view)
+            return;
+        ui->view->page()->runJavaScript(js, [](const QVariant &r) {
+            const QString out = r.toString();
+            if (out == u"not-visible"_s)
+                return;   // hidden tab at startup; the reveal will do it
+            if (out != u"ok"_s)
+                qWarning().noquote()
+                        << u"[sky] could not frame the Galactic plane: %1"_s.arg(out);
+        });
+    });
+}
 
 void MainWindow::changeViewSelectionMode()
 {

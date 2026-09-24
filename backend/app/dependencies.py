@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import asyncio as _asyncio
 import base64
 import csv
@@ -157,6 +158,61 @@ _POOL = _new_pool()
 _POOL_LOCK = threading.Lock()
 # Counts how many times the pool had to be rebuilt, so /health can say so.
 _POOL_RESTARTS = 0
+
+
+def shutdown_pool(timeout_s: float = 3.0) -> None:
+    """Stop the worker pool and make sure its children are gone.
+
+    A ProcessPoolExecutor's workers are separate processes: they outlive the
+    backend unless it shuts the pool down, and then they outlive the desktop
+    client too. Measured on this machine after a day of development: 317 stray
+    interpreters holding 16.8 GB.
+
+    Waiting politely is not enough. ``cancel_futures`` drops work that has not
+    started, but a task already RUNNING cannot be cancelled — and the client
+    gives the backend three seconds before killing it, so a quit during a moment
+    map would leave exactly the orphans this exists to prevent. So: stop
+    accepting, wait briefly, then terminate whatever is still alive and reap it.
+
+    Deliberately bounded. A shutdown path that can block forever is worse than
+    one that leaves a process behind, because it hangs the quit as well.
+    """
+    import os, signal, time as _time  # noqa: PLC0415 - only needed on this path
+
+    with _POOL_LOCK:
+        pool = _POOL
+    # Snapshot the children before shutdown(): the executor clears the map as it
+    # joins them, and we need the pids to check up on the stragglers.
+    children = [p for p in getattr(pool, "_processes", {}).values() if p is not None]
+    pool.shutdown(wait=False, cancel_futures=True)
+
+    deadline = _time.monotonic() + max(0.0, timeout_s)
+    while _time.monotonic() < deadline:
+        if not any(p.is_alive() for p in children):
+            break
+        _time.sleep(0.05)
+
+    survivors = [p for p in children if p.is_alive()]
+    for p in survivors:
+        # SIGTERM first: a worker between tasks exits on it cleanly.
+        with contextlib.suppress(Exception):
+            p.terminate()
+    for p in survivors:
+        with contextlib.suppress(Exception):
+            p.join(0.5)
+    hard = [p for p in survivors if p.is_alive()]
+    for p in hard:
+        # Still there — it is inside a long native call (a VTK pass, a large
+        # numpy reduction) that no signal will interrupt politely.
+        with contextlib.suppress(Exception):
+            os.kill(p.pid, signal.SIGKILL)
+            p.join(0.5)
+    if children:
+        logger.info(
+            "[shutdown] worker pool stopped (%d worker(s), %d terminated, %d killed)",
+            len(children), len(survivors) - len(hard), len(hard))
+    else:
+        logger.info("[shutdown] worker pool stopped (no workers had been started)")
 
 
 def pool_health() -> dict[str, Any]:
@@ -465,7 +521,7 @@ _DEC_CANDIDATES = ["dec", "Dec", "DEC", "DEJ2000", "dec_deg", "DECdeg", "DELTA_J
 # (e.g. _normalize_path, _is_fits) being available, so list them explicitly.
 __all__ = [
     "logger",
-    "_WORKERS", "_POOL", "pool_health", "_DASK_CLIENT", "_DASK_SCHEDULER", "_VTK_AVAILABLE",
+    "_WORKERS", "_POOL", "pool_health", "shutdown_pool", "_DASK_CLIENT", "_DASK_SCHEDULER", "_VTK_AVAILABLE",
     "_auth",
     "_FITS_SUFFIXES",
     "_COSMOLOGY_MODELS",

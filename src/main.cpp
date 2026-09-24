@@ -430,7 +430,15 @@ int main(int argc, char *argv[])
     // Set application info
     QApplication::setApplicationName(u"VisIVO Visual Analytics"_s);
     QApplication::setApplicationVersion(QStringLiteral(VISIVO_VERSION_STR));
+#ifndef Q_OS_MACOS
+    // NOT on macOS. There the Dock icon comes from the bundle's .icns, which is
+    // drawn with Apple's rounded-rectangle mask; calling setWindowIcon replaces
+    // it at runtime with this flat square PNG, so the icon visibly changes shape
+    // the moment the application finishes launching (reported as "rounded while
+    // loading, square once open"). macOS windows carry no icon of their own, so
+    // there is nothing else this call would buy us there.
     QApplication::setWindowIcon(QIcon(":/icons/VisIVO_512.png"));
+#endif
     QApplication::setOrganizationName(u"Osservatorio Astrofisico di Catania"_s);
     QApplication::setOrganizationDomain(u"it.inaf.oact"_s);
 

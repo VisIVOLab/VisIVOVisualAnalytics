@@ -8,6 +8,11 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QProcessEnvironment>
+
+#ifdef Q_OS_UNIX
+#include <csignal>
+#include <unistd.h>
+#endif
 #include <QStandardPaths>
 #include <QRandomGenerator>
 #include <QUrl>
@@ -540,13 +545,35 @@ BackendLauncher::BackendLauncher(QObject *parent) : QObject(parent)
                      this, &BackendLauncher::onPollHealthDone);
 }
 
+void BackendLauncher::stopBackendProcess(int graceMs)
+{
+    if (!m_process || m_process->state() != QProcess::Running)
+        return;
+#ifdef Q_OS_UNIX
+    // setsid() in the child made its pid the group id, so one signal reaches
+    // uvicorn AND every worker it spawned. Ask politely first: the backend's
+    // lifespan hook shuts the pool down cleanly when it is not mid-request.
+    const auto pgid = static_cast<pid_t>(m_process->processId());
+    if (pgid > 0)
+        ::killpg(pgid, SIGTERM);
+#endif
+    m_process->terminate();
+    if (m_process->waitForFinished(graceMs))
+        return;
+#ifdef Q_OS_UNIX
+    // Still there: a worker inside a long native call, or a server still
+    // draining. Take the group down rather than leave orphans behind.
+    if (pgid > 0)
+        ::killpg(pgid, SIGKILL);
+#endif
+    m_process->kill();
+    m_process->waitForFinished(1000);
+}
+
 BackendLauncher::~BackendLauncher()
 {
     cancel();
-    if (m_process && m_process->state() == QProcess::Running) {
-        m_process->terminate();
-        m_process->waitForFinished(3000);
-    }
+    stopBackendProcess(3000);
 }
 
 void BackendLauncher::startAsync(const QString &backendUrl,
@@ -806,6 +833,17 @@ void BackendLauncher::launchProcess()
     m_process = new QProcess(this);
     m_process->setWorkingDirectory(backendDir);
     m_process->setProcessEnvironment(backendEnvironment());
+#ifdef Q_OS_UNIX
+    // Give the backend its own process GROUP, so that stopping it can stop the
+    // whole family. The backend runs a ProcessPoolExecutor, and its workers are
+    // separate processes that do not die with their parent: quitting the client
+    // was leaving them behind (317 of them, 16.8 GB, measured after a day's
+    // work). The backend's own shutdown hook cleans them up when it gets to
+    // run — but uvicorn drains in-flight requests BEFORE running it, so a quit
+    // during a long moment map never reaches that code and the client kills the
+    // server first. A group signal does not depend on the server cooperating.
+    m_process->setChildProcessModifier([] { ::setsid(); });
+#endif
 
     // Capture stdout + stderr as they arrive.
     QObject::connect(m_process, &QProcess::readyReadStandardOutput, this, [this]() {

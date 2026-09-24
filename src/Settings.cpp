@@ -45,6 +45,7 @@ void Settings::resetDefaults()
     this->settings->setValue(Settings::ColorScheme.first, Settings::ColorScheme.second);
     this->settings->setValue(this->PythonLocation.first, this->PythonLocation.second);
     this->settings->setValue(Settings::PanoramicView.first, Settings::PanoramicView.second);
+    this->settings->setValue(Settings::PanoramicZoom.first, Settings::PanoramicZoom.second);
     this->settings->setValue(Settings::MaxGlyphs.first, Settings::MaxGlyphs.second);
     this->settings->setValue(Settings::VLKBUrl.first, Settings::VLKBUrl.second);
     this->settings->setValue(Settings::VLKBSearch.first, Settings::VLKBSearch.second);
@@ -125,6 +126,30 @@ QString Settings::getPanoramicView() const
 void Settings::setPanoramicView(const QString &url)
 {
     this->settings->setValue(Settings::PanoramicView.first, url);
+}
+
+// The page's own starting view is unusable: it calls zoomToExtent on a rectangle
+// OUTSIDE the map (y 16000..20000 where the map spans -4398..0), so it opens on
+// empty space and the user has to hunt for the Galactic plane. The client frames
+// the plane itself once the page has loaded.
+//
+// 0 means "fit the survey's height to the pane", which is the right answer for
+// any window size; a level from 1 to 10 pins it instead, for opening somewhere
+// specific.
+const std::pair<QString, QVariant> Settings::PanoramicZoom = { u"PanoramicView/zoom"_s, 0 };
+
+int Settings::getPanoramicZoom() const
+{
+    bool ok = false;
+    const int z = this->settings->value(Settings::PanoramicZoom.first).toInt(&ok);
+    if (!ok)
+        return Settings::PanoramicZoom.second.toInt();
+    return std::clamp(z, 0, 10);   // the survey pyramid has 11 levels
+}
+
+void Settings::setPanoramicZoom(int zoom)
+{
+    this->settings->setValue(Settings::PanoramicZoom.first, std::clamp(zoom, 0, 10));
 }
 
 //----------------------------------------------------------------------------

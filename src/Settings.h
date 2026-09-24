@@ -104,6 +104,13 @@ public:
     void setPanoramicView(const QString &url);
 
     /**
+     * Zoom level the panoramic view opens at (OpenLayers level, 0 = whole sky).
+     * @return the stored level, or the default when unset.
+     */
+    int getPanoramicZoom() const;
+    void setPanoramicZoom(int zoom);
+
+    /**
    * @return Maximum number of glyphs to visualize in vtkWindowSources
    */
     int getMaxGlyphs() const;
@@ -257,6 +264,7 @@ private:
     // Platform independent
     static const std::pair<QString, QVariant> ColorScheme;
     static const std::pair<QString, QVariant> PanoramicView;
+    static const std::pair<QString, QVariant> PanoramicZoom;
     static const std::pair<QString, QVariant> MaxGlyphs;
     static const std::pair<QString, QVariant> VLKBUrl;
     static const std::pair<QString, QVariant> VLKBSearch;

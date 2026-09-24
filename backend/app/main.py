@@ -89,6 +89,26 @@ async def _lifespan(_app: "FastAPI"):
         except Exception as exc:  # noqa: BLE001
             logging.getLogger("visivo.backend").warning(
                 "[shutdown] render manager stop failed: %s", exc)
+    # Take the worker pool down with us. A ProcessPoolExecutor's children do not
+    # die when their parent does: quitting the desktop client left three Python
+    # processes of the bundled runtime alive with no backend and no window —
+    # observed, not hypothesised. cancel_futures so a long interactive job does
+    # not hold the exit; wait so the children are reaped before uvicorn's own
+    # process goes, which is what makes them orphans in the first place.
+    try:
+        import asyncio  # noqa: PLC0415
+        from .dependencies import shutdown_pool  # noqa: PLC0415
+        # In a thread and under a deadline: shutdown_pool joins and, if it has
+        # to, signals child processes, and neither belongs on the event loop —
+        # the client kills the backend three seconds after asking it to stop, so
+        # a shutdown that blocks is a shutdown that gets killed half-done.
+        await asyncio.wait_for(asyncio.to_thread(shutdown_pool, 2.0), timeout=4.0)
+    except TimeoutError:
+        logging.getLogger("visivo.backend").warning(
+            "[shutdown] worker pool did not stop in time; leaving it to the OS")
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("visivo.backend").warning(
+            "[shutdown] worker pool shutdown failed: %s", exc)
 
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────

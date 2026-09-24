@@ -34,6 +34,10 @@ public:
     explicit BackendLauncher(QObject *parent = nullptr);
     ~BackendLauncher() override;
 
+    /// Stop the backend and everything it spawned, giving it @p graceMs to go
+    /// quietly before the whole process group is killed.
+    void stopBackendProcess(int graceMs = 3000);
+
     /**
      * Begin the startup sequence asynchronously.
      *
