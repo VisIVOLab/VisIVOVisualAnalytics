@@ -68,7 +68,7 @@ AssistantPanel::AssistantPanel(QWidget *parent) : QWidget(parent)
     m_clear->setFlat(true);
     m_clear->setCursor(Qt::PointingHandCursor);
     m_clear->setStyleSheet(u"QPushButton { color: palette(mid); border: none; padding: 2px 6px; }"
-                           "QPushButton:hover { color: palette(text); }"_s);
+                           u"QPushButton:hover { color: palette(text); }"_s);
     titleRow->addWidget(title);
     titleRow->addStretch(1);
     titleRow->addWidget(m_clear);
@@ -100,8 +100,8 @@ AssistantPanel::AssistantPanel(QWidget *parent) : QWidget(parent)
     });
     m_transcript->setPlaceholderText(
             u"Ask about the loaded dataset - units, statistics, a moment map, a "
-            "distance. Every number in the answer is backed by a tool call.\n\n"
-            "Ask follow-up questions freely (the copilot remembers the conversation)."_s);
+            u"distance. Every number in the answer is backed by a tool call.\n\n"
+            u"Ask follow-up questions freely (the copilot remembers the conversation)."_s);
     root->addWidget(m_transcript, 1);
 
     // Starter-question chips, shown only while the conversation is empty.
@@ -172,9 +172,9 @@ void AssistantPanel::rebuildSuggestions()
         chip->setCursor(Qt::PointingHandCursor);
         chip->setStyleSheet(
                 u"QPushButton { text-align: left; padding: 5px 9px; border: 1px solid "
-                "palette(mid); border-radius: 10px; color: palette(text); "
-                "background: palette(base); }"
-                "QPushButton:hover { background: palette(alternate-base); }"_s);
+                u"palette(mid); border-radius: 10px; color: palette(text); "
+                u"background: palette(base); }"
+                u"QPushButton:hover { background: palette(alternate-base); }"_s);
         connect(chip, &QPushButton::clicked, this, [this, p]() {
             if (m_busy)
                 return;
@@ -422,9 +422,9 @@ void AssistantPanel::renderConversation()
         const QString gap = u"<td width='16%'></td>"_s;
         const QString cell =
                 u"<td width='84%'><table width='100%' cellpadding='8' cellspacing='0' "
-                "bgcolor='%1'><tr><td>%2</td></tr></table></td>"_s.arg(bg, inner);
+                u"bgcolor='%1'><tr><td>%2</td></tr></table></td>"_s.arg(bg, inner);
         return u"<table width='100%' cellspacing='0' cellpadding='0' "
-               "style='margin:5px 0;'><tr>%1</tr></table>"_s
+               u"style='margin:5px 0;'><tr>%1</tr></table>"_s
                 .arg(rightAlign ? (gap + cell) : (cell + gap));
     };
 
@@ -434,7 +434,7 @@ void AssistantPanel::renderConversation()
         if (e.kind == Entry::User) {
             const QString inner =
                     u"<span style='color:%1;font-size:small;'>You</span><br>"
-                    "<span style='color:%2;'>%3</span>"_s
+                    u"<span style='color:%2;'>%3</span>"_s
                             .arg(t.meta, t.userFg, esc(e.text).replace(u"\n"_s, u"<br>"_s));
             html += bubble(/*rightAlign=*/true, t.userBg, inner);
         } else if (e.kind == Entry::Assistant) {
@@ -445,37 +445,37 @@ void AssistantPanel::renderConversation()
                              .arg(t.botFg, esc(e.text).replace(u"\n"_s, u"<br>"_s));
             if (!e.configured) {
                 inner += u"<br><span style='color:%1;font-size:small;'><i>No LLM provider is "
-                         "configured on the server - the analysis tools still work; open ⚙ to "
-                         "enable natural-language answers.</i></span>"_s.arg(t.meta);
+                         u"configured on the server - the analysis tools still work; open ⚙ to "
+                         u"enable natural-language answers.</i></span>"_s.arg(t.meta);
             }
             if (!e.provenance.isEmpty()) {
                 inner += u"<div style='margin-top:6px;border-top:1px solid %1;padding-top:4px;'>"
-                         "<span style='color:%2;font-size:small;'>%3 · grounded in tool call(s):"
-                         "</span><div style='color:%2;font-size:small;'>%4</div></div>"_s
+                         u"<span style='color:%2;font-size:small;'>%3 · grounded in tool call(s):"
+                         u"</span><div style='color:%2;font-size:small;'>%4</div></div>"_s
                                  .arg(t.rule, t.meta,
                                       e.grounded ? u"✓ provenance"_s : u"provenance"_s,
                                       e.provenance);
             }
             if (!e.repro.isEmpty()) {
                 inner += u"<div style='margin-top:4px;'><span style='color:%1;font-size:small;'>"
-                         "Reproducibility</span><pre style='color:%1;font-size:small;margin:2px 0;'>"
-                         "%2</pre></div>"_s.arg(t.meta, esc(e.repro));
+                         u"Reproducibility</span><pre style='color:%1;font-size:small;margin:2px 0;'>"
+                         u"%2</pre></div>"_s.arg(t.meta, esc(e.repro));
             }
             // Copy affordances (handled via anchorClicked, like the Undo link).
             inner += u"<div style='margin-top:6px;'>"
-                     "<a href='copilot:copy:%1' style='color:%2;font-size:small;'>⧉ Copy</a>"_s
+                     u"<a href='copilot:copy:%1' style='color:%2;font-size:small;'>⧉ Copy</a>"_s
                              .arg(QString::number(i), t.meta);
             if (!e.repro.isEmpty())
                 inner += u"&nbsp;&nbsp;<a href='copilot:copyrepro:%1' "
-                         "style='color:%2;font-size:small;'>⧉ Copy script</a>"_s
+                         u"style='color:%2;font-size:small;'>⧉ Copy script</a>"_s
                                  .arg(QString::number(i), t.meta);
             inner += u"</div>"_s;
             html += bubble(/*rightAlign=*/false, t.botBg, inner);
         } else if (e.kind == Entry::ActionLog) {
             html += u"<table width='100%' cellspacing='0' cellpadding='6' style='margin:2px 0;'>"
-                    "<tr><td><span style='color:%1;font-size:small;'>▸ Applied to the view "
-                    "[<a href='copilot:undo' style='color:%1;'>↩ Undo latest change</a>]</span>"
-                    "<span style='color:%1;font-size:small;'>%2</span></td></tr></table>"_s
+                    u"<tr><td><span style='color:%1;font-size:small;'>▸ Applied to the view "
+                    u"[<a href='copilot:undo' style='color:%1;'>↩ Undo latest change</a>]</span>"
+                    u"<span style='color:%1;font-size:small;'>%2</span></td></tr></table>"_s
                             .arg(t.meta, e.actionLog);
         } else {   // Error
             html += bubble(/*rightAlign=*/false, t.errBg,
@@ -556,7 +556,7 @@ void AssistantPanel::startStream(const QString &question)
                         // reject the stream, so say so instead of failing oddly.
                         setBusy(false);
                         appendError(u"Could not establish a session with the backend - "
-                                    "check the connection and try again."_s);
+                                    u"check the connection and try again."_s);
                         return;
                     }
                     sendStreamRequest(question);

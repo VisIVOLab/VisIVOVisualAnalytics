@@ -980,7 +980,7 @@ void vtkWindowCube::refreshRemoteRecommendBanner()
         QString reason;
         if (backendWantsRemote) {
             reason = u"backend tagged this cube as too large for a local "
-                     "full-resolution load."_s;
+                     u"full-resolution load."_s;
         } else {
             reason = QStringLiteral(
                     "cube is %1 GB at full resolution (threshold %2 MB).")
@@ -1007,7 +1007,7 @@ void vtkWindowCube::refreshRemoteRecommendBanner()
                 local ? u" The backend is on this machine, so nothing is transferred."_s
                       : canRemote ? u" Rendering it on the backend avoids the transfer."_s
                                   : u" This backend cannot render server-side, so loading it "
-                                    "here is the only way to the full grid."_s;
+                                    u"here is the only way to the full grid."_s;
         QString why;
         if (local && canRemote) {
             why = QStringLiteral(

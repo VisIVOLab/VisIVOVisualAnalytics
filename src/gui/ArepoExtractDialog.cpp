@@ -105,8 +105,8 @@ void ArepoExtractDialog::buildUi()
     m_level->setValue(7);
     m_level->setToolTip(
             u"yt refinement level of the whole simulation domain: the window gets its own "
-            "fraction of 2^level cells, so a level means the same resolution whatever "
-            "window you ask for."_s);
+            u"fraction of 2^level cells, so a level means the same resolution whatever "
+            u"window you ask for."_s);
     whatForm->addRow(u"Level"_s, m_level);
 
     m_particle = new QLineEdit(u"gas"_s, what);
@@ -114,7 +114,7 @@ void ArepoExtractDialog::buildUi()
 
     m_fields = new QLineEdit(u"density"_s, what);
     m_fields->setToolTip(u"One or more field names, separated by spaces or commas. "
-                         "Each one becomes its own FITS cube."_s);
+                         u"Each one becomes its own FITS cube."_s);
     whatForm->addRow(u"Fields"_s, m_fields);
     panelLayout->addWidget(what);
 
@@ -233,7 +233,7 @@ void ArepoExtractDialog::applyInspection(const BackendArepoInspectResult &result
         m_extractButton->setEnabled(false);
         m_statusLabel->setText(
                 u"This backend cannot extract: the 'yt' package is not installed on it. "
-                "Browsing and planning still work."_s);
+                u"Browsing and planning still work."_s);
     }
 }
 
@@ -314,7 +314,7 @@ void ArepoExtractDialog::onPlanFinished()
     for (double size : plan.cellSizePc)
         cells.append(QString::number(size, 'f', 2));
     QString text = u"<b>Grid:</b> %1 cells &nbsp; <b>Cell:</b> %2 pc &nbsp; "
-                   "<b>Per field:</b> %3"_s.arg(dims.join(u" × "_s), cells.join(u" × "_s),
+                   u"<b>Per field:</b> %3"_s.arg(dims.join(u" × "_s), cells.join(u" × "_s),
                                                 formatBytes(plan.bytesEstimate));
     // The cell size is fixed by the level, so the extracted extent is the
     // requested window rounded to whole cells. Say so when they differ, rather

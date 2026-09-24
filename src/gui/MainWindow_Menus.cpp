@@ -362,7 +362,7 @@ void MainWindow::buildDataMenu()
     auto *actArepo = dataMenu->addAction(u"Extract from AREPO Snapshot…"_s);
     actArepo->setToolTip(
             u"Resample a window of an AREPO simulation onto a uniform grid, on the backend, "
-            "and open the result as a cube."_s);
+            u"and open the result as a cube."_s);
     QObject::connect(actArepo, &QAction::triggered, this, &MainWindow::openArepoSnapshot);
 
     dataMenu->addSeparator();

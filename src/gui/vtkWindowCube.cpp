@@ -1321,12 +1321,12 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                   .arg(warnThreshold)
                                   .arg(this->m_serverSideRenderingAvailable
                                                ? u"Rendering it in the backend process instead "
-                                                 "uses the same GPU for the same volume and "
-                                                 "adds a per-frame encode; what it avoids is "
-                                                 "holding the cube in THIS process."_s
+                                                 u"uses the same GPU for the same volume and "
+                                                 u"adds a per-frame encode; what it avoids is "
+                                                 u"holding the cube in THIS process."_s
                                                : u"This backend cannot render server-side (no "
-                                                 "EGL context), so loading it here is the only "
-                                                 "way to the full grid."_s)
+                                                 u"EGL context), so loading it here is the only "
+                                                 u"way to the full grid."_s)
                         : QStringLiteral(
                                   "This cube is %1 GB at full resolution, well above the "
                                   "%2 MB local-load threshold.\n\nDownloading the full "
@@ -1336,13 +1336,13 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                   .arg(warnThreshold)
                                   .arg(this->m_serverSideRenderingAvailable
                                                ? u"Remote rendering (GPU on the backend) is "
-                                                 "already configured and will give you "
-                                                 "full-quality, fully interactive 3D without "
-                                                 "the transfer."_s
+                                                 u"already configured and will give you "
+                                                 u"full-quality, fully interactive 3D without "
+                                                 u"the transfer."_s
                                                : u"This backend cannot render server-side (no "
-                                                 "EGL context), so there is no alternative to "
-                                                 "the download, consider Crop Full Resolution "
-                                                 "for a region instead."_s));
+                                                 u"EGL context), so there is no alternative to "
+                                                 u"the download, consider Crop Full Resolution "
+                                                 u"for a region instead."_s));
                 // Only when the backend can actually do it: with no EGL there,
                 // this button led straight into a refused request (verified —
                 // the probe returns false on macOS).

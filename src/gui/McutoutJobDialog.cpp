@@ -240,7 +240,7 @@ void McutoutJobDialog::onReportFinished()
     setStatus(ok == result.results.size()
                       ? u"All %1 cutouts are ready."_s.arg(ok)
                       : u"%1 of %2 cutouts are ready; hover a failed row for the "
-                        "archive's reason."_s.arg(ok).arg(result.results.size()));
+                        u"archive's reason."_s.arg(ok).arg(result.results.size()));
     m_collectButton->setEnabled(ok > 0);
 }
 

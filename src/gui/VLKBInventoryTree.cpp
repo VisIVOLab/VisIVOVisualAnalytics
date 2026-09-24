@@ -137,8 +137,8 @@ void VLKBInventoryTree::buildUi(const QString &posCutout)
     m_batchButton->setEnabled(false);
     m_batchButton->setToolTip(
             u"Ask the archive for the whole selection as one asynchronous job. "
-            "Slower to start, but it is a single request and it keeps running if "
-            "you close this window."_s);
+            u"Slower to start, but it is a single request and it keeps running if "
+            u"you close this window."_s);
     QObject::connect(m_batchButton, &QPushButton::clicked, this,
                      &VLKBInventoryTree::requestBatch);
     actions->addWidget(hint, 1);

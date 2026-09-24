@@ -270,8 +270,8 @@ void SedWindow::buildUi()
     bandsLayout->setContentsMargins(6, 6, 6, 6);
     auto *bandsHint = new QLabel(
             u"<b>Use</b> — include the band in the fit.   "
-            "<b>UL</b> — treat its flux as an upper limit: it constrains the fit "
-            "without entering the χ²."_s,
+            u"<b>UL</b> — treat its flux as an upper limit: it constrains the fit "
+            u"without entering the χ²."_s,
             bandsPage);
     bandsHint->setWordWrap(true);
     bandsLayout->addWidget(bandsHint);
@@ -365,8 +365,8 @@ void SedWindow::buildUi()
     m_selectOnPlot = new QCheckBox(u"Select on plot"_s, actions);
     m_selectOnPlot->setToolTip(
             u"Drag a rectangle over the points to add them to the fit. Clicking a point "
-            "always toggles it, with or without this. Turn it off to drag the plot around "
-            "instead — the two gestures share a mouse button."_s);
+            u"always toggles it, with or without this. Turn it off to drag the plot around "
+            u"instead — the two gestures share a mouse button."_s);
     connect(m_selectOnPlot, &QCheckBox::toggled, this, [this](bool on) {
         m_plot->setSelectionRectMode(on ? QCP::srmSelect : QCP::srmNone);
     });
@@ -375,8 +375,8 @@ void SedWindow::buildUi()
     m_collapseBranches = new QCheckBox(u"Collapse branches"_s, actions);
     m_collapseBranches->setToolTip(
             u"A band-merged source can have more than one counterpart in the same band. "
-            "Collapsed, they are summed into a single point per band; expanded, each is a "
-            "separate branch you can choose between."_s);
+            u"Collapsed, they are summed into a single point per band; expanded, each is a "
+            u"separate branch you can choose between."_s);
     connect(m_collapseBranches, &QCheckBox::toggled, this, &SedWindow::setBranchesCollapsed);
     actionLayout->addWidget(m_collapseBranches);
 
@@ -491,14 +491,14 @@ void SedWindow::buildParameterPanel(QWidget *page)
     m_sizeArcsec->setSuffix(u" \""_s);
     m_sizeArcsec->setToolTip(
             u"Angular size used by the optically thick model. Taken from the catalogue's "
-            "per-band FWHM (median over the bands in use) when it gives one."_s);
+            u"per-band FWHM (median over the bands in use) when it gives one."_s);
     commonForm->addRow(u"Source size"_s, m_sizeArcsec);
 
     m_colourCorrection = new QCheckBox(u"Apply PACS colour corrections"_s, common);
     m_colourCorrection->setChecked(true);
     m_colourCorrection->setToolTip(
             u"PACS fluxes are calibrated for a νF_ν = const source; a cold greybody needs a "
-            "temperature-dependent correction at 70, 100 and 160 µm."_s);
+            u"temperature-dependent correction at 70, 100 and 160 µm."_s);
     commonForm->addRow(QString(), m_colourCorrection);
     layout->addWidget(common);
 
@@ -599,7 +599,7 @@ void SedWindow::refreshBandTable()
             // in the row itself, because "why are there two 250 µm rows" is the
             // first question the table otherwise raises.
             band->setToolTip(u"Another counterpart of this source in the same band. "
-                             "Tick it to fit this branch instead."_s);
+                             u"Tick it to fit this branch instead."_s);
             band->setForeground(QBrush(QColor(154, 174, 196)));
         }
         m_bandTable->setItem(row, ColBand, band);
@@ -702,7 +702,7 @@ void SedWindow::setBranchesCollapsed(bool collapsed)
 
         if (!refused.isEmpty()) {
             m_log->append(u"Not collapsed at %1 µm: the band mixes a detection with an "
-                          "upper limit, and those cannot be added together."_s
+                          u"upper limit, and those cannot be added together."_s
                                   .arg(refused.join(u", "_s)));
         }
         m_sed.points = std::move(summed);
@@ -829,9 +829,9 @@ void SedWindow::runGreybodyFit()
     if (distinctDetectionWavelengths(points) < 2) {
         QMessageBox::warning(this, u"SED fit"_s,
                              u"Select at least two detections at different wavelengths. Two "
-                             "branches of the same band are two measurements of one point on "
-                             "the spectrum, and upper limits constrain the fit but cannot "
-                             "define it."_s);
+                             u"branches of the same band are two measurements of one point on "
+                             u"the spectrum, and upper limits constrain the fit but cannot "
+                             u"define it."_s);
         return;
     }
 
@@ -855,7 +855,7 @@ void SedWindow::runGreybodyFit()
         if (request.model == u"thick"_s) {
             QMessageBox::warning(this, u"SED fit"_s,
                                  u"The optically thick model needs a source size, and this "
-                                 "catalogue gives none. Type one in the Fit tab."_s);
+                                 u"catalogue gives none. Type one in the Fit tab."_s);
             return;
         }
         m_log->append(u"No source size available: only the optically thin model will be fitted."_s);
@@ -900,7 +900,7 @@ void SedWindow::onGreybodyFitFinished()
     showFitResults();
     if (m_resultsStale) {
         m_log->append(u"<i>The inputs changed while this fit was running: it describes the "
-                      "previous selection. Run it again.</i>"_s);
+                      u"previous selection. Run it again.</i>"_s);
     }
     replot();
     m_tabs->setCurrentIndex(2);
@@ -1405,7 +1405,7 @@ void SedWindow::markResultsStale()
         return;
     m_resultsStale = true;
     m_log->append(u"<i>The photometry changed after the last fit: the curves and results "
-                  "shown belong to the previous selection. Run the fit again.</i>"_s);
+                  u"shown belong to the previous selection. Run the fit again.</i>"_s);
     updateIdleStatus();
 }
 

@@ -261,7 +261,7 @@ void vtkWindowCube::requestRemoteRenderSession()
             qWarning() << "[remote-render] create_session returned no session_id";
             this->abortRemoteSwitch(
                     u"The backend accepted the request but returned no render session - "
-                    "staying local."_s);
+                    u"staying local."_s);
             return;
         }
         this->m_renderSessionId = sid;

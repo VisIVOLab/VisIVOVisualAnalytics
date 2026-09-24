@@ -236,7 +236,18 @@ if (VISIVO_ENABLE_WEBRTC)
             # populated.
             GIT_SUBMODULES_RECURSE TRUE
         )
+        # libdatachannel v0.21.2 bundles plog, whose CMakeLists still declares
+        # cmake_minimum_required(VERSION 3.2). CMake 4 REMOVED compatibility with
+        # anything below 3.5 and errors out, which is what broke the macOS CI
+        # runners the day they moved to CMake 4 while Linux and Windows were
+        # still on 3.x. Scoped to this dependency and restored immediately after,
+        # rather than passed as -DCMAKE_POLICY_VERSION_MINIMUM on the whole
+        # configure: our own code should keep being held to current policies.
+        set(_visivo_saved_policy_min "${CMAKE_POLICY_VERSION_MINIMUM}")
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
         FetchContent_MakeAvailable(libdatachannel)
+        set(CMAKE_POLICY_VERSION_MINIMUM "${_visivo_saved_policy_min}")
+        unset(_visivo_saved_policy_min)
         if (TARGET LibDataChannel::LibDataChannel)
             set(_visivo_webrtc_lib LibDataChannel::LibDataChannel)
         elseif (TARGET datachannel)
