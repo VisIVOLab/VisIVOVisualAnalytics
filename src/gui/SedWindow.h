@@ -56,6 +56,8 @@ private slots:
     /// The user picked points on the plot: that selection *is* the set of bands
     /// in the fit, so it is written straight back into the photometry table.
     void onPlotSelectionChanged();
+    /// Name the band under the cursor, and point the table at it.
+    void showPointTooltip(QMouseEvent *event);
     /// Sum the branches at each wavelength into one point, and back again.
     void setBranchesCollapsed(bool collapsed);
     void runModelFit();

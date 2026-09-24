@@ -6,6 +6,9 @@
 #include "theme/VisivoTheme.h"
 
 #include <QCheckBox>
+#include <QToolTip>
+
+#include <limits>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -177,6 +180,11 @@ SedWindow::SedWindow(const visivo::SedBuildResult &sed, const QString &backendUr
 
     connect(m_plot, &QCustomPlot::selectionChangedByUser,
             this, &SedWindow::onPlotSelectionChanged);
+    // Which dot is which row? With eleven bands, four of them at the same
+    // wavelength, the plot and the table were two lists you had to match by
+    // eye. Hovering now says it outright.
+    m_plot->setMouseTracking(true);
+    connect(m_plot, &QCustomPlot::mouseMove, this, &SedWindow::showPointTooltip);
     connect(&m_fitWatcher, &QFutureWatcher<BackendSedFitResult>::finished,
             this, &SedWindow::onGreybodyFitFinished);
     connect(&m_modelWatcher, &QFutureWatcher<BackendSedModelsResult>::finished,
@@ -242,12 +250,18 @@ void SedWindow::buildUi()
     m_plot = new QCustomPlot(splitter);
     m_plot->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_plot->setMinimumWidth(420);
-    // iSelectPlottables is what makes a click on a point do anything at all;
-    // the selection-rect mode set by the "Select on plot" box only governs what
-    // a DRAG does. iMultiSelect lets one rubber band take in both the
-    // detections and the upper limits, which are separate plottables.
-    m_plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables
-                            | QCP::iMultiSelect);
+    // Selection on the plot is OFF until asked for, clicks included. It used to
+    // be that the box governed only the rubber-band drag while a plain click
+    // always toggled a band in or out of the fit — which meant a click intended
+    // to bring the window forward, or a slightly-moved drag, silently changed
+    // the data going into the fit. A toggle that governs one of the two gestures
+    // it looks like it governs is worse than no toggle (user report).
+    //
+    // So: off, the plot is for looking — drag pans, wheel zooms, nothing you do
+    // there changes the fit. On, clicking toggles a band and dragging rubber-
+    // bands a group. iMultiSelect lets one band take in both the detections and
+    // the upper limits, which are separate plottables.
+    m_plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
     m_plot->xAxis->setLabel(u"Wavelength (µm)"_s);
     m_plot->yAxis->setLabel(u"Flux (Jy)"_s);
     m_plot->legend->setVisible(true);
@@ -364,10 +378,15 @@ void SedWindow::buildUi()
     // so a drag still pans; the two gestures are the same mouse button.
     m_selectOnPlot = new QCheckBox(u"Select on plot"_s, actions);
     m_selectOnPlot->setToolTip(
-            u"Drag a rectangle over the points to add them to the fit. Clicking a point "
-            u"always toggles it, with or without this. Turn it off to drag the plot around "
-            u"instead — the two gestures share a mouse button."_s);
+            u"Click a point to put its band in or out of the fit, or drag a rectangle over "
+            u"several. While this is off the plot only pans and zooms, and nothing you do "
+            u"on it changes the fit — the two gestures share a mouse button."_s);
     connect(m_selectOnPlot, &QCheckBox::toggled, this, [this](bool on) {
+        // Both gestures, not just the drag: see the interaction flags above.
+        QCP::Interactions flags = m_plot->interactions();
+        flags.setFlag(QCP::iSelectPlottables, on);
+        flags.setFlag(QCP::iMultiSelect, on);
+        m_plot->setInteractions(flags);
         m_plot->setSelectionRectMode(on ? QCP::srmSelect : QCP::srmNone);
     });
     actionLayout->addWidget(m_selectOnPlot);
@@ -1083,11 +1102,55 @@ void SedWindow::plotObservedPoints()
 
     const QColor dim(kDataColour.red(), kDataColour.green(), kDataColour.blue(), 110);
 
-    // The guide line joins the bands actually in the fit, in wavelength order.
-    // It carries no model — it is there because an unconnected scatter of eight
-    // points across four decades does not read as one source's spectrum. Added
-    // FIRST: within a layer QCustomPlot draws in creation order, so this is how
-    // the line ends up behind the markers the user has to click.
+    // ── Every band, in grey, connected: the shape of the source ─────────────
+    //
+    // Two families, the way the legacy viewer drew them, because each answers a
+    // different question:
+    //
+    //   grey  — ALL the photometry there is, joined in wavelength order. Where a
+    //           band has several counterparts the line runs up and down between
+    //           them, and that vertical spread IS the information: it says how
+    //           much the choice of counterpart matters. When the branches have
+    //           been collapsed this is still the ORIGINAL set, so the plot shows
+    //           what collapsing did rather than only its result.
+    //   bright — the working set: the bands that will enter the fit.
+    //
+    // Before this the plot drew one family and joined only the used points, so
+    // the alternatives floated unconnected and the collapsed view hid the
+    // measurements it was made from.
+    //
+    // Added FIRST: within a layer QCustomPlot draws in creation order, so grey
+    // ends up behind the markers the user has to click.
+    const std::vector<visivo::SedPoint> &allBands =
+            m_rawPoints.empty() ? m_sed.points : m_rawPoints;
+    {
+        QVector<double> rawX;
+        QVector<double> rawY;
+        for (const visivo::SedPoint &point : allBands) {
+            if (point.upperLimit)
+                continue;
+            rawX.append(point.wavelengthUm);
+            rawY.append(point.fluxJy);
+        }
+        if (rawX.size() >= 2) {
+            const QColor raw(150, 155, 165);
+            auto *original = m_plot->addGraph();
+            original->setName(m_branchesCollapsed ? u"All bands (before collapsing)"_s
+                                                  : u"All bands"_s);
+            original->setData(rawX, rawY, /*alreadySorted=*/true);
+            // Deliberately faint: it is the backdrop, and the eye must land on
+            // the spectrum being fitted rather than on the alternatives.
+            original->setPen(QPen(QColor(raw.red(), raw.green(), raw.blue(), 70), 1.0));
+            original->setScatterStyle(m_branchesCollapsed
+                    ? QCPScatterStyle(QCPScatterStyle::ssCircle, QPen(raw, 1.0), Qt::NoBrush, 5)
+                    : QCPScatterStyle(QCPScatterStyle::ssNone));
+            original->setSelectable(QCP::stNone);
+        }
+    }
+
+    // The bright line joins the bands actually in the fit, in wavelength order.
+    // Solid and in the data colour — it is the spectrum being fitted, and the
+    // grey behind it is the context.
     QVector<double> lineX;
     QVector<double> lineY;
     for (const visivo::SedPoint &point : m_sed.points) {
@@ -1099,7 +1162,7 @@ void SedWindow::plotObservedPoints()
     if (lineX.size() >= 2) {
         auto *guide = m_plot->addGraph();
         guide->setData(lineX, lineY, /*alreadySorted=*/true);
-        guide->setPen(QPen(dim, 1, Qt::DashLine));
+        guide->setPen(QPen(kDataColour, 1.8));
         guide->setScatterStyle(QCPScatterStyle::ssNone);
         guide->setSelectable(QCP::stNone);
         guide->removeFromLegend();
@@ -1221,6 +1284,74 @@ void SedWindow::syncPlotSelection()
     apply(m_dataGraph, m_dataRows);
     apply(m_ulGraph, m_ulRows);
     m_syncingSelection = false;
+}
+
+void SedWindow::showPointTooltip(QMouseEvent *event)
+{
+    if (!event || !m_plot)
+        return;
+    const QPoint pos = event->pos();
+
+    // Nearest point among the two data families, within a few pixels. selectTest
+    // reports the distance AND, through the details, which data index it was —
+    // which is what maps a dot back to its row in the table.
+    const auto nearest = [this, pos](QCPGraph *graph, const std::vector<int> &rows,
+                                     double &bestDist, int &bestRow) {
+        if (!graph || graph->dataCount() == 0)
+            return;
+        QVariant details;
+        const double d = graph->selectTest(pos, /*onlySelectable=*/false, &details);
+        if (d < 0.0 || d > 12.0 || d >= bestDist)
+            return;
+        const QCPDataSelection sel = details.value<QCPDataSelection>();
+        if (sel.dataRangeCount() == 0)
+            return;
+        const int index = sel.dataRange(0).begin();
+        if (index < 0 || index >= static_cast<int>(rows.size()))
+            return;
+        bestDist = d;
+        bestRow = rows[static_cast<std::size_t>(index)];
+    };
+
+    double bestDist = std::numeric_limits<double>::max();
+    int row = -1;
+    nearest(m_dataGraph, m_dataRows, bestDist, row);
+    nearest(m_ulGraph, m_ulRows, bestDist, row);
+
+    if (row < 0 || row >= static_cast<int>(m_sed.points.size())) {
+        QToolTip::hideText();
+        return;
+    }
+
+    const visivo::SedPoint &point = m_sed.points[static_cast<std::size_t>(row)];
+    QStringList lines;
+    // trimmed(), because a collapsed band whose catalogue gave no designation
+    // ends up with just " (+2 branches summed)" — a bold empty line.
+    const QString name = !point.label.trimmed().isEmpty() ? point.label.trimmed()
+                                                          : point.band.trimmed();
+    if (!name.isEmpty())
+        lines << u"<b>%1</b>"_s.arg(name.toHtmlEscaped());
+    lines << u"λ %1 µm"_s.arg(formatValue(point.wavelengthUm));
+    if (point.upperLimit)
+        lines << u"flux ≤ %1 Jy (upper limit)"_s.arg(formatValue(point.fluxJy));
+    else if (point.errorJy > 0.0)
+        lines << u"flux %1 ± %2 Jy"_s.arg(formatValue(point.fluxJy), formatValue(point.errorJy));
+    else
+        lines << u"flux %1 Jy"_s.arg(formatValue(point.fluxJy));
+    if (point.sizeArcsec > 0.0)
+        lines << u"size %1″"_s.arg(formatValue(point.sizeArcsec));
+    // The one thing the dot itself cannot say, and the reason for hovering.
+    lines << (point.use ? u"<i>in the fit</i>"_s : u"<i>not in the fit</i>"_s);
+
+    QToolTip::showText(m_plot->mapToGlobal(pos), lines.join(u"<br>"_s), m_plot);
+
+    // Row 3 of the table is not row 3 of the plot: point the table at the same
+    // band so the two views agree about what is being pointed at.
+    if (m_bandTable && m_bandTable->selectionModel()) {
+        const QModelIndex idx = m_bandTable->model()->index(row, 0);
+        if (idx.isValid())
+            m_bandTable->setCurrentIndex(idx);
+    }
 }
 
 void SedWindow::onPlotSelectionChanged()
