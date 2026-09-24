@@ -102,11 +102,11 @@ than silently combining measurements taken at different frequencies.
 
 ## 4. Keeping the results
 
-Every map here is an ordinary 2-D product, and
-*Tools ▸ Export ▸ **Export Displayed Map as FITS…*** writes the one currently
-shown in a pane into Workspace Exports as a standalone 2-D FITS. It works for
-any map the cube viewer produces — polarised intensity, position angle, peak
-|F(φ)|, Faraday depth, line-width — not only for moments.
+Every map here is an ordinary 2-D product, so the cube viewer's single export
+entry covers it: focus the pane holding the map and use
+*Tools ▸ Export*, which will be reading **Export Peak |F(φ)| as FITS…** or
+whatever the map is called. It writes a standalone 2-D FITS into Workspace
+Exports.
 
 What ends up in the file:
 

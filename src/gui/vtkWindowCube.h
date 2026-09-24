@@ -1111,6 +1111,7 @@ protected:
     /// screen (the controller pushes the first result). Stays enabled.
     QPointer<QAction> m_actExportMomentFits;
     QPointer<QAction> m_actExportDisplayedMap;
+    QPointer<QAction> m_actExportSelected;   ///< the one export; label follows the focused pane
     QPointer<QAction> m_actFilterFits;
     QPointer<QAction> m_actExportSubCube;
     QPointer<QAction> m_actMaskRegion;
@@ -1164,7 +1165,20 @@ protected:
     /// exportMomentMapAsFits(), which can only export a moment because it
     /// exports a RECIPE for the service to recompute. Everything else this
     /// window produces is finished pixels, so those go up with the request.
-    void exportDisplayedMapAsFits();
+    /// @param productId the 2-D product to export; empty means the displayed one.
+    void exportDisplayedMapAsFits(const QString &productId = {});
+    /// Tools → "Export …" — ONE export that acts on the focused pane.
+    ///
+    /// There used to be four entries, one per kind of thing, and the user had
+    /// to know which exporter matched what they were looking at: the channel
+    /// one for the slice, the moment one for a moment, the map one for
+    /// everything else, the sub-cube one for the volume. What they actually
+    /// want is "save this". So the action follows the focused pane and its
+    /// LABEL says what it will write, which keeps the discoverability that a
+    /// bare "Export…" would lose.
+    void exportSelectedView();
+    /// Re-label / re-enable the unified export for whatever the focused pane holds.
+    void updateExportSelectedAction();
     /// The 2-D product currently visible in a pane, preferring the focused one,
     /// or an empty string when no map is on screen.
     QString displayedImageProductId() const;

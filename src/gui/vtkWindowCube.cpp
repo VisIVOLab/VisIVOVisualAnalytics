@@ -2853,14 +2853,18 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(m_actSliceHistogram, &QAction::triggered,
                      this, &vtkWindowCube::showSliceHistogramPanel);
 
+    m_actExportSelected = ui->menuTools->addAction(u"Export Selected View…"_s);
+    QObject::connect(m_actExportSelected, &QAction::triggered,
+                     this, &vtkWindowCube::exportSelectedView);
+
     m_actExportDisplayedMap = ui->menuTools->addAction(u"Export Displayed Map as FITS…"_s);
     m_actExportDisplayedMap->setToolTip(
             u"Save the 2-D map currently shown in a pane — a moment, a line-width "
             u"map, polarised intensity, a Faraday-depth map — as a standalone 2-D "
             u"FITS in Workspace Exports, with the celestial WCS and the parameters "
             u"it was computed with recorded as HISTORY."_s);
-    QObject::connect(m_actExportDisplayedMap, &QAction::triggered,
-                     this, &vtkWindowCube::exportDisplayedMapAsFits);
+    QObject::connect(m_actExportDisplayedMap, &QAction::triggered, this,
+                     [this]() { this->exportDisplayedMapAsFits(); });
 
     m_actExportMomentFits = ui->menuTools->addAction(u"Export Moment Map as FITS…"_s);
     m_actExportMomentFits->setToolTip(
@@ -5096,9 +5100,101 @@ QString vtkWindowCube::displayedImageProductId() const
     return {};
 }
 
-void vtkWindowCube::exportDisplayedMapAsFits()
+void vtkWindowCube::updateExportSelectedAction()
 {
-    const QString productId = displayedImageProductId();
+    if (!m_actExportSelected)
+        return;
+    const PaneView pv = (m_activePane >= 0 && m_activePane < 4) ? m_slots[m_activePane].view
+                                                                : PaneView{};
+    QString label, why;
+    switch (pv.kind) {
+    case ViewId::View3D:
+        label = u"Export Sub-Cube as FITS…"_s;
+        why = u"Crop the cube to a spatial and spectral box and save it as a standalone "
+              u"FITS in Workspace Exports. The bounds start from the drawn region, if any."_s;
+        break;
+    case ViewId::Slice2D:
+        label = u"Export Current Channel as 2-D FITS…"_s;
+        why = u"Save the channel on screen as a true 2-D FITS image — the spectral axis "
+              u"is dropped, not kept as a degenerate dimension."_s;
+        break;
+    case ViewId::Spectrum:
+        label = u"Export Spectrum as CSV…"_s;
+        why = u"Save the spectrum in this pane as CSV."_s;
+        break;
+    case ViewId::Product: {
+        const QString name = m_products2d.contains(pv.productId)
+                ? m_products2d.value(pv.productId).label
+                : (m_products1d.contains(pv.productId) ? m_products1d.value(pv.productId).label
+                                                       : QString());
+        if (m_products1d.contains(pv.productId)) {
+            label = u"Export %1 as CSV…"_s.arg(name);
+            why = u"Save this spectrum as CSV."_s;
+        } else if (m_products2d.contains(pv.productId)) {
+            label = u"Export %1 as FITS…"_s.arg(name);
+            why = u"Save this map as a 2-D FITS in Workspace Exports, with the celestial "
+                  u"WCS, its own BUNIT and the parameters it was computed with recorded "
+                  u"as HISTORY."_s;
+        }
+        break;
+    }
+    case ViewId::None:
+    default:
+        break;
+    }
+
+    // A name, not a verdict: the label says what will be written, so the one
+    // entry is as explicit as the four it replaced.
+    const bool ready = !label.isEmpty();
+    m_actExportSelected->setText(ready ? label : u"Export Selected View…"_s);
+    m_actExportSelected->setEnabled(ready);
+    m_actExportSelected->setToolTip(
+            ready ? why
+                  : u"Select a pane first: this exports what the focused pane is showing — "
+                    u"the cube, the current channel, a map, or a spectrum."_s);
+}
+
+void vtkWindowCube::exportSelectedView()
+{
+    const PaneView pv = (m_activePane >= 0 && m_activePane < 4) ? m_slots[m_activePane].view
+                                                                : PaneView{};
+    switch (pv.kind) {
+    case ViewId::View3D:
+        exportSubCubeAsFits();
+        return;
+    case ViewId::Slice2D:
+        exportCurrentChannelAs2dFits();
+        return;
+    case ViewId::Spectrum:
+        if (auto *w = m_paneSpectra[m_activePane])
+            w->saveSpectrumCsvNow();
+        return;
+    case ViewId::Product:
+        if (m_products1d.contains(pv.productId)) {
+            if (auto *w = m_paneSpectra[m_activePane])
+                w->saveSpectrumCsvNow();
+            return;
+        }
+        // A moment keeps its own exporter: that one sends a RECIPE and lets the
+        // service recompute at full precision, which beats uploading the pixels
+        // that happen to be on screen.
+        if (pv.productId.startsWith(u"moment"_s))
+            exportMomentMapAsFits(pv.productId);
+        else
+            exportDisplayedMapAsFits(pv.productId);
+        return;
+    case ViewId::None:
+    default:
+        QMessageBox::information(this, u"Export"_s,
+                u"Select the pane holding what you want to save first."_s);
+        return;
+    }
+}
+
+void vtkWindowCube::exportDisplayedMapAsFits(const QString &requestedProductId)
+{
+    const QString productId = requestedProductId.isEmpty() ? displayedImageProductId()
+                                                           : requestedProductId;
     if (productId.isEmpty()) {
         QMessageBox::warning(this, u"Export Map"_s,
                 u"No 2-D map is on screen. Compute one — a moment, a line-width map, "
@@ -6893,11 +6989,15 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Catalogue"_s, self->actionShowCatalogueLabels);
     add(u"Catalogue"_s, self->actionClearCatalogueOverlay);
 
+    // ONE export of the data, which follows the focused pane and re-labels
+    // itself. The four it replaced — sub-cube, current channel, displayed map,
+    // moment map — are still the code underneath, and are still reachable
+    // programmatically; they are simply not four things the user has to choose
+    // between while looking at one pane. Smooth / Regrid writes a new cube
+    // rather than exporting this one, and a movie is not the data, so those
+    // two keep their own entries.
+    add(u"Export"_s, self->m_actExportSelected);
     add(u"Export"_s, self->m_actFilterFits);
-    add(u"Export"_s, self->m_actExportSubCube);
-    add(u"Export"_s, self->m_actExportChannel2d);
-    add(u"Export"_s, self->m_actExportDisplayedMap);
-    add(u"Export"_s, self->m_actExportMomentFits);
     add(u"Export"_s, self->m_actExportMovie);
 
     add(u"Views"_s, self->m_actSendSliceToImage);
@@ -9025,6 +9125,9 @@ void vtkWindowCube::refreshPaneInteractors()
 
 void vtkWindowCube::refreshPaneActiveStyles()
 {
+    // Called on every focus and layout change, which is exactly when the one
+    // export entry has to say something else.
+    updateExportSelectedAction();
     const QLatin1StringView pri(VisivoTheme::kPrimary());
     // §3.2: the active-pane distinction must be VISIBLE, not documented. The active
     // pane carries the brand-blue border + a filled brand-blue dot; every other pane
@@ -11201,6 +11304,11 @@ void vtkWindowCube::setupInspector()
     // And the menu itself, regrouped from the same table.
     regroupToolsMenu();
     regroupViewMenu();
+    // Once, now that the panes exist and the action does too. Without this the
+    // unified export keeps its placeholder label — and its default ENABLED
+    // state — until the first pane change, so a window opened and left alone
+    // offers "Export Selected View…" that does not say what it would write.
+    updateExportSelectedAction();
 
     // Armed-pane border: every interaction tool listens to ONE view, and the
     // amber frame says which. Wired here, once, for all of them — by this point

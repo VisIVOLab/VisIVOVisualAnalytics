@@ -730,75 +730,55 @@ caution.
 
 ### FITS exports → Workspace
 
-Several entries under **Tools ▸ Export** persist derived FITS artefacts into a
-backend *Workspace Exports* directory (default ``~/.visivo/exports/``, override
-with the ``VISIVO_EXPORTS_DIR`` environment variable):
+**Tools ▸ Export ▸ Export …** is one entry, and it exports what the **focused
+pane** is showing. Its label says what it will write, so the single entry is as
+explicit as the four it replaced:
 
-- **Tools → Export Sub-Cube as FITS…** — crop the current cube to a
-  spatial+spectral ROI and save it as a standalone FITS. The bounds
-  dialog defaults to the AABB of the currently-drawn region (if any),
-  otherwise to the full cube extent. WCS is preserved: ``CRPIX1/2/3`` is
-  shifted so every pixel in the cropped FITS keeps its original sky /
-  spectral coordinates. The sub-cube is also registered as a new dataset
-  in the active session, so you can immediately open it in a new cube
-  viewer.
-  As you type the X/Y/Z bounds, the region they describe is drawn live in the
-  viewer — an amber rectangle on the 2-D slice and a translucent box inside the
-  volume — so you can see what you are about to cut out before you cut it.
-  *Tools → Mask 3-D Region…* shows the same box.
-- **Tools → Export Current Channel as 2-D FITS…** — save the channel
-  that is currently displayed on the slice slider as a **standalone
-  2-D FITS image** (``NAXIS=2`` — the spectral axis is dropped, not
-  kept as a degenerate dimension). Used by the Stokes / spectral
-  index / Faraday-RM workflows in the image viewer: it gives you a
-  single-frequency 2-D map per click. Header keeps ``BUNIT``,
-  ``OBJECT``, the celestial WCS (axes 1 + 2) plus ``SPECVAL`` /
-  ``SPECTYPE`` / ``SPECUNIT`` recording the spectral coordinate of the
-  exported channel, so you can later look up the frequency / velocity
-  for the spectral-index and RM dialogs.
-- **Tools → Export Moment Map as FITS…** — persist the moment currently
-  on screen as a 2-D FITS (celestial WCS, ``BUNIT`` derived from the
-  cube). Disabled until a moment has been computed.
-- **Tools → Export Displayed Map as FITS…** — the generic one: whatever 2-D
-  map is in the focused pane, whether or not the service can recompute it.
-  Moments, line-width maps, polarised intensity, position angle, peak
-  |F(φ)|, Faraday depth — all of them. The header is built service-side, so
-  every export gets the same treatment: ``NAXIS=2`` with the spectral and
-  Stokes axes projected away, the source's celestial WCS (including SIP
-  distortion when it has it), the **map's own** ``BUNIT`` rather than the
-  cube's, and the parameters it was computed with written as ``HISTORY``
-  cards — the same rows the Inspector shows. A map covering a drawn region
-  gets ``CRPIX`` shifted by the crop origin, so it carries the astrometry of
-  the crop and not of the whole field.
+| Focused pane | The entry reads | What you get |
+|---|---|---|
+| 3-D view | *Export Sub-Cube as FITS…* | a cropped cube; the bounds start from the drawn region |
+| 2-D slice | *Export Current Channel as 2-D FITS…* | the displayed channel, `NAXIS=2` |
+| a map product | *Export Faraday depth (RM) as FITS…* (its own name) | that map as 2-D FITS |
+| a spectrum | *Export … as CSV…* | the spectrum as CSV |
 
-  A moment is routed to the exporter above instead, which re-derives it from
-  its recipe rather than uploading the displayed pixels.
+Before this there were four separate entries and you had to know which exporter
+matched what you were looking at. There is nothing to choose now: select the
+pane, export.
+
+Artefacts land in a backend *Workspace Exports* directory (default
+``~/.visivo/exports/``, override with ``VISIVO_EXPORTS_DIR``), browsable from
+the Data Hub. The name you give is auto-suffixed on collision
+(``cube.fits`` → ``cube_1.fits`` → …), and the completion dialog shows the
+filename and on-disk path.
+
+What ends up in a **map** export:
+
+- ``NAXIS=2``, with the spectral and Stokes axes projected away rather than
+  left degenerate, so the image viewer opens it directly;
+- the source's celestial WCS, including SIP distortion when it has it. A map
+  computed over a drawn region gets ``CRPIX`` shifted by the crop origin —
+  otherwise the file would claim the whole field's astrometry;
+- the **map's own** ``BUNIT`` (``deg`` for a position angle, ``rad m-2`` for a
+  Faraday depth), not the cube's;
+- the parameters it was computed with, as ``HISTORY`` cards — the same rows the
+  Inspector shows.
+
+A moment map is routed differently on purpose: the service recomputes it from
+its recipe at full precision instead of uploading the pixels on screen.
+
+The **sub-cube** export preserves the WCS by shifting ``CRPIX1/2/3``, and its
+bounds dialog draws the box live in both views — an amber rectangle on the
+slice and a translucent box in the volume — so you see what you are about to
+cut out before you cut it. *Tools → Mask 3-D Region…* shows the same box.
+
+Two neighbours in the same group are **not** exports of the view:
+*Smooth / Regrid…* writes a new, processed cube rather than saving this one,
+and *Export Movie…* writes an animation.
+
 - **Tools → Overlay Slice on an Open Image…** — draw the current 2-D slice
-  to the first open image viewer as a contour overlay. No FITS
-  round-trip required — the data travels in memory via the
-  ``contourDataReady`` signal. Useful for quick radio + optical
-  comparisons without persisting intermediate files.
-
-These flows take a **basename** (e.g. ``m31_m0.fits``) — a field in the tool's
-own window, not a second prompt after it closes, which is how Export Sub-Cube
-used to ask. The backend stores the file in the Workspace Exports dir and
-auto-suffixes collisions (``cube.fits`` → ``cube_1.fits`` → …). The completion
-dialog shows the chosen filename and on-disk path, and the tool window stays
-open so you can crop another region straight away.
-
-Once in the workspace, artefacts are listed in the **Workspace Exports**
-panel of the Data Hub. Per-entry actions:
-
-- **Open** — register the FITS as a new session dataset and open the
-  matching viewer (cube viewer for cubes, image viewer for 2-D maps).
-- **Download…** — native Save As dialog → streams the bytes from the
-  backend (over HTTP, so it works the same when the backend lives on a
-  remote host) and writes to the chosen local path.
-- **Delete** — removes the FITS from the workspace (confirmation
-  prompt; irreversible).
-
-The panel auto-refreshes every few seconds, so new exports from any
-cube viewer appear without manual action.
+  to the first open image viewer as a contour overlay. No FITS round-trip —
+  the data travels in memory via the ``contourDataReady`` signal. Useful for
+  quick radio + optical comparisons without persisting intermediate files.
 
 ## Performance notes
 
