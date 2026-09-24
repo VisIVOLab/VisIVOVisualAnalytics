@@ -730,8 +730,8 @@ caution.
 
 ### FITS exports → Workspace
 
-Two entries under **Tools** persist derived FITS artefacts into a backend
-*Workspace Exports* directory (default ``~/.visivo/exports/``, override
+Several entries under **Tools ▸ Export** persist derived FITS artefacts into a
+backend *Workspace Exports* directory (default ``~/.visivo/exports/``, override
 with the ``VISIVO_EXPORTS_DIR`` environment variable):
 
 - **Tools → Export Sub-Cube as FITS…** — crop the current cube to a
@@ -759,13 +759,27 @@ with the ``VISIVO_EXPORTS_DIR`` environment variable):
 - **Tools → Export Moment Map as FITS…** — persist the moment currently
   on screen as a 2-D FITS (celestial WCS, ``BUNIT`` derived from the
   cube). Disabled until a moment has been computed.
+- **Tools → Export Displayed Map as FITS…** — the generic one: whatever 2-D
+  map is in the focused pane, whether or not the service can recompute it.
+  Moments, line-width maps, polarised intensity, position angle, peak
+  |F(φ)|, Faraday depth — all of them. The header is built service-side, so
+  every export gets the same treatment: ``NAXIS=2`` with the spectral and
+  Stokes axes projected away, the source's celestial WCS (including SIP
+  distortion when it has it), the **map's own** ``BUNIT`` rather than the
+  cube's, and the parameters it was computed with written as ``HISTORY``
+  cards — the same rows the Inspector shows. A map covering a drawn region
+  gets ``CRPIX`` shifted by the crop origin, so it carries the astrometry of
+  the crop and not of the whole field.
+
+  A moment is routed to the exporter above instead, which re-derives it from
+  its recipe rather than uploading the displayed pixels.
 - **Tools → Overlay Slice on an Open Image…** — draw the current 2-D slice
   to the first open image viewer as a contour overlay. No FITS
   round-trip required — the data travels in memory via the
   ``contourDataReady`` signal. Useful for quick radio + optical
   comparisons without persisting intermediate files.
 
-Both flows take a **basename** (e.g. ``m31_m0.fits``) — a field in the tool's
+These flows take a **basename** (e.g. ``m31_m0.fits``) — a field in the tool's
 own window, not a second prompt after it closes, which is how Export Sub-Cube
 used to ask. The backend stores the file in the Workspace Exports dir and
 auto-suffixes collisions (``cube.fits`` → ``cube_1.fits`` → …). The completion
