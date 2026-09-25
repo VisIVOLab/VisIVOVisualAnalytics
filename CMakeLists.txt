@@ -1,5 +1,29 @@
 cmake_minimum_required(VERSION 3.22)
 
+# ── Oldest macOS this build will run on ──────────────────────────────────────
+#
+# MUST be set before project(): CMake reads it while probing the compiler, and
+# setting it afterwards leaves the already-probed flags alone.
+#
+# Left unset, CMake stamps the binary with the version of the machine that
+# COMPILED it, and macOS refuses to launch it on anything older — "you can't
+# open this application with this version of macOS", with no hint that the
+# cause is the builder's OS rather than the user's. A build made on a machine
+# that had just been upgraded therefore stopped working for every colleague who
+# had not upgraded, which is exactly what happened.
+#
+# 13.0 is Qt 6.11's own floor (its frameworks are stamped minos 13.0), so
+# asking for less would not buy anything: the app would still refuse to load Qt.
+# NOT DEFINED is not enough: an existing build directory carries the variable as
+# an EMPTY cache entry, which is defined. FORCE is safe under this condition,
+# which is precisely "nobody asked for a target"; -DCMAKE_OSX_DEPLOYMENT_TARGET
+# on the command line makes it false and is left alone.
+if (APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING
+        "Oldest macOS supported by this build (Qt 6.11's floor)" FORCE)
+endif ()
+
+
 project(VisIVOVisualAnalytics
         VERSION 1.0.0
         LANGUAGES CXX C
