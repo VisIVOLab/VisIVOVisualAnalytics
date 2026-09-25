@@ -1,6 +1,7 @@
 #include "VisivoTheme.h"
 
 #include <QApplication>
+#include <QEvent>
 #include <QDebug>
 #include <QFile>
 #include <QFileInfo>
@@ -1188,12 +1189,85 @@ QLabel *createVisivoLogoLabel(int height, QWidget *parent)
     return nullptr;
 }
 
+
+// ── Tooltip style guard ──────────────────────────────────────────────────────
+//
+// The application stylesheet styles QToolTip, and for most tooltips that is
+// enough. It is not enough for a tooltip shown from a widget that carries its
+// own stylesheet written WITHOUT a selector — `w->setStyleSheet("background:
+// transparent;")` — because in Qt a widget's own sheet outranks the
+// application's, and it applies to that widget's tooltip as well. The tooltip
+// then keeps the theme's border and loses its background: light text on
+// nothing, which is unreadable, and which is what the Data Hub's recent-dataset
+// rows showed.
+//
+// Measured, not assumed: with an anchor widget styled that way the tip label
+// renders with an unpainted background; with the same declarations scoped to an
+// id selector it renders correctly.
+//
+// Fixing all ~150 unscoped stylesheets one by one would leave the next one to
+// be written broken again. This is the backstop: the tip label is given its own
+// stylesheet the moment it is shown, and nothing outranks a widget's own sheet.
+// The scoped-stylesheet hygiene is still worth doing — this only guarantees the
+// tooltip.
+namespace {
+
+class ToolTipStyleGuard : public QObject
+{
+public:
+    explicit ToolTipStyleGuard(QObject *parent) : QObject(parent) { }
+
+    void setCss(const QString &css) { m_css = css; }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        // QTipLabel is private to Qt, so it is matched by class name. Polish as
+        // well as Show: a reused tip label is polished again before it is shown
+        // with new text, and a style set only on Show can be undone by that.
+        if ((event->type() == QEvent::Show || event->type() == QEvent::Polish)
+            && !m_css.isEmpty()
+            && qstrcmp(watched->metaObject()->className(), "QTipLabel") == 0) {
+            if (auto *w = qobject_cast<QWidget *>(watched)) {
+                if (w->styleSheet() != m_css)
+                    w->setStyleSheet(m_css);   // guarded: setStyleSheet repolishes
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    QString m_css;
+};
+
+/// Install once per application; later calls only refresh the colours.
+void installToolTipGuard(QApplication *app, const QString &css)
+{
+    if (!app)
+        return;
+    static ToolTipStyleGuard *guard = nullptr;
+    if (!guard) {
+        guard = new ToolTipStyleGuard(app);
+        app->installEventFilter(guard);
+    }
+    guard->setCss(css);
+}
+
+}   // namespace
+
 void applyDarkTo(QApplication *app)
 {
     // Mark the active theme so factory functions / inline accessors return the
     // dark palette. Must be set BEFORE building the QPalette below, because the
     // accessors are conditional on currentMode().
     setMode(Mode::Dark);
+
+    // Declaration-only on purpose: this is applied to the tip label itself, so
+    // a selector would not match it.
+    installToolTipGuard(app, QStringLiteral(
+            "background-color: #11181F; color: #F1F4F6;"
+            "border: 1px solid rgba(4, 138, 191, 0.35); border-radius: 4px;"
+            "padding: 6px 10px; font-size: 12px;"));
 
     // ── 1. Register bundled fonts first ───────────────────────────────────────
     // Must happen before any QFont or QSS that references "Lato".
@@ -1718,6 +1792,11 @@ void applyLightTo(QApplication *app)
     // Mark the active theme so factory functions / inline accessors return the
     // light palette. Must be set BEFORE building widgets through any factory.
     setMode(Mode::Light);
+
+    installToolTipGuard(app, QStringLiteral(
+            "background-color: #FFFFFF; color: #1C2734;"
+            "border: 1px solid rgba(3, 103, 166, 0.30); border-radius: 4px;"
+            "padding: 6px 10px; font-size: 12px;"));
 
     // ── 1. Register bundled fonts (idempotent) ────────────────────────────────
     loadBundledFonts();
