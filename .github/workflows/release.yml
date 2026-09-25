@@ -289,7 +289,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: vtk-install
-          key: vtk-${{ env.VTK_VERSION }}-qt${{ env.QT_VERSION }}-${{ matrix.os }}-${{ matrix.qt_arch }}-v1
+          key: vtk-${{ env.VTK_VERSION }}-qt${{ env.QT_VERSION }}-${{ matrix.os }}-${{ matrix.qt_arch }}-macos13-v2
 
       - name: Build VTK from source
         if: steps.cache-vtk.outputs.cache-hit != 'true'
@@ -298,6 +298,12 @@ jobs:
           WS="$(pwd -W 2>/dev/null || pwd)"
           git clone --depth 1 --branch v${{ env.VTK_VERSION }} \
             https://gitlab.kitware.com/vtk/vtk.git vtk-src
+          # macOS refuses to launch a binary on an OS older than the one that
+          # BUILT it, so without a deployment target every dependency inherits
+          # the runner image's version and the release silently stops working
+          # for anyone who has not upgraded. 13.0 is Qt 6.11's own floor. The
+          # app sets the same value in CMakeLists.txt; it has to be set here
+          # too, or VTK alone raises the bundle's floor back up.
           cmake -S vtk-src -B vtk-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=ON \
@@ -305,6 +311,7 @@ jobs:
             -DVTK_BUILD_EXAMPLES=OFF \
             -DVTK_GROUP_ENABLE_Qt=YES \
             -DVTK_QT_VERSION=6 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
             -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON \
             -DCMAKE_INSTALL_PREFIX="$WS/vtk-install"
           cmake --build vtk-build --parallel
@@ -317,7 +324,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: vtk-install
-          key: vtk-${{ env.VTK_VERSION }}-qt${{ env.QT_VERSION }}-${{ matrix.os }}-${{ matrix.qt_arch }}-v1
+          key: vtk-${{ env.VTK_VERSION }}-qt${{ env.QT_VERSION }}-${{ matrix.os }}-${{ matrix.qt_arch }}-macos13-v2
 
       # ── Configure & build the desktop client ─────────────────────────────
       - name: Diagnose VTK install layout (Windows)
