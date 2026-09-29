@@ -155,12 +155,27 @@ void Settings::setPanoramicZoom(int zoom)
 //----------------------------------------------------------------------------
 // Visualization
 //----------------------------------------------------------------------------
+// Two million points is already more than a viewer draws comfortably, and the
+// service refuses a larger point subset outright. The old default was INT_MAX,
+// which is not a limit but the absence of one: opening a 21-million-row table
+// asked the service for every row of every field — 1.8 GB of arrays and 2.5 GB
+// of base64 — and killed it, which reached the user as "connection refused".
 const std::pair<QString, QVariant> Settings::MaxGlyphs = { u"Visualization/max_glyphs"_s,
-                                                           std::numeric_limits<int>::max() };
+                                                           2'000'000 };
 
 int Settings::getMaxGlyphs() const
 {
-    return this->settings->value(Settings::MaxGlyphs.first, Settings::MaxGlyphs.second).toInt();
+    const int stored =
+            this->settings->value(Settings::MaxGlyphs.first, Settings::MaxGlyphs.second).toInt();
+    // A stored INT_MAX is the OLD default, and it does not mean "two billion
+    // glyphs" — it means "no limit", which is what let a 21-million-row table
+    // ask the service for every row of every field and kill it. The value is
+    // written into the ini on first run, so everyone who has already used the
+    // app carries it: changing the compiled default alone would have fixed
+    // nothing for them. A non-positive value is equally meaningless.
+    if (stored <= 0 || stored >= std::numeric_limits<int>::max())
+        return Settings::MaxGlyphs.second.toInt();
+    return stored;
 }
 
 void Settings::setMaxGlyphs(int n)

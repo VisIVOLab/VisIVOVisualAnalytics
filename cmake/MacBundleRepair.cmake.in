@@ -199,6 +199,161 @@ if (EXISTS "${_helper}")
     endforeach ()
 endif ()
 
+# ── 1c. Nothing outside the bundle ──────────────────────────────────────────
+#
+# fixup_bundle copies the dependencies in but does not always finish the job on
+# the main executable, and what it leaves behind is invisible on the machine
+# that built it:
+#
+#   * the executable asked for @rpath/QtConcurrent.framework/…,
+#     @rpath/libvtkCommonCore-….dylib and @rpath/libdatachannel.0.dylib while
+#     carrying NO bundle-relative rpath — only /opt/Qt/6.11.1/macos/lib,
+#     /opt/VTK/…/lib, /opt/homebrew/lib and the libdatachannel build directory.
+#     dyld found them there, so the app started here and nowhere else: on a
+#     colleague's Mac it died with "Library not loaded: @rpath/QtConcurrent…",
+#     naming paths that exist only on the developer's machine.
+#
+#   * four Homebrew libraries (cfitsio, and three from ffmpeg) were still
+#     referenced by absolute path although their copies were sitting in
+#     Contents/Frameworks.
+#
+# Both are repaired here, and then the whole bundle is VERIFIED: a single
+# remaining external reference fails the install. Nothing checked before, which
+# is how three releases shipped that only ran on one Mac.
+
+# The external dependencies of one Mach-O file, or an empty list.
+#
+# Two things must not be mistaken for leaks. The FIRST line of `otool -L` is the
+# file's own install name, not a dependency. And the staging tree itself lives
+# under a developer path — /Users/…/dist-mac/… — so every in-bundle reference
+# matches an "outside" pattern unless the bundle's own prefix is excluded
+# first. Both caught this check out on its first run.
+function (visivo_external_deps _out _file)
+    set(${_out} "" PARENT_SCOPE)
+    execute_process(COMMAND otool -L "${_file}"
+            OUTPUT_VARIABLE _deps ERROR_QUIET RESULT_VARIABLE _rc)
+    if (NOT _rc EQUAL 0)
+        return ()          # not Mach-O
+    endif ()
+    string(REPLACE "\n" ";" _lines "${_deps}")
+    set(_found "")
+    set(_index 0)
+    foreach (_line IN LISTS _lines)
+        math(EXPR _index "${_index} + 1")
+        if (_index LESS_EQUAL 2)
+            continue ()    # "<path>:" header, then the install name
+        endif ()
+        string(REGEX MATCH "^\t(/opt/[^ ]+|/usr/local/[^ ]+|/Users/[^ ]+)" _m "${_line}")
+        if (NOT _m)
+            continue ()
+        endif ()
+        set(_dep "${CMAKE_MATCH_1}")
+        string(FIND "${_dep}" "${_app}" _inside)
+        if (_inside EQUAL 0)
+            continue ()    # already points into the bundle
+        endif ()
+        list(APPEND _found "${_dep}")
+    endforeach ()
+    set(${_out} "${_found}" PARENT_SCOPE)
+endfunction ()
+
+set(_exe "${_app}/Contents/MacOS/@PROJECT_NAME@")
+set(_frameworks "${_app}/Contents/Frameworks")
+
+# Every Mach-O in the bundle, so the repair and the verification cover the same
+# set. `file(GLOB_RECURSE)` would also list scripts and data; the loop filters
+# by asking otool, which fails on anything that is not Mach-O.
+file(GLOB_RECURSE _all_files "${_app}/*")
+
+# ── the bundle-relative rpath the executable was missing ────────────────────
+execute_process(COMMAND otool -l "${_exe}" OUTPUT_VARIABLE _exe_lc)
+if (NOT _exe_lc MATCHES "path @executable_path/\\.\\./Frameworks \\(offset")
+    execute_process(
+            COMMAND install_name_tool -add_rpath "@executable_path/../Frameworks" "${_exe}"
+            RESULT_VARIABLE _rc ERROR_VARIABLE _err)
+    if (NOT _rc EQUAL 0)
+        message(FATAL_ERROR "could not add the bundle rpath to the executable: ${_err}")
+    endif ()
+    message(STATUS "Bundle repair: added @executable_path/../Frameworks to the executable")
+endif ()
+
+# ── absolute references → the copy already in Contents/Frameworks ───────────
+set(_rewritten 0)
+foreach (_file IN LISTS _all_files)
+    if (IS_DIRECTORY "${_file}" OR IS_SYMLINK "${_file}")
+        continue ()
+    endif ()
+    visivo_external_deps(_externals "${_file}")
+    foreach (_dep IN LISTS _externals)
+        get_filename_component(_name "${_dep}" NAME)
+        if (NOT EXISTS "${_frameworks}/${_name}")
+            message(FATAL_ERROR
+                    "${_file} depends on ${_dep}, which is outside the bundle and has no copy "
+                    "in Contents/Frameworks. The app would not start on a machine without it.")
+        endif ()
+        execute_process(
+                COMMAND install_name_tool -change "${_dep}"
+                        "@executable_path/../Frameworks/${_name}" "${_file}"
+                RESULT_VARIABLE _rc ERROR_VARIABLE _err)
+        if (NOT _rc EQUAL 0)
+            message(FATAL_ERROR "could not rewrite ${_dep} in ${_file}: ${_err}")
+        endif ()
+        math(EXPR _rewritten "${_rewritten} + 1")
+    endforeach ()
+endforeach ()
+message(STATUS "Bundle repair: rewrote ${_rewritten} absolute dependency reference(s)")
+
+# ── rpaths that point outside the bundle ────────────────────────────────────
+#
+# Deleted rather than left harmless: they are what let the missing
+# bundle-relative rpath go unnoticed, because dyld kept finding the libraries
+# in the developer's own directories.
+set(_dropped 0)
+foreach (_file IN LISTS _all_files)
+    if (IS_DIRECTORY "${_file}" OR IS_SYMLINK "${_file}")
+        continue ()
+    endif ()
+    execute_process(COMMAND otool -l "${_file}"
+            OUTPUT_VARIABLE _lc ERROR_QUIET RESULT_VARIABLE _rc)
+    if (NOT _rc EQUAL 0)
+        continue ()
+    endif ()
+    string(REGEX MATCHALL "path (/opt/[^ ]+|/usr/local/[^ ]+|/Users/[^ ]+) \\(offset"
+           _bad_rpaths "${_lc}")
+    foreach (_entry IN LISTS _bad_rpaths)
+        string(REGEX REPLACE "^path (.*) \\(offset$" "\\1" _rp "${_entry}")
+        execute_process(
+                COMMAND install_name_tool -delete_rpath "${_rp}" "${_file}"
+                RESULT_VARIABLE _rc ERROR_VARIABLE _err)
+        if (NOT _rc EQUAL 0)
+            message(FATAL_ERROR "could not drop the external rpath ${_rp} from ${_file}: ${_err}")
+        endif ()
+        math(EXPR _dropped "${_dropped} + 1")
+    endforeach ()
+endforeach ()
+message(STATUS "Bundle repair: dropped ${_dropped} rpath(s) pointing outside the bundle")
+
+# ── verification: one external reference is a failed install ────────────────
+set(_leaks "")
+foreach (_file IN LISTS _all_files)
+    if (IS_DIRECTORY "${_file}" OR IS_SYMLINK "${_file}")
+        continue ()
+    endif ()
+    # The Python runtime ships third-party wheels whose own rpaths name the
+    # machines they were built on (Pillow, SciPy). Those are inert — the
+    # libraries resolve through @loader_path — so only LOAD commands count.
+    visivo_external_deps(_externals "${_file}")
+    foreach (_dep IN LISTS _externals)
+        string(APPEND _leaks "\n    ${_file}\n      -> ${_dep}")
+    endforeach ()
+endforeach ()
+if (NOT _leaks STREQUAL "")
+    message(FATAL_ERROR
+            "the bundle still depends on files outside itself, so it would only run on "
+            "this machine:${_leaks}")
+endif ()
+message(STATUS "Bundle repair: no dependency outside the bundle")
+
 # ── 2. The signature ─────────────────────────────────────────────────────────
 
 execute_process(

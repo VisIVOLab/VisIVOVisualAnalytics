@@ -3522,15 +3522,15 @@ void vtkWindowCube::updateInfoStatsPage()
     switch (this->remoteCubeDisplayState) {
     case RemoteCubeDisplayState::Preview:
         d.loadStateText        = u"Preview proxy"_s;
-        d.loadStateStyleSheet  = u"QLabel { font-size: 9px; color: #E8A840; }"_s;
+        d.loadStateStyleSheet  = u"QLabel { font-size: 9px; color: %1; }"_s.arg(QLatin1StringView(VisivoTheme::kWarning()));
         break;
     case RemoteCubeDisplayState::LoadingFullResolution:
         d.loadStateText        = u"Loading full resolution\u2026"_s;
-        d.loadStateStyleSheet  = u"QLabel { font-size: 9px; color: #E8A840; font-style: italic; }"_s;
+        d.loadStateStyleSheet  = u"QLabel { font-size: 9px; color: %1; font-style: italic; }"_s.arg(QLatin1StringView(VisivoTheme::kWarning()));
         break;
     case RemoteCubeDisplayState::FullResolution:
         d.loadStateText        = u"Full resolution"_s;
-        d.loadStateStyleSheet  = u"QLabel { font-size: 9px; color: #7AAABB; }"_s;
+        d.loadStateStyleSheet  = u"QLabel { font-size: 9px; color: %1; }"_s.arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
         break;
     }
 

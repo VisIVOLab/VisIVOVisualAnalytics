@@ -124,7 +124,8 @@ struct VbtOpenTaskResult
 
 static VbtOpenTaskResult runVbtOpenTask(const QString &headerPath,
                                         const QString &backendUrl,
-                                        const QString &backendToken)
+                                        const QString &backendToken,
+                                        int maxPointRows)
 {
     VbtOpenTaskResult out;
     out.backendUrl = backendUrl;
@@ -167,7 +168,11 @@ static VbtOpenTaskResult runVbtOpenTask(const QString &headerPath,
             return out;
         }
     } else {
-        out.subsetResult = client.requestVbtSubset(out.openResult.datasetId);
+        // Capped, not "everything": a point table is returned as one float64
+        // column per field, so asking for all rows of a large table costs more
+        // than the service has. Without a cap a 21-million-row file killed it,
+        // and the client reported "connection refused".
+        out.subsetResult = client.requestVbtSubset(out.openResult.datasetId, maxPointRows);
         if (!out.subsetResult.valid) {
             out.error = out.subsetResult.error.isEmpty()
                     ? QStringLiteral("Backend returned no table data.")
@@ -180,6 +185,21 @@ static VbtOpenTaskResult runVbtOpenTask(const QString &headerPath,
         }
     }
 
+    // A truncated table must SAY it is truncated: showing two million of
+    // twenty-one million particles as if they were the dataset is a quiet way
+    // to draw a wrong conclusion.
+    const bool truncated = out.openResult.kind != QStringLiteral("volume")
+            && out.subsetResult.numRows > 0
+            && out.subsetResult.numRows < out.openResult.numRows;
+    if (truncated) {
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Warning, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
+                QStringLiteral("Showing %1 of %2 rows — the rest is not loaded. "
+                               "Raise Settings ▸ Visualization ▸ Max glyphs to see more.")
+                        .arg(out.subsetResult.numRows)
+                        .arg(out.openResult.numRows),
+                out.openResult.datasetId, out.sessionId, QStringLiteral("open"));
+    }
     DiagnosticsManager::instance()->publish(
             DiagnosticsLevel::Info, DiagnosticsCategory::Remote, QStringLiteral("VBT"),
             QStringLiteral("Opened %1 (%2 rows, %3 fields).")
@@ -1249,6 +1269,10 @@ void MainWindow::doOpenVbtPath(const QString &headerPath)
     this->updateSampActions();
     const QString backendUrl   = this->settings->getBackendUrl();
     const QString backendToken = this->settings->getBackendToken();
+    // Read here, on the UI thread: the task below runs on a worker and must not
+    // touch Settings. A point table larger than this is truncated, and the task
+    // says so rather than letting a partial cloud pass for the whole dataset.
+    const int maxPointRows = std::max(1, this->settings->getMaxGlyphs());
 
     // Disable the action while loading to prevent double-submit
     if (ui->actionOpenVbt) {
@@ -1308,5 +1332,6 @@ void MainWindow::doOpenVbtPath(const QString &headerPath)
             });
 
     watcher->setFuture(
-            QtConcurrent::run(&runVbtOpenTask, headerPath, backendUrl, backendToken));
+            QtConcurrent::run(&runVbtOpenTask, headerPath, backendUrl, backendToken,
+                              maxPointRows));
 }

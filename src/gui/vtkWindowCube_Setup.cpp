@@ -779,23 +779,34 @@ void vtkWindowCube::setupWorkspaceDocks()
             u"  border-bottom: 1px solid rgba(217, 119, 6, 0.40);"
             u"}"
             u"QFrame#localRecommendRemoteBanner QLabel {"
-            u"  color: #f3f4f6; padding: 4px 8px;"
+            u"  color: %1; padding: 4px 8px;"
             u"}"
             u"QFrame#localRecommendRemoteBanner QPushButton {"
-            u"  background: rgba(255, 255, 255, 0.14);"
-            u"  border: 1px solid rgba(255, 255, 255, 0.25);"
-            u"  border-radius: 3px; color: #f3f4f6;"
+            u"  background: %2;"
+            u"  border: 1px solid %3;"
+            u"  border-radius: 3px; color: %1;"
             u"  padding: 2px 10px; font-weight: 600;"
             u"}"
             u"QFrame#localRecommendRemoteBanner QPushButton:hover {"
-            u"  background: rgba(255, 255, 255, 0.22);"
+            u"  background: %4;"
             u"}"
             u"QFrame#localRecommendRemoteBanner QToolButton {"
-            u"  border: none; color: #f3f4f6; padding: 0 8px; font-weight: 600;"
+            u"  border: none; color: %1; padding: 0 8px; font-weight: 600;"
             u"}"
             u"QFrame#localRecommendRemoteBanner QToolButton:hover {"
-            u"  background: rgba(255, 255, 255, 0.10); border-radius: 3px;"
-            u"}"_s);
+            u"  background: %5; border-radius: 3px;"
+            u"}"_s
+                    // Same reason as the sibling banner: a translucent fill plus
+                    // fixed near-white text only works over a dark surface.
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurface()),
+                         VisivoTheme::isDark() ? u"rgba(255, 255, 255, 0.14)"_s
+                                               : u"rgba(0, 0, 0, 0.07)"_s,
+                         VisivoTheme::isDark() ? u"rgba(255, 255, 255, 0.25)"_s
+                                               : u"rgba(0, 0, 0, 0.18)"_s,
+                         VisivoTheme::isDark() ? u"rgba(255, 255, 255, 0.22)"_s
+                                               : u"rgba(0, 0, 0, 0.12)"_s,
+                         VisivoTheme::isDark() ? u"rgba(255, 255, 255, 0.10)"_s
+                                               : u"rgba(0, 0, 0, 0.06)"_s));
     auto *recLayout = new QHBoxLayout(this->m_localRecommendRemoteBanner);
     recLayout->setContentsMargins(8, 2, 4, 2);
     recLayout->setSpacing(8);
@@ -870,13 +881,19 @@ void vtkWindowCube::setupWorkspaceDocks()
             u"      stop:1 rgba(217, 119, 6, 0.16));"
             u"  border-bottom: 1px solid rgba(217, 119, 6, 0.40);"
             u"}"
-            u"QFrame#remoteRenderBanner QLabel { color: #f3f4f6; padding: 4px 8px; }"
+            u"QFrame#remoteRenderBanner QLabel { color: %1; padding: 4px 8px; }"
             u"QFrame#remoteRenderBanner QToolButton {"
-            u"  border: none; color: #f3f4f6; padding: 0 8px; font-weight: 600;"
+            u"  border: none; color: %1; padding: 0 8px; font-weight: 600;"
             u"}"
             u"QFrame#remoteRenderBanner QToolButton:hover {"
-            u"  background: rgba(255, 255, 255, 0.10); border-radius: 3px;"
-            u"}"_s);
+            u"  background: %2; border-radius: 3px;"
+            u"}"_s
+                    // The banner's amber is translucent, so on a light surface it
+                    // composites pale — near-white text on it is invisible. Both
+                    // follow the theme instead.
+                    .arg(QLatin1StringView(VisivoTheme::kOnSurface()),
+                         VisivoTheme::isDark() ? u"rgba(255, 255, 255, 0.10)"_s
+                                               : u"rgba(0, 0, 0, 0.06)"_s));
     auto *bannerLayout = new QHBoxLayout(banner);
     bannerLayout->setContentsMargins(8, 2, 4, 2);
     bannerLayout->setSpacing(8);

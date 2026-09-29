@@ -753,10 +753,10 @@ def _parse_vbt_header(head_path: Path) -> dict:
     scalar_str = lines[0].lower()
     if scalar_str in ("f", "float"):
         scalar_type = "float32"
-        np_endian_code = "<f4"
+        np_itemcode = "f4"
     elif scalar_str in ("d", "double"):
         scalar_type = "float64"
-        np_endian_code = "<f8"
+        np_itemcode = "f8"
     else:
         raise ValueError(f"Unknown VBT scalar type: '{lines[0]}'")
 
@@ -794,6 +794,13 @@ def _parse_vbt_header(head_path: Path) -> dict:
         file_endian = "big"
     else:
         raise ValueError(f"Unknown VBT endian: '{lines[3]}'")
+
+    # The byte order was parsed and then thrown away: the numpy code was fixed
+    # to "<" by the scalar type above, so EVERY VBT was read as little-endian
+    # and a big-endian one came back as garbage — NaNs and values at the
+    # float32 limit, with nothing to say why. The header line exists precisely
+    # to be obeyed.
+    np_endian_code = ("<" if file_endian == "little" else ">") + np_itemcode
 
     if len(lines) < 4 + field_count:
         raise ValueError(

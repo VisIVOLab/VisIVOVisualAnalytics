@@ -92,13 +92,6 @@ QToolButton *CubeUiAssembler::makeSidebarButton(const QString &label)
     return makeSidebarToolButton(label);
 }
 
-static const QString kInfoCardStyle =
-        u"QFrame {"
-        u"  background: rgba(255,255,255,0.04);"
-        u"  border: 1px solid rgba(4,138,191,0.18);"
-        u"  border-radius: 4px;"
-        u"}"_s;
-
 // ── Inspector (sidebar "Inspector" page) — visual tokens matching the
 // ── Observatory Console design: flat sections separated by 1px dividers,
 // ── KV rows with muted label / monospace value, optional file badge header.
@@ -181,9 +174,6 @@ static QString kInspectorBadgeStyle()
             "  border-radius: 3px;"
             "}");
 }
-
-static const QString kInfoRoStyle =
-        u"QLineEdit[readOnly='true'] { color: #7AAABB; }"_s;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction
@@ -546,7 +536,8 @@ QWidget *CubeUiAssembler::build2dViewPage()
         auto *info = new QLabel(
                 u"No moment map available.\nOpen Compute \u2192 Moment Map\nto generate one."_s);
         info->setWordWrap(true);
-        info->setStyleSheet(u"QLabel { color: #7AAABB; font-size: 9px; }"_s);
+        info->setStyleSheet(u"QLabel { color: %1; font-size: 9px; }"_s
+            .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
         cl->addWidget(info);
         m_momentInfoLabel = info;
 
@@ -1037,9 +1028,9 @@ void CubeUiAssembler::updateMomentCard(const MomentCardData &data)
     if (!lbl)
         return;
 
-    static const QString infoColor  = u"color: #7AAABB;"_s;
-    static const QString busyColor  = u"color: #E8A840;"_s;
-    static const QString errorColor = u"color: #CC6060;"_s;
+    const QString infoColor  = u"color: %1;"_s.arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant()));
+    const QString busyColor  = u"color: %1;"_s.arg(QLatin1StringView(VisivoTheme::kWarning()));
+    const QString errorColor = u"color: %1;"_s.arg(QLatin1StringView(VisivoTheme::kError()));
 
     switch (data.state) {
     case MomentCardData::State::NoMoment:

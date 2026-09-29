@@ -104,6 +104,12 @@ async def vbt_open(
         spacing=header["spacing"] or [],
     )
 
+#: Budget for one point-table reply, encoded. 256 MiB is already far past what
+#: a viewer can draw as glyphs; the point is to fail with a sentence instead of
+#: with a dead process.
+_POINT_SUBSET_LIMIT_BYTES = 256 * 1024 * 1024
+
+
 @router.post("/v1/vbt/subset", response_model=VbtSubsetResponse, tags=["vbt"])
 async def vbt_subset(
     request: VbtSubsetRequest,
@@ -134,6 +140,31 @@ async def vbt_subset(
     if header["kind"] == "point":
         max_rows = request.max_rows if request.max_rows > 0 else num_rows
         max_rows = min(max_rows, num_rows)
+
+        # A point table is returned as one base64 float64 column per field, so
+        # the reply costs 8 bytes per value on the wire plus a third again for
+        # the encoding — and the arrays, the encoded strings and the serialised
+        # JSON are all alive at once.
+        #
+        # max_rows = 0 means "everything", and the desktop client sends exactly
+        # that. On a 21-million-row, 11-field table (mergerSTAR.bin, a real
+        # user file) that is 1.8 GB of arrays and 2.5 GB of base64 before
+        # serialisation: the process is killed, and the client reports
+        # "connection refused" — which points at the network rather than at the
+        # request that caused it. Refusing with the number of rows that DO fit
+        # turns an unexplained death into an answer the caller can act on.
+        payload_bytes = max_rows * len(field_names) * 8 * 4 // 3
+        if payload_bytes > _POINT_SUBSET_LIMIT_BYTES:
+            fits = (_POINT_SUBSET_LIMIT_BYTES * 3 // 4) // (len(field_names) * 8)
+            return VbtSubsetResponse(
+                valid=False,
+                error=(
+                    f"This subset would be {payload_bytes / (1 << 20):.0f} MiB on the wire "
+                    f"({max_rows} rows x {len(field_names)} fields), over the "
+                    f"{_POINT_SUBSET_LIMIT_BYTES >> 20} MiB limit. Ask for at most "
+                    f"{fits} rows via max_rows."
+                ),
+            )
         columns: dict[str, str] = {}
         for i, fname in enumerate(field_names):
             # np.array() copies the memmap slice so the wire bytes are a plain ndarray.
