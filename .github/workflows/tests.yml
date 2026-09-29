@@ -6,6 +6,13 @@ name: tests
 on:
   push:
     branches: ["**"]
+    # A documentation-only push cannot break a test, and the run still costs
+    # runner minutes. Both jobs are Linux (billed 1x, against 10x for macOS),
+    # so this is a small saving — but a free one.
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - ".readthedocs.yaml"
   pull_request:
   workflow_dispatch:
 

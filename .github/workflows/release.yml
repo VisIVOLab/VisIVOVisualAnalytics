@@ -46,6 +46,21 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: >-
+          Which platforms to build. A macOS runner is billed at 10x the minutes
+          of a Linux one and Windows at 2x, so a full four-platform run costs
+          far more than the one artefact you usually want. A tag push always
+          builds everything.
+        type: choice
+        default: macos-arm
+        options:
+          - macos-arm
+          - macos-both
+          - windows
+          - linux
+          - all
 
 env:
   QT_VERSION: '6.10.1'
@@ -58,40 +73,51 @@ env:
   CFITSIO_VERSION: '4.6.3'  # Linux: built from source. macOS: from Homebrew.
 
 jobs:
+  # Which platforms this run builds. A few seconds on a Linux runner, so that a
+  # manual build does not have to pay for three artefacts nobody asked for:
+  # GitHub cannot filter `matrix.include` from an input declaratively, so the
+  # matrix is emitted here instead. A tag push ignores the input and builds
+  # everything, because a published release has to be complete.
+  setup:
+    name: choose platforms
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        shell: bash
+        env:
+          WANTED: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'all' }}
+        run: |
+          set -euo pipefail
+          all='[
+            {"os":"ubuntu-22.04","name":"linux-x86_64","qt_host":"linux",
+             "qt_arch":"linux_gcc_64","py_triple":"x86_64-unknown-linux-gnu"},
+            {"os":"macos-15","name":"macos-arm64","qt_host":"mac",
+             "qt_arch":"clang_64","py_triple":"aarch64-apple-darwin"},
+            {"os":"macos-15-intel","name":"macos-x86_64","qt_host":"mac",
+             "qt_arch":"clang_64","py_triple":"x86_64-apple-darwin"},
+            {"os":"windows-2022","name":"windows-x86_64","qt_host":"windows",
+             "qt_arch":"win64_msvc2022_64","py_triple":"x86_64-pc-windows-msvc"}
+          ]'
+          case "$WANTED" in
+            macos-arm)  keep='["macos-arm64"]' ;;
+            macos-both) keep='["macos-arm64","macos-x86_64"]' ;;
+            windows)    keep='["windows-x86_64"]' ;;
+            linux)      keep='["linux-x86_64"]' ;;
+            *)          keep='null' ;;
+          esac
+          include=$(printf '%s' "$all" | jq -c --argjson keep "$keep" \
+            'if $keep == null then . else map(select(.name as $n | $keep | index($n))) end')
+          echo "building: $(printf '%s' "$include" | jq -r '[.[].name] | join(", ")')"
+          printf 'matrix={"include":%s}\n' "$include" >> "$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.name }}
+    needs: setup
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            name: linux-x86_64
-            qt_host: linux
-            qt_arch: linux_gcc_64
-            py_triple: x86_64-unknown-linux-gnu
-          # Runner labels checked against actions/runner-images: macos-13 has been
-          # retired and macos-14 is deprecated, so both would fail or age out.
-          # ubuntu-22.04 is kept deliberately — the oldest supported glibc makes
-          # the most portable AppImage.
-          - os: macos-15
-            name: macos-arm64
-            qt_host: mac
-            qt_arch: clang_64
-            py_triple: aarch64-apple-darwin
-          # Intel Macs: a separate runner, not a universal binary — VTK is built
-          # from source per runner and lipo-ing two VTK trees is far more work
-          # than one more matrix entry.
-          - os: macos-15-intel
-            name: macos-x86_64
-            qt_host: mac
-            qt_arch: clang_64
-            py_triple: x86_64-apple-darwin
-          - os: windows-2022
-            name: windows-x86_64
-            qt_host: windows
-            qt_arch: win64_msvc2022_64
-            py_triple: x86_64-pc-windows-msvc
-
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
 
     steps:
