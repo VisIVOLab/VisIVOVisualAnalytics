@@ -274,6 +274,72 @@ class ScientificFitsDataset:
     def _axis_float(self, key: str, default: float = 0.0) -> float:
         return float(self.header.get(key, default))
 
+    def _cdelt(self, axis: int) -> float:
+        """Degrees (or native units) per pixel along `axis`, CD matrix included.
+
+        ``CDELT`` is optional in FITS: a header may express the whole linear
+        transformation as a ``CD`` matrix instead, and GLIMPSE mosaics — and so
+        every VLKB cutout of one — do exactly that. Reading only ``CDELT`` gave
+        those images a scale of 1.0 **degree** per pixel, which is not a small
+        error: a 0.6° cutout was placed across 1800° of longitude, the axes were
+        labelled with numbers near -3861, and every catalogue query built from
+        those corners asked the VLKB about a region that does not exist. That is
+        the "the coordinates are wrong and compact sources find nothing" pair;
+        they are one defect.
+
+        For the celestial axes the scale of axis *j* is the norm of **column j**
+        of the matrix, not its diagonal element — a 90°-rotated field has zeros
+        on the diagonal and perfectly square pixels. The sign is the orientation
+        and has to be carried: a negative determinant means the longitude axis
+        runs backwards, which is the usual case for sky images.
+        """
+        def keyword(name: str) -> float | None:
+            raw = self.header.get(name)
+            if raw is None:
+                return None
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                return None
+            return value if np.isfinite(value) and value != 0.0 else None
+
+        def cd(i: int, j: int) -> float | None:
+            raw = self.header.get(f"CD{i}_{j}")
+            if raw is None:
+                return None
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                return None
+            return value if np.isfinite(value) else None
+
+        # When both are written the CD matrix wins, which is what astropy does
+        # and so what the rest of this class already assumes. A header carrying
+        # both is malformed — the standard makes them exclusive — but they exist,
+        # and agreeing with the WCS object beside us matters more than agreeing
+        # with the keyword that happens to be read first.
+        if axis in (1, 2):
+            matrix = [[cd(i, j) for j in (1, 2)] for i in (1, 2)]
+            if any(element is not None for row in matrix for element in row):
+                m = [[element or 0.0 for element in row] for row in matrix]
+                scale = float(np.hypot(m[0][axis - 1], m[1][axis - 1]))
+                if scale > 0.0:
+                    determinant = m[0][0] * m[1][1] - m[0][1] * m[1][0]
+                    # Convention: the handedness flip is attributed to axis 1,
+                    # which is how a negative CDELT1 is written when CDELT is.
+                    if axis == 1 and determinant < 0.0:
+                        return -scale
+                    return scale
+
+        written = keyword(f"CDELT{axis}")
+        if written is not None:
+            return written
+
+        diagonal = cd(axis, axis)
+        if diagonal is not None and diagonal != 0.0:
+            return diagonal
+        return 1.0
+
     def _wcs_ref_pixel_sky(self, pix_x: float, pix_y: float) -> list[float] | None:
         """Return [lon, lat] in degrees (native WCS frame) for a 0-indexed pixel via astropy."""
         if self.wcs is None:
@@ -319,7 +385,7 @@ class ScientificFitsDataset:
             eff2 = float(sky_p1y[1] - sky_ref[1])
             if not (np.isfinite(eff1) and np.isfinite(eff2)):
                 return None
-            return [eff1, eff2, float(self._axis_float("CDELT3", 1.0))]
+            return [eff1, eff2, self._cdelt(3)]
         except Exception as exc:
             logger.warning("[fits] effective_cdelt failed for path=%s: %s", self.path, exc)
             return None
@@ -380,7 +446,7 @@ class ScientificFitsDataset:
         ))
 
     def geometry_metadata(self) -> dict[str, Any]:
-        spacing = [self._axis_float("CDELT1", 1.0), self._axis_float("CDELT2", 1.0), self._axis_float("CDELT3", 1.0)]
+        spacing = [self._cdelt(1), self._cdelt(2), self._cdelt(3)]
         origin = [
             self._axis_float("CRVAL1") - spacing[0] * (self._axis_float("CRPIX1", 1.0) - 1.0),
             self._axis_float("CRVAL2") - spacing[1] * (self._axis_float("CRPIX2", 1.0) - 1.0),
@@ -638,9 +704,8 @@ class ScientificFitsDataset:
                     scales_deg = proj_plane_pixel_scales(celestial)
                     return float(np.mean(np.abs(scales_deg))) * 3600.0
             except Exception as exc:
-                logger.warning("[fits] proj_plane_pixel_scales failed for path=%s: %s. Using CDELT1 fallback.", self.path, exc)
-        cdelt1_deg = abs(float(self.header.get("CDELT1", 1.0)))
-        return cdelt1_deg * 3600.0
+                logger.warning("[fits] proj_plane_pixel_scales failed for path=%s: %s. Using CDELT/CD fallback.", self.path, exc)
+        return abs(self._cdelt(1)) * 3600.0
 
     def spatial_pixel_area_arcsec2(self) -> float:
         """EXACT pixel solid angle in arcsec² — the quantity flux/N_HI/M_HI need.
@@ -648,7 +713,7 @@ class ScientificFitsDataset:
         Uses astropy ``proj_plane_pixel_area`` on the celestial sub-WCS, which is
         the true parallelogram area (|det| of the local CD matrix) and so is
         correct for non-square AND skewed/rotated pixels. Falls back to
-        |CDELT1·CDELT2|·3600² from the header when the WCS is unusable.
+        the header's own CDELT (or CD matrix) when the WCS is unusable.
         """
         if self.wcs is not None:
             try:
@@ -659,9 +724,7 @@ class ScientificFitsDataset:
                     return float(abs(proj_plane_pixel_area(celestial))) * 3600.0 * 3600.0
             except Exception as exc:
                 logger.warning("[fits] proj_plane_pixel_area failed for path=%s: %s. Using CDELT fallback.", self.path, exc)
-        c1 = abs(float(self.header.get("CDELT1", 1.0)))
-        c2 = abs(float(self.header.get("CDELT2", c1)))
-        return c1 * c2 * 3600.0 * 3600.0
+        return abs(self._cdelt(1)) * abs(self._cdelt(2)) * 3600.0 * 3600.0
 
     # ── Stokes axis detection ─────────────────────────────────────────────────
 
