@@ -1703,6 +1703,13 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                      });
     nameLayerSettings();
     QObject::connect(this->layers, &LayerListModel::dataChanged, this, &vtkWindowImage::vtkRender);
+    // dataChanged alone is not enough: it covers a layer's *properties*, not
+    // the structure. Reordering the stack by drag and drop changes what is
+    // drawn on top without changing any row's data, and a master replacement
+    // resets the model — neither emits dataChanged, so the scene stayed as it
+    // was until an unrelated event (a click on the VTK widget) forced a render.
+    QObject::connect(this->layers, &LayerListModel::rowsMoved, this, &vtkWindowImage::vtkRender);
+    QObject::connect(this->layers, &LayerListModel::modelReset, this, &vtkWindowImage::vtkRender);
     // Keep a layer always selected: if the current row is cleared while layers
     // remain, re-select the first one (deferred to avoid reentrancy).
     QObject::connect(ui->listLayer->selectionModel(), &QItemSelectionModel::currentChanged, this,
