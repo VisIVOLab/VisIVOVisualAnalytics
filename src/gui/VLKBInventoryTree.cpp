@@ -2,6 +2,7 @@
 #include "vtkWindowImage.h"
 
 #include <functional>
+#include <utility>
 #include <limits>
 
 #include <QFont>
@@ -10,6 +11,7 @@
 #include <QCheckBox>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
 #include <QModelIndex>
 #include <QPushButton>
@@ -40,6 +42,29 @@ vtkWindowImage *VLKBInventoryTree::linkedImageWindow() const
 void VLKBInventoryTree::setLinkedImageWindow(vtkWindowImage *win)
 {
     m_linkedImageWindow = win;
+    // The claim is over the moment the window exists: anything arriving from
+    // now on can be added straight to it.
+    if (win)
+        m_imageWindowPending = false;
+}
+
+bool VLKBInventoryTree::claimImageWindow()
+{
+    if (m_imageWindowPending || linkedImageWindow())
+        return false;
+    m_imageWindowPending = true;
+    return true;
+}
+
+void VLKBInventoryTree::queuePendingLayer(const QString &backendPath, const QString &displayName)
+{
+    m_pendingLayers.append({ backendPath, displayName });
+}
+
+QList<QPair<QString, QString>> VLKBInventoryTree::takePendingLayers()
+{
+    m_imageWindowPending = false;
+    return std::exchange(m_pendingLayers, {});
 }
 
 // ── Constructor ───────────────────────────────────────────────────────────────
@@ -115,6 +140,12 @@ void VLKBInventoryTree::buildUi(const QString &posCutout)
     QObject::connect(m_tree, &QAbstractItemView::doubleClicked,
                      this,   &VLKBInventoryTree::onDoubleClicked);
 
+    // Right-click: the two actions that are not the default one — a viewer of
+    // its own, and downloading without opening.
+    m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
+    QObject::connect(m_tree, &QTreeView::customContextMenuRequested,
+                     this,   &VLKBInventoryTree::showRowContextMenu);
+
     // "Green = fully covers the region" was information you could only act on
     // by eye, over a list of 151 rows. Now it filters.
     m_coverageOnly = new QCheckBox(u"Only datasets that fully cover the region"_s, this);
@@ -142,7 +173,12 @@ void VLKBInventoryTree::buildUi(const QString &posCutout)
 
     // Action row: explicit Open button (double-click still works).
     auto *actions = new QHBoxLayout;
-    auto *hint = new QLabel(u"Double-click a dataset, or:"_s, this);
+    // Not "Double-click a dataset, or:" — that reads as a sentence someone cut
+    // off, and it does not say that the thing to click is the button beside it.
+    auto *hint = new QLabel(
+            u"Double-click a dataset to open it, or select several and use the buttons. "
+            u"Right-click for more."_s, this);
+    hint->setWordWrap(true);
     hint->setStyleSheet(u"color: #8090a0; font-size: 10px; font-style: italic;"_s);
     m_openButton = new QPushButton(u"Download && Open"_s, this);
     m_openButton->setEnabled(false);
@@ -418,6 +454,47 @@ void VLKBInventoryTree::onSelectionChanged()
         m_batchButton->setText(datasets > 1 ? u"Request as batch (%1)…"_s.arg(datasets)
                                             : u"Request as batch…"_s);
     }
+    showFootprintFor(selected.size() == 1 ? selected.first() : QModelIndex{});
+}
+
+// Outline the clicked dataset's sky coverage on the linked image, so its
+// position is visible before anything is downloaded. Only for a single
+// selection: several outlines at once say less than one.
+void VLKBInventoryTree::showFootprintFor(const QModelIndex &idx)
+{
+    auto *win = linkedImageWindow();
+    if (!win)
+        return;                 // nothing to draw on yet
+    if (!idx.isValid()) {
+        win->clearInventoryFootprint();
+        return;
+    }
+    auto *item = m_model->itemFromIndex(idx);
+    const QUuid id = item ? item->data(Qt::UserRole).toUuid() : QUuid{};
+    if (!m_cutouts.contains(id)) {
+        win->clearInventoryFootprint();   // a group row
+        return;
+    }
+
+    // s_region_galactic is "<shape> <frame> l1 b1 l2 b2 …": the first two tokens
+    // name the shape and the coordinate system, the rest are the corners.
+    const QStringList tok = m_cutouts.value(id).region_gal.split(u' ', Qt::SkipEmptyParts);
+    QVector<QPointF> corners;
+    for (int i = 2; i + 1 < tok.size(); i += 2) {
+        bool okL = false, okB = false;
+        const double l = tok.at(i).toDouble(&okL);
+        const double b = tok.at(i + 1).toDouble(&okB);
+        if (!okL || !okB) {
+            win->clearInventoryFootprint();
+            return;
+        }
+        corners.append(QPointF(l, b));
+    }
+    if (corners.size() < 3) {
+        win->clearInventoryFootprint();
+        return;
+    }
+    win->showInventoryFootprint(corners);
 }
 
 void VLKBInventoryTree::downloadSelected()
@@ -462,22 +539,20 @@ void VLKBInventoryTree::requestBatch()
     emit batchRequested(ids, m_posCutout, names);
 }
 
-void VLKBInventoryTree::requestCutout(const QModelIndex &idx)
+VLKBInventoryTree::RowRequest VLKBInventoryTree::rowRequest(const QModelIndex &idx) const
 {
+    RowRequest r;
     if (!idx.isValid())
-        return;
-
+        return r;
     const QUuid id = m_model->itemFromIndex(idx)->data(Qt::UserRole).toUuid();
-
     if (!m_cutouts.contains(id))
-        return;  // branch node — ignore
-
+        return r;            // branch node — no dataset behind it
     const Cutout &c = m_cutouts.value(id);
     if (c.ivoID.isEmpty())
-        return;
+        return r;
 
-    // Build a human-readable label: "Survey Transition" (e.g. "MAGPIS 20cm").
-    // Fall back to the ivoID tail if both fields are empty.
+    // A human-readable label: "Survey Transition" (e.g. "MAGPIS 20cm"), falling
+    // back to the ivoID tail when both fields are empty.
     QString displayName;
     if (!c.survey.isEmpty() || !c.transition.isEmpty()) {
         displayName = c.survey;
@@ -487,9 +562,58 @@ void VLKBInventoryTree::requestCutout(const QModelIndex &idx)
     } else {
         displayName = c.ivoID.section(u'/', -1);
     }
+    r.ivoID = c.ivoID;
+    r.pos = m_posCutout;
+    r.displayName = displayName.simplified();
+    r.type = c.type;
+    return r;
+}
 
-    noteCutoutStarted(displayName.simplified());
-    emit cutoutRequested(c.ivoID, m_posCutout, displayName.simplified(), c.type);
+void VLKBInventoryTree::requestCutout(const QModelIndex &idx)
+{
+    const RowRequest r = rowRequest(idx);
+    if (r.ivoID.isEmpty())
+        return;
+    noteCutoutStarted(r.displayName);
+    emit cutoutRequested(r.ivoID, r.pos, r.displayName, r.type);
+}
+
+void VLKBInventoryTree::showRowContextMenu(const QPoint &pos)
+{
+    const QModelIndex idx = m_tree->indexAt(pos);
+    const RowRequest r = rowRequest(idx);
+    if (r.ivoID.isEmpty())
+        return;              // a group row has nothing to act on
+
+    QMenu menu(this);
+    // Named after what they do, and ordered with the default first so the menu
+    // reads as "the usual thing, or these two".
+    QAction *asLayer = menu.addAction(
+            r.type == u"image"_s ? u"Open as a Layer"_s : u"Open"_s);
+    asLayer->setToolTip(u"Add to the shared viewer for this inventory — its datasets "
+                        u"all cover the same sky."_s);
+    QAction *ownWindow = menu.addAction(u"Open in a New Window"_s);
+    ownWindow->setEnabled(r.type == u"image"_s);
+    ownWindow->setToolTip(r.type == u"image"_s
+            ? u"A viewer of its own, for comparing two datasets side by side."_s
+            : u"Cubes always open in their own viewer."_s);
+    menu.addSeparator();
+    QAction *saveOnly = menu.addAction(u"Save File…"_s);
+    saveOnly->setToolTip(u"Download the cutout and keep the file, without opening it."_s);
+
+    QAction *chosen = menu.exec(m_tree->viewport()->mapToGlobal(pos));
+    if (!chosen)
+        return;
+    if (chosen == asLayer) {
+        noteCutoutStarted(r.displayName);
+        emit cutoutRequested(r.ivoID, r.pos, r.displayName, r.type);
+    } else if (chosen == ownWindow) {
+        noteCutoutStarted(r.displayName);
+        emit openInNewWindowRequested(r.ivoID, r.pos, r.displayName, r.type);
+    } else if (chosen == saveOnly) {
+        noteCutoutStarted(r.displayName);
+        emit saveFileRequested(r.ivoID, r.pos, r.displayName, r.type);
+    }
 }
 
 void VLKBInventoryTree::noteCutoutStarted(const QString &displayName)

@@ -64,6 +64,30 @@ public:
     /// Called by MainWindow after it creates a new vtkWindowImage for this session.
     void setLinkedImageWindow(vtkWindowImage *win);
 
+    // ── One window per inventory, not one per file ───────────────────────────
+    //
+    // The datasets in an inventory all cover the same patch of sky, so 2-D ones
+    // belong as LAYERS of a single viewer. They did not get that when several
+    // were downloaded at once: each cutout finishes independently, and the
+    // first one to arrive opens the window through a chain of BLOCKING backend
+    // calls. Those spin a nested event loop, which delivers the other
+    // completions while the window does not exist yet, so each of them opens
+    // one of its own. Downloading six pointings gave six windows; downloading
+    // them one after another gave one, because by then the window was there.
+    //
+    // The cure is to claim the window BEFORE the first blocking call and park
+    // the rest until it exists.
+
+    /// True once a viewer has been claimed for this inventory but is not open
+    /// yet. Set before any blocking work, so re-entrant completions see it.
+    bool imageWindowPending() const { return m_imageWindowPending; }
+    /// Claim the viewer. Returns false if somebody already has.
+    bool claimImageWindow();
+    /// Park a layer until the claimed window exists.
+    void queuePendingLayer(const QString &backendPath, const QString &displayName);
+    /// Hand over everything parked, and stop parking.
+    QList<QPair<QString, QString>> takePendingLayers();
+
 public slots:
     /// Called by whoever performs the fetch, so the dialog can stop saying it
     /// is waiting. @p ok false keeps the failed dataset's name visible.
@@ -78,6 +102,18 @@ signals:
     void cutoutRequested(const QString &ivoID, const QString &posCutout,
                          const QString &displayName, const QString &type);
 
+    /// Same cutout, but deliberately in a viewer of its OWN rather than as a
+    /// layer of the shared one. The default is a layer because the inventory's
+    /// datasets are co-spatial; this is the escape hatch for comparing two of
+    /// them side by side.
+    void openInNewWindowRequested(const QString &ivoID, const QString &posCutout,
+                                  const QString &displayName, const QString &type);
+
+    /// Fetch the cutout and write it to disk WITHOUT opening it. For the case
+    /// where the user wants the file, not the picture.
+    void saveFileRequested(const QString &ivoID, const QString &posCutout,
+                           const QString &displayName, const QString &type);
+
     /// The user asked for the selection as ONE asynchronous archive job rather
     /// than N synchronous cutouts. Parallel lists, one entry per dataset.
     void batchRequested(const QStringList &ivoIDs, const QString &posCutout,
@@ -85,6 +121,9 @@ signals:
 
 private slots:
     void onDoubleClicked(const QModelIndex &idx);
+    /// Right-click on a dataset row: open as a layer (the default action),
+    /// open in its own window, or just save the file.
+    void showRowContextMenu(const QPoint &pos);
     void onSelectionChanged();
     void downloadSelected();
     void requestBatch();
@@ -112,7 +151,13 @@ private:
     void annotateCounts();                       ///< append "(N)" to branch nodes, grey empties
     int  countAndTag(QStandardItem *node);        ///< recursive leaf count + tagging
     bool filterNode(QStandardItem *node, const QString &needle);  ///< recursive hide/show
+    /// Draw (or clear) the sky outline of @p idx on the linked image viewer.
+    void showFootprintFor(const QModelIndex &idx);
     void requestCutout(const QModelIndex &idx);
+    /// The (ivoID, pos, label, type) of a row, or an empty ivoID for a branch.
+    /// Shared by every action so they cannot disagree about what a row means.
+    struct RowRequest { QString ivoID, pos, displayName, type; };
+    RowRequest rowRequest(const QModelIndex &idx) const;
     /// Let category rows use the full width instead of being elided in column 0.
     void spanGroupRows();   ///< shared by double-click + button
     int  groupIndexOf(double lambda) const;
@@ -127,6 +172,8 @@ private:
     QLabel             *m_status      { nullptr };  ///< "Requesting …" while fetches are out
     int                 m_pending     { 0 };        ///< cutout requests still in flight
     bool                m_busyCursorSet { false };
+    bool                m_imageWindowPending{ false };
+    QList<QPair<QString, QString>> m_pendingLayers;   ///< (backend path, label)
     QString             m_lastRequested;
     QString             m_lastFailed;
     QList<WavelengthGroup>       m_groups;

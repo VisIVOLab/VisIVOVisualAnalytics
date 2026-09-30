@@ -654,6 +654,18 @@ private:
     /// window's WCS (handles a non-Galactic native frame by converting first).
     bool galacticToImagePixel(double glon, double glat, std::array<double, 2> &pixel) const;
     /// Galactic bounding box (deg) of the current image footprint, for the query.
+public:
+    /// Outline the sky polygon of an inventory dataset on this image.
+    ///
+    /// `skyCorners` are native-frame (Galactic, for VLKB) degrees. Projected
+    /// with the same call the catalogue overlay uses, so the outline lands in
+    /// the same place its sources do — which matters because Hi-GAL cutouts are
+    /// CAR and a gnomonic projection would put it somewhere else.
+    void showInventoryFootprint(const QVector<QPointF> &skyCorners);
+    /// Remove it (a branch row selected, or the inventory closed).
+    void clearInventoryFootprint();
+
+protected:
     bool imageGalacticFootprint(double &glonMin, double &glonMax,
                                 double &glatMin, double &glatMax) const;
     QFutureWatcher<VlkbCatalogueRaw> m_vlkbCatWatcher;
@@ -692,6 +704,9 @@ private:
     unsigned long m_vlkbMoveTag{ 0 };
     unsigned long m_vlkbReleaseTag{ 0 };
     vtkSmartPointer<vtkActor2D> m_vlkbRubberActor;
+    /// Outline of the inventory row the user last clicked, drawn over the image
+    /// so you can see WHERE a dataset falls before downloading it.
+    vtkSmartPointer<vtkActor2D> m_inventoryFootprintActor;
     vtkSmartPointer<vtkInteractorObserver> m_vlkbPrevStyle;   ///< restored after selection
 
     // Stack

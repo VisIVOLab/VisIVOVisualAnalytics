@@ -498,84 +498,27 @@ void MainWindow::queryVlkb()
                                               });
                              job->show();
                          });
+                         // One handler, three intentions. The fetch, the error
+                         // reporting and the "requesting…" bookkeeping are the same
+                         // whatever the user chose to do with the result, so they
+                         // live in one place and the choice is a parameter.
                          QObject::connect(tree, &VLKBInventoryTree::cutoutRequested, this,
                                           [this, treeGuard](const QString &ivoID, const QString &pos,
-                                                       const QString &displayName,
-                                                       const QString &type) {
-                                              const QString sodaUrl =
-                                                      this->settings->getVLKBUrl()
-                                                      + u"/soda/sync?ID="_s
-                                                      + QUrl::toPercentEncoding(ivoID)
-                                                      + u"&POS="_s
-                                                      + QUrl::toPercentEncoding(pos)
-                                                      + u"&POSSYS=GALACTIC"_s;
-                                              const QString bearer =
-                                                      this->auth->bearerToken(AuthService::VLKB);
-
-                                              auto *watcher =
-                                                      new QFutureWatcher<BackendVlkbFetchResult>(this);
-                                              const QPointer<VLKBInventoryTree> tree = treeGuard;
-                                              QObject::connect(
-                                                      watcher,
-                                                      &QFutureWatcher<BackendVlkbFetchResult>::finished,
-                                                      this,
-                                                      [this, tree, displayName, type, watcher]() {
-                                                          watcher->deleteLater();
-                                                          const auto res = watcher->result();
-                                                          // Tell the inventory dialog the wait is
-                                                          // over, whichever way it ended: it is the
-                                                          // window the user is looking at, and it
-                                                          // has been saying "requesting…" since the
-                                                          // double-click.
-                                                          if (tree)
-                                                              tree->noteCutoutFinished(displayName,
-                                                                                       res.valid);
-                                                          if (!res.valid) {
-                                                              // The text is the
-                                                              // remote service's
-                                                              // own: shown as
-                                                              // PLAIN text, so
-                                                              // markup in it is
-                                                              // read, not
-                                                              // rendered.
-                                                              QMessageBox box(
-                                                                      QMessageBox::Critical,
-                                                                      u"VLKB cutout failed"_s,
-                                                                      res.error,
-                                                                      QMessageBox::Ok, this);
-                                                              box.setTextFormat(Qt::PlainText);
-                                                              box.exec();
-                                                              return;
-                                                          }
-                                                          if (type == u"image"_s) {
-                                                              // 2D: reuse the existing viewer when
-                                                              // possible, add as layer instead of
-                                                              // opening a new window each time.
-                                                              if (tree && tree->linkedImageWindow()) {
-                                                                  tree->linkedImageWindow()
-                                                                          ->addLayerFromBackendPath(
-                                                                                  res.path,
-                                                                                  displayName);
-                                                              } else {
-                                                                  this->openVlkbImageLayer(
-                                                                          res.path, displayName, tree);
-                                                              }
-                                                          } else {
-                                                              // Cube / other: open in the appropriate
-                                                              // specialist viewer.
-                                                              this->doOpenDataPath(res.path);
-                                                          }
-                                                      });
-                                              const QString backendUrl =
-                                                      this->settings->getBackendUrl();
-                                              const QString backendToken =
-                                                      this->settings->getBackendToken();
-                                              watcher->setFuture(QtConcurrent::run(
-                                                      [backendUrl, backendToken,
-                                                       sodaUrl, bearer]() {
-                                                          BackendClient bc(backendUrl, backendToken);
-                                                          return bc.vlkbFetchCutout(sodaUrl, bearer);
-                                                      }));
+                                                            const QString &name, const QString &type) {
+                                              this->fetchVlkbCutout(ivoID, pos, name, type, treeGuard,
+                                                                    VlkbCutoutMode::Layer);
+                                          });
+                         QObject::connect(tree, &VLKBInventoryTree::openInNewWindowRequested, this,
+                                          [this, treeGuard](const QString &ivoID, const QString &pos,
+                                                            const QString &name, const QString &type) {
+                                              this->fetchVlkbCutout(ivoID, pos, name, type, treeGuard,
+                                                                    VlkbCutoutMode::NewWindow);
+                                          });
+                         QObject::connect(tree, &VLKBInventoryTree::saveFileRequested, this,
+                                          [this, treeGuard](const QString &ivoID, const QString &pos,
+                                                            const QString &name, const QString &type) {
+                                              this->fetchVlkbCutout(ivoID, pos, name, type, treeGuard,
+                                                                    VlkbCutoutMode::SaveOnly);
                                           });
                      });
 
@@ -594,4 +537,174 @@ void MainWindow::queryVlkb()
     // The very string the panel previewed, so preview, search and cutout are
     // one region rather than three constructions of it.
     svc->searchPos(posStr);
+}
+
+// ── One VLKB cutout, three things the user might want from it ────────────────
+//
+// The datasets in an inventory are co-spatial, so the default for a 2-D one is
+// to become a LAYER of a single viewer rather than a window of its own. The
+// context menu offers the two exceptions: a separate window (to compare two
+// side by side) and saving the file without opening anything.
+void MainWindow::fetchVlkbCutout(const QString &ivoID, const QString &pos,
+                                 const QString &displayName, const QString &type,
+                                 QPointer<VLKBInventoryTree> tree, VlkbCutoutMode mode)
+{
+    const QString sodaUrl = this->settings->getVLKBUrl()
+            + u"/soda/sync?ID="_s + QUrl::toPercentEncoding(ivoID)
+            + u"&POS="_s + QUrl::toPercentEncoding(pos)
+            + u"&POSSYS=GALACTIC"_s;
+    const QString bearer = this->auth->bearerToken(AuthService::VLKB);
+
+    auto *watcher = new QFutureWatcher<BackendVlkbFetchResult>(this);
+    QObject::connect(watcher, &QFutureWatcher<BackendVlkbFetchResult>::finished, this,
+                     [this, tree, displayName, type, mode, watcher]() {
+                         watcher->deleteLater();
+                         const auto res = watcher->result();
+                         // Tell the inventory the wait is over whichever way it
+                         // ended: it is the window the user is looking at, and it
+                         // has been saying "requesting…" since the click.
+                         if (tree)
+                             tree->noteCutoutFinished(displayName, res.valid);
+                         if (!res.valid) {
+                             // The text is the remote service's own, shown as
+                             // PLAIN text so markup in it is read, not rendered.
+                             QMessageBox box(QMessageBox::Critical, u"VLKB cutout failed"_s,
+                                             res.error, QMessageBox::Ok, this);
+                             box.setTextFormat(Qt::PlainText);
+                             box.exec();
+                             return;
+                         }
+
+                         if (mode == VlkbCutoutMode::SaveOnly) {
+                             this->saveVlkbCutoutAs(res.path, displayName);
+                             return;
+                         }
+
+                         if (type != u"image"_s) {
+                             // A cube cannot be a layer of a 2-D viewer, so it
+                             // always opens in its own specialist window.
+                             this->doOpenDataPath(res.path);
+                             return;
+                         }
+
+                         if (mode == VlkbCutoutMode::NewWindow) {
+                             // Deliberately NOT linked to the inventory: linking
+                             // it would make the next layer land here instead of
+                             // in the shared viewer.
+                             this->openVlkbImageLayer(res.path, displayName, {});
+                             return;
+                         }
+
+                         if (tree && tree->linkedImageWindow()) {
+                             tree->linkedImageWindow()->addLayerFromBackendPath(res.path,
+                                                                               displayName);
+                             return;
+                         }
+                         if (tree && !tree->claimImageWindow()) {
+                             // Another completion is already opening the shared
+                             // viewer. Park this layer for it: openVlkbImageLayer
+                             // blocks on the backend, and the nested event loop
+                             // delivers the rest of a multi-selection meanwhile —
+                             // which is how six downloads used to give six
+                             // windows.
+                             tree->queuePendingLayer(res.path, displayName);
+                             return;
+                         }
+                         this->openVlkbImageLayer(res.path, displayName, tree);
+                         if (tree) {
+                             auto *win = tree->linkedImageWindow();
+                             for (const auto &parked : tree->takePendingLayers()) {
+                                 if (win)
+                                     win->addLayerFromBackendPath(parked.first, parked.second);
+                             }
+                         }
+                     });
+
+    const QString backendUrl = this->settings->getBackendUrl();
+    const QString backendToken = this->settings->getBackendToken();
+    watcher->setFuture(QtConcurrent::run([backendUrl, backendToken, sodaUrl, bearer]() {
+        BackendClient bc(backendUrl, backendToken);
+        return bc.vlkbFetchCutout(sodaUrl, bearer);
+    }));
+}
+
+// ── "Save File…": the file, not the picture ─────────────────────────────────
+//
+// The cutout the archive produced sits on the BACKEND, which is not always this
+// machine, so "save it" cannot be a file copy. It goes the way every other
+// artefact does — into Workspace Exports — and from there down to the path the
+// user chose. The workspace copy is left in place on purpose: it is where the
+// Data Hub can find it again.
+void MainWindow::saveVlkbCutoutAs(const QString &backendPath, const QString &displayName)
+{
+    QString base = displayName.simplified().toLower();
+    base.replace(QRegularExpression(u"[^a-z0-9]+"_s), u"_"_s);
+    while (base.endsWith(u'_'))
+        base.chop(1);
+    if (base.isEmpty())
+        base = u"vlkb_cutout"_s;
+    base += u".fits"_s;
+
+    const QString localPath = QFileDialog::getSaveFileName(
+            this, u"Save VLKB cutout"_s,
+            QDir(QDir::homePath()).absoluteFilePath(base),
+            u"FITS files (*.fits *.fit);;All files (*)"_s);
+    if (localPath.isEmpty())
+        return;   // cancelled — nothing fetched twice, the cutout is already there
+
+    this->statusBar()->showMessage(u"Saving %1…"_s.arg(displayName), 0);
+
+    const QString url = this->settings->getBackendUrl();
+    const QString token = this->settings->getBackendToken();
+    struct SaveOutcome { bool ok{ false }; QString error; QString workspaceName; };
+    auto *watcher = new QFutureWatcher<SaveOutcome>(this);
+    QPointer<MainWindow> self(this);
+    QObject::connect(watcher, &QFutureWatcher<SaveOutcome>::finished, this,
+                     [self, watcher, localPath, displayName]() {
+                         const SaveOutcome r = watcher->result();
+                         watcher->deleteLater();
+                         if (!self)
+                             return;
+                         self->statusBar()->clearMessage();
+                         if (!r.ok) {
+                             QMessageBox::warning(self, u"Save VLKB cutout"_s,
+                                     r.error.isEmpty() ? u"The cutout could not be saved."_s
+                                                       : r.error);
+                             return;
+                         }
+                         QMessageBox::information(self, u"Save VLKB cutout"_s,
+                                 u"%1 saved.\n\nFile: %2\n\nA copy is also in Workspace Exports "
+                                 u"as %3, reachable from the Data Hub."_s
+                                         .arg(displayName, localPath, r.workspaceName));
+                     });
+    watcher->setFuture(QtConcurrent::run([url, token, backendPath, base, localPath]() {
+        SaveOutcome out;
+        BackendClient c(url, token);
+        // Opened first because the workspace copy is addressed by dataset, not
+        // by path — and opening also proves the archive returned something the
+        // backend can read.
+        const auto opened = c.openDataset(backendPath);
+        if (!opened.valid || opened.datasetId.isEmpty()) {
+            out.error = opened.error.isEmpty() ? u"The backend could not open the cutout."_s
+                                               : opened.error;
+            return out;
+        }
+        const auto copied = c.copyDatasetToWorkspace(opened.datasetId, base);
+        if (!copied.valid) {
+            out.error = copied.error.isEmpty() ? u"The cutout could not be copied into the "
+                                                 u"workspace."_s
+                                               : copied.error;
+            return out;
+        }
+        // The struct is shared with the delete call, so the field is named for that
+        // one; here it carries the name the copy was given.
+        out.workspaceName = copied.deletedFilename;
+        QString err;
+        if (!c.downloadExport(copied.deletedFilename, localPath, err)) {
+            out.error = err.isEmpty() ? u"The workspace copy could not be downloaded."_s : err;
+            return out;
+        }
+        out.ok = true;
+        return out;
+    }));
 }

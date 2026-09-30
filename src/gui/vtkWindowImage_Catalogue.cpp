@@ -2303,3 +2303,80 @@ void vtkWindowImage::toggleVlkbBand(const QString &band, bool visible)
     if (ui && ui->vtk && ui->vtk->renderWindow())
         ui->vtk->renderWindow()->Render();
 }
+
+// ── Inventory footprint ──────────────────────────────────────────────────────
+//
+// Clicking a row in the VLKB inventory outlines that dataset's sky coverage on
+// the image, so its position is visible before anything is downloaded. The
+// legacy did this and it was lost in the port.
+//
+// The corners are projected with catalogueWorldToPixel — the same call the
+// catalogue overlay uses — rather than a gnomonic transform: the Hi-GAL cutouts
+// are CAR, and projecting them as TAN puts the outline in the wrong place. The
+// actor draws in world coordinates because for this viewer world IS the image
+// pixel grid, which is what the source markers already rely on.
+void vtkWindowImage::showInventoryFootprint(const QVector<QPointF> &skyCorners)
+{
+    if (skyCorners.size() < 3) {
+        clearInventoryFootprint();
+        return;
+    }
+    if (!ui->vtk || !ui->vtk->renderWindow())
+        return;
+    auto *ren = ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer();
+    if (!ren)
+        return;
+
+    auto pts = vtkSmartPointer<vtkPoints>::New();
+    for (const QPointF &sky : skyCorners) {
+        std::array<double, 2> pixel{ 0.0, 0.0 };
+        if (!this->catalogueWorldToPixel(sky.x(), sky.y(), pixel)) {
+            // One corner that will not project means the outline would be a
+            // wrong shape rather than a missing one — worse than nothing.
+            clearInventoryFootprint();
+            return;
+        }
+        pts->InsertNextPoint(pixel[0], pixel[1], 0.0);
+    }
+
+    auto lines = vtkSmartPointer<vtkCellArray>::New();
+    lines->InsertNextCell(static_cast<vtkIdType>(skyCorners.size()) + 1);
+    for (vtkIdType i = 0; i < skyCorners.size(); ++i)
+        lines->InsertCellPoint(i);
+    lines->InsertCellPoint(0);          // closed
+
+    auto pd = vtkSmartPointer<vtkPolyData>::New();
+    pd->SetPoints(pts);
+    pd->SetLines(lines);
+    auto mapper = vtkSmartPointer<vtkPolyDataMapper2D>::New();
+    mapper->SetInputData(pd);
+    auto coord = vtkSmartPointer<vtkCoordinate>::New();
+    coord->SetCoordinateSystemToWorld();
+    mapper->SetTransformCoordinate(coord);
+
+    if (!this->m_inventoryFootprintActor) {
+        this->m_inventoryFootprintActor = vtkSmartPointer<vtkActor2D>::New();
+        ren->AddActor2D(this->m_inventoryFootprintActor);
+    }
+    this->m_inventoryFootprintActor->SetMapper(mapper);
+    // Amber, like the other "this is the region you are about to act on"
+    // outlines in the cube viewer, and dashed so it reads as a preview rather
+    // than as data.
+    this->m_inventoryFootprintActor->GetProperty()->SetColor(0.94, 0.66, 0.24);
+    this->m_inventoryFootprintActor->GetProperty()->SetLineWidth(2.0);
+    this->m_inventoryFootprintActor->VisibilityOn();
+    ui->vtk->renderWindow()->Render();
+}
+
+void vtkWindowImage::clearInventoryFootprint()
+{
+    if (!this->m_inventoryFootprintActor)
+        return;
+    if (ui->vtk && ui->vtk->renderWindow()) {
+        if (auto *ren = ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer())
+            ren->RemoveActor2D(this->m_inventoryFootprintActor);
+    }
+    this->m_inventoryFootprintActor = nullptr;
+    if (ui->vtk && ui->vtk->renderWindow())
+        ui->vtk->renderWindow()->Render();
+}

@@ -87,7 +87,14 @@ jobs:
       - id: pick
         shell: bash
         env:
-          WANTED: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'all' }}
+          # The fallback is the SINGLE most expensive decision in this file.
+          # GitHub renders the workflow_dispatch inputs from the DEFAULT
+          # branch, so until this file reaches it the platform menu is not
+          # offered and `inputs.platforms` arrives empty. Falling back to "all"
+          # there would quietly spend ~1940 billed minutes on a run the user
+          # started expecting one artefact. A manual run defaults to the one
+          # artefact instead; only a tag builds everything.
+          WANTED: ${{ github.event_name == 'workflow_dispatch' && (inputs.platforms || 'macos-arm') || 'all' }}
         run: |
           set -euo pipefail
           all='[

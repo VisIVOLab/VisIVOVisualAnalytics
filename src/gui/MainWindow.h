@@ -195,6 +195,24 @@ private:
     /// @p tree is a QPointer, not a raw pointer: the inventory has
     /// WA_DeleteOnClose and the backend calls in here spin an event loop, so it
     /// can be closed while they run.
+    /// What to do with a VLKB cutout once it has been fetched.
+    enum class VlkbCutoutMode {
+        Layer,       ///< add to the inventory's shared viewer (the default)
+        NewWindow,   ///< a viewer of its own, for side-by-side comparison
+        SaveOnly,    ///< keep the file, do not open it
+    };
+    /// Fetch one inventory dataset and act on it. The fetch, the error report
+    /// and the dialog's "requesting…" bookkeeping are identical for all three
+    /// modes, so they are written once.
+    void fetchVlkbCutout(const QString &ivoID, const QString &pos,
+                         const QString &displayName, const QString &type,
+                         QPointer<VLKBInventoryTree> tree, VlkbCutoutMode mode);
+
+    /// Keep a fetched cutout as a file, without opening it. The cutout lives on
+    /// the BACKEND, which may be another machine, so it travels: workspace copy,
+    /// then download to the path the user picked.
+    void saveVlkbCutoutAs(const QString &backendPath, const QString &displayName);
+
     void openVlkbImageLayer(const QString &backendPath, const QString &displayName,
                              QPointer<VLKBInventoryTree> tree);
 
