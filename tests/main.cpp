@@ -30,6 +30,7 @@
 #include "TestViewerModeState.h"
 #include "TestLayerCardGeometry.h"
 #include "TestRegionReadout.h"
+#include "TestBackendUrlLocality.h"
 
 #include <QCoreApplication>
 #include <QTest>
@@ -66,5 +67,6 @@ int main(int argc, char *argv[])
     { TestViewerModeState  t; status |= QTest::qExec(&t, argc, argv); }
     { TestLayerCardGeometry t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionReadout    t; status |= QTest::qExec(&t, argc, argv); }
+    { TestBackendUrlLocality t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }

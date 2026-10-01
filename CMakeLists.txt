@@ -337,6 +337,8 @@ set(PROJECT_SOURCES
         src/auth/VisIVOUrlSchemeHandler.h
         src/app/BackendLauncher.cpp
         src/app/BackendLauncher.h
+        src/app/BackendUrl.cpp
+        src/app/BackendUrl.h
         src/app/DiagnosticsManager.cpp
         src/app/DiagnosticsManager.h
         src/app/ThemeManager.cpp

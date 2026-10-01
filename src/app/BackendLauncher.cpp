@@ -1,5 +1,7 @@
 #include "BackendLauncher.h"
 
+#include "BackendUrl.h"
+
 #include "BackendClient.h"
 
 #include <QCoreApplication>
@@ -578,16 +580,23 @@ BackendLauncher::~BackendLauncher()
 
 void BackendLauncher::startAsync(const QString &backendUrl,
                                  const QString &pythonExe,
-                                 bool noAutostart)
+                                 bool noAutostart,
+                                 const QString &backendToken)
 {
-    m_backendUrl = backendUrl;
+    // Settings::getBackendUrl() already trims, which is where it matters for the
+    // other readers; this covers a caller that assembled the URL some other way.
+    m_backendUrl = backendUrl.trimmed();
     m_pythonExe  = pythonExe;
+    m_backendToken = backendToken.trimmed();
     m_noAutostart = noAutostart;
     m_cancelled = false;
     m_ready = false;
     m_processFinishedUnexpectedly = false;
     m_pollCheckInFlight = false;
     m_capturedLogs.clear();
+    m_healthError.clear();
+    m_launchHost.clear();
+    m_launchLocality = BackendUrl::Locality::ThisMachine;
 
     emit messageChanged(u"Checking backend…"_s);
     doInitialHealthCheck();
@@ -616,8 +625,9 @@ bool BackendLauncher::isReady() const
 void BackendLauncher::doInitialHealthCheck()
 {
     const QString url = m_backendUrl;
-    m_initialHealthWatcher.setFuture(QtConcurrent::run([url]() -> BackendHealthResult {
-        BackendClient bc(url);
+    const QString token = m_backendToken;
+    m_initialHealthWatcher.setFuture(QtConcurrent::run([url, token]() -> BackendHealthResult {
+        BackendClient bc(url, token);
         return bc.health();
     }));
 }
@@ -642,7 +652,56 @@ void BackendLauncher::onInitialHealthDone()
         return;
     }
 
+    // Only this machine's backend is ours to start. launchProcess() passes the
+    // URL's host straight to `uvicorn --host`, so for a remote server it used
+    // to try to bind a hostname this machine does not hold: the bind failed and
+    // the user was told the backend had failed to start, when what had actually
+    // happened was that a remote server did not answer. Those two need
+    // different actions from them, so they need different messages.
+    //
+    m_healthError = result.error;
+
+    // Refuse only where refusing is certain: a literal address this machine
+    // does not hold. A name we do not recognise is NOT refused — it may well be
+    // ours (an /etc/hosts alias, a CNAME, the machine's fully qualified name),
+    // and resolving it to find out would mean a DNS lookup on the start-up path
+    // that can hang on a bad network. We let it try, exactly as before, and the
+    // failure message says what was attempted.
+    m_launchLocality = BackendUrl::localityOf(m_backendUrl);
+    if (m_launchLocality == BackendUrl::Locality::Malformed) {
+        emit failed(u"\"%1\" is not a usable server address.\n\n"
+                    u"It needs a scheme: http://host:port — for example "
+                    u"http://127.0.0.1:8000. Fix it in Settings ▸ Backend and "
+                    u"restart."_s.arg(m_backendUrl));
+        return;
+    }
+    if (m_launchLocality == BackendUrl::Locality::NotThisMachine) {
+        refuseRemoteAutostart();
+        return;
+    }
+
     launchProcess();
+}
+
+void BackendLauncher::refuseRemoteAutostart()
+{
+    // Deliberately NOT "no backend is answering": the health check reports a
+    // message, not a status, so a server that is up and refusing the token
+    // looks the same here as one that is switched off. Asserting which it was
+    // would send the user after the wrong problem half the time, so the client
+    // states what it will not do and quotes what it saw.
+    QString message = u"Could not reach the backend at %1, and this address is not on "
+                      u"this machine — so the client cannot start one for you.\n\n"
+                      u"Check that the server is running and reachable. If it needs a "
+                      u"token, set it in Settings ▸ Backend and restart the client, or "
+                      u"start the client with VISIVO_TOKEN set — this screen has no field "
+                      u"for it."_s.arg(m_backendUrl);
+    if (!m_healthError.isEmpty()) {
+        message += u"\n\nThe check reported: %1"_s.arg(m_healthError);
+    }
+    appendLog(u"[launcher] %1 is not this machine; not autostarting. Health check: %2"_s
+                      .arg(m_backendUrl, m_healthError.isEmpty() ? u"(no detail)"_s : m_healthError));
+    emit failed(message);
 }
 
 // ---------------------------------------------------------------------------
@@ -818,9 +877,12 @@ void BackendLauncher::launchProcess()
     }
 
     // ── Extract host and port from the backend URL ────────────────────────────
-    const QUrl parsedUrl(m_backendUrl);
-    const int    port = parsedUrl.port(8000);
-    const QString host = parsedUrl.host().isEmpty() ? u"127.0.0.1"_s : parsedUrl.host();
+    // The host comes from the same parse the locality gate used, so the address
+    // bound here is the one that was judged.
+    const int     port = BackendUrl::portOf(m_backendUrl, 8000);
+    const QString parsedHost = BackendUrl::hostOf(m_backendUrl);
+    const QString host = parsedHost.isEmpty() ? u"127.0.0.1"_s : parsedHost;
+    m_launchHost = host;
 
     const QStringList args = {
         u"-m"_s, u"uvicorn"_s, u"app.main:app"_s,
@@ -908,16 +970,28 @@ void BackendLauncher::onPollTick()
     // Guard: process crashed before becoming reachable.
     if (m_processFinishedUnexpectedly) {
         m_pollTimer.stop();
-        emit failed(
-                u"The backend process exited unexpectedly before becoming reachable.\n\n"
-                u"Use 'Show Logs' for details."_s);
+        QString message = u"The backend process exited unexpectedly before becoming "
+                          u"reachable."_s;
+        // Only for a name we could not place. An address this machine holds, or
+        // its own hostname, failed for some other reason entirely — a port
+        // already in use, say — and sending that user off to another machine
+        // would be worse than saying nothing.
+        if (m_launchLocality == BackendUrl::Locality::Unknown) {
+            message += u"\n\nIt was asked to listen on %1. If that is another "
+                       u"machine, start the backend there and make sure it is "
+                       u"reachable — the client cannot start it for you."_s
+                               .arg(m_launchHost);
+        }
+        message += u"\n\nUse 'Show Logs' for details."_s;
+        emit failed(message);
         return;
     }
 
     m_pollCheckInFlight = true;
     const QString url = m_backendUrl;
-    m_pollHealthWatcher.setFuture(QtConcurrent::run([url]() -> BackendHealthResult {
-        BackendClient bc(url);
+    const QString token = m_backendToken;
+    m_pollHealthWatcher.setFuture(QtConcurrent::run([url, token]() -> BackendHealthResult {
+        BackendClient bc(url, token);
         return bc.health();
     }));
 }

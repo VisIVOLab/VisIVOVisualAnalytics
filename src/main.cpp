@@ -8,6 +8,8 @@
 #include <QVTKOpenGLNativeWidget.h>
 
 #include <QApplication>
+
+#include "DiagnosticsManager.h"
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
@@ -401,6 +403,22 @@ int main(int argc, char *argv[])
     }
 
     QApplication app(argc, argv);
+
+    // Build the diagnostics singleton here, on the main thread, rather than
+    // wherever the first diagnostic happens to be published. It is a
+    // function-local static parented to qApp, so whichever thread touches it
+    // first is the thread it is constructed on — and the first publisher is
+    // often a worker (the backend health check runs in QtConcurrent and reports
+    // a failure). Qt then refuses to parent it across threads and says so:
+    //
+    //   QObject: Cannot create children for a parent that is in a different thread.
+    //
+    // Measured: the object's thread affinity ends up correct either way, so
+    // nothing malfunctions — the parent is simply never set, and a singleton
+    // that lives for the whole process does not need one. What it costs is the
+    // warning itself, printed at exactly the moment something has gone wrong
+    // and someone is reading the log for a reason.
+    DiagnosticsManager::instance();
 
     // Before anything can block: a Finder double-click delivers its FileOpen
     // event as soon as the app object exists, and the startup dialog below runs

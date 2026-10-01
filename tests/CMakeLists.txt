@@ -42,6 +42,7 @@ find_package(Qt6 REQUIRED COMPONENTS Test Core Network)
 # Does NOT depend on Qt::Widgets, VTK, or any UI component.
 add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/app/BackendClient.cpp
+    ${VISIVO_ROOT}/src/app/BackendUrl.cpp
     ${VISIVO_ROOT}/src/app/DiagnosticsManager.cpp
     ${VISIVO_ROOT}/src/AnalysisParamStore.cpp
     ${VISIVO_ROOT}/src/Settings.cpp
@@ -121,6 +122,8 @@ add_executable(VisIVOTests
     test_layer_card_geometry.cpp
     TestRegionReadout.h
     test_region_readout.cpp
+    TestBackendUrlLocality.h
+    test_backend_url_locality.cpp
 )
 set_target_properties(VisIVOTests PROPERTIES AUTOMOC ON)
 target_include_directories(VisIVOTests PRIVATE

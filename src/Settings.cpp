@@ -221,7 +221,14 @@ const std::pair<QString, QVariant> Settings::BackendUrl = {
 
 QString Settings::getBackendUrl() const
 {
-    const QString url = this->settings->value(Settings::BackendUrl.first).toString();
+    // Trimmed here rather than at each reader. A value stored with a trailing
+    // space parses as the right host and the DEFAULT port, and BackendClient
+    // concatenates the string straight into a request URL — so one caller binds
+    // a port while another queries an invalid address, and the app is quietly
+    // offline. Roughly thirty call sites read this; one of them remembering to
+    // trim is not a fix.
+    const QString url =
+            this->settings->value(Settings::BackendUrl.first).toString().trimmed();
     return url.isEmpty() ? Settings::BackendUrl.second.toString() : url;
 }
 
@@ -283,8 +290,11 @@ void Settings::setLocalFullThresholdMb(int mb)
 
 QString Settings::getBackendToken() const
 {
+    // Trimmed for the same reason, and one of its own: a token copied out of a
+    // terminal commonly brings a newline with it, and the server compares the
+    // bytes exactly.
     return this->settings->value(Settings::BackendToken.first,
-                                  Settings::BackendToken.second).toString();
+                                  Settings::BackendToken.second).toString().trimmed();
 }
 
 void Settings::setBackendToken(const QString &token)
