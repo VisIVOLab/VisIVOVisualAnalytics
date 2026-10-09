@@ -15,7 +15,7 @@ about five minutes.
 | **GPU** | Any Apple-Silicon GPU or a modern desktop GPU. Volume rendering uses `vtkGPUVolumeRayCastMapper`. |
 
 For full build flags and dependency notes see the repository
-[`BUILDING.md`](https://github.com/VisIVOLab/ViaLacteaVisualAnalytics/blob/master/BUILDING.md).
+[`BUILDING.md`](https://github.com/VisIVOLab/VisIVO-next/blob/main/BUILDING.md).
 
 ## Starting the backend
 
