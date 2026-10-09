@@ -2,7 +2,7 @@
 # `VisIVOLab/VisIVO-doc` repository, which Read the Docs uses as the source
 # for https://visivo.readthedocs.io.
 #
-# Why this exists: the main repo (ViaLacteaVisualAnalytics) is private and
+# Why this exists: the main repo (VisIVO-next) is private and
 # RTD Community can only build from public repositories. The cleanest way to
 # keep RTD happy without paying for RTD Business is to mirror only the docs
 # tree into a public repo that RTD points at. Editors keep working on the
@@ -25,8 +25,13 @@ name: Sync docs to public mirror
 on:
   push:
     branches:
-      - next-server
-      - master
+      # The branches that publish the public site. `next-server` and `master`
+      # were here until neither existed any more, so every docs change since
+      # the rename went nowhere and the site quietly froze. `skava` is listed
+      # because that is where the work happens — the site has always tracked
+      # the active branch, not a release.
+      - main
+      - skava
     paths:
       - "docs/**"
       - ".readthedocs.yaml"
@@ -87,8 +92,8 @@ jobs:
 
           The contents of this repo are auto-generated from the `docs/`
           subtree of the (private) source repository
-          [`VisIVOLab/ViaLacteaVisualAnalytics`](https://github.com/VisIVOLab/ViaLacteaVisualAnalytics)
-          via a [GitHub Actions workflow](https://github.com/VisIVOLab/ViaLacteaVisualAnalytics/blob/next-server/.github/workflows/sync-docs.yml).
+          [`VisIVOLab/VisIVO-next`](https://github.com/VisIVOLab/VisIVO-next)
+          via a [GitHub Actions workflow](https://github.com/VisIVOLab/VisIVO-next/blob/main/.github/workflows/sync-docs.yml).
           Every push to the upstream `docs/` triggers a sync that overwrites
           the contents of this repo and re-runs the RTD build.
 

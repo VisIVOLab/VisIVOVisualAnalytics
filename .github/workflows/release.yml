@@ -44,7 +44,13 @@ name: Release Build
 on:
   push:
     tags:
+      # Both conventions, because a release that silently does not build is
+      # worse than a tag name nobody likes. `v*` is the GitHub habit; a bare
+      # `1.0` is what actually got tagged the first time, and it matched
+      # nothing — the release was published with no packages on it and no
+      # failed run to say why.
       - 'v*'
+      - '[0-9]*'
   workflow_dispatch:
     inputs:
       platforms:

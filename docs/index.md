@@ -437,4 +437,4 @@ cmake --build build
 | Backend | FastAPI + Python 3.12+ |
 | Client | Qt 6.5+ / VTK 9.5+ / C++17 |
 | License | See repository `LICENSE` |
-| Repo | <https://github.com/VisIVOLab/ViaLacteaVisualAnalytics> |
+| Repo | <https://github.com/VisIVOLab/VisIVO-next> |

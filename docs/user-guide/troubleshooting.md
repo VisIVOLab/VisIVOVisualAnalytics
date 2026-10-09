@@ -1,7 +1,7 @@
 # Troubleshooting
 
 Common problems, what they mean, and how to fix them. Open a
-[GitHub issue](https://github.com/VisIVOLab/ViaLacteaVisualAnalytics/issues)
+[GitHub issue](https://github.com/VisIVOLab/VisIVO-next/issues)
 if you hit something not covered here.
 
 ## Backend / connection

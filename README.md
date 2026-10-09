@@ -1,299 +1,183 @@
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/_static/visivo_logo_white.svg">
+  <img src="docs/_static/visivo_logo_light.svg" alt="VisIVO" width="260">
+</picture>
+
 # VisIVO Visual Analytics
 
-VisIVO Visual Analytics is a scientific desktop application for interactive visualization of astronomical FITS datasets, including 2D images and 3D spectral cubes. It combines a native C++ client based on Qt and VTK with a Python FastAPI backend to support both local and remote workflows, with a remote-first architecture for scalable computation on HPC systems.
+**Interactive analysis of astronomical data cubes, images and catalogues —
+on your desktop, with the heavy computation wherever the data lives.**
 
-## Key Features
+[**Documentation**](https://visivo.readthedocs.io/) ·
+[User guide](https://visivo.readthedocs.io/en/latest/user-guide/getting-started.html) ·
+[Backend API](https://visivo.readthedocs.io/en/latest/backend-api.html) ·
+[Building from source](BUILDING.md)
 
-- Interactive 3D visualization of FITS cubes — isosurface and direct volume rendering
-- Volume rendering blend modes: Composite ray-casting, MIP (Maximum Intensity Projection), MinIP
-- Interactive 2D visualization of FITS images with multi-layer support
-- WCS-accurate multi-survey layer alignment (VLKB layers and remote FITS layers)
-- Remote file browsing for layers — browse and add backend-side FITS files as layers
-- Remote full-resolution slice computation with client-side cache and neighbor prefetch
-- Remote isosurface extraction with local VTK mesh rendering
-- Preview-to-full-resolution workflow for responsive remote cube opening
-- Moment map computation (all standard orders: 0–2, 3/4/5 higher-order statistical moments, 6, 8, 10) locally and remotely
-- Spectral line-width maps — per-pixel FWHM (Gaussian fit) and equivalent-width maps
-- Spectral baseline subtraction — polynomial or median baseline fit and removal, result registered as new dataset
-- Spectral cube stacking — mean, median, or weighted-mean combination of N open cubes
-- Position-velocity diagram generation
-- Configurable color maps per rendering mode (volume LUT independent of slice/moment LUTs)
-- Dockable, floatable workspace panels (3D cube view and 2D slice/detail view)
-- WCS axes overlay toggled from the View menu
-- Guided startup flow — auto-starts bundled backend, health-checks, and walks through token setup before the main window opens
-- Token-based authentication for secure remote access
-- Per-session dataset isolation for concurrent multi-user use
-- HPC deployment via Apptainer/Singularity container and SLURM job scripts
-- Loading placeholder in all viewers — a centred status message is shown while data is being fetched
-- Fully asynchronous backend communication — no UI freeze during computation
-
-## Architecture Overview
-
-VisIVO Visual Analytics is split into two cooperating components.
-
-The **C++ desktop client** is built with Qt 6 and VTK. It provides the interactive user interface, local rendering, camera controls, slice interaction, and mesh visualization. It communicates with the backend over HTTP, adding authentication and session headers to every request.
-
-The **Python backend** is built with FastAPI, astropy, and numpy. It handles remote data access and computation: file inspection, slice extraction, moment computation, subvolume loading, PV diagrams, and isosurface generation. CPU-bound VTK and numpy work runs in a `ProcessPoolExecutor` to avoid blocking the ASGI event loop. FITS files are opened with `astropy.io.fits` in memory-mapped mode so only the requested pixels are read from disk.
-
-This separation keeps the rendering experience responsive on the desktop while moving data-intensive work close to the data source on a server or HPC cluster.
-
-## Authentication
-
-Access to the backend is controlled by a **shared secret token** — there is no username/password system. The token is generated automatically the first time the backend starts, saved to `~/.visivo_token` (permissions `600`, readable only by the owning user), and also printed to the console:
-
-```
-[visivo] token: a3f9b2c1d4e57f8a...
-```
-
-The client reads the token automatically from the `VISIVO_TOKEN` environment variable or `~/.visivo_token`. For remote/HPC use, copy the token from the server and paste it in the Settings dialog under **Remote Backend → Access token**.
-
-Anyone who knows the token can use the backend, so treat it like a password and avoid sharing it over unencrypted channels.
-
-## Session Isolation
-
-Each time a client opens a dataset the backend returns a **session ID** (a UUID). All subsequent requests for that dataset — slices, moments, isosurfaces, PV diagrams — carry the session ID in the `X-Visivo-Session` header. This allows multiple clients or multiple concurrent open datasets to be handled independently without interfering with each other. Sessions expire automatically after a configurable idle timeout.
-
-## Main Workflows
-
-### Open a Remote Cube
-
-1. Browse the remote filesystem and select a FITS cube.
-2. The client opens the dataset through the backend and receives metadata and a session ID.
-3. A downsampled preview volume is loaded first so the cube appears immediately.
-4. A full-resolution subvolume request starts automatically in the background.
-5. When ready, the preview is replaced by the full-resolution cube in the same viewer.
-
-### Navigate Slices
-
-1. Slice selection uses the real dataset depth, not the preview depth.
-2. The 2D slice view is fetched remotely at full resolution.
-3. Recent slices are cached client-side.
-4. Neighbor slices are prefetched to improve responsiveness during navigation.
-
-### Compute a Moment Map
-
-1. The user configures the moment order and optional channel range and mask.
-2. In remote mode the request is sent to the backend with the session ID.
-3. The resulting 2D image is returned and displayed in the moment viewer.
-
-### Compute an Isosurface
-
-1. The user selects a threshold value.
-2. The backend computes the isosurface mesh from the remote FITS cube.
-3. The mesh vertices and polygons are returned to the client.
-4. The client reconstructs the VTK polydata and renders it locally in the cube viewer.
-
-### Open a Remote 2D FITS Image
-
-1. Browse the remote filesystem and select a FITS image.
-2. The backend opens the dataset and returns image metadata.
-3. A preview is fetched first; full resolution loads in the background.
-4. The standard image viewer displays the result. A centred "Loading image…" placeholder is visible until the first image data arrives.
-
-### Add a Layer to the 2D Image Viewer
-
-1. With a FITS image already open, select **File → Add New FITS File**.
-2. A remote file browser opens (same backend-side browser used by Data Hub).
-3. Select any `.fits` or `.fit` file accessible on the backend.
-4. The layer is loaded using the same WCS-aware pipeline (`loadImageLayer` / `AstroUtils` / libwcs) as the "Add New Layer" action, ensuring correct alignment with the base image.
-
-VLKB layers added from the inventory tree also use this same pipeline, so all layer sources are aligned consistently.
-
-## Remote File Browser
-
-The remote file browser behaves like a practical filesystem browser.
-
-- Starts from the remote user's home directory
-- Two-panel layout: directory tree on the left, metadata and FITS header on the right
-- FITS-focused filtering and sorting
-- Remembers the last visited directory during the current app session
-- Displays FITS header cards in a dedicated preview panel
-
-## Startup Flow
-
-When the application launches, a startup dialog guides the user through three sequential steps before the main window appears:
-
-1. **Backend** — the client health-checks the configured backend URL. If it is not reachable and auto-start is enabled (default), `BackendLauncher` starts the bundled `python -m uvicorn` process automatically. The process is kept alive for the entire application lifetime and terminated cleanly on exit.
-2. **Auth** — the client looks for an access token in `~/.visivo_token`. If none is found an inline form lets the user paste or type the token, with an explicit **Save & Continue** button that writes it to `~/.visivo_token`.
-3. **Ready** — after both backend and token are confirmed, the dialog auto-accepts and the main window opens.
-
-Error states show **Retry**, **Show Logs**, and **Quit** buttons. The log panel captures every line of stdout/stderr from the backend process and all launcher decision messages, making startup failures easy to diagnose.
-
-### Suppressing auto-start
-
-Pass `--no-backend-autostart` on the command line or set `VISIVO_NO_BACKEND_AUTOSTART` in the environment to skip the launch step and connect to an already-running backend instance.
-
-### Python interpreter resolution
-
-When `BackendLauncher` needs to start the backend it selects the Python interpreter using the following priority chain:
-
-| Priority | Source | Description |
-|---|---|---|
-| 1 | `VISIVO_BACKEND_PYTHON` env var | Explicit override — highest priority |
-| 2 | `$VIRTUAL_ENV/bin/python` | Active virtual environment in the calling shell |
-| 3 | `<backendDir>/../.venv/bin/python` | Project `.venv` in the dev tree |
-| 4 | `<appDir>/python3` | Bundled Python alongside the executable |
-| 5 | Settings / PATH-detected Python | Set in the Settings dialog at startup |
-| 6 | `python3` on PATH | Last resort; may not have uvicorn |
-
-The typical developer workflow `source .venv/bin/activate && open VisIVO.app` is covered by priority 2 (active venv). A production `.app` bundle with a bundled runtime is covered by priority 4.
+</div>
 
 ---
 
-## Setup
+VisIVO Visual Analytics is a desktop application for exploring FITS spectral
+cubes, 2-D maps and 3-D catalogues. It pairs a native Qt/VTK client with a
+Python compute service, so the same interface works whether your data sits on
+the laptop in front of you or on an HPC cluster on another continent — the
+client renders, the service computes next to the data, and only the result
+travels.
 
-### Backend — pip
+It is developed at **INAF** and is part of the wider VisIVO family, alongside
+the [VisIVO Server](https://visivo.readthedocs.io/en/latest/server/visivo_server.html)
+command-line toolkit, with which it shares data formats.
 
-Requirements: Python 3.10 or newer.
+## What it does
+
+**Spectral cubes** — slice navigation, cutting plane, probe spectra, isosurface
+and GPU volume rendering (composite, MIP, MinIP), camera ROI, animation export.
+
+**Maps and products** — moment maps of orders 0–10 with channel ranges and RMS
+masking; line-width (FWHM) and equivalent-width maps; polynomial or median
+baseline subtraction; spectral stacking across cubes; position–velocity
+diagrams; MAD-based noise estimation.
+
+**Regions and measurement** — box, circle, polygon and annulus statistics; a
+geodesic 3-D "kinematic lasso" for selecting coherent structures in a cube;
+region import/export in CRTF and ds9 formats.
+
+**Polarimetry** — Stokes Q/U/V companions, polarised intensity and angle, and
+rotation-measure synthesis over the frequency axis.
+
+**Images and surveys** — WCS-aware multi-layer 2-D images, all-sky HiPS,
+3-D catalogue scatter, VLKB archive cutouts with compact-source and filament
+overlays, SED fitting, and SAMP messaging with TOPCAT and Aladin.
+
+**Scientific Copilot** — ask questions in natural language; every number is
+produced by a real backend tool rather than generated text, with provenance and
+a reproducibility script. Works with a hosted model or one you run yourself.
+
+The [user guide](https://visivo.readthedocs.io/en/latest/) documents each of
+these, including the scientific interpretation of the products, not only the
+buttons that make them.
+
+## Getting it
+
+### Packaged builds
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) builds
+ready-to-run packages for all four targets and attaches them to the GitHub
+release for any version tag (`1.0`, `v1.0.0`, …):
+
+| Platform | Package |
+|---|---|
+| macOS (Apple Silicon / Intel) | `VisIVOVisualAnalytics-macos-{arm64,x86_64}.dmg` |
+| Linux x86-64 | `VisIVOVisualAnalytics-linux-x86_64.tar.gz` (AppImage) |
+| Windows x86-64 | `VisIVOVisualAnalytics-windows-x86_64.zip` |
+
+Each package ships its **own Python runtime with the backend's dependencies
+already installed**, so a release runs on a machine that has no Python at all.
+These builds are unsigned and intended for internal testers: on macOS, open
+them the first time with right-click → Open.
+
+### From source
+
+See [BUILDING.md](BUILDING.md). In short, you need Qt 6.5+, VTK 9.5+ built with
+Qt support, a C++17 compiler, and Python 3.11+ for the backend.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_PREFIX_PATH="/path/to/Qt;/path/to/VTK"
+cmake --build build --parallel
+```
+
+## Running it
+
+Start the application. On first launch it finds or creates a Python
+environment, starts the backend itself, and walks you through the token step
+before the main window opens — there is nothing to configure for local use.
+
+To run the backend yourself instead:
 
 ```bash
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-The token is printed to the console on first start and saved to `~/.visivo_token`.
+then start the client with `--no-backend-autostart`.
 
-### Backend — conda (recommended for HPC)
+### Against a remote backend
 
-```bash
-cd backend
-conda env create -f conda-environment.yml
-conda activate visivo
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
+Run the service on the machine that holds the data, then point the client at it
+in **Settings ▸ Backend**: the server URL and the access token the backend
+printed at startup. The client never needs the files themselves.
 
-### Backend — Apptainer/Singularity container
-
-Build the container image:
+For clusters, the repository ships an Apptainer definition and a SLURM
+launcher that allocates a node, starts the service, waits for it to answer, and
+prints the SSH tunnel command:
 
 ```bash
 apptainer build visivo-backend.sif apptainer/backend.def
+bash scripts/launch_backend_slurm.sh --sif visivo-backend.sif \
+     --bind /data --partition gpu --time 04:00:00
 ```
 
-Run it (bind-mount your data directory):
+The [multi-user backend guide](https://visivo.readthedocs.io/en/latest/multi-user-backend.html)
+describes what a shared backend does and does not isolate — read it before
+exposing one to colleagues.
+
+## How it fits together
+
+```
+┌──────────────────────────┐        HTTP + WebSocket/WebRTC
+│  Desktop client (C++)    │  ◄──────────────────────────────►
+│  Qt 6 · VTK 9            │        token + session headers
+│  interaction, rendering  │
+└──────────────────────────┘
+                                   ┌───────────────────────────┐
+                                   │  Compute service (Python) │
+                                   │  FastAPI · astropy · numpy│
+                                   │  next to the data         │
+                                   └───────────────────────────┘
+```
+
+The client owns interaction and rendering. The service owns the data: it
+memory-maps FITS so only the requested pixels are read, and runs CPU-bound work
+in a process pool so the event loop stays responsive. Cubes too large to ship
+are rendered server-side and streamed as video.
+
+Every request carries a **token** and a **session id**: sessions keep each
+client's datasets, tasks and results separate, and expire when idle.
+
+The [architecture note](https://visivo.readthedocs.io/en/latest/architecture-note.html)
+is the long version.
+
+## Development
 
 ```bash
-VISIVO_TOKEN=your-token apptainer run \
-  --bind /path/to/fits/data:/data \
-  visivo-backend.sif
+# C++ tests — no VTK or Qt Widgets needed
+cmake -S tests -B build-tests && cmake --build build-tests
+./build-tests/VisIVOTests
+
+# Backend tests — synthetic FITS fixtures, no real data
+cd backend && pip install -r requirements-dev.txt && pytest -q
 ```
 
-### Backend — SLURM (HPC)
+Documentation sources live in [`docs/`](docs/) and are mirrored to a public
+repository that Read the Docs builds from; see
+[`.github/workflows/sync-docs.yml`](.github/workflows/sync-docs.yml).
 
-The script `scripts/launch_backend_slurm.sh` submits a SLURM job, waits for the node to be assigned, polls the health endpoint, and prints the SSH tunnel command when the backend is ready.
+Release notes and the development history are in [CHANGELOG.md](CHANGELOG.md).
 
-```bash
-bash scripts/launch_backend_slurm.sh \
-  --sif visivo-backend.sif \
-  --bind /data \
-  --partition gpu \
-  --time 04:00:00
-```
+## Citing
 
-After the script completes, it prints something like:
+If VisIVO Visual Analytics contributes to work you publish, please cite the
+software and this repository. A paper describing the architecture and the
+kinematic-lasso selection method is in preparation; this section will carry the
+reference once it is available.
 
-```
-Backend ready on hpc-node-42:8000
-SSH tunnel: ssh -L 18000:hpc-node-42:8000 your-hpc-login
-```
+## Licence
 
-Open the SSH tunnel on your laptop, then set **Server URL** to `http://localhost:18000` in the Settings dialog.
+Apache License 2.0 — see [LICENSE](LICENSE).
 
-### Client
-
-See [BUILDING.md](BUILDING.md) for full dependency setup and build instructions.
-
-### Client configuration
-
-Open **Edit → Settings → Remote Backend**:
-
-| Field | Description |
-|---|---|
-| Server URL | Full URL of the backend, e.g. `http://127.0.0.1:8000` or the SSH tunnel address |
-| Access token | Leave empty to auto-load from `~/.visivo_token`, or paste the token shown in the backend console |
-
-The 👁 button reveals the token in plain text; ⎘ copies it to the clipboard.
-
-## API Reference
-
-All endpoints are prefixed with `/v1/` and require the header `X-Visivo-Token: <token>`. Dataset-scoped endpoints also accept `X-Visivo-Session: <session-id>`.
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/v1/health` | Health check (no auth required) |
-| `GET` | `/v1/files/list` | List a remote directory |
-| `POST` | `/v1/files/header` | Read FITS header cards |
-| `POST` | `/v1/dataset/open` | Open a dataset; returns `dataset_id` and `session_id` |
-| `GET` | `/v1/sessions` | List active sessions (admin) |
-| `POST` | `/v1/cube/slice` | Extract a 2D slice from a cube |
-| `POST` | `/v1/cube/subvolume` | Fetch a 3D subvolume |
-| `POST` | `/v1/cube/preview` | Fetch a downsampled preview volume |
-| `POST` | `/v1/cube/moment` | Compute a moment map |
-| `POST` | `/v1/cube/pv` | Compute a position-velocity diagram |
-| `POST` | `/v1/image/full` | Fetch a full-resolution 2D image |
-| `POST` | `/v1/image/preview` | Fetch a downsampled image preview |
-| `POST` | `/v1/products/isosurface` | Compute an isosurface mesh |
-
-## Running Tests
-
-```bash
-cd backend
-pip install -r requirements-dev.txt
-pytest tests/ -v
-```
-
-Tests use synthetic FITS fixtures (no real data required) and an in-process ASGI client. VTK-dependent tests are skipped automatically when VTK is not available.
-
-## Design Decisions
-
-**Python backend** — chosen for its strong scientific ecosystem (astropy, numpy, scipy), FITS tooling, and a clean path toward cluster-side computation. `ProcessPoolExecutor` avoids blocking the async event loop for CPU-bound work. Memory-mapped FITS I/O ensures only the requested pixels are loaded.
-
-**C++ client** — chosen for interactive desktop performance, robust Qt UI integration, and high-quality VTK-based scientific rendering.
-
-**Shared-secret token** — simpler than OAuth for the typical use case (a single researcher or small team connecting to their own HPC allocation). The token is generated once per installation and never transmitted in URLs.
-
-**Session isolation** — enables concurrent multi-user use and multiple simultaneously open datasets without server-side state collisions.
-
-## Recent Development
-
-**next-server branch — spectral analysis improvements (2026-04)**
-
-- **Moment orders 3, 4, 5 fully supported** — M3 (skewness = μ₃/σ³), M4 (excess kurtosis = μ₄/σ⁴ − 3), and M5 (standardised 5th moment = μ₅/σ⁵) are now correctly computed in both the numpy and Dask paths. All three are dimensionless and normalised consistently with one another. The C++ `isSupportedMomentOrder()` guard was extended to include these orders (previously returned "Unsupported moment order" at runtime).
-- **Unified moment dialog** — the Moment submenu (six individual order actions) is replaced by a single **Tools → Compute Moment…** action that always opens a configuration dialog. The dialog lets the user select any supported order, channel range, and optional threshold mask in one step.
-- **Surface real backend error text** — `MomentMapController` stores the backend error message with the `"MomentMap M<order>: …"` prefix and exposes it via `lastError()`. The status-bar deferred-error path in `vtkWindowCube` now shows the actual backend message instead of a generic string.
-- **Line-width map guard** — `LinewidthDialog` validates `width > 0 && height > 0` before constructing the `ScienceMapWindow`, preventing a crash on all-NaN output (when all pixels fail to fit).
-- **Session ID plumbing** — `LinewidthDialog`, `BaselineDialog`, and `StackDialog` all accept a `sessionId` parameter and call `client->setSessionId()` before making any request, fixing the double-slash URL and 401 errors that occurred when session ID was not forwarded.
-- **StackDialog redesign** — replaced the plain list with a checkable `QListWidget`. A live counter label shows "N selected" in red when fewer than 2 cubes are chosen; the Compute button is disabled until at least 2 are selected.
-- **Backend spectral endpoints** — `/v1/spectral/linewidth`, `/v1/spectral/linewidth/binary`, `/v1/spectral/baseline/{session_id}/{dataset_id}`, `/v1/spectral/stack`, `/v1/spectral/stack/binary` added. These support per-pixel Gaussian FWHM and equivalent-width fitting, polynomial/median baseline subtraction, and mean/median/weighted-mean cube stacking. Source-finder integration via `/v1/spectral/sourcefind` (SoFiA-2 backend).
-- **next-server branch**
-
-- **Guided startup flow** — a `StartupDialog` shown before `MainWindow` drives backend health-check, optional auto-start, and token setup. `BackendLauncher` manages the backend process lifetime and captures all stdout/stderr for the log panel.
-- **Smart Python resolution** — `BackendLauncher` walks a six-level priority chain (`VISIVO_BACKEND_PYTHON` → active venv → project `.venv` → bundled Python → Settings Python → PATH fallback) to find the right interpreter without manual configuration.
-- **Remote file browsing for image layers** — "File → Add New FITS File" in the image viewer now opens the backend-side `RemoteFileBrowserDialog` instead of a local file picker. The selected path is loaded through the same WCS-aware pipeline used by all other layer sources.
-- **Unified VLKB layer alignment** — VLKB survey layers added from the inventory tree route through `addLayerImage()` → `loadImageLayer()` → `AstroUtils` / libwcs, the same pipeline as the standard "Add New Layer" path. All layer sources are now aligned consistently regardless of how they were added.
-- **Loading placeholder in all viewers** — `vtkWindowImage`, `vtkWindowVbt`, and `vtkWindowVbtVolume` now display a centred "Loading…" message (font 16 pt, colour `#B8D6E8`) while data is being fetched, matching the existing pattern in `vtkWindowCube`.
-- **Dockable workspace** — the 3D cube view and the 2D slice/detail view are now independent `QDockWidget` panels. Each panel can be floated, resized, or closed independently. A "Reset Layout" action in the View menu restores the default side-by-side arrangement.
-- **3D View Settings tab** — the former "Threshold" sidebar tab is redesigned. Rendering mode (Isosurface / Volume), volume blend mode, threshold slider, and color map selection are organised into collapsible cards. Color Map and Surface Color cards are shown only for the active rendering mode.
-- **Volume rendering blend modes** — Composite ray-casting, MIP, and MinIP are selectable both from the sidebar and from the View → Volume Rendering submenu. The sidebar and menu stay in sync bidirectionally.
-- **Color map scope** — the LUT combo in the 3D View Settings tab now updates only the volume color transfer function. Slice and moment LUTs are managed independently and are not affected.
-- **Non-blocking async controllers** — `NoiseController`, `MomentMapController`, and `PvController` dispatch computation via `QtConcurrent::run` with per-request heap-allocated `QFutureWatcher`. The main thread never blocks waiting for results.
-- **WCS axes overlay** — toggled from View → Show WCS Axes.
-- **Backend LRU cache** — the overlay CSV catalogue cache is bounded (`functools.lru_cache(maxsize=32)`) instead of growing without limit.
-- **Plot background theme** — Settings → UI → Plot background lets the user choose between a dark (default) and light plot background. The preference is applied to the PV Diagram window and all spectrum/profile plot windows when they are opened. The setting is persisted in `Settings.ini` under `Plots/theme`.
-- **PNG export for plots** — the PV Diagram window and the spectrum/profile plot windows each have a "Save as PNG…" button in the footer bar. Clicking it opens a file dialog and saves the current plot via `QCustomPlot::savePng()`, suitable for inclusion in papers and presentations.
-- **Non-modal analysis results** — the Noise Estimation and Region Analysis result dialogs (`ToolResultDialog`) are now non-modal. The result window stays open while the user continues to interact with the cube viewer, and closes itself when dismissed.
-
-## Roadmap
-
-- Settings dialog: SSH tunnel launcher integrated in the UI
-- Progressive streaming and multi-resolution data delivery
-- ROI-based subvolume loading driven by the current camera view
-- AI-assisted scientific workflows and a domain-aware analysis copilot
-- Multi-user token management and per-user session quotas
-
-## Status
-
-The system supports working local and remote FITS workflows for remote file browsing, 2D image loading, cube preview and full-resolution upgrade, slice extraction, moment computation, PV diagrams, and isosurface extraction. The architecture is designed to evolve toward progressive data transport, large-scale HPC execution, and AI-assisted analysis while keeping the same core desktop interaction model.
+Developed at the Istituto Nazionale di Astrofisica (INAF).
